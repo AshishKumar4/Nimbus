@@ -60,7 +60,7 @@ try {
         continue;
       }
       for (const [call, value] of Object.entries(calls)) {
-        a.check(`step ${step}: ${section}.${call} answers as on Cloudflare${section === 'd1' && call === 'servedBy' ? ' (a named difference)' : ''}`,
+        a.check(`step ${step}: ${section}.${call} answers as on Cloudflare${(section === 'd1' && call === 'servedBy') || (section === 'r2' && call === 'unknownLength') ? ' (a named difference)' : ''}`,
           isDeepStrictEqual(got?.[section]?.[call], value), `got=${JSON.stringify(got?.[section]?.[call])} expected=${JSON.stringify(value)}`);
       }
     }

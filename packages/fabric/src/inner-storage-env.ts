@@ -88,14 +88,23 @@ export interface D1QuerySqlResult {
   data: { kind: 'raw'; columns: string[]; rows: D1Value[][] };
 }
 
-/** All of a request's queries, in one transaction, or the error that rolled it back. */
+/**
+ * All of a request's queries, in one transaction, and the database's
+ * bookmark after them; or the error that rolled them back.
+ */
 export type D1QueryResponse =
-  | { success: true; results: { queryResults: D1QuerySqlResult[] } }
+  | { success: true; results: { queryResults: D1QuerySqlResult[]; bookmark?: string } }
   | { success: false; error: { name: string; message: string } };
+
+/** A request by D1's binding contract: its queries, and the bookmark (or constraint) of the session sending them. */
+export interface D1QueryRequest {
+  queries: D1QuerySql[];
+  bookmark?: string;
+}
 
 /** The binding the loader passes for a D1 database. */
 export interface D1BindingRemote {
-  query(request: { queries: D1QuerySql[] }): Promise<D1QueryResponse>;
+  query(request: D1QueryRequest): Promise<D1QueryResponse>;
 }
 
 // ── R2, as the binding takes and answers it ────────────────────────────────
@@ -259,20 +268,27 @@ function rowsAsObjects(answer: D1RowsAndColumns): D1Result {
   return { ...answer, results: rows.map((row) => Object.fromEntries(row.map((cell, i) => [columns[i], cell]))) };
 }
 
-/** The binding a session sends its queries to: off the session's own surface. */
-let remoteOf: (session: D1DatabaseSession) => D1BindingRemote;
+/** `queries` sent as `session` sends them: off the session's own surface. */
+let sendD1: (session: D1DatabaseSession, queries: D1QuerySql[], code: string) => Promise<D1RowsAndColumns[]>;
 
-/** The session a statement runs in (d1-api D1DatabaseSession); the database's own goes to the primary. */
+/**
+ * The session a statement runs in (d1-api D1DatabaseSession): it sends its
+ * bookmark (or constraint) with each request, and keeps the latest bookmark
+ * the database answers. The database's own session goes to the primary, and
+ * sends and keeps none.
+ */
 class D1DatabaseSession {
   readonly #remote: D1BindingRemote;
+  readonly #keepsBookmark: boolean;
   #bookmark: string | null;
 
   static {
-    remoteOf = (session) => session.#remote;
+    sendD1 = (session, queries, code) => session.#send(queries, code);
   }
 
   constructor(remote: D1BindingRemote, bookmarkOrConstraint: string | null) {
     this.#remote = remote;
+    this.#keepsBookmark = bookmarkOrConstraint !== null;
     if (bookmarkOrConstraint === null) {
       this.#bookmark = null;
     } else {
@@ -281,12 +297,26 @@ class D1DatabaseSession {
     }
   }
 
+  /**
+   * `queries` run in one transaction: each answer, or the failure rolling
+   * them back thrown as `<code>: <message>`. A bookmark answered replaces
+   * the session's only when it is later (d1-api _updateBookmark).
+   */
+  async #send(queries: D1QuerySql[], code: string): Promise<D1RowsAndColumns[]> {
+    const response = await this.#remote.query(this.#bookmark === null ? { queries } : { queries, bookmark: this.#bookmark });
+    if (!response.success) throw d1Error(code, response.error.message);
+    const answered = response.results.bookmark?.trim();
+    const current = this.getBookmark();
+    if (this.#keepsBookmark && answered && (current === null || current.localeCompare(answered) < 0)) this.#bookmark = answered;
+    return response.results.queryResults.map(({ meta, data }) => ({ success: true, meta, results: { columns: data.columns, rows: data.rows } }));
+  }
+
   prepare(sql: string): D1PreparedStatement {
     return new D1PreparedStatement(this, sql);
   }
 
   async batch(statements: D1PreparedStatement[]): Promise<D1Result[]> {
-    const answers = await sendD1(this, statements.map(statementQuery), 'D1_ERROR');
+    const answers = await this.#send(statements.map(statementQuery), 'D1_ERROR');
     return answers.map(rowsAsObjects);
   }
 
@@ -300,16 +330,6 @@ class D1DatabaseSession {
         return this.#bookmark;
     }
   }
-}
-
-/**
- * `queries` run in one transaction: each answer, or the failure rolling them
- * back thrown as `<code>: <message>`.
- */
-async function sendD1(session: D1DatabaseSession, queries: D1QuerySql[], code: string): Promise<D1RowsAndColumns[]> {
-  const response = await remoteOf(session).query({ queries });
-  if (!response.success) throw d1Error(code, response.error.message);
-  return response.results.queryResults.map(({ meta, data }) => ({ success: true, meta, results: { columns: data.columns, rows: data.rows } }));
 }
 
 function statementQuery(statement: D1PreparedStatement): D1QuerySql {
@@ -736,9 +756,20 @@ class R2Bucket {
 
   async put(key: string, value: R2PutBody | Blob, options?: R2PutOptions): Promise<HeadResult | null> {
     const wire: R2WirePutOptions = {};
-    if (options?.customMetadata !== undefined) wire.customMetadata = { ...options.customMetadata };
-    if (options?.httpMetadata !== undefined) {
-      wire.httpMetadata = options.httpMetadata instanceof Headers ? metadataFromHeaders(options.httpMetadata) : options.httpMetadata;
+    // Each metadata value is a string, as workerd's Dict<kj::String> and HttpMetadata coerce them.
+    if (options?.customMetadata !== undefined) {
+      wire.customMetadata = Object.fromEntries(Object.entries(options.customMetadata).map(([name, field]) => [name, String(field)]));
+    }
+    if (options?.httpMetadata instanceof Headers) {
+      wire.httpMetadata = metadataFromHeaders(options.httpMetadata);
+    } else if (options?.httpMetadata !== undefined) {
+      const given = options.httpMetadata;
+      const metadata: R2WireHttpMetadata = {};
+      for (const field of ['contentType', 'contentLanguage', 'contentDisposition', 'contentEncoding', 'cacheControl'] as const) {
+        if (given[field] !== undefined) metadata[field] = String(given[field]);
+      }
+      if (given.cacheExpiry !== undefined) metadata.cacheExpiry = new Date(given.cacheExpiry);
+      wire.httpMetadata = metadata;
     }
     if (options !== undefined) {
       const checksums = wireChecksums(options);
@@ -754,8 +785,14 @@ class R2Bucket {
     return this.#remote.delete(Array.isArray(keys) ? keys.map(String) : String(keys));
   }
 
-  async list(options?: R2WireListOptions): Promise<{ objects: HeadResult[]; truncated: boolean; cursor?: string; delimitedPrefixes: string[] }> {
-    const listed = await this.#remote.list({ ...options });
+  async list(options?: Omit<R2WireListOptions, 'include'> & { include?: string[] }): Promise<{ objects: HeadResult[]; truncated: boolean; cursor?: string; delimitedPrefixes: string[] }> {
+    const { include: given, ...rest } = options ?? {};
+    const include: NonNullable<R2WireListOptions['include']> = [];
+    for (const field of given ?? []) {
+      if (field !== 'httpMetadata' && field !== 'customMetadata') throw new RangeError(`Unsupported include value ${field}`);
+      include.push(field);
+    }
+    const listed = await this.#remote.list(given === undefined ? rest : { ...rest, include });
     // In the order of workerd's R2Objects struct.
     return {
       objects: listed.objects.map((object) => new HeadResult(object)),

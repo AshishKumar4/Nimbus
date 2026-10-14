@@ -10,9 +10,13 @@
 //     one request; exec sends each line as a statement and names the first
 //     line when one fails; a failure is D1_ERROR with the bare message its
 //     cause; query is refused as without d1_binding_jsrpc;
+//   - D1: a session sends its bookmark with each query and keeps the latest
+//     bookmark the database answers, a later one only (as d1-api's
+//     _updateBookmark); the database's own statements keep none;
 //   - R2: an object's fields are its own, read-only, in workerd's order, its
 //     class workerd's; a body reads once; a condition and a range are sent
-//     as R2's client sends them, and a range or etag it refuses is refused
+//     as R2's client sends them, metadata values as strings (workerd's
+//     Dict<kj::String>), and a range, etag or include it refuses is refused
 //     before the binding is asked.
 //
 // The live differential is wrangler-dev-storage-bindings-workerd.
@@ -24,11 +28,13 @@ const { innerStorageAdapter } = (0, eval)(INNER_STORAGE_ADAPTER_SOURCE);
 
 const meta = { served_by: 'test', duration: 1, changes: 0, last_row_id: 0, changed_db: false, size_after: 4096, rows_read: 1, rows_written: 0 };
 const sent = [];
+// The bookmark the database answers next.
+let bookmark = '00000002-00000000-00000000-aa';
 const d1Remote = {
   async query(request) {
     sent.push(request);
     if (request.queries.some((q) => q.sql.includes('missing'))) return { success: false, error: { name: 'Error', message: 'no such table: missing: SQLITE_ERROR' } };
-    return { success: true, results: { queryResults: request.queries.map(() => ({ meta, data: { kind: 'raw', columns: ['x', 'y', 'x'], rows: [[1, 'a', 2], [3, 'b', 4]] } })) } };
+    return { success: true, results: { bookmark, queryResults: request.queries.map(() => ({ meta, data: { kind: 'raw', columns: ['x', 'y', 'x'], rows: [[1, 'a', 2], [3, 'b', 4]] } })) } };
   },
 };
 const asked = [];
@@ -78,7 +84,20 @@ await assert.rejects(DB.exec('INSERT INTO t VALUES (2)\nSELECT * FROM missing'),
 await assert.rejects(DB.query({ queries: [] }), { message: /^D1_ERROR: D1Database\.query\(\) requires the d1_binding_jsrpc compatibility flag/ });
 const session = DB.withSession('first-primary');
 assert.equal(session.getBookmark(), null);
+sent.length = 0;
 assert.deepEqual(await session.prepare('SELECT 1').first(), { x: 2, y: 'a' });
+assert.equal(sent[0].bookmark, 'first-primary', 'a session sends its constraint');
+assert.equal(session.getBookmark(), '00000002-00000000-00000000-aa', 'and keeps the bookmark the database answered');
+bookmark = '00000001-00000000-00000000-ff';
+await session.batch([session.prepare('SELECT 1')]);
+assert.equal(session.getBookmark(), '00000002-00000000-00000000-aa', 'an earlier bookmark does not replace it');
+bookmark = '00000003-00000000-00000000-00';
+await session.prepare('SELECT 1').run();
+assert.equal(sent.at(-1).bookmark, '00000002-00000000-00000000-aa', 'its bookmark rides each later query');
+assert.equal(session.getBookmark(), '00000003-00000000-00000000-00', 'a later one does');
+assert.equal(DB.withSession('00000009-x').getBookmark(), '00000009-x', 'a session begun at a bookmark has it');
+await DB.prepare('SELECT 1').first();
+assert.equal(sent.at(-1).bookmark, undefined, "the database's own statements send none");
 
 // ── R2 ─────────────────────────────────────────────────────────────────────
 const BUCKET = env.BUCKET;
@@ -118,6 +137,12 @@ await assert.rejects(BUCKET.put('k', 'v', { md5: 'abc' }), { name: 'TypeError', 
 await assert.rejects(BUCKET.put('k', 'v', { md5: new Uint8Array(16), sha1: new Uint8Array(20) }), { message: 'You cannot specify multiple hashing algorithms.' });
 assert.equal(asked.length, refusedBefore, 'what the client refuses never reaches the binding');
 
+await BUCKET.put('k', 'v', { customMetadata: { count: 1, flag: true }, httpMetadata: { contentType: 1, cacheExpiry: new Date(5_000) } });
+assert.deepEqual(asked.at(-1)[3], { customMetadata: { count: '1', flag: 'true' }, httpMetadata: { contentType: '1', cacheExpiry: new Date(5_000) } },
+  'metadata values cross as strings, as workerd coerces them');
+const bogus = asked.length;
+await assert.rejects(BUCKET.list({ include: ['bogus'] }), { name: 'RangeError', message: 'Unsupported include value bogus' });
+assert.equal(asked.length, bogus, 'an include R2 does not have is refused before the binding is asked');
 const put = await BUCKET.put('k', new Blob(['blob']), { md5: new Uint8Array(16).fill(255), httpMetadata: new Headers({ 'content-type': 'text/html', expires: 'Thu, 01 Jan 1970 00:00:10 GMT' }) });
 assert.equal(put.range, undefined);
 const [, , value, options] = asked.at(-1);

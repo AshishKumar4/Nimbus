@@ -17,8 +17,14 @@ published independently in the `@nimbus-sh` npm scope.
   carries no class instance. Each binding reaches only the store it is
   declared for, in its own project: a KV namespace's or R2 bucket's files
   under the project's `.nimbus`, as the user who started the server, and a
-  D1 binding's own database. An R2 object's etag is now its body's MD5, as
-  on Cloudflare, and KV and R2 listings page with Cloudflare's cursor.
+  D1 binding's own database. A KV or R2 body is streamed to its file as
+  it arrives, never held whole, and one past the platform's limit (25 MiB
+  for a KV value, 5 GiB less 5 MiB for an R2 upload) is refused with the
+  platform's error as it passes it, its stream cancelled, leaving the value
+  it would have replaced. An R2 object's etag is now its body's MD5, as on
+  Cloudflare, a key ending `.meta` is its own object, and KV and R2
+  listings page with Cloudflare's cursor. Unlike workerd, an R2 put of a
+  stream whose length is not known is accepted.
   Embedders re-export the new `NimbusKVNamespace`, `NimbusD1Binding` and
   `NimbusR2Bucket` classes from their Worker's main module, as they do the
   other Nimbus classes (`export * from '@nimbus-sh/sdk/entrypoints'`

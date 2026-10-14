@@ -18,13 +18,27 @@ export const WRANGLER_CONFIG = {
  * Step 1 calls each API's main methods on empty stores; step 2, a later
  * request, reads what step 1 left. Every answer is a value or an error's
  * name, message and cause; what differs from run to run (a duration, an
- * upload time, an R2 version) is answered as its shape.
+ * upload time, an R2 version, a D1 bookmark) is answered as its shape. A
+ * stream past KV's limit is refused with the length read so far, which a
+ * store that drains it (Miniflare) and one that cancels it once past the
+ * limit (Nimbus) read to different points, so that length is answered as
+ * whether it is past the limit.
  */
 export const WORKER = String.raw`
 const enc = new TextEncoder();
 const bytes = (buffer) => Array.from(new Uint8Array(buffer));
 const hex = (buffer) => Array.from(new Uint8Array(buffer), (b) => b.toString(16).padStart(2, '0')).join('');
 const text = (stream) => new Response(stream).text();
+/** A stream of \`count\` pieces of 64 KiB, made as they are asked for. */
+function pieces(count) {
+  let made = 0;
+  return new ReadableStream({
+    pull(controller) {
+      if (made === count) { controller.close(); return; }
+      controller.enqueue(new Uint8Array(65536).fill(made++ & 255));
+    },
+  }, { highWaterMark: 0 });
+}
 
 function failure(error) {
   const out = { name: error && error.name, message: error && error.message };
@@ -87,6 +101,21 @@ async function kv(KV) {
   out.bulkJson = await attempt(async () => Array.from(await KV.get(['json', 'missing'], 'json')));
   out.bulkMetadata = await attempt(async () => Array.from(await KV.getWithMetadata(['meta', 'a'])));
   out.delete = await attempt(async () => [await KV.delete('a'), await KV.get('a'), await KV.delete('never-stored')]);
+  out.bulkJsonNull = await attempt(async () => {
+    await KV.put('jnull', 'null', { metadata: { m: 1 } });
+    return Array.from(await KV.getWithMetadata(['jnull', 'missing'], 'json'));
+  });
+  out.listLimitNotPositive = await attempt(async () => [(await KV.list({ prefix: 'p/', limit: 0 })).keys.length, (await KV.list({ prefix: 'p/', limit: -1 })).keys.length]);
+  out.bigStream = await attempt(async () => {
+    const refused = await attempt(() => KV.put('big', pieces(1024)));
+    const length = Number(/length of (\d+)/.exec(refused.error?.message ?? '')?.[1]);
+    return {
+      name: refused.error?.name,
+      message: refused.error?.message.replace(/length of \d+/, 'length of N'),
+      pastLimit: length > 26214400,
+      stored: await KV.get('big'),
+    };
+  });
   out.errors = {
     emptyKey: await attempt(() => KV.get('')),
     dotKey: await attempt(() => KV.put('..', 'x')),
@@ -158,7 +187,12 @@ async function d1(DB) {
   });
   out.session = await attempt(async () => {
     const session = DB.withSession('first-primary');
-    return { before: session.getBookmark(), row: await session.prepare('SELECT 1 AS one').first(), batch: (await session.batch([session.prepare('SELECT 2 AS two')])).map((r) => r.results) };
+    const before = session.getBookmark();
+    const row = await session.prepare('SELECT 1 AS one').first();
+    const first = session.getBookmark();
+    const batch = (await session.batch([session.prepare('SELECT 2 AS two')])).map((r) => r.results);
+    const second = session.getBookmark();
+    return { before, row, batch, bookmark: String(first).replace(/[0-9a-f]/g, 'x'), later: typeof second === 'string' && second.localeCompare(first) >= 0 };
   });
   out.errors = {
     noTable: await attempt(() => DB.prepare('SELECT * FROM missing').all()),
@@ -326,6 +360,31 @@ async function r2(BUCKET) {
     return [one, many, await BUCKET.head('hello.txt'), (await BUCKET.list({ prefix: 'v/' })).objects.map((o) => o.key)];
   });
   out.longKey = await attempt(() => BUCKET.put('k'.repeat(1025), 'x'));
+  out.metadataCoerced = await attempt(async () => {
+    const put = object(await BUCKET.put('meta.txt', 'm', { customMetadata: { count: 1, flag: true }, httpMetadata: { contentType: 1 } }));
+    const got = await BUCKET.get('meta.txt');
+    return { put, head: object(await BUCKET.head('meta.txt')), get: object(got), text: await got.text() };
+  });
+  out.listIncludeBogus = await attempt(() => BUCKET.list({ include: ['bogus'] }));
+  out.bigStream = await attempt(async () => {
+    const size = 640 * 65536;
+    const { readable, writable } = new FixedLengthStream(size);
+    const writing = pieces(640).pipeTo(writable);
+    const put = await BUCKET.put('big.bin', readable);
+    await writing;
+    const digest = new crypto.DigestStream('MD5');
+    await (await BUCKET.get('big.bin')).body.pipeTo(digest);
+    const answer = { size: put.size, head: (await BUCKET.head('big.bin')).size, md5: hex(await digest.digest) === put.etag };
+    await BUCKET.delete('big.bin');
+    return answer;
+  });
+  out.unknownLength = await attempt(async () => {
+    try {
+      return object(await BUCKET.put('plain', new ReadableStream({ start(c) { c.enqueue(enc.encode('plain')); c.close(); } })));
+    } finally {
+      await BUCKET.delete('plain');
+    }
+  });
   return out;
 }
 
@@ -352,13 +411,31 @@ export function expectedAnswer(step) {
 }
 
 /**
- * What Nimbus answers where Cloudflare answers `answer`, and why it differs:
- * a D1 result's meta.served_by names the database that ran the statement,
- * and Nimbus's is its own (wrangler dev's says miniflare.db, Cloudflare's a
- * D1 server's).
+ * What Nimbus answers where Cloudflare answers `answer` (step 1's), and why
+ * it differs:
+ *
+ * - a D1 result's meta.served_by names the database that ran the statement,
+ *   and Nimbus's is its own (wrangler dev's says miniflare.db, Cloudflare's
+ *   a D1 server's);
+ * - workerd refuses an R2 put of a stream whose length it does not know,
+ *   before it sends it. A stream's length is not visible to JavaScript, and
+ *   crossing to the binding does not keep it, so Nimbus stores the stream,
+ *   counting it against R2's per-upload limit as it arrives.
  */
 export function nimbusAnswer(answer) {
-  return answer.d1?.servedBy === undefined ? answer : { ...answer, d1: { ...answer.d1, servedBy: ['nimbus-d1-emu'] } };
+  if (answer.step !== 1) return answer;
+  const etag = 'ac7938d40cfc2307e2bf325d28e7884e';
+  const unknownLength = {
+    class: 'HeadResult',
+    keys: ['ssecKeyMd5', 'storageClass', 'range', 'customMetadata', 'httpMetadata', 'uploaded', 'checksums', 'httpEtag', 'etag', 'size', 'version', 'key'],
+    key: 'plain', size: 5, etag, httpEtag: `"${etag}"`, version: true, uploaded: true, httpMetadata: {}, customMetadata: {},
+    checksums: { md5: etag }, md5: etag, storageClass: '', body: false, writeHttpMetadata: 'function',
+  };
+  return {
+    ...answer,
+    d1: { ...answer.d1, servedBy: ['nimbus-d1-emu'] },
+    r2: { ...answer.r2, unknownLength: { value: unknownLength } },
+  };
 }
 
 const EXPECTED = {
@@ -384,6 +461,9 @@ const EXPECTED = {
       "bulkJson": {"value": [["json", {"x": 1, "y": [true, null]}], ["missing", null]]},
       "bulkMetadata": {"value": [["meta", {"value": "with metadata", "metadata": {"m": 1, "s": "x"}}], ["a", {"value": "alpha", "metadata": null}]]},
       "delete": {"value": [null, null, null]},
+      "bulkJsonNull": {"value": [["jnull", null], ["missing", null]]},
+      "listLimitNotPositive": {"value": [3, 3]},
+      "bigStream": {"value": {"name": "Error", "message": "KV PUT failed: 413 Value length of N exceeds limit of 26214400.", "pastLimit": true, "stored": null}},
       errors: {
         "emptyKey": {"error": {"name": "TypeError", "message": "Key name cannot be empty."}},
         "dotKey": {"error": {"name": "TypeError", "message": "\"..\" is not allowed as a key name."}},
@@ -424,7 +504,7 @@ const EXPECTED = {
       "batch": {"value": [{"success": true, "meta": {"keys": ["changed_db", "changes", "duration", "last_row_id", "rows_read", "rows_written", "served_by", "size_after"], "duration": "number", "changes": 1, "last_row_id": 3, "changed_db": true, "size_after": "number", "rows_read": 0, "rows_written": 1}, "results": []}, {"success": true, "meta": {"keys": ["changed_db", "changes", "duration", "last_row_id", "rows_read", "rows_written", "served_by", "size_after"], "duration": "number", "changes": 1, "last_row_id": 3, "changed_db": true, "size_after": "number", "rows_read": 3, "rows_written": 1}, "results": []}, {"success": true, "meta": {"keys": ["changed_db", "changes", "duration", "last_row_id", "rows_read", "rows_written", "served_by", "size_after"], "duration": "number", "changes": 0, "last_row_id": 3, "changed_db": false, "size_after": "number", "rows_read": 6, "rows_written": 0}, "results": [{"name": "A"}, {"name": "b"}, {"name": "c"}]}]},
       "batchRollback": {"value": {"before": 3, "error": {"error": {"name": "Error", "message": "D1_ERROR: no such table: missing: SQLITE_ERROR", "cause": "no such table: missing: SQLITE_ERROR"}}, "after": 3}},
       "statement": {"value": {"statement": "SELECT ?, ?", "params": [1, [4]]}},
-      "session": {"value": {"before": null, "row": {"one": 1}, "batch": [[{"two": 2}]]}},
+      "session": {"value": {"before": null, "row": {"one": 1}, "batch": [[{"two": 2}]], "bookmark": "xxxxxxxx-xxxxxxxx-xxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "later": true}},
       errors: {
         "noTable": {"error": {"name": "Error", "message": "D1_ERROR: no such table: missing: SQLITE_ERROR", "cause": "no such table: missing: SQLITE_ERROR"}},
         "syntax": {"error": {"name": "Error", "message": "D1_ERROR: near \"SELEC\": syntax error at offset 0: SQLITE_ERROR", "cause": "near \"SELEC\": syntax error at offset 0: SQLITE_ERROR"}},
@@ -464,17 +544,21 @@ const EXPECTED = {
       "listObjects": {"value": {"objects": [{"class": "HeadResult", "keys": ["ssecKeyMd5", "storageClass", "range", "customMetadata", "httpMetadata", "uploaded", "checksums", "httpEtag", "etag", "size", "version", "key"], "key": "hello.txt", "size": 9, "etag": "06b9a4a9751dc35d9f0d94b3a6cfea99", "httpEtag": "\"06b9a4a9751dc35d9f0d94b3a6cfea99\"", "version": true, "uploaded": true, "httpMetadata": {}, "customMetadata": {}, "checksums": {"md5": "06b9a4a9751dc35d9f0d94b3a6cfea99"}, "md5": "06b9a4a9751dc35d9f0d94b3a6cfea99", "storageClass": "", "body": false, "writeHttpMetadata": "function"}], "truncated": false, "delimitedPrefixes": []}},
       "listInclude": {"value": [{"class": "HeadResult", "keys": ["ssecKeyMd5", "storageClass", "range", "customMetadata", "httpMetadata", "uploaded", "checksums", "httpEtag", "etag", "size", "version", "key"], "key": "hello.txt", "size": 9, "etag": "06b9a4a9751dc35d9f0d94b3a6cfea99", "httpEtag": "\"06b9a4a9751dc35d9f0d94b3a6cfea99\"", "version": true, "uploaded": true, "httpMetadata": {"contentType": "text/plain", "cacheControl": "no-cache"}, "customMetadata": {"owner": "test"}, "checksums": {"md5": "06b9a4a9751dc35d9f0d94b3a6cfea99"}, "md5": "06b9a4a9751dc35d9f0d94b3a6cfea99", "storageClass": "", "body": false, "writeHttpMetadata": "function"}]},
       "listDelimiter": {"value": {"objects": ["dir/a", "dir/z"], "truncated": false, "delimitedPrefixes": ["dir/sub/"]}},
-      "listPages": {"value": [{"objects": ["v/blob", "v/buffer"], "truncated": true, "delimitedPrefixes": [], "cursor": "di9idWZmZXI="}, {"objects": ["v/null", "v/stream"], "truncated": true, "delimitedPrefixes": [], "cursor": "di9zdHJlYW0="}]},
+      "listPages": {"value": [{"objects": ["v/blob", "v/buffer"], "truncated": true, "cursor": "di9idWZmZXI=", "delimitedPrefixes": []}, {"objects": ["v/null", "v/stream"], "truncated": true, "cursor": "di9zdHJlYW0=", "delimitedPrefixes": []}]},
       "listStartAfter": {"value": ["v/null", "v/stream", "v/string", "v/view"]},
       "listLimit": {"error": {"name": "Error", "message": "list: MaxKeys params must be positive integer <= 1000. (10022)"}},
       "delete": {"value": [null, null, null, ["v/blob", "v/null", "v/stream", "v/view"]]},
       "longKey": {"error": {"name": "Error", "message": "put: The specified object name is not valid. (10020)"}},
+      "metadataCoerced": {"value": {"put": {"class": "HeadResult", "keys": ["ssecKeyMd5", "storageClass", "range", "customMetadata", "httpMetadata", "uploaded", "checksums", "httpEtag", "etag", "size", "version", "key"], "key": "meta.txt", "size": 1, "etag": "6f8f57715090da2632453988d9a1501b", "httpEtag": "\"6f8f57715090da2632453988d9a1501b\"", "version": true, "uploaded": true, "httpMetadata": {"contentType": "1"}, "customMetadata": {"count": "1", "flag": "true"}, "checksums": {"md5": "6f8f57715090da2632453988d9a1501b"}, "md5": "6f8f57715090da2632453988d9a1501b", "storageClass": "", "body": false, "writeHttpMetadata": "function"}, "head": {"class": "HeadResult", "keys": ["ssecKeyMd5", "storageClass", "range", "customMetadata", "httpMetadata", "uploaded", "checksums", "httpEtag", "etag", "size", "version", "key"], "key": "meta.txt", "size": 1, "etag": "6f8f57715090da2632453988d9a1501b", "httpEtag": "\"6f8f57715090da2632453988d9a1501b\"", "version": true, "uploaded": true, "httpMetadata": {"contentType": "1"}, "customMetadata": {"count": "1", "flag": "true"}, "range": {"offset": 0, "length": 1}, "checksums": {"md5": "6f8f57715090da2632453988d9a1501b"}, "md5": "6f8f57715090da2632453988d9a1501b", "storageClass": "", "body": false, "writeHttpMetadata": "function"}, "get": {"class": "GetResult", "keys": ["ssecKeyMd5", "storageClass", "range", "customMetadata", "httpMetadata", "uploaded", "checksums", "httpEtag", "etag", "size", "version", "key"], "key": "meta.txt", "size": 1, "etag": "6f8f57715090da2632453988d9a1501b", "httpEtag": "\"6f8f57715090da2632453988d9a1501b\"", "version": true, "uploaded": true, "httpMetadata": {"contentType": "1"}, "customMetadata": {"count": "1", "flag": "true"}, "range": {"offset": 0, "length": 1}, "checksums": {"md5": "6f8f57715090da2632453988d9a1501b"}, "md5": "6f8f57715090da2632453988d9a1501b", "storageClass": "", "body": true, "writeHttpMetadata": "function"}, "text": "m"}},
+      "listIncludeBogus": {"error": {"name": "RangeError", "message": "Unsupported include value bogus"}},
+      "bigStream": {"value": {"size": 41943040, "head": 41943040, "md5": true}},
+      "unknownLength": {"error": {"name": "TypeError", "message": "Provided readable stream must have a known length (request/response body or readable half of FixedLengthStream)"}},
     },
   },
   2: {
     "step": 2,
-    "kv": {"value": [{"x": 1, "y": [true, null]}, ["bin", "buffer", "json", "meta", "meta2", "p/1", "p/2", "p/3", "streamed", "t"]]},
+    "kv": {"value": [{"x": 1, "y": [true, null]}, ["bin", "buffer", "jnull", "json", "meta", "meta2", "p/1", "p/2", "p/3", "streamed", "t"]]},
     "d1": {"value": [["alice"], ["bob"], ["carol"]]},
-    "r2": {"value": ["{\"a\":[1,2]}", ["checked", "data.json", "dir/a", "dir/sub/b", "dir/sub/c", "dir/z", "headers.txt", "new.txt", "v/blob", "v/null", "v/stream", "v/view"]]},
+    "r2": {"value": ["{\"a\":[1,2]}", ["checked", "data.json", "dir/a", "dir/sub/b", "dir/sub/c", "dir/z", "headers.txt", "meta.txt", "new.txt", "v/blob", "v/null", "v/stream", "v/view"]]},
   },
 };

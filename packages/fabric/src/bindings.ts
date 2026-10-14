@@ -31,7 +31,7 @@ import { hostNamespace, stagedBootAssembler } from './composition.js';
 import type { HostRoute } from './composition.js';
 import { hostNamespaceBinding, hostOpDispatch, type HostOpDispatch } from './host-dispatch.js';
 import { innerDoIdFromName } from './inner-do-env.js';
-import type { D1QueryResponse, D1QuerySql, KvCall, KvGetOptions, KvListOptions, KvPutOptions, KvPutValue, R2Call, R2PutBody, R2WireGetOptions, R2WireListOptions, R2WirePutOptions } from './inner-storage-env.js';
+import type { D1QueryRequest, D1QueryResponse, D1QuerySql, KvCall, KvGetOptions, KvListOptions, KvPutOptions, KvPutValue, R2Call, R2PutBody, R2WireGetOptions, R2WireListOptions, R2WirePutOptions } from './inner-storage-env.js';
 import { assertModuleMapWithinCodeLimit } from './budgets.js';
 import { applyFacetLimits, facetLimits, guestFacetPolicy, effectiveFacetLimits, facetLoaderKey, FACET_LIMITS, type FacetCodePolicy, type FacetKind } from './facet-limits.js';
 import { bindingSupervisor, egressMarker, workspaceOutbound, type SupervisorBindingProps } from './supervisor-props.js';
@@ -1017,8 +1017,12 @@ export class NimbusKVNamespace extends WorkerEntrypoint<object, NimbusStoragePro
 
 /** A D1 database's binding: D1's own binding contract, `query`, and nothing else. */
 export class NimbusD1Binding extends WorkerEntrypoint<object, NimbusStorageProps> {
-  /** All of `request`'s queries, run in one transaction. */
-  async query(request: { queries: D1QuerySql[] }): Promise<D1QueryResponse> {
+  /**
+   * All of `request`'s queries, run in one transaction, answered with the
+   * database's bookmark after them. The request's bookmark is not sent on:
+   * the database has one copy, which every bookmark is already met by.
+   */
+  async query(request: D1QueryRequest): Promise<D1QueryResponse> {
     const queries = Array.isArray(request?.queries) ? request.queries : [];
     const answer = await storageOp(this.env, this.ctx.props, 'NimbusD1Binding', { op: 'd1Query', call: queries });
     if (!isD1QueryResponse(answer)) throw new Error('Nimbus: d1Query returned an invalid result');

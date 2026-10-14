@@ -13,6 +13,11 @@
  *        meta?: <JSON>,           // user-supplied metadata
  *        v: 1 }                   // schema version
  *
+ * A value is streamed to its file as it arrives, and one past KV's 25 MiB
+ * is refused as it passes it, its stream cancelled; it is written beside
+ * the key's file and replaces it once whole, so a refused put leaves the
+ * value it would have replaced.
+ *
  * Test seam: `_setKvNow(() => ts)` replaces the wall clock (Date.now/1000)
  * for TTL probes. Production reads Date.now() / 1000.
  */
@@ -20,8 +25,8 @@
 import { z } from 'zod/v4';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { KvCall, KvGetOptions, KvJson, KvListOptions, KvPutOptions } from '@nimbus-sh/fabric/inner-storage-env.js';
-import { bodyStream, coerceBindingBody, ensureBindingDir } from './body.js';
-import { cursorAfter, cursorKey, listObjectFiles, objectFileName, objectStoreDir, removeObjectFiles, utf8Order } from './object-store.js';
+import { ensureBindingDir, fileStream, writeBody } from './body.js';
+import { cursorAfter, cursorKey, listObjectFiles, objectFileName, objectStoreDir, removeObjectFiles, uploadFileName, utf8Order } from './object-store.js';
 
 export interface KvEmulatorOptions {
   vfs: CredentialedVfs;
@@ -159,12 +164,12 @@ export class KvEmulator {
       if (bytes > MAX_METADATA_BYTES) throw failed('PUT', 413, `Metadata length of ${bytes} exceeds limit of ${MAX_METADATA_BYTES}.`);
       meta.meta = metadata;
     }
-    const body = await coerceBindingBody(isObject ? value : String(value));
-    if (body.byteLength > MAX_VALUE_BYTES) throw failed('PUT', 413, `Value length of ${body.byteLength} exceeds limit of ${MAX_VALUE_BYTES}.`);
-
     const enc = objectFileName(name);
     ensureBindingDir(this.vfs, this.dir);
-    this.vfs.writeFile(this.dir + '/' + enc, body);
+    const upload = this.dir + '/' + uploadFileName();
+    await writeBody(this.vfs, upload, isObject ? value : String(value), MAX_VALUE_BYTES,
+      (received) => failed('PUT', 413, `Value length of ${received} exceeds limit of ${MAX_VALUE_BYTES}.`));
+    this.vfs.rename(upload, this.dir + '/' + enc);
     // A put replaces the entry whole: an expiry or metadata it does not give is gone.
     const metaPath = this.dir + '/' + enc + '.meta';
     if (meta.exp !== undefined || meta.meta !== undefined) this.vfs.writeFile(metaPath, JSON.stringify(meta));
@@ -178,9 +183,9 @@ export class KvEmulator {
   }
 
   async list(options?: KvListOptions): Promise<KvListResult> {
-    const limit = int32(options?.limit) ?? MAX_LIST_KEYS;
-    // The store refuses these as the GET it is.
-    if (limit < 1) throw failed('GET', 400, `Invalid key_count_limit of ${limit}. Please specify an integer greater than 0.`);
+    // workerd's client sends a limit only when it is positive; the store refuses a larger one as the GET it is.
+    const given = int32(options?.limit);
+    const limit = given === undefined || given <= 0 ? MAX_LIST_KEYS : given;
     if (limit > MAX_LIST_KEYS) throw failed('GET', 400, `Invalid key_count_limit of ${limit}. Please specify an integer less than ${MAX_LIST_KEYS}.`);
     const prefix = options?.prefix == null ? '' : String(options.prefix);
     const prefixBytes = utf8Bytes(prefix);
@@ -214,14 +219,14 @@ export class KvEmulator {
     validateKeyName('GET', name);
     const { type, cacheTtl } = getOptions(options);
     checkCacheTtl('GET', cacheTtl);
-    const entry = this.#read(objectFileName(name));
+    const entry = this.#entry(objectFileName(name));
     if (entry === null) return { value: null, metadata: null, cacheStatus: null };
     const metadata = entry.meta?.meta ?? null;
     switch (type ?? 'text') {
-      case 'text': return { value: new TextDecoder().decode(entry.body), metadata, cacheStatus: null };
-      case 'json': return { value: JSON.parse(new TextDecoder().decode(entry.body)), metadata, cacheStatus: null };
-      case 'arrayBuffer': return { value: entry.body.slice().buffer, metadata, cacheStatus: null };
-      case 'stream': return { value: bodyStream(entry.body), metadata, cacheStatus: null };
+      case 'text': return { value: new TextDecoder().decode(this.vfs.readFile(entry.path)), metadata, cacheStatus: null };
+      case 'json': return { value: JSON.parse(new TextDecoder().decode(this.vfs.readFile(entry.path))), metadata, cacheStatus: null };
+      case 'arrayBuffer': return { value: this.vfs.readFile(entry.path).slice().buffer, metadata, cacheStatus: null };
+      case 'stream': return { value: fileStream(this.vfs, entry.path, 0, this.vfs.stat(entry.path).size), metadata, cacheStatus: null };
       default: throw new TypeError('Unknown response type. Possible types are "text", "arrayBuffer", "json", and "stream".');
     }
   }
@@ -241,12 +246,12 @@ export class KvEmulator {
       const bytes = utf8Bytes(name);
       if (bytes > MAX_KEY_BYTES) throw failed('GET_BULK', 414, `UTF-8 encoded length of ${bytes} exceeds key length limit of ${MAX_KEY_BYTES}.`);
       checkCacheTtl('GET_BULK', cacheTtl);
-      const entry = this.#read(objectFileName(name));
+      const entry = this.#entry(objectFileName(name));
       if (entry === null) {
         answers[name] = null;
         continue;
       }
-      const text = new TextDecoder().decode(entry.body);
+      const text = new TextDecoder().decode(this.vfs.readFile(entry.path));
       total += text.length;
       let value: KvJson = text;
       if (type === 'json') {
@@ -256,14 +261,15 @@ export class KvEmulator {
           throw failed('GET_BULK', 400, `At least one of the requested keys corresponds to a non-${type} value`);
         }
       }
-      answers[name] = withMetadata ? { value, metadata: entry.meta?.meta ?? null } : value;
+      // A JSON null is null, with metadata or without (Miniflare's processKeyValue).
+      answers[name] = withMetadata && value !== null ? { value, metadata: entry.meta?.meta ?? null } : value;
     }
     if (total > MAX_VALUE_BYTES) throw failed('GET_BULK', 413, `Total size of request exceeds the limit of ${MAX_VALUE_BYTES / 1024 / 1024}MB`);
     return new Map(Object.keys(answers).filter((name) => !isArrayIndex(name)).map((name) => [name, answers[name]]));
   }
 
-  /** A key's body and sidecar, or null when it is absent or expired (an expired one is removed). */
-  #read(fileName: string): { body: Uint8Array; meta: KvMeta | null } | null {
+  /** A key's body file and sidecar, or null when it is absent or expired (an expired one is removed). */
+  #entry(fileName: string): { path: string; meta: KvMeta | null } | null {
     const path = this.dir + '/' + fileName;
     if (!this.vfs.exists(path)) return null;
     const meta = this.#readMeta(fileName);
@@ -271,7 +277,7 @@ export class KvEmulator {
       removeObjectFiles(this.vfs, this.dir, fileName);
       return null;
     }
-    return { body: this.vfs.readFile(path), meta };
+    return { path, meta };
   }
 
   #readMeta(fileName: string): KvMeta | null {
@@ -286,12 +292,15 @@ export class KvEmulator {
 }
 
 /** One call of the KV API (fabric bindings.ts NimbusKVNamespace), served by `kv`. */
-export function serveKvCall(kv: KvEmulator, call: KvCall): Promise<KvValue | Map<string, KvJson> | { value: KvValue; metadata: KvJson; cacheStatus: null } | KvListResult | void> {
+export async function serveKvCall(kv: KvEmulator, call: KvCall): Promise<KvValue | Map<string, KvJson> | { value: KvValue; metadata: KvJson; cacheStatus: null } | KvListResult | void> {
   switch (call.method) {
     case 'get': return kv.get(call.key, call.options);
     case 'getWithMetadata': return kv.getWithMetadata(call.key, call.options);
     case 'put': return kv.put(call.key, call.value, call.options);
     case 'delete': return kv.delete(call.key);
     case 'list': return kv.list(call.options);
+    default:
+      call satisfies never;
+      throw new TypeError('KV has no such method');
   }
 }
