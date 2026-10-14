@@ -111,6 +111,22 @@ export class WebSocketTerminal {
     }
     writeln(data) { this.write(data + '\r\n'); }
     /**
+     * What the session already recorded (its scrollback), shown on the socket
+     * after anything written before it, and not recorded again: the tee is
+     * for what the session writes.
+     */
+    replay(data) {
+        this.flushNow();
+        if (data.length === 0)
+            return;
+        this.release(() => {
+            try {
+                this.ws?.send(JSON.stringify({ type: 'output', data }));
+            }
+            catch { /* the socket closed */ }
+        });
+    }
+    /**
      * REPL-A1 (master plan §1): drain the buffer synchronously, bypassing
      * the turn coalescer. Used by ReplSession.submitLine to emit stdout,
      * stderr, and the next-prompt as three discrete frames in deterministic

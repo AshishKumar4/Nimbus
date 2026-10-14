@@ -14,6 +14,61 @@ published independently in the `@nimbus-sh` npm scope.
   forgot the ended child's row. A parent that paused for a minute between
   reads got ESRCH and lost the rest of the child's output and its exit
   status. A `kill()` of such a child returns false, as in Node.
+- Fixed: a Ruby program and a threaded WASI program end as other WASI
+  programs do: what they wrote is in the workspace before their result
+  returns, and a run whose session restarted under it, or whose writes the
+  session refused, fails and says why. Before, such a run could report
+  success, and a file it wrote could be missing when the command returned.
+- Fixed: a Node process holds only the output it has not delivered yet. A
+  server that logged with no HTTP traffic, or a long one-shot run, kept a
+  record of every write it made until its next request or its end.
+- Fixed: a durable `spawnWorker` launch with an inline wasm module
+  (`modules: { 'x.wasm': { wasm } }`) boots again after the session
+  restarts. Its stored image wrote the module's bytes as `{}`, so the
+  restarted program could not compile it. An image stored before this fix
+  has lost those bytes: unless the launch's `vfsWasmModules` or
+  `vfsTextModules` supplies the same module, its restart fails, naming the
+  image, and the application has to be spawned again.
+- Fixed: `opencode` reads the files of its working tree and installed
+  packages as they are. Its snapshot was prepared as a Node program's
+  module map: an installed module came back as Nimbus's rendering of it,
+  and every module and TypeScript file went through the compiler for code
+  opencode never runs.
+- Fixed: a terminal that reconnects is shown its session's history without
+  storing it again. Each reconnect wrote the replayed history back into the
+  scrollback, so the next reconnect showed it twice, then four times, until
+  the size cap evicted real history to keep the copies.
+- Fixed: a session has one build. An SDK call, a shell connection and the
+  frame of a socket that woke a hibernated session, arriving while the
+  session was being built, each started a build of their own, replacing the
+  first's terminal, workspace and shell process under it; and an SDK call
+  could proceed before the session's own commands were registered. They
+  now wait for the one build, and a socket among them is attached to it.
+- Fixed: a Node program whose only remaining work was a `zlib` or `crypto`
+  call with a callback (`zlib.deflate`, `crypto.pbkdf2`, `scrypt`,
+  `randomBytes`, ...) could end with exit 0 and none of the output its
+  callback writes: the runtime counted fetches, timers and its own calls as
+  live work, not the engine's. Such a call is live until its callback, as
+  Node's active requests keep its event loop. Small calls finished in time
+  unless the machine was busy.
+- Security: a D1 binding under `wrangler dev` is a database of its own (a
+  Durable Object facet of the session, its own SQLite), as on Cloudflare.
+  It ran its statements in the session's own database, and a table name it
+  had not created passed through unchanged, so a migration in the project's
+  `migrations_dir` could read or change the session's internal tables (its
+  filesystem, its storage ledger, its scrollback). A statement naming one
+  now finds no such table. Embedders re-export the new `NimbusD1Database`
+  class from their Worker's main module, as they do the other Nimbus
+  classes (`export * from '@nimbus-sh/sdk/entrypoints'` does); without it a
+  D1 binding is not made. A project's local D1 data starts empty in the new
+  database: its migrations apply again on the next `wrangler dev`.
+- Fixed: a D1 migration under `wrangler dev` applies whole or not at all,
+  as `wrangler d1 migrations apply` does. A failing statement left the rest
+  of its migration applied and the migration recorded as applied; now it is
+  rolled back, not recorded, logged, and ends the run, and the next
+  `wrangler dev` tries it again. The ledger is wrangler's `d1_migrations`.
+## 2026-10-14: platform 0.10.0, core 0.21.0, fabric 0.16.0, worker 0.19.0, sdk 0.15.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4 (config 0.3.1 unchanged)
+The 2026-10-13 versions, and core 0.20.0, fabric 0.15.0 and worker 0.18.0 of this date, reached production but were never published to npm; these carry their changes too.
 - Fixed: a Node program's `http.get` or `http.request` to a server of the
   same program waits for the server's `res.end()`, as Node does. It
   answered at once, so a handler that ended from a timer or after an
@@ -150,11 +205,6 @@ published independently in the `@nimbus-sh` npm scope.
   `accountWork` and `holdWork` (the shell counts and holds its work in that
   table), and `createKillCommand(host)`, `createPsCommand(processes)` and
   `createTopCommand(processes)` read it.
-
-## 2026-10-14: platform 0.10.0, core 0.20.0, fabric 0.15.0, worker 0.18.0, sdk 0.15.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4 (config 0.3.1 unchanged)
-
-The 2026-10-13 versions reached production but were never published to npm; these carry their changes too.
-
 - Fixed (Node `fs`): a write keeps the bytes it was given. `writeFileSync`,
   `appendFileSync`, `fs.promises.writeFile` and a descriptor's `write` used
   the program's own buffer as the file's bytes, so changing or reusing the

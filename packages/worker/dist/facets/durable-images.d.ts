@@ -17,6 +17,11 @@
  * Two blobs per launch: `runner` is the main module's source text,
  * `application` is a JSON payload of `{ modules, env, vfsWasmModules }` plus,
  * when the launch set them, `vfsTextModules`, `mainModule` and `startArgs`.
+ * A text module is its text there, and an inline wasm module `{ wasm }` its
+ * bytes in base64, restored as an ArrayBuffer: JSON writes an ArrayBuffer as
+ * `{}`, and a re-drive booted a module that could not compile. An image
+ * written that way has lost those bytes, unless its by-path maps supply the
+ * same module, which the loader takes in place of the inline one.
  * The digests in the journal's `recipe.image` are sha256 hashes of those two
  * payloads, and a self-owned spawn mints them at spawn time; an
  * embedder-owned spawn is given them by its own bookkeeping instead.
@@ -27,6 +32,10 @@ import { type ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
 import type { ResolvedWorkerLaunch, WorkerRecipe } from './manager.js';
 /** The directory every durable application's image blobs live under. */
 export declare const DURABLE_IMAGE_DIR = ".nimbus/images";
+/** An inline module as the launch has it, and as its application blob holds it. */
+type InlineModule = string | {
+    wasm: ArrayBuffer;
+};
 /** Remove only the owner's blobs that no other retained recipe references. */
 export declare function purgeDurableWorkerImages(vfs: SqliteVFS, owned: Iterable<{
     runner: string;
@@ -43,9 +52,7 @@ export declare function purgeDurableWorkerImages(vfs: SqliteVFS, owned: Iterable
  * process they belong to.
  */
 export declare function persistDurableWorkerImage(blobs: ImageBlobStore, workerCode: string, payload: {
-    modules: Record<string, string | {
-        wasm: ArrayBuffer;
-    }>;
+    modules: Record<string, InlineModule>;
     env?: ResidentCodeSpec['env'];
     vfsWasmModules?: Record<string, string>;
     vfsTextModules?: Record<string, string>;
@@ -64,4 +71,5 @@ export declare function persistDurableWorkerImage(blobs: ImageBlobStore, workerC
  * gone', exactly as an embedder-owned launch whose embedder answers null.
  */
 export declare function resolveDurableWorkerImage(vfs: SqliteVFS, recipe: WorkerRecipe): Promise<ResolvedWorkerLaunch | null>;
+export {};
 //# sourceMappingURL=durable-images.d.ts.map

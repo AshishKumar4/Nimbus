@@ -127,7 +127,8 @@ if (hasHost('ruby')) {
   // The facet's own __rubyRun, with the VM stood in for by a recorder of
   // what it evaluates; then that Ruby, under a real Ruby.
   const evaluated = [];
-  const scope = { __wasiSupervisorOutput: wasiOutputRelay, __wasiOutputControl: outputControlReader, __nimbusRubyStep: async () => ({ resumed: false, alive: false }), __evaluated: evaluated };
+  // With the mount stood in for, the run's settle (wasi/preamble.ts __wasiSettled) has nothing to send.
+  const scope = { __wasiSupervisorOutput: wasiOutputRelay, __wasiOutputControl: outputControlReader, __wasiSettled: async (result) => result, __nimbusRubyStep: async () => ({ resumed: false, alive: false }), __evaluated: evaluated };
   const stand = 'function __nimbusInstallRubyFs() {}\nfunction __wasiAdoptSupervisor() {}\nasync function __nimbusRubyEval(boot, code) { globalThis.__evaluated.push(code); return { status: 0 }; }';
   new Function('globalThis', `${RUBY_RUNNER_PREAMBLE_TAIL}\n${stand}`).call(scope, scope);
   scope.__rubyBootstrap = Promise.resolve({ ok: true, rubyInitialized: true });
