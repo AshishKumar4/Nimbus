@@ -1,6 +1,7 @@
-import { bindProcessView } from '../../../runtime/process-files.js';
+import { X_OK, bindProcessView } from '../../../runtime/process-files.js';
 import { resolveContext } from '../commands/registry.js';
-import { syscallError } from '../../../vfs/vfs-error.js';
+import { isVfsError, syscallError } from '../../../vfs/vfs-error.js';
+import { executablePath } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
 import { lex } from './lexer.js';
 import { parse } from './parser.js';
@@ -638,8 +639,10 @@ export class Interpreter {
         if (replacesShell)
             [name, ...args] = args[0] === '--' ? args.slice(1) : args;
         // `command name [args]` runs name as a builtin or a program, never as a
-        // function or an alias (bash); `command -v`/`-V` describe, by the registry's.
-        const viaCommand = name === 'command' && args.length > 0 && (args[0] === '--' ? args.length > 1 : !args[0].startsWith('-'));
+        // function or an alias (bash); `command -v`/`-V` describe, by the
+        // registry's. A function or an alias named `command` is that instead.
+        const viaCommand = name === 'command' && !replacesShell && !this.functions.has(name) && !this.config.aliases.has(name)
+            && args.length > 0 && (args[0] === '--' ? args.length > 1 : !args[0].startsWith('-'));
         if (viaCommand)
             [name, ...args] = args[0] === '--' ? args.slice(1) : args;
         // Check alias expansion
@@ -858,6 +861,18 @@ export class Interpreter {
         const command = await this.config.registry.resolve(name, resolveContext(spec.cwd, spec.env, vfs));
         if (!command)
             throw syscallError('ENOENT', 'execvp', name);
+        // execve(2) refuses a file the child may not execute: its caller reports that, as it does a missing one.
+        const path = executablePath(name, spec.cwd, command);
+        if (path !== null) {
+            try {
+                await vfs.access(path, X_OK);
+            }
+            catch (error) {
+                if (isVfsError(error))
+                    throw syscallError(error.code, 'execvp', name);
+                throw error;
+            }
+        }
         return await this.runCommand(command, name, args, {
             ...spec,
             vfs,

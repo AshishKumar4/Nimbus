@@ -81,10 +81,10 @@ export class JobTable {
         return Array.from(this.jobs.values());
     }
     /**
-     * Deliver `signal` (a parsed name, never `0`) to `job`, one of this
-     * table's, from `caller`: a terminating one ends its process, which stops
-     * its work; a stop or continue sets or clears its stop mark. False when
-     * kill(2)'s rule refuses `caller` (SessionProcessSupervisor.maySignal).
+     * Deliver `signal` (a parsed name; `0` delivers nothing) to `job`, one of
+     * this table's, from `caller`: a terminating one ends its process, which
+     * stops its work; a stop or continue sets or clears its stop mark. False
+     * when kill(2)'s rule refuses `caller` (SessionProcessSupervisor.maySignal).
      */
     signal(job, signal, caller) {
         const record = this.jobs.get(job.id);

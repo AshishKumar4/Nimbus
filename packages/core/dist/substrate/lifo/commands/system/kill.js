@@ -62,7 +62,7 @@ export async function runKill(ctx, caller, jobs, host) {
                 status = 1;
                 continue;
             }
-            if (signal !== '0' && jobs?.signal(job, signal, caller) === false) {
+            if (jobs?.signal(job, signal, caller) === false) {
                 await ctx.stderr.write(`kill: (${job.pid}) - Operation not permitted\n`);
                 status = 1;
             }
@@ -76,15 +76,13 @@ export async function runKill(ctx, caller, jobs, host) {
         const pid = Number(target);
         const job = jobs?.byPid(pid);
         if (job && job.status !== 'done') {
-            if (signal !== '0' && jobs?.signal(job, signal, caller) === false) {
+            if (jobs?.signal(job, signal, caller) === false) {
                 await ctx.stderr.write(`kill: (${pid}) - Operation not permitted\n`);
                 status = 1;
             }
             continue;
         }
         if (host?.isLive(pid) === true) {
-            if (signal === '0')
-                continue;
             const result = await host.signal(pid, signal, ctx.stderr, caller);
             if (result === 'delivered')
                 continue;

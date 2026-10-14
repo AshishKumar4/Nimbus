@@ -90,6 +90,12 @@ export type Resolution = {
 /** How `command` was resolved, when this resolver gave it; undefined for a registered command. */
 export declare function resolutionOf(command: object): Resolution | undefined;
 /**
+ * The file execve(2) checks its caller may execute, for `command`, what
+ * `name` resolved to from `cwd`: a path name's file, or the one a PATH
+ * search found; null for a registered command.
+ */
+export declare function executablePath(name: string, cwd: string, command: object): string | null;
+/**
  * Resolve path-shaped names, and bare names along PATH, to what the file is.
  * Everything is looked at through the caller's view; `fs` is the view of a
  * caller that resolves without a context of its own.

@@ -57,10 +57,10 @@ export declare class JobTable {
     }, run: (job: JobProcess) => Promise<number>): Job;
     list(): Job[];
     /**
-     * Deliver `signal` (a parsed name, never `0`) to `job`, one of this
-     * table's, from `caller`: a terminating one ends its process, which stops
-     * its work; a stop or continue sets or clears its stop mark. False when
-     * kill(2)'s rule refuses `caller` (SessionProcessSupervisor.maySignal).
+     * Deliver `signal` (a parsed name; `0` delivers nothing) to `job`, one of
+     * this table's, from `caller`: a terminating one ends its process, which
+     * stops its work; a stop or continue sets or clears its stop mark. False
+     * when kill(2)'s rule refuses `caller` (SessionProcessSupervisor.maySignal).
      */
     signal(job: Job, signal: string, caller: Readonly<VfsCred>): boolean;
     fork(): JobTable;

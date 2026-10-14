@@ -61,8 +61,12 @@ export async function registerHostedCommands(self, workspace) {
     const hostSignals = {
         isLive: (pid) => self._viteShimPid === pid || self.processes.get(pid)?.state === 'running',
         async signal(pid, signal, stderr, caller) {
-            // The terminal's shell outlives every line it runs; any other is kill(2)'s rule.
-            if (pid === workspace.shellProcessPid || !self.processes.maySignal(caller, pid))
+            if (!self.processes.maySignal(caller, pid))
+                return 'not-permitted';
+            if (signal === '0')
+                return 'delivered';
+            // The terminal's shell outlives every line it runs.
+            if (pid === workspace.shellProcessPid)
                 return 'not-permitted';
             const disposition = signalDisposition(signal);
             // A default-ignored signal to a process of the session's own (a shell's

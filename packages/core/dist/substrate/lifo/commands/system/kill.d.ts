@@ -14,10 +14,10 @@ export interface HostProcessSignals {
     /** Whether `pid` is a live process of this host. `kill -0` asks only this. */
     isLive(pid: number): boolean;
     /**
-     * Deliver `signal` (a parsed name, never `0`) to a live pid of this host,
-     * from `caller`, whom kill(2)'s rule may refuse (`not-permitted`). A
-     * teardown step that failed without keeping the process alive is reported
-     * on `stderr`.
+     * Deliver `signal` (a parsed name; `0` delivers nothing) to a live pid of
+     * this host, from `caller`, whom kill(2)'s rule may refuse
+     * (`not-permitted`), for `0` too. A teardown step that failed without
+     * keeping the process alive is reported on `stderr`.
      */
     signal(pid: number, signal: string, stderr: CommandOutputStream, caller: Readonly<VfsCred>): Promise<HostSignalResult>;
 }
