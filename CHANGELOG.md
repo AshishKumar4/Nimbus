@@ -5,6 +5,20 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a Node process holds only the output it has not delivered yet. A
+  server that logged with no HTTP traffic, or a long one-shot run, kept a
+  record of every write it made until its next request or its end.
+- Fixed: a durable `spawnWorker` launch with an inline wasm module
+  (`modules: { 'x.wasm': { wasm } }`) boots again after the session
+  restarts. Its stored image wrote the module's bytes as `{}`, so the
+  restarted program could not compile it. An image stored before this fix
+  has lost those bytes: its restart fails, naming the image, and the
+  application has to be spawned again.
+- Fixed: `opencode` reads the files of its working tree and installed
+  packages as they are. Its snapshot was prepared as a Node program's
+  module map: an installed module came back as Nimbus's rendering of it,
+  and every module and TypeScript file went through the compiler for code
+  opencode never runs.
 - Fixed: a Node program's `http.get` or `http.request` to a server of the
   same program waits for the server's `res.end()`, as Node does. It
   answered at once, so a handler that ended from a timer or after an
