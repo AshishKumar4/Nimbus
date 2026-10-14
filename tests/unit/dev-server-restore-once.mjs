@@ -1,0 +1,73 @@
+#!/usr/bin/env bun
+// A new incarnation runs each recorded dev server again once, whoever asks:
+// the requests that reach the session while the restore runs (a woken page
+// fetches several URLs at once) wait on that one run, and a request after it
+// gets its answer without running anything. Through a real workspace shell
+// and process table, with a command that serves as the dev servers do: its
+// process adopted or spawned (devServerProcess) and recorded (recordDevServer).
+
+import assert from 'node:assert/strict';
+
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
+
+const bundle = await importWorkerBundle({
+  'packages/worker/src/session/dev-servers.ts': ['devServerProcess', 'recordDevServer', 'restoreDevServers', 'spawnOf'],
+  'packages/core/src/workspace/nimbus-workspace.ts': ['NimbusWorkspace'],
+  'packages/core/src/runtime/session-process-supervisor.ts': ['SessionProcessSupervisor'],
+  'packages/core/src/runtime/port-registry.ts': ['PortRegistry'],
+  'packages/core/src/vfs/sqlite-vfs.ts': ['SqliteVFS'],
+  'packages/core/src/runtime/process-table.ts': ['PID_GEN_STRIDE'],
+});
+
+const harness = createSqliteVfsTestHarness();
+const vfs = new bundle.SqliteVFS(harness.sql, harness.ctx);
+const rows = new Map();
+const world = createFacetWorld(() => ({}), { resolveConfig: false });
+
+let runs = 0;
+let release = () => {};
+async function incarnation(generation) {
+  const processes = new bundle.SessionProcessSupervisor();
+  processes.setPidBase(generation * bundle.PID_GEN_STRIDE);
+  const workspace = await bundle.NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, vfs, processes, generation });
+  const host = {
+    ctx: createFacetCtx(world, 'dev-server-restore-once', rows),
+    processes,
+    portRegistry: new bundle.PortRegistry(),
+    runtimeWorkspace: workspace,
+    ensureRuntimeReady: async () => {},
+  };
+  // A dev server: it serves until it is stopped, from its own process, recorded while it runs.
+  workspace.registry.register('serve', async (ctx) => {
+    runs += 1;
+    const { entry } = bundle.devServerProcess(processes, 'serve', ctx);
+    await new Promise((resolve) => { release = resolve; });
+    await bundle.recordDevServer(host, entry.pid, { ...bundle.spawnOf(entry), env: ctx.env, root: ctx.cwd });
+    return 0;
+  });
+  return { host, workspace };
+}
+
+const first = await incarnation(1);
+const started = first.workspace.exec('serve');
+await new Promise((resolve) => setTimeout(resolve, 0));
+release();
+assert.equal((await started).exitCode, 0);
+assert.equal(runs, 1);
+await first.workspace.close();
+
+const next = await incarnation(2);
+const asked = [bundle.restoreDevServers(next.host), bundle.restoreDevServers(next.host), bundle.restoreDevServers(next.host)];
+for (let i = 0; i < 50 && runs < 2; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+assert.equal(runs, 2, 'the restore runs the command');
+release();
+const answers = await Promise.all(asked);
+assert.equal(runs, 2, 'once, for every request that came while it ran');
+assert.ok(answers.every((answer) => answer === answers[0]), 'each gets the one answer');
+assert.deepEqual(answers[0], [], 'that it started again');
+assert.equal(await bundle.restoreDevServers(next.host), answers[0], 'a later request gets it without a run');
+assert.equal(runs, 2);
+await next.workspace.close();
+console.log('dev-server-restore-once: ok');

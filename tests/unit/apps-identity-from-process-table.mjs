@@ -16,11 +16,9 @@
 //   2. a bin/npx resident IS journalled at spawn — the wrapper pid the bin
 //      resolver allocated carries a row with the derived owner, and the
 //      resolver answers the row, not the table;
-//   3. the Cirrus dev server started through `/api/start-vite`, exposed under
-//      a name, survives a hibernation: the restored pid derives the same
-//      identity from the persisted cwd+argv, keeps the persisted execId,
-//      re-adopts the shared link at registration, and rotates as the same
-//      application;
+//   3. the Cirrus dev server started through `/api/start-vite` has a derived
+//      identity, exposes under a name and rotates as that application (its
+//      surviving a new incarnation of the session: dev-server-restore.mjs);
 //   4. a pid that is neither running nor journalled is refused by name;
 //   5. the SDK's own launch: `startProcess('npx vite …')` allocates the wrapper
 //      pid the builtin adopts and registers the port under — the shell line
@@ -39,7 +37,6 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { deriveResidentOwner } from '../../packages/worker/src/facets/resident-identity.ts';
 import { readPortReservation } from '../../packages/worker/src/session/port-capability.ts';
 import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
-import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
 import { buildPublicPreviewHost } from '../../packages/worker/src/_shared/preview-host.ts';
 import { PUBLIC_BEARER_HEADER, PREVIEW_CAPABILITY_HEADER } from '../../packages/worker/src/_shared/session-router.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
@@ -50,10 +47,10 @@ import { importWorkerBundle } from './lib/worker-bundle.mjs';
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
 const {
-  handleFetch, restorePersistedDevServer: sessionRestorePersistedDevServer, routeToSessionPort,
+  handleFetch, routeToSessionPort,
   rpcExposeApp, rpcListApps, rpcRotateLink, rpcRemoveApp, rpcStartProcess, composeFacetManager,
 } = await importWorkerBundle({
-  'packages/worker/src/session/routes.ts': ['handleFetch', 'restorePersistedDevServer'],
+  'packages/worker/src/session/routes.ts': ['handleFetch'],
   'packages/worker/src/session/port-capability.ts': ['routeToSessionPort'],
   'packages/worker/src/session/programmatic.ts': ['rpcExposeApp', 'rpcListApps', 'rpcRotateLink', 'rpcRemoveApp', 'rpcStartProcess'],
   'packages/worker/src/facets/compose.ts': ['composeFacetManager'],
@@ -156,7 +153,7 @@ function setup({ storage = new Map(), world, directory = fakeDirectory(), notice
       this.facetManager = fm;
       return this.facetManagerComposed;
     },
-    restorePersistedDevServer: (onlyPort) => sessionRestorePersistedDevServer(self, onlyPort),
+    restoreDevServers: async () => [],
     ensureDurableAppOnPort: (port) => fm.ensureDurableAppOnPort(port),
   };
   return { world, ctx, env, fm, processes, portRegistry, storage, self, directory, notices };
@@ -260,7 +257,7 @@ async function serve(t, { command, argv, cwd, port, tag }) {
   assert.equal(identity.owner, row.owner, 'the resolver answers the row, never a second source');
 }
 
-// ── 3. the Cirrus dev server, exposed, survives hibernation as the same app ──
+// ── 3. the Cirrus dev server, exposed, rotates as the same app ─────────────
 {
   const ROOT = 'home/user/app';
   const directory = fakeDirectory();
@@ -273,36 +270,17 @@ async function serve(t, { command, argv, cwd, port, tag }) {
   const pid = first.self._viteShimPid;
   const identity = await first.fm.residentIdentity(pid);
   assert.match(identity.owner, /^auto:[a-f0-9]{24}$/, 'the in-process dev server has a derived identity');
-  const persisted = await first.ctx.storage.get('vite-config');
-  assert.deepEqual(persisted.identity, { cwd: first.processes.get(pid).cwd, argv: first.processes.get(pid).argv, cred: first.processes.get(pid).cred },
-    'the identity inputs are persisted with the dev-server config, and who it ran as');
-
   const exposed = await rpcExposeApp(first.self, 5173, { visibility: 'public', name: 'web' });
   assert.equal(exposed.owner, identity.owner);
-  assert.equal((await rpcListApps(first.self)).find((app) => app.name === 'web')?.status, 'running');
-  // What the `vite` builtin persists when an exec named `j1` started it.
-  await first.ctx.storage.put('vite-config', { ...persisted, identity: { ...persisted.identity, execId: 'j1' } });
-
-  // Hibernation: a new instance over the same storage, nothing in memory.
-  const next = setup({ storage: first.storage, world: first.world, sessionFs: fakeSessionFs(ROOT), directory });
-  next.processes.setPidBase(PID_GEN_STRIDE);
-  const woken = await handleFetch(next.self, new Request(`https://probe.test/port/5173/`, { headers: { 'X-Nimbus-Base': BASE_PATH } }));
-  assert.equal(woken.status, 200, `the restored dev server answers, got ${woken.status}`);
-  assert.match(await woken.text(), /identity app/);
-  const restoredPid = next.self._viteShimPid;
-  assert.ok(restoredPid > PID_GEN_STRIDE, 'the restored server owns a pid of the new generation');
-  assert.equal((await next.fm.residentIdentity(restoredPid)).owner, identity.owner, 'the restored server is the same application');
-  assert.equal(next.portRegistry.hasCapability(5173, exposed.capability), true, 'registration re-adopted the shared link');
-  assert.equal(directory.rows.get(exposed.capability)?.name, 'web', 'the directory row was never unbound');
-  const listed = (await rpcListApps(next.self)).find((app) => app.name === 'web');
+  const listed = (await rpcListApps(first.self)).find((app) => app.name === 'web');
   assert.equal(listed?.status, 'running');
-  assert.equal(listed?.pid, restoredPid);
-  assert.equal(next.processes.get(restoredPid).execId, 'j1', 'the restored server keeps the execId it was started under');
-  assert.equal(listed?.execId, 'j1', 'and the app reports it');
-  const rotated = await rpcRotateLink(next.self, 'web');
+  assert.equal(listed?.pid, pid);
+  const served = await handleFetch(first.self, new Request('https://probe.test/port/5173/', { headers: { 'X-Nimbus-Base': BASE_PATH } }));
+  assert.match(await served.text(), /identity app/);
+  const rotated = await rpcRotateLink(first.self, 'web');
   assert.equal(rotated.owner, identity.owner);
-  assert.equal(rotated.pid, restoredPid);
-  assert.equal(next.portRegistry.hasCapability(5173, rotated.capability), true);
+  assert.equal(rotated.pid, pid);
+  assert.equal(first.portRegistry.hasCapability(5173, rotated.capability), true);
 }
 
 // ── 4. a pid that is neither running nor journalled is refused by name ──────

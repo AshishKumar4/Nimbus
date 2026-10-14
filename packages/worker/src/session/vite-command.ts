@@ -17,7 +17,6 @@ import { normalizeVfsPath, parentVfsPath, resolveVfsPath, stripLeadingSlashes } 
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
-import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
 import { viteBuildBlockingPlugins, unhandledVitePlugins, type ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 import { readViteConfigFile } from '../facets/vite-config-file.js';
 import { viteEsbuildSettings } from '@nimbus-sh/core/runtime/vite-esbuild-options.js';
@@ -36,12 +35,30 @@ import {
   withLoudTimeout,
   VITE_BUILD_TIMEOUT_MS,
 } from './helpers.js';
-import { devServerIdentity, startRealVite, type DevServerIdentity } from './start-real-vite.js';
+import { startRealVite } from './start-real-vite.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
-import { VITE_CONFIG_KEY } from './keys.js';
+import { devServerProcess, devServerSpawn, recordDevServer, spawnOf } from './dev-servers.js';
 import { registerServingPort } from './serving-port.js';
 
 type ViteHost = any;
+
+/**
+ * End the Cirrus server running now with its process (`vite stop`, or a
+ * server that replaces it): its port is released, and its record with it.
+ */
+export function stopViteShim(self: ViteHost): boolean {
+  const running = self.viteDevServer?.isRunning === true;
+  if (running) self.viteDevServer.stop();
+  self.viteDevServer = null;
+  const pid: number | null = self._viteShimPid;
+  if (pid == null) return running;
+  self._viteShimPid = null;
+  self._viteShimPort = null;
+  try { self.portRegistry.unregisterByPid(pid); } catch {}
+  self.processes.exit(pid, 0);
+  notifyTerminalEvent(self.terminal, { type: 'exit', pid, code: 0, command: 'vite' });
+  return true;
+}
 
 export function createViteCommand(self: ViteHost) {
   return async (ctx: any): Promise<number> => {
@@ -325,17 +342,14 @@ export function createViteCommand(self: ViteHost) {
       }
       // Start vite on the dist directory
       if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
-      if (self.viteDevServer?.isRunning) self.viteDevServer.stop();
+      stopViteShim(self);
       const previewBasePath = self.viteBasePath;
       // process metadata support: same long-running treatment as the
       // dev path, just on the dist/ directory.
       const previewPort = viteConfig.port || 4173; // vite preview default
-      // A child of the command, under its credential: the server reads the
+      // The server's process, under the command's credential: it reads the
       // build as the principal who ran it.
-      const previewProcEntry = self.processes.spawn(
-        'vite preview (' + distRoot + ')', ['vite', ...args], distRoot,
-        { longRunning: true, parentPid: ctx.pid },
-      );
+      const { entry: previewProcEntry } = devServerProcess(self.processes, 'vite', ctx);
       self.viteDevServer = new ViteDevServer({
         vfs: self.sqliteFs, cred: previewProcEntry.cred, namespace: self.getFilesystemAuthority().vfs, esbuild: self.esbuildService, root: servedDist,
         onHmrMessage: () => {},
@@ -356,12 +370,7 @@ export function createViteCommand(self: ViteHost) {
         self._viteShimPid = previewProcEntry.pid;
         self._viteShimPort = previewPort;
       } catch {}
-      try {
-        await self.ctx.storage.put(VITE_CONFIG_KEY, {
-          root: servedDist, basePath: previewBasePath, port: previewPort,
-          identity: devServerIdentity(previewProcEntry),
-        });
-      } catch {}
+      await recordDevServer(self, previewProcEntry.pid, { ...spawnOf(previewProcEntry), env: ctx.env, root: servedDist });
       ctx.stdout.write('Serving at ' + previewBasePath + '/ \x1b[2m(pid=' + previewProcEntry.pid + ', port=' + previewPort + ')\x1b[0m\n');
       return 0;
     }
@@ -373,24 +382,7 @@ export function createViteCommand(self: ViteHost) {
         self.facetManager.finishProcess(self.cirrusReal.pid, 0);
         stopped = true;
       }
-      if (self.viteDevServer?.isRunning) {
-        self.viteDevServer.stop();
-        self.viteDevServer = null;
-        try { await self.ctx.storage.delete(VITE_CONFIG_KEY); } catch {}
-        stopped = true;
-      }
-      // Primitive #3 teardown — symmetric with the start path. Always
-      // safe to call: unregisterByPid is idempotent, exit() guards
-      // against re-marking already-terminal entries.
-      if (self._viteShimPid != null) {
-        try { self.portRegistry.unregisterByPid(self._viteShimPid); } catch {}
-        try { self.processes.exit(self._viteShimPid, 0); } catch {}
-        notifyTerminalEvent(self.terminal, {
-          type: 'exit', pid: self._viteShimPid, code: 0, command: 'vite',
-        });
-        self._viteShimPid = null;
-        self._viteShimPort = null;
-      }
+      if (stopViteShim(self)) stopped = true;
       if (stopped) {
         ctx.stdout.write('\x1b[33mDev server stopped.\x1b[0m\n');
       } else {
@@ -447,7 +439,7 @@ export function createViteCommand(self: ViteHost) {
       }
     }
 
-    if (self.viteDevServer?.isRunning) self.viteDevServer.stop();
+    stopViteShim(self);
 
     // ── Real-vite mode (Phase 0 spike, opt-in) ─────────────────────────
     // NIMBUS_REAL_VITE=1 or `nimbusDevServer: 'real'` in vite.config.ts
@@ -462,23 +454,12 @@ export function createViteCommand(self: ViteHost) {
     const useReal = shouldUseRealVite({ env: sessionEnv, viteConfig });
     // Long-running handoff (bin-spawn contract): when invoked from a
     // wrapper that already allocated a pid (`npm run dev` via
-    // shellExecuteTracked, the npm-bin resolver, the SDK's startProcess),
-    // ADOPT that pid instead of spawning a second one. One pid, one start
-    // banner, no false exit — and one identity: the process table's
-    // cwd+argv for that pid is what the app verbs derive the dev server's
-    // owner from, so it is persisted with the config and given back to
-    // the entry a hibernation restore allocates.
-    const binSpawn = ctx.__nimbusBinSpawn as
-      | { skipSpawn?: boolean; callerPid?: number }
-      | undefined;
-    const adoptedEntry =
-      binSpawn?.skipSpawn && binSpawn.callerPid != null
-        ? self.processes.get(binSpawn.callerPid)
-        : undefined;
-    const handedOff = adoptedEntry != null;
-    const identity: DevServerIdentity = adoptedEntry
-      ? devServerIdentity(adoptedEntry)
-      : { cwd: vfsRoot, argv: expandedArgs, cred: requireVfsCred(ctx.cred, 'vite'), ...execIdField(self.processes.get(ctx.pid)) };
+    // shellExecuteTracked, the npm-bin resolver, the SDK's startProcess, a
+    // restore), the server runs as that pid; else as a child of the command.
+    // One identity either way: the process table's cwd+argv for that pid is
+    // what the app verbs derive the dev server's owner from, and its spawn
+    // is what a restore spawns again (dev-servers.ts).
+    const { spawn } = devServerSpawn(self.processes, 'vite', ctx);
     if (useReal) {
       const vitePort = resolvedPort;
       const previewBasePath = self.viteBasePath;
@@ -492,7 +473,7 @@ export function createViteCommand(self: ViteHost) {
         port: vitePort,
         basePath: previewBasePath,
         configDir: cwd,
-        identity,
+        identity: spawn,
         signal: ctx.signal,
         onConfigError: (msg) => {
           ctx.stderr.write('\x1b[33m!\x1b[0m vite.config bundling failed: ' + msg + '\n');
@@ -500,6 +481,7 @@ export function createViteCommand(self: ViteHost) {
         },
       });
 
+      await recordDevServer(self, cirrusReal.pid, { ...spawn, env: ctx.env, root: servedRoot });
       {
         // ── Boot banner (§4.3 of PHASE2-REAL-VITE-PLAN.md) ──────
         const snap = (cirrusReal.stats as any).snapshot;
@@ -560,28 +542,13 @@ export function createViteCommand(self: ViteHost) {
     // visible in the Process tab.
     //
     // The adopted wrapper pid stays `running` in /api/processes with this
-    // port; a fresh spawn carries the identity inputs computed above.
-    const viteProcEntry = adoptedEntry ?? self.processes.spawn(
-      'vite (' + vfsRoot + ')',
-      identity.argv,
-      identity.cwd,
-      { longRunning: true, cred: identity.cred, execId: identity.execId },
-    );
-    if (handedOff) self.processes.setLongRunning(viteProcEntry.pid);
+    // port; a fresh spawn is a child of the command.
+    const { entry: viteProcEntry, adopted: handedOff } = devServerProcess(self.processes, 'vite', ctx);
 
     // The directory the config was read from, at its engine key (a mount has
-    // none: the server then never reads it again), and what a restore starts
-    // from, kept as the server reads the config again.
+    // none: the server then never reads it again).
     const configDir = await engineKey(ctx.vfs, self.sqliteFs, '/' + cwd);
     const viteEsbuild = viteEsbuildSettings(configFile.path ? viteConfig : null);
-    const persisted = {
-      root: servedRoot, aliases: viteConfig.alias, define: viteDefine,
-      injectBasename: viteConfig.injectBasename, basePath: previewBasePath,
-      port: resolvedPort,
-      identity: devServerIdentity(viteProcEntry),
-      viteEsbuild,
-      ...(configDir !== null ? { configDir } : {}),
-    };
     self.viteDevServer = new ViteDevServer({
       vfs: self.sqliteFs!,
       // The server reads and writes as the principal who ran the command.
@@ -609,20 +576,9 @@ export function createViteCommand(self: ViteHost) {
       // after the banner.
       pid: viteProcEntry.pid,
       processes: self.processes,
-      ...(configDir !== null ? {
-        configDir,
-        onConfigChange: (config: ParsedViteConfig | null) => {
-          Object.assign(persisted, {
-            aliases: config?.alias, define: config?.define, injectBasename: config?.injectBasename, viteEsbuild: viteEsbuildSettings(config),
-          });
-          self.ctx.storage.put(VITE_CONFIG_KEY, persisted).catch(() => {});
-        },
-      } : {}),
+      ...(configDir !== null ? { configDir } : {}),
     });
     self.viteDevServer.start();
-    try {
-      await self.ctx.storage.put(VITE_CONFIG_KEY, persisted);
-    } catch {}
 
     // Register the port and build the long-running stub. The stub
     // forwards into the in-process viteDevServer through the generic
@@ -635,6 +591,7 @@ export function createViteCommand(self: ViteHost) {
     // down without searching the registry.
     self._viteShimPid = viteProcEntry.pid;
     self._viteShimPort = resolvedPort;
+    await recordDevServer(self, viteProcEntry.pid, { ...spawnOf(viteProcEntry), env: ctx.env, root: servedRoot });
 
     // Spawn / long-running event for the Process tab UI. Mirrors the
     // shellExecuteTracked banner so the user sees the same shape no

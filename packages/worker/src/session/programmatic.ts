@@ -31,7 +31,7 @@ import {
   type SessionExposeOptions, type SessionDurableAppOptions, type SessionTerminalSize,
   type SessionRuntimeInstallOptions, type SessionResult,
 } from '@nimbus-sh/core/runtime/session-protocol.js';
-import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX, VITE_CONFIG_KEY } from './keys.js';
+import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX } from './keys.js';
 import { clearPortCapability, persistPortCapability, portRecordKey, readPortReservation, readPortReservationByName, readPortReservationByOwner, reservePort, rotatePortCapability, type PortReservation, type PortVisibility } from './port-capability.js';
 import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/public-directory.js';
 import { isPreviewHostName, isPreviewHostSafeSid, previewHostUrl, readPreviewHostSuffix } from '../_shared/preview-host.js';
@@ -667,7 +667,6 @@ export async function rpcKillProcess(self: ProgrammaticHost, pid: number) {
       if (self.viteDevServer?.isRunning) {
         self.viteDevServer.stop();
         self.viteDevServer = null;
-        try { await self.ctx.storage.delete(VITE_CONFIG_KEY); } catch {}
       }
     } catch {}
     try { self.portRegistry.unregisterByPid(n); } catch {}
@@ -1270,7 +1269,6 @@ async function destroySession(
       if (self._viteShimPid === pid) {
         if (self.viteDevServer?.isRunning) self.viteDevServer.stop();
         self.viteDevServer = null;
-        try { await self.ctx.storage.delete(VITE_CONFIG_KEY); } catch {}
         self._viteShimPid = null;
         self._viteShimPort = null;
       } else if (self.facetManager?.kill?.(pid, undefined, SESSION_DESTROYED)) {

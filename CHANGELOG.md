@@ -5,6 +5,26 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a running `wrangler dev` stopped serving when its session's object
+  was re-created (an idle session's is, within minutes; so is one after an
+  instance reset): its Worker URL answered "no dev server running" until it
+  was started again. It is now a process of its own (`ps` lists it, `kill`
+  ends it), and while it runs, its spawn is recorded: the command line, its
+  argv, directory, credential and exec id, and the environment the command
+  was given (a launch's `$PORT` and `$NIMBUS_APP` are not part of it). The
+  next incarnation of the session runs the command again, once, as the same
+  process restarted (`restartedFrom` cause `session-restart`); `wrangler
+  stop`, `vite stop` or a kill ends the record with the process, so a stopped
+  server stays stopped. `vite`, `vite preview` and real Vite come back the
+  same way, through the `vite` command run again: it reads its `vite.config`
+  afresh rather than the options it had when the session stopped. A server
+  started by `/api/start-vite` comes back as `vite --port <n>
+  --no-install-check` in its root, with its project's `vite.config` and not
+  the aliases or define the request gave. A command that fails to start
+  again is not retried: a request for its server answers 503 with the
+  command, why it failed and which process's log holds its output. A `vite`
+  server the session was running when it was upgraded to this release is
+  not restored once; run `vite` again.
 - Fixed: two Durable Objects of a `wrangler dev` Worker could run as one
   (one instance, one storage): an object's facet was named by its binding
   and its id joined with `-`, so binding `A-B`'s object `c` and binding

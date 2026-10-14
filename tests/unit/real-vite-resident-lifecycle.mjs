@@ -15,8 +15,8 @@
 //   5. killProcess ends it 137;
 //   6. a lost facet ends it 137, its port answering with the cause, and the
 //      server is never evaluated a second time under the same pid;
-// and each end forgets what would restore the server when the session
-// wakes, which it holds while the server runs.
+// and each end releases the record a new incarnation of the session would
+// run the server again from, which is kept while the server runs.
 //   7. the runtime's close ends it.
 
 import assert from 'node:assert/strict';
@@ -97,14 +97,14 @@ const server = () => {
   const boot = world.boots.at(-1);
   return { pid, facet: boot?.facetName, boot };
 };
-/** What restores the server when the session wakes (routes.restorePersistedDevServer). */
-const restoreIntent = () => ctx.storage.get('vite-config');
+/** The record a new incarnation of the session runs `pid`'s server again from (dev-servers.ts). */
+const recordOf = (pid) => ctx.storage.get(`dev-server:${pid}`);
 const ended = async (pid, code, facet, what) => {
   assert.equal(running(pid), false, `${what}: the server's process ended`);
   assert.equal(processes.get(pid)?.exitCode, code, `${what}: exit ${code}`);
   assert.equal(ports.get(PORT), undefined, `${what}: its port is free`);
   assert.equal(world.liveFacets().includes(facet), false, `${what}: its facet is released`);
-  assert.equal(await restoreIntent(), undefined, `${what}: nothing restores it`);
+  assert.equal(await recordOf(pid), undefined, `${what}: nothing runs it again`);
 };
 
 try {
@@ -118,14 +118,17 @@ try {
   const entry = processes.get(first.pid);
   assert.deepEqual(
     { argv: entry.argv, cred: entry.cred, execId: entry.execId, longRunning: entry.longRunning },
-    { argv: ['--port', String(PORT), '--no-install-check'], cred: bundle.CRED_SESSION_USER, execId: 'dev-1', longRunning: true },
+    { argv: ['vite', '--port', String(PORT), '--no-install-check'], cred: bundle.CRED_SESSION_USER, execId: 'dev-1', longRunning: true },
     'it runs as the command that started it: its argv, credential and exec id',
   );
   assert.equal(entry.parentPid, undefined, 'and outlives that command');
   const env0 = first.boot.config.env;
   assert.equal(env0.SUPERVISOR?.supervisor?.pid, first.pid, 'its SUPERVISOR is its own process\'s');
   assert.equal(env0.CIRRUS_HMR?.hmr?.doId, 'real-vite-do', 'its HMR channel is the session\'s');
-  assert.equal((await restoreIntent())?.port, PORT, 'while it runs, a session that wakes restores it');
+  const record = await recordOf(first.pid);
+  assert.equal(record?.command, `vite --port ${PORT} --no-install-check`, 'while it runs, a new incarnation runs its command again');
+  assert.deepEqual(record?.env?.NIMBUS_REAL_VITE, '1', 'with the environment it was given');
+  assert.deepEqual(record?.ports, [PORT], 'and takes back the link of its port');
   const page = await ports.routeRequest(PORT, new Request('https://session.test/'), '/index.html');
   assert.equal(await page.text(), 'vite /index.html', 'its port routes to the process');
   console.log('  [1] vite returns with Vite booted in one resident process, its port routed to it');
@@ -155,7 +158,8 @@ try {
   assert.equal(processes.get(third.pid)?.exitCode, 143);
   assert.equal(world.liveFacets().includes(third.facet), false, 'its facet is released');
   assert.equal(ports.get(PORT)?.pid, fourth.pid, 'the new one serves the port');
-  assert.equal((await restoreIntent())?.identity?.argv?.join(' '), `--port ${PORT} --no-install-check`, 'and is what a session that wakes restores');
+  assert.equal(await recordOf(third.pid), undefined, 'the one it replaced is not run again');
+  assert.equal((await recordOf(fourth.pid))?.argv?.join(' '), `vite --port ${PORT} --no-install-check`, 'and the new one is');
   console.log('  [4] a second vite ends the server running before it');
 
   // ── 5. killProcess ──────────────────────────────────────────────────────
@@ -176,7 +180,7 @@ try {
   assert.equal(processes.get(fifth.pid)?.exitCode, 137);
   assert.equal(ports.get(PORT), undefined, 'its port is free');
   assert.match(String(ports.ended(PORT)), new RegExp(`pid ${fifth.pid}`), 'and answers with the cause');
-  assert.equal(await restoreIntent(), undefined, 'nothing restores it');
+  assert.equal(await recordOf(fifth.pid), undefined, 'nothing runs it again');
   console.log('  [6] a lost facet ends it 137, its port answering with the cause');
 
   // ── 7. the runtime's close ──────────────────────────────────────────────

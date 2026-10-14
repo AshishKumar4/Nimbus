@@ -34,6 +34,8 @@ import { z } from 'zod/v4';
 import { adoptCtxExports, supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
 import { hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
+import { restoreDevServers } from '../session/dev-servers.js';
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 
 const HostedTask = z.enum(['resident-launch', 'resident-keepalive', 'log-flush', 'log-janitor', 'hosting-watch']);
 export type HostedRuntimeTask = z.infer<typeof HostedTask>;
@@ -168,6 +170,8 @@ class RuntimeOwner {
       await registerHostedCommands(this, this.options.workspace);
       await this.ensureFacetManager().pumpLaunches();
       await this.options.workspace.start();
+      // The dev servers the previous incarnation ran start again, once it is ready.
+      restoreDevServers(this).catch((error) => console.warn(`[runtime] restoring the dev servers failed: ${errorText(error)}`));
     })();
     return this.readyPromise;
   }

@@ -28,6 +28,7 @@ import { PUBLIC_BEARER_HEADER, renderSessionStatusPage } from '../_shared/sessio
 import { isPreviewHostName } from '../_shared/preview-host.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from './keys.js';
+import { devServerRestoreFailedResponse, type DevServerRestoreFailure } from './helpers.js';
 
 /** The minimum a caller needs to own a port capability. */
 export interface PortCapabilityHost {
@@ -395,7 +396,7 @@ export interface SessionPortHost {
   cirrusReal?: { isRunning: boolean; port: number } | null;
   // Session-owned helpers the route delegates to — absent on the composed
   // host, where they would have nothing to restore or accept.
-  restorePersistedDevServer?: (onlyPort?: number) => Promise<void>;
+  restoreDevServers?: () => Promise<readonly DevServerRestoreFailure[]>;
   acceptCirrusHmrWs?: (request: Request) => Response;
 }
 
@@ -469,7 +470,7 @@ export async function routeToSessionPort(
       return new Response('Not found', { status: 404 });
     }
   }
-  await self.restorePersistedDevServer?.(port);
+  const restoreFailures = await self.restoreDevServers?.() ?? [];
   // The durable seam: a request on a port nothing is serving may be a
   // durable application a reset left dead — the alarm pump would re-drive
   // it eventually, but a URL in someone's hands cannot wait for eventually.
@@ -523,6 +524,7 @@ export async function routeToSessionPort(
     ? await self.portRegistry.routeRequest(port, request, innerPath)
     : await self.portRegistry.routeCapabilityRequest(port, capability, request, innerPath);
   if (proxied) return proxied;
+  if (restoreFailures.length > 0) return devServerRestoreFailedResponse(restoreFailures);
   const ended = self.portRegistry.ended(port);
   return new Response(`No process listening on port ${port}${ended === undefined ? '' : `: ${ended}`}`, { status: 502 });
 }
