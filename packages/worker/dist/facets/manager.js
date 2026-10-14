@@ -2873,324 +2873,82 @@ export async function speculativePackageDirs(vfs, cwdStripped, bundle) {
     return [...reached].sort();
 }
 /**
- * X.5-Z3: scan every JS source already in `bundle` for static
- * `fs.readFileSync(path.resolve(__dirname, "<rel>"))` shapes and pull
- * the matched asset files (.css / .html / .htm / .svg / .txt / .json)
- * into the bundle. The motivating case is jsdom's
- * `lib/jsdom/living/css/helpers/computed-style.js:16-19`, which loads
- * `default-stylesheet.css` at module-eval time:
- *
- *   const defaultStyleSheet = fs.readFileSync(
- *     path.resolve(__dirname, "../../../browser/default-stylesheet.css"),
- *     { encoding: "utf-8" },
- *   );
- *
- * The fs shim's `readFileSync` (`src/node-shims.ts:202-215`) consults
- * only `__vfsBundle` + `__vfsWrites`; runtime asset files that the
- * require-graph walker doesn't reach (it's bounded to .js/.mjs/.cjs)
- * are absent from the bundle and ENOENT at runtime. This helper closes
- * that gap as a sibling of `greedyAddMainEntries` (W2.6a) +
- * `transformEsmInBundle` (W3.5 Fix B).
- *
- * Pattern matched: literal-only, conservative.
- *
- *   fs.readFileSync(path.resolve(__dirname, "<rel>"), …)
- *   readFileSync(path.resolve(__dirname, "<rel>"), …)
- *
- * `<rel>` is a string literal (single, double, OR backtick — provided
- * the backtick form has no `${}` interpolation). Template-literal,
- * variable, and concatenation forms are **deliberately skipped** —
- * they're an unbounded class. Comment-stripped first to avoid
- * matching the pattern inside `//` / `/* *​/`.
- *
- * Returns the count of asset files added (for diagnostics). Errors
- * are swallowed: missing assets, unreadable VFS, and non-string
- * readFile inputs are silent skips.
- *
- * Same budget shape as `greedyAddMainEntries` — shares the same
- * VFS_BUNDLE_MAX_FILES / VFS_BUNDLE_MAX_BYTES caps via the
- * `budgetState` counter.
+ * X.5-Z3 and X.5-U: an asset a module reads synchronously by a path it
+ * spells out — a stylesheet, page, image, text or JSON file, or a dotfile or
+ * digest/hash/version/sha/md5 sentinel — whatever spells it:
+ * `fs.readFileSync(path.resolve(__dirname, "<rel>"))`, SWC's
+ * `(0, fs_1.readFileSync)((0, path_1.resolve)(__dirname, "<rel>"))`, a join,
+ * an alias of the path function. jsdom reads `default-stylesheet.css` at
+ * module evaluation; ts-jest reads `.ts-jest-digest`. The gate bounds the
+ * guess: an ungated read of any `__dirname`-relative file would pull compiled
+ * wasm and JSON dictionaries a package reads the same way.
  */
-export async function addStaticReadFileAssets(vfs, cwd, bundle, budgetState) {
-    let added = 0;
-    // Asset extensions covered. Conservative whitelist — txt/json are
-    // also legit runtime-loaded assets (e.g. mime-db json, license.txt).
-    // .json is already typically reachable via `require('./x.json')` so
-    // it's mostly defensive here.
-    const ASSET_EXT = /\.(css|html|htm|svg|txt|json)$/i;
-    // Match the static-literal shape. The capture groups are:
-    //   1 = the relative path string literal contents (no quote chars).
-    // Shape:
-    //   readFileSync(  path.resolve(  __dirname  ,  "rel"  )
-    //   fs.readFileSync(path.resolve(__dirname, "rel"), …)
-    //   node:path / "node:path" forms also covered by allowing optional
-    //   leading `\w+\.` prefix on the resolve target.
-    // Quote chars supported: ' " `. For backtick we additionally check
-    // there's no `${` in the captured body (template-literal interpolation
-    // is rejected).
-    const RX = /(?:\bfs\s*\.)?readFileSync\s*\(\s*(?:[\w$.]+\s*\.\s*)?resolve\s*\(\s*__dirname\s*,\s*(['"`])([^'"`]+)\1\s*[\),]/g;
-    async function addOneAsset(absPath) {
-        const stripped = absPath.replace(/^\/+/, '');
-        if (stripped in bundle)
-            return false;
-        if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
-            return false;
-        if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
-            return false;
-        try {
-            if (!(await filesOf(vfs).exists(stripped)) || (await filesOf(vfs).isDirectory(stripped)))
-                return false;
-            if (!(await _bundleAdmits(vfs, stripped, budgetState)))
-                return false;
-            // hardening-r5: preserve binary content as Uint8Array.
-            const content = (await _readBundleCell(vfs, stripped));
-            const cellLen = _bundleCellLength(content);
-            if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES)
-                return false;
-            bundle[stripped] = content;
-            budgetState.totalBytes += cellLen;
-            budgetState.fileCount++;
-            added++;
-            return true;
-        }
-        catch {
-            return false;
-        }
-    }
-    // Snapshot the keys first — we mutate `bundle` during the loop.
-    const sourceKeys = Object.keys(bundle).filter((k) => k.endsWith('.js') || k.endsWith('.mjs') || k.endsWith('.cjs'));
-    for (const sourcePath of sourceKeys) {
-        const src = bundle[sourcePath];
-        if (!src || src.length === 0)
-            continue;
-        // hardening-r5: skip binary cells (a .js extension on a binary file
-        // is rare but possible — defensive guard prevents .replace() throwing
-        // on a Uint8Array).
-        if (typeof src !== 'string')
-            continue;
-        // Strip line + block comments before regex-matching so the pattern
-        // doesn't fire inside `// fs.readFileSync(...)` etc.
-        const stripped = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
-        // Quick reject: skip files that don't even contain readFileSync.
-        if (stripped.indexOf('readFileSync') < 0)
-            continue;
-        const sourceDir = sourcePath.includes('/')
-            ? sourcePath.substring(0, sourcePath.lastIndexOf('/'))
-            : '';
-        RX.lastIndex = 0;
-        let match;
-        while ((match = RX.exec(stripped)) !== null) {
-            const quote = match[1];
-            const rel = match[2];
-            // Reject template-literal interpolation inside backticks.
-            if (quote === '`' && rel.indexOf('${') >= 0)
-                continue;
-            // Reject any form that looks dynamic (defensive — RX already
-            // requires literal but absolute paths starting with `/` would
-            // bypass the __dirname-relative semantics; allow them since
-            // they're literal and unambiguous).
-            if (!ASSET_EXT.test(rel))
-                continue;
-            // Resolve relative to the source file's directory (the runtime's
-            // __dirname for that source). Match runtime resolution: leading
-            // `./` strips, `..` walks up.
-            let resolved;
-            if (rel.startsWith('/')) {
-                resolved = rel.replace(/^\/+/, '');
-            }
-            else {
-                const parts = (sourceDir + '/' + rel).split('/');
-                const out = [];
-                for (const seg of parts) {
-                    if (seg === '' || seg === '.')
-                        continue;
-                    if (seg === '..') {
-                        if (out.length > 0)
-                            out.pop();
-                        continue;
-                    }
-                    out.push(seg);
-                }
-                resolved = out.join('/');
-            }
-            (await addOneAsset(resolved));
-        }
-    }
-    return { added };
-}
+const STATIC_ASSET_READS = {
+    mayName: (source) => source.includes('readFileSync'),
+    named: (refs) => refs.exact.filter((ref) => {
+        const name = ref.path.slice(ref.path.lastIndexOf('/') + 1);
+        return ref.sync && (/\.(?:css|html|htm|svg|txt|json)$/i.test(name) || /^\.|digest|hash|version|sha|md5/i.test(name));
+    }).map((ref) => ref.path),
+};
 /**
- * X.5-U: scan every JS source already in `bundle` for static
- * readFileSync of a `__dirname`-relative dotfile or "digest/hash/version/
- * sha/md5"-shaped sentinel, AND match the SWC/TypeScript-compiled
- * `(0, fs_1.readFileSync)((0, path_1.resolve)(__dirname, "<rel>"))`
- * call shape that X.5-Z3's `addStaticReadFileAssets` regex misses.
- *
- * Motivating case: ts-jest@29.x's
- * `package/dist/legacy/config/config-set.js:105`:
- *
- *   var fs_1 = require("fs");
- *   var path_1 = require("path");
- *   exports.MY_DIGEST = (0, fs_1.readFileSync)(
- *     (0, path_1.resolve)(__dirname, '../../../.ts-jest-digest'), 'utf8');
- *
- * The install pipeline writes `.ts-jest-digest` to VFS correctly
- * (the namespace lists it). But the runtime
- * fs shim's readFileSync (`src/node-shims.ts:202-215`) consults
- * `__vfsBundle` only, and none of the existing bundle-population
- * passes — `prefetchForRequire` (require-graph), `greedyAddMainEntries`
- * (pkg main entries), `addStaticReadFileAssets` (X.5-Z3, restricted to
- * `.css|html|svg|txt|json` and to direct `path.resolve(__dirname,…)`)
- * — picks the dotfile up. Result: ENOENT at facet runtime even though
- * `fs.readdirSync` and `fs.statSync` both see the file via the manifest.
- *
- * Bounded heuristic: filename must EITHER start with `.` (dotfile) OR
- * match `/digest|hash|version|sha|md5/i` (small-metadata-sentinel
- * pattern). Without this gate, an unconstrained "match any
- * __dirname-relative readFileSync filename" would pull arbitrary large
- * runtime-loaded files (compiled WASM, JSON dictionaries, …) on
- * packages that read them via this exact shape — bundle bloat with no
- * payoff. The heuristic narrows to the ts-jest class. Trade-off
- * documented; future packages outside this shape can extend the
- * predicate.
- *
- * Quote chars supported: `'`, `"`, and backticks WITHOUT `${}`
- * interpolation. Dynamic specifiers (variable, concatenation,
- * interpolation) are deliberately skipped.
- *
- * Same budget shape as `greedyAddMainEntries` /
- * `addStaticReadFileAssets` — shares the same VFS_BUNDLE_MAX_FILES /
- * VFS_BUNDLE_MAX_BYTES caps via `budgetState`. Returns the count of
- * files added (for diagnostics).
- *
- * Errors are swallowed: missing assets, unreadable VFS, and
- * non-string readFile inputs are silent skips — matches Z3 posture.
+ * Shell compatibility (2026-05-11): an absolute path the entry code or a
+ * staged module spells as a literal (`node -e 'fs.readFileSync("/home/user/
+ * x.txt")'`, a module that hardcodes one), outside the mounts a session does
+ * not have. No other pass reads the user's own files by an absolute path.
  */
-export async function addStaticReadFileDotfilesAndCompiled(vfs, cwd, bundle, budgetState) {
-    let added = 0;
-    // The heuristic gate. Filenames matching either branch are eligible.
-    //   - Leading `.` covers `.ts-jest-digest`, `.cache-marker`, `.lintstagedrc`-ish
-    //     sentinel files. Note: `package.json` etc are NOT dotfiles.
-    //   - `digest|hash|version|sha|md5` covers compiled-loose sentinel
-    //     filenames like `version.txt`, `git-sha`, `build-hash`, …
-    //     (Phase B regression matrix §5: bounded to the actual class.)
-    const FILENAME_GATE = /(^\.[^/]+$|digest|hash|version|sha|md5)/i;
-    // Match shapes:
-    //   readFileSync(path.resolve(__dirname, "<rel>"))                  (X.5-Z3)
-    //   fs.readFileSync(path.resolve(__dirname, "<rel>"))               (X.5-Z3)
-    //   (0, fs_1.readFileSync)((0, path_1.resolve)(__dirname, "<rel>")) (X.5-U new — SWC)
-    //   readFileSync(path.join(__dirname, "<rel>"))                     (X.5-U new — join also)
-    //   readFileSync((0, path_1.resolve)(__dirname, "<rel>"))            (mixed)
-    //
-    // Strategy: anchor the ENTIRE call on `readFileSync` (with optional
-    // `(0, x.y)` wrap or `x.` prefix), then look for either `resolve` OR
-    // `join` (with optional `(0, x.y)` wrap or `x.` prefix), then
-    // `__dirname` and the literal. Capture group 1 = quote, group 2 =
-    // body.
-    //
-    // The regex is permissive about whitespace + parens because
-    // SWC/TypeScript emit varies (extra parens in some output flags,
-    // tighter spacing in production). Tested against:
-    //   ts-jest@29.1.4/dist/legacy/config/config-set.js:105
-    //   synth `(0, fs_1.readFileSync)((0, path_1.resolve)(__dirname, "X"))`
-    //   plain `fs.readFileSync(path.resolve(__dirname, "X"))`
-    //   plain `readFileSync(path.join(__dirname, "X"))`
-    const RX = new RegExp(
-    // optional `(0, ` wrap then `<x.>?readFileSync` or bare `readFileSync`
-    '(?:\\(\\s*0\\s*,\\s*)?(?:[\\w$]+\\s*\\.\\s*)?readFileSync\\s*\\)?\\s*\\(' +
-        // call args: optional outer paren, optional `(0, ` wrap then
-        // `<x.>?(resolve|join)` then required `(`
-        '\\s*(?:\\(\\s*0\\s*,\\s*)?(?:[\\w$]+\\s*\\.\\s*)?(?:resolve|join)\\s*\\)?\\s*\\(' +
-        // required __dirname
-        '\\s*__dirname\\s*,\\s*' +
-        // literal: ' " ` (no ${ for backtick)
-        '([\'"`])([^\'"`]+)\\1', 'g');
-    async function addOneAsset(absPath) {
-        const stripped = absPath.replace(/^\/+/, '');
-        if (stripped in bundle)
-            return false;
-        if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
-            return false;
-        if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
-            return false;
-        try {
-            if (!(await filesOf(vfs).exists(stripped)) || (await filesOf(vfs).isDirectory(stripped)))
-                return false;
-            if (!(await _bundleAdmits(vfs, stripped, budgetState)))
-                return false;
-            // hardening-r5: preserve binary content as Uint8Array.
-            const content = (await _readBundleCell(vfs, stripped));
-            const cellLen = _bundleCellLength(content);
-            if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES)
-                return false;
-            bundle[stripped] = content;
-            budgetState.totalBytes += cellLen;
-            budgetState.fileCount++;
-            added++;
-            return true;
-        }
-        catch {
-            return false;
+const STATIC_ABSOLUTE_LITERALS = {
+    mayName: (source) => /['"`]\//.test(source),
+    named: (refs) => refs.literals.filter((path) => !/^\/(proc|sys|dev|lib|lib64|boot|root)(\/|$)/.test(path)),
+};
+/**
+ * Stage, within the bundle's budget, each existing file that `sources` (each
+ * a module's path and text) name as `selection` wants, as static-fs-refs.ts
+ * finds what code names: comments are not code, and a URL string is not one
+ * (the regex passes this replaces stripped `//` to the end of the line, the
+ * rest of a line after "http://" included). `refsOf` answers a source's
+ * analysis. A file that is missing, a directory or unreadable is skipped.
+ */
+async function addStaticReads(vfs, bundle, budgetState, sources, refsOf, selection) {
+    for (const [path, source] of sources) {
+        if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES || budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
+            return;
+        if (!selection.mayName(source))
+            continue;
+        const refs = await refsOf(path, source);
+        if (refs === null)
+            continue;
+        for (const named of selection.named(refs)) {
+            const key = stripLeadingSlashes(named);
+            if (bundle[key] !== undefined)
+                continue;
+            if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES || budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
+                return;
+            try {
+                if (!(await filesOf(vfs).exists(key)) || (await filesOf(vfs).isDirectory(key)))
+                    continue;
+                if (!(await _bundleAdmits(vfs, key, budgetState)))
+                    continue;
+                // hardening-r5: preserve binary content as Uint8Array.
+                const content = await _readBundleCell(vfs, key);
+                const cellLen = _bundleCellLength(content);
+                if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES)
+                    continue;
+                bundle[key] = content;
+                budgetState.totalBytes += cellLen;
+                budgetState.fileCount++;
+            }
+            catch { /* missing, unreadable, or gone since */ }
         }
     }
-    // Snapshot keys; we mutate `bundle` during the loop.
-    const sourceKeys = Object.keys(bundle).filter((k) => k.endsWith('.js') || k.endsWith('.mjs') || k.endsWith('.cjs'));
-    for (const sourcePath of sourceKeys) {
-        const src = bundle[sourcePath];
-        if (!src || src.length === 0)
-            continue;
-        // hardening-r5: skip binary cells (a .js extension on a binary file
-        // is rare but possible — defensive guard prevents .replace() throwing
-        // on a Uint8Array).
-        if (typeof src !== 'string')
-            continue;
-        // Strip line + block comments before regex-matching so the pattern
-        // doesn't fire inside `// fs.readFileSync(...)` etc.
-        const stripped = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
-        // Quick reject: skip files that don't even contain readFileSync.
-        if (stripped.indexOf('readFileSync') < 0)
-            continue;
-        const sourceDir = sourcePath.includes('/')
-            ? sourcePath.substring(0, sourcePath.lastIndexOf('/'))
-            : '';
-        RX.lastIndex = 0;
-        let match;
-        while ((match = RX.exec(stripped)) !== null) {
-            const quote = match[1];
-            const rel = match[2];
-            // Reject template-literal interpolation inside backticks.
-            if (quote === '`' && rel.indexOf('${') >= 0)
-                continue;
-            // Resolve relative to the source file's __dirname (matches runtime).
-            let resolved;
-            if (rel.startsWith('/')) {
-                resolved = rel.replace(/^\/+/, '');
-            }
-            else {
-                const parts = (sourceDir + '/' + rel).split('/');
-                const out = [];
-                for (const seg of parts) {
-                    if (seg === '' || seg === '.')
-                        continue;
-                    if (seg === '..') {
-                        if (out.length > 0)
-                            out.pop();
-                        continue;
-                    }
-                    out.push(seg);
-                }
-                resolved = out.join('/');
-            }
-            // Apply the bounded-heuristic gate on the BASENAME so we don't
-            // overshoot. Z3's `ASSET_EXT` filter overlaps but doesn't cover
-            // dotfiles or no-extension sentinels, which is X.5-U's class.
-            const slash = resolved.lastIndexOf('/');
-            const basename = slash >= 0 ? resolved.slice(slash + 1) : resolved;
-            if (!FILENAME_GATE.test(basename))
-                continue;
-            (await addOneAsset(resolved));
-        }
+}
+/** The JavaScript sources a bundle stages now, by path: what the static-read passes analyze. */
+function stagedJavaScript(bundle) {
+    const sources = [];
+    for (const [path, cell] of Object.entries(bundle)) {
+        if (typeof cell === 'string' && /\.(?:c|m)?js$/.test(path))
+            sources.push([path, cell]);
     }
-    return { added };
+    return sources;
 }
 /**
  * G3 (runtime-pkg wave) — bin-target sibling oversample.
@@ -3201,9 +2959,9 @@ export async function addStaticReadFileDotfilesAndCompiled(vfs, cwd, bundle, bud
  * the static walker can't see (computed paths, package-internal
  * data files, .cow / .pem / .wasm / .ttf / etc.).
  *
- * Pre-fix: addStaticReadFileAssets only covers a hardcoded ASSET_EXT
- * whitelist (.css/.html/.htm/.svg/.txt/.json). Cowsay's `.cow` files
- * ENOENT at runtime.
+ * Pre-fix: the static asset reads (STATIC_ASSET_READS) cover only a
+ * hardcoded extension list (.css/.html/.htm/.svg/.txt/.json). Cowsay's
+ * `.cow` files ENOENT at runtime.
  *
  * Fix shape: when entry is inside a `node_modules/<pkg>` directory,
  * walk that pkg dir's contents and pull runtime package files under
@@ -3739,106 +3497,6 @@ async function addCwdProjectFiles(vfs, cwd, bundle, budgetState) {
     return { added };
 }
 /**
- * shell compatibility (2026-05-11): scan entry code (and any already-bundled
- * .js/.mjs/.cjs sources) for ABSOLUTE-PATH string literals that look
- * like file reads. For every candidate that exists on the SqliteVFS,
- * pull it into the bundle so the facet's __vfsBundle can serve it.
- *
- * Pre-fix: `node -e 'fs.readFileSync("/home/user/x.txt")'` returned
- * ENOENT for files the shell could `cat`. The facet's bundle never
- * included `/home/user/x.txt` because no static scanner matched the
- * shape (greedy/dotfile/asset all required `path.resolve(__dirname,
- * "rel")` or `node_modules` pkg-root containment).
- *
- * Match policy:
- *   - String literals matching `/[^"`']+/` (slash-prefixed, no quotes
- *     inside), length 2-512 chars.
- *   - Reject paths under prefixes we don't mount (`/proc`, `/sys`,
- *     `/dev`, `/lib`, `/lib64`) — wouldn't resolve.
- *   - Reject paths containing `*` `?` `[` `]` `${` (glob/template).
- *   - File must exist on VFS, be a file (not a dir).
- *   - Defer to budgetState caps so we don't blow VFS_BUNDLE_MAX_BYTES.
- *
- * Quick-reject: only files containing readFileSync / createReadStream
- * / openSync / readFile in source are scanned. Entry code is always
- * scanned (it's the user's intent).
- */
-async function addEntryAbsPathReads(vfs, entryCode, bundle, budgetState) {
-    let added = 0;
-    // Capture absolute-path string literals. The path may not contain
-    // the quote char; the surrounding regex strips line/block comments
-    // first to avoid commented-out matches.
-    // Path char set: alnum + dot + dash + slash + underscore. This
-    // excludes spaces, glob chars, template syntax — all dynamic.
-    const RX = /(['"`])(\/[A-Za-z0-9._\-\/]{1,510})\1/g;
-    const REJECT_PREFIX = /^\/(proc|sys|dev|lib|lib64|boot|root)(\/|$)/;
-    async function tryAdd(absPath) {
-        if (!absPath || absPath.length < 2 || absPath.length > 512)
-            return;
-        if (REJECT_PREFIX.test(absPath))
-            return;
-        const stripped = absPath.replace(/^\/+/, '');
-        if (stripped in bundle)
-            return;
-        if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
-            return;
-        if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
-            return;
-        try {
-            if (!(await filesOf(vfs).exists(stripped)) || (await filesOf(vfs).isDirectory(stripped)))
-                return;
-            if (!(await _bundleAdmits(vfs, stripped, budgetState)))
-                return;
-            // hardening-r5: preserve binary content as Uint8Array.
-            const content = (await _readBundleCell(vfs, stripped));
-            const cellLen = _bundleCellLength(content);
-            if (budgetState.totalBytes + cellLen > VFS_BUNDLE_MAX_BYTES)
-                return;
-            bundle[stripped] = content;
-            budgetState.totalBytes += cellLen;
-            budgetState.fileCount++;
-            added++;
-        }
-        catch { /* swallow — file may be binary, race-deleted, etc. */ }
-    }
-    async function scanOne(src) {
-        if (!src)
-            return;
-        // Strip line + block comments so we don't match commented-out reads.
-        const stripped = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
-        RX.lastIndex = 0;
-        let m;
-        while ((m = RX.exec(stripped)) !== null) {
-            const literal = m[2];
-            // Skip if there's any unsafe char (defensive — RX already
-            // forbids most). The check on the captured group is cheap.
-            if (/[\?\*\[\]\{\}]/.test(literal))
-                continue;
-            (await tryAdd(literal));
-        }
-    }
-    // Always scan entry code.
-    (await scanOne(entryCode));
-    // Optionally scan bundled JS sources too — useful for transitive cases
-    // where a require'd module hardcodes an absolute path. Use the same
-    // budget-state so we don't blow caps.
-    const sourceKeys = Object.keys(bundle).filter((k) => k.endsWith('.js') || k.endsWith('.mjs') || k.endsWith('.cjs'));
-    for (const k of sourceKeys) {
-        if (budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
-            break;
-        if (budgetState.totalBytes >= VFS_BUNDLE_MAX_BYTES)
-            break;
-        // hardening-r5: scanOne expects string. Binary cells (rare with a
-        // .js extension but possible) are skipped — scanOne would throw on
-        // a Uint8Array .replace() call.
-        const cell = bundle[k];
-        if (typeof cell !== 'string')
-            continue;
-        (await scanOne(cell));
-    }
-    return { added };
-}
-/**
  * framework-fixes-F4 (2026-05-12): helper for the "esbuild unavailable
  * or fatally errored" paths. Walks the bundle for ESM-shaped files and
  * gives each a JS-valid diagnostic shim as its module (`placeEmit`), which
@@ -4197,35 +3855,36 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     // What the passes so far staged to run. Every pass below stages files to
     // be read, and so do the observed reads above.
     const stagedToRun = new Set(Object.keys(bundle));
-    // 2.25 X.5-Z3: static-readFileSync asset prefetch. Scans every
-    //      bundle .js/.mjs/.cjs source for the canonical jsdom shape:
-    //
-    //        fs.readFileSync(path.resolve(__dirname, "<rel>.css"), …)
-    //
-    //      and pulls the matched asset into the bundle. Without this,
-    //      `default-stylesheet.css` (and similar runtime asset reads in
-    //      tldts, parse5, lookup-table packages, mime-db, etc.) ENOENT
-    //      at facet runtime even though the file is on VFS-disk + in
-    const assetAdd = (await addStaticReadFileAssets(vfs, cwd, bundle, budgetState));
+    // What a source names (static-fs-refs.ts), analyzed once per build: a
+    // staged file's by the manager's analysis of it (once per revision of the
+    // file, which its data plan reads too), else from its text.
+    const analyses = new Map();
+    const refsOf = (path, source) => {
+        let refs = analyses.get(path);
+        if (refs === undefined) {
+            refs = (async () => {
+                const known = staticRefs !== undefined && bundle[path] === source ? await staticRefs(path) : null;
+                if (known !== null)
+                    return known;
+                await pacer?.spend(source.length);
+                return findStaticFsReferences(source, '/' + path);
+            })();
+            analyses.set(path, refs);
+        }
+        return refs;
+    };
+    // 2.25 X.5-Z3, X.5-U: the assets staged modules read synchronously by a
+    //      path they spell out (STATIC_ASSET_READS). Without them jsdom's
+    //      `default-stylesheet.css` and ts-jest's `.ts-jest-digest` raised
+    //      ENOENT in the facet though the files were there.
+    await addStaticReads(vfs, bundle, budgetState, stagedJavaScript(bundle), refsOf, STATIC_ASSET_READS);
     phase('e.assets');
-    void assetAdd;
-    await paceAfterPass();
-    // 2.27 X.5-U: dotfile + SWC-shape readFileSync sentinel prefetch.
-    //      Sibling of `addStaticReadFileAssets` (X.5-Z3) — same call shape,
-    //      different match space. Covers the SWC/TS-compiled
-    //      `(0, fs_1.readFileSync)((0, path_1.resolve)(__dirname, "<rel>"))`
-    //      pattern AND filenames outside the Z3 ASSET_EXT whitelist
-    //      (dotfiles, no-extension sentinels, "digest/hash/version/sha/md5"
-    //      shapes). Motivating case: ts-jest's `.ts-jest-digest`. See
-    const dotAdd = (await addStaticReadFileDotfilesAndCompiled(vfs, cwd, bundle, budgetState));
-    phase('e.dotfiles');
-    void dotAdd;
     await paceAfterPass();
     // 2.30 G3 (runtime-pkg wave): bin-target sibling oversample. Pulls
     //      ALL files under the entry's package root (capped at 200) so
     //      bins like cowsay that readFileSync('cows/X.cow') at runtime
-    //      find their data files. Existing greedy/asset/dotfile passes
-    //      cover JS sources + a hardcoded ASSET_EXT list; this one
+    //      find their data files. Existing greedy/asset passes
+    //      cover JS sources + a hardcoded extension list; this one
     //      catches custom extensions (.cow, .pem, .ttf, .wasm bundled
     //      as data, etc.) without needing a per-pkg whitelist.
     //      No-op when entry isn't inside node_modules.
@@ -4247,33 +3906,17 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     phase('e.cwdProject');
     void cwdProjectAdd;
     await paceAfterPass();
-    // 2.35 shell compatibility: absolute-path readFileSync scanner.
-    //
-    // Pre-fix `node -e 'fs.readFileSync("/home/user/er.txt")'` returned
-    // ENOENT even when the file existed on the SqliteVFS (verified via
-    // `cat`/`ls`). Cause: buildPrefetchBundle's existing scanners
-    // (greedy main entries, addStaticReadFileAssets, dotfiles, bin
-    // siblings) all look at INSTALLED packages or relative-resolve
-    // patterns inside the bundle's source files. They never scan the
-    // user's ENTRY CODE for absolute-path string literals, so user
-    // files like /home/user/data.json or /tmp/cache.bin never reached
-    // the facet's __vfsBundle.
-    //
-    // Fix: scan entryCode + every JS source already in the bundle for
-    // any string literal that LOOKS like an absolute path (`/x/y/z`,
-    // optionally inside a readFileSync/createReadStream/open call).
-    // For each candidate that exists on the VFS (and isn't already in
-    // the bundle), pull it in within the byte budget.
-    //
-    // Defenses:
-    //   - Only path-shaped strings (starts with `/`, length 1-512).
-    //   - VFS file existence + non-dir check before adding.
-    //   - Byte/file budget guards identical to other passes.
-    //   - Skip paths under known-untrusted prefixes (`/proc`, `/sys`,
-    //     `/dev` — we don't have these mounts; they'd never resolve).
-    const absScanAdd = (await addEntryAbsPathReads(vfs, entryCode || '', bundle, budgetState));
+    // 2.35 shell compatibility: the absolute paths the entry code (`-e` or
+    //      stdin code; a script is a staged module) and the staged modules
+    //      spell as literals (STATIC_ABSOLUTE_LITERALS). The passes above look
+    //      at installed packages and __dirname-relative reads, never at the
+    //      user's own files by an absolute path, so `node -e
+    //      'fs.readFileSync("/home/user/x.txt")'` raised ENOENT for a file
+    //      `cat` reads.
+    const entryKey = stripLeadingSlashes(scriptPath?.startsWith('/') ? scriptPath : `${cwd.replace(/\/+$/, '')}/[eval]`);
+    const entrySource = entryCode && bundle[entryKey] === undefined ? [[entryKey, entryCode]] : [];
+    await addStaticReads(vfs, bundle, budgetState, [...entrySource, ...stagedJavaScript(bundle)], refsOf, STATIC_ABSOLUTE_LITERALS);
     phase('e.absPaths');
-    void absScanAdd;
     await paceAfterPass();
     // 2.5 The module pass (core bundle-cell-transform.ts): each ES module read
     //     for staging, TypeScript stripped or compiled, CommonJS's import()
@@ -4740,7 +4383,7 @@ export class FacetManager {
      * (bundleProfile, cwd, scriptPath, entryCode identity).
      *
      * Correctness watermark: the GLOBAL SqliteVFS revision. buildPrefetchBundle
-     * reads from paths that can lie anywhere in the VFS (addEntryAbsPathReads
+     * reads from paths that can lie anywhere in the VFS (STATIC_ABSOLUTE_LITERALS
      * pulls absolute-path literals like /tmp/x),
      * so a cwd-scoped subtree revision cannot guarantee invalidation. The
      * global revision bumps on ANY write, so the cache invalidates on every
@@ -5467,7 +5110,9 @@ export class FacetManager {
      */
     async _planResidentData(entry, vfsState, cwd, home, pacer, 
     /** The program's path, which its listing walks mounts for (nameLaunch). */
-    program) {
+    program, 
+    /** The program's own conditions, which its code's resolutions use. */
+    conditions = []) {
         if (!this.vfs || !this.filesystem)
             return { paths: [], storageBytes: 0, lazyReads: {} };
         const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
@@ -5536,6 +5181,7 @@ export class FacetManager {
             codeOnly: vfsState.codeOnly,
             refs,
             learned,
+            conditions,
             spend: (units) => pacer.spend(units),
         });
         trace(`planned ${plan.paths.length}`);
@@ -5761,7 +5407,7 @@ export class FacetManager {
             const refs = await this._staticRefsOf(vfs, cred, path, pacer);
             if (refs === null)
                 continue;
-            if (refs.exact.length + refs.listed.length + refs.patterns.length + refs.cwdRelative.length + refs.resolves.length > 0) {
+            if (refs.exact.length + refs.listed.length + refs.patterns.length + refs.cwdRelative.length + refs.resolves.length + refs.subpaths.length > 0) {
                 out.push(refs);
                 each?.(path, refs);
             }
@@ -8179,7 +7825,7 @@ export class FacetManager {
                     + `transforms ${JSON.stringify(vfsState.transforms ?? null)}, ES modules ${JSON.stringify(vfsState.esmSize ?? null)} (${pacer.chunks} turns so far)\n`);
             }
             const planStart = Date.now();
-            const planned = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer, opts.filename);
+            const planned = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer, opts.filename, opts.node?.conditions);
             if (this.debugEnabled) {
                 this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] data plan: ${planned.paths.length} paths in ${Date.now() - planStart} ms (${pacer.chunks} turns so far)\n`);
             }

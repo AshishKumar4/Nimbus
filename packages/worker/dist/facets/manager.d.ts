@@ -646,104 +646,6 @@ export declare function greedyAddMainEntries(vfs: LaunchFs, cwd: string, bundle:
  */
 export declare function speculativePackageDirs(vfs: LaunchFs, cwdStripped: string, bundle: Record<string, string | Uint8Array>): Promise<string[]>;
 /**
- * X.5-Z3: scan every JS source already in `bundle` for static
- * `fs.readFileSync(path.resolve(__dirname, "<rel>"))` shapes and pull
- * the matched asset files (.css / .html / .htm / .svg / .txt / .json)
- * into the bundle. The motivating case is jsdom's
- * `lib/jsdom/living/css/helpers/computed-style.js:16-19`, which loads
- * `default-stylesheet.css` at module-eval time:
- *
- *   const defaultStyleSheet = fs.readFileSync(
- *     path.resolve(__dirname, "../../../browser/default-stylesheet.css"),
- *     { encoding: "utf-8" },
- *   );
- *
- * The fs shim's `readFileSync` (`src/node-shims.ts:202-215`) consults
- * only `__vfsBundle` + `__vfsWrites`; runtime asset files that the
- * require-graph walker doesn't reach (it's bounded to .js/.mjs/.cjs)
- * are absent from the bundle and ENOENT at runtime. This helper closes
- * that gap as a sibling of `greedyAddMainEntries` (W2.6a) +
- * `transformEsmInBundle` (W3.5 Fix B).
- *
- * Pattern matched: literal-only, conservative.
- *
- *   fs.readFileSync(path.resolve(__dirname, "<rel>"), …)
- *   readFileSync(path.resolve(__dirname, "<rel>"), …)
- *
- * `<rel>` is a string literal (single, double, OR backtick — provided
- * the backtick form has no `${}` interpolation). Template-literal,
- * variable, and concatenation forms are **deliberately skipped** —
- * they're an unbounded class. Comment-stripped first to avoid
- * matching the pattern inside `//` / `/* *​/`.
- *
- * Returns the count of asset files added (for diagnostics). Errors
- * are swallowed: missing assets, unreadable VFS, and non-string
- * readFile inputs are silent skips.
- *
- * Same budget shape as `greedyAddMainEntries` — shares the same
- * VFS_BUNDLE_MAX_FILES / VFS_BUNDLE_MAX_BYTES caps via the
- * `budgetState` counter.
- */
-export declare function addStaticReadFileAssets(vfs: LaunchFs, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
-    totalBytes: number;
-    fileCount: number;
-}): Promise<{
-    added: number;
-}>;
-/**
- * X.5-U: scan every JS source already in `bundle` for static
- * readFileSync of a `__dirname`-relative dotfile or "digest/hash/version/
- * sha/md5"-shaped sentinel, AND match the SWC/TypeScript-compiled
- * `(0, fs_1.readFileSync)((0, path_1.resolve)(__dirname, "<rel>"))`
- * call shape that X.5-Z3's `addStaticReadFileAssets` regex misses.
- *
- * Motivating case: ts-jest@29.x's
- * `package/dist/legacy/config/config-set.js:105`:
- *
- *   var fs_1 = require("fs");
- *   var path_1 = require("path");
- *   exports.MY_DIGEST = (0, fs_1.readFileSync)(
- *     (0, path_1.resolve)(__dirname, '../../../.ts-jest-digest'), 'utf8');
- *
- * The install pipeline writes `.ts-jest-digest` to VFS correctly
- * (the namespace lists it). But the runtime
- * fs shim's readFileSync (`src/node-shims.ts:202-215`) consults
- * `__vfsBundle` only, and none of the existing bundle-population
- * passes — `prefetchForRequire` (require-graph), `greedyAddMainEntries`
- * (pkg main entries), `addStaticReadFileAssets` (X.5-Z3, restricted to
- * `.css|html|svg|txt|json` and to direct `path.resolve(__dirname,…)`)
- * — picks the dotfile up. Result: ENOENT at facet runtime even though
- * `fs.readdirSync` and `fs.statSync` both see the file via the manifest.
- *
- * Bounded heuristic: filename must EITHER start with `.` (dotfile) OR
- * match `/digest|hash|version|sha|md5/i` (small-metadata-sentinel
- * pattern). Without this gate, an unconstrained "match any
- * __dirname-relative readFileSync filename" would pull arbitrary large
- * runtime-loaded files (compiled WASM, JSON dictionaries, …) on
- * packages that read them via this exact shape — bundle bloat with no
- * payoff. The heuristic narrows to the ts-jest class. Trade-off
- * documented; future packages outside this shape can extend the
- * predicate.
- *
- * Quote chars supported: `'`, `"`, and backticks WITHOUT `${}`
- * interpolation. Dynamic specifiers (variable, concatenation,
- * interpolation) are deliberately skipped.
- *
- * Same budget shape as `greedyAddMainEntries` /
- * `addStaticReadFileAssets` — shares the same VFS_BUNDLE_MAX_FILES /
- * VFS_BUNDLE_MAX_BYTES caps via `budgetState`. Returns the count of
- * files added (for diagnostics).
- *
- * Errors are swallowed: missing assets, unreadable VFS, and
- * non-string readFile inputs are silent skips — matches Z3 posture.
- */
-export declare function addStaticReadFileDotfilesAndCompiled(vfs: LaunchFs, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
-    totalBytes: number;
-    fileCount: number;
-}): Promise<{
-    added: number;
-}>;
-/**
  * G3 (runtime-pkg wave) — bin-target sibling oversample.
  *
  * When the entry script lives at `node_modules/<pkg>/...` (typical
@@ -752,9 +654,9 @@ export declare function addStaticReadFileDotfilesAndCompiled(vfs: LaunchFs, cwd:
  * the static walker can't see (computed paths, package-internal
  * data files, .cow / .pem / .wasm / .ttf / etc.).
  *
- * Pre-fix: addStaticReadFileAssets only covers a hardcoded ASSET_EXT
- * whitelist (.css/.html/.htm/.svg/.txt/.json). Cowsay's `.cow` files
- * ENOENT at runtime.
+ * Pre-fix: the static asset reads (STATIC_ASSET_READS) cover only a
+ * hardcoded extension list (.css/.html/.htm/.svg/.txt/.json). Cowsay's
+ * `.cow` files ENOENT at runtime.
  *
  * Fix shape: when entry is inside a `node_modules/<pkg>` directory,
  * walk that pkg dir's contents and pull runtime package files under
@@ -1304,7 +1206,7 @@ export declare class FacetManager {
      * (bundleProfile, cwd, scriptPath, entryCode identity).
      *
      * Correctness watermark: the GLOBAL SqliteVFS revision. buildPrefetchBundle
-     * reads from paths that can lie anywhere in the VFS (addEntryAbsPathReads
+     * reads from paths that can lie anywhere in the VFS (STATIC_ABSOLUTE_LITERALS
      * pulls absolute-path literals like /tmp/x),
      * so a cwd-scoped subtree revision cannot guarantee invalidation. The
      * global revision bumps on ANY write, so the cache invalidates on every
