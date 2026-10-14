@@ -400,9 +400,10 @@ class Server extends EventEmitter {
       req.url = vReq.url;
 
       const res = new ServerResponse(vRes);
-      // Attach the done promise to vRes so consumers (tunnel, curl) can await async middleware
-      (vRes as VirtualResponseWithDone)._donePromise = res._donePromise;
       this.emit('request', req, res);
+      // A handler that has not ended the response yet (a timer, an await, async
+      // middleware) is waited for: whoever serves the request awaits this.
+      if (!res.finished) (vRes as VirtualResponseWithDone)._donePromise = res._donePromise;
 
       // Emit body data + end so middleware that reads the request body works
       queueMicrotask(() => {
