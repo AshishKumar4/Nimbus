@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (security): a public application URL is forwarded only to the
+  session its capability belongs to. Put under another session's id of the
+  same tenant, the capability was forwarded to that session, which woke
+  (or, for an id no session had, was created) only to refuse it; now the
+  router answers 404 and names no session.
 - Fixed: in a core workspace, a process that ends after the exec that
   started it (a background job) leaves the process table a minute after it
   ended, at the next exec, as in a hosted session. It stayed, with its
