@@ -1,5 +1,4 @@
 import type { ITerminal } from '../terminal/ITerminal.js';
-import type { HeldProcessWork } from '../../../runtime/session-process-supervisor.js';
 import { ProcessView, bindProcessView } from '../../../runtime/process-files.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import type { CommandInputStream, CommandOutputStream } from '../commands/types.js';
@@ -14,9 +13,8 @@ import { createShellState, restoreShellState, snapshotShellState, type ShellOpti
 import { shellBuiltins } from './builtins.js';
 import { continuationState } from './lexer.js';
 import { HistoryManager } from './history.js';
-import { JobTable } from './jobs.js';
-import { ProcessRegistry } from './ProcessRegistry.js';
-import { exitCodeForAbortSignal, signalAbortReason, type SignalAbortReason } from './signals.js';
+import { JobTable, type ShellProcesses } from './jobs.js';
+import { exitCodeForAbortSignal, signalAbortReason } from './signals.js';
 import { complete, type CompletionContext } from './completer.js';
 import { TerminalStdin } from './terminal-stdin.js';
 import { normalizeTerminalNewlines } from '../../../_shared/terminal.js';
@@ -102,25 +100,16 @@ export interface ExecuteOptions {
   runAs?: CommandRunAsHost;
 }
 
+/**
+ * The process a shell runs its lines as, a live entry of its process table.
+ * Each line is work held for it there (SessionProcessSupervisor.holdWork), so
+ * a kill of it stops the line, and each command counts as its work.
+ */
 export interface ShellCommandIdentity {
   pid: number;
   cred: VfsCred;
   setUmask(mask: number): void;
   runAs?: CommandRunAsHost;
-  /**
-   * A unit of process `pid`'s own work, while a command runs as it
-   * (interpreter CommandIdentity.beginWork; SessionProcessSupervisor.beginWork).
-   * Session-wide: every command counts for the pid it runs as, whichever
-   * shell runs it, so no command of a process goes uncounted.
-   */
-  accountWork?(pid: number): () => void;
-  /**
-   * A line this shell runs on process `pid`'s descriptors, until the
-   * returned function is called: `stop` ends it (SessionProcessSupervisor
-   * holdWork). What the pid bound is released after the line has closed
-   * what it opened, however the process ends.
-   */
-  holdWork?(pid: number, stop: (reason?: SignalAbortReason) => void, signal?: AbortSignal): HeldProcessWork;
 }
 
 export class Shell {
@@ -151,7 +140,8 @@ export class Shell {
   // New Sprint 2 components
   private interpreter: Interpreter;
   private historyManager: HistoryManager;
-  private processRegistry: ProcessRegistry;
+  /** The session's process table: this shell's process, its jobs, and the work of its lines. */
+  private readonly processes: ShellProcesses;
   /** The host's own processes, which `kill` reaches by pid (see setHostProcessSignals). */
   private hostProcessSignals: HostProcessSignals | undefined;
   private builtins: Map<string, BuiltinFn>;
@@ -192,26 +182,18 @@ export class Shell {
     readonly filesystem: NimbusFilesystemAuthority,
     registry: CommandRegistry,
     env: Record<string, string>,
-    processRegistry: ProcessRegistry,
+    processes: ShellProcesses,
     commandIdentity?: ShellCommandIdentity,
   ) {
     this.terminal = terminal;
     this.registry = registry;
-    this.state = createShellState(env, env['HOME'] ?? DEFAULT_HOME, new JobTable(processRegistry));
+    this.processes = processes;
+    this.state = createShellState(env, env['HOME'] ?? DEFAULT_HOME, new JobTable(processes));
+    // Without a host's identity, the shell is a process of its own in the table.
+    this.commandIdentity = commandIdentity ?? shellProcessIdentity(processes, this.state.getCwd());
     const shellEnv = this.state.env;
     if (!shellEnv['0']) shellEnv['0'] = 'nimbus-sh';
-    if (!shellEnv['$']) shellEnv['$'] = String(processRegistry.registerShell(this.state.getCwd()));
-    let defaultCred: VfsCred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
-    this.commandIdentity = commandIdentity ?? {
-      pid: Number(shellEnv['$']),
-      get cred() { return defaultCred; },
-      setUmask: (mask) => {
-        defaultCred = { ...defaultCred, umask: mask };
-      },
-    };
-
-    // Use shared process registry from Kernel
-    this.processRegistry = processRegistry;
+    shellEnv['$'] = String(this.commandIdentity.pid);
 
     // Initialize history manager
     this.historyManager = new HistoryManager(() => this.vfs, () => this.state.env.HOME ?? DEFAULT_HOME);
@@ -219,7 +201,6 @@ export class Shell {
     this.builtins = shellBuiltins({
       vfs: () => this.vfs,
       registry,
-      processRegistry,
       hostProcessSignals: () => this.hostProcessSignals,
       clearTerminal: () => this.terminal.clear(),
       history: () => this.historyManager.getAll(),
@@ -231,7 +212,6 @@ export class Shell {
       filesystem,
       registry: this.registry,
       builtins: this.builtins,
-      processRegistry: this.processRegistry,
       writeToTerminal: (text: string) => this.writeToTerminal(text),
       getAbortSignal: () => this.abortController?.signal ?? new AbortController().signal,
     });
@@ -256,9 +236,9 @@ export class Shell {
   }
 
   /**
-   * Let `kill` signal the host's processes: a numeric pid this shell's own
-   * registry does not hold is handed to `host`. Child-shell views read the
-   * shell they were forked from.
+   * Let `kill` signal the host's processes: a numeric pid that names none of
+   * this shell's jobs is handed to `host`. Child-shell views read the shell
+   * they were forked from.
    */
   setHostProcessSignals(host: HostProcessSignals): void {
     this.hostProcessSignals = host;
@@ -267,10 +247,6 @@ export class Shell {
   /** The host processes `kill` reaches, for a shell built alongside this one. */
   getHostProcessSignals(): HostProcessSignals | undefined {
     return this.hostProcessSignals;
-  }
-
-  getProcessRegistry(): ProcessRegistry {
-    return this.processRegistry;
   }
 
   getCwd(): string {
@@ -455,8 +431,8 @@ export class Shell {
     }
 
     const identity = this.resolveCommandIdentity(options?.commandContext);
-    const stopped = identity.holdWork?.(identity.pid, (reason) => abortController.abort(reason), abortController.signal);
-    const workSignal = stopped?.signal ?? abortController.signal;
+    const stopped = this.processes.holdWork(identity.pid, (reason) => abortController.abort(reason), abortController.signal);
+    const workSignal = stopped.signal;
     try {
       workSignal.throwIfAborted();
       const exitCode = await this.interpreter.executeLine(
@@ -482,7 +458,7 @@ export class Shell {
       await stderrStream.write(msg + '\n');
       return { stdout: stdoutBuf, stderr: stderrBuf, exitCode: 1 };
     } finally {
-      stopped?.();
+      stopped();
       this._executeDepth--;
       // Restore state
       if (options?.signal) {
@@ -501,14 +477,13 @@ export class Shell {
     }
   }
 
-  private resolveCommandIdentity(overrides: Record<string, unknown> | undefined): ShellCommandIdentity & { beginWork?(): () => void } {
+  private resolveCommandIdentity(overrides: Record<string, unknown> | undefined): ShellCommandIdentity & { beginWork(): () => void } {
     const pid = overrides?.['pid'];
     const cred = overrides?.['cred'];
     const setUmask = overrides?.['setUmask'];
     const resolvedPid = typeof pid === 'number' ? pid : this.commandIdentity.pid;
     const base = this.commandIdentity;
-    const accountWork = base.accountWork;
-    const holdWork = base.holdWork;
+    const processes = this.processes;
     return {
       pid: resolvedPid,
       // Read when used, as the shell's own identity is: the process's
@@ -518,10 +493,8 @@ export class Shell {
         ? (mask) => setUmask(mask)
         : this.commandIdentity.setUmask,
       runAs: this.commandIdentity.runAs,
-      accountWork,
-      ...(holdWork ? { holdWork } : {}),
       // Counted for the pid the command runs as, whichever it is.
-      ...(accountWork ? { beginWork: () => accountWork(resolvedPid) } : {}),
+      beginWork: () => processes.beginWork(resolvedPid),
     };
   }
 
@@ -537,11 +510,6 @@ export class Shell {
    * alongside the rc files.
    */
   async start(): Promise<void> {
-    // Register this shell instance as a process
-    // First shell gets PID 1, subsequent shells get PID 2, 3, etc.
-    const pid = this.processRegistry.registerShell(this.state.getCwd());
-    this.state.env['$'] = String(pid);
-
     this.bindTerminalInput();
 
     // The saved history, so Up recalls the last session's commands, as bash's does.
@@ -591,11 +559,10 @@ export class Shell {
       return;
     }
 
-    // Report the jobs that finished, then reap their processes (and any other zombie).
+    // Report the jobs that finished.
     for (const job of this.state.jobTable.collectDone()) {
       this.writeToTerminal(`[${job.id}] Done    ${job.command}\n`);
     }
-    this.processRegistry.collectZombies();
 
     const source = this.exitNoticeSource;
     if (source) {
@@ -1193,8 +1160,8 @@ export class Shell {
     this.terminal.write(COMMAND_START);
     let status: number | null = null;
     const identity = this.resolveCommandIdentity(undefined);
-    const stopped = identity.holdWork?.(identity.pid, (reason) => lineAbort.abort(reason), lineAbort.signal);
-    const workSignal = stopped?.signal ?? lineAbort.signal;
+    const stopped = this.processes.holdWork(identity.pid, (reason) => lineAbort.abort(reason), lineAbort.signal);
+    const workSignal = stopped.signal;
     try {
       workSignal.throwIfAborted();
       // Saved beside the line, which does not wait for it: a reader's recall
@@ -1214,7 +1181,7 @@ export class Shell {
       this.interpreter.setLastExitCode(status);
       if (!workSignal.aborted) this.writeToTerminal(`${error instanceof Error ? error.message : String(error)}\n`);
     } finally {
-      stopped?.();
+      stopped();
       this.terminalStdin?.close();
       this.terminalStdin = null;
       this.stdinLineBuffer = '';
@@ -1283,4 +1250,14 @@ function restoreEnvKeys(env: Record<string, string>, snapshot: Map<string, strin
     if (value === undefined) delete env[key];
     else env[key] = value;
   }
+}
+
+/** A shell's own process in `processes`, as the session's user, when no host gives it one. */
+function shellProcessIdentity(processes: ShellProcesses, cwd: string): ShellCommandIdentity {
+  const { pid } = processes.spawn('sh', ['sh'], cwd);
+  return {
+    pid,
+    get cred() { return processes.cred(pid); },
+    setUmask: (mask) => { processes.setUmask(pid, mask); },
+  };
 }

@@ -110,7 +110,7 @@ try {
   const asyncBox = await testBox({ harness, vfs: rawVfs });
   const shell = new Shell(
     new HeadlessTerminal(), remote, asyncBox.commands.registry,
-    { HOME: '/work', PATH: '/bin', USER: 'user' }, asyncBox.shell.getProcessRegistry(),
+    { HOME: '/work', PATH: '/bin', USER: 'user' }, asyncBox.workspace.processes,
     { pid: 91, cred: USER, setUmask() {}, runAs: async () => ({ status: 126, signal: null }) },
   );
   try {

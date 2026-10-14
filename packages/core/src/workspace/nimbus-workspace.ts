@@ -20,8 +20,7 @@
  * routed through it would silently acquire all of that.
  */
 
-import type { SignalAbortReason } from '../substrate/lifo/shell/signals.js';
-import { createKillCommand } from '../substrate/lifo/commands/system/kill.js';
+import { createKillCommand, type HostProcessSignals } from '../substrate/lifo/commands/system/kill.js';
 import { Kernel } from '../substrate/lifo/kernel/index.js';
 import { Shell } from '../substrate/lifo/shell/Shell.js';
 import type { ShellCommandIdentity } from '../substrate/lifo/shell/Shell.js';
@@ -51,7 +50,7 @@ import { PID_GEN_STRIDE, type ProcessEntry } from '../runtime/process-table.js';
 import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { ChildProcessManager, type ChildProcessHost } from '../runtime/child-process-manager.js';
 import { resolveWorkspaceChild } from './child-process-runner.js';
-import { exitCodeForSignal } from '../substrate/lifo/shell/signals.js';
+import { exitCodeForSignal, signalAbortReason, signalDisposition } from '../substrate/lifo/shell/signals.js';
 import type { FacetHost } from '../runtime/facet-host.js';
 import { runtimeEntrypoints, type RunnerFactory } from '../runtime/installed-runtimes.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
@@ -126,9 +125,8 @@ export interface NimbusWorkspaceOptions {
   /** Absent means headless: `.exec` captures output and nothing is drawn. */
   readonly terminal?: ITerminal;
   /**
-   * Who the shell acts as, when the host keeps a process table that can answer
-   * for it. Absent, commands run as uid 1000 with a umask of 022 and no
-   * process behind them, which is the Shell's own default.
+   * Who the shell acts as: a process of `processes`, which the host keeps
+   * alive. Absent, the workspace spawns the shell's process there.
    */
   readonly identity?: ShellCommandIdentity;
   /**
@@ -426,10 +424,24 @@ export class NimbusWorkspace {
       filesystem,
       registry,
       env,
-      kernel.processRegistry,
+      processes,
       identity,
     );
     if (options.cwd) shell.setCwd(options.cwd);
+    // Past a shell's own jobs, `kill` reaches by pid every process this
+    // workspace runs work for (another shell's job, an exec, a child
+    // process), and ends it by stopping that work; never the workspace's
+    // own shell, which outlives every line it runs. A host that runs
+    // processes of its own replaces this (Shell.setHostProcessSignals).
+    const processSignals: HostProcessSignals = {
+      isLive: (pid) => processes.runsWork(pid),
+      async signal(pid, signal) {
+        if (pid === shellProcessPid) return 'not-permitted';
+        if (signalDisposition(signal) !== 'terminate') return 'unsupported';
+        return processes.kill(pid, exitCodeForSignal(signal), signalAbortReason(signal)) ? 'delivered' : 'no-such-process';
+      },
+    };
+    shell.setHostProcessSignals(processSignals);
 
     // node/curl/wget are bound to THIS workspace's kernel: their localhost
     // traffic resolves through its port registry and loopback router, not the
@@ -439,8 +451,8 @@ export class NimbusWorkspace {
     registry.register('wget', createWgetCommand(kernel));
     registry.register('dig', createDigCommand(kernel));
     registry.register('ping', createPingCommand(kernel));
-    // kill signals this workspace's own processes and jobs (bash's builtin).
-    registry.register('kill', createKillCommand(kernel.processRegistry));
+    // kill as a program (`xargs kill`): no jobs, the processes the shell's reaches by pid.
+    registry.register('kill', createKillCommand(processSignals));
 
     const getHome = () => shell.getEnv().HOME ?? DEFAULT_HOME;
     const kernelFs = vfs.as(CRED_KERNEL);
@@ -650,15 +662,13 @@ export class NimbusWorkspace {
       new HeadlessTerminal(),
       this.filesystem,
       this.registry,
-      { ...this.shell.getEnv(), ...state.env, $: String(pid) },
-      this.kernel.processRegistry,
+      { ...this.shell.getEnv(), ...state.env },
+      processes,
       {
         pid,
         get cred() { return processes.cred(pid); },
         setUmask: (mask: number) => processes.setUmask(pid, mask),
         runAs: this.shell.getRunAsHost(),
-        accountWork: (worker: number) => processes.beginWork(worker),
-        holdWork: (worker: number, stop: (reason?: SignalAbortReason) => void, signal?: AbortSignal) => processes.holdWork(worker, stop, signal),
       },
     );
     const hostSignals = this.shell.getHostProcessSignals();
@@ -844,8 +854,6 @@ function workspaceShellIdentity(
       processes.setUmask(pid, mask);
     },
     runAs: runAsProcess,
-    accountWork: (worker: number) => processes.beginWork(worker),
-    holdWork: (worker: number, stop: (reason?: SignalAbortReason) => void, signal?: AbortSignal) => processes.holdWork(worker, stop, signal),
   });
 
   return commandIdentityFor(shellProcess.pid);

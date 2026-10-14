@@ -5,6 +5,36 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `test` and `[` run by name (`command test`, `find -exec test`)
+  evaluate as the shell's builtin does. `command test 1 -eq 2` returned 0,
+  and `command [ 1 -eq 1` ran without its closing `]`.
+- Fixed: `xargs` runs each command as a child process with stdin from
+  `/dev/null`, as GNU xargs does. `printf x | xargs -I {} cat /dev/zero |
+  head -c1` failed, and one command's `umask` reached the next. A command
+  that cannot run ends xargs with 127 (126 when it may not run) after GNU's
+  message, and one a signal ends, with 125.
+- Changed: a background job is a process of the session's process table, a
+  child of the shell that started it, as a fork makes one. `$!`, `jobs -l`
+  and `jobs -p` give that pid, the session's `ps` lists it, and a session's
+  destroy stops it. Its commands run as that process, so a `umask` in the
+  job stays the job's, as in bash.
+- Changed: `$$` in the session's terminal shell and in a script's shell
+  (`sh x.sh`) is that shell's pid in the session's table, as in bash; it
+  was 1. `kill` of the terminal shell's pid answers "Operation not
+  permitted".
+- Changed: `kill` run as a program (`xargs kill`, `sudo kill`) has no jobs,
+  as procps kill has none: `%2` answers "no such job". The shell's own
+  `kill %2` still ends job 2, and `kill PID` from any shell ends a job by
+  its pid.
+- Changed: `wait PID` for a process that is no job of this shell answers
+  "pid PID is not a child of this shell" with status 127, as bash does. It
+  waited for another shell's job.
+- Breaking (embedders): the lifo `ProcessRegistry` and
+  `Kernel.processRegistry` are gone. A `Shell` takes the session's process
+  table (`SessionProcessSupervisor`), `ShellCommandIdentity` drops
+  `accountWork` and `holdWork` (the shell counts and holds its work in that
+  table), and `createKillCommand(host)`, `createPsCommand(processes)` and
+  `createTopCommand(processes)` read it.
 - Fixed (Node `fs`): `fs.promises.realpath` and callback `fs.realpath`
   resolve symlinks and refuse a missing path with `ENOENT`, giving
   `realpathSync`'s answer; they returned the path as written. A link the

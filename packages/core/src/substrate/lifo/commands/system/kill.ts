@@ -1,19 +1,18 @@
 import type { Command, CommandContext, CommandOutputStream } from '../types.js';
-import type { ProcessRegistry } from '../../shell/ProcessRegistry.js';
-import { resolveJobSpec } from '../../shell/jobs.js';
+import { resolveJobSpec, type JobTable } from '../../shell/jobs.js';
 import { formatSignalList, parseSignalName, signalOperand } from '../../shell/signals.js';
 
-interface KillJob { id: number; command: string; pid?: number }
 const USAGE = 'kill: usage: kill [-s sigspec | -n signum | -sigspec] pid | jobspec ... or kill -l [sigspec]\n';
 
-/** What a host did with a signal `kill` handed it. */
-export type HostSignalResult = 'delivered' | 'no-such-process' | 'unsupported';
+/** What a host did with a signal `kill` handed it: `not-permitted` for a process no shell may signal (the session's own shell). */
+export type HostSignalResult = 'delivered' | 'no-such-process' | 'unsupported' | 'not-permitted';
 
 /**
- * Processes a host runs outside the shell's own registry, in the host's own
- * pid space: a hosted session's resident servers. `kill` consults it only for
- * a numeric operand the shell's registry does not hold; a jobspec always
- * names one of the shell's own jobs.
+ * The processes of the session's table a shell's `kill` reaches by pid, past
+ * its own jobs, and how a signal is delivered to each: a hosted session's
+ * resident servers, another shell's jobs. `kill` consults it only for a
+ * numeric operand that names none of the shell's jobs; a jobspec always
+ * names one of the shell's own.
  */
 export interface HostProcessSignals {
   /** Whether `pid` is a live process of this host. `kill -0` asks only this. */
@@ -26,10 +25,13 @@ export interface HostProcessSignals {
   signal(pid: number, signal: string, stderr: CommandOutputStream): Promise<HostSignalResult>;
 }
 
+/**
+ * `kill`, by the shell's builtin with its `jobs`, or as a program, which has
+ * no jobs and finds a jobspec names none (procps kill).
+ */
 export async function runKill(
   ctx: Pick<CommandContext, 'args' | 'stdout' | 'stderr'>,
-  processes: ProcessRegistry,
-  jobs: readonly KillJob[],
+  jobs: Pick<JobTable, 'list' | 'byPid' | 'signal'> | null,
   host?: HostProcessSignals,
 ): Promise<number> {
   const args = ctx.args;
@@ -60,49 +62,41 @@ export async function runKill(
   if (index === args.length) { await ctx.stderr.write(USAGE); return 2; }
   let status = 0;
   for (const target of args.slice(index)) {
-    let pid: number | undefined;
     const byJob = target.startsWith('%');
     if (byJob) {
-      const job = resolveJobSpec(target, jobs);
+      const job = resolveJobSpec(target, jobs?.list() ?? []);
       if (!job || job === 'ambiguous') {
         await ctx.stderr.write(`kill: ${target}: ${job === 'ambiguous' ? 'ambiguous job spec' : 'no such job'}\n`);
         status = 1;
         continue;
       }
-      pid = job.pid;
-    } else if (/^\d+$/.test(target)) pid = Number(target);
-    else { await ctx.stderr.write(`kill: \`${target}': not a pid or valid job spec\n`); status = 1; continue; }
-    const proc = pid === undefined ? undefined : processes.get(pid);
-    if (!proc || !byJob && proc.status === 'zombie') {
-      if (!byJob && pid !== undefined && host?.isLive(pid) === true) {
-        if (signal === '0') continue;
-        const result = await host.signal(pid, signal, ctx.stderr);
-        if (result === 'delivered') continue;
-        await ctx.stderr.write(result === 'unsupported'
-          ? `kill: (${pid}) - Operation not supported (SIG${signal} cannot be delivered to a hosted process)\n`
-          : `kill: (${pid}) - No such process\n`);
-        status = 1;
-        continue;
-      }
-      await ctx.stderr.write(`kill: (${pid ?? target}) - No such process\n`);
+      if (signal !== '0') jobs?.signal(job, signal);
+      continue;
+    }
+    if (!/^\d+$/.test(target)) { await ctx.stderr.write(`kill: \`${target}': not a pid or valid job spec\n`); status = 1; continue; }
+    const pid = Number(target);
+    const job = jobs?.byPid(pid);
+    if (job && job.status !== 'done') {
+      if (signal !== '0') jobs?.signal(job, signal);
+      continue;
+    }
+    if (host?.isLive(pid) === true) {
+      if (signal === '0') continue;
+      const result = await host.signal(pid, signal, ctx.stderr);
+      if (result === 'delivered') continue;
+      await ctx.stderr.write(result === 'unsupported'
+        ? `kill: (${pid}) - Operation not supported (SIG${signal} cannot be delivered to a hosted process)\n`
+        : result === 'not-permitted' ? `kill: (${pid}) - Operation not permitted\n` : `kill: (${pid}) - No such process\n`);
       status = 1;
       continue;
     }
-    if (signal === '0') continue;
-    if (!processes.kill(proc.pid, signal)) {
-      await ctx.stderr.write(`kill: (${proc.pid}) - Operation not permitted (cannot kill shell)\n`);
-      status = 1;
-    }
+    await ctx.stderr.write(`kill: (${pid}) - No such process\n`);
+    status = 1;
   }
   return status;
 }
 
-export function createKillCommand(processes: ProcessRegistry, host?: HostProcessSignals): Command {
-  return async (ctx) => {
-    const jobs = new Map<number, KillJob>();
-    for (const proc of processes.getBackgroundJobs()) {
-      if (proc.jobId !== undefined) jobs.set(proc.jobId, { id: proc.jobId, command: proc.args.join(' '), pid: proc.pid });
-    }
-    return await runKill(ctx, processes, [...jobs.values()], host);
-  };
+/** `kill` as a program (`xargs kill`, `sudo kill`): it reaches the processes `host` does. */
+export function createKillCommand(host?: HostProcessSignals): Command {
+  return async (ctx) => await runKill(ctx, null, host);
 }
