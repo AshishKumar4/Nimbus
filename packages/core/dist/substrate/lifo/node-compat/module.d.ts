@@ -53,10 +53,42 @@ export declare class Module {
  * map's built-ins alone.
  */
 export declare function createModuleShim(moduleMap: Record<string, () => unknown>, createRequire?: (filename: string | URL) => RequireFunction): {
-    Module: typeof Module;
+    Module: {
+        new (id?: string, parent?: Module | null): {
+            id: string;
+            filename: string;
+            exports: unknown;
+            parent: Module | null;
+            children: Module[];
+            loaded: boolean;
+            paths: string[];
+            require(_id: string): unknown;
+        };
+        createRequire: (filename: string | URL) => RequireFunction;
+        _cache: Record<string, unknown>;
+        builtinModules: string[];
+        isBuiltin: typeof isBuiltin;
+        _resolveFilename(request: string): string;
+    };
     builtinModules: string[];
     isBuiltin: (specifier: string) => boolean;
     createRequire: (filename: string | URL) => RequireFunction;
-    default: typeof Module;
+    default: {
+        new (id?: string, parent?: Module | null): {
+            id: string;
+            filename: string;
+            exports: unknown;
+            parent: Module | null;
+            children: Module[];
+            loaded: boolean;
+            paths: string[];
+            require(_id: string): unknown;
+        };
+        createRequire: (filename: string | URL) => RequireFunction;
+        _cache: Record<string, unknown>;
+        builtinModules: string[];
+        isBuiltin: typeof isBuiltin;
+        _resolveFilename(request: string): string;
+    };
 };
 //# sourceMappingURL=module.d.ts.map
