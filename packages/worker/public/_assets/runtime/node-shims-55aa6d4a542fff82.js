@@ -3573,8 +3573,8 @@ const __fsMod = (() => {
    * that the path is there, and the retirement of any revision stamp the old
    * content carried. One place, because every sync mutation owes all three.
    */
-  function _parkWrite(k, cell, mode = 0o666) {
-    _noteCreation(k, mode);
+  function _parkWrite(k, cell, mode = 0o666, absent) {
+    _noteCreation(k, mode, absent);
     _ownWriteTimes[k] = Date.now();
     __vfsWrites[k] = cell;
     if (__vfsBundle) __vfsBundle[k] = cell;
@@ -3593,7 +3593,7 @@ const __fsMod = (() => {
    * never staged may exist at the authority, owned by someone else. Each is
    * kept with the mode the call that made it asked for (before the umask).
    */
-  function _noteCreation(k, mode = 0o666) {
+  function _noteCreation(k, mode = 0o666, absent) {
     if (typeof __resident === "undefined") return;
     // A file it made is still that file, and a new write to it is not yet the session's.
     const made = _nsOwn.get(k);
@@ -3601,7 +3601,8 @@ const __fsMod = (() => {
     const absPath = "/" + k;
     // Known absent: the namespace names everything this credential can see,
     // except on a mount where the launch did not list it, which is unknown.
-    if (_statLadder(absPath) !== undefined || _nsUnlisted(absPath, true, false) !== null) return;
+    // `absent`: what the write's own check found just now (_ensureWritable).
+    if (absent === undefined ? _statLadder(absPath) !== undefined || _nsUnlisted(absPath, true, false) !== null : !absent) return;
     _nsOwnSet(k, "file", { mode, landing: true });
   }
   /**
@@ -6428,7 +6429,12 @@ const __fsMod = (() => {
     if (stat !== undefined && !_modeAllows(stat, 4)) throw _fsErr("EACCES", syscall, p);
   }
 
-  /** `live`: the caller asks the authority next, so a path the namespace cannot judge is left to it. */
+  /**
+   * `live`: the caller asks the authority next, so a path the namespace
+   * cannot judge is left to it. Answers whether nothing is there (the
+   * namespace knows): true for a create, false for a file there, undefined
+   * when it cannot say.
+   */
   function _ensureWritable(absPath, syscall, p, live, dest) {
     _ensureAncestorsTraversable(absPath, syscall, p, dest);
     const denial = _denialAt(absPath);
@@ -6438,12 +6444,12 @@ const __fsMod = (() => {
     const stat = _statLadder(absPath);
     if (stat !== undefined) {
       if (!_modeAllows(stat, 2)) throw _fsErr("EACCES", syscall, p, dest);
-      return;
+      return false;
     }
     // Not known to be absent: on a mount, in a directory the launch did not list.
     const mount = _nsUnlisted(absPath, true, false);
     if (mount !== null) {
-      if (live) return;
+      if (live) return undefined;
       throw _nsUnlistedErr(mount, syscall, p, "fs.promises." + (syscall === "open" ? "writeFile" : syscall), dest);
     }
     // Nothing there: a create, judged by the parent the namespace describes.
@@ -6453,7 +6459,7 @@ const __fsMod = (() => {
     if (parentStat !== undefined) {
       if (!parentStat.isDirectory()) throw _fsErr("ENOTDIR", syscall, p, dest);
       if (!_modeAllows(parentStat, 3)) throw _fsErr("EACCES", syscall, p, dest);
-      return;
+      return true;
     }
 
     throw _fsErr("ENOENT", syscall, p, dest);
@@ -6571,9 +6577,9 @@ const __fsMod = (() => {
    */
   function _parkWholeWrite(p, data, live, mode) {
     const absPath = _resolveFollow(p, "open");
-    _ensureWritable(absPath, "open", p, live);
+    const absent = _ensureWritable(absPath, "open", p, live);
     const k = _strip(absPath);
-    _parkWrite(k, _ownedCell(data), mode);
+    _parkWrite(k, _ownedCell(data), mode, absent);
     _parkedPartial.delete(k);
     return k;
   }
@@ -6592,7 +6598,7 @@ const __fsMod = (() => {
   function _appendLocal(p, data, opts, acknowledged) {
     const mode = _createMode(opts, "open", p);
     const absPath = _resolveFollow(p, "open");
-    _ensureWritable(absPath, "open", p);
+    const absent = _ensureWritable(absPath, "open", p);
     const k = _strip(absPath);
     const hadPendingWrite = Object.prototype.hasOwnProperty.call(__vfsWrites, k);
     const wholeBefore = hadPendingWrite && _parkedPartial.get(k) !== __vfsWriteGenerations[k];
@@ -6615,7 +6621,7 @@ const __fsMod = (() => {
       // Both strings — string concat.
       cell = existing + piece;
     }
-    _parkWrite(k, cell, mode);
+    _parkWrite(k, cell, mode, absent);
     // Bundle content is only a sync-view cache and may be stale: only a
     // pending whole write of this process's owns the cell's prefix.
     if (wholeBefore) _parkedPartial.delete(k);
