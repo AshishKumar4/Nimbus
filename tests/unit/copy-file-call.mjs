@@ -188,10 +188,10 @@ await check('a source repointed while its lookup awaits a mount is refused, not 
   user.symlink('/m/src', 'home/user/alias');
   release.resolve();
   const result = await pending;
-  const dst = user.stat('home/user/dst') === null ? null : text(user.readFile('home/user/dst'));
+  const dst = user.exists('home/user/dst') ? text(user.readFile('home/user/dst')) : null;
   assert.notEqual(dst, 'hidden', 'the row the mount covers is never copied');
   assert.equal(result.ok, false, `refused, not copied (dst ${dst})`);
-  assert.equal(result.error?.code, 'ESTALE');
+  assert.equal(result.error?.code, 'ESTALE', String(result.error?.message));
 });
 
 // ── over a file there: its write is authorized by its own mode, then the copy's mode is set ──
@@ -216,8 +216,8 @@ await check('a mounted source over a read-only file here: EACCES, the file as it
   user.writeFile('home/user/t4', 'old');
   user.chmod('home/user/t4', 0o400);
   const result = await wave(files, user, [{ call: 'copyFile', path: 'home/user/t4', from: 'shared/rw' }]);
-  assert.equal(result.ok, false);
-  assert.equal(result.error?.code, 'EACCES');
+  assert.equal(result.ok, false, 'refused');
+  assert.equal(result.error?.code, 'EACCES', String(result.error?.message));
   assert.deepEqual([text(raw.as(CRED_KERNEL).readFile('home/user/t4')), user.stat('home/user/t4').mode & 0o7777], ['old', 0o400]);
 });
 
