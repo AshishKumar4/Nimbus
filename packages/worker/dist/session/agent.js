@@ -30,6 +30,8 @@ const MAX_TOOL_RESULT_CHARS = 8000;
 const STREAMING_TEXT_FLUSH_MS = 500;
 const STREAMING_TEXT_FLUSH_BYTES = 1024;
 const activeAssistantMessages = new WeakMap();
+/** The user messages whose turns are running in this isolate. */
+const activeTurns = new WeakMap();
 const SYSTEM_PROMPT = [
     'You are Nimbus Agent, an autonomous software builder inside a persistent Nimbus cloud dev sandbox.',
     'Your job is to help the user build, change, debug, run, and preview software end-to-end in this workspace.',
@@ -254,15 +256,20 @@ async function agentChat(self, request, url) {
         }, 409);
     }
     const turn = await changeConversation(self, async (messages, generation) => {
+        recoverOrphanedTurns(self, messages);
         let userMessage;
         if (retry) {
             // Re-run the last user turn: drop the trailing assistant answer (if
             // any) and stream a fresh one. No duplicate user message is stored.
-            if (messages[messages.length - 1]?.role === 'assistant')
-                messages.pop();
-            const last = messages[messages.length - 1];
+            const answer = messages[messages.length - 1]?.role === 'assistant' ? messages[messages.length - 1] : null;
+            const last = messages[messages.length - (answer === null ? 1 : 2)];
             if (!last || last.role !== 'user')
-                return null;
+                return json({ error: 'nothing to retry', code: 'E_AGENT_NOTHING_TO_RETRY' }, 400);
+            // Its answer is still being written: a second would stand beside it.
+            if (activeTurns.get(self)?.has(last.id))
+                return json({ error: 'the turn is still running', code: 'E_AGENT_TURN_RUNNING' }, 409);
+            if (answer !== null)
+                messages.pop();
             userMessage = last;
         }
         else {
@@ -270,26 +277,29 @@ async function agentChat(self, request, url) {
             messages.push(userMessage);
         }
         await saveMessages(self, messages);
+        const running = activeTurns.get(self) ?? new Set();
+        activeTurns.set(self, running.add(userMessage.id));
         return { generation, messages: structuredClone(messages), userMessage };
     });
-    if (turn === null)
-        return json({ error: 'nothing to retry', code: 'E_AGENT_NOTHING_TO_RETRY' }, 400);
+    if (turn instanceof Response)
+        return turn;
     if (body?.stream === false) {
         return agentChatJson(self, turn);
     }
     return agentChatStream(self, turn);
 }
-async function agentChatJson(self, { generation, messages }) {
+async function agentChatJson(self, turn) {
+    const { messages } = turn;
     try {
         const result = await runAiSdkTurn(self, messages);
         const assistantMessage = makeMessage('assistant', result.text || 'Done.');
         assistantMessage.parts = result.parts;
         assistantMessage.status = 'complete';
-        const conversation = await checkpointTurn(self, generation, assistantMessage);
+        const conversation = await checkpointTurn(self, turn, assistantMessage);
         return json({
             ok: true,
             message: assistantMessage,
-            messages: trimMessagesForClient(conversation ?? []),
+            messages: trimMessagesForClient(conversation),
         });
     }
     catch (e) {
@@ -299,8 +309,12 @@ async function agentChatJson(self, { generation, messages }) {
             messages: trimMessagesForClient(messages),
         }, 502);
     }
+    finally {
+        endTurn(self, turn);
+    }
 }
-function agentChatStream(self, { generation, messages, userMessage }) {
+function agentChatStream(self, turn) {
+    const { messages, userMessage } = turn;
     const headers = new Headers();
     headers.set('Cache-Control', 'no-store');
     headers.set('Content-Type', 'application/x-ndjson; charset=utf-8');
@@ -344,7 +358,7 @@ function agentChatStream(self, { generation, messages, userMessage }) {
             });
             const enqueueStreamingPersistence = () => {
                 const message = assistantSnapshot('streaming');
-                const write = persistenceQueue.then(async () => { await checkpointTurn(self, generation, message); });
+                const write = persistenceQueue.then(async () => { await checkpointTurn(self, turn, message); });
                 persistenceQueue = write.catch((error) => {
                     persistenceError ??= error;
                 });
@@ -386,7 +400,7 @@ function agentChatStream(self, { generation, messages, userMessage }) {
                 clearTextFlush();
                 await persistenceQueue;
                 const assistantMessage = assistantSnapshot('interrupted', terminalError === undefined ? { aborted: true } : { error: terminalError });
-                return (await checkpointTurn(self, generation, assistantMessage)) ?? [];
+                return checkpointTurn(self, turn, assistantMessage);
             };
             emit({ type: 'start', messages: trimMessagesForClient(messages) });
             emit({ type: 'message', message: userMessage });
@@ -448,11 +462,11 @@ function agentChatStream(self, { generation, messages, userMessage }) {
                     parts: structuredClone(parts),
                     status: 'complete',
                 };
-                const conversation = await checkpointTurn(self, generation, assistantMessage);
+                const conversation = await checkpointTurn(self, turn, assistantMessage);
                 emit({
                     type: 'done',
                     message: assistantMessage,
-                    messages: trimMessagesForClient(conversation ?? []),
+                    messages: trimMessagesForClient(conversation),
                 });
             }
             catch (e) {
@@ -475,6 +489,7 @@ function agentChatStream(self, { generation, messages, userMessage }) {
                 activeMessages.delete(assistantMessageId);
                 if (activeMessages.size === 0)
                     activeAssistantMessages.delete(self);
+                endTurn(self, turn);
                 if (!cancelled) {
                     try {
                         controller.close();
@@ -900,17 +915,7 @@ function cookieSecret(self) {
 }
 async function loadMessages(self) {
     return changeConversation(self, async (messages) => {
-        const activeMessages = activeAssistantMessages.get(self);
-        let recovered = false;
-        for (const message of messages) {
-            if (message.role !== 'assistant' || message.status !== 'streaming' || activeMessages?.has(message.id))
-                continue;
-            message.status = 'interrupted';
-            if (message.parts)
-                interruptRunningTools(message.parts, 'Interrupted before completion');
-            recovered = true;
-        }
-        if (recovered) {
+        if (recoverOrphanedTurns(self, messages)) {
             await saveMessages(self, messages);
             // TODO(agent-turn-forensics): immediately persist an agent-turn-orphaned
             // recovery record (cause reset/interrupted, dataLoss true) once the
@@ -918,6 +923,32 @@ async function loadMessages(self) {
         }
         return messages;
     });
+}
+/**
+ * Mark interrupted, in `messages`, each answer still streaming whose turn
+ * is not running in this isolate (the object restarted under it), its
+ * running tools settled: what a model reads of history has no tool call
+ * left unanswered. Whether any was.
+ */
+function recoverOrphanedTurns(self, messages) {
+    const activeMessages = activeAssistantMessages.get(self);
+    let recovered = false;
+    for (const message of messages) {
+        if (message.role !== 'assistant' || message.status !== 'streaming' || activeMessages?.has(message.id))
+            continue;
+        message.status = 'interrupted';
+        if (message.parts)
+            interruptRunningTools(message.parts, 'Interrupted before completion');
+        recovered = true;
+    }
+    return recovered;
+}
+/** `turn` no longer running. */
+function endTurn(self, turn) {
+    const running = activeTurns.get(self);
+    running?.delete(turn.userMessage.id);
+    if (running?.size === 0)
+        activeTurns.delete(self);
 }
 /**
  * The conversation's changes, one at a time per session: each reads the
@@ -939,12 +970,13 @@ function changeConversation(self, change) {
 /**
  * A turn's message, as it is now, into the conversation it started in: its
  * row, by its id, changed or added. Nothing, when the conversation was
- * cleared since (null). The conversation after it, otherwise.
+ * cleared since, or no longer holds the question it answers (trimmed off
+ * its start). The conversation, after it.
  */
-function checkpointTurn(self, generation, message) {
-    return changeConversation(self, async (messages, current) => {
-        if (current !== generation)
-            return null;
+function checkpointTurn(self, turn, message) {
+    return changeConversation(self, async (messages, generation) => {
+        if (generation !== turn.generation || !messages.some((stored) => stored.id === turn.userMessage.id))
+            return messages;
         upsertStoredMessage(messages, message);
         await saveMessages(self, messages);
         return messages;
