@@ -23,6 +23,23 @@ for (const [label, source] of [
   assert.ok(paths(refs(source, FILE).exact).includes('/p/node_modules/pkg/data/x.json'), label);
 }
 
+// A name given a path function directly is that function.
+for (const [label, source] of [
+  ['require member', `const fs = require('fs'); const resolve = require('path').resolve; fs.readFileSync(resolve(__dirname, '../data/x.json'));`],
+  ['binding member', `const fs = require('fs'); const path = require('path'); const join = path.join; fs.readFileSync(join(__dirname, '..', 'data', 'x.json'));`],
+  ['posix member', `const fs = require('fs'); const resolve = require('path').posix.resolve; fs.readFileSync(resolve(__dirname, '../data/x.json'));`],
+]) {
+  assert.deepEqual(syncPaths(refs(source, FILE).exact), ['/p/node_modules/pkg/data/x.json'], label);
+}
+
+// Absolute paths spelled as literals, wherever they are: what a URL string
+// or a comment holds is not one.
+assert.deepEqual(
+  refs(`const home = "http://example.com"; const p = '/home/user/data/x.txt'; // '/etc/commented'
+    module.exports = { t: \`/opt/t.txt\`, spaced: '/srv/a b', rel: 'srv/x', dyn: \`/opt/\${x}\` };`, FILE).literals,
+  ['/home/user/data/x.txt', '/opt/t.txt'],
+);
+
 // A sync read is one however its callee is spelled: a bracketed name, an
 // optional call, a parenthesized one.
 for (const [label, source] of [
@@ -129,12 +146,18 @@ assert.deepEqual(refs('this is not javascript {{{', FILE).exact, []);
     fs.openSync('/opt/data/ro.bin', 'r');
     fs.openSync('/opt/data/log.txt', 'a');
     fs.openSync('/opt/data/out.txt', 'w');
+    var fs_1 = require("fs"); exports.D = (0, fs_1.readFileSync)((0, path_1.resolve)(__dirname, ".digest"), "utf8");
+    const home = "http://example.com"; module.exports = { p: '/home/user/y.txt', t: \`/opt/t.txt\`, dyn: \`/opt/\${x}\` };
     x = ['astro/runtime/client/entry.js'];` + pad, FILE);
   assert.ok(paths(big.exact).includes('/p/node_modules/pkg/data/x.json'), JSON.stringify(big.exact));
   assert.ok(paths(big.exact).includes('/p/node_modules/pkg/runtime/entry.js'), JSON.stringify(big.exact));
   assert.deepEqual(big.listed, ['/etc/app/templates']);
   assert.deepEqual(big.resolves.map((r) => r.spec), ['astro/runtime/client/entry.js']);
-  assert.deepEqual(syncPaths(big.exact).sort(), ['/opt/data/big.dat', '/opt/data/ro.bin', '/opt/data/text.dat']);
+  // A join of __dirname is a synchronous read as readFileSync's first argument, plainly or as SWC calls it.
+  assert.deepEqual(syncPaths(big.exact).sort(),
+    ['/opt/data/big.dat', '/opt/data/ro.bin', '/opt/data/text.dat', '/p/node_modules/pkg/data/x.json', '/p/node_modules/pkg/lib/.digest']);
+  assert.deepEqual(big.literals.sort(), ['/etc/app/templates', '/home/user/y.txt', '/opt/data/big.dat', '/opt/data/log.txt',
+    '/opt/data/out.txt', '/opt/data/ro.bin', '/opt/data/text.dat', '/opt/t.txt']);
   assert.ok(paths(big.exact).includes('/opt/data/log.txt') && paths(big.exact).includes('/opt/data/out.txt'));
 }
 

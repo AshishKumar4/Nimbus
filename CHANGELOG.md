@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `node` stages what its code reads by a path it spells out even
+  after a URL string on the same line. `node -e 'const u =
+  "http://example.com"; fs.readFileSync("/home/user/data/x.txt")'` raised
+  EAGAIN for a file outside the working directory. A read through a name
+  given a path function (`const resolve = require('path').resolve`) is
+  found as one too.
 - Fixed: `node`'s `fs.readFileSync` returns a file that opens with a UTF-8
   byte order mark with the mark, as Node does, wherever the launch staged
   it from: a working-tree file, a required module or JSON file, an

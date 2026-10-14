@@ -49,6 +49,12 @@ export interface StaticFsRefs {
   cwdRelative: PathRef[];
   /** `require.resolve(spec)` / `createRequire(..).resolve(spec)` from `from`. */
   resolves: { from: string; spec: string }[];
+  /**
+   * Absolute paths spelled as string literals anywhere (ABSOLUTE_LITERAL),
+   * named by no call this analysis follows: a guess at a file the module
+   * reads, which a launch stages when it is there.
+   */
+  literals: string[];
 }
 
 const PATH_MODULES = new Set(['path', 'node:path', 'path/posix', 'node:path/posix']);
@@ -77,6 +83,10 @@ function mergeRefs(list: readonly PathRef[]): PathRef[] {
 }
 /** `pkg/sub/file.ext` or `@scope/pkg/sub/file.ext`: a bare specifier naming a file. */
 const BARE_SUBPATH = /^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*(?:\/[\w.@-]+)+\.[a-z0-9]+$/i;
+/** `/x/y.z`: an absolute path of name characters, no wider than a literal a path is spelled as. */
+const ABSOLUTE_LITERAL = /^\/[\w.\-/]{1,510}$/;
+/** What `require('path').<name>` is when it is the module again, not one of its functions. */
+const PATH_NAMESPACES = new Set(['default', 'posix']);
 
 function parseAny(source: string): AstNode | null {
   for (const sourceType of ['module', 'script'] as const) {
@@ -118,7 +128,7 @@ function isNode(value: unknown): value is AstNode {
  */
 export function findStaticFsReferences(source: string, filename: string): StaticFsRefs {
   if (source.length > STATIC_AST_MAX_SOURCE) return scanStaticFsTokens(source, filename);
-  const refs: StaticFsRefs = { exact: [], listed: [], patterns: [], cwdRelative: [], resolves: [] };
+  const refs: StaticFsRefs = { exact: [], listed: [], patterns: [], cwdRelative: [], resolves: [], literals: [] };
   const ast = parseAny(source);
   if (ast === null) return refs;
   const file = normalize(filename);
@@ -130,6 +140,9 @@ export function findStaticFsReferences(source: string, filename: string): Static
   const inits = new Map<string, AstNode | null>();
   const pathBindings = new Set<string>();
   const pathFunctions = new Map<string, string>();
+  // `const resolve = path.resolve`: a path function's own name, known to be
+  // one once every binding of the path module is.
+  const aliases: { name: string; method: string; init: AstNode; object: string | null }[] = [];
   const resolvers = new Set<string>();
   const bind = (name: string, init: AstNode | null) => {
     inits.set(name, inits.has(name) ? null : init);
@@ -158,7 +171,9 @@ export function findStaticFsReferences(source: string, filename: string): Static
       const init = (node.init as AstNode | null) ?? null;
       if (id.type === 'Identifier') {
         bind(String(id.name), init);
-        if (requiresPath(init)) pathBindings.add(String(id.name));
+        if (init?.type === 'MemberExpression' && !init.computed && init.property.type === 'Identifier' && !PATH_NAMESPACES.has(init.property.name)) {
+          aliases.push({ name: String(id.name), method: init.property.name, init, object: init.object.type === 'Identifier' ? init.object.name : null });
+        } else if (requiresPath(init)) pathBindings.add(String(id.name));
         if (init && init.type === 'CallExpression' && calleeName(init.callee) === 'createRequire') resolvers.add(String(id.name));
       } else if (id.type === 'ObjectPattern' && requiresPath(init)) {
         for (const prop of id.properties as AstNode[]) {
@@ -181,6 +196,9 @@ export function findStaticFsReferences(source: string, filename: string): Static
       }
     }
   });
+  for (const alias of aliases) {
+    if (requiresPath(alias.init) || (alias.object !== null && pathBindings.has(alias.object))) pathFunctions.set(alias.name, alias.method);
+  }
 
   /** The path-module function a callee denotes: "join", "resolve", "dirname", or null. */
   function pathCall(callee: AstNode): string | null {
@@ -191,7 +209,7 @@ export function findStaticFsReferences(source: string, filename: string): Static
     const method = String((c.property as AstNode).name);
     let obj = c.object as AstNode;
     if (obj.type === 'MemberExpression' && !obj.computed
-      && ['default', 'posix'].includes(String((obj.property as AstNode).name))) obj = obj.object as AstNode;
+      && PATH_NAMESPACES.has(String((obj.property as AstNode).name))) obj = obj.object as AstNode;
     if (obj.type === 'Identifier' && pathBindings.has(String(obj.name))) return method;
     if (obj.type === 'CallExpression' && requiresPath(obj)) return method;
     return null;
@@ -284,6 +302,12 @@ export function findStaticFsReferences(source: string, filename: string): Static
       if (typeof node.value === 'string' && BARE_SUBPATH.test(node.value)) {
         refs.resolves.push({ from: dir, spec: node.value });
       }
+      if (typeof node.value === 'string' && ABSOLUTE_LITERAL.test(node.value)) refs.literals.push(normalize(node.value));
+      return;
+    }
+    if (node.type === 'TemplateLiteral') {
+      const text = node.expressions.length === 0 ? node.quasis[0]?.value.cooked : undefined;
+      if (typeof text === 'string' && ABSOLUTE_LITERAL.test(text)) refs.literals.push(normalize(text));
       return;
     }
     if (node.type === 'NewExpression') {
@@ -356,6 +380,7 @@ export function findStaticFsReferences(source: string, filename: string): Static
   refs.exact = mergeRefs(refs.exact);
   refs.listed = [...new Set(refs.listed)];
   refs.cwdRelative = mergeRefs(refs.cwdRelative);
+  refs.literals = [...new Set(refs.literals)];
   return refs;
 }
 
@@ -372,17 +397,31 @@ export const STATIC_AST_MAX_SOURCE = 1024 * 1024;
 /**
  * The same references, found in a token stream with O(1) memory: the
  * literal shapes that need no bindings. `join|resolve(__dirname | import.meta.
- * dirname, 'lit', ...)`, `new URL('lit', import.meta.url)`, a read call on an
- * absolute literal, and package-subpath literals. What folding through
- * bindings would add is not found here.
+ * dirname, 'lit', ...)` (a synchronous read when it is readFileSync's first
+ * argument), `new URL('lit', import.meta.url)`, a read call on an absolute
+ * literal, and package-subpath and absolute-path literals. What folding
+ * through bindings would add is not found here.
  */
 export function scanStaticFsTokens(source: string, filename: string): StaticFsRefs {
-  const refs: StaticFsRefs = { exact: [], listed: [], patterns: [], cwdRelative: [], resolves: [] };
+  const refs: StaticFsRefs = { exact: [], listed: [], patterns: [], cwdRelative: [], resolves: [], literals: [] };
   const file = normalize(filename);
   const dir = dirnameOf(file);
   const recent: { type: string; value: unknown }[] = [];
   const at = (back: number) => recent[recent.length - 1 - back];
   const isPunct = (t: { type: string } | undefined, label: string) => t !== undefined && t.type === label;
+  /** The callee whose last token is `back` tokens back (`f`, `a.b.f`, `(0, a.f)`): its name, and where the token before it is. */
+  const callee = (back: number): { name: string; next: number } | null => {
+    const last = at(back);
+    if (isPunct(last, ')')) {
+      const name = at(back + 1);
+      return name?.type === 'name' && isPunct(at(back + 2), '.') && at(back + 3)?.type === 'name' && isPunct(at(back + 4), ',')
+        && at(back + 5)?.type === 'num' && isPunct(at(back + 6), '(') ? { name: String(name.value), next: back + 7 } : null;
+    }
+    if (last?.type !== 'name') return null;
+    let next = back + 1;
+    while (isPunct(at(next), '.') && at(next + 1)?.type === 'name') next += 2;
+    return { name: String(last.value), next };
+  };
   const scan = (sourceType: 'module' | 'script') => {
     const tokens = tokenizer(source, {
       ecmaVersion: 'latest', sourceType, allowHashBang: true,
@@ -398,6 +437,12 @@ export function scanStaticFsTokens(source: string, filename: string): StaticFsRe
       if (recent.length > 64) recent.splice(0, recent.length - 32);
       if (type === 'string' && typeof value === 'string' && BARE_SUBPATH.test(value)) {
         refs.resolves.push({ from: dir, spec: value });
+      }
+      if (type === 'string' && typeof value === 'string' && ABSOLUTE_LITERAL.test(value)) refs.literals.push(normalize(value));
+      // A template with no substitution closes right after its one text.
+      const quasi = at(1);
+      if (type === '`' && quasi?.type === 'template' && isPunct(at(2), '`') && typeof quasi.value === 'string' && ABSOLUTE_LITERAL.test(quasi.value)) {
+        refs.literals.push(normalize(quasi.value));
       }
       if (type !== ')') continue;
       // new URL('lit', import.meta.url)
@@ -429,7 +474,11 @@ export function scanStaticFsTokens(source: string, filename: string): StaticFsRe
       const dirnameArg = at(i)?.type === 'name' && at(i)!.value === '__dirname' ? i
         : at(i)?.value === 'dirname' && isPunct(at(i + 1), '.') && at(i + 2)?.value === 'meta'
           && isPunct(at(i + 3), '.') && at(i + 4)?.type === 'import' ? i + 4 : -1;
-      if (dirnameArg >= 0 && isPunct(at(dirnameArg + 1), '(')) refs.exact.push({ path: normalize(dir + '/' + lits.join('/')), sync: false });
+      if (dirnameArg >= 0 && isPunct(at(dirnameArg + 1), '(')) {
+        const join = callee(dirnameArg + 2);
+        const sink = join !== null && (join.name === 'join' || join.name === 'resolve') && isPunct(at(join.next), '(') ? callee(join.next + 1) : null;
+        refs.exact.push({ path: normalize(dir + '/' + lits.join('/')), sync: sink?.name === 'readFileSync' });
+      }
     }
   };
   try { scan('module'); } catch {
@@ -438,6 +487,7 @@ export function scanStaticFsTokens(source: string, filename: string): StaticFsRe
   }
   refs.exact = mergeRefs(refs.exact);
   refs.listed = [...new Set(refs.listed)];
+  refs.literals = [...new Set(refs.literals)];
   return refs;
 }
 
