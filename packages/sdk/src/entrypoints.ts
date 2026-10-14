@@ -10,4 +10,7 @@ export {
   NimbusDOStub,
   CirrusHmrRPC,
   NimbusD1Database,
+  NimbusKVNamespace,
+  NimbusD1Binding,
+  NimbusR2Bucket,
 } from '@nimbus-sh/worker';

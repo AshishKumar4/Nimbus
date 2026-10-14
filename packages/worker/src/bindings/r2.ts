@@ -1,358 +1,330 @@
 /**
- * binding-r2.ts — R2 bucket emulator for nimbus-wrangler.
+ * r2.ts — the R2 bucket a Worker is given under `nimbus wrangler dev`
+ * (https://developers.cloudflare.com/r2/api/workers/workers-api-reference/),
+ * as `wrangler dev` gives it: Cloudflare's local store (Miniflare's R2
+ * bucket), its conditionals, ranges, checksums, listing and errors.
  *
- * Implements the Workers R2 runtime API
- * (https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)
- * backed by SqliteVFS file blobs. Mirrors KV's storage layout:
+ * The session serves it (session/rpc.ts _rpcR2Call) for the Worker's binding
+ * (fabric bindings.ts NimbusR2Bucket), which answers each object as its
+ * fields; the Worker's env.BUCKET (fabric inner-storage-env.ts) makes the
+ * platform's R2Object and R2ObjectBody of them. Backed by SqliteVFS files:
  *
  *   <root>/.nimbus/r2/<binding>/<key>          — body (raw bytes)
  *   <root>/.nimbus/r2/<binding>/<key>.meta     — sidecar JSON:
- *      { etag: string,                       // sha256 hex of body
+ *      { etag: string,                       // md5 hex of body
+ *        version?: string,                   // random, per put
  *        size: number,
- *        uploaded: number,                    // unix ms
+ *        uploaded: number,                   // unix ms
+ *        checksums?: { md5?, sha1?, … },     // hex
  *        httpMetadata?: R2HTTPMetadata,
  *        customMetadata?: Record<string,string>,
  *        v: 1 }
  *
- * Out of scope for W10 (W10.5 candidates):
- *   - Multipart uploads (createMultipartUpload / resumeMultipartUpload
- *     throw "not supported" errors with a clear message)
- *   - Server-side checksums (md5/sha1/sha256/sha512 verifies passed via
- *     `options` are honored only loosely — we compute sha256 ourselves
- *     and compare; mismatched verify hashes cause put() to throw)
- *
- * Range reads return bodies sliced from the in-memory Uint8Array.
- *
- * The `R2ObjectBody` returned by get() carries a fresh ReadableStream on
- * every call (the body is one-shot per real-R2 contract), plus convenience
- * helpers text() / arrayBuffer() / json() / blob().
+ * A sidecar from an older release has a sha256 etag and neither version nor
+ * checksums: its etag stands for its version, and it has no checksums.
  */
 
+import { z } from 'zod/v4';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type {
+  R2Call, R2EtagCondition, R2HashName, R2PutBody, R2WireChecksums, R2WireConditional, R2WireGetOptions, R2WireGetResult,
+  R2WireListOptions, R2WireObject, R2WireObjects, R2WirePutOptions,
+} from '@nimbus-sh/fabric/inner-storage-env.js';
 import { bodyStream, coerceBindingBody, ensureBindingDir } from './body.js';
-import { cursorPage, listObjectFiles, objectFileName, objectStoreDir, removeObjectFiles } from './object-store.js';
-import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
-
-// ── Public types ──────────────────────────────────────────────────────────
-
-export interface R2HTTPMetadata {
-  contentType?: string;
-  contentLanguage?: string;
-  contentDisposition?: string;
-  contentEncoding?: string;
-  cacheControl?: string;
-  cacheExpiry?: Date;
-}
-
-export interface R2Conditional {
-  etagMatches?: string;
-  etagDoesNotMatch?: string;
-  uploadedBefore?: Date;
-  uploadedAfter?: Date;
-}
-
-export interface R2Range {
-  offset?: number;
-  length?: number;
-  suffix?: number;
-}
-
-export interface R2PutOptions {
-  httpMetadata?: R2HTTPMetadata;
-  customMetadata?: Record<string, string>;
-  md5?: string | ArrayBuffer;
-  sha1?: string | ArrayBuffer;
-  sha256?: string | ArrayBuffer;
-  sha512?: string | ArrayBuffer;
-  onlyIf?: R2Conditional;
-}
-
-export interface R2GetOptions {
-  onlyIf?: R2Conditional;
-  range?: R2Range;
-}
-
-export interface R2ListOptions {
-  prefix?: string;
-  delimiter?: string;
-  cursor?: string;
-  limit?: number;
-  include?: ('httpMetadata' | 'customMetadata')[];
-}
+import { cursorAfter, cursorKey, listObjectFiles, objectFileName, objectStoreDir, removeObjectFiles, utf8Order } from './object-store.js';
 
 export interface R2EmulatorOptions {
   vfs: CredentialedVfs;
   root: string;
   binding: string;
-  onLog?: (msg: string) => void;
 }
 
-interface R2Sidecar {
-  etag: string;
-  size: number;
-  uploaded: number;
-  httpMetadata?: R2HTTPMetadata;
-  customMetadata?: Record<string, string>;
-  v: 1;
+const HttpMetadataSchema = z.object({
+  contentType: z.string().optional(),
+  contentLanguage: z.string().optional(),
+  contentDisposition: z.string().optional(),
+  contentEncoding: z.string().optional(),
+  cacheControl: z.string().optional(),
+  cacheExpiry: z.coerce.date().optional(),
+});
+
+/** An object's sidecar, as the store wrote it. */
+const R2SidecarSchema = z.object({
+  etag: z.string(),
+  version: z.string().optional(),
+  size: z.number(),
+  uploaded: z.number(),
+  checksums: z.record(z.enum(['md5', 'sha1', 'sha256', 'sha384', 'sha512']), z.string()).optional(),
+  httpMetadata: HttpMetadataSchema.optional(),
+  customMetadata: z.record(z.string(), z.string()).optional(),
+  v: z.literal(1),
+});
+type R2Sidecar = z.infer<typeof R2SidecarSchema>;
+
+const MAX_KEY_BYTES = 1024;
+const MAX_LIST_KEYS = 1000;
+/** The most objects a listing answers that includes metadata. */
+const MAX_LIST_KEYS_WITH_METADATA = 100;
+
+/** The digest each algorithm is, as R2 names it in a checksum error. */
+const HASHES: readonly { name: R2HashName; label: string; algorithm: string }[] = [
+  { name: 'md5', label: 'MD5', algorithm: 'MD5' },
+  { name: 'sha1', label: 'SHA-1', algorithm: 'SHA-1' },
+  { name: 'sha256', label: 'SHA-256', algorithm: 'SHA-256' },
+  { name: 'sha384', label: 'SHA-384', algorithm: 'SHA-384' },
+  { name: 'sha512', label: 'SHA-512', algorithm: 'SHA-512' },
+];
+
+/** An error of R2's, as workerd's R2 client throws it: the action, the message, R2's code. */
+function r2Error(action: string, message: string, code: number): Error {
+  return new Error(`${action}: ${message} (${code})`);
 }
 
-// ── R2Object / R2ObjectBody ────────────────────────────────────────────
-
-export class R2Object {
-  key: string;
-  version: string;
-  size: number;
-  etag: string;
-  httpEtag: string;
-  uploaded: Date;
-  httpMetadata: R2HTTPMetadata;
-  customMetadata: Record<string, string>;
-
-  constructor(key: string, side: R2Sidecar) {
-    this.key = key;
-    this.version = side.etag;       // mirror real R2: version is etag-like
-    this.size = side.size;
-    this.etag = side.etag;
-    this.httpEtag = '"' + side.etag + '"';
-    this.uploaded = new Date(side.uploaded);
-    this.httpMetadata = side.httpMetadata || {};
-    this.customMetadata = side.customMetadata || {};
-  }
+function validateKey(action: string, key: string): void {
+  if (new TextEncoder().encode(key).byteLength > MAX_KEY_BYTES) throw r2Error(action, 'The specified object name is not valid.', 10020);
 }
 
-export class R2ObjectBody extends R2Object {
-  /** @internal */
-  private _body: Uint8Array;
-
-  constructor(key: string, side: R2Sidecar, body: Uint8Array) {
-    super(key, side);
-    this._body = body;
-  }
-
-  get body(): ReadableStream<Uint8Array> {
-    return bodyStream(this._body);
-  }
-
-  get bodyUsed(): boolean { return false; /* one-shot stream is not tracked */ }
-
-  async text(): Promise<string> {
-    return new TextDecoder().decode(this._body);
-  }
-  async arrayBuffer(): Promise<ArrayBuffer> {
-    const ab = new ArrayBuffer(this._body.byteLength);
-    new Uint8Array(ab).set(this._body);
-    return ab;
-  }
-  async json<T = any>(): Promise<T> {
-    return JSON.parse(await this.text()) as T;
-  }
-  async blob(): Promise<Blob> {
-    return new Blob([this._body]);
-  }
+async function hexDigest(algorithm: string, body: Uint8Array): Promise<string> {
+  return Array.from(new Uint8Array(await crypto.subtle.digest(algorithm, body)), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-// ── R2Emulator ────────────────────────────────────────────────────────────
+function includesEtag(conditions: readonly R2EtagCondition[], etag: string, comparison: 'strong' | 'weak'): boolean {
+  return conditions.some((c) => c.type === 'wildcard' || (c.value === etag && (c.type === 'strong' || comparison === 'weak')));
+}
+
+/** Whether `onlyIf` holds for the object `side` (none when absent), as R2 tests it. */
+function conditionHolds(onlyIf: R2WireConditional, side: R2Sidecar | null): boolean {
+  if (side === null) return onlyIf.etagMatches === undefined && onlyIf.uploadedAfter === undefined;
+  const truncate = (ms: number) => (onlyIf.secondsGranularity ? Math.floor(ms / 1000) * 1000 : ms);
+  const ifMatch = onlyIf.etagMatches === undefined || includesEtag(onlyIf.etagMatches, side.etag, 'strong');
+  const ifNoneMatch = onlyIf.etagDoesNotMatch === undefined || !includesEtag(onlyIf.etagDoesNotMatch, side.etag, 'weak');
+  const uploaded = truncate(side.uploaded);
+  const ifModifiedSince = onlyIf.uploadedAfter === undefined || truncate(onlyIf.uploadedAfter.getTime()) < uploaded
+    || (onlyIf.etagDoesNotMatch !== undefined && ifNoneMatch);
+  const ifUnmodifiedSince = onlyIf.uploadedBefore === undefined || uploaded < truncate(onlyIf.uploadedBefore.getTime())
+    || (onlyIf.etagMatches !== undefined && ifMatch);
+  return ifMatch && ifNoneMatch && ifModifiedSince && ifUnmodifiedSince;
+}
+
+/** A Range header's one range in an object of `size` bytes; none for any other header. */
+function headerRange(header: string, size: number): { start: number; end: number } | undefined {
+  const prefix = /^ *bytes *=/i.exec(header);
+  if (prefix === null) return undefined;
+  const ranges: { start: number; end: number }[] = [];
+  for (const part of header.slice(prefix[0].length).split(',')) {
+    const match = /^ *(\d+)? *- *(\d+)? *$/.exec(part);
+    if (match === null) return undefined;
+    const [, start, end] = match;
+    if (start !== undefined && end !== undefined) {
+      const from = parseInt(start, 10);
+      const to = parseInt(end, 10);
+      if (from > to || from >= size) return undefined;
+      ranges.push({ start: from, end: Math.min(to, size - 1) });
+    } else if (start !== undefined) {
+      const from = parseInt(start, 10);
+      if (from >= size) return undefined;
+      ranges.push({ start: from, end: size - 1 });
+    } else if (end !== undefined) {
+      const suffix = parseInt(end, 10);
+      if (suffix >= size) return undefined;
+      if (suffix !== 0) ranges.push({ start: size - suffix, end: size - 1 });
+    } else {
+      return undefined;
+    }
+  }
+  return ranges.length === 1 ? ranges[0] : undefined;
+}
+
+/** The bytes a get asks for, or none for the whole object; a range the object cannot satisfy is refused. */
+function requestedRange(options: R2WireGetOptions, size: number): { start: number; end: number } | undefined {
+  if (options.rangeHeader !== undefined) return headerRange(options.rangeHeader, size);
+  if (options.range === undefined) return undefined;
+  let { offset, length } = options.range;
+  const { suffix } = options.range;
+  if (suffix !== undefined) {
+    if (suffix <= 0) throw r2Error('get', 'The requested range is not satisfiable', 10039);
+    offset = size - Math.min(suffix, size);
+    length = Math.min(suffix, size);
+  }
+  offset ??= 0;
+  length ??= size - offset;
+  if (offset < 0 || offset > size || length <= 0) throw r2Error('get', 'The requested range is not satisfiable', 10039);
+  return { start: offset, end: offset + Math.min(length, size - offset) - 1 };
+}
 
 export class R2Emulator {
   private vfs: CredentialedVfs;
   private dir: string;
-  private onLog: (m: string) => void;
 
   constructor(opts: R2EmulatorOptions) {
     this.vfs = opts.vfs;
     this.dir = objectStoreDir(opts.root, 'r2', opts.binding);
-    this.onLog = opts.onLog || (() => {});
   }
 
   // ── public API ────────────────────────────────────────────────────────
 
-  async head(key: string): Promise<R2Object | null> {
-    const side = this.#readSide(key);
-    if (!side) return null;
-    return new R2Object(key, side);
+  async head(key: string): Promise<R2WireObject | null> {
+    validateKey('head', key);
+    const side = this.#readSide(objectFileName(key));
+    return side === null ? null : this.#object(key, side, { offset: 0, length: side.size });
   }
 
-  async get(key: string, options?: R2GetOptions): Promise<R2ObjectBody | null> {
-    const side = this.#readSide(key);
-    if (!side) return null;
-    if (options?.onlyIf && !this.#evalConditional(side, options.onlyIf)) return null;
-
-    let body = this.#readBody(key);
-    if (options?.range) {
-      body = this.#applyRange(body, options.range);
+  async get(key: string, options: R2WireGetOptions): Promise<R2WireGetResult | null> {
+    validateKey('get', key);
+    const fileName = objectFileName(key);
+    const side = this.#readSide(fileName);
+    if (side === null) return null;
+    if (options.onlyIf !== undefined && !conditionHolds(options.onlyIf, side)) {
+      return { object: this.#object(key, side, { offset: 0, length: side.size }), body: null };
     }
-    return new R2ObjectBody(key, side, body);
+    const range = requestedRange(options, side.size);
+    const body = this.vfs.readFile(this.dir + '/' + fileName);
+    if (range === undefined) return { object: this.#object(key, side, { offset: 0, length: side.size }), body: bodyStream(body) };
+    return {
+      object: this.#object(key, side, { offset: range.start, length: range.end - range.start + 1 }),
+      body: bodyStream(body.slice(range.start, range.end + 1)),
+    };
   }
 
-  async put(
-    key: string,
-    value: ReadableStream | ArrayBuffer | ArrayBufferView | Uint8Array | string | null,
-    options?: R2PutOptions,
-  ): Promise<R2Object | null> {
-    // Conditional: check existing
-    if (options?.onlyIf) {
-      const existing = this.#readSide(key);
-      // For PUT, the conditional checks the SOURCE state (existing object).
-      // If onlyIf fails, return null without writing.
-      if (existing && !this.#evalConditional(existing, options.onlyIf)) return null;
-      if (!existing && options.onlyIf.etagMatches) {
-        // etagMatches against missing object: fails
-        return null;
-      }
-    }
-
+  async put(key: string, value: R2PutBody, options: R2WirePutOptions): Promise<R2WireObject | null> {
     const body = await coerceBindingBody(value);
-    const etag = await sha256Hex(body);
-
-    // Verify integrity hashes if supplied
-    if (options?.md5 || options?.sha1 || options?.sha256 || options?.sha512) {
-      // We only compute sha256 anyway; verify against the matching one.
-      if (options.sha256 != null) {
-        const want = this.#normalizeHash(options.sha256);
-        if (want.toLowerCase() !== etag.toLowerCase()) {
-          throw new Error('R2 put: sha256 verification failed');
-        }
+    const checksums: R2WireChecksums = { md5: await hexDigest('MD5', body) };
+    for (const { name, label, algorithm } of HASHES) {
+      const provided = options.checksums?.[name];
+      if (provided === undefined) continue;
+      const computed = name === 'md5' ? checksums.md5 : await hexDigest(algorithm, body);
+      if (provided !== computed) {
+        throw r2Error('put', [
+          `The ${label} checksum you specified did not match what we received.`,
+          `You provided a ${label} checksum with value: ${provided}`,
+          `Actual ${label} was: ${computed}`,
+        ].join('\n'), 10037);
       }
-      // md5/sha1/sha512 verification requires their own hash computation;
-      // skipped for W10 (rarely used at dev time). Document in retro.
+      checksums[name] = computed;
     }
+    validateKey('put', key);
+    const fileName = objectFileName(key);
+    if (options.onlyIf !== undefined && !conditionHolds(options.onlyIf, this.#readSide(fileName))) return null;
 
     const side: R2Sidecar = {
-      etag,
+      etag: checksums.md5 ?? '',
+      version: Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join(''),
       size: body.byteLength,
       uploaded: Date.now(),
+      checksums,
+      httpMetadata: options.httpMetadata ?? {},
+      customMetadata: options.customMetadata ?? {},
       v: 1,
     };
-    if (options?.httpMetadata) side.httpMetadata = options.httpMetadata;
-    if (options?.customMetadata) side.customMetadata = options.customMetadata;
-
     ensureBindingDir(this.vfs, this.dir);
-    const enc = objectFileName(key);
-    this.vfs.writeFile(this.dir + '/' + enc, body);
-    this.vfs.writeFile(this.dir + '/' + enc + '.meta', JSON.stringify(side));
-
-    return new R2Object(key, side);
+    this.vfs.writeFile(this.dir + '/' + fileName, body);
+    this.vfs.writeFile(this.dir + '/' + fileName + '.meta', JSON.stringify(side));
+    return this.#object(key, side, undefined);
   }
 
   async delete(keys: string | string[]): Promise<void> {
     const list = Array.isArray(keys) ? keys : [keys];
-    for (const k of list) removeObjectFiles(this.vfs, this.dir, objectFileName(k));
+    for (const key of list) validateKey('delete', key);
+    for (const key of list) removeObjectFiles(this.vfs, this.dir, objectFileName(key));
   }
 
-  async list(options?: R2ListOptions): Promise<{
-    objects: R2Object[];
-    truncated: boolean;
-    cursor?: string;
-    delimitedPrefixes: string[];
-  }> {
-    const prefix = options?.prefix || '';
-    const delimiter = options?.delimiter;
+  async list(options: R2WireListOptions): Promise<R2WireObjects> {
+    let limit = options.limit ?? MAX_LIST_KEYS;
+    if (limit < 1 || limit > MAX_LIST_KEYS) throw r2Error('list', `MaxKeys params must be positive integer <= ${MAX_LIST_KEYS}.`, 10022);
+    const include = options.include ?? [];
+    if (include.length > 0) limit = Math.min(limit, MAX_LIST_KEYS_WITH_METADATA);
+    const prefix = options.prefix ?? '';
+    let startAfter = options.startAfter;
+    if (options.cursor !== undefined) {
+      const after = cursorKey(options.cursor);
+      if (startAfter === undefined || utf8Order(after, startAfter) > 0) startAfter = after;
+    }
+    const delimiter = options.delimiter === '' ? undefined : options.delimiter;
 
-    let entries: { key: string; side: R2Sidecar }[] = [];
+    // Each row: an object, or a delimited prefix standing for every key under
+    // it, placed (and resumed after) by its last key.
+    const rows: { lastKey: string; prefix?: string; key?: string; fileName?: string }[] = [];
+    const prefixes = new Map<string, { lastKey: string; prefix?: string }>();
     for (const { key, fileName } of listObjectFiles(this.vfs, this.dir, prefix)) {
-      const side = this.#readSideEnc(fileName);
-      if (side) entries.push({ key, side });
-    }
-
-    // Delimiter handling: collect common prefixes that share <prefix><…><delimiter>
-    const delimitedPrefixes: string[] = [];
-    if (delimiter) {
-      const seen = new Set<string>();
-      const filtered: typeof entries = [];
-      for (const e of entries) {
-        const tail = e.key.slice(prefix.length);
-        const idx = tail.indexOf(delimiter);
-        if (idx !== -1) {
-          const cp = prefix + tail.slice(0, idx + delimiter.length);
-          if (!seen.has(cp)) { seen.add(cp); delimitedPrefixes.push(cp); }
-          continue;          // grouped — don't list as an object
-        }
-        filtered.push(e);
+      if (startAfter !== undefined && utf8Order(key, startAfter) <= 0) continue;
+      const at = delimiter === undefined ? -1 : key.indexOf(delimiter, prefix.length);
+      if (delimiter === undefined || at === -1) {
+        rows.push({ lastKey: key, key, fileName });
+        continue;
       }
-      entries = filtered;
+      const delimited = key.slice(0, at + delimiter.length);
+      const row = prefixes.get(delimited);
+      if (row === undefined) {
+        const added = { lastKey: key, prefix: delimited };
+        prefixes.set(delimited, added);
+        rows.push(added);
+      } else {
+        row.lastKey = key;
+      }
     }
+    rows.sort((a, b) => utf8Order(a.lastKey, b.lastKey));
 
-    const { page, next } = cursorPage(entries, options?.cursor, options?.limit ?? 1000);
+    const page = rows.slice(0, limit);
+    const objects: R2WireObject[] = [];
+    const delimitedPrefixes: string[] = [];
+    for (const row of page) {
+      if (row.prefix !== undefined) {
+        delimitedPrefixes.push(row.prefix);
+        continue;
+      }
+      const side = row.fileName === undefined ? null : this.#readSide(row.fileName);
+      if (row.key === undefined || side === null) continue;
+      objects.push(this.#object(row.key, {
+        ...side,
+        httpMetadata: include.includes('httpMetadata') ? side.httpMetadata : {},
+        customMetadata: include.includes('customMetadata') ? side.customMetadata : {},
+      }, undefined));
+    }
+    const truncated = rows.length > limit;
     return {
-      objects: page.map(e => new R2Object(e.key, e.side)),
-      truncated: next !== undefined,
-      ...(next !== undefined ? { cursor: next } : {}),
+      objects,
+      truncated,
+      ...(truncated ? { cursor: cursorAfter(page[page.length - 1].lastKey) } : {}),
       delimitedPrefixes,
     };
   }
 
-  // ── multipart (out of scope) ─────────────────────────────────────────
-
-  async createMultipartUpload(_key: string, _options?: any): Promise<never> {
-    throw new Error('R2 multipart uploads not supported in nimbus-wrangler dev (W10.5 candidate)');
-  }
-  async resumeMultipartUpload(_key: string, _uploadId: string): Promise<never> {
-    throw new Error('R2 multipart uploads not supported in nimbus-wrangler dev (W10.5 candidate)');
-  }
-
   // ── internals ─────────────────────────────────────────────────────────
 
-
-
-  #readSide(key: string): R2Sidecar | null {
-    return this.#readSideEnc(objectFileName(key));
+  /** An object's fields, as R2 answers them. */
+  #object(key: string, side: R2Sidecar, range: { offset: number; length: number } | undefined): R2WireObject {
+    return {
+      key,
+      version: side.version ?? side.etag,
+      size: side.size,
+      etag: side.etag,
+      uploaded: side.uploaded,
+      httpMetadata: side.httpMetadata ?? {},
+      customMetadata: side.customMetadata ?? {},
+      ...(range === undefined ? {} : { range }),
+      checksums: side.checksums ?? {},
+      storageClass: '',
+    };
   }
 
-  #readSideEnc(enc: string): R2Sidecar | null {
-    const mp = this.dir + '/' + enc + '.meta';
-    if (!this.vfs.exists(mp)) {
-      // No sidecar — but the body might exist (legacy). Synthesize.
-      const bp = this.dir + '/' + enc;
-      if (!this.vfs.exists(bp)) return null;
-      return null; // No metadata at all means treat as missing
-    }
+  #readSide(fileName: string): R2Sidecar | null {
+    const path = this.dir + '/' + fileName + '.meta';
+    if (!this.vfs.exists(path)) return null;
     try {
-      const raw = this.vfs.readFileString(mp);
-      return JSON.parse(raw) as R2Sidecar;
+      return R2SidecarSchema.parse(JSON.parse(this.vfs.readFileString(path)));
     } catch {
-      return null;
+      return null; // a torn sidecar reads as no object
     }
   }
+}
 
-  #readBody(key: string): Uint8Array {
-    const path = this.dir + '/' + objectFileName(key);
-    return this.vfs.readFile(path);
-  }
-
-  #evalConditional(side: R2Sidecar, c: R2Conditional): boolean {
-    if (c.etagMatches != null) {
-      if (this.#normalizeEtag(c.etagMatches) !== side.etag) return false;
-    }
-    if (c.etagDoesNotMatch != null) {
-      if (this.#normalizeEtag(c.etagDoesNotMatch) === side.etag) return false;
-    }
-    if (c.uploadedAfter instanceof Date) {
-      if (side.uploaded <= c.uploadedAfter.getTime()) return false;
-    }
-    if (c.uploadedBefore instanceof Date) {
-      if (side.uploaded >= c.uploadedBefore.getTime()) return false;
-    }
-    return true;
-  }
-
-  #normalizeEtag(e: string): string {
-    return String(e).replace(/^"+|"+$/g, '').toLowerCase();
-  }
-
-  #applyRange(body: Uint8Array, range: R2Range): Uint8Array {
-    if (range.suffix != null) {
-      const len = Math.min(range.suffix, body.byteLength);
-      return body.slice(body.byteLength - len);
-    }
-    const off = range.offset ?? 0;
-    if (off >= body.byteLength) return new Uint8Array(0);
-    const len = range.length != null ? range.length : (body.byteLength - off);
-    return body.slice(off, Math.min(off + len, body.byteLength));
-  }
-
-  #normalizeHash(input: string | ArrayBuffer): string {
-    if (typeof input === 'string') return input.replace(/^"+|"+$/g, '').toLowerCase();
-    const u = new Uint8Array(input);
-    return [...u].map(b => b.toString(16).padStart(2, '0')).join('');
+/** One call of the R2 API (fabric bindings.ts NimbusR2Bucket), served by `r2`. */
+export function serveR2Call(r2: R2Emulator, call: R2Call): Promise<R2WireObject | R2WireGetResult | R2WireObjects | null | void> {
+  switch (call.method) {
+    case 'head': return r2.head(String(call.key));
+    case 'get': return r2.get(String(call.key), call.options);
+    case 'put': return r2.put(String(call.key), call.value, call.options);
+    case 'delete': return r2.delete(Array.isArray(call.keys) ? call.keys.map(String) : String(call.keys));
+    case 'list': return r2.list(call.options);
   }
 }

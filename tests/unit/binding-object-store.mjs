@@ -2,10 +2,11 @@
 // binding-object-store — `nimbus wrangler dev`'s KV and R2 emulators store
 // each object as a body file and a `.meta` sidecar under
 // `<root>/.nimbus/<kv|r2>/<binding>/`, and page their listings with an
-// offset cursor. Driven through each emulator's Workers API over an
-// in-memory filesystem: keys that need encoding round-trip, a listing pages
-// in key order to its end, a delete leaves no file behind, KV expiry hides
-// a key, and R2 groups keys by a delimiter.
+// cursor naming the last key listed. Driven through each emulator's API
+// over an in-memory filesystem: keys that need encoding round-trip, a
+// listing pages in key order to its end, a delete leaves no file behind, KV
+// expiry hides a key, R2 groups keys by a delimiter, and no key or binding
+// name reaches outside its binding's directory (`..` included).
 
 import assert from 'node:assert/strict';
 import { KvEmulator, _setKvNow } from '../../packages/worker/src/bindings/kv.ts';
@@ -50,7 +51,7 @@ const KEYS = ['a/b c', 'a/b%d', 'b#1', 'a/ü'];
 // ── KV ───────────────────────────────────────────────────────────────────────
 {
   const vfs = memoryVfs();
-  const kv = new KvEmulator({ vfs, root: '/home/user/app/', binding: 'CACHE', onLog: () => {} });
+  const kv = new KvEmulator({ vfs, root: '/home/user/app/', binding: 'CACHE' });
   assert.equal(await kv.list().then((r) => r.keys.length), 0, 'a binding with nothing stored lists nothing');
   for (const key of KEYS) await kv.put(key, `value of ${key}`, { metadata: { key } });
   for (const key of KEYS) {
@@ -86,11 +87,11 @@ const KEYS = ['a/b c', 'a/b%d', 'b#1', 'a/ü'];
 // ── R2 ───────────────────────────────────────────────────────────────────────
 {
   const vfs = memoryVfs();
-  const r2 = new R2Emulator({ vfs, root: 'home/user/app', binding: 'BUCKET', onLog: () => {} });
-  for (const key of KEYS) await r2.put(key, `body of ${key}`);
-  await r2.put('blob', new Blob(['from a blob']));
-  assert.equal(await (await r2.get('blob')).text(), 'from a blob', 'a Blob body is stored as its bytes');
-  assert.equal(await new Response((await r2.get('b#1')).body).text(), 'body of b#1', 'the body streams its bytes');
+  const r2 = new R2Emulator({ vfs, root: 'home/user/app', binding: 'BUCKET' });
+  for (const key of KEYS) await r2.put(key, `body of ${key}`, {});
+  await r2.put('blob', new Blob(['from a blob']), {});
+  assert.equal(await new Response((await r2.get('blob', {})).body).text(), 'from a blob', 'a Blob body is stored as its bytes');
+  assert.equal(await new Response((await r2.get('b#1', {})).body).text(), 'body of b#1', 'the body streams its bytes');
 
   const pages = [];
   let cursor;
@@ -110,6 +111,22 @@ const KEYS = ['a/b c', 'a/b%d', 'b#1', 'a/ü'];
   assert.deepEqual((await r2.list()).objects.map((o) => o.key), ['a/b%d', 'a/ü', 'b#1']);
   assert.ok([...vfs.files.keys()].every((p) => p.startsWith('home/user/app/.nimbus/r2/BUCKET/')));
   assert.equal(vfs.files.size, 6, 'a delete removes the body and its sidecar');
+
+  // `.` and `..` are keys like any other, in the binding's own directory.
+  await r2.put('..', 'dots', {});
+  await r2.put('.', 'dot', {});
+  assert.equal(await new Response((await r2.get('..', {})).body).text(), 'dots');
+  assert.deepEqual((await r2.list({ prefix: '.' })).objects.map((o) => o.key), ['.', '..']);
+  assert.ok([...vfs.files.keys()].every((p) => p.startsWith('home/user/app/.nimbus/r2/BUCKET/')), 'a dot key is a file of the bucket');
+  assert.equal(vfs.files.size, 10);
+}
+
+// ── A binding's name is one directory of its kind's ──────────────────────────
+{
+  const vfs = memoryVfs();
+  const r2 = new R2Emulator({ vfs, root: 'home/user/app', binding: '../../escape' });
+  await r2.put('k', 'v', {});
+  assert.deepEqual([...vfs.files.keys()].sort(), ['home/user/app/.nimbus/r2/..%2F..%2Fescape/k', 'home/user/app/.nimbus/r2/..%2F..%2Fescape/k.meta']);
 }
 
 console.log('binding-object-store: ok');

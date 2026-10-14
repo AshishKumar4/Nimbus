@@ -103,8 +103,9 @@ assert.deepEqual(calls, [
 assert.deepEqual(new NimbusDurableObjectClasses({}, env).missing(['P', 'notAClass', 'Absent']), ['notAClass', 'Absent']);
 
 // The modules.
+const DO_ONLY = { durableObjects: ['P'], d1: [], r2: [] };
 const bundle = '// src/index.js\nexport class P {}\nexport default {};\n';
-const { mainModule, modules, classesEntrypoint } = innerWorkerModules(bundle, ['P']);
+const { mainModule, modules, classesEntrypoint } = innerWorkerModules(bundle, DO_ONLY);
 assert.equal(mainModule, 'worker.js');
 assert.equal(classesEntrypoint, 'NimbusDurableObjectClasses');
 assert.deepEqual(Object.keys(modules), ['worker.js', 'nimbus-do-env.js']);
@@ -112,14 +113,24 @@ assert.equal(modules['worker.js'], "export { NimbusDurableObjectClasses as Nimbu
   'the adapter is the first import, on the first line');
 assert.match(modules['nimbus-do-env.js'], /^import \{ env, RpcStub, WorkerEntrypoint \} from 'cloudflare:workers';\nimport \* as main from '\.\/worker\.js';/);
 assert.match(modules['nimbus-do-env.js'], /, \["P"\], main, \{ env, RpcStub, WorkerEntrypoint \}\);\nexport \{ NimbusDurableObjectClasses \};$/);
-assert.equal(innerWorkerModules('#!/usr/bin/env node\nexport default {};', ['P']).modules['worker.js'],
+assert.equal(innerWorkerModules('#!/usr/bin/env node\nexport default {};', DO_ONLY).modules['worker.js'],
   "#!/usr/bin/env node\nexport { NimbusDurableObjectClasses as NimbusDurableObjectClasses } from './nimbus-do-env.js';export default {};",
   'a hashbang stays first');
-assert.deepEqual(innerWorkerModules(bundle, []), { mainModule: 'worker.js', modules: { 'worker.js': bundle }, classesEntrypoint: null });
+assert.deepEqual(innerWorkerModules(bundle, { durableObjects: [], d1: [], r2: [] }), { mainModule: 'worker.js', modules: { 'worker.js': bundle }, classesEntrypoint: null });
+
+// D1 and R2 bindings alone: the adapter is still the first import, with no class check.
+const storage = innerWorkerModules(bundle, { durableObjects: [], d1: ['DB'], r2: ['BUCKET'] });
+assert.equal(storage.classesEntrypoint, null);
+assert.equal(storage.modules['worker.js'], "import './nimbus-do-env.js';" + bundle, 'the adapter is the first import, on the first line');
+assert.doesNotMatch(storage.modules['nimbus-do-env.js'], /innerDoAdapter|import \* as main/, 'no Durable Object adapter without a Durable Object binding');
+assert.match(storage.modules['nimbus-do-env.js'], /\ninnerStorageAdapter\(\{"d1":\["DB"\],"r2":\["BUCKET"\]\}, env\);$/);
+const both = innerWorkerModules(bundle, { durableObjects: ['P'], d1: ['DB'], r2: [] });
+assert.equal(both.classesEntrypoint, 'NimbusDurableObjectClasses');
+assert.match(both.modules['nimbus-do-env.js'], /export \{ NimbusDurableObjectClasses \};\nconst \{ innerStorageAdapter \} = /);
 
 // A bundle that spells the class check's name (it exports it, say) gets one it never spells.
 const exporting = 'class NimbusDurableObjectClasses {}\nconst NimbusDurableObjectClasses_2 = 1;\nexport { NimbusDurableObjectClasses, NimbusDurableObjectClasses_2 };\n';
-const renamed = innerWorkerModules(exporting, ['P']);
+const renamed = innerWorkerModules(exporting, DO_ONLY);
 assert.equal(renamed.classesEntrypoint, 'NimbusDurableObjectClasses_3');
 assert.equal(renamed.modules['worker.js'], "export { NimbusDurableObjectClasses as NimbusDurableObjectClasses_3 } from './nimbus-do-env.js';" + exporting);
 

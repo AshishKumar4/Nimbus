@@ -5,6 +5,24 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a Worker whose `wrangler.jsonc` declares `kv_namespaces`,
+  `d1_databases` or `r2_buckets` starts under `wrangler dev`, and
+  `env.KV`, `env.DB` and `env.BUCKET` answer as the local bindings real
+  `wrangler dev` gives a Worker do: KV get (each type, and bulk), put,
+  delete, list and getWithMetadata; D1 prepare, bind, first, all, run, raw,
+  batch, exec and withSession, with D1's errors and meta fields; R2 head,
+  get (ranges, conditions), put (metadata, checksums, conditions), delete,
+  list and each body method. The build failed with "Could not serialize
+  object of type "D1Emulator"" (or "KvEmulator"): a Worker Loader env
+  carries no class instance. Each binding reaches only the store it is
+  declared for, in its own project: a KV namespace's or R2 bucket's files
+  under the project's `.nimbus`, as the user who started the server, and a
+  D1 binding's own database. An R2 object's etag is now its body's MD5, as
+  on Cloudflare, and KV and R2 listings page with Cloudflare's cursor.
+  Embedders re-export the new `NimbusKVNamespace`, `NimbusD1Binding` and
+  `NimbusR2Bucket` classes from their Worker's main module, as they do the
+  other Nimbus classes (`export * from '@nimbus-sh/sdk/entrypoints'`
+  does); without one, its kind of binding is not made, with a warning.
 - Security: a D1 binding under `wrangler dev` is a database of its own (a
   Durable Object facet of the session, its own SQLite), as on Cloudflare.
   It ran its statements in the session's own database, and a table name it

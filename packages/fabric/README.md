@@ -424,6 +424,19 @@ Limits, where a stub differs from Cloudflare's:
   can carry nothing made in one request; a namespace is refused there on
   Cloudflare too.
 
+`NimbusKVNamespace`, `NimbusD1Binding` and `NimbusR2Bucket` are a KV, D1 or
+R2 binding. The session mints each for one store of one project, named in
+its props, and each call is a supervisor op (`kvCall`, `d1Query`,
+`r2Call`) the session serves for that store only. The KV binding is the
+inner Worker's `env.KV` as it is: its methods take and answer values that
+cross RPC. The D1 and R2 APIs cannot cross RPC (a statement is bound
+synchronously; an R2 object has methods), so the same adapter replaces
+them with local objects (`inner-storage-env.ts`): a `D1Database` as
+workerd's own over the binding's `query`, D1's binding contract, and an
+`R2Bucket` whose objects it makes from the fields the binding answers.
+tests/unit/wrangler-dev-storage-bindings-workerd.mjs checks all three
+against the local bindings `wrangler dev` gives a Worker.
+
 ## Measured platform limits
 
 Figures below come from production workerd, June to August 2026. The code

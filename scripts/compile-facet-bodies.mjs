@@ -42,7 +42,10 @@ const outputs = [
   {
     path: `${fabric}/compiled-bodies.generated.ts`,
     tasks: [],
-    bodies: [['INNER_DO_ADAPTER_SOURCE', './inner-do-env.js', ['innerDoAdapter', 'innerDoIdFromName']]],
+    bodies: [
+      ['INNER_DO_ADAPTER_SOURCE', './inner-do-env.js', ['innerDoAdapter', 'innerDoIdFromName']],
+      ['INNER_STORAGE_ADAPTER_SOURCE', './inner-storage-env.js', ['innerStorageAdapter']],
+    ],
   },
   {
     path: `${worker}/loaders/compiled-bodies.generated.ts`,

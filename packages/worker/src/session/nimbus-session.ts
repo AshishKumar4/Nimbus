@@ -130,6 +130,7 @@ import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-
 import { openSupervisorDeliveries, type SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import type { HostedHttpRequest, HostedHttpResponse, PeerHost } from '@nimbus-sh/fabric/peer-host.js';
 import type { FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
+import type { D1QueryResponse, D1QuerySql, KvCall, R2Call } from '@nimbus-sh/fabric/inner-storage-env.js';
 // The supervisor terminates a facet's outbound sockets so inbound frames
 // arrive as supervisor replies (VFS coherence witness 3).
 // The supervisor terminates a facet's outbound sockets so inbound frames
@@ -886,6 +887,9 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   async _rpcReadFileBytes(path: string, pid?: number, cred?: VfsCred): Promise<Uint8Array | null> { return _rpc._rpcReadFileBytes(this as any, path, pid, cred); }
   async _rpcInnerDoFetch(req: any): Promise<any> { return _rpc._rpcInnerDoFetch(this as any, req); }
   async _rpcInnerDoCall(req: any): Promise<unknown> { return _rpc._rpcInnerDoCall(this as any, req); }
+  async _rpcKvCall(target: { root: string; store: string }, call: KvCall, cred?: VfsCred) { return _rpc._rpcKvCall(this, target, call, cred); }
+  async _rpcR2Call(target: { root: string; store: string }, call: R2Call, cred?: VfsCred) { return _rpc._rpcR2Call(this, target, call, cred); }
+  async _rpcD1Query(target: { root: string; store: string }, queries: D1QuerySql[]): Promise<D1QueryResponse> { return _rpc._rpcD1Query({ ctx: this.ctx }, target, queries); }
   async _rpcWriteFile(path: string, content: string | Uint8Array, pid?: number, cred?: VfsCred): Promise<number> { return _rpc._rpcWriteFile(this as any, path, content, pid, cred); }
   async _rpcWriteProtectedRootFile(rootPath: string, path: string, content: string | Uint8Array) {
     return _rpc._rpcWriteProtectedRootFile(this as any, rootPath, path, content);
@@ -1441,4 +1445,7 @@ export {
   NimbusLoadedEntrypoint,
   NimbusDurableObjectNamespace,
   NimbusDOStub,
+  NimbusKVNamespace,
+  NimbusD1Binding,
+  NimbusR2Bucket,
 } from '@nimbus-sh/fabric/bindings.js';
