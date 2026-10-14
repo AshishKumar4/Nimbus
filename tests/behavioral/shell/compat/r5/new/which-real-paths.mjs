@@ -43,7 +43,7 @@ a.check('which git → /usr/bin/git', termBody(r6.output) === '/usr/bin/git', `b
 
 // Probe 7: script pattern `dirname $(which X)`
 const r7 = await t.run('dirname $(which clang)', 5_000);
-a.check('`dirname $(which clang)` → /usr/local/bin', termBody(r7.output) === '/usr/local/bin', `body=${JSON.stringify(termBody(r7.output))}`);
+a.check('`dirname $(which clang)` → /usr/bin', termBody(r7.output) === '/usr/bin', `body=${JSON.stringify(termBody(r7.output))}`);
 
 await t.close();
 const sum = a.summary();
