@@ -1059,9 +1059,10 @@ const __fsMod = (() => {
   }
 
   // ── VFS bundle lookup (fast path — in-memory) ──
-  function _bundleLookup(absPath) {
+  /** \`observe\`: a read of the file (the residency predictor learns from it); a copy's look at its bytes is not. */
+  function _bundleLookup(absPath, observe = true) {
     const k = _strip(absPath);
-    if (typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(k);
+    if (observe && typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(k);
     // The parked write first, as _writtenCell reads: it is this process's own,
     // newer than anything the store holds, and it is the live cell (a store
     // read reassembles a copy, which a write loop would pay for per write).
@@ -3881,7 +3882,7 @@ const __fsMod = (() => {
     const destAbs = _resolveFollow(dest, "copyfile");
     const destK = _strip(destAbs);
     const call = { call: "copyFile", path: _strip(_resolve(dest)), from: _strip(_resolve(src)) };
-    const content = _bundleLookup(srcAbs);
+    const content = _bundleLookup(srcAbs, false);
     const srcK = _strip(srcAbs);
     const whole = content !== undefined && _denialCode(content) === null && _parkedPartial.get(srcK) !== __vfsWriteGenerations[srcK];
     const decided = _decidedHere(destAbs);
