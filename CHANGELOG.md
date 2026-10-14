@@ -14,6 +14,10 @@ published independently in the `@nimbus-sh` npm scope.
   default `force: true`, where Node overwrites. Directory modes and errors
   (`ERR_FS_CP_*`) differed from Node's, and copying a directory into itself
   never ended.
+- Changed (Node `fs`): `fs.cpSync` is faster than before, and
+  `fs.promises.cp` and `fs.cp` are slower, about 1.3 ms per file in a warm
+  isolate. Node's `cp` stats each source entry twice, and each file's copy
+  waits for the session.
 - Changed (Node `fs`): `fs.cp` and `fs.cpSync` create directories as Node
   does: 0777 less the umask, with the mode set only where Node sets it.
   `fs.cpSync` leaves each directory it makes that way, and `fs.promises.cp`
