@@ -1,10 +1,13 @@
 #!/usr/bin/env bun
 // A release names every staged napi binding its users' installs need and no
-// build provides. What a user installs is what npm resolves from the
-// consumers' latest releases: each declared range to its newest published
-// version (no prerelease), along each chain from a consumer to a binding's
-// owner. A chain that no longer holds, or a staged binding no chain
-// reaches, is an error naming what to update, never a silent pass.
+// build provides. What a user installs is what Nimbus's npm resolves from the
+// consumers' latest releases, along each chain from a consumer to a
+// binding's owner: each declared range to its newest published version (no
+// prerelease), but a binding owner's range to the newest staged version it
+// admits (resolve-one-facet's stagedBindingVersion). Only a range that admits
+// no staged version is missing a build, and at the newest version it admits.
+// A chain that no longer holds, or a staged binding no chain reaches, is an
+// error naming what to update, never a silent pass.
 import assert from 'node:assert/strict';
 import { missingBindings } from '../../scripts/ci/lib/binding-demand.mjs';
 
@@ -52,12 +55,25 @@ const packages = {
   // A prerelease no range takes, and a minor the range excludes.
   newer['@astrojs/compiler-rs'].versions['0.5.4-beta.1'] = { dependencies: { '@astrojs/compiler-binding': '0.5.4-beta.1' } };
   newer['@astrojs/compiler-rs'].versions['0.6.0'] = { dependencies: { '@astrojs/compiler-binding': '0.6.0' } };
+  // A newer rolldown each range admits: the staged 1.2.13 is what installs.
+  newer.rolldown.versions['1.2.14'] = {};
   newer.rolldown.versions['1.3.0'] = {};
   const report = await missingBindings({ specs: SPECS, demand: DEMAND, packument: registry(newer) });
   assert.deepEqual(report.missing.map((m) => [m.key, m.via.join(' > ')]), [
     ['astro-compiler@0.5.3', 'astro@7.3.8 > @astrojs/compiler-rs@0.5.3 > @astrojs/compiler-binding@0.5.3'],
-    ['rolldown@1.3.0', 'astro@7.3.8 > rolldown@1.3.0'],
   ]);
+  assert.deepEqual(report.demanded.filter((d) => d.owner === 'rolldown').map((d) => [d.key, d.built]), [['rolldown@1.2.13', true]]);
+}
+
+// ── a range that admits no staged version: missing, at the newest it admits ──
+{
+  const moved = structuredClone(packages);
+  moved.vite.versions['8.4.0'] = { dependencies: { rolldown: '~1.3.0' } };
+  moved.vite['dist-tags'].latest = '8.4.0';
+  moved.rolldown.versions['1.3.0'] = {};
+  moved.rolldown.versions['1.3.1'] = {};
+  const report = await missingBindings({ specs: SPECS, demand: DEMAND, packument: registry(moved) });
+  assert.deepEqual(report.missing.map((m) => [m.key, m.via.join(' > ')]), [['rolldown@1.3.1', 'vite@8.4.0 > rolldown@1.3.1']]);
 }
 
 // ── a chain that no longer holds is an error naming it ──
