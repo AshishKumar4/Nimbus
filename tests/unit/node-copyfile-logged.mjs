@@ -29,7 +29,7 @@ kernel.chown('home/user', 1000, 1000);
 // A file the program has not read, larger than one chunk, outside the
 // directory its launch reads ahead.
 const big = new Uint8Array(200_000).map((_, i) => i % 251);
-authority.kfs.mkdir('srv/data', { recursive: true });
+kernel.mkdir('srv/data', { recursive: true });
 kernel.chown('srv/data', 1000, 1000);
 authority.rawVfs.as(cred).writeFile('srv/data/unread.bin', big);
 authority.rawVfs.as(cred).chmod('srv/data/unread.bin', 0o666);
