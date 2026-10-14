@@ -37,7 +37,7 @@ import { STOP_RECORD_PREFIX } from '../../packages/worker/src/runtime/stop-repla
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld, residentRunner } from './facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 
@@ -49,14 +49,9 @@ adoptCtxExports({
   }),
 });
 
-// A lifetime run (an attached TTY's resident, startContract 'lifetime')
-// holds its start call open for its life, as the runner's does: the fabric
-// releases its residency as that call returns. Set for (3), ended at its kill.
-let lifetime = null;
-const world = createFacetWorld(() => ({
-  async startProcess() { if (lifetime !== null) await lifetime.promise; return { ok: true }; },
-  async handleHttpRequest() { return new Response('ok'); },
-}));
+const processes = new SessionProcessSupervisor();
+// (3)'s attached TTY runs for its life (residentRunner): the fabric releases its residency as that call returns.
+const world = createFacetWorld(residentRunner(processes));
 const ctx = createFacetCtx(world, 'resident-inherited-admission');
 // A one-shot's run stops at its first listen once `listen` is opened.
 let openListen;
@@ -83,7 +78,6 @@ const env = {
   },
   ASSETS: stagedAssets,
 };
-const processes = new SessionProcessSupervisor();
 const manager = new FacetManager(
   ctx, env, processes, new PortRegistry(), processHostFor,
   { requestLaunchTurn: () => { setTimeout(() => { void manager.pumpResidentLaunches(); }, 0); }, onExternalExit: () => {} },
@@ -140,7 +134,6 @@ const until = async (ok, label) => {
 // (3) Brokered and deferred: the broker's admission closes as spawnNode answers, before the boot.
 {
   const child = processes.spawn('node tui.js', ['node', 'tui.js'], '/home/user/app');
-  lifetime = Promise.withResolvers();
   const other = await acquireSupervisorAllocation(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES);
   await withLaunchAdmission(ctx, { pid: child.pid }, undefined, () => manager.spawnNode("require('./tui.js');", {
     filename: '/home/user/app/tui.js', cwd: '/home/user/app', command: 'node tui.js', skipSpawn: true, callerPid: child.pid, attachedTty: true,
@@ -157,8 +150,6 @@ const until = async (ok, label) => {
   assert.equal(processes.get(child.pid)?.state, 'running', 'deferred: it is still running');
   assert.ok(launchHeld(child.pid).length > 0, 'deferred: its residency still holds its slot past its boot');
   manager.kill(child.pid);
-  lifetime.resolve();
-  lifetime = null;
 }
 
 assert.equal(budget().current, 0, 'every launch gave its credit back');

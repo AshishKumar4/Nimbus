@@ -45,6 +45,26 @@ async function adapterFor(capability) {
  *   adapter itself (observeResidentConfig's entry), which answers watches and
  *   admits requests; otherwise the stub models that adapter around a guest.
  */
+/**
+ * A resident's runner as the real one keeps its start (process-fabric's
+ * StartContract): an attached TTY's run holds its start call open for its
+ * process's life, failing as its facet is aborted (a kill), as the platform
+ * fails a dead facet's open calls; any other run answers once it is up. The
+ * process table says which (`processes`), as the runner's own args do. A
+ * runner that returned a lifetime start at once ended its residency ~20 ms
+ * after its boot, and a test of that residency passed only by timing.
+ * Every request is answered by `respond`.
+ */
+export function residentRunner(processes, respond = () => new Response('ok')) {
+  return (_config, { died }) => ({
+    async startProcess(args) {
+      if (processes.get(args?.pid)?.attachedTty === true) await died;
+      return { ok: true };
+    },
+    async handleHttpRequest(request) { return respond(request); },
+  });
+}
+
 export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdapter = false } = {}) {
   /** One entry per module evaluation — the ledger a ghost boot lands in. */
   const boots = [];
@@ -53,6 +73,21 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
   const configs = new Map();
   /** facetName → the live instance, or a promise for it while it starts. */
   const live = new Map();
+  /** facetName → its death: rejected as it is aborted or deleted, as the platform fails a dead facet's open calls. */
+  const deaths = new Map();
+  const deathOf = (name) => {
+    let death = deaths.get(name);
+    if (death === undefined) {
+      death = Promise.withResolvers();
+      death.promise.catch(() => {});
+      deaths.set(name, death);
+    }
+    return death;
+  };
+  const kill = (name, error) => {
+    deaths.get(name)?.reject(error);
+    deaths.delete(name);
+  };
 
   const loader = {
     // The one unkeyed load: the journal reader a released resident's store
@@ -82,7 +117,7 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
             async instantiate(facetName) {
               if (resolveConfig && !configs.has(loaderId)) configs.set(loaderId, await config());
               const resolved = configs.get(loaderId);
-              const instance = await evaluate(resolved, { loaderId, facetName, className });
+              const instance = await evaluate(resolved, { loaderId, facetName, className, died: deathOf(facetName).promise });
               boots.push({ loaderId, facetName, className, config: resolved, instance });
               return instance;
             },
@@ -163,8 +198,8 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
     // durable release relies on.
     // Whoever aborts or deletes a facet ended it, and what held it open
     // hears nothing (a release ignores it; a previous incarnation is gone).
-    abort(name) { live.delete(name); die(name, new Error('facet aborted')); },
-    delete(name) { live.delete(name); die(name, new Error('facet deleted')); resetProcessFacetStorage(name); },
+    abort(name) { live.delete(name); die(name, new Error('facet aborted')); kill(name, new Error('facet aborted')); },
+    delete(name) { live.delete(name); die(name, new Error('facet deleted')); kill(name, new Error('facet deleted')); resetProcessFacetStorage(name); },
   };
 
   return {
