@@ -254,12 +254,25 @@ const ETC = ['etc/profile', 'etc/hostname', 'etc/os-release'];
   console.log('  an install is not written through a runtime\'s directories a user made');
 }
 
+// ── a home is not configured inside the system's own stores ───────────────
+// Root makes a home and hands it to the user: inside a runtime's tree, or the
+// kernel's /.nimbus, that would hand the user a directory the kernel writes,
+// unpacks into and clears as its own.
+for (const HOME of ['/usr/lib/nimbus/clang/x/share/clang/sysroot', '/usr/lib/nimbus', '/.nimbus/facet-images']) {
+  const db = new Database(':memory:');
+  await assert.rejects(open(db, { env: { HOME } }), /HOME/, `HOME=${HOME} is refused`);
+  db.close();
+}
+console.log('  a home is not configured inside the system\'s own stores');
+
 // ── an install is not written through a directory in its tree a user owns ──
 {
-  // A home configured inside a runtime's tree is the user's, made so by root.
+  // As one handed to a user earlier (only root could have): a home there.
   const db = new Database(':memory:');
-  const ws = await open(db, { env: { HOME: '/usr/lib/nimbus/toy/1.0.0/share' } });
+  const ws = await open(db);
   const kernel = ws.vfs.as(CRED_KERNEL);
+  kernel.mkdir('usr/lib/nimbus/toy/1.0.0/share', { recursive: true, mode: 0o755 });
+  kernel.chown('usr/lib/nimbus/toy/1.0.0/share', USER, USER);
   ws.vfs.as(CRED_SESSION_USER).symlink('/etc', 'usr/lib/nimbus/toy/1.0.0/share/toy');
   await assert.rejects(ws.runtimes.installPackage(toyPackage()), /usr\/lib\/nimbus\/toy\/1\.0\.0\/share/, 'the install is refused');
   assert.equal(kernel.exists('etc/data'), false, 'nothing is written through it');
