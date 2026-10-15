@@ -193,10 +193,17 @@ function makeInstaller(pkgJson, packages) {
   const warned = await ws.exec('cd /home/user/dev && npm install left-pad');
   assert.equal(warned.exitCode, 0, warned.stderr);
   assert.ok(warned.stderr.startsWith(said('warn', 'warn').join('\n')), warned.stderr);
+  // Below npm's warn level its warnings are not shown; its refusal stands.
+  const quiet = await ws.exec('cd /home/user/dev && npm install --loglevel=error left-pad');
+  assert.equal(quiet.exitCode, 0, quiet.stderr);
+  assert.ok(!quiet.stderr.includes('EBADDEVENGINES'), quiet.stderr);
   devEngines('error');
+  const quietForced = await ws.exec('cd /home/user/dev && npm install --loglevel=error --force left-pad');
+  assert.ok(!quietForced.stderr.includes('npm warn'), quietForced.stderr);
+  assert.equal((await ws.exec('cd /home/user/dev && npm ls --loglevel=error')).exitCode, 1);
   const global = await ws.exec('cd /home/user/dev && npm install -g left-pad');
   assert.ok(!global.stderr.includes('EBADDEVENGINES'), 'a global command is not checked');
-  assert.deepEqual(asked.length, 3);
+  assert.deepEqual(asked.length, 5);
 }
 
 // ── npm install says it as npm does: a warning of each, or the strict error ──

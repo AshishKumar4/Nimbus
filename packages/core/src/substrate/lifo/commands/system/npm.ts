@@ -29,7 +29,7 @@ import {
   type NpmInstallInvocation,
 } from './npm-install-args.js';
 import type { NpmConfig } from './npm-config.js';
-import { installSummary, npmDevEnginesLines, npmEngineLines, npmLogEnabled, npmRemovedLine, type NpmLogEmitter, type NpmLogLevel } from './npm-log.js';
+import { installSummary, npmDevEnginesLines, npmEngineLines, npmLogEnabled, npmRemovedLine, parseNpmLogLevel, type NpmLogEmitter, type NpmLogLevel } from './npm-log.js';
 import { checkDevEngines, type DevEnginesFailure } from '../../../../_shared/npm-libs.js';
 import { checkEngines, type EngineMismatch } from '../../../../_shared/npm-arborist/engines.js';
 import { exists } from '../../../../vfs/vfs.js';
@@ -196,13 +196,20 @@ function npmConfigOf(ctx: CommandContext): Promise<NpmConfig> {
 	if (config === undefined) {
 		config = (async () => {
 			const loaded = await (await import('./npm-config.js')).loadNpmConfig(ctx.vfs, ctx.cwd, ctx.env, ctx.args);
-			for (const warning of loaded.warnings) await ctx.stderr.write(`npm warn ${warning}\n`);
-			if (loaded.get('force')) await ctx.stderr.write('npm warn using --force Recommended protections disabled.\n');
+			if (npmWarns(loaded)) {
+				for (const warning of loaded.warnings) await ctx.stderr.write(`npm warn ${warning}\n`);
+				if (loaded.get('force')) await ctx.stderr.write('npm warn using --force Recommended protections disabled.\n');
+			}
 			return loaded;
 		})();
 		configs.set(ctx, config);
 	}
 	return config;
+}
+
+/** Whether npm's configured log level (`--loglevel`, an .npmrc's) shows its warnings. */
+function npmWarns(config: NpmConfig): boolean {
+	return npmLogEnabled(parseNpmLogLevel(config.get('loglevel')), 'warn');
 }
 
 /** What npm's devEngines preflight compares a project's devEngines with: this runtime (npm-install-checks currentEnv.devEngines). */
@@ -242,7 +249,7 @@ async function devEnginesRefuse(ctx: CommandContext, config: NpmConfig): Promise
 	const force = config.get('force') === true;
 	const errors = failures.filter((failure) => failure.isError);
 	const passed = [...failures.filter((failure) => failure.isWarn), ...(force ? errors : [])];
-	for (const [at, failure] of passed.entries()) for (const line of npmDevEnginesLines(failure, at === 0, 'warn')) await ctx.stderr.write(`${line}\n`);
+	if (npmWarns(config)) for (const [at, failure] of passed.entries()) for (const line of npmDevEnginesLines(failure, at === 0, 'warn')) await ctx.stderr.write(`${line}\n`);
 	if (force || errors.length === 0) return false;
 	for (const line of npmDevEnginesLines(errors[0]!, true, 'error')) await ctx.stderr.write(`${line}\n`);
 	return true;
