@@ -18,6 +18,11 @@ published independently in the `@nimbus-sh` npm scope.
   asks the registry first for a newer version.
 - Removed: core's `createNpxCommand` (`@nimbus-sh/core/substrate/lifo`),
   a second npx no Nimbus shell registered. The session's `npx` is the one.
+- Fixed: `pip install` sees a release published since an earlier install.
+  The session kept PyPI's answers forever, so a later install could not
+  see a new release, and each process's own network left its answers
+  behind. They are now kept as pip's HTTP cache keeps them: for the
+  response's `max-age` (15 minutes for PyPI).
 
 ## 2026-10-15: platform 0.11.0, core 0.22.0, fabric 0.17.0, worker 0.20.0, sdk 0.16.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4, runtime-cpython 3.13.14-2 (config 0.3.1 unchanged)
 
