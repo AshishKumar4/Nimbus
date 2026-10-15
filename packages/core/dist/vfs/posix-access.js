@@ -20,6 +20,16 @@ export function posixAccess(entry, want, cred) {
     const shift = cred.uid === entry.uid ? 6 : cred.gid === entry.gid || cred.groups.includes(entry.gid) ? 3 : 0;
     return ((permissions >> shift) & requested) === requested;
 }
+/**
+ * posixAccess for a filesystem's stat, as the session's views judge one: a
+ * stat without a mode (a backend that keeps none) is not judged, and an
+ * owner or group it keeps none of is no one's.
+ */
+export function modeAllows(stat, want, cred) {
+    if (stat.mode === undefined)
+        return true;
+    return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1, type: stat.type }, want, cred);
+}
 /** chmod(2)'s rule: only the owner or root changes a mode (EPERM). */
 export function chmodRefusal(entry, cred) {
     return cred.uid !== 0 && cred.uid !== entry.uid ? 'EPERM' : null;

@@ -2,7 +2,7 @@ import { inWatchedTree, projectChange } from './events.js';
 import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError } from './vfs-error.js';
 import { normalizeVfsPath, parentOf } from './path.js';
 import { entryVfsPath, walkVfsPath } from './path-walk.js';
-import { posixAccess } from './posix-access.js';
+import { modeAllows } from './posix-access.js';
 import { recallOf, withRecall } from './recall.js';
 import { DIRENT_TYPES } from './dirent-type.js';
 import { walkRemoval } from './removal-walk.js';
@@ -2269,15 +2269,10 @@ export class CompositeVFS {
             return null;
         }
     }
-    /** Whether this view's principal has `want` (r=4, w=2, x=1) on a stat, by its mode bits. */
+    /** Whether this view's principal has `want` (r=4, w=2, x=1) on a stat (modeAllows); a view with no principal is not judged. */
     permits(stat, want) {
         const cred = this.viewer.cred;
-        // An entry its backend keeps no mode for is not judged, and an owner or
-        // group it keeps none of matches no one. Its type is the stat's: a
-        // backend's mode may carry no file-type bits.
-        if (cred === null || stat.mode === undefined)
-            return true;
-        return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1, type: stat.type }, want, cred);
+        return cred === null || modeAllows(stat, want, cred);
     }
     /** A stat that failed during the walk: absent (ENOENT) reads as nothing there; other errors stand. */
     walkMiss(error, _path) {

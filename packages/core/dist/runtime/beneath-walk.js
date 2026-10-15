@@ -6,7 +6,7 @@
  * exactly the code the authority walks with (sqlite-runtime-fs-bridge.ts).
  */
 import { fsError as nodeFsError } from '../vfs/vfs-error.js';
-import { posixAccess } from '../vfs/posix-access.js';
+import { modeAllows } from '../vfs/posix-access.js';
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
 export const MAX_LINK_HOPS = 40;
 /** vfs-error.ts's fsError for a call on a runtime path, named by its path. */
@@ -14,12 +14,6 @@ export function fsError(code, syscall, path, dest, options = {}) {
     const name = typeof path === 'string' ? path : path.path;
     const second = dest === undefined ? undefined : typeof dest === 'string' ? dest : dest.path;
     return nodeFsError(code, syscall, name, second, options);
-}
-/** POSIX rwx for `cred` on a stat (posixAccess); a stat without a mode allows. An absent owner or group is no one's. */
-export function modeAllows(stat, want, cred) {
-    if (stat.mode === undefined)
-        return true;
-    return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1, type: stat.type }, want, cred);
 }
 /**
  * A lookup beneath `root` (RESOLVE_BENEATH, a WASI preopen), as the
