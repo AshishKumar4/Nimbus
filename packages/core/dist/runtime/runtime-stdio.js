@@ -1,54 +1,83 @@
 import { stdinBytesOf } from '../shell/stdin-adapter.js';
 import { outputHooks } from '../_shared/byte-stream.js';
-/** A runtime's fd0/1/2, on the process supervisor's existing byte channels. */
-export function openRuntimeStdio(deps, ctx, command, { consumedStdin = false } = {}) {
-    const reserved = ctx.__nimbusBinSpawn;
-    const owned = reserved?.callerPid === undefined;
-    const entry = owned
-        ? deps.processes.spawn(command, [command], ctx.cwd || '/home/user', { parentPid: ctx.pid, cred: ctx.cred })
-        : deps.processes.get(reserved.callerPid);
+/**
+ * A run's fd0/1/2, on the process supervisor's byte channels: its process
+ * (made, or the broker's), the signal that ends it, its input pumped (fd 0
+ * at EOF when nothing is) and its output delivered. `release` stops them as
+ * the run ends; ending an owned process is the runner's, once it has said
+ * what it has to.
+ */
+export function openInvocationStdio(processes, spec) {
+    const owned = spec.existingPid === undefined;
+    const entry = spec.existingPid === undefined
+        ? processes.spawn(spec.command, [...spec.argv], spec.cwd, { parentPid: spec.parentPid, cred: spec.cred })
+        : processes.get(spec.existingPid);
     if (!entry || entry.state !== 'running')
-        throw new Error(`${command}: runtime process is not running`);
+        throw new Error(`${spec.command}: runtime process is not running`);
     const pid = entry.pid;
     const controller = new AbortController();
-    const abort = () => controller.abort(ctx.signal?.reason);
-    if (ctx.signal?.aborted)
+    const abort = () => controller.abort(spec.signal?.reason);
+    if (spec.signal?.aborted)
         abort();
     else
-        ctx.signal?.addEventListener('abort', abort, { once: true });
-    deps.processes.setTerminator(pid, () => controller.abort());
+        spec.signal?.addEventListener('abort', abort, { once: true });
+    processes.setTerminator(pid, () => controller.abort());
+    const input = spec.input ? processes.pumpInput(pid, stdinBytesOf(spec.input)) : null;
+    if (!processes.hasInput(pid)) {
+        processes.openInput(pid);
+        processes.endInput(pid);
+    }
+    const output = spec.output;
+    const unsubscribe = output ? processes.subscribeOutputBytes(pid, ({ stream, data }) => output(stream, data)) : null;
+    if (unsubscribe)
+        processes.setForeground(pid, true);
+    return {
+        pid,
+        owned,
+        cred: entry.cred,
+        signal: controller.signal,
+        release() {
+            spec.signal?.removeEventListener('abort', abort);
+            input?.stop();
+            if (owned)
+                processes.closeInput(pid);
+            unsubscribe?.();
+            if (unsubscribe)
+                processes.setForeground(pid, false);
+        },
+    };
+}
+/** A runtime's fd0/1/2 for a command's run (openInvocationStdio over its CommandContext). */
+export function openRuntimeStdio(deps, ctx, command, { consumedStdin = false } = {}) {
+    const reserved = ctx.__nimbusBinSpawn;
     // A broker already owns this input and routes its output to the parent's
     // pipes. Pumping or subscribing a second time would duplicate that path.
     const brokerIo = reserved?.liveInput === true;
-    const input = !brokerIo && !consumedStdin && ctx.stdin
-        ? deps.processes.pumpInput(pid, stdinBytesOf(ctx.stdin)) : null;
-    if (!deps.processes.hasInput(pid)) {
-        deps.processes.openInput(pid);
-        deps.processes.endInput(pid);
-    }
-    const output = runtimeOutput(ctx);
-    const unsubscribe = brokerIo ? null : deps.processes.subscribeOutputBytes(pid, ({ stream, data }) => output.write(stream, data));
-    if (unsubscribe)
-        deps.processes.setForeground(pid, true);
+    const output = brokerIo ? null : runtimeOutput(ctx);
+    const stdio = openInvocationStdio(deps.processes, {
+        existingPid: reserved?.callerPid,
+        command,
+        argv: [command],
+        cwd: ctx.cwd || '/home/user',
+        parentPid: ctx.pid,
+        cred: ctx.cred,
+        signal: ctx.signal,
+        input: !brokerIo && !consumedStdin && ctx.stdin ? ctx.stdin : null,
+        output: output === null ? null : (stream, bytes) => output.write(stream, bytes),
+    });
     return {
-        pid,
-        signal: controller.signal,
-        syscalls: { pid, vfs: deps.filesystem.bind({ pid, cred: entry.cred }), processes: deps.processes },
+        pid: stdio.pid,
+        signal: stdio.signal,
+        syscalls: { pid: stdio.pid, vfs: deps.filesystem.bind({ pid: stdio.pid, cred: stdio.cred }), processes: deps.processes },
         async finish(exitCode) {
-            ctx.signal?.removeEventListener('abort', abort);
-            input?.stop();
-            unsubscribe?.();
-            if (unsubscribe)
-                deps.processes.setForeground(pid, false);
+            stdio.release();
             // Its last bytes before its exit: a character they left unfinished is written.
             try {
-                await output.end();
+                await output?.end();
             }
             finally {
-                if (owned) {
-                    deps.processes.closeInput(pid);
-                    deps.processes.exit(pid, exitCode);
-                }
+                if (stdio.owned)
+                    deps.processes.exit(stdio.pid, exitCode);
             }
         },
     };
