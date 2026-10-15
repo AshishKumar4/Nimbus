@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import realm from 'node:process';
 import { createProcessWarnings } from '../../../_shared/node-warning.js';
 import { ttyOf } from './tty-streams.js';
 import { NODE_VERSION, NODE_VERSIONS } from '../../../constants.js';
@@ -151,8 +152,9 @@ export function createProcess(opts) {
         }, {
             bigint: () => BigInt(Math.floor(performance.now() * 1e6)),
         }),
+        // The engine's: its queue runs before promise jobs, and a domain takes what a tick throws, as Node's.
         nextTick: (fn, ...args) => {
-            queueMicrotask(() => fn(...args));
+            realm.nextTick(() => fn(...args));
         },
         memoryUsage: () => {
             const m = performance.memory;

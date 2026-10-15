@@ -43,6 +43,7 @@ export async function runNodeProgram(program, host) {
         stdin: host.stdin,
         stdio: { stdout: host.stdoutStream, stderr: host.stderrStream, env: program.env, input: host.input, terminal: host.terminal },
         reachStreams: leaveStandardStreamsOpen,
+        ownRealm: true,
     };
     // One process and console, every module's, as in Node.
     const main = { process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdio: nodeCtx.stdio, identity }), console: createConsole(ctx.stdout, ctx.stderr), global: globalThis };
