@@ -1113,33 +1113,36 @@ const shellExecuteTracked = async (
     try { cmdCtx.stderr.write(line); } catch {}
     exitCode = 1;
   } finally {
-    await shown.end();
-    endAwait();
-    try { await scriptShell.closeDescriptors(); } catch {}
-    stopped();
-    // When a long-running script handed off to a live server (the registry
-    // command adopted this pid and returned 0), the process stays running;
-    // emitting an immediate exit would print a false `[shell exited]` and
-    // flip the process to terminated in /api/processes. Mirror the npm-bin
-    // resolver's `handedOffToLongRunningFacet` contract.
-    const handedOffToLongRunningFacet = opts.longRunning === true && exitCode === 0;
-    if (!handedOffToLongRunningFacet) {
-      try { self.processes.exit(pid, exitCode); } catch {}
-      try {
-        if (!self.processes.getExit(pid)) {
-          self.processes.markExit(pid, exitCode);
-        }
-      } catch {}
+    try {
+      await shown.end();
+    } finally {
+      endAwait();
+      try { await scriptShell.closeDescriptors(); } catch {}
+      stopped();
+      // When a long-running script handed off to a live server (the registry
+      // command adopted this pid and returned 0), the process stays running;
+      // emitting an immediate exit would print a false `[shell exited]` and
+      // flip the process to terminated in /api/processes. Mirror the npm-bin
+      // resolver's `handedOffToLongRunningFacet` contract.
+      const handedOffToLongRunningFacet = opts.longRunning === true && exitCode === 0;
+      if (!handedOffToLongRunningFacet) {
+        try { self.processes.exit(pid, exitCode); } catch {}
+        try {
+          if (!self.processes.getExit(pid)) {
+            self.processes.markExit(pid, exitCode);
+          }
+        } catch {}
 
-      // Structured exit for the tabs UI. Always fires (the UI doesn't
-      // know which tabs are open, and client-side dedupe is trivial).
-      // Include the command so the UI can backfill a tab for pids it
-      // never saw a spawn event for (e.g. evals routed past onSpawn).
-      notifyTerminalEvent(terminal, { type: 'exit', pid, code: exitCode, command: cmd });
+        // Structured exit for the tabs UI. Always fires (the UI doesn't
+        // know which tabs are open, and client-side dedupe is trivial).
+        // Include the command so the UI can backfill a tab for pids it
+        // never saw a spawn event for (e.g. evals routed past onSpawn).
+        notifyTerminalEvent(terminal, { type: 'exit', pid, code: exitCode, command: cmd });
 
-      // Keep shell execution diagnostics on the same session helper used by
-      // the rest of the process subsystem.
-      try { self._emitShellExecDone(pid, cmd, exitCode, Date.now() - startedAt); } catch {}
+        // Keep shell execution diagnostics on the same session helper used by
+        // the rest of the process subsystem.
+        try { self._emitShellExecDone(pid, cmd, exitCode, Date.now() - startedAt); } catch {}
+      }
     }
   }
   return exitCode;
