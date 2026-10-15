@@ -17,23 +17,20 @@
  * (resolve-one-facet.ts:264 + RESOLVE_VERSION). Handles all semver-range
  * syntax including major-only and major.minor.
  *
- * Binary lookup and execution follow the same user-visible npx flow:
- *   1. Check cwd/node_modules/.bin/<cmd>
- *   2. Check /tmp/.npx-cache/node_modules/.bin/<cmd>
- *   3. Check global registry (built-ins like vite, esbuild — handled by
- *      caller; this module is only invoked when registry resolution failed)
- *   4. Install package via NpmInstaller into /tmp/.npx-cache
- *   5. Locate <pkg>/package.json#bin → resolve absolute path
- *   6. Invoke via Nimbus's `node` registry command (preserves PID
- *      tracking, log buffer, process table membership)
+ * Binary lookup and execution follow libnpmexec 10.9.8's flow:
+ *   1. Built-ins (vite, esbuild) are the caller's, before this module.
+ *   2. The package in cwd/node_modules, where it answers the request
+ *      (libnpmexec missingFromTree, installedFor).
+ *   3. The npx cache directory of this request (npxCacheDir: one per spec
+ *      set, as libnpmexec's), where it answers it.
+ *   4. Else install the package into that directory via NpmInstaller.
+ *   5. The bin libnpmexec chooses from the package's manifest (npxPackageBin),
+ *      invoked via Nimbus's `node` registry command.
  */
 import type { NpmInstaller } from './installer.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProjectFs } from '../runtime/project-fs.js';
 import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
-/** Path where npx caches packages it installs. Matches the vendored substrate
- * cache layout so tooling that introspects npx state sees the expected path. */
-export declare const NPX_CACHE_DIR = "/tmp/.npx-cache";
 export type NpxSelfInvocation = 'help' | 'version' | 'missing' | null;
 /** What `npx <args>` asks for, read once. */
 export interface NpxInvocation {
@@ -49,6 +46,13 @@ export interface NpxInvocation {
 }
 export declare function parseNpxInvocation(rawArgs: string[]): NpxInvocation;
 export declare function formatNpxHelp(): string;
+/**
+ * The directory npx installs `specs` into, as libnpmexec 10.9.8 names it: the
+ * first 16 hex digits of the SHA-512 of the specs as written, sorted, one a
+ * line. Each request set its own, so one that fails, or names another
+ * version, never touches what another installed.
+ */
+export declare function npxCacheDir(specs: readonly string[]): Promise<string>;
 /**
  * Result of a Nimbus-native npx invocation.
  *
@@ -72,9 +76,9 @@ export interface NpxResolveResult {
 /**
  * Resolve a binary for `npx <args>` by:
  *   1. Parsing args.
- *   2. Checking the package in cwd/node_modules, then the NPX cache, for its bin.
- *   3. If absent, installing the package via NpmInstaller into
- *      /tmp/.npx-cache, then re-checking.
+ *   2. Checking the package in cwd/node_modules, then this request's npx
+ *      directory, where it answers the request (installedFor).
+ *   3. Else installing the package into that directory via NpmInstaller.
  *
  * The caller is responsible for actually invoking the resulting binPath
  * via Nimbus's `node` command — keeping this module pure (no process
@@ -86,7 +90,7 @@ export interface NpxResolveResult {
  */
 export declare function resolveNpxBinary(installer: NpmInstaller, 
 /** The caller's view of the namespace (runtime/project-fs.ts): the project and the npx cache alike. */
-vfs: Pick<ProjectFs, 'exists' | 'isDirectory' | 'readFileString' | 'mkdir' | 'writeFile'>, 
+vfs: Pick<ProjectFs, 'exists' | 'isDirectory' | 'readFileString' | 'mkdir'>, 
 /** The caller's credential: what the npx cache install is written as. */
 cred: VfsCred, cwd: string, rawArgs: string[], log: (msg: string) => void, pid: number, 
 /** The command's `NPM_REGISTRY`; the npx cache install reads from it too. */

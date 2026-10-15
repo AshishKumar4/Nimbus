@@ -128,9 +128,6 @@ export declare function packagesIn(vfs: VFS, modulesDir: string): AsyncGenerator
 export declare function getBinEntries(pkg: PackageJson): Record<string, string>;
 export declare function registerBinCommand(registry: CommandRegistry, binName: string, scriptPath: string, kernel?: Kernel): void;
 export declare function createNpmCommand(registry: CommandRegistry, shellExecute?: ShellExecuteFn, kernel?: Kernel, deps?: NpmCommandDeps): Command;
-export declare function createNpxCommand(registry: CommandRegistry, shellExecute?: ShellExecuteFn, 
-/** Its network is the one the npx cache install fetches through. */
-kernel?: Kernel, deps?: NpmCommandDeps): Command;
 /**
  * Install one package globally, through the install port (the host's, else
  * the shell's own). Called directly by `lifo install` to avoid the
