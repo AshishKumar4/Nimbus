@@ -1085,7 +1085,7 @@ function called(call, run) {
 function hasErrorCode(error, code) {
     return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
 }
-/** readFile's `maxBytes`: a regular file of at most `maxBytes` bytes is read whole; a directory answers as readFile does. */
+/** A whole read's `maxBytes` (RuntimeReadFileOptions): a regular file of at most `maxBytes` bytes is read whole; a directory answers as a read does. */
 export function fitsWholeRead(stat, maxBytes) {
     return stat.type === 'directory' || (stat.type === 'file' && !isCharacterDevice(stat.mode) && stat.size <= maxBytes);
 }

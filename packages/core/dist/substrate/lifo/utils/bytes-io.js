@@ -7,6 +7,7 @@ import { readToEnd } from '../../../runtime/process-files.js';
 import { isVfsError, syscallError } from '../../../vfs/vfs-error.js';
 import { resolve } from './path.js';
 import { direntTypeOfStat } from '../../../vfs/dirent-type.js';
+import { fitsWholeRead } from '../../../runtime/sqlite-runtime-fs-bridge.js';
 const enc = new TextEncoder();
 const CHUNK = 65536;
 /** An operand's bytes in bounded chunks; `-` or undefined is standard input. */
@@ -35,16 +36,20 @@ export async function* inputChunks(ctx, operand, { readSize = CHUNK, fileReadSiz
     // name leads to; a larger one, or a device, through one description from
     // its first byte to a read that answers none (its end), closed however the
     // reader stops: either way the bytes are one file's, whatever the name
-    // names after.
-    try {
-        const bytes = await ctx.vfs.readFile(path, { maxBytes: fileReadSize });
-        if (bytes.length > 0)
-            yield bytes;
-        return;
-    }
-    catch (error) {
-        if (!isVfsError(error) || error.code !== 'EFBIG')
-            throw error;
+    // names after. The stat only chooses which is tried first: a refusal that
+    // throws costs a deep stack's capture, as a stat does not.
+    const seen = await ctx.vfs.stat(path);
+    if (seen === null || fitsWholeRead(seen, fileReadSize)) {
+        try {
+            const bytes = await ctx.vfs.readFile(path, { maxBytes: fileReadSize });
+            if (bytes.length > 0)
+                yield bytes;
+            return;
+        }
+        catch (error) {
+            if (!isVfsError(error) || error.code !== 'EFBIG')
+                throw error;
+        }
     }
     const file = await ctx.vfs.open(path, { read: true });
     try {

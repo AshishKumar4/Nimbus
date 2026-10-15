@@ -2,7 +2,7 @@ import { type CredentialedVfs, type DelegationTerms, type SqliteVFS } from '../v
 import type { WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
 import { type CompositeVFS } from '../vfs/composite.js';
-import { type Awaitable, type VfsRemoval, type VfsStat } from '../vfs/vfs.js';
+import { type Awaitable, type VfsRemoval } from '../vfs/vfs.js';
 export { fsError, modeAllows, walkBeneath, type BeneathLookup } from './beneath-walk.js';
 import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeFsPath, RuntimeReadFileOptions, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeReopenTarget, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest } from './os-contracts.js';
 export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
@@ -214,6 +214,10 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     fchown(handleId: number, uid: number, gid: number): void;
     futimes(handleId: number, atime: number, mtime: number): void;
 }
-/** readFile's `maxBytes`: a regular file of at most `maxBytes` bytes is read whole; a directory answers as readFile does. */
-export declare function fitsWholeRead(stat: Pick<VfsStat, 'type' | 'size' | 'mode'>, maxBytes: number): boolean;
+/** A whole read's `maxBytes` (RuntimeReadFileOptions): a regular file of at most `maxBytes` bytes is read whole; a directory answers as a read does. */
+export declare function fitsWholeRead(stat: {
+    readonly type: string;
+    readonly size: number;
+    readonly mode?: number;
+}, maxBytes: number): boolean;
 //# sourceMappingURL=sqlite-runtime-fs-bridge.d.ts.map
