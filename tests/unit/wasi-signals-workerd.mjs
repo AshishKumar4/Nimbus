@@ -62,6 +62,9 @@ function nativeRepo() {
 }
 
 const query = 'protocol=https\nhost=example.com\n\n';
+// A helper and an editor that wait a minute, whatever arguments git appends ("get", the message's file).
+const HELPER = '!sleep 60; :';
+const EDITOR = 'sleep 60; :';
 const ident = { GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@a', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@a' };
 
 let probe;
@@ -112,9 +115,9 @@ try {
   probe = await startLocalProbe({ runtimes: ['bash', 'git'] });
 
   await check('git waiting on its credential helper dies of SIGINT, its helper with it', async () => {
-    const native = await nativeInterrupt(['git', '-c', 'credential.helper=!sleep 60', 'credential', 'fill'], { cwd: tmpdir(), input: query });
+    const native = await nativeInterrupt(['git', '-c', `credential.helper=${HELPER}`, 'credential', 'fill'], { cwd: tmpdir(), input: query });
     console.log('native credential:', JSON.stringify(native));
-    const nimbus = await interrupted(`printf '${query.replace(/\n/g, '\\n')}' | NIMBUS_GIT_WASI=1 git -c credential.helper='!sleep 60' credential fill`);
+    const nimbus = await interrupted(`printf '${query.replace(/\n/g, '\\n')}' | NIMBUS_GIT_WASI=1 git -c credential.helper='${HELPER}' credential fill`);
     assert.equal(nimbus.status, native.status, `status (native ${native.status}): ${JSON.stringify(nimbus.text.slice(-400))}`);
     assert.ok(nimbus.backMs !== null && nimbus.backMs <= PROMPT_BACK_MS, `prompt back ${nimbus.backMs} ms after Ctrl-C`);
     assert.deepEqual(nimbus.live.filter((command) => /git|sleep/.test(command)), [], 'git and its helper ended');
@@ -123,11 +126,11 @@ try {
   await check('git commit ignores SIGINT while its editor runs, and cleans up after the editor dies of it', async () => {
     const dir = nativeRepo();
     try {
-      const native = await nativeInterrupt(['git', 'commit', '-a'], { cwd: dir, env: { ...ident, GIT_EDITOR: 'sleep 60' } });
+      const native = await nativeInterrupt(['git', 'commit', '-a'], { cwd: dir, env: { ...ident, GIT_EDITOR: EDITOR } });
       console.log('native commit:', JSON.stringify(native));
-      const nimbus = await interrupted('cd repo && GIT_EDITOR="sleep 60" NIMBUS_GIT_WASI=1 git commit -a', {
+      const nimbus = await interrupted(`cd /home/user/repo && GIT_EDITOR='${EDITOR}' NIMBUS_GIT_WASI=1 git commit -a`, {
         setup: [
-          'mkdir repo && cd repo && NIMBUS_GIT_WASI=1 git init -q -b main && echo one > f && NIMBUS_GIT_WASI=1 git add f'
+          'mkdir -p /home/user/repo && cd /home/user/repo && NIMBUS_GIT_WASI=1 git init -q -b main && echo one > f && NIMBUS_GIT_WASI=1 git add f'
             + ` && ${Object.entries(ident).map(([k, v]) => `${k}=${v}`).join(' ')} NIMBUS_GIT_WASI=1 git commit -q -m one && echo two > f`,
         ],
       });
@@ -137,7 +140,7 @@ try {
       assert.match(native.stderr, /problem with the editor/);
       assert.match(nimbus.text, /problem with the editor/, 'git reported the editor\'s failure');
       assert.equal(existsSync(join(dir, '.git', 'index.lock')), false, 'native git removed its index.lock');
-      const lock = await nimbus.session.run('test -e repo/.git/index.lock && echo locked || echo clean', 30_000);
+      const lock = await nimbus.session.run('test -e /home/user/repo/.git/index.lock && echo locked || echo clean', 30_000);
       assert.match(lock.stdout, /clean/, 'git removed its index.lock');
     } finally {
       rmSync(dir, { recursive: true, force: true });
