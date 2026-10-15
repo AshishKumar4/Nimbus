@@ -55,10 +55,10 @@ export function* scanOptions(args, spec, { abbreviations = true, stopAtOperand =
                 yield { kind: 'unwanted', key, option: `--${name}`, value: inline };
             }
             else if (argument === 'required' && inline === undefined) {
-                yield i + 1 < args.length ? { kind: 'option', key, value: args[++i] } : { kind: 'missing', key, option: `--${name}` };
+                yield i + 1 < args.length ? { kind: 'option', key, value: args[i + 1], word: i++ } : { kind: 'missing', key, option: `--${name}` };
             }
             else {
-                yield inline === undefined ? { kind: 'option', key } : { kind: 'option', key, value: inline };
+                yield inline === undefined ? { kind: 'option', key, word: i } : { kind: 'option', key, value: inline, word: i };
             }
             continue;
         }
@@ -69,14 +69,14 @@ export function* scanOptions(args, spec, { abbreviations = true, stopAtOperand =
                 continue;
             }
             if (!takesArgument(letter)) {
-                yield { kind: 'option', key: letter };
+                yield { kind: 'option', key: letter, word: i };
                 continue;
             }
             const rest = arg.slice(j + 1);
             if (rest !== '')
-                yield { kind: 'option', key: letter, value: rest };
+                yield { kind: 'option', key: letter, value: rest, word: i };
             else
-                yield i + 1 < args.length ? { kind: 'option', key: letter, value: args[++i] } : { kind: 'missing', key: letter, option: `-${letter}` };
+                yield i + 1 < args.length ? { kind: 'option', key: letter, value: args[i + 1], word: i++ } : { kind: 'missing', key: letter, option: `-${letter}` };
             break;
         }
     }

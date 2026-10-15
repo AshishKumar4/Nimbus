@@ -3,12 +3,12 @@
  * bytes: a byte that is not valid UTF-8 passes through unchanged. Decoding
  * with TextDecoder would turn it into U+FFFD, three different bytes.
  */
+import { concatBytes as concatParts, enc, dec } from '../../../_shared/bytes.js';
 import { readToEnd } from '../../../runtime/process-files.js';
 import { isVfsError, syscallError } from '../../../vfs/vfs-error.js';
 import { resolve } from './path.js';
 import { direntTypeOfStat } from '../../../vfs/dirent-type.js';
 import { fitsWholeRead } from '../../../runtime/sqlite-runtime-fs-bridge.js';
-const enc = new TextEncoder();
 const CHUNK = 65536;
 /** An operand's bytes in bounded chunks; `-` or undefined is standard input. */
 export async function* inputChunks(ctx, operand, { readSize = CHUNK, fileReadSize = CHUNK, slice = false } = {}) {
@@ -73,17 +73,9 @@ export async function readAllInput(ctx, operand) {
         parts.push(chunk);
     return concatBytes(parts);
 }
+/** The parts as one: a single part is itself, uncopied; more are the shared concatenation (_shared/bytes.ts). */
 export function concatBytes(parts) {
-    if (parts.length === 1)
-        return parts[0];
-    const total = parts.reduce((n, part) => n + part.length, 0);
-    const out = new Uint8Array(total);
-    let at = 0;
-    for (const part of parts) {
-        out.set(part, at);
-        at += part.length;
-    }
-    return out;
+    return parts.length === 1 ? parts[0] : concatParts(parts);
 }
 /** Write bytes as they are, to a sink that takes bytes; a text-only sink gets their lossless decoding. */
 export async function writeBytes(out, bytes) {
@@ -104,7 +96,7 @@ export function decodeLossless(bytes) {
     let run = 0;
     const flush = (end) => {
         if (end > run)
-            out += new TextDecoder().decode(bytes.subarray(run, end));
+            out += dec.decode(bytes.subarray(run, end));
     };
     for (let i = 0; i < bytes.length;) {
         const b = bytes[i];

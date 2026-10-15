@@ -1,5 +1,6 @@
-import { inputChunks } from '../../utils/bytes-io.js';
-const enc = new TextEncoder();
+import { concatBytes, inputChunks } from '../../utils/bytes-io.js';
+import { dec, enc } from '../../../../_shared/bytes.js';
+import { getopt } from '../../utils/args.js';
 class CutUsage extends Error {
 }
 /** A list: items split on commas or blanks; N, N-M, N-, -M. Sorted, overlaps merged. */
@@ -94,6 +95,15 @@ function cutRecord(record, o) {
     }
     return parts;
 }
+/** GNU cut's options, its long ones in its table's order. */
+const CUT_OPTIONS = {
+    short: 'b:c:d:f:nsz',
+    long: {
+        bytes: ['b', 'required'], characters: ['c', 'required'], delimiter: ['d', 'required'], fields: ['f', 'required'],
+        'only-delimited': ['s', 'none'], 'output-delimiter': ['output-delimiter', 'required'], complement: ['complement', 'none'],
+        'zero-terminated': ['z', 'none'],
+    },
+};
 const command = async (ctx) => {
     let mode = null;
     let list = '';
@@ -114,67 +124,42 @@ const command = async (ctx) => {
         list = value;
         return undefined;
     };
-    const args = ctx.args;
-    for (let i = 0; i < args.length; i++) {
-        const arg = args[i];
-        if (arg === '--') {
-            files.push(...args.slice(i + 1));
-            break;
+    for (const event of getopt(ctx.args, CUT_OPTIONS)) {
+        if (event.kind === 'error')
+            return usage(event.message);
+        if (event.kind === 'operand') {
+            files.push(event.value);
+            continue;
         }
-        if (arg.startsWith('--')) {
-            const eq = arg.indexOf('=');
-            const name = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
-            const takes = ['bytes', 'characters', 'fields', 'delimiter', 'output-delimiter'].includes(name);
-            let value = eq === -1 ? undefined : arg.slice(eq + 1);
-            if (takes && value === undefined)
-                value = args[++i];
-            if (takes && value === undefined)
-                return usage(`option '--${name}' requires an argument`);
-            let error;
-            if (name === 'bytes' || name === 'characters')
+        const value = event.value ?? '';
+        let error;
+        switch (event.key) {
+            case 'b':
+            case 'c':
                 error = setList('bytes', value);
-            else if (name === 'fields')
-                error = setList('fields', value);
-            else if (name === 'delimiter')
-                delimiterText = value;
-            else if (name === 'output-delimiter')
-                outputDelimiter = enc.encode(value);
-            else if (name === 'only-delimited')
-                onlyDelimited = true;
-            else if (name === 'complement')
-                complemented = true;
-            else if (name === 'zero-terminated')
-                terminator = 0;
-            else
-                return usage(`unrecognized option '--${name}'`);
-            if (error !== undefined)
-                return usage(error);
-            continue;
-        }
-        if (!arg.startsWith('-') || arg === '-') {
-            files.push(arg);
-            continue;
-        }
-        for (let j = 1; j < arg.length; j++) {
-            const flag = arg[j];
-            if ('bcfd'.includes(flag)) {
-                let value = arg.slice(j + 1);
-                if (value === '')
-                    value = args[++i];
-                if (value === undefined)
-                    return usage(`option requires an argument -- '${flag}'`);
-                const error = flag === 'd' ? (delimiterText = value, undefined) : setList(flag === 'f' ? 'fields' : 'bytes', value);
-                if (error !== undefined)
-                    return usage(error);
                 break;
-            }
-            if (flag === 's')
+            case 'f':
+                error = setList('fields', value);
+                break;
+            case 'd':
+                delimiterText = value;
+                break;
+            case 'output-delimiter':
+                outputDelimiter = enc.encode(value);
+                break;
+            case 's':
                 onlyDelimited = true;
-            else if (flag === 'z')
+                break;
+            case 'complement':
+                complemented = true;
+                break;
+            case 'z':
                 terminator = 0;
-            else if (flag !== 'n')
-                return usage(`invalid option -- '${flag}'`);
+                break;
+            // -n: no split multibyte characters, which bytes are here.
         }
+        if (error !== undefined)
+            return usage(error);
     }
     if (mode === null)
         return usage('you must specify a list of bytes, characters, or fields');
@@ -203,17 +188,11 @@ const command = async (ctx) => {
     };
     const end = Uint8Array.of(terminator);
     const write = async (parts) => {
-        const total = parts.reduce((n, part) => n + part.length, 0);
-        const out = new Uint8Array(total);
-        let at = 0;
-        for (const part of parts) {
-            out.set(part, at);
-            at += part.length;
-        }
+        const out = concatBytes(parts);
         if (ctx.stdout.writeBytes)
             await ctx.stdout.writeBytes(out);
         else
-            await ctx.stdout.write(new TextDecoder().decode(out));
+            await ctx.stdout.write(dec.decode(out));
     };
     let status = 0;
     for (const file of files.length > 0 ? files : [undefined]) {

@@ -5254,25 +5254,6 @@ export function registerUnixCommands(registry, sqliteVfs) {
     }));
     registry.register('test', wrap(mkTest(false)));
     registry.register('[', wrap(mkTest(true)));
-    // read — read a line (stub, returns empty for non-interactive)
-    // shell-polish (2026-05-12): `read VAR` is registered here as a
-    // NO-OP fallback (matches the pre-existing stub behaviour). The
-    // REAL working implementation lives in src/session/init.ts as a
-    // shell builtin (shellAny.builtins.set('read', ...)).
-    //
-    // Why two registrations: the interpreter executes registered
-    // shell commands with `ctx.env = { ...this.config.env }` — a SHALLOW
-    // COPY.
-    // Mutating ctx.env inside a registered command therefore CANNOT
-    // propagate the var-assignment back to the shell. Builtins, by
-    // contrast, run inside the interp instance with direct access to
-    // `this.env` (the real shell env). The wait builtin in shell/compat/r6 uses
-    // the same workaround.
-    //
-    // Keep the registry stub so `type read` reports "shell builtin" and
-    // `which read` doesn't error; the builtin always wins dispatch
-    // (interp.executeSimpleCommand checks builtins.get BEFORE
-    // registry.resolve — index-Djm2onjx.js:5182-5186).
     // read, exit, source, ., set and trap are the shell's own builtins; run by
     // name (xargs, find -exec) they are not found, as on a system that ships no
     // /usr/bin copies of them. shopt and ulimit answer for this shell: it has

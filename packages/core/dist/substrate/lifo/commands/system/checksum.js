@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { crc32 } from '@nimbus-sh/platform/crc32.js';
+import { getopt } from '../../utils/args.js';
 import { decodeLossless, encodeLossless, inputChunks, readAllInput, writeBytes } from '../../utils/bytes-io.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
 import { shellEscape } from '../../../../_shared/shell-quote.js';
@@ -153,16 +155,6 @@ const CRC_POSIX = (() => {
     }
     return table;
 })();
-const CRC_32B = (() => {
-    const table = new Uint32Array(256);
-    for (let i = 0; i < 256; i++) {
-        let c = i;
-        for (let k = 0; k < 8; k++)
-            c = c & 1 ? (c >>> 1) ^ 0xedb88320 : c >>> 1;
-        table[i] = c >>> 0;
-    }
-    return table;
-})();
 function crcPosix() {
     let crc = 0;
     let size = 0;
@@ -180,16 +172,16 @@ function crcPosix() {
         },
     };
 }
+/** IEEE CRC-32 (zlib's), the platform's: each update continues the finished value before it. */
 function crc32b() {
-    let crc = 0xffffffff;
+    let crc = 0;
     let size = 0;
     return {
         update(bytes) {
-            for (const b of bytes)
-                crc = (crc >>> 8) ^ CRC_32B[(crc ^ b) & 0xff];
+            crc = crc32(bytes, crc);
             size += bytes.length;
         },
-        result: () => ({ value: (crc ^ 0xffffffff) >>> 0, size }),
+        result: () => ({ value: crc, size }),
     };
 }
 function bsdSum() {
@@ -458,6 +450,28 @@ async function checkFiles(ctx, o) {
     return status;
 }
 // ── commands ──
+/**
+ * A checksum program's options, as GNU's digest.c gives each: sum's -r and
+ * -s; the *sum tools' check and output options (b2sum's -l too); cksum's
+ * besides, -a and the long ones of its own. Long ones in GNU's table order.
+ */
+function checksumOptions(program, isCksum) {
+    if (program === 'sum')
+        return { short: 'rs', long: { sysv: ['s', 'none'] } };
+    const option = (key, argument = 'none') => [key, argument];
+    const lengthed = isCksum || program === 'b2sum';
+    return {
+        short: `${isCksum ? 'a:' : ''}${lengthed ? 'l:' : ''}bctwz`,
+        long: {
+            ...(lengthed ? { length: option('l', 'required') } : {}),
+            binary: option('b'), check: option('c'), 'ignore-missing': option('ignore-missing'), quiet: option('quiet'),
+            status: option('status'), text: option('t'), warn: option('w'), strict: option('strict'), tag: option('tag'), zero: option('z'),
+            ...(isCksum ? {
+                algorithm: option('a', 'required'), base64: option('base64'), debug: option('debug'), raw: option('raw'), untagged: option('untagged'),
+            } : {}),
+        },
+    };
+}
 function makeCommand(program, fixed) {
     return async (ctx) => {
         const usage = async (message) => {
@@ -475,7 +489,6 @@ function makeCommand(program, fixed) {
         let tagGiven = false;
         // The -c-only options, in the order given (GNU names the first it checks).
         const checkOnly = new Set();
-        const sumMode = program === 'sum';
         const setAlgorithm = (a) => {
             algorithmGiven = true;
             if (a in DIGESTS)
@@ -486,134 +499,77 @@ function makeCommand(program, fixed) {
                 return `invalid argument \u2018${a}\u2019 for \u2018--algorithm\u2019`;
             return null;
         };
-        const args = ctx.args;
-        for (let i = 0; i < args.length; i++) {
-            const arg = args[i];
-            if (arg === '--') {
-                o.files.push(...args.slice(i + 1));
-                break;
-            }
-            if (arg.startsWith('--')) {
-                const [name, inline] = arg.slice(2).split(/=(.*)/s, 2);
-                const value = () => inline ?? args[++i];
-                switch (name) {
-                    case 'binary':
-                        o.binary = true;
-                        binaryOrText = true;
-                        break;
-                    case 'text':
-                        o.binary = false;
-                        binaryOrText = true;
-                        break;
-                    case 'tag':
-                        o.tag = true;
-                        tagGiven = true;
-                        break;
-                    case 'untagged':
-                        untagged = true;
-                        break;
-                    case 'zero':
-                        o.zero = true;
-                        break;
-                    case 'check':
-                        o.check = true;
-                        break;
-                    case 'ignore-missing':
-                        o.ignoreMissing = true;
-                        checkOnly.add('ignore-missing');
-                        break;
-                    case 'quiet':
-                        o.mode = 'quiet';
-                        checkOnly.add('quiet');
-                        break;
-                    case 'status':
-                        o.mode = 'status';
-                        checkOnly.add('status');
-                        break;
-                    case 'strict':
-                        o.strict = true;
-                        checkOnly.add('strict');
-                        break;
-                    case 'warn':
-                        o.mode = 'warn';
-                        checkOnly.add('warn');
-                        break;
-                    case 'base64':
-                        o.base64 = true;
-                        break;
-                    case 'raw':
-                        o.raw = true;
-                        break;
-                    case 'debug': break;
-                    case 'length':
-                        length = Number(value());
-                        break;
-                    case 'algorithm': {
-                        if (fixed !== null)
-                            return usage(`unrecognized option '--algorithm'`);
-                        const error = setAlgorithm(value());
-                        if (error)
-                            return usage(error);
-                        break;
-                    }
-                    case 'sysv': if (sumMode) {
-                        o.algorithm = { kind: 'sysv' };
-                        break;
-                    }
-                    // falls through
-                    default: return usage(`unrecognized option '--${name}'`);
-                }
+        for (const event of getopt(ctx.args, checksumOptions(program, fixed === null))) {
+            if (event.kind === 'error')
+                return usage(event.message);
+            if (event.kind === 'operand') {
+                o.files.push(event.value);
                 continue;
             }
-            if (!arg.startsWith('-') || arg === '-') {
-                o.files.push(arg);
-                continue;
-            }
-            for (let j = 1; j < arg.length; j++) {
-                const flag = arg[j];
-                if ((flag === 'l' && program !== 'sum') || (flag === 'a' && fixed === null)) {
-                    let value = arg.slice(j + 1);
-                    if (value === '')
-                        value = args[++i];
-                    if (value === undefined)
-                        return usage(`option requires an argument -- '${flag}'`);
-                    if (flag === 'l')
-                        length = Number(value);
-                    else {
-                        const error = setAlgorithm(value);
-                        if (error)
-                            return usage(error);
-                    }
-                    break;
-                }
-                if (sumMode && flag === 'r') {
-                    o.algorithm = { kind: 'bsd' };
-                    continue;
-                }
-                if (sumMode && flag === 's') {
-                    o.algorithm = { kind: 'sysv' };
-                    continue;
-                }
-                if (sumMode)
-                    return usage(`invalid option -- '${flag}'`);
-                if (flag === 'b') {
+            switch (event.key) {
+                case 'b':
                     o.binary = true;
                     binaryOrText = true;
-                }
-                else if (flag === 't') {
+                    break;
+                case 't':
                     o.binary = false;
                     binaryOrText = true;
-                }
-                else if (flag === 'c')
+                    break;
+                case 'tag':
+                    o.tag = true;
+                    tagGiven = true;
+                    break;
+                case 'untagged':
+                    untagged = true;
+                    break;
+                case 'z':
+                    o.zero = true;
+                    break;
+                case 'c':
                     o.check = true;
-                else if (flag === 'w') {
+                    break;
+                case 'ignore-missing':
+                    o.ignoreMissing = true;
+                    checkOnly.add('ignore-missing');
+                    break;
+                case 'quiet':
+                    o.mode = 'quiet';
+                    checkOnly.add('quiet');
+                    break;
+                case 'status':
+                    o.mode = 'status';
+                    checkOnly.add('status');
+                    break;
+                case 'strict':
+                    o.strict = true;
+                    checkOnly.add('strict');
+                    break;
+                case 'w':
                     o.mode = 'warn';
                     checkOnly.add('warn');
+                    break;
+                case 'base64':
+                    o.base64 = true;
+                    break;
+                case 'raw':
+                    o.raw = true;
+                    break;
+                case 'l':
+                    length = Number(event.value);
+                    break;
+                case 'a': {
+                    const error = setAlgorithm(event.value ?? '');
+                    if (error)
+                        return usage(error);
+                    break;
                 }
-                else if (flag === 'z')
-                    o.zero = true;
-                else
-                    return usage(`invalid option -- '${flag}'`);
+                case 'r':
+                    o.algorithm = { kind: 'bsd' };
+                    break;
+                case 's':
+                    o.algorithm = { kind: 'sysv' };
+                    break;
+                // --debug: nothing to say.
             }
         }
         // Everything a combination of options refuses, before any work (GNU's order).

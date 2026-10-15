@@ -17,6 +17,13 @@ export interface GetoptSpec {
     readonly short: string;
     readonly long: Readonly<Record<string, readonly [key: string, argument: LongArgument]>>;
 }
+/** An option, by key, with its argument, and the index of the word that named it (`-k2`'s, or `-k`'s in `-k 2`). */
+export interface ScanOption {
+    readonly kind: 'option';
+    readonly key: string;
+    readonly value?: string;
+    readonly word: number;
+}
 /**
  * One step of a scan: an option (by key, with its argument) or an operand;
  * or an option the spec cannot take: one it does not have (`option` is `-x`
@@ -24,11 +31,7 @@ export interface GetoptSpec {
  * an argument and is the last word, or a long one given an argument it does
  * not take. The scan goes on after each; a policy decides what it means.
  */
-export type ScanEvent = {
-    readonly kind: 'option';
-    readonly key: string;
-    readonly value?: string;
-} | {
+export type ScanEvent = ScanOption | {
     readonly kind: 'operand';
     readonly value: string;
 } | {
@@ -70,11 +73,7 @@ export interface ScanOptions {
  */
 export declare function scanOptions(args: readonly string[], spec: GetoptSpec, { abbreviations, stopAtOperand }?: ScanOptions): Generator<ScanEvent>;
 /** An option or an operand, or the diagnostic GNU getopt prints for a bad option. */
-export type GetoptEvent = {
-    readonly kind: 'option';
-    readonly key: string;
-    readonly value?: string;
-} | {
+export type GetoptEvent = ScanOption | {
     readonly kind: 'operand';
     readonly value: string;
 } | {
