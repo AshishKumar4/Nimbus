@@ -3,6 +3,11 @@ import { createProcessWarnings } from '../../../_shared/node-warning.js';
 import { standardStream } from './standard-streams.js';
 import { NODE_VERSION, NODE_VERSIONS } from '../../../constants.js';
 import { nodeError } from '../../../_shared/node-error.js';
+/** The status a program's process ends with when it ends by itself: its process.exitCode, as Node reads it (0 unset). */
+export function exitCodeOf(proc) {
+    const code = Reflect.get(proc, 'exitCode');
+    return typeof code === 'number' && Number.isInteger(code) ? code : 0;
+}
 export class ProcessExitError extends Error {
     exitCode;
     constructor(code) {
@@ -72,9 +77,8 @@ export function createProcess(opts) {
         env: { ...opts.env },
         cwd: () => opts.cwd,
         chdir: (_dir) => { throw new Error('process.chdir() is not supported in Lifo'); },
-        exit: (code = 0) => {
-            throw new ProcessExitError(code);
-        },
+        // Node's: no code is process.exitCode's.
+        exit: (code) => { throw new ProcessExitError(code ?? exitCodeOf(proc)); },
         stdin: {
             isTTY: false,
             fd: 0,
