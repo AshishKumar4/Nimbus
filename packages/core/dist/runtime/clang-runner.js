@@ -49,7 +49,17 @@ export function makeClangRunnerFactory(deps) {
         const sysrootVfsPath = findFile('share/clang/sysroot.tar');
         // Guest-visible: the toolchain is handed this as an absolute path.
         const sysrootDir = `/${normalizeVfsPath(`${installRoot}/${SYSROOT_DIR_REL}`)}`;
-        let runtimePromise = null;
+        // Each made once, by the first run that needs it, and again by the next
+        // after a failure. clang is read only to compile and wasm-ld only to
+        // link: a compile-only run, or one whose compile fails, never reads the
+        // linker. The images are read uncached: one-shot bulk reads of large
+        // blobs (clang 31 MiB, wasm-ld 18.5 MiB, sysroot 9.3 MiB) routed through
+        // the LRU content cache would evict the user's hot working set and pin
+        // the chunks in the DO heap for the session, tipping heavy sessions into
+        // an OOM reset mid-compile.
+        const sysroot = lazily();
+        const clangImage = lazily();
+        const lldImage = lazily();
         // Installed toolchain blobs are supervisor-owned artifacts, so they are read
         // through a kernel host lease that lives exactly as long as one invocation.
         return function clangBinHandler(ctx) {
@@ -132,38 +142,44 @@ export function makeClangRunnerFactory(deps) {
                 ctx.stderr.write(`${binName}: no compilable / linkable inputs\n`);
                 return 1;
             }
-            let toolchain;
             try {
-                if (!runtimePromise) {
-                    runtimePromise = loadClangToolchain({
-                        clangVfsPath,
-                        lldVfsPath,
-                        sysrootVfsPath,
-                        sysrootDir,
-                        vfs: runtimeVfs,
-                    });
-                }
-                toolchain = await runtimePromise;
+                await sysroot(() => ensureSysrootUnpacked(runtimeVfs, sysrootVfsPath, sysrootDir));
             }
             catch (e) {
-                runtimePromise = null;
                 ctx.stderr.write(`${binName}: clang runtime warm-up failed: ${errorMessage(e)}\n`);
                 return 1;
             }
             // Opened per invocation, not cached: the supervisor capability is bound
             // to this process's pid when the facet opens, so one held across calls
             // would hand every later caller the first caller's credential.
-            const openTarget = (primaryName, image) => ({
-                primaryName,
-                pid: stdio.pid,
-                facet: deps.facets.open({
-                    tag: `clang-runner-${primaryName}`,
-                    concurrency: 1,
-                    syscalls: stdio.syscalls,
-                    preamble: CLANG_RUNNER_PREAMBLE,
-                    wasmModules: { 'primary.wasm': image },
-                }),
-            });
+            // A phase's target, opened when the phase first runs, its image read
+            // then; null, said, when the image cannot be read.
+            const opened = [];
+            const openTarget = async (primaryName) => {
+                let image;
+                try {
+                    image = primaryName === 'clang'
+                        ? await clangImage(() => runtimeVfs.readArrayBufferUncached(clangVfsPath))
+                        : await lldImage(() => runtimeVfs.readArrayBufferUncached(lldVfsPath));
+                }
+                catch (e) {
+                    ctx.stderr.write(`${binName}: ${primaryName} runtime warm-up failed: ${errorMessage(e)}\n`);
+                    return null;
+                }
+                const target = {
+                    primaryName,
+                    pid: stdio.pid,
+                    facet: deps.facets.open({
+                        tag: `clang-runner-${primaryName}`,
+                        concurrency: 1,
+                        syscalls: stdio.syscalls,
+                        preamble: CLANG_RUNNER_PREAMBLE,
+                        wasmModules: { 'primary.wasm': image },
+                    }),
+                };
+                opened.push(target);
+                return target;
+            };
             // Intermediate objects live in a per-invocation scratch directory, as a
             // real driver's do, so a multi-file build leaves no .o beside the
             // sources. `-c` is the exception: its objects ARE the output.
@@ -180,8 +196,6 @@ export function makeClangRunnerFactory(deps) {
             }
             const stdio = openRuntimeStdio(deps, ctx, [binName, ...argv].join(' '));
             let outcome = 1;
-            const compile = openTarget('clang', toolchain.clang);
-            const link = openTarget('wasm-ld', toolchain.lld);
             const execute = async () => {
                 try {
                     // ── COMPILE PHASE ────────────────────────────────────────────
@@ -200,7 +214,11 @@ export function makeClangRunnerFactory(deps) {
                     // input); otherwise it goes to the scratch directory, keyed by the
                     // source's full path so src/foo.c and lib/foo.c never collide.
                     const objPaths = [];
+                    let compile = null;
                     for (const src of sourceInputs) {
+                        compile ??= await openTarget('clang');
+                        if (compile === null)
+                            return 1;
                         const objName = src.slice(src.lastIndexOf('/') + 1).replace(/\.(c|cc|cpp|cxx|c\+\+|C)$/, '.o');
                         const objPath = scratchVfs
                             ? `/${scratchVfs}/${src.replace(/^\/+/, '').replace(/\//g, '_').replace(/\.[^.]+$/, '.o')}`
@@ -274,6 +292,9 @@ export function makeClangRunnerFactory(deps) {
                         '-lclang_rt.builtins-wasm32',
                         '-o', outputGuest,
                     ];
+                    const link = await openTarget('wasm-ld');
+                    if (link === null)
+                        return 1;
                     const linkStarted = Date.now();
                     const linkResult = await dispatchClangFacet(link, { argv: linkArgv, cred: processCred }, stdio.signal);
                     const linkMs = Date.now() - linkStarted;
@@ -303,8 +324,8 @@ export function makeClangRunnerFactory(deps) {
                     return 0;
                 }
                 finally {
-                    compile.facet.dispose();
-                    link.facet.dispose();
+                    for (const target of opened)
+                        target.facet.dispose();
                     if (scratchVfs)
                         await vfs.remove(scratchVfs, { recursive: true, force: true });
                 }
@@ -543,18 +564,13 @@ async function ensureSysrootUnpacked(vfs, tarVfsPath, sysrootDir) {
     const stamp = { tarSize, files: paths.size };
     await vfs.writeFile(stampPath, JSON.stringify(stamp));
 }
-async function loadClangToolchain(args) {
-    // Uncached reads: these are one-shot bulk reads of large runtime blobs
-    // (clang 31 MiB, wasm-ld 18.5 MiB, sysroot 9.3 MiB). Routing them
-    // through the LRU content cache would evict the user's hot working set
-    // and pin ~32 MiB of clang chunks resident in the DO heap for the whole
-    // session — a primary cause of supervisor-DO memory pressure that tips
-    // heavy sessions into an OOM reset mid-compile.
-    await ensureSysrootUnpacked(args.vfs, args.sysrootVfsPath, args.sysrootDir);
-    return {
-        clang: await args.vfs.readArrayBufferUncached(args.clangVfsPath),
-        lld: await args.vfs.readArrayBufferUncached(args.lldVfsPath),
-    };
+/** A load made once, by the first call that wants it; one that failed is made again by the next. */
+function lazily() {
+    let made = null;
+    return (load) => (made ??= load().catch((error) => {
+        made = null;
+        throw error;
+    }));
 }
 async function dispatchClangFacet(target, args, signal) {
     try {
