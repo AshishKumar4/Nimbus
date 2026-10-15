@@ -1166,6 +1166,23 @@ export function residentFilesystem(session, resident, delegation) {
         return after(local, (done) => (done !== DELEGATE ? undefined
             : named !== undefined ? byClient('unlink', { type: 'call', call: { call: 'unlink', path: named } }) : bySessionUnlink(path)));
     };
+    // A copy both of whose names a held subtree holds, its source's bytes the
+    // holder's or what the store read under the grant: decided here; any
+    // other, the session's.
+    const bySessionCopy = fs.copyFile;
+    fs.copyFile = (from, to, options) => {
+        if (holder === null)
+            return bySessionCopy(from, to, options);
+        const local = decide('copyFile', () => after(keyFor(from, true), (source) => (source === DELEGATE ? DELEGATE
+            : after(keyFor(to, true), (target) => {
+                if (target === DELEGATE)
+                    return DELEGATE;
+                const entry = entryAt(source);
+                const stored = entry ? store.content(source, entry.revision) : undefined;
+                return holder.copyFile(source, target, pathOf(to), stored, options?.keepMode === true) ? undefined : DELEGATE;
+            }))));
+        return after(local, (done) => (done !== DELEGATE ? undefined : bySessionCopy(from, to, options)));
+    };
     const bySessionRename = fs.rename;
     fs.rename = (from, to) => {
         if (holder === null)
