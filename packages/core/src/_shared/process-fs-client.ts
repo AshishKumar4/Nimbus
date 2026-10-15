@@ -279,8 +279,8 @@ export interface ProcessFsClient {
    * subtree the process holds alone (not shared, not closing, no raw socket)
    * whose certificate the cursor has reached, in its epoch, so the view has
    * every change before the grant and none came after it unrecalled; and
-   * every change of the process's own: none logged and unanswered, the
-   * session's revision as it answered each one reached. 'held':
+   * every change of the process's own: none logged and unanswered, each
+   * published, and the session's revision as it answered it reached. 'held':
    * `key` is at or beneath its root, everything about it vouched for; 'above':
    * an ancestor of its root, whose own change (its mode, its rename) recalls
    * the grant, though a change beneath it elsewhere does not. Undefined:
@@ -625,12 +625,15 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   let heldWaves = 0;
   let publishedThrough = 0;
   /**
-   * The session's revision as it last answered a wave (its `revision`): every
-   * change of the process's own it has answered is at or before it, so a view
+   * The session's revision as it last answered a wave with nothing of the
+   * process's held for publication (its `revision`): every change of the
+   * process's own it has answered is published at or before it, so a view
    * short of it may lack one (vouch). Past every revision once a change's
-   * fate is unknown, or an answer does not say it.
+   * fate is unknown, or an answer does not say it. `ownHeld`: the last answer
+   * came ahead of a publication (`held`), at a revision none has said yet.
    */
   let ownThrough = 0;
+  let ownHeld = false;
   /**
    * The session told of a raw socket (rawSocket): every wave after it is
    * sent once it lands, and nothing is decided here from then on. Landed:
@@ -842,7 +845,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       return;
     }
     ack = Math.max(ack, cursor);
-    ownThrough = Math.max(ownThrough, answer.revision ?? Infinity);
+    ownHeld = answer.held === true;
+    if (!ownHeld) ownThrough = Math.max(ownThrough, answer.revision ?? Infinity);
     const refused = writer === null
       ? (error?.errno !== undefined && SYSCALL_VERDICTS.has(error.errno as VfsErrorCode) ? { seq: cursor + 1, errno: error.errno, message: error.message } : null)
       : answer.sequence?.refused ?? null;
@@ -1252,7 +1256,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       return grants.some((grant) => !grant.ended && within(key, grant.root));
     },
     vouch(key, cursor) {
-      if (escaped !== null || client.pending() || cursor.rev < ownThrough) return undefined;
+      if (escaped !== null || client.pending() || ownHeld || cursor.rev < ownThrough) return undefined;
       let found: 'held' | 'above' | undefined;
       for (const grant of grants) {
         const certificate = grant.certificate;

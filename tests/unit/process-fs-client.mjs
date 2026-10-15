@@ -572,6 +572,40 @@ for (const lose of [0, 1]) {
   await c.settle();
 }
 
+// ── A change committed ahead of another's read-lease recall is vouched for
+//    in no view until it is published, and then only in one at or past its
+//    publication: answered ahead of it (`continues`) or once it is ──
+// Red before: the answer's revision was read before the publication, the
+// published clock still short of the commit, so a view from before the
+// change was vouched for.
+for (const continues of [true, false]) {
+  const s = session();
+  s.kernel.mkdir('home/user/v', { mode: 0o755 });
+  s.kernel.chown('home/user/v', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  if (continues) s.files.continueAtCommit(PID);
+  const c = client(s, { grantAfter: 1, grantIdleMs: 60_000, recallPollMs: 100 });
+  c.holder('home/user/v/x');
+  const grant = await until(() => c.holder('home/user/v/x'), 'the grant');
+  const reader = s.files.bind({ pid: 7, cred: CRED_SESSION_USER });
+  const { readLease } = reader.acquire(s.engine.epoch, s.engine.revision(), { lease: true });
+  assert.ok(readLease, 'the reader holds no read lease');
+  const view = { epoch: grant.certificate.epoch, rev: s.engine.revision() };
+  assert.equal(c.vouch('home/user/v', view), 'held', 'a view at the session\'s revision was not vouched for');
+  const written = c.submit(writeFile('home/user/v/made', 'm'));
+  assert.equal(await reader.awaitRecall(readLease.owner, 1000), 'revoke');
+  if (!continues) setTimeout(() => reader.recalled(readLease.owner, 'revoke'), 20);
+  await written;
+  assert.equal(c.vouch('home/user/v', view), undefined, 'a view from before the change was vouched for');
+  if (continues) {
+    assert.equal(c.vouch('home/user/v', { ...view, rev: s.engine.revision() }), undefined, 'a change not yet published was vouched for');
+    reader.recalled(readLease.owner, 'revoke');
+    await s.engine.publishedFor();
+    await c.submit(writeFile('home/user/v/after', 'a'));
+  }
+  assert.equal(c.vouch('home/user/v', { ...view, rev: s.engine.revision() }), 'held');
+  await c.settle();
+}
+
 // ── An idle grant is given back; a refused subtree is not asked for again ──
 {
   const s = session();
