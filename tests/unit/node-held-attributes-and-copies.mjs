@@ -28,6 +28,7 @@
 import assert from 'node:assert/strict';
 import { createAuthority, facetSupervisor, launchResident, residentDataPlan, runScenarios, sleep, until } from './lib/resident-body.mjs';
 import { drainProcessFsJournal, journalSource, LINGER_MS, sqlJournal } from '../../packages/core/src/_shared/process-fs-client.ts';
+import { WAVE_BYTES } from '../../packages/platform/src/wave-writer.ts';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { journalDrainSession } from '../../packages/core/src/workspace/supervisor-op.ts';
 
@@ -44,7 +45,7 @@ const OUT = '/home/user/app/out';
  * waves, and one that makes its listings fail. Root owns `out/rootfile` and
  * the unsearchable `/home/user/app/locked`.
  */
-async function boot() {
+async function boot({ program = PROGRAM, held = true } = {}) {
   const authority = createAuthority();
   authority.kfs.mkdir('home/user/app/out', { recursive: true, mode: 0o755 });
   authority.kfs.mkdir('home/user/elsewhere', { mode: 0o755 });
@@ -72,11 +73,12 @@ async function boot() {
   forward = handle.forward;
   await launchResident({
     authority,
-    program: PROGRAM,
+    program,
     env: { SUPERVISOR: handle.supervisor },
     dataPlan: await residentDataPlan(authority, '/home/user'),
     cursor: authority.cursor(),
   });
+  if (!held) return { authority, log: handle.log };
   const { fs } = globalThis.__probe;
   for (let i = 0; i < 16; i++) await fs.promises.writeFile(`${OUT}/warm${i}`, 'w');
   await until(() => globalThis.__nimbusProcessFs?.held('home/user/app/out/x') !== undefined, 'the subtree held', 5_000);
@@ -212,6 +214,83 @@ await runScenarios(import.meta.path, {
     assert.equal(after.kfs.stat('home/user/app/out/answered.txt').mode & 0o7777, sourceMode);
   },
 
+  async 'a decided copy\'s log never puts a byte in the session readable beyond its source, whichever wave it stops after'() {
+    for (const existing of [false, true]) {
+      const { authority, fs, stall } = await boot();
+      if (existing) fs.writeFileSync(`${OUT}/copy.bin`, 'old');
+      fs.writeFileSync(`${OUT}/private.bin`, Buffer.alloc(WAVE_BYTES + 1024, 112));
+      fs.chmodSync(`${OUT}/private.bin`, 0o600);
+      stall();
+      assert.equal(await answeredAtOnce(fs.promises.copyFile(`${OUT}/private.bin`, `${OUT}/copy.bin`)), 'answered');
+      // The process ends after the wave that carries the copy's first bytes.
+      const log = sqlJournal(globalThis.__nimbusFsJournalSql);
+      const first = log.entries().find(({ op }) => op.type === 'call' && op.call.path === 'home/user/app/out/copy.bin' && op.call.data?.byteLength > 3);
+      assert.ok(first, 'the copy\'s bytes are in the log');
+      const prefix = { ...journalSource(log), readAfter: async (after, max) => (await journalSource(log).readAfter(after, max)).filter(({ jid }) => jid <= first.jid) };
+      const after = createAuthority();
+      after.kfs.mkdir('home/user/app/out', { recursive: true, mode: 0o755 });
+      if (existing) after.kfs.writeFile('home/user/app/out/copy.bin', 'old', { mode: 0o644 });
+      const lease = after.files.openHost(CRED_SESSION_USER);
+      await drainProcessFsJournal({ journal: prefix, session: journalDrainSession(lease.fs, 1000002) }).finally(() => lease.dispose());
+      const left = after.rawVfs.as(CRED_KERNEL).stat('home/user/app/out/copy.bin');
+      if (left.size > 3) assert.equal(left.mode & 0o077, 0, `${existing ? 'an existing' : 'a new'} destination holds the source's bytes readable beyond its mode: ${(left.mode & 0o777).toString(8)}`);
+    }
+  },
+
+  async 'the source\'s own chmod of a directory above it is searched, as the session searches it'() {
+    const { authority, fs } = await boot();
+    await authority.peer.mkdir('home/user/app/out/shut-before', { mode: 0o755 });
+    await globalThis.__nimbusProcessFs.flush();
+    fs.writeFileSync(`${OUT}/shut-before/s`, 'S');
+    fs.chmodSync(`${OUT}/shut-before`, 0o600);
+    assert.throws(() => fs.statSync(`${OUT}/shut-before/s`), { code: 'EACCES' });
+    await assert.rejects(fs.promises.copyFile(`${OUT}/shut-before/s`, `${OUT}/from-shut-before`), { code: 'EACCES' });
+  },
+
+  async 'every call through a linked directory to outside the held subtree waits for the session'() {
+    const { authority, fs, stall, release } = await boot();
+    fs.symlinkSync('/home/user/elsewhere', `${OUT}/alias`);
+    fs.writeFileSync('/home/user/elsewhere/a.txt', 'A');
+    fs.writeFileSync('/home/user/elsewhere/b.txt', 'B');
+    fs.mkdirSync('/home/user/elsewhere/gone');
+    await globalThis.__nimbusProcessFs.flush();
+    stall();
+    const calls = {
+      lchown: fs.promises.lchown(`${OUT}/alias/x.txt`, 1000, 1000),
+      lutimes: fs.promises.lutimes(`${OUT}/alias/x.txt`, 5, 5),
+      chmod: fs.promises.chmod(`${OUT}/alias/x.txt`, 0o640),
+      chown: fs.promises.chown(`${OUT}/alias/x.txt`, 1000, 1000),
+      utimes: fs.promises.utimes(`${OUT}/alias/x.txt`, 6, 6),
+      unlink: fs.promises.unlink(`${OUT}/alias/a.txt`),
+      rename: fs.promises.rename(`${OUT}/alias/b.txt`, `${OUT}/alias/b2.txt`),
+      symlink: fs.promises.symlink('x.txt', `${OUT}/alias/link`),
+      mkdir: fs.promises.mkdir(`${OUT}/alias/made`),
+      rmdir: fs.promises.rmdir(`${OUT}/alias/gone`),
+    };
+    for (const [name, call] of Object.entries(calls)) assert.equal(await answeredAtOnce(call), 'waiting', name);
+    await release();
+    await Promise.all(Object.values(calls));
+    assert.equal((await authority.peer.lstat('home/user/elsewhere/link')).isSymbolicLink(), true);
+  },
+
+  async 'a descriptor\'s chmod, utimes and chown change the file it opened, wherever the process has gone since'() {
+    const { authority, fs } = await boot();
+    process.chdir(OUT);
+    const fd = fs.openSync('opened.txt', 'w');
+    fs.writeSync(fd, 'O');
+    process.chdir('/home/user/elsewhere');
+    fs.fchmodSync(fd, 0o640);
+    fs.futimesSync(fd, 8, 8);
+    fs.fchownSync(fd, 1000, 1000);
+    fs.closeSync(fd);
+    assert.equal(fs.statSync(`${OUT}/opened.txt`).mode & 0o777, 0o640);
+    assert.equal(fs.existsSync('/home/user/elsewhere/opened.txt'), false);
+    await globalThis.__nimbusProcessFs.flush();
+    const stat = await authority.peer.stat('home/user/app/out/opened.txt');
+    assert.equal(stat.mode & 0o777, 0o640);
+    assert.equal(Number(stat.mtime), 8000);
+  },
+
   async 'a decided copy is refused where the session\'s walk to its source is (EACCES)'() {
     const { authority, fs } = await boot();
     fs.mkdirSync(`${OUT}/shut`);
@@ -279,6 +358,26 @@ await runScenarios(import.meta.path, {
     const stat = await authority.peer.stat('home/user/app/out/warm4');
     assert.equal(stat.mode & 0o7777, 0o640);
     assert.equal(Number(stat.mtime), 7000);
+  },
+
+  async 'a one-shot that ends with answered changes lingering exits at once, its changes in the session'() {
+    const program = `
+const fs = require("fs");
+const fsp = fs.promises;
+(async () => {
+  for (let i = 0; i < 16; i++) await fsp.writeFile("${OUT}/warm" + i, "w");
+  while (globalThis.__nimbusProcessFs?.held("home/user/app/out/x") === undefined) await new Promise((r) => setTimeout(r, 5));
+  await fsp.chmod("${OUT}/warm0", 0o600);
+  fs.writeFileSync("${OUT}/last.txt", "LAST");
+  process.exit(0);
+})();
+`;
+    const { authority, log } = await boot({ program, held: false });
+    // Its exit sends what lingers (the runtime's flush): it never waits out the linger, nor more.
+    await until(() => log.exit !== null, 'the exit', 2_000);
+    assert.equal(log.exit.code, 0, JSON.stringify(log));
+    assert.equal(await peerRead(authority, 'home/user/app/out/last.txt'), 'LAST');
+    assert.equal((await authority.peer.stat('home/user/app/out/warm0')).mode & 0o7777, 0o600);
   },
 
   async 'an answered change in a held subtree goes with the next change someone awaits, in one wave'() {
