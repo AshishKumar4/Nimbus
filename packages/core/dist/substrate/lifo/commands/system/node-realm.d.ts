@@ -105,6 +105,16 @@ export type HostEvent = {
     readonly type: 'changed';
     readonly id: number;
     readonly event: VfsEvent;
+}
+/**
+ * A write to output `fd` failed with `code`, on a pipe or a file: the
+ * program's stream of it errors, as Node's does, and no later write is made.
+ */
+ | {
+    readonly type: 'output-failed';
+    readonly fd: 1 | 2;
+    readonly code: string;
+    readonly pipe: boolean;
 } | EgressHostEvent;
 /**
  * What the realm starts with: the program, the kernel's /etc/hosts its

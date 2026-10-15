@@ -51,6 +51,7 @@ export function standardStream(output, fd) {
             Promise.all(pending).then(() => writer.end()).then(() => callback(), callback);
         },
     }), { isTTY: false, fd, columns: 80, _isStdio: true });
+    output.onFailure?.((error) => { stream.destroy(error); });
     standardStreams.add(stream);
     return stream;
 }

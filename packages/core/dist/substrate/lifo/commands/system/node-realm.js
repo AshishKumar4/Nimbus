@@ -69,6 +69,8 @@ export function isHostEvent(value) {
                 && typeof value.event.path === 'string'
                 && (value.event.oldPath === undefined || typeof value.event.oldPath === 'string')
                 && typeof value.event.timestamp === 'number';
+        case 'output-failed':
+            return (value.fd === 1 || value.fd === 2) && typeof value.code === 'string' && typeof value.pipe === 'boolean';
         default: return false;
     }
 }
@@ -237,21 +239,33 @@ export async function runNodeInRealm(program, ctx, kernel) {
     const filesystem = synchronousFilesystem(ctx.vfs, () => mask);
     // Output in the order it was written, each write after the last; bytes
     // for an output that takes text are decoded across writes, as one stream.
+    // A write that fails is the program's to hear of, as a Node process's
+    // stream errors (it ignores SIGPIPE): no later write to that output is made.
     let written = Promise.resolve();
     const writers = new Map();
-    const writerOf = (stream) => {
-        let writer = writers.get(stream);
+    const failedOutputs = new Set();
+    const writerOf = (fd) => {
+        let writer = writers.get(fd);
         if (writer === undefined)
-            writers.set(stream, writer = new SinkWriter(stream));
+            writers.set(fd, writer = new SinkWriter(fd === 1 ? ctx.stdout : ctx.stderr));
         return writer;
     };
-    const write = (stream, data) => {
+    const write = (fd, data) => {
         written = written.then(async () => {
-            if (typeof data === 'string')
-                await writerOf(stream).writeText(data);
-            else
-                await writerOf(stream).write(data);
-        }).catch(() => { });
+            if (failedOutputs.has(fd))
+                return;
+            try {
+                if (typeof data === 'string')
+                    await writerOf(fd).writeText(data);
+                else
+                    await writerOf(fd).write(data);
+            }
+            catch (error) {
+                failedOutputs.add(fd);
+                const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
+                post({ type: 'output-failed', fd, code: typeof code === 'string' ? code : 'EIO', pipe: ctx.isFdPipe?.(fd) === true });
+            }
+        });
     };
     // The realm, once it has started: a request for one of the guest's servers waits for none before.
     let post = () => false;
@@ -327,7 +341,7 @@ export async function runNodeInRealm(program, ctx, kernel) {
                 return;
             switch (event.type) {
                 case 'output':
-                    write(event.fd === 1 ? ctx.stdout : ctx.stderr, event.data);
+                    write(event.fd, event.data);
                     return;
                 case 'exit':
                     code = event.code;
@@ -365,8 +379,11 @@ export async function runNodeInRealm(program, ctx, kernel) {
     for (const watch of watches.values())
         watch.close();
     await written;
-    for (const writer of writers.values())
-        await writer.end().catch(() => { });
+    // What a character left unfinished at the end: the program has ended, and
+    // no one is left to hear that its last bytes could not be written.
+    for (const [fd, writer] of writers)
+        if (!failedOutputs.has(fd))
+            await writer.end().catch(() => { });
     if (end.terminated)
         return exitCodeForAbortSignal(ctx.signal);
     if (end.failure !== null) {

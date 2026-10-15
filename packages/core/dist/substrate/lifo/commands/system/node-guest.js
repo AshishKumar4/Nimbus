@@ -17,6 +17,7 @@ import realm from 'node:process';
 import { joinRealm } from '../../../../runtime/realm-guest.js';
 import { DNSResolver } from '../../kernel/dns-resolver.js';
 import { createHostsResolver } from '../../kernel/index.js';
+import { errnoDescription, errnoOf, VFS_ERRNO } from '../../../../vfs/vfs-error.js';
 import { ProcessExitError } from '../../node-compat/index.js';
 import { runNodeProgram } from './node.js';
 import { routeFetchThroughHost } from '../../../../runtime/realm-egress-guest.js';
@@ -136,10 +137,43 @@ const filesystem = {
         };
     },
 };
-const output = (fd) => ({
-    write: (data) => post({ type: 'output', fd, data }),
-    writeBytes: (data) => post({ type: 'output', fd, data }),
-});
+/**
+ * The program's output `fd`: its writes cross to the host, which makes them
+ * later. One the host could not make fails the output (failOutput): the
+ * program's stream of it errors, as Node's does, and later writes go nowhere
+ * (a console write's failure is ignored, as Node ignores it).
+ */
+function realmOutput(fd) {
+    let failure = null;
+    const listeners = [];
+    return {
+        write: (data) => { if (failure === null)
+            post({ type: 'output', fd, data }); },
+        writeBytes: (data) => { if (failure === null)
+            post({ type: 'output', fd, data }); },
+        onFailure: (listener) => { if (failure === null)
+            listeners.push(listener);
+        else
+            listener(failure); },
+        fail(error) {
+            failure = error;
+            for (const listener of listeners.splice(0))
+                listener(error);
+        },
+    };
+}
+const outputs = { 1: realmOutput(1), 2: realmOutput(2) };
+/**
+ * Node's error for a write the output refused: a pipe's as its stream reports
+ * it (`write EPIPE`), a file's as fs does (`ENOSPC: no space left on device,
+ * write`), each with its fields in Node's order.
+ */
+function writeFailure(code, pipe) {
+    const errno = errnoOf(code) ?? VFS_ERRNO.EIO;
+    if (pipe)
+        return Object.assign(new Error(`write ${code}`), { errno, code, syscall: 'write' });
+    return Object.assign(new Error(`${code}: ${errnoDescription(code) ?? 'i/o error'}, write`), { errno, syscall: 'write', code });
+}
 /** The program's servers, as the session reaches them: listening is the host's to record, and holds the realm. */
 class RealmPorts extends Map {
     set(port, handler) {
@@ -209,15 +243,29 @@ events.on('message', (event) => {
         case 'changed':
             watches.get(event.id)?.listener(event.event);
             return;
+        case 'output-failed':
+            outputs[event.fd].fail(writeFailure(event.code, event.pipe));
+            return;
     }
 });
 // ── Fatal errors, as Node ends a process on them ───────────────────────────
 const fatal = (reason) => {
     if (reason instanceof ProcessExitError)
         return exitNow(reason.exitCode);
-    post({ type: 'output', fd: 2, data: `${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}\n` });
+    post({ type: 'output', fd: 2, data: `${uncaughtReport(reason)}\n` });
     return exitNow(1);
 };
+/** What Node prints of an uncaught `reason`: an error's stack, and its own fields after it (`{ errno: -32, code: 'EPIPE', … }`). */
+function uncaughtReport(reason) {
+    if (!(reason instanceof Error))
+        return String(reason);
+    const head = reason.stack ?? reason.message;
+    const fields = Object.keys(reason);
+    if (fields.length === 0)
+        return head;
+    const { inspect } = realm.getBuiltinModule('node:util');
+    return `${head} {\n${fields.map((field) => `  ${field}: ${inspect(Reflect.get(reason, field))}`).join(',\n')}\n}`;
+}
 realm.on('unhandledRejection', fatal);
 realm.on('uncaughtException', fatal);
 // The loop ran empty with the main script still waiting: an ES module whose
@@ -234,8 +282,8 @@ if (egress) {
 holdWhileBusy();
 const end = await runNodeProgram(program, {
     filesystem: () => filesystem,
-    stdout: output(1),
-    stderr: output(2),
+    stdout: outputs[1],
+    stderr: outputs[2],
     stdin: () => bytes(call({ op: 'stdin' }), 'stdin'),
     setUmask: (mask) => { call({ op: 'umask', mask }); },
     portRegistry: ports,
