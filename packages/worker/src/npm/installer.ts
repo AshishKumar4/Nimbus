@@ -47,7 +47,7 @@ import {
   type NamedPackage, type ProjectManifest, type TreeRoot,
 } from '@nimbus-sh/core/_shared/npm-tree.js';
 import { planTree, type InstalledPackage, type OmitTypes, type PlanOptions, type TreePlan, type TreeResolution } from '@nimbus-sh/core/_shared/npm-arborist/plan.js';
-import { engineMismatches, type EngineMismatch } from '@nimbus-sh/core/_shared/npm-arborist/engines.js';
+import { checkEngines, type EngineMismatch } from '@nimbus-sh/core/_shared/npm-arborist/engines.js';
 import { parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
 import {
@@ -81,7 +81,7 @@ import {
 import { recordCacheStatEvents } from '@nimbus-sh/core/_shared/cache-stats.js';
 import { estimateSupervisorHeap } from '@nimbus-sh/platform/heap-estimate.js';
 import { describeError } from '@nimbus-sh/platform/oom-classify.js';
-import { resolvedFromRecord, type RegistryCacheEntry } from './registry-record.js';
+import { isEngines, resolvedFromRecord, type RegistryCacheEntry } from './registry-record.js';
 import {
   type ResolveOneSpec,
   type ResolveOneResult,
@@ -443,7 +443,7 @@ export class NpmInstaller {
     }
     // npm's engine check of the tree: under --engine-strict a mismatch fails
     // the install before anything changes; otherwise npm warns of each.
-    const engines = engineMismatches(manifest, plan, opts.force === true);
+    const engines = checkEngines(manifest, plan, opts.force === true);
     if (opts.engineStrict === true && engines.length > 0) {
       return { installed: [], failed: [engines[0]!.pkgid ?? projDir], totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases, engines };
     }
@@ -1742,6 +1742,7 @@ export class NpmInstaller {
         os: platform.os,
         cpu: platform.cpu,
         libc: platform.libc,
+        ...(isEngines(manifest.engines) ? { engines: manifest.engines } : {}),
         exports: null,
         main: '',
         module: '',

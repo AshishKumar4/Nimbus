@@ -62,11 +62,20 @@ export function npmInstallInvocation(config: NpmConfig): NpmInstallInvocation {
     return typeof value === 'string' && value.length > 0 ? value : null;
   };
   const kinds = (key: string) => new Set((Array.isArray(config.get(key)) ? config.get(key) as unknown[] : []).map(String));
-  // npm: what `--include` names is installed, whatever `--omit` (or the deprecated --production, --no-optional) says.
+  // @npmcli/config's buildOmitList: --omit, less what --include names, the
+  // deprecated --production, --only, --also, --dev and --optional each
+  // adding to one or the other (--no-production includes dev, as
+  // --optional includes optional).
   const omitted = kinds('omit');
-  if (flag('production')) omitted.add('dev');
-  if (config.get('optional') === false) omitted.add('optional');
   const included = kinds('include');
+  const only = config.get('only');
+  if ((typeof only === 'string' && /^prod(uction)?$/.test(only)) || flag('production')) omitted.add('dev');
+  else if (config.get('production') === false) included.add('dev');
+  const also = config.get('also');
+  if (typeof also === 'string' && /^dev/.test(also)) included.add('dev');
+  if (flag('dev')) included.add('dev');
+  if (config.get('optional') === false) omitted.add('optional');
+  else if (config.get('optional') === true) included.add('optional');
   const omits = (type: string) => omitted.has(type) && !included.has(type);
   const global = flag('global') || config.get('location') === 'global';
   // npm: --global-style is the shallow strategy, --legacy-bundling the nested one; a global install is always shallow.

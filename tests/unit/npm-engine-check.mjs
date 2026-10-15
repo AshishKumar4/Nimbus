@@ -1,15 +1,23 @@
 #!/usr/bin/env bun
-// npm's engine check (arborist build-ideal-tree #checkEngineAndPlatform, by
-// npm-install-checks' own checkEngine): the project, unless it declares
-// devEngines, and every package the tree requires (an optional one is not
-// checked) against this runtime's Node and npm. npm warns of each mismatch,
-// in its exact text; under --engine-strict (an .npmrc's, as `sv create`
-// writes) the first fails the install, which changes nothing; --force checks
-// npm alone. Red before: engine-strict was refused as unsupported, and no
-// engine was ever checked or warned of.
+// npm's engine checks, by npm-install-checks' own checkEngine and
+// checkDevEngines, against this runtime:
+// - arborist build-ideal-tree's: the project, unless it declares devEngines,
+//   and every package the tree requires, in the inventory's order (the order
+//   npm's builder placed them in). npm warns of each mismatch, in its exact
+//   text; under --engine-strict (an .npmrc's, as `sv create` writes) the
+//   first fails the install, which changes nothing; --force checks npm alone.
+//   A lock's packages are checked as the registry's are (npm ci).
+// - reify's: an optional package whose engines exclude this runtime is left
+//   out with its optional set, unsaid, whatever --force or --engine-strict.
+// - the command's devEngines preflight (base-cmd checkDevEngines), before any
+//   command but a global one: onFail error ends the command, warn (or any
+//   under --force) is warned of.
+// Red before: engine-strict was refused as unsupported, and no engine was
+// ever checked or warned of.
 //
 // The text is real npm 10.9.8's (an install of a package whose engines say
-// `node: '>=99'`), with this runtime's versions.
+// `node: '>=99'`; a project whose devEngines.runtime does), with this
+// runtime's versions.
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
@@ -83,6 +91,7 @@ function makeInstaller(pkgJson, packages) {
   assert.deepEqual(warned.engines.map((m) => m.pkgid), ['app@1.0.0', 'dep@1.0.0', 'deep@1.0.0'],
     'the project, then each required package that excludes this node or npm; the optional one is not checked');
   assert.ok(loose.root.exists(`${NM}/dep/package.json`), 'npm warns, and installs');
+  assert.equal(loose.root.exists(`${NM}/maybe`), false, 'the optional one whose engines exclude this runtime is left out');
 
   const strict = makeInstaller(app, packages);
   const refused = await strict.installer.install(PROJ, { engineStrict: true });
@@ -97,6 +106,97 @@ function makeInstaller(pkgJson, packages) {
   const forced = makeInstaller(app, packages);
   assert.deepEqual((await forced.installer.install(PROJ, { force: true })).engines.map((m) => m.pkgid), ['deep@1.0.0'],
     '--force checks npm alone');
+}
+
+// ── In the order npm's builder placed them: a's b, top-level, is taken before c's z, and b's d before z ──
+{
+  const packages = {
+    a: resolvedResult('a', '1.0.0', { dependencies: { b: '1.0.0' } }),
+    b: resolvedResult('b', '1.0.0', { dependencies: { d: '1.0.0' } }),
+    c: resolvedResult('c', '1.0.0', { dependencies: { z: '1.0.0' } }),
+    d: resolvedResult('d', '1.0.0', { engines: FAR }),
+    z: resolvedResult('z', '1.0.0', { engines: FAR }),
+  };
+  const { installer } = makeInstaller({ name: 'app', version: '1.0.0', dependencies: { a: '1.0.0', c: '1.0.0' } }, packages);
+  assert.deepEqual((await installer.install(PROJ)).engines.map((m) => m.pkgid), ['d@1.0.0', 'z@1.0.0']);
+}
+
+// ── An optional package whose engines exclude this runtime is left out, unsaid, whatever --engine-strict or --force ──
+{
+  const packages = {
+    fine: resolvedResult('fine', '1.0.0', { engines: { node: '>=18' } }),
+    maybe: resolvedResult('maybe', '1.0.0', { engines: FAR }),
+  };
+  for (const options of [{}, { engineStrict: true }, { force: true }]) {
+    const { installer, root } = makeInstaller({ name: 'app', version: '1.0.0', dependencies: { fine: '1.0.0' }, optionalDependencies: { maybe: '1.0.0' } }, packages);
+    const result = await installer.install(PROJ, options);
+    assert.deepEqual([result.failed, result.engines], [[], []], JSON.stringify(options));
+    assert.equal(root.exists(`${NM}/maybe`), false, JSON.stringify(options));
+    assert.ok(root.exists(`${NM}/fine/package.json`));
+  }
+}
+
+// ── npm ci checks the lock's packages as the registry's ──
+{
+  const tgz = (name, version) => `https://registry.invalid/${name}-${version}.tgz`;
+  const app = { name: 'app', version: '1.0.0', dependencies: { far: '1.0.0' } };
+  const lock = {
+    name: 'app', lockfileVersion: 3,
+    packages: {
+      '': app,
+      'node_modules/far': { version: '1.0.0', resolved: tgz('far', '1.0.0'), integrity: 'sha512-far', engines: FAR },
+    },
+  };
+  const ci = (options) => {
+    const made = makeInstaller(app, {});
+    made.root.writeFile(`${PROJ}/package-lock.json`, JSON.stringify(lock));
+    return made.installer.install(PROJ, { pid: 1, fromLockfile: true, ...options }).then((result) => ({ ...made, result }));
+  };
+  const strict = await ci({ engineStrict: true });
+  assert.deepEqual(strict.result.failed, ['far@1.0.0']);
+  assert.equal(strict.root.exists(`${NM}/far`), false);
+  const loose = await ci({});
+  assert.deepEqual(loose.result.engines.map((m) => m.pkgid), ['far@1.0.0']);
+}
+
+// ── devEngines, before any command but a global one: npm's preflight ──
+{
+  const harness = createSqliteVfsTestHarness();
+  const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
+  const vfs = ws.vfs.as(CRED_KERNEL);
+  vfs.mkdir('home/user/dev', { recursive: true });
+  const asked = [];
+  ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel, {
+    installer: { async install(spec) { asked.push(spec.packages); return { installed: [], failed: [], engines: [] }; } },
+  }));
+  const devEngines = (onFail) => vfs.writeFile('home/user/dev/package.json', JSON.stringify({ name: 'dev', version: '1.0.0', devEngines: { runtime: { name: 'node', version: '>=99', onFail } } }));
+  const said = (level, onFail) => [
+    ...(level === 'error' ? ['npm error code EBADDEVENGINES'] : []),
+    'The developer of this package has specified the following through devEngines',
+    'Invalid devEngines.runtime',
+    `Invalid semver version ">=99" does not match "${NODE_VERSION}" for "runtime"`,
+    '{',
+    `  current: { name: 'node', version: '${NODE_VERSION}' },`,
+    `  required: { name: 'node', version: '>=99', onFail: '${onFail}' }`,
+    '}',
+  ].map((line) => (line.startsWith('npm error code') ? line : `npm ${level} EBADDEVENGINES ${line}`));
+  devEngines('error');
+  const refused = await ws.exec('cd /home/user/dev && npm install left-pad');
+  assert.equal(refused.exitCode, 1);
+  assert.equal(refused.stderr, `${said('error', 'error').join('\n')}\n`);
+  assert.equal((await ws.exec('cd /home/user/dev && npm ls')).exitCode, 1, 'every command is checked, as npm checks it');
+  assert.deepEqual(asked, [], 'and nothing ran');
+  const forced = await ws.exec('cd /home/user/dev && npm install --force left-pad');
+  assert.equal(forced.exitCode, 0, forced.stderr);
+  assert.ok(forced.stderr.startsWith(['npm warn using --force Recommended protections disabled.', ...said('warn', 'error')].join('\n')), forced.stderr);
+  devEngines('warn');
+  const warned = await ws.exec('cd /home/user/dev && npm install left-pad');
+  assert.equal(warned.exitCode, 0, warned.stderr);
+  assert.ok(warned.stderr.startsWith(said('warn', 'warn').join('\n')), warned.stderr);
+  devEngines('error');
+  const global = await ws.exec('cd /home/user/dev && npm install -g left-pad');
+  assert.ok(!global.stderr.includes('EBADDEVENGINES'), 'a global command is not checked');
+  assert.deepEqual(asked.length, 3);
 }
 
 // ── npm install says it as npm does: a warning of each, or the strict error ──

@@ -57,6 +57,8 @@ export interface RegistryCacheEntry {
 type Platform = { os?: unknown; cpu?: unknown; libc?: unknown };
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+/** `engines` as a manifest states it (a registry's, a lock's): what it asks of each engine. */
+export const isEngines: (value: unknown) => value is Readonly<Record<string, unknown>> = isObject;
 const isStringMap = (value: unknown): value is Record<string, string> =>
   isObject(value) && Object.values(value).every((v) => typeof v === 'string');
 const isStringList = (value: unknown): value is string[] => Array.isArray(value) && value.every((v) => typeof v === 'string');
@@ -116,7 +118,7 @@ export function resolvedFromRecord(record: RegistryCacheEntry): ResolvedPackage 
   const platform: Platform = record.platformJson === '{}' ? NO_PLATFORM : decoded(record.platformJson, isObject, NO_PLATFORM);
   const peerMeta = decoded(record.peerMetaJson, isPeerMeta, {});
   const bundle: unknown = record.bundleJson ? decoded(record.bundleJson, isAnyJson, undefined) : undefined;
-  const engines = record.enginesJson ? decoded(record.enginesJson, isObject, undefined) : undefined;
+  const engines = record.enginesJson ? decoded(record.enginesJson, isEngines, undefined) : undefined;
   return {
     name: record.name,
     version: record.version,

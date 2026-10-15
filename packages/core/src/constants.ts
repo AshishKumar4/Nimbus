@@ -350,6 +350,8 @@ export const SYSTEM_IDENTITY = {
   version: '#1 Nimbus',
   machine: 'wasm',
 } as const;
+/** What node reports of that system (process.platform and arch, os.platform() and arch()), and npm reads. */
+export const NODE_SYSTEM = { platform: 'linux', arch: 'x64' } as const;
 export const DEFAULT_HOME = '/home/user';
 export const DEFAULT_USER = 'user';
 export const DEFAULT_SHELL = '/bin/sh';

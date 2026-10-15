@@ -12,6 +12,7 @@
 import { format } from 'node:util';
 import { NODE_VERSION, NPM_VERSION } from '../../../../constants.js';
 import type { EngineMismatch } from '../../../../_shared/npm-arborist/engines.js';
+import type { DevEnginesFailure } from '../../../../_shared/npm-libs.js';
 import { DIM, GREEN, RED, RESET, YELLOW } from '../../utils/colors.js';
 
 export type NpmLogLevel =
@@ -136,4 +137,22 @@ export function npmEngineLines(mismatch: EngineMismatch, strict: boolean): strin
     `notsup Required: ${JSON.stringify(mismatch.required)}`,
     `notsup Actual:   ${JSON.stringify({ npm: NPM_VERSION, node: NODE_VERSION })}`,
   ].map((line) => `npm error ${line}`);
+}
+
+/**
+ * What npm says of a devEngines failure (base-cmd checkDevEngines): its
+ * message (the first said with npm's preface), then what is current and
+ * what is required, each line as npm's display prefixes it; `level` warn
+ * for one npm lets pass, error for the one the command ends with
+ * (error-message.js's summary and detail).
+ */
+export function npmDevEnginesLines(failure: DevEnginesFailure, first: boolean, level: 'warn' | 'error'): string[] {
+  const message = [...new Set([
+    first ? 'The developer of this package has specified the following through devEngines' : '',
+    failure.message,
+    failure.errors.map((error) => error.message).join('\n'),
+  ])].filter((line) => line).join('\n');
+  const lines = [...message.split('\n'), ...format({ current: failure.current, required: failure.required }).split('\n')]
+    .map((line: string) => `npm ${level} EBADDEVENGINES ${line}`);
+  return level === 'error' ? ['npm error code EBADDEVENGINES', ...lines] : lines;
 }

@@ -93,3 +93,18 @@ console.log('npm-install-args: ok');
   assert.equal((await parseNpmInstallInvocation(['--global=false', 'xc'])).global, false);
   assert.equal((await parseNpmInstallInvocation(['--location=global', 'xc'])).global, true);
 }
+
+// What is omitted is @npmcli/config's buildOmitList over the command's environment and options, the inverse rules too.
+// Red before: --no-production and --optional=true were read as nothing, so NODE_ENV=production still omitted dev.
+{
+  const production = { NODE_ENV: 'production' };
+  assert.equal((await parseNpmInstallInvocation(['xc'], {}, production)).production, true, 'NODE_ENV=production omits dev, as npm\'s default');
+  assert.equal((await parseNpmInstallInvocation(['--no-production', 'xc'], {}, production)).production, false, '--no-production includes dev');
+  assert.equal((await parseNpmInstallInvocation(['--include=dev', 'xc'], {}, production)).production, false);
+  assert.equal((await parseNpmInstallInvocation(['--dev', 'xc'], {}, production)).production, false, 'the deprecated --dev includes dev');
+  assert.equal((await parseNpmInstallInvocation(['--also=dev', 'xc'], {}, production)).production, false);
+  assert.equal((await parseNpmInstallInvocation(['--only=prod', 'xc'])).production, true);
+  assert.equal((await parseNpmInstallInvocation(['--omit=optional', 'xc'])).omitOptional, true);
+  assert.equal((await parseNpmInstallInvocation(['--omit=optional', '--optional=true', 'xc'])).omitOptional, false, '--optional=true includes optional');
+  assert.equal((await parseNpmInstallInvocation(['--no-optional', 'xc'])).omitOptional, true);
+}

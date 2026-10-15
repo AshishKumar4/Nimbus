@@ -54,7 +54,7 @@ import type { ResolvedPackage } from './resolver.js';
 import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
 import type { FacetRegistryEvent } from './resolve-facet.js';
 import type { PackumentReadOptions } from './r2-cache.js';
-import { registryRecord, resolvedFromRecord, type RegistryCacheEntry } from './registry-record.js';
+import { isEngines, registryRecord, resolvedFromRecord, type RegistryCacheEntry } from './registry-record.js';
 import type { PackageStagedArtifactEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { compareSemver, exactVersion, isSemverRange, parseSemver, pickInstalledVersion, stagedBindingVersion as stagedBindingVersionOf } from '@nimbus-sh/core/_shared/npm-semver.js';
 import type { parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
@@ -592,7 +592,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
       os: Array.isArray(v.os) ? v.os : undefined,
       cpu: Array.isArray(v.cpu) ? v.cpu : undefined,
       libc: Array.isArray(v.libc) ? v.libc : undefined,
-      ...(v.engines !== null && typeof v.engines === 'object' && !Array.isArray(v.engines) ? { engines: v.engines } : {}),
+      ...(isEngines(v.engines) ? { engines: v.engines } : {}),
       exports: v.exports ?? null,
       main: v.main || '',
       module: v.module || '',
