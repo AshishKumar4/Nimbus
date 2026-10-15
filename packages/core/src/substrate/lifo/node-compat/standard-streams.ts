@@ -109,17 +109,28 @@ export interface StandardInput {
 
 /**
  * `stream` reading fd 0 from `input` (none: fd 0 is at its end): a piece is
- * asked for when the stream wants one, as Node starts reading a descriptor,
- * and the wait stops holding the program once it pauses the stream, as
- * Node's readStop does.
+ * asked for when the stream wants one, as Node starts reading a descriptor.
+ * Its wait holds the program until the stream is paused and, a tick later,
+ * still not flowing, as Node stops reading a paused stdin then (so that the
+ * process can end).
  */
 export function joinStandardInput<T extends Readable>(stream: T, input: StandardInput | undefined): T {
   let reading = false;
   let stopped = false;
   const want = () => input?.waiting(reading && !stopped);
-  stream._read = () => {
+  stream.on('pause', () => {
+    realm.nextTick(() => {
+      if (stream.readableFlowing === true) return;
+      stopped = true;
+      want();
+    });
+  });
+  stream.on('resume', () => {
     stopped = false;
-    if (reading) { want(); return; }
+    want();
+  });
+  stream._read = () => {
+    if (reading) return;
     if (input === undefined) { stream.push(null); return; }
     reading = true;
     want();
@@ -129,8 +140,8 @@ export function joinStandardInput<T extends Readable>(stream: T, input: Standard
         if (piece !== null && piece.length === 0) { next(); return; }
         reading = false;
         want();
-        // A Uint8Array is made a Buffer over the same bytes, as Node takes one from a read.
-        stream.push(piece);
+        // As a Buffer over the same bytes, as Node's reads give.
+        stream.push(piece === null ? null : Buffer.from(piece.buffer, piece.byteOffset, piece.byteLength));
       }, (error: Error) => {
         reading = false;
         want();
@@ -138,21 +149,6 @@ export function joinStandardInput<T extends Readable>(stream: T, input: Standard
       });
     };
     next();
-  };
-  // A read in flight is not asked again when the stream flows again: its wait holds the program again here.
-  const pause = stream.pause;
-  const resume = stream.resume;
-  stream.pause = function (this: T): T {
-    stopped = true;
-    want();
-    pause.call(this);
-    return this;
-  };
-  stream.resume = function (this: T): T {
-    stopped = false;
-    want();
-    resume.call(this);
-    return this;
   };
   return stream;
 }

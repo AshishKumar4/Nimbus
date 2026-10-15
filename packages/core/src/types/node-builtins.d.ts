@@ -7,6 +7,8 @@
 declare module 'node:buffer' {
   export class Buffer extends Uint8Array {
     static from(value: string | ArrayBuffer | ArrayLike<number> | Iterable<number>, encodingOrMapFn?: string | ((v: number, k: number) => number)): Buffer;
+    /** A Buffer over the same memory. */
+    static from(buffer: ArrayBufferLike, byteOffset: number, length: number): Buffer;
     static alloc(size: number): Buffer;
     static concat(list: readonly Uint8Array[], totalLength?: number): Buffer;
     static isEncoding(encoding: string): boolean;
@@ -59,6 +61,8 @@ declare module 'node:stream' {
     pipe(destination: Writable, options?: PipeOptions): Writable;
     readonly readable: boolean;
     readonly readableEnded: boolean;
+    /** null until something reads it, then whether it flows. */
+    readonly readableFlowing: boolean | null;
     _read(size: number): void;
     push(chunk: Uint8Array | string | null, encoding?: string): boolean;
     pause(): this;

@@ -79,9 +79,21 @@ function holdWhileBusy(): void {
 
 /** End the process now with `code`, as process.exit() and a fatal error do: a write that fails later is no one's. */
 function exitNow(code: number): never {
+  const status = exiting ? code : tellExit(code, true);
   exiting = true;
-  post({ type: 'exit', code, ended: true });
-  return realm.exit(code);
+  post({ type: 'exit', code: status, ended: true });
+  return realm.exit(status);
+}
+
+/** The program's process hears 'exit' (LifoProcess.exitWith), and its status is then what its listeners leave. */
+function tellExit(code: number, explicit: boolean): number {
+  if (programProcess === null) return code;
+  try {
+    return programProcess.exitWith(code, explicit);
+  } catch (error) {
+    postOutput(2, 'console', `${uncaughtReport(error, (value) => realm.getBuiltinModule('node:util').inspect(value))}\n`);
+    return 1;
+  }
 }
 
 /** The program's process, once runNodeProgram has made it. */
@@ -341,7 +353,7 @@ let mainCode = 0;
 realm.on('exit', () => {
   if (exiting) return;
   if (mainDone) {
-    const code = finalCode();
+    const code = tellExit(finalCode(), false);
     if (code !== mainCode) post({ type: 'exit', code, ended: false });
     return;
   }

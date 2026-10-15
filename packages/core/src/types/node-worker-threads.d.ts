@@ -57,6 +57,7 @@ declare module 'node:process' {
       ctor?: (...args: never[]) => unknown,
     ): void;
     exit(code: number): never;
+    nextTick(callback: () => void): void;
     /** The engine running this process: a process realm's guest runs under the same. */
     readonly execPath: string;
     readonly pid: number;

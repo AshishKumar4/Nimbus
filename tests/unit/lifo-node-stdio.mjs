@@ -7,6 +7,8 @@
 //     (before the input ends), async iteration, pipe into stdout, and
 //     readline over it, the engine's own, as Node's is;
 //   - a program that never reads, or pauses stdin, does not wait for it;
+//   - its process hears 'exit' as it ends, by itself, by process.exit() or
+//     of an error nothing caught, and its listeners decide its status;
 //   - readFileSync(0) and the stream read one fd 0;
 //   - tty.WriteStream(fd) writes to that descriptor, in order with
 //     process.stdout; isatty answers for each descriptor; a descriptor that is
@@ -17,7 +19,8 @@
 // isatty is true, the window is COLUMNS x LINES, a typed line is read as it
 // is typed, and setRawMode hands the terminal's keys to the program.
 //
-// Red before: process.stdin was a stub whose 'data' never fired, tty's
+// Red before: process.stdin was a stub whose 'data' never fired, 'exit'
+// was never emitted on a program's process, tty's
 // streams were joined to no descriptor (a WriteStream's writes went nowhere),
 // isatty was always false, readline was lifo's own (a line split across two
 // pieces came out as two), and process.stdout.isTTY was false with 80
@@ -47,7 +50,7 @@ const cases = {
   'data.js': ["process.stdin.on('data', (c) => console.log('got', Buffer.isBuffer(c), JSON.stringify(String(c)))); process.stdin.on('end', () => console.log('end'));",
     '{ printf a; sleep 0.3; printf b; } | node {prog}'],
   'encoding.js': ["process.stdin.setEncoding('utf8'); let s = ''; process.stdin.on('data', (c) => { s += c; console.log(typeof c); }); process.stdin.on('end', () => console.log(JSON.stringify(s)));",
-    "printf 'h\\303\\251' | node {prog}"],
+    'node {prog} < utf8.txt'],
   'iterate.js': ["(async () => { const parts = []; for await (const c of process.stdin) parts.push(String(c)); console.log(JSON.stringify(parts.join(''))); })();",
     "{ printf 'one '; sleep 0.2; printf two; } | node {prog}"],
   'pipe.js': ["process.stdin.pipe(process.stdout); process.stdin.on('end', () => setTimeout(() => process.stdout.write('after\\n'), 10));",
@@ -68,6 +71,12 @@ const cases = {
     'echo x | node {prog} | cat'],
   'writestream.js': ["const tty = require('tty'); const one = new tty.WriteStream(1); one.write('via tty 1\\n'); process.stdout.write('via stdout\\n'); new tty.WriteStream(2).write('via tty 2\\n'); console.log(one.isTTY, typeof one.columns, one.fd); for (const fd of [9, -1]) { try { new tty.WriteStream(fd); console.log('made', fd); } catch (e) { console.log(fd, e.name, e.code, e.message); } }",
     'node {prog} 2>&1 | cat'],
+  'exitcode.js': ["process.on('exit', (code) => console.log('exit', code, process.exitCode)); process.exitCode = 3;",
+    'node {prog}; echo status $?'],
+  'exitcall.js': ["process.on('exit', (code) => { console.log('exit', code, process.exitCode); process.exitCode = 5; }); setTimeout(() => console.log('never'), 50); process.exit(2);",
+    'node {prog}; echo status $?'],
+  'exitfatal.js': ["process.on('exit', (code) => console.log('exit', code)); setTimeout(() => { throw 1; }, 0);",
+    'node {prog} 2>/dev/null; echo status $?'],
   'filefd.js': ["const tty = require('tty'); try { new tty.WriteStream(1); console.error('made'); } catch (e) { console.error(e.name, e.code, e.message); }",
     'node {prog} > out.txt; cat out.txt'],
 };
@@ -85,6 +94,10 @@ const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1, term
 const host = mkdtempSync(join(tmpdir(), 'lifo-node-stdio-'));
 const failed = [];
 try {
+  // A file of bytes on both sides: a two-byte character, then a newline.
+  const utf8 = new Uint8Array([0x68, 0xc3, 0xa9, 0x0a]);
+  await ws.fs.writeFile('/home/user/utf8.txt', utf8);
+  writeFileSync(join(host, 'utf8.txt'), utf8);
   for (const [name, [source, line]] of Object.entries(cases)) {
     const command = line.replaceAll('{prog}', name);
     await ws.fs.writeFile(`/home/user/${name}`, source);

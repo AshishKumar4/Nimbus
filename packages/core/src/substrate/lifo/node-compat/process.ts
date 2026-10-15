@@ -84,6 +84,28 @@ export class LifoProcess extends EventEmitter {
    * list), or one for an error nothing caught (takeUncaught's, the monitor's
    * included).
    */
+  #exited = false;
+
+  /**
+   * Node's 'exit', heard once as the process ends: with `code`, which an
+   * explicit end (process.exit(), a fatal error) also makes its
+   * process.exitCode, or, when its loop ran empty, its process.exitCode. Its
+   * listeners may set process.exitCode, which is then its status; a
+   * process.exit() among them ends it there.
+   */
+  exitWith(code: number, explicit: boolean): number {
+    if (this.#exited) return code;
+    this.#exited = true;
+    if (explicit) Reflect.set(this, 'exitCode', code);
+    try {
+      this.emit('exit', code);
+    } catch (error) {
+      if (error instanceof ProcessExitError) return error.exitCode;
+      throw error;
+    }
+    return exitCodeOf(this);
+  }
+
   hearsWriteFailures(): boolean {
     return (this.#stdout?.listenerCount('error') ?? 0) > 0 || (this.#stderr?.listenerCount('error') ?? 0) > 0
       || this.#capture !== null || this.listenerCount('uncaughtException') > 0 || this.listenerCount('uncaughtExceptionMonitor') > 0;
