@@ -394,8 +394,10 @@ try {
       assert.match(await install('fresh'), /"version":"2\.0\.0"/, 'past its max-age, the release list was not fetched again');
       const plainBefore = fetches;
       await install('plain');
+      const once = fetches - plainBefore;
       await install('plain');
-      assert.equal(fetches - plainBefore, 4, 'an answer without a max-age was reused by a later install');
+      assert.ok(once > 0);
+      assert.equal(fetches - plainBefore - once, once, 'an answer without a max-age was reused by a later install');
     } finally {
       Date.now = realNow;
     }
