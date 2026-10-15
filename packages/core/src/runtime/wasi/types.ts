@@ -44,7 +44,7 @@ export const NIMBUS_ERESTART = 512;
  * (WasiMakeImportsOptions.takesSignals): NIMBUS_ESIGNAL plus the signal's
  * number. Its libc raises the signal, so that the program's own handling
  * runs (or the default ends it, 128 + the number), then the call answers
- * EINTR (wasm/nimbus-libc/nimbus-signal.h), as Linux runs a handler before
+ * EINTR (wasm/nimbus-libc/nimbus-signal.c), as Linux runs a handler before
  * the call it interrupted returns.
  */
 export const NIMBUS_ESIGNAL = 1024;

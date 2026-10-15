@@ -6,7 +6,6 @@
 #include <string.h>
 #include <unistd.h>
 #include "nimbus-proc.h"
-#include "nimbus-signal.h"
 
 /* ---- processes and pipes: the host's (nimbus_proc imports) ---- */
 
@@ -34,8 +33,7 @@ int kill(pid_t pid, int signal) { return nimbus_result(__nimbus_kill(pid, signal
 pid_t waitpid(pid_t pid, int *status, int options) {
   int st = 0, waited = -1;
   int error = __nimbus_wait(pid, options, &st, &waited);
-  /* A signal that interrupted it is raised, and it fails EINTR (nimbus-signal.h). */
-  if (error) { errno = error; nimbus_signal_taken(); return -1; }
+  if (error) { errno = error; return -1; }
   if (status && waited > 0) *status = st;
   return waited;
 }

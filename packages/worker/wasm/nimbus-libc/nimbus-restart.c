@@ -3,14 +3,12 @@
  *   -Wl,--wrap=read -Wl,--wrap=readv -Wl,--wrap=write -Wl,--wrap=writev
  * every call to them, wasi-libc's own included (stdio's __stdio_read and
  * __stdio_write), comes here: a call the host gave up waiting on is asked
- * again, with errno as it was; one a signal sent to the process interrupted
- * raises it (nimbus-signal.h) and fails EINTR; any other result, EINTR
- * included, is the caller's. */
+ * again, with errno as it was, and any other result, EINTR included, is the
+ * caller's. */
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/uio.h>
 #include "nimbus-restart.h"
-#include "nimbus-signal.h"
 
 ssize_t __real_read(int fd, void *buf, size_t count);
 ssize_t __real_readv(int fd, const struct iovec *iov, int iovcnt);
@@ -22,11 +20,7 @@ ssize_t __real_writev(int fd, const struct iovec *iov, int iovcnt);
     int saved = errno;                                    \
     for (;;) {                                            \
       ssize_t n = (call);                                 \
-      if (n >= 0) return n;                               \
-      if (errno != NIMBUS_ERESTART) {                     \
-        nimbus_signal_taken();                            \
-        return n;                                         \
-      }                                                   \
+      if (n >= 0 || errno != NIMBUS_ERESTART) return n;   \
       errno = saved;                                      \
     }                                                     \
   } while (0)

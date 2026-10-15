@@ -1,16 +1,32 @@
-/* Signals a Nimbus host sends the process (nimbus-signal.h). Linked with
- *   -Wl,--wrap=raise -Wl,--wrap=poll
- * every raise comes here, the program's own and libc's: a signal whose
- * action is still the default one that ends a process ends it as Linux's
- * does, at once, quietly, with 128 + its number (wasi-libc's prints a line
- * and traps); any other is wasi-libc's. And a poll a signal interrupted
- * raises it (read, write and waitpid do: nimbus-restart.c, nimbus-proc.c). */
-#include <poll.h>
+/* Signals a Nimbus host sends the process. To an image that takes them
+ * (git-runner@2), the host answers a wait a signal interrupted
+ * NIMBUS_ESIGNAL plus the signal's number (core runtime/wasi/types.ts
+ * NIMBUS_SIGNAL_ERRNOS). Linked with
+ *   -Wl,--wrap=__wasi_fd_read -Wl,--wrap=__wasi_fd_write
+ *   -Wl,--wrap=__wasi_poll_oneoff -Wl,--wrap=__nimbus_wait -Wl,--wrap=raise
+ * such an answer raises the signal where the host call returns, as Linux
+ * runs a handler before the call it interrupted returns, and the call fails
+ * EINTR (read, write, poll, waitpid; nimbus-restart.c passes EINTR on). A
+ * signal whose action is still the default one that ends a process ends it
+ * at once, quietly, with 128 + its number (wasi-libc's raise prints a line
+ * and traps); any other raise is wasi-libc's. */
+#include <errno.h>
+#include <signal.h>
 #include <stdlib.h>
-#include "nimbus-signal.h"
+#include <wasi/api.h>
+
+#define NIMBUS_ESIGNAL 1024
+
+/* Signal numbers end below this (musl's and wasi-libc's 65). */
+#ifndef _NSIG
+#define _NSIG 65
+#endif
 
 int __real_raise(int sig);
-int __real_poll(struct pollfd *fds, nfds_t nfds, int timeout);
+__wasi_errno_t __real___wasi_fd_read(__wasi_fd_t fd, const __wasi_iovec_t *iovs, size_t iovs_len, __wasi_size_t *nread);
+__wasi_errno_t __real___wasi_fd_write(__wasi_fd_t fd, const __wasi_ciovec_t *iovs, size_t iovs_len, __wasi_size_t *nwritten);
+__wasi_errno_t __real___wasi_poll_oneoff(const __wasi_subscription_t *in, __wasi_event_t *out, __wasi_size_t nsubscriptions, __wasi_size_t *nevents);
+int __real___nimbus_wait(int pid, int options, int *status, int *waited);
 
 /* Whether the default action of `sig` ends a process (POSIX: terminate or core). */
 static int ends_process(int sig) {
@@ -31,8 +47,26 @@ int __wrap_raise(int sig) {
   return __real_raise(sig);
 }
 
-int __wrap_poll(struct pollfd *fds, nfds_t nfds, int timeout) {
-  int ready = __real_poll(fds, nfds, timeout);
-  if (ready < 0) nimbus_signal_taken();
-  return ready;
+/* A host call's error: a signal the host sent is raised, and the call fails EINTR. */
+static int taken(int error) {
+  int sig = error - NIMBUS_ESIGNAL;
+  if (sig <= 0 || sig >= _NSIG) return error;
+  raise(sig);
+  return EINTR;
+}
+
+__wasi_errno_t __wrap___wasi_fd_read(__wasi_fd_t fd, const __wasi_iovec_t *iovs, size_t iovs_len, __wasi_size_t *nread) {
+  return taken(__real___wasi_fd_read(fd, iovs, iovs_len, nread));
+}
+
+__wasi_errno_t __wrap___wasi_fd_write(__wasi_fd_t fd, const __wasi_ciovec_t *iovs, size_t iovs_len, __wasi_size_t *nwritten) {
+  return taken(__real___wasi_fd_write(fd, iovs, iovs_len, nwritten));
+}
+
+__wasi_errno_t __wrap___wasi_poll_oneoff(const __wasi_subscription_t *in, __wasi_event_t *out, __wasi_size_t nsubscriptions, __wasi_size_t *nevents) {
+  return taken(__real___wasi_poll_oneoff(in, out, nsubscriptions, nevents));
+}
+
+int __wrap___nimbus_wait(int pid, int options, int *status, int *waited) {
+  return taken(__real___nimbus_wait(pid, options, status, waited));
 }

@@ -15,13 +15,14 @@ CFLAGS = -O2 -g0 -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI
   -I$(GIT_WASI_DIR)/include -I$(GIT_WASI_DIR)/../nimbus-libc -I$(SYSROOT_EXTRA)/include -include $(GIT_WASI_COMPAT_H)
 # --wrap: a read or write the host gave up waiting on is asked again
 # (wasm/nimbus-libc/nimbus-restart.c), stdio's included, and a signal the
-# host sends the process is raised where a wait it interrupted returns, its
-# default action ending git quietly (nimbus-signal.c); the image is
-# git-runner@2's, whose host answers such waits NIMBUS_ERESTART and
-# NIMBUS_ESIGNAL.
+# host sends the process is raised where a host call it interrupted
+# returns, its default action ending git quietly (nimbus-signal.c); the
+# image is git-runner@2's, whose host answers such waits NIMBUS_ERESTART
+# and NIMBUS_ESIGNAL.
 LDFLAGS = -L$(SYSROOT_EXTRA)/lib -lwasi-emulated-signal -lwasi-emulated-process-clocks -lwasi-emulated-getpid \
   -Wl,-z,stack-size=8388608 -Wl,--initial-memory=12582912 -Wl,--max-memory=2147483648 \
-  -Wl,--wrap=read -Wl,--wrap=readv -Wl,--wrap=write -Wl,--wrap=writev -Wl,--wrap=raise -Wl,--wrap=poll
+  -Wl,--wrap=read -Wl,--wrap=readv -Wl,--wrap=write -Wl,--wrap=writev \
+  -Wl,--wrap=__wasi_fd_read -Wl,--wrap=__wasi_fd_write -Wl,--wrap=__wasi_poll_oneoff -Wl,--wrap=__nimbus_wait -Wl,--wrap=raise
 COMPAT_OBJS += compat/git-wasi-compat.o compat/nimbus-fs.o compat/nimbus-proc.o compat/nimbus-restart.o compat/nimbus-signal.o
 # Git's default prefix is the builder's $HOME, baked into the binary as the
 # root of its template, exec and documentation paths. /usr is where a
