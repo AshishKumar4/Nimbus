@@ -36,7 +36,7 @@
  * module is an emit and that the map does not carry (`codeOnly`: an ES module
  * staged only to run) is planned as any other file is.
  */
-import { parseResolvablePackageJson, resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
+import { packageJsonText, parseResolvablePackageJson, resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { resolveFile, type RequireFs } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { resolveDeferredImport } from '@nimbus-sh/core/runtime/require-resolver.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -47,7 +47,7 @@ export interface DataPlanEntry { path: string; kind: string; size: number; linkT
 export interface DataPlanSource {
   /** One page of the namespace in path order; `next === null` ends it. */
   list(after: string | null): Promise<{ entries: DataPlanEntry[]; next: string | null }>;
-  /** A file's text, or null when it cannot be read. */
+  /** A file's text, a byte order mark kept (require-resolution.ts fileText), or null when it cannot be read. */
   readText(path: string): Promise<string | null>;
   /**
    * Where the symlink at a path leads, as the namespace follows it (its
@@ -174,7 +174,7 @@ async function readManifest(
   let manifest = manifests.get(dir);
   if (manifest === undefined) {
     const text = await source.readText(joinKey(dir, 'package.json'));
-    try { manifest = text === null ? null : JSON.parse(text) as Record<string, unknown>; } catch { manifest = null; }
+    try { manifest = text === null ? null : JSON.parse(packageJsonText(text)) as Record<string, unknown>; } catch { manifest = null; }
     manifests.set(dir, manifest);
   }
   return manifest;
@@ -459,7 +459,7 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     for (const root of typesRoots) {
       const text = await source.readText(root + '/package.json');
       try {
-        const deps = (JSON.parse(text ?? '{}') as { dependencies?: Record<string, string> }).dependencies ?? {};
+        const deps = (JSON.parse(packageJsonText(text ?? '{}')) as { dependencies?: Record<string, string> }).dependencies ?? {};
         for (const dep of Object.keys(deps)) typeDeps.add(dep);
       } catch { /* not a manifest */ }
     }

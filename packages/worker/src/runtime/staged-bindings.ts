@@ -37,6 +37,7 @@ import {
 } from '../napi-wasm-artifacts.generated.js';
 import { fetchStagedBytes, stagedAsset, type StagedSourceEnv } from './staged-source.js';
 import { packageRootOf } from '../facets/data-plan.js';
+import { packageJsonText } from '@nimbus-sh/core/_shared/exports-resolver.js';
 
 export { NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, type NapiWasmAsset };
 
@@ -173,7 +174,7 @@ export async function stagedBindingsDeclaredBy(
     const text = await fs.readText('/' + dir + '/package.json');
     if (text !== null) {
       try {
-        const parsed: unknown = JSON.parse(text);
+        const parsed: unknown = JSON.parse(packageJsonText(text));
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) manifest = parsed as Record<string, unknown>;
       } catch {
         // Not a manifest: nothing installed here.

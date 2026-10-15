@@ -52,8 +52,12 @@ function mergeRefs(list) {
 const BARE_SUBPATH = /^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*(?:\/[\w.@-]+)+\.[a-z0-9]+$/i;
 /** `/x/y.z`: an absolute path of name characters, no wider than a literal a path is spelled as. */
 const ABSOLUTE_LITERAL = /^\/[\w.\-/]{1,510}$/;
+/** Whether a literal's text is an absolute path (ABSOLUTE_LITERAL): its first character decides for nearly every string. */
+const absoluteLiteral = (text) => text.charCodeAt(0) === 0x2f && ABSOLUTE_LITERAL.test(text);
 /** What `require('path').<name>` is when it is the module again, not one of its functions. */
 const PATH_NAMESPACES = new Set(['default', 'posix']);
+/** The path functions folding evaluates (evaluate's CallExpression). */
+const PATH_FUNCTIONS = new Set(['join', 'resolve', 'dirname']);
 function parseAny(source) {
     for (const sourceType of ['module', 'script']) {
         try {
@@ -142,7 +146,7 @@ export function findStaticFsReferences(source, filename) {
             const init = node.init ?? null;
             if (id.type === 'Identifier') {
                 bind(String(id.name), init);
-                if (init?.type === 'MemberExpression' && !init.computed && init.property.type === 'Identifier' && !PATH_NAMESPACES.has(init.property.name)) {
+                if (init?.type === 'MemberExpression' && !init.computed && init.property.type === 'Identifier' && PATH_FUNCTIONS.has(init.property.name)) {
                     aliases.push({ name: String(id.name), method: init.property.name, init, object: init.object.type === 'Identifier' ? init.object.name : null });
                 }
                 else if (requiresPath(init))
@@ -304,17 +308,20 @@ export function findStaticFsReferences(source, filename) {
         const node = raw;
         if (node.type === 'Literal') {
             // A package subpath spelled as data ("astro/runtime/client/x.js" in a
-            // bundler's include list) is read by whatever resolves it.
+            // bundler's include list) is read by whatever resolves it; so is one
+            // a template with no substitution spells, below.
             if (typeof node.value === 'string' && BARE_SUBPATH.test(node.value)) {
                 refs.subpaths.push({ from: dir, spec: node.value });
             }
-            if (typeof node.value === 'string' && ABSOLUTE_LITERAL.test(node.value))
+            if (typeof node.value === 'string' && absoluteLiteral(node.value))
                 refs.literals.push(normalize(node.value));
             return;
         }
         if (node.type === 'TemplateLiteral') {
             const text = node.expressions.length === 0 ? node.quasis[0]?.value.cooked : undefined;
-            if (typeof text === 'string' && ABSOLUTE_LITERAL.test(text))
+            if (typeof text === 'string' && BARE_SUBPATH.test(text))
+                refs.subpaths.push({ from: dir, spec: text });
+            if (typeof text === 'string' && absoluteLiteral(text))
                 refs.literals.push(normalize(text));
             return;
         }
@@ -419,8 +426,9 @@ export const STATIC_AST_MAX_SOURCE = 1024 * 1024;
  * literal shapes that need no bindings. `join|resolve(__dirname | import.meta.
  * dirname, 'lit', ...)` (a synchronous read when it is readFileSync's first
  * argument), `new URL('lit', import.meta.url)`, a read call on an absolute
- * literal, and package-subpath and absolute-path literals. What folding
- * through bindings would add is not found here.
+ * literal, and package-subpath and absolute-path literals, a template with
+ * no substitution being the string it spells. What folding through bindings
+ * would add is not found here.
  */
 export function scanStaticFsTokens(source, filename) {
     const refs = { exact: [], listed: [], patterns: [], cwdRelative: [], resolves: [], subpaths: [], literals: [] };
@@ -453,21 +461,27 @@ export function scanStaticFsTokens(source, filename) {
             const token = tokens.getToken();
             if (token.type === tokTypes.eof)
                 return;
-            const type = token.type.label;
+            let type = token.type.label;
             // acorn's typings omit Token.value; it is the literal's or name's value.
-            const value = token.value;
+            let value = token.value;
+            // A template with no substitution closes right after its one text: it
+            // is the string it spells, one token, as a quoted one is.
+            if (type === '`') {
+                const quasi = recent[recent.length - 1];
+                if (quasi?.type === 'template' && typeof quasi.value === 'string' && recent[recent.length - 2]?.type === '`') {
+                    recent.length -= 2;
+                    type = 'string';
+                    value = quasi.value;
+                }
+            }
             recent.push({ type, value });
             if (recent.length > 64)
                 recent.splice(0, recent.length - 32);
-            if (type === 'string' && typeof value === 'string' && BARE_SUBPATH.test(value)) {
-                refs.subpaths.push({ from: dir, spec: value });
-            }
-            if (type === 'string' && typeof value === 'string' && ABSOLUTE_LITERAL.test(value))
-                refs.literals.push(normalize(value));
-            // A template with no substitution closes right after its one text.
-            const quasi = at(1);
-            if (type === '`' && quasi?.type === 'template' && isPunct(at(2), '`') && typeof quasi.value === 'string' && ABSOLUTE_LITERAL.test(quasi.value)) {
-                refs.literals.push(normalize(quasi.value));
+            if (type === 'string' && typeof value === 'string') {
+                if (BARE_SUBPATH.test(value))
+                    refs.subpaths.push({ from: dir, spec: value });
+                if (absoluteLiteral(value))
+                    refs.literals.push(normalize(value));
             }
             if (type !== ')')
                 continue;

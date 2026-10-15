@@ -49,7 +49,7 @@ import { forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
 import { requireWrapperCalls } from './require-wrappers.js';
 
 // The CommonJS resolver this walk stages from (require-resolution.ts).
-export { requireFsOverBridge, type BridgeRequireFs, type RequireFs, type StagingRequireFs } from './require-resolution.js';
+export { fileText, requireFsOverBridge, type BridgeRequireFs, type RequireFs, type StagingRequireFs } from './require-resolution.js';
 export { requireWrapperCalls } from './require-wrappers.js';
 
 // Match literal-string require/require.resolve with single, double, or

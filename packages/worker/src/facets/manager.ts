@@ -75,7 +75,7 @@ import {
 import { typeScriptStripOptions, type NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
 import type { NodeTypeScript } from '@nimbus-sh/core/runtime/typescript-strip.js';
 import { findStaticFsReferences, type StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
-import { fileCell, packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
+import { fileCell, fileText, packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
 import type { ModuleScope, PackageType } from '@nimbus-sh/core/runtime/module-format.js';
 import { isManifestKey, linkTargetOf, packageRootOf, planFacetData } from './data-plan.js';
 import {
@@ -118,6 +118,7 @@ import {
 import { TransformStore } from './transform-store.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import {
+  packageJsonText,
   parseResolvablePackageJson,
   BUILD_BROWSER_PACKAGE_MAP_POLICY,
   type ResolvablePackageJson,
@@ -242,9 +243,8 @@ function launchEntryType(vfs: LaunchFs, dir: string, entry: RuntimeVfsDirEntry):
 /** The declared-dependency walk's questions (stagedBindingsDeclaredBy), on a launch's fs. */
 function declaredBindingFs(fs: LaunchFs): DeclaredBindingFs {
   const files = filesOf(fs);
-  const decoder = new TextDecoder();
   return {
-    readText: async (path) => { const bytes = await files.readBytes(path); return bytes === null ? null : decoder.decode(bytes); },
+    readText: async (path) => { const bytes = await files.readBytes(path); return bytes === null ? null : fileText(bytes); },
     exists: async (path) => await files.exists(path),
     realpath: async (path) => { try { return await fs.realpath(path); } catch { return null; } },
   };
@@ -3414,7 +3414,7 @@ export async function speculativePackageDirs(
 ): Promise<string[]> {
   const runtimeDeps = async (pkgJsonPath: string): Promise<string[]> => {
     try {
-      const meta = JSON.parse((await filesOf(vfs).readFileString(pkgJsonPath)));
+      const meta = JSON.parse(packageJsonText(await filesOf(vfs).readFileString(pkgJsonPath)));
       const names = new Set<string>();
       for (const field of ['dependencies', 'optionalDependencies']) {
         const deps = meta?.[field];
@@ -4245,7 +4245,7 @@ export async function toolConfigRoots(vfs: LaunchFs, cwd: string, scriptPath: st
   const root = packageRootOf(script.replace(/^\/+/, ''));
   if (root === null) return [];
   let manifest: Record<string, unknown>;
-  try { manifest = JSON.parse(await filesOf(vfs).readFileString(root + '/package.json')) as Record<string, unknown>; } catch { return []; }
+  try { manifest = JSON.parse(packageJsonText(await filesOf(vfs).readFileString(root + '/package.json'))) as Record<string, unknown>; } catch { return []; }
   const tools = new Set<string>(typeof manifest.name === 'string' ? [manifest.name] : []);
   for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies'] as const) {
     const named = manifest[field];

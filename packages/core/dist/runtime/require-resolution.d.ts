@@ -21,8 +21,8 @@ export interface RequireFs {
 }
 /**
  * The filesystem a module map is staged from: its cells copy each file's
- * bytes (fileCell), which readFileString, the text a resolver parses, does
- * not.
+ * bytes (fileCell), which readFileString's text (fileText) may not, where
+ * the file is not UTF-8.
  */
 export interface StagingRequireFs extends RequireFs {
     /** A file's bytes, or null when it does not exist. */
@@ -99,16 +99,21 @@ export declare function createRequireResolver(host: RequireResolverHost, options
     packageScopeSync: (dir: string) => RequirePackageScope | null;
 };
 /**
+ * A file's bytes as text, as Node's readFileSync(path, 'utf8') answers them:
+ * every byte decoded, a leading byte order mark kept. What
+ * RequireFs.readFileString answers, and what a resolver parses.
+ */
+export declare function fileText(bytes: Uint8Array): string;
+/**
  * A file's bytes as a module map's cell carries them: its text when the
  * bytes are UTF-8, every byte kept, else the bytes.
  */
 export declare function fileCell(bytes: Uint8Array): string | Uint8Array;
 /**
  * The text a module walk reads a cell as, or a file's bytes it stages: a
- * text cell is that text; bytes are decoded as a copy of the file, which is
- * the cell's text when the file is UTF-8 (fileCell), and as Node decodes
- * source otherwise. A walk stages, reuses and compares cells through this,
- * in the one representation it reads.
+ * text cell is that text; bytes are the file's text (fileText), which is the
+ * cell's text when the file is UTF-8 (fileCell). A walk stages, reuses and
+ * compares cells through this, in the one representation it reads.
  */
 export declare function heldCellText(cell: string | Uint8Array): string;
 export declare function requireFsOverBridge(bridge: RuntimeFsBridge): BridgeRequireFs;

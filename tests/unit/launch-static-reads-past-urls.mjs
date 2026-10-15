@@ -11,6 +11,12 @@
 // with the shapes the staging covers: path.resolve or path.join of
 // __dirname, an alias of the path function, SWC's `(0, fs_1.readFileSync)`,
 // a dotfile or version sentinel, and an absolute path a module names.
+//
+// A module past STATIC_AST_MAX_SOURCE is scanned token by token. Its reads
+// spelled with a backtick template (`style.css`), plainly or as SWC calls
+// them, are staged as the regex passes staged them: a one-shot of a script
+// requiring an installed package that reads its own assets so runs as node
+// does, on its first launch.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -18,6 +24,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
+import { STATIC_AST_MAX_SOURCE } from '../../packages/core/src/runtime/static-fs-refs.ts';
 import { createAuthority } from './lib/resident-body.mjs';
 import { adoptSessionSupervisor, oneShotManager, runnerLoader } from './lib/one-shot-runner.mjs';
 
@@ -26,6 +33,7 @@ const CWD = `${ROOT}/proj`;
 const URL_LINE = 'const home = "http://example.com";';
 const evalCode = (root) => `${URL_LINE} console.log(require("fs").readFileSync("${root}/data/x.txt", "utf8"));`;
 const PKG = 'proj/node_modules/assets';
+const BIG = 'proj/node_modules/big';
 const files = {
   'data/x.txt': 'x-data',
   'data/y.txt': 'y-data',
@@ -44,11 +52,25 @@ const files = {
   [`${PKG}/VERSION`]: '1.0.0',
   [`${PKG}/abs.js`]: `module.exports = { file: '${ROOT}/data/y.txt' };\n`,
   [`${PKG}/abs-url.js`]: `${URL_LINE} module.exports = { file: '${ROOT}/data/z.txt' };\n`,
+  'proj/big.js': "console.log(require('big'));\n",
+  [`${BIG}/package.json`]: JSON.stringify({ name: 'big', version: '1.0.0', main: 'index.js' }),
+  [`${BIG}/index.js`]: [
+    "const fs = require('fs');",
+    "const path = require('path');",
+    'var fs_1 = require("fs");',
+    'var path_1 = require("path");',
+    "module.exports = fs.readFileSync(path.resolve(__dirname, `big.css`), 'utf8') + ' ' + (0, fs_1.readFileSync)((0, path_1.resolve)(__dirname, `.big-digest`), \"utf8\");",
+    `// ${'x'.repeat(STATIC_AST_MAX_SOURCE)}`,
+    '',
+  ].join('\n'),
+  [`${BIG}/big.css`]: 'big {}',
+  [`${BIG}/.big-digest`]: 'd-big',
 };
 
 // ── real node ────────────────────────────────────────────────────────────
 const disk = realpathSync(mkdtempSync(join(tmpdir(), 'launch-static-reads-')));
 let expected;
+let expectedBig;
 try {
   for (const [rel, body] of Object.entries(files)) {
     mkdirSync(dirname(join(disk, rel)), { recursive: true });
@@ -57,10 +79,15 @@ try {
   const node = spawnSync('node', ['-e', evalCode(disk)], { cwd: join(disk, 'proj'), encoding: 'utf8' });
   assert.equal(node.status, 0, `node -e: ${node.stderr}`);
   expected = node.stdout;
+  const big = spawnSync('node', ['big.js'], { cwd: join(disk, 'proj'), encoding: 'utf8' });
+  assert.equal(big.status, 0, `node big.js: ${big.stderr}`);
+  expectedBig = big.stdout;
 } finally {
   rmSync(disk, { recursive: true, force: true });
 }
 assert.equal(expected, 'x-data\n', 'premise: node reads the file named after the URL');
+assert.equal(expectedBig, 'big {} d-big\n', 'premise: node reads the large module\'s assets');
+assert.ok(files[`${BIG}/index.js`].length > STATIC_AST_MAX_SOURCE, 'premise: the module is scanned token by token');
 
 // ── the session ──────────────────────────────────────────────────────────
 const { host, rawVfs, kfs } = createAuthority();
@@ -81,6 +108,15 @@ try {
 assert.equal(result.exitCode, 0, `node -e: ${result.stderr}${out}`);
 assert.equal(out + result.stdout, expected, 'node -e reads the file it names after a URL, as node does');
 
+// A first launch of a script whose installed package, past the parse
+// threshold, reads its assets by backtick templates.
+out = '';
+try {
+  result = await manager.exec(files['proj/big.js'], { filename: `${CWD}/big.js`, dirname: CWD, cwd: CWD, captureOutput: true });
+} finally { Object.assign(globalThis, real); }
+assert.equal(result.exitCode, 0, `node big.js: ${result.stderr}${out}`);
+assert.equal(out + result.stdout, expectedBig, 'node big.js reads the assets its large dependency names by templates, as node does');
+
 // The module map a launch of main.js builds.
 const spec = { scriptPath: `${CWD}/main.js`, cwd: CWD, entryCode: files['proj/main.js'] };
 const entry = host.processes.spawn('node main.js', ['node', 'main.js'], CWD, { cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
@@ -96,4 +132,4 @@ const want = {
 };
 for (const [what, path] of Object.entries(want)) assert.ok(staged.has(path), `the module map stages ${what}: ${path}`);
 
-console.log(`launch-static-reads-past-urls: node -e reads past a URL, and the map stages ${Object.keys(want).length} spelled-out reads`);
+console.log(`launch-static-reads-past-urls: node -e reads past a URL, a large module's template reads are staged, and the map stages ${Object.keys(want).length} spelled-out reads`);

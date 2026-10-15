@@ -25,8 +25,8 @@ export interface RequireFs {
 }
 /**
  * The filesystem a module map is staged from: its cells copy each file's
- * bytes (fileCell), which readFileString, the text a resolver parses, does
- * not.
+ * bytes (fileCell), which readFileString's text (fileText) may not, where
+ * the file is not UTF-8.
  */
 export interface StagingRequireFs extends RequireFs {
   /** A file's bytes, or null when it does not exist. */
@@ -395,14 +395,20 @@ export function createRequireResolver(host: RequireResolverHost, options: Requir
   };
 }
 
-/** A file's bytes as RequireFs.readFileString answers them: text to parse. */
-const fileTextDecoder = new TextDecoder();
-
-// A copy keeps a leading byte order mark, which TextDecoder's default drops:
-// Node's readFileSync returns it, and its parsers (a JSON require, the
-// package.json reader) are what skip it.
+// A file's text keeps a leading byte order mark, which TextDecoder's default
+// drops: Node's readFileSync returns it, and its parsers (a JSON require, the
+// package.json reader: packageJsonText) are what skip it, once.
 const cellDecoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
-const cellTextDecoder = new TextDecoder('utf-8', { ignoreBOM: true });
+const textDecoder = new TextDecoder('utf-8', { ignoreBOM: true });
+
+/**
+ * A file's bytes as text, as Node's readFileSync(path, 'utf8') answers them:
+ * every byte decoded, a leading byte order mark kept. What
+ * RequireFs.readFileString answers, and what a resolver parses.
+ */
+export function fileText(bytes: Uint8Array): string {
+  return textDecoder.decode(bytes);
+}
 
 /**
  * A file's bytes as a module map's cell carries them: its text when the
@@ -418,13 +424,12 @@ export function fileCell(bytes: Uint8Array): string | Uint8Array {
 
 /**
  * The text a module walk reads a cell as, or a file's bytes it stages: a
- * text cell is that text; bytes are decoded as a copy of the file, which is
- * the cell's text when the file is UTF-8 (fileCell), and as Node decodes
- * source otherwise. A walk stages, reuses and compares cells through this,
- * in the one representation it reads.
+ * text cell is that text; bytes are the file's text (fileText), which is the
+ * cell's text when the file is UTF-8 (fileCell). A walk stages, reuses and
+ * compares cells through this, in the one representation it reads.
  */
 export function heldCellText(cell: string | Uint8Array): string {
-  return typeof cell === 'string' ? cell : cellTextDecoder.decode(cell);
+  return typeof cell === 'string' ? cell : fileText(cell);
 }
 
 export function requireFsOverBridge(bridge: RuntimeFsBridge): BridgeRequireFs {
@@ -444,7 +449,7 @@ export function requireFsOverBridge(bridge: RuntimeFsBridge): BridgeRequireFs {
     readFileString: async (path) => {
       const bytes = await readBytes(path);
       if (bytes === null) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
-      return fileTextDecoder.decode(bytes);
+      return fileText(bytes);
     },
     stat,
     realpath: (path) => bridge.realpath(path),

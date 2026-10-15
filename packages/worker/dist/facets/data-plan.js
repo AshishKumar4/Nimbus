@@ -36,7 +36,7 @@
  * module is an emit and that the map does not carry (`codeOnly`: an ES module
  * staged only to run) is planned as any other file is.
  */
-import { parseResolvablePackageJson, resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
+import { packageJsonText, parseResolvablePackageJson, resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { resolveFile } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { resolveDeferredImport } from '@nimbus-sh/core/runtime/require-resolver.js';
 /** Package data this size or larger is a bundle or a binary, not configuration. */
@@ -135,7 +135,7 @@ async function readManifest(source, dir, manifests) {
     if (manifest === undefined) {
         const text = await source.readText(joinKey(dir, 'package.json'));
         try {
-            manifest = text === null ? null : JSON.parse(text);
+            manifest = text === null ? null : JSON.parse(packageJsonText(text));
         }
         catch {
             manifest = null;
@@ -468,7 +468,7 @@ export async function planFacetData(source, input) {
         for (const root of typesRoots) {
             const text = await source.readText(root + '/package.json');
             try {
-                const deps = JSON.parse(text ?? '{}').dependencies ?? {};
+                const deps = JSON.parse(packageJsonText(text ?? '{}')).dependencies ?? {};
                 for (const dep of Object.keys(deps))
                     typeDeps.add(dep);
             }

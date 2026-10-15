@@ -161,6 +161,23 @@ assert.deepEqual(refs('this is not javascript {{{', FILE).exact, []);
   assert.deepEqual(big.literals.sort(), ['/etc/app/templates', '/home/user/y.txt', '/opt/data/big.dat', '/opt/data/log.txt',
     '/opt/data/out.txt', '/opt/data/ro.bin', '/opt/data/text.dat', '/opt/t.txt']);
   assert.ok(paths(big.exact).includes('/opt/data/log.txt') && paths(big.exact).includes('/opt/data/out.txt'));
+
+  // A backtick template with no substitution is the string it spells, as in
+  // the parsed path; one with a substitution names nothing.
+  const templated = refs(`const path = require('path');
+    fs.readFileSync(path.resolve(__dirname, \`tpl.css\`), 'utf8');
+    (0, fs_1.readFileSync)((0, path_1.join)(__dirname, \`.tpl-digest\`), \`utf8\`);
+    const u = new URL(\`../runtime/tpl.js\`, import.meta.url);
+    fs.readFileSync(\`/opt/data/tpl.dat\`);
+    fs.readFileSync(path.join(__dirname, \`dyn-\${x}.css\`));
+    x = [\`astro/runtime/client/tpl.js\`];` + pad, FILE);
+  assert.deepEqual(syncPaths(templated.exact).sort(),
+    ['/opt/data/tpl.dat', '/p/node_modules/pkg/lib/.tpl-digest', '/p/node_modules/pkg/lib/tpl.css']);
+  assert.ok(paths(templated.exact).includes('/p/node_modules/pkg/runtime/tpl.js'), JSON.stringify(templated.exact));
+  assert.ok(!paths(templated.exact).some((p) => p.includes('dyn-')), 'a template with a substitution names nothing');
+  assert.deepEqual(templated.subpaths.map((r) => r.spec), ['astro/runtime/client/tpl.js']);
+  assert.deepEqual(refs(`x = [\`astro/runtime/client/tpl.js\`];`, FILE).subpaths.map((r) => r.spec), ['astro/runtime/client/tpl.js'],
+    'and in the parsed path');
 }
 
 console.log('static-fs-refs: ok');

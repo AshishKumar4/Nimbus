@@ -36,7 +36,7 @@ import { packageJsonText } from '../_shared/exports-resolver.js';
 import { forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
 import { requireWrapperCalls } from './require-wrappers.js';
 // The CommonJS resolver this walk stages from (require-resolution.ts).
-export { requireFsOverBridge } from './require-resolution.js';
+export { fileText, requireFsOverBridge } from './require-resolution.js';
 export { requireWrapperCalls } from './require-wrappers.js';
 // Match literal-string require/require.resolve with single, double, or
 // template-literal-no-interp specifier. The plain-string variant is by
