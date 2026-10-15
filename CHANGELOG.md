@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `npx` keeps each request's install apart, as npm does: in its own
+  directory under `/tmp/.npx-cache`, named as npm names it, written only
+  if its install succeeds. A request for a package that does not exist no
+  longer breaks every later `npx`. What earlier sessions installed in the
+  shared `/tmp/.npx-cache` is installed again once, where it is asked for.
+- Fixed: `npx <pkg>@<version>` runs that version. A project's
+  `node_modules`, or what an earlier `npx` installed, answers only a
+  version or range it satisfies; before, whatever version was there ran.
+- Removed: core's `createNpxCommand` (`@nimbus-sh/core/substrate/lifo`),
+  a second npx no Nimbus shell registered. The session's `npx` is the one.
 - Fixed: the shell's `node` matches Node in more of its module surface. A
   CommonJS file runs with `this` as its `module.exports`;
   `require('fs').promises` is `require('fs/promises')`, and likewise for
