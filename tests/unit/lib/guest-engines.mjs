@@ -138,6 +138,8 @@ export const answeredAtOnce = (work) => Promise.race([Promise.resolve(work).then
 /**
  * A process on engine `kind` over a new session, its project at APP. `seed`
  * makes what the session holds before the process starts (authority).
+ * @param {string} kind
+ * @param {{ seed?: (authority: any) => void }} [options]
  */
 export async function bootEngine(kind, { seed } = {}) {
   if (!ENGINES.includes(kind)) throw new Error(`no engine ${kind}`);

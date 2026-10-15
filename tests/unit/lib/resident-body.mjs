@@ -230,6 +230,7 @@ export function facetSql(db = new Database(':memory:')) {
  * the fabric does: `new NimbusProcess(ctx, env).startProcess({ vfsCursor })`.
  * `env` is the facet's bindings (SUPERVISOR); `processEnv` the program's own,
  * and `argv` its command line (node's flags first, as runFresh passes it).
+ * @param {{ program: string, env: any, processEnv?: any, sql?: any, cwd?: string, bundle?: any, manifest?: any, metadata?: any, cursor: any, authority?: any, dataPlan?: any, startArgs?: any, argv?: string[], node?: any }} options
  */
 export async function launchResident({
   program,
