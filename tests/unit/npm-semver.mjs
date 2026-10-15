@@ -35,7 +35,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
-const embedded = await importResolvePreamble(['PARSE_SEMVER', 'COMPARE_SEMVER', 'SATISFIES_RANGE', 'RESOLVE_VERSION', 'IS_SEMVER_RANGE', 'PICK_INSTALLED_VERSION', 'STAGED_BINDING_VERSION', 'PARSE_REGISTRY_REQUEST']);
+const embedded = await importResolvePreamble(['PARSE_SEMVER', 'COMPARE_SEMVER', 'SATISFIES_RANGE', 'EXACT_VERSION', 'IS_SEMVER_RANGE', 'PICK_INSTALLED_VERSION', 'STAGED_BINDING_VERSION', 'PARSE_REGISTRY_REQUEST']);
 
 // ── parse + compare: prerelease identifiers are part of the order ───────────
 {
