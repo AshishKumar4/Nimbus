@@ -33,6 +33,17 @@ published independently in the `@nimbus-sh` npm scope.
   `statSync` reports. Each was accepted, or refused, where the session
   answered otherwise. While the process's view of the filesystem is being
   rebuilt, their async forms ask the session instead of refusing `EAGAIN`.
+- Fixed (npm): an install of many packages dropped one about one time in
+  ten, its reason "Response closed due to connection limit" (pi's official
+  installer, 118 packages). The install facet held registry answers open and
+  unread (a hedged download while the cache was still answering, and a body
+  read only as fast as its files were written), and the runtime closes the
+  least recently used idle connection when six are open and another waits.
+  Every registry answer the installer fetches (tarballs and packuments) is
+  now settled as it arrives: a 2xx body is read ahead of its reader (up to
+  4 MiB, which most tarballs fit), any other answer's body is cancelled and
+  only its status kept, so a 503 is retried without waiting on its body; and
+  a package's download is ended however the package ends.
 - Added: `npm install` and `npm ci` check engines as npm does: the
   project's (unless it declares `devEngines`) and every required package's
   `engines`, a lock's packages included, against this runtime's Node and

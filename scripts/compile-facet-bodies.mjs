@@ -61,7 +61,7 @@ const outputs = [
     bodies: [
       ['NPM_INSTALL_HELPERS_SOURCE', null, [], [
         "export { retryDelayMs, retrying } from './packages/platform/src/retry.ts';",
-        "export { retryingRegistryFetch } from './packages/worker/src/npm/registry-retry.ts';",
+        "export { retryingRegistryFetch, settleRegistryAnswer } from './packages/worker/src/npm/registry-retry.ts';",
         "export { sriDigestAlgorithms, sriEntries, strongestSriEntry, sriDigestOf, sriDigestsEqual } from './packages/core/src/_shared/tarball-integrity.ts';",
       ].join('\n')],
       ['NPM_ABI_POLICY_SOURCE', '../facets/wasm-swap-registry.js', ['policyLookupSwap', 'policyLookupReject', 'policyNativePlatformReject', 'policyNativeBinAdvisory', 'policyLookupStagedArtifact', 'policyApplyStagedArtifact', 'policyIsOptionalNativeBinding']],
