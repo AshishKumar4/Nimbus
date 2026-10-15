@@ -31,7 +31,12 @@ import './lib/install-facet-scope.mjs';
 const LIMIT = 6;
 const CLOSED = 'Response closed due to connection limit';
 
-/** The registry as an invocation at workerd's connection limit sees it. */
+/**
+ * The registry as an invocation at workerd's connection limit sees it: six
+ * connections open at most; while another waits, if no open one has seen a
+ * read for IDLE_MS (none is being read), the least recently read is closed.
+ */
+const IDLE_MS = 10;
 function limitedRegistry(tarballs) {
   const open = new Set();
   const waiting = [];
@@ -41,21 +46,21 @@ function limitedRegistry(tarballs) {
     const next = waiting.shift();
     if (next) next();
   };
-  const unblock = () => {
-    if (waiting.length === 0 || open.size < LIMIT) return;
-    const idle = [...open].filter((connection) => !connection.reading).sort((a, b) => a.usedAt - b.usedAt);
-    if (idle.length < open.size) return;
-    const victim = idle[0];
-    closed += 1;
-    victim.close();
+  const watch = () => {
+    if (waiting.length === 0) return;
+    const now = performance.now();
+    const all = [...open];
+    if (all.length >= LIMIT && all.every((connection) => !connection.reading && now - connection.usedAt >= IDLE_MS)) {
+      closed += 1;
+      all.sort((a, b) => a.usedAt - b.usedAt)[0].close();
+    }
+    setTimeout(watch, 2);
   };
   const fetch = async (url, init) => {
     if (open.size >= LIMIT) {
-      await new Promise((resolve) => {
-        waiting.push(resolve);
-        // As the runtime checks when an attempt has to wait.
-        queueMicrotask(unblock);
-      });
+      const turn = new Promise((resolve) => { waiting.push(resolve); });
+      if (waiting.length === 1) setTimeout(watch, 2);
+      await turn;
     }
     const bytes = tarballs.get(String(url));
     let offset = 0;
@@ -74,9 +79,9 @@ function limitedRegistry(tarballs) {
       start(controller) { controllerRef = controller; },
       async pull(controller) {
         connection.reading = true;
-        connection.usedAt = performance.now();
         await new Promise((resolve) => setTimeout(resolve, 1));
         connection.reading = false;
+        connection.usedAt = performance.now();
         if (!open.has(connection)) return;
         if (offset >= bytes.length) {
           controller.close();
@@ -89,7 +94,6 @@ function limitedRegistry(tarballs) {
       cancel() { release(connection); },
     }, { highWaterMark: 0 });
     // The answer's headers arrive; what comes after is read only as its reader pulls.
-    queueMicrotask(unblock);
     return new Response(body, { status: 200 });
   };
   return { fetch, closed: () => closed };
