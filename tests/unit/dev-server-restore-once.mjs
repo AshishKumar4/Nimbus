@@ -89,6 +89,9 @@ for (const entry of destroyed.host.processes.getAll()) if (entry.state === 'runn
 destroyed.host.processes.setPidBase(4 * bundle.PID_GEN_STRIDE);
 rows.clear();
 release();
+await new Promise((resolve) => setTimeout(resolve, 50));
+// What it wrongly started would wait here.
+release();
 await restoring;
 assert.equal(runs, 4, 'and, the session destroyed, never the second');
 assert.deepEqual([...rows.keys()].filter((key) => Number(key.slice('dev-server:'.length)) > destroyedBase), [], 'nor records one of its own');
