@@ -25,12 +25,14 @@ try {
   assert.equal(whole.stdout.slice(-2), 'aé', 'exec\'s stdout has é whole');
   const counted = await ws.exec('x=$(cat split.txt); echo ${#x}', { cwd: '/home/user' });
   assert.equal(counted.stdout, '65536\n', '$( ) has é as one character');
-  const invalid = await ws.exec("printf 'a\\377b'", { cwd: '/home/user' });
+  await ws.fs.writeFile('/home/user/invalid.bin', Uint8Array.of(0x61, 0xff, 0x62));
+  const invalid = await ws.exec('cat invalid.bin', { cwd: '/home/user' });
   assert.equal(invalid.stdout, 'a\udcffb', 'an invalid byte still maps alone, losslessly');
   console.log('  ✓ a character split between writes is captured whole; an invalid byte still maps alone');
 
   const streamed = [];
-  const tail = await ws.exec("printf 'ab\\303'", { cwd: '/home/user', onStdout: (bytes) => { streamed.push(...bytes); } });
+  await ws.fs.writeFile('/home/user/unfinished.bin', Uint8Array.of(0x61, 0x62, 0xc3));
+  const tail = await ws.exec('cat unfinished.bin', { cwd: '/home/user', onStdout: (bytes) => { streamed.push(...bytes); } });
   assert.deepEqual(streamed, [0x61, 0x62, 0xc3], 'the stream gets the bytes as they are');
   assert.equal(tail.stdout, 'ab\ufffd', 'the streamed exec\'s result ends its decoder: the unfinished character is a replacement');
   console.log('  ✓ a streamed exec\'s result ends with what its last unfinished character decodes to');
