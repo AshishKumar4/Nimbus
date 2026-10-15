@@ -69,9 +69,6 @@ export function createProcess(opts: ProcessOptions) {
     cwd: () => opts.cwd,
     chdir: (_dir: string) => { throw new Error('process.chdir() is not supported in Lifo'); },
     exit: (code = 0) => {
-      if (code !== 0) {
-        opts.stderr.write(`[process.exit] code=${code}\n`);
-      }
       throw new ProcessExitError(code);
     },
     stdin: {
