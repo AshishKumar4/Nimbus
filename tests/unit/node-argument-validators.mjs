@@ -61,6 +61,10 @@ const compare = (front, name, line) => {
 };
 
 // The guest's shims, as the hosted node runs a program (node-shims-permissions' way).
+// Its supervisor answers no asynchronous I/O, so an async case's write fails
+// there (EIO); its mode is read before (_createMode, shared with
+// writeFileSync's), so a refused mode would show.
+const ASYNC_IO = new Set(['nullModePromise']);
 for (const name of Object.keys(CASES)) {
   let out = '';
   const factory = new Function(
@@ -80,7 +84,8 @@ for (const name of Object.keys(CASES)) {
   } catch (error) {
     out = `threw ${error?.code ?? ''} ${error?.message ?? error}\n`;
   }
-  compare('hosted', name, out);
+  if (ASYNC_IO.has(name)) assert.equal(out, 'p EIO\n', `hosted ${name}: the mode is taken, and the write reaches the supervisor`);
+  else compare('hosted', name, out);
 }
 
 // The shell's built-in node.
