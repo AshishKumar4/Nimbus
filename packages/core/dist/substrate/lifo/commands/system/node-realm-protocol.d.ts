@@ -98,10 +98,11 @@ export type GuestEvent =
     readonly code: number;
     readonly ended: boolean;
 }
-/** The guest took a failure of output `fd`'s stream (output-failed): whatever the program makes of it, it is the guest's. */
+/** The guest took a failure of output `fd`'s writer `writer` (output-failed), or the writer closed: whatever the program makes of its failures, they are the guest's. */
  | {
     readonly type: 'heard';
     readonly fd: 1 | 2;
+    readonly writer: number;
 }
 /** fd 0's next piece, wanted as read `id` (process.stdin). */
  | {

@@ -172,8 +172,21 @@ function realmOutput(fd) {
     });
     const streamOf = (writer) => ({
         ...through('stream', writer),
-        onFailure: (listener) => { listeners.set(writer, [...listeners.get(writer) ?? [], listener]); },
+        onFailure: (listener) => {
+            listeners.set(writer, [...listeners.get(writer) ?? [], listener]);
+            return () => {
+                const rest = (listeners.get(writer) ?? []).filter((heard) => heard !== listener);
+                if (rest.length > 0) {
+                    listeners.set(writer, rest);
+                    return;
+                }
+                // A writer no one hears any more: its writes' failures are no one's, as a destroyed stream's are in Node.
+                listeners.delete(writer);
+                post({ type: 'heard', fd, writer });
+            };
+        },
         another: () => streamOf(++writers),
+        settled: () => outputSettled(postedOutput),
     });
     return {
         stream: streamOf(0),
@@ -189,6 +202,24 @@ let postedOutput = 0;
 let settledOutput = 0;
 /** Whether the guest waits for the host to settle its writes (settle): the realm is held meanwhile. */
 let settling = false;
+/** What waits for writes up to a number to be settled. */
+const settleWaits = [];
+/** Once the host settled writes up to number `upTo`, a failure told first: asked of it, holding the realm meanwhile. */
+function outputSettled(upTo) {
+    if (settledOutput >= upTo)
+        return Promise.resolve();
+    return new Promise((resolve) => {
+        settleWaits.push({ upTo, resolve });
+        askSettle();
+    });
+}
+function askSettle() {
+    if (settling)
+        return;
+    settling = true;
+    post({ type: 'settle', upTo: postedOutput });
+    holdWhileBusy();
+}
 function postOutput(fd, source, writer, data) {
     post({ type: 'output', fd, source, writer, data });
     postedOutput++;
@@ -308,14 +339,24 @@ events.on('message', (event) => {
         case 'output-failed':
             // A stream's failure is heard here, whatever the program makes of it: the host reports it no more.
             if (event.source === 'stream')
-                post({ type: 'heard', fd: event.fd });
+                post({ type: 'heard', fd: event.fd, writer: event.writer });
             outputs[event.fd].fail(writeFailure(event.code, event.pipe), event.source, event.writer);
             return;
-        case 'output-settled':
+        case 'output-settled': {
             settledOutput = event.seq;
             settling = false;
+            const waiting = settleWaits.splice(0);
+            for (const wait of waiting) {
+                if (wait.upTo <= settledOutput)
+                    wait.resolve();
+                else
+                    settleWaits.push(wait);
+            }
+            if (settleWaits.length > 0)
+                askSettle();
             holdWhileBusy();
             return;
+        }
     }
 });
 // ── Fatal errors, as Node ends a process on them ───────────────────────────
@@ -349,11 +390,9 @@ realm.on('uncaughtException', uncaught('uncaughtException'));
 // writes, as a Node process's are made before it ends. What it hears may run
 // more of it, and the loop runs empty again.
 realm.on('beforeExit', () => {
-    if (settling || settledOutput === postedOutput || programProcess?.hearsWriteFailures() !== true)
+    if (settledOutput === postedOutput || programProcess?.hearsWriteFailures() !== true)
         return;
-    settling = true;
-    post({ type: 'settle', upTo: postedOutput });
-    holdWhileBusy();
+    askSettle();
 });
 // The loop ran empty with the main script still waiting: an ES module whose
 // top-level await never settled.

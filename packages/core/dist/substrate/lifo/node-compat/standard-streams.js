@@ -26,7 +26,8 @@ export function leaveStandardStreamsOpen() {
  * write is made, decoded across writes for an output that takes text, so
  * they keep their place among the console's, which writes the output
  * directly; an output's failure is the stream's error, and the stream
- * finishes once every write handed to the output is done. Without an output
+ * finishes once every write handed to the output is done (settled, by one
+ * that makes them later: a failure then is its error). Without an output
  * (a descriptor the program has not), every write fails EBADF.
  */
 export function outputSink(output) {
@@ -50,7 +51,7 @@ export function outputSink(output) {
             callback();
         },
         final(callback) {
-            Promise.all(pending).then(() => writer?.end()).then(() => callback(), callback);
+            Promise.all(pending).then(() => writer?.end()).then(() => output?.settled?.()).then(() => callback(), callback);
         },
     };
 }

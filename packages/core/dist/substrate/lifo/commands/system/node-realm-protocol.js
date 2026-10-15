@@ -20,7 +20,7 @@ export function isGuestEvent(value) {
                 && (value.body === null || typeof value.body === 'string' || value.body instanceof Uint8Array);
         case 'served': return Number.isSafeInteger(value.id) && isResponse(value.response);
         case 'exit': return Number.isSafeInteger(value.code) && typeof value.ended === 'boolean';
-        case 'heard': return value.fd === 1 || value.fd === 2;
+        case 'heard': return (value.fd === 1 || value.fd === 2) && Number.isSafeInteger(value.writer);
         case 'stdin-read':
         case 'stdin-cancel': return Number.isSafeInteger(value.id);
         default: return false;
