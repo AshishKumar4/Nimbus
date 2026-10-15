@@ -18,6 +18,9 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
@@ -37,11 +40,15 @@ const CASES = {
 
 /** host Node's line for each case. */
 const host = Object.fromEntries(Object.entries(CASES).map(([name, body]) => {
-  const dir = spawnSync('mktemp', ['-d'], { encoding: 'utf8' }).stdout.trim();
-  spawnSync('sh', ['-c', 'echo x > f && chmod 644 f'], { cwd: dir });
-  const r = spawnSync(process.env.NODE_BIN ?? 'node', ['-e', `const fs = require('fs'); process.umask(0o022); ${body}`], { cwd: dir, encoding: 'utf8' });
-  assert.equal(r.status, 0, `host node: ${name}: ${r.stderr}`);
-  return [name, r.stdout];
+  const dir = mkdtempSync(join(tmpdir(), 'node-arguments-'));
+  try {
+    writeFileSync(join(dir, 'f'), 'x\n', { mode: 0o644 });
+    const r = spawnSync(process.env.NODE_BIN ?? 'node', ['-e', `const fs = require('fs'); process.umask(0o022); ${body}`], { cwd: dir, encoding: 'utf8' });
+    assert.equal(r.status, 0, `host node: ${name}: ${r.stderr}`);
+    return [name, r.stdout];
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }));
 
 const failures = [];

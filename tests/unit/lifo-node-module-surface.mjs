@@ -41,7 +41,6 @@ const FILES = {
   ].join('\n'),
   'rm.js': [
     "const fs = require('fs');",
-    "fs.writeFileSync('kept', 'k'); fs.symlinkSync('missing', 'dangling'); fs.symlinkSync('kept', 'live'); fs.mkdirSync('empty');",
     "const seen = [];",
     "fs.rmSync('dangling'); seen.push(fs.readdirSync('.').includes('dangling') ? 'dangling left' : 'dangling gone');",
     "fs.rmSync('live', { force: true }); seen.push(fs.existsSync('kept') ? 'target kept' : 'target lost', fs.readdirSync('.').includes('live') ? 'link left' : 'link gone');",
@@ -50,6 +49,8 @@ const FILES = {
     "fs.promises.rm('empty', { recursive: true }).then(() => { seen.push(fs.existsSync('empty') ? 'dir left' : 'dir gone'); console.log(seen.join(' | ')); });",
   ].join('\n'),
 };
+// What each program finds made before it runs (by the shell: the shell's node makes no links).
+const SETUP = { 'rm.js': 'echo k > kept && ln -s missing dangling && ln -s kept live && mkdir empty' };
 const said = (stderr) => stderr.split('\n')
   .filter((line) => line !== '' && !/^\s+at /.test(line) && !/^(node:|\s+throw |\s*\^|Node\.js v)/.test(line))
   .join('\n');
@@ -63,10 +64,12 @@ try {
     const dir = join(host, name.replace(/\.js$/, ''));
     mkdirSync(dir);
     writeFileSync(join(dir, name), text);
+    if (SETUP[name]) assert.equal(spawnSync('sh', ['-c', SETUP[name]], { cwd: dir }).status, 0);
     const node = spawnSync(process.env.NODE_BIN ?? 'node', [name], { cwd: dir, encoding: 'utf8', timeout: 30_000 });
     const lifoDir = `/home/user/${name.replace(/\.js$/, '')}`;
     await ws.exec(`mkdir -p ${lifoDir}`, { cwd: '/home/user' });
     await ws.fs.writeFile(`${lifoDir}/${name}`, text);
+    if (SETUP[name]) assert.equal((await ws.exec(SETUP[name], { cwd: lifoDir })).exitCode, 0);
     const ours = await ws.exec(`node ${name}`, { cwd: lifoDir });
     const expected = { code: node.status, stdout: node.stdout, said: said(node.stderr) };
     const actual = { code: ours.exitCode, stdout: ours.stdout, said: said(ours.stderr) };
