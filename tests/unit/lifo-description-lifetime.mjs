@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
-import { ProcessFile, ProcessView } from '../../packages/core/src/runtime/process-files.ts';
+import { ProcessFile, ProcessView, withOpenFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { hostSqlite } from './lib/host-sqlite.mjs';
 
 const eio = (what) => Object.assign(new Error(`EIO: i/o error, ${what}`), { code: 'EIO' });
@@ -64,12 +64,28 @@ class Backend extends MemoryVFS {
     if (this.failWriteBack && base(path).startsWith('nosync')) throw eio(`write '${path}'`);
     return super.writeFile(path, data, options);
   }
+  // grows-*: a stat answers the size the file had, and the file has grown since (another writer).
+  stat(path, options) {
+    const stat = super.stat(path, options);
+    return stat !== null && base(path).startsWith('grows') ? { ...stat, size: 10 } : stat;
+  }
+}
+
+/** The same backend, answering every call later, as a mount across RPC does. */
+class AsyncBackend extends Backend {
+  async stat(path, options) { return super.stat(path, options); }
+  async readFile(path) { return super.readFile(path); }
+  async readRange(path, offset, length) { return super.readRange(path, offset, length); }
+  async readdir(path) { return super.readdir(path); }
+  async lstat(path) { return super.lstat(path); }
 }
 
 const { sql, transactions } = await hostSqlite();
 const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1 });
 const backend = new Backend({ uid: 1000, gid: 1000 });
 ws.filesystem.vfs.mount('/m', backend);
+const later = new AsyncBackend({ uid: 1000, gid: 1000 });
+ws.filesystem.vfs.mount('/a', later);
 const sh = async (line) => {
   const r = await ws.exec(line, { shellId: 'persistent', cwd: '/home/user' });
   return { code: r.exitCode, out: r.stdout, err: r.stderr };
@@ -156,6 +172,32 @@ try {
   assert.equal(piped.code, 1, 'a write that fails fails dd');
   assert.equal(backend.held, 0, 'and dd closed the output it was copying standard input to');
   console.log('  ✓ dd closes its output when its preparation or a write fails');
+
+  // ── a whole read is bounded on every route ─────────────────────────────
+  const grown = bytes(100_000, 11);
+  backend.writeFile('/grows-s', grown);
+  later.writeFile('/grows-a', grown);
+  const view = ws.filesystem.view({ pid: 4242, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
+  for (const path of ['/m/grows-s', '/a/grows-a']) {
+    await assert.rejects(view.readFile(path, { maxBytes: 65536 }), (error) => error.code === 'EFBIG',
+      `${path}: a whole read of a file grown past its stat is refused, not answered at its new size`);
+    const whole = await sh(`cat ${path} | wc -c`);
+    assert.equal(whole.out.trim(), '100000', `${path}: cat reads it all, through a description`);
+  }
+  console.log('  ✓ a whole read refuses a file grown past its stat, synchronous and awaited mounts alike');
+
+  // ── one report a failure, and every description closed ─────────────────
+  backend.writeFile('/badwrite-d', new Uint8Array());
+  const once = await sh('echo data | tee /m/badwrite-d /home/user/plain');
+  assert.equal(once.code, 1);
+  assert.equal(once.err.split('badwrite-d').length - 1, 1, `tee reports a FILE it could not write once: ${JSON.stringify(once.err)}`);
+  assert.equal(backend.held, 0);
+  for (const name of ['nosync-e', 'nosync-f']) backend.writeFile(`/${name}`, new Uint8Array());
+  await withOpenFiles(view, async (open) => {
+    for (const name of ['nosync-e', 'nosync-f']) await (await open(`/m/${name}`, { write: true })).write(Uint8Array.of(1));
+  }, () => { throw new Error('the report could not be made'); });
+  assert.equal(backend.held, 0, 'a reporter that throws at once leaves no description open');
+  console.log('  ✓ a FILE tee closed is reported once and not synced again; a throwing reporter leaves none open');
 } finally {
   await ws.close();
 }
