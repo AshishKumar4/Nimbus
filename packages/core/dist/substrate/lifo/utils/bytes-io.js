@@ -77,6 +77,53 @@ export async function writeBytes(out, bytes) {
         await out.write(decodeLossless(bytes));
 }
 /**
+ * {@link decodeLossless} across writes: a sequence a write leaves unfinished
+ * is held for the next, so a character split between writes decodes whole;
+ * what is held at the end decodes byte by byte, as decodeLossless has it.
+ */
+export class LosslessDecoder {
+    held = new Uint8Array(0);
+    decode(bytes) {
+        const all = this.held.length === 0 ? bytes : concatBytes([this.held, bytes]);
+        const cut = unfinishedTail(all);
+        this.held = all.slice(cut);
+        return decodeLossless(all.subarray(0, cut));
+    }
+    end() {
+        const rest = this.held;
+        this.held = new Uint8Array(0);
+        return rest.length === 0 ? '' : decodeLossless(rest);
+    }
+}
+/** Where a UTF-8 sequence that `bytes` ends inside begins: their length when none does. */
+function unfinishedTail(bytes) {
+    for (let back = 1; back <= 3 && back <= bytes.length; back++) {
+        const at = bytes.length - back;
+        const b = bytes[at];
+        if (b >= 0x80 && b < 0xc0)
+            continue;
+        const length = b >= 0xf0 && b <= 0xf4 ? 4 : b >= 0xe0 && b < 0xf0 ? 3 : b >= 0xc2 && b < 0xe0 ? 2 : 1;
+        return length > back ? at : bytes.length;
+    }
+    return bytes.length;
+}
+/**
+ * An output the shell captures as text (exec's stdout and stderr, `$( )`):
+ * the bytes of every command writing to it decoded as one stream, as its
+ * reader would read them, and `end`ed when the capture is read.
+ */
+export function textCapture(append) {
+    const decoder = new LosslessDecoder();
+    return {
+        stream: {
+            writeBytes: (bytes) => { append(decoder.decode(bytes)); },
+            // Text after bytes that left a character unfinished: those bytes decode alone first.
+            write: (text) => { append(decoder.end() + text); },
+        },
+        end: () => { append(decoder.end()); },
+    };
+}
+/**
  * Bytes as a string without loss: valid UTF-8 decodes to its characters,
  * and every byte of an invalid sequence to U+DC80 + byte (a lone surrogate,
  * which valid UTF-8 never produces). `encodeLossless` inverts it exactly.
