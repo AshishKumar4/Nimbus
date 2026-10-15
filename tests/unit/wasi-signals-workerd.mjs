@@ -21,7 +21,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { constants, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
@@ -44,7 +44,7 @@ function nativeInterrupt(argv, { cwd, env = {}, input = null }) {
     child.on('exit', (code, signal) => {
       clearTimeout(timer);
       // What a shell reports for it: 128 + the signal it died of, else its code.
-      resolve({ status: signal === 'SIGINT' ? 130 : signal ? 128 : code, stderr });
+      resolve({ status: signal ? 128 + constants.signals[signal] : code, stderr });
     });
   });
 }
@@ -77,8 +77,9 @@ const check = async (name, body) => {
 };
 
 /**
- * `line` typed into a fresh session's terminal, Ctrl-C after SETTLE_MS: the
- * status it printed, how long after the Ctrl-C, and the terminal's text.
+ * `line` typed into a fresh session's terminal, Ctrl-C after SETTLE_MS: its
+ * status as the shell reports it (OSC 133;D), how long after the Ctrl-C, the
+ * terminal's text, and the session's processes still running.
  */
 async function interrupted(line, { setup = [] } = {}) {
   const session = await localTerminal(probe, { install: ['bash', 'git'] });
@@ -90,16 +91,16 @@ async function interrupted(line, { setup = [] } = {}) {
   const t = session.terminal;
   await t.waitForPrompt(30_000);
   t.reset();
-  t.cmd(`${line}; echo "status $?"`);
+  t.cmd(line);
   await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
   const sent = Date.now();
   t.send('\x03');
   let backMs = null;
   try {
-    await t.waitFor((buf) => /status \d+/.test(buf), 30_000, 'the status line');
+    await t.waitFor((buf) => /\x1b\]133;D;\d+\x07/.test(buf), 30_000, 'the command\'s end');
     backMs = Date.now() - sent;
   } catch {}
-  const status = Number(/status (\d+)/.exec(t.buf)?.[1] ?? NaN);
+  const status = Number(/\x1b\]133;D;(\d+)\x07/.exec(t.buf)?.[1] ?? NaN);
   // The driver after the probe started: it reads the probe's address as it loads.
   const { requestHeaders } = await import('../behavioral/_driver.mjs');
   const running = await (await fetch(`${probe.base}/s/${session.sid}/api/processes`, { headers: requestHeaders() })).json();
@@ -112,6 +113,7 @@ try {
 
   await check('git waiting on its credential helper dies of SIGINT, its helper with it', async () => {
     const native = await nativeInterrupt(['git', '-c', 'credential.helper=!sleep 60', 'credential', 'fill'], { cwd: tmpdir(), input: query });
+    console.log('native credential:', JSON.stringify(native));
     const nimbus = await interrupted(`printf '${query.replace(/\n/g, '\\n')}' | NIMBUS_GIT_WASI=1 git -c credential.helper='!sleep 60' credential fill`);
     assert.equal(nimbus.status, native.status, `status (native ${native.status}): ${JSON.stringify(nimbus.text.slice(-400))}`);
     assert.ok(nimbus.backMs !== null && nimbus.backMs <= PROMPT_BACK_MS, `prompt back ${nimbus.backMs} ms after Ctrl-C`);
@@ -122,12 +124,14 @@ try {
     const dir = nativeRepo();
     try {
       const native = await nativeInterrupt(['git', 'commit', '-a'], { cwd: dir, env: { ...ident, GIT_EDITOR: 'sleep 60' } });
+      console.log('native commit:', JSON.stringify(native));
       const nimbus = await interrupted('cd repo && GIT_EDITOR="sleep 60" NIMBUS_GIT_WASI=1 git commit -a', {
         setup: [
           'mkdir repo && cd repo && NIMBUS_GIT_WASI=1 git init -q -b main && echo one > f && NIMBUS_GIT_WASI=1 git add f'
             + ` && ${Object.entries(ident).map(([k, v]) => `${k}=${v}`).join(' ')} NIMBUS_GIT_WASI=1 git commit -q -m one && echo two > f`,
         ],
       });
+      console.log('nimbus commit:', JSON.stringify({ status: nimbus.status, backMs: nimbus.backMs, live: nimbus.live, text: nimbus.text.slice(-800) }));
       assert.equal(nimbus.status, native.status, `status (native ${native.status}): ${JSON.stringify(nimbus.text.slice(-600))}`);
       assert.ok(nimbus.backMs !== null && nimbus.backMs <= PROMPT_BACK_MS, `prompt back ${nimbus.backMs} ms after Ctrl-C`);
       assert.match(native.stderr, /problem with the editor/);
@@ -148,7 +152,7 @@ try {
       child.stdout.on('data', (chunk) => { stdout += chunk; });
       const timer = setTimeout(() => process.kill(-child.pid, 'SIGINT'), SETTLE_MS);
       child.on('error', reject);
-      child.on('exit', (code, signal) => { clearTimeout(timer); child.stdin.destroy(); resolve({ status: signal === 'SIGINT' ? 130 : code, stdout }); });
+      child.on('exit', (code, signal) => { clearTimeout(timer); child.stdin.destroy(); resolve({ status: signal ? 128 + constants.signals[signal] : code, stdout }); });
     });
     const nimbus = await interrupted(`bash -c 'read line; echo "read $line"'`);
     assert.equal(nimbus.status, native.status, `status (native ${native.status}): ${JSON.stringify(nimbus.text.slice(-400))}`);
