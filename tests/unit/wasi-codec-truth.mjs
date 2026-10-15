@@ -10,14 +10,15 @@
 //     moves nothing, pread never moves it, and a negative pread is EINVAL;
 //   - a file whose bytes are made when read (/proc's) is read anew at each
 //     open, though its stat names no revision;
-//   - stdin that is not a terminal is not a character device, so
-//     `test -t 0` is false for it, and for its duplicates and a subshell's;
+//   - stdin that is not a terminal is a FIFO (`[ -p /dev/stdin ]`), as are
+//     its duplicates and a subshell's, and `test -t 0` is false for it; a
+//     terminal's is a character device;
 //   - a poll on a clock no host has is that subscription's EINVAL event,
 //     as clock_time_get refuses the same clock.
 //
 // Red before: a read at the end set the offset to the file's size; the
 // codec kept a generated file's first bytes for every later open; every
-// stdio descriptor that was not a pipe reported a character device; and
+// stdio descriptor reported a character device, a piped stdin too; and
 // the generic runner's poll took any clock id for the monotonic clock.
 
 import assert from 'node:assert/strict';
@@ -52,9 +53,11 @@ const extraWasm = probeWasmEntry();
 }
 
 {
-  const probe = 'if test -t 0; then echo tty; else echo notty; fi; exec 4<&0; if test -t 4; then echo tty; else echo notty; fi; (if test -t 4; then echo tty; else echo notty; fi)';
-  check('stdin that is not a terminal, its duplicate and a subshell\'s', (await runScript(probe, { stdin: 'x' })).stdout, 'notty\nnotty\nnotty\n');
-  check('a terminal stdin is one', (await runScript(probe, { stdinTty: true })).stdout, 'tty\ntty\ntty\n');
+  const kinds = '[ -p /dev/stdin ] && echo fifo || echo nofifo; [ -c /dev/stdin ] && echo chr || echo nochr; '
+    + 'exec 4<&0; [ -p /dev/fd/4 ] && echo fifo4 || echo nofifo4; ( [ -p /dev/fd/4 ] && echo sub || echo nosub )';
+  check('stdin that is not a terminal is a FIFO, so are its duplicate and a subshell\'s, and test -t is false',
+    (await runScript(`${kinds}; test -t 0 && echo tty || echo notty`, { stdin: 'x' })).stdout, 'fifo\nnochr\nfifo4\nsub\nnotty\n');
+  check('a terminal stdin is a character device', (await runScript(kinds, { stdinTty: true })).stdout, 'nofifo\nchr\nnofifo4\nnosub\n');
 }
 
 {
