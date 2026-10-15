@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { Readable } from 'node:stream';
 import {
   isLoopbackHost,
   type LoopbackRouter,
@@ -18,7 +19,8 @@ interface RequestOptions {
   timeout?: number;
 }
 
-class IncomingMessage extends EventEmitter {
+/** A request a server is given, or a response a client is: a Readable of its body, as Node's. */
+class IncomingMessage extends Readable {
   statusCode: number;
   statusMessage: string;
   headers: Record<string, string>;
@@ -29,7 +31,6 @@ class IncomingMessage extends EventEmitter {
   httpVersionMinor = 1;
   complete = false;
   aborted = false;
-  readable = true;
   // Minimal socket stub that Vite/Connect middleware expects
   socket: {
     remoteAddress: string;
@@ -57,22 +58,13 @@ class IncomingMessage extends EventEmitter {
     this.connection = socketStub;
   }
 
-  setEncoding(_enc: string): this {
-    return this;
-  }
+  _read(): void {}
 
-  // Stream-like methods that middleware may call
-  resume(): this {
-    return this;
-  }
-
-  pause(): this {
-    return this;
-  }
-
-  destroy(): this {
-    this.aborted = true;
-    return this;
+  /** Its body, then its end. */
+  deliver(body: string | null): void {
+    if (body) this.push(Buffer.from(body));
+    this.complete = true;
+    this.push(null);
   }
 }
 
@@ -163,10 +155,7 @@ class ClientRequest extends EventEmitter {
           // The server's answer, as this request's: its status and reason, its headers, then its body and end.
           const msg = new IncomingMessage(served.statusCode, statusText(served.statusCode), served.headers);
           this.emit('response', msg);
-          queueMicrotask(() => {
-            msg.emit('data', servedBody(served) ?? '');
-            msg.emit('end');
-          });
+          msg.deliver(servedBody(served));
           return;
         }
         if (!this.routeLoopback) {
@@ -215,9 +204,7 @@ class ClientRequest extends EventEmitter {
     response.headers.forEach((value, key) => { headers[key] = value; });
     const msg = new IncomingMessage(response.status, response.statusText, headers);
     this.emit('response', msg);
-    const text = await response.text();
-    msg.emit('data', text);
-    msg.emit('end');
+    msg.deliver(await response.text());
   }
 
   setTimeout(_ms: number, cb?: () => void): this {
@@ -415,14 +402,7 @@ class Server extends EventEmitter {
       // middleware) is waited for: whoever serves the request awaits this.
       if (!res.finished) vRes._donePromise = res._donePromise;
 
-      // Emit body data + end so middleware that reads the request body works
-      queueMicrotask(() => {
-        if (vReq.body) {
-          req.emit('data', vReq.body);
-        }
-        req.complete = true;
-        req.emit('end');
-      });
+      req.deliver(vReq.body ?? null);
     };
     this.portRegistry.set(port, handler);
 

@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
-// A lifo CommonJS command's http messages are Readables, as Node's are: a
-// server reads a request's body with setEncoding and 'data', a client reads
-// a response with for-await (Buffer chunks) and can pipe it. The same
-// program run by real Node, against a real server, is the oracle.
+// lifo's http (node-compat/http.ts, what a lifo command's require('http')
+// is) gives Readables, as Node's does: a server reads a request's body with
+// setEncoding and 'data', a client reads a response with for-await (Buffer
+// chunks) and can pipe it. The same program run by real Node, against a real
+// server, is the oracle; here its server is one on lifo's port map, as the
+// lifo node's is.
 //
 // Red before: IncomingMessage was an EventEmitter that emitted strings:
 // no pipe, no async iterator, setEncoding a no-op.
@@ -12,14 +14,12 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
-import { createLifoCommand } from '../../packages/core/src/substrate/lifo/pkg/lifo-runtime.ts';
-import { hostSqlite } from './lib/host-sqlite.mjs';
+import { createRequire } from 'node:module';
+import { createHttp } from '../../packages/core/src/substrate/lifo/node-compat/http.ts';
 
 const PROGRAM = `
-const http = require('http');
 const { Readable, Writable } = require('stream');
-module.exports = async () => {
+module.exports = async (http) => {
   const server = http.createServer((req, res) => {
     let body = '';
     req.setEncoding('utf8');
@@ -46,19 +46,19 @@ module.exports = async () => {
 
 const dir = mkdtempSync(join(tmpdir(), 'lifo-http-'));
 writeFileSync(join(dir, 'program.js'), PROGRAM);
-writeFileSync(join(dir, 'run.js'), "require('./program.js')().then((code) => process.exit(code));\n");
+writeFileSync(join(dir, 'run.js'), "require('./program.js')(require('http')).then((code) => process.exit(code));\n");
 const node = spawnSync('node', ['run.js'], { cwd: dir, encoding: 'utf8' });
 assert.equal(node.status, 0, node.stderr);
 
-const { sql, transactions } = await hostSqlite();
-const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1 });
+const program = createRequire(import.meta.url)(join(dir, 'program.js'));
+let printed = '';
+const write = process.stdout.write;
+process.stdout.write = (chunk) => { printed += chunk; return true; };
+let code;
 try {
-  await ws.fs.mkdir('/home/user/pkg', { recursive: true });
-  await ws.fs.writeFile('/home/user/pkg/program.js', PROGRAM);
-  ws.registry.register('program', createLifoCommand('/home/user/pkg/program.js', ws.filesystem.view({ pid: 900, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } })));
-  const r = await ws.exec('program', { cwd: '/home/user' });
-  assert.deepEqual([r.exitCode, r.stdout, r.stderr], [0, node.stdout, ''], 'what node prints');
+  code = await program(createHttp(new Map()));
 } finally {
-  await ws.close();
+  process.stdout.write = write;
 }
+assert.deepEqual([code, printed], [0, node.stdout], 'what node prints');
 console.log('lifo-http-incoming-readable: ok');
