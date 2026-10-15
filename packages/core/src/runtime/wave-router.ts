@@ -96,7 +96,7 @@ export function namespaceWaveRouter(namespace: CompositeVFS, credential: (cred: 
       }, false, guard);
       if (call.fchmod === undefined) return { file, stat: statOf(opened) };
       // fchmod(2) of the file the open found, part of the open: refused, so is the open.
-      const held = await file.hold({ read: false, write: true }, opened.ino);
+      const held = await file.hold({ read: false, write: true }, statOf(opened).ino);
       try {
         await held.chmod(call.fchmod, guard);
         return { file, stat: statOf(await held.stat()) };

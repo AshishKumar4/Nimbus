@@ -127,11 +127,12 @@ async function copyStoppedAfterItsBytes(existing) {
 
 /**
  * A private source's decided copy over the program's own `copy.bin`, its log
- * replayed into another session, `prepare`d before, with `between` run after
- * the copy's open and before its bytes: no file there holding the source's
- * bytes is readable by anyone the source refuses.
+ * replayed into another session by one drain, which runs `beforeOpen` once
+ * it has applied what came before the copy's open, and `afterOpen` once it
+ * has applied the open: no file there holding the source's bytes is
+ * readable by anyone the source refuses.
  */
-async function replayCopy(prepare, between) {
+async function replayCopy(beforeOpen, afterOpen) {
   const { fs, stall } = await boot();
   fs.writeFileSync(`${OUT}/copy.bin`, 'old');
   fs.writeFileSync(`${OUT}/private.bin`, 'SECRET-BYTES');
@@ -139,20 +140,26 @@ async function replayCopy(prepare, between) {
   stall();
   assert.equal(await answeredAtOnce(fs.promises.copyFile(`${OUT}/private.bin`, `${OUT}/copy.bin`)), 'answered');
   const log = sqlJournal(globalThis.__nimbusFsJournalSql);
-  const open = log.entries().find(({ op }) => op.type === 'call' && op.call.call === 'open' && op.call.path === 'home/user/app/out/copy.bin');
+  const entries = log.entries();
+  const open = entries.find(({ op }) => op.type === 'call' && op.call.call === 'open' && op.call.path === 'home/user/app/out/copy.bin');
   assert.ok(open, 'the copy\'s open is in the log');
   const after = createAuthority();
   const root = after.rawVfs.as(CRED_KERNEL);
   after.kfs.mkdir('home/user/app/out', { recursive: true, mode: 0o755 });
-  prepare(after, root);
-  const drain = async (keep) => {
-    const part = { ...journalSource(log), readAfter: async (from, max) => (await journalSource(log).readAfter(from, max)).filter(({ jid }) => keep(jid)) };
-    const lease = after.files.openHost(CRED_SESSION_USER);
-    await drainProcessFsJournal({ journal: part, session: journalDrainSession(lease.fs, 1000002) }).finally(() => lease.dispose());
+  // Each step runs once the drain has applied every entry through its jid, before it reads on.
+  const stops = [[Math.max(0, ...entries.map(({ jid }) => jid).filter((jid) => jid < open.jid)), beforeOpen], [open.jid, afterOpen]];
+  const source = journalSource(log);
+  const stepped = {
+    ...source,
+    readAfter: async (from, max) => {
+      while (stops.length > 0 && from >= stops[0][0]) stops.shift()[1](after, root);
+      const read = await source.readAfter(from, max);
+      return stops.length === 0 ? read : read.filter(({ jid }) => jid <= stops[0][0]);
+    },
   };
-  await drain((jid) => jid <= open.jid);
-  between(after, root);
-  await drain((jid) => jid > open.jid);
+  const lease = after.files.openHost(CRED_SESSION_USER);
+  await drainProcessFsJournal({ journal: stepped, session: journalDrainSession(lease.fs, 1000002) }).finally(() => lease.dispose());
+  assert.equal(stops.length, 0, 'the drain read on past each step');
   for (const { name, type } of root.readdir('home/user/app/out')) {
     if (type !== 'file') continue;
     const at = `home/user/app/out/${name}`;
@@ -285,15 +292,17 @@ await runScenarios(import.meta.path, {
 
   async 'replayed where the destination is now another\'s, the copy\'s mode is refused with its open: no byte reaches it'() {
     await replayCopy((after, root) => {
+      root.unlink('home/user/app/out/copy.bin');
       root.writeFile('home/user/app/out/copy.bin', 'theirs');
       root.chmod('home/user/app/out/copy.bin', 0o666);
     }, () => {});
   },
 
   async 'replayed where the destination is replaced after the copy\'s open, its bytes reach only the file that open narrowed'() {
-    await replayCopy(() => {}, (after) => {
-      after.kfs.rename('home/user/app/out/copy.bin', 'home/user/app/out/moved.bin');
-      after.kfs.writeFile('home/user/app/out/copy.bin', 'PUBLIC', { mode: 0o644 });
+    await replayCopy(() => {}, (after, root) => {
+      root.rename('home/user/app/out/copy.bin', 'home/user/app/out/moved.bin');
+      root.writeFile('home/user/app/out/copy.bin', 'PUBLIC');
+      root.chmod('home/user/app/out/copy.bin', 0o644);
     });
   },
 
