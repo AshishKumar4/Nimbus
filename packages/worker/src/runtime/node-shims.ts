@@ -1815,8 +1815,10 @@ const __fsMod = (() => {
       let meta;
       // A thrown stat is the authority failing to answer, not an answer:
       // nothing is learned, and the miss stands.
-      // Queued on the path: the program's own later mutations of it must not overtake the stat.
+      // Queued on the path: the program's own later mutations of it must not
+      // overtake the stat, and its earlier ones, lingering, go now.
       const observe = () => __nimbusUseRpcResult(supervisor.stat(absPath), (r) => r);
+      if (_hasVfsMutationQueue() && __nimbusAncestorTails(absPath).length > 0) __nimbusHurryVfs();
       try { meta = await (_hasVfsMutationQueue() ? __nimbusQueueVfsMutation(absPath, observe, false) : observe()); }
       catch { return; }
       if (meta === null || meta === undefined) { _observedAbsent.add(k); return; }
@@ -4162,7 +4164,7 @@ const __fsMod = (() => {
   // path it changes); what only the authority can answer is its answer, awaited.
   async function _structuralAsync(queue, syscall, p, judged = true, at = _resolve(p)) {
     const decided = judged && _decidedHere(at);
-    const queued = queue();
+    const queued = decided ? __nimbusLogDecided(queue) : queue();
     if (decided) _detachStructuralMutation(__nimbusDecided(queued), syscall, p);
     else await queued;
   }

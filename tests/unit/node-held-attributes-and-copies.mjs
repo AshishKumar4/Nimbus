@@ -1,17 +1,22 @@
 #!/usr/bin/env bun
 // In a subtree a node process holds, an awaited chmod, utimes or chown is
 // its sync form's change, answered once logged, as mkdir, unlink and a
-// file's rename are; elsewhere the session answers it. A copy of the
-// program's own write the session has not answered yet, both names held, is
-// answered once logged too, the copy reading as those bytes at once.
+// file's rename are; elsewhere the session answers it. A copy with both names
+// held is answered once logged too when its source's bytes are known under
+// the grant (the program's own unanswered write, or a read of it under the
+// grant), the copy reading as those bytes at once. What the process answered
+// lingers: it goes with the next change someone awaits, in one wave, and what
+// sees the session without recalling the subtree hears it within LINGER_MS.
 //
 // Red before: each async form was a second implementation that sent the path
 // and waited for the session's answer, held or not, so Node's cp (copyFile,
 // then chmod of each file) waited out the session's durable commit twice a
-// file; and every copy waited for its own.
+// file; every copy waited for its own; and an answered change went alone,
+// ahead of the awaited one after it.
 
 import assert from 'node:assert/strict';
 import { createAuthority, facetSupervisor, launchResident, residentDataPlan, runScenarios, sleep, until } from './lib/resident-body.mjs';
+import { LINGER_MS } from '../../packages/core/src/_shared/process-fs-client.ts';
 
 const PROGRAM = `
 const fs = require("fs");
@@ -29,9 +34,11 @@ async function boot() {
   authority.kfs.writeFile('home/user/elsewhere/x.txt', 'x');
   authority.kfs.writeFile('home/user/app/out/seeded.txt', 'seeded');
   let stalled = null;
+  let waves = 0;
   let forward;
   const handle = facetSupervisor(authority, {
     writeBatchStream: async (...args) => {
+      waves++;
       if (stalled !== null) await stalled.promise;
       return forward('writeBatchStream', args);
     },
@@ -51,6 +58,7 @@ async function boot() {
   return {
     authority,
     fs,
+    waves: () => waves,
     stall: () => { stalled = Promise.withResolvers(); },
     release: async () => {
       stalled.resolve();
@@ -115,18 +123,36 @@ await runScenarios(import.meta.path, {
     assert.equal(await peerRead(authority, 'home/user/app/out/warm2'), 'AGAIN');
   },
 
-  async 'a copy of what the session holds, or of a set-id file, is the session\'s to answer'() {
+  async 'a copy from outside any held subtree, or of a set-id file, is the session\'s to answer'() {
     const { authority, fs, stall, release } = await boot();
     stall();
-    const seeded = fs.promises.copyFile(`${OUT}/seeded.txt`, `${OUT}/from-seeded.txt`);
-    assert.equal(await answeredAtOnce(seeded), 'waiting', 'a file the program did not write');
+    const outside = fs.promises.copyFile('/home/user/elsewhere/x.txt', `${OUT}/from-elsewhere.txt`);
+    assert.equal(await answeredAtOnce(outside), 'waiting', 'a source outside the subtree');
     fs.writeFileSync(`${OUT}/tool`, 'TOOL');
     fs.chmodSync(`${OUT}/tool`, 0o4755);
     const setuid = fs.promises.copyFile(`${OUT}/tool`, `${OUT}/tool-copy`);
     assert.equal(await answeredAtOnce(setuid), 'waiting', 'a set-id source');
     await release();
-    await Promise.all([seeded, setuid]);
-    assert.equal(await peerRead(authority, 'home/user/app/out/from-seeded.txt'), 'seeded');
+    await Promise.all([outside, setuid]);
+    assert.equal(await peerRead(authority, 'home/user/app/out/from-elsewhere.txt'), 'x');
     assert.equal(await peerRead(authority, 'home/user/app/out/tool-copy'), 'TOOL');
+  },
+
+  async 'an answered change in a held subtree goes with the next change someone awaits, in one wave'() {
+    const { authority, fs, waves } = await boot();
+    const before = waves();
+    await fs.promises.chmod(`${OUT}/warm3`, 0o600);
+    await fs.promises.chmod('/home/user/elsewhere/x.txt', 0o640);
+    assert.equal(waves() - before, 1, 'the answered chmod went alone, ahead of the awaited one');
+    assert.equal((await authority.peer.stat('home/user/app/out/warm3')).mode & 0o7777, 0o600);
+  },
+
+  async 'the file tree hears an answered change in a held subtree within LINGER_MS, unasked'() {
+    const { authority, fs } = await boot();
+    const heard = [];
+    const stop = authority.files.vfs.watchChanges('/home/user/app/out', (events) => { for (const event of events) heard.push(event.path); });
+    await fs.promises.writeFile(`${OUT}/told.txt`, 'told');
+    await until(() => heard.some((path) => path.endsWith('/told.txt')), 'the tree heard the write', LINGER_MS + 500);
+    stop();
   },
 });

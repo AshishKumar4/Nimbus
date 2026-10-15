@@ -156,6 +156,8 @@ export interface ProcessFsClientOptions {
   readonly grantInos?: number;
   /** How long one recall poll waits before asking again. */
   readonly recallPollMs?: number;
+  /** How long the process's own answered changes in a subtree it holds wait to be sent (LINGER_MS). */
+  readonly lingerMs?: number;
   /** Every key that is a home directory itself: never taken. */
   readonly isHomeRoot?: (key: string) => boolean;
   /**
@@ -193,9 +195,13 @@ export interface ProcessFsClient {
    * its errno when refused. `acknowledged`: the program was already told
    * it succeeded (a synchronous call), so its refusal is a failure to
    * report and the answer never rejects. A synchronous op past the client's
-   * cap throws ENOMEM here, logged nowhere.
+   * cap throws ENOMEM here, logged nowhere. \`decided\`: decided here, its
+   * caller answered already, as an acknowledged one's was. Either, in a
+   * subtree the process holds, lingers (LINGER_MS).
    */
-  submit(op: ProcessFsOp, options?: { acknowledged?: boolean }): Promise<ProcessFsAnswer>;
+  submit(op: ProcessFsOp, options?: { acknowledged?: boolean; decided?: boolean }): Promise<ProcessFsAnswer>;
+  /** Send what lingers now: someone waits on one of the process's own changes. */
+  hurry(): void;
   /** Resolves once every op logged so far is answered (not those logged after: a writing process is never idle). */
   flush(): Promise<void>;
   /**
@@ -374,6 +380,18 @@ const DATA_PIECE_BYTES = WAVE_BYTES;
 export const MAX_DELEGATIONS_PER_PROCESS = 8;
 /** Mutations in a subtree before the client takes it. */
 export const GRANT_AFTER = 8;
+/**
+ * How long a change the process already answered (acknowledged, or decided
+ * here) waits to be sent while the log holds only such changes in subtrees
+ * it holds: it goes with the next change someone awaits, a flush, an effect
+ * or a recall, or after this. While a wave is out, the session's commit of
+ * it holds every answer the session gives, reads too, so a change sent the
+ * moment it is logged makes the program's next read and its next awaited
+ * change each wait out a commit. What sees the session without recalling
+ * the subtree (the file tree, another process's watch) sees the change this
+ * much later at most.
+ */
+export const LINGER_MS = 10;
 
 /** `op` with the process's umask now, when it makes a name with a mode and names none (ProcessFsClientOptions.umask). */
 function withUmaskOf(op: ProcessFsOp, umask: (() => number | undefined) | undefined): ProcessFsOp {
@@ -441,6 +459,8 @@ interface Entry {
   bytes: number;
   paths: string[];
   acknowledged: boolean;
+  /** Answered already and in a subtree held when logged: sent with the next change awaited, or after LINGER_MS. */
+  lingers: boolean;
   resolve(answer: ProcessFsAnswer): void;
   reject(error: Error): void;
 }
@@ -588,6 +608,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   const grantAfter = options.grantAfter ?? GRANT_AFTER;
   const grantIdleMs = options.grantIdleMs ?? GRANT_IDLE_MS;
   const recallPollMs = options.recallPollMs ?? RECALL_POLL_MS;
+  const lingerMs = options.lingerMs ?? LINGER_MS;
   const grants: Grant[] = [];
   /** Mutations per candidate subtree not yet held; subtrees the session refused, and the range each was last given. */
   const mutations = new Map<string, number>();
@@ -599,6 +620,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   /** The wave in flight, settled once its answer is applied. */
   let sending: Promise<void> | null = null;
   let idleTimer: unknown = null;
+  /** Armed while what is unsent all lingers: sends it at the latest LINGER_MS after the first of it. */
+  let lingerTimer: unknown = null;
   let settling = false;
 
   const settled = (entry: Entry): void => {
@@ -819,6 +842,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     if (back.length === 0) return;
     if (answer.ok || refused !== null) {
       // After a refusal, nothing more in the wave was applied: they go again, first, as numbered.
+      for (const entry of back) entry.lingers = false;
       queue.unshift(...back);
       return;
     }
@@ -871,7 +895,18 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     scheduled = false;
     if (inFlight !== null || paused) return;
     if (queue.length === 0) return;
+    if (marks.length === 0 && queue.every((entry) => entry.lingers)) {
+      lingerTimer ??= timers.setTimeout(() => {
+        lingerTimer = null;
+        client.hurry();
+      }, lingerMs);
+      return;
+    }
     const entries = cut();
+    if (queue.length === 0 && lingerTimer !== null) {
+      timers.clearTimeout(lingerTimer);
+      lingerTimer = null;
+    }
     inFlight = entries;
     sending = send(entries).finally(() => {
       inFlight = null;
@@ -1180,6 +1215,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       const acknowledged = submitOptions?.acknowledged === true;
       const op = withUmaskOf(given, options.umask);
       const named = pathsOf(op);
+      const lingers = (acknowledged || submitOptions?.decided === true) && named.every((path) => heldGrant(path) !== undefined);
       for (const path of named) if (!canonical(path)) throw fsError('EINVAL', `EINVAL: not a filesystem path the session takes: '${path}'`, path);
       // A link's target past PATH_MAX is refused here, as symlink(2) refuses it; no wave could carry it.
       if (op.type === 'call' && op.call.call === 'symlink' && utf8Bytes(op.call.target) > SYMLINK_TARGET_MAX) {
@@ -1201,6 +1237,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         const grown = mergedBytes - tail.bytes;
         tail.op = merged;
         tail.bytes = mergedBytes;
+        tail.lingers &&= lingers;
         heapBytes += grown;
         pendingBytes += grown;
         if (acknowledged) pendingSyncBytes += grown;
@@ -1222,7 +1259,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         // The heap keeps a window of what is unsent; the rest is read back from the journal.
         const kept = !journal.durable || heapBytes + partBytes <= PROCESS_FS_HEAP_WINDOW_BYTES;
         if (kept) heapBytes += partBytes;
-        queue.push({ op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, resolve, reject });
+        queue.push({ op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject });
         pendingBytes += partBytes;
         if (acknowledged) {
           pendingSyncBytes += partBytes;
@@ -1245,6 +1282,10 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       });
       if (acknowledged) answer.catch(() => {});
       return answer;
+    },
+    hurry() {
+      for (const entry of queue) entry.lingers = false;
+      schedule();
     },
     flush() {
       options.drain?.();
