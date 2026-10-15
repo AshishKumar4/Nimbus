@@ -87,17 +87,15 @@ export interface RealmResponse {
 }
 /** What the guest posts on `events`. */
 export type GuestEvent = 
-/**
- * Output write number `seq` (each one more than the last, both outputs
- * counted together); `settle`, made after the program's code has run (a
- * timer's), which waits to be told once it is made (output-settled).
- */
+/** An output write: the host counts them, both outputs together, in the order they come (a flush's and a settle's numbers). */
 {
     readonly type: 'output';
     readonly fd: 1 | 2;
     readonly data: string | Uint8Array;
-    readonly seq: number;
-    readonly settle: boolean;
+}
+/** A write made after the program's code has run (a timer's) waits: tell it once every write so far is made (output-settled). */
+ | {
+    readonly type: 'settle';
 } | {
     readonly type: 'fetch';
     readonly id: number;
@@ -143,7 +141,7 @@ export type HostEvent = {
 }
 /**
  * Every output write up to number `seq` is made or failed (a failure told
- * first): told, for a write that asked (settle), when no later one waits.
+ * first): told, once asked (settle), when no later write waits.
  */
  | {
     readonly type: 'output-settled';

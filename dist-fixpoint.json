@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "2b2cbff180db2323259d059350f7067297109cf3cb03bcdec7e05bb560b5800e",
+  "fingerprint": "2a5252009d800c6e7bacc6addac970b19f186be93820782ac2ad0576c5b88dd3",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -933,10 +933,10 @@
     "packages/core/dist/substrate/lifo/commands/system/man.js": "883cdb4915cb7d1197b03622620532a7445dff9dccf5f84bf6d3a6ab6b135693",
     "packages/core/dist/substrate/lifo/commands/system/node-guest.d.ts": "11d10fb4b2142e6c08739aded745135bb6eaaa28710a0912b6db961dc5d5eb08",
     "packages/core/dist/substrate/lifo/commands/system/node-guest.d.ts.map": "eb121bcb7f8dbbd3549359765252056b015a9e228f73765e55684d802e9777c3",
-    "packages/core/dist/substrate/lifo/commands/system/node-guest.js": "cb8892d706110c5e1a6ecfadd5c4195ed722113dd1c397374e35f2f361791676",
-    "packages/core/dist/substrate/lifo/commands/system/node-realm.d.ts": "a360f546ce0a94c8bcf5378aa0947ecccb0e8ea89bc75eacfb414b53e1c7027f",
-    "packages/core/dist/substrate/lifo/commands/system/node-realm.d.ts.map": "2af6036fe802b9906be662ba30cd4d4454cff9cb817aaa3c51e14807a17c5fcb",
-    "packages/core/dist/substrate/lifo/commands/system/node-realm.js": "d3d4e07444f5f59340c99cd975d608c37fa359668dc7eeaebd37bd8e2f0bd302",
+    "packages/core/dist/substrate/lifo/commands/system/node-guest.js": "4ec78e3cb72322449be5a62b455e846febab4341193221e7e91104f12af290ed",
+    "packages/core/dist/substrate/lifo/commands/system/node-realm.d.ts": "5c5982794ad838c7502aedb4106c50a2bcbd0c53ddf1f8555645d5b999c66c91",
+    "packages/core/dist/substrate/lifo/commands/system/node-realm.d.ts.map": "5c49a2422fe35dd593ec6f8ecd1541e5c06190043c6f0a5629f7c96f04e4ea93",
+    "packages/core/dist/substrate/lifo/commands/system/node-realm.js": "5fb00b4ffa0a4779bd72e357f15dc84e466bfa0a7d9fae8f2699721e61f6b9d8",
     "packages/core/dist/substrate/lifo/commands/system/node.d.ts": "d56ead32eb661c1e88f0f04506151006666e2791fc9dafe2cc41cd92ab93f23b",
     "packages/core/dist/substrate/lifo/commands/system/node.d.ts.map": "07337c7588f3b160439b61cfaa9a8aac52dbfbb26a16cf9af6adb24e7238dc45",
     "packages/core/dist/substrate/lifo/commands/system/node.js": "f0a0bdd2630aba3d155dab8f5b163c845fb9e7a74802ecf76ae837baa46279de",
@@ -1641,8 +1641,8 @@
     "packages/core/src/substrate/lifo/commands/system/kill.ts": "371bb3e747a840088fad2c554b30833cf05d11c81196074b8513db793032989d",
     "packages/core/src/substrate/lifo/commands/system/lifo.ts": "d3ad98c76f3e7187ca38306e73ef34f8ab39c91d682b68359b4fbac83c7824be",
     "packages/core/src/substrate/lifo/commands/system/man.ts": "a74abc1bdfd7447eedf1f61283aa7951d4596fb3463bbdc106c2d9387112dbb6",
-    "packages/core/src/substrate/lifo/commands/system/node-guest.ts": "6b3d20a5e749e5317621476d075705fa92295681189c90f3f86447afc2a4db3e",
-    "packages/core/src/substrate/lifo/commands/system/node-realm.ts": "ce6ab8db6572f2fdace9580a8b349236b9619f1bc75c03df59169875de2c8cdc",
+    "packages/core/src/substrate/lifo/commands/system/node-guest.ts": "92b3239246987d08f9cf2fdd73ffd22494eb094ed5ea0ef6a8b8b68ae0f127c8",
+    "packages/core/src/substrate/lifo/commands/system/node-realm.ts": "65bb2a42ae90b97d99565e85435e0e269bc7fe6ce61779708f1cdd28802e8f23",
     "packages/core/src/substrate/lifo/commands/system/node.ts": "118a19e1b52b785e88b242ecbf8f4e18a7fe39062c975431d3cd0f40db35426d",
     "packages/core/src/substrate/lifo/commands/system/npm-config.ts": "85a917ed831bb102eb68677027a7e1a9bb43a7be409a9e2b46ba5228e82cdf61",
     "packages/core/src/substrate/lifo/commands/system/npm-init.ts": "bb2ae0538611507b931cb2003e0e8f2e5918639d31a44e52eb395084557f2494",

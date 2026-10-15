@@ -151,9 +151,12 @@ function realmOutput(fd) {
             return;
         // Once its code has run, the program waits for its writes (holdWhileBusy);
         // while it runs, it is held by its own code, and asks nothing.
-        post({ type: 'output', fd, data, seq: ++postedOutput, settle: mainDone });
-        if (mainDone && postedOutput === settledOutput + 1)
+        postOutput(fd, data);
+        // A write after the code has run asks to be told it is made, once: the first one unsettled.
+        if (mainDone && postedOutput === settledOutput + 1) {
+            post({ type: 'settle' });
             holdWhileBusy();
+        }
     };
     return {
         write: (data) => send(data),
@@ -172,6 +175,11 @@ function realmOutput(fd) {
 /** Output writes posted, and the last the host has settled (made, or failed): the realm is held while any is not. */
 let postedOutput = 0;
 let settledOutput = 0;
+/** An output write to the host, counted as the host counts them. */
+function postOutput(fd, data) {
+    post({ type: 'output', fd, data });
+    postedOutput++;
+}
 const outputs = { 1: realmOutput(1), 2: realmOutput(2) };
 /**
  * Node's error for a write the output refused: a pipe's as its stream reports
@@ -266,7 +274,7 @@ events.on('message', (event) => {
 const fatal = (reason) => {
     if (reason instanceof ProcessExitError)
         return exitNow(reason.exitCode);
-    post({ type: 'output', fd: 2, data: `${uncaughtReport(reason)}\n`, seq: ++postedOutput, settle: false });
+    postOutput(2, `${uncaughtReport(reason)}\n`);
     return exitNow(1);
 };
 /** What Node prints of an uncaught `reason`: an error's stack, and its own fields after it (`{ errno: -32, code: 'EPIPE', … }`). */
@@ -297,7 +305,7 @@ realm.on('exit', () => {
             post({ type: 'exit', code });
         return;
     }
-    post({ type: 'output', fd: 2, data: `Warning: Detected unsettled top-level await at ${program.filename}\n`, seq: ++postedOutput, settle: false });
+    postOutput(2, `Warning: Detected unsettled top-level await at ${program.filename}\n`);
     post({ type: 'exit', code: 13 });
 });
 if (egress) {

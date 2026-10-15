@@ -48,8 +48,8 @@ export function isGuestEvent(value) {
     if (!record(value))
         return false;
     switch (value.type) {
-        case 'output': return (value.fd === 1 || value.fd === 2) && (typeof value.data === 'string' || value.data instanceof Uint8Array)
-            && Number.isSafeInteger(value.seq) && typeof value.settle === 'boolean';
+        case 'output': return (value.fd === 1 || value.fd === 2) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
+        case 'settle': return true;
         case 'fetch':
             return Number.isSafeInteger(value.id) && Number.isSafeInteger(value.port) && typeof value.url === 'string'
                 && typeof value.method === 'string' && stringRecord(value.headers)
@@ -275,10 +275,8 @@ export async function runNodeInRealm(program, ctx, kernel) {
         settleWanted = false;
         post({ type: 'output-settled', seq: lastSettled });
     };
-    const write = (fd, data, seq, settle) => {
-        lastQueued = seq;
-        if (settle)
-            settleWanted = true;
+    const write = (fd, data) => {
+        const seq = ++lastQueued;
         written = written.then(async () => {
             if (!failedOutputs.has(fd)) {
                 try {
@@ -296,10 +294,8 @@ export async function runNodeInRealm(program, ctx, kernel) {
             }
             lastSettled = seq;
             settled();
-            for (const flush of flushes.filter((each) => each.upTo <= seq)) {
-                flushes.splice(flushes.indexOf(flush), 1);
-                flush.resolve();
-            }
+            if (flushes.length > 0 && flushes[0].upTo <= seq)
+                flushes.shift()?.resolve();
         });
     };
     // The realm, once it has started: a request for one of the guest's servers waits for none before.
@@ -381,7 +377,11 @@ export async function runNodeInRealm(program, ctx, kernel) {
                 return;
             switch (event.type) {
                 case 'output':
-                    write(event.fd, event.data, event.seq, event.settle);
+                    write(event.fd, event.data);
+                    return;
+                case 'settle':
+                    settleWanted = true;
+                    settled();
                     return;
                 case 'exit':
                     code = event.code;
