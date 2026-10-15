@@ -17,7 +17,9 @@ published independently in the `@nimbus-sh` npm scope.
   a multibyte character that a command's writes split, instead of two
   stray bytes. A streamed exec's result, `bun run`, `npm run`, shell
   scripts and the WASI runtimes now write the character their output's last
-  bytes left unfinished; it was lost.
+  bytes left unfinished; it was lost. Captured text keeps a byte that is not
+  UTF-8 the same way for every command: a `node` program's now reads as a
+  coreutil's always did (one character a byte), not as U+FFFD.
 - Fixed: `tee`, `dd` and the commands that read a file operand (`cat`, `wc`,
   `grep` and the rest) open each file once, as their GNU tools do. If
   another command moved the file aside and a new file took its name while
