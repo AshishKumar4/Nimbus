@@ -193,15 +193,9 @@ export function buildRubySocketProcessWorker(preamble) {
         '',
         'async function __nimbusStartRubyProcess(args) {',
         '  if (!globalThis.__nimbusRubyProcessPromise) {',
-        '    globalThis.__nimbusRubyProcessArgs = {',
-        '      userCode: args.userCode,',
-        '      rbArgv: args.rbArgv || [],',
-        '      userEnv: args.userEnv || {},',
-        '      progName: args.progName || "ruby",',
-        '      binName: args.binName || "ruby",',
-        '      cwd: args.cwd || "/home/user",',
-        '      supervisorPid: args.supervisorPid,',
-        '    };',
+        // The invocation as the runner made it (RubyFacetCallArgs): its credential
+        // and its -r libraries reach the VM as a one-shot run's do.
+        '    globalThis.__nimbusRubyProcessArgs = args;',
         '    globalThis.__nimbusRubyProcessPromise = globalThis.__rubyRun(globalThis.__nimbusRubyProcessArgs).then((result) => {',
         '      globalThis.__nimbusRubyProcessResult = result;',
         '      return result;',

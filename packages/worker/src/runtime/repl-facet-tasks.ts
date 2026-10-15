@@ -82,6 +82,7 @@ export function rubyReplStepFacetFn(args: RubyReplStep, facetEnv: {
         Reflect.set(globalThis, '__nimbusRubyPromptStarted', true);
         const r = await fn({
             userCode: args.userCode,
+            requires: [],
             rbArgv: ['ruby', '-e', args.userCode],
             userEnv: { HOME: args.home },
             progName: 'ruby',

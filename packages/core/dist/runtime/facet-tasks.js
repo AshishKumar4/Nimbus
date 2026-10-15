@@ -91,16 +91,8 @@ export const rubyFacetCall = async function rubyFacetCall(inArgs, facetEnv) {
     if (supervisor)
         Reflect.set(globalThis, '__nimbusRubySupervisor', supervisor);
     adopt?.(supervisor);
-    return fn({
-        userCode: inArgs.userCode,
-        rbArgv: inArgs.rbArgv,
-        userEnv: inArgs.userEnv,
-        progName: inArgs.progName,
-        binName: inArgs.binName,
-        cwd: inArgs.cwd,
-        cred: inArgs.cred,
-        supervisorPid: inArgs.supervisorPid,
-    });
+    // The invocation as the runner made it: a field it adds reaches the VM.
+    return fn(inArgs);
 };
 export const wasmFacetCall = async function wasmFacetCall(args, facetEnv) {
     const wasmTable = globalThis.__NIMBUS_WASM || {};

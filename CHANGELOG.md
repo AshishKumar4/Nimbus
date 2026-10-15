@@ -19,6 +19,24 @@ published independently in the `@nimbus-sh` npm scope.
   later) and CPython 3.13.14-3. BusyBox is now built by the same
   reproducible recipe as bash. The catalog keeps 5.2.37-6 and 3.13.14-2 as
   its defaults until the next release publishes the new builds.
+- Fixed: `npx` keeps each request's install apart, as npm does: in its own
+  directory under `/tmp/.npx-cache`, named as npm names it, written only
+  if its install succeeds. A request for a package that does not exist no
+  longer breaks every later `npx`. What earlier sessions installed in the
+  shared `/tmp/.npx-cache` is installed again once, where it is asked for.
+- Fixed: `npx <pkg>@<version>` runs that version. A project's
+  `node_modules`, or what an earlier `npx` installed, answers only a
+  version or range it satisfies; before, whatever version was there ran.
+  One known difference from npm: `npx <pkg>` by name alone, with that
+  package already in its npx directory, runs what is there, where npm
+  asks the registry first for a newer version.
+- Removed: core's `createNpxCommand` (`@nimbus-sh/core/substrate/lifo`),
+  a second npx no Nimbus shell registered. The session's `npx` is the one.
+- Fixed: `pip install` sees a release published since an earlier install.
+  The session kept PyPI's answers forever, so a later install could not
+  see a new release, and each process's own network left its answers
+  behind. They are now kept as pip's HTTP cache keeps them: for the
+  response's `max-age` (15 minutes for PyPI).
 - Fixed: the shell's built-in `node` hears of a write its output refused,
   as Node does: piped to a reader that closed (`node … | head -1`) or
   redirected to a full device, `process.stdout` emits the EPIPE or ENOSPC
@@ -58,6 +76,11 @@ published independently in the `@nimbus-sh` npm scope.
 - Changed: `clang` reads each toolchain image only when its phase runs.
   `clang -c`, and a compile that fails, no longer read or hold the 18.5 MiB
   linker; a link of objects alone no longer reads the 31 MiB compiler.
+- Fixed: `ruby -r NAME` requires NAME as written, as Ruby does: `#{...}` in
+  it is no longer interpolated. A Ruby script (which keeps running as its
+  own process) now runs with the caller's credential, as `ruby -e` does, so
+  its file calls use the resident filesystem instead of a supervisor round
+  trip each.
 
 ## 2026-10-15: platform 0.11.0, core 0.22.0, fabric 0.17.0, worker 0.20.0, sdk 0.16.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4, runtime-cpython 3.13.14-2 (config 0.3.1 unchanged)
 
