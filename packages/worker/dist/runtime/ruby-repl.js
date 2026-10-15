@@ -178,8 +178,8 @@ class RubyReplAdapter {
         const { pool, wasmBytesAB } = this;
         if (!pool || !wasmBytesAB)
             throw new Error('Ruby REPL is not initialized');
-        const { home, cwd, binName } = this.deps;
-        const step = { userCode, home, cwd, binName, supervisorPid: this.deps.pid };
+        const { home, cwd, binName, cred } = this.deps;
+        const step = { userCode, home, cwd, binName, supervisorPid: this.deps.pid, cred };
         return await pool.submit(RUBY_REPL_TASK, step, {
             wasmModules: { 'ruby+stdlib.wasm': wasmBytesAB },
         });

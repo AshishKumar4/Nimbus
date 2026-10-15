@@ -63,12 +63,14 @@ export function rubyReplStepFacetFn(args, facetEnv) {
         Reflect.set(globalThis, '__nimbusRubyPromptStarted', true);
         const r = await fn({
             userCode: args.userCode,
+            requires: [],
             rbArgv: ['ruby', '-e', args.userCode],
             userEnv: { HOME: args.home },
             progName: 'ruby',
             binName: args.binName,
             cwd: started ? undefined : args.cwd,
             supervisorPid: args.supervisorPid,
+            cred: args.cred,
             outputControls: [{ key: 'incomplete', prefix: '__NIMBUS_INCOMPLETE__' }],
         });
         return {
