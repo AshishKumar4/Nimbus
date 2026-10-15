@@ -214,6 +214,14 @@ export interface NimbusFilesystemAuthority {
     openHost(cred: Readonly<VfsCred>, options?: {
         signal?: AbortSignal;
     }): NimbusHostFilesystemLease;
+    /**
+     * What a drain of process `pid`'s write log writes through, taken when its
+     * log is booked: the pid's own binding, so its log lands as the process
+     * would have landed it, with the descriptions it opened and the grants it
+     * holds (their reserved inodes). Its release keeps them until the lease is
+     * disposed, then completes; nothing else binds the pid once it is released.
+     */
+    recovery(pid: number, cred: Readonly<VfsCred>): NimbusHostFilesystemLease;
     releaseProcess(pid: number): Promise<void>;
     /**
      * A run of the process ended and another of the same process starts in its

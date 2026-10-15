@@ -4310,6 +4310,8 @@ export class FacetManager {
     processJournals;
     /** Residents whose log is being drained as their facet is released. */
     journalDraining = new Set();
+    /** Per resident with a booked log: the binding its drain writes through (NimbusFilesystemAuthority.recovery). */
+    recoveries = new Map();
     /** An exit a signal decided, told once its process's log is drained (`_endBySignal`). */
     endsAfterDrain = new Map();
     /**
@@ -4503,8 +4505,12 @@ export class FacetManager {
             journalFor: (pid) => ({
                 opened: (facet) => {
                     const cred = this.processes.get(pid)?.cred;
-                    if (cred !== undefined)
-                        this.processJournals.opened(facet, pid, cred, generation(this.ctx));
+                    if (cred === undefined)
+                        return;
+                    this.processJournals.opened(facet, pid, cred, generation(this.ctx));
+                    // What its drain writes through, kept from its release to the drain's end.
+                    if (this.filesystem !== null && !this.recoveries.has(pid))
+                        this.recoveries.set(pid, this.filesystem.recovery(pid, cred));
                 },
                 drain: async (journal) => {
                     this.journalDraining.add(pid);
@@ -4809,20 +4815,33 @@ export class FacetManager {
      * A change the session refuses is said in the process's own output, named.
      */
     async _drainProcessJournal(pid, journal) {
-        const pending = this.processJournals.of(pid);
-        if (pending === undefined)
-            return;
-        await this._drainJournalAs(pending.pid, pending.cred, journal);
-        this.vfs?.forgetSequences(pid);
-        this.processJournals.settled(pid);
+        const recovery = this.recoveries.get(pid);
+        this.recoveries.delete(pid);
+        try {
+            const pending = this.processJournals.of(pid);
+            if (pending === undefined)
+                return;
+            await this._drainJournalAs(pending.pid, pending.cred, journal, recovery);
+            this.vfs?.forgetSequences(pid);
+            this.processJournals.settled(pid);
+        }
+        finally {
+            await recovery?.dispose();
+        }
     }
-    /** Drain `journal` into the session as process `pid` (with its credential) would have sent it. */
-    async _drainJournalAs(pid, cred, journal) {
+    /**
+     * Drain `journal` into the session as process `pid` (with its credential)
+     * would have sent it: through `recovery`, the process's own binding, kept
+     * since its log was booked (its descriptions, and the grants that reserved
+     * the inodes it numbered); else, for a log an earlier incarnation left, a
+     * lease of its credential.
+     */
+    async _drainJournalAs(pid, cred, journal, recovery) {
         if (!this.filesystem)
             throw new Error('Process filesystem authority is not initialized');
         // Under the process's credential, numbered as its own waves were.
-        const lease = this.filesystem.openHost(cred);
-        const drained = await drainProcessFsJournal({ journal, session: journalDrainSession(lease.fs, pid) }).finally(() => lease.dispose());
+        const lease = recovery === undefined ? this.filesystem.openHost(cred) : null;
+        const drained = await drainProcessFsJournal({ journal, session: journalDrainSession((recovery ?? lease).fs, pid) }).finally(() => lease?.dispose());
         if (drained.landed > 0 || drained.failures.length > 0) {
             const refused = drained.failures.map((failure) => `  ${failure.op} /${failure.path}: ${failure.errno}: ${failure.message}\n`).join('');
             this.processes.appendOutput(pid, 'stderr', `[nimbus] process ${pid} ended with ${drained.landed + drained.failures.length} change${drained.landed + drained.failures.length === 1 ? '' : 's'} not yet in the session: `

@@ -34,6 +34,9 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     private readonly processes;
     private readonly namespaces;
     private readonly retired;
+    /** Per process: the recovery leases taken for its log's drain, and its release, deferred until the last is disposed. */
+    private readonly recovering;
+    private readonly releasing;
     /** Per process: where its listings of the mounts beyond SQLite stand (MountListing). */
     private readonly listings;
     /** Inode numbers for mounted entries whose backend keeps none: stable per path for the session. */
@@ -97,6 +100,7 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     private listingOf;
     private createListing;
     bind({ pid, cred, signal }: NimbusFilesystemBinding): RuntimeFsBridge;
+    recovery(pid: number, cred: Readonly<VfsCred>): NimbusHostFilesystemLease;
     openHost(cred: Readonly<VfsCred>, options?: {
         signal?: AbortSignal;
     }): NimbusHostFilesystemLease;

@@ -287,6 +287,9 @@ export class ProcessFiles {
     processes = new Map();
     namespaces = new Map();
     retired = new Set();
+    /** Per process: the recovery leases taken for its log's drain, and its release, deferred until the last is disposed. */
+    recovering = new Map();
+    releasing = new Map();
     /** Per process: where its listings of the mounts beyond SQLite stand (MountListing). */
     listings = new Map();
     /** Inode numbers for mounted entries whose backend keeps none: stable per path for the session. */
@@ -408,6 +411,28 @@ export class ProcessFiles {
         }
         return this.bridgeFor(scope, immutableCredential(cred), signal, pid);
     }
+    recovery(pid, cred) {
+        const fs = this.bind({ pid, cred });
+        this.recovering.set(pid, (this.recovering.get(pid) ?? 0) + 1);
+        let disposed = false;
+        return {
+            fs,
+            dispose: async () => {
+                if (disposed)
+                    return;
+                disposed = true;
+                const left = (this.recovering.get(pid) ?? 1) - 1;
+                if (left > 0) {
+                    this.recovering.set(pid, left);
+                    return;
+                }
+                this.recovering.delete(pid);
+                const release = this.releasing.get(pid);
+                this.releasing.delete(pid);
+                await release?.();
+            },
+        };
+    }
     openHost(cred, options = {}) {
         const scope = createDescriptorScope();
         const fs = this.bridgeFor(scope, immutableCredential(cred), options.signal);
@@ -516,17 +541,24 @@ export class ProcessFiles {
     async releaseProcess(pid) {
         this.retired.add(pid);
         this.listings.delete(pid);
-        const scope = this.processes.get(pid);
-        try {
-            // Its descriptors' last closes flush; one whose flush fails is reported
-            // once the process is released all the same.
-            if (scope)
-                await this.closeScope(scope);
-        }
-        finally {
-            this.processes.delete(pid);
-            this.retireWriter(pid);
-        }
+        const release = async () => {
+            const scope = this.processes.get(pid);
+            try {
+                // Its descriptors' last closes flush; one whose flush fails is reported
+                // once the process is released all the same.
+                if (scope)
+                    await this.closeScope(scope);
+            }
+            finally {
+                this.processes.delete(pid);
+                this.retireWriter(pid);
+            }
+        };
+        // Its log is draining (recovery): what it opened and holds stay until the drain ends.
+        if (this.recovering.has(pid))
+            this.releasing.set(pid, release);
+        else
+            await release();
     }
     /** See NimbusFilesystemAuthority.rewindProcess. */
     async rewindProcess(pid) {
