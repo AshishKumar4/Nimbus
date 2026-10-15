@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (lifo commands): a command's `process.exit(n)` writes nothing, as
+  Node's does; it wrote `[process.exit] code=n` on the command's stderr for a
+  non-zero `n`. lifo's `http` gives Readables, as Node's: a server's request
+  and a client's response push their body as a Buffer and end, so `pipe`,
+  `for await`, `setEncoding` and `'data'` work as in Node, and `'end'` comes
+  only once the body is read.
 - Fixed: a running `wrangler dev` stopped serving when its session's object
   was re-created (an idle session's is, within minutes; so is one after an
   instance reset): its Worker URL answered "no dev server running" until it
