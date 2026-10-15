@@ -33,6 +33,12 @@ published independently in the `@nimbus-sh` npm scope.
   `statSync` reports. Each was accepted, or refused, where the session
   answered otherwise. While the process's view of the filesystem is being
   rebuilt, their async forms ask the session instead of refusing `EAGAIN`.
+- Fixed (lifo commands): a command's `process.exit(n)` writes nothing, as
+  Node's does; it wrote `[process.exit] code=n` on the command's stderr for a
+  non-zero `n`. lifo's `http` gives Readables, as Node's: a server's request
+  and a client's response push their body as a Buffer and end, so `pipe`,
+  `for await`, `setEncoding` and `'data'` work as in Node, and `'end'` comes
+  only once the body is read.
 - Fixed: `tee`, `dd` and the commands that read a file operand (`cat`, `wc`,
   `grep` and the rest) open each file once, as their GNU tools do. If
   another command moved the file aside and a new file took its name while
