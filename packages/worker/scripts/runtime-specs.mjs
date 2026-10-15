@@ -107,7 +107,11 @@ export const SPECS = {
   // every rebuild, and the entrypoint names the runner contract the build
   // was made for (BASH_RUNNER), so a deployment whose preamble predates it
   // never binds it. 5.2.37 is build 1, published under `bash-runner`.
-  'bash/5.2.37-6': {
+  // -7: built by the recipe with BusyBox (build-in-bwrap.sh): bash's own
+  // stat asks the runner for a stat preview1 gave no type (bash-runner@6),
+  // and both read accounts from /etc/passwd and /etc/group
+  // (nimbus-libc/nimbus-accounts.c).
+  'bash/5.2.37-7': {
     license: 'GPL-3.0-or-later AND GPL-2.0-only',
     wasi_namespace: 'wasi_snapshot_preview1',
     local_base: '../wasm/bash',
@@ -115,9 +119,9 @@ export const SPECS = {
     npm: {
       name: '@nimbus-sh/runtime-bash',
       summary: 'GNU bash 5.2.37 and BusyBox 1.37.0, cross-compiled to wasm32-wasi',
-      // The first core that registers bash-runner@5, whose module logs its
-      // jmp_buf copies in its own memory (core 0.19.0 registers @3).
-      core: '>=0.20.0',
+      // The first core that registers bash-runner@6, which gives bash's own
+      // instance nimbus_proc.stat_metadata (core 0.22.0 registers @5 alone).
+      core: '>=0.23.0',
     },
     files: [
       { src: 'bash.async.wasm',           vfs: 'share/bash/bash.async.wasm' },

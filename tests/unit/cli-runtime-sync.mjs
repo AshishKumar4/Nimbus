@@ -76,7 +76,7 @@ process.exit(1);
     const write = process.stdout.write.bind(process.stdout);
     process.stdout.write = (chunk, ...rest) => { out.push(String(chunk)); return write(chunk, ...rest); };
     try {
-      const code = await syncRuntimes(['--bucket', bucket, 'bash@5.2.37-6'], { scriptPath: join(scripts, 'bundle-runtime.mjs') });
+      const code = await syncRuntimes(['--bucket', bucket, 'bash@5.2.37-7'], { scriptPath: join(scripts, 'bundle-runtime.mjs') });
       return { code, report: out.map((l) => l.trim()).filter((l) => l.startsWith('{')).map((l) => JSON.parse(l)).at(-1) };
     } finally {
       process.stdout.write = write;

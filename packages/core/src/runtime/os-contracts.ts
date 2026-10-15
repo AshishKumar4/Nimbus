@@ -845,7 +845,16 @@ export const NIMBUS_RUNTIME_ABIS: Readonly<Record<string, RuntimePackageAbi>> = 
  * catalog is shared by every deployment reading it and a workspace binds only
  * the build its preamble was written against.
  */
-export const BASH_RUNNER = 'bash-runner@5';
+export const BASH_RUNNER = 'bash-runner@6';
+
+/**
+ * The contracts this tree's bash runner implements, and the keys it is
+ * registered under. @6 gives bash's own instance nimbus_proc.stat_metadata
+ * (5.2.37-7 asks it for a stat preview1 gave no type); a @5 build (5.2.37-5,
+ * -6) does not import it, and an instantiation ignores what a module does
+ * not import.
+ */
+export const BASH_RUNNER_CONTRACTS: readonly string[] = ['bash-runner@5', BASH_RUNNER];
 
 /**
  * The runner key a CPython manifest entrypoint names: the contract between the

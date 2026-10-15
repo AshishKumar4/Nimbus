@@ -29,7 +29,7 @@ const WORKER = join(REPO, 'packages', 'worker');
 
 /** What we publish, and the manifest each package must turn out to carry. */
 const RUNTIMES = [
-  { runtime: 'bash', version: '5.2.37-6', command: 'bash -c "echo hi"' },
+  { runtime: 'bash', version: '5.2.37-7', command: 'bash -c "echo hi"' },
   { runtime: 'cpython', version: '3.13.14-2', command: 'python -c "print(6*7)"' },
 ];
 

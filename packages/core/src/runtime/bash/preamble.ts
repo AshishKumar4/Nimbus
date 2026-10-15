@@ -692,6 +692,7 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
       U8().set(bytes, ptr); U8()[ptr + bytes.length] = 0; return bytes.length;
     },
     capture_cwd: (ptr: number, length: number) => { proc.cwd = td.decode(U8().subarray(ptr, ptr + length)); return 0; },
+    stat_metadata: suspend('stat_metadata', metadataImports(s, proc, DV, U8, s.fs).stat_metadata),
     // A landing (the capture's own rewind, or a longjmp's) stops the rewind and runs no hook.
     setjmp: (env) => {
       if (c.rewinding) { proc.inst.exports.asyncify_stop_rewind(); c.rewinding = false; return; }
@@ -1067,6 +1068,61 @@ function startDeferred(s: BashSession): void {
 // exec re-homes the forked child onto a staged plain-WASI coreutil
 // bound to the process fd table (M2 exec-into-runner, in-facet). The
 // tool's blocking pipe reads synchronously pump the writer procs.
+/**
+ * nimbus_proc's metadata calls for a process's descriptors and paths, which
+ * preview1 cannot carry (mode, owner): BusyBox's stat wrappers ask at every
+ * stat, bash's own only for a stat preview1 gave no type (a pipe, a stdin
+ * that is not a terminal). Its chmod and chown, for the same reason.
+ */
+function metadataImports(s: BashSession, proc: BashProc, DV: () => DataView, U8: () => Uint8Array, fs: RuntimeFsBridge | RuntimeSynchronousFs) {
+  const readPath = (ptr: number, length: number) => td.decode(U8().subarray(ptr, ptr + length));
+  const at = (fd: number, path: string): RuntimeFsPath => {
+    if (path.startsWith('/')) return path;
+    if (fd === -1) return proc.cwd + '/' + path;
+    // Same redirection the preview1 path imports apply: a dirfd the shell
+    // claimed still names the root wasi-libc resolved it against.
+    const entry = proc.fds.get(proc.preopenMoved.get(fd) ?? fd);
+    if (entry?.kind === 'preopen') return entry.vfsPath + '/' + path;
+    if (entry?.kind !== 'authority') throw Object.assign(new Error('EBADF'), { code: 'EBADF' });
+    return { directory: entry.handle.id, path };
+  };
+  const descriptor = (fd: number) => { const entry = proc.fds.get(fd); if (entry?.kind !== 'authority') throw Object.assign(new Error('EBADF'), { code: 'EBADF' }); return entry.handle.id; };
+  const metadata = (out: number, mode: number, uid: number, gid: number): number => {
+    DV().setUint32(out, mode, true); DV().setUint32(out + 4, uid, true); DV().setUint32(out + 8, gid, true); return 0;
+  };
+  // fstat's: a file's own, a stream's or a pipe's by its kind (no inode: a terminal's or a FIFO's mode, the session's owner).
+  const descriptorMetadata = (fd: number, out: number): Awaitable<number> => {
+    const entry = proc.fds.get(fd);
+    if (entry === undefined) return E.BADF;
+    if (entry.kind === 'resident') return metadata(out, entry.stat.mode ?? 0, entry.stat.uid, entry.stat.gid);
+    if (entry.kind === 'pipe' || entry.kind === 'stdin' || entry.kind === 'stdout' || entry.kind === 'stderr') return metadata(out, hostFifo(entry) ? 0o010600 : 0o020620, s.cred.uid, s.cred.gid);
+    const stat = entry.kind === 'authority' ? () => fs.fstat(entry.handle.id) : entry.kind === 'preopen' ? () => fs.stat(entry.vfsPath) : null;
+    if (stat === null) return E.BADF;
+    return result(stat, st => st ? metadata(out, st.mode ?? 0, st.uid, st.gid) : E.NOENT);
+  };
+  // The call is produced inside the guard, not handed to it: resolving the fd
+  // is itself a syscall step that can fail, and an EBADF raised while building
+  // the arguments has to answer the guest as an errno rather than escape the
+  // import and fail the whole session.
+  const result = <T>(produce: () => T | Promise<T>, finish: (value: T) => number) => {
+    try { const next = after(produce(), finish); return next instanceof Promise ? next.catch((error) => refusalErrno(error, s.gone)) : next; }
+    catch (error) { return refusalErrno(error, s.gone); }
+  };
+  return {
+    stat_metadata: (fd: number, ptr: number, length: number, follow: number, out: number) => {
+      if (!ptr) return descriptorMetadata(fd, out);
+      const path = readPath(ptr, length);
+      // A path naming a descriptor (/dev/fd/N) is that descriptor's, resolved as path_filestat_get resolves it.
+      const named = descriptorNamed(proc.fds, fd === -1 ? -1 : proc.preopenMoved.get(fd) ?? fd, path, proc.cwd);
+      if (named !== null) return proc.fds.has(named) ? descriptorMetadata(named, out) : E.NOENT;
+      return result(() => fs.stat(at(fd, path), { followSymlinks: !!follow }), st => st ? metadata(out, st.mode ?? 0, st.uid, st.gid) : E.NOENT);
+    },
+    chmod: (ptr: number, length: number, mode: number) => result(() => fs.chmod(at(-1, readPath(ptr, length)), mode), () => 0),
+    fchmod: (fd: number, mode: number) => result(() => fs.fchmod(descriptor(fd), mode), () => 0),
+    chown: (fd: number, ptr: number, length: number, uid: number, gid: number, follow: number) => result(() => ptr ? fs.chown(at(fd, readPath(ptr, length)), uid, gid, { followSymlinks: !!follow }) : fs.fchown(descriptor(fd), uid, gid), () => 0),
+  };
+}
+
 async function doExec(s: BashSession, proc: BashProc): Promise<void> {
   if (!s.procs.has(proc.pid)) return;
   const path = proc.ctx.execPath.startsWith('/') ? proc.ctx.execPath : proc.cwd + '/' + proc.ctx.execPath;
@@ -1180,53 +1236,10 @@ async function doExec(s: BashSession, proc: BashProc): Promise<void> {
   };
   const fs = canPark ? s.fs : s.fs.synchronous;
   if (!fs) throw new Error('Synchronous authority is unavailable');
-  const readPath = (ptr: number, length: number) => td.decode(U8().subarray(ptr, ptr + length));
-  const at = (fd: number, path: string): RuntimeFsPath => {
-    if (path.startsWith('/')) return path;
-    if (fd === -1) return proc.cwd + '/' + path;
-    // Same redirection the preview1 path imports apply: a dirfd the shell
-    // claimed still names the root wasi-libc resolved it against.
-    const entry = proc.fds.get(proc.preopenMoved.get(fd) ?? fd);
-    if (entry?.kind === 'preopen') return entry.vfsPath + '/' + path;
-    if (entry?.kind !== 'authority') throw Object.assign(new Error('EBADF'), { code: 'EBADF' });
-    return { directory: entry.handle.id, path };
-  };
-  const descriptor = (fd: number) => { const entry = proc.fds.get(fd); if (entry?.kind !== 'authority') throw Object.assign(new Error('EBADF'), { code: 'EBADF' }); return entry.handle.id; };
-  const metadata = (out: number, mode: number, uid: number, gid: number): number => {
-    DV().setUint32(out, mode, true); DV().setUint32(out + 4, uid, true); DV().setUint32(out + 8, gid, true); return 0;
-  };
-  // fstat's: a file's own, a stream's or a pipe's by its kind (no inode: a terminal's or a FIFO's mode, the session's owner).
-  const descriptorMetadata = (fd: number, out: number): Awaitable<number> => {
-    const entry = proc.fds.get(fd);
-    if (entry === undefined) return E.BADF;
-    if (entry.kind === 'resident') return metadata(out, entry.stat.mode ?? 0, entry.stat.uid, entry.stat.gid);
-    if (entry.kind === 'pipe' || entry.kind === 'stdin' || entry.kind === 'stdout' || entry.kind === 'stderr') return metadata(out, hostFifo(entry) ? 0o010600 : 0o020620, s.cred.uid, s.cred.gid);
-    const stat = entry.kind === 'authority' ? () => fs.fstat(entry.handle.id) : entry.kind === 'preopen' ? () => fs.stat(entry.vfsPath) : null;
-    if (stat === null) return E.BADF;
-    return result(stat, st => st ? metadata(out, st.mode ?? 0, st.uid, st.gid) : E.NOENT);
-  };
-  // The call is produced inside the guard, not handed to it: resolving the fd
-  // is itself a syscall step that can fail, and an EBADF raised while building
-  // the arguments has to answer the guest as an errno rather than escape the
-  // import and fail the whole session.
-  const result = <T>(produce: () => T | Promise<T>, finish: (value: T) => number) => {
-    try { const next = after(produce(), finish); return next instanceof Promise ? next.catch((error) => refusalErrno(error, s.gone)) : next; }
-    catch (error) { return refusalErrno(error, s.gone); }
-  };
   const native = {
     startup_cwd: (ptr: number, capacity: number) => { const bytes = te.encode(proc.cwd); if (!capacity) return bytes.length; if (capacity <= bytes.length) return -37; U8().set(bytes, ptr); U8()[ptr + bytes.length] = 0; return bytes.length; },
     identity: (field: number) => { if ((field & 7) === 4) { const previous = s.cred.umask; s.cred = { ...s.cred, umask: field >>> 3 }; return previous; } return [s.cred.uid, s.cred.gid, proc.pid, proc.ppid][field] ?? 0; },
-    stat_metadata: (fd: number, ptr: number, length: number, follow: number, out: number) => {
-      if (!ptr) return descriptorMetadata(fd, out);
-      const path = readPath(ptr, length);
-      // A path naming a descriptor (/dev/fd/N) is that descriptor's, resolved as path_filestat_get resolves it.
-      const named = descriptorNamed(proc.fds, fd === -1 ? -1 : proc.preopenMoved.get(fd) ?? fd, path, proc.cwd);
-      if (named !== null) return proc.fds.has(named) ? descriptorMetadata(named, out) : E.NOENT;
-      return result(() => fs.stat(at(fd, path), { followSymlinks: !!follow }), st => st ? metadata(out, st.mode ?? 0, st.uid, st.gid) : E.NOENT);
-    },
-    chmod: (ptr: number, length: number, mode: number) => result(() => fs.chmod(at(-1, readPath(ptr, length)), mode), () => 0),
-    fchmod: (fd: number, mode: number) => result(() => fs.fchmod(descriptor(fd), mode), () => 0),
-    chown: (fd: number, ptr: number, length: number, uid: number, gid: number, follow: number) => result(() => ptr ? fs.chown(at(fd, readPath(ptr, length)), uid, gid, { followSymlinks: !!follow }) : fs.fchown(descriptor(fd), uid, gid), () => 0),
+    ...metadataImports(s, proc, DV, U8, fs),
   };
   const imports = canPark ? {
     fd_prestat_get: new WebAssembly.Suspending(wasi.fd_prestat_get),

@@ -526,6 +526,8 @@ export type BashProcImports = {
   tcgetpgrp(): number;
   tcgetattr(): number;
   tcsetattr(): number;
+  /** A stat preview1 gave no type (a pipe, a stdin that is not a terminal): its mode, uid and gid (bash-runner@6). */
+  stat_metadata(fd: number, ptr: number, length: number, follow: number, out: number): number;
 };
 
 /**

@@ -6,7 +6,7 @@ import type { Command, CommandContext } from '@nimbus-sh/core/substrate/lifo/com
 import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { outputHooks } from '@nimbus-sh/core/_shared/byte-stream.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
-import { BASH_RUNNER, CPYTHON_RUNNER_CONTRACTS, GIT_RUNNER, CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER_CONTRACTS, CPYTHON_RUNNER_CONTRACTS, GIT_RUNNER, CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
@@ -280,36 +280,34 @@ workspace.runtimes.registerRunner(
 // mechanisms). Interactive terminal invocations use the shared
 // ReplSession line editor; -c, scripts, and piped stdin retain the
 // canonical one-shot handler.
-workspace.runtimes.registerRunner(
-  BASH_RUNNER,
-  (manifest, installRoot, binName, binKind) => async (ctx: CommandContext) => {
-    const argv = ctx.args || [];
-    const explicitInteractive = argv.includes('-i');
-    const terminalStdin = ctx.isFdTerminal?.(0) ?? !ctx.stdin;
-    if (terminal && (explicitInteractive || (argv.length === 0 && terminalStdin))) {
-      const { runBashRepl } = await import('../runtime/bash-repl.js');
-      return await runBashRepl({
-        facetMgr,
-        authority: workspace.filesystem,
-        terminal: terminal,
-        installRoot,
-        manifest,
-        cred: ctx.cred,
-        pid: ctx.pid,
-        processes: self.processes,
-        filesystem: workspace.filesystem.bind({ pid: ctx.pid, cred: ctx.cred, signal: ctx.signal }),
-        env: ctx.env,
-        cwd: ctx.cwd || '/home/user',
-        shell: shell ?? undefined,
-      });
-    }
-    const { makeBashRunnerFactory } = await import('@nimbus-sh/core/runtime/bash-runner.js');
-    const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
-    return await makeBashRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes })(
-      manifest, installRoot, binName, binKind,
-    )(ctx);
-  },
-);
+const bash: RunnerFactory = (manifest, installRoot, binName, binKind) => async (ctx: CommandContext) => {
+  const argv = ctx.args || [];
+  const explicitInteractive = argv.includes('-i');
+  const terminalStdin = ctx.isFdTerminal?.(0) ?? !ctx.stdin;
+  if (terminal && (explicitInteractive || (argv.length === 0 && terminalStdin))) {
+    const { runBashRepl } = await import('../runtime/bash-repl.js');
+    return await runBashRepl({
+      facetMgr,
+      authority: workspace.filesystem,
+      terminal: terminal,
+      installRoot,
+      manifest,
+      cred: ctx.cred,
+      pid: ctx.pid,
+      processes: self.processes,
+      filesystem: workspace.filesystem.bind({ pid: ctx.pid, cred: ctx.cred, signal: ctx.signal }),
+      env: ctx.env,
+      cwd: ctx.cwd || '/home/user',
+      shell: shell ?? undefined,
+    });
+  }
+  const { makeBashRunnerFactory } = await import('@nimbus-sh/core/runtime/bash-runner.js');
+  const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
+  return await makeBashRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes })(
+    manifest, installRoot, binName, binKind,
+  )(ctx);
+};
+for (const key of BASH_RUNNER_CONTRACTS) workspace.runtimes.registerRunner(key, bash);
 {
   // Cast registry to the minimal package-manager shape. CommandRegistry
   // CommandRegistry has register(name, handler) which matches.
