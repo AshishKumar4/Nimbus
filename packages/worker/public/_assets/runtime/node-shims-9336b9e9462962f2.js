@@ -6457,13 +6457,8 @@ const __fsMod = (() => {
   }
 
   async function _writeFileAsync(p, data, opts) {
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/node-shims-f5fb05caa34f1cfe.js
     const mode = _createMode(opts);
-    const absPath = _resolveFollow(p, "open");
-========
-    const mode = _createMode(opts, "open", p);
     const absPath = _target(p, true, "open");
->>>>>>>> origin/main:packages/worker/public/_assets/runtime/node-shims-a0e051bbe6bece78.js
     const supervisor = _supervisor();
     // A target this view cannot judge (on a mount, where the launch did not
     // list it) is the authority's to answer for, as the async rename's
@@ -6680,14 +6675,7 @@ const __fsMod = (() => {
   }
 
   function chmodSync(p, mode) {
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/node-shims-f5fb05caa34f1cfe.js
-    if (!existsSync(p)) throw _absentErr(_resolve(p), "chmod", p, "fs.promises.chmod");
-    const absPath = _resolveFollow(p, "chmod");
-    _ensureModeOwner(absPath, "chmod", p);
-    _detachStructuralMutation(_chmodQueued(absPath, _coerceMode(mode), "chmod", p), "chmod", p);
-========
     _detachStructuralMutation(_chmodJudged(p, mode, false).queue(), "chmod", p);
->>>>>>>> origin/main:packages/worker/public/_assets/runtime/node-shims-a0e051bbe6bece78.js
   }
 
   // chmod as this view judges its target (_attrTarget) by the session's rule
@@ -6697,7 +6685,7 @@ const __fsMod = (() => {
   function _chmodJudged(p, mode, live, syscall = "chmod", fixed) {
     const { target, sent, guarded, entry } = _attrTarget(p, true, syscall, "fs.promises.chmod", live, fixed);
     if (entry !== undefined && __nimbusResidentModule.chmodRefusal(entry, _posixCred()) !== null) throw _fsErr("EPERM", syscall, p);
-    const m = _coerceMode(mode, syscall, p);
+    const m = _coerceMode(mode);
     const judged = entry !== undefined && __nimbusResidentModule.confinedModeRefusal(entry.mode, m) === null;
     return { walked: { target, guarded }, judged, queue: () => _chmodQueued(target, sent, m, syscall, p) };
   }
@@ -6713,32 +6701,10 @@ const __fsMod = (() => {
     return _queueStructuralMutation(sent, syscall, p, () => _vfsOp({ type: "setattr", path: _strip(sent), attrs: { mode } }));
   }
 
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/node-shims-f5fb05caa34f1cfe.js
-  async function _chmodAsync(p, mode) {
-    const absPath = _resolveFollow(p, "chmod");
-    const supervisor = _supervisor();
-    let localExists = false;
-    try { localExists = existsSync(p); } catch {}
-    if (!localExists && !supervisor) {
-      throw _fsErr("ENOENT", "chmod", p);
-    }
-    const m = _coerceMode(mode);
-    if (localExists) _ensureModeOwner(absPath, "chmod", p);
-    // Delivered with the path's next flush (_flushHeld), once.
-    _setLocalAttr("mode", _strip(absPath), m, false, true);
-    _nsOwnMode(_strip(absPath), m);
-    if (supervisor) {
-      await _flushLocalPathToSupervisor(absPath, supervisor);
-      _markVfsStale();
-      return;
-    }
-    if (!supervisor && !existsSync(p)) throw _fsErr("ENOENT", "chmod", p);
-========
   async function _chmodAsync(p, mode, fixed) {
     const syscall = fixed === undefined ? "chmod" : "fchmod";
     const { walked, judged, queue } = _chmodJudged(p, mode, true, syscall, fixed);
     await _structuralAsync(queue, syscall, p, judged, walked);
->>>>>>>> origin/main:packages/worker/public/_assets/runtime/node-shims-a0e051bbe6bece78.js
   }
 
   function _coerceId(value, syscall, p) {
@@ -7033,13 +6999,8 @@ const __fsMod = (() => {
   // the program was told it succeeded). The cell is the file's whole content
   // only when it extends a parked cell of this process's that was whole.
   function _appendLocal(p, data, opts, acknowledged) {
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/node-shims-f5fb05caa34f1cfe.js
     const mode = _createMode(opts);
-    const absPath = _resolveFollow(p, "open");
-========
-    const mode = _createMode(opts, "open", p);
     const absPath = _target(p, true, "open");
->>>>>>>> origin/main:packages/worker/public/_assets/runtime/node-shims-a0e051bbe6bece78.js
     const absent = _ensureWritable(absPath, "open", p);
     const k = _strip(absPath);
     const hadPendingWrite = Object.prototype.hasOwnProperty.call(__vfsWrites, k);
@@ -7995,13 +7956,8 @@ const __fsMod = (() => {
 
   async function _openAsync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/node-shims-f5fb05caa34f1cfe.js
     const createMode = _coerceMode(mode, 0o666);
-    const absPath = _resolveFollow(path, "open");
-========
-    const createMode = mode === undefined || mode === null ? 0o666 : _coerceMode(mode, "open", path);
     const absPath = _target(path, true, "open");
->>>>>>>> origin/main:packages/worker/public/_assets/runtime/node-shims-a0e051bbe6bece78.js
     const supervisor = _supervisor();
     let liveMeta = null;
     if (supervisor && typeof supervisor.stat === "function") {
@@ -8035,14 +7991,8 @@ const __fsMod = (() => {
 
   function openSync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/node-shims-f5fb05caa34f1cfe.js
     const createMode = _coerceMode(mode, 0o666);
-    const absPath = _resolveFollow(path, "open");
-    _ensureAncestorsTraversable(absPath, "open", path);
-========
-    const createMode = mode === undefined || mode === null ? 0o666 : _coerceMode(mode, "open", path);
     const absPath = _target(path, true, "open");
->>>>>>>> origin/main:packages/worker/public/_assets/runtime/node-shims-a0e051bbe6bece78.js
     const st = statSync(path, { throwIfNoEntry: false });
     if (st && st.isDirectory()) throw _fsErr("EISDIR", "open", path);
     const exists = st !== undefined;
@@ -8177,12 +8127,7 @@ const __fsMod = (() => {
   function fchmodSync(fd, mode) {
     if (_isStdioFd(fd)) throw _fsErr("EINVAL", "fchmod", fd);
     const handle = _fdHandle(fd, "fchmod");
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/node-shims-f5fb05caa34f1cfe.js
-    _ensureModeOwner(handle._abs, "fchmod", handle._path);
-    _detachStructuralMutation(_chmodQueued(handle._abs, _coerceMode(mode), "fchmod", handle._path), "fchmod", handle._path);
-========
     _detachStructuralMutation(_chmodJudged(handle._path, mode, false, "fchmod", handle._abs).queue(), "fchmod", handle._path);
->>>>>>>> origin/main:packages/worker/public/_assets/runtime/node-shims-a0e051bbe6bece78.js
   }
   function fchownSync(fd, uid, gid) {
     if (_isStdioFd(fd)) throw _fsErr("EINVAL", "fchown", fd);
