@@ -151,9 +151,13 @@ try {
       + '&& npm run hello; echo run=$?; npm ls; echo ls=$?; npm uninstall a; echo un=$?; cat package.json; '
       + 'mkdir {dir}/p/i && cd {dir}/p/i && npm init -y; echo init=$?; cat package.json');
     assert.match(home.stdout, /hello-script\nrun=0\n/, home.stderr);
-    assert.match(home.stdout, /un=0\n\{[^]*"dependencies": \{\}/);
+    // npm's: the declared dependency is not installed, and the uninstall drops its declaration, in the file's own format.
+    assert.match(home.stdout, /\np@1\.0\.0 \/home\/user\/p\n└── UNMET DEPENDENCY a@1\.0\.0\n\nls=1\n/);
+    assert.match(home.stdout, /\nup to date in \S+\nun=0\n\{"name":"p","version":"1\.0\.0","scripts":\{"hello":"echo hello-script"\}\}Wrote to/);
     assert.match(home.stdout, /init=0\n\{[^]*"name": "i"/);
-    assert.deepEqual({ stdout: mount.stdout, stderr: mount.stderr }, { stdout: home.stdout, stderr: home.stderr }, 'npm on the mount, as in the home');
+    // The time npm's summary reports is the run's.
+    const untimed = (text) => text.replace(/ in \d+(?:ms|s)\n/g, ' in <time>\n');
+    assert.deepEqual({ stdout: untimed(mount.stdout), stderr: mount.stderr }, { stdout: untimed(home.stdout), stderr: home.stderr }, 'npm on the mount, as in the home');
     console.log('  [4] npm run, ls, uninstall and init read and write the mounted package.json');
   }
 
@@ -178,10 +182,24 @@ try {
     const line = await runtime.exec('cd /home/user/o && npm uninstall a; echo un=$?; cat package.json; '
       + 'cd /home/user/oi && npm init -y >/dev/null; echo init=$?; grep -c \'"name": "oi"\' package.json; '
       + 'cd /home/user/os && npm uninstall a; echo root-only=$?');
-    assert.match(line.stdout, /^removed a\nun=0\n\{\n {2}"name": "o",\n {2}"dependencies": \{\n {4}"b": "1\.0\.0"\n {2}\}\n\}\ninit=0\n1\nremoved a\nroot-only=1\n$/, line.stdout + line.stderr);
+    assert.match(line.stdout, /^\nup to date in \S+\nun=0\n\{"name":"o","dependencies":\{"b":"1\.0\.0"\}\}init=0\n1\nroot-only=1\n$/, line.stdout + line.stderr);
     assert.match(line.stderr, /npm ERR! could not update package\.json: EACCES/);
     assert.equal(kernel.stat('home/user/os/package.json').uid, 0, 'a root-only package.json stays root\'s');
     console.log('  npm uninstall and init update a package.json an earlier release wrote as root; a root-only one fails them');
+  }
+
+  // ── a package npm uninstall cannot reach fails alone ───────────────────
+  {
+    await runtime.exec('mkdir -p /home/user/l/node_modules/@locked/a /home/user/l/node_modules/b && cd /home/user/l '
+      + '&& printf \'{"name":"l","dependencies":{"@locked/a":"1.0.0","b":"1.0.0"}}\' > package.json && chmod 600 node_modules/@locked');
+    const line = await runtime.exec('cd /home/user/l && npm uninstall @locked/a b; echo un=$?; cat package.json');
+    // Written in the file's own format, as npm writes it: one line, and no line end after it.
+    assert.equal(line.stdout, 'un=1\n{"name":"l"}', line.stderr);
+    assert.match(line.stderr, /^npm ERR! could not remove @locked\/a: EACCES/);
+    const kernel = vfs.as(bundle.CRED_KERNEL);
+    assert.equal(kernel.exists('home/user/l/node_modules/b'), false, 'the package it can reach is removed');
+    assert.equal(kernel.exists('home/user/l/node_modules/@locked/a'), true, 'the one it cannot is not');
+    console.log('  npm uninstall removes what it can reach when one package fails, and fails');
   }
 
   // ── item 6: bun run ─────────────────────────────────────────────────────

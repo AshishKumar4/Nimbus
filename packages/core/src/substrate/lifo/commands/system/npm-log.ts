@@ -72,6 +72,15 @@ export function npmAddedLine(packages: number, elapsedMs: number): string {
   return `added ${packages} ${unit} in ${(elapsedMs / 1000).toFixed(1)}s`;
 }
 
+const ELAPSED_UNITS: ReadonlyArray<readonly [string, number]> = [['d', 86_400_000], ['h', 3_600_000], ['m', 60_000], ['s', 1000], ['ms', 1]];
+
+/** `removed N packages in T`, or `up to date in T` — npm's summary of an uninstall, its time as the `ms` package prints it. */
+export function npmRemovedLine(packages: number, elapsedMs: number): string {
+  const [unit, size] = ELAPSED_UNITS.find(([, ms]) => elapsedMs >= ms) ?? ['ms', 1];
+  const elapsed = `${Math.round(elapsedMs / size)}${unit}`;
+  return packages === 0 ? `up to date in ${elapsed}` : `removed ${packages} package${packages === 1 ? '' : 's'} in ${elapsed}`;
+}
+
 /** What an install did, as its styled summary reports it. */
 export interface InstallReport {
   readonly installed: number;

@@ -18,6 +18,32 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: a Python program that resolves more than 64 distinct hostnames gets
   `socket.gaierror` (EAI_MEMORY) for the 65th, instead of an address that
   stood for another name, which a connect would have dialed.
+- Fixed: a session's `npm uninstall` and `npm ls` do what npm 10 does.
+  `npm uninstall -g p` removes the global p and its commands, for good (no
+  later global install links them again); it removed the project's p and
+  its declaration instead. Both read their options as npm reads them
+  (`--global=false` is the project, `--location=global` the global
+  prefix, and `.npmrc` counts). `npm uninstall p` removes p's
+  bins with it, and every declaration of p, installed or not (each
+  dependency field and `bundleDependencies`); package.json keeps its own
+  indent, its dependency fields sorted and empty ones dropped, and
+  `--no-save` leaves it as it is. It reports `removed N packages` or `up to
+  date`. `npm ls` lists what the project declares as npm does: one that is
+  not installed is an `UNMET DEPENDENCY` (not its range, as though it
+  were), one its range does not take is `invalid`, and a package nothing
+  depends on is `extraneous`; a missing or invalid one fails the command
+  (`ELSPROBLEMS`). `npm ls -g` lists the global prefix, not the project.
+  An install and an uninstall into one tree at once run one after the
+  other. For embedders: `createNpmCommand` takes `beforeWrite`, called
+  before the command replaces the project's package.json, and an
+  `NpmInstallPort` may have `unlinkBins`, called with the packages an
+  uninstall removed, and `hold`, the hold its installs take on a tree.
+- Fixed: two npm installs at once in a session no longer remove each
+  other's staged packages. Each install built its own installer, so one
+  starting could sweep the staging directory of another installing into a
+  mounted project, which then reported packages installed that it never
+  put there. The session has one installer; each install's progress and
+  npm log are still its own.
 - Fixed: a Worker whose `wrangler.jsonc` declares `kv_namespaces`,
   `d1_databases` or `r2_buckets` starts under `wrangler dev`, and
   `env.KV`, `env.DB` and `env.BUCKET` answer as the local bindings real

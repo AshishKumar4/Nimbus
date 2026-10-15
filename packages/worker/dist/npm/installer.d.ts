@@ -113,15 +113,10 @@ export declare class NpmInstaller {
     private bundlePool;
     private ctx;
     private env;
-    private onProgress;
+    /** Where an install that names no progress sink of its own reports. */
+    private readonly onProgress;
     /** The workspace's network: every resolve and install facet (here and in peers) goes out through it. */
     private readonly network;
-    /**
-     * npm-protocol log sink for the install in flight. Set per invocation
-     * because `--loglevel` is a per-invocation flag; the no-op default is
-     * what every caller that didn't pass one gets.
-     */
-    private npmLog;
     constructor(filesystem: ProcessFiles, sql: SqlStorage, opts?: {
         esbuild?: EsbuildService;
         bundlePool?: BundlePoolProvider;
@@ -225,7 +220,7 @@ export declare class NpmInstaller {
     private buildRoots;
     /**
      * W6: apply the PACKAGE_ABI_POLICY swap rewrites and reject deny list
-     * to a top-level spec map. Emits `[swap]` notices via onProgress.
+     * to a top-level spec map. Emits `[swap]` notices through `log`.
      *
      * A swap rewrites the spec's RANGE to an npm alias of the swap target
      * (`esbuild` → `npm:esbuild-wasm@<range>`), never its key: the key names
