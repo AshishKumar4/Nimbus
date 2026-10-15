@@ -188,6 +188,16 @@ await runScenarios(import.meta.path, {
     await assert.rejects(fs.promises.chown(`${OUT}/warm1`, 0, 0), { code: 'EPERM' });
   },
 
+  async 'awaited chmods alone take the subtree they change, and are decided there from then'() {
+    const { authority, fs, stall, release } = await boot();
+    for (let i = 0; i < 12; i++) await authority.peer.writeFile(`home/user/app/modes/f${i}`, 'm');
+    for (let i = 0; i < 12; i++) await fs.promises.chmod(`/home/user/app/modes/f${i}`, 0o600);
+    await until(() => globalThis.__nimbusProcessFs.held('home/user/app/modes/x') !== undefined, 'the chmods took their subtree', 5_000);
+    stall();
+    assert.equal(await answeredAtOnce(fs.promises.chmod('/home/user/app/modes/f0', 0o640)), 'answered');
+    await release();
+  },
+
   async 'an awaited chmod outside a held subtree waits for the session'() {
     const { authority, fs, stall, release } = await boot();
     stall();

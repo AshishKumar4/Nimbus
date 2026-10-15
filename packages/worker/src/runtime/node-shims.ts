@@ -4227,7 +4227,8 @@ const __fsMod = (() => {
   // (\`walked\`, _walk's) crossed only guarded names; what only the authority
   // can answer is its answer, awaited.
   async function _structuralAsync(queue, syscall, p, judged, walked) {
-    const decided = judged && walked.guarded && _decidedHere(walked.target);
+    // Counted toward taking the subtree whether or not it is decided here (_decidedHere).
+    const decided = judged && _decidedHere(walked.target) && walked.guarded;
     const queued = decided ? __nimbusLogDecided(queue) : queue();
     if (decided) _detachStructuralMutation(__nimbusDecided(queued), syscall, p);
     else await queued;
@@ -4927,7 +4928,7 @@ const __fsMod = (() => {
     const source = _statLadder(oldAbs, true);
     // A source the namespace knows is not there is ENOENT here for a sync call (it has no other verdict) and where
     // this process decides (a subtree it holds); an async one elsewhere asks the session, which a peer may have changed.
-    if (source === undefined && (!live || (from.guarded && _decidedHere(oldAbs))) && _nsUnlisted(oldAbs, false, false) === null) throw _fsErr("ENOENT", "rename", oldP, newP);
+    if (source === undefined && (!live || (_decidedHere(oldAbs) && from.guarded)) && _nsUnlisted(oldAbs, false, false) === null) throw _fsErr("ENOENT", "rename", oldP, newP);
     // A name renamed to itself is left as it is, as rename(2) leaves it.
     if (oldN === newN) {
       if (source !== undefined) return null;
