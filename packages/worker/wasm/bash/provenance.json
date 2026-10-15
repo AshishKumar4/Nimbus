@@ -5,14 +5,16 @@
       "../../scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
       "../nimbus-libc/nimbus-accounts.c": "59dfeaa9ba065a3d921833f089eec98a858d2728e10cf73d1eebdcef10025302",
       "../nimbus-libc/nimbus-netdb.h": "22cdb1eb824a2559f404770c830b31d07284a3909711c8afb95506858e2d7278",
+      "../nimbus-libc/nimbus-restart.c": "4beb995921f510a9a30ce39ccc24a7ef438184a0454f631102f2c8f8fb5dc907",
+      "../nimbus-libc/nimbus-restart.h": "52d0ab05d0eb76ff77091afc5f99a75d5f0a89ee555fae44999cd0d752303df0",
       "../nimbus-libc/posix/grp.h": "c94a5733475b9a4b0fac11f637189e94833840318d4c83b5774cfb28e4dbbb37",
       "../nimbus-libc/posix/nimbus-signal.h": "17efffa065e543783bcfd80f714a835a86c1013b748cb2d520b2c1db3579dc5b",
       "../nimbus-libc/posix/pwd.h": "b0c58893ddbf8b597b9ed2d61a10319302ceb4121afc5618a9b8993d7807929d",
       "../nimbus-libc/posix/sys/wait.h": "f29779776c898516b94f2554e02a0e691d287657069eb7327edd15f4c0291eb1",
       "../nimbus-libc/posix/termios.h": "7508aa9ab4edcdac427cd3e805152b766da70772a4dbe39e833988d3e46dfdbb",
-      "build-bash.sh": "fecae5a3a374145d6716396a8f63927f20d83d16ef2decf7fd1c246df1b2b5ff",
+      "build-bash.sh": "9adcbd3493f82a9c76c10e094cf89f281ae043a96a9c522931abff39552b9f66",
       "build-in-bwrap.sh": "a15f2836efae9aa88c15e01b579dee3df4c40bd3fda33b6278c6d3f6440bff2f",
-      "coreutils/build-busybox.sh": "66779dcf48396acb9246ecc48b3dc6cb85300bfeb7c5d5d4a9c433acb9c36396",
+      "coreutils/build-busybox.sh": "ac96596152759a2e7ca025bd0c2b63bc0dad88862dc221aa9f07ad96ab917ae5",
       "coreutils/busybox-wasi.config": "3b1ac1812b6cb1ad655542fb56b73359ac126d572dceae6eff618950df9354b1",
       "coreutils/list-applets.mjs": "a6c8bf425642dbfbaaf8872b47e67986c7342dec9f7a808f7535971ef3fe31a3",
       "coreutils/overlay/mntent.h": "d7d0caf06391dcce6f1caf30797f5ee6c774e9dd5f7140c1ce2c0d41250c2f59",
@@ -25,15 +27,15 @@
       "coreutils/overlay/termios.h": "8b546fa0cdc3267a7132fea6014677be9969cb58deebc72f3a2775a9c9062196",
       "coreutils/wasi-shim.c": "391ebbb9e7b436fb683c2ce81fa21d8ce623355b63ac1dc32e9cd9c1ef9d0078",
       "cross.cache": "0e48ab58769e8245ae2bb440e9394b4e8b50565eebec0a9f05d1d69e23009693",
-      "inputs.mjs": "5d99dcadf7b4472ecfbb443cdcf9dd6f4ba99a682c179dba9f1199c86c0f46ac",
+      "inputs.mjs": "2e01113a758ae1f8ca3e1f93f82b76bc338e43d15490678fc845e339a717f103",
       "nimbus-proc.c": "a81af420ecfb83fb4f2a176368149ba06d6f98fe50462e5892f62e2a3693e8e3",
       "nimbus-proc.h": "c8d7dd17a91aea16e142689183ec7c18555a16ae2692c4bf13fbac239fc8931e",
       "patches/procenv.patch": "381a3918e5981fef1bcbf3df2f7f9396630a32a38268113b2a62a983ac4d28bd"
     }
   },
   "outputs": {
-    "bash.async.wasm": "c8a66184da94dc0365e56f5137c6736a782d2ccf3851a1a26810855d3d556a83",
+    "bash.async.wasm": "69918013eee0a062cdd29cd805f4ccd6ececd48c30e88fdb489e426cb40545cb",
     "coreutils/busybox.applets": "85b8b3dcf20452f66a55f6b4a41bc82c249fa121cd3cda523f0ec3f344e8ee25",
-    "coreutils/busybox.wasm": "a52bd4d6921e555ea56d7ee2abd043e8a21e58dda50c31e916a6c9ba06eb5c78"
+    "coreutils/busybox.wasm": "a17d722a43ddf6f5268157ae37540fcd1ff9041ae3325cae2bd5533216506014"
   }
 }
