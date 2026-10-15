@@ -1,1 +1,1 @@
-{"version":3,"file":"vm.d.ts","sourceRoot":"","sources":["../../../../src/substrate/lifo/node-compat/vm.ts"],"names":[],"mappings":"AAOA;;;;;;;;;;;GAWG;AACH,wBAAgB,QAAQ,IAAI,MAAM,CAsBjC"}
+{"version":3,"file":"vm.d.ts","sourceRoot":"","sources":["../../../../src/substrate/lifo/node-compat/vm.ts"],"names":[],"mappings":"AAOA;;;;;;;;;;;;GAYG;AACH,wBAAgB,QAAQ,IAAI,MAAM,CAuBjC"}

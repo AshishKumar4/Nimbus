@@ -11,8 +11,9 @@ const MODULE_CLASSES = new Set(['SourceTextModule', 'SyntheticModule', 'Module']
  * and context that names it. That is the program's module map kept whole,
  * not a boundary: a program that seeks the engine's loader reaches it
  * (import() in a Function body), as core's README says of a realm. A
- * program's own callback is its own. vm's module classes are absent, as in
- * Node without --experimental-vm-modules.
+ * program's own callback is its own, and every script it is given (a
+ * referrer) is a vm.Script, whichever function made it. vm's module classes
+ * are absent, as in Node without --experimental-vm-modules.
  */
 export function createVm() {
     const engine = realm.getBuiltinModule('node:vm');
@@ -21,12 +22,13 @@ export function createVm() {
         if (typeof options === 'object' && options !== null && options.importModuleDynamically === loader)
             unavailable('vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER');
     };
-    class Script extends engine.Script {
-        constructor(code, options) {
-            refuseLoader(options);
-            super(code, options);
-        }
-    }
+    // The engine's own class, its loader refused as it constructs: a script any of vm's functions makes is one of its.
+    const Script = new Proxy(engine.Script, {
+        construct(target, args, newTarget) {
+            refuseLoader(args[1]);
+            return Reflect.construct(target, args, newTarget);
+        },
+    });
     return {
         ...Object.fromEntries(Object.entries(engine).filter(([name]) => !MODULE_CLASSES.has(name))),
         Script,
