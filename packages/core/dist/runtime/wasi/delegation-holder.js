@@ -301,7 +301,7 @@ export function delegationHolder(options) {
             });
         }
     };
-    /** An owner or group id a chown keeps (-1): null, as chownRefusal takes it. */
+    /** An owner or group id a chown keeps (null, or -1 as fchown(2) spells it): null, as chownRefusal takes it. */
     const kept = (id) => (id === -1 ? null : id);
     /** `entry` as chmod, chown (the set-id bits chownedMode clears) and utimes leave it, its ctime now. */
     const changedBy = (entry, attrs) => ('mode' in attrs ? { ...entry, mode: (entry.mode & ~0o7777) | (attrs.mode & 0o7777), ctime: now() }
