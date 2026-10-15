@@ -1,26 +1,22 @@
 #!/usr/bin/env bun
-// A program's vm and domain, as Node gives them (X-9): run through the public
-// workspace API, a program writes exactly what real `node` writes running it.
+// A program's vm, as Node gives it (X-9): run through the public workspace
+// API, a program writes exactly what real `node` writes running it.
 //
-//   - vm is the engine's: contexts, scripts, compileFunction, runInThisContext,
-//     an error thrown in another context; vm's module classes are absent, as
-//     in Node without --experimental-vm-modules;
-//   - a dynamic import in vm code under
-//     constants.USE_MAIN_CONTEXT_DEFAULT_LOADER loads the program's module,
-//     from the workspace (not a file of the host's at that path); with no
-//     callback, it refuses as Node does;
-//   - domain is the engine's in the program's realm: an error thrown in a
-//     domain's timer or tick is its 'error' (Node only: Bun's domain catches
-//     neither); process.nextTick is the engine's, its queue before promise
-//     jobs.
+//   - vm is the engine's: contexts, scripts, compileFunction,
+//     runInThisContext, an error thrown in another context; vm's module
+//     classes are absent, as in Node without --experimental-vm-modules;
+//   - a dynamic import in vm code with no callback refuses as Node's does.
 //
-// And without an oracle: the constant with no absolute filename, which Node
-// resolves against its process's directory, is refused (that import would
-// have no referrer of the program's); and a lifo CommonJS command, which runs
-// in the host's realm, has vm but not domain (it would set the host's
-// process).
+// And without an oracle: importModuleDynamically:
+// vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER, which imports through the
+// engine's own loader past the program's module map, is refused at each
+// compile and context that names it, read once (an accessor that names it
+// on a second read does not get it compiled), and the engine's Script is not
+// reachable from the program's to compile with it; domain stays refused
+// (it would set the engine's own process); and a lifo CommonJS command,
+// which runs in the host's realm, has the same vm.
 //
-// Red before: vm and domain were refused whole.
+// Red before: vm was refused whole.
 //
 // Under Bun against the source, then under node against the built package
 // (packages/core/dist: rebuild first).
@@ -41,12 +37,7 @@ const { createLifoCommand } = await import(underBun
   ? '../../packages/core/src/substrate/lifo/pkg/lifo-runtime.ts'
   : '../../packages/core/dist/substrate/lifo/pkg/lifo-runtime.js');
 
-/** Files both sides have: the module vm code imports. */
-const files = {
-  'vmmod.mjs': "export const here = 'from ' + import.meta.url.split('/').pop();\n",
-};
-
-/** Each case: a program, the shell line that runs it ({prog} is its name), and the engine it is Node's on, if one. */
+/** Each case: a program, and the shell line that runs it ({prog} is its name). */
 const cases = {
   'contexts.js': [[
     "const vm = require('vm');",
@@ -58,40 +49,17 @@ const cases = {
     "const script = new vm.Script('n = (typeof n === \"number\" ? n : 0) + 1', { filename: '/s.js' });",
     'const context = vm.createContext({});',
     'script.runInContext(context); script.runInContext(context);',
-    'console.log(context.n, script instanceof vm.Script, vm.createScript("1") instanceof vm.Script);',
+    'console.log(context.n, script instanceof vm.Script, vm.createScript("1") instanceof vm.Script, script.runInNewContext({ n: 41 }));',
     "console.log(vm.compileFunction('return a + b', ['a', 'b'])(2, 3));",
     "console.log(vm.runInThisContext('typeof globalThis.setTimeout'));",
     "try { vm.runInNewContext('throw new TypeError(\"inner\")', {}, { filename: '/thrower.js' }); } catch (e) { console.log(e.name, e.message, e instanceof TypeError); }",
     "console.log(typeof vm.SourceTextModule, typeof vm.SyntheticModule, 'SourceTextModule' in vm, typeof vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER);",
   ].join('\n'), 'node {prog}'],
-  // The constant's ExperimentalWarning names Node's pid: stderr is not compared.
-  'vmimport.js': [[
+  'nocallback.js': [[
     "const vm = require('vm');",
-    "const path = require('path');",
-    'const loader = vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER;',
-    "const filename = path.join(__dirname, 'script.js');",
-    'const steps = [',
-    "  ['script imported', () => new vm.Script(\"import('./vmmod.mjs').then((m) => m.here)\", { filename, importModuleDynamically: loader }).runInThisContext()],",
-    "  ['function imported', () => vm.compileFunction(\"return import('./vmmod.mjs').then((m) => m.here)\", [], { filename: path.join(__dirname, 'fn.js'), importModuleDynamically: loader })()],",
-    "  ['builtin imported', () => vm.runInNewContext(\"import('node:path').then((p) => typeof p.join)\", {}, { filename: path.join(__dirname, 'ctx.js'), importModuleDynamically: loader })],",
-    "  ['no callback', () => new vm.Script(\"import('./vmmod.mjs')\", { filename }).runInThisContext()],",
-    '];',
-    '(async () => {',
-    "  for (const [label, step] of steps) { try { console.log(label, await step()); } catch (e) { console.log(label, 'failed', e.code); } }",
-    '})();',
-  ].join('\n'), 'node {prog} 2>/dev/null'],
-  // A tick is the engine's: it runs before promise jobs, as a domain's tick does.
-  'ticks.js': ["Promise.resolve().then(() => console.log('promise')); process.nextTick((a) => console.log('tick', a), 'arg'); queueMicrotask(() => console.log('microtask'));",
-    'node {prog}'],
-  'domain.js': [[
-    "const domain = require('domain');",
-    'const d = domain.create();',
-    "d.on('error', (e) => console.log('caught', e.message));",
-    "d.run(() => { setTimeout(() => { throw new Error('async boom'); }, 10); });",
-    "d.run(() => { process.nextTick(() => { throw new Error('tick boom'); }); });",
-    "setTimeout(() => console.log('after'), 50);",
-    "process.on('exit', (code) => console.log('exit', code));",
-  ].join('\n'), 'node {prog}; echo status $?', 'node'],
+    "new vm.Script(\"import('./other.mjs')\", { filename: require('path').join(__dirname, 'script.js') }).runInThisContext()",
+    "  .then(() => console.log('imported'), (e) => console.log('no callback', e.code));",
+  ].join('\n'), 'node {prog}'],
 };
 
 /** `promise`, or a failure naming `what` once `ms` pass. */
@@ -103,12 +71,7 @@ const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1, term
 const host = mkdtempSync(join(tmpdir(), 'lifo-node-vm-'));
 const failed = [];
 try {
-  for (const [name, text] of Object.entries(files)) {
-    await ws.fs.writeFile(`/home/user/${name}`, text);
-    writeFileSync(join(host, name), text);
-  }
-  for (const [name, [source, line, engine]] of Object.entries(cases)) {
-    if (engine === 'node' && underBun) continue;
+  for (const [name, [source, line]] of Object.entries(cases)) {
     const command = line.replaceAll('{prog}', name);
     await ws.fs.writeFile(`/home/user/${name}`, source);
     writeFileSync(join(host, name), source);
@@ -126,20 +89,40 @@ try {
     }
   }
 
-  // ── no oracle: the constant with no absolute filename ─────────────────────
+  // ── no oracle: the engine's main-context loader, refused ────────────────
   try {
-    await ws.fs.writeFile('/home/user/nofilename.js', [
+    await ws.fs.writeFile('/home/user/loader.js', [
       "const vm = require('vm');",
       'const loader = vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER;',
-      "for (const filename of [undefined, 'relative.js']) {",
-      "  try { new vm.Script(\"import('./vmmod.mjs')\", { filename, importModuleDynamically: loader }); console.log('made'); } catch (e) { console.log(e.code, e.message); }",
-      '}',
+      "const filename = require('path').join(__dirname, 'script.js');",
+      'let reads = 0;',
+      "const flipping = { filename, get importModuleDynamically() { return ++reads === 1 ? undefined : loader; } };",
+      'const attempts = [',
+      "  ['Script', () => new vm.Script(\"import('node:fs')\", { filename, importModuleDynamically: loader })],",
+      "  ['compileFunction', () => vm.compileFunction(\"return import('node:fs')\", [], { filename, importModuleDynamically: loader })],",
+      "  ['runInNewContext', () => vm.runInNewContext(\"import('node:fs')\", {}, { filename, importModuleDynamically: loader })],",
+      "  ['createContext', () => vm.createContext({}, { importModuleDynamically: loader })],",
+      "  ['an accessor read once', () => new vm.Script(\"import('node:fs')\", flipping).runInThisContext().then(() => 'imported', (e) => e.code)],",
+      "  ['the inherited constructor', () => new (Object.getPrototypeOf(vm.Script))(\"import('node:fs')\", { filename, importModuleDynamically: loader })],",
+      '];',
+      '(async () => {',
+      "  for (const [label, attempt] of attempts) { try { console.log(label, 'compiled', await attempt()); } catch (e) { console.log(label, e.code ?? e.name); } }",
+      "  try { require('domain'); console.log('domain served'); } catch (e) { console.log('domain', e.code); }",
+      '})();',
     ].join('\n'));
-    const ran = await within(30_000, ws.exec('node nofilename.js', { cwd: '/home/user' }), 'nofilename.js');
-    const refusal = 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM The feature vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER without an absolute filename is unavailable on the current platform, which is being used to run Node.js';
-    assert.equal(ran.stdout, `${refusal}\n${refusal}\n`, 'refused, naming what');
+    const ran = await within(30_000, ws.exec('node loader.js', { cwd: '/home/user' }), 'loader.js');
+    assert.equal(ran.stdout, [
+      'Script ERR_FEATURE_UNAVAILABLE_ON_PLATFORM',
+      'compileFunction ERR_FEATURE_UNAVAILABLE_ON_PLATFORM',
+      'runInNewContext ERR_FEATURE_UNAVAILABLE_ON_PLATFORM',
+      'createContext ERR_FEATURE_UNAVAILABLE_ON_PLATFORM',
+      'an accessor read once compiled ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING',
+      'the inherited constructor TypeError',
+      'domain ERR_FEATURE_UNAVAILABLE_ON_PLATFORM',
+      '',
+    ].join('\n'), 'each refused, naming the loader; one read once is compiled with what was read');
   } catch (error) {
-    failed.push(`the constant with no absolute filename: ${error.message}`);
+    failed.push(`the main-context loader: ${error.message}`);
   }
 
   // ── a lifo CommonJS command (the host's realm): vm, but not domain ────────
@@ -154,7 +137,7 @@ try {
     ].join('\n'));
     ws.registry.register('realmless', createLifoCommand('/home/user/pkg/realmless.js', ws.filesystem.view({ pid: 900, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } })));
     const ran = await within(30_000, ws.exec('realmless', { cwd: '/home/user' }), 'realmless');
-    assert.equal(ran.stdout, 'vm 2\ndomain ERR_FEATURE_UNAVAILABLE_ON_PLATFORM\n', 'its domain would set the host\'s process');
+    assert.equal(ran.stdout, 'vm 2\ndomain ERR_FEATURE_UNAVAILABLE_ON_PLATFORM\n', 'its vm is the engine\'s; domain would set the host\'s process');
   } catch (error) {
     failed.push(`a lifo CommonJS command: ${error.message}`);
   }
@@ -166,11 +149,11 @@ try {
 if (underBun) {
   // Under node whatever Bun answered, so a red run shows both.
   const node = spawnSync('node', ['--no-warnings', fileURLToPath(import.meta.url)], { encoding: 'utf8', timeout: 180_000 });
-  assert.deepEqual(failed, [], `bun: lifo's node runs vm and domain as real node does:\n${failed.join('\n')}\n\nunder node (exit ${node.status}):\n${node.stdout}${node.stderr}`);
+  assert.deepEqual(failed, [], `bun: lifo's node runs vm as real node does:\n${failed.join('\n')}\n\nunder node (exit ${node.status}):\n${node.stdout}${node.stderr}`);
   assert.equal(node.status, 0, `under node:\n${node.stdout}${node.stderr}`);
   assert.match(node.stdout, /^ok - under node/m, node.stdout);
-  console.log('ok - lifo-node-vm (vm and domain as node has them; under Bun and Node)');
+  console.log('ok - lifo-node-vm (vm as node has it; under Bun and Node)');
 } else {
-  assert.deepEqual(failed, [], `node: lifo's node runs vm and domain as real node does:\n${failed.join('\n')}`);
+  assert.deepEqual(failed, [], `node: lifo's node runs vm as real node does:\n${failed.join('\n')}`);
   console.log('ok - under node');
 }

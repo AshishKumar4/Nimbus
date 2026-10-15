@@ -145,6 +145,12 @@ declare module 'node:vm' {
   }
   export class Script {
     constructor(code: string, options?: string | ScriptOptions);
+    runInThisContext(options?: object): object;
+    runInContext(contextifiedObject: object, options?: object): object;
+    runInNewContext(contextObject?: object, options?: object): object;
+    createCachedData(): Uint8Array;
+    readonly cachedDataRejected: boolean | undefined;
+    readonly sourceMapURL: string | undefined;
   }
   export const constants: { readonly USE_MAIN_CONTEXT_DEFAULT_LOADER: symbol };
   export function createContext(contextObject?: object, options?: ContextOptions): object;

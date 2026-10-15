@@ -6,22 +6,15 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Fixed (lifo `node`, X-9): `vm` is Node's. Contexts, scripts,
-  `compileFunction`, `runInThisContext` and `runInNewContext` work; the module
-  was refused before. A dynamic import in code vm compiled with
-  `importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER`
-  loads the program's module from the workspace through the program's own
-  loader, not a host file at that path. Code with no absolute `filename`
-  (which Node resolves against its process's directory) is refused that
-  loader, and so is a context made with it. `vm.SourceTextModule` and
-  `vm.SyntheticModule` are absent, as in Node without
-  `--experimental-vm-modules`. `domain` is Node's in an inline `node` program,
-  which runs in a realm of its own; a lifo command runs in the host's realm,
-  where `domain` would set the host's process, and it is still refused there.
-  A program's `process.nextTick` is the engine's, so its callbacks run
-  before promise jobs, as in Node; they ran after them before. A domain
-  takes what a tick throws.
-  Breaking (core): `NativeModuleLoader` (`substrate/lifo/node-compat/cjs-loader.js`)
-  has `registerScript`.
+  `compileFunction`, `runInThisContext` and `runInNewContext` work in an
+  inline `node` program and a lifo command alike; before, the module was
+  refused. `importModuleDynamically:
+  vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER` is refused
+  (`ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`) at each compile and context that
+  names it, because the engine's own loader imports past the program's
+  module map. A program's own callback is its own. `vm.SourceTextModule`
+  and `vm.SyntheticModule` are absent, as in Node without
+  `--experimental-vm-modules`. `domain` stays refused.
 
 - Fixed: `bash` and its BusyBox commands read accounts from `/etc/passwd`
   and `/etc/group` at each lookup. `~user` is the user's home and `~root`
