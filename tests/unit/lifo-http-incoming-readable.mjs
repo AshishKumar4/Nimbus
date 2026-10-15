@@ -11,7 +11,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -45,20 +45,24 @@ module.exports = async (http) => {
 `;
 
 const dir = mkdtempSync(join(tmpdir(), 'lifo-http-'));
-writeFileSync(join(dir, 'program.js'), PROGRAM);
-writeFileSync(join(dir, 'run.js'), "require('./program.js')(require('http')).then((code) => process.exit(code));\n");
-const node = spawnSync('node', ['run.js'], { cwd: dir, encoding: 'utf8' });
-assert.equal(node.status, 0, node.stderr);
-
-const program = createRequire(import.meta.url)(join(dir, 'program.js'));
-let printed = '';
-const write = process.stdout.write;
-process.stdout.write = (chunk) => { printed += chunk; return true; };
-let code;
 try {
-  code = await program(createHttp(new Map()));
+  writeFileSync(join(dir, 'program.js'), PROGRAM);
+  writeFileSync(join(dir, 'run.js'), "require('./program.js')(require('http')).then((code) => process.exit(code));\n");
+  const node = spawnSync('node', ['run.js'], { cwd: dir, encoding: 'utf8' });
+  assert.equal(node.status, 0, node.stderr);
+
+  const program = createRequire(import.meta.url)(join(dir, 'program.js'));
+  let printed = '';
+  const write = process.stdout.write;
+  process.stdout.write = (chunk) => { printed += chunk; return true; };
+  let code;
+  try {
+    code = await program(createHttp(new Map()));
+  } finally {
+    process.stdout.write = write;
+  }
+  assert.deepEqual([code, printed], [0, node.stdout], 'what node prints');
 } finally {
-  process.stdout.write = write;
+  rmSync(dir, { recursive: true, force: true });
 }
-assert.deepEqual([code, printed], [0, node.stdout], 'what node prints');
 console.log('lifo-http-incoming-readable: ok');
