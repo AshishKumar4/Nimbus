@@ -12,6 +12,11 @@
 // Red before: Nimbus put every installed gem's lib on $LOAD_PATH first
 // (NIMBUS_GEM_LIBS), so nothing was activated, a bare `require "a"` loaded
 // a 1.0.0, and the conflict loaded too.
+//
+// A gem installed while a ruby process runs is what RubyGems makes of it:
+// not found until Gem.refresh (the specifications it read are cached),
+// then found; the launch made the gem home resident, and that view stays
+// the session's.
 
 import { mintSession, Terminal, makeAsserter, stripAnsi, heredocCommand } from '../_driver.mjs';
 
@@ -55,6 +60,15 @@ when "bare" then report("bare") { require "a" }
 when "conflict" then report("conflict") { require "a"; require "b" }
 end`;
 
+const LATE = `
+require "a"
+home = ENV["GEM_HOME"]
+File.write(File.join(home, "ready"), "")
+sleep 0.05 until File.exist?(File.join(home, "go"))
+begin; require "late"; puts "without refresh: #{Late::V}"; rescue LoadError; puts "without refresh: LoadError"; end
+Gem.refresh
+begin; require "late"; puts "after refresh: #{Late::V}"; rescue LoadError; puts "after refresh: LoadError"; end`;
+
 // Host Ruby 3.3.8 on this gem home.
 const EXPECTED = {
   dependent: 'dependent: A=1.0.0 loaded=a-1.0.0,b-1.0.0',
@@ -82,6 +96,20 @@ for (const [name, expected] of Object.entries(EXPECTED)) {
   console.log(`  ${line}`);
   a.check(`a session's ruby activates as host Ruby: ${name}`, line === expected, JSON.stringify({ line, expected }));
 }
+
+// A gem installed, as the installer writes one, while a ruby process runs (host Ruby 3.3.8: the same two lines).
+await t.run(heredocCommand('/home/user/late.rb', LATE), 20_000);
+await t.run('ruby /home/user/late.rb > /home/user/late.out 2>&1 &', 20_000);
+const ready = await t.run(`for i in $(seq 1 600); do test -f ${HOME}/ready && break; sleep 0.1; done; test -f ${HOME}/ready && echo READY`, 90_000);
+a.check('the running ruby started', /READY/.test(stripAnsi(ready.output)), stripAnsi(ready.output).slice(-300));
+await t.run(`mkdir -p ${HOME}/gems/late-1.0.0/lib`, 20_000);
+await t.run(heredocCommand(`${HOME}/gems/late-1.0.0/lib/late.rb`, 'module Late; V = "1.0.0"; end'), 20_000);
+await t.run(heredocCommand(`${HOME}/specifications/late-1.0.0.gemspec`, spec('late', '1.0.0', [])), 20_000);
+await t.run(`touch ${HOME}/go; wait`, 60_000);
+const late = stripAnsi((await t.run('cat /home/user/late.out', 20_000)).output);
+console.log(`  ${late.trim().split(/\r?\n/).slice(-3).join(' | ')}`);
+a.check('a gem installed while ruby runs is found after Gem.refresh, as host Ruby finds it',
+  /without refresh: LoadError/.test(late) && /after refresh: 1\.0\.0/.test(late), late.slice(-400));
 
 await t.close();
 const sum = a.summary();

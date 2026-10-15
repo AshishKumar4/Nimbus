@@ -170,6 +170,12 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
   stats(): ResidentFilesystemStats;
   /** The directories this process opened, in order (bounded): the next run's in the same facet (ResidentDelegation.walked). */
   walked(): readonly string[];
+  /**
+   * Fetch the files of `dir` (listed already) named with `ext`, that the
+   * store does not hold, in as few batches as READ_AHEAD_* allow: what a
+   * runtime knows it reads at launch (__wasiPrepareFilesystem).
+   */
+  prefetch(dir: string, ext: string): Promise<void>;
 }
 
 /** A held file the session refused part of: what a run reports, naming the file. */
@@ -560,14 +566,24 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const dir = parentKey(key);
     const misses = miss(dir);
     const ext = extensionOf(key);
-    const children = store.children(dir);
-    if (misses < 2 || ext === '' || children === undefined) return undefined;
-    const window = READ_AHEAD_FIRST * 2 ** Math.min(misses - 2, 7);
+    if (misses < 2 || ext === '') return undefined;
     const name = key.slice(key.lastIndexOf('/') + 1);
-    const batch: Array<[string, ResidentEntry]> = [[key, entry]];
-    let bytes = entry.size;
-    const ordered = byCodeUnit(children.filter((child) => child.type === 'file' && child.name !== name && extensionOf(child.name) === ext));
-    const at = ordered.findIndex((child) => child.name > name);
+    return fetchAhead(dir, ext, [key, entry], name, READ_AHEAD_FIRST * 2 ** Math.min(misses - 2, 7));
+  };
+
+  /**
+   * One batch of `dir`'s files named with `ext` that the store does not hold,
+   * fetched together (within READ_AHEAD_* and the batch's bounds): `first`
+   * among them, and the rest from the name after `after`, wrapping round, up
+   * to `window` more. Undefined when there is nothing to fetch with it.
+   */
+  const fetchAhead = (dir: string, ext: string, first: [string, ResidentEntry] | null, after: string, window: number): Promise<void> | undefined => {
+    const children = store.children(dir);
+    if (children === undefined) return undefined;
+    const batch: Array<[string, ResidentEntry]> = first === null ? [] : [first];
+    let bytes = first === null ? 0 : first[1].size;
+    const ordered = byCodeUnit(children.filter((child) => child.type === 'file' && child.name !== after && extensionOf(child.name) === ext));
+    const at = ordered.findIndex((child) => child.name > after);
     for (const child of at < 0 ? ordered : [...ordered.slice(at), ...ordered.slice(0, at)]) {
       if (batch.length > window || batch.length >= FS_READ_BATCH_PATH_LIMIT) break;
       const sibling = dir === '' ? child.name : `${dir}/${child.name}`;
@@ -580,11 +596,12 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       batch.push([sibling, found]);
       bytes += found.size;
     }
-    if (batch.length === 1) return undefined;
-    readAheadBytes += bytes - entry.size;
+    const ahead = batch.length - (first === null ? 0 : 1);
+    if (ahead === 0) return undefined;
+    readAheadBytes += bytes - (first === null ? 0 : first[1].size);
     counts.fills += batch.length;
     counts.filledBytes += bytes;
-    counts.readAhead += batch.length - 1;
+    counts.readAhead += ahead;
     const fetched = store.fillMany(batch).catch(() => {});
     for (const [path] of batch) fetchingAhead.set(path, fetched);
     void fetched.then(() => { for (const [path] of batch) if (fetchingAhead.get(path) === fetched) fetchingAhead.delete(path); });
@@ -794,6 +811,13 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   // is answered first, and a refusal it recorded is this sync's answer.
   fs.syncInode = () => holder?.flush();
   fs.walked = () => opening;
+  fs.prefetch = async (dir, ext) => {
+    const key = keyOf(dir);
+    // Each batch takes what none in flight has, so the batches go together and end.
+    const batches: Promise<void>[] = [];
+    for (let batch = fetchAhead(key, ext, null, '', FS_READ_BATCH_PATH_LIMIT); batch !== undefined; batch = fetchAhead(key, ext, null, '', FS_READ_BATCH_PATH_LIMIT)) batches.push(batch);
+    await Promise.all(batches);
+  };
   fs.stats = () => ({
     ...counts,
     delegated: { ...counts.delegated },

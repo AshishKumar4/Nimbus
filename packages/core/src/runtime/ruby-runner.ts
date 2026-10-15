@@ -1285,6 +1285,14 @@ async function __rubyRunOnce(args) {
     globalThis.__nimbusRubyWriteDiagnostic('[ruby-runner] VFS mount failed: ' + (e && e.message) + '\\n');
   }
 
+  // At its first require of a gem, RubyGems reads every installed
+  // specification and probes each gem's lib: the gem homes are made resident
+  // while the VM starts, and the program waits for them only before it runs.
+  const gemHomes = [...new Set([args.userEnv?.GEM_HOME, ...String(args.userEnv?.GEM_PATH ?? '').split(':')].filter(Boolean))];
+  const gemsResident = typeof __wasiPrepareFilesystem === 'function' && gemHomes.length > 0
+    ? __wasiPrepareFilesystem(gemHomes, gemHomes.map((home) => ({ dir: home + '/specifications', ext: '.gemspec' }))).catch(() => {})
+    : null;
+
   // First call into __rubyRun: complete Ruby VM init (ruby-init +
   // ruby-init-loadpath) now that we're in request-handler context
   // where crypto.getRandomValues is permitted. Subsequent calls skip.
@@ -1435,6 +1443,7 @@ async function __rubyRunOnce(args) {
   // Stage 1: run the prelude (sync flags, ARGV, ENV, $0/$PROGRAM_NAME).
   let preludeStatus;
   try {
+    await gemsResident;
     preludeStatus = await callEvalStringProtect(preludeRb);
   } catch (e) {
     return {
