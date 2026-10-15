@@ -1602,6 +1602,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         return;
       }
       ack = Math.max(ack, cursor);
+      ownThrough = Math.max(ownThrough, answer.revision ?? Infinity);
       const refused = writer === null ? error?.errno !== void 0 && SYSCALL_VERDICTS.has(error.errno) ? { seq: cursor + 1, errno: error.errno, message: error.message } : null : answer.sequence?.refused ?? null;
       let receipt = 0;
       const back = [];
@@ -1626,10 +1627,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
             answered2 = { receipt: stat };
           }
           const mutation = mutations2.get(index);
-          if (mutation !== void 0) {
-            answered2.mutation = { before: mutation.before, after: mutation.after };
-            ownThrough = Math.max(ownThrough, mutation.after);
-          }
+          if (mutation !== void 0) answered2.mutation = { before: mutation.before, after: mutation.after };
           entry.resolve(answered2);
           continue;
         }

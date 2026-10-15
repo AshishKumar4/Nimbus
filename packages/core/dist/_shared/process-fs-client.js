@@ -275,9 +275,10 @@ export function processFsClient(options) {
     let heldWaves = 0;
     let publishedThrough = 0;
     /**
-     * The session's revision after the last of the process's own changes it
-     * answered (ProcessFsAnswer.mutation): a view short of it lacks one
-     * (vouch). Past every revision once a change's fate is unknown.
+     * The session's revision as it last answered a wave (its `revision`): every
+     * change of the process's own it has answered is at or before it, so a view
+     * short of it may lack one (vouch). Past every revision once a change's
+     * fate is unknown, or an answer does not say it.
      */
     let ownThrough = 0;
     /**
@@ -504,6 +505,7 @@ export function processFsClient(options) {
             return;
         }
         ack = Math.max(ack, cursor);
+        ownThrough = Math.max(ownThrough, answer.revision ?? Infinity);
         const refused = writer === null
             ? (error?.errno !== undefined && SYSCALL_VERDICTS.has(error.errno) ? { seq: cursor + 1, errno: error.errno, message: error.message } : null)
             : answer.sequence?.refused ?? null;
@@ -533,10 +535,8 @@ export function processFsClient(options) {
                     answered = { receipt: stat };
                 }
                 const mutation = mutations.get(index);
-                if (mutation !== undefined) {
+                if (mutation !== undefined)
                     answered.mutation = { before: mutation.before, after: mutation.after };
-                    ownThrough = Math.max(ownThrough, mutation.after);
-                }
                 entry.resolve(answered);
                 continue;
             }
