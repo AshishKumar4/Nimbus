@@ -308,7 +308,8 @@ export function installAuthorityFilesystem(imports, options) {
     /** The bytes of the file `st` describes: `read`'s, unless the copy at its revision is kept. */
     const residentContent = (st, read) => {
         // An unlinked file's stat revision is the namespace's, which its own writes do not move: its copy is read each time.
-        if (options.retainResident === false || st.nlink === 0)
+        // So is a file with no revision (0: a mount's backend that keeps none, /proc's files made when read).
+        if (options.retainResident === false || st.nlink === 0 || st.revision === 0)
             return read();
         const key = `${st.dev}:${st.ino}`;
         const cached = resident.get(key);

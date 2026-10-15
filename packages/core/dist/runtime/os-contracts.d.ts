@@ -86,10 +86,7 @@ export interface RuntimeVfsStat {
     mode: number;
     uid: number;
     gid: number;
-    /**
-     * Per-path revision: changes iff this path (or its subtree) mutated. A
-     * backend that keeps none gives a new one at every stat (runtimeStatOf).
-     */
+    /** Per-path revision: changes iff this path (or its subtree) mutated; 0 when its backend keeps none (a mount's). */
     revision: number;
 }
 /**
