@@ -9,8 +9,12 @@ published independently in the `@nimbus-sh` npm scope.
   as Node does: piped to a reader that closed (`node … | head -1`) or
   redirected to a full device, `process.stdout` emits the EPIPE or ENOSPC
   error; unhandled, the program ends with its stack and status 1, and a
-  program that handles it goes on. `console.log`'s failures are ignored, as
-  Node ignores them. A status set in `process.exitCode` after the main
+  program that handles it goes on. A write that fails after the program's
+  code ran reaches any listener the program added before it ended.
+  `console.log`'s failures are heard only by an `'error'` listener on its
+  stream, as in Node. One known difference: Node's `console.log` in a loop
+  into a closed pipe can end the program with an unhandled EPIPE (status 1);
+  here it is ignored. A status set in `process.exitCode` after the main
   script ran is now the program's, and `process.exit(n)` no longer prints a
   `[process.exit]` line.
 - Fixed: text the shell captures (exec's stdout and stderr, `$( )`) decodes

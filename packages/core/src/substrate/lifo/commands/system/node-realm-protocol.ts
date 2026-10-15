@@ -5,6 +5,7 @@
  */
 import type { RuntimeVfsDirEntry, RuntimeVfsStat } from '../../../../runtime/os-contracts.js';
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
+import type { OutputSource } from '../../node-compat/standard-streams.js';
 import type { VfsEvent } from '../../../../vfs/events.js';
 import { isEgressGuestEvent, isEgressHostEvent, type EgressGuestEvent, type EgressHostEvent } from '../../../../runtime/realm-egress.js';
 import type { NodeProgram } from './node-program.js';
@@ -22,22 +23,10 @@ export type NodeCall =
   /** Watch `path` as watch `id` (NodeFilesystem.watch); a null path stops it. */
   | { readonly op: 'watch'; readonly id: number; readonly path: string | null }
   /** umask(2): the mask the program creates with from now on (its own copy: the shell's is not changed). */
-  | { readonly op: 'umask'; readonly mask: number }
-  /**
-   * Answered once output writes up to number `upTo` are made or failed (the
-   * writes come on the event channel, which this call does not wait behind):
-   * the outputs that have failed (OutputFailure). The program's code has run,
-   * and it hears of a failure before it ends.
-   */
-  | { readonly op: 'flush'; readonly upTo: number };
+  | { readonly op: 'umask'; readonly mask: number };
 
-/** An output whose write failed: with `code`, on a pipe or a file. */
-export interface OutputFailure { readonly fd: 1 | 2; readonly code: string; readonly pipe: boolean }
-
-export function isOutputFailures(value: unknown): value is readonly OutputFailure[] {
-  return Array.isArray(value) && value.every((failure) => record(failure) && (failure.fd === 1 || failure.fd === 2)
-    && typeof failure.code === 'string' && typeof failure.pipe === 'boolean');
-}
+/** A write to output `fd` that failed with `code`, on a pipe or a file, made through `source`. */
+export interface OutputFailure { readonly fd: 1 | 2; readonly code: string; readonly pipe: boolean; readonly source: OutputSource }
 
 /** A response to a request that stayed on the box, as data, either way across. */
 export interface RealmResponse {
@@ -48,18 +37,16 @@ export interface RealmResponse {
 
 /** What the guest posts on `events`. */
 export type GuestEvent =
-  /** An output write: the host counts them, both outputs together, in the order they come (a flush's and a settle's numbers). */
-  | { readonly type: 'output'; readonly fd: 1 | 2; readonly data: string | Uint8Array }
-  /** A write made after the program's code has run (a timer's) waits: tell it once every write so far is made (output-settled). */
-  | { readonly type: 'settle' }
+  /** An output write, through `source`: the host numbers them, both outputs together, in the order they come (a settle's numbers). */
+  | { readonly type: 'output'; readonly fd: 1 | 2; readonly source: OutputSource; readonly data: string | Uint8Array }
+  /** The program's loop ran empty, and it would hear of a failed write: tell it once writes up to number `upTo` are made (output-settled). */
+  | { readonly type: 'settle'; readonly upTo: number }
 
   | { readonly type: 'fetch'; readonly id: number; readonly port: number; readonly url: string; readonly method: string; readonly headers: Record<string, string>; readonly body: string | Uint8Array | null }
   | { readonly type: 'served'; readonly id: number; readonly response: RealmResponse | null }
   /** Its status; `ended`, it ended itself (process.exit, a fatal error): a write that fails later is no one's. */
   | { readonly type: 'exit'; readonly code: number; readonly ended: boolean }
-  /** The program reached its stream of output `fd`, which a failed write errors: unheard, the program ends of it. */
-  | { readonly type: 'stream'; readonly fd: 1 | 2 }
-  /** The guest took the failure of output `fd` (output-failed): whatever the program makes of it, it is the guest's. */
+  /** The guest took a failure of output `fd`'s stream (output-failed): whatever the program makes of it, it is the guest's. */
   | { readonly type: 'heard'; readonly fd: 1 | 2 }
   | EgressGuestEvent;
 
@@ -69,15 +56,9 @@ export type HostEvent =
   | { readonly type: 'serve'; readonly id: number; readonly port: number; readonly request: VirtualRequest }
   /** A change watch `id` was told. */
   | { readonly type: 'changed'; readonly id: number; readonly event: VfsEvent }
-  /**
-   * A write to output `fd` failed with `code`, on a pipe or a file: the
-   * program's stream of it errors, as Node's does, and no later write is made.
-   */
-  | { readonly type: 'output-failed'; readonly fd: 1 | 2; readonly code: string; readonly pipe: boolean }
-  /**
-   * Every output write up to number `seq` is made or failed (a failure told
-   * first): told, once asked (settle), when no later write waits.
-   */
+  /** A write failed: the stream's, its error; the console's, heard only by a listener on the stream, as Node's console ignores it. */
+  | ({ readonly type: 'output-failed' } & OutputFailure)
+  /** Every output write up to number `seq` is made or failed (a failure told first): told once asked (settle). */
   | { readonly type: 'output-settled'; readonly seq: number }
   | EgressHostEvent;
 
@@ -103,6 +84,8 @@ export const record = (value: unknown): value is Record<string, unknown> => type
 const stringRecord = (value: unknown): value is Record<string, string> =>
   record(value) && Object.values(value).every((entry) => typeof entry === 'string');
 
+const isOutputSource = (value: unknown): value is OutputSource => value === 'stream' || value === 'console';
+
 const isResponse = (value: unknown): value is RealmResponse | null =>
   value === null || (record(value) && typeof value.status === 'number' && stringRecord(value.headers)
     && (typeof value.body === 'string' || value.body instanceof Uint8Array));
@@ -111,15 +94,14 @@ export function isGuestEvent(value: unknown): value is GuestEvent {
   if (isEgressGuestEvent(value)) return true;
   if (!record(value)) return false;
   switch (value.type) {
-    case 'output': return (value.fd === 1 || value.fd === 2) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
-    case 'settle': return true;
+    case 'output': return (value.fd === 1 || value.fd === 2) && isOutputSource(value.source) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
+    case 'settle': return Number.isSafeInteger(value.upTo);
     case 'fetch':
       return Number.isSafeInteger(value.id) && Number.isSafeInteger(value.port) && typeof value.url === 'string'
         && typeof value.method === 'string' && stringRecord(value.headers)
         && (value.body === null || typeof value.body === 'string' || value.body instanceof Uint8Array);
     case 'served': return Number.isSafeInteger(value.id) && isResponse(value.response);
     case 'exit': return Number.isSafeInteger(value.code) && typeof value.ended === 'boolean';
-    case 'stream':
     case 'heard': return value.fd === 1 || value.fd === 2;
     default: return false;
   }
@@ -139,7 +121,7 @@ export function isHostEvent(value: unknown): value is HostEvent {
         && (value.event.oldPath === undefined || typeof value.event.oldPath === 'string')
         && typeof value.event.timestamp === 'number';
     case 'output-failed':
-      return (value.fd === 1 || value.fd === 2) && typeof value.code === 'string' && typeof value.pipe === 'boolean';
+      return (value.fd === 1 || value.fd === 2) && typeof value.code === 'string' && typeof value.pipe === 'boolean' && isOutputSource(value.source);
     case 'output-settled': return Number.isSafeInteger(value.seq);
     default: return false;
   }

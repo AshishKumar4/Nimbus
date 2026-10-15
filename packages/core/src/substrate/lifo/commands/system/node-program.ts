@@ -14,7 +14,7 @@ import { createProcess, exitCodeOf, type LifoProcess, type ProcessIdentity } fro
 import { createConsole } from '../../node-compat/console.js';
 import { createNativeEsmLoader } from '../../node-compat/native-esm-loader.js';
 import { pathToFileURL } from '../../node-compat/file-url.js';
-import { leaveStandardStreamsOpen } from '../../node-compat/standard-streams.js';
+import { leaveStandardStreamsOpen, type FailableOutput } from '../../node-compat/standard-streams.js';
 import type { VirtualRequestHandler, LoopbackRouter } from '../../kernel/index.js';
 import type { DNSResolver } from '../../kernel/dns-resolver.js';
 import type { CommandOutputStream } from '../types.js';
@@ -36,8 +36,12 @@ export interface NodeProgram {
 /** What a run reaches outside its realm: the filesystem, its stdio, the session's ports. */
 export interface NodeProgramHost {
 	readonly filesystem: () => NodeFilesystem;
+	/** What its console, and the realm's own reports, write: a failure there is heard only by a listener on the stream. */
 	readonly stdout: CommandOutputStream;
 	readonly stderr: CommandOutputStream;
+	/** What its process.stdout and process.stderr write: a failure there is the stream's error. */
+	readonly stdoutStream: FailableOutput;
+	readonly stderrStream: FailableOutput;
 	/** fd 0, read to its end: blocks until stdin ends, as a synchronous read of it does in Node. */
 	readonly stdin: () => Uint8Array;
 	readonly portRegistry?: Map<number, VirtualRequestHandler>;
@@ -93,7 +97,7 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 		};
 
 		// One process and console, every module's, as in Node.
-		const main = { process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr, identity }), console: createConsole(ctx.stdout, ctx.stderr), global: globalThis };
+		const main = { process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: host.stdoutStream, stderr: host.stderrStream, identity }), console: createConsole(ctx.stdout, ctx.stderr), global: globalThis };
 		host.started(main.process);
 		const loader = createCjsLoader(nodeCtx, main);
 
