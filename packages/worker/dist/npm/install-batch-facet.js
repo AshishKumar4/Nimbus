@@ -49,6 +49,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
     // R2_RACE_TIMEOUT_MS - SPECULATIVE_FETCH_DELAY_MS would otherwise be dead
     // air before the download could start.
     const SPECULATIVE_FETCH_DELAY_MS = 75;
+    // How far a registry body is read ahead of its reader (readAhead).
+    const READ_AHEAD_BYTES = 8 * 1024 * 1024;
     // How long a package waits on its best-effort R2 cache write. A tarball is
     // at most MAX_R2_TARBALL_BYTES (30 MiB); a write still unanswered past this
     // is abandoned, and the next install that misses the cache writes it.
@@ -194,15 +196,21 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                 new Promise((rs) => setTimeout(() => rs(null), R2_RACE_TIMEOUT_MS)),
             ]).catch(() => null)
             : Promise.resolve(null);
-        // A registry answer is read whole as it arrives. One left unread (a
-        // hedge's while the R2 leg is out, a body read only as fast as its files
-        // are written) holds a connection idle, and an invocation at the
-        // runtime's limit of six has its least recently used idle one closed:
-        // "Response closed due to connection limit".
-        const readWhole = async (answer) => {
+        // A registry answer is read as it arrives, READ_AHEAD_BYTES ahead of its
+        // reader. One left unread (a hedge's while the R2 leg is out, a body read
+        // only as fast as its files are written) holds a connection idle, and an
+        // invocation at the runtime's limit of six has its least recently used
+        // idle one closed: "Response closed due to connection limit". A tarball
+        // smaller than that is read to its end at once. An answer that is not a
+        // tarball keeps no body: its status is what the retry policy reads.
+        const readAhead = async (answer) => {
             const response = await answer;
-            const bytes = await response.arrayBuffer();
-            return new Response(bytes, { status: response.status, statusText: response.statusText, headers: response.headers });
+            const init = { status: response.status, statusText: response.statusText, headers: response.headers };
+            if (!response.ok || response.body === null) {
+                await response.body?.cancel();
+                return new Response(null, init);
+            }
+            return new Response(response.body.pipeThrough(new TransformStream(undefined, new ByteLengthQueuingStrategy({ highWaterMark: READ_AHEAD_BYTES }))), init);
         };
         let pendingNetwork = null;
         let hedgeTimer = null;
@@ -217,7 +225,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             hedgeTimer = setTimeout(() => {
                 hedgeTimer = null;
                 speculativeFetches++;
-                pendingNetwork = readWhole(network.fetch(spec.tarballUrl, { signal: hedgeAbort.signal }));
+                pendingNetwork = readAhead(network.fetch(spec.tarballUrl, { signal: hedgeAbort.signal }));
                 // Rejections are re-awaited and rethrown in order by takeNetworkResponse;
                 // this sink only stops a failure that lands while the R2 leg is still
                 // outstanding from surfacing as an unhandled rejection.
@@ -228,7 +236,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             clearHedgeTimer();
             const pending = pendingNetwork;
             pendingNetwork = null;
-            return pending ? await pending : await readWhole(fetchVia(spec.tarballUrl));
+            return pending ? await pending : await readAhead(fetchVia(spec.tarballUrl));
         };
         const discardPendingNetwork = () => {
             clearHedgeTimer();
