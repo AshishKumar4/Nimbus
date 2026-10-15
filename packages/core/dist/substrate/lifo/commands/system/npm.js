@@ -11,7 +11,7 @@ import { planTree, requiredFailures } from '../../../../_shared/npm-arborist/pla
 import { InstallJournal } from './npm-journal.js';
 import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '../../../../_shared/tarball-integrity.js';
 import { RegistryPackumentSchema, RegistrySearchResponseSchema, renderSearchTable, } from './registry-schemas.js';
-import { parseNpmInstallInvocation, } from './npm-install-args.js';
+import { npmInstallInvocation, } from './npm-install-args.js';
 import { installSummary, npmLogEnabled, npmRemovedLine } from './npm-log.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
 import { direntTypeIn } from '../../../../vfs/dirent-type.js';
@@ -39,6 +39,22 @@ export function npmRegistryOrigin(configured) {
 }
 function getRegistry(env) {
     return npmRegistryOrigin(env.NPM_REGISTRY);
+}
+/** An install's registry: the one npm's configuration names, else the session's (getRegistry). */
+function registryOf(ctx, invocation) {
+    return invocation.registry === null ? getRegistry(ctx.env) : npmRegistryOrigin(invocation.registry);
+}
+/**
+ * npm's configuration for this command (npm-config.ts: npm's definitions and
+ * nopt, so `--global=false` is local and `--location=global` global; its
+ * .npmrc files and npm_config_* too), its warnings printed. npm's libraries
+ * load the first time a session runs one.
+ */
+async function npmConfigOf(ctx) {
+    const config = await (await import('./npm-config.js')).loadNpmConfig(ctx.vfs, ctx.cwd, ctx.env, ctx.args);
+    for (const warning of config.warnings)
+        await ctx.stderr.write(`npm warn ${warning}\n`);
+    return config;
 }
 // ─── Registry fetch ───
 function encodePackageName(name) {
@@ -392,8 +408,7 @@ async function npmInit(ctx) {
     return (await import('./npm-init.js')).npmInitCommand(ctx);
 }
 async function npmInstall(ctx, registry, kernel, deps) {
-    const args = ctx.args.slice(1);
-    const invocation = parseNpmInstallInvocation(args);
+    const invocation = npmInstallInvocation(await npmConfigOf(ctx));
     const packages = invocation.packages;
     if (invocation.unsupported.length > 0) {
         for (const line of invocation.unsupported)
@@ -418,7 +433,7 @@ async function npmInstall(ctx, registry, kernel, deps) {
     // `<prefix>/lib/node_modules` and `<prefix>/bin` from it.
     const globalPrefix = resolveNpmPrefixVfs(ctx.cwd, ctx.env, invocation.prefix);
     const globalBinDir = `${globalPrefix}/bin`;
-    const npmRegistry = getRegistry(ctx.env);
+    const npmRegistry = registryOf(ctx, invocation);
     const startTime = Date.now();
     // The port owns the install, prefix dirs and bin materialisation: the
     // host's, else the shell's own (shellInstallPort). This command owns the
@@ -541,9 +556,7 @@ function resolveNpmPrefixVfs(cwd, env, explicit) {
  * npm's libraries load the first time a session runs one.
  */
 async function npmInvocation(ctx) {
-    const config = await (await import('./npm-config.js')).loadNpmConfig(ctx.vfs, ctx.cwd, ctx.env, ctx.args);
-    for (const warning of config.warnings)
-        await ctx.stderr.write(`npm warn ${warning}\n`);
+    const config = await npmConfigOf(ctx);
     const global = config.get('global') === true || config.get('location') === 'global';
     return {
         names: config.positionals.slice(1),
@@ -992,7 +1005,7 @@ export function createNpmCommand(registry, shellExecute, kernel, deps) {
  * the install with the project untouched.
  */
 async function npmCi(ctx, deps) {
-    const invocation = parseNpmInstallInvocation(ctx.args.slice(1));
+    const invocation = npmInstallInvocation(await npmConfigOf(ctx));
     if (invocation.unsupported.length > 0) {
         for (const line of invocation.unsupported)
             await ctx.stderr.write(`npm ERR! ${line}\n`);
@@ -1032,7 +1045,7 @@ async function npmCi(ctx, deps) {
             global: false,
             pid: ctx.pid,
             signal: ctx.signal,
-            registry: getRegistry(ctx.env),
+            registry: registryOf(ctx, invocation),
             production: invocation.production,
             omitOptional: invocation.omitOptional,
             omitPeer: invocation.omitPeer,

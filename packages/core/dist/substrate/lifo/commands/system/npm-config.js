@@ -126,6 +126,7 @@ export async function loadNpmConfig(vfs, cwd, env, argv) {
     }
     return {
         get,
+        find: (key) => layers.find(({ data }) => key in data)?.where ?? 'default',
         default: (key) => DEFAULTS[key],
         localPrefix,
         positionals: remain,
