@@ -14,6 +14,23 @@ import { createNativeEsmLoader } from '../../node-compat/native-esm-loader.js';
 import { pathToFileURL } from '../../node-compat/file-url.js';
 import { leaveStandardStreamsOpen } from '../../node-compat/standard-streams.js';
 /**
+ * `run`, from the event loop and not a promise job, as Node runs a CommonJS
+ * main: what it queues with process.nextTick runs before its promise jobs.
+ */
+function fromEventLoop(run) {
+    return new Promise((resolve, reject) => {
+        setImmediate(() => {
+            try {
+                run();
+                resolve();
+            }
+            catch (error) {
+                reject(error);
+            }
+        });
+    });
+}
+/**
  * Run `program` in the current realm, which is the program's own: its globals
  * (process, Buffer, console) are installed on
  * globalThis for good. Resolves once the main script has run (an ES module's
@@ -81,10 +98,10 @@ export async function runNodeProgram(program, host) {
             await native.importMain();
         else if (filename === '[eval]') {
             const fn = new Function(`return ${moduleWrapper(cleanMainSource, pathToFileURL(`${program.cwd}/[eval]`).href)}`)();
-            fn(...loader.wrapperArguments(filename, module));
+            await fromEventLoop(() => fn(...loader.wrapperArguments(filename, module)));
         }
         else
-            loader.load(filename, { source: cleanMainSource, esm: false });
+            await fromEventLoop(() => loader.load(filename, { source: cleanMainSource, esm: false }));
         const finalCode = () => exitCodeOf(main.process);
         return { code: finalCode(), ended: false, finalCode };
     }

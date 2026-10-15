@@ -35,7 +35,7 @@ function owner(url) {
 const privateUrl = (url) => url?.startsWith(PRIVATE_ROOT) === true;
 const privatePath = (path) => path.startsWith(PRIVATE_PATH);
 /** Whether `path` (an importer as Bun names it) is code vm compiled for a loader. */
-const scriptPath = (path) => path.startsWith('/') && scripts.has(pathToFileURL(path).href);
+const scriptPath = (path) => scripts.size > 0 && path.startsWith('/') && scripts.has(pathToFileURL(path).href);
 /** Installed once in a realm, including a host realm shared by lifo commands. */
 function installHooks() {
     return installed ??= (async () => {
