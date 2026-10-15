@@ -71,8 +71,9 @@ class Backend extends MemoryVFS {
   }
 }
 
-/** The same backend, answering every call later, as a mount across RPC does. */
+/** The same backend, answering every call later, as a mount across RPC does: it has no synchronous face. */
 class AsyncBackend extends Backend {
+  sync = undefined;
   async stat(path, options) { return super.stat(path, options); }
   async readFile(path) { return super.readFile(path); }
   async readRange(path, offset, length) { return super.readRange(path, offset, length); }
