@@ -36,8 +36,10 @@ try {
   // The publisher and the helpers it imports, as the repository has them.
   cpSync(join(WORKER, 'scripts'), scripts, { recursive: true });
   cpSync(join(WORKER, 'runtime-contracts'), join(root, 'packages/worker/runtime-contracts'), { recursive: true });
-  // The module, busybox, and the recipe and provenance the publisher checks them against (wasm/bash/inputs.mjs).
+  // The modules, and the recipe and provenance the publisher checks them against (wasm/bash/inputs.mjs),
+  // which reads the nimbus-libc sources bash and BusyBox share.
   cpSync(join(WORKER, 'wasm/bash'), join(root, 'packages/worker/wasm/bash'), { recursive: true });
+  cpSync(join(WORKER, 'wasm/nimbus-libc'), join(root, 'packages/worker/wasm/nimbus-libc'), { recursive: true });
   mkdirSync(join(root, 'node_modules/@nimbus-sh'), { recursive: true });
   symlinkSync(CORE, join(root, 'node_modules/@nimbus-sh/core'));
   // The recipe check's parser, as the worker's scripts resolve it.
