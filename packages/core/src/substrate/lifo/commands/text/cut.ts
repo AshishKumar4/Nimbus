@@ -1,5 +1,6 @@
 import type { Command } from '../types.js';
-import { inputChunks } from '../../utils/bytes-io.js';
+import { concatBytes, inputChunks } from '../../utils/bytes-io.js';
+import { dec } from '../../../../_shared/bytes.js';
 
 // GNU cut (coreutils 9.7), bytes in the C locale: -b and -c select bytes,
 // -f fields; lists are sorted and overlapping ranges merged; --complement,
@@ -183,12 +184,9 @@ const command: Command = async (ctx) => {
 
   const end = Uint8Array.of(terminator);
   const write = async (parts: Uint8Array[]): Promise<void> => {
-    const total = parts.reduce((n, part) => n + part.length, 0);
-    const out = new Uint8Array(total);
-    let at = 0;
-    for (const part of parts) { out.set(part, at); at += part.length; }
+    const out = concatBytes(parts);
     if (ctx.stdout.writeBytes) await ctx.stdout.writeBytes(out);
-    else await ctx.stdout.write(new TextDecoder().decode(out));
+    else await ctx.stdout.write(dec.decode(out));
   };
   let status = 0;
   for (const file of files.length > 0 ? files : [undefined]) {
