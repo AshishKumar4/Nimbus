@@ -22,7 +22,7 @@ import type { OutputGate } from './output-gate.js';
 import { CompositeVFS } from '../vfs/composite.js';
 import { ProcVFS } from '../vfs/proc-vfs.js';
 import type { VFS, VfsCopyOptions, VfsDirent, VfsRemoval, VfsStat } from '../vfs/vfs.js';
-import { type NimbusFilesystemAuthority, type NimbusFilesystemBinding, type NimbusHostFilesystemLease, type NimbusMountEntry, type RuntimeFsBridge, type RuntimeSynchronousFs, type RuntimeVfsDirEntry, type RuntimeVfsStat, type VfsCred } from './os-contracts.js';
+import { type NimbusFilesystemAuthority, type NimbusFilesystemBinding, type NimbusHostFilesystemLease, type NimbusMountEntry, type RuntimeFsBridge, type RuntimeOpenFlags, type RuntimeSynchronousFs, type RuntimeVfsDirEntry, type RuntimeVfsStat, type VfsCred } from './os-contracts.js';
 /** The session's namespace and the processes bound to it. */
 export declare class ProcessFiles implements NimbusFilesystemAuthority {
     readonly engine: SqliteVFS;
@@ -201,6 +201,15 @@ export declare const F_OK = 0;
 export declare const X_OK = 1;
 export declare const W_OK = 2;
 export declare const R_OK = 4;
+/**
+ * A process's namespace as a `VFS` over its bound bridge, plus the process
+ * syscalls a `VFS` has no word for (access, realpath, append). Absent is
+ * null from `stat`; every failure is a `VfsError`.
+ */
+/** A bridge's calls as a view that can wait makes them (ProcessView): each a promise, made again after a recall. */
+type RecallingBridge = {
+    [K in keyof RuntimeFsBridge]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>> : never;
+};
 export declare class ProcessView implements VFS {
     /** The bridge itself: what a runtime hands a guest as its syscall surface. */
     readonly process: RuntimeFsBridge;
@@ -224,7 +233,10 @@ export declare class ProcessView implements VFS {
     isSymlink(path: string): Promise<boolean>;
     /** The file's bytes as UTF-8 text. */
     readFileString(path: string): Promise<string>;
-    readFile(path: string): Promise<Uint8Array>;
+    /** `maxBytes`: only a regular file of at most that many bytes, read whole; a larger one or a device is EFBIG, unread (RuntimeReadFileOptions). */
+    readFile(path: string, options?: {
+        maxBytes?: number;
+    }): Promise<Uint8Array>;
     /**
      * Text is written as UTF-8, as a process's write(2) of a string would.
      * `mode` applies only if this creates the file, and at creation
@@ -302,9 +314,62 @@ export declare class ProcessView implements VFS {
     /** access(2): `mode` is F_OK or any of R_OK, W_OK, X_OK. */
     access(path: string, mode: number): Promise<void>;
     realpath(path: string): Promise<string>;
+    /**
+     * An open file description of this process on `path` (open(2)): its reads
+     * and writes are the file the open found, whatever the name names after,
+     * at its own position, until it is closed.
+     */
+    open(path: string, flags: RuntimeOpenFlags): Promise<ProcessFile>;
     /** Append through an O_APPEND descriptor, so concurrent appenders never overwrite each other. */
     appendFile(path: string, content: Uint8Array | string): Promise<void>;
 }
+/** A process's open file description (ProcessView.open), by its descriptor; every failure is a `VfsError`. */
+export declare class ProcessFile {
+    #private;
+    private readonly fs;
+    readonly path: string;
+    private readonly handle;
+    /** Its file as the open found it. */
+    readonly stat: ProcessStat;
+    /** Opened to write: what it wrote is synced before it closes (withOpenFiles). */
+    readonly writes: boolean;
+    constructor(fs: RecallingBridge, path: string, handle: number, 
+    /** Its file as the open found it. */
+    stat: ProcessStat, 
+    /** Opened to write: what it wrote is synced before it closes (withOpenFiles). */
+    writes: boolean);
+    /** Up to `length` bytes at `offset`, or (null) at its position, which then moves: none only at the end (readToEnd). */
+    read(length: number, offset?: number | null): Promise<Uint8Array>;
+    /** All of `bytes`, at `offset` or (null) at its position (its end, opened to append), which then moves. */
+    write(bytes: Uint8Array, offset?: number | null): Promise<void>;
+    /** ftruncate(2): the file this description holds, whatever its name names now. */
+    truncate(size: number): Promise<void>;
+    /** What the filesystem still holds for its file, written (fsync): a write it could not make fails here. */
+    sync(): Promise<void>;
+    /** Whether it is closed: nothing is read, written or synced through it after. */
+    get closed(): boolean;
+    /** Closed once, whoever closes it first: a later close does nothing. */
+    close(): Promise<void>;
+}
+/**
+ * `file`'s bytes from `from`, `size` at a time, to a read that answers none
+ * (its end: a read may answer fewer bytes than it asks and the file go on),
+ * or until `limit` bytes.
+ */
+export declare function readToEnd(file: ProcessFile, size: number, { from, limit }?: {
+    from?: number;
+    limit?: number;
+}): AsyncGenerator<Uint8Array>;
+/** How withOpenFiles' `use` opens a description it holds. */
+export type OpenFile = (path: string, flags: RuntimeOpenFlags) => Promise<ProcessFile>;
+/**
+ * `use`, with every description it opens through `open` closed when it ends,
+ * however it ends: one opened to write synced first, then closed whether the
+ * sync succeeded or not; one `use` closed itself is left as it is. What a
+ * sync or a close fails with is told to `failed`, and the rest are closed all
+ * the same, also when `failed` throws.
+ */
+export declare function withOpenFiles<T>(view: ProcessView, use: (open: OpenFile) => Promise<T>, failed: (file: ProcessFile, error: unknown) => Promise<void>): Promise<T>;
 /** A process's stat: everything stat(2) answers, which the bridge always has. */
 export interface ProcessStat extends VfsStat {
     mode: number;
@@ -367,4 +432,5 @@ export declare class NamespaceFs {
     };
     releaseExclusiveMutation(owner: string): void;
 }
+export {};
 //# sourceMappingURL=process-files.d.ts.map

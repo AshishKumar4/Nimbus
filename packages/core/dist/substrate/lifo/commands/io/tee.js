@@ -1,5 +1,6 @@
 import { resolve } from '../../utils/path.js';
 import { inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { withOpenFiles } from '../../../../runtime/process-files.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
 // GNU tee (coreutils 9.7) on bytes, streaming: standard input to standard
 // output and every FILE as it arrives. -a appends; a FILE that cannot be
@@ -39,47 +40,51 @@ const command = async (ctx) => {
         }
     }
     let status = 0;
-    // Each FILE operand is its own descriptor: without -a, one per occurrence
-    // at its own offset (so `tee f f` writes the input once); with -a each
-    // occurrence appends.
-    const outputs = [];
-    for (const file of files) {
-        if (file === '-') {
-            outputs.push({ path: '-', offset: 0 });
-            continue;
-        }
-        const path = resolve(ctx.cwd, file);
-        try {
-            if (!append)
-                await ctx.vfs.writeFile(path, new Uint8Array(0));
-            else if ((await ctx.vfs.stat(path)) === null)
-                await ctx.vfs.writeFile(path, new Uint8Array(0));
-            outputs.push({ path, offset: 0 });
-        }
-        catch (error) {
-            await ctx.stderr.write(`tee: ${file}: ${strerror(error)}\n`);
-            status = 1;
-        }
-    }
-    for await (const chunk of inputChunks(ctx, '-')) {
-        await writeBytes(ctx.stdout, chunk);
-        for (const out of outputs) {
+    const report = async (file, error) => {
+        status = 1;
+        await ctx.stderr.write(`tee: ${file}: ${strerror(error)}\n`);
+    };
+    // Each FILE operand is an open description of its own, as GNU's tee opens
+    // one per occurrence (so `tee f f` writes the input once without -a): the
+    // input goes to the file the open found, whatever the name names after.
+    // Every one is synced and closed however tee ends.
+    const operand = new Map();
+    await withOpenFiles(ctx.vfs, async (open) => {
+        const outputs = [];
+        for (const file of files) {
+            if (file === '-') {
+                outputs.push({ file, open: null });
+                continue;
+            }
             try {
-                if (out.path === '-')
-                    await writeBytes(ctx.stdout, chunk);
-                else if (append)
-                    await ctx.vfs.appendFile(out.path, chunk);
-                else {
-                    await ctx.vfs.writeRange(out.path, out.offset, chunk);
-                    out.offset += chunk.length;
-                }
+                const opened = await open(resolve(ctx.cwd, file), { write: true, create: true, append, truncate: !append });
+                operand.set(opened, file);
+                outputs.push({ file, open: opened });
             }
             catch (error) {
-                await ctx.stderr.write(`tee: ${out.path}: ${strerror(error)}\n`);
-                status = 1;
+                await report(file, error);
             }
         }
-    }
+        for await (const chunk of inputChunks(ctx, '-')) {
+            await writeBytes(ctx.stdout, chunk);
+            for (const out of [...outputs]) {
+                try {
+                    if (out.open === null)
+                        await writeBytes(ctx.stdout, chunk);
+                    else
+                        await out.open.write(chunk);
+                }
+                catch (error) {
+                    // A FILE that cannot be written is reported once and written no more, as GNU's tee does.
+                    outputs.splice(outputs.indexOf(out), 1);
+                    // Its failure is told; what its close would answer adds nothing.
+                    if (out.open !== null)
+                        await out.open.close().catch(() => undefined);
+                    await report(out.file, error);
+                }
+            }
+        }
+    }, async (file, error) => report(operand.get(file) ?? file.path, error));
     return status;
 };
 export default command;

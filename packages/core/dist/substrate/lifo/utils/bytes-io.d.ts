@@ -3,7 +3,7 @@
  * bytes: a byte that is not valid UTF-8 passes through unchanged. Decoding
  * with TextDecoder would turn it into U+FFFD, three different bytes.
  */
-import type { ProcessView } from '../../../runtime/process-files.js';
+import { type ProcessView } from '../../../runtime/process-files.js';
 import type { CommandInputStream } from '../commands/types.js';
 export interface ByteInputContext {
     cwd: string;
