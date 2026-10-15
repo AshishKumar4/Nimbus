@@ -1139,8 +1139,8 @@ export declare class FacetManager {
     private processFabric;
     /** The residents whose write log may still hold changes (process-journals.ts). */
     readonly processJournals: ProcessJournals;
-    /** Residents whose log is being drained as their facet is released. */
-    private readonly journalDraining;
+    /** Per resident whose log is being drained as its facet is released: the drain. */
+    private readonly journalDrains;
     /** Per resident with a booked log: the binding its drain writes through (NimbusFilesystemAuthority.recovery). */
     private readonly recoveries;
     /** An exit a signal decided, told once its process's log is drained (`_endBySignal`). */
