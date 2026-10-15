@@ -35,6 +35,7 @@
  * (the documented limit, answered by the session's recall timeout).
  */
 import { fsError } from '../beneath-walk.js';
+import { chmodRefusal, chownedMode, chownRefusal, utimesRefusal } from '../../vfs/posix-access.js';
 import { modeAllows } from '../../vfs/posix-access.js';
 import { processFsClient } from '../../_shared/process-fs-client.js';
 /** Descriptors this holder opens are numbered below every session descriptor. */
@@ -720,6 +721,33 @@ export function delegationHolder(options) {
                 local.mode = attrs.mode & 0o7777;
             log({ type: 'setattr', path: key, attrs });
             return true;
+        },
+        fsetattr: (handleId, attrs, explicit) => {
+            const file = handleOf(handleId).file;
+            if (file.through !== undefined)
+                return false;
+            if (file.detached === undefined)
+                return !('uid' in attrs) && holder.setattr(file.key, attrs);
+            // Its name gone, the file is this process's alone: judged and changed here.
+            const entry = file.detached;
+            const uid = 'uid' in attrs && attrs.uid !== -1 ? attrs.uid : null;
+            const gid = 'uid' in attrs && attrs.gid !== -1 ? attrs.gid : null;
+            const refused = 'mode' in attrs ? chmodRefusal(entry, store.cred)
+                : 'uid' in attrs ? chownRefusal(entry, uid, gid, store.cred)
+                    : utimesRefusal(entry, explicit, store.cred);
+            if (refused !== null)
+                throw fsError(refused, 'mode' in attrs ? 'fchmod' : 'uid' in attrs ? 'fchown' : 'futimes', '/' + file.key);
+            file.detached = 'mode' in attrs ? { ...entry, mode: (entry.mode & ~0o7777) | (attrs.mode & 0o7777), ctime: now() }
+                : 'uid' in attrs ? { ...entry, uid: uid ?? entry.uid, gid: gid ?? entry.gid, mode: chownedMode(entry.mode, store.cred), ctime: now() }
+                    : { ...entry, atime: attrs.atime, mtime: attrs.mtime, ctime: now() };
+            if ('mode' in attrs)
+                file.mode = attrs.mode & 0o7777;
+            return true;
+        },
+        restat: (handleId, stat) => {
+            const through = handleOf(handleId).file.through;
+            if (through !== undefined)
+                through.entry = { ...stat, target: null };
         },
         holds: (key) => client.held(key) !== undefined,
         pending: () => dirty.size > 0 || client.pending(),

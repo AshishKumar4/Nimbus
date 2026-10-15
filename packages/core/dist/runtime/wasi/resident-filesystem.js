@@ -1076,34 +1076,33 @@ export function residentFilesystem(session, resident, delegation) {
         if (typeof passed !== 'function')
             continue;
         Reflect.set(fs, name, (handleId, ...rest) => {
-            if (holder?.owns(handleId))
-                return holderDescriptorCall(name, handleId, rest);
-            return Reflect.apply(passed, fs, [handleId, ...rest]);
+            if (!holder?.owns(handleId))
+                return Reflect.apply(passed, fs, [handleId, ...rest]);
+            if (name === 'dup')
+                return holder.dup(handleId);
+            return holderAttrs(name, passed, handleId, rest);
         });
     }
     /**
-     * fchmod, futimes, fchown and dup of a descriptor of the holder's: decided
-     * here where the holder decides them, else by the file's name at the
-     * session, once what was decided is sent.
+     * fchmod, fchown and futimes of a descriptor of the holder's, on the file
+     * it opened, never on a name: decided here where the holder decides that
+     * file, else through the description the session holds of it (the file
+     * written through first), and its stat as the session then says.
      */
-    const holderDescriptorCall = (name, handleId, rest) => {
-        const key = holder.keyOf(handleId);
-        if (name === 'dup')
-            return holder.dup(handleId);
+    const holderAttrs = (name, passed, handleId, rest) => {
+        const explicit = name !== 'futimes' || (rest[0] !== null && rest[0] !== undefined);
         const attrs = name === 'fchmod' ? { mode: Number(rest[0]) }
-            : name === 'futimes' && typeof rest[0] === 'number' && typeof rest[1] === 'number' ? { atime: rest[0], mtime: rest[1] }
-                : null;
-        const bySession = () => holder.flush().then(() => {
-            const path = '/' + key;
-            if (name === 'fchmod')
-                return fs.chmod(path, Number(rest[0]));
-            if (name === 'fchown')
-                return fs.chown(path, rest[0], rest[1]);
-            return fs.utimes(path, rest[0], rest[1]);
+            : name === 'fchown' ? { uid: Number(rest[0]), gid: Number(rest[1]) }
+                : explicit ? { atime: Number(rest[0]), mtime: Number(rest[1]) } : { atime: Date.now(), mtime: Date.now() };
+        if (holder.fsetattr(handleId, attrs, explicit))
+            return undefined;
+        holder.changing([holder.keyOf(handleId)]);
+        return holder.flush().then(() => holder.sessionOf(handleId)).then(async (session) => {
+            if (session === undefined)
+                throw fsError('EBADF', name, '/' + holder.keyOf(handleId));
+            await passed.call(fs, session, ...rest);
+            holder.restat(handleId, await fs.fstat(session));
         });
-        if (attrs === null)
-            return bySession();
-        return after(holder.setattr(key, attrs), (done) => (done ? undefined : bySession()));
     };
     /**
      * A change by name no held subtree decides: an op of the process's client

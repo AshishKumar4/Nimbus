@@ -162,6 +162,16 @@ export interface DelegationHolder {
     rename(from: string, to: string, path: string): boolean;
     /** Decide an attribute change of `key`: true when decided here. */
     setattr(key: string, attrs: W7Attrs): boolean;
+    /**
+     * Decide an attribute change of the file `handleId` opened (fchmod,
+     * fchown, futimes; `explicit` false: the times are now): true when decided
+     * here, for a file of the holder's that lost its name, or one it decides
+     * under its name; false when it is the session's, through the
+     * description it holds of the file (restat after).
+     */
+    fsetattr(handleId: number, attrs: W7Attrs, explicit: boolean): boolean;
+    /** The session's stat of the file a through description opened, after a change through it: what fstat answers from now on. */
+    restat(handleId: number, stat: Omit<ResidentEntry, 'target'>): void;
     /** Whether a mutation at `key` would be decided here (a held subtree holds it). */
     holds(key: string): boolean;
     /** Whether anything decided here is not sent yet. */
