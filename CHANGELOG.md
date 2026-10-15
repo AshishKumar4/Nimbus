@@ -5,6 +5,24 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `npx` keeps each request's install apart, as npm does: in its own
+  directory under `/tmp/.npx-cache`, named as npm names it, written only
+  if its install succeeds. A request for a package that does not exist no
+  longer breaks every later `npx`. What earlier sessions installed in the
+  shared `/tmp/.npx-cache` is installed again once, where it is asked for.
+- Fixed: `npx <pkg>@<version>` runs that version. A project's
+  `node_modules`, or what an earlier `npx` installed, answers only a
+  version or range it satisfies; before, whatever version was there ran.
+  One known difference from npm: `npx <pkg>` by name alone, with that
+  package already in its npx directory, runs what is there, where npm
+  asks the registry first for a newer version.
+- Removed: core's `createNpxCommand` (`@nimbus-sh/core/substrate/lifo`),
+  a second npx no Nimbus shell registered. The session's `npx` is the one.
+- Fixed: `pip install` sees a release published since an earlier install.
+  The session kept PyPI's answers forever, so a later install could not
+  see a new release, and each process's own network left its answers
+  behind. They are now kept as pip's HTTP cache keeps them: for the
+  response's `max-age` (15 minutes for PyPI).
 - Fixed: the shell's built-in `node` hears of a write its output refused,
   as Node does: piped to a reader that closed (`node … | head -1`) or
   redirected to a full device, `process.stdout` emits the EPIPE or ENOSPC

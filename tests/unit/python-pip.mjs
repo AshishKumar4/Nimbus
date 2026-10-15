@@ -366,6 +366,42 @@ try {
       true,
     );
   }
+  // PyPI's answers are reused as pip's HTTP cache reuses them: for their
+  // max-age, then fetched again, so a release published since is seen; an
+  // answer without one is not reused by a later install.
+  // Red before: an answer was kept forever, so a later install could not see
+  // a new release, and every process's own network left its answers behind.
+  {
+    let fetches = 0;
+    const versions = { '1.0.0': [file('fresh', '1.0.0', 'fresh-1.0.0-py3-none-any.whl')] };
+    installMockPypi([project('fresh', versions), project('plain', { '1.0.0': [file('plain', '1.0.0', 'plain-1.0.0-py3-none-any.whl')] })]);
+    const mocked = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      fetches++;
+      const resp = await mocked(url);
+      return { ...resp, headers: new Headers(String(url).includes('/plain/') ? {} : { 'cache-control': 'max-age=900, public' }) };
+    };
+    const realNow = Date.now;
+    const network = { ...ISOLATE_NETWORK, id: 'npm-11' };
+    const install = async (name) => (await buildPipInvocation(['install', name], 'pip', cwd, new FakeVfs(), { home: '/home/user', network })).code;
+    try {
+      assert.match(await install('fresh'), /"version":"1\.0\.0"/);
+      const first = fetches;
+      await install('fresh');
+      assert.equal(fetches, first, 'within its max-age, an answer is reused');
+      versions['2.0.0'] = [file('fresh', '2.0.0', 'fresh-2.0.0-py3-none-any.whl')];
+      Date.now = () => realNow() + 901_000;
+      assert.match(await install('fresh'), /"version":"2\.0\.0"/, 'past its max-age, the release list was not fetched again');
+      const plainBefore = fetches;
+      await install('plain');
+      const once = fetches - plainBefore;
+      await install('plain');
+      assert.ok(once > 0);
+      assert.equal(fetches - plainBefore - once, once, 'an answer without a max-age was reused by a later install');
+    } finally {
+      Date.now = realNow;
+    }
+  }
 } finally {
   globalThis.fetch = originalFetch;
 }
