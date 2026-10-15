@@ -123,6 +123,16 @@ await runScenarios(import.meta.path, {
     assert.equal(await peerRead(authority, 'home/user/app/out/warm2'), 'AGAIN');
   },
 
+  async 'a copy of a held file the program did not write is answered once logged, after a read of it under the grant'() {
+    const { authority, fs, stall, release } = await boot();
+    stall();
+    assert.equal(await answeredAtOnce(fs.promises.copyFile(`${OUT}/seeded.txt`, `${OUT}/from-seeded.txt`)), 'answered');
+    assert.equal(fs.readFileSync(`${OUT}/from-seeded.txt`, 'utf8'), 'seeded');
+    assert.equal(fs.statSync(`${OUT}/from-seeded.txt`).mode & 0o7777, fs.statSync(`${OUT}/seeded.txt`).mode & 0o7777);
+    await release();
+    assert.equal(await peerRead(authority, 'home/user/app/out/from-seeded.txt'), 'seeded');
+  },
+
   async 'a copy from outside any held subtree, or of a set-id file, is the session\'s to answer'() {
     const { authority, fs, stall, release } = await boot();
     stall();
