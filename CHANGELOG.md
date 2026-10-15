@@ -5,6 +5,20 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `npx` keeps each request's install apart, as npm does: in its own
+  directory under `/tmp/.npx-cache`, named as npm names it, written only
+  if its install succeeds. A request for a package that does not exist no
+  longer breaks every later `npx`. What earlier sessions installed in the
+  shared `/tmp/.npx-cache` is installed again once, where it is asked for.
+- Fixed: `npx <pkg>@<version>` runs that version. A project's
+  `node_modules`, or what an earlier `npx` installed, answers only a
+  version or range it satisfies; before, whatever version was there ran.
+  One known difference from npm: `npx <pkg>` by name alone, with that
+  package already in its npx directory, runs what is there, where npm
+  asks the registry first for a newer version.
+- Removed: core's `createNpxCommand` (`@nimbus-sh/core/substrate/lifo`),
+  a second npx no Nimbus shell registered. The session's `npx` is the one.
+
 ## 2026-10-15: platform 0.11.0, core 0.22.0, fabric 0.17.0, worker 0.20.0, sdk 0.16.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4, runtime-cpython 3.13.14-2 (config 0.3.1 unchanged)
 
 The 2026-10-14 versions reached production but were never published to npm; these carry their changes too.

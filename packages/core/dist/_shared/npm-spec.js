@@ -3,7 +3,8 @@ import { npa } from './npm-libs.js';
  * The package a command-line spec names and the range it asks for, as npa
  * splits `name[@range]` (`@scope/name@range`, `name@npm:other@range`); the
  * range is null when the spec gives none, and a spec that names no package
- * (a path, a git repository, a URL) is its own name.
+ * (a path, a git repository, a URL) is its own name. `parsed`: npa's reading
+ * of it, null for a spec npa refuses.
  */
 export function splitPackageSpec(spec) {
     let parsed;
@@ -11,14 +12,14 @@ export function splitPackageSpec(spec) {
         parsed = npa(spec);
     }
     catch {
-        return { name: spec, range: null };
+        return { name: spec, range: null, parsed: null };
     }
     const name = parsed.name;
     if (!name || !spec.startsWith(name))
-        return { name: spec, range: null };
+        return { name: spec, range: null, parsed };
     return spec.length > name.length && spec[name.length] === '@'
-        ? { name, range: spec.slice(name.length + 1) }
-        : { name: spec, range: null };
+        ? { name, range: spec.slice(name.length + 1), parsed }
+        : { name: spec, range: null, parsed };
 }
 /**
  * The registry request a dependency `name` with `range` makes: an `npm:`
