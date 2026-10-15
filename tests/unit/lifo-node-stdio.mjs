@@ -18,7 +18,7 @@
 //     not one, or a file, is refused as Node refuses it; a write's failure is
 //     the writer's that made it, heard even once it ended, no one's once it
 //     was destroyed, and one writer that heard its own does not hear
-//     another's.
+//     another's; an end waits for the writer's own writes alone.
 //
 // And in a terminal (no oracle: a terminal Node is not available here),
 // as Node documents: process.stdin and stdout are the tty module's streams,
@@ -103,6 +103,9 @@ const cases = {
   // loop ran empty (stdout's reader drains only after a second), and ends it as an uncaught error does.
   'ttyepipelate.js': ["const tty = require('tty'); const w = new tty.WriteStream(2); w.on('error', () => {}); w.on('close', () => { process.stdout.write('y'.repeat(200000)); new tty.WriteStream(2).write('x'.repeat(100000)); }); setTimeout(() => w.write('x'.repeat(100000)), 300);",
     'rm -f st.txt; { { node {prog}; echo "status $?" > st.txt; } | { sleep 1; cat > /dev/null; }; } 2>&1 | true; cat st.txt'],
+  // A writer's end waits for its own writes, not another's: stdout's is held until the end's callback lets its reader drain.
+  'ttyendempty.js': ["process.stdout.write('y'.repeat(200000)); new (require('tty').WriteStream)(2).end(() => require('fs').writeFileSync('handshake', ''));",
+    'rm -f handshake; node {prog} 2>&1 | { while [ ! -e handshake ]; do sleep 0.05; done; cat > /dev/null; echo drained; }'],
   // Destroyed, its write that fails later is no one's: Node's destroyed stream hears no failure.
   'ttydestroy.js': ["const w = new (require('tty').WriteStream)(1); setTimeout(() => { w.write('x'.repeat(100000)); w.destroy(); }, 300);",
     'rm -f st.txt; { node {prog}; echo "status $?" > st.txt; } | sleep 1; cat st.txt'],

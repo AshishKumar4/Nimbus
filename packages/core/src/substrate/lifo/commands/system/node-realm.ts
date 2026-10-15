@@ -216,7 +216,11 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   // one that fails is the program's to hear of, through what made it.
   let written: Promise<void> = Promise.resolve();
   const writers = new Map<1 | 2, SinkWriter>();
-  const streamFailures: OutputFailure[] = [];
+  // The failures of the program's stream writes the guest has not taken
+  // (heard), in the order they came; and each writer's writes not yet made,
+  // while it has any, with whether their failures are the guest's.
+  let unheard: OutputFailure[] = [];
+  const inFlight = { 1: new Map<number, { pending: number; heard: boolean }>(), 2: new Map<number, { pending: number; heard: boolean }>() };
   const writerOf = (fd: 1 | 2): SinkWriter => {
     let writer = writers.get(fd);
     if (writer === undefined) writers.set(fd, writer = new SinkWriter(fd === 1 ? ctx.stdout : ctx.stderr));
@@ -234,6 +238,12 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   };
   const write = (fd: 1 | 2, source: OutputSource, writer: number, data: string | Uint8Array) => {
     const seq = ++lastQueued;
+    let flight: { pending: number; heard: boolean } | undefined;
+    if (source === 'stream') {
+      flight = inFlight[fd].get(writer);
+      if (flight === undefined) inFlight[fd].set(writer, flight = { pending: 0, heard: false });
+      flight.pending++;
+    }
     written = written.then(async () => {
       try {
         if (typeof data === 'string') await writerOf(fd).writeText(data);
@@ -241,9 +251,10 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
       } catch (error) {
         const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
         const failure: OutputFailure = { fd, code: typeof code === 'string' ? code : 'EIO', pipe: ctx.isFdPipe?.(fd) === true, source, writer };
-        if (source === 'stream') streamFailures.push(failure);
+        if (flight !== undefined && !flight.heard) unheard.push(failure);
         post({ type: 'output-failed', ...failure });
       }
+      if (flight !== undefined && --flight.pending === 0) inFlight[fd].delete(writer);
       lastSettled = seq;
       settled();
     });
@@ -349,8 +360,6 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
 
   let code: number | null = null;
   let endedItself = false;
-  // The writers of each output whose failure the guest took.
-  const heard = { 1: new Set<number>(), 2: new Set<number>() };
   // The program's process's network (WorkspaceNetwork.forProcess).
   const network = kernel?.network?.forProcess(ctx.pid);
   const payload: NodeRealmPayload = { program, hosts: kernel?.dns?.hostsFile(), egress: network?.egress !== undefined };
@@ -374,9 +383,12 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
           code = event.code;
           endedItself ||= event.ended;
           return;
-        case 'heard':
-          heard[event.fd].add(event.writer);
+        case 'heard': {
+          const flight = inFlight[event.fd].get(event.writer);
+          if (flight !== undefined) flight.heard = true;
+          unheard = unheard.filter((failure) => failure.fd !== event.fd || failure.writer !== event.writer);
           return;
+        }
         case 'served':
           pending.get(event.id)?.(event.response);
           pending.delete(event.id);
@@ -430,12 +442,11 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   // not hear it (it had ended, nothing listening holding it) ends it as the
   // error would have: Node's report of it, and status 1. The first such
   // failure is the one; a console write's failure is no one's.
-  const unheard = endedItself || end.terminated || end.failure !== null ? undefined
-    : streamFailures.find((failure) => !heard[failure.fd].has(failure.writer));
-  if (unheard !== undefined) {
+  const failure = endedItself || end.terminated || end.failure !== null ? undefined : unheard[0];
+  if (failure !== undefined) {
     // util is loaded only here: the guest loads this module too, and every program would pay for it.
     const { inspect } = await import('node:util');
-    await writerOf(2).writeText(`${uncaughtReport(writeFailure(unheard.code, unheard.pipe), (value) => inspect(value))}\n`).catch(() => {});
+    await writerOf(2).writeText(`${uncaughtReport(writeFailure(failure.code, failure.pipe), (value) => inspect(value))}\n`).catch(() => {});
     code = 1;
   }
   // What a character left unfinished at the end: the program has ended, and

@@ -177,12 +177,14 @@ const filesystem: NodeFilesystem = {
  * with what made it.
  */
 function realmOutput(fd: 1 | 2): { readonly stream: FailableOutput; readonly console: CommandOutputStream; fail(error: Error, source: OutputSource, writer: number): void } {
-  // Each writer of the descriptor hears its own writes' failures: 0 is process.stdout or process.stderr, and its console.
+  // Each writer of the descriptor hears its own writes' failures, and its end waits for its own writes (its last
+  // one's number): 0 is process.stdout or process.stderr, and its console.
   const listeners = new Map<number, ((error: Error, source: OutputSource) => void)[]>();
+  const lastWrites = new Map<number, number>();
   let writers = 0;
   const through = (source: OutputSource, writer: number): CommandOutputStream => ({
-    write: (data: string) => postOutput(fd, source, writer, data),
-    writeBytes: (data: Uint8Array) => postOutput(fd, source, writer, data),
+    write: (data: string) => { lastWrites.set(writer, postOutput(fd, source, writer, data)); },
+    writeBytes: (data: Uint8Array) => { lastWrites.set(writer, postOutput(fd, source, writer, data)); },
   });
   const streamOf = (writer: number): FailableOutput => ({
     ...through('stream', writer),
@@ -193,11 +195,12 @@ function realmOutput(fd: 1 | 2): { readonly stream: FailableOutput; readonly con
         if (rest.length > 0) { listeners.set(writer, rest); return; }
         // A writer no one hears any more: its writes' failures are no one's, as a destroyed stream's are in Node.
         listeners.delete(writer);
+        lastWrites.delete(writer);
         post({ type: 'heard', fd, writer });
       };
     },
     another: () => streamOf(++writers),
-    settled: () => outputSettled(postedOutput),
+    settled: () => outputSettled(lastWrites.get(writer) ?? 0),
   });
   return {
     stream: streamOf(0),
@@ -212,8 +215,9 @@ let postedOutput = 0;
 let settledOutput = 0;
 /** Whether the guest waits for the host to settle its writes (settle): the realm is held meanwhile. */
 let settling = false;
-/** What waits for writes up to a number to be settled. */
+/** What waits for writes up to a number to be settled, and the number the request outstanding names. */
 const settleWaits: { readonly upTo: number; resolve(): void }[] = [];
+let askedUpTo = 0;
 /** Once the host settled writes up to number `upTo`, a failure told first: asked of it, holding the realm meanwhile. */
 function outputSettled(upTo: number): Promise<void> {
   if (settledOutput >= upTo) return Promise.resolve();
@@ -222,15 +226,19 @@ function outputSettled(upTo: number): Promise<void> {
     askSettle();
   });
 }
+/** Ask the host for the nearest number a wait needs: a request outstanding for a later one is lowered, so that no wait waits on writes after its own. */
 function askSettle(): void {
-  if (settling) return;
+  const upTo = settleWaits.reduce((nearest, wait) => Math.min(nearest, wait.upTo), Infinity);
+  if (settling && askedUpTo <= upTo) return;
   settling = true;
-  post({ type: 'settle', upTo: postedOutput });
+  askedUpTo = upTo;
+  post({ type: 'settle', upTo });
   holdWhileBusy();
 }
-function postOutput(fd: 1 | 2, source: OutputSource, writer: number, data: string | Uint8Array): void {
+/** Its number. */
+function postOutput(fd: 1 | 2, source: OutputSource, writer: number, data: string | Uint8Array): number {
   post({ type: 'output', fd, source, writer, data });
-  postedOutput++;
+  return ++postedOutput;
 }
 const outputs = { 1: realmOutput(1), 2: realmOutput(2) };
 
@@ -390,7 +398,7 @@ realm.on('uncaughtException', uncaught('uncaughtException'));
 // more of it, and the loop runs empty again.
 realm.on('beforeExit', () => {
   if (settledOutput === postedOutput || programProcess?.hearsWriteFailures() !== true) return;
-  askSettle();
+  void outputSettled(postedOutput);
 });
 // The loop ran empty with the main script still waiting: an ES module whose
 // top-level await never settled.
