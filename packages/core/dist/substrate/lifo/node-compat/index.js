@@ -70,7 +70,7 @@ export function createModuleMap(ctx) {
             argv: ctx.argv,
             env: ctx.env,
             cwd: ctx.cwd,
-            stdio: ctx,
+            stdio: ctx.stdio,
             identity: ctx.identity,
         }),
         events: () => realm.getBuiltinModule('node:events'),
@@ -90,7 +90,7 @@ export function createModuleMap(ctx) {
         crypto: () => realm.getBuiltinModule('node:crypto'),
         zlib: () => zlibModule,
         string_decoder: () => realm.getBuiltinModule('node:string_decoder'),
-        tty: () => (ctx.reachStreams?.(), ttyOf(ctx).module),
+        tty: () => (ctx.reachStreams?.(), ttyOf(ctx.stdio).module),
         dns: dnsModule,
         'dns/promises': () => dnsModule().promises,
         // The engine's own (X-2): over process.stdin, as Node's reads its input.

@@ -1,20 +1,21 @@
 import type { Readable, Writable } from 'node:stream';
-import type { CommandOutputStream } from '../commands/types.js';
-import { type StandardInput } from './standard-streams.js';
-/** Which of a program's standard descriptors is the terminal, and its modes. */
+import { type FailableOutput, type StandardInput } from './standard-streams.js';
+/** What a program's standard descriptors are, and the terminal's modes. */
 export interface ProgramTerminal {
     /** Whether `fd` (0, 1 or 2) is the terminal. */
     isatty(fd: number): boolean;
+    /** Whether `fd` (0, 1 or 2) is a pipe. */
+    isPipe(fd: number): boolean;
     /** termios raw mode, on or off: the terminal's keys go to the program as they are typed. */
     setRawMode(on: boolean): void;
 }
 /** A program's standard descriptors, as its process and its tty module see them. */
 export interface ProgramStdio {
-    readonly stdout: CommandOutputStream;
-    readonly stderr: CommandOutputStream;
+    readonly stdout: FailableOutput;
+    readonly stderr: FailableOutput;
     /** fd 0, a piece at a time; absent, fd 0 is at its end. */
     readonly input?: StandardInput;
-    /** Absent, no descriptor is the terminal. */
+    /** Absent, no descriptor is the terminal or a pipe. */
     readonly terminal?: ProgramTerminal;
     /** The window's size, COLUMNS x LINES, as the shell's own commands read it. */
     readonly env: Record<string, string>;

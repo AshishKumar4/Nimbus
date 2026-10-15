@@ -21,6 +21,7 @@ export function isGuestEvent(value) {
         case 'served': return Number.isSafeInteger(value.id) && isResponse(value.response);
         case 'exit': return Number.isSafeInteger(value.code) && typeof value.ended === 'boolean';
         case 'heard': return value.fd === 1 || value.fd === 2;
+        case 'stdin-read': return Number.isSafeInteger(value.id);
         default: return false;
     }
 }
@@ -42,6 +43,7 @@ export function isHostEvent(value) {
         case 'output-failed':
             return (value.fd === 1 || value.fd === 2) && typeof value.code === 'string' && typeof value.pipe === 'boolean' && isOutputSource(value.source);
         case 'output-settled': return Number.isSafeInteger(value.seq);
+        case 'stdin': return Number.isSafeInteger(value.id) && (value.data === null || value.data instanceof Uint8Array);
         default: return false;
     }
 }

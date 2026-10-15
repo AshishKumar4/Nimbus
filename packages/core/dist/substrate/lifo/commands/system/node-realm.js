@@ -161,6 +161,16 @@ async function performCall(call, services) {
                 throw refused('mask that is not one');
             return services.setUmask(call.mask);
         }
+        case 'fdKind': {
+            if (call.fd !== 0 && call.fd !== 1 && call.fd !== 2)
+                throw refused('descriptor but 0, 1 or 2');
+            return services.fdKind(call.fd);
+        }
+        case 'rawMode': {
+            if (typeof call.on !== 'boolean')
+                throw refused('raw mode that is not on or off');
+            return services.setRawMode(call.on);
+        }
         default: throw refused(`call ${JSON.stringify(String(call.op))}`);
     }
 }
@@ -251,15 +261,36 @@ export async function runNodeInRealm(program, ctx, kernel) {
         }
     };
     const watches = new Map();
-    let stdinTaken = false;
+    // fd 0 has one reader, the program: its pieces and its read to the end are
+    // taken in the order asked for. A piece it left waiting for when it ended
+    // is withdrawn, so what is typed next is the shell's, not swallowed.
+    const ended = new AbortController();
+    let stdinAtEnd = false;
+    let stdinReads = Promise.resolve();
+    const fromStdin = (read) => {
+        const next = stdinReads.then(read);
+        stdinReads = next.catch(() => { });
+        return next;
+    };
+    const stdinPiece = () => fromStdin(async () => {
+        const stdin = ctx.stdin;
+        if (stdinAtEnd || !stdin)
+            return null;
+        const piece = stdin.readBytes ? await stdin.readBytes(65536, ended.signal) : textPiece(await stdin.read());
+        if (piece === null)
+            stdinAtEnd = true;
+        return piece;
+    });
     const services = {
         filesystem,
-        stdin: async () => {
-            if (stdinTaken || !ctx.stdin || ctx.stdin === ctx.terminalStdin)
+        stdin: () => fromStdin(async () => {
+            if (stdinAtEnd || !ctx.stdin || ctx.stdin === ctx.terminalStdin)
                 return new Uint8Array(0);
-            stdinTaken = true;
+            stdinAtEnd = true;
             return readToEnd(ctx.stdin);
-        },
+        }),
+        fdKind: (fd) => (ctx.isFdTerminal?.(fd) ? 'terminal' : ctx.isFdPipe?.(fd) ? 'pipe' : 'other'),
+        setRawMode: (on) => { ctx.setRawMode?.(on); },
         listen: (port) => {
             if (!kernel)
                 throw new VfsError('EACCES', `listen: no ports on this host :${port}`);
@@ -326,6 +357,13 @@ export async function runNodeInRealm(program, ctx, kernel) {
                         post({ type: 'fetched', id: event.id, response });
                     });
                     return;
+                case 'stdin-read':
+                    // A read that failed ends fd 0 for the program; one withdrawn at its end answers nothing.
+                    void stdinPiece().then((data) => post({ type: 'stdin', id: event.id, data }), () => {
+                        if (!ended.signal.aborted)
+                            post({ type: 'stdin', id: event.id, data: null });
+                    });
+                    return;
             }
         },
     });
@@ -341,6 +379,7 @@ export async function runNodeInRealm(program, ctx, kernel) {
     if (ctx.signal.aborted)
         abort();
     const end = await realm.ended;
+    ended.abort();
     ctx.signal.removeEventListener('abort', abort);
     for (const port of ports)
         kernel?.portRegistry.delete(port);
@@ -373,6 +412,10 @@ export async function runNodeInRealm(program, ctx, kernel) {
         return code ?? 1;
     }
     return code ?? end.code;
+}
+/** A text read's piece as bytes; null at the end. */
+function textPiece(text) {
+    return text === null ? null : enc.encode(text);
 }
 /** All of `stdin`, to its end. */
 async function readToEnd(stdin) {

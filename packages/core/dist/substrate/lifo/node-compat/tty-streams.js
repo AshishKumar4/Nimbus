@@ -24,9 +24,10 @@ function createTty(stdio) {
     const isatty = (fd) => Number.isInteger(fd) && fd >= 0 && fd <= 2 && stdio.terminal?.isatty(fd) === true;
     const ttyModule = () => module ??= ttyClasses(stdio, isatty);
     const standardOutput = (fd) => {
+        const output = fd === 1 ? stdio.stdout : stdio.stderr;
         if (!isatty(fd))
-            return standardStream(fd === 1 ? stdio.stdout : stdio.stderr, fd);
-        return asStandardStream(new (ttyModule().WriteStream)(fd), fd);
+            return standardStream(output, fd);
+        return asStandardStream(new (ttyModule().WriteStream)(fd), fd, output);
     };
     return {
         get module() { return ttyModule(); },
@@ -43,19 +44,25 @@ function checkFd(fd) {
         throw nodeError(RangeError, 'ERR_INVALID_FD', `"fd" must be a positive integer: ${String(fd)}`);
     return fd;
 }
-/** What uv_tty_init answers for a descriptor that is not one of the program's standard three. */
+/**
+ * What uv_tty_init answers for a descriptor it cannot stream: one the
+ * program has not, or a file (libuv streams only a terminal, a pipe or a
+ * socket).
+ */
 function ttyInitFailed() {
     return nodeSystemError('ERR_TTY_INIT_FAILED', 'TTY initialization failed', { errno: -22, code: 'EINVAL', message: 'invalid argument', syscall: 'uv_tty_init' });
 }
 function ttyClasses(stdio, isatty) {
     const { Readable, Writable } = realm.getBuiltinModule('node:stream');
     const readline = realm.getBuiltinModule('node:readline');
+    /** A standard descriptor libuv can stream: the terminal or a pipe. */
+    const streamable = (fd) => fd <= 2 && (isatty(fd) || stdio.terminal?.isPipe(fd) === true);
     const windowSize = () => [Number(stdio.env.COLUMNS) || 80, Number(stdio.env.LINES) || 24];
     class ReadStream extends Readable {
         isTTY = true;
         isRaw = false;
         constructor(fd) {
-            if (checkFd(fd) !== 0)
+            if (checkFd(fd) !== 0 || !streamable(fd))
                 throw ttyInitFailed();
             super();
             joinStandardInput(this, stdio.input);
@@ -73,7 +80,7 @@ function ttyClasses(stdio, isatty) {
         columns;
         rows;
         constructor(fd) {
-            if (checkFd(fd) > 2)
+            if (!streamable(checkFd(fd)))
                 throw ttyInitFailed();
             super(outputSink(fd === 1 ? stdio.stdout : fd === 2 ? stdio.stderr : undefined));
             if (isatty(fd))

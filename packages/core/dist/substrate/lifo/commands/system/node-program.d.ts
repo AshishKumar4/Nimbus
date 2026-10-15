@@ -1,7 +1,8 @@
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import { type PackageType } from '../../../../runtime/module-format.js';
 import { type LifoProcess, type ProcessIdentity } from '../../node-compat/process.js';
-import { type FailableOutput } from '../../node-compat/standard-streams.js';
+import { type FailableOutput, type StandardInput } from '../../node-compat/standard-streams.js';
+import type { ProgramTerminal } from '../../node-compat/tty-streams.js';
 import type { VirtualRequestHandler, LoopbackRouter } from '../../kernel/index.js';
 import type { DNSResolver } from '../../kernel/dns-resolver.js';
 import type { CommandOutputStream } from '../types.js';
@@ -29,6 +30,10 @@ export interface NodeProgramHost {
     readonly stderrStream: FailableOutput;
     /** fd 0, read to its end: blocks until stdin ends, as a synchronous read of it does in Node. */
     readonly stdin: () => Uint8Array;
+    /** fd 0 a piece at a time (process.stdin). */
+    readonly input: StandardInput;
+    /** What its standard descriptors are, and the terminal's modes. */
+    readonly terminal: ProgramTerminal;
     readonly portRegistry?: Map<number, VirtualRequestHandler>;
     readonly routeLoopback?: LoopbackRouter;
     readonly dns?: DNSResolver;

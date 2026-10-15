@@ -36,7 +36,19 @@ export type NodeCall = {
  | {
     readonly op: 'umask';
     readonly mask: number;
+}
+/** Whether standard descriptor `fd` is the terminal, a pipe, or neither. */
+ | {
+    readonly op: 'fdKind';
+    readonly fd: number;
+}
+/** The terminal's raw mode, on or off (tty.ReadStream.setRawMode). */
+ | {
+    readonly op: 'rawMode';
+    readonly on: boolean;
 };
+/** What a standard descriptor is, as libuv tells a stream it can make from it. */
+export type FdKind = 'terminal' | 'pipe' | 'other';
 /** A write to output `fd` that failed with `code`, on a pipe or a file, made through `source`. */
 export interface OutputFailure {
     readonly fd: 1 | 2;
@@ -86,6 +98,11 @@ export type GuestEvent =
  | {
     readonly type: 'heard';
     readonly fd: 1 | 2;
+}
+/** fd 0's next piece, wanted as read `id` (process.stdin). */
+ | {
+    readonly type: 'stdin-read';
+    readonly id: number;
 } | EgressGuestEvent;
 /** What this side posts on `events`. */
 export type HostEvent = {
@@ -112,6 +129,12 @@ export type HostEvent = {
  | {
     readonly type: 'output-settled';
     readonly seq: number;
+}
+/** Read `id`'s piece of fd 0; null at its end. */
+ | {
+    readonly type: 'stdin';
+    readonly id: number;
+    readonly data: Uint8Array | null;
 } | EgressHostEvent;
 /**
  * What the realm starts with: the program, the kernel's /etc/hosts its

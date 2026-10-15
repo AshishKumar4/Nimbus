@@ -59,7 +59,7 @@ const fetched = new Map();
 let offTheBox = null;
 /** `events` holds the realm open while anything of the program's waits on it. */
 function holdWhileBusy() {
-    joined.hold(fetched.size > 0 || ports.size > 0 || persistentWatches > 0 || (offTheBox?.awaited ?? 0) > 0 || settling);
+    joined.hold(fetched.size > 0 || ports.size > 0 || persistentWatches > 0 || (offTheBox?.awaited ?? 0) > 0 || settling || stdinWaiting);
 }
 /** End the process now with `code`, as process.exit() and a fatal error do: a write that fails later is no one's. */
 function exitNow(code) {
@@ -173,6 +173,33 @@ function postOutput(fd, source, data) {
     postedOutput++;
 }
 const outputs = { 1: realmOutput(1), 2: realmOutput(2) };
+/** fd 0, a piece at a time, each asked of the host; a read the program waits on (not one it paused) holds the realm. */
+const stdinPieces = new Map();
+let stdinReads = 0;
+let stdinWaiting = false;
+const input = {
+    read: () => new Promise((resolve) => {
+        const id = ++stdinReads;
+        stdinPieces.set(id, resolve);
+        post({ type: 'stdin-read', id });
+    }),
+    waiting: (on) => {
+        stdinWaiting = on;
+        holdWhileBusy();
+    },
+};
+/** What a standard descriptor is, asked of the host once. */
+const fdKinds = new Map();
+const fdKind = (fd) => {
+    if (!fdKinds.has(fd))
+        fdKinds.set(fd, call({ op: 'fdKind', fd }));
+    return fdKinds.get(fd);
+};
+const terminal = {
+    isatty: (fd) => fdKind(fd) === 'terminal',
+    isPipe: (fd) => fdKind(fd) === 'pipe',
+    setRawMode: (on) => { call({ op: 'rawMode', on }); },
+};
 /** The program's servers, as the session reaches them: listening is the host's to record, and holds the realm. */
 class RealmPorts extends Map {
     set(port, handler) {
@@ -241,6 +268,10 @@ events.on('message', (event) => {
             return;
         case 'changed':
             watches.get(event.id)?.listener(event.event);
+            return;
+        case 'stdin':
+            stdinPieces.get(event.id)?.(event.data);
+            stdinPieces.delete(event.id);
             return;
         case 'output-failed':
             // A stream's failure is heard here, whatever the program makes of it: the host reports it no more.
@@ -321,6 +352,8 @@ const end = await runNodeProgram(program, {
     stdoutStream: outputs[1].stream,
     stderrStream: outputs[2].stream,
     stdin: () => bytes(call({ op: 'stdin' }), 'stdin'),
+    input,
+    terminal,
     setUmask: (mask) => { call({ op: 'umask', mask }); },
     started: (process) => { programProcess = process; },
     portRegistry: ports,
