@@ -51,26 +51,11 @@ import type { Awaitable, RuntimeFsBridge, RuntimeFsPath, RuntimeSynchronousFs } 
 import type { SyscallResult, WasiSupervisorStub } from '../wasi/types.js';
 import { wasiOutputRelay, type WasiOutputTarget } from '../wasi/stdio.js';
 import { outputControlReader } from '../wasi/output-control.js';
+import { clockNs, clockResolutionNs, realtimeNs } from '../wasi/clock.js';
 import { ARENA_SIZE, CaptureStore, type ModuleLayout } from './capture-store.js';
 
 const PAGE = 65536, te = new TextEncoder(), td = new TextDecoder();
 const E = { ACCES: 2, BADF: 8, EXIST: 20, INVAL: 28, ISDIR: 31, LOOP: 32, NOENT: 44, NOSYS: 52, NOTDIR: 54, NOTEMPTY: 55, PERM: 63, SPIPE: 70, SRCH: 71 } satisfies Record<string, BashErrno>;
-// WASI clock ids. MONOTONIC and the two CPUTIME clocks are answered from a
-// monotonic source; an id outside this set is EINVAL, never a silent realtime
-// reading — a guest that asks for monotonic and receives wall time computes
-// negative durations the first time the wall clock steps backwards.
-const CLOCK_REALTIME = 0, CLOCK_MONOTONIC = 1, CLOCK_PROCESS_CPUTIME = 2, CLOCK_THREAD_CPUTIME = 3;
-function realtimeNs() { return BigInt(Date.now()) * 1000000n; }
-function monotonicNs() {
-  const ms = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-  return BigInt(Math.floor(ms * 1000)) * 1000n;
-}
-// null for an unknown id, so callers answer EINVAL rather than inventing a time.
-function clockNs(id: number | undefined): bigint | null {
-  if (id === CLOCK_REALTIME) return realtimeNs();
-  if (id === CLOCK_MONOTONIC || id === CLOCK_PROCESS_CPUTIME || id === CLOCK_THREAD_CPUTIME) return monotonicNs();
-  return null;
-}
 class Exit { declare code: number; constructor(c: number) { this.code = c; } }
 /** A process killed by a signal's default action: SIGPIPE, a write to a pipe no one can read. */
 class Signalled { declare signal: number; constructor(signal: number) { this.signal = signal; } }
@@ -377,7 +362,7 @@ function makeWasiFs(s: BashSession, proc: BashProc, DV: () => DataView, U8: () =
     },
     poll_oneoff: (p: number,q: number,n: number,out: number) => io.poll(p,q,n,out),
     clock_time_get(id: number,_precision: bigint,out: number) { const ns=clockNs(id); if(ns===null)return E.INVAL; DV().setBigUint64(out,ns,true);return 0; },
-    clock_res_get(id: number,out: number) { if(clockNs(id)===null)return E.INVAL;DV().setBigUint64(out,id===CLOCK_REALTIME?1000000n:1000n,true);return 0; },
+    clock_res_get(id: number,out: number) { const ns=clockResolutionNs(id); if(ns===null)return E.INVAL; DV().setBigUint64(out,ns,true);return 0; },
     random_get(p: number,n: number): BashErrno { for(let i=0;i<n;i+=65536)crypto.getRandomValues(U8().subarray(p+i,p+Math.min(i+65536,n)));return 0; },
     proc_exit(code: number) { throw new Exit(code); },
   };
