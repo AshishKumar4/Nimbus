@@ -197,7 +197,7 @@ try {
   for (const name of ['nosync-e', 'nosync-f']) backend.writeFile(`/${name}`, new Uint8Array());
   backend.failWriteBack = true;
   await withOpenFiles(view, async (open) => {
-    for (const name of ['nosync-e', 'nosync-f']) await (await open(`/m/${name}`, { write: true })).write(Uint8Array.of(1));
+    for (const name of ['nosync-e', 'nosync-f']) await (await open(`/m/${name}`, { write: true, create: true, truncate: true })).write(Uint8Array.of(1));
   }, () => { throw new Error('the report could not be made'); });
   assert.equal(backend.held, 0, 'a reporter that throws at once leaves no description open');
   console.log('  ✓ a FILE tee closed is reported once and not synced again; a throwing reporter leaves none open');
