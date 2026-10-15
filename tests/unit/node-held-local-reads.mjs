@@ -206,6 +206,7 @@ await runScenarios(import.meta.path, {
     const { authority, fs, asked } = await boot();
     await fs.promises.stat(`${OUT}/seeded.txt`);
     await authority.peer.mkdir('home/user/app2', { mode: 0o755 });
+    await fs.promises.stat('/home/user/app2');
     await fs.promises.writeFile('/home/user/app2/t', 'there');
     await fs.promises.symlink('/home/user/app2/t', `${OUT}/across`);
     await takeOut(fs, '/home/user/app2');
