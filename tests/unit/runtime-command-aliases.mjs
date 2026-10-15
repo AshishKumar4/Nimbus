@@ -16,6 +16,7 @@ import {
 import { RuntimeManager } from '../../packages/core/src/runtime/runtime-manager.ts';
 import {
   RUNTIME_EXTRA_ENTRYPOINTS,
+  runtimeEntrypoints,
 } from '../../packages/core/src/runtime/installed-runtimes.ts';
 import { NIMBUS_RUNTIME_ABIS } from '../../packages/core/src/runtime/os-contracts.ts';
 
@@ -32,13 +33,13 @@ import { NIMBUS_RUNTIME_ABIS } from '../../packages/core/src/runtime/os-contract
     for (const ep of entrypoints) {
       assert.ok(!seenBins.has(ep.binName), `duplicate extra command '${ep.binName}'`);
       seenBins.add(ep.binName);
-      // `<runtime>-runner`, with `@<contract>` once a rebuild has changed
-      // the artifact contract the runner binds (see BASH_RUNNER).
-      assert.match(
-        ep.runner,
-        new RegExp(`^${runtime}-runner(@\\d+)?$`),
-        `extra command '${ep.binName}' must dispatch to the ${runtime} runner`,
-      );
+      // It rides the runner the build's own entrypoints name, the contract
+      // that build was made for: an older build's front-end binds as it does.
+      for (const runner of [`${runtime}-runner`, `${runtime}-runner@9`]) {
+        const manifest = { name: runtime, entrypoints: [{ binName: `${runtime}-main`, runner, args: [] }] };
+        assert.equal(runtimeEntrypoints(manifest).find((each) => each.binName === ep.binName)?.runner, runner,
+          `extra command '${ep.binName}' dispatches to the runner its build names`);
+      }
       assert.deepEqual(ep.args, [], `extra command '${ep.binName}' must not inject args`);
     }
   }

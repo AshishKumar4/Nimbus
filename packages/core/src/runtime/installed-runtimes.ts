@@ -24,7 +24,6 @@ import type { RuntimePackageFs as CredentialedVfs } from './runtime-package.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 import {
-  BASH_RUNNER,
   CRED_KERNEL,
   NIMBUS_ABI_TARGET,
   NIMBUS_RUNTIME_ABIS,
@@ -97,32 +96,38 @@ export function runtimeAbiForManifest(manifest: RuntimeManifest): RuntimePackage
  * wasm-ld, …) come from manifest entrypoints and must NOT be repeated
  * here. Mechanically validated against `NIMBUS_RUNTIME_ABIS` by
  * tests/unit/runtime-command-aliases.mjs.
+ *
+ * A row names no runner: it rides the one the manifest's own entrypoints
+ * name, the contract that build was made for (BASH_RUNNER, CPYTHON_RUNNER),
+ * so an older build's pip is bound, or not, as its python is.
  */
-export const RUNTIME_EXTRA_ENTRYPOINTS: Readonly<Record<string, readonly ManifestEntrypoint[]>> = {
+export const RUNTIME_EXTRA_ENTRYPOINTS: Readonly<Record<string, readonly Omit<ManifestEntrypoint, 'runner'>[]>> = {
   bash: [
-    { binName: '/bin/bash', runner: BASH_RUNNER, args: [] },
-    { binName: '/usr/bin/bash', runner: BASH_RUNNER, args: [] },
+    { binName: '/bin/bash', args: [] },
+    { binName: '/usr/bin/bash', args: [] },
   ],
   // `pip` belongs to whichever runtime provides the interpreter, and only one
   // may claim it. The python row went with python-runner: Pyodide's manifest
   // still names that runner, so it could not serve pip even if it were listed.
   cpython: [
-    { binName: 'pip', runner: 'cpython-runner', kind: 'pip', args: [] },
-    { binName: 'pip3', runner: 'cpython-runner', kind: 'pip', args: [] },
+    { binName: 'pip', kind: 'pip', args: [] },
+    { binName: 'pip3', kind: 'pip', args: [] },
   ],
   ruby: [
-    { binName: 'gem', runner: 'ruby-runner', kind: 'gem', args: [] },
-    { binName: 'bundle', runner: 'ruby-runner', kind: 'bundle', args: [] },
-    { binName: 'bundler', runner: 'ruby-runner', kind: 'bundle', args: [] },
+    { binName: 'gem', kind: 'gem', args: [] },
+    { binName: 'bundle', kind: 'bundle', args: [] },
+    { binName: 'bundler', kind: 'bundle', args: [] },
   ],
 };
 
 export function runtimeEntrypoints(manifest: RuntimeManifest): RuntimeManifest['entrypoints'] {
   const out = [...manifest.entrypoints];
+  const runner = out[0]?.runner;
+  if (runner === undefined) return out;
   const seen = new Set(out.map((ep) => ep.binName));
   for (const ep of RUNTIME_EXTRA_ENTRYPOINTS[manifest.name] ?? []) {
     if (seen.has(ep.binName)) continue;
-    out.push({ ...ep });
+    out.push({ ...ep, runner });
     seen.add(ep.binName);
   }
   return out;
