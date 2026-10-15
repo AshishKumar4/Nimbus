@@ -107,14 +107,15 @@ export declare function settleHeldAt(scope: DescriptorScope, file: () => Awaitab
     key(): Awaitable<string | null>;
 }>): Awaitable<void>;
 /**
- * Closes every description `scope` holds, each whatever another's flush
- * answers, and empties it at once. The closes that failed (lastClose's
- * errors) are answered once every one has (an awaiting description's backend
- * close awaits), for the caller to report once the rest of its teardown is
- * done (reportLost): a teardown that stopped at the first one would keep the
- * scope, and everything it revokes, open.
+ * Closes every description `scope` holds (those on a mount alone, with
+ * `mounted`), each whatever another's flush answers, and drops them at once.
+ * The closes that failed (lastClose's errors) are answered once every one
+ * has (an awaiting description's backend close awaits), for the caller to
+ * report once the rest of its teardown is done (reportLost): a teardown that
+ * stopped at the first one would keep the scope, and everything it revokes,
+ * open.
  */
-export declare function closeDescriptions(scope: DescriptorScope): Awaitable<unknown[]>;
+export declare function closeDescriptions(scope: DescriptorScope, mounted?: boolean): Awaitable<unknown[]>;
 /** Reports closeDescriptions' failures: the one, or EIO over them all. */
 export declare function reportLost(lost: readonly unknown[]): void;
 /** A file as a path read finds it (PinnedName), or as a description holds it (HeldFile): which file, and its content. */
