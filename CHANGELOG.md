@@ -5,6 +5,10 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: when `python`, `bash` or `clang` cannot start, the reason reads as
+  every other command's does: a thrown object's message instead of
+  `[object Object]`, and `Error` instead of nothing for an error without a
+  message.
 - Fixed (local workerd: `wrangler dev`, the unit suite): a session could
   stop answering for good, its thread at 100% CPU, after a real-git run on a
   busy machine. workerd 1.20260926.1 left cppgc sweeping incremental (V8
