@@ -27,7 +27,7 @@ import { sriDigestOf, sriDigestsEqual, strongestSriEntry, type SriEntry } from '
 import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 // The registry's retry policy and tarball integrity: in the facet, the
 // preamble's (loaders/npm-install-preamble.ts) by the same identifiers.
-import { retryingRegistryFetch, type RegistryNetwork } from './registry-retry.js';
+import { retryingRegistryFetch, settleRegistryAnswer, type RegistryNetwork } from './registry-retry.js';
 
 declare const __nimbusWaveWriter: typeof import('@nimbus-sh/platform/wave-writer.js');
 
@@ -330,7 +330,10 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       : Promise.resolve(null);
     let pendingNetwork: Promise<Response> | null = null;
     let hedgeTimer: ReturnType<typeof setTimeout> | null = null;
-    const hedgeAbort = new AbortController();
+    // The package's download, ended however the package ends (a cache hit
+    // after the hedge fired, a failure, an early return): a body its reader
+    // left is not held open (settleRegistryAnswer).
+    const networkAbort = new AbortController();
     const clearHedgeTimer = (): void => {
       if (hedgeTimer === null) return;
       clearTimeout(hedgeTimer);
@@ -340,7 +343,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       hedgeTimer = setTimeout(() => {
         hedgeTimer = null;
         speculativeFetches++;
-        pendingNetwork = network.fetch(spec.tarballUrl, { signal: hedgeAbort.signal });
+        pendingNetwork = network.fetch(spec.tarballUrl, { signal: networkAbort.signal }).then(settleRegistryAnswer);
         // Rejections are re-awaited and rethrown in order by takeNetworkResponse;
         // this sink only stops a failure that lands while the R2 leg is still
         // outstanding from surfacing as an unhandled rejection.
@@ -351,7 +354,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       clearHedgeTimer();
       const pending = pendingNetwork;
       pendingNetwork = null;
-      return pending ? await pending : await fetchVia(spec.tarballUrl);
+      return pending ? await pending : await fetchVia(spec.tarballUrl, { signal: networkAbort.signal });
     };
     const discardPendingNetwork = (): void => {
       clearHedgeTimer();
@@ -360,7 +363,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       // Abort rather than await-then-cancel the body: a `.then()` that cancels
       // only runs once the registry's response headers arrive, so it holds the
       // connection open for exactly the round-trip the cache hit avoided.
-      hedgeAbort.abort();
+      networkAbort.abort();
     };
 
     try {
@@ -657,6 +660,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     } finally {
       // No-op once the retry loop has taken it; closes every early return.
       discardPendingNetwork();
+      networkAbort.abort();
       const publishedBytes = capturedTgzBytes ?? r2HitBytes;
       publishTarballBytes(publishedBytes && verifiedDigest ? { bytes: publishedBytes, verified: verifiedDigest } : null);
       inFlight = Math.max(0, inFlight - 1);

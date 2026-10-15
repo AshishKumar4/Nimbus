@@ -671,7 +671,8 @@ export class R2CacheClient {
                 finally {
                     clearTimeout(timer);
                 }
-            }, { retries: options?.retries });
+                // Its body is read whole at once, above, in the session's isolate: nothing is read ahead of that.
+            }, { retries: options?.retries, readAheadBytes: 0 });
         }
         catch (e) {
             return { json: null, source: 'network', failure: errorText(e) };

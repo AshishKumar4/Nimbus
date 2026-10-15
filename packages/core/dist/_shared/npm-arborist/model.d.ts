@@ -120,6 +120,12 @@ export declare class Tree<H extends HostPackages> {
     readonly global: boolean;
     private readonly edgesByName;
     private readonly byName;
+    /**
+     * Every node in the tree, the root first, in the order each joined it
+     * (npm's inventory): a node moved within the tree keeps its place, as
+     * npm's keeps a node whose root does not change.
+     */
+    readonly inventory: Set<Node<H>>;
     constructor(root: Node<H>, global: boolean);
     named(name: string): ReadonlySet<Node<H>>;
     /** Whether anything in the tree is, or asks for, `name`. */
@@ -131,6 +137,8 @@ export declare class Tree<H extends HostPackages> {
     replace(node: Node<H>, old: Node<H>): void;
     /** Take `node`, and what is beneath it, out of the tree. */
     detach(node: Node<H>): void;
+    /** `node` out of its folder; `moving`: to another in this tree, its place in the inventory kept. */
+    private take;
     private register;
     private unregister;
     /** Every edge for `name` from `parent` or beneath it, retargeted. */

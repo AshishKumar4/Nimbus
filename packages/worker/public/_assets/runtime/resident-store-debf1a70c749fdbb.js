@@ -24,10 +24,15 @@ var __nimbusResidentModule = (() => {
     NS_DIR: () => NS_DIR,
     NS_FILE: () => NS_FILE,
     NS_LINK: () => NS_LINK,
+    chmodRefusal: () => chmodRefusal,
+    chownRefusal: () => chownRefusal,
+    chownedMode: () => chownedMode,
+    confinedModeRefusal: () => confinedModeRefusal,
     createResidentStore: () => createResidentStore,
     namespaceRowBytes: () => namespaceRowBytes,
     posixAccess: () => posixAccess,
-    residentFileCost: () => residentFileCost
+    residentFileCost: () => residentFileCost,
+    utimesRefusal: () => utimesRefusal
   });
 
   // ../platform/dist/limits.js
@@ -321,6 +326,33 @@ var __nimbusResidentModule = (() => {
       return (requested & 1) === 0 || (permissions & 73) !== 0 || entry.type === "directory";
     const shift = cred.uid === entry.uid ? 6 : cred.gid === entry.gid || cred.groups.includes(entry.gid) ? 3 : 0;
     return (permissions >> shift & requested) === requested;
+  }
+  function chmodRefusal(entry, cred) {
+    return cred.uid !== 0 && cred.uid !== entry.uid ? "EPERM" : null;
+  }
+  function confinedModeRefusal(current, next) {
+    const held = current & 4095;
+    const granted = next & 3135 & ~held;
+    const unstuck = held & ~next & 512;
+    return granted === 0 && unstuck === 0 ? null : "EPERM";
+  }
+  function chownRefusal(entry, uid, gid, cred) {
+    if (cred.uid === 0)
+      return null;
+    const owner = cred.uid === entry.uid;
+    if (uid !== null && (uid !== entry.uid || !owner))
+      return "EPERM";
+    if (gid !== null && (!owner || gid !== entry.gid && !cred.groups.includes(gid)))
+      return "EPERM";
+    return null;
+  }
+  function chownedMode(mode, cred) {
+    return cred.uid === 0 ? mode : mode & ~3072;
+  }
+  function utimesRefusal(entry, explicit, cred) {
+    if (!explicit)
+      return posixAccess(entry, 2, cred) ? null : "EACCES";
+    return cred.uid !== 0 && cred.uid !== entry.uid ? "EPERM" : null;
   }
 
   // src/vfs/resident/permissions.ts
@@ -1104,15 +1136,16 @@ var __nimbusResidentModule = (() => {
       links.delete(k);
       unlisted.delete(k);
     };
-    const lookup = (k, followLeaf, own) => {
+    function lookup(k, followLeaf, own, visit) {
       const t = coherence.require();
-      if (own === void 0 && links.size === 0) return { path: k, table: k, row: nsRowAt(t, k) };
+      if (own === void 0 && links.size === 0 && visit === void 0) return { path: k, table: k, row: nsRowAt(t, k) };
       let path = k;
       walk: for (let hops = 0; hops <= NS_MAX_HOPS; hops++) {
         const segs = path === "" ? [] : path.split("/");
         let table = "";
         for (let i = 1; i <= segs.length; i++) {
           const prefix = segs.slice(0, i).join("/");
+          if (visit !== void 0 && !visit(prefix)) return "EACCES";
           const leaf = i === segs.length;
           const step = table === null ? null : table ? table + "/" + segs[i - 1] : segs[i - 1];
           const word = own?.(prefix);
@@ -1154,7 +1187,7 @@ var __nimbusResidentModule = (() => {
         return { path, table, row: table === null ? void 0 : nsRowAt(t, table) };
       }
       return "ELOOP";
-    };
+    }
     const traversable = (row) => {
       if (!row || row.kind !== NS_DIR) return false;
       return namespaceAllows(cred, row, "directory", 1);

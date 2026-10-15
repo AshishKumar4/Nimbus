@@ -48,6 +48,7 @@ export function createNpmInstallPort(self: InstallHost, filesystem: ProcessFiles
         saveDev: spec.saveDev,
         saveOptional: spec.saveOptional,
         force: spec.force,
+        engineStrict: spec.engineStrict,
         strictPeerDeps: spec.strictPeerDeps,
         legacyPeerDeps: spec.legacyPeerDeps,
         omitOptional: spec.omitOptional,
@@ -73,6 +74,7 @@ export function createNpmInstallPort(self: InstallHost, filesystem: ProcessFiles
         totalFiles: result.totalFiles,
         fromCacheHits: result.cachedHits,
         linkedBins: result.linkedBins ?? 0,
+        engines: result.engines ?? [],
       };
     },
 

@@ -20,6 +20,91 @@ published independently in the `@nimbus-sh` npm scope.
   bytes left unfinished; it was lost. Captured text keeps a byte that is not
   UTF-8 the same way for every command: a `node` program's now reads as a
   coreutil's always did (one character a byte), not as U+FFFD.
+- Changed: in a directory tree a node process writes often enough to hold,
+  the changes it has already answered (its sync calls, and the async ones
+  decided there) are sent with the next change it awaits, when it flushes,
+  prints or otherwise acts outside, or 10 ms later. Sent one by one, each
+  made the program's next read and next awaited change wait out the
+  session's durable commit, about 40 ms deployed. The session's file tree
+  and other processes' watchers see such a change up to 10 ms later than
+  before. In such a tree, `fs.promises.chmod`, `utimes` and `chown` (and
+  their callback and `FileHandle` forms) now resolve once the change is
+  logged, as `mkdir`, `unlink` and a file's `rename` already did. So does
+  `fs.promises.copyFile` when both names are in held trees and the source
+  is a file the program just wrote, or one the copy reads once into the
+  program's view. `fs.promises.cp` of 200 small files takes about 3 s,
+  where it took 13 s, and 8 s before it was Node's own. An async `chown` now
+  refuses `EPERM` itself, as `chownSync` does.
+- Fixed: a file `fs.promises.copyFile` or `fs.promises.cp` made in a
+  directory the program had just made was missing to `existsSync`,
+  `statSync` and `readdirSync` until later, although it could be read.
+  It is now there as soon as the copy resolves.
+- Fixed: `chmod`, `chown` and `utimes` in node (sync, callback, promise and
+  descriptor forms) judge as the session does, by the same rules: `utimes`
+  of another user's file is `EPERM`, a directory on the path the caller may
+  not search is `EACCES`, `lchown` and `lutimes` judge the link itself (a
+  link to another's file, or to nothing, is the caller's to change), and a
+  `chown` by anyone but root clears the setuid and setgid bits in what
+  `statSync` reports. Each was accepted, or refused, where the session
+  answered otherwise. While the process's view of the filesystem is being
+  rebuilt, their async forms ask the session instead of refusing `EAGAIN`.
+- Fixed (npm): an install of many packages dropped one about one time in
+  ten, its reason "Response closed due to connection limit" (pi's official
+  installer, 118 packages). The install facet held registry answers open and
+  unread (a hedged download while the cache was still answering, and a body
+  read only as fast as its files were written), and the runtime closes the
+  least recently used idle connection when six are open and another waits.
+  Every registry answer the installer fetches (tarballs and packuments) is
+  now settled as it arrives: a 2xx body is read ahead of its reader (up to
+  4 MiB, which most tarballs fit), any other answer's body is cancelled and
+  only its status kept, so a 503 is retried without waiting on its body; and
+  a package's download is ended however the package ends.
+- Added: `npm install` and `npm ci` check engines as npm does: the
+  project's (unless it declares `devEngines`) and every required package's
+  `engines`, a lock's packages included, against this runtime's Node and
+  npm, with npm's `npm warn EBADENGINE` warning for each mismatch, in npm's
+  order. Under `--engine-strict`, or an `.npmrc`'s `engine-strict=true` (as
+  `sv create` writes), the first mismatch fails the install with npm's
+  error, and nothing changes. An optional package whose engines exclude
+  this runtime is left out, as npm leaves it out. Before, no engine was
+  checked, and `--engine-strict` was refused.
+- Added: every `npm` command but a global one checks the project's
+  `devEngines` first, as npm does: npm's `EBADDEVENGINES` error ends it
+  (`onFail: "error"`, the default), npm's warning lets it run
+  (`onFail: "warn"`, or any under `--force`). `--force` now says npm's
+  "Recommended protections disabled" for every command, not only
+  `npm init`.
+- Fixed: `npm install --no-production` (and `--include=dev`, `--dev`,
+  `--also=dev`) installs devDependencies where `NODE_ENV=production` would
+  omit them, and `--optional=true` keeps optional dependencies
+  `--omit=optional` would leave out, as npm reads them.
+- Fixed: npm's defaults that npm takes from its own environment (`omit` from
+  `NODE_ENV`, `editor`, `shell`, `unicode`, `color`) come from the session's
+  environment, not the Worker's. The Worker's production build made
+  `npm ls`, `npm uninstall` and `npm init` read `omit=dev` as the default.
+- Fixed: a session's npm installs no longer take one registry's package for
+  another's. The session kept what a registry said of `name@version` (its
+  tarball, integrity and dependencies) under the name and version alone, so
+  an install against another registry (`--registry`, an `.npmrc`,
+  `NPM_REGISTRY`, or a process's own network) could install the first
+  registry's tarball. Each registry's answers, read through each network,
+  are now kept apart. What the session kept before is dropped once.
+- Fixed: a version range (`^2`) is resolved from the registry's versions, as
+  npm resolves it, never from the few versions a session happened to have
+  kept: a fresh `^2` came back 2.0.0 when 2.0.0 had been installed before,
+  with 2.1.0 published. An exact version (as a lockfile names) is still
+  answered from what the session kept.
+- Fixed: `npm install` and `npm ci` read their options as npm does, from
+  the command line, `npm_config_*` and the `.npmrc` files (project, user,
+  global), like `npm init`, `npm ls` and `npm uninstall` already did.
+  `--registry` (or an `.npmrc`'s `registry=`) was parsed and dropped: an
+  install went to the session's registry (`NPM_REGISTRY`, else
+  registry.npmjs.org) whatever was asked. Now npm's setting wins, and the
+  session's applies where npm names none. Options npm spells its own way
+  are read as npm reads them: `--global=false`, abbreviations, and `-p`,
+  which is `--parseable` to npm (it was taken as `--production`; use
+  `--omit=dev`). `bun install|add -p` still means production, and bun's
+  `-d`/`--dev` now save a dev dependency as bun does.
 - Fixed (lifo commands): a command's `process.exit(n)` writes nothing, as
   Node's does; it wrote `[process.exit] code=n` on the command's stderr for a
   non-zero `n`. lifo's `http` gives Readables, as Node's: a server's request

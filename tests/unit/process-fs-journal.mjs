@@ -40,6 +40,7 @@ function session() {
   const s = {
     engine,
     files,
+    op,
     harness,
     sql: harness.sql,
     kernel,
@@ -152,6 +153,49 @@ function mortalPort(s, live = Infinity) {
   const drained = await drainProcessFsJournal({ journal: journalSource(sqlJournal(sql)), session: s.port, retry: RETRY });
   for (let i = 0; i < 2_500; i++) assert.equal(s.text(`home/user/out/a${i}`), `${i}\n`, `a${i} after the drain: lost or doubled`);
   assert.ok(drained.landed >= 2_500 - landedBefore);
+}
+
+// ── Dies while what it answered in a subtree it held lingers (unsent,
+//    LINGER_MS): the journal holds it as it holds any logged change, and the
+//    session's drain lands it ──
+{
+  const s = session();
+  const sql = facetSql();
+  const never = new Promise(() => {});
+  let dead = false;
+  const port = {
+    ...s.port,
+    writeBatchStream: (stream, fence, owner) => (dead ? never : s.port.writeBatchStream(stream, fence, owner)),
+    grants: {
+      acquire: (path, delegate) => s.op({ op: 'fsAcquireExclusiveMutation', args: [path, { delegate }], pid: PID }),
+      release: (owner) => s.op({ op: 'fsReleaseExclusiveMutation', args: [owner], pid: PID }),
+      awaitRecall: () => never,
+      recalled: async () => {},
+    },
+  };
+  const c = processFsClient({ session: port, journal: sqlJournal(sql), retry: RETRY, grantAfter: 1, grantIdleMs: 60_000, lingerMs: 60_000 });
+  c.holder('home/user/out/x');
+  let grant;
+  for (let i = 0; i < 400 && (grant = c.holder('home/user/out/x')) === undefined; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.notEqual(grant, undefined, 'the subtree was not taken');
+  const applied = s.applied;
+  // A node process's own write (it numbers nothing from the grant) and a mode decided there.
+  c.submit({ type: 'call', call: { call: 'writeFile', path: 'home/user/out/lingered', mode: 0o644, data: enc.encode('lingered') } }, { acknowledged: true });
+  c.submit({ type: 'setattr', path: 'home/user/out/lingered', attrs: { mode: 0o600 } }, { decided: true });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(s.applied, applied, 'what lingers was sent');
+  // The process dies with them lingering: the session lets go of what it held, and drains its journal.
+  dead = true;
+  await s.files.releaseProcess(PID);
+  const reopened = sqlJournal(sql);
+  assert.equal(reopened.entries().length, 2, 'what lingered was not in the journal');
+  const lease = s.files.openHost(CRED_SESSION_USER);
+  const drained = await drainProcessFsJournal({ journal: journalSource(reopened), session: journalDrainSession(lease.fs, PID), retry: RETRY });
+  await lease.dispose();
+  assert.deepEqual(drained.failures, []);
+  assert.equal(drained.landed, 2);
+  assert.equal(s.text('home/user/out/lingered'), 'lingered');
+  assert.equal(s.kernel.stat('home/user/out/lingered').mode & 0o777, 0o600);
 }
 
 // ── Drained in the session itself (the manager's drain), long after it died ──

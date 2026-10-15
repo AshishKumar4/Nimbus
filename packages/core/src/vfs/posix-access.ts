@@ -25,3 +25,63 @@ export function posixAccess(
   const shift = cred.uid === entry.uid ? 6 : cred.gid === entry.gid || cred.groups.includes(entry.gid) ? 3 : 0;
   return ((permissions >> shift) & requested) === requested;
 }
+
+/** The caller a metadata rule judges: its uid, its primary group and its supplementary groups. */
+export interface PosixCred {
+  readonly uid: number;
+  readonly gid: number;
+  readonly groups: readonly number[];
+}
+
+/** chmod(2)'s rule: only the owner or root changes a mode (EPERM). */
+export function chmodRefusal(entry: { readonly uid: number }, cred: Pick<PosixCred, 'uid'>): 'EPERM' | null {
+  return cred.uid !== 0 && cred.uid !== entry.uid ? 'EPERM' : null;
+}
+
+/**
+ * The mode change a confined principal may not make (EPERM): granting a
+ * setuid, setgid, group or other bit the entry lacks, or clearing its sticky
+ * bit. A confined principal owns its own triad and nothing else.
+ */
+export function confinedModeRefusal(current: number, next: number): 'EPERM' | null {
+  const held = current & 0o7777;
+  const granted = (next & 0o6077) & ~held;
+  const unstuck = held & ~next & 0o1000;
+  return granted === 0 && unstuck === 0 ? null : 'EPERM';
+}
+
+/**
+ * chown(2)'s rule (EPERM): root changes anything; the owner may keep its
+ * owner and set the group to the entry's own or one in `cred.groups`; no one else
+ * may name an owner or group at all. A null id leaves it as it is.
+ */
+export function chownRefusal(
+  entry: { readonly uid: number; readonly gid: number },
+  uid: number | null,
+  gid: number | null,
+  cred: PosixCred,
+): 'EPERM' | null {
+  if (cred.uid === 0) return null;
+  const owner = cred.uid === entry.uid;
+  if (uid !== null && (uid !== entry.uid || !owner)) return 'EPERM';
+  if (gid !== null && (!owner || (gid !== entry.gid && !cred.groups.includes(gid)))) return 'EPERM';
+  return null;
+}
+
+/** The mode a chown leaves: a caller other than root clears the setuid and setgid bits. */
+export function chownedMode(mode: number, cred: Pick<PosixCred, 'uid'>): number {
+  return cred.uid === 0 ? mode : mode & ~0o6000;
+}
+
+/**
+ * utimes(2)'s rule: explicit times only by the owner or root (EPERM); the
+ * current time by anyone who may write the entry (EACCES).
+ */
+export function utimesRefusal(
+  entry: { readonly mode: number; readonly uid: number; readonly gid: number; readonly type: PosixNodeType },
+  explicit: boolean,
+  cred: PosixCred,
+): 'EPERM' | 'EACCES' | null {
+  if (!explicit) return posixAccess(entry, 0o2, cred) ? null : 'EACCES';
+  return cred.uid !== 0 && cred.uid !== entry.uid ? 'EPERM' : null;
+}

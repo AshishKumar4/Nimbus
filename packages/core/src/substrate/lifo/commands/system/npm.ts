@@ -25,17 +25,20 @@ import {
 	type RegistryVersionInfo,
 } from './registry-schemas.js';
 import {
-  parseNpmInstallInvocation,
+  npmInstallInvocation,
   type NpmInstallInvocation,
 } from './npm-install-args.js';
-import { installSummary, npmLogEnabled, npmRemovedLine, type NpmLogEmitter } from './npm-log.js';
+import type { NpmConfig } from './npm-config.js';
+import { installSummary, npmDevEnginesLines, npmEngineLines, npmLogEnabled, npmRemovedLine, parseNpmLogLevel, type NpmLogEmitter, type NpmLogLevel } from './npm-log.js';
+import { checkDevEngines, type DevEnginesFailure } from '../../../../_shared/npm-libs.js';
+import { checkEngines, type EngineMismatch } from '../../../../_shared/npm-arborist/engines.js';
 import { exists } from '../../../../vfs/vfs.js';
+import { NODE_SYSTEM, NODE_VERSION, NPM_VERSION, SYSTEM_IDENTITY } from '../../../../constants.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
 import { direntTypeIn } from '../../../../vfs/dirent-type.js';
 
 /** The registry an install reads from when its env names none. */
 export const NPM_REGISTRY_ORIGIN = 'https://registry.npmjs.org';
-export const NPM_VERSION = '10.0.0';
 
 // ─── Types ───
 
@@ -77,8 +80,10 @@ export interface NpmInstallPort {
     saveDev?: boolean;
     /** `--save-optional`: what is named is saved to optionalDependencies. */
     saveOptional?: boolean;
-    /** `--force`: a peer conflict the project owns is a warning, not ERESOLVE. */
+    /** `--force`: a peer conflict the project owns is a warning, not ERESOLVE, and node's engine is not checked. */
     force?: boolean;
+    /** `--engine-strict`: a package whose engines exclude this node or npm fails the install, which changes nothing. */
+    engineStrict?: boolean;
     /** `--strict-peer-deps`: any peer conflict is ERESOLVE unless forced. */
     strictPeerDeps?: boolean;
     /** `--legacy-peer-deps`: peers are not installed, nor checked. */
@@ -101,7 +106,7 @@ export interface NpmInstallPort {
     fromLockfile?: boolean;
     npmLog?: NpmLogEmitter | null;
     onProgress?: (line: string) => void;
-  }): Promise<{ installed: string[]; failed: string[]; totalFiles?: number; fromCacheHits?: number; linkedBins?: number }>;
+  }): Promise<{ installed: string[]; failed: string[]; totalFiles?: number; fromCacheHits?: number; linkedBins?: number; engines?: readonly EngineMismatch[] }>;
   /**
    * The host's records of the bins of `packages`, which `npm uninstall`
    * removed from `modulesDir`: retired, shims and all, so no later install
@@ -127,6 +132,21 @@ export interface NpmCommandDeps {
    * handed to its directory's owner, so the command, as its process, can.
    */
   beforeWrite?: (ctx: CommandContext, path: string) => Promise<void>;
+}
+
+/**
+ * npm's word on the tree's EBADENGINEs, on the command's stderr: under
+ * `--engine-strict` the error the install failed with (true), else a
+ * warning of each, at npm's warn level.
+ */
+async function writeEngines(ctx: CommandContext, engines: readonly EngineMismatch[] = [], strict: boolean, loglevel: NpmLogLevel | null): Promise<boolean> {
+	if (strict && engines.length > 0) {
+		for (const line of npmEngineLines(engines[0]!, true)) await ctx.stderr.write(`${line}\n`);
+		return true;
+	}
+	if (loglevel !== null && !npmLogEnabled(loglevel, 'warn')) return false;
+	for (const engine of engines) for (const line of npmEngineLines(engine, false)) await ctx.stderr.write(`${line}\n`);
+	return false;
 }
 
 /** The end-of-install report (installSummary), on the command's own streams. */
@@ -155,6 +175,84 @@ export function npmRegistryOrigin(configured: string | undefined): string {
 
 function getRegistry(env: Record<string, string>): string {
 	return npmRegistryOrigin(env.NPM_REGISTRY);
+}
+
+/** An install's registry: the one npm's configuration names, else the session's (getRegistry). */
+function registryOf(ctx: CommandContext, invocation: NpmInstallInvocation): string {
+	return invocation.registry === null ? getRegistry(ctx.env) : npmRegistryOrigin(invocation.registry);
+}
+
+/** Each command's configuration, read once (npmConfigOf). */
+const configs = new WeakMap<CommandContext, Promise<NpmConfig>>();
+
+/**
+ * npm's configuration for this command (npm-config.ts: npm's definitions and
+ * nopt, so `--global=false` is local and `--location=global` global; its
+ * .npmrc files and npm_config_* too), read once, as npm loads it before any
+ * command: what it warns of printed, and `--force`'s warning.
+ */
+function npmConfigOf(ctx: CommandContext): Promise<NpmConfig> {
+	let config = configs.get(ctx);
+	if (config === undefined) {
+		config = (async () => {
+			const loaded = await (await import('./npm-config.js')).loadNpmConfig(ctx.vfs, ctx.cwd, ctx.env, ctx.args);
+			if (npmWarns(loaded)) {
+				for (const warning of loaded.warnings) await ctx.stderr.write(`npm warn ${warning}\n`);
+				if (loaded.get('force')) await ctx.stderr.write('npm warn using --force Recommended protections disabled.\n');
+			}
+			return loaded;
+		})();
+		configs.set(ctx, config);
+	}
+	return config;
+}
+
+/** Whether npm's configured log level (`--loglevel`, an .npmrc's) shows its warnings. */
+function npmWarns(config: NpmConfig): boolean {
+	return npmLogEnabled(parseNpmLogLevel(config.get('loglevel')), 'warn');
+}
+
+/** What npm's devEngines preflight compares a project's devEngines with: this runtime (npm-install-checks currentEnv.devEngines). */
+const DEV_ENGINES_CURRENT = {
+	cpu: { name: NODE_SYSTEM.arch },
+	// No C library: what runs here is wasm (SYSTEM_IDENTITY.machine).
+	libc: { name: null },
+	os: { name: NODE_SYSTEM.platform, version: SYSTEM_IDENTITY.release },
+	packageManager: { name: 'npm', version: NPM_VERSION },
+	runtime: { name: 'node', version: NODE_VERSION },
+};
+
+/**
+ * npm's devEngines preflight (base-cmd checkDevEngines), as npm runs it
+ * before every command but a global one: the devEngines of the project at
+ * npm's local prefix, by npm-install-checks' own checkDevEngines, against
+ * this runtime. What npm lets pass (onFail warn, any under --force) is
+ * warned of; else the first failure is the command's error, and it runs
+ * nothing (true).
+ */
+async function devEnginesRefuse(ctx: CommandContext, config: NpmConfig): Promise<boolean> {
+	if (config.get('global') === true || config.get('location') === 'global') return false;
+	let devEngines: unknown;
+	try {
+		devEngines = (JSON.parse(await ctx.vfs.readFileString(join(config.localPrefix, 'package.json'))) as { devEngines?: unknown }).devEngines;
+	} catch {
+		return false;
+	}
+	if (devEngines === undefined) return false;
+	let failures: DevEnginesFailure[];
+	try {
+		failures = checkDevEngines(devEngines, DEV_ENGINES_CURRENT);
+	} catch (error) {
+		await ctx.stderr.write(`npm error ${error instanceof Error ? error.message : String(error)}\n`);
+		return true;
+	}
+	const force = config.get('force') === true;
+	const errors = failures.filter((failure) => failure.isError);
+	const passed = [...failures.filter((failure) => failure.isWarn), ...(force ? errors : [])];
+	if (npmWarns(config)) for (const [at, failure] of passed.entries()) for (const line of npmDevEnginesLines(failure, at === 0, 'warn')) await ctx.stderr.write(`${line}\n`);
+	if (force || errors.length === 0) return false;
+	for (const line of npmDevEnginesLines(errors[0]!, true, 'error')) await ctx.stderr.write(`${line}\n`);
+	return true;
 }
 
 // ─── Registry fetch ───
@@ -335,6 +433,8 @@ interface TreeInstall {
 	 */
 	globalBinDir?: string;
 	force?: boolean;
+	/** `--engine-strict`: an EBADENGINE fails the install, which changes nothing. */
+	engineStrict?: boolean;
 	strictPeerDeps?: boolean;
 	legacyPeerDeps?: boolean;
 	/** What `--omit` leaves out: planned, and not installed. */
@@ -394,9 +494,11 @@ interface TreeOutcome {
 	installed: string[];
 	failed: string[];
 	plannedVersion?: (name: string) => string | null;
+	/** Each EBADENGINE of the tree (npm's engine check). */
+	engines?: readonly EngineMismatch[];
 }
 
-async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Promise<TreeOutcome> {
+async function installTree(roots: readonly TreeRoot[], install: TreeInstall, project: ProjectManifest | null): Promise<TreeOutcome> {
 	const { targetBase, vfs, network, npmRegistry, signal, stdout, stderr } = install;
 	const fail = async (name: string, message: string): Promise<TreeOutcome> => {
 		if (message.includes('Failed to fetch') || message.includes('NetworkError') || message.includes('CORS')) {
@@ -449,6 +551,9 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 	for (const { id, edge } of plan.failures) {
 		await stderr.write(`npm WARN optional SKIPPING OPTIONAL DEPENDENCY: ${edge.name}: ${plan.reasons.get(id)}\n`);
 	}
+	// npm's engine check of the tree: under --engine-strict a mismatch fails the install before anything changes.
+	const engines = checkEngines(project, plan, install.force === true);
+	if (install.engineStrict === true && engines.length > 0) return { installed: [], failed: [engines[0]!.pkgid ?? targetBase], engines };
 	signal.throwIfAborted();
 
 	// ── Reify ──
@@ -483,7 +588,7 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 		// What is on disk the tree does not hold goes (npm prunes it).
 		const removals = onDisk.filter((at) => !inTree(at));
 		const publish = planned.filter((node) => inTree(node.at)).sort((x, y) => depthOf(x.at) - depthOf(y.at));
-		if (publish.length === 0 && removals.length === 0) return { installed: [], failed: [], plannedVersion };
+		if (publish.length === 0 && removals.length === 0) return { installed: [], failed: [], plannedVersion, engines };
 
 		const journal = InstallJournal.begin(vfs, targetBase, run);
 		const retiredAt = new Map<string, string>();
@@ -531,7 +636,7 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall): Pr
 				if (node.edge.from === '') await linkGlobalBins(node.pkg.info, join(targetBase, node.at), install.globalBinDir, install);
 			}
 		}
-		return { installed: publish.map((node) => `${node.pkg.name}@${node.pkg.version}`), failed: [], plannedVersion };
+		return { installed: publish.map((node) => `${node.pkg.name}@${node.pkg.version}`), failed: [], plannedVersion, engines };
 	} finally {
 		try { await vfs.remove(staging, { recursive: true, force: true }); } catch { /* none was made */ }
 	}
@@ -566,14 +671,9 @@ async function printHelp(ctx: CommandContext): Promise<void> { await ctx.stdout.
 	await ctx.stdout.write('  search <term>              search the npm registry\n');
 	await ctx.stdout.write('  -v, --version              print npm version\n'); }
 
-/**
- * `npm init`, `npm create` and `npm innit` (npm-init.ts). npm's own
- * libraries there (hosted-git-info, npm-package-arg, semver, the SPDX list)
- * are evaluated the first time a session runs one, not when it starts.
- */
-async function npmInit(ctx: CommandContext): Promise<number> {
-	return (await import('./npm-init.js')).npmInitCommand(ctx);
-}
+// `npm init`, `npm create` and `npm innit` are npm-init.ts's: npm's own
+// libraries there (hosted-git-info, npm-package-arg, semver, the SPDX list)
+// are evaluated the first time a session runs one, not when it starts.
 
 async function npmInstall(
 	ctx: CommandContext,
@@ -581,8 +681,7 @@ async function npmInstall(
 	kernel?: Kernel,
 	deps?: NpmCommandDeps,
 ): Promise<number> {
-	const args = ctx.args.slice(1);
-	const invocation = parseNpmInstallInvocation(args);
+	const invocation = npmInstallInvocation(await npmConfigOf(ctx));
 	const packages = invocation.packages;
 	if (invocation.unsupported.length > 0) {
 		for (const line of invocation.unsupported) await ctx.stderr.write(`npm ERR! ${line}\n`);
@@ -609,7 +708,7 @@ async function npmInstall(
 	const globalPrefix = resolveNpmPrefixVfs(ctx.cwd, ctx.env, invocation.prefix);
 	const globalBinDir = `${globalPrefix}/bin`;
 
-	const npmRegistry = getRegistry(ctx.env);
+	const npmRegistry = registryOf(ctx, invocation);
 	const startTime = Date.now();
 
 	// The port owns the install, prefix dirs and bin materialisation: the
@@ -632,6 +731,7 @@ async function npmInstall(
 			saveDev: invocation.saveDev,
 			saveOptional: invocation.saveOptional,
 			force: invocation.force,
+			engineStrict: invocation.engineStrict,
 			strictPeerDeps: invocation.strictPeerDeps,
 			legacyPeerDeps: invocation.legacyPeerDeps,
 			omitOptional: invocation.omitOptional,
@@ -643,6 +743,7 @@ async function npmInstall(
 			npmLog,
 			onProgress: async (line) => await ctx.stdout.write(`[npm] ${line}\n`),
 		});
+		if (await writeEngines(ctx, result.engines, invocation.engineStrict, invocation.loglevel)) return 1;
 		await writeInstallSummary(ctx, result.installed, result.failed, {
 			totalFiles: result.totalFiles,
 			fromCacheHits: result.fromCacheHits,
@@ -676,7 +777,7 @@ function shellInstallPort(ctx: CommandContext, registry: CommandRegistry, kernel
 			const tree: TreeInstall = {
 				targetBase, vfs, network: (kernel?.network ?? ISOLATE_NETWORK).forProcess(ctx.pid), npmRegistry: spec.registry, signal,
 				stdout: ctx.stdout, stderr: ctx.stderr, registry, kernel,
-				force: spec.force === true, strictPeerDeps: spec.strictPeerDeps === true, legacyPeerDeps: spec.legacyPeerDeps === true, preferDedupe: spec.preferDedupe === true,
+				force: spec.force === true, engineStrict: spec.engineStrict === true, strictPeerDeps: spec.strictPeerDeps === true, legacyPeerDeps: spec.legacyPeerDeps === true, preferDedupe: spec.preferDedupe === true,
 				omit: { dev: spec.production === true, optional: spec.omitOptional === true, peer: spec.omitPeer === true },
 				...(globalBinDir ? { globalBinDir } : {}),
 			};
@@ -692,7 +793,7 @@ function shellInstallPort(ctx: CommandContext, registry: CommandRegistry, kernel
 				const named = namedPackages(project?.manifest ?? null, spec.packages, { saveDev: spec.saveDev, saveOptional: spec.saveOptional });
 				const roots = projectRoots(project?.manifest ?? null, named, { legacyPeerDeps: spec.legacyPeerDeps === true });
 				await ctx.stdout.write(spec.packages.length === 0 ? 'Installing dependencies...\n' : 'Installing packages...\n');
-				const result = await installTree(roots, tree);
+				const result = await installTree(roots, tree, project?.manifest ?? null);
 				if (result.failed.length > 0 || project === null || named.length === 0 || spec.save === false) return result;
 				// What the command line named is saved to package.json, at the version the tree holds, once it installed.
 				try {
@@ -731,8 +832,7 @@ function resolveNpmPrefixVfs(cwd: string, env: Record<string, string>, explicit:
  * npm's libraries load the first time a session runs one.
  */
 async function npmInvocation(ctx: CommandContext): Promise<{ names: readonly string[]; prefix: string | null; save: boolean }> {
-	const config = await (await import('./npm-config.js')).loadNpmConfig(ctx.vfs, ctx.cwd, ctx.env, ctx.args);
-	for (const warning of config.warnings) await ctx.stderr.write(`npm warn ${warning}\n`);
+	const config = await npmConfigOf(ctx);
 	const global = config.get('global') === true || config.get('location') === 'global';
 	return {
 		names: config.positionals.slice(1),
@@ -1140,6 +1240,53 @@ async function npmSearch(ctx: CommandContext, network: WorkspaceNetwork): Promis
 
 // ─── Factory ───
 
+/** The command npm runs for `subcommand` (one of its aliases), or null for one it does not know. */
+function npmSubcommand(
+	subcommand: string,
+	registry: CommandRegistry,
+	shellExecute: ShellExecuteFn | undefined,
+	kernel: Kernel | undefined,
+	deps: NpmCommandDeps | undefined,
+): ((ctx: CommandContext) => Promise<number>) | null {
+	switch (subcommand) {
+		case 'init':
+		case 'create':
+		case 'innit':
+			return async (ctx) => (await import('./npm-init.js')).npmInitCommand(ctx, await npmConfigOf(ctx));
+		case 'install':
+		case 'i':
+		case 'add':
+			return (ctx) => npmInstall(ctx, registry, kernel, deps);
+		case 'ci':
+		case 'clean-install':
+		case 'install-clean':
+			return (ctx) => npmCi(ctx, deps);
+		case 'uninstall':
+		case 'remove':
+		case 'rm':
+		case 'un':
+			return (ctx) => npmUninstall(ctx, kernel, deps);
+		case 'list':
+		case 'ls':
+			return (ctx) => npmList(ctx);
+		case 'run':
+		case 'run-script':
+			return (ctx) => npmRun(ctx, shellExecute, registry, kernel);
+		case 'start':
+			return (ctx) => npmRun({ ...ctx, args: ['run', 'start', ...ctx.args.slice(1)] }, shellExecute, registry);
+		case 'test':
+			return (ctx) => npmRun({ ...ctx, args: ['run', 'test', ...ctx.args.slice(1)] }, shellExecute, registry);
+		case 'info':
+		case 'view':
+		case 'show':
+			return (ctx) => npmInfo(ctx, (kernel?.network ?? ISOLATE_NETWORK).forProcess(ctx.pid));
+		case 'search':
+			return (ctx) => npmSearch(ctx, (kernel?.network ?? ISOLATE_NETWORK).forProcess(ctx.pid));
+		default:
+			return null;
+	}
+}
+
 export function createNpmCommand(
 	registry: CommandRegistry,
 	shellExecute?: ShellExecuteFn,
@@ -1153,50 +1300,19 @@ export function createNpmCommand(
 			await printHelp(ctx);
 			return subcommand ? 0 : 1;
 		}
-
-		switch (subcommand) {
-			case 'init':
-			case 'create':
-			case 'innit':
-				return (await npmInit(ctx));
-			case 'install':
-			case 'i':
-			case 'add':
-				return (await npmInstall(ctx, registry, kernel, deps));
-			case 'ci':
-			case 'clean-install':
-			case 'install-clean':
-				return (await npmCi(ctx, deps));
-			case 'uninstall':
-			case 'remove':
-			case 'rm':
-			case 'un':
-				return (await npmUninstall(ctx, kernel, deps));
-			case 'list':
-			case 'ls':
-				return (await npmList(ctx));
-			case 'run':
-			case 'run-script':
-				return (await npmRun(ctx, shellExecute, registry, kernel));
-			case 'start':
-				return (await npmRun({ ...ctx, args: ['run', 'start', ...ctx.args.slice(1)] }, shellExecute, registry));
-			case 'test':
-				return (await npmRun({ ...ctx, args: ['run', 'test', ...ctx.args.slice(1)] }, shellExecute, registry));
-			case 'info':
-			case 'view':
-			case 'show':
-				return (await npmInfo(ctx, (kernel?.network ?? ISOLATE_NETWORK).forProcess(ctx.pid)));
-			case 'search':
-				return (await npmSearch(ctx, (kernel?.network ?? ISOLATE_NETWORK).forProcess(ctx.pid)));
-			case '-v':
-			case '--version':
-				await ctx.stdout.write(NPM_VERSION + '\n');
-				return 0;
-			default:
-				await ctx.stderr.write(`npm: unknown command '${subcommand}'\n`);
-				await ctx.stderr.write('Run npm --help for usage\n');
-				return 1;
+		if (subcommand === '-v' || subcommand === '--version') {
+			await ctx.stdout.write(NPM_VERSION + '\n');
+			return 0;
 		}
+		const run = npmSubcommand(subcommand, registry, shellExecute, kernel, deps);
+		if (run === null) {
+			await ctx.stderr.write(`npm: unknown command '${subcommand}'\n`);
+			await ctx.stderr.write('Run npm --help for usage\n');
+			return 1;
+		}
+		// What npm does before any command it knows: its configuration read, and the project's devEngines checked.
+		if (await devEnginesRefuse(ctx, await npmConfigOf(ctx))) return 1;
+		return await run(ctx);
 	};
 }
 
@@ -1207,7 +1323,7 @@ export function createNpmCommand(
  * the install with the project untouched.
  */
 async function npmCi(ctx: CommandContext, deps?: NpmCommandDeps): Promise<number> {
-	const invocation = parseNpmInstallInvocation(ctx.args.slice(1));
+	const invocation = npmInstallInvocation(await npmConfigOf(ctx));
 	if (invocation.unsupported.length > 0) {
 		for (const line of invocation.unsupported) await ctx.stderr.write(`npm ERR! ${line}\n`);
 		return 1;
@@ -1246,11 +1362,12 @@ async function npmCi(ctx: CommandContext, deps?: NpmCommandDeps): Promise<number
 			global: false,
 			pid: ctx.pid,
 			signal: ctx.signal,
-			registry: getRegistry(ctx.env),
+			registry: registryOf(ctx, invocation),
 			production: invocation.production,
 			omitOptional: invocation.omitOptional,
 			omitPeer: invocation.omitPeer,
 			force: invocation.force,
+			engineStrict: invocation.engineStrict,
 			strictPeerDeps: invocation.strictPeerDeps,
 			legacyPeerDeps: invocation.legacyPeerDeps,
 			preferDedupe: invocation.preferDedupe,
@@ -1258,6 +1375,7 @@ async function npmCi(ctx: CommandContext, deps?: NpmCommandDeps): Promise<number
 			npmLog,
 			onProgress: async (line) => await ctx.stdout.write(`[npm] ${line}\n`),
 		});
+		if (await writeEngines(ctx, result.engines, invocation.engineStrict, invocation.loglevel)) return 1;
 		await writeInstallSummary(ctx, result.installed, result.failed, {
 			totalFiles: result.totalFiles,
 			fromCacheHits: result.fromCacheHits,

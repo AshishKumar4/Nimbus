@@ -28,6 +28,7 @@ import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NpmCache } from './cache.js';
+import { type EngineMismatch } from '@nimbus-sh/core/_shared/npm-arborist/engines.js';
 import { type NpmLogEmitter } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
 import type { BundlePoolProvider } from '../facets/prebundle-pool.js';
 import type { InstallPhase } from '@nimbus-sh/platform/install-phase.js';
@@ -69,8 +70,10 @@ export interface NpmInstallOptions {
     save?: boolean;
     /** What a saved range starts with ('' for `--save-exact`); '^' when not given. */
     savePrefix?: string;
-    /** `--force`: a peer conflict the project owns is a warning. */
+    /** `--force`: a peer conflict the project owns is a warning, and node's engine is not checked. */
     force?: boolean;
+    /** `--engine-strict`: a package whose engines exclude this node or npm fails the install, which changes nothing. */
+    engineStrict?: boolean;
     /** `--strict-peer-deps`: any peer conflict is ERESOLVE unless forced. */
     strictPeerDeps?: boolean;
     /** `--legacy-peer-deps`: peers are neither installed nor checked. */
@@ -93,6 +96,8 @@ export interface NpmInstallResult {
     phases: Record<string, number>;
     /** The bins `whileHeld` linked. */
     linkedBins?: number;
+    /** Each EBADENGINE of the tree (npm's engine check): warnings, or under --engine-strict the install's failure. */
+    engines?: EngineMismatch[];
 }
 export declare class NpmInstaller {
     /** The session's namespace: the project is reached through it as the invoking principal. */

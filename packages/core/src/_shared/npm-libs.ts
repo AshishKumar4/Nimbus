@@ -11,3 +11,17 @@ export const typeDescription: typeof import('@npmcli/config/lib/type-description
 export const ini: typeof import('ini').default = compiled.ini;
 export const nopt: typeof import('nopt').default = compiled.nopt;
 export const validateName: typeof import('validate-npm-package-name').default = compiled.validateName;
+/** npm-install-checks' checkEngine: throws npm's EBADENGINE where `target.engines` excludes `nodeVer` (unless `force`) or `npmVer`. */
+export const checkEngine: (target: { readonly engines?: unknown; readonly _id?: string }, npmVer: string, nodeVer: string, force?: boolean) => void = compiled.npmInstallChecks.checkEngine;
+/** npm-install-checks' checkDevEngines: each of `wanted`'s engines `current` fails, as npm's devEngines preflight reads them; throws for a devEngines it cannot read. */
+export const checkDevEngines: (wanted: unknown, current: Readonly<Record<string, unknown>>) => DevEnginesFailure[] = compiled.npmInstallChecks.checkDevEngines;
+/** One engine checkDevEngines fails: its message, why each wanted entry failed, and npm's verdict from its onFail. */
+export interface DevEnginesFailure {
+  readonly message: string;
+  readonly errors: readonly Error[];
+  readonly engine: string;
+  readonly isWarn: boolean;
+  readonly isError: boolean;
+  readonly current: unknown;
+  readonly required: unknown;
+}

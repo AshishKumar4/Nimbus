@@ -96,8 +96,14 @@ export interface Namespace {
     deleteTree(t: ResidentTables, k: string, self: boolean): void;
     /** Drop one row and what the table keeps of it in heap. */
     forget(t: ResidentTables, k: string): void;
-    /** `own`: the process's own effects, applied at each name the walk reaches (OwnView). */
+    /**
+     * `own`: the process's own effects, applied at each name the walk reaches
+     * (OwnView). `visit`: told each name the walk looks up, in order (its
+     * directory is the one searched), before it is looked up; false stops the
+     * walk there, EACCES.
+     */
     lookup(k: string, followLeaf: boolean, own?: OwnView): Lookup | 'ELOOP';
+    lookup(k: string, followLeaf: boolean, own: OwnView | undefined, visit: (name: string) => boolean): Lookup | 'ELOOP' | 'EACCES';
     resolve(k: string, followLeaf: boolean, own?: OwnView): Resolved | null;
     unknown(k: string, followLeaf: boolean, listing: boolean, own?: OwnView): string | null;
     children(k: string): {

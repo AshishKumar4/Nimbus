@@ -1,4 +1,4 @@
-import { Shell, createCurlCommand, createNpmCommand, NPM_VERSION, createTopCommand, createWatchCommand, createHelpCommand } from '@nimbus-sh/core/substrate/lifo/index.js';
+import { Shell, createCurlCommand, createNpmCommand, createTopCommand, createWatchCommand, createHelpCommand } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { createKillCommand } from '@nimbus-sh/core/substrate/lifo/commands/system/kill.js';
 import { installSummary } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
 import { signalAbortReason, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
@@ -28,7 +28,7 @@ import { rpcExposeApp, rpcListApps, rpcRemoveApp, rpcRotateLink } from '../sessi
 import { listInstalledRuntimes } from '@nimbus-sh/core/runtime/installed-runtimes.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi } from '@nimbus-sh/core/runtime/process-logs.js';
-import { DEFAULT_HOME, NODE_VERSION } from '@nimbus-sh/core/constants.js';
+import { DEFAULT_HOME, NODE_VERSION, NPM_VERSION } from '@nimbus-sh/core/constants.js';
 import { afterDevServerRestore, devServerProcess, recordDevServer, spawnOf } from '../session/dev-servers.js';
 import { HeadlessTerminal } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { makeNimbusVerbHandler } from '@nimbus-sh/core/runtime/nimbus-command.js';
@@ -427,6 +427,21 @@ export async function registerHostedCommands(self, workspace) {
             return {};
         }
     };
+    /**
+     * `bun install|i|add …` as npm's install: bun's own spellings that npm reads
+     * otherwise (-p/--production, -d/--dev, --optional, --exact) said npm's way,
+     * so npm's configuration (npm-config.ts) is the one reader of the rest.
+     */
+    async function bunInstall(ctx, reg, verb) {
+        const npmCmd = await reg.resolve('npm');
+        if (!npmCmd) {
+            ctx.stderr.write(`bun ${verb}: npm handler unavailable\n`);
+            return 1;
+        }
+        const BUN_TO_NPM = { '-p': '--omit=dev', '--production': '--omit=dev', '-d': '--save-dev', '--dev': '--save-dev', '--optional': '--save-optional', '--exact': '--save-exact' };
+        const args = (ctx.args || []).slice(1).map((arg) => BUN_TO_NPM[arg] ?? arg);
+        return await npmCmd({ ...ctx, args: ['install', ...args] });
+    }
     const bunSpec = {
         name: 'bun',
         version: BUN_VERSION,
@@ -446,30 +461,9 @@ export async function registerHostedCommands(self, workspace) {
         repl: jsReplProgram(`Welcome to Bun v${BUN_VERSION}\nType ".help" for more information.\n`),
         subcommands: {
             // bun install / i / add → npm install (same VFS, same R2 caches).
-            install: async (ctx, reg) => {
-                const npmCmd = await reg.resolve('npm');
-                if (npmCmd) {
-                    return await npmCmd({ ...ctx, args: ['install', ...(ctx.args || []).slice(1)] });
-                }
-                ctx.stderr.write('bun install: npm handler unavailable\n');
-                return 1;
-            },
-            i: async (ctx, reg) => {
-                const npmCmd = await reg.resolve('npm');
-                if (npmCmd) {
-                    return await npmCmd({ ...ctx, args: ['install', ...(ctx.args || []).slice(1)] });
-                }
-                ctx.stderr.write('bun i: npm handler unavailable\n');
-                return 1;
-            },
-            add: async (ctx, reg) => {
-                const npmCmd = await reg.resolve('npm');
-                if (npmCmd) {
-                    return await npmCmd({ ...ctx, args: ['install', ...(ctx.args || []).slice(1)] });
-                }
-                ctx.stderr.write('bun add: npm handler unavailable\n');
-                return 1;
-            },
+            install: (ctx, reg) => bunInstall(ctx, reg, 'install'),
+            i: (ctx, reg) => bunInstall(ctx, reg, 'i'),
+            add: (ctx, reg) => bunInstall(ctx, reg, 'add'),
             // bun run <target> — a package.json script, or a file.
             //
             // Real bun's precedence, and the reason this is not just a script

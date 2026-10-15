@@ -89,7 +89,17 @@ export function namespaceWaveRouter(namespace, credential) {
             const opened = await openOnMount(file, {
                 flags, mode: call.mode, refuse: (code) => new VfsError(code, VFS_DESCRIPTION[code], call.path),
             }, false, guard);
-            return { file, stat: statOf(opened) };
+            if (call.fchmod === undefined)
+                return { file, stat: statOf(opened) };
+            // fchmod(2) of the file the open found, part of the open: refused, so is the open.
+            const held = await file.hold({ read: false, write: true }, statOf(opened).ino);
+            try {
+                await held.chmod(call.fchmod, guard);
+                return { file, stat: statOf(await held.stat()) };
+            }
+            finally {
+                await held.close();
+            }
         },
     };
 }

@@ -358,7 +358,7 @@ async function bundleGitPack() {
 async function bundleNpmResolve() {
   const compiled = await compiledBodies({
     contents: [
-      "export { compareSemver, isSemverRange, parseSemver, pickInstalledVersion, resolveVersion, satisfiesRange, stagedBindingVersion } from './src/_shared/npm-semver.ts';",
+      "export { compareSemver, exactVersion, isSemverRange, parseSemver, pickInstalledVersion, satisfiesRange, stagedBindingVersion } from './src/_shared/npm-semver.ts';",
       "export { parseRegistryRequest } from './src/_shared/npm-spec.ts';",
     ].join('\n'),
     resolveDir: coreRoot,

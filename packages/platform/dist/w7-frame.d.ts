@@ -209,7 +209,11 @@ export type W7Call =
  * process chose), the session keeps the open description under it, its
  * access fixed now; the description's write, append and ftruncate calls
  * name it, and its `close` ends it. `ino`: the number a name it makes is
- * given (a delegation's, as a mkdir's).
+ * given (a delegation's, as a mkdir's). `fchmod`: the file it opened then
+ * given exactly this mode (fchmod(2), as libuv's copyfile narrows its
+ * destination before a byte reaches it), part of the open: refused
+ * (EPERM: another's file), the open is refused and keeps no description,
+ * so a write through it is EBADF.
  */
  | {
     call: 'open';
@@ -223,6 +227,7 @@ export type W7Call =
     exclusive?: true;
     nofollow?: true;
     description?: string;
+    fchmod?: number;
 }
 /** close(2) of the session's open description `description` (an `open` call's). */
  | {

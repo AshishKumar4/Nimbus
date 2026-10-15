@@ -13,7 +13,7 @@
  *   - PARSE_SEMVER(v) → [major, minor, patch, prerelease[]] | null
  *   - COMPARE_SEMVER(a, b) → number
  *   - SATISFIES_RANGE(version, range) → boolean
- *   - RESOLVE_VERSION(versions, range) → string | null
+ *   - EXACT_VERSION(spec) → the one version spec names exactly | null
  *   - IS_SEMVER_RANGE(range)    → boolean
  *   - PICK_INSTALLED_VERSION(versions, distTags, range, staged) → string | null
  *   - STAGED_BINDING_VERSION(staged, range) → string | null

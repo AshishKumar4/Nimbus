@@ -24,7 +24,7 @@
  *       NATIVE_EXECUTABLE_REJECT(pkg) → { from, reason, suggest? } | null
  *       PARSE_SEMVER(v) → [maj, min, patch] | null
  *       COMPARE_SEMVER(a, b) → number
- *       RESOLVE_VERSION(versions, range) → string | null
+ *       EXACT_VERSION(spec) → string | null
  *       PARSE_REGISTRY_REQUEST(name, range) → the registry request a spec makes
  *
  * What the task does NOT do (supervisor responsibility)
@@ -37,16 +37,15 @@
  * What the task DOES do
  * ─────────────────────
  *   1. Apply swap / reject-fail registry policy.
- *   2. Try in-task cache from `cachedHit` (one entry shipped from
- *      supervisor's NpmCache).
+ *   2. An exact version's record, where the supervisor's NpmCache holds
+ *      this registry's (cachedEntries).
  *   3. Ask env.SUPERVISOR.getPackument for the packument. Fetching the
  *      registry and filling the cross-tenant cache are supervisor-side;
  *      the facet only reads.
- *   4. Pick version via preamble's RESOLVE_VERSION.
+ *   4. Pick version via preamble's PICK_INSTALLED_VERSION.
  *   5. Materialise ResolvedPackage shape (versionToResolved-style).
- *   6. Stage cache writes for this version + top-5 recent versions.
- *      Returns them in `cacheWrites` so the supervisor can flush in one
- *      batched RPC.
+ *   6. Stage the cache write for this version, returned in `cacheWrites`
+ *      so the supervisor flushes every task's in one batched RPC.
  *   7. Return {pkg, cacheWrites, messages, events, packumentBytesDecoded,
  *      packumentSource, error?, nativeExecutable?}.
  */
@@ -67,9 +66,10 @@ export interface ResolveOneSpec {
     name: string;
     range: string;
     /**
-     * Pre-shipped cache entries for THIS name only. Bounded to ≤16 (top
-     * versions) so the per-task RPC payload stays small. The task picks
-     * the best version that satisfies range.
+     * The record of the exact version `range` names, where the session holds
+     * this registry's (through this network): the task answers that version
+     * from it without the packument. Empty for a range, which only the
+     * registry's whole version list answers.
      */
     cachedEntries: RegistryCacheEntry[];
     /** Per-fetch timeout (ms). Default 15_000. */
