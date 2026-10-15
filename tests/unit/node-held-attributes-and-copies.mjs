@@ -192,6 +192,8 @@ await runScenarios(import.meta.path, {
     const { authority, fs, stall, release } = await boot();
     await authority.peer.mkdir('home/user/app/modes');
     for (let i = 0; i < 12; i++) await authority.peer.writeFile(`home/user/app/modes/f${i}`, 'm');
+    // Listed in the process's view, as a tree is that was there when it started.
+    assert.equal((await fs.promises.readdir('/home/user/app/modes')).length, 12);
     for (let i = 0; i < 12; i++) await fs.promises.chmod(`/home/user/app/modes/f${i}`, 0o600);
     await until(() => globalThis.__nimbusProcessFs.held('home/user/app/modes/x') !== undefined, 'the chmods took their subtree', 5_000);
     stall();
