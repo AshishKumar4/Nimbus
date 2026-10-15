@@ -102,3 +102,20 @@ export function npmEngineLines(mismatch, strict) {
         `notsup Actual:   ${JSON.stringify({ npm: NPM_VERSION, node: NODE_VERSION })}`,
     ].map((line) => `npm error ${line}`);
 }
+/**
+ * What npm says of a devEngines failure (base-cmd checkDevEngines): its
+ * message (the first said with npm's preface), then what is current and
+ * what is required, each line as npm's display prefixes it; `level` warn
+ * for one npm lets pass, error for the one the command ends with
+ * (error-message.js's summary and detail).
+ */
+export function npmDevEnginesLines(failure, first, level) {
+    const message = [...new Set([
+            first ? 'The developer of this package has specified the following through devEngines' : '',
+            failure.message,
+            failure.errors.map((error) => error.message).join('\n'),
+        ])].filter((line) => line).join('\n');
+    const lines = [...message.split('\n'), ...format({ current: failure.current, required: failure.required }).split('\n')]
+        .map((line) => `npm ${level} EBADDEVENGINES ${line}`);
+    return level === 'error' ? ['npm error code EBADDEVENGINES', ...lines] : lines;
+}

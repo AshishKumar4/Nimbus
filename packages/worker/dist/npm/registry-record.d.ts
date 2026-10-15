@@ -50,6 +50,8 @@ export interface RegistryCacheEntry {
     enginesJson?: string;
     fetchedAt: number;
 }
+/** `engines` as a manifest states it (a registry's, a lock's): what it asks of each engine. */
+export declare const isEngines: (value: unknown) => value is Readonly<Record<string, unknown>>;
 /** The record of `pkg`, fetched at `fetchedAt`, as the cache keeps it. */
 export declare function registryRecord(pkg: ResolvedPackage, fetchedAt: number): RegistryCacheEntry;
 /** The package a record describes, as a cold resolve of its version answers it. */

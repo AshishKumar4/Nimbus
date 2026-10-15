@@ -35,7 +35,7 @@ import { NpmCache } from './cache.js';
 import { hoistPlacements, } from './resolver.js';
 import { bundledNames, canonicalTreePath, holdTree, lockRootMatches, namedPackages, packageJsonDocument, parentPlacement, placementName, projectRoots, readPackageJson, saveNamed, } from '@nimbus-sh/core/_shared/npm-tree.js';
 import { planTree } from '@nimbus-sh/core/_shared/npm-arborist/plan.js';
-import { engineMismatches } from '@nimbus-sh/core/_shared/npm-arborist/engines.js';
+import { checkEngines } from '@nimbus-sh/core/_shared/npm-arborist/engines.js';
 import { parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
 import { npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine, } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
@@ -49,7 +49,7 @@ import { setInstallPhase, recordInstallFacetCounters, recordPreBundleSummary, re
 import { recordCacheStatEvents } from '@nimbus-sh/core/_shared/cache-stats.js';
 import { estimateSupervisorHeap } from '@nimbus-sh/platform/heap-estimate.js';
 import { describeError } from '@nimbus-sh/platform/oom-classify.js';
-import { resolvedFromRecord } from './registry-record.js';
+import { isEngines, resolvedFromRecord } from './registry-record.js';
 import { NPM_RESOLVE_PREAMBLE } from '../loaders/npm-resolve-preamble.js';
 import { NPM_INSTALL_PREAMBLE } from '../loaders/npm-install-preamble.js';
 import { NPM_INSTALL_BATCH_TASK, NPM_RESOLVE_ONE_TASK } from '../loaders/compiled-bodies.generated.js';
@@ -249,7 +249,7 @@ export class NpmInstaller {
         }
         // npm's engine check of the tree: under --engine-strict a mismatch fails
         // the install before anything changes; otherwise npm warns of each.
-        const engines = engineMismatches(manifest, plan, opts.force === true);
+        const engines = checkEngines(manifest, plan, opts.force === true);
         if (opts.engineStrict === true && engines.length > 0) {
             return { installed: [], failed: [engines[0].pkgid ?? projDir], totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases, engines };
         }
@@ -1525,6 +1525,7 @@ export class NpmInstaller {
                 os: platform.os,
                 cpu: platform.cpu,
                 libc: platform.libc,
+                ...(isEngines(manifest.engines) ? { engines: manifest.engines } : {}),
                 exports: null,
                 main: '',
                 module: '',

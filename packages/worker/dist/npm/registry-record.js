@@ -7,6 +7,8 @@
  * reconstructs a lockfile's packages with the same decoder.
  */
 const isObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
+/** `engines` as a manifest states it (a registry's, a lock's): what it asks of each engine. */
+export const isEngines = isObject;
 const isStringMap = (value) => isObject(value) && Object.values(value).every((v) => typeof v === 'string');
 const isStringList = (value) => Array.isArray(value) && value.every((v) => typeof v === 'string');
 const isPeerMeta = (value) => isObject(value) && Object.values(value).every((meta) => isObject(meta) && (meta.optional === undefined || typeof meta.optional === 'boolean'));
@@ -66,7 +68,7 @@ export function resolvedFromRecord(record) {
     const platform = record.platformJson === '{}' ? NO_PLATFORM : decoded(record.platformJson, isObject, NO_PLATFORM);
     const peerMeta = decoded(record.peerMetaJson, isPeerMeta, {});
     const bundle = record.bundleJson ? decoded(record.bundleJson, isAnyJson, undefined) : undefined;
-    const engines = record.enginesJson ? decoded(record.enginesJson, isObject, undefined) : undefined;
+    const engines = record.enginesJson ? decoded(record.enginesJson, isEngines, undefined) : undefined;
     return {
         name: record.name,
         version: record.version,

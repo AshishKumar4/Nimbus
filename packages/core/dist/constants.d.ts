@@ -89,6 +89,11 @@ export declare const SYSTEM_IDENTITY: {
     readonly version: "#1 Nimbus";
     readonly machine: "wasm";
 };
+/** What node reports of that system (process.platform and arch, os.platform() and arch()), and npm reads. */
+export declare const NODE_SYSTEM: {
+    readonly platform: "linux";
+    readonly arch: "x64";
+};
 export declare const DEFAULT_HOME = "/home/user";
 export declare const DEFAULT_USER = "user";
 export declare const DEFAULT_SHELL = "/bin/sh";

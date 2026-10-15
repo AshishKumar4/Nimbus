@@ -1,47 +1,56 @@
 /**
- * npm's engine check over a planned tree (arborist build-ideal-tree's
- * #checkEngineAndPlatform), by npm-install-checks' own checkEngine against
- * this runtime's Node (NODE_VERSION) and npm (NPM_VERSION).
+ * npm's engine checks over a planned tree, by npm-install-checks' own
+ * checkEngine against this runtime's Node (NODE_VERSION) and npm
+ * (NPM_VERSION): arborist build-ideal-tree's #checkEngineAndPlatform for
+ * what the tree requires, and reify's for an optional package, which leaves
+ * it out.
  */
 import { NODE_VERSION, NPM_VERSION } from '../../constants.js';
 import { checkEngine } from '../npm-libs.js';
 /**
- * Each EBADENGINE of the tree `plan` holds for `project` (its root
- * manifest; null under a global prefix): the project's own, unless it
- * declares devEngines, then every package a path of required edges reaches,
- * in the order npm's ideal tree takes them in (breadth first: by how many
- * edges from the project, then by placement). An optional one is not
- * checked; `force` checks npm alone.
+ * The tree `plan` holds for `project` (its root manifest; null under a
+ * global prefix), checked as npm checks it, in the inventory's order:
+ * - an optional package whose engines exclude this runtime is left out with
+ *   its optional set (plan.fail), as reify leaves it out, whatever --force
+ *   or --engine-strict say, and nothing is said of it;
+ * - the project, unless it declares devEngines (the command's own preflight
+ *   checks those), and every package the tree requires: each mismatch is
+ *   answered, for npm's warning, or under --engine-strict its error; `force`
+ *   checks npm alone.
  */
-export function engineMismatches(project, plan, force) {
-    const targets = [];
-    if (project !== null && project.devEngines === undefined)
-        targets.push({ engines: project.engines, _id: idOf(project.name, project.version) });
-    const depth = (at, seen = 0) => {
-        const node = plan.nodes.get(at);
-        if (node === undefined || !node.planned || node.edge.from === '' || seen > plan.nodes.size)
-            return at.split('/node_modules/').length;
-        return depth(node.edge.from, seen + 1) + 1;
-    };
-    const required = [...plan.nodes].filter(([at]) => plan.required.has(at) && !plan.skipped.has(at))
-        .map(([at, node]) => ({ at, node, depth: depth(at) }))
-        .sort((a, b) => a.depth - b.depth || a.at.localeCompare(b.at, 'en'));
-    for (const { node } of required) {
-        targets.push({ engines: node.pkg.engines, _id: idOf(node.pkg.registryName ?? node.pkg.name, node.pkg.version) });
+export function checkEngines(project, plan, force) {
+    for (const [at, node] of plan.nodes) {
+        if (plan.required.has(at) || plan.skipped.has(at))
+            continue;
+        if (mismatchOf(node.pkg, false) !== null)
+            plan.fail(at, 'Unsupported engine');
     }
     const mismatches = [];
-    for (const target of targets) {
-        try {
-            checkEngine(target, NPM_VERSION, NODE_VERSION, force);
-        }
-        catch (error) {
-            const engine = error;
-            if (engine.code !== 'EBADENGINE')
-                throw error;
-            mismatches.push({ pkgid: engine.pkgid, required: engine.required, current: engine.current });
-        }
-    }
+    const check = (target) => {
+        const mismatch = mismatchOf(target, force);
+        if (mismatch !== null)
+            mismatches.push(mismatch);
+    };
+    if (project !== null && project.devEngines === undefined)
+        check({ engines: project.engines, _id: idOf(project.name, project.version) });
+    for (const [at, node] of plan.nodes)
+        if (plan.required.has(at) && !plan.skipped.has(at))
+            check(node.pkg);
     return mismatches;
+}
+/** checkEngine's EBADENGINE for `target` (a package, or a target npm names by `_id`), or null. */
+function mismatchOf(target, force) {
+    const named = 'version' in target ? { engines: target.engines, _id: idOf(target.registryName ?? target.name, target.version) } : target;
+    try {
+        checkEngine(named, NPM_VERSION, NODE_VERSION, force);
+        return null;
+    }
+    catch (error) {
+        const engine = error;
+        if (engine.code !== 'EBADENGINE')
+            throw error;
+        return { pkgid: engine.pkgid, required: engine.required, current: engine.current };
+    }
 }
 /** A manifest's _id, as npm's package.json normalization makes it: `name@version`, where it states both. */
 function idOf(name, version) {

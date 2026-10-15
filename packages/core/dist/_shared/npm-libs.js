@@ -12,3 +12,5 @@ export const nopt = compiled.nopt;
 export const validateName = compiled.validateName;
 /** npm-install-checks' checkEngine: throws npm's EBADENGINE where `target.engines` excludes `nodeVer` (unless `force`) or `npmVer`. */
 export const checkEngine = compiled.npmInstallChecks.checkEngine;
+/** npm-install-checks' checkDevEngines: each of `wanted`'s engines `current` fails, as npm's devEngines preflight reads them; throws for a devEngines it cannot read. */
+export const checkDevEngines = compiled.npmInstallChecks.checkDevEngines;

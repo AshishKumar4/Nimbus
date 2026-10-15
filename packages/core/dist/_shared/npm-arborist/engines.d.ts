@@ -10,12 +10,15 @@ export interface EngineMismatch {
     };
 }
 /**
- * Each EBADENGINE of the tree `plan` holds for `project` (its root
- * manifest; null under a global prefix): the project's own, unless it
- * declares devEngines, then every package a path of required edges reaches,
- * in the order npm's ideal tree takes them in (breadth first: by how many
- * edges from the project, then by placement). An optional one is not
- * checked; `force` checks npm alone.
+ * The tree `plan` holds for `project` (its root manifest; null under a
+ * global prefix), checked as npm checks it, in the inventory's order:
+ * - an optional package whose engines exclude this runtime is left out with
+ *   its optional set (plan.fail), as reify leaves it out, whatever --force
+ *   or --engine-strict say, and nothing is said of it;
+ * - the project, unless it declares devEngines (the command's own preflight
+ *   checks those), and every package the tree requires: each mismatch is
+ *   answered, for npm's warning, or under --engine-strict its error; `force`
+ *   checks npm alone.
  */
-export declare function engineMismatches<P extends TreePackage, I extends TreePackage>(project: ProjectManifest | null, plan: Pick<TreePlan<P, I>, 'nodes' | 'required' | 'skipped'>, force: boolean): EngineMismatch[];
+export declare function checkEngines<P extends TreePackage, I extends TreePackage>(project: ProjectManifest | null, plan: Pick<TreePlan<P, I>, 'nodes' | 'required' | 'skipped' | 'fail'>, force: boolean): EngineMismatch[];
 //# sourceMappingURL=engines.d.ts.map
