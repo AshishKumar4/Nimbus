@@ -37,7 +37,8 @@ const CASES = {
   openXw: `const fd = fs.openSync('made', 'xw'); fs.writeSync(fd, 'x'); fs.closeSync(fd); let again; try { fs.openSync('made', 'xw'); again = 'opened'; } catch (e) { again = e.code; } console.log(fs.readFileSync('made', 'utf8'), again)`,
   // A creation's mode, null or absent, is Node's default (0o666, a directory's 0o777); chmod has none.
   nullModes: `const seen = []; for (const [what, run] of [['writeFile', () => fs.writeFileSync('w', 'x', { mode: null })], ['appendFile', () => fs.appendFileSync('a', 'x', { mode: null })], ['open', () => fs.closeSync(fs.openSync('o', 'w', null))], ['mkdir', () => fs.mkdirSync('d', { mode: null })], ['chmod', () => fs.chmodSync('f', null)]]) { try { run(); seen.push(what + ' ok'); } catch (e) { seen.push(what + ' ' + e.code); } } for (const name of ['w', 'a', 'o']) seen.push(name + ' ' + (fs.statSync(name).mode & 0o777).toString(8)); seen.push('d ' + fs.existsSync('d')); console.log(seen.join(' | '))`,
-  nullModePromise: `fs.promises.writeFile('p', 'x', { mode: null }).then(() => console.log('p', (fs.statSync('p').mode & 0o777).toString(8)), (e) => console.log('p', e.code))`,
+  // An async case leaves its promise in globalThis.settled, which a front that runs the case to its end awaits.
+  nullModePromise: `globalThis.settled = fs.promises.writeFile('p', 'x', { mode: null }).then(() => console.log('p', (fs.statSync('p').mode & 0o777).toString(8)), (e) => console.log('p', e.code))`,
   modes: `const seen = []; for (const bad of ['7a5', '0o755', -1]) { try { fs.chmodSync('f', bad); seen.push('took ' + bad); } catch (e) { seen.push(e.code + ' ' + e.message); } } fs.chmodSync('f', '640'); seen.push((fs.statSync('f').mode & 0o777).toString(8)); console.log(seen.join(' | '))`,
 };
 
@@ -74,6 +75,8 @@ for (const name of Object.keys(CASES)) {
   const console = { log: (...parts) => { out += `${parts.join(' ')}\n`; } };
   try {
     new Function('process', 'fs', 'console', CASES[name])(shim.process, shim.fs, console);
+    await globalThis.settled;
+    delete globalThis.settled;
   } catch (error) {
     out = `threw ${error?.code ?? ''} ${error?.message ?? error}\n`;
   }

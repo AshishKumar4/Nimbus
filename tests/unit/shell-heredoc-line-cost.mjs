@@ -4,8 +4,8 @@
 // tested against the one here-document it is in.
 //
 // A command opens H empty here-documents (`true <<E <<E …`), and H lines of
-// `E` end them. The time a line takes, at H = 40,000 against H = 4,000, is
-// the measure: the same per line, not ten times more.
+// `E` end them. A line at H = 40,000 costs about what it costs at 4,000: a
+// look at the 36,000 more here-documents would add tens of microseconds.
 //
 // Red before: each line asked every one of the command's here-documents
 // whether it strips tabs, so a line cost H.
@@ -35,6 +35,6 @@ const perLine = async (count) => {
 await perLine(2_000);
 const small = Math.min(await perLine(4_000), await perLine(4_000));
 const large = await perLine(40_000);
-assert.ok(large < small * 2.5, `a line costs ${large.toFixed(1)} us at 40,000 here-documents and ${small.toFixed(1)} us at 4,000`);
+assert.ok(large - small < 10, `a line costs ${large.toFixed(1)} us at 40,000 here-documents and ${small.toFixed(1)} us at 4,000`);
 console.log(`  ✓ a here-document line costs the same however many the command opens (${small.toFixed(1)} us at 4,000, ${large.toFixed(1)} us at 40,000)`);
 console.log('shell-heredoc-line-cost: ok');
