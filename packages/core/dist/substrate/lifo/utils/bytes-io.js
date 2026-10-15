@@ -100,19 +100,20 @@ export async function writeBytes(out, bytes) {
  * what is held at the end decodes byte by byte, as decodeLossless has it.
  */
 export class LosslessDecoder {
-    held = new Uint8Array(0);
+    held = NOTHING_HELD;
     decode(bytes) {
         const all = this.held.length === 0 ? bytes : concatBytes([this.held, bytes]);
         const cut = unfinishedTail(all);
-        this.held = all.slice(cut);
-        return decodeLossless(all.subarray(0, cut));
+        this.held = cut === all.length ? NOTHING_HELD : all.slice(cut);
+        return decodeLossless(cut === all.length ? all : all.subarray(0, cut));
     }
     end() {
         const rest = this.held;
-        this.held = new Uint8Array(0);
+        this.held = NOTHING_HELD;
         return rest.length === 0 ? '' : decodeLossless(rest);
     }
 }
+const NOTHING_HELD = new Uint8Array(0);
 /** Where a UTF-8 sequence that `bytes` ends inside begins: their length when none does. */
 function unfinishedTail(bytes) {
     for (let back = 1; back <= 3 && back <= bytes.length; back++) {

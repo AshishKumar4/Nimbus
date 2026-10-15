@@ -22,7 +22,7 @@ import { ProcessExitError } from '../../node-compat/index.js';
 import { runNodeProgram } from './node.js';
 import { routeFetchThroughHost } from '../../../../runtime/realm-egress-guest.js';
 import { isEgressHostEvent } from '../../../../runtime/realm-egress.js';
-import { isDirEntries, isHostEvent, isNodeRealmPayload, isStat, } from './node-realm.js';
+import { isDirEntries, isHostEvent, isNodeRealmPayload, isOutputFailures, isStat, } from './node-realm.js';
 const joined = await joinRealm();
 if (!isNodeRealmPayload(joined.payload))
     throw new Error('node-guest: started without a program');
@@ -314,7 +314,15 @@ if (end.ended)
     exitNow(end.code);
 post({ type: 'exit', code: end.code });
 finalCode = end.finalCode;
+// The program's code has run: it hears of a write that failed before it ends,
+// as a Node process's pending writes hold it. One call waits for them all.
+if (postedOutput > 0) {
+    const failures = call({ op: 'flush' });
+    if (!isOutputFailures(failures))
+        malformed('flush');
+    for (const failure of failures)
+        outputs[failure.fd].fail(writeFailure(failure.code, failure.pipe));
+    settledOutput = postedOutput;
+}
 mainDone = true;
-if (settledOutput < postedOutput)
-    post({ type: 'settle' });
 holdWhileBusy();

@@ -32,6 +32,10 @@ import { SinkWriter } from '../../../../_shared/byte-stream.js';
 import { VfsError } from '../../../../vfs/vfs-error.js';
 import { dispatchWorkspaceRequest } from '../net/kernel-fetch.js';
 import { isEgressGuestEvent, isEgressHostEvent, RealmEgress } from '../../../../runtime/realm-egress.js';
+export function isOutputFailures(value) {
+    return Array.isArray(value) && value.every((failure) => record(failure) && (failure.fd === 1 || failure.fd === 2)
+        && typeof failure.code === 'string' && typeof failure.pipe === 'boolean');
+}
 // ── The protocol's messages, narrowed where they arrive ─────────────────────
 // Each side receives a structured clone it must narrow: a guard per shape.
 const record = (value) => typeof value === 'object' && value !== null;
@@ -46,7 +50,6 @@ export function isGuestEvent(value) {
     switch (value.type) {
         case 'output': return (value.fd === 1 || value.fd === 2) && (typeof value.data === 'string' || value.data instanceof Uint8Array)
             && Number.isSafeInteger(value.seq) && typeof value.settle === 'boolean';
-        case 'settle': return true;
         case 'fetch':
             return Number.isSafeInteger(value.id) && Number.isSafeInteger(value.port) && typeof value.url === 'string'
                 && typeof value.method === 'string' && stringRecord(value.headers)
@@ -218,6 +221,7 @@ async function performCall(call, services) {
                 throw refused('mask that is not one');
             return services.setUmask(call.mask);
         }
+        case 'flush': return services.flush();
         default: throw refused(`call ${JSON.stringify(String(call.op))}`);
     }
 }
@@ -246,7 +250,7 @@ export async function runNodeInRealm(program, ctx, kernel) {
     // stream errors (it ignores SIGPIPE): no later write to that output is made.
     let written = Promise.resolve();
     const writers = new Map();
-    const failedOutputs = new Set();
+    const failedOutputs = new Map();
     const writerOf = (fd) => {
         let writer = writers.get(fd);
         if (writer === undefined)
@@ -254,8 +258,9 @@ export async function runNodeInRealm(program, ctx, kernel) {
         return writer;
     };
     // A program whose code has run waits until the host has made (or failed)
-    // its last write: once asked, the last write waiting is told settled, and
-    // with it every one before.
+    // its writes: those made by then with one call (flush), a later one's once
+    // the host has made it (settle: the last write waiting is told settled,
+    // and with it every one before).
     let lastQueued = 0;
     let lastSettled = 0;
     let settleWanted = false;
@@ -278,9 +283,10 @@ export async function runNodeInRealm(program, ctx, kernel) {
                         await writerOf(fd).write(data);
                 }
                 catch (error) {
-                    failedOutputs.add(fd);
                     const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
-                    post({ type: 'output-failed', fd, code: typeof code === 'string' ? code : 'EIO', pipe: ctx.isFdPipe?.(fd) === true });
+                    const failure = { fd, code: typeof code === 'string' ? code : 'EIO', pipe: ctx.isFdPipe?.(fd) === true };
+                    failedOutputs.set(fd, failure);
+                    post({ type: 'output-failed', ...failure });
                 }
             }
             lastSettled = seq;
@@ -331,6 +337,10 @@ export async function runNodeInRealm(program, ctx, kernel) {
                 kernel?.portRegistry.delete(port);
         },
         setUmask: (next) => { mask = next; },
+        flush: async () => {
+            await written;
+            return [...failedOutputs.values()];
+        },
         watch: (id, path) => {
             watches.get(id)?.close();
             watches.delete(id);
@@ -362,10 +372,6 @@ export async function runNodeInRealm(program, ctx, kernel) {
             switch (event.type) {
                 case 'output':
                     write(event.fd, event.data, event.seq, event.settle);
-                    return;
-                case 'settle':
-                    settleWanted = true;
-                    settled();
                     return;
                 case 'exit':
                     code = event.code;

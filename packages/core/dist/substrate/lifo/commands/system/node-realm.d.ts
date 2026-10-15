@@ -61,7 +61,22 @@ export type NodeCall = {
  | {
     readonly op: 'umask';
     readonly mask: number;
+}
+/**
+ * Answered once every output write made so far is made or failed: the
+ * outputs that have failed (OutputFailure). The program's code has run, and
+ * it hears of a failure before it ends.
+ */
+ | {
+    readonly op: 'flush';
 };
+/** An output whose write failed: with `code`, on a pipe or a file. */
+export interface OutputFailure {
+    readonly fd: 1 | 2;
+    readonly code: string;
+    readonly pipe: boolean;
+}
+export declare function isOutputFailures(value: unknown): value is readonly OutputFailure[];
 /** A response to a request that stayed on the box, as data, either way across. */
 export interface RealmResponse {
     readonly status: number;
@@ -72,8 +87,8 @@ export interface RealmResponse {
 export type GuestEvent = 
 /**
  * Output write number `seq` (each one more than the last, both outputs
- * counted together); `settle`, the program's code has run, and it waits to
- * be told once the writes are made (output-settled).
+ * counted together); `settle`, made after the program's code has run (a
+ * timer's), which waits to be told once it is made (output-settled).
  */
 {
     readonly type: 'output';
@@ -81,10 +96,6 @@ export type GuestEvent =
     readonly data: string | Uint8Array;
     readonly seq: number;
     readonly settle: boolean;
-}
-/** The program's code has run: tell it once every write so far is made (output-settled). */
- | {
-    readonly type: 'settle';
 } | {
     readonly type: 'fetch';
     readonly id: number;
@@ -130,7 +141,7 @@ export type HostEvent = {
 }
 /**
  * Every output write up to number `seq` is made or failed (a failure told
- * first): told, once asked (settle), when no later write is waiting.
+ * first): told, for a write that asked (settle), when no later one waits.
  */
  | {
     readonly type: 'output-settled';
@@ -166,6 +177,8 @@ export interface RealmServices {
     watch(id: number, path: string | null): void;
     /** umask(2): the mask the program creates with from now on. */
     setUmask(mask: number): void;
+    /** Once every output write so far is made or failed: the outputs that failed. */
+    flush(): Promise<readonly OutputFailure[]>;
 }
 /**
  * The answer to `call`, whatever the guest sent: the value of one of the calls
