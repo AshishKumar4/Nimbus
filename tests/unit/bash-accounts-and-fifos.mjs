@@ -8,15 +8,14 @@
 //     `~root` root's, a name no account has stays as written, and `ls -l`
 //     names each file's owner and group. An account added while bash runs
 //     is found by its next lookup, and a renamed one by BusyBox's. An id
-//     above 0x7fffffff names its account, and chown's -1 (`chown :group`)
-//     keeps the owner.
+//     above 0x7fffffff names its account, and root's `cp -p` sets it.
 //   - A pipe on stdin is a FIFO, as Linux says: bash's `test -p` on
 //     /dev/stdin and /dev/fd/0, and BusyBox's `stat -c %F`.
 //
 // Red before: bash answered every name with one fixed account (home /root),
-// BusyBox named every owner "user" and refused `chown :group` (its -1 uid
-// reached the host signed: EINVAL); and preview1, which has no FIFO type,
-// left a piped stdin untyped for both.
+// BusyBox named every owner "user", and an id above 0x7fffffff reached the
+// host signed (no account; chown's EINVAL); and preview1, which has no FIFO
+// type, left a piped stdin untyped for both.
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
@@ -70,9 +69,9 @@ try {
   check('an owner and group above 0x7fffffff are named',
     await run(`bash -c 'stat -c %U:%G /tmp/wide; ls -l /tmp/wide | { read -r mode links owner group rest; echo "$owner:$group"; }'`),
     { stdout: 'wide:widegroup\nwide:widegroup\n', exitCode: 0 });
-  check('chown :group keeps the owner (chown -1)',
-    await run(`bash -c 'touch g; chown :user g && stat -c %U:%G g'`),
-    { stdout: 'user:user\n', exitCode: 0 });
+  check('and root\'s cp -p gives the copy those ids',
+    await run(`sudo bash -c 'cp -p /tmp/wide /tmp/wide-copy && stat -c %u:%g /tmp/wide-copy'`),
+    { stdout: '3000000000:3000000001\n', exitCode: 0 });
 
   // The user may edit the account files here, as root could: bash itself adds the account.
   kernel.chown('etc/passwd', 1000, 1000);
