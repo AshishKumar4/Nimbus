@@ -68,21 +68,39 @@ const read = async (path, attempts = 6) => {
 // facet-lifetime property and not the coherence being measured here.
 await t.run('node -e \'console.log("warm")\'', 45_000);
 
+// Each resumption below is ordered, not timed: the program reads the path
+// and says so (READ_DONE, spelled apart in its source so the shell's echo of
+// the command is not it); only then does the peer write the path, and then a
+// marker (GO). The program, woken only by the resumption under test, reads
+// the marker each time it wakes, and once it sees GO reads the path. The peer
+// wrote the path before the marker, so seeing GO and not PEER_WROTE is the
+// failure. (A fixed sleep before the peer write raced a lagging probe client:
+// the write landed after the timer had fired.) A program that never sees GO
+// answers what it reads at its bound, and fails the same way.
+const marked = (marker, then, bound) => [
+  `const done=Date.now()+${bound};`,
+  `const go=()=>{try{return fs.readFileSync("${marker}","utf8")==="GO"}catch{return false}};`,
+  `const answer=()=>${then};`,
+].join('');
+
 // ── 1. the timer resumption ─────────────────────────────────────────────
 {
   const path = '/home/user/coh-timer.txt';
+  const marker = '/home/user/coh-timer-go.txt';
   const result = '/home/user/coh-timer-result.txt';
   await peerWrite(path, 'BEFORE');
+  await peerWrite(marker, 'WAIT');
   const program = [
     'const fs=require("fs");',
     `fs.readFileSync("${path}","utf8");`,
-    'setTimeout(()=>{',
-    `fs.writeFileSync("${result}","TIMER_SAW["+fs.readFileSync("${path}","utf8")+"]");`,
-    '},1200);',
+    marked(marker, `fs.writeFileSync("${result}","TIMER_SAW["+fs.readFileSync("${path}","utf8")+"]")`, 15_000),
+    'const tick=()=>{if(go()||Date.now()>done)answer();else setTimeout(tick,200);};',
+    'console.log("READ"+"_DONE");setTimeout(tick,200);',
   ].join('');
   const running = t.run(`node -e '${program}'`, 40_000);
-  await sleep(500);
+  await t.waitFor((out) => /READ_DONE/.test(out), 30_000, 'the program read the path');
   await peerWrite(path, 'PEER_WROTE');
+  await peerWrite(marker, 'GO');
   await running;
   const out = await read(result);
   a.check(
@@ -125,20 +143,25 @@ await t.run('node -e \'console.log("warm")\'', 45_000);
 // with the request, however much cheaper that would be.
 {
   const path = '/home/user/coh-fetch.txt';
+  const marker = '/home/user/coh-fetch-go.txt';
   const result = '/home/user/coh-fetch-result.txt';
   await peerWrite(path, 'BEFORE');
+  await peerWrite(marker, 'WAIT');
+  // Woken each time by a fetch's response alone: no timer between the fetch and the reads.
   const program = [
     'const fs=require("fs");',
     `fs.readFileSync("${path}","utf8");`,
-    'setTimeout(()=>{(async()=>{',
+    marked(marker, `fs.writeFileSync("${result}","FETCH_SAW["+fs.readFileSync("${path}","utf8")+"]")`, 15_000),
+    'console.log("READ"+"_DONE");(async()=>{for(;;){',
     'await fetch("https://cloudflare-dns.com/dns-query?name=example.com",',
     '{headers:{accept:"application/dns-json"}}).catch(()=>{});',
-    `fs.writeFileSync("${result}","FETCH_SAW["+fs.readFileSync("${path}","utf8")+"]");`,
-    '})();},900);',
+    'if(go()||Date.now()>done){answer();return;}',
+    '}})();',
   ].join('');
   const running = t.run(`node -e '${program}'`, 40_000);
-  await sleep(500);
+  await t.waitFor((out) => /READ_DONE/.test(out), 30_000, 'the program read the path');
   await peerWrite(path, 'PEER_WROTE');
+  await peerWrite(marker, 'GO');
   await running;
   const out = await read(result);
   a.check(

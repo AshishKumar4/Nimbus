@@ -10,7 +10,8 @@
 // in between stamped old bytes as the copy's; it kept the source's own
 // buffer as the copy's, so appends to both overwrote each other; a source
 // the program never wrote was not whole, so its copy was unreadable; and the
-// copy's name stayed absent to sync reads until a barrier.
+// copy's name stayed absent to sync reads until a barrier, in a directory the
+// program made just now too.
 import assert from 'node:assert/strict';
 import { createAuthority, facetSupervisor, launchResident, runScenarios, residentDataPlan, until } from './lib/resident-body.mjs';
 
@@ -167,6 +168,19 @@ await runScenarios(import.meta.path, {
     const local = fs.statSync(`${A}/moved4/d4`);
     const session = await fs.promises.stat(`${A}/moved4/d4`);
     assert.deepEqual([local.mode & 0o777, local.size], [0o644, 2], 'the copy\'s mode and size, under the new name');
+    assert.deepEqual([local.mode, local.size, local.mtimeMs], [session.mode, session.size, session.mtimeMs], 'statSync answers as the session does');
+  },
+
+  async 'a new file copied into a directory made just now is there to sync reads the moment it is answered'() {
+    const box = await boot({}, (authority) => authority.kfs.writeFile('home/user/app/s9', 'S9', { mode: 0o640 }));
+    const { fs } = box.probe;
+    await fs.promises.mkdir(`${A}/fresh9/deep`, { recursive: true });
+    await fs.promises.copyFile(`${A}/s9`, `${A}/fresh9/deep/c9`);
+    assert.equal(fs.existsSync(`${A}/fresh9/deep/c9`), true, 'existsSync');
+    const local = fs.statSync(`${A}/fresh9/deep/c9`);
+    assert.deepEqual([local.mode & 0o777, local.size], [0o640, 2], 'the copy\'s mode and size');
+    assert.deepEqual(fs.readdirSync(`${A}/fresh9/deep`), ['c9']);
+    const session = await fs.promises.stat(`${A}/fresh9/deep/c9`);
     assert.deepEqual([local.mode, local.size, local.mtimeMs], [session.mode, session.size, session.mtimeMs], 'statSync answers as the session does');
   },
 

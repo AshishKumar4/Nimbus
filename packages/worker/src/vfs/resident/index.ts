@@ -155,7 +155,7 @@ import { createSync, type Sync } from './sync.js';
 import { createTransport, type Transport } from './transport.js';
 import { heapTables, sqlTables, type HeapTables, type ResidentSql, type ResidentTables } from './tables.js';
 
-export { posixAccess } from '@nimbus-sh/core/vfs/posix-access.js';
+export { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, posixAccess, utimesRefusal } from '@nimbus-sh/core/vfs/posix-access.js';
 export { namespaceRowBytes, residentFileCost } from './cell-cost.js';
 export { NS_DIR, NS_FILE, NS_LINK } from './tables.js';
 export type { ResidentCell } from './cell-cost.js';
