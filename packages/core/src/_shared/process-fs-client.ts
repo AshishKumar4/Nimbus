@@ -452,6 +452,12 @@ interface Grant extends ProcessFsGrant {
   lastUsed: number;
 }
 
+/** Where `key` stands to a grant held alone (not ended, closing or shared): 'held' at or beneath its root, 'above' an ancestor of it. */
+function standingOf(grant: Grant, key: string): 'held' | 'above' | undefined {
+  if (grant.ended || grant.closing || grant.shared) return undefined;
+  return within(key, grant.root) ? 'held' : within(grant.root, key) ? 'above' : undefined;
+}
+
 function parentKey(key: string): string {
   const at = key.lastIndexOf('/');
   return at < 0 ? '' : key.slice(0, at);
@@ -1237,15 +1243,15 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       let found: 'held' | 'above' | undefined;
       for (const grant of grants) {
         const certificate = grant.certificate;
-        if (grant.ended || grant.closing || grant.shared || certificate === undefined) continue;
-        if (certificate.epoch !== cursor.epoch || cursor.rev < certificate.revision) continue;
-        if (within(key, grant.root)) return 'held';
-        if (within(grant.root, key)) found = 'above';
+        if (certificate === undefined || certificate.epoch !== cursor.epoch || cursor.rev < certificate.revision) continue;
+        const standing = standingOf(grant, key);
+        if (standing === 'held') return standing;
+        found ??= standing;
       }
       return found;
     },
     guards(key) {
-      return escaped === null && grants.some((grant) => !grant.ended && !grant.closing && !grant.shared && (within(key, grant.root) || within(grant.root, key)));
+      return escaped === null && grants.some((grant) => standingOf(grant, key) !== undefined);
     },
     pending() {
       return queue.length > 0 || inFlight !== null;
