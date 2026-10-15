@@ -20,7 +20,7 @@
  * Binary lookup and execution follow libnpmexec 10.9.8's flow:
  *   1. Built-ins (vite, esbuild) are the caller's, before this module.
  *   2. The package in cwd/node_modules, where it answers the request
- *      (libnpmexec missingFromTree, installedFor).
+ *      (libnpmexec missingFromTree, answers).
  *   3. The npx cache directory of this request (npxCacheDir: one per spec
  *      set, as libnpmexec's), where it answers it.
  *   4. Else install the package into that directory via NpmInstaller.
@@ -139,17 +139,20 @@ function parseNpxArgs(rawArgs: string[]): ParsedNpx | { error: string } {
 
 /**
  * The bin npx runs from the package at `packageDir`, chosen and validated as
- * npxPackageBin does; null for none, or a staged-artifact bin (a sentinel,
- * not a file `node` can run).
+ * npxPackageBin does, with the version of the package that has it; null for
+ * none, or a staged-artifact bin (a sentinel, not a file `node` can run).
  */
 async function binAt(
   vfs: Pick<ProjectFs, 'exists' | 'isDirectory' | 'readFileString'>,
   packageDir: string,
   command: string | null,
-): Promise<{ name: string; path: string } | null> {
+): Promise<{ name: string; path: string; version: string } | null> {
   const bin = await npxPackageBin(vfs, packageDir, command);
-  return bin && !isStagedArtifactTarget(bin.targetPath) ? { name: bin.name, path: '/' + bin.targetPath } : null;
+  return bin && !isStagedArtifactTarget(bin.targetPath) ? { name: bin.name, path: '/' + bin.targetPath, version: bin.packageVersion } : null;
 }
+
+/** npxCacheDir's answers, by the text it hashes: a session asks for few. */
+const npxCacheDirs = new Map<string, Promise<string>>();
 
 /**
  * The directory npx installs `specs` into, as libnpmexec 10.9.8 names it: the
@@ -157,41 +160,39 @@ async function binAt(
  * line. Each request set its own, so one that fails, or names another
  * version, never touches what another installed.
  */
-export async function npxCacheDir(specs: readonly string[]): Promise<string> {
+export function npxCacheDir(specs: readonly string[]): Promise<string> {
   const text = [...specs].sort((a, b) => a.localeCompare(b, 'en')).join('\n');
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-512', new TextEncoder().encode(text)));
-  return `${NPX_CACHE_DIR}/${Array.from(digest.subarray(0, 8), (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+  let dir = npxCacheDirs.get(text);
+  if (dir === undefined) {
+    dir = crypto.subtle.digest('SHA-512', new TextEncoder().encode(text)).then((digest) =>
+      `${NPX_CACHE_DIR}/${Array.from(new Uint8Array(digest, 0, 8), (byte) => byte.toString(16).padStart(2, '0')).join('')}`);
+    npxCacheDirs.set(text, dir);
+  }
+  return dir;
+}
+
+/** `spec` as npm-package-arg reads it; null for one it cannot read. */
+function specOf(spec: string): ReturnType<typeof npa> | null {
+  try {
+    return npa(spec);
+  } catch {
+    return null;
+  }
 }
 
 /**
- * Whether the package installed at `packageDir`, if any, answers `spec`, as
- * libnpmexec's missingFromTree reads a tree: a spec by name alone takes
- * whatever is installed; a registry version or range, only a version that
- * satisfies it. Any other spec (a tag, a git or tarball url, a path) only
- * the npx directory of that very request answers (`ownRequest`): npm would
- * fetch its manifest to compare, and that directory holds what it named.
+ * Whether an installed `version` answers `spec`, as libnpmexec's
+ * missingFromTree reads a tree: a spec by name alone takes whatever is
+ * installed; a registry version or range, only a version that satisfies it.
+ * Any other spec (a tag, a git or tarball url, a path) only the npx
+ * directory of that very request answers (`ownRequest`): npm would fetch its
+ * manifest to compare, and that directory holds what it named.
  */
-async function installedFor(
-  vfs: Pick<ProjectFs, 'exists' | 'readFileString'>,
-  packageDir: string,
-  spec: string,
-  ownRequest: boolean,
-): Promise<boolean> {
-  let parsed: ReturnType<typeof npa>;
-  try {
-    parsed = npa(spec);
-  } catch {
-    return false;
-  }
-  // By name alone, whatever is there (the bin's own lookup finds whether anything is).
-  if (parsed.raw === parsed.name) return true;
-  if (!(parsed.registry && (parsed.type === 'version' || parsed.type === 'range'))) return ownRequest;
-  try {
-    const { version } = JSON.parse(await vfs.readFileString(_vfsKey(`${packageDir}/package.json`)));
-    return typeof version === 'string' && satisfiesRange(version, parsed.rawSpec);
-  } catch {
-    return false;
-  }
+function answers(spec: ReturnType<typeof npa> | null, version: string, ownRequest: boolean): boolean {
+  if (spec === null) return false;
+  if (spec.raw === spec.name) return true;
+  if (spec.registry && (spec.type === 'version' || spec.type === 'range')) return satisfiesRange(version, spec.rawSpec);
+  return ownRequest;
 }
 
 /**
@@ -219,7 +220,7 @@ export interface NpxResolveResult {
  * Resolve a binary for `npx <args>` by:
  *   1. Parsing args.
  *   2. Checking the package in cwd/node_modules, then this request's npx
- *      directory, where it answers the request (installedFor).
+ *      directory, where it answers the request (answers).
  *   3. Else installing the package into that directory via NpmInstaller.
  *
  * The caller is responsible for actually invoking the resulting binPath
@@ -259,19 +260,15 @@ export async function resolveNpxBinary(
   });
 
   // 1. The project's own package, where it answers the request.
-  const local = `${cwd}/node_modules/${parsed.pkgName}`;
-  if (await installedFor(vfs, local, parsed.pkgSpec, false)) {
-    const bin = await binAt(vfs, local, parsed.command);
-    if (bin) return found(bin, 'project-nm');
-  }
+  const spec = specOf(parsed.pkgSpec);
+  const local = await binAt(vfs, `${cwd}/node_modules/${parsed.pkgName}`, parsed.command);
+  if (local && answers(spec, local.version, false)) return found(local, 'project-nm');
 
   // 2. This request's npx directory, where an earlier npx installed it.
   const dir = await npxCacheDir([parsed.pkgSpec]);
   const cached = `${dir}/node_modules/${parsed.pkgName}`;
-  if (await installedFor(vfs, cached, parsed.pkgSpec, true)) {
-    const bin = await binAt(vfs, cached, parsed.command);
-    if (bin) return found(bin, 'npx-cache');
-  }
+  const there = await binAt(vfs, cached, parsed.command);
+  if (there && answers(spec, there.version, true)) return found(there, 'npx-cache');
 
   // 3. Install it there, made as libnpmexec makes it: what the install writes is that directory's alone.
   log(`  ${parsed.pkgSpec}...`);
