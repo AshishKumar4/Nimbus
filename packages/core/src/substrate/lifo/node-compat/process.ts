@@ -4,7 +4,7 @@ import type { CommandOutputStream } from '../commands/types.js';
 import { createProcessWarnings, type WarningConstructor, type WarningOptions } from '../../../_shared/node-warning.js';
 import { standardStream } from './standard-streams.js';
 import { NODE_VERSION, NODE_VERSIONS } from '../../../constants.js';
-import { nodeError } from '../../../_shared/node-error.js';
+import { parseFileMode } from '../../../_shared/node-arguments.js';
 
 export class ProcessExitError extends Error {
   exitCode: number;
@@ -72,32 +72,6 @@ export interface ProcessOptions {
   stdout: CommandOutputStream;
   stderr: CommandOutputStream;
   identity: ProcessIdentity;
-}
-
-/**
- * A mode argument as Node's parseFileMode reads it: an octal string of
- * digits alone, or an unsigned 32-bit integer. Anything else is refused with
- * Node's error, before anything changes.
- */
-function parseFileMode(given: unknown, name: string): number {
-  let value = given;
-  if (typeof value === 'string') {
-    if (!/^[0-7]+$/.test(value)) {
-      throw nodeError(TypeError, 'ERR_INVALID_ARG_VALUE', `The argument '${name}' must be a 32-bit unsigned integer or an octal string. Received ${JSON.stringify(value)}`);
-    }
-    // Then checked as a number is (validateUint32): '40000000000' is 2 ** 32, out of range.
-    value = Number.parseInt(value, 8);
-  }
-  if (typeof value !== 'number') {
-    throw nodeError(TypeError, 'ERR_INVALID_ARG_TYPE', `The "${name}" argument must be of type number. Received ${value === null ? 'null' : `type ${typeof value}`}`);
-  }
-  if (!Number.isInteger(value)) {
-    throw nodeError(RangeError, 'ERR_OUT_OF_RANGE', `The value of "${name}" is out of range. It must be an integer. Received ${value}`);
-  }
-  if (value < 0 || value > 0xffff_ffff) {
-    throw nodeError(RangeError, 'ERR_OUT_OF_RANGE', `The value of "${name}" is out of range. It must be >= 0 && <= 4294967295. Received ${value}`);
-  }
-  return value;
 }
 
 export function createProcess(opts: ProcessOptions) {

@@ -157,6 +157,36 @@ export function invalidArgType(name: string, expected: string | readonly string[
   return made(TypeError, 'ERR_INVALID_ARG_TYPE', invalidArgTypeMessage(name, expected, actual), undefined, invalidArgType);
 }
 
+/** Node's ERR_INVALID_ARG_VALUE: `name` was `value`, refused for `reason` (`is invalid`, or what it must be). */
+export function invalidArgValue(name: string, value: unknown, reason = 'is invalid'): Error {
+  return made(TypeError, 'ERR_INVALID_ARG_VALUE', invalidArgValueMessage(name, value, reason), undefined, invalidArgValue);
+}
+
+function invalidArgValueMessage(name: string, value: unknown, reason = 'is invalid'): string {
+  let inspected = inspectValue(value, {});
+  if (inspected.length > 128) inspected = `${inspected.slice(0, 128)}...`;
+  return `The ${name.includes('.') ? 'property' : 'argument'} '${name}' ${reason}. Received ${inspected}`;
+}
+
+/** Node's ERR_OUT_OF_RANGE: `name` must be `range` (`an integer`, `>= 0 && <= 4294967295`), and was `input`. */
+export function outOfRange(name: string, range: string, input: unknown): Error {
+  return made(RangeError, 'ERR_OUT_OF_RANGE', outOfRangeMessage(name, range, input), undefined, outOfRange);
+}
+
+function outOfRangeMessage(str: string, range: string, input: unknown, replaceDefaultBoolean = false): string {
+  let received: string;
+  if (typeof input === 'number' && Number.isInteger(input) && Math.abs(input) > 2 ** 32) {
+    received = addNumericalSeparator(String(input));
+  } else if (typeof input === 'bigint') {
+    received = String(input);
+    if (input > 2n ** 32n || input < -(2n ** 32n)) received = addNumericalSeparator(received);
+    received += 'n';
+  } else {
+    received = inspectValue(input, {});
+  }
+  return `${replaceDefaultBoolean ? str : `The value of "${str}" is out of range.`} It must be ${range}. Received ${received}`;
+}
+
 function invalidArgTypeMessage(name: string, expected: string | readonly string[], actual: unknown): string {
   const types: string[] = [];
   const instances: string[] = [];
@@ -234,11 +264,7 @@ const nodeErrorMessages: Record<string, readonly [Message, ...ErrorClass[]]> = {
   ERR_DNS_SET_SERVERS_FAILED: [(error: string, servers: readonly string[]) => `c-ares failed to set servers: "${error}" [${inspectValue(servers, {})}]`, Error],
   ERR_INVALID_MIME_SYNTAX: [(production: string, str: string, invalidIndex: number) =>
     `The MIME syntax for a ${production} in "${str}" is invalid${invalidIndex !== -1 ? ` at ${invalidIndex}` : ''}`, TypeError],
-  ERR_INVALID_ARG_VALUE: [(name: string, value: unknown, reason = 'is invalid') => {
-    let inspected = inspectValue(value, {});
-    if (inspected.length > 128) inspected = `${inspected.slice(0, 128)}...`;
-    return `The ${name.includes('.') ? 'property' : 'argument'} '${name}' ${reason}. Received ${inspected}`;
-  }, TypeError, RangeError],
+  ERR_INVALID_ARG_VALUE: [invalidArgValueMessage, TypeError, RangeError],
   ERR_INVALID_RETURN_VALUE: [(input: string, name: string, value: unknown) =>
     `Expected ${input} to be returned from the "${name}" function but got ${determineSpecificType(value)}.`, TypeError, RangeError],
   ERR_INVALID_THIS: ['Value of "this" must be of type %s', TypeError],
@@ -254,19 +280,7 @@ const nodeErrorMessages: Record<string, readonly [Message, ...ErrorClass[]]> = {
     ? `. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- ${JSON.stringify(option)}`
     : ''}`, TypeError],
   ERR_OPERATION_FAILED: ['Operation failed: %s', Error, TypeError],
-  ERR_OUT_OF_RANGE: [(str: string, range: string, input: unknown, replaceDefaultBoolean = false) => {
-    let received: string;
-    if (Number.isInteger(input) && Math.abs(input as number) > 2 ** 32) {
-      received = addNumericalSeparator(String(input));
-    } else if (typeof input === 'bigint') {
-      received = String(input);
-      if (input > 2n ** 32n || input < -(2n ** 32n)) received = addNumericalSeparator(received);
-      received += 'n';
-    } else {
-      received = inspectValue(input, {});
-    }
-    return `${replaceDefaultBoolean ? str : `The value of "${str}" is out of range.`} It must be ${range}. Received ${received}`;
-  }, RangeError],
+  ERR_OUT_OF_RANGE: [outOfRangeMessage, RangeError],
   ERR_SOCKET_BAD_PORT: [(name: string, port: unknown, allowZero = true) =>
     `${name} should be ${allowZero ? '>=' : '>'} 0 and < 65536. Received ${determineSpecificType(port)}.`, RangeError],
   ERR_UNAVAILABLE_DURING_EXIT: ['Cannot call function in process exit handler', Error],

@@ -152,6 +152,36 @@ export function determineSpecificType(value) {
 export function invalidArgType(name, expected, actual) {
     return made(TypeError, 'ERR_INVALID_ARG_TYPE', invalidArgTypeMessage(name, expected, actual), undefined, invalidArgType);
 }
+/** Node's ERR_INVALID_ARG_VALUE: `name` was `value`, refused for `reason` (`is invalid`, or what it must be). */
+export function invalidArgValue(name, value, reason = 'is invalid') {
+    return made(TypeError, 'ERR_INVALID_ARG_VALUE', invalidArgValueMessage(name, value, reason), undefined, invalidArgValue);
+}
+function invalidArgValueMessage(name, value, reason = 'is invalid') {
+    let inspected = inspectValue(value, {});
+    if (inspected.length > 128)
+        inspected = `${inspected.slice(0, 128)}...`;
+    return `The ${name.includes('.') ? 'property' : 'argument'} '${name}' ${reason}. Received ${inspected}`;
+}
+/** Node's ERR_OUT_OF_RANGE: `name` must be `range` (`an integer`, `>= 0 && <= 4294967295`), and was `input`. */
+export function outOfRange(name, range, input) {
+    return made(RangeError, 'ERR_OUT_OF_RANGE', outOfRangeMessage(name, range, input), undefined, outOfRange);
+}
+function outOfRangeMessage(str, range, input, replaceDefaultBoolean = false) {
+    let received;
+    if (typeof input === 'number' && Number.isInteger(input) && Math.abs(input) > 2 ** 32) {
+        received = addNumericalSeparator(String(input));
+    }
+    else if (typeof input === 'bigint') {
+        received = String(input);
+        if (input > 2n ** 32n || input < -(2n ** 32n))
+            received = addNumericalSeparator(received);
+        received += 'n';
+    }
+    else {
+        received = inspectValue(input, {});
+    }
+    return `${replaceDefaultBoolean ? str : `The value of "${str}" is out of range.`} It must be ${range}. Received ${received}`;
+}
 function invalidArgTypeMessage(name, expected, actual) {
     const types = [];
     const instances = [];
@@ -231,12 +261,7 @@ const nodeErrorMessages = {
     ERR_INVALID_ARG_TYPE: [invalidArgTypeMessage, TypeError],
     ERR_DNS_SET_SERVERS_FAILED: [(error, servers) => `c-ares failed to set servers: "${error}" [${inspectValue(servers, {})}]`, Error],
     ERR_INVALID_MIME_SYNTAX: [(production, str, invalidIndex) => `The MIME syntax for a ${production} in "${str}" is invalid${invalidIndex !== -1 ? ` at ${invalidIndex}` : ''}`, TypeError],
-    ERR_INVALID_ARG_VALUE: [(name, value, reason = 'is invalid') => {
-            let inspected = inspectValue(value, {});
-            if (inspected.length > 128)
-                inspected = `${inspected.slice(0, 128)}...`;
-            return `The ${name.includes('.') ? 'property' : 'argument'} '${name}' ${reason}. Received ${inspected}`;
-        }, TypeError, RangeError],
+    ERR_INVALID_ARG_VALUE: [invalidArgValueMessage, TypeError, RangeError],
     ERR_INVALID_RETURN_VALUE: [(input, name, value) => `Expected ${input} to be returned from the "${name}" function but got ${determineSpecificType(value)}.`, TypeError, RangeError],
     ERR_INVALID_THIS: ['Value of "this" must be of type %s', TypeError],
     ERR_INVALID_URI: ['URI malformed', URIError],
@@ -251,22 +276,7 @@ const nodeErrorMessages = {
             ? `. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- ${JSON.stringify(option)}`
             : ''}`, TypeError],
     ERR_OPERATION_FAILED: ['Operation failed: %s', Error, TypeError],
-    ERR_OUT_OF_RANGE: [(str, range, input, replaceDefaultBoolean = false) => {
-            let received;
-            if (Number.isInteger(input) && Math.abs(input) > 2 ** 32) {
-                received = addNumericalSeparator(String(input));
-            }
-            else if (typeof input === 'bigint') {
-                received = String(input);
-                if (input > 2n ** 32n || input < -(2n ** 32n))
-                    received = addNumericalSeparator(received);
-                received += 'n';
-            }
-            else {
-                received = inspectValue(input, {});
-            }
-            return `${replaceDefaultBoolean ? str : `The value of "${str}" is out of range.`} It must be ${range}. Received ${received}`;
-        }, RangeError],
+    ERR_OUT_OF_RANGE: [outOfRangeMessage, RangeError],
     ERR_SOCKET_BAD_PORT: [(name, port, allowZero = true) => `${name} should be ${allowZero ? '>=' : '>'} 0 and < 65536. Received ${determineSpecificType(port)}.`, RangeError],
     ERR_UNAVAILABLE_DURING_EXIT: ['Cannot call function in process exit handler', Error],
     ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET: ['`process.setupUncaughtExceptionCapture()` was called while a capture callback was already active', Error],

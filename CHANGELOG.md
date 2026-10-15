@@ -12,6 +12,25 @@ published independently in the `@nimbus-sh` npm scope.
   Everywhere else, and for anything the process changed and the session
   has not answered yet, they ask the session as before. A mount or unmount
   overlapping a held tree now gives that tree back first.
+- Fixed: the shell's `node` matches Node in more of its module surface. A
+  CommonJS file runs with `this` as its `module.exports`;
+  `require('fs').promises` is `require('fs/promises')`, and likewise for
+  `dns`; `module.isBuiltin` and `module.builtinModules` agree with
+  `Module`'s own and no longer count `rimraf` and `esbuild` as core; and
+  `fs.rm` and the new `fs.rmSync` remove a dangling link, never what a link
+  names, and refuse a directory without `recursive` (`ERR_FS_EISDIR`).
+- Fixed: `stat -c` prints a file's real inode, link count and device for
+  `%i`, `%h`, `%d` and `%D`; `%i` used to be a hash of the path as typed.
+- Fixed: the interactive shell collects a here-document with an empty
+  delimiter (`cat <<''`, ended by an empty line) instead of running the
+  command before its body.
+- Fixed: both `node`s check a mode, a mask and open flags as Node does,
+  with Node's errors. In a hosted program, `process.umask('022garbage')` and
+  `fs.chmodSync(f, '7a5')` took the digits they began with, and
+  `umask('40000000000')` set 0; `fs.openSync(f, 'xw')` opened for reading
+  and failed on a new file, and any other string opened for reading. The
+  shell's `node` now honours `fs.mkdirSync`'s mode and takes an octal string
+  for `chmod` and `mkdir`.
 - Changed: in a directory tree a node process writes often enough to hold,
   the changes it has already answered (its sync calls, and the async ones
   decided there) are sent with the next change it awaits, when it flushes,

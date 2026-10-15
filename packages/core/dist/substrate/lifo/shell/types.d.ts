@@ -32,6 +32,7 @@ export interface Token {
     pos: number;
     fd?: number;
     heredocQuoted?: boolean;
+    heredocTerminated?: boolean;
     parts?: WordPart[];
 }
 export interface ScriptNode {
