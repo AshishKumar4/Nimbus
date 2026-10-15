@@ -29,7 +29,7 @@
 import { exitCodeForAbortSignal } from '../../shell/signals.js';
 import type { RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from '../../../../runtime/os-contracts.js';
 import { realmOutcome, startRealm, type RealmOutcome } from '../../../../runtime/realm.js';
-import type { CommandContext, CommandOutputStream } from '../types.js';
+import type { CommandContext } from '../types.js';
 import type { Kernel, VirtualRequest, VirtualRequestHandler, VirtualResponse } from '../../kernel/index.js';
 import type { NodeFilesystem, NodeWatch } from '../../node-compat/filesystem.js';
 import type { VfsEvent } from '../../../../vfs/events.js';
@@ -78,6 +78,11 @@ export type HostEvent =
   | { readonly type: 'serve'; readonly id: number; readonly port: number; readonly request: VirtualRequest }
   /** A change watch `id` was told. */
   | { readonly type: 'changed'; readonly id: number; readonly event: VfsEvent }
+  /**
+   * A write to output `fd` failed with `code`, on a pipe or a file: the
+   * program's stream of it errors, as Node's does, and no later write is made.
+   */
+  | { readonly type: 'output-failed'; readonly fd: 1 | 2; readonly code: string; readonly pipe: boolean }
   | EgressHostEvent;
 
 /**
@@ -134,6 +139,8 @@ export function isHostEvent(value: unknown): value is HostEvent {
         && typeof value.event.path === 'string'
         && (value.event.oldPath === undefined || typeof value.event.oldPath === 'string')
         && typeof value.event.timestamp === 'number';
+    case 'output-failed':
+      return (value.fd === 1 || value.fd === 2) && typeof value.code === 'string' && typeof value.pipe === 'boolean';
     default: return false;
   }
 }
@@ -307,18 +314,28 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
 
   // Output in the order it was written, each write after the last; bytes
   // for an output that takes text are decoded across writes, as one stream.
+  // A write that fails is the program's to hear of, as a Node process's
+  // stream errors (it ignores SIGPIPE): no later write to that output is made.
   let written: Promise<void> = Promise.resolve();
-  const writers = new Map<CommandOutputStream, SinkWriter>();
-  const writerOf = (stream: CommandOutputStream): SinkWriter => {
-    let writer = writers.get(stream);
-    if (writer === undefined) writers.set(stream, writer = new SinkWriter(stream));
+  const writers = new Map<1 | 2, SinkWriter>();
+  const failedOutputs = new Set<1 | 2>();
+  const writerOf = (fd: 1 | 2): SinkWriter => {
+    let writer = writers.get(fd);
+    if (writer === undefined) writers.set(fd, writer = new SinkWriter(fd === 1 ? ctx.stdout : ctx.stderr));
     return writer;
   };
-  const write = (stream: CommandOutputStream, data: string | Uint8Array) => {
+  const write = (fd: 1 | 2, data: string | Uint8Array) => {
     written = written.then(async () => {
-      if (typeof data === 'string') await writerOf(stream).writeText(data);
-      else await writerOf(stream).write(data);
-    }).catch(() => {});
+      if (failedOutputs.has(fd)) return;
+      try {
+        if (typeof data === 'string') await writerOf(fd).writeText(data);
+        else await writerOf(fd).write(data);
+      } catch (error) {
+        failedOutputs.add(fd);
+        const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
+        post({ type: 'output-failed', fd, code: typeof code === 'string' ? code : 'EIO', pipe: ctx.isFdPipe?.(fd) === true });
+      }
+    });
   };
   // The realm, once it has started: a request for one of the guest's servers waits for none before.
   let post: (event: HostEvent) => boolean = () => false;
@@ -385,7 +402,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
       if (!isGuestEvent(event)) return;
       switch (event.type) {
         case 'output':
-          write(event.fd === 1 ? ctx.stdout : ctx.stderr, event.data);
+          write(event.fd, event.data);
           return;
         case 'exit':
           code = event.code;
@@ -420,7 +437,9 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   egress?.close();
   for (const watch of watches.values()) watch.close();
   await written;
-  for (const writer of writers.values()) await writer.end().catch(() => {});
+  // What a character left unfinished at the end: the program has ended, and
+  // no one is left to hear that its last bytes could not be written.
+  for (const [fd, writer] of writers) if (!failedOutputs.has(fd)) await writer.end().catch(() => {});
   if (end.terminated) return exitCodeForAbortSignal(ctx.signal);
   if (end.failure !== null) {
     await ctx.stderr.write(`${end.failure.stack ?? end.failure.message}\n`);
