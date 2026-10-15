@@ -138,6 +138,29 @@ try {
     failed.push(`the main-context loader: ${error.message}`);
   }
 
+  // ── no oracle, Bun only: a callback's referrer is a vm.Script, whichever
+  // function made it (Node calls a callback only under
+  // --experimental-vm-modules).
+  if (underBun) {
+    try {
+      await ws.fs.writeFile('/home/user/referrer.js', [
+        "const vm = require('vm');",
+        "const importModuleDynamically = (specifier, referrer) => { console.log(specifier, referrer instanceof vm.Script); return Promise.resolve({}); };",
+        "const options = { filename: require('path').join(__dirname, 'script.js'), importModuleDynamically };",
+        '(async () => {',
+        "  await new vm.Script(\"import('script')\", options).runInThisContext();",
+        "  await vm.runInThisContext(\"import('this')\", options);",
+        "  await vm.runInNewContext(\"import('new')\", {}, options);",
+        "  await vm.runInContext(\"import('context')\", vm.createContext({}), options);",
+        '})();',
+      ].join('\n'));
+      const ran = await within(30_000, ws.exec('node referrer.js', { cwd: '/home/user' }), 'referrer.js');
+      assert.equal(ran.stdout, 'script true\nthis true\nnew true\ncontext true\n', ran.stdout + ran.stderr);
+    } catch (error) {
+      failed.push(`a callback's referrer: ${error.message}`);
+    }
+  }
+
   // ── a lifo CommonJS command (the host's realm): vm, but not domain ────────
   try {
     await ws.fs.mkdir('/home/user/pkg', { recursive: true });
