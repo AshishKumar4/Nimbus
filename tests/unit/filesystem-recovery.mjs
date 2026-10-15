@@ -149,4 +149,46 @@ function session() {
   console.log('  one recovery per process');
 }
 
+// ── A binding's stream commits leave no listener on the signals it is bound
+//    under: 10,000 of them, landed and refused ────────────────────────────
+{
+  const s = session();
+  s.kernel.mkdir('home/root-only', { mode: 0o755 });
+  const { pid } = s.processes.spawn('git commit', [], '/home/user', { cred: user });
+  const fs = s.filesystem.bind({ pid, cred: user });
+  const recovery = s.filesystem.recovery(pid, user);
+  const live = new Map();
+  const add = EventTarget.prototype.addEventListener;
+  const remove = EventTarget.prototype.removeEventListener;
+  EventTarget.prototype.addEventListener = function (type, ...rest) {
+    if (type === 'abort') live.set(this, (live.get(this) ?? 0) + 1);
+    return add.call(this, type, ...rest);
+  };
+  EventTarget.prototype.removeEventListener = function (type, ...rest) {
+    if (type === 'abort') live.set(this, (live.get(this) ?? 0) - 1);
+    return remove.call(this, type, ...rest);
+  };
+  const commit = (path) => fs.writeStream(encodeWriteBatchStream({
+    inodes: [{ path, parentPath: path.slice(0, path.lastIndexOf('/')), isDir: false, size: 1, mtime: 1, mode: 0o644, chunkCount: 1 }],
+    chunks: [{ path, chunkId: 0, data: new Uint8Array([120]) }],
+  }));
+  try {
+    let landed = 0;
+    let refused = 0;
+    for (let i = 0; i < 5_000; i++) {
+      if ((await commit(`home/user/repo/f${i % 10}`)).ok) landed++;
+      const outcome = await commit('home/root-only/f').then((result) => result.ok, () => false);
+      if (!outcome) refused++;
+    }
+    assert.deepEqual([landed, refused], [5_000, 5_000], 'the commits did not land and refuse as set up');
+  } finally {
+    EventTarget.prototype.addEventListener = add;
+    EventTarget.prototype.removeEventListener = remove;
+  }
+  const left = [...live.values()].filter((count) => count > 0);
+  assert.deepEqual(left, [], 'a stream commit left an abort listener behind');
+  await recovery.dispose();
+  console.log('  10,000 stream commits leave no abort listener behind');
+}
+
 console.log('filesystem recovery: ok');
