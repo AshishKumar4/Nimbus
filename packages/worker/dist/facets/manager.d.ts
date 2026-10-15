@@ -1139,8 +1139,10 @@ export declare class FacetManager {
     private processFabric;
     /** The residents whose write log may still hold changes (process-journals.ts). */
     readonly processJournals: ProcessJournals;
-    /** Residents whose log is being drained as their facet is released. */
-    private readonly journalDraining;
+    /** Per resident whose log is being drained as its facet is released: the drain. */
+    private readonly journalDrains;
+    /** Per resident with a booked log: the binding its drain writes through (NimbusFilesystemAuthority.recovery). */
+    private readonly recoveries;
     /** An exit a signal decided, told once its process's log is drained (`_endBySignal`). */
     private readonly endsAfterDrain;
     /**
@@ -1368,7 +1370,13 @@ export declare class FacetManager {
      * A change the session refuses is said in the process's own output, named.
      */
     private _drainProcessJournal;
-    /** Drain `journal` into the session as process `pid` (with its credential) would have sent it. */
+    /**
+     * Drain `journal` into the session as process `pid` (with its credential)
+     * would have sent it: through `recovery`, the process's own binding, kept
+     * since its log was booked (its descriptions, and the grants that reserved
+     * the inodes it numbered); else, for a log an earlier incarnation left, a
+     * lease of its credential.
+     */
     private _drainJournalAs;
     /**
      * What every loader-backed runtime builds its facet pools from: the env and

@@ -22,9 +22,9 @@ function receiptOf(path, now, handle) {
     };
 }
 /** A re-sent open of a description the binding keeps on a mount: its answer again, as SqliteVFS.reopened gives one; null once its file is gone. */
-async function reopenedOnMount(path, node, handle) {
+async function reopenedOnMount(path, node, handle, admit) {
     try {
-        return receiptOf(path, await node.stat(), handle);
+        return receiptOf(path, await node.stat(admit), handle);
     }
     catch (error) {
         const code = errnoCodeOf(error);
@@ -730,7 +730,7 @@ export class WaveIngest {
                                 const receipt = mounted === undefined
                                     ? scope.asWriter(() => scope.reopened(path, description))
                                     // Its mount's answer, which the wave's cut does not wait for (untilAborted), as every routed one.
-                                    : await untilAborted(reopenedOnMount(path, mounted, options.descriptions?.handle(description)), scope.signal);
+                                    : await untilAborted(reopenedOnMount(path, mounted, options.descriptions?.handle(description), () => scope.signal.throwIfAborted()), scope.signal);
                                 if (receipt !== null)
                                     progress.receipts.push(receipt);
                             }
@@ -1200,7 +1200,7 @@ export class WaveIngest {
                     const node = file.described;
                     if (node !== undefined) {
                         await backend(Promise.resolve(file.call === 'append' ? node.append(bytes, at.guard) : node.write(file.offset ?? 0, bytes, at.guard)));
-                        at.committed(receiptOf(file.named, await backend(Promise.resolve(node.stat()))), bytes.byteLength);
+                        at.committed(receiptOf(file.named, await backend(Promise.resolve(node.stat(at.guard)))), bytes.byteLength);
                         return true;
                     }
                     const stat = await backend(router.apply(file.call !== undefined

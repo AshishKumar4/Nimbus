@@ -71,6 +71,8 @@ export declare function openOnMount(file: PinnedName, open: MountedOpen, describ
 export interface MountedDescriptionContext {
     /** The descriptors' scope: its held writes are this process's (processView, settleHeld). */
     scope: DescriptorScope;
+    /** Its opener's own abort (a caller's signal): the description's calls are refused once it comes, its buffered writes lost. */
+    signal?: AbortSignal;
     refuse: Refuse;
     /** O_SYNC: each write in the mount before it returns. */
     sync: boolean;

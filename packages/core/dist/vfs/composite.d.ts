@@ -221,10 +221,11 @@ export interface HeldFile {
     readonly awaits: boolean;
     /** Which file it is: the same for every hold of it, through any name or view of its backend. */
     readonly key: string;
-    stat(): Awaitable<VfsStat>;
-    read(offset: number, length: number): Awaitable<Uint8Array>;
-    readAll(): Awaitable<Uint8Array>;
-    /** In place; ENOTSUP where it cannot be written so. `admit` runs right before the backend is asked, after every await. */
+    /** `admit`, on each: its caller's admission, run right before the backend is asked, after every await (the view it was opened through asks nothing of its own). */
+    stat(admit?: () => void): Awaitable<VfsStat>;
+    read(offset: number, length: number, admit?: () => void): Awaitable<Uint8Array>;
+    readAll(admit?: () => void): Awaitable<Uint8Array>;
+    /** In place; ENOTSUP where it cannot be written so. */
     write(offset: number, bytes: Uint8Array, admit?: () => void): Awaitable<void>;
     /** Its whole content, `bytes`. */
     replace(bytes: Uint8Array, admit?: () => void): Awaitable<void>;
@@ -232,7 +233,7 @@ export interface HeldFile {
     chmod(mode: number, admit?: () => void): Awaitable<void>;
     chown(uid: number, gid: number, admit?: () => void): Awaitable<void>;
     utimes(atime: number, mtime: number, admit?: () => void): Awaitable<void>;
-    readdir(): Awaitable<VfsDirent[]>;
+    readdir(admit?: () => void): Awaitable<VfsDirent[]>;
     close(): Awaitable<void>;
 }
 export interface MountInfo {
@@ -652,7 +653,8 @@ export declare class CompositeVFS implements VFS {
      * refusal (it is not the file at `at` now), asked after the before-image is
      * read, before the guard. A file with no name (unlinked, held open) is no
      * name's change: only the view's own check is asked. `told`: what its
-     * change is told as (WriteSpec.told).
+     * change is told as (WriteSpec.told). `own`: the view's check is asked (a
+     * pin's, its opener's call); a held file's caller's comes in `admit`.
      */
     private changingOn;
     /** A name an open found on a backend (pin). */
@@ -886,7 +888,9 @@ export declare class CompositeVFS implements VFS {
     private onMutation;
     /**
      * Refuses this view's mutation at each of `paths` (the names it was given
-     * and the namespace paths it lands at) by the table's guard
+     * and the namespace paths it lands at): by the view's own check (its
+     * binding's authority, scoped), unless the caller's comes with the call
+     * (`own` false: a held file's, whoever holds it), and by the table's guard
      * (guardMutations), for a view with a credential. Called right before the
      * backend is, on the path this namespace resolved.
      */

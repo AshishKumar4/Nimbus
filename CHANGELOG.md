@@ -23,6 +23,10 @@ published independently in the `@nimbus-sh` npm scope.
   Breaking (core): `NativeModuleLoader` (`substrate/lifo/node-compat/cjs-loader.js`)
   has `registerScript`.
 
+- Fixed: a WASI program (git, Python, clang, Ruby) that was killed, or that
+  exited, before the session had answered its last file changes no longer
+  loses the files it made in a directory it held. The session landed the
+  rest of what the program had logged but refused those files.
 - Fixed (real git, `NIMBUS_GIT_WASI=1`): Ctrl-C reaches `git` while it
   waits on a credential helper, an editor, a pipe or a child, as on Linux:
   `git credential fill` and `git commit` waiting on its editor end with

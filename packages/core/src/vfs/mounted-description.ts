@@ -120,6 +120,8 @@ export function openOnMount(file: PinnedName, open: MountedOpen, describes: bool
 export interface MountedDescriptionContext {
   /** The descriptors' scope: its held writes are this process's (processView, settleHeld). */
   scope: DescriptorScope;
+  /** Its opener's own abort (a caller's signal): the description's calls are refused once it comes, its buffered writes lost. */
+  signal?: AbortSignal;
   refuse: Refuse;
   /** O_SYNC: each write in the mount before it returns. */
   sync: boolean;
@@ -201,17 +203,17 @@ class MountedDescription implements MountedFileDescription {
   path(): string { return this.file.name; }
   key(): string { return this.file.key; }
 
-  stat(): Awaitable<RuntimeVfsStat> {
-    return andThen(this.file.stat(), (there) => {
+  stat(admit?: () => void): Awaitable<RuntimeVfsStat> {
+    return andThen(this.file.stat(this.admitted('fstat', admit)), (there) => {
       const now = runtimeStatOf(there);
-      return andThen(this.viewed(), (view) => (view ? { ...now, size: view.byteLength } : now));
+      return andThen(this.viewed(admit), (view) => (view ? { ...now, size: view.byteLength } : now));
     });
   }
 
-  read(offset: number, length: number): Awaitable<Uint8Array> {
-    const view = this.viewed();
-    if (view === undefined) return this.file.read(offset, length);
-    return andThen(view, (bytes) => (bytes ? bytes.slice(offset, offset + length) : this.file.read(offset, length)));
+  read(offset: number, length: number, admit?: () => void): Awaitable<Uint8Array> {
+    const view = this.viewed(admit);
+    if (view === undefined) return this.file.read(offset, length, this.admitted('read', admit));
+    return andThen(view, (bytes) => (bytes ? bytes.slice(offset, offset + length) : this.file.read(offset, length, this.admitted('read', admit))));
   }
 
   write(offset: number, bytes: Uint8Array, admit?: () => void): Awaitable<number> {
@@ -223,7 +225,7 @@ class MountedDescription implements MountedFileDescription {
   /** At the end as it is then (answers that end); a held one goes at the end as it stands at the flush. */
   append(bytes: Uint8Array, admit?: () => void): Awaitable<number> {
     if (!this.inPlace) return this.heldAppend(bytes, admit);
-    return andThen(this.file.stat(), (there) => {
+    return andThen(this.file.stat(this.admitted('write', admit)), (there) => {
       const written = this.inPlaceAt(there.size, bytes, admit);
       if (written === undefined) return this.heldAppend(bytes, admit);
       return isPromise(written) ? written.then((end) => end ?? this.heldAppend(bytes, admit)) : written;
@@ -236,8 +238,8 @@ class MountedDescription implements MountedFileDescription {
     return this.file.truncate(size, this.admitted('ftruncate', admit));
   }
 
-  readdir(): Awaitable<RuntimeVfsDirEntry[]> {
-    return andThen(this.file.readdir(), (entries) => entries.map((entry) => ({ name: entry.name, type: entry.type })));
+  readdir(admit?: () => void): Awaitable<RuntimeVfsDirEntry[]> {
+    return andThen(this.file.readdir(this.admitted('scandir', admit)), (entries) => entries.map((entry) => ({ name: entry.name, type: entry.type })));
   }
 
   chmod(mode: number, admit?: () => void): Awaitable<void> { return this.file.chmod(mode, this.admitted('fchmod', admit)); }
@@ -256,7 +258,7 @@ class MountedDescription implements MountedFileDescription {
     this.pending = [];
     this.held = 0;
     this.options.scope.held.delete(this);
-    return andThen(this.file.readAll(), (base) => this.file.replace(apply(writes, base), this.admitted('write', admit)));
+    return andThen(this.file.readAll(this.admitted('write', admit)), (base) => this.file.replace(apply(writes, base), this.admitted('write', admit)));
   }
 
   /** A settle it did not ask for (settleHeld): what it fails with is kept for its next fsync or close. */
@@ -270,10 +272,10 @@ class MountedDescription implements MountedFileDescription {
   }
 
   /** Its file closed whatever the flush answers: the flush's failure, else the close's, is its answer. */
-  close(): Awaitable<void> {
+  close(admit?: () => void): Awaitable<void> {
     let flushed: Awaitable<void>;
     try {
-      flushed = this.flush();
+      flushed = this.flush(admit);
     } catch (error) {
       return this.closeAfter(error);
     }
@@ -313,13 +315,13 @@ class MountedDescription implements MountedFileDescription {
    * its descriptions (processView): this one's own O_SYNC governs only its
    * writes.
    */
-  private viewed(): Awaitable<Uint8Array | undefined> {
+  private viewed(admit: (() => void) | undefined): Awaitable<Uint8Array | undefined> {
     const { file } = this;
-    return processView(this.options.scope, () => ({ key: () => file.key, readAll: () => file.readAll() }));
+    return processView(this.options.scope, () => ({ key: () => file.key, readAll: () => file.readAll(this.admitted('read', admit)) }));
   }
 
   private heldAppend(bytes: Uint8Array, admit?: () => void): Awaitable<number> {
-    return andThen(this.hold({ offset: null, bytes: bytes.slice() }, bytes.byteLength, admit), () => andThen(this.stat(), (now) => now.size));
+    return andThen(this.hold({ offset: null, bytes: bytes.slice() }, bytes.byteLength, admit), () => andThen(this.stat(admit), (now) => now.size));
   }
 
   /**
@@ -340,14 +342,16 @@ class MountedDescription implements MountedFileDescription {
   }
 
   /**
-   * `admit` (the operation's own admission), after the description's: its
-   * process's descriptors still open (EBADF once released). Run right before
-   * the mount is asked, after every await.
+   * `admit` (the operation's own admission: its caller's Authority, the
+   * wave's), after the description's own: its process's descriptors still
+   * open (EBADF once its scope is closed), the opener's own abort not come.
+   * Run right before the mount is asked, after every await.
    */
   private admitted(syscall: string, admit: (() => void) | undefined): () => void {
-    const { scope, refuse } = this.options;
+    const { scope, refuse, signal } = this.options;
     return () => {
       if (scope.closed) throw refuse('EBADF', syscall);
+      signal?.throwIfAborted();
       admit?.();
     };
   }

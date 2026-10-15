@@ -1,6 +1,6 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE } from '../vfs/sqlite-vfs.js';
 import { BUFFERED_WRITE_BYTES, describeMounted, flagsRefusal, openAccess, openFollows, openMounted, reopenMounted } from '../vfs/mounted-description.js';
-import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt } from './descriptors.js';
+import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, scopeAccess, settleHeldAt } from './descriptors.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf } from '../vfs/composite.js';
 import { abandon, andThen, isCharacterDevice, isPromise, readDeclaredSource, readRangeOrWhole, syncValue } from '../vfs/vfs.js';
@@ -14,6 +14,7 @@ export class SqliteRuntimeFsBridge {
     namespace;
     bufferedWriteBytes;
     waves;
+    binding;
     synchronous = this;
     vfs;
     /** The namespace as this caller sees it: what a path off the SQLite root reaches. */
@@ -24,15 +25,18 @@ export class SqliteRuntimeFsBridge {
     /** Bytes one buffered handle may hold before a write is EFBIG. */
     bufferedWriteBytes = BUFFERED_WRITE_BYTES, 
     /** The namespace's wave ingestion (ProcessFiles.waves); without a namespace, none places anything elsewhere. */
-    waves = new WaveIngest(null)) {
+    waves = new WaveIngest(null), 
+    /** Its binding's Authority, its standing (Descriptors' `owned`), and its caller's abort; else its scope alone. */
+    binding = scopeAccess(scope)) {
         this.rawVfs = rawVfs;
         this.scope = scope;
         this.namespace = namespace;
         this.bufferedWriteBytes = bufferedWriteBytes;
         this.waves = waves;
+        this.binding = binding;
         this.vfs = vfs;
         this.mounted = namespace?.sync;
-        this.descriptors = new Descriptors(scope, () => rawVfs.revision(), true);
+        this.descriptors = new Descriptors(scope, () => rawVfs.revision(), binding.authority, binding.owned, true);
     }
     dispose() {
         const lost = closeDescriptions(this.scope);
@@ -387,7 +391,7 @@ export class SqliteRuntimeFsBridge {
                 return syncValue(this.descriptors.open(syncValue(openMounted({
                     name: located.path, flags: normalizedFlags, mode: flags.mode,
                     refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, pin: (name, follow) => namespace.pin(name, { follow, sync: true }),
-                    sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
+                    sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes, ...(this.binding.signal === undefined ? {} : { signal: this.binding.signal }),
                 })), normalizedFlags));
             }
             const p = located.path;
@@ -956,6 +960,7 @@ export class SqliteRuntimeFsBridge {
                 return syncValue(this.descriptors.open(syncValue(reopenMounted(held, {
                     flags: normalizedFlags, mode: flags.mode, refuse: (code, syscall) => fsError(code, syscall, named), scope: this.scope,
                     pin: (name, follow) => namespace.pin(name, { follow, sync: true }), sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
+                    ...(this.binding.signal === undefined ? {} : { signal: this.binding.signal }),
                 })), normalizedFlags));
             }
             if (held.ino === ROOT_INODE)
