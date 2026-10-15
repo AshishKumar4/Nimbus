@@ -5,6 +5,15 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (local workerd: `wrangler dev`, the unit suite): a session could
+  stop answering for good, its thread at 100% CPU, after a real-git run on a
+  busy machine. workerd 1.20260926.1 left cppgc sweeping incremental (V8
+  overwrote the atomic sweeping workerd asked for), and its message-loop pump
+  ran the incremental sweep task, which re-posted itself, forever. wrangler
+  4.143.0 → 4.145.0, which pins workerd 1.20260930.2 and miniflare
+  5.20260930.0-alpha: workerd's e5803288a sweeps atomically, so no sweep task
+  is ever posted. Deployed Workers are unaffected: the edge runs Cloudflare's
+  own build.
 - Fixed (npm): an install of many packages dropped one about one time in
   ten, its reason "Response closed due to connection limit" (pi's official
   installer, 118 packages). The install facet held registry answers open and
