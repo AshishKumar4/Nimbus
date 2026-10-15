@@ -822,6 +822,11 @@ export declare class SqliteVFS {
     /** Throw what writing `opened`'s held appends failed with, once. */
     private raiseAppendFailure;
     private now;
+    /**
+     * A BLOB as a plain Uint8Array over the port's bytes: a subclass (a Node
+     * Buffer, which a better-sqlite3-style port answers) slices to a view, not
+     * a copy, so a read's bytes would be the cache's.
+     */
     private blobToUint8Array;
     private copyBytes;
     /**

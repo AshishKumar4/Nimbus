@@ -4,8 +4,8 @@ import { resolve } from '../../utils/path.js';
 import { encode } from '../../utils/encoding.js';
 import { SinkWriter } from '../../../../_shared/byte-stream.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
-import { isCharacterDevice, statOrThrow } from '../../../../vfs/vfs.js';
-import { exists } from '../../../../vfs/vfs.js';
+import { isCharacterDevice } from '../../../../vfs/vfs.js';
+import { readToEnd, withOpenFiles, type OpenFile, type ProcessFile } from '../../../../runtime/process-files.js';
 import { parseSuffixedCount } from '../../utils/size-units.js';
 
 /**
@@ -39,9 +39,23 @@ const command: Command = async (ctx) => {
   const options = parsed.options;
 
   try {
-    const copied = options.input && options.input !== '-' && options.input !== '/dev/stdin'
-      ? await copyFromFile(ctx, options)
-      : await copyFromStdin(ctx, options);
+    // The files dd opens, if= before of= as dd opens them, are synced and
+    // closed however the copy ends; a sync or a close that fails is dd's failure.
+    const closing: Error[] = [];
+    const copied = await withOpenFiles(ctx.vfs, async (open) => {
+      const input = options.input && options.input !== '-' && options.input !== '/dev/stdin'
+        ? { name: options.input, file: await openInput(ctx, options, options.input, open) }
+        : null;
+      const sink = await openOutput(ctx, options, open);
+      try {
+        return input === null ? await copyFromStdin(ctx, options, sink) : await copyFromFile(ctx, options, input.name, input.file, sink);
+      } finally {
+        await sink.end();
+      }
+    }, async (file, error) => {
+      closing.push(new Error(`${file.path}: ${error instanceof Error ? error.message : String(error)}`));
+    });
+    if (closing.length > 0) throw closing[0];
     if (options.status !== 'none') await writeStatus(ctx, options, copied);
     return 0;
   } catch (error) {
@@ -50,33 +64,37 @@ const command: Command = async (ctx) => {
   }
 };
 
-async function copyFromFile(ctx: CommandContext, options: DdOptions): Promise<number> {
-  const path = resolve(ctx.cwd, options.input!);
-  const limit = await inputLimit(ctx, options, path);
-  const sink = await openOutput(ctx, options);
-  const start = options.skip * options.inputBlockSize;
-
-  let copied = 0;
-  while (copied < limit) {
-    if (ctx.signal.aborted) break;
-    const want = Math.min(options.inputBlockSize, limit - copied);
-    const block = await readInput(ctx, path, start + copied, want, options.input!);
-    if (block.length === 0) break;
-    await sink.write(block);
-    copied += block.length;
+/** The input, opened once, as dd's if= is: its blocks are the file the open found. */
+async function openInput(ctx: CommandContext, options: DdOptions, input: string, open: OpenFile): Promise<ProcessFile> {
+  const file = await labelled(input, () => open(resolve(ctx.cwd, input), { read: true }));
+  if (options.count === undefined && isCharacterDevice(file.stat.mode)) {
+    throw new Error(`${input}: character device has no end — pass count= to bound the copy`);
   }
-  await sink.end();
+  return file;
+}
+
+/** `file`'s blocks from skip=, to its end or count=. */
+async function copyFromFile(ctx: CommandContext, options: DdOptions, input: string, file: ProcessFile, sink: DdSink): Promise<number> {
+  const limit = options.count === undefined ? Number.POSITIVE_INFINITY : options.count * options.inputBlockSize;
+  let copied = 0;
+  const blocks = readToEnd(file, options.inputBlockSize, { from: options.skip * options.inputBlockSize, limit });
+  for (;;) {
+    if (ctx.signal.aborted) break;
+    const next = await labelled(input, () => blocks.next());
+    if (next.done) break;
+    await sink.write(next.value);
+    copied += next.value.length;
+  }
   return copied;
 }
 
-async function copyFromStdin(ctx: CommandContext, options: DdOptions): Promise<number> {
+async function copyFromStdin(ctx: CommandContext, options: DdOptions, sink: DdSink): Promise<number> {
   const stdin = options.input === '/dev/tty' ? ctx.terminalStdin : ctx.stdin;
   if (!stdin) throw new Error('standard input: Bad file descriptor');
 
   const limit = options.count === undefined
     ? Number.POSITIVE_INFINITY
     : options.count * options.inputBlockSize;
-  const sink = await openOutput(ctx, options);
 
   let copied = 0;
   let skipRemaining = options.skip * options.inputBlockSize;
@@ -92,7 +110,6 @@ async function copyFromStdin(ctx: CommandContext, options: DdOptions): Promise<n
     await sink.write(bytes);
     copied += bytes.length;
   }
-  await sink.end();
   return copied;
 }
 
@@ -101,66 +118,43 @@ async function readStdinChunk(stdin: CommandInputStream, want: number): Promise<
   return (await stdin.read());
 }
 
-/**
- * How many bytes this invocation is allowed to read.
- *
- * `count` is the explicit answer. Without it dd copies to EOF, which a regular
- * file's size supplies — but a character device never reaches EOF, so an
- * unbounded copy from one cannot be satisfied and is rejected rather than
- * silently producing whatever a single read returned.
- */
-async function inputLimit(ctx: CommandContext, options: DdOptions, path: string): Promise<number> {
-  if (options.count !== undefined) return options.count * options.inputBlockSize;
-
-  const stat = await statOrThrow(ctx.vfs, path);
-  if (isCharacterDevice(stat.mode)) {
-    throw new Error(`${options.input}: character device has no end — pass count= to bound the copy`);
-  }
-  return Math.max(0, stat.size - options.skip * options.inputBlockSize);
-}
-
-async function readInput(
-  ctx: CommandContext,
-  path: string,
-  offset: number,
-  length: number,
-  label: string,
-): Promise<Uint8Array> {
+/** `run`'s VFS failure as dd reports one: the operand's name, then the error. */
+async function labelled<T>(label: string, run: () => Promise<T>): Promise<T> {
   try {
-    return await ctx.vfs.readRange(path, offset, length);
+    return await run();
   } catch (error) {
     if (isVfsError(error)) throw new Error(`${label}: ${error.message}`);
     throw error;
   }
 }
 
-/** A byte destination that tracks its own write offset, like an open fd. */
+/** Where dd writes: a stream, or the output file's open description at its own offset. */
 interface DdSink {
   write(bytes: Uint8Array): void | Promise<void>;
   end(): void | Promise<void>;
 }
 
-async function openOutput(ctx: CommandContext, options: DdOptions): Promise<DdSink> {
+async function openOutput(ctx: CommandContext, options: DdOptions, open: OpenFile): Promise<DdSink> {
   const target = options.output;
   if (!target || target === '-' || target === '/dev/stdout') return streamSink(ctx.stdout);
   if (target === '/dev/stderr') return streamSink(ctx.stderr);
 
   const path = resolve(ctx.cwd, target);
   const start = options.seek * options.outputBlockSize;
-  // dd truncates its output file unless conv=notrunc; seeking still keeps
-  // whatever precedes the seek point.
-  if (!options.notrunc) {
-    if (await ctx.vfs.exists(path)) await ctx.vfs.truncate(path, start);
-    else await ctx.vfs.writeFile(path, new Uint8Array(start));
-  }
-
+  // The output is opened once, as dd's of= is, and written at its own offset.
+  // dd truncates it unless conv=notrunc; seeking still keeps whatever
+  // precedes the seek point.
+  const file = await labelled(target, () => open(path, { write: true, create: true }));
+  // The file dd opened, whatever its name names now.
+  if (!options.notrunc) await labelled(target, () => file.truncate(start));
   let offset = start;
   return {
     write: async (bytes) => {
-      await ctx.vfs.writeRange(path, offset, bytes);
+      await labelled(target, () => file.write(bytes, offset));
       offset += bytes.length;
     },
-    end: () => { /* nothing buffered */ },
+    // Synced and closed with every file dd opened (withOpenFiles).
+    end: () => undefined,
   };
 }
 
