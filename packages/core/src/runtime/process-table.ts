@@ -85,7 +85,7 @@ export function parseExecId(value: unknown): string {
  * the pid listening on a port): absent when the process has none, so a
  * record about a process no exec named is what it was before exec ids.
  */
-export function execIdField(entry: ProcessEntry | undefined): { execId?: string } {
+export function execIdField(entry: Pick<ProcessEntry, 'execId'> | undefined): { execId?: string } {
   return entry?.execId === undefined ? {} : { execId: entry.execId };
 }
 

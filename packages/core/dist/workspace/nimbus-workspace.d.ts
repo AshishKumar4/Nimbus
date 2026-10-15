@@ -304,7 +304,8 @@ export declare class NimbusWorkspace {
      * A shell of its own for process `pid`, a second cwd and environment over
      * the workspace shell's filesystem, commands and kernel. It starts in
      * `state.cwd` with the workspace shell's environment and `state.env` on
-     * top. Its commands act as `pid` (`$$`, and the credential and umask
+     * top; with `inheritEnv: false`, with `state.env` alone (a command run again
+     * as it was once run). Its commands act as `pid` (`$$`, and the credential and umask
      * {@link processes} holds for it); `sudo` and `su` go through the workspace
      * shell's identity, and `kill` reaches what the workspace shell's does.
      *
@@ -315,6 +316,7 @@ export declare class NimbusWorkspace {
     shellFor(pid: number, state: {
         readonly cwd: string;
         readonly env?: Readonly<Record<string, string>>;
+        readonly inheritEnv?: boolean;
     }): Shell;
     /**
      * Run `body` in the named shell `id` (see named-shells.ts): in the cwd and

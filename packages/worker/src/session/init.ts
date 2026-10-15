@@ -87,6 +87,8 @@ export function initSession(
     if (self.building === building) self.building = null;
   });
   self.building = building;
+  // The dev servers the previous incarnation ran start again once it is built.
+  building.then(() => self.restoreDevServers(), () => []).catch((error) => console.warn(`[init] restoring the session's dev servers failed: ${errorText(error)}`));
   return building;
 }
 

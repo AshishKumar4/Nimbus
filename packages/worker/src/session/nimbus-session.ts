@@ -139,6 +139,8 @@ import { WebSocketRelay } from './ws-relay.js';
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 import * as _routes from './routes.js';
+import { restoreDevServers, type DevServerRestoreHost } from './dev-servers.js';
+import type { DevServerRestoreFailure } from './helpers.js';
 import * as _portCapability from './port-capability.js';
 // Programmatic SDK RPC surface.
 import * as _programmatic from './programmatic.js';
@@ -1073,9 +1075,19 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
     return _portCapability.routeCapabilityPort(this as any, port, capability, request, innerPath);
   }
 
-  /** The port route's dev-server restore, delegated — lives in routes.ts where the other session routes do. */
-  restorePersistedDevServer(onlyPort?: number): Promise<void> {
-    return _routes.restorePersistedDevServer(this as any, onlyPort);
+  /** What restoring the dev servers reads of this session, one view per instance (its restore is the view's). */
+  private devServerHost: DevServerRestoreHost | null = null;
+  /** The dev servers a previous incarnation ran, started again once (dev-servers.ts): what every route to one waits on. */
+  restoreDevServers(): Promise<readonly DevServerRestoreFailure[]> {
+    const session = this;
+    this.devServerHost ??= {
+      ctx: this.ctx,
+      get processes() { return session.processes; },
+      get portRegistry() { return session.portRegistry; },
+      get runtimeWorkspace() { return session.runtimeWorkspace; },
+      ensureRuntimeReady: () => this.ensureRuntimeReady(),
+    };
+    return restoreDevServers(this.devServerHost);
   }
   /** The port route's in-DO HMR accept, delegated — same reason. */
   acceptCirrusHmrWs(request: Request): Response {

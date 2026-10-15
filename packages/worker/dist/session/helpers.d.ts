@@ -180,4 +180,15 @@ export declare const VITE_BUILD_TIMEOUT_MS = 120000;
  * to null-check: settle clears it on every path.
  */
 export declare function withLoudTimeout<T>(work: Promise<T>, timeoutMs: number, what: string): Promise<T>;
+/** A recorded dev server that did not start again. */
+export interface DevServerRestoreFailure {
+    /** The command line, and where it ran. */
+    command: string;
+    cwd: string;
+    /** The process its run had, whose log holds its output; null when it did not run. */
+    pid: number | null;
+    reason: string;
+}
+/** What a request that needed a dev server answers when one did not start again: what failed, why, and what to do. */
+export declare function devServerRestoreFailedResponse(failures: readonly DevServerRestoreFailure[]): Response;
 //# sourceMappingURL=helpers.d.ts.map

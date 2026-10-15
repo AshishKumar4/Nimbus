@@ -66,6 +66,7 @@ import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-d
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 import * as _routes from './routes.js';
+import { restoreDevServers } from './dev-servers.js';
 import * as _portCapability from './port-capability.js';
 // Programmatic SDK RPC surface.
 import * as _programmatic from './programmatic.js';
@@ -940,9 +941,19 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcRouteCapabilityPort(port, capability, request, innerPath) {
         return _portCapability.routeCapabilityPort(this, port, capability, request, innerPath);
     }
-    /** The port route's dev-server restore, delegated — lives in routes.ts where the other session routes do. */
-    restorePersistedDevServer(onlyPort) {
-        return _routes.restorePersistedDevServer(this, onlyPort);
+    /** What restoring the dev servers reads of this session, one view per instance (its restore is the view's). */
+    devServerHost = null;
+    /** The dev servers a previous incarnation ran, started again once (dev-servers.ts): what every route to one waits on. */
+    restoreDevServers() {
+        const session = this;
+        this.devServerHost ??= {
+            ctx: this.ctx,
+            get processes() { return session.processes; },
+            get portRegistry() { return session.portRegistry; },
+            get runtimeWorkspace() { return session.runtimeWorkspace; },
+            ensureRuntimeReady: () => this.ensureRuntimeReady(),
+        };
+        return restoreDevServers(this.devServerHost);
     }
     /** The port route's in-DO HMR accept, delegated — same reason. */
     acceptCirrusHmrWs(request) {

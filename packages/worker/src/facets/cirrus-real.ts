@@ -83,6 +83,7 @@ import {
 } from './real-vite-hmr.js';
 import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
 import type { CompositeVFS } from '@nimbus-sh/core/vfs/composite.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { FacetManager, WorkerFacet } from './manager.js';
@@ -531,7 +532,7 @@ export class CirrusReal {
     ctx: DurableObjectState,
     launcher: Pick<FacetManager, 'spawnWorker'>,
     processes: Pick<SessionProcessSupervisor, 'get' | 'subscribeTerminal'>,
-    identity: { cwd: string; argv: string[]; cred: VfsCred; execId?: string },
+    identity: { cwd: string; argv: string[]; cred: VfsCred; execId?: string; restartedFrom?: ProcessRestart },
   ): Promise<void> {
     this._startedAt = Date.now();
 
@@ -675,7 +676,11 @@ export class CirrusReal {
         },
         ...(hmrBinding ? { bindings: { CIRRUS_HMR: hmrBinding } } : {}),
         port: this.port,
-        identity: { argv: identity.argv, cred: identity.cred, ...(identity.execId === undefined ? {} : { execId: identity.execId }) },
+        identity: {
+          argv: identity.argv, cred: identity.cred,
+          ...(identity.execId === undefined ? {} : { execId: identity.execId }),
+          ...(identity.restartedFrom === undefined ? {} : { restartedFrom: identity.restartedFrom }),
+        },
       }));
     } catch (error) {
       this.stop();
