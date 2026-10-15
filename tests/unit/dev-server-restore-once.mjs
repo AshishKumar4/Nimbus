@@ -112,6 +112,9 @@ for (const entry of during.host.processes.getAll()) if (entry.state === 'running
 during.host.processes.setPidBase(7 * bundle.PID_GEN_STRIDE);
 rows.clear();
 destroyDone();
+await new Promise((resolve) => setTimeout(resolve, 50));
+// What it wrongly started would wait here.
+release();
 assert.deepEqual(await askedDuring, [], 'it ran nothing');
 assert.equal(runs, lateRuns + 1, 'only the start before the destroy ran the command');
 assert.deepEqual([...rows.keys()], [], 'and wrote nothing that outlived the wipe');
