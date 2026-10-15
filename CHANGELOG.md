@@ -5,6 +5,23 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (lifo `node` and lifo CommonJS commands, X-1/X-2): a program's
+  `process.stdin` is a Readable over fd 0, as Node's: `'data'` as each piece
+  arrives rather than once stdin ends, `for await`, `pipe`, `setEncoding`, and
+  readline over it (the engine's own readline now; lifo's copy, which split a
+  line arriving in two pieces into two lines, is gone). A program that never
+  reads stdin, or pauses it, no longer waits for it to end. In a terminal,
+  `process.stdin`, `process.stdout` and `process.stderr` are the tty module's
+  streams, as in Node: `isTTY` is true, `columns` and `rows` are the window's
+  (`COLUMNS` x `LINES`), a typed line is read as it is typed, and
+  `setRawMode` hands the program each key. `tty.isatty(fd)` answers for each
+  descriptor (it was always false), and `tty.WriteStream(fd)` writes to that
+  descriptor in order with `process.stdout` (its writes went nowhere); a
+  descriptor that is not 0, 1 or 2 is refused as Node refuses it.
+  Breaking: `createProcess` (`substrate/lifo/node-compat/process.js`) takes
+  `stdio` (`{ stdout, stderr, env, input?, terminal? }`) in place of `stdout`
+  and `stderr`; `substrate/lifo/node-compat/readline.js` is removed; and a
+  `tty.WriteStream` needs its descriptor, as Node's does.
 ## 2026-10-15: platform 0.11.0, core 0.22.0, fabric 0.17.0, worker 0.20.0, sdk 0.16.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4, runtime-cpython 3.13.14-2 (config 0.3.1 unchanged)
 
 The 2026-10-14 versions reached production but were never published to npm; these carry their changes too.

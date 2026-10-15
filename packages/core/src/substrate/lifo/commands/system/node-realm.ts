@@ -55,7 +55,11 @@ export type NodeCall =
   /** Watch `path` as watch `id` (NodeFilesystem.watch); a null path stops it. */
   | { readonly op: 'watch'; readonly id: number; readonly path: string | null }
   /** umask(2): the mask the program creates with from now on (its own copy: the shell's is not changed). */
-  | { readonly op: 'umask'; readonly mask: number };
+  | { readonly op: 'umask'; readonly mask: number }
+  /** Whether standard descriptor `fd` is the terminal. */
+  | { readonly op: 'isatty'; readonly fd: number }
+  /** The terminal's raw mode, on or off (tty.ReadStream.setRawMode). */
+  | { readonly op: 'rawMode'; readonly on: boolean };
 
 /** A response to a request that stayed on the box, as data, either way across. */
 export interface RealmResponse {
@@ -70,6 +74,8 @@ export type GuestEvent =
   | { readonly type: 'fetch'; readonly id: number; readonly port: number; readonly url: string; readonly method: string; readonly headers: Record<string, string>; readonly body: string | Uint8Array | null }
   | { readonly type: 'served'; readonly id: number; readonly response: RealmResponse | null }
   | { readonly type: 'exit'; readonly code: number }
+  /** fd 0's next piece, wanted as read `id` (process.stdin). */
+  | { readonly type: 'stdin-read'; readonly id: number }
   | EgressGuestEvent;
 
 /** What this side posts on `events`. */
@@ -78,6 +84,8 @@ export type HostEvent =
   | { readonly type: 'serve'; readonly id: number; readonly port: number; readonly request: VirtualRequest }
   /** A change watch `id` was told. */
   | { readonly type: 'changed'; readonly id: number; readonly event: VfsEvent }
+  /** Read `id`'s piece of fd 0; null at its end. */
+  | { readonly type: 'stdin'; readonly id: number; readonly data: Uint8Array | null }
   | EgressHostEvent;
 
 /**
@@ -117,6 +125,7 @@ export function isGuestEvent(value: unknown): value is GuestEvent {
         && (value.body === null || typeof value.body === 'string' || value.body instanceof Uint8Array);
     case 'served': return Number.isSafeInteger(value.id) && isResponse(value.response);
     case 'exit': return Number.isSafeInteger(value.code);
+    case 'stdin-read': return Number.isSafeInteger(value.id);
     default: return false;
   }
 }
@@ -134,6 +143,7 @@ export function isHostEvent(value: unknown): value is HostEvent {
         && typeof value.event.path === 'string'
         && (value.event.oldPath === undefined || typeof value.event.oldPath === 'string')
         && typeof value.event.timestamp === 'number';
+    case 'stdin': return Number.isSafeInteger(value.id) && (value.data === null || value.data instanceof Uint8Array);
     default: return false;
   }
 }
@@ -163,6 +173,10 @@ export interface RealmServices {
   filesystem(): NodeFilesystem;
   /** fd 0, read to its end, once; empty after. */
   stdin(): Promise<Uint8Array>;
+  /** Whether standard descriptor `fd` is the terminal. */
+  isatty(fd: number): boolean;
+  /** The terminal's raw mode, on or off. */
+  setRawMode(on: boolean): void;
   listen(port: number): void;
   unlisten(port: number): void;
   /** Watch `path` as watch `id`, or stop it (null). */
@@ -271,6 +285,11 @@ async function performCall(call: unknown, services: RealmServices): Promise<unkn
       return callFilesystem(services.filesystem(), call.method, call.args);
     }
     case 'stdin': return services.stdin();
+    case 'isatty': return services.isatty(fdArg(call.fd));
+    case 'rawMode': {
+      if (typeof call.on !== 'boolean') throw refused('raw mode that is not on or off');
+      return services.setRawMode(call.on);
+    }
     case 'listen': return services.listen(portArg(call.port));
     case 'unlisten': return services.unlisten(portArg(call.port));
     case 'watch': {
@@ -342,14 +361,33 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
     }
   };
   const watches = new Map<number, NodeWatch>();
-  let stdinTaken = false;
+  // fd 0 has one reader, the program: its pieces and its read to the end are
+  // taken in the order asked for. A piece it left waiting for when it ended
+  // is withdrawn, so what is typed next is the shell's, not swallowed.
+  const ended = new AbortController();
+  let stdinAtEnd = false;
+  let stdinReads: Promise<unknown> = Promise.resolve();
+  const fromStdin = <T>(read: () => Promise<T>): Promise<T> => {
+    const next = stdinReads.then(read);
+    stdinReads = next.catch(() => {});
+    return next;
+  };
+  const stdinPiece = (): Promise<Uint8Array | null> => fromStdin(async () => {
+    const stdin = ctx.stdin;
+    if (stdinAtEnd || !stdin) return null;
+    const piece = stdin.readBytes ? await stdin.readBytes(65536, ended.signal) : textPiece(await stdin.read());
+    if (piece === null) stdinAtEnd = true;
+    return piece;
+  });
   const services: RealmServices = {
     filesystem,
-    stdin: async () => {
-      if (stdinTaken || !ctx.stdin || ctx.stdin === ctx.terminalStdin) return new Uint8Array(0);
-      stdinTaken = true;
+    stdin: () => fromStdin(async () => {
+      if (stdinAtEnd || !ctx.stdin || ctx.stdin === ctx.terminalStdin) return new Uint8Array(0);
+      stdinAtEnd = true;
       return readToEnd(ctx.stdin);
-    },
+    }),
+    isatty: (fd) => ctx.isFdTerminal?.(fd) ?? false,
+    setRawMode: (on) => { ctx.setRawMode?.(on); },
     listen: (port) => {
       if (!kernel) throw new VfsError('EACCES', `listen: no ports on this host :${port}`);
       kernel.portRegistry.set(port, serveFromGuest(port));
@@ -399,6 +437,12 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
             post({ type: 'fetched', id: event.id, response });
           });
           return;
+        case 'stdin-read':
+          // A read that failed ends fd 0 for the program; one withdrawn at its end answers nothing.
+          void stdinPiece().then((data) => post({ type: 'stdin', id: event.id, data }), () => {
+            if (!ended.signal.aborted) post({ type: 'stdin', id: event.id, data: null });
+          });
+          return;
       }
     },
   });
@@ -414,6 +458,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   if (ctx.signal.aborted) abort();
 
   const end = await realm.ended;
+  ended.abort();
   ctx.signal.removeEventListener('abort', abort);
   for (const port of ports) kernel?.portRegistry.delete(port);
   for (const respond of pending.values()) respond(null);
@@ -427,6 +472,11 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
     return code ?? 1;
   }
   return code ?? end.code;
+}
+
+/** A text read's piece as bytes; null at the end. */
+function textPiece(text: string | null): Uint8Array | null {
+  return text === null ? null : new TextEncoder().encode(text);
 }
 
 /** All of `stdin`, to its end. */

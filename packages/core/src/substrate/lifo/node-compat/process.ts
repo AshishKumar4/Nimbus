@@ -1,8 +1,7 @@
 import { EventEmitter } from 'node:events';
-import type { Writable } from 'node:stream';
-import type { CommandOutputStream } from '../commands/types.js';
+import type { Readable, Writable } from 'node:stream';
 import { createProcessWarnings, type WarningConstructor, type WarningOptions } from '../../../_shared/node-warning.js';
-import { standardStream } from './standard-streams.js';
+import { ttyOf, type ProgramStdio } from './tty-streams.js';
 import { NODE_VERSION, NODE_VERSIONS } from '../../../constants.js';
 import { parseFileMode } from '../../../_shared/node-arguments.js';
 
@@ -24,28 +23,29 @@ interface WarningFlags {
 }
 
 /**
- * A program's process: an emitter, as Node's is. Its stdout and stderr are
- * made when the program first reaches them: a Writable costs the engine's
- * stream module, which a program that only logs never loads.
+ * A program's process: an emitter, as Node's is. Its stdin, stdout and
+ * stderr are made when the program first reaches them (a stream costs the
+ * engine's stream module, which a program that only logs never loads), and
+ * are its tty module's streams where the descriptor is the terminal.
  */
 export class LifoProcess extends EventEmitter {
-  readonly #output: CommandOutputStream;
-  readonly #errorOutput: CommandOutputStream;
-  #stdout: Writable | undefined;
-  #stderr: Writable | undefined;
+  readonly #stdio: ProgramStdio;
 
-  constructor(output: CommandOutputStream, errorOutput: CommandOutputStream) {
+  constructor(stdio: ProgramStdio) {
     super();
-    this.#output = output;
-    this.#errorOutput = errorOutput;
+    this.#stdio = stdio;
+  }
+
+  get stdin(): Readable {
+    return ttyOf(this.#stdio).stdin();
   }
 
   get stdout(): Writable {
-    return this.#stdout ??= standardStream(this.#output, 1);
+    return ttyOf(this.#stdio).stdout();
   }
 
   get stderr(): Writable {
-    return this.#stderr ??= standardStream(this.#errorOutput, 2);
+    return ttyOf(this.#stdio).stderr();
   }
 }
 
@@ -69,8 +69,8 @@ export interface ProcessOptions {
   argv: string[];
   env: Record<string, string>;
   cwd: string;
-  stdout: CommandOutputStream;
-  stderr: CommandOutputStream;
+  /** Its standard descriptors: the same object its module map's tty is made for. */
+  stdio: ProgramStdio;
   identity: ProcessIdentity;
 }
 
@@ -81,9 +81,9 @@ export function createProcess(opts: ProcessOptions) {
   // Unset until the program sets them, as in a Node run without their options.
   const unflagged: WarningFlags = {};
   // Node's warnings, written on the program's stderr.
-  const warnings = createProcessWarnings(() => proc, (text) => { opts.stderr.write(`${text}\n`); });
+  const warnings = createProcessWarnings(() => proc, (text) => { opts.stdio.stderr.write(`${text}\n`); });
 
-  const proc = Object.assign(new LifoProcess(opts.stdout, opts.stderr), {
+  const proc = Object.assign(new LifoProcess(opts.stdio), {
     argv: ['/usr/bin/node', ...opts.argv],
     argv0: 'node',
     env: { ...opts.env },
@@ -91,16 +91,6 @@ export function createProcess(opts: ProcessOptions) {
     chdir: (_dir: string) => { throw new Error('process.chdir() is not supported in Lifo'); },
     exit: (code = 0) => {
       throw new ProcessExitError(code);
-    },
-    stdin: {
-      isTTY: false,
-      fd: 0,
-      on: () => {},
-      once: () => {},
-      resume: () => {},
-      pause: () => {},
-      setEncoding: () => {},
-      read: () => null,
     },
     platform: 'linux' as string,
     arch: 'x64' as string,

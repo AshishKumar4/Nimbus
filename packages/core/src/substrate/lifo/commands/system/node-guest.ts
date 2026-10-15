@@ -21,6 +21,8 @@ import { createHostsResolver, type VirtualRequest, type VirtualRequestHandler, t
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { VfsEvent } from '../../../../vfs/events.js';
 import type { CommandOutputStream } from '../types.js';
+import type { StandardInput } from '../../node-compat/standard-streams.js';
+import type { ProgramTerminal } from '../../node-compat/tty-streams.js';
 import { ProcessExitError } from '../../node-compat/index.js';
 import { useNodeErrorInspect } from '../../../../_shared/node-error.js';
 import { runNodeProgram } from './node.js';
@@ -70,7 +72,7 @@ const fetched = new Map<number, (response: RealmResponse | null) => void>();
 let offTheBox: RealmEgressGuest | null = null;
 /** `events` holds the realm open while anything of the program's waits on it. */
 function holdWhileBusy(): void {
-  joined.hold(fetched.size > 0 || ports.size > 0 || persistentWatches > 0 || (offTheBox?.awaited ?? 0) > 0);
+  joined.hold(fetched.size > 0 || ports.size > 0 || persistentWatches > 0 || stdinWaiting || (offTheBox?.awaited ?? 0) > 0);
 }
 
 /** End the process now with `code`, as process.exit() and a fatal error do. */
@@ -150,6 +152,27 @@ const filesystem: NodeFilesystem = {
   },
 };
 
+/** fd 0, a piece at a time, each asked of the host; a read the program waits on (not one it paused) holds the realm. */
+const stdinPieces = new Map<number, (piece: Uint8Array | null) => void>();
+let stdinReads = 0;
+let stdinWaiting = false;
+const input: StandardInput = {
+  read: () => new Promise((resolve) => {
+    const id = ++stdinReads;
+    stdinPieces.set(id, resolve);
+    post({ type: 'stdin-read', id });
+  }),
+  waiting: (on) => {
+    stdinWaiting = on;
+    holdWhileBusy();
+  },
+};
+
+const terminal: ProgramTerminal = {
+  isatty: (fd) => flagOf(call({ op: 'isatty', fd }), 'isatty'),
+  setRawMode: (on) => { call({ op: 'rawMode', on }); },
+};
+
 const output = (fd: 1 | 2): CommandOutputStream => ({
   write: (data: string) => post({ type: 'output', fd, data }),
   writeBytes: (data: Uint8Array) => post({ type: 'output', fd, data }),
@@ -220,6 +243,10 @@ events.on('message', (event) => {
     case 'changed':
       watches.get(event.id)?.listener(event.event);
       return;
+    case 'stdin':
+      stdinPieces.get(event.id)?.(event.data);
+      stdinPieces.delete(event.id);
+      return;
   }
 });
 
@@ -249,6 +276,8 @@ const end = await runNodeProgram(program, {
   stdout: output(1),
   stderr: output(2),
   stdin: () => bytes(call({ op: 'stdin' }), 'stdin'),
+  input,
+  terminal,
   setUmask: (mask) => { call({ op: 'umask', mask }); },
   portRegistry: ports,
   routeLoopback,

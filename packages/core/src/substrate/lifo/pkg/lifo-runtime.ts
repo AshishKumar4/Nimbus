@@ -200,6 +200,9 @@ async function executeCjsCommand(
 ): Promise<number> {
   // The command's own mask, a copy of the shell's as it started, as a child's is.
   let mask = ctx.cred.umask;
+  // fd 0 a piece at a time: a read still waiting when the command ends is withdrawn.
+  const ended = new AbortController();
+  const stdin = ctx.stdin;
   const nodeCtx: NodeContext = {
     filesystem: synchronousFilesystem(ctx.vfs, () => mask),
     identity: { pid: ctx.pid, uid: ctx.cred.uid, gid: ctx.cred.gid, groups: ctx.cred.groups, umask: mask, setUmask: (next) => { mask = next; } },
@@ -211,15 +214,33 @@ async function executeCjsCommand(
     filename: entryPath,
     dirname: dirname(entryPath),
     signal: ctx.signal,
+    input: {
+      read: async () => {
+        if (!stdin) return null;
+        if (stdin.readBytes) return stdin.readBytes(65536, ended.signal);
+        const text = await stdin.read();
+        return text === null ? null : new TextEncoder().encode(text);
+      },
+      // The command's own promise is what it waits on.
+      waiting: () => {},
+    },
+    terminal: {
+      isatty: (fd) => ctx.isFdTerminal?.(fd) ?? false,
+      setRawMode: (on) => { ctx.setRawMode?.(on); },
+    },
     reachStreams: leaveStandardStreamsOpen,
   };
-  const process = createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr, identity: nodeCtx.identity });
+  const process = createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdio: nodeCtx, identity: nodeCtx.identity });
   const console = createConsole(ctx.stdout, ctx.stderr);
   // A command runs in the shell's realm, whose globalThis is the shell's: its
   // modules share a global of their own instead.
   const scope = { process, console, global: { process, Buffer, console } };
   const loader = createCjsLoader(nodeCtx, scope);
-  return commandsRunning().run(scope.process, () => runCjsCommand(entryPath, source, ctx, lifo, nodeCtx, loader));
+  try {
+    return await commandsRunning().run(scope.process, () => runCjsCommand(entryPath, source, ctx, lifo, nodeCtx, loader));
+  } finally {
+    ended.abort();
+  }
 }
 
 /**

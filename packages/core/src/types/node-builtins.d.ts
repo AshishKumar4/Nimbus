@@ -59,7 +59,10 @@ declare module 'node:stream' {
     pipe(destination: Writable, options?: PipeOptions): Writable;
     readonly readable: boolean;
     readonly readableEnded: boolean;
+    _read(size: number): void;
     push(chunk: Uint8Array | string | null, encoding?: string): boolean;
+    pause(): this;
+    resume(): this;
     setEncoding(encoding: string): this;
     destroy(error?: Error): this;
   }
@@ -172,6 +175,15 @@ declare module 'node:util' {
   export function inspect(value: unknown, options?: InspectOptions): string;
   const util: { format: typeof format; inspect: typeof inspect };
   export default util;
+}
+
+// The cursor functions the tty module's WriteStream is made of, as Node's.
+declare module 'node:readline' {
+  import type { Writable } from 'node:stream';
+  export function clearLine(stream: Writable, dir: -1 | 0 | 1, callback?: () => void): boolean;
+  export function clearScreenDown(stream: Writable, callback?: () => void): boolean;
+  export function cursorTo(stream: Writable, x: number, y?: number, callback?: () => void): boolean;
+  export function moveCursor(stream: Writable, dx: number, dy: number, callback?: () => void): boolean;
 }
 
 declare module 'node:string_decoder' {

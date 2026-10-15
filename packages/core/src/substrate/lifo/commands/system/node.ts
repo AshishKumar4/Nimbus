@@ -14,7 +14,8 @@ import { NODE_VERSION } from '../../../../constants.js';
 import { createConsole } from '../../node-compat/console.js';
 import { createNativeEsmLoader } from '../../node-compat/native-esm-loader.js';
 import { pathToFileURL } from '../../node-compat/file-url.js';
-import { leaveStandardStreamsOpen } from '../../node-compat/standard-streams.js';
+import { leaveStandardStreamsOpen, type StandardInput } from '../../node-compat/standard-streams.js';
+import type { ProgramTerminal } from '../../node-compat/tty-streams.js';
 import type { VirtualRequestHandler, Kernel, LoopbackRouter } from '../../kernel/index.js';
 import type { DNSResolver } from '../../kernel/dns-resolver.js';
 import type { CommandOutputStream } from '../types.js';
@@ -128,6 +129,10 @@ export interface NodeProgramHost {
 	readonly stderr: CommandOutputStream;
 	/** fd 0, read to its end: blocks until stdin ends, as a synchronous read of it does in Node. */
 	readonly stdin: () => Uint8Array;
+	/** fd 0 a piece at a time (process.stdin). */
+	readonly input: StandardInput;
+	/** Which standard descriptor is the terminal, and its modes. */
+	readonly terminal: ProgramTerminal;
 	readonly portRegistry?: Map<number, VirtualRequestHandler>;
 	readonly routeLoopback?: LoopbackRouter;
 	readonly dns?: DNSResolver;
@@ -173,11 +178,13 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 			routeLoopback: host.routeLoopback,
 			dns: host.dns,
 			stdin: host.stdin,
+			input: host.input,
+			terminal: host.terminal,
 			reachStreams: leaveStandardStreamsOpen,
 		};
 
 		// One process and console, every module's, as in Node.
-		const main = { process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr, identity }), console: createConsole(ctx.stdout, ctx.stderr), global: globalThis };
+		const main = { process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdio: nodeCtx, identity }), console: createConsole(ctx.stdout, ctx.stderr), global: globalThis };
 		const loader = createCjsLoader(nodeCtx, main);
 
 		// Execute main script

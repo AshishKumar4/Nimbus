@@ -30,7 +30,7 @@ const identity = { pid: 2, uid: 1000, gid: 1000, groups: [1000], umask: 0o022, s
 
 await check('bytes and text decode as one stream for a text output', async () => {
   const seen = [];
-  const proc = createProcess({ argv: [], env: {}, cwd: '/', identity, stdout: { write: (text) => { seen.push(text); } }, stderr: quiet });
+  const proc = createProcess({ argv: [], env: {}, cwd: '/', identity, stdio: { stdout: { write: (text) => { seen.push(text); } }, stderr: quiet, env: {} } });
   proc.stdout.write(Buffer.from([0xe2]));
   proc.stdout.write('x');
   proc.stdout.write(Buffer.from([0x82, 0xac]));
@@ -40,7 +40,7 @@ await check('bytes and text decode as one stream for a text output', async () =>
 
 await check('an empty write is no boundary: a character split around it decodes whole', async () => {
   const seen = [];
-  const proc = createProcess({ argv: [], env: {}, cwd: '/', identity, stdout: { write: (text) => { seen.push(text); } }, stderr: quiet });
+  const proc = createProcess({ argv: [], env: {}, cwd: '/', identity, stdio: { stdout: { write: (text) => { seen.push(text); } }, stderr: quiet, env: {} } });
   proc.stdout.write(Buffer.from([0xe2]));
   proc.stdout.write('');
   proc.stdout.write(Buffer.from([0x82, 0xac]));
@@ -50,8 +50,8 @@ await check('an empty write is no boundary: a character split around it decodes 
 
 await check('an output that fails after end() errors the stream, which does not finish', async () => {
   const proc = createProcess({
-    argv: [], env: {}, cwd: '/', identity, stderr: quiet,
-    stdout: { write: () => new Promise((_resolve, reject) => setTimeout(() => reject(new Error('output gone')), 20)) },
+    argv: [], env: {}, cwd: '/', identity,
+    stdio: { stderr: quiet, env: {}, stdout: { write: () => new Promise((_resolve, reject) => setTimeout(() => reject(new Error('output gone')), 20)) } },
   });
   const outcome = await new Promise((resolve) => {
     proc.stdout.on('finish', () => resolve('finished'));
