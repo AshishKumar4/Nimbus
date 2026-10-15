@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "e652a4f7472cd96199e6c4d678dad9bef9972300c385914f02b431016290503a",
+  "fingerprint": "3b3b3fc777802ec8eceb1a78533f6a1b0222663c4dfb4d899a9c0f1ef68cf41e",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -148,9 +148,9 @@
     "packages/core/dist/_shared/npm-arborist/can-place.d.ts": "ec0e4d4341cd2db1b163afcbc738a4bf7e841c6a635a52f66a1d6bed8c5ab81e",
     "packages/core/dist/_shared/npm-arborist/can-place.d.ts.map": "8a02b0aa332b0ac18e64480ad098ab799baa46486796736a4547b2fb823c6d24",
     "packages/core/dist/_shared/npm-arborist/can-place.js": "d8ddde34a258f81a5b68fc489bf0a3654a84c532bc4ca3b4bfce90dfd050e102",
-    "packages/core/dist/_shared/npm-arborist/engines.d.ts": "1fb4101f5d873bc16b7d0871fce117c8c267c425a0565fb74f41e077c648054a",
-    "packages/core/dist/_shared/npm-arborist/engines.d.ts.map": "ba27ffa2806f714899d96ecbc65deb6e8620c01ceac1e9fa236744e570d7ed43",
-    "packages/core/dist/_shared/npm-arborist/engines.js": "8716037d32dc37ed08dfaea23003fac1b072be634e009c6c7b40ff38050a553b",
+    "packages/core/dist/_shared/npm-arborist/engines.d.ts": "c57d06c798636a11b1c03b11296d4f9fb5c13f2ad5ab8fde807123bc67dcd31b",
+    "packages/core/dist/_shared/npm-arborist/engines.d.ts.map": "346eea00b04b3fb417f9ef578b7aa7b2125b63962cc50039c9db66e451438165",
+    "packages/core/dist/_shared/npm-arborist/engines.js": "057eec359925cae43d89a28923c147d8e322c25edb62f2644a65e031e9db0ac2",
     "packages/core/dist/_shared/npm-arborist/flags.d.ts": "45922666f5fbc48e61c477ff180cede9944ebc17050bf4b555077514cb89ffc6",
     "packages/core/dist/_shared/npm-arborist/flags.d.ts.map": "b18086c4b9675976540bbca0aaeeae3525f10fefb50cfae88d0be94a78fdee3f",
     "packages/core/dist/_shared/npm-arborist/flags.js": "d3c17599ea1ac80a6b5ee6c772230f481b3755e2d026d9a74251487dd70a7d2f",
@@ -1382,7 +1382,7 @@
     "packages/core/src/_shared/node-warning.ts": "99ee9994300e557392c815397278c603510b0660bbb9310cfb0e1c1c9314f23a",
     "packages/core/src/_shared/npm-arborist/build.ts": "65b86482a86f6f17c5f0154c737d9df97995de97b8171dbcfcaad0719c1ed6ab",
     "packages/core/src/_shared/npm-arborist/can-place.ts": "642ebfa837c2ee59ecec33b362263efdb571c9c7402b7ffda6325d2a8540bd02",
-    "packages/core/src/_shared/npm-arborist/engines.ts": "97f3075858f951824e0f23a68c4b19494083bc26a698d6ca20c0f920ccf8c82f",
+    "packages/core/src/_shared/npm-arborist/engines.ts": "69bef3e5376bd9aaa2cba933882dde29f3b0db1124b650d389e523286f73308a",
     "packages/core/src/_shared/npm-arborist/flags.ts": "d4bae0dac6e951194dac828b6b7b3a2c93c020287a382536c7e1210404290036",
     "packages/core/src/_shared/npm-arborist/model.ts": "748d703e7146efb99f50fe10a9794d31ea05037db98285dc327b8e0baca57ec9",
     "packages/core/src/_shared/npm-arborist/place-dep.ts": "5ad8ec7d1d1640ecd6aa156c74ae3a233c265d43cd2a90047161481e69907b11",

@@ -9,16 +9,24 @@ import { checkEngine } from '../npm-libs.js';
  * Each EBADENGINE of the tree `plan` holds for `project` (its root
  * manifest; null under a global prefix): the project's own, unless it
  * declares devEngines, then every package a path of required edges reaches,
- * in placement order. An optional one is not checked; `force` checks npm
- * alone.
+ * in the order npm's ideal tree takes them in (breadth first: by how many
+ * edges from the project, then by placement). An optional one is not
+ * checked; `force` checks npm alone.
  */
 export function engineMismatches(project, plan, force) {
     const targets = [];
     if (project !== null && project.devEngines === undefined)
         targets.push({ engines: project.engines, _id: idOf(project.name, project.version) });
-    for (const [at, node] of plan.nodes) {
-        if (!plan.required.has(at) || plan.skipped.has(at))
-            continue;
+    const depth = (at, seen = 0) => {
+        const node = plan.nodes.get(at);
+        if (node === undefined || !node.planned || node.edge.from === '' || seen > plan.nodes.size)
+            return at.split('/node_modules/').length;
+        return depth(node.edge.from, seen + 1) + 1;
+    };
+    const required = [...plan.nodes].filter(([at]) => plan.required.has(at) && !plan.skipped.has(at))
+        .map(([at, node]) => ({ at, node, depth: depth(at) }))
+        .sort((a, b) => a.depth - b.depth || a.at.localeCompare(b.at, 'en'));
+    for (const { node } of required) {
         targets.push({ engines: node.pkg.engines, _id: idOf(node.pkg.registryName ?? node.pkg.name, node.pkg.version) });
     }
     const mismatches = [];
