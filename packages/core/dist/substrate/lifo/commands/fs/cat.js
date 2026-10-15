@@ -1,7 +1,16 @@
 import { inputChunks, isBrokenPipe, writeBytes } from '../../utils/bytes-io.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
+import { getopt } from '../../utils/args.js';
 // GNU cat (coreutils 9.7) on bytes: -A -b -e -E -n -s -t -T -u -v. Without
 // options the bytes pass through untouched, chunk by chunk.
+/** GNU cat's options, its long ones in its table's order (an ambiguous prefix names them so). */
+const CAT_OPTIONS = {
+    short: 'benstuvAET',
+    long: {
+        'number-nonblank': ['b', 'none'], number: ['n', 'none'], 'squeeze-blank': ['s', 'none'], 'show-nonprinting': ['v', 'none'],
+        'show-ends': ['E', 'none'], 'show-tabs': ['T', 'none'], 'show-all': ['A', 'none'],
+    },
+};
 const command = async (ctx) => {
     let number = false, numberNonblank = false, squeeze = false, ends = false, tabs = false, visible = false;
     const files = [];
@@ -9,62 +18,43 @@ const command = async (ctx) => {
         await ctx.stderr.write(`cat: ${message}\nTry 'cat --help' for more information.\n`);
         return 1;
     };
-    const LONG = {
-        'show-all': 'A', 'number-nonblank': 'b', 'show-ends': 'E', number: 'n', 'squeeze-blank': 's',
-        'show-tabs': 'T', 'show-nonprinting': 'v',
-    };
-    const apply = (flag) => {
-        switch (flag) {
+    for (const event of getopt(ctx.args, CAT_OPTIONS)) {
+        if (event.kind === 'error')
+            return usage(event.message);
+        if (event.kind === 'operand') {
+            files.push(event.value);
+            continue;
+        }
+        switch (event.key) {
             case 'A':
                 visible = ends = tabs = true;
-                return true;
+                break;
             case 'b':
                 numberNonblank = number = true;
-                return true;
+                break;
             case 'e':
                 visible = ends = true;
-                return true;
+                break;
             case 'E':
                 ends = true;
-                return true;
+                break;
             case 'n':
                 number = true;
-                return true;
+                break;
             case 's':
                 squeeze = true;
-                return true;
+                break;
             case 't':
                 visible = tabs = true;
-                return true;
+                break;
             case 'T':
                 tabs = true;
-                return true;
-            case 'u': return true;
+                break;
             case 'v':
                 visible = true;
-                return true;
-            default: return false;
+                break;
+            // -u: unbuffered, as every write here is.
         }
-    };
-    for (let i = 0; i < ctx.args.length; i++) {
-        const arg = ctx.args[i];
-        if (arg === '--') {
-            files.push(...ctx.args.slice(i + 1));
-            break;
-        }
-        if (arg.startsWith('--')) {
-            const flag = LONG[arg.slice(2)];
-            if (flag === undefined || !apply(flag))
-                return usage(`unrecognized option '${arg}'`);
-            continue;
-        }
-        if (!arg.startsWith('-') || arg === '-') {
-            files.push(arg);
-            continue;
-        }
-        for (const flag of arg.slice(1))
-            if (!apply(flag))
-                return usage(`invalid option -- '${flag}'`);
     }
     const plain = !number && !squeeze && !ends && !tabs && !visible;
     // Line state carries across chunks and files, as GNU's does.

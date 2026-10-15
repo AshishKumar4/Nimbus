@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 import { Buffer } from '../../packages/core/src/substrate/lifo/node-compat/buffer.ts';
 import { createFs } from '../../packages/core/src/substrate/lifo/node-compat/fs.ts';
 import { synchronousFilesystem } from '../../packages/core/src/substrate/lifo/node-compat/filesystem.ts';
-import { isHostEvent } from '../../packages/core/src/substrate/lifo/commands/system/node-realm.ts';
+import { isHostEvent } from '../../packages/core/src/substrate/lifo/commands/system/node-realm-protocol.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';

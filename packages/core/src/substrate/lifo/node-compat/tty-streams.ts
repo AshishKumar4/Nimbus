@@ -1,24 +1,25 @@
 import realm from 'node:process';
 import type { Readable, Writable } from 'node:stream';
-import type { CommandOutputStream } from '../commands/types.js';
 import { nodeError, nodeSystemError } from '../../../_shared/node-error.js';
-import { asStandardStream, joinStandardInput, outputSink, standardStream, type StandardInput } from './standard-streams.js';
+import { asStandardStream, joinStandardInput, outputSink, standardStream, type FailableOutput, type StandardInput } from './standard-streams.js';
 
-/** Which of a program's standard descriptors is the terminal, and its modes. */
+/** What a program's standard descriptors are, and the terminal's modes. */
 export interface ProgramTerminal {
   /** Whether `fd` (0, 1 or 2) is the terminal. */
   isatty(fd: number): boolean;
+  /** Whether `fd` (0, 1 or 2) is a pipe. */
+  isPipe(fd: number): boolean;
   /** termios raw mode, on or off: the terminal's keys go to the program as they are typed. */
   setRawMode(on: boolean): void;
 }
 
 /** A program's standard descriptors, as its process and its tty module see them. */
 export interface ProgramStdio {
-  readonly stdout: CommandOutputStream;
-  readonly stderr: CommandOutputStream;
+  readonly stdout: FailableOutput;
+  readonly stderr: FailableOutput;
   /** fd 0, a piece at a time; absent, fd 0 is at its end. */
   readonly input?: StandardInput;
-  /** Absent, no descriptor is the terminal. */
+  /** Absent, no descriptor is the terminal or a pipe. */
   readonly terminal?: ProgramTerminal;
   /** The window's size, COLUMNS x LINES, as the shell's own commands read it. */
   readonly env: Record<string, string>;
@@ -63,8 +64,9 @@ function createTty(stdio: ProgramStdio): ProgramTty {
   const isatty = (fd: number): boolean => Number.isInteger(fd) && fd >= 0 && fd <= 2 && stdio.terminal?.isatty(fd) === true;
   const ttyModule = (): TtyModule => module ??= ttyClasses(stdio, isatty);
   const standardOutput = (fd: 1 | 2): Writable => {
-    if (!isatty(fd)) return standardStream(fd === 1 ? stdio.stdout : stdio.stderr, fd);
-    return asStandardStream(new (ttyModule().WriteStream)(fd), fd);
+    const output = fd === 1 ? stdio.stdout : stdio.stderr;
+    if (!isatty(fd)) return standardStream(output, fd);
+    return asStandardStream(new (ttyModule().WriteStream)(fd), fd, output);
   };
   return {
     get module() { return ttyModule(); },
@@ -82,7 +84,11 @@ function checkFd(fd: number): number {
   return fd;
 }
 
-/** What uv_tty_init answers for a descriptor that is not one of the program's standard three. */
+/**
+ * What uv_tty_init answers for a descriptor it cannot stream: one the
+ * program has not, or a file (libuv streams only a terminal, a pipe or a
+ * socket).
+ */
 function ttyInitFailed(): Error {
   return nodeSystemError('ERR_TTY_INIT_FAILED', 'TTY initialization failed', { errno: -22, code: 'EINVAL', message: 'invalid argument', syscall: 'uv_tty_init' });
 }
@@ -90,6 +96,8 @@ function ttyInitFailed(): Error {
 function ttyClasses(stdio: ProgramStdio, isatty: (fd: number) => boolean): TtyModule {
   const { Readable, Writable } = realm.getBuiltinModule('node:stream');
   const readline = realm.getBuiltinModule('node:readline');
+  /** A standard descriptor libuv can stream: the terminal or a pipe. */
+  const streamable = (fd: number): boolean => fd <= 2 && (isatty(fd) || stdio.terminal?.isPipe(fd) === true);
   const windowSize = (): [number, number] => [Number(stdio.env.COLUMNS) || 80, Number(stdio.env.LINES) || 24];
 
   class ReadStream extends Readable {
@@ -97,7 +105,7 @@ function ttyClasses(stdio: ProgramStdio, isatty: (fd: number) => boolean): TtyMo
     isRaw = false;
 
     constructor(fd: number) {
-      if (checkFd(fd) !== 0) throw ttyInitFailed();
+      if (checkFd(fd) !== 0 || !streamable(fd)) throw ttyInitFailed();
       super();
       joinStandardInput(this, stdio.input);
     }
@@ -117,7 +125,7 @@ function ttyClasses(stdio: ProgramStdio, isatty: (fd: number) => boolean): TtyMo
     rows: number | undefined;
 
     constructor(fd: number) {
-      if (checkFd(fd) > 2) throw ttyInitFailed();
+      if (!streamable(checkFd(fd))) throw ttyInitFailed();
       super(outputSink(fd === 1 ? stdio.stdout : fd === 2 ? stdio.stderr : undefined));
       if (isatty(fd)) [this.columns, this.rows] = windowSize();
     }

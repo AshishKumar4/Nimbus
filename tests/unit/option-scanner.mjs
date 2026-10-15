@@ -28,12 +28,14 @@ for (const [argv, want] of LEGACY) assert.deepEqual(parseArgs(argv, SPEC), want,
 
 const GNU = { short: 'kl:', long: { keep: ['k', 'none'], level: ['l', 'required'], label: ['label', 'required'], help: ['help', 'none'] } };
 const scan = (argv) => [...getopt(argv, GNU)];
-assert.deepEqual(scan(['--ke', 'a']), [{ kind: 'option', key: 'k' }, { kind: 'operand', value: 'a' }], 'an unambiguous prefix');
+assert.deepEqual(scan(['--ke', 'a']), [{ kind: 'option', key: 'k', word: 0 }, { kind: 'operand', value: 'a' }], 'an unambiguous prefix');
 assert.deepEqual(scan(['--l']), [{ kind: 'error', message: "option '--l' is ambiguous; possibilities: '--level' '--label'" }]);
 assert.deepEqual(scan(['--keep=1']), [{ kind: 'error', message: "option '--keep' doesn't allow an argument" }]);
 assert.deepEqual(scan(['--level']), [{ kind: 'error', message: "option '--level' requires an argument" }]);
 assert.deepEqual(scan(['-l']), [{ kind: 'error', message: "option requires an argument -- 'l'" }]);
-assert.deepEqual(scan(['-kz', 'x']), [{ kind: 'option', key: 'k' }, { kind: 'error', message: "invalid option -- 'z'" }]);
+assert.deepEqual(scan(['-kz', 'x']), [{ kind: 'option', key: 'k', word: 0 }, { kind: 'error', message: "invalid option -- 'z'" }]);
 assert.deepEqual(scan(['--zap=1']), [{ kind: 'error', message: "unrecognized option '--zap=1'" }]);
-assert.deepEqual(scan(['a', '-l2', '--', '-k']), [{ kind: 'operand', value: 'a' }, { kind: 'option', key: 'l', value: '2' }, { kind: 'operand', value: '-k' }]);
+assert.deepEqual(scan(['a', '-l2', '--', '-k']), [{ kind: 'operand', value: 'a' }, { kind: 'option', key: 'l', value: '2', word: 1 }, { kind: 'operand', value: '-k' }]);
+// An option names the word it came from, its argument's word aside: grep's -NUM counts the digits of one word.
+assert.deepEqual(scan(['-k', '--level', '3', '-kl', '4']).map((event) => event.kind === 'option' ? [event.key, event.word] : event.kind), [['k', 0], ['l', 1], ['k', 3], ['l', 3]]);
 console.log('option-scanner: ok');

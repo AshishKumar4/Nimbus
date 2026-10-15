@@ -2,11 +2,17 @@ import { resolve } from '../../utils/path.js';
 import { inputChunks, writeBytes } from '../../utils/bytes-io.js';
 import { withOpenFiles } from '../../../../runtime/process-files.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
+import { getopt } from '../../utils/args.js';
 // GNU tee (coreutils 9.7) on bytes, streaming: standard input to standard
 // output and every FILE as it arrives. -a appends; a FILE that cannot be
 // opened is reported and the rest still get the input (status 1); -i, -p and
 // --output-error are accepted (there are no signals or broken pipes to treat
 // differently here).
+/** GNU tee's options, its long ones in its table's order. */
+const TEE_OPTIONS = {
+    short: 'aip',
+    long: { append: ['a', 'none'], 'ignore-interrupts': ['i', 'none'], 'output-error': ['output-error', 'optional'] },
+};
 const command = async (ctx) => {
     let append = false;
     const files = [];
@@ -14,30 +20,13 @@ const command = async (ctx) => {
         await ctx.stderr.write(`tee: ${message}\nTry 'tee --help' for more information.\n`);
         return 1;
     };
-    for (let i = 0; i < ctx.args.length; i++) {
-        const arg = ctx.args[i];
-        if (arg === '--') {
-            files.push(...ctx.args.slice(i + 1));
-            break;
-        }
-        if (arg.startsWith('--')) {
-            const name = arg.slice(2).split('=', 1)[0];
-            if (name === 'append')
-                append = true;
-            else if (name !== 'ignore-interrupts' && name !== 'output-error')
-                return usage(`unrecognized option '${arg}'`);
-            continue;
-        }
-        if (!arg.startsWith('-') || arg === '-') {
-            files.push(arg);
-            continue;
-        }
-        for (const flag of arg.slice(1)) {
-            if (flag === 'a')
-                append = true;
-            else if (flag !== 'i' && flag !== 'p')
-                return usage(`invalid option -- '${flag}'`);
-        }
+    for (const event of getopt(ctx.args, TEE_OPTIONS)) {
+        if (event.kind === 'error')
+            return usage(event.message);
+        if (event.kind === 'operand')
+            files.push(event.value);
+        else if (event.key === 'a')
+            append = true;
     }
     let status = 0;
     const report = async (file, error) => {

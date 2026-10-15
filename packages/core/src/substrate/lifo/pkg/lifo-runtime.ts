@@ -214,23 +214,29 @@ async function executeCjsCommand(
     filename: entryPath,
     dirname: dirname(entryPath),
     signal: ctx.signal,
-    input: {
-      read: async () => {
-        if (!stdin) return null;
-        if (stdin.readBytes) return stdin.readBytes(65536, ended.signal);
-        const text = await stdin.read();
-        return text === null ? null : new TextEncoder().encode(text);
+    stdio: {
+      stdout: ctx.stdout,
+      stderr: ctx.stderr,
+      env: ctx.env,
+      input: {
+        read: async () => {
+          if (!stdin) return null;
+          if (stdin.readBytes) return stdin.readBytes(65536, ended.signal);
+          const text = await stdin.read();
+          return text === null ? null : new TextEncoder().encode(text);
+        },
+        // The command's own promise is what it waits on.
+        waiting: () => {},
       },
-      // The command's own promise is what it waits on.
-      waiting: () => {},
-    },
-    terminal: {
-      isatty: (fd) => ctx.isFdTerminal?.(fd) ?? false,
-      setRawMode: (on) => { ctx.setRawMode?.(on); },
+      terminal: {
+        isatty: (fd) => ctx.isFdTerminal?.(fd) ?? false,
+        isPipe: (fd) => ctx.isFdPipe?.(fd) ?? false,
+        setRawMode: (on) => { ctx.setRawMode?.(on); },
+      },
     },
     reachStreams: leaveStandardStreamsOpen,
   };
-  const process = createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdio: nodeCtx, identity: nodeCtx.identity });
+  const process = createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdio: nodeCtx.stdio, identity: nodeCtx.identity });
   const console = createConsole(ctx.stdout, ctx.stderr);
   // A command runs in the shell's realm, whose globalThis is the shell's: its
   // modules share a global of their own instead.

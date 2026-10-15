@@ -1,21 +1,37 @@
 import { EventEmitter } from 'node:events';
-import type { Readable, Writable } from 'node:stream';
+import type { Writable } from 'node:stream';
+import type { CommandOutputStream } from '../commands/types.js';
 import { type WarningConstructor, type WarningOptions } from '../../../_shared/node-warning.js';
-import { type ProgramStdio } from './tty-streams.js';
+/** The status a program's process ends with when it ends by itself: its process.exitCode, as Node reads it (0 unset). */
+export declare function exitCodeOf(proc: object): number;
 export declare class ProcessExitError extends Error {
     exitCode: number;
     constructor(code: number);
 }
 /**
- * A program's process: an emitter, as Node's is. Its stdin, stdout and
- * stderr are made when the program first reaches them (a stream costs the
- * engine's stream module, which a program that only logs never loads), and
- * are its tty module's streams where the descriptor is the terminal.
+ * A program's process: an emitter, as Node's is. Its stdout and stderr are
+ * made when the program first reaches them: a Writable costs the engine's
+ * stream module, which a program that only logs never loads.
  */
 export declare class LifoProcess extends EventEmitter {
     #private;
-    constructor(stdio: ProgramStdio);
-    get stdin(): Readable;
+    constructor(output: CommandOutputStream, errorOutput: CommandOutputStream);
+    /** Node's: `fn` takes every error nothing caught, in place of 'uncaughtException'; null clears it. */
+    setUncaughtExceptionCaptureCallback(fn: ((error: unknown) => void) | null): void;
+    hasUncaughtExceptionCaptureCallback(): boolean;
+    /**
+     * An error nothing caught, in Node's order: 'uncaughtExceptionMonitor', then
+     * the capture callback or 'uncaughtException'. False when nothing took it,
+     * and the program ends of it.
+     */
+    takeUncaught(error: unknown, origin: 'uncaughtException' | 'unhandledRejection'): boolean;
+    /**
+     * Whether a failed write would reach anything of the program's: an 'error'
+     * listener on its stdout or stderr (on, once and the prepends share one
+     * list), or one for an error nothing caught (takeUncaught's, the monitor's
+     * included).
+     */
+    hearsWriteFailures(): boolean;
     get stdout(): Writable;
     get stderr(): Writable;
 }
@@ -38,8 +54,8 @@ export interface ProcessOptions {
     argv: string[];
     env: Record<string, string>;
     cwd: string;
-    /** Its standard descriptors: the same object its module map's tty is made for. */
-    stdio: ProgramStdio;
+    stdout: CommandOutputStream;
+    stderr: CommandOutputStream;
     identity: ProcessIdentity;
 }
 export declare function createProcess(opts: ProcessOptions): LifoProcess & {
@@ -55,6 +71,16 @@ export declare function createProcess(opts: ProcessOptions): LifoProcess & {
     cwd: () => string;
     chdir: (_dir: string) => never;
     exit: (code?: number) => never;
+    stdin: {
+        isTTY: boolean;
+        fd: number;
+        on: () => void;
+        once: () => void;
+        resume: () => void;
+        pause: () => void;
+        setEncoding: () => void;
+        read: () => null;
+    };
     platform: string;
     arch: string;
     version: string;

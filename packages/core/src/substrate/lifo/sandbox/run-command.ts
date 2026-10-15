@@ -1,5 +1,5 @@
 import type { Shell } from '../shell/Shell.js';
-import { textSink } from '../../../_shared/bytes.js';
+import { textCapture } from '../utils/bytes-io.js';
 
 export interface RunOptions {
   /** Working directory for this command */
@@ -41,14 +41,23 @@ export async function runCommand(shell: Shell, cmd: string, options?: RunOptions
   let stderr = '';
   const onStdout = options?.onStdout;
   const onStderr = options?.onStderr;
-  const result = await shell.execute(cmd, {
-    cwd: options?.cwd,
-    env: options?.env,
-    onStdout: onStdout && tee(onStdout, (text) => { stdout += text; }),
-    onStderr: onStderr && tee(onStderr, (text) => { stderr += text; }),
-    stdin: options?.stdin,
-    signal,
-  });
+  const stdoutTee = onStdout && tee(onStdout, (text) => { stdout += text; });
+  const stderrTee = onStderr && tee(onStderr, (text) => { stderr += text; });
+  let result: Awaited<ReturnType<Shell['execute']>>;
+  try {
+    result = await shell.execute(cmd, {
+      cwd: options?.cwd,
+      env: options?.env,
+      onStdout: stdoutTee?.write,
+      onStderr: stderrTee?.write,
+      stdin: options?.stdin,
+      signal,
+    });
+  } finally {
+    // The captures end with the run: bytes a character left unfinished are in the result.
+    stdoutTee?.end();
+    stderrTee?.end();
+  }
   return {
     exitCode: result.exitCode,
     stdout: onStdout ? stdout : result.stdout,
@@ -56,10 +65,14 @@ export async function runCommand(shell: Shell, cmd: string, options?: RunOptions
   };
 }
 
-function tee(sink: (data: Uint8Array) => void, capture: (text: string) => void): (data: Uint8Array) => void {
-  const decode = textSink(capture);
-  return (data) => {
-    decode(data);
-    sink(data);
+/** `sink`'s bytes, and their text to `capture` as the shell captures text (textCapture), which `end` ends. */
+function tee(sink: (data: Uint8Array) => void, capture: (text: string) => void): { write(data: Uint8Array): void; end(): void } {
+  const text = textCapture(capture);
+  return {
+    write: (data) => {
+      text.stream.writeBytes(data);
+      sink(data);
+    },
+    end: () => text.end(),
   };
 }

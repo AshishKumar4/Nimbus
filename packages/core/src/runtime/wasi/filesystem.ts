@@ -434,7 +434,8 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   /** The bytes of the file `st` describes: `read`'s, unless the copy at its revision is kept. */
   const residentContent = (st: RuntimeVfsStat, read: () => Awaitable<Uint8Array>): Awaitable<Uint8Array> => {
     // An unlinked file's stat revision is the namespace's, which its own writes do not move: its copy is read each time.
-    if (options.retainResident === false || st.nlink === 0) return read();
+    // So is a file with no revision (0: a mount's backend that keeps none, /proc's files made when read).
+    if (options.retainResident === false || st.nlink === 0 || st.revision === 0) return read();
     const key = `${st.dev}:${st.ino}`;
     const cached = resident.get(key);
     if (cached && cached.revision === st.revision) return cached.bytes;
@@ -576,8 +577,10 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     if (target?.kind === 'preopen' || (target?.kind === 'authority' && target.type === 'directory')) fail('EISDIR');
     const e = right(fd, 1), vectors = iovs(ptr, count);
     if (e.kind === 'resident') {
-      const start = Math.min(offset ?? e.position, e.bytes.length);
-      const used = scatter(e.bytes.subarray(start, Math.min(e.bytes.length, start + vectors.total)), vectors.result);
+      // As the authority's descriptor (DescriptorTable.read): the offset is where the read starts, past the end too, and never negative.
+      if (offset !== null && offset < 0) fail('EINVAL');
+      const start = offset ?? e.position;
+      const used = scatter(e.bytes.subarray(Math.min(start, e.bytes.length), Math.min(e.bytes.length, start + vectors.total)), vectors.result);
       if (offset === null) e.position = start + used;
       u32(written, used); return 0;
     }

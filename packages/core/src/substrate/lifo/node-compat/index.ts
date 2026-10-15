@@ -13,8 +13,7 @@ import type { LoopbackRouter, VirtualRequestHandler } from '../kernel/index.js';
 import type { DNSResolver } from '../kernel/dns-resolver.js';
 import { createChildProcess } from './child_process.js';
 import * as zlibModule from './zlib.js';
-import { ttyOf, type ProgramTerminal } from './tty-streams.js';
-import type { StandardInput } from './standard-streams.js';
+import { ttyOf, type ProgramStdio } from './tty-streams.js';
 import { createDns } from './dns.js';
 import { createModuleShim, PROVIDED_PACKAGES } from './module.js';
 import { createRimraf } from './rimraf.js';
@@ -37,10 +36,8 @@ export interface NodeContext {
   executeCapture?: (input: string) => Promise<string>;
   /** fd 0 to its end, blocking until stdin ends (readFileSync(0)); absent, fd 0 reads as empty. */
   stdin?: () => Uint8Array;
-  /** fd 0 a piece at a time (process.stdin, tty.ReadStream(0)); absent, it is at its end. */
-  input?: StandardInput;
-  /** Which standard descriptor is the terminal, and its modes; absent, none is. */
-  terminal?: ProgramTerminal;
+  /** Its standard descriptors, as its process and its tty module see them (one object per program). */
+  stdio: ProgramStdio;
   portRegistry?: Map<number, VirtualRequestHandler>;
   routeLoopback?: LoopbackRouter;
   /** The kernel's resolver, which dns.lookup answers from as curl and wget do. */
@@ -109,7 +106,7 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       argv: ctx.argv,
       env: ctx.env,
       cwd: ctx.cwd,
-      stdio: ctx,
+      stdio: ctx.stdio,
       identity: ctx.identity,
     }),
     events: () => realm.getBuiltinModule('node:events'),
@@ -129,7 +126,7 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     crypto: () => realm.getBuiltinModule('node:crypto'),
     zlib: () => zlibModule,
     string_decoder: () => realm.getBuiltinModule('node:string_decoder'),
-    tty: () => (ctx.reachStreams?.(), ttyOf(ctx).module),
+    tty: () => (ctx.reachStreams?.(), ttyOf(ctx.stdio).module),
     dns: dnsModule,
     'dns/promises': () => dnsModule().promises,
     // The engine's own (X-2): over process.stdin, as Node's reads its input.

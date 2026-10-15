@@ -10,7 +10,6 @@
  * facet bundles included. Facet code that is a string, not a bundle, cannot
  * import this module and keeps its inline allocations.
  */
-import { SinkWriter } from './byte-stream.js';
 /** Shared UTF-8 encoder. Stateless; safe to share across all callers. */
 export const enc = new TextEncoder();
 /** Shared UTF-8 decoder. Stateless; safe to share across all callers. */
@@ -53,16 +52,6 @@ export class StreamTextDecoders {
         this.decoders.delete(key);
         return decoder.decode();
     }
-}
-/**
- * A text writer's edge over a byte hook: an `onStdout`-shaped callback whose
- * bytes reach `write` as text through its own {@link SinkWriter}, so a text
- * consumer reads whole characters even when a multibyte one straddles two
- * chunks. One per stream; do not share a sink between stdout and stderr.
- */
-export function textSink(write) {
-    const writer = new SinkWriter({ write });
-    return (bytes) => writer.write(bytes);
 }
 /** `parts`, one after another, in one array. */
 export function concatBytes(parts) {

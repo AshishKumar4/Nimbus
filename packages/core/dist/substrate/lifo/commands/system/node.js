@@ -1,16 +1,6 @@
-import { Buffer } from 'node:buffer';
-import realm from 'node:process';
 import { resolve, dirname, extname } from '../../utils/path.js';
-import { ProcessExitError } from '../../node-compat/index.js';
-import { createCjsLoader, moduleWrapper, stripShebang } from '../../node-compat/cjs-loader.js';
-import { isEsModuleFile, isEsModuleInput } from '../../../../runtime/module-format.js';
 import { packageScopeType } from '../../../../runtime/require-resolution.js';
-import { createProcess } from '../../node-compat/process.js';
 import { NODE_VERSION } from '../../../../constants.js';
-import { createConsole } from '../../node-compat/console.js';
-import { createNativeEsmLoader } from '../../node-compat/native-esm-loader.js';
-import { pathToFileURL } from '../../node-compat/file-url.js';
-import { leaveStandardStreamsOpen } from '../../node-compat/standard-streams.js';
 import { runNodeInRealm } from './node-realm.js';
 /** The same walk for the main script, through the shell's own view before any `require` runs. */
 async function mainPackageType(filename, vfs) {
@@ -98,92 +88,6 @@ function createNodeImpl(kernelOrPortRegistry) {
         const identity = { pid: ctx.pid, uid: ctx.cred.uid, gid: ctx.cred.gid, groups: [...ctx.cred.groups], umask: ctx.cred.umask };
         return runNodeInRealm({ source, filename, scriptArgs, cwd: ctx.cwd, env: ctx.env, mainType, identity }, ctx, kernel);
     };
-}
-/**
- * Run `program` in the current realm, which is the program's own: its globals
- * (process, Buffer, console) are installed on
- * globalThis for good. Resolves once the main script has run (an ES module's
- * top-level await included). What it left (timers, servers, requests) runs on
- * in the realm's own event loop, which owns how long the process lives.
- */
-export async function runNodeProgram(program, host) {
-    const { source, filename, scriptArgs, mainType } = program;
-    const filesystem = host.filesystem;
-    const ctx = { stdout: host.stdout, stderr: host.stderr };
-    const dir = filename === '[eval]' ? program.cwd : dirname(filename);
-    const identity = { ...program.identity, setUmask: host.setUmask };
-    const nodeCtx = {
-        filesystem,
-        identity,
-        cwd: program.cwd,
-        env: program.env,
-        stdout: host.stdout,
-        stderr: host.stderr,
-        argv: [filename, ...scriptArgs],
-        filename,
-        dirname: dir,
-        signal: new AbortController().signal,
-        portRegistry: host.portRegistry,
-        routeLoopback: host.routeLoopback,
-        dns: host.dns,
-        stdin: host.stdin,
-        input: host.input,
-        terminal: host.terminal,
-        reachStreams: leaveStandardStreamsOpen,
-    };
-    // One process and console, every module's, as in Node.
-    const main = { process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdio: nodeCtx, identity }), console: createConsole(ctx.stdout, ctx.stderr), global: globalThis };
-    const loader = createCjsLoader(nodeCtx, main);
-    // Execute main script
-    const module = { exports: {} };
-    const cleanMainSource = stripShebang(source);
-    const isEsm = filename === '[eval]' ? isEsModuleInput(cleanMainSource, undefined) : isEsModuleFile(filename, cleanMainSource, () => mainType);
-    // Capture the host's module API before replacing the program's globals.
-    // Hooks supply VFS sources, but all ESM bindings and evaluation are native.
-    let native;
-    try {
-        native = await createNativeEsmLoader(nodeCtx, loader, isEsm ? { filename, source: cleanMainSource } : undefined);
-    }
-    catch (error) {
-        await ctx.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-        return { code: 1, ended: true };
-    }
-    // The realm is the program's: a module that reaches globalThis.process
-    // (not a CommonJS wrapper parameter) finds the program's.
-    const ga = globalThis;
-    ga.process = main.process;
-    // So are the realm's own warnings, a native builtin's (util.deprecate,
-    // Buffer(), events): Node delivers a warning to the process that raised
-    // it, through whatever its emitWarning is when the warning is raised.
-    realm.emitWarning = (...warning) => { main.process.emitWarning(...warning); };
-    realm.removeAllListeners('warning');
-    realm.on('warning', (warning) => { main.process.emit('warning', warning); });
-    ga.Buffer = Buffer;
-    ga.console = main.console;
-    ga.global = globalThis;
-    try {
-        if (isEsm)
-            await native.importMain();
-        else if (filename === '[eval]') {
-            const fn = new Function(`return ${moduleWrapper(cleanMainSource, pathToFileURL(`${program.cwd}/[eval]`).href)}`)();
-            fn(...loader.wrapperArguments(filename, module));
-        }
-        else
-            loader.load(filename, { source: cleanMainSource, esm: false });
-        return { code: 0, ended: false };
-    }
-    catch (e) {
-        if (e instanceof ProcessExitError) {
-            return { code: e.exitCode, ended: true };
-        }
-        if (e instanceof Error) {
-            await ctx.stderr.write(`${e.stack || e.message}\n`);
-        }
-        else {
-            await ctx.stderr.write(`${String(e)}\n`);
-        }
-        return { code: 1, ended: true };
-    }
 }
 export function createNodeCommand(kernel) {
     return createNodeImpl(kernel);

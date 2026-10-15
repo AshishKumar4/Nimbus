@@ -2,6 +2,7 @@ import { bindProcessView } from '../../../runtime/process-files.js';
 import { isVfsCred } from '../../../runtime/os-contracts.js';
 import { DEFAULT_HOME } from '../../../constants.js';
 import { BOLD, GREEN, BLUE, RESET } from '../utils/colors.js';
+import { textCapture } from '../utils/bytes-io.js';
 import { Interpreter } from './interpreter.js';
 import { createShellState, restoreShellState, snapshotShellState } from './state.js';
 import { shellBuiltins } from './builtins.js';
@@ -279,23 +280,21 @@ export class Shell {
         }
         let stdoutBuf = '';
         let stderrBuf = '';
+        // A stream the caller sinks gets the bytes; one it does not is captured as text.
         const onStdout = options?.onStdout;
         const onStderr = options?.onStderr;
-        const stdoutStream = {
-            ...(onStdout ? { writeBytes: (bytes) => onStdout(bytes) } : {}),
-            write: async (text) => {
-                if (onStdout)
-                    return (await onStdout(enc.encode(text)));
-                stdoutBuf += text;
-            },
-        };
-        const stderrStream = {
-            ...(onStderr ? { writeBytes: (bytes) => onStderr(bytes) } : {}),
-            write: async (text) => {
-                if (onStderr)
-                    return (await onStderr(enc.encode(text)));
-                stderrBuf += text;
-            },
+        const sunk = (sink) => ({
+            writeBytes: (bytes) => sink(bytes),
+            write: async (text) => (await sink(enc.encode(text))),
+        });
+        const stdoutCapture = textCapture((text) => { stdoutBuf += text; });
+        const stderrCapture = textCapture((text) => { stderrBuf += text; });
+        const stdoutStream = onStdout ? sunk(onStdout) : stdoutCapture.stream;
+        const stderrStream = onStderr ? sunk(onStderr) : stderrCapture.stream;
+        const captured = (exitCode) => {
+            stdoutCapture.end();
+            stderrCapture.end();
+            return { stdout: stdoutBuf, stderr: stderrBuf, exitCode };
         };
         // Save current state
         const prevCwd = options?.cwd ? this.state.getCwd() : undefined;
@@ -357,12 +356,12 @@ export class Shell {
                 runAs: options?.runAs ?? this.commandIdentity.runAs,
                 signal: workSignal,
             });
-            return { stdout: stdoutBuf, stderr: stderrBuf, exitCode };
+            return captured(exitCode);
         }
         catch (e) {
             const msg = e instanceof Error ? (e.stack || e.message) : String(e);
             await stderrStream.write(msg + '\n');
-            return { stdout: stdoutBuf, stderr: stderrBuf, exitCode: 1 };
+            return captured(1);
         }
         finally {
             stopped();

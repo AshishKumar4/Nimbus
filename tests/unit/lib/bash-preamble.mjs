@@ -160,6 +160,7 @@ function remoteSupervisor(dispatch, pid) {
  * @param {string[]} [opts.dirs]                 directories seeded into the snapshot.
  * @param {Record<string,number>} [opts.modes]   vfsPath → effective rwx bits.
  * @param {string} [opts.stdin]                  stdin bytes, delivered closed.
+ * @param {boolean} [opts.stdinTty]              whether that stdin is a terminal.
  * @param {string[]} [opts.environ]
  * @param {Record<string,WebAssembly.Module>} [opts.extraWasm]  see loadPreamble.
  */
@@ -169,7 +170,7 @@ export async function runScript(script, opts = {}) {
   try { return await session.boot({
     argv: ['bash', '-c', script],
     environ: opts.environ || ['PATH=/bin:/usr/bin', 'HOME=/home/user', 'NIMBUS_PWD=/', 'TERM=dumb'],
-    stdinTty: false,
+    stdinTty: opts.stdinTty === true,
     stdinData: opts.stdin || '',
     stdinClosed: true,
     busyboxApplets: applets,

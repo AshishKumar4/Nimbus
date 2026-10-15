@@ -8,6 +8,7 @@ import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { processHost } from '@nimbus-sh/core/runtime/wasi/processes.js';
 import { wasiOutputRelay } from '@nimbus-sh/core/runtime/wasi/stdio.js';
 import { outputControlReader } from '@nimbus-sh/core/runtime/wasi/output-control.js';
+import { clockNs, clockResolutionNs } from '@nimbus-sh/core/runtime/wasi/clock.js';
 import { createResidentStore } from '../../vfs/resident/index.js';
 // errno constants
 const __WASI_ESUCCESS = 0;
@@ -34,10 +35,6 @@ const __WASI_ESPIPE = 70;
 const __WASI_ETIMEDOUT = 73;
 const __WASI_ENOTCAPABLE = 76;
 // clock ids
-const __WASI_CLOCK_REALTIME = 0;
-const __WASI_CLOCK_MONOTONIC = 1;
-const __WASI_CLOCK_PROCESS_CPUTIME_ID = 2;
-const __WASI_CLOCK_THREAD_CPUTIME_ID = 3;
 // oflags
 const __WASI_O_CREAT = 1;
 const __WASI_O_DIRECTORY = 2;
@@ -1352,34 +1349,18 @@ export function __wasiMakeImports(opts) {
         clock_time_get(clockId, _precision, timePtr) {
             // precision is i64 — passed as BigInt by V8. We don't use it but
             // the arity must match for V8 to route correctly.
-            let nowNs;
-            if (clockId === __WASI_CLOCK_REALTIME) {
-                nowNs = BigInt(Date.now()) * 1000000n;
-            }
-            else if (clockId === __WASI_CLOCK_MONOTONIC
-                || clockId === __WASI_CLOCK_PROCESS_CPUTIME_ID
-                || clockId === __WASI_CLOCK_THREAD_CPUTIME_ID) {
-                const ms = (typeof performance !== 'undefined' && performance.now)
-                    ? performance.now() : Date.now();
-                nowNs = BigInt(Math.floor(ms * 1000)) * 1000n;
-            }
-            else
+            const nowNs = clockNs(clockId);
+            if (nowNs === null)
                 return __WASI_EINVAL;
             writeU64LE(timePtr, nowNs);
             return __WASI_ESUCCESS;
         },
         clock_res_get(clockId, resPtr) {
-            if (clockId === __WASI_CLOCK_REALTIME) {
-                writeU64LE(resPtr, 1000000n);
-                return __WASI_ESUCCESS;
-            }
-            if (clockId === __WASI_CLOCK_MONOTONIC
-                || clockId === __WASI_CLOCK_PROCESS_CPUTIME_ID
-                || clockId === __WASI_CLOCK_THREAD_CPUTIME_ID) {
-                writeU64LE(resPtr, 1000n);
-                return __WASI_ESUCCESS;
-            }
-            return __WASI_EINVAL;
+            const resolution = clockResolutionNs(clockId);
+            if (resolution === null)
+                return __WASI_EINVAL;
+            writeU64LE(resPtr, resolution);
+            return __WASI_ESUCCESS;
         },
         // ── random ──
         random_get(bufPtr, bufLen) {
@@ -1476,11 +1457,6 @@ export function __wasiMakeImports(opts) {
             // Waits on pipes, cancelled once the poll returns without them.
             const pipeWaits = new Array(subs.length);
             const readerLocks = [];
-            const monoNowNs = () => {
-                const ms = (typeof performance !== 'undefined' && performance.now)
-                    ? performance.now() : Date.now();
-                return BigInt(Math.floor(ms * 1000)) * 1000n;
-            };
             const promises = subs.map((s) => {
                 if (s.badTag) {
                     return Promise.resolve({
@@ -1488,22 +1464,16 @@ export function __wasiMakeImports(opts) {
                     });
                 }
                 if (s.tag === __WASI_EVENTTYPE_CLOCK) {
-                    // Compute absolute deadline (ns) and convert to ms-delay.
-                    let deadlineNs;
-                    if ((s.flags & __WASI_SUBCLOCKFLAGS_ABSTIME) !== 0) {
-                        deadlineNs = s.timeout;
+                    // A clock no host has (clock_time_get's EINVAL) has no deadline: its event says so.
+                    const nowNs = clockNs(s.id);
+                    if (nowNs === null) {
+                        return Promise.resolve({ idx: s.idx, error: __WASI_EINVAL, type: s.tag, nbytes: 0n, flags: 0 });
                     }
-                    else {
-                        // Relative: deadline = now + timeout.
-                        const nowNs = (s.id === __WASI_CLOCK_REALTIME)
-                            ? BigInt(Date.now()) * 1000000n
-                            : monoNowNs();
-                        deadlineNs = nowNs + s.timeout;
-                    }
-                    const nowAgain = (s.id === __WASI_CLOCK_REALTIME)
-                        ? BigInt(Date.now()) * 1000000n
-                        : monoNowNs();
-                    const remainNs = deadlineNs > nowAgain ? (deadlineNs - nowAgain) : 0n;
+                    // The deadline (ns), absolute or from now, as an ms delay.
+                    const deadlineNs = (s.flags & __WASI_SUBCLOCKFLAGS_ABSTIME) !== 0
+                        ? s.timeout
+                        : nowNs + s.timeout;
+                    const remainNs = deadlineNs > nowNs ? (deadlineNs - nowNs) : 0n;
                     const remainMs = Number(remainNs / 1000000n);
                     return new Promise((resolve) => {
                         // POLICY: setTimeout is the only correct way to express a

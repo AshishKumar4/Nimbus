@@ -25,6 +25,18 @@ export function leaveStandardStreamsOpen(): void {
   };
 }
 
+/** What made a write to a program's stdout or stderr: its stream, or its console (which, in Node, writes through the stream). */
+export type OutputSource = 'stream' | 'console';
+
+/**
+ * An output that can fail after it took a write (a program in a realm, whose
+ * host makes the write later): `onFailure` hears of each failed write, and
+ * what made it.
+ */
+export interface FailableOutput extends CommandOutputStream {
+  onFailure?(listener: (error: Error, source: OutputSource) => void): void;
+}
+
 /**
  * A Writable's options over `output`: its bytes reach the output as each
  * write is made, decoded across writes for an output that takes text, so
@@ -60,21 +72,27 @@ export function outputSink(output: CommandOutputStream | undefined): WritableOpt
 }
 
 /**
- * `stream` as a program's process.stdout (fd 1) or process.stderr (fd 2),
- * which Node's legacy pipe knows by `_isStdio` and a pipe into leaves open.
+ * `stream`, over `output`, as a program's process.stdout (fd 1) or
+ * process.stderr (fd 2), which Node's legacy pipe knows by `_isStdio` and a
+ * pipe into leaves open. A failed write is its error (a console write's only
+ * when it has a listener, as Node's console ignores its own failures
+ * otherwise).
  */
-export function asStandardStream<T extends Writable>(stream: T, fd: 1 | 2): T {
+export function asStandardStream<T extends Writable>(stream: T, fd: 1 | 2, output: FailableOutput): T {
   leaveStandardStreamsOpen();
   Object.assign(stream, { fd, _isStdio: true });
+  output.onFailure?.((error, source) => {
+    if (source === 'stream' || stream.listenerCount('error') > 0) stream.destroy(error);
+  });
   standardStreams.add(stream);
   return stream;
 }
 
 /** A program's process.stdout (fd 1) or process.stderr (fd 2) that is not the terminal: a Writable over its output, as Node's is a stream. */
-export function standardStream(output: CommandOutputStream, fd: 1 | 2): Writable {
+export function standardStream(output: FailableOutput, fd: 1 | 2): Writable {
   leaveStandardStreamsOpen();
   const { Writable } = realm.getBuiltinModule('node:stream');
-  return asStandardStream(new Writable(outputSink(output)), fd);
+  return asStandardStream(new Writable(outputSink(output)), fd, output);
 }
 
 /** fd 0, a piece at a time, as a program's process.stdin and tty.ReadStream(0) read it. */

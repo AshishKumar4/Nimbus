@@ -1,4 +1,4 @@
-import type { Readable, Writable, WritableOptions } from 'node:stream';
+import type { Writable } from 'node:stream';
 import type { CommandOutputStream } from '../commands/types.js';
 /**
  * A pipe into a program's stdout or stderr leaves it open, as Node's pipe
@@ -8,38 +8,25 @@ import type { CommandOutputStream } from '../commands/types.js';
  * is the engine's as it was.
  */
 export declare function leaveStandardStreamsOpen(): void;
+/** What made a write to a program's stdout or stderr: its stream, or its console (which, in Node, writes through the stream). */
+export type OutputSource = 'stream' | 'console';
 /**
- * A Writable's options over `output`: its bytes reach the output as each
- * write is made, decoded across writes for an output that takes text, so
- * they keep their place among the console's, which writes the output
- * directly; an output's failure is the stream's error, and the stream
- * finishes once every write handed to the output is done. Without an output
- * (a descriptor the program has not), every write fails EBADF.
+ * An output that can fail after it took a write (a program in a realm, whose
+ * host makes the write later): `onFailure` hears of each failed write, and
+ * what made it.
  */
-export declare function outputSink(output: CommandOutputStream | undefined): WritableOptions;
-/**
- * `stream` as a program's process.stdout (fd 1) or process.stderr (fd 2),
- * which Node's legacy pipe knows by `_isStdio` and a pipe into leaves open.
- */
-export declare function asStandardStream<T extends Writable>(stream: T, fd: 1 | 2): T;
-/** A program's process.stdout (fd 1) or process.stderr (fd 2) that is not the terminal: a Writable over its output, as Node's is a stream. */
-export declare function standardStream(output: CommandOutputStream, fd: 1 | 2): Writable;
-/** fd 0, a piece at a time, as a program's process.stdin and tty.ReadStream(0) read it. */
-export interface StandardInput {
-    /** fd 0's next piece; null at its end. */
-    read(): Promise<Uint8Array | null>;
-    /**
-     * Whether the program waits on a read of it: what it waits on holds it
-     * open, as reading a pipe or the terminal holds a Node process, and a
-     * paused stdin does not.
-     */
-    waiting(on: boolean): void;
+export interface FailableOutput extends CommandOutputStream {
+    onFailure?(listener: (error: Error, source: OutputSource) => void): void;
 }
 /**
- * `stream` reading fd 0 from `input` (none: fd 0 is at its end): a piece is
- * asked for when the stream wants one, as Node starts reading a descriptor,
- * and the wait stops holding the program once it pauses the stream, as
- * Node's readStop does.
+ * A program's process.stdout (fd 1) or process.stderr (fd 2): a Writable
+ * over its output, as Node's is a stream, which Node's legacy pipe knows by
+ * `_isStdio`. Its bytes reach the output as each write is made, decoded
+ * across writes for an output that takes text, so they keep their place
+ * among the console's, which writes the output directly; a failed write
+ * is the stream's error (a console write's only when the stream has a
+ * listener, as Node's console ignores its own failures otherwise), and the
+ * stream finishes once every write handed to the output is done.
  */
-export declare function joinStandardInput<T extends Readable>(stream: T, input: StandardInput | undefined): T;
+export declare function standardStream(output: FailableOutput, fd: 1 | 2): Writable;
 //# sourceMappingURL=standard-streams.d.ts.map
