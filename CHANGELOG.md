@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (npm): an install of many packages dropped one about one time in
+  ten, its reason "Response closed due to connection limit" (pi's official
+  installer, 118 packages). The install facet held registry answers open and
+  unread (a hedged download while the cache was still answering, and a body
+  read only as fast as its files were written), and the runtime closes the
+  least recently used idle connection when six are open and another waits.
+  Each registry tarball is now read ahead of its reader as it arrives (up to
+  8 MiB, which most read to their end at once), and an answer that is not a
+  tarball keeps only its status, so a 503 is retried without waiting on its
+  body.
 - Fixed: a lifo ES module command sends only its real bare imports to the
   CDN. A string or a comment that read like an import was rewritten too,
   so `ctx.stdout.write("from 'foo'")` printed a CDN URL, and `node:`
