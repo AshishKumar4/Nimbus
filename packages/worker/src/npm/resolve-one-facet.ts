@@ -353,8 +353,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   const cached = (() => {
     const entries = spec.cachedEntries || [];
     if (entries.length === 0) return null;
-    // A record is trusted as the package it names only where it says so: a row from before records kept their registry identity may be another package's.
-    const candidates = entries.filter((e) => e.name === request.registryName && e.registryName === request.registryName);
+    const candidates = entries.filter((e) => e.name === request.registryName);
     if (candidates.length === 0) return null;
     const picked = EXACT_VERSION(request.range);
     if (picked === null) return null;

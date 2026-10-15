@@ -1587,8 +1587,6 @@ export class NpmInstaller {
       let record = read.get(key);
       if (record === undefined) {
         record = this.cache.getRegistryEntry(source, registryName, entry.resolvedVer);
-        // A row from before records kept their registry identity may be another package's.
-        if (record !== null && record.registryName !== registryName) record = null;
         read.set(key, record);
       }
       return record !== null && record.integrity === entry.integrity ? record : null;
