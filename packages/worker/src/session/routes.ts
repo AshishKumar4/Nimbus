@@ -1105,7 +1105,7 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
 
         // After the servers the session ran before it restarted are back, so this one replaces them, not they it.
         await self.restoreDevServers();
-        stopViteServers(self);
+        stopViteServers(self, { replacing: true });
 
         // Start in-process ViteDevServer
         if (!self.esbuildService) {

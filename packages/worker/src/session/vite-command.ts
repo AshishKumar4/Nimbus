@@ -67,13 +67,14 @@ export function viteShimTeardown(self: ViteHost, shim: ViteShim): () => void {
 
 /**
  * End whichever Vite server runs now, in the session or real Vite, with its
- * process (`vite stop`, or a server that replaces it): its port is released,
- * and its record with it.
+ * process: `vite stop` ends real Vite as finished, a server that replaces it
+ * terminates it. Its port is released, and its record with it.
  */
-export function stopViteServers(self: ViteHost): boolean {
+export function stopViteServers(self: ViteHost, { replacing }: { replacing: boolean }): boolean {
   let stopped = false;
   if (self.cirrusReal?.isRunning) {
-    self.facetManager.finishProcess(self.cirrusReal.pid, 0);
+    if (replacing) self.facetManager.kill(self.cirrusReal.pid, 'TERM');
+    else self.facetManager.finishProcess(self.cirrusReal.pid, 0);
     stopped = true;
   }
   const pid: number | null = self._viteShimPid;
@@ -370,7 +371,7 @@ export function createViteCommand(self: ViteHost) {
       }
       // Start vite on the dist directory
       if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
-      stopViteServers(self);
+      stopViteServers(self, { replacing: true });
       const previewBasePath = self.viteBasePath;
       // process metadata support: same long-running treatment as the
       // dev path, just on the dist/ directory.
@@ -412,7 +413,7 @@ export function createViteCommand(self: ViteHost) {
 
     // ── vite stop ──
     if (args[0] === 'stop') {
-      if (stopViteServers(self)) {
+      if (stopViteServers(self, { replacing: false })) {
         ctx.stdout.write('\x1b[33mDev server stopped.\x1b[0m\n');
       } else {
         ctx.stdout.write('No dev server running.\n');
@@ -468,7 +469,7 @@ export function createViteCommand(self: ViteHost) {
       }
     }
 
-    stopViteServers(self);
+    stopViteServers(self, { replacing: true });
 
     // ── Real-vite mode (Phase 0 spike, opt-in) ─────────────────────────
     // NIMBUS_REAL_VITE=1 or `nimbusDevServer: 'real'` in vite.config.ts

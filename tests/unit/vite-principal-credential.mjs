@@ -121,6 +121,8 @@ const host = {
   viteBasePath: '/preview',
   viteDevServer: null,
   terminal: null,
+  // Nothing to restore: no incarnation ran before this one.
+  restoreDevServers: async () => [],
   portRegistry: { bindFacetStub() {}, register() {}, unregister() {}, unregisterByPid() {}, has: () => false, getAll: () => [], getRouteablePortsByPid: () => [] },
 };
 const registry = new CommandRegistry();

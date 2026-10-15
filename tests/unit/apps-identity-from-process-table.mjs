@@ -119,7 +119,7 @@ function setup({ storage = new Map(), world, directory = fakeDirectory(), notice
     fm.setVfs(vfs, authority);
   }
   const self = {
-    shell: {},
+    shell: { getEnv: () => ({}) },
     env,
     ctx,
     portRegistry,

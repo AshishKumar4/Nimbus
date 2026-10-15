@@ -31,15 +31,20 @@ const makeVfs = () => readOnlyVfs(new Map([
   [`${ROOT}/package.json`, JSON.stringify({ name: 'app', dependencies: {} })],
 ]));
 
-/** A session whose restore runs the built-in dev server again once, as the session's own restore runs a recorded `vite`. */
+/**
+ * A session whose restore runs the built-in dev server again once, as the
+ * session's own restore runs a recorded `vite`: its start, being the
+ * restore's, does not wait on the restore.
+ */
 function restoring() {
   const self = makeSession({}, { vfs: makeVfs, routes });
   let restore = null;
   self.restores = 0;
+  const insideRestore = new Proxy(self, { get: (target, key) => (key === 'restoreDevServers' ? async () => [] : Reflect.get(target, key)) });
   self.restoreDevServers = () => restore ??= (async () => {
     self.restores += 1;
     await new Promise((resolve) => setTimeout(resolve, 5));
-    await startVite(self, routes);
+    await startVite(insideRestore, routes);
     return [];
   })();
   return self;
