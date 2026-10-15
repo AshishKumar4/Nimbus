@@ -63,6 +63,6 @@ try {
   assert.deepEqual(scripts.map((entry) => entry.state), scripts.map(() => 'exited'), `the script's process ended with its run (${npmStatus})`);
   console.log(`  ✓ a refused last write leaves no tracked process running (npm: ${npmStatus})`);
 } finally {
-  await workspace.close();
+  await runtime.close();
 }
 console.log('hosted-tracked-output-end: ok');
