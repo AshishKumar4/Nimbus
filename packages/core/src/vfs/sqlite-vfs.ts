@@ -370,7 +370,8 @@ export interface VfsOpenDescription {
   /** The directory's entries; a mounted backend's may name a device or say its type is unknown. */
   readdir(): { name: string; type: VfsDirentType }[];
   chmod(mode: number): void;
-  chown(uid: number, gid: number): void;
+  /** A null side keeps the file's. */
+  chown(uid: number | null, gid: number | null): void;
   utimes(atime: number, mtime: number): void;
   close(): void;
   /**
@@ -2752,9 +2753,9 @@ export class SqliteVFS {
         return opened.path === null ? [] : this.readdir(opened.path, CRED_KERNEL);
       },
       chmod: owned((mode: number): void => this.chmodInode(current(), mode, cred, opened.path)),
-      chown: owned((uid: number, gid: number): void => {
+      chown: owned((uid: number | null, gid: number | null): void => {
         const inode = current();
-        const owner = this.ownerChange(inode, uid === -1 ? null : uid, gid === -1 ? null : gid, cred, opened.path);
+        const owner = this.ownerChange(inode, uid, gid, cred, opened.path);
         if (opened.path === null) { Object.assign(inode, owner); inode.ctime = this.now(); return; }
         this.assertMutationsAllowed([opened.path]);
         this.publishMetadata(inode, owner);

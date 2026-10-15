@@ -1076,33 +1076,36 @@ export function residentFilesystem(session, resident, delegation) {
         if (typeof passed !== 'function')
             continue;
         Reflect.set(fs, name, (handleId, ...rest) => {
-            if (!holder?.owns(handleId))
-                return Reflect.apply(passed, fs, [handleId, ...rest]);
-            if (name === 'dup')
-                return holder.dup(handleId);
-            return holderAttrs(name, passed, handleId, rest);
+            if (holder?.owns(handleId))
+                return holderDescriptorCall(name, handleId, rest);
+            return Reflect.apply(passed, fs, [handleId, ...rest]);
         });
     }
     /**
-     * fchmod, fchown and futimes of a descriptor of the holder's, on the file
-     * it opened, never on a name: decided here where the holder decides that
-     * file, else through the description the session holds of it (the file
-     * written through first), and its stat as the session then says.
+     * fchmod, futimes, fchown and dup of a descriptor of the holder's: decided
+     * here where the holder decides them, else by the file's name at the
+     * session, once what was decided is sent.
      */
-    const holderAttrs = (name, passed, handleId, rest) => {
-        const explicit = name !== 'futimes' || (rest[0] !== null && rest[0] !== undefined);
+    /** An fchown side as the guest sent it: a uid or gid, or null (keep the file's). */
+    const ownerSide = (value) => typeof value === 'number' ? value : null;
+    const holderDescriptorCall = (name, handleId, rest) => {
+        const key = holder.keyOf(handleId);
+        if (name === 'dup')
+            return holder.dup(handleId);
         const attrs = name === 'fchmod' ? { mode: Number(rest[0]) }
-            : name === 'fchown' ? { uid: Number(rest[0]), gid: Number(rest[1]) }
-                : explicit ? { atime: Number(rest[0]), mtime: Number(rest[1]) } : { atime: Date.now(), mtime: Date.now() };
-        if (holder.fsetattr(handleId, attrs, explicit))
-            return undefined;
-        holder.changing([holder.keyOf(handleId)]);
-        return holder.flush().then(() => holder.sessionOf(handleId)).then(async (session) => {
-            if (session === undefined)
-                throw fsError('EBADF', name, '/' + holder.keyOf(handleId));
-            await passed.call(fs, session, ...rest);
-            holder.restat(handleId, await fs.fstat(session));
+            : name === 'futimes' && typeof rest[0] === 'number' && typeof rest[1] === 'number' ? { atime: rest[0], mtime: rest[1] }
+                : null;
+        const bySession = () => holder.flush().then(() => {
+            const path = '/' + key;
+            if (name === 'fchmod')
+                return fs.chmod(path, Number(rest[0]));
+            if (name === 'fchown')
+                return fs.chown(path, ownerSide(rest[0]), ownerSide(rest[1]));
+            return fs.utimes(path, rest[0], rest[1]);
         });
+        if (attrs === null)
+            return bySession();
+        return after(holder.setattr(key, attrs), (done) => (done ? undefined : bySession()));
     };
     /**
      * A change by name no held subtree decides: an op of the process's client
@@ -1115,8 +1118,8 @@ export function residentFilesystem(session, resident, delegation) {
         // A name it changes: the files the process holds open at or under it write through first.
         if (op.type === 'rename')
             holder.changing([op.from, op.to]);
-        else if (op.type === 'setattr' || (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir')))
-            holder.changing([op.type === 'setattr' ? op.path : op.call.path]);
+        else if (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir'))
+            holder.changing([op.call.path]);
         return holder.client.submit(op).then(() => { owed = true; }, (error) => { owed = true; throw error; });
     };
     const pathOf = (path) => (typeof path === 'string' ? path : path.path);
@@ -1179,41 +1182,6 @@ export function residentFilesystem(session, resident, delegation) {
         return after(local, (done) => (done !== DELEGATE ? undefined
             : names !== undefined ? byClient('rename', { type: 'rename', from: names[0], to: names[1] }) : bySessionRename(from, to)));
     };
-    // An attribute change by name: decided here where a held subtree holds the
-    // name, else the client's where the store places it outside one, else the
-    // session's, after what the holder has (one it holds but does not decide:
-    // another's file, a grant the session judges). Not a link's own (lchown,
-    // lutimes), nor times now or an owner kept: the session's alone.
-    for (const name of ['chmod', 'chown', 'utimes']) {
-        const passed = Reflect.get(fs, name);
-        Reflect.set(fs, name, (path, ...rest) => {
-            const options = rest[2];
-            const attrs = name === 'chmod' ? { mode: Number(rest[0]) }
-                : options?.followSymlinks === false ? null
-                    : name === 'chown' ? { uid: Number(rest[0]), gid: Number(rest[1]) }
-                        : typeof rest[0] === 'number' && typeof rest[1] === 'number' ? { atime: rest[0], mtime: rest[1] } : null;
-            if (holder === null || attrs === null)
-                return passed.call(fs, path, ...rest);
-            let named;
-            const local = decide(name, () => after(keyFor(path, true), (key) => {
-                if (key === DELEGATE)
-                    return DELEGATE;
-                named = key;
-                return holder.setattr(key, attrs) ? undefined : DELEGATE;
-            }));
-            return after(local, (done) => {
-                if (done !== DELEGATE)
-                    return undefined;
-                if (named === undefined || ('uid' in attrs && (attrs.uid === -1 || attrs.gid === -1)))
-                    return passed.call(fs, path, ...rest);
-                if (!holder.holds(named))
-                    return byClient(name, { type: 'setattr', path: named, attrs });
-                // The session's, the holder's sent first: what it decided there is the session's after.
-                const key = named;
-                return after(passed.call(fs, path, ...rest), (receipt) => { holder.undecided(key); return receipt; });
-            });
-        });
-    }
     // Nothing of these is decided here: by the client when the store places the name.
     const byName = (name, passed, pathAt, op) => (...args) => {
         if (holder === null)

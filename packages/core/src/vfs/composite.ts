@@ -326,7 +326,7 @@ export interface HeldFile {
   replace(bytes: Uint8Array, admit?: () => void): Awaitable<void>;
   truncate(size: number, admit?: () => void): Awaitable<void>;
   chmod(mode: number, admit?: () => void): Awaitable<void>;
-  chown(uid: number, gid: number, admit?: () => void): Awaitable<void>;
+  chown(uid: number | null, gid: number | null, admit?: () => void): Awaitable<void>;
   utimes(atime: number, mtime: number, admit?: () => void): Awaitable<void>;
   readdir(admit?: () => void): Awaitable<VfsDirent[]>;
   close(): Awaitable<void>;
@@ -2066,7 +2066,7 @@ export class CompositeVFS implements VFS {
       return this.byName('fchmod', (backend) => need(backend.chmod, this.target.name).call(backend, this.target.rel, mode), admit);
     }
 
-    chown(uid: number, gid: number, admit?: () => void): Awaitable<void> {
+    chown(uid: number | null, gid: number | null, admit?: () => void): Awaitable<void> {
       return this.byName('fchown', (backend) => need(backend.chown, this.target.name).call(backend, this.target.rel, uid, gid), admit);
     }
 
@@ -3476,7 +3476,7 @@ export class CompositeVFS implements VFS {
     return awaited({ syscall: 'chmod', path }, () => this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'chmod', at)(rel, mode)));
   }
 
-  async chown(path: string, uid: number, gid: number): Promise<void> {
+  async chown(path: string, uid: number | null, gid: number | null): Promise<void> {
     return awaited({ syscall: 'chown', path }, () => this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'chown', at)(rel, uid, gid)));
   }
 

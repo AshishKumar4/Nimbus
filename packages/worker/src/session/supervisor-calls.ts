@@ -396,8 +396,8 @@ export function supervisorCalls<Base extends Class>(base: Base) {
 
     async chown(
       path: RuntimeFsPath,
-      uid: number,
-      gid: number,
+      uid: number | null,
+      gid: number | null,
       options?: { followSymlinks?: boolean },
     ): Promise<VfsMutationReceipt> {
       return this[CALL](this[FS_MUTATION]('chown', [path, uid, gid, options]));

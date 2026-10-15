@@ -3,17 +3,39 @@
   "source": {
     "inputs": {
       "../../scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
-      "build-bash.sh": "df02884a023be271a95d42274e8405deff8c18f42170414a1c50b200b35ac434",
-      "build-in-bwrap.sh": "9ec80a0befc8bb87371427e91ef2ccc49ad55eabc2e579450b362fb38068411a",
-      "cross.cache": "94c70967b023de4687815ec71d3ffdd8394491ed97f3fe52a2a37bd4935325a3",
-      "include/termios.h": "64b72d467d29829d60ac3c69af7846a0ba6ec1de3d7e137b3ca275c7c0928ae4",
-      "inputs.mjs": "b8f5f6ff4874a9873834b4b7f47169516c09fcaac715882756968eb95eecd321",
-      "nimbus-proc.c": "93cbc9c2e8862f9ac3340e22b8f9ddc583cf0936c5ef61641b99d55152105591",
-      "nimbus-proc.h": "0ccc6f2a82b0e0777558f0cef5477261d1a8a3e9485ef1e2236095c9691901b3",
+      "../nimbus-libc/nimbus-accounts.c": "fb8f9d5604c4ddfe549edc4afa866dbe16787bc349088cf7cf5bc860c3de9143",
+      "../nimbus-libc/nimbus-netdb.h": "22cdb1eb824a2559f404770c830b31d07284a3909711c8afb95506858e2d7278",
+      "../nimbus-libc/nimbus-restart.c": "4beb995921f510a9a30ce39ccc24a7ef438184a0454f631102f2c8f8fb5dc907",
+      "../nimbus-libc/nimbus-restart.h": "52d0ab05d0eb76ff77091afc5f99a75d5f0a89ee555fae44999cd0d752303df0",
+      "../nimbus-libc/posix/grp.h": "c94a5733475b9a4b0fac11f637189e94833840318d4c83b5774cfb28e4dbbb37",
+      "../nimbus-libc/posix/nimbus-signal.h": "17efffa065e543783bcfd80f714a835a86c1013b748cb2d520b2c1db3579dc5b",
+      "../nimbus-libc/posix/pwd.h": "b0c58893ddbf8b597b9ed2d61a10319302ceb4121afc5618a9b8993d7807929d",
+      "../nimbus-libc/posix/sys/wait.h": "f29779776c898516b94f2554e02a0e691d287657069eb7327edd15f4c0291eb1",
+      "../nimbus-libc/posix/termios.h": "7508aa9ab4edcdac427cd3e805152b766da70772a4dbe39e833988d3e46dfdbb",
+      "build-bash.sh": "9adcbd3493f82a9c76c10e094cf89f281ae043a96a9c522931abff39552b9f66",
+      "build-in-bwrap.sh": "a15f2836efae9aa88c15e01b579dee3df4c40bd3fda33b6278c6d3f6440bff2f",
+      "coreutils/build-busybox.sh": "ac96596152759a2e7ca025bd0c2b63bc0dad88862dc221aa9f07ad96ab917ae5",
+      "coreutils/busybox-wasi.config": "3b1ac1812b6cb1ad655542fb56b73359ac126d572dceae6eff618950df9354b1",
+      "coreutils/list-applets.mjs": "44ecfef0672feccf1b7bf82a22b116860aa3912482d50196034bbf9ae495ebaf",
+      "coreutils/overlay/mntent.h": "d7d0caf06391dcce6f1caf30797f5ee6c774e9dd5f7140c1ce2c0d41250c2f59",
+      "coreutils/overlay/net/if.h": "ce69d2b298a5454cf906f94bfedf3ac6fec694beec9c0ec7d7d4d9f7017ef916",
+      "coreutils/overlay/netdb.h": "e9453e4c5f0fe1c0775b4b6c318957c3ae932f8565d91ae86a095bcc4d71741f",
+      "coreutils/overlay/nimbus-wasi-compat.h": "192eb475ccc9582487ce7d23e632cbf93a5b95efe3efd165f5bfa0d26b7f44cd",
+      "coreutils/overlay/paths.h": "23eacab20d17d7d51312f0d594ed5179663af4b4bd86dc1ff3b1e02231b6d18c",
+      "coreutils/overlay/sys/statfs.h": "7033b53dc09ebffe521afa710454492b44e6bd9b59bc2bc346926c93bca59fdb",
+      "coreutils/overlay/sys/sysmacros.h": "95555e7715501f3b8e3e85899ccc4d43e3473d79f3e4f11a0264de8a8ff37158",
+      "coreutils/overlay/termios.h": "8b546fa0cdc3267a7132fea6014677be9969cb58deebc72f3a2775a9c9062196",
+      "coreutils/wasi-shim.c": "391ebbb9e7b436fb683c2ce81fa21d8ce623355b63ac1dc32e9cd9c1ef9d0078",
+      "cross.cache": "0e48ab58769e8245ae2bb440e9394b4e8b50565eebec0a9f05d1d69e23009693",
+      "inputs.mjs": "2e01113a758ae1f8ca3e1f93f82b76bc338e43d15490678fc845e339a717f103",
+      "nimbus-proc.c": "a81af420ecfb83fb4f2a176368149ba06d6f98fe50462e5892f62e2a3693e8e3",
+      "nimbus-proc.h": "c8d7dd17a91aea16e142689183ec7c18555a16ae2692c4bf13fbac239fc8931e",
       "patches/procenv.patch": "381a3918e5981fef1bcbf3df2f7f9396630a32a38268113b2a62a983ac4d28bd"
     }
   },
   "outputs": {
-    "bash.async.wasm": "bcf5e75d03f43ba0419487191b07065fb806bb06f4a7409249923fa603022733"
+    "bash.async.wasm": "ddc86c1422556654f02edf083f70017275bbc52f53781d1b74ac538bc7d0b102",
+    "coreutils/busybox.applets": "85b8b3dcf20452f66a55f6b4a41bc82c249fa121cd3cda523f0ec3f344e8ee25",
+    "coreutils/busybox.wasm": "7d1b34a31d74473be1fdb50706ed75e8ec765b68878b4fb2cf6ab486cbcb2631"
   }
 }

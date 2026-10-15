@@ -483,8 +483,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     }
   };
 
-  /** An owner or group id a chown keeps (-1): null, as chownRefusal takes it. */
-  const kept = (id: number): number | null => (id === -1 ? null : id);
+  /** An owner or group id a chown keeps (null, or -1 as fchown(2) spells it): null, as chownRefusal takes it. */
+  const kept = (id: number | null): number | null => (id === -1 ? null : id);
 
   /** `entry` as chmod, chown (the set-id bits chownedMode clears) and utimes leave it, its ctime now. */
   const changedBy = (entry: ResidentEntry, attrs: W7Attrs): ResidentEntry => (

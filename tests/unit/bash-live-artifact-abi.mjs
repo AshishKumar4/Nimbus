@@ -29,6 +29,10 @@ assert(imports(bash).includes('nimbus_procenv.full') && !imports(bash).includes(
 const exported = Object.fromEntries(WebAssembly.Module.exports(bash).map(({ name, kind }) => [name, kind]));
 for (const name of ['__stack_pointer', '__data_end', '__heap_base']) assert.equal(exported[name], 'global', name);
 assert.equal(exported.nimbus_procenv_log, 'function');
+// bash-runner@6: bash asks the runner for a stat preview1 left untyped (a pipe, a stdin that is not a terminal),
+// and bash and BusyBox ask it for the session's accounts.
+assert(imports(bash).includes('nimbus_proc.stat_metadata'));
+assert(imports(bash).includes('nimbus_proc.account') && imports(busybox).includes('nimbus_proc.account'));
 assert(imports(busybox).includes('nimbus_proc.startup_cwd'));
 assert(imports(busybox).includes('nimbus_proc.stat_metadata'));
 assert(imports(busybox).includes('wasi_snapshot_preview1.fd_sync'));
@@ -72,6 +76,8 @@ function nativeImports(getInstance, cwd, observed) {
     chmod() { observed.denials++; return 2; },
     fchmod() { observed.denials++; return 2; },
     chown() { observed.denials++; return 63; },
+    // These runs name no account: none is found.
+    account() { return 44; },
   };
 }
 

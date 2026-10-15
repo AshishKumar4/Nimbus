@@ -6,14 +6,17 @@ export interface UnixAccountReader {
 
 export interface UnixUser {
   name: string;
+  password: string;
   uid: number;
   gid: number;
+  gecos: string;
   home: string;
   shell: string;
 }
 
 export interface UnixGroup {
   name: string;
+  password: string;
   gid: number;
   members: readonly string[];
 }
@@ -24,9 +27,10 @@ export function parseUnixId(value: string): number | null {
   return Number.isSafeInteger(id) ? id : null;
 }
 
-async function users(vfs: UnixAccountReader): Promise<UnixUser[]> {
+/** The accounts /etc/passwd's `text` holds, in its order: the one parser of it, the shell's and the runtimes' (nimbus_proc.account). */
+export function unixUsers(text: string): UnixUser[] {
   const result: UnixUser[] = [];
-  for (const line of (await vfs.readFileString('/etc/passwd')).split('\n')) {
+  for (const line of text.split('\n')) {
     if (!line || line.startsWith('#')) continue;
     const fields = line.split(':');
     if (fields.length < 7) continue;
@@ -35,8 +39,10 @@ async function users(vfs: UnixAccountReader): Promise<UnixUser[]> {
     if (uid === null || gid === null || !fields[0]) continue;
     result.push({
       name: fields[0],
+      password: fields[1],
       uid,
       gid,
+      gecos: fields[4],
       home: fields[5],
       shell: fields[6],
     });
@@ -44,9 +50,10 @@ async function users(vfs: UnixAccountReader): Promise<UnixUser[]> {
   return result;
 }
 
-async function groups(vfs: UnixAccountReader): Promise<UnixGroup[]> {
+/** The groups /etc/group's `text` holds, in its order. */
+export function unixGroups(text: string): UnixGroup[] {
   const result: UnixGroup[] = [];
-  for (const line of (await vfs.readFileString('/etc/group')).split('\n')) {
+  for (const line of text.split('\n')) {
     if (!line || line.startsWith('#')) continue;
     const fields = line.split(':');
     if (fields.length < 4) continue;
@@ -54,11 +61,20 @@ async function groups(vfs: UnixAccountReader): Promise<UnixGroup[]> {
     if (gid === null || !fields[0]) continue;
     result.push({
       name: fields[0],
+      password: fields[1],
       gid,
       members: fields[3] ? fields[3].split(',').filter(Boolean) : [],
     });
   }
   return result;
+}
+
+async function users(vfs: UnixAccountReader): Promise<UnixUser[]> {
+  return unixUsers(await vfs.readFileString('/etc/passwd'));
+}
+
+async function groups(vfs: UnixAccountReader): Promise<UnixGroup[]> {
+  return unixGroups(await vfs.readFileString('/etc/group'));
 }
 
 export async function findUnixUser(vfs: UnixAccountReader, identity: string | number): Promise<UnixUser | null> {

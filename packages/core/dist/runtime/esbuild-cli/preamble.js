@@ -120,6 +120,8 @@ function goFilesystem(vfs, stdio, state, live, crash) {
             throw errno('EBADF', `fd ${fd}`);
         return open;
     };
+    // Node's and Go's chown take -1 for a side to keep, which the bridge says as null.
+    const ownerSide = (id) => id === -1 ? null : id;
     const settle = (work, callback) => {
         Promise.resolve().then(work).then((value) => { if (live())
             deliver(callback, null, value); }, (error) => { if (live())
@@ -266,12 +268,12 @@ function goFilesystem(vfs, stdio, state, live, crash) {
         fchmod(fd, mode, callback) {
             settle(() => { const open = file(fd); return open.kind === 'handle' ? vfs.fchmod(open.handle, mode) : vfs.chmod(open.path, mode); }, callback);
         },
-        chown(path, uid, gid, callback) { settle(() => vfs.chown(at(path), uid, gid), callback); },
+        chown(path, uid, gid, callback) { settle(() => vfs.chown(at(path), ownerSide(uid), ownerSide(gid)), callback); },
         lchown(path, uid, gid, callback) {
-            settle(() => vfs.chown(at(path), uid, gid, { followSymlinks: false }), callback);
+            settle(() => vfs.chown(at(path), ownerSide(uid), ownerSide(gid), { followSymlinks: false }), callback);
         },
         fchown(fd, uid, gid, callback) {
-            settle(() => { const open = file(fd); return open.kind === 'handle' ? vfs.fchown(open.handle, uid, gid) : vfs.chown(open.path, uid, gid); }, callback);
+            settle(() => { const open = file(fd); return open.kind === 'handle' ? vfs.fchown(open.handle, ownerSide(uid), ownerSide(gid)) : vfs.chown(open.path, ownerSide(uid), ownerSide(gid)); }, callback);
         },
         utimes(path, atime, mtime, callback) {
             settle(() => vfs.utimes(at(path), atime * 1000, mtime * 1000), callback);

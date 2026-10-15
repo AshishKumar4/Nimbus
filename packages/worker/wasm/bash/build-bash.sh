@@ -6,6 +6,7 @@
 # (BASH_SRC), wasm-opt on PATH, and a host gcc and make for bash's build tools.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+NIMBUS_LIBC="$(cd "$HERE/../nimbus-libc" && pwd)"
 : "${WASI_SDK:?set WASI_SDK to the wasi-sdk root (bin/wasm32-wasi-clang)}"
 : "${BASH_SRC:?set BASH_SRC to an extracted bash-5.2.x source tree}"
 CC="$WASI_SDK/bin/wasm32-wasi-clang"
@@ -22,7 +23,8 @@ TARGET_CFLAGS="-std=gnu17 -O2 \
   -Wno-incompatible-pointer-types -Wno-int-conversion"
 TARGET_LDFLAGS="-lwasi-emulated-signal -lwasi-emulated-process-clocks -lwasi-emulated-mman"
 
-INC="-I$HERE/include"   # Nimbus termios.h overlay
+# termios.h, sys/wait.h, pwd.h and the sigaction flags wasi-libc omits, shared with BusyBox.
+INC="-I$NIMBUS_LIBC/posix"
 
 cd "$BASH_SRC"
 if [ ! -f config.status ]; then
@@ -37,12 +39,13 @@ if [ ! -f config.status ]; then
   CPPFLAGS="-D_GNU_SOURCE" LDFLAGS="$TARGET_LDFLAGS" \
   ./configure --host=wasm32-wasi --without-bash-malloc --disable-nls \
     --cache-file=nimbus-cross.cache
-  # config.h fixes: wasi-libc HAS gethostname/tcgetattr/tcgetpgrp/termios;
-  # struct passwd comes from the overlay (no <pwd.h> file) so keep HAVE_PWD_H
-  # off but HAVE_GETPWNAM on. HAVE_TERMIOS_H + HAVE_TCGETATTR make config-bot.h
-  # pick the termios tty driver (not the absent BSD sgtty one).
+  # config.h fixes: wasi-libc HAS gethostname/tcgetattr/tcgetpgrp/termios.
+  # struct passwd comes from nimbus-proc.h (nimbus-libc/posix/pwd.h, force-
+  # included), so HAVE_PWD_H stays off; the getpw* calls are nimbus-libc's
+  # (cross.cache: lib/tilde expands ~name only with HAVE_GETPWENT too).
+  # HAVE_TERMIOS_H + HAVE_TCGETATTR make config-bot.h pick the termios tty
+  # driver (not the absent BSD sgtty one).
   sed -i 's|/\* #undef HAVE_GETHOSTNAME \*/|#define HAVE_GETHOSTNAME 1|;
-          s|/\* #undef HAVE_GETPWNAM \*/|#define HAVE_GETPWNAM 1|;
           s|/\* #undef HAVE_TERMIOS_H \*/|#define HAVE_TERMIOS_H 1|;
           s|/\* #undef HAVE_TCGETATTR \*/|#define HAVE_TCGETATTR 1|;
           s|/\* #undef HAVE_TCGETPGRP \*/|#define HAVE_TCGETPGRP 1|' config.h
@@ -56,9 +59,13 @@ TARGET_CFLAGS="$TARGET_CFLAGS $INC"
 make -j"${NIMBUS_BUILD_JOBS:-1}" CC_FOR_BUILD='gcc -std=gnu17' CFLAGS="$TARGET_CFLAGS" LOCAL_LIBS="" \
   || echo "make compiles all objects; final link is done explicitly below"
 
-# nimbus-proc.o: the process/setjmp/termios/signal trap layer linked into bash.
-"$CC" -std=gnu17 -D_GNU_SOURCE -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS $INC -O2 \
-  -c "$HERE/nimbus-proc.c" -o nimbus-proc.o
+# nimbus-proc.o: the process/setjmp/termios/signal trap layer linked into bash;
+# nimbus-accounts.o: the session's accounts (~user), shared with BusyBox;
+# nimbus-restart.o: a read or write the host gave up waiting on is asked again.
+for unit in "$HERE/nimbus-proc.c" "$NIMBUS_LIBC/nimbus-accounts.c" "$NIMBUS_LIBC/nimbus-restart.c"; do
+  "$CC" -std=gnu17 -D_GNU_SOURCE -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS $INC -O2 \
+    -c "$unit" -o "$(basename "$unit" .c).o"
+done
 
 # Explicit link. --no-gc-sections is REQUIRED: bash's main() is K&R 3-arg, so the
 # wasi crt's weak __main_argc_argv→main link doesn't root it under gc-sections and
@@ -71,13 +78,17 @@ OBJS="shell.o eval.o y.tab.o general.o make_cmd.o print_cmd.o dispose_cmd.o exec
 # --wrap=dup,dup2,fcntl routes bash's fd-duplication onto the nimbus_proc fd
 # table (where pipe ends live) instead of wasi-libc's separate fd namespace —
 # one FdTable (the M3 layer), so pipe redirections (dup2 pipefd->1) work.
+# --wrap=stat,... gives a stat preview1 left untyped the runner's type, and
+# --wrap=read,... asks again a read or write the host gave up on (bash-runner@6).
 "$CC" -O2 -o bash $OBJS \
   -L./builtins -L./lib/readline -L./lib/glob -L./lib/tilde -L./lib/sh \
   -lbuiltins -lglob -lsh -lreadline -lhistory ./lib/termcap/libtermcap.a -ltilde \
-  nimbus-proc.o $TARGET_LDFLAGS \
+  nimbus-proc.o nimbus-accounts.o nimbus-restart.o $TARGET_LDFLAGS \
   -Wl,--export=__stack_pointer -Wl,--export=__data_end -Wl,--export=__heap_base \
   -Wl,--allow-undefined -Wl,--no-gc-sections \
-  -Wl,--wrap=dup2 -Wl,--wrap=dup -Wl,--wrap=fcntl
+  -Wl,--wrap=dup2 -Wl,--wrap=dup -Wl,--wrap=fcntl \
+  -Wl,--wrap=stat -Wl,--wrap=lstat -Wl,--wrap=fstat -Wl,--wrap=fstatat \
+  -Wl,--wrap=read -Wl,--wrap=readv -Wl,--wrap=write -Wl,--wrap=writev
 
 # fpcast-emu: bash's unwind_protect casts function pointers, which wasm's
 # type-checked call_indirect rejects at runtime (traps after the command runs).

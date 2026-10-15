@@ -1202,6 +1202,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     });
   }
 
+  /** An fchown side as the guest sent it: a uid or gid, or null (keep the file's). */
+  const ownerSide = (value: unknown): number | null => typeof value === 'number' ? value : null;
   /**
    * fchmod, fchown and futimes of a descriptor of the holder's, on the file
    * it opened, never on a name: decided here where the holder decides that
@@ -1211,7 +1213,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const holderAttrs = (name: 'fchmod' | 'fchown' | 'futimes', passed: (handleId: number, ...rest: unknown[]) => unknown, handleId: number, rest: unknown[]): unknown => {
     const explicit = name !== 'futimes' || (rest[0] !== null && rest[0] !== undefined);
     const attrs: W7Attrs = name === 'fchmod' ? { mode: Number(rest[0]) }
-      : name === 'fchown' ? { uid: Number(rest[0]), gid: Number(rest[1]) }
+      : name === 'fchown' ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) }
       : explicit ? { atime: Number(rest[0]), mtime: Number(rest[1]) } : { atime: Date.now(), mtime: Date.now() };
     if (holder!.fsetattr(handleId, attrs, explicit)) return undefined;
     holder!.changing([holder!.keyOf(handleId)]);
@@ -1298,7 +1300,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       const options = rest[2] as { followSymlinks?: boolean } | undefined;
       const attrs: W7Attrs | null = name === 'chmod' ? { mode: Number(rest[0]) }
         : options?.followSymlinks === false ? null
-        : name === 'chown' ? { uid: Number(rest[0]), gid: Number(rest[1]) }
+        : name === 'chown' ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) }
         : typeof rest[0] === 'number' && typeof rest[1] === 'number' ? { atime: rest[0], mtime: rest[1] } : null;
       if (holder === null || attrs === null) return passed.call(fs, path, ...rest);
       let named: string | undefined;

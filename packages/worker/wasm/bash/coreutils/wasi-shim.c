@@ -1,9 +1,9 @@
 /* wasi-shim.c — POSIX stubs busybox needs that wasi-libc omits.
  *
- * Semantics are chosen for the Nimbus in-facet runtime: a single-user
- * (uid 0 "user"), process-less, signal-free VFS world. Identity calls
- * answer honestly for that world; process/signal-delivery calls fail
- * with ENOSYS so applets report a real error instead of misbehaving.
+ * Semantics are chosen for the Nimbus in-facet runtime: a process-less,
+ * signal-free VFS world. Identity calls answer the process's credential;
+ * process/signal-delivery calls fail with ENOSYS so applets report a real
+ * error instead of misbehaving.
  * Maintained by Claude, presented as-is. */
 #include <errno.h>
 #include <string.h>
@@ -38,35 +38,7 @@ int getgroups(int size, gid_t list[]) { if (!size) return 1; if (size < 1) { err
 int setgroups(size_t size, const gid_t *list) { (void)size; (void)list; errno = EPERM; return -1; }
 int initgroups(const char *user, gid_t group) { (void)user; (void)group; errno = EPERM; return -1; }
 
-static char pw_name[] = "user", pw_dir[] = "/home/user", pw_shell[] = "/bin/bash", pw_empty[] = "";
-static struct passwd the_user = { pw_name, pw_empty, 0, 0, pw_empty, pw_dir, pw_shell };
-static struct group the_group = { pw_name, pw_empty, 0, 0 };
-struct passwd *getpwuid(uid_t uid) { (void)uid; return &the_user; }
-struct passwd *getpwnam(const char *name) { return strcmp(name, pw_name) == 0 ? &the_user : 0; }
-int getpwuid_r(uid_t uid, struct passwd *pwd, char *buf, size_t buflen, struct passwd **result) {
-  (void)uid; (void)buf; (void)buflen; *pwd = the_user; *result = pwd; return 0;
-}
-int getpwnam_r(const char *name, struct passwd *pwd, char *buf, size_t buflen, struct passwd **result) {
-  (void)buf; (void)buflen;
-  if (strcmp(name, pw_name) != 0) { *result = 0; return 0; }
-  *pwd = the_user; *result = pwd; return 0;
-}
-struct passwd *getpwent(void) { return 0; }
-void setpwent(void) {}
-void endpwent(void) {}
-struct group *getgrgid(gid_t gid) { (void)gid; return &the_group; }
-struct group *getgrnam(const char *name) { return strcmp(name, pw_name) == 0 ? &the_group : 0; }
-int getgrgid_r(gid_t gid, struct group *grp, char *buf, size_t buflen, struct group **result) {
-  (void)gid; (void)buf; (void)buflen; *grp = the_group; *result = grp; return 0;
-}
-int getgrnam_r(const char *name, struct group *grp, char *buf, size_t buflen, struct group **result) {
-  (void)buf; (void)buflen;
-  if (strcmp(name, pw_name) != 0) { *result = 0; return 0; }
-  *grp = the_group; *result = grp; return 0;
-}
-struct group *getgrent(void) { return 0; }
-void setgrent(void) {}
-void endgrent(void) {}
+/* Accounts are the session's: nimbus-libc/nimbus-accounts.c. */
 
 IMPORT("chown") extern int nimbus_chown(int fd, const char *path, unsigned len, unsigned uid, unsigned gid, unsigned follow);
 static int syscall_result(int err) { if (err) { errno = err; return -1; } return 0; }
@@ -225,7 +197,8 @@ static int stat_metadata(int fd, const char *path, unsigned follow, struct stat 
   unsigned out[3];
   int err = nimbus_stat_metadata(fd == AT_FDCWD ? -1 : fd, path, path ? strlen(path) : 0, follow, out);
   if (err) { errno = err; return -1; }
-  st->st_mode = (st->st_mode & S_IFMT) | (out[0] & 07777);
+  /* preview1 has no FIFO type: one it gave none takes the runner's. */
+  st->st_mode = ((st->st_mode & S_IFMT) ? (st->st_mode & S_IFMT) : (out[0] & S_IFMT)) | (out[0] & 07777);
   st->st_uid = out[1]; st->st_gid = out[2];
   st->st_blocks = (st->st_size + 511) / 512;
   return 0;

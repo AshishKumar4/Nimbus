@@ -247,7 +247,7 @@ export class SqliteFiles implements VFS {
     this.run('chmod', path, () => this.view.chmod(path, mode));
   }
 
-  chown(path: string, uid: number, gid: number): void {
+  chown(path: string, uid: number | null, gid: number | null): void {
     this.run('chown', path, () => this.view.chown(path, uid, gid));
   }
 

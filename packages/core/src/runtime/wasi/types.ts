@@ -25,7 +25,7 @@ import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
  * widened at a use site. Numbers are the preview1 enum, which is alphabetical
  * and therefore not guessable; check the spec before adding one.
  */
-export type Errno = 0 | 1 | 2 | 6 | 8 | 10 | 12 | 14 | 20 | 21 | 22 | 23 | 27 | 28 | 29 | 31 | 32 | 33 | 37 | 41 | 44 | 48 | 51 | 52 | 53 | 54 | 55 | 57 | 58 | 59 | 60 | 63 | 64 | 69 | 70 | 71 | 72 | 73 | 75 | 76
+export type Errno = 0 | 1 | 2 | 6 | 8 | 10 | 12 | 14 | 20 | 21 | 22 | 23 | 27 | 28 | 29 | 31 | 32 | 33 | 37 | 41 | 44 | 48 | 51 | 52 | 53 | 54 | 55 | 57 | 58 | 59 | 60 | 63 | 64 | 68 | 69 | 70 | 71 | 72 | 73 | 75 | 76
   | typeof NIMBUS_ERESTART | SignalErrno;
 
 /**

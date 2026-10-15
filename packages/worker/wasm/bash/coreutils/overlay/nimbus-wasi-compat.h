@@ -59,27 +59,10 @@ struct sigaction {
 };
 #define sa_handler   __sa_handler.sa_handler
 #define sa_sigaction __sa_handler.sa_sigaction
-#define SA_NOCLDSTOP 1
-#define SA_NOCLDWAIT 2
-#define SA_SIGINFO   4
-#define SA_ONSTACK   0x08000000
-#define SA_RESTART   0x10000000
-#define SA_NODEFER   0x40000000
-#define SA_RESETHAND 0x80000000
-#define SIG_BLOCK    0
-#define SIG_UNBLOCK  1
-#define SIG_SETMASK  2
+#include <nimbus-signal.h>
 #ifndef NSIG
 #define NSIG 65
 #endif
-int sigaction(int sig, const struct sigaction *act, struct sigaction *oact);
-int sigemptyset(sigset_t *set);
-int sigfillset(sigset_t *set);
-int sigaddset(sigset_t *set, int sig);
-int sigdelset(sigset_t *set, int sig);
-int sigismember(const sigset_t *set, int sig);
-int sigprocmask(int how, const sigset_t *set, sigset_t *oset);
-int sigsuspend(const sigset_t *mask);
 int sigwait(const sigset_t *set, int *sig);
 int killpg(int pgrp, int sig);
 #include <sys/socket.h>

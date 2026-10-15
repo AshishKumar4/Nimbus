@@ -14,7 +14,7 @@ declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
     utimes(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, atimeMs: number, mtimeMs: number): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsMutationReceipt>;
     chmod(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, mode: number): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsMutationReceipt>;
     access(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, mode: number): Promise<void>;
-    chown(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, uid: number, gid: number, options?: {
+    chown(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, uid: number | null, gid: number | null, options?: {
         followSymlinks?: boolean;
     } | undefined): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsMutationReceipt>;
     setUmask(mask: number): Promise<number>;
@@ -56,7 +56,7 @@ declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
     fsReaddirHandle(handleId: number): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["readdirHandle"]>>>;
     fsFtruncate(handleId: number, size: number): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["ftruncate"]>>>;
     fsFchmod(handleId: number, mode: number): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["fchmod"]>>>;
-    fsFchown(handleId: number, uid: number, gid: number): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["fchown"]>>>;
+    fsFchown(handleId: number, uid: number | null, gid: number | null): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["fchown"]>>>;
     fsFutimes(handleId: number, atimeMs: number, mtimeMs: number): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["futimes"]>>>;
     fsSync(handleId?: number | undefined): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["fsync"]>>>;
     fsRealpath(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["realpath"]>>>;

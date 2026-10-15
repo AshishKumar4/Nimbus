@@ -349,8 +349,12 @@ export interface RuntimeFsBridge {
     chmod(path: RuntimeFsPath, mode: number): Awaitable<VfsMutationReceipt>;
     /** Check access using the bridge's process credential. */
     access(path: RuntimeFsPath, mode: number): Awaitable<void>;
-    /** Change stored ownership, optionally operating on a symlink itself. */
-    chown(path: RuntimeFsPath, uid: number, gid: number, options?: {
+    /**
+     * Change stored ownership, optionally operating on a symlink itself. A
+     * side that is null keeps what the file has (chown(2)'s -1), in the same
+     * change: no owner set between is overwritten.
+     */
+    chown(path: RuntimeFsPath, uid: number | null, gid: number | null, options?: {
         followSymlinks?: boolean;
     }): Awaitable<VfsMutationReceipt>;
     /** `options.mutationOwner`: the lease an open for writing presents. */
@@ -455,7 +459,8 @@ export interface RuntimeFsBridge {
     readdirHandle(handleId: number): Awaitable<RuntimeVfsDirEntry[]>;
     ftruncate(handleId: number, size: number): Awaitable<void>;
     fchmod(handleId: number, mode: number): Awaitable<void>;
-    fchown(handleId: number, uid: number, gid: number): Awaitable<void>;
+    /** chown's, of an open file: a null side keeps the file's. */
+    fchown(handleId: number, uid: number | null, gid: number | null): Awaitable<void>;
     futimes(handleId: number, atimeMs: number, mtimeMs: number): Awaitable<void>;
     /** `signal`: cancels it before its commit (a released process publishes nothing). */
     writeBatch(payload: import('@nimbus-sh/platform/w7-frame.js').BatchWritePayload, options?: {
@@ -785,23 +790,41 @@ export declare const NIMBUS_RUNTIME_ABIS: Readonly<Record<string, RuntimePackage
  * catalog is shared by every deployment reading it and a workspace binds only
  * the build its preamble was written against.
  */
-export declare const BASH_RUNNER = "bash-runner@5";
+export declare const BASH_RUNNER = "bash-runner@6";
+/**
+ * The contracts this tree's bash runner implements, the keys it is
+ * registered under, and what each build asks of its host. @6 gives bash's
+ * own instance nimbus_proc.stat_metadata (5.2.37-7 asks it for a stat
+ * preview1 gave no type); a @5 build (5.2.37-5, -6) does not import it, and
+ * an instantiation ignores what a module does not import. @6's bash and
+ * BusyBox also ask again a read or write their host gave up on
+ * (nimbus-libc's restart wrappers); bash's host gives none up today.
+ */
+export declare const BASH_RUNNER_CONTRACTS: Readonly<Record<string, {
+    readonly restartsWaits: boolean;
+}>>;
 /**
  * The runner key a CPython manifest entrypoint names: the contract between the
  * CPython preamble (cpython-preamble.ts) and the wasm build in
  * `packages/worker/wasm/python`. 3.13.14-2 imports nimbus_fs and nimbus_proc,
  * which an older runner does not give the module, so it is `@2`; 3.13.14-1
- * and before were published under `cpython-runner`. A rebuild that changes
- * what the module imports or exports takes the next number, as BASH_RUNNER's do.
+ * and before were published under `cpython-runner`. 3.13.14-3 asks again a
+ * read or write its host gave up on (nimbus-libc's restart wrappers), which
+ * a host may answer only to it, so it is `@3`. A rebuild that changes what
+ * the module imports, exports or asks of its host takes the next number, as
+ * BASH_RUNNER's do.
  */
-export declare const CPYTHON_RUNNER = "cpython-runner@2";
+export declare const CPYTHON_RUNNER = "cpython-runner@3";
 /**
- * The contracts this tree's CPython runner implements, and the keys it is
- * registered under: each build's imports are a subset of what it gives a
- * module (preview1, and nimbus_fs and nimbus_proc since @2), and an
- * instantiation ignores the ones a module does not import.
+ * The contracts this tree's CPython runner implements, the keys it is
+ * registered under, and what each build asks of its host: each build's
+ * imports are a subset of what it gives a module (preview1, and nimbus_fs
+ * and nimbus_proc since @2), and an instantiation ignores the ones a module
+ * does not import.
  */
-export declare const CPYTHON_RUNNER_CONTRACTS: readonly string[];
+export declare const CPYTHON_RUNNER_CONTRACTS: Readonly<Record<string, {
+    readonly restartsWaits: boolean;
+}>>;
 /** What a git build asks of its host (GIT_RUNNER_CONTRACTS). */
 export interface GitRunnerContract {
     /** Its libc asks again a read or write the host gave up waiting on (NIMBUS_ERESTART). */

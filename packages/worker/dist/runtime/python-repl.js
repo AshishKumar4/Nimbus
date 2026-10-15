@@ -258,6 +258,7 @@ export function pythonReplStep(deps, pythonHome, userCode) {
     return {
         userCode,
         cred: deps.cred,
+        restartsWaits: deps.restartsWaits === true,
         supervisorPid: deps.pid || 0,
         outputControls: [{ key: 'incomplete', prefix: INCOMPLETE_MARKER }, { key: 'exit', prefix: EXIT_MARKER, suffix: ':' }],
         pythonHome,

@@ -71,6 +71,8 @@ async function __nimbusPyBoot(args) {
     getMemory: () => instance.exports.memory,
     stdoutBytes: __nimbusPyOutput.stdoutBytes,
     stderrBytes: __nimbusPyOutput.stderrBytes,
+    // An image whose libc asks again a wait the host gave up on (cpython-runner@3).
+    restartsWaits: args.restartsWaits === true,
   });
   if (typeof __wasiPrepareFilesystem === 'function') {
     await __wasiPrepareFilesystem([(args.pythonHome || '/usr/local') + '/lib']);
@@ -147,6 +149,8 @@ async function __nimbusPyBoot(args) {
     if (setupRc !== 0) throw new Error('Python runtime bootstrap failed (exit ' + setupRc + ')');
   }
 
+  // nimbus_py_run flushes sys.stdout and sys.stderr before it returns, so an
+  // entry that returned needs no flush; flush is for one that trapped.
   return {
     instance,
     run: (src) => withCString(src, (ptr) => __nimbusEnterVm(exports.nimbus_py_run)(ptr)),
@@ -218,7 +222,6 @@ async function __cpythonRunOnce(args) {
   }
   try {
     const exitCode = await boot.run(args.userCode || '');
-    await boot.flush();
     return { exitCode, ...drain() };
   } catch (e) {
     try { await boot.flush(); } catch (ignored) { /* the VM is already gone */ }
@@ -262,7 +265,6 @@ async function __cpythonReplLine(args) {
       // program's own os.chdir left. One it cannot enter ends the prompt.
       if (args.enter) {
         const entered = await boot.run(args.enter);
-        await boot.flush();
         if (entered !== 0) return { exitCode: entered, ...drain() };
       }
     }
@@ -271,7 +273,6 @@ async function __cpythonReplLine(args) {
   }
   try {
     const exitCode = await globalThis.__cpythonReplBoot.run(args.userCode || '');
-    await globalThis.__cpythonReplBoot.flush();
     return { exitCode, ...drain() };
   } catch (e) {
     return { exitCode: 1, ...drain(), error: (e && e.message) || String(e) };
@@ -295,7 +296,6 @@ globalThis.__cpythonStartProcess = async function __cpythonStartProcess(args) {
   let error;
   try {
     exitCode = await boot.run(args.userCode || '');
-    await boot.flush();
   } catch (e) {
     error = (e && e.message) || String(e);
   }
@@ -318,7 +318,6 @@ globalThis.__cpythonListeningPorts = async function __cpythonListeningPorts() {
   const controls = globalThis.__wasiOutputControl([{ key: 'ports', prefix: '__NIMBUS_PORTS__', suffix: '\n' }]);
   __nimbusPyOutputControl = controls;
   await proc.boot.run('print("__NIMBUS_PORTS__" + repr(_nimbus_listening_ports()))');
-  await proc.boot.flush();
   await __nimbusPyOutput.drain();
   __nimbusPyOutputControl = null;
   const tail = controls.finish();
@@ -343,7 +342,6 @@ globalThis.__nimbusVirtualSocketRequestQueued = globalThis.__nimbusVirtualSocket
           'import sys\n'
           + '_nimbus_ok = _nimbus_serve_one(' + Number(port) + ')\n'
           + 'if not _nimbus_ok: sys.stderr.write("nimbus: no server registered on port ' + Number(port) + '\\n")');
-        await proc.boot.flush();
       } finally {
         // A request the server handled leaves what it wrote in the session; a
         // refusal goes to the process's stderr, naming the file.

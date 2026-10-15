@@ -23,7 +23,8 @@
 // the link's target, chown was decided for a target outside the subtree,
 // utimes of another's file was answered, a chown left the set-id bits the
 // session clears, and with the namespace unavailable each async form
-// refused EAGAIN instead of asking the session.
+// refused EAGAIN instead of asking the session; and chown's -1, which keeps
+// that side in Node, was refused EINVAL.
 
 import assert from 'node:assert/strict';
 import { createAuthority, facetSupervisor, launchResident, residentDataPlan, runScenarios, sleep, until } from './lib/resident-body.mjs';
@@ -433,6 +434,20 @@ await runScenarios(import.meta.path, {
     assert.equal((await authority.peer.lstat('home/user/app/out/mylink')).uid, 1000);
     await assert.rejects(fs.promises.chown(`${OUT}/mylink`, 1000, 1000), { code: 'EPERM' }, 'chown follows it to root\'s file');
     await assert.rejects(fs.promises.utimes(`${OUT}/mylink`, 3, 3), { code: 'EPERM' }, 'and so does utimes');
+  },
+
+  async 'chown with -1 keeps that side, as Node\'s does, held or the session\'s to answer'() {
+    const { authority, fs } = await boot();
+    fs.chownSync(`${OUT}/warm2`, -1, 1000);
+    await fs.promises.chown(`${OUT}/warm4`, -1, 1000);
+    await fs.promises.lchown(`${OUT}/warm5`, 1000, -1);
+    await fs.promises.chown('/home/user/elsewhere/x.txt', -1, -1);
+    await globalThis.__nimbusProcessFs.flush();
+    for (const path of ['home/user/app/out/warm2', 'home/user/app/out/warm4', 'home/user/app/out/warm5', 'home/user/elsewhere/x.txt']) {
+      const stat = await authority.peer.stat(path);
+      assert.deepEqual({ uid: stat.uid, gid: stat.gid }, { uid: 1000, gid: 1000 }, path);
+    }
+    assert.throws(() => fs.chownSync(`${OUT}/warm2`, -2, 1000), { code: 'EINVAL' }, 'below -1 is no id');
   },
 
   async 'chown through a link to a file outside the held subtree waits for the session'() {
