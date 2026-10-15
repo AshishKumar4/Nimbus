@@ -57,11 +57,12 @@ export type NodeCall =
   /** umask(2): the mask the program creates with from now on (its own copy: the shell's is not changed). */
   | { readonly op: 'umask'; readonly mask: number }
   /**
-   * Answered once every output write made so far is made or failed: the
-   * outputs that have failed (OutputFailure). The program's code has run, and
-   * it hears of a failure before it ends.
+   * Answered once output writes up to number `upTo` are made or failed (the
+   * writes come on the event channel, which this call does not wait behind):
+   * the outputs that have failed (OutputFailure). The program's code has run,
+   * and it hears of a failure before it ends.
    */
-  | { readonly op: 'flush' };
+  | { readonly op: 'flush'; readonly upTo: number };
 
 /** An output whose write failed: with `code`, on a pipe or a file. */
 export interface OutputFailure { readonly fd: 1 | 2; readonly code: string; readonly pipe: boolean }
@@ -203,8 +204,8 @@ export interface RealmServices {
   watch(id: number, path: string | null): void;
   /** umask(2): the mask the program creates with from now on. */
   setUmask(mask: number): void;
-  /** Once every output write so far is made or failed: the outputs that failed. */
-  flush(): Promise<readonly OutputFailure[]>;
+  /** Once output writes up to number `upTo` are made or failed: the outputs that failed. */
+  flush(upTo: number): Promise<readonly OutputFailure[]>;
 }
 
 /** A call no method answers, or with arguments not of its kind. */
@@ -317,7 +318,10 @@ async function performCall(call: unknown, services: RealmServices): Promise<unkn
       if (!Number.isSafeInteger(call.mask) || typeof call.mask !== 'number' || call.mask < 0 || call.mask > 0o777) throw refused('mask that is not one');
       return services.setUmask(call.mask);
     }
-    case 'flush': return services.flush();
+    case 'flush': {
+      if (!Number.isSafeInteger(call.upTo) || typeof call.upTo !== 'number') throw refused('flush without a write number');
+      return services.flush(call.upTo);
+    }
     default: throw refused(`call ${JSON.stringify(String(call.op))}`);
   }
 }
@@ -361,6 +365,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   let lastQueued = 0;
   let lastSettled = 0;
   let settleWanted = false;
+  const flushes: { readonly upTo: number; resolve(): void }[] = [];
   const settled = () => {
     if (!settleWanted || lastSettled !== lastQueued) return;
     settleWanted = false;
@@ -383,6 +388,10 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
       }
       lastSettled = seq;
       settled();
+      for (const flush of flushes.filter((each) => each.upTo <= seq)) {
+        flushes.splice(flushes.indexOf(flush), 1);
+        flush.resolve();
+      }
     });
   };
   // The realm, once it has started: a request for one of the guest's servers waits for none before.
@@ -424,8 +433,8 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
       if (ports.delete(port)) kernel?.portRegistry.delete(port);
     },
     setUmask: (next) => { mask = next; },
-    flush: async () => {
-      await written;
+    flush: async (upTo) => {
+      if (lastSettled < upTo) await new Promise<void>((resolve) => { flushes.push({ upTo, resolve }); });
       return [...failedOutputs.values()];
     },
     watch: (id, path) => {

@@ -317,7 +317,7 @@ finalCode = end.finalCode;
 // The program's code has run: it hears of a write that failed before it ends,
 // as a Node process's pending writes hold it. One call waits for them all.
 if (postedOutput > 0) {
-  const failures = call({ op: 'flush' });
+  const failures = call({ op: 'flush', upTo: postedOutput });
   if (!isOutputFailures(failures)) malformed('flush');
   for (const failure of failures) outputs[failure.fd].fail(writeFailure(failure.code, failure.pipe));
   settledOutput = postedOutput;
