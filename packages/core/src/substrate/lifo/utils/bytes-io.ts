@@ -161,13 +161,13 @@ function unfinishedTail(bytes: Uint8Array): number {
  * the bytes of every command writing to it decoded as one stream, as its
  * reader would read them, and `end`ed when the capture is read.
  */
-export function textCapture(append: (text: string) => void): { readonly stream: CommandOutputStream; end(): void } {
+export function textCapture(append: (text: string) => void): { readonly stream: CommandOutputStream & { writeBytes(bytes: Uint8Array): void }; end(): void } {
   const decoder = new LosslessDecoder();
   return {
     stream: {
       writeBytes: (bytes) => { append(decoder.decode(bytes)); },
-      // Text after bytes that left a character unfinished: those bytes decode alone first.
-      write: (text) => { append(decoder.end() + text); },
+      // Text after bytes that left a character unfinished: those bytes decode alone first. No text is no write.
+      write: (text) => { if (text !== '') append(decoder.end() + text); },
     },
     end: () => { append(decoder.end()); },
   };
