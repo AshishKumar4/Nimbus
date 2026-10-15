@@ -225,7 +225,7 @@ export async function bootEngine(kind, { seed } = {}) {
      * its write log as it does for any resident; the guest is not asked to
      * flush first.
      */
-    async end(how = 'kill') {
+    async end(how = 'kill', { twice = false } = {}) {
       const name = `guest-engine-${kind}`;
       const ctx = createFacetCtx(createFacetWorld(() => ({})), name);
       Reflect.set(ctx.storage, 'sql', Reflect.get(authority.rawVfs, 'sql'));
@@ -237,7 +237,10 @@ export async function bootEngine(kind, { seed } = {}) {
           return {
             started: Promise.resolve({ ok: true }),
             lost: new Promise(() => {}),
-            release: () => params.journal.drain(journalSource(engine.journal())),
+            // `twice`: the session drains the log twice at once (one joins the other).
+            release: () => (twice
+              ? Promise.all([params.journal.drain(journalSource(engine.journal())), params.journal.drain(journalSource(engine.journal()))])
+              : params.journal.drain(journalSource(engine.journal()))),
             describe: () => name,
           };
         },

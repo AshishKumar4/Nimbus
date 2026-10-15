@@ -261,6 +261,16 @@ const SCENARIOS = {
     await e.end('exit');
     assert.equal(await e.peerText(`${OUT}/last.txt`), 'LAST');
   },
+  async 'two drains of the process\'s log at once land each of its appends once'(e) {
+    await e.write(`${APP}/log.txt`, '');
+    const opened = await e.fs.open(`${APP}/log.txt`, { write: true, append: true });
+    await e.fs.write(opened.id, null, enc.encode('a'));
+    e.stall();
+    for (const piece of ['b', 'c']) await e.fs.write(opened.id, null, enc.encode(piece));
+    await e.write(`${APP}/next.txt`, 'NEXT');
+    await e.end('kill', { twice: true });
+    assert.equal(await e.peerText(`${APP}/log.txt`), 'abc', 'an append landed twice, or not at all');
+  },
   async 'what the process was told it wrote lands when the session kills it at once'(e) {
     await e.hold(OUT);
     e.stall();
