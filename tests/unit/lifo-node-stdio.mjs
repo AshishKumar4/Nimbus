@@ -54,7 +54,7 @@ const cases = {
   'iterate.js': ["(async () => { const parts = []; for await (const c of process.stdin) parts.push(String(c)); console.log(JSON.stringify(parts.join(''))); })();",
     "{ printf 'one '; sleep 0.2; printf two; } | node {prog}"],
   // pipe is taken from stdin before stdout is made: the pipe must still leave stdout open.
-  'pipe.js': ["process.stdin.pipe(process.stdout); process.stdin.on('end', () => setTimeout(() => process.stdout.write('after\\n'), 10));
+  'pipe.js': ["process.stdin.pipe(process.stdout); process.stdin.on('end', () => setTimeout(() => process.stdout.write('after\\n'), 10));",
     "printf 'piped\\n' | node {prog}"],
   'readline.js': ["const rl = require('readline').createInterface({ input: process.stdin }); rl.on('line', (l) => console.log('line', JSON.stringify(l))); rl.on('close', () => console.log('close'));",
     "{ printf 'one\\n\\ntwo\\nthr'; sleep 0.3; printf 'ee\\n'; } | node {prog}"],
