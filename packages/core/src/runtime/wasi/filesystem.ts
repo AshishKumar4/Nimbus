@@ -576,8 +576,10 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     if (target?.kind === 'preopen' || (target?.kind === 'authority' && target.type === 'directory')) fail('EISDIR');
     const e = right(fd, 1), vectors = iovs(ptr, count);
     if (e.kind === 'resident') {
-      const start = Math.min(offset ?? e.position, e.bytes.length);
-      const used = scatter(e.bytes.subarray(start, Math.min(e.bytes.length, start + vectors.total)), vectors.result);
+      // As the authority's descriptor (DescriptorTable.read): the offset is where the read starts, past the end too, and never negative.
+      if (offset !== null && offset < 0) fail('EINVAL');
+      const start = offset ?? e.position;
+      const used = scatter(e.bytes.subarray(Math.min(start, e.bytes.length), Math.min(e.bytes.length, start + vectors.total)), vectors.result);
       if (offset === null) e.position = start + used;
       u32(written, used); return 0;
     }
