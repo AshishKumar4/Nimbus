@@ -266,8 +266,9 @@ const SCENARIOS = {
     const opened = await e.fs.open(`${APP}/log.txt`, { write: true, append: true });
     await e.fs.write(opened.id, null, enc.encode('a'));
     e.stall();
-    for (const piece of ['b', 'c']) await e.fs.write(opened.id, null, enc.encode(piece));
-    await e.write(`${APP}/next.txt`, 'NEXT');
+    // Logged, and never answered.
+    for (const piece of ['b', 'c']) e.fs.write(opened.id, null, enc.encode(piece)).catch(() => {});
+    await sleep(LINGER_MS * 4);
     await e.end('kill', { twice: true });
     assert.equal(await e.peerText(`${APP}/log.txt`), 'abc', 'an append landed twice, or not at all');
   },

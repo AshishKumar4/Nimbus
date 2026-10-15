@@ -46,7 +46,7 @@ function session() {
   const fs = s.filesystem.bind({ pid, cred: user });
   fs.writeFile('/home/user/repo/kept', 'k');
   const opened = fs.open('/home/user/repo/kept', { read: true });
-  const grant = await s.op({ op: 'fsAcquireExclusiveMutation', args: ['/home/user/repo'], pid });
+  const grant = await s.op({ op: 'fsAcquireExclusiveMutation', args: ['/home/user/repo', { delegate: { reads: true } }], pid });
   const recovery = s.filesystem.recovery(pid, user);
   s.processes.kill(pid, 137);
   const released = s.processes.released(pid);
