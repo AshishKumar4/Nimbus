@@ -39,7 +39,7 @@ const PROGRAM = [
   'print(os.pread(f, 2, 100), os.lseek(f, 0, os.SEEK_CUR))',
   'print(os.pread(f, 2, 1), os.lseek(f, 0, os.SEEK_CUR))',
   'print(os.read(f, 5), os.lseek(f, 0, os.SEEK_CUR))',
-].join('\n');
+].join('; ');
 
 const dir = mkdtempSync(join(tmpdir(), 'wasi-resident-offset-'));
 let host;
