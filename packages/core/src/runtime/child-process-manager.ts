@@ -8,6 +8,7 @@ import { enc } from '../_shared/bytes.js';
 import { exitCodeForSignal, parseSignalName, signalDisposition } from '../substrate/lifo/shell/signals.js';
 import { pulledStdinReader } from '../shell/stdin-adapter.js';
 import type { CommandInputStream } from '../substrate/lifo/commands/types.js';
+import { parseProcessSignalName } from './process-io-protocol.js';
 
 /**
  * Output chunk in a child's per-fd ring. Sequence numbers let parents
@@ -497,10 +498,11 @@ export class ChildProcessManager {
 
   // ── stdin queue ─────────────────────────────────────────────────────────
 
-  async stdinWrite(childPid: number, data: Uint8Array): Promise<{ ok: boolean }> {
+  /** `writer`, the process writing, is interrupted by a signal it takes (SessionProcessSupervisor.writeInputBytesWait). */
+  async stdinWrite(childPid: number, data: Uint8Array, writer?: number): Promise<{ ok: boolean; signal?: string }> {
     const child = this.children.get(childPid);
     if (!child || child.exitCode !== null) return { ok: false };
-    return this.deps.processes.writeInputBytesWait(childPid, data);
+    return this.deps.processes.writeInputBytesWait(childPid, data, writer);
   }
 
   async stdinEnd(childPid: number): Promise<void> {
@@ -524,14 +526,14 @@ export class ChildProcessManager {
    * Long-poll: child facet asks the supervisor for its next stdin chunk.
    * Returns immediately if data is already queued OR if stdin is closed.
    */
-  /** The next signal sent to `pid`, whose program takes its own (SessionProcessSupervisor.nextSignal). */
-  nextSignal(pid: number, waitMs: number): Promise<string | null> {
-    return this.deps.processes.nextSignal(pid, waitMs);
-  }
-
   async cpReadStdin(childPid: number, waitMs: number, maxBytes?: number): Promise<{ data: Uint8Array; ended: boolean }> {
     const packet = await this.deps.processes.readInput(childPid, waitMs, maxBytes);
     return { ...packet, data: typeof packet.data === 'string' ? textBytes(packet.data) : packet.data };
+  }
+
+  /** The next signal sent to `pid`, whose program takes its own (SessionProcessSupervisor.nextSignal). */
+  nextSignal(pid: number, waitMs: number): Promise<string | null> {
+    return this.deps.processes.nextSignal(pid, waitMs);
   }
 
   // ── output queue ────────────────────────────────────────────────────────
@@ -735,6 +737,9 @@ export class ChildProcessManager {
     // signal has ends nothing here.
     const name = parseSignalName(String(signal));
     if (name === null || name === '0' || signalDisposition(name) !== 'terminate') return false;
+    // One its program takes is its program's: the child runs on.
+    const sent = parseProcessSignalName(`SIG${name}`);
+    if (sent !== null && this.deps.processes.deliverSignal(child.pid, sent)) return true;
 
     child.killed = true;
     this.deps.terminate(child.pid, name);
@@ -890,7 +895,7 @@ export class ChildProcessManager {
 export function createChildProcessSupervisor(manager: ChildProcessManager, pid: number) {
   return {
     cpSpawn: (request: SpawnReq) => manager.spawn({ ...request, parentPid: pid }),
-    cpStdinWrite: (child: number, bytes: Uint8Array) => manager.stdinWrite(child, bytes),
+    cpStdinWrite: (child: number, bytes: Uint8Array) => manager.stdinWrite(child, bytes, pid),
     cpStdinEnd: (child: number) => manager.stdinEnd(child),
     cpReadOutput: (child: number, fd: 1 | 2, sinceSeq: number, waitMs?: number) => manager.readOutput(child, fd, sinceSeq, waitMs),
     cpWait: (child: number, waitMs?: number, _acquire?: object, knownStarted = true) => manager.wait(child, waitMs, knownStarted),

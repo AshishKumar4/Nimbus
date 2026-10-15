@@ -1532,9 +1532,10 @@ export async function _rpcCpSpawn(self: RpcHost, req: any, parentPid?: number): 
  * the store used to take text, decoded here, which turned a byte that is not
  * UTF-8 into U+FFFD.
  */
-export async function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: Uint8Array, pid?: number): Promise<{ ok: boolean; full?: boolean }> {
+export async function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: Uint8Array, pid?: number): Promise<{ ok: boolean; signal?: string }> {
     childOf(self, childPid, pid);
-    return self.processes.writeInputBytesWait(childPid, data);
+    // A caller of a prior generation is no process here: no signal of this table's is its.
+    return self.processes.writeInputBytesWait(childPid, data, pid === undefined || isPriorGenerationPid(self, pid) ? undefined : pid);
 }
 
 export async function _rpcCpStdinEnd(self: RpcHost, childPid: number, pid?: number): Promise<void> {

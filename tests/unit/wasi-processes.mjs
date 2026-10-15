@@ -27,8 +27,10 @@
  *     once, answered NIMBUS_ESIGNAL + its number and taken by that answer,
  *     consuming nothing; one that came while it ran ends its next wait at
  *     once; a child's start it does not end; a stdin read the session
- *     interrupted answers it too. A guest that does not take them is never
- *     asked for them, and a stdin signal is EINTR to it.
+ *     interrupted answers it too, and so does a poll on a clock alone and
+ *     a write to a child whose stdin is full (withdrawn, writing nothing);
+ *     a pump holding a child's output asks for none. A guest that does not
+ *     take them is never asked for them, and a stdin signal is EINTR to it.
  */
 
 import assert from 'node:assert/strict';
@@ -80,10 +82,14 @@ function session() {
       if (!sup.holdStart) control.start(pid);
       return { childPid: pid };
     },
+    /** While set, the child's stdin has no room: a write waits, and a signal sent to the guest withdraws it and answers it, as the session does for a writer that takes its signals. */
+    stdinFull: false,
     async cpStdinWrite(pid, data) {
       const child = children.get(pid);
       if (child.lost) throw acrossRpc(new Error('session reset'));
       if (child.exit || child.stdinEnded) return { ok: false };
+      await until(() => !sup.stdinFull || sup.signals.length > 0, 60_000);
+      if (sup.stdinFull) return { ok: false, signal: sup.signals.shift() };
       child.stdin.push(dec.decode(data));
       return { ok: true };
     },
@@ -286,6 +292,18 @@ async function guest({ stdin, takesSignals = false } = {}) {
     },
     /** The guest exited: its host stops following its children. */
     dispose: () => bundle.procDispose(),
+    /** poll_oneoff on one relative monotonic clock of `ms`: its errno. */
+    async sleep(ms) {
+      const at = scratch();
+      const v = view();
+      v.setBigUint64(at, 7n, true);
+      v.setUint8(at + 8, 0);
+      v.setUint32(at + 16, 1, true);
+      v.setBigUint64(at + 24, BigInt(ms) * 1_000_000n, true);
+      v.setBigUint64(at + 32, 0n, true);
+      v.setUint16(at + 40, 0, true);
+      return wasi.poll_oneoff(at, at + 64, 1, at + 128);
+    },
     /** poll_oneoff on one descriptor: { errno, events: [{ error, nbytes, hangup }] }. */
     async poll(fd, want = 'read') {
       const at = scratch();
@@ -692,6 +710,52 @@ let checks = 0;
   checks++;
 }
 
+// A poll on a clock alone, a write to a child whose stdin is full: each a signal ends, the write withdrawn.
+{
+  const g = await guest({ takesSignals: true });
+  const started = Date.now();
+  const sleeping = g.sleep(10_000);
+  await settle();
+  g.control.signal('SIGINT');
+  assert.equal(await sleeping, ESIGINT, 'a signal ends a poll on a clock alone, answered with it');
+  assert.ok(Date.now() - started < 2_000, 'at once');
+
+  const [r, w] = g.pipe();
+  const child = await g.spawn(['cat'], { fdin: r });
+  g.close(r);
+  g.sup.stdinFull = true;
+  const writing = g.write(w, 'held');
+  await settle();
+  g.control.signal('SIGTERM');
+  assert.equal(await writing, ESIGTERM, 'a signal ends a write to a child whose stdin is full, answered with it');
+  assert.deepEqual(g.control.child(child.pid).stdin, [], 'and nothing of it was written');
+  g.sup.stdinFull = false;
+  assert.equal(await g.write(w, 'after'), E.SUCCESS);
+  assert.deepEqual(g.control.child(child.pid).stdin, ['after'], 'the next write is made');
+  g.control.exit(child.pid, 0);
+  await g.wait(child.pid);
+  g.dispose();
+  checks++;
+}
+
+// Only the guest's own waits are a signal's: a child's output held in a full pipe asks the session for none.
+{
+  const g = await guest({ takesSignals: true });
+  const [r, w] = g.pipe();
+  const child = await g.spawn(['yes'], { fdout: w });
+  g.close(w);
+  g.control.print(child.pid, 1, 'y'.repeat(100_000));
+  await settle();
+  assert.equal(g.buffered(r), 65536, 'its output fills the pipe');
+  await settle();
+  assert.equal(g.sup.signalWaits, 0, 'and the pump that holds the rest waits without asking for a signal');
+  g.close(r);
+  g.control.exit(child.pid, 0);
+  await g.wait(child.pid);
+  g.dispose();
+  checks++;
+}
+
 // A stdin read the session interrupted answers the signal to a guest that takes them, EINTR to one that does not.
 for (const takesSignals of [true, false]) {
   const g = await guest({ takesSignals, stdin: async () => ({ data: new Uint8Array(0), ended: false, signal: 'SIGINT' }) });
@@ -710,6 +774,7 @@ for (const takesSignals of [true, false]) {
   await settle();
   assert.equal(await g.write(w, 'x'), E.SUCCESS);
   assert.deepEqual(await reading, { errno: E.SUCCESS, text: 'x' }, 'its wait goes on');
+  assert.equal(await g.sleep(30), E.SUCCESS, 'and its poll on a clock');
   assert.equal(g.sup.signalWaits, 0, 'nothing asked the session for a signal');
   g.dispose();
   checks++;

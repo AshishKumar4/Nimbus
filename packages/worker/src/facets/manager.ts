@@ -39,6 +39,7 @@ import { ReadAheadBudget, STDIN_SYNC_READ_BYTES, type ReadAheadAccount } from '@
 import { execIdField, parseExecId, type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { exitCodeForSignal, type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
+import { parseProcessSignalName } from '@nimbus-sh/core/runtime/process-io-protocol.js';
 import { createNodeFacetRuntime, fetchNodeFacetSources, nodeFacetSource, type NodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { moduleSource, type ModuleSource, type ImmutableModuleSource } from '@nimbus-sh/platform/module-source.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
@@ -9788,6 +9789,9 @@ export class FacetManager {
   kill(pid: number, signal?: string, reason?: SignalAbortReason): boolean {
     const entry = this.processes.get(pid);
     if (!entry || entry.state !== 'running') return false;
+    // One its program takes is its program's (SessionProcessSupervisor.takeSignals): nothing of it ends.
+    const sent = signal === undefined ? null : parseProcessSignalName(`SIG${signal}`);
+    if (sent !== null && this.processes.deliverSignal(pid, sent)) return true;
     this._end(pid, {
       code: signal === undefined ? 137 : exitCodeForSignal(signal), cause: signal === undefined ? 'killed' : `SIG${signal}`, killed: true,
       ...(reason === undefined ? {} : { reason }),

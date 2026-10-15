@@ -968,7 +968,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       return this[CALL](this[OP]('cpSpawn', [{ ...req, parentPid: this[PID]() }]));
     }
 
-    async cpStdinWrite(childPid: number, data: Uint8Array): Promise<{ ok: boolean; full?: boolean }> {
+    async cpStdinWrite(childPid: number, data: Uint8Array): Promise<{ ok: boolean; signal?: string }> {
       return this[CALL](this[OP]('cpStdinWrite', [childPid, data]));
     }
 

@@ -14,16 +14,22 @@
 //     and to every process below it, as to a foreground job's process group:
 //     each takes it as a kill gives it, its program's own where it takes
 //     its signals, its end where not; the run is not ended by it;
-//   - its command's status is its program's (CommandContext.takesSignals).
+//   - its command's status is its program's (CommandContext.takesSignals);
+//   - a run on an adopted process takes its signals for that run alone;
+//   - a parent's kill of it (the child broker's) is delivered, not its end;
+//   - its write to a full pipe waits until a signal, which withdraws it.
 
 import assert from 'node:assert/strict';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
+import { ChildProcessManager } from '../../packages/core/src/runtime/child-process-manager.ts';
 import { openInvocationStdio, openRuntimeStdio } from '../../packages/core/src/runtime/runtime-stdio.ts';
 import { signalAbortReason } from '../../packages/core/src/substrate/lifo/shell/signals.ts';
 import { CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 
 const CATCHES = ['SIGHUP', 'SIGINT', 'SIGQUIT', 'SIGTERM'];
 const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+/** `promise`'s value, or 'still waiting' once `ms` pass. */
+const within = (ms, promise) => Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve('still waiting'), ms))]);
 
 // ── a kill it catches is its program's; one it does not ends it ──────────
 {
@@ -124,6 +130,61 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(stdio.signal.aborted, true, 'its run is ended');
   assert.equal(await processes.nextSignal(stdio.pid, 20), null, 'nothing is queued for it');
   stdio.release();
+}
+
+// ── a run on an adopted process takes its signals for that run alone ────
+{
+  const processes = new SessionProcessSupervisor();
+  const wrapper = processes.spawn('sh', ['sh'], '/home/user');
+  const run = openInvocationStdio(processes, {
+    existingPid: wrapper.pid, command: 'git', argv: ['git'], cwd: '/home/user', parentPid: undefined,
+    cred: CRED_SESSION_USER, signal: undefined, takesSignals: true, input: null, output: null,
+  });
+  processes.kill(wrapper.pid, 130, signalAbortReason('INT'));
+  assert.equal(processes.get(wrapper.pid).state, 'running', 'while git runs on it, a SIGINT is git\'s');
+  assert.equal(await processes.nextSignal(wrapper.pid, 100), 'SIGINT');
+  run.release();
+  processes.kill(wrapper.pid, 130, signalAbortReason('INT'));
+  assert.deepEqual([processes.get(wrapper.pid).state, processes.get(wrapper.pid).exitCode], ['killed', 130], 'once it ended, the next program the process runs is ended by one');
+}
+
+// ── a parent's kill(2) of a child that takes its signals is delivered ────
+{
+  const processes = new SessionProcessSupervisor();
+  const parent = processes.spawn('bash', ['bash'], '/home/user');
+  const manager = new ChildProcessManager({
+    processes,
+    terminate(pid) { return processes.kill(pid, 143); },
+    async resolve() { return { run: () => new Promise(() => {}) }; },
+  });
+  const { childPid } = await manager.spawn({ parentPid: parent.pid, command: 'git', args: [], cwd: '/home/user', env: {}, stdio: ['pipe', 'pipe', 'pipe'] });
+  processes.takeSignals(childPid, CATCHES);
+  assert.equal(manager.kill(childPid, 'SIGINT'), true, 'the kill is delivered');
+  assert.equal(processes.get(childPid).state, 'running', 'the child runs on');
+  assert.equal((await manager.wait(childPid, 50)).done, false, 'and its parent sees no exit');
+  assert.equal(await processes.nextSignal(childPid, 100), 'SIGINT', 'its program takes it');
+  assert.equal(manager.kill(childPid, 'SIGUSR1'), true);
+  assert.deepEqual([(await manager.wait(childPid, 1000)).signal], ['SIGUSR1'], 'one it does not catch ends it');
+}
+
+// ── its write to a full pipe is interrupted, and withdrawn ───────────────
+{
+  const processes = new SessionProcessSupervisor();
+  const git = processes.spawn('git', ['git'], '/home/user');
+  const helper = processes.spawn('cat', ['cat'], '/home/user', { parentPid: git.pid });
+  processes.openInput(helper.pid);
+  processes.takeSignals(git.pid, CATCHES);
+  processes.signal(git.pid, 'SIGTERM');
+  const fill = new Uint8Array(256 * 1024).fill(1);
+  assert.deepEqual(await processes.writeInputBytesWait(helper.pid, fill, git.pid), { ok: true }, 'a write there is room for is made, a signal pending or not');
+  assert.equal(await processes.nextSignal(git.pid, 100), 'SIGTERM', 'and leaves the signal for its next wait');
+  const held = processes.writeInputBytesWait(helper.pid, new Uint8Array([2, 2, 2]), git.pid);
+  await settle();
+  processes.signal(git.pid, 'SIGINT');
+  assert.deepEqual(await within(1000, held), { ok: false, signal: 'SIGINT' }, 'one waiting for room answers a signal');
+  const drained = await processes.readInput(helper.pid, 100, 512 * 1024);
+  assert.equal(drained.data.byteLength, 256 * 1024);
+  assert.equal(await within(200, processes.readInput(helper.pid, 50)).then((packet) => packet.data.length), 0, 'and wrote nothing');
 }
 
 console.log('process-takes-signals: ok');
