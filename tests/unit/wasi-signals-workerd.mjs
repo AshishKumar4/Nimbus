@@ -24,7 +24,6 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { requestHeaders } from '../behavioral/_driver.mjs';
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
 
 /** How long after a Ctrl-C the prompt must be back. */
@@ -101,6 +100,8 @@ async function interrupted(line, { setup = [] } = {}) {
     backMs = Date.now() - sent;
   } catch {}
   const status = Number(/status (\d+)/.exec(t.buf)?.[1] ?? NaN);
+  // The driver after the probe started: it reads the probe's address as it loads.
+  const { requestHeaders } = await import('../behavioral/_driver.mjs');
   const running = await (await fetch(`${probe.base}/s/${session.sid}/api/processes`, { headers: requestHeaders() })).json();
   const live = (Array.isArray(running) ? running : running.processes ?? []).filter((p) => p.state === 'running').map((p) => p.command);
   return { session, status, backMs, text: t.buf, live };
