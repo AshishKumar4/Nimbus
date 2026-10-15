@@ -113,6 +113,11 @@ function ttyClasses(stdio: ProgramStdio, isatty: (fd: number) => boolean): TtyMo
 
     setRawMode(mode: boolean): this {
       const raw = Boolean(mode);
+      // As uv_tty_set_mode on a descriptor that is not a terminal: its termios cannot be read.
+      if (!isatty(0)) {
+        this.emit('error', Object.assign(new Error('setRawMode ENOTTY'), { errno: -25, code: 'ENOTTY', syscall: 'setRawMode' }));
+        return this;
+      }
       stdio.terminal?.setRawMode(raw);
       this.isRaw = raw;
       return this;
@@ -127,7 +132,12 @@ function ttyClasses(stdio: ProgramStdio, isatty: (fd: number) => boolean): TtyMo
 
     constructor(fd: number) {
       if (!streamable(checkFd(fd))) throw ttyInitFailed();
-      super(outputSink(fd === 1 ? stdio.stdout : fd === 2 ? stdio.stderr : undefined));
+      const output = fd === 1 ? stdio.stdout : fd === 2 ? stdio.stderr : undefined;
+      super(outputSink(output));
+      // A write it made that fails later is its error, as one through process.stdout is that stream's.
+      output?.onFailure?.((error, source) => {
+        if (source === 'stream') this.destroy(error);
+      });
       if (isatty(fd)) [this.columns, this.rows] = windowSize();
     }
 

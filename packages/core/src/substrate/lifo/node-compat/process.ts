@@ -108,7 +108,9 @@ export class LifoProcess extends EventEmitter {
 
   hearsWriteFailures(): boolean {
     return (this.#stdout?.listenerCount('error') ?? 0) > 0 || (this.#stderr?.listenerCount('error') ?? 0) > 0
-      || this.#capture !== null || this.listenerCount('uncaughtException') > 0 || this.listenerCount('uncaughtExceptionMonitor') > 0;
+      || this.#capture !== null || this.listenerCount('uncaughtException') > 0 || this.listenerCount('uncaughtExceptionMonitor') > 0
+      // Its 'exit' listeners see a status a failed write changed.
+      || this.listenerCount('exit') > 0;
   }
 
   get stdin(): Readable {

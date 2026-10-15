@@ -9,6 +9,7 @@ import type { OutputSource } from '../../node-compat/standard-streams.js';
 import type { VfsEvent } from '../../../../vfs/events.js';
 import { isEgressGuestEvent, isEgressHostEvent, type EgressGuestEvent, type EgressHostEvent } from '../../../../runtime/realm-egress.js';
 import type { NodeProgram } from './node-program.js';
+import type { RealmError } from '../../../../runtime/realm.js';
 import type { VirtualRequest } from '../../kernel/index.js';
 
 /** The filesystem methods a call names: NodeFilesystem's, but its watch (a call of its own). */
@@ -57,6 +58,8 @@ export type GuestEvent =
   | { readonly type: 'heard'; readonly fd: 1 | 2 }
   /** fd 0's next piece, wanted as read `id` (process.stdin). */
   | { readonly type: 'stdin-read'; readonly id: number }
+  /** Read `id` is withdrawn: what has not arrived stays on fd 0. */
+  | { readonly type: 'stdin-cancel'; readonly id: number }
   | EgressGuestEvent;
 
 /** What this side posts on `events`. */
@@ -69,8 +72,10 @@ export type HostEvent =
   | ({ readonly type: 'output-failed' } & OutputFailure)
   /** Every output write up to number `seq` is made or failed (a failure told first): told once asked (settle). */
   | { readonly type: 'output-settled'; readonly seq: number }
-  /** Read `id`'s piece of fd 0; null at its end. */
+  /** Read `id`'s answer, once: its piece of fd 0 (null at its end), its error, or that it was withdrawn before anything arrived. */
   | { readonly type: 'stdin'; readonly id: number; readonly data: Uint8Array | null }
+  | { readonly type: 'stdin'; readonly id: number; readonly error: RealmError }
+  | { readonly type: 'stdin'; readonly id: number; readonly withdrawn: true }
   | EgressHostEvent;
 
 /**
@@ -114,7 +119,8 @@ export function isGuestEvent(value: unknown): value is GuestEvent {
     case 'served': return Number.isSafeInteger(value.id) && isResponse(value.response);
     case 'exit': return Number.isSafeInteger(value.code) && typeof value.ended === 'boolean';
     case 'heard': return value.fd === 1 || value.fd === 2;
-    case 'stdin-read': return Number.isSafeInteger(value.id);
+    case 'stdin-read':
+    case 'stdin-cancel': return Number.isSafeInteger(value.id);
     default: return false;
   }
 }
@@ -135,7 +141,9 @@ export function isHostEvent(value: unknown): value is HostEvent {
     case 'output-failed':
       return (value.fd === 1 || value.fd === 2) && typeof value.code === 'string' && typeof value.pipe === 'boolean' && isOutputSource(value.source);
     case 'output-settled': return Number.isSafeInteger(value.seq);
-    case 'stdin': return Number.isSafeInteger(value.id) && (value.data === null || value.data instanceof Uint8Array);
+    case 'stdin':
+      return Number.isSafeInteger(value.id) && (value.data === null || value.data instanceof Uint8Array || value.withdrawn === true
+        || (record(value.error) && typeof value.error.name === 'string' && typeof value.error.message === 'string' && record(value.error.properties)));
     default: return false;
   }
 }

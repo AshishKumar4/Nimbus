@@ -95,60 +95,69 @@ export function standardStream(output: FailableOutput, fd: 1 | 2): Writable {
   return asStandardStream(new Writable(outputSink(output)), fd, output);
 }
 
+/** What a read of fd 0 gives: a piece, null at its end, or nothing, withdrawn before anything arrived. */
+export type StandardPiece = Uint8Array | null | 'withdrawn';
+
+/** A read of fd 0 in flight. */
+export interface StandardRead {
+  readonly piece: Promise<StandardPiece>;
+  /** Withdraw it: what has not arrived stays on fd 0 for the next read, and the read settles 'withdrawn'. */
+  cancel(): void;
+}
+
 /** fd 0, a piece at a time, as a program's process.stdin and tty.ReadStream(0) read it. */
 export interface StandardInput {
-  /** fd 0's next piece; null at its end. */
-  read(): Promise<Uint8Array | null>;
-  /**
-   * Whether the program waits on a read of it: what it waits on holds it
-   * open, as reading a pipe or the terminal holds a Node process, and a
-   * paused stdin does not.
-   */
-  waiting(on: boolean): void;
+  /** fd 0's next piece, never an empty one; a failed read rejects with the descriptor's error. */
+  read(): StandardRead;
+  /** One more reader waits on fd 0 (true), or one fewer (false): while any does, the program is held, as reading a pipe or the terminal holds a Node process. */
+  hold(on: boolean): void;
 }
 
 /**
- * `stream` reading fd 0 from `input` (none: fd 0 is at its end): a piece is
- * asked for when the stream wants one, as Node starts reading a descriptor.
- * Its wait holds the program until the stream is paused and, a tick later,
- * still not flowing, as Node stops reading a paused stdin then (so that the
- * process can end).
+ * `stream` reading fd 0 from `input` (none: fd 0 is at its end), as Node's
+ * stdin reads its descriptor: a piece is asked for when the stream wants
+ * one, and its wait holds the program. Paused and, a tick later, still not
+ * flowing, or destroyed, it stops reading (the read is withdrawn and holds
+ * no more), as Node's stdin does so that its process can end; reading again
+ * starts a new read.
  */
 export function joinStandardInput<T extends Readable>(stream: T, input: StandardInput | undefined): T {
-  let reading = false;
-  let stopped = false;
-  const want = () => input?.waiting(reading && !stopped);
+  let pending: StandardRead | null = null;
+  const settle = (read: StandardRead): void => {
+    if (pending !== read) return;
+    pending = null;
+    input?.hold(false);
+  };
+  const stop = (): void => {
+    const read = pending;
+    if (read === null) return;
+    settle(read);
+    read.cancel();
+    // As Node's onpause: the next _read starts a new read.
+    stream._readableState.reading = false;
+  };
   stream.on('pause', () => {
     realm.nextTick(() => {
-      if (stream.readableFlowing === true) return;
-      stopped = true;
-      want();
+      if (stream.readableFlowing !== true) stop();
     });
   });
-  stream.on('resume', () => {
-    stopped = false;
-    want();
-  });
+  stream.on('close', stop);
   stream._read = () => {
-    if (reading) return;
+    if (pending !== null) return;
     if (input === undefined) { stream.push(null); return; }
-    reading = true;
-    want();
-    const next = (): void => {
-      input.read().then((piece) => {
-        // An empty piece is no data and not the end: ask again.
-        if (piece !== null && piece.length === 0) { next(); return; }
-        reading = false;
-        want();
-        // As a Buffer over the same bytes, as Node's reads give.
-        stream.push(piece === null ? null : Buffer.from(piece.buffer, piece.byteOffset, piece.byteLength));
-      }, (error: Error) => {
-        reading = false;
-        want();
-        stream.destroy(error);
-      });
-    };
-    next();
+    const read = input.read();
+    pending = read;
+    input.hold(true);
+    read.piece.then((piece) => {
+      settle(read);
+      // A piece that arrived after its read stopped was taken from fd 0: it is the stream's, as Node's buffered data is.
+      if (piece === 'withdrawn' || stream.destroyed) return;
+      // As a Buffer over the same bytes, as Node's reads give.
+      stream.push(piece === null ? null : Buffer.from(piece.buffer, piece.byteOffset, piece.byteLength));
+    }, (error: Error) => {
+      settle(read);
+      stream.destroy(error);
+    });
   };
   return stream;
 }

@@ -10,10 +10,15 @@ published independently in the `@nimbus-sh` npm scope.
   arrives rather than once stdin ends, `for await`, `pipe`, `setEncoding`, and
   readline over it (the engine's own readline now; lifo's copy, which split a
   line arriving in two pieces into two lines, is gone). A program that never
-  reads stdin, or pauses it, no longer waits for it to end. A program's
-  process now hears `'exit'` as it ends (by itself, by `process.exit()`, or
-  of an error nothing caught), and its listeners decide its status through
-  `process.exitCode`, as in Node; no listener ever heard it before. In a terminal,
+  reads stdin, pauses it or destroys it, no longer waits for it to end, and
+  a read it left pending takes nothing typed after it ends. A program's
+  process (a lifo CommonJS command's too) now hears `'exit'` as it ends (by
+  itself, by `process.exit()`, or of an error nothing caught), and its
+  listeners decide its status through `process.exitCode`, as in Node; no
+  listener ever heard it before. A program that ends in raw mode leaves the
+  terminal in the mode it found it. And in the shell, what is typed while a
+  command runs and before it reads is edited into a line, as a tty's line
+  discipline holds it: a reader gets the whole line, not its first key. In a terminal,
   `process.stdin`, `process.stdout` and `process.stderr` are the tty module's
   streams, as in Node: `isTTY` is true, `columns` and `rows` are the window's
   (`COLUMNS` x `LINES`), a typed line is read as it is typed, and

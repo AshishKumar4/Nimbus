@@ -63,6 +63,9 @@ declare module 'node:stream' {
     readonly readableEnded: boolean;
     /** null until something reads it, then whether it flows. */
     readonly readableFlowing: boolean | null;
+    readonly destroyed: boolean;
+    /** Node's own state: its stdin clears `reading` when it stops reading (lib/internal/bootstrap/switches/is_main_thread.js). */
+    readonly _readableState: { reading: boolean };
     _read(size: number): void;
     push(chunk: Uint8Array | string | null, encoding?: string): boolean;
     pause(): this;

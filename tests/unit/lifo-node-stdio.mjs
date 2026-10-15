@@ -10,6 +10,9 @@
 //   - its process hears 'exit' as it ends, by itself, by process.exit() or
 //     of an error nothing caught, and its listeners decide its status;
 //   - readFileSync(0) and the stream read one fd 0;
+//   - one that stops reading (paused a tick, destroyed) holds it no more,
+//     leaves fd 0 to a later readFileSync(0), and holds it again when it
+//     reads again; two readers each hold it;
 //   - tty.WriteStream(fd) writes to that descriptor, in order with
 //     process.stdout; isatty answers for each descriptor; a descriptor that is
 //     not one, or a file, is refused as Node refuses it.
@@ -17,7 +20,10 @@
 // And in a terminal (no oracle: a terminal Node is not available here),
 // as Node documents: process.stdin and stdout are the tty module's streams,
 // isatty is true, the window is COLUMNS x LINES, a typed line is read as it
-// is typed, and setRawMode hands the terminal's keys to the program.
+// is typed, and setRawMode hands the terminal's keys to the program; a
+// program that ends raw, or with a read pending, leaves the terminal and
+// what is typed next to what follows it. And a lifo CommonJS command hears
+// 'exit', and its pending read is withdrawn at its end.
 //
 // Red before: process.stdin was a stub whose 'data' never fired, 'exit'
 // was never emitted on a program's process, tty's
@@ -41,6 +47,9 @@ const underBun = typeof process.versions.bun === 'string';
 const { NimbusWorkspace } = await import(underBun
   ? '../../packages/core/src/workspace/nimbus-workspace.ts'
   : '../../packages/core/dist/workspace/nimbus-workspace.js');
+const { createLifoCommand } = await import(underBun
+  ? '../../packages/core/src/substrate/lifo/pkg/lifo-runtime.ts'
+  : '../../packages/core/dist/substrate/lifo/pkg/lifo-runtime.js');
 
 /** How long from the program's start it ended: Node runs on while it waits for its input, and not otherwise. */
 const timed = "const started = Date.now(); process.on('exit', () => console.log(Date.now() - started < 1500 ? 'did not wait' : 'waited'));";
@@ -64,6 +73,18 @@ const cases = {
     '{ sleep 3; echo late; } | node {prog}'],
   'paused.js': [`${timed} process.stdin.on('data', () => {}); process.stdin.pause(); console.log('paused');`,
     '{ sleep 3; echo late; } | node {prog}'],
+  'destroyed.js': [`${timed} process.stdin.resume(); setTimeout(() => process.stdin.destroy(), 20); console.log('destroys');`,
+    '{ sleep 3; echo late; } | node {prog}'],
+  'tworeaders.js': [`${timed} const r = new (require('tty').ReadStream)(0); r.resume(); r.on('data', () => {}); process.stdin.on('data', () => {}); setTimeout(() => r.pause(), 20);`,
+    '{ sleep 2; echo late; } | node {prog}'],
+  'pausedsync.js': ["process.stdin.resume(); process.stdin.pause(); setTimeout(() => console.log(JSON.stringify(require('fs').readFileSync(0, 'utf8'))), 50);",
+    "{ sleep 0.3; printf abc; } | node {prog}"],
+  'pausediterate.js': [`${timed} process.stdin.pause(); setTimeout(async () => { for await (const c of process.stdin) console.log('got', String(c).trim()); }, 50);`,
+    '{ sleep 2; echo late; } | node {prog}'],
+  'rawpipe.js': ["const r = new (require('tty').ReadStream)(0); r.on('error', (e) => console.log('error', e.code, e.syscall, e.message)); r.setRawMode(true); console.log('raw', r.isRaw); r.destroy();",
+    'printf x | node {prog}'],
+  'tla.mjs': ["process.on('exit', (code) => { console.log('exit', code); process.exitCode = 4; }); await new Promise(() => {});",
+    'node {prog} 2>/dev/null; echo status $?'],
   'whole.js': ["const all = require('fs').readFileSync(0, 'utf8'); console.log(JSON.stringify(all)); process.stdin.on('data', (c) => console.log('more', String(c))).on('end', () => console.log('end'));",
     "printf 'all of it' | node {prog}"],
   'empty.js': ["process.stdin.on('data', (c) => console.log('data', String(c))).on('end', () => console.log('end'));",
@@ -144,8 +165,36 @@ try {
   await settle(() => terminalOutput.includes('key '), 'a key in raw mode reaches the program without Enter');
   assert.match(terminalOutput, /key "q"/);
   await within(10_000, ran, 'the program in the terminal');
+
+  // A program that ends in raw mode leaves the terminal as it found it, and
+  // one that ends with a read pending takes nothing typed after it: the next
+  // reader in the line gets the next line.
+  await ws.fs.writeFile('/home/user/rawexit.js', "process.stdin.setRawMode(true); console.log('raw on'); process.exit(0);");
+  await ws.fs.writeFile('/home/user/pending.js', "process.stdin.once('data', () => {}); setTimeout(() => { console.log('bye'); process.exit(0); }, 100);");
+  for (const [program, marker] of [['rawexit.js', 'raw on'], ['pending.js', 'bye']]) {
+    terminalOutput = '';
+    const line = shell.executeLine(`node ${program}; head -n1`);
+    await settle(() => terminalOutput.includes(`${marker}\r\n`), `${program} runs`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    for (const ch of 'xyz') shell.handleInput(ch);
+    shell.handleInput('\r');
+    await within(10_000, line, `head -n1 after ${program}`);
+    assert.match(terminalOutput.slice(terminalOutput.indexOf(marker)), /xyz\r\n[^]*xyz/, `after ${program}, head reads the typed line`);
+  }
   } catch (error) {
     failed.push(`in a terminal: ${error.message}`);
+  }
+
+  // ── a lifo CommonJS command (no oracle: a Node process is not one) ────────
+  try {
+    await ws.fs.mkdir('/home/user/pkg', { recursive: true });
+    await ws.fs.writeFile('/home/user/pkg/reader.js', "module.exports = async () => { process.on('exit', (code) => console.log('exit', code)); process.stdin.resume(); process.stdin.on('data', (c) => console.log('data', String(c).trim())); await new Promise((resolve) => setTimeout(resolve, 50)); return 3; };\n");
+    ws.registry.register('reader', createLifoCommand('/home/user/pkg/reader.js', ws.filesystem.view({ pid: 900, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } })));
+    const ran = await within(30_000, ws.exec('{ sleep 1; echo late; } | reader; echo status $?', { cwd: '/home/user' }), 'reader');
+    assert.equal(ran.stdout, 'exit 3\nstatus 3\n', 'its process hears exit with its status, and its read pending at its end is withdrawn, not an error');
+    assert.equal(ran.stderr, '');
+  } catch (error) {
+    failed.push(`a lifo CommonJS command: ${error.message}`);
   }
 } finally {
   rmSync(host, { recursive: true, force: true });

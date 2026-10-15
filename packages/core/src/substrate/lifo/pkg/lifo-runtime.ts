@@ -21,7 +21,8 @@ import { createConsole } from '../node-compat/console.js';
 import { ProcessExitError } from '../node-compat/index.js';
 import { createCjsLoader } from '../node-compat/cjs-loader.js';
 import { createNativeEsmLoader } from '../node-compat/native-esm-loader.js';
-import { leaveStandardStreamsOpen } from '../node-compat/standard-streams.js';
+import { leaveStandardStreamsOpen, type StandardPiece } from '../node-compat/standard-streams.js';
+import { enc } from '../../../_shared/bytes.js';
 import { applySourceEdits, containsModuleSyntax } from '../../../runtime/javascript-ast.js';
 import { readModuleImportSites, unusedIdentifier } from '../../../runtime/dynamic-import-rewrite.js';
 import type { NodeContext } from '../node-compat/index.js';
@@ -202,6 +203,8 @@ async function executeCjsCommand(
   let mask = ctx.cred.umask;
   // fd 0 a piece at a time: a read still waiting when the command ends is withdrawn.
   const ended = new AbortController();
+  // The terminal's mode as the command left it: its end restores it.
+  let rawMode = false;
   const stdin = ctx.stdin;
   const nodeCtx: NodeContext = {
     filesystem: synchronousFilesystem(ctx.vfs, () => mask),
@@ -219,19 +222,21 @@ async function executeCjsCommand(
       stderr: ctx.stderr,
       env: ctx.env,
       input: {
-        read: async () => {
-          if (!stdin) return null;
-          if (stdin.readBytes) return stdin.readBytes(65536, ended.signal);
-          const text = await stdin.read();
-          return text === null ? null : new TextEncoder().encode(text);
+        read: () => {
+          const withdraw = new AbortController();
+          const signal = AbortSignal.any([withdraw.signal, ended.signal]);
+          return { piece: commandStdinPiece(stdin, signal), cancel: () => withdraw.abort() };
         },
         // The command's own promise is what it waits on.
-        waiting: () => {},
+        hold: () => {},
       },
       terminal: {
         isatty: (fd) => ctx.isFdTerminal?.(fd) ?? false,
         isPipe: (fd) => ctx.isFdPipe?.(fd) ?? false,
-        setRawMode: (on) => { ctx.setRawMode?.(on); },
+        setRawMode: (on) => {
+          rawMode = on;
+          ctx.setRawMode?.(on);
+        },
       },
     },
     reachStreams: leaveStandardStreamsOpen,
@@ -243,9 +248,17 @@ async function executeCjsCommand(
   const scope = { process, console, global: { process, Buffer, console } };
   const loader = createCjsLoader(nodeCtx, scope);
   try {
-    return await commandsRunning().run(scope.process, () => runCjsCommand(entryPath, source, ctx, lifo, nodeCtx, loader));
+    const code = await commandsRunning().run(scope.process, () => runCjsCommand(entryPath, source, ctx, lifo, nodeCtx, loader));
+    // Its process hears 'exit' with the status it ends with, as a Node process does.
+    try {
+      return scope.process.exitWith(code, true);
+    } catch (error) {
+      await ctx.stderr.write(error instanceof Error ? `${error.stack || error.message}\n` : `${String(error)}\n`);
+      return 1;
+    }
   } finally {
     ended.abort();
+    if (rawMode) ctx.setRawMode?.(false);
   }
 }
 
@@ -258,6 +271,26 @@ async function executeCjsCommand(
  * host's own outside the commands.
  */
 let running: AsyncLocalStorage<CommandProcess> | undefined;
+/** A command's next piece of fd 0, never an empty one, until `signal` ends: then 'withdrawn', taking nothing. */
+async function commandStdinPiece(stdin: CommandContext['stdin'], signal: AbortSignal): Promise<StandardPiece> {
+  try {
+    for (;;) {
+      if (!stdin) return null;
+      signal.throwIfAborted();
+      let piece: Uint8Array | null;
+      if (stdin.readBytes) piece = await stdin.readBytes(65536, signal);
+      else {
+        const text = await stdin.read();
+        piece = text === null ? null : enc.encode(text);
+      }
+      if (piece === null || piece.length > 0) return piece;
+    }
+  } catch (error) {
+    if (signal.aborted) return 'withdrawn';
+    throw error;
+  }
+}
+
 type CommandProcess = ReturnType<typeof createProcess>;
 
 function commandsRunning(): AsyncLocalStorage<CommandProcess> {

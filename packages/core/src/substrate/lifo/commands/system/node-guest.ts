@@ -20,7 +20,7 @@ import { DNSResolver } from '../../kernel/dns-resolver.js';
 import { createHostsResolver, type VirtualRequest, type VirtualRequestHandler, type VirtualResponse } from '../../kernel/index.js';
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { VfsEvent } from '../../../../vfs/events.js';
-import type { FailableOutput, OutputSource, StandardInput } from '../../node-compat/standard-streams.js';
+import type { FailableOutput, OutputSource, StandardInput, StandardPiece } from '../../node-compat/standard-streams.js';
 import type { ProgramTerminal } from '../../node-compat/tty-streams.js';
 import type { CommandOutputStream } from '../types.js';
 import { uncaughtReport, writeFailure } from '../../node-compat/output-failure.js';
@@ -32,8 +32,9 @@ import { routeFetchThroughHost, type RealmEgressGuest } from '../../../../runtim
 import { isEgressHostEvent } from '../../../../runtime/realm-egress.js';
 import {
   isDirEntries, isHostEvent, isNodeRealmPayload, isStat,
-  type GuestEvent, type NodeCall, type RealmResponse,
+  type FdKind, type GuestEvent, type NodeCall, type RealmResponse,
 } from './node-realm-protocol.js';
+import { fromRealmError } from '../../../../runtime/realm.js';
 
 // Node's errors show a value as util.inspect does ('a string' quoted), the program's realm's.
 useNodeErrorInspect((value, options) => realm.getBuiltinModule('node:util').inspect(value, options));
@@ -74,7 +75,7 @@ const fetched = new Map<number, (response: RealmResponse | null) => void>();
 let offTheBox: RealmEgressGuest | null = null;
 /** `events` holds the realm open while anything of the program's waits on it. */
 function holdWhileBusy(): void {
-  joined.hold(fetched.size > 0 || ports.size > 0 || persistentWatches > 0 || (offTheBox?.awaited ?? 0) > 0 || settling || stdinWaiting);
+  joined.hold(fetched.size > 0 || ports.size > 0 || persistentWatches > 0 || (offTheBox?.awaited ?? 0) > 0 || settling || stdinHolds > 0);
 }
 
 /** End the process now with `code`, as process.exit() and a fatal error do: a write that fails later is no one's. */
@@ -200,27 +201,33 @@ function postOutput(fd: 1 | 2, source: OutputSource, data: string | Uint8Array):
 }
 const outputs = { 1: realmOutput(1), 2: realmOutput(2) };
 
-/** fd 0, a piece at a time, each asked of the host; a read the program waits on (not one it paused) holds the realm. */
-const stdinPieces = new Map<number, (piece: Uint8Array | null) => void>();
+/** fd 0, a piece at a time, each read asked of the host and answered once; the readers waiting on it hold the realm. */
+const stdinAnswers = new Map<number, { resolve(piece: StandardPiece): void; reject(error: Error): void }>();
 let stdinReads = 0;
-let stdinWaiting = false;
+let stdinHolds = 0;
 const input: StandardInput = {
-  read: () => new Promise((resolve) => {
+  read: () => {
     const id = ++stdinReads;
-    stdinPieces.set(id, resolve);
+    const piece = new Promise<StandardPiece>((resolve, reject) => { stdinAnswers.set(id, { resolve, reject }); });
     post({ type: 'stdin-read', id });
-  }),
-  waiting: (on) => {
-    stdinWaiting = on;
+    return { piece, cancel: () => { if (stdinAnswers.has(id)) post({ type: 'stdin-cancel', id }); } };
+  },
+  hold: (on) => {
+    stdinHolds += on ? 1 : -1;
     holdWhileBusy();
   },
 };
 
 /** What a standard descriptor is, asked of the host once. */
-const fdKinds = new Map<number, unknown>();
-const fdKind = (fd: number): unknown => {
-  if (!fdKinds.has(fd)) fdKinds.set(fd, call({ op: 'fdKind', fd }));
-  return fdKinds.get(fd);
+const fdKinds = new Map<number, FdKind>();
+const fdKind = (fd: number): FdKind => {
+  let kind = fdKinds.get(fd);
+  if (kind === undefined) {
+    const answer = call({ op: 'fdKind', fd });
+    kind = answer === 'terminal' || answer === 'pipe' || answer === 'other' ? answer : malformed('fdKind');
+    fdKinds.set(fd, kind);
+  }
+  return kind;
 };
 const terminal: ProgramTerminal = {
   isatty: (fd) => fdKind(fd) === 'terminal',
@@ -293,10 +300,13 @@ events.on('message', (event) => {
     case 'changed':
       watches.get(event.id)?.listener(event.event);
       return;
-    case 'stdin':
-      stdinPieces.get(event.id)?.(event.data);
-      stdinPieces.delete(event.id);
+    case 'stdin': {
+      const answer = stdinAnswers.get(event.id);
+      stdinAnswers.delete(event.id);
+      if ('error' in event) answer?.reject(fromRealmError(event.error));
+      else answer?.resolve('withdrawn' in event ? 'withdrawn' : event.data);
       return;
+    }
     case 'output-failed':
       // A stream's failure is heard here, whatever the program makes of it: the host reports it no more.
       if (event.source === 'stream') post({ type: 'heard', fd: event.fd });
@@ -358,7 +368,7 @@ realm.on('exit', () => {
     return;
   }
   postOutput(2, 'console', `Warning: Detected unsettled top-level await at ${program.filename}\n`);
-  post({ type: 'exit', code: 13, ended: false });
+  post({ type: 'exit', code: tellExit(13, true), ended: false });
 });
 
 if (egress) {
