@@ -45,7 +45,7 @@ declare module 'node:process' {
   import type * as NodeUtil from 'node:util';
   interface RealmProcess {
     on(event: 'unhandledRejection' | 'uncaughtException', listener: (reason: unknown) => void): RealmProcess;
-    on(event: 'exit', listener: (code: number) => void): RealmProcess;
+    on(event: 'beforeExit' | 'exit', listener: (code: number) => void): RealmProcess;
     on(event: 'warning', listener: (warning: Error) => void): RealmProcess;
     removeAllListeners(event: 'warning'): RealmProcess;
     /** The realm's own warnings (a native builtin's): node.ts makes them the program's. */
