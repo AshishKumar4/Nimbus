@@ -100,6 +100,7 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 			stdin: host.stdin,
 			stdio: { stdout: host.stdoutStream, stderr: host.stderrStream, env: program.env, input: host.input, terminal: host.terminal },
 			reachStreams: leaveStandardStreamsOpen,
+			ownRealm: true,
 		};
 
 		// One process and console, every module's, as in Node.

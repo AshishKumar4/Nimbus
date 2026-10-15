@@ -5,6 +5,21 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (lifo `node`, X-9): `vm` is Node's. Contexts, scripts,
+  `compileFunction`, `runInThisContext` and `runInNewContext` work; the module
+  was refused before. A dynamic import in code vm compiled with
+  `importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER`
+  loads the program's module from the workspace through the program's own
+  loader, not a host file at that path. Code with no absolute `filename`
+  (which Node resolves against its process's directory) is refused that
+  loader, and so is a context made with it. `vm.SourceTextModule` and
+  `vm.SyntheticModule` are absent, as in Node without
+  `--experimental-vm-modules`. `domain` is Node's in an inline `node` program,
+  which runs in a realm of its own; a lifo command runs in the host's realm,
+  where `domain` would set the host's process, and it is still refused there.
+  Breaking (core): `NativeModuleLoader` (`substrate/lifo/node-compat/cjs-loader.js`)
+  has `registerScript`.
+
 - Fixed (real git, `NIMBUS_GIT_WASI=1`): Ctrl-C reaches `git` while it
   waits on a credential helper, an editor, a pipe or a child, as on Linux:
   `git credential fill` and `git commit` waiting on its editor end with

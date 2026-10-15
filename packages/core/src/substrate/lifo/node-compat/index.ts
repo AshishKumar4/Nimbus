@@ -18,8 +18,9 @@ import { createDns } from './dns.js';
 import { createModuleShim, PROVIDED_PACKAGES } from './module.js';
 import { createRimraf } from './rimraf.js';
 import { createEsbuild } from './esbuild.js';
+import { createVm } from './vm.js';
 import { createHttp2Module } from '../../../_shared/http2-module.js';
-import { nodeError } from '../../../_shared/node-error.js';
+import { featureUnavailable } from '../../../_shared/node-error.js';
 
 export interface NodeContext {
   filesystem: () => NodeFilesystem;
@@ -44,6 +45,13 @@ export interface NodeContext {
   dns?: DNSResolver;
   /** Told when the program first reaches the engine's stream classes (a stream module, an fs or tty stream, process.stdout). */
   reachStreams?: () => void;
+  /**
+   * The program runs in a realm of its own (the inline `node`'s): the
+   * engine's process is its, and so is domain, which sets that process.
+   * Absent, it runs in the host's realm (a lifo command), and domain is
+   * refused.
+   */
+  ownRealm?: boolean;
 }
 
 /**
@@ -77,7 +85,7 @@ class StubServer extends EventEmitter {
 
 /** What would reach past the program (the host's files, loader or process), refused as an unavailable feature. */
 function unavailable(feature: string): never {
-  throw nodeError(TypeError, 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM', `The feature ${feature} is unavailable on the current platform, which is being used to run Node.js`);
+  throw featureUnavailable(feature);
 }
 
 /** The engine's `module` with each of `names` refused (unavailable). */
@@ -135,15 +143,17 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     constants: () => ({ ...createOs(ctx.env).constants, ...fsModule().constants }),
     // The engine's own, context-free (X-3). v8 is the engine's but for what
     // would reach the host's files or flags (a heap snapshot file, coverage,
-    // V8 flags), each refused. vm, domain, trace_events and wasi are refused
-    // whole: vm's main-context loader imports past the program's module map,
-    // domain sets the engine's own process (its domain and uncaught-exception
-    // capture), and trace_events and wasi reach the host's files.
+    // V8 flags), each refused. vm is the engine's, its main-context loader
+    // the program's (vm.ts: the CommonJS loader's, which has the program's
+    // module loader; refused here, where none is). domain sets the engine's own process (its domain
+    // and uncaught-exception capture): the program's in a realm of its own,
+    // the host's otherwise, where it is refused. trace_events and wasi reach
+    // the host's files, and are refused whole.
     assert: () => realm.getBuiltinModule('node:assert'),
     'assert/strict': () => realm.getBuiltinModule('node:assert/strict'),
     async_hooks: () => realm.getBuiltinModule('node:async_hooks'),
     diagnostics_channel: () => realm.getBuiltinModule('node:diagnostics_channel'),
-    domain: () => unavailable('domain'),
+    domain: () => (ctx.ownRealm ? realm.getBuiltinModule('node:domain') : unavailable('domain')),
     perf_hooks: () => realm.getBuiltinModule('node:perf_hooks'),
     punycode: () => realm.getBuiltinModule('node:punycode'),
     querystring: () => realm.getBuiltinModule('node:querystring'),
@@ -152,7 +162,7 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     'timers/promises': () => realm.getBuiltinModule('node:timers/promises'),
     'util/types': () => realm.getBuiltinModule('node:util/types'),
     v8: () => withoutHostReach(realm.getBuiltinModule('node:v8'), 'v8', ['writeHeapSnapshot', 'setFlagsFromString', 'setHeapSnapshotNearHeapLimit', 'takeCoverage', 'stopCoverage']),
-    vm: () => unavailable('vm'),
+    vm: () => createVm(null),
     trace_events: () => unavailable('trace_events'),
     wasi: () => unavailable('wasi'),
     // net — stub (vite imports it but only uses it for actual TCP in server mode)

@@ -168,6 +168,11 @@ function invalidArgValueMessage(name: string, value: unknown, reason = 'is inval
   return `The ${name.includes('.') ? 'property' : 'argument'} '${name}' ${reason}. Received ${inspected}`;
 }
 
+/** Node's ERR_FEATURE_UNAVAILABLE_ON_PLATFORM: what would reach past the program (the host's files, loader or process), refused. */
+export function featureUnavailable(feature: string): Error {
+  return made(TypeError, 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM', `The feature ${feature} is unavailable on the current platform, which is being used to run Node.js`, undefined, featureUnavailable);
+}
+
 /** Node's ERR_OUT_OF_RANGE: `name` must be `range` (`an integer`, `>= 0 && <= 4294967295`), and was `input`. */
 export function outOfRange(name: string, range: string, input: unknown): Error {
   return made(RangeError, 'ERR_OUT_OF_RANGE', outOfRangeMessage(name, range, input), undefined, outOfRange);

@@ -19,6 +19,7 @@ import { Buffer } from 'node:buffer';
 import { fileURLToPath } from 'node:url';
 import { createModuleMap, ProcessExitError, type NodeContext } from './index.js';
 import { createModuleShim, type RequireFunction } from './module.js';
+import { createVm } from './vm.js';
 import { pathToFileURL } from './file-url.js';
 import { rewriteDynamicImports, unusedIdentifier } from '../../../runtime/dynamic-import-rewrite.js';
 import { isEsModuleFile, type PackageType } from '../../../runtime/module-format.js';
@@ -76,6 +77,8 @@ export interface ModuleScope {
 export interface NativeModuleLoader {
 	importModule(specifier: string, parentUrl: string, options?: unknown): Promise<unknown>;
 	requireModule(filename: string, parentFilename?: string): unknown;
+	/** Code at `filename` (an absolute path) that vm compiled imports through this loader, as its referrer. */
+	registerScript(filename: string): void;
 }
 
 export interface CjsLoader {
@@ -127,6 +130,11 @@ export function createCjsLoader(context: NodeContext, scope: ModuleScope, option
 	const moduleMap = createModuleMap(context);
 	moduleMap.process = () => scope.process;
 	moduleMap.console = () => scope.console;
+	// Code vm compiles imports through the program's native loader.
+	moduleMap.vm = () => createVm((filename) => {
+		if (!native) throw new Error('Native ES modules require a lifo native module loader');
+		native.registerScript(filename);
+	});
 	const builtins = new Map<string, unknown>();
 	let native: NativeModuleLoader | undefined;
 	const cache: Record<string, unknown> = Object.create(null);
