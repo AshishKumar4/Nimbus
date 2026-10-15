@@ -48,7 +48,7 @@ import {
   serializeFacetVfsCursor,
 } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { NimbusFilesystemAuthority, RuntimeFsBridge, RuntimeSynchronousFs, RuntimeVfsDirEntry, RuntimeVfsStat, VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { NimbusFilesystemAuthority, NimbusHostFilesystemLease, RuntimeFsBridge, RuntimeSynchronousFs, RuntimeVfsDirEntry, RuntimeVfsStat, VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { normalizeVfsPath, stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
@@ -5310,6 +5310,8 @@ export class FacetManager {
   readonly processJournals: ProcessJournals;
   /** Residents whose log is being drained as their facet is released. */
   private readonly journalDraining = new Set<number>();
+  /** Per resident with a booked log: the binding its drain writes through (NimbusFilesystemAuthority.recovery). */
+  private readonly recoveries = new Map<number, NimbusHostFilesystemLease>();
   /** An exit a signal decided, told once its process's log is drained (`_endBySignal`). */
   private readonly endsAfterDrain = new Map<number, () => void>();
   /**
@@ -5528,7 +5530,10 @@ export class FacetManager {
       journalFor: (pid) => ({
         opened: (facet) => {
           const cred = this.processes.get(pid)?.cred;
-          if (cred !== undefined) this.processJournals.opened(facet, pid, cred, generation(this.ctx));
+          if (cred === undefined) return;
+          this.processJournals.opened(facet, pid, cred, generation(this.ctx));
+          // What its drain writes through, kept from its release to the drain's end.
+          if (this.filesystem !== null && !this.recoveries.has(pid)) this.recoveries.set(pid, this.filesystem.recovery(pid, cred));
         },
         drain: async (journal) => {
           this.journalDraining.add(pid);
@@ -5833,19 +5838,31 @@ export class FacetManager {
    * A change the session refuses is said in the process's own output, named.
    */
   private async _drainProcessJournal(pid: number, journal: ProcessFsJournalSource): Promise<void> {
-    const pending = this.processJournals.of(pid);
-    if (pending === undefined) return;
-    await this._drainJournalAs(pending.pid, pending.cred, journal);
-    this.vfs?.forgetSequences(pid);
-    this.processJournals.settled(pid);
+    const recovery = this.recoveries.get(pid);
+    this.recoveries.delete(pid);
+    try {
+      const pending = this.processJournals.of(pid);
+      if (pending === undefined) return;
+      await this._drainJournalAs(pending.pid, pending.cred, journal, recovery);
+      this.vfs?.forgetSequences(pid);
+      this.processJournals.settled(pid);
+    } finally {
+      await recovery?.dispose();
+    }
   }
 
-  /** Drain `journal` into the session as process `pid` (with its credential) would have sent it. */
-  private async _drainJournalAs(pid: number, cred: VfsCred, journal: ProcessFsJournalSource): Promise<void> {
+  /**
+   * Drain `journal` into the session as process `pid` (with its credential)
+   * would have sent it: through `recovery`, the process's own binding, kept
+   * since its log was booked (its descriptions, and the grants that reserved
+   * the inodes it numbered); else, for a log an earlier incarnation left, a
+   * lease of its credential.
+   */
+  private async _drainJournalAs(pid: number, cred: VfsCred, journal: ProcessFsJournalSource, recovery?: NimbusHostFilesystemLease): Promise<void> {
     if (!this.filesystem) throw new Error('Process filesystem authority is not initialized');
     // Under the process's credential, numbered as its own waves were.
-    const lease = this.filesystem.openHost(cred);
-    const drained = await drainProcessFsJournal({ journal, session: journalDrainSession(lease.fs, pid) }).finally(() => lease.dispose());
+    const lease = recovery === undefined ? this.filesystem.openHost(cred) : null;
+    const drained = await drainProcessFsJournal({ journal, session: journalDrainSession((recovery ?? lease!).fs, pid) }).finally(() => lease?.dispose());
     if (drained.landed > 0 || drained.failures.length > 0) {
       const refused = drained.failures.map((failure) => `  ${failure.op} /${failure.path}: ${failure.errno}: ${failure.message}\n`).join('');
       this.processes.appendOutput(pid, 'stderr',

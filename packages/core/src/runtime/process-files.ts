@@ -304,6 +304,9 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   private readonly processes = new Map<number, DescriptorScope>();
   private readonly namespaces = new Map<string, NamespaceFs>();
   private readonly retired = new Set<number>();
+  /** Per process: the recovery leases taken for its log's drain, and its release, deferred until the last is disposed. */
+  private readonly recovering = new Map<number, number>();
+  private readonly releasing = new Map<number, () => Promise<void>>();
   /** Per process: where its listings of the mounts beyond SQLite stand (MountListing). */
   private readonly listings = new Map<number, MountListing>();
   /** Inode numbers for mounted entries whose backend keeps none: stable per path for the session. */
@@ -435,6 +438,25 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     return this.bridgeFor(scope, immutableCredential(cred), signal, pid);
   }
 
+  recovery(pid: number, cred: Readonly<VfsCred>): NimbusHostFilesystemLease {
+    const fs = this.bind({ pid, cred });
+    this.recovering.set(pid, (this.recovering.get(pid) ?? 0) + 1);
+    let disposed = false;
+    return {
+      fs,
+      dispose: async () => {
+        if (disposed) return;
+        disposed = true;
+        const left = (this.recovering.get(pid) ?? 1) - 1;
+        if (left > 0) { this.recovering.set(pid, left); return; }
+        this.recovering.delete(pid);
+        const release = this.releasing.get(pid);
+        this.releasing.delete(pid);
+        await release?.();
+      },
+    };
+  }
+
   openHost(cred: Readonly<VfsCred>, options: { signal?: AbortSignal } = {}): NimbusHostFilesystemLease {
     const scope = createDescriptorScope();
     const fs = this.bridgeFor(scope, immutableCredential(cred), options.signal);
@@ -547,15 +569,20 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   async releaseProcess(pid: number): Promise<void> {
     this.retired.add(pid);
     this.listings.delete(pid);
-    const scope = this.processes.get(pid);
-    try {
-      // Its descriptors' last closes flush; one whose flush fails is reported
-      // once the process is released all the same.
-      if (scope) await this.closeScope(scope);
-    } finally {
-      this.processes.delete(pid);
-      this.retireWriter(pid);
-    }
+    const release = async (): Promise<void> => {
+      const scope = this.processes.get(pid);
+      try {
+        // Its descriptors' last closes flush; one whose flush fails is reported
+        // once the process is released all the same.
+        if (scope) await this.closeScope(scope);
+      } finally {
+        this.processes.delete(pid);
+        this.retireWriter(pid);
+      }
+    };
+    // Its log is draining (recovery): what it opened and holds stay until the drain ends.
+    if (this.recovering.has(pid)) this.releasing.set(pid, release);
+    else await release();
   }
 
   /** See NimbusFilesystemAuthority.rewindProcess. */
