@@ -25,7 +25,7 @@ instance = await WebAssembly.instantiate(mod, { ...wasi.getImportObject(), nimbu
     [0o40755, 0, 0].forEach((value, i) => view.setUint32(out + i * 4, value, true));
     return 0;
   },
-  chmod: () => 63, fchmod: () => 63, chown: () => 63,
+  chmod: () => 63, fchmod: () => 63, chown: () => 63, account: () => 44,
 } });
 wasi.start(instance);
 closeSync(stderr);
