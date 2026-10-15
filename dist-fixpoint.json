@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "4d14353142c34a4c8cdea634072a22ec0b1e0f9b2db3495c13ea53df04f784eb",
+  "fingerprint": "ea405b56fc676d81d712670073b1ced8f6b72e9085959332509123054fb28762",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -940,8 +940,8 @@
     "packages/core/dist/substrate/lifo/commands/system/node-program.d.ts": "55acf550345c5b461dabfb1c92fac8689e7e6704e78afe3d3a8955564dbb6a91",
     "packages/core/dist/substrate/lifo/commands/system/node-program.d.ts.map": "09c58f53ef4e4a978cf3cd56e32675084225ec021658fd5a506b8377fdad8f89",
     "packages/core/dist/substrate/lifo/commands/system/node-program.js": "a437fbfc4a542ecb7a07075c8d26ac64d77d09cb341c336c8f6d3576732715cb",
-    "packages/core/dist/substrate/lifo/commands/system/node-realm-protocol.d.ts": "8f840e226963f04a7555f5cad2c6f61a69c5ae6f52e8845262bfdd6554a14f3c",
-    "packages/core/dist/substrate/lifo/commands/system/node-realm-protocol.d.ts.map": "65c75d5e6eccffe515b03a43b98d855b82c1a03e49f01222141a102ab423b9a1",
+    "packages/core/dist/substrate/lifo/commands/system/node-realm-protocol.d.ts": "752796379ff8f49414480636e85387a531da5a9d1b58b0ebf1a1cd882913d812",
+    "packages/core/dist/substrate/lifo/commands/system/node-realm-protocol.d.ts.map": "6ec57eb48eaf85f035be947f721a9e7c10d0109a6ab3a899fcc5b52080ce21e6",
     "packages/core/dist/substrate/lifo/commands/system/node-realm-protocol.js": "b2ac6b3c98cc2bf38ccfed10373e957f5aca682fd72f16f59f1d77735768581c",
     "packages/core/dist/substrate/lifo/commands/system/node-realm.d.ts": "46d6f84a79c72da191874a6448cc97eb64fe8b43543b4626f7e46bbf86c3b3c3",
     "packages/core/dist/substrate/lifo/commands/system/node-realm.d.ts.map": "bf5b6177a60fd964ca1213f65e8b19ca53f9256747ea88591db2ac0a4d0d7247",
@@ -1656,7 +1656,7 @@
     "packages/core/src/substrate/lifo/commands/system/man.ts": "a74abc1bdfd7447eedf1f61283aa7951d4596fb3463bbdc106c2d9387112dbb6",
     "packages/core/src/substrate/lifo/commands/system/node-guest.ts": "edba3a2eff780a319092d9ea3f9197efc82583331e86c81b4cfcef098128117e",
     "packages/core/src/substrate/lifo/commands/system/node-program.ts": "b0fc09ad1915615f1811f8a45a04cb560c1f474b23397781a48d128658836fb5",
-    "packages/core/src/substrate/lifo/commands/system/node-realm-protocol.ts": "980572877b9819b31928f851fb389791796ed8691904814331f2044f98e14fcf",
+    "packages/core/src/substrate/lifo/commands/system/node-realm-protocol.ts": "b4988d44ad3c12071f6fb20a3275a6a10a172bd8b924d6a88a465ed0a9daa7f5",
     "packages/core/src/substrate/lifo/commands/system/node-realm.ts": "bba0dc64f1d8340179f7b8d51fa1d6ffaca630bfd93fc4e0ce7edba5c59e8ef2",
     "packages/core/src/substrate/lifo/commands/system/node.ts": "d2eb690fb48f2b4998e00ddb958732045fd5260deddd9aa4368e61a8448fbef9",
     "packages/core/src/substrate/lifo/commands/system/npm-config.ts": "89c9393a677044d9265d4a74438c2d7bc227797d2e69a7915e8ee7205b2f46d7",
