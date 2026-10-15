@@ -2,7 +2,9 @@
  * npm/cache.ts — SQLite-backed package cache for Nimbus npm v2.
  *
  * Four tables:
- *   1. pkg_registry_cache — packument metadata (avoids re-fetching full JSON)
+ *   1. pkg_registry_records — a registry's record of name@version, by the
+ *      registry it was read from and the network it was read through
+ *      (RecordSource): one registry's answer never stands for another's
  *   2. pkg_lockfile        — resolved dependency graph per project
  *   3. pkg_esm_bundles     — pre-bundled ESM for /@modules/ serving
  *   4. user_module_transforms — transformed user .ts/.tsx/.jsx output,
@@ -31,7 +33,17 @@ export class NpmCache {
     ensureSchema() {
         if (this.initialized)
             return;
-        this.sql.exec(`CREATE TABLE IF NOT EXISTS pkg_registry_cache (
+        // A record is a registry's answer, read through a network: the same
+        // name@version from another registry (or through another egress) may be
+        // another tarball with other dependencies. The table before this one
+        // kept neither, so none of its rows can be trusted as any registry's.
+        try {
+            this.sql.exec(`DROP TABLE IF EXISTS pkg_registry_cache`);
+        }
+        catch { /* non-fatal */ }
+        this.sql.exec(`CREATE TABLE IF NOT EXISTS pkg_registry_records (
+      registry       TEXT NOT NULL,
+      network        TEXT NOT NULL,
       name           TEXT NOT NULL,
       version        TEXT NOT NULL,
       tarball_url    TEXT NOT NULL,
@@ -48,35 +60,8 @@ export class NpmCache {
       registry_name  TEXT NOT NULL DEFAULT '',
       bundle_json    TEXT NOT NULL DEFAULT '',
       fetched_at     INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (name, version)
+      PRIMARY KEY (registry, network, name, version)
     )`);
-        // Columns added after the original CREATE (peer_deps_json in
-        // X.5-F R2; platform_json + optional_deps_json with the package ABI
-        // policy work). Older tenants have a registry cache table without
-        // them — ALTER TABLE adds each with the same NOT NULL DEFAULT '{}'
-        // the CREATE specifies. SQLite errors on ADD COLUMN for an existing
-        // column, so we probe via PRAGMA first.
-        let existingCols = new Set();
-        try {
-            const cols = [...this.sql.exec(`PRAGMA table_info(pkg_registry_cache)`)];
-            existingCols = new Set(cols.map((r) => String(r.name)));
-        }
-        catch { /* PRAGMA failed — fall through and ATTEMPT, swallow on error */ }
-        for (const [col, fallback] of [['peer_deps_json', '{}'], ['platform_json', '{}'], ['optional_deps_json', '{}'], ['peer_meta_json', '{}'], ['registry_name', ''], ['bundle_json', '']]) {
-            if (existingCols.has(col))
-                continue;
-            try {
-                this.sql.exec(`ALTER TABLE pkg_registry_cache ADD COLUMN ${col} TEXT NOT NULL DEFAULT '${fallback}'`);
-            }
-            catch (e) {
-                // Race or pre-existing — non-fatal; the column might already
-                // exist if the CREATE just ran above on a fresh tenant.
-                const msg = e?.message || String(e);
-                if (!/duplicate column/i.test(msg)) {
-                    console.error(`[npm-cache] ${col} migration failed:`, msg);
-                }
-            }
-        }
         this.sql.exec(`CREATE TABLE IF NOT EXISTS pkg_lockfile (
       project_path TEXT NOT NULL,
       name         TEXT NOT NULL,
@@ -183,10 +168,10 @@ export class NpmCache {
      *  good proxy for "how much L1 data did we save fetching" — not the
      *  exact SQLite blob byte count (which would require a separate
      *  SELECT). */
-    getRegistryEntry(name, version) {
+    getRegistryEntry(source, name, version) {
         this.ensureSchema();
         const rows = [...this.sql.exec(`SELECT ${NpmCache.REGISTRY_COLUMNS}
-       FROM pkg_registry_cache WHERE name = ? AND version = ?`, name, version)];
+       FROM pkg_registry_records WHERE registry = ? AND network = ? AND name = ? AND version = ?`, source.registry, source.network, name, version)];
         if (rows.length === 0) {
             _l1RecordMiss('L1', 'packument');
             return null;
@@ -208,14 +193,14 @@ export class NpmCache {
      * getRegistryEntry for each `[name, version]`, read together: the record
      * by `name@version`, or null; each counted as getRegistryEntry counts it.
      */
-    getRegistryEntries(keys) {
+    getRegistryEntries(source, keys) {
         this.ensureSchema();
         const out = new Map(keys.map(([name, version]) => [`${name}@${version}`, null]));
         const unique = [...new Map(keys.map((key) => [`${key[0]}@${key[1]}`, key])).values()];
-        // DO SQLite binds at most 100 values a statement: 49 pairs.
-        for (let i = 0; i < unique.length; i += 49) {
-            const batch = unique.slice(i, i + 49);
-            for (const r of this.sql.exec(`SELECT ${NpmCache.REGISTRY_COLUMNS} FROM pkg_registry_cache WHERE (name, version) IN (VALUES ${batch.map(() => '(?,?)').join(',')})`, ...batch.flat())) {
+        // DO SQLite binds at most 100 values a statement: the source, and 48 pairs.
+        for (let i = 0; i < unique.length; i += 48) {
+            const batch = unique.slice(i, i + 48);
+            for (const r of this.sql.exec(`SELECT ${NpmCache.REGISTRY_COLUMNS} FROM pkg_registry_records WHERE registry = ? AND network = ? AND (name, version) IN (VALUES ${batch.map(() => '(?,?)').join(',')})`, source.registry, source.network, ...batch.flat())) {
                 const entry = this.rowToRegistryEntry(r);
                 out.set(`${entry.name}@${entry.version}`, entry);
             }
@@ -227,13 +212,6 @@ export class NpmCache {
                 _l1RecordHit('L1', 'packument', entry.depsJson.length + entry.peerDepsJson.length + entry.exportsJson.length + entry.binJson.length);
         }
         return out;
-    }
-    /** Get all cached versions for a package name. */
-    getRegistryVersions(name) {
-        this.ensureSchema();
-        const rows = [...this.sql.exec(`SELECT ${NpmCache.REGISTRY_COLUMNS}
-       FROM pkg_registry_cache WHERE name = ?`, name)];
-        return rows.map((r) => this.rowToRegistryEntry(r));
     }
     /**
      * Bulk-write registry entries in ONE call. Used by the resolver-facet
@@ -249,15 +227,15 @@ export class NpmCache {
      * single row fails (malformed data), it's logged and the rest still
      * commit; resolver correctness depends on cache being best-effort.
      */
-    putRegistryEntries(entries) {
+    putRegistryEntries(source, entries) {
         this.ensureSchema();
         let written = 0;
         let failed = 0;
         for (const entry of entries) {
             try {
-                this.sql.exec(`INSERT OR REPLACE INTO pkg_registry_cache
-           (${NpmCache.REGISTRY_COLUMNS})
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, entry.name, entry.version, entry.tarballUrl, entry.integrity, entry.depsJson, entry.peerDepsJson || '{}', entry.exportsJson, entry.main, entry.moduleField, entry.binJson, entry.platformJson || '{}', entry.optionalDepsJson || '{}', entry.peerMetaJson || '{}', entry.registryName ?? '', entry.bundleJson ?? '', entry.fetchedAt);
+                this.sql.exec(`INSERT OR REPLACE INTO pkg_registry_records
+           (registry, network, ${NpmCache.REGISTRY_COLUMNS})
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, source.registry, source.network, entry.name, entry.version, entry.tarballUrl, entry.integrity, entry.depsJson, entry.peerDepsJson || '{}', entry.exportsJson, entry.main, entry.moduleField, entry.binJson, entry.platformJson || '{}', entry.optionalDepsJson || '{}', entry.peerMetaJson || '{}', entry.registryName ?? '', entry.bundleJson ?? '', entry.fetchedAt);
                 written++;
             }
             catch (e) {
