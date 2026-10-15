@@ -22,8 +22,12 @@ export declare class ByteQueue {
     close(): void;
     /** Drop what is queued and unread. */
     protected discard(): void;
-    /** Next queued chunk, a delivery waited for, or null once ended and empty. */
-    protected pull(): Promise<Uint8Array | null>;
+    /**
+     * Next queued chunk, a delivery waited for, or null once ended and empty.
+     * A wait `signal` ends is withdrawn, rejecting with its reason: the next
+     * delivery is the next reader's.
+     */
+    protected pull(signal?: AbortSignal): Promise<Uint8Array | null>;
     /** The next text the input holds, or null at its end. */
     read(): Promise<string | null>;
     /** Everything to the end, as text. */
@@ -40,7 +44,7 @@ export declare class ByteQueue {
      * complete it would stall every reader downstream of a live producer. A
      * larger chunk gives its first maxLength bytes; the rest stays queued.
      */
-    readBytes(maxLength: number): Promise<Uint8Array | null>;
+    readBytes(maxLength: number, signal?: AbortSignal): Promise<Uint8Array | null>;
     /** What is queued and unread, as text, without waiting: the queue is left empty. */
     drainText(): string;
 }

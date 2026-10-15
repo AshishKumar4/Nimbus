@@ -1,8 +1,7 @@
 import { EventEmitter } from 'node:events';
-import type { Writable } from 'node:stream';
-import type { CommandOutputStream } from '../commands/types.js';
+import type { Readable, Writable } from 'node:stream';
 import { createProcessWarnings, type WarningConstructor, type WarningOptions } from '../../../_shared/node-warning.js';
-import { standardStream } from './standard-streams.js';
+import { ttyOf, type ProgramStdio } from './tty-streams.js';
 import { NODE_VERSION, NODE_VERSIONS } from '../../../constants.js';
 import { invalidArgType, nodeError } from '../../../_shared/node-error.js';
 import { parseFileMode } from '../../../_shared/node-arguments.js';
@@ -31,22 +30,21 @@ interface WarningFlags {
 }
 
 /**
- * A program's process: an emitter, as Node's is. Its stdout and stderr are
- * made when the program first reaches them: a Writable costs the engine's
- * stream module, which a program that only logs never loads.
+ * A program's process: an emitter, as Node's is. Its stdin, stdout and
+ * stderr are made when the program first reaches them (a stream costs the
+ * engine's stream module, which a program that only logs never loads), and
+ * are its tty module's streams where the descriptor is the terminal.
  */
 export class LifoProcess extends EventEmitter {
-  readonly #output: CommandOutputStream;
-  readonly #errorOutput: CommandOutputStream;
+  readonly #stdio: ProgramStdio;
   #stdout: Writable | undefined;
   #stderr: Writable | undefined;
 
   #capture: ((error: unknown) => void) | null = null;
 
-  constructor(output: CommandOutputStream, errorOutput: CommandOutputStream) {
+  constructor(stdio: ProgramStdio) {
     super();
-    this.#output = output;
-    this.#errorOutput = errorOutput;
+    this.#stdio = stdio;
   }
 
   /** Node's: `fn` takes every error nothing caught, in place of 'uncaughtException'; null clears it. */
@@ -86,17 +84,47 @@ export class LifoProcess extends EventEmitter {
    * list), or one for an error nothing caught (takeUncaught's, the monitor's
    * included).
    */
+  #exited = false;
+
+  /**
+   * Node's 'exit', heard once as the process ends: with `code`, which an
+   * explicit end (process.exit(), a fatal error) also makes its
+   * process.exitCode, or, when its loop ran empty, its process.exitCode. Its
+   * listeners may set process.exitCode, which is then its status; a
+   * process.exit() among them ends it there.
+   */
+  exitWith(code: number, explicit: boolean): number {
+    if (this.#exited) return code;
+    this.#exited = true;
+    if (explicit) Reflect.set(this, 'exitCode', code);
+    try {
+      this.emit('exit', code);
+    } catch (error) {
+      if (error instanceof ProcessExitError) return error.exitCode;
+      throw error;
+    }
+    return exitCodeOf(this);
+  }
+
   hearsWriteFailures(): boolean {
     return (this.#stdout?.listenerCount('error') ?? 0) > 0 || (this.#stderr?.listenerCount('error') ?? 0) > 0
-      || this.#capture !== null || this.listenerCount('uncaughtException') > 0 || this.listenerCount('uncaughtExceptionMonitor') > 0;
+      || this.#capture !== null || this.listenerCount('uncaughtException') > 0 || this.listenerCount('uncaughtExceptionMonitor') > 0
+      // Its 'exit' listeners see a status a failed write changed.
+      || this.listenerCount('exit') > 0
+      // A WriteStream it made that listens for its own writes' failures.
+      || ttyOf(this.#stdio).writersHear();
+  }
+
+  get stdin(): Readable {
+    return ttyOf(this.#stdio).stdin();
   }
 
   get stdout(): Writable {
-    return this.#stdout ??= standardStream(this.#output, 1);
+    return this.#stdout ??= ttyOf(this.#stdio).stdout();
   }
 
   get stderr(): Writable {
-    return this.#stderr ??= standardStream(this.#errorOutput, 2);
+    return this.#stderr ??= ttyOf(this.#stdio).stderr();
   }
 }
 
@@ -120,8 +148,8 @@ export interface ProcessOptions {
   argv: string[];
   env: Record<string, string>;
   cwd: string;
-  stdout: CommandOutputStream;
-  stderr: CommandOutputStream;
+  /** Its standard descriptors: the same object its module map's tty is made for. */
+  stdio: ProgramStdio;
   identity: ProcessIdentity;
 }
 
@@ -132,9 +160,9 @@ export function createProcess(opts: ProcessOptions) {
   // Unset until the program sets them, as in a Node run without their options.
   const unflagged: WarningFlags = {};
   // Node's warnings, written on the program's stderr.
-  const warnings = createProcessWarnings(() => proc, (text) => { opts.stderr.write(`${text}\n`); });
+  const warnings = createProcessWarnings(() => proc, (text) => { opts.stdio.stderr.write(`${text}\n`); });
 
-  const proc = Object.assign(new LifoProcess(opts.stdout, opts.stderr), {
+  const proc = Object.assign(new LifoProcess(opts.stdio), {
     argv: ['/usr/bin/node', ...opts.argv],
     argv0: 'node',
     env: { ...opts.env },
@@ -142,16 +170,6 @@ export function createProcess(opts: ProcessOptions) {
     chdir: (_dir: string) => { throw new Error('process.chdir() is not supported in Lifo'); },
     // Node's: no code is process.exitCode's.
     exit: (code?: number) => { throw new ProcessExitError(code ?? exitCodeOf(proc)); },
-    stdin: {
-      isTTY: false,
-      fd: 0,
-      on: () => {},
-      once: () => {},
-      resume: () => {},
-      pause: () => {},
-      setEncoding: () => {},
-      read: () => null,
-    },
     platform: 'linux' as string,
     arch: 'x64' as string,
     // One release, core's (constants.ts), as `node --version` reports it.

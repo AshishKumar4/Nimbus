@@ -14,7 +14,8 @@ import { createProcess, exitCodeOf, type LifoProcess, type ProcessIdentity } fro
 import { createConsole } from '../../node-compat/console.js';
 import { createNativeEsmLoader } from '../../node-compat/native-esm-loader.js';
 import { pathToFileURL } from '../../node-compat/file-url.js';
-import { leaveStandardStreamsOpen, type FailableOutput } from '../../node-compat/standard-streams.js';
+import { leaveStandardStreamsOpen, type FailableOutput, type StandardInput } from '../../node-compat/standard-streams.js';
+import type { ProgramTerminal } from '../../node-compat/tty-streams.js';
 import type { VirtualRequestHandler, LoopbackRouter } from '../../kernel/index.js';
 import type { DNSResolver } from '../../kernel/dns-resolver.js';
 import type { CommandOutputStream } from '../types.js';
@@ -44,6 +45,10 @@ export interface NodeProgramHost {
 	readonly stderrStream: FailableOutput;
 	/** fd 0, read to its end: blocks until stdin ends, as a synchronous read of it does in Node. */
 	readonly stdin: () => Uint8Array;
+	/** fd 0 a piece at a time (process.stdin). */
+	readonly input: StandardInput;
+	/** What its standard descriptors are, and the terminal's modes. */
+	readonly terminal: ProgramTerminal;
 	readonly portRegistry?: Map<number, VirtualRequestHandler>;
 	readonly routeLoopback?: LoopbackRouter;
 	readonly dns?: DNSResolver;
@@ -93,11 +98,12 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 			routeLoopback: host.routeLoopback,
 			dns: host.dns,
 			stdin: host.stdin,
+			stdio: { stdout: host.stdoutStream, stderr: host.stderrStream, env: program.env, input: host.input, terminal: host.terminal },
 			reachStreams: leaveStandardStreamsOpen,
 		};
 
 		// One process and console, every module's, as in Node.
-		const main = { process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: host.stdoutStream, stderr: host.stderrStream, identity }), console: createConsole(ctx.stdout, ctx.stderr), global: globalThis };
+		const main = { process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdio: nodeCtx.stdio, identity }), console: createConsole(ctx.stdout, ctx.stderr), global: globalThis };
 		host.started(main.process);
 		const loader = createCjsLoader(nodeCtx, main);
 

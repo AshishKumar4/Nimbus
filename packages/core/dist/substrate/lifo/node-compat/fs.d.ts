@@ -160,7 +160,15 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
             pipe(destination: import("node:stream").Writable, options?: import("node:stream").PipeOptions): import("node:stream").Writable;
             readonly readable: boolean;
             readonly readableEnded: boolean;
+            readonly readableFlowing: boolean | null;
+            readonly destroyed: boolean;
+            readonly _readableState: {
+                reading: boolean;
+            };
+            _read(size: number): void;
             push(chunk: Uint8Array | string | null, encoding?: string): boolean;
+            pause(): /*elided*/ any;
+            resume(): /*elided*/ any;
             setEncoding(encoding: string): /*elided*/ any;
             destroy(error?: Error): /*elided*/ any;
             on(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;
@@ -203,7 +211,15 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
         pipe(destination: import("node:stream").Writable, options?: import("node:stream").PipeOptions): import("node:stream").Writable;
         readonly readable: boolean;
         readonly readableEnded: boolean;
+        readonly readableFlowing: boolean | null;
+        readonly destroyed: boolean;
+        readonly _readableState: {
+            reading: boolean;
+        };
+        _read(size: number): void;
         push(chunk: Uint8Array | string | null, encoding?: string): boolean;
+        pause(): /*elided*/ any;
+        resume(): /*elided*/ any;
         setEncoding(encoding: string): /*elided*/ any;
         destroy(error?: Error): /*elided*/ any;
         on(event: string | symbol, listener: import("node:events").Listener): /*elided*/ any;

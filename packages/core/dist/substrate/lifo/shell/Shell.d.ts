@@ -179,6 +179,11 @@ export declare class Shell {
     queueProcessExitNotice(notice: ProcessExitNotice, source: ProcessExitNoticeSource, render: (notice: ProcessExitNotice, source: ProcessExitNoticeSource) => string): boolean;
     handleInput(data: string, submission?: ShellInputSubmission): Promise<void>;
     private handleTab;
+    /**
+     * The tty's canonical line discipline over stdin: `data` edits the line a
+     * reader is given at Enter, echoed as it is typed (`echo`: type-ahead was
+     * echoed when typed, and is not again).
+     */
     private handleStdinInput;
     private applyCompletion;
     private getPromptWidth;

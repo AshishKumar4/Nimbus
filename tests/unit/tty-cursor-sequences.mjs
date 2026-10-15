@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 // The lifo node's tty.WriteStream cursor methods are readline's, as in Node,
 // and write what Node's do (the sequences below are Node 22.22's readline): they were a
-// second copy of readline's four functions.
+// second copy of readline's four functions. The readline a program gets is
+// the engine's own (X-2), so it is the engine's that is checked here.
 import assert from 'node:assert/strict';
+import * as readline from 'node:readline';
 import { WriteStream } from '../../packages/core/src/substrate/lifo/node-compat/tty.ts';
-import * as readline from '../../packages/core/src/substrate/lifo/node-compat/readline.ts';
 
 const calls = [
   [(s) => s.clearLine(-1), '\x1b[1K'], [(s) => s.clearLine(1), '\x1b[0K'], [(s) => s.clearLine(0), '\x1b[2K'],
@@ -14,7 +15,7 @@ const calls = [
 ];
 for (const [call, want] of calls) {
   let out = '';
-  const stream = new WriteStream();
+  const stream = new WriteStream(1);
   stream.write = (chunk) => { out += chunk; return true; };
   assert.equal(call(stream), true);
   assert.equal(out, want, String(call));
@@ -26,7 +27,6 @@ for (const [call, want] of calls) {
   });
   assert.equal(viaReadline, want, `readline: ${call}`);
 }
-let called = false;
-new WriteStream().cursorTo(0, () => { called = true; });
-assert.ok(called, 'cursorTo(x, callback) calls back');
+// Once its write is done, as Node's: the callback is the write's.
+await new Promise((resolve) => new WriteStream(1).cursorTo(0, resolve));
 console.log('tty-cursor-sequences: ok');

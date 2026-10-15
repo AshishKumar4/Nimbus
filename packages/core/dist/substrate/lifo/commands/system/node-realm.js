@@ -26,7 +26,7 @@
  * hosted/commands.ts).
  */
 import { exitCodeForAbortSignal } from '../../shell/signals.js';
-import { realmOutcome, startRealm } from '../../../../runtime/realm.js';
+import { realmError, realmOutcome, startRealm } from '../../../../runtime/realm.js';
 import { synchronousFilesystem } from '../../node-compat/filesystem.js';
 import { SinkWriter } from '../../../../_shared/byte-stream.js';
 import { uncaughtReport, writeFailure } from '../../node-compat/output-failure.js';
@@ -161,6 +161,16 @@ async function performCall(call, services) {
                 throw refused('mask that is not one');
             return services.setUmask(call.mask);
         }
+        case 'fdKind': {
+            if (call.fd !== 0 && call.fd !== 1 && call.fd !== 2)
+                throw refused('descriptor but 0, 1 or 2');
+            return services.fdKind(call.fd);
+        }
+        case 'rawMode': {
+            if (typeof call.on !== 'boolean')
+                throw refused('raw mode that is not on or off');
+            return services.setRawMode(call.on);
+        }
         default: throw refused(`call ${JSON.stringify(String(call.op))}`);
     }
 }
@@ -189,7 +199,11 @@ export async function runNodeInRealm(program, ctx, kernel) {
     // one that fails is the program's to hear of, through what made it.
     let written = Promise.resolve();
     const writers = new Map();
-    const streamFailures = [];
+    // The failures of the program's stream writes the guest has not taken
+    // (heard), in the order they came; and each writer's writes not yet made,
+    // while it has any, with whether their failures are the guest's.
+    let unheard = [];
+    const inFlight = { 1: new Map(), 2: new Map() };
     const writerOf = (fd) => {
         let writer = writers.get(fd);
         if (writer === undefined)
@@ -207,8 +221,15 @@ export async function runNodeInRealm(program, ctx, kernel) {
         settleUpTo = 0;
         post({ type: 'output-settled', seq: lastSettled });
     };
-    const write = (fd, source, data) => {
+    const write = (fd, source, writer, data) => {
         const seq = ++lastQueued;
+        let flight;
+        if (source === 'stream') {
+            flight = inFlight[fd].get(writer);
+            if (flight === undefined)
+                inFlight[fd].set(writer, flight = { pending: 0, heard: false });
+            flight.pending++;
+        }
         written = written.then(async () => {
             try {
                 if (typeof data === 'string')
@@ -218,11 +239,13 @@ export async function runNodeInRealm(program, ctx, kernel) {
             }
             catch (error) {
                 const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
-                const failure = { fd, code: typeof code === 'string' ? code : 'EIO', pipe: ctx.isFdPipe?.(fd) === true, source };
-                if (source === 'stream')
-                    streamFailures.push(failure);
+                const failure = { fd, code: typeof code === 'string' ? code : 'EIO', pipe: ctx.isFdPipe?.(fd) === true, source, writer };
+                if (flight !== undefined && !flight.heard)
+                    unheard.push(failure);
                 post({ type: 'output-failed', ...failure });
             }
+            if (flight !== undefined && --flight.pending === 0)
+                inFlight[fd].delete(writer);
             lastSettled = seq;
             settled();
         });
@@ -251,14 +274,72 @@ export async function runNodeInRealm(program, ctx, kernel) {
         }
     };
     const watches = new Map();
-    let stdinTaken = false;
+    // fd 0 has one reader, the program: its pieces and its read to the end are
+    // taken in the order asked for. A piece it left waiting for when it ended
+    // is withdrawn, so what is typed next is the shell's, not swallowed.
+    const ended = new AbortController();
+    // The terminal's mode before the program first changed it, which its end restores, as libuv restores the
+    // termios it saved (uv_tty_reset_mode); undefined while it has changed nothing.
+    let entryRawMode;
+    let stdinAtEnd = false;
+    // Reads waiting for their turn; one `signal` withdraws leaves at once, taking nothing.
+    const stdinQueue = [];
+    let stdinBusy = false;
+    const fromStdin = (read, signal) => new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(signal.reason);
+            return;
+        }
+        const leave = () => {
+            const at = stdinQueue.indexOf(turn);
+            if (at < 0)
+                return;
+            stdinQueue.splice(at, 1);
+            reject(signal?.reason);
+        };
+        const turn = () => {
+            signal?.removeEventListener('abort', leave);
+            stdinBusy = true;
+            read().then(resolve, reject).finally(() => {
+                stdinBusy = false;
+                stdinQueue.shift()?.();
+            });
+        };
+        if (!stdinBusy) {
+            turn();
+            return;
+        }
+        signal?.addEventListener('abort', leave, { once: true });
+        stdinQueue.push(turn);
+    });
+    /** fd 0's next piece, never an empty one, until `signal` ends: a read withdrawn takes nothing. */
+    const stdinPiece = (signal) => fromStdin(async () => {
+        const stdin = ctx.stdin;
+        for (;;) {
+            if (stdinAtEnd || !stdin)
+                return null;
+            signal.throwIfAborted();
+            const piece = stdin.readBytes ? await stdin.readBytes(65536, signal) : textPiece(await stdin.read());
+            if (piece === null)
+                stdinAtEnd = true;
+            if (piece === null || piece.length > 0)
+                return piece;
+        }
+    }, signal);
+    /** The program's reads of fd 0 in flight, each withdrawn when it cancels or ends. */
+    const stdinInFlight = new Map();
     const services = {
         filesystem,
-        stdin: async () => {
-            if (stdinTaken || !ctx.stdin || ctx.stdin === ctx.terminalStdin)
+        stdin: () => fromStdin(async () => {
+            if (stdinAtEnd || !ctx.stdin || ctx.stdin === ctx.terminalStdin)
                 return new Uint8Array(0);
-            stdinTaken = true;
+            stdinAtEnd = true;
             return readToEnd(ctx.stdin);
+        }),
+        fdKind: (fd) => (ctx.isFdTerminal?.(fd) ? 'terminal' : ctx.isFdPipe?.(fd) ? 'pipe' : 'other'),
+        setRawMode: (on) => {
+            entryRawMode ??= ctx.getRawMode?.() ?? false;
+            ctx.setRawMode?.(on);
         },
         listen: (port) => {
             if (!kernel)
@@ -285,8 +366,6 @@ export async function runNodeInRealm(program, ctx, kernel) {
     };
     let code = null;
     let endedItself = false;
-    // The outputs whose stream's failure the guest took.
-    const heard = new Set();
     // The program's process's network (WorkspaceNetwork.forProcess).
     const network = kernel?.network?.forProcess(ctx.pid);
     const payload = { program, hosts: kernel?.dns?.hostsFile(), egress: network?.egress !== undefined };
@@ -304,7 +383,7 @@ export async function runNodeInRealm(program, ctx, kernel) {
                 return;
             switch (event.type) {
                 case 'output':
-                    write(event.fd, event.source, event.data);
+                    write(event.fd, event.source, event.writer, event.data);
                     return;
                 case 'settle':
                     settleUpTo = event.upTo;
@@ -314,9 +393,13 @@ export async function runNodeInRealm(program, ctx, kernel) {
                     code = event.code;
                     endedItself ||= event.ended;
                     return;
-                case 'heard':
-                    heard.add(event.fd);
+                case 'heard': {
+                    const flight = inFlight[event.fd].get(event.writer);
+                    if (flight !== undefined)
+                        flight.heard = true;
+                    unheard = unheard.filter((failure) => failure.fd !== event.fd || failure.writer !== event.writer);
                     return;
+                }
                 case 'served':
                     pending.get(event.id)?.(event.response);
                     pending.delete(event.id);
@@ -325,6 +408,25 @@ export async function runNodeInRealm(program, ctx, kernel) {
                     void fetchForGuest(kernel, event).then((response) => {
                         post({ type: 'fetched', id: event.id, response });
                     });
+                    return;
+                case 'stdin-read': {
+                    const withdraw = new AbortController();
+                    stdinInFlight.set(event.id, withdraw);
+                    const signal = AbortSignal.any([withdraw.signal, ended.signal]);
+                    void stdinPiece(signal).then((data) => {
+                        stdinInFlight.delete(event.id);
+                        post({ type: 'stdin', id: event.id, data });
+                    }, (error) => {
+                        stdinInFlight.delete(event.id);
+                        if (signal.aborted)
+                            post({ type: 'stdin', id: event.id, withdrawn: true });
+                        else
+                            post({ type: 'stdin', id: event.id, error: realmError(error) });
+                    });
+                    return;
+                }
+                case 'stdin-cancel':
+                    stdinInFlight.get(event.id)?.abort();
                     return;
             }
         },
@@ -341,6 +443,9 @@ export async function runNodeInRealm(program, ctx, kernel) {
     if (ctx.signal.aborted)
         abort();
     const end = await realm.ended;
+    ended.abort();
+    if (entryRawMode !== undefined && ctx.getRawMode?.() !== entryRawMode)
+        ctx.setRawMode?.(entryRawMode);
     ctx.signal.removeEventListener('abort', abort);
     for (const port of ports)
         kernel?.portRegistry.delete(port);
@@ -354,12 +459,11 @@ export async function runNodeInRealm(program, ctx, kernel) {
     // not hear it (it had ended, nothing listening holding it) ends it as the
     // error would have: Node's report of it, and status 1. The first such
     // failure is the one; a console write's failure is no one's.
-    const unheard = endedItself || end.terminated || end.failure !== null ? undefined
-        : streamFailures.find((failure) => !heard.has(failure.fd));
-    if (unheard !== undefined) {
+    const failure = endedItself || end.terminated || end.failure !== null ? undefined : unheard[0];
+    if (failure !== undefined) {
         // util is loaded only here: the guest loads this module too, and every program would pay for it.
         const { inspect } = await import('node:util');
-        await writerOf(2).writeText(`${uncaughtReport(writeFailure(unheard.code, unheard.pipe), (value) => inspect(value))}\n`).catch(() => { });
+        await writerOf(2).writeText(`${uncaughtReport(writeFailure(failure.code, failure.pipe), (value) => inspect(value))}\n`).catch(() => { });
         code = 1;
     }
     // What a character left unfinished at the end: the program has ended, and
@@ -373,6 +477,10 @@ export async function runNodeInRealm(program, ctx, kernel) {
         return code ?? 1;
     }
     return code ?? end.code;
+}
+/** A text read's piece as bytes; null at the end. */
+function textPiece(text) {
+    return text === null ? null : enc.encode(text);
 }
 /** All of `stdin`, to its end. */
 async function readToEnd(stdin) {

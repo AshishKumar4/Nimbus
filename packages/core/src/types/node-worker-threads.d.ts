@@ -42,6 +42,7 @@ declare module 'node:process' {
   import type NodeStream from 'node:stream';
   import type { EventEmitter } from 'node:events';
   import type * as NodeStringDecoder from 'node:string_decoder';
+  import type * as NodeReadline from 'node:readline';
   import type * as NodeUtil from 'node:util';
   interface RealmProcess {
     on(event: 'unhandledRejection' | 'uncaughtException', listener: (reason: unknown) => void): RealmProcess;
@@ -56,6 +57,7 @@ declare module 'node:process' {
       ctor?: (...args: never[]) => unknown,
     ): void;
     exit(code: number): never;
+    nextTick(callback: () => void): void;
     /** The engine running this process: a process realm's guest runs under the same. */
     readonly execPath: string;
     readonly pid: number;
@@ -75,6 +77,8 @@ declare module 'node:process' {
     getBuiltinModule(id: 'node:stream'): typeof NodeStream;
     getBuiltinModule(id: 'node:stream/promises' | 'node:stream/consumers' | 'node:stream/web'): object;
     getBuiltinModule(id: 'node:string_decoder'): typeof NodeStringDecoder;
+    getBuiltinModule(id: 'node:readline'): typeof NodeReadline;
+    getBuiltinModule(id: 'node:readline/promises'): object;
     getBuiltinModule(id: 'node:assert' | 'node:assert/strict' | 'node:diagnostics_channel' | 'node:domain' | 'node:perf_hooks' | 'node:punycode'
       | 'node:querystring' | 'node:sys' | 'node:timers' | 'node:timers/promises' | 'node:util/types' | 'node:v8' | 'node:vm'): object;
     getBuiltinModule(id: 'node:util'): typeof NodeUtil;
