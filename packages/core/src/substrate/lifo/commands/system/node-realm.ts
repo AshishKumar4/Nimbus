@@ -66,7 +66,8 @@ export interface RealmResponse {
 
 /** What the guest posts on `events`. */
 export type GuestEvent =
-  | { readonly type: 'output'; readonly fd: 1 | 2; readonly data: string | Uint8Array }
+  /** Output write number `seq` (each one more than the last, both outputs counted together). */
+  | { readonly type: 'output'; readonly fd: 1 | 2; readonly data: string | Uint8Array; readonly seq: number }
   | { readonly type: 'fetch'; readonly id: number; readonly port: number; readonly url: string; readonly method: string; readonly headers: Record<string, string>; readonly body: string | Uint8Array | null }
   | { readonly type: 'served'; readonly id: number; readonly response: RealmResponse | null }
   | { readonly type: 'exit'; readonly code: number }
@@ -83,6 +84,12 @@ export type HostEvent =
    * program's stream of it errors, as Node's does, and no later write is made.
    */
   | { readonly type: 'output-failed'; readonly fd: 1 | 2; readonly code: string; readonly pipe: boolean }
+  /**
+   * Every output write up to number `seq` is made or failed (a failure told
+   * first): told when no later write is waiting, so a program writing on is
+   * told once it pauses.
+   */
+  | { readonly type: 'output-settled'; readonly seq: number }
   | EgressHostEvent;
 
 /**
@@ -115,7 +122,7 @@ export function isGuestEvent(value: unknown): value is GuestEvent {
   if (isEgressGuestEvent(value)) return true;
   if (!record(value)) return false;
   switch (value.type) {
-    case 'output': return (value.fd === 1 || value.fd === 2) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
+    case 'output': return (value.fd === 1 || value.fd === 2) && (typeof value.data === 'string' || value.data instanceof Uint8Array) && Number.isSafeInteger(value.seq);
     case 'fetch':
       return Number.isSafeInteger(value.id) && Number.isSafeInteger(value.port) && typeof value.url === 'string'
         && typeof value.method === 'string' && stringRecord(value.headers)
@@ -141,6 +148,7 @@ export function isHostEvent(value: unknown): value is HostEvent {
         && typeof value.event.timestamp === 'number';
     case 'output-failed':
       return (value.fd === 1 || value.fd === 2) && typeof value.code === 'string' && typeof value.pipe === 'boolean';
+    case 'output-settled': return Number.isSafeInteger(value.seq);
     default: return false;
   }
 }
@@ -324,17 +332,23 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
     if (writer === undefined) writers.set(fd, writer = new SinkWriter(fd === 1 ? ctx.stdout : ctx.stderr));
     return writer;
   };
-  const write = (fd: 1 | 2, data: string | Uint8Array) => {
+  // The program is held until the host has made (or failed) its last write:
+  // the last write waiting is told settled, and with it every one before.
+  let lastQueued = 0;
+  const write = (fd: 1 | 2, data: string | Uint8Array, seq: number) => {
+    lastQueued = seq;
     written = written.then(async () => {
-      if (failedOutputs.has(fd)) return;
-      try {
-        if (typeof data === 'string') await writerOf(fd).writeText(data);
-        else await writerOf(fd).write(data);
-      } catch (error) {
-        failedOutputs.add(fd);
-        const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
-        post({ type: 'output-failed', fd, code: typeof code === 'string' ? code : 'EIO', pipe: ctx.isFdPipe?.(fd) === true });
+      if (!failedOutputs.has(fd)) {
+        try {
+          if (typeof data === 'string') await writerOf(fd).writeText(data);
+          else await writerOf(fd).write(data);
+        } catch (error) {
+          failedOutputs.add(fd);
+          const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
+          post({ type: 'output-failed', fd, code: typeof code === 'string' ? code : 'EIO', pipe: ctx.isFdPipe?.(fd) === true });
+        }
       }
+      if (seq === lastQueued) post({ type: 'output-settled', seq });
     });
   };
   // The realm, once it has started: a request for one of the guest's servers waits for none before.
@@ -402,7 +416,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
       if (!isGuestEvent(event)) return;
       switch (event.type) {
         case 'output':
-          write(event.fd, event.data);
+          write(event.fd, event.data, event.seq);
           return;
         case 'exit':
           code = event.code;
