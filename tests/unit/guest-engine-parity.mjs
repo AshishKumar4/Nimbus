@@ -38,6 +38,16 @@ async function decided(e, work, landed) {
   await landed();
 }
 
+/** What a drain of the process's log lands in its own session, as the session drains a process that ended (FacetManager._drainJournalAs). */
+async function drainedHere(e) {
+  const lease = e.authority.files.openHost(CRED_SESSION_USER);
+  try {
+    return await drainProcessFsJournal({ journal: journalSource(e.journal()), session: journalDrainSession(lease.fs, e.log.pid) });
+  } finally {
+    await lease.dispose();
+  }
+}
+
 /** What a drain of the process's log puts in a new session, with `prepare` run on it first. */
 async function drained(e, prepare = () => {}) {
   const after = createAuthority();
@@ -260,9 +270,9 @@ const SCENARIOS = {
     await e.hold(OUT);
     e.stall();
     await e.write(`${OUT}/last.txt`, 'LAST');
-    const { after, result } = await drained(e);
+    const result = await drainedHere(e);
     assert.deepEqual(result.failures, []);
-    assert.equal(after.read('home/user/app/out/last.txt'), 'LAST');
+    assert.equal(await e.peerText(`${OUT}/last.txt`), 'LAST');
   },
 };
 
@@ -278,7 +288,6 @@ const GAPS = {
   'a chown by the owner clears the set-id bits, as the process sees it [holder]': { lacks: 'its own attribute changes in its view', shows: 'the set-id bits the session clears are still set' },
   'the session hears an answered change within the linger, unasked [holder]': { lacks: 'lingering answered changes', shows: 'timed out waiting for the session heard the write' },
   'awaited chmods alone take the subtree they change [holder]': { lacks: 'attribute changes counted toward taking a subtree', shows: 'timed out waiting for the chmods took their subtree' },
-  'what the process answered and never sent is in its log, and a drain lands it [holder]': { lacks: 'a log a drain replays whole: a write through a description logged with the open it writes through', shows: 'no open description' },
   'a copy of a held file the process did not write is answered once it has read it [node]': { lacks: 'decided copies of a file it read', shows: 'not decided in the held subtree' },
   'a name under a file is ENOTDIR, a looping link ELOOP [node]': { lacks: 'ENOTDIR for a name under a file it made, decided in a held subtree', shows: 'Missing expected rejection' },
   'an open description reads the file it opened after its name is unlinked [node]': { lacks: PATH_FDS, shows: 'the description read the name\'s new file' },
