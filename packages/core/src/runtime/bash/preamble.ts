@@ -1078,6 +1078,9 @@ function startDeferred(s: BashSession): void {
  * stdin that is not a terminal), chmod and chown, and the session's
  * accounts (account).
  */
+/** (uid_t)-1 and (gid_t)-1: chown's "keep this side". */
+const KEEP_ID = 0xffffffff;
+
 function metadataImports(s: BashSession, proc: BashProc, DV: () => DataView, U8: () => Uint8Array, fs: RuntimeFsBridge | RuntimeSynchronousFs) {
   const readPath = (ptr: number, length: number) => td.decode(U8().subarray(ptr, ptr + length));
   const at = (fd: number, path: string): RuntimeFsPath => {
@@ -1123,7 +1126,20 @@ function metadataImports(s: BashSession, proc: BashProc, DV: () => DataView, U8:
     },
     chmod: (ptr: number, length: number, mode: number) => result(() => fs.chmod(at(-1, readPath(ptr, length)), mode), () => 0),
     fchmod: (fd: number, mode: number) => result(() => fs.fchmod(descriptor(fd), mode), () => 0),
-    chown: (fd: number, ptr: number, length: number, uid: number, gid: number, follow: number) => result(() => ptr ? fs.chown(at(fd, readPath(ptr, length)), uid, gid, { followSymlinks: !!follow }) : fs.fchown(descriptor(fd), uid, gid), () => 0),
+    // uid_t and gid_t are unsigned, and come as i32: an id above 0x7fffffff
+    // arrives negative (>>> 0 is its value), and (uid_t)-1 keeps that side,
+    // as chown(2)'s -1 does (chgrp, chown :group), read off the file first.
+    chown: (fd: number, ptr: number, length: number, uidBits: number, gidBits: number, follow: number) => result(() => {
+      const uid = uidBits >>> 0, gid = gidBits >>> 0;
+      const path = ptr ? at(fd, readPath(ptr, length)) : null;
+      const handle = path === null ? descriptor(fd) : 0;
+      const change = (owner: number, group: number) => path !== null ? fs.chown(path, owner, group, { followSymlinks: !!follow }) : fs.fchown(handle, owner, group);
+      if (uid !== KEEP_ID && gid !== KEEP_ID) return change(uid, gid);
+      return after(path !== null ? fs.stat(path, { followSymlinks: !!follow }) : fs.fstat(handle), (st) => {
+        if (st === null) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+        return change(uid === KEEP_ID ? st.uid : uid, gid === KEEP_ID ? st.gid : gid);
+      });
+    }, () => 0),
     /**
      * One getpw* or getgr* lookup (nimbus-libc/nimbus-accounts.c), in one
      * round trip: a user (kind 0) or a group (1), by id (by 0), by name (1)
@@ -1134,8 +1150,10 @@ function metadataImports(s: BashSession, proc: BashProc, DV: () => DataView, U8:
      * password, members). `needed` gets its size: ERANGE when it is more
      * than `capacity`, NOENT when no account is that one.
      */
-    account: (kind: number, by: number, ptr: number, length: number, id: number, out: number, capacity: number, needed: number) =>
+    account: (kind: number, by: number, ptr: number, length: number, idBits: number, out: number, capacityBits: number, needed: number) =>
       result(() => fs.readFile(kind === 1 ? '/etc/group' : '/etc/passwd'), (bytes) => {
+        // A uid, gid or index is unsigned, and comes as i32: one above 0x7fffffff arrives negative.
+        const id = idBits >>> 0, capacity = capacityBits >>> 0;
         const text = bytes === null ? '' : td.decode(bytes);
         const name = by === 1 ? td.decode(U8().subarray(ptr, ptr + length)) : '';
         let ids: [number, number];
