@@ -55,6 +55,8 @@ export function makeGitRunnerFactory(deps: {
   filesystem: NimbusFilesystemAuthority;
   processes: SessionProcessSupervisor;
   fsmonitorState?: GitFsmonitorState;
+  /** The installed image asks again a wait its host gave up on: its runner key's contract (GIT_RUNNER_CONTRACTS). */
+  restartsWaits: boolean;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command {
   const fsmonitor = makeGitFsmonitor(deps.fsmonitorState);
   /**
@@ -140,6 +142,7 @@ export function makeGitRunnerFactory(deps: {
         env,
         cred,
         pid: stdio.pid,
+        restartsWaits: deps.restartsWaits,
       };
       let outcome = 1;
       try {
@@ -212,6 +215,7 @@ globalThis.__gitRun = async function __gitRun(args) {
     stdoutBytes: output.stdoutBytes,
     stderrBytes: output.stderrBytes,
     stdinRead: (maxBytes) => args.supervisor.cpReadStdin(args.pid, 8000, undefined, maxBytes),
+    restartsWaits: args.restartsWaits === true,
   });
   let instance;
   try {

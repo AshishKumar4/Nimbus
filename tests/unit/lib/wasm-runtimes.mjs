@@ -48,7 +48,7 @@ export const RUNTIMES = [
   },
   {
     name: 'git',
-    version: '2.53.0',
+    version: '2.53.0-1',
     license: 'GPL-2.0-only',
     entrypoints: [
       { binName: 'git', runner: GIT_RUNNER, args: [] },
