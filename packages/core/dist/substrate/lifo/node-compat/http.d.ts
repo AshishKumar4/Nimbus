@@ -34,6 +34,7 @@ declare class IncomingMessage extends Readable {
     };
     constructor(statusCode: number, statusMessage: string, headers: Record<string, string>);
     _read(): void;
+    _destroy(error: Error | null, callback: (error?: Error | null) => void): void;
     /** Its body, then its end. */
     deliver(body: string | null): void;
 }
