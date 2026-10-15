@@ -28,7 +28,6 @@
 import { exitCodeForAbortSignal } from '../../shell/signals.js';
 import { realmOutcome, startRealm } from '../../../../runtime/realm.js';
 import { synchronousFilesystem } from '../../node-compat/filesystem.js';
-import { inspect } from 'node:util';
 import { SinkWriter } from '../../../../_shared/byte-stream.js';
 import { uncaughtReport, writeFailure } from '../../node-compat/output-failure.js';
 import { VfsError } from '../../../../vfs/vfs-error.js';
@@ -444,6 +443,8 @@ export async function runNodeInRealm(program, ctx, kernel) {
     const unheard = endedItself || end.terminated || end.failure !== null ? undefined
         : [...failedOutputs.values()].find((failure) => streams.has(failure.fd) && !heard.has(failure.fd));
     if (unheard !== undefined) {
+        // util is loaded only here: the guest loads this module too, and every program would pay for it.
+        const { inspect } = await import('node:util');
         await writerOf(2).writeText(`${uncaughtReport(writeFailure(unheard.code, unheard.pipe), (value) => inspect(value))}\n`).catch(() => { });
         code = 1;
     }
