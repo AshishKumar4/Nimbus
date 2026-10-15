@@ -128,6 +128,7 @@ export function makeGitRunnerFactory(deps) {
                 env,
                 cred,
                 pid: stdio.pid,
+                restartsWaits: deps.restartsWaits,
             };
             let outcome = 1;
             try {
@@ -202,6 +203,7 @@ globalThis.__gitRun = async function __gitRun(args) {
     stdoutBytes: output.stdoutBytes,
     stderrBytes: output.stderrBytes,
     stdinRead: (maxBytes) => args.supervisor.cpReadStdin(args.pid, 8000, undefined, maxBytes),
+    restartsWaits: args.restartsWaits === true,
   });
   let instance;
   try {
