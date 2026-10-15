@@ -4,9 +4,10 @@
 // the session's for everything the answer depends on: the grant's
 // certificate (where the session stood when it recorded it) reached by the
 // view's cursor in its epoch, every name the walk crosses vouched for by a
-// fresh grant (the entry itself held), each the namespace's own row with no
-// change of the process's own unanswered, no mount, no climbing link, and
-// nothing admitted halfway. Anywhere else the session answers, as before.
+// fresh grant (the entry itself held), each the namespace's own row with
+// every change of the process's own answered and in the view, no mount, no
+// climbing link, and nothing admitted halfway. Anywhere else the session
+// answers, as before.
 //
 // Red before: every async stat flushed the path and asked the session, held
 // or not (the gain scenarios). The others hold before and after: what the
@@ -31,9 +32,10 @@ const STAT_FIELDS = ['mode', 'size', 'ino', 'uid', 'gid', 'nlink', 'mtimeMs', 'c
  * A process, its session's stat and lstat reads counted (`asked`), and a
  * held `out` (taken by writing there) unless `take` is false. `strip`: the
  * session's grants come without their certificate (a session before them).
+ * `slow`: ms each write wave's answer is held back after it commits.
  * `relists`: a gate the namespace's relists wait on, when set.
  */
-async function boot({ take = true, strip = false } = {}) {
+async function boot({ take = true, strip = false, slow = 0 } = {}) {
   const authority = createAuthority();
   authority.kfs.mkdir('home/user/app/out', { recursive: true, mode: 0o755 });
   authority.kfs.mkdir('home/user/elsewhere', { mode: 0o755 });
@@ -52,6 +54,13 @@ async function boot({ take = true, strip = false } = {}) {
       if (counted.relistGate !== null) await counted.relistGate.promise;
       return forward('fsList', args);
     },
+    ...(slow > 0 ? {
+      writeBatchStream: async (...args) => {
+        const answer = await forward('writeBatchStream', args);
+        await sleep(slow);
+        return answer;
+      },
+    } : {}),
     ...(strip ? {
       fsAcquireExclusiveMutation: async (...args) => {
         const { certificate, ...granted } = await forward('fsAcquireExclusiveMutation', args);
@@ -151,6 +160,53 @@ await runScenarios(import.meta.path, {
         [session.mode, Number(session.size), session.ino, session.uid, session.gid, Number(session.mtime), Number(session.atime)],
       );
     }
+  },
+
+  async 'a rewrite the session answered: the stat is the session\'s, its times with it, not the view\'s guess at them (T6)'() {
+    const { authority, fs } = await boot({ slow: 40 });
+    await fs.promises.stat(`${OUT}/seeded.txt`);
+    await fs.promises.writeFile(`${OUT}/seeded.txt`, 'rewritten, and longer');
+    await globalThis.__nimbusProcessFs.flush();
+    const local = await fs.promises.stat(`${OUT}/seeded.txt`);
+    const session = await authority.peer.stat('home/user/app/out/seeded.txt');
+    assert.deepEqual(
+      [local.size, local.mtimeMs, local.ctimeMs],
+      [Number(session.size), Number(session.mtime), Number(session.ctime)],
+    );
+  },
+
+  async 'an entry the process made, moved or removed, answered: its directory\'s stat is the session\'s (T6)'() {
+    const { authority, fs } = await boot();
+    for (const change of [
+      () => fs.promises.writeFile(`${OUT}/child.txt`, 'c'),
+      () => fs.promises.mkdir(`${OUT}/sub`),
+      () => fs.promises.rename(`${OUT}/child.txt`, `${OUT}/sub/child.txt`),
+      () => fs.promises.unlink(`${OUT}/sub/child.txt`),
+      () => fs.promises.rmdir(`${OUT}/sub`),
+    ]) {
+      await fs.promises.stat(OUT);
+      await sleep(5);
+      await change();
+      await globalThis.__nimbusProcessFs.flush();
+      const local = await fs.promises.stat(OUT);
+      const session = await authority.peer.stat('home/user/app/out');
+      assert.deepEqual(
+        [local.mtimeMs, local.ctimeMs, local.nlink],
+        [Number(session.mtime), Number(session.ctime), Number(session.nlink)],
+        String(change),
+      );
+    }
+  },
+
+  async 'the process\'s own chmod denying search, answered: a stat beneath it is EACCES, as the session says (T6)'() {
+    const { fs } = await boot();
+    await fs.promises.mkdir(`${OUT}/shut`);
+    await fs.promises.writeFile(`${OUT}/shut/f`, 'f');
+    await globalThis.__nimbusProcessFs.flush();
+    await fs.promises.stat(`${OUT}/shut/f`);
+    await fs.promises.chmod(`${OUT}/shut`, 0o600);
+    await globalThis.__nimbusProcessFs.flush();
+    await assert.rejects(fs.promises.stat(`${OUT}/shut/f`), { code: 'EACCES' });
   },
 
   async 'a peer\'s chmod of an ancestor that denies search: the stat is EACCES, as the session says (T7)'() {

@@ -278,7 +278,9 @@ export interface ProcessFsClient {
    * What vouches for `key` in a view whose applied cursor is `cursor`: a
    * subtree the process holds alone (not shared, not closing, no raw socket)
    * whose certificate the cursor has reached, in its epoch, so the view has
-   * every change before the grant and none came after it unrecalled. 'held':
+   * every change before the grant and none came after it unrecalled; and
+   * every change of the process's own: none logged and unanswered, the
+   * session's revision after each answered one reached. 'held':
    * `key` is at or beneath its root, everything about it vouched for; 'above':
    * an ancestor of its root, whose own change (its mode, its rename) recalls
    * the grant, though a change beneath it elsewhere does not. Undefined:
@@ -623,6 +625,12 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   let heldWaves = 0;
   let publishedThrough = 0;
   /**
+   * The session's revision after the last of the process's own changes it
+   * answered (ProcessFsAnswer.mutation): a view short of it lacks one
+   * (vouch). Past every revision once a change's fate is unknown.
+   */
+  let ownThrough = 0;
+  /**
    * The session told of a raw socket (rawSocket): every wave after it is
    * sent once it lands, and nothing is decided here from then on. Landed:
    * the session answered it, everything it held of the process's published.
@@ -860,7 +868,10 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
           answered = { receipt: stat };
         }
         const mutation = mutations.get(index);
-        if (mutation !== undefined) answered.mutation = { before: mutation.before, after: mutation.after };
+        if (mutation !== undefined) {
+          answered.mutation = { before: mutation.before, after: mutation.after };
+          ownThrough = Math.max(ownThrough, mutation.after);
+        }
         entry.resolve(answered);
         continue;
       }
@@ -895,6 +906,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     journal.dropThrough(entries[entries.length - 1]!.jid);
     if (writer !== null) retiring.push(writer);
     epoch = null;
+    ownThrough = Infinity;
     for (const entry of queue) entry.seq = 0;
   };
 
@@ -908,6 +920,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     journal.dropThrough(ended[ended.length - 1]!.jid);
     if (writer !== null) retiring.push(writer);
     epoch = null;
+    ownThrough = Infinity;
   };
 
   const exhaustedInvocation = (entries: Entry[], refusal: Error): void => {
@@ -919,6 +932,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     }
     if (!journal.durable) journal.dropThrough(stopped[stopped.length - 1]!.jid);
     epoch = null;
+    ownThrough = Infinity;
   };
 
   const pump = (): void => {
@@ -1239,7 +1253,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       return grants.some((grant) => !grant.ended && within(key, grant.root));
     },
     vouch(key, cursor) {
-      if (escaped !== null) return undefined;
+      if (escaped !== null || client.pending() || cursor.rev < ownThrough) return undefined;
       let found: 'held' | 'above' | undefined;
       for (const grant of grants) {
         const certificate = grant.certificate;
