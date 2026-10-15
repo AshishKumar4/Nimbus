@@ -1023,6 +1023,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   async _rpcCpKill(childPid: number, signal: string, pid?: number): Promise<boolean> { return _rpc._rpcCpKill(this as any, childPid, signal, pid); }
   async _rpcCpWait(childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean) { return _rpc._rpcCpWait(this as any, childPid, waitMs, acquire, pid, knownStarted); }
   async _rpcCpBlocked(pid: number, report: unknown) { return _rpc._rpcCpBlocked(this as any, pid, report); }
+  async _rpcCpNextSignal(pid: number, waitMs: number): Promise<string | null> { return _rpc._rpcCpNextSignal(this as any, pid, waitMs); }
 
   // Programmatic sandbox SDK RPC
   async _rpcReady(options?: SessionReadyOptions) { return _programmatic.ensureProgrammaticReady(this as any, options); }

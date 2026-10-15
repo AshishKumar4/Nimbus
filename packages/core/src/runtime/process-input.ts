@@ -260,7 +260,12 @@ export class ProcessInputStore {
     }
   }
 
-  async read(pid: number, waitMs = 1000, maxBytes?: number): Promise<ProcessInputPacket> {
+  /**
+   * `pid`'s next input, waiting up to `waitMs` (at most 5 s) for it: an empty
+   * packet when none came. A wait `withdraw` ends leaves at once, taking
+   * nothing: what comes next is the next read's.
+   */
+  async read(pid: number, waitMs = 1000, maxBytes?: number, withdraw?: AbortSignal): Promise<ProcessInputPacket> {
     if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 0)) throw new TypeError('stdin maxBytes must be a nonnegative integer');
     if (maxBytes === 0) return { data: new Uint8Array(0), ended: false };
     if (!isValidPid(pid)) return { data: '', ended: true };
@@ -303,12 +308,21 @@ export class ProcessInputStore {
     }
     if (state.failure) throw state.failure;
     if (state.closed) return { data: '', ended: true };
+    if (withdraw?.aborted) return { data: '', ended: false };
 
     return new Promise((resolve, reject) => {
+      const leave = (): void => {
+        const idx = state.waiters.indexOf(waiter);
+        if (idx < 0) return;
+        state.waiters.splice(idx, 1);
+        clearTimeout(waiter.timer);
+        resolve({ data: '', ended: false });
+      };
       const waiter: InputWaiter = {
         pid,
-        reject,
+        reject: (error) => { withdraw?.removeEventListener('abort', leave); reject(error); },
         resolve: packet => {
+          withdraw?.removeEventListener('abort', leave);
           if (maxBytes === undefined || !packet.data.length) { resolve(packet); return; }
           const bytes = typeof packet.data === 'string' ? encoder.encode(packet.data) : packet.data;
           const limit = Math.max(1, Math.min(PROCESS_INPUT_READ_MAX_BYTES, maxBytes));
@@ -316,12 +330,14 @@ export class ProcessInputStore {
           resolve({ ...packet, data: bytes.subarray(0, limit), ...(bytes.length > limit ? { ended: false } : {}) });
         },
         timer: setTimeout(() => {
+          withdraw?.removeEventListener('abort', leave);
           const idx = state.waiters.indexOf(waiter);
           if (idx >= 0) state.waiters.splice(idx, 1);
           resolve({ data: '', ended: false });
         }, Math.max(0, Math.min(waitMs, 5000))),
       };
       state.waiters.push(waiter);
+      withdraw?.addEventListener('abort', leave, { once: true });
     });
   }
 }

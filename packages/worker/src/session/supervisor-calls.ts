@@ -177,7 +177,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       const run = this[RUN_ID]();
       if (props?.bindingKind === 'infrastructure') {
         if (run !== undefined) throw new Error('infrastructure supervisor cannot carry a process run');
-        if (['stdout', 'stderr', 'reportExit', 'reportRuntimeCode', 'cpSpawn', 'cpStdinWrite', 'cpStdinEnd', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpCloseOutput', 'cpKill', 'cpWait', 'cpBlocked', 'replayBoundary', 'stdinFileRead', 'stdinPrepared', 'netTls', 'outbound'].includes(envelope.op)) {
+        if (['stdout', 'stderr', 'reportExit', 'reportRuntimeCode', 'cpSpawn', 'cpStdinWrite', 'cpStdinEnd', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpCloseOutput', 'cpKill', 'cpWait', 'cpNextSignal', 'cpBlocked', 'replayBoundary', 'stdinFileRead', 'stdinPrepared', 'netTls', 'outbound'].includes(envelope.op)) {
           throw new Error('infrastructure supervisor refuses guest-originated operations');
         }
       } else if (run === undefined) throw new Error('process supervisor binding requires a run');
@@ -1072,6 +1072,15 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       knownStarted?: boolean,
     ): Promise<{ done: boolean; exitCode: number | null; signal: string | null; spawnError?: string; started?: boolean; news?: number[]; acquired?: VfsDeliveredAcquire }> {
       return this[CALL](this[OP]('cpWait', [childPid, waitMs, acquire ?? null, knownStarted !== false], { pid: this[REPORTING_PID]() }));
+    }
+
+    /**
+     * The next signal sent to this process, whose program takes its own
+     * (SessionProcessSupervisor.takeSignals), waiting up to `waitMs` for one:
+     * null if none came.
+     */
+    async cpNextSignal(waitMs: number): Promise<string | null> {
+      return this[CALL](this[OP]('cpNextSignal', [waitMs], { pid: this[REPORTING_PID]() }));
     }
 
     /**

@@ -865,17 +865,27 @@ export const CPYTHON_RUNNER = 'cpython-runner@2';
  */
 export const CPYTHON_RUNNER_CONTRACTS: readonly string[] = ['cpython-runner', CPYTHON_RUNNER];
 
+/** What a git build asks of its host (GIT_RUNNER_CONTRACTS). */
+export interface GitRunnerContract {
+  /** Its libc asks again a read or write the host gave up waiting on (NIMBUS_ERESTART). */
+  readonly restartsWaits: boolean;
+  /** Its libc raises the signals the host sends it (NIMBUS_ESIGNAL), and its process takes its own. */
+  readonly takesSignals: boolean;
+}
+
 /**
  * Git's runner keys, and what each build asks of its host. The first imports
  * the shared Nimbus filesystem/process extensions; @2's libc also asks again
  * a read or write the host gave up waiting on (wasm/nimbus-libc
  * nimbus-restart.c), which a host answers NIMBUS_ERESTART only to it
  * (runtime/wasi/types.ts): to the first, EINTR, which its stdio took for an
- * end. One runner serves both.
+ * end. @2's libc also raises the signals its host sends it
+ * (nimbus-signal.c), so that git's own handling runs: to the first, a
+ * signal ends the run. One runner serves both.
  */
-export const GIT_RUNNER_CONTRACTS: Readonly<Record<string, { readonly restartsWaits: boolean }>> = Object.freeze({
-  'git-runner': { restartsWaits: false },
-  'git-runner@2': { restartsWaits: true },
+export const GIT_RUNNER_CONTRACTS: Readonly<Record<string, GitRunnerContract>> = Object.freeze({
+  'git-runner': { restartsWaits: false, takesSignals: false },
+  'git-runner@2': { restartsWaits: true, takesSignals: true },
 });
 
 /** The key this tree's git build names. */

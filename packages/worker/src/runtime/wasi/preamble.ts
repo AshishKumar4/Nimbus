@@ -992,6 +992,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     parks: procParks,
     park: __wasiThreadPark,
     gaveUp: opts.restartsWaits === true ? NIMBUS_ERESTART : __WASI_EINTR,
+    takesSignals: opts.takesSignals === true,
   });
 
   const imports: WasiImports = {
@@ -1641,10 +1642,12 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       }
       // The deadline answered this poll: its events are not the guest's.
       if (call && !call.current) return __WASI_EAGAIN;
-      // Only a pipe's wait that gave up wins with EINTR: nothing else was ready.
+      // Only a pipe's wait that ended without an answer wins with EINTR,
+      // nothing else being ready: the poll answers the signal that ended it,
+      // or, it having given up, EINTR.
       if (winnerResult.error === __WASI_EINTR) {
         writeU32LE(retNeventsPtr, 0);
-        return __WASI_EINTR;
+        return proc.interrupted();
       }
       // Write events.
       let nevents = 0;
