@@ -1565,6 +1565,9 @@ export class ProcessFile {
     catch (error) { throw toVfsError(error, 'fsync', this.path); }
   }
 
+  /** Whether it is closed: nothing is read, written or synced through it after. */
+  get closed(): boolean { return this.#closed; }
+
   /** Closed once, whoever closes it first: a later close does nothing. */
   async close(): Promise<void> {
     if (this.#closed) return;
@@ -1594,8 +1597,9 @@ export type OpenFile = (path: string, flags: RuntimeOpenFlags) => Promise<Proces
 /**
  * `use`, with every description it opens through `open` closed when it ends,
  * however it ends: one opened to write synced first, then closed whether the
- * sync succeeded or not. What a sync or a close fails with is told to
- * `failed`, and the rest are closed all the same, also when `failed` throws.
+ * sync succeeded or not; one `use` closed itself is left as it is. What a
+ * sync or a close fails with is told to `failed`, and the rest are closed all
+ * the same, also when `failed` throws.
  */
 export async function withOpenFiles<T>(
   view: ProcessView,
@@ -1611,6 +1615,7 @@ export async function withOpenFiles<T>(
     });
   } finally {
     for (const file of opened) {
+      if (file.closed) continue;
       try {
         try {
           if (file.writes) await file.sync();
