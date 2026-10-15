@@ -303,6 +303,10 @@ const SCENARIO_TIMEOUT_MS = 60_000;
  * Run each scenario in its own child process, or — inside that child — run
  * the one it was started for. `file` is the calling test's own path.
  *
+ * `gaps` names scenarios known to fail, each `{ lacks, shows }`: what is
+ * missing, and text its failure must show. A gap must fail showing it; a gap
+ * that passes fails the file (what it lacked is there now: the gap goes).
+ *
  * A barrier that gets no answer is repaired against the listing, so it can
  * still produce the bytes a scenario expects. A scenario about the delta path
  * would then pass without having exercised it, which is how a harness that
@@ -310,7 +314,7 @@ const SCENARIO_TIMEOUT_MS = 60_000;
  * route it was. Unless `barrierFailures` says the file fails barriers on
  * purpose, a scenario in which any barrier failed fails, naming the reason.
  */
-export async function runScenarios(file, scenarios, { barrierFailures = false } = {}) {
+export async function runScenarios(file, scenarios, { barrierFailures = false, gaps = {} } = {}) {
   const selected = realProcess.env.NIMBUS_RESIDENT_BODY_SCENARIO;
   if (selected) {
     try {
@@ -331,6 +335,7 @@ export async function runScenarios(file, scenarios, { barrierFailures = false } 
     return;
   }
   const failures = [];
+  for (const name of Object.keys(gaps)) if (!Object.hasOwn(scenarios, name)) failures.push(`${name} (a gap of no scenario)`);
   for (const name of Object.keys(scenarios)) {
     const child = Bun.spawnSync({
       cmd: [realProcess.execPath, file],
@@ -341,7 +346,18 @@ export async function runScenarios(file, scenarios, { barrierFailures = false } 
     });
     const stdout = child.stdout.toString();
     const stderr = child.stderr.toString();
-    if (child.exitCode === 0 && stdout.includes(`SCENARIO-OK ${name}`)) {
+    const passed = child.exitCode === 0 && stdout.includes(`SCENARIO-OK ${name}`);
+    const gap = gaps[name];
+    if (gap !== undefined) {
+      if (!passed && `${stdout}${stderr}`.includes(gap.shows)) {
+        realStdout(`  gap ${name}: lacks ${gap.lacks}\n`);
+      } else {
+        realStdout(passed
+          ? `  FAIL ${name}: listed as lacking ${gap.lacks}, and passes; remove the gap\n`
+          : `  FAIL ${name}: listed as lacking ${gap.lacks}, and fails without showing "${gap.shows}"\n${stdout}${stderr}\n`);
+        failures.push(name);
+      }
+    } else if (passed) {
       realStdout(`  ok  ${name}\n`);
     } else {
       const killed = child.exitCode === null ? `killed (${child.signalCode}) after ${SCENARIO_TIMEOUT_MS} ms\n` : '';
