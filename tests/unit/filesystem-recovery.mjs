@@ -194,7 +194,7 @@ function session() {
   const enc = new TextEncoder();
   const s = session();
   const mounted = new MemoryVFS({ uid: 1000, gid: 1000 });
-  mounted.writeFile('/doomed', 'd');
+  mounted.writeFile('/doomed', new TextEncoder().encode('d'));
   const pause = pausing();
   s.filesystem.vfs.mount('/home/user/am', asyncOnly(mounted, { beforeCall: (method) => pause.beforeCall(method) }));
   const { pid } = s.processes.spawn('git commit', [], '/home/user', { cred: user });
