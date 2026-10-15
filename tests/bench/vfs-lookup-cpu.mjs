@@ -1,14 +1,12 @@
 #!/usr/bin/env bun
-// Paired in-process CPU comparison. remote-vfs-lookup-cpu supplies the baseline sources.
+// Paired in-process CPU comparison, one run of it. remote-vfs-lookup-cpu supplies the baseline
+// sources and judges the runs together: a process's own state (where its heap and databases
+// landed) moves a whole run, which an interval over one run's pairs cannot show.
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
-import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { hostSqlite } from '../unit/lib/host-sqlite.mjs';
 
 const args = process.argv.slice(2);
@@ -20,41 +18,41 @@ const option = (name) => {
 const baseline = resolve(option('--baseline'));
 const output = option('--out');
 const source = new URL('../../packages/core/src/', import.meta.url).pathname;
-const fixture = mkdtempSync(join(source, '.vfs-cpu-'));
+const MEASURED = { vfs: ['sqlite-vfs.ts', 'path.ts', 'composite.ts', 'sqlite-files.ts'], runtime: ['process-files.ts', 'sqlite-runtime-fs-bridge.ts'] };
+const fixtures = [];
 const median = (values) => {
   const sorted = [...values].sort((a, b) => a - b);
   return (sorted[Math.floor((sorted.length - 1) / 2)] + sorted[Math.floor(sorted.length / 2)]) / 2;
 };
-const quantile = (values, fraction) => [...values].sort((a, b) => a - b)[Math.floor(fraction * (values.length - 1))];
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const ITERATIONS = 24_000;
 const PAIRS = 36;
 let checksum = 0;
 const results = [];
-const failures = [];
 
 try {
-  mkdirSync(join(fixture, 'vfs'));
-  mkdirSync(join(fixture, 'runtime'));
-  for (const entry of readdirSync(source)) {
-    if (entry === 'vfs' || entry === 'runtime' || entry.startsWith('.vfs-cpu-')) continue;
-    symlinkSync(join(source, entry), join(fixture, entry));
-  }
-  for (const entry of readdirSync(join(source, 'vfs'))) {
-    const target = join(fixture, 'vfs', entry);
-    if (['sqlite-vfs.ts', 'path.ts', 'composite.ts', 'sqlite-files.ts'].includes(entry)) {
-      writeFileSync(target, readFileSync(join(baseline, 'vfs', entry)));
-    } else symlinkSync(join(source, 'vfs', entry), target);
-  }
-  for (const entry of readdirSync(join(source, 'runtime'))) {
-    const target = join(fixture, 'runtime', entry);
-    if (['process-files.ts', 'sqlite-runtime-fs-bridge.ts'].includes(entry)) writeFileSync(target, readFileSync(join(baseline, 'runtime', entry)));
-    else symlinkSync(join(source, 'runtime', entry), target);
-  }
-  const { SqliteVFS: Before } = await import(pathToFileURL(join(fixture, 'vfs', 'sqlite-vfs.ts')).href);
-  const { CompositeVFS: NamespaceBefore } = await import(pathToFileURL(join(fixture, 'vfs', 'composite.ts')).href);
-  const { sqliteFiles: FilesBefore, SqliteFiles: FilesClassBefore } = await import(pathToFileURL(join(fixture, 'vfs', 'sqlite-files.ts')).href);
-  const { ProcessFiles: ProcessesBefore } = await import(pathToFileURL(join(fixture, 'runtime', 'process-files.ts')).href);
+  // Both arms load the measured files from a copy of their own, beside the
+  // same links to everything else: an arm that ran src's copies would share
+  // them with every other module that imports them, and an A/A comparison
+  // then favored it by 5-9%.
+  const load = async (from) => {
+    const fixture = mkdtempSync(join(source, '.vfs-cpu-'));
+    fixtures.push(fixture);
+    for (const entry of readdirSync(source)) {
+      if (entry.startsWith('.vfs-cpu-')) continue;
+      if (!Object.hasOwn(MEASURED, entry)) { symlinkSync(join(source, entry), join(fixture, entry)); continue; }
+      mkdirSync(join(fixture, entry));
+      for (const file of readdirSync(join(source, entry))) {
+        const target = join(fixture, entry, file);
+        if (MEASURED[entry].includes(file)) writeFileSync(target, readFileSync(join(from, entry, file)));
+        else symlinkSync(join(source, entry, file), target);
+      }
+    }
+    const at = (path) => import(pathToFileURL(join(fixture, path)).href);
+    const [{ SqliteVFS }, { CompositeVFS }, { sqliteFiles, SqliteFiles }, { ProcessFiles }] = await Promise.all(
+      ['vfs/sqlite-vfs.ts', 'vfs/composite.ts', 'vfs/sqlite-files.ts', 'runtime/process-files.ts'].map(at));
+    return [SqliteVFS, CompositeVFS, sqliteFiles, SqliteFiles, ProcessFiles];
+  };
   const make = async (Store, Namespace, files, FilesClass, Processes) => {
     const host = await hostSqlite();
     const engine = new Store(host.sql, host.transactions);
@@ -89,8 +87,19 @@ try {
     };
     return { engine, root, store, namespace, process, paths, packagePaths, chainPaths, removal, seedRemoval };
   };
-  const { SqliteFiles } = await import('../../packages/core/src/vfs/sqlite-files.ts');
-  const arms = [await make(Before, NamespaceBefore, FilesBefore, FilesClassBefore, ProcessesBefore), await make(SqliteVFS, CompositeVFS, sqliteFiles, SqliteFiles, ProcessFiles)];
+  const shuffled = (items) => {
+    const out = [...items];
+    for (let i = out.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [out[i], out[j]] = [out[j], out[i]]; }
+    return out;
+  };
+  // A, the baseline; null, a second copy of the baseline, the A/A reference
+  // the branch's delta is judged against; real, the branch. Made in a random
+  // order and run in one each pair: where an arm's heap and database landed
+  // moves it by as much as many deltas, which is then noise across runs
+  // rather than a bias of every run.
+  const sources = { A: baseline, null: baseline, real: source };
+  const arms = {};
+  for (const name of shuffled(Object.keys(sources))) arms[name] = await make(...await load(sources[name]));
   const run = async ({ store, namespace, process, paths, packagePaths, chainPaths, removal }, kind) => {
     if (kind === 'walked-removal') {
       const report = removal.removeRecursive('/home/user/tree');
@@ -120,45 +129,38 @@ try {
     return (used.user + used.system) / 1000;
   };
   for (const kind of ['store', 'namespace', 'namespace-walk', 'store-linked', 'store-pnpm-chain', 'store-dot', 'store-link-parent', 'store-dot-lease', 'process-view', 'process-linked', 'walked-removal']) {
-    const leases = kind === 'store-dot-lease' ? arms.map((arm) => arm.engine.acquireExclusiveMutation('lease')) : [];
-    for (let warm = 0; warm < (kind === 'walked-removal' ? 2 : 12); warm++) for (const arm of arms) {
+    const leases = kind === 'store-dot-lease' ? Object.values(arms).map((arm) => [arm, arm.engine.acquireExclusiveMutation('lease')]) : [];
+    for (let warm = 0; warm < (kind === 'walked-removal' ? 2 : 12); warm++) for (const arm of Object.values(arms)) {
       if (kind === 'walked-removal') arm.seedRemoval();
       await run(arm, kind);
     }
     const pairs = [];
     for (let pair = 0; pair < PAIRS; pair++) {
       const samples = {};
-      const order = pair % 3 === 0 ? ['A1', 'B', 'A2'] : pair % 3 === 1 ? ['B', 'A2', 'A1'] : ['A2', 'A1', 'B'];
-      for (const label of order) samples[label] = await cpu(arms[label === 'B' ? 1 : 0], kind);
-      pairs.push({ ...samples, delta: samples.B - (samples.A1 + samples.A2) / 2 });
-    }
-    const deltas = pairs.map((pair) => pair.delta);
-    const aa = pairs.map((pair) => pair.A2 - pair.A1);
-    const boot = [];
-    let state = 0x51_53;
-    for (let sample = 0; sample < 3000; sample++) {
-      const draw = [];
-      for (let i = 0; i < PAIRS; i++) {
-        state ^= state << 13; state ^= state >>> 17; state ^= state << 5;
-        draw.push(deltas[(state >>> 0) % PAIRS]);
+      // A1 and A2 run A's copy of the code twice a pair, so null's and real's
+      // run twice too (W, untimed): a copy that ran half as often would sit
+      // at a colder JIT tier, and that bias is larger than many deltas.
+      for (const label of shuffled(['A1', 'A2', 'null', 'Wnull', 'real', 'Wreal'])) {
+        const used = await cpu(arms[label.startsWith('A') ? 'A' : label.replace(/^W/, '')], kind);
+        if (!label.startsWith('W')) samples[label] = used;
       }
-      boot.push(median(draw));
+      const A = (samples.A1 + samples.A2) / 2;
+      pairs.push({ ...samples, delta: samples.real - A, nullDelta: samples.null - A });
     }
-    const interval = [quantile(boot, 0.025), quantile(boot, 0.975)];
-    const spread = [Math.min(...aa), Math.max(...aa)];
-    const result = { kind, iterations: kind === 'walked-removal' ? 2000 : ITERATIONS, pairs: PAIRS, medianA: median(pairs.map(({ A1, A2 }) => (A1 + A2) / 2)), medianB: median(pairs.map(({ B }) => B)), medianDelta: median(deltas), ci95: interval, aaSpread: spread, samples: pairs };
+    const result = {
+      kind, iterations: kind === 'walked-removal' ? 2000 : ITERATIONS, pairs: PAIRS,
+      medianA: median(pairs.map(({ A1, A2 }) => (A1 + A2) / 2)), medianB: median(pairs.map(({ real }) => real)),
+      medianDelta: median(pairs.map((pair) => pair.delta)), medianNullDelta: median(pairs.map((pair) => pair.nullDelta)), samples: pairs,
+    };
     results.push(result);
     writeFileSync(output, `${JSON.stringify(results, null, 2)}\n`);
     const { samples, ...summary } = result;
     console.log(JSON.stringify(summary));
-    if (result.medianDelta > 0) failures.push(`${kind}: median paired CPU delta ${result.medianDelta} ms is positive`);
-    if (interval[1] >= 0 && (interval[0] < spread[0] || interval[1] > spread[1])) failures.push(`${kind}: confidence interval is outside A/A spread`);
-    for (let i = 0; i < leases.length; i++) arms[i].engine.releaseExclusiveMutation(leases[i].owner);
+    for (const [arm, lease] of leases) arm.engine.releaseExclusiveMutation(lease.owner);
   }
   assert.ok(checksum > 0);
-  assert.deepEqual(failures, [], failures.join('\n'));
 } finally {
-  rmSync(fixture, { recursive: true, force: true });
+  for (const fixture of fixtures) rmSync(fixture, { recursive: true, force: true });
 }
 
 function lookupPath(kind, index, plain, packagePaths, chainPaths) {
