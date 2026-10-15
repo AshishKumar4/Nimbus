@@ -10,7 +10,7 @@ import { encode, decode } from '../utils/encoding.js';
 import { errnoCodeOf, fsError, isVfsError, type FsError } from '../../../vfs/vfs-error.js';
 import { DIRENT_TYPES, direntTypeOfStat } from '../../../vfs/dirent-type.js';
 import { S_IFMT } from '../../../vfs/vfs.js';
-import { invalidArgType, nodeError } from '../../../_shared/node-error.js';
+import { invalidArgType, nodeError, nodeSystemError } from '../../../_shared/node-error.js';
 import {
   O_ACCMODE, O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR, O_SYNC, O_TRUNC, O_WRONLY, parseFileMode, stringToFlags,
 } from '../../../_shared/node-arguments.js';
@@ -290,6 +290,27 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     vfs.unlink(abs);
   }
 
+  /**
+   * fs.rmSync, as Node's: the name itself (lstat), never what a link names;
+   * a directory only with `recursive` (ERR_FS_EISDIR); with `force`, a name
+   * that is not there is no error.
+   */
+  function rmSync(path: string | URL, options?: { recursive?: boolean; force?: boolean }): void {
+    const abs = resolvePath(cwd, path);
+    let stat: NodeStat;
+    try {
+      stat = lstatSync(abs);
+    } catch (e) {
+      if (options?.force && isVfsError(e) && e.code === 'ENOENT') return;
+      throw e;
+    }
+    if (!stat.isDirectory()) { vfs.unlink(abs); return; }
+    if (!options?.recursive) {
+      throw nodeSystemError('ERR_FS_EISDIR', 'Path is a directory', { code: 'EISDIR', message: 'is a directory', path: String(path), syscall: 'rm', errno: 21 });
+    }
+    vfs.rmdirRecursive(abs);
+  }
+
   function rmdirSync(path: string | URL, options?: { recursive?: boolean }): void {
     const abs = resolvePath(cwd, path);
     if (options?.recursive) {
@@ -468,6 +489,12 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     const options = typeof optionsOrCb === 'function' ? undefined : optionsOrCb;
     const callback = typeof optionsOrCb === 'function' ? optionsOrCb : cb!;
     wrapCallback(() => readdirSync(path, options), callback);
+  }
+
+  function rm(path: string | URL, optionsOrCb: { recursive?: boolean; force?: boolean } | Callback<void>, cb?: Callback<void>): void {
+    const options = typeof optionsOrCb === 'function' ? undefined : optionsOrCb;
+    const done = typeof optionsOrCb === 'function' ? optionsOrCb : cb;
+    if (done) wrapCallback(() => rmSync(path, options), done);
   }
 
   function unlink(path: string | URL, cb: Callback<void>): void {
@@ -693,24 +720,7 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
         truncate: async (len?: number) => ftruncateSync(fd, len),
       };
     },
-    rm: async (path: string | URL, options?: { recursive?: boolean; force?: boolean }) => {
-      const abs = resolvePath(cwd, path);
-      try {
-        const s = vfs.stat(abs);
-        if (s.type === 'directory') {
-          if (options?.recursive) {
-            vfs.rmdirRecursive(abs);
-          } else {
-            vfs.rmdir(abs);
-          }
-        } else {
-          vfs.unlink(abs);
-        }
-      } catch (e) {
-        if (options?.force && isVfsError(e) && e.code === 'ENOENT') return;
-        throw e;
-      }
-    },
+    rm: async (path: string | URL, options?: { recursive?: boolean; force?: boolean }) => rmSync(path, options),
   };
 
   // ─── Constants ───
@@ -746,6 +756,7 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     mkdirSync,
     readdirSync,
     unlinkSync,
+    rmSync,
     rmdirSync,
     renameSync,
     copyFileSync,
@@ -773,6 +784,7 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     mkdir,
     readdir,
     unlink,
+    rm,
     rename,
     access,
     exists,
