@@ -139,7 +139,21 @@ const PyodideLockfileSchema = z.object({
     }),
     packages: z.record(z.string(), PyodideLockPackageSchema),
 });
+/**
+ * PyPI's answers, by network and request, kept as pip's HTTP cache
+ * (cachecontrol) keeps them: each for its response's max-age, 900 s for
+ * PyPI's JSON API, none without one. What has expired is dropped whenever an
+ * answer is kept, so a process's own egress leaves nothing behind it.
+ */
 const pypiCache = new Map();
+/** How long, in ms, a response says it may be reused: its Cache-Control max-age, 0 for none (or no-store, no-cache). */
+function pypiAnswerAge(resp) {
+    const control = resp.headers?.get('cache-control') ?? '';
+    if (/(^|,)\s*(no-store|no-cache)\s*(,|$)/i.test(control))
+        return 0;
+    const age = /(?:^|,)\s*max-age\s*=\s*(\d+)/i.exec(control);
+    return age === null ? 0 : Number(age[1]) * 1000;
+}
 export async function buildPipInvocation(argv, binName, cwd, vfs, runtimeContext) {
     const wantsVersion = argv.includes('--version') || argv.includes('-V');
     const wantsHelp = argv.length === 0 || argv.includes('--help') || argv.includes('-h');
@@ -610,24 +624,31 @@ async function fetchPypiJson(network, name, version) {
     // Cached per network: what one workspace's egress answered is never another's.
     const key = `${network.id}|` + (version ? `${canonical}@${version}` : canonical);
     let entry = pypiCache.get(key);
-    if (!entry) {
+    if (!entry || entry.expires <= Date.now()) {
         const url = version
             ? `${PYPI_API}/${encodeURIComponent(canonical)}/${encodeURIComponent(version)}/json`
             : `${PYPI_API}/${encodeURIComponent(canonical)}/json`;
-        entry = {
-            promise: network.fetch(url).then(async (resp) => {
-                if (!resp.ok)
-                    throw new Error(`HTTP ${resp.status}`);
-                return PypiJsonSchema.parse(await resp.json());
-            }),
-        };
+        const fetched = { expires: Infinity };
+        fetched.promise = network.fetch(url).then(async (resp) => {
+            if (!resp.ok)
+                throw new Error(`HTTP ${resp.status}`);
+            const data = PypiJsonSchema.parse(await resp.json());
+            fetched.expires = Date.now() + pypiAnswerAge(resp);
+            return data;
+        });
+        entry = fetched;
+        const now = Date.now();
+        for (const [kept, answer] of pypiCache)
+            if (answer.expires <= now)
+                pypiCache.delete(kept);
         pypiCache.set(key, entry);
     }
     try {
         return { data: await entry.promise };
     }
     catch (e) {
-        pypiCache.delete(key);
+        if (pypiCache.get(key) === entry)
+            pypiCache.delete(key);
         return { error: `PyPI metadata fetch failed for ${canonical}: ${e instanceof Error ? e.message : String(e)}` };
     }
 }

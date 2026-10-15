@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "18a5572c13f0d3aa972a1ff51d5e400fbc5b4efc35098e18cecc5c97011f6404",
+  "fingerprint": "a9f90932551c2b64be614bcf9cdcc9e8079217956551ff843422ed66e5b05440",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -590,8 +590,8 @@
     "packages/core/dist/runtime/provided-packages.d.ts.map": "c3c5b8620b281810de74357c24c8d554243b653555cd03b5f0b573545f79f17f",
     "packages/core/dist/runtime/provided-packages.js": "48a57a65fbc59eada8f91ea69cfbccce9dc476bccb3bbcbc02cbe85bddc07cc5",
     "packages/core/dist/runtime/python-pip.d.ts": "72401d036c4d22bbdac1a154977652ba09424ff6f6f20563de051cf66f68f3f1",
-    "packages/core/dist/runtime/python-pip.d.ts.map": "e20adb05cd25be7f0c0bd9a37edda28121c88dc39a3c873a264b3e15dee93960",
-    "packages/core/dist/runtime/python-pip.js": "7429312b7410d0352e61220a3f3ddd962e4b4930d045e92c56e7824e76c612ba",
+    "packages/core/dist/runtime/python-pip.d.ts.map": "1178979da244365ff078c2aabf342c28a1c913764cf88b374487fe832093e8fb",
+    "packages/core/dist/runtime/python-pip.js": "d80769002d929b3252b76e8ea1d61cb9a2dc2edced6d4488772a402406eab19c",
     "packages/core/dist/runtime/python-server-adapter.d.ts": "c32aea244014813fc9a6d9cbc8b3c022a214c1dab27e9977200d456a0fe5943f",
     "packages/core/dist/runtime/python-server-adapter.d.ts.map": "32f3ed6df9611a72a7d5baf0465d53bdfed2bf8bcde54f0a269e2da05027cce0",
     "packages/core/dist/runtime/python-server-adapter.js": "48bb1597d57c98ae8b5abd429cd5561c15fdf4907e1710264ebdf6a7085a6ce4",
@@ -1532,7 +1532,7 @@
     "packages/core/src/runtime/process-table.ts": "0f0cf4ca99dff734fd67079e84d80c93db63232ccf34cc0fdc2c5f602e418e89",
     "packages/core/src/runtime/project-detect.ts": "96f64e8736668f738c08b0e61b24726e2a41ccf02049a476a7c4090e460063df",
     "packages/core/src/runtime/provided-packages.ts": "33edf8c2adcde267ccefef8147e7bc6b1d262e8569fe8535b0dcbe39d8420cad",
-    "packages/core/src/runtime/python-pip.ts": "a96cc60c2fdf51c79a5e0178dee7bd19467be610899d00e1d3fd9e824e5ea611",
+    "packages/core/src/runtime/python-pip.ts": "84971a27f68adebb0675e2f83ec4394d03052f7a1254653ebc97f1dd15b5e47f",
     "packages/core/src/runtime/python-server-adapter.ts": "166dd887cefb0e5e2b31a22a4ae34682124547a0779da70b4e76b338a9364dd6",
     "packages/core/src/runtime/read-directory-batch.ts": "aa296cdc167c943054db5742f71ac9b94667f8f97f60f24378c42797ee0e94dd",
     "packages/core/src/runtime/realm-egress-guest.ts": "853618c98c45e14c1f0fa4601e8531bd570bb9b6e1f3ebf2ae063db67de35b18",
