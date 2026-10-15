@@ -83,6 +83,7 @@ export const REPLAY_OPERATION_POLICY = {
     cpReadOutput: { kind: 'observation', answer: withAcquire, args: (a) => [...a.slice(0, 4), acquireArgs(a[4])] },
     cpDrainOutput: read, cpCloseOutput: effect, cpKill: effect,
     cpBlocked: { kind: 'control' },
+    cpNextSignal: read,
     cpWait: { kind: 'observation', answer: withAcquire, args: (a) => [...a.slice(0, 2), acquireArgs(a[2])] },
     fsFstat: read, fsDup: read, fsSeek: read,
     fsSetStatus: effect, fsReaddirHandle: read, fsFtruncate: effect,

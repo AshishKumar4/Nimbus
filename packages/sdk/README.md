@@ -96,6 +96,14 @@ Nimbus keeps no user OAuth token in Durable Object storage.
 
 ## Sandboxes from your own code
 
+A sandbox is a session of a deployed Nimbus Worker: it runs in Workers
+isolates, and those are its boundary. `@nimbus-sh/core`'s `NimbusWorkspace`
+on a Node or Bun host is not a sandbox. Its programs run as your OS user, in
+your process or a child of it, and only Nimbus's own code stands between
+them and your machine (core's README, *What a program can reach*, says what
+its realms keep apart and what they do not). Run such a host in a container
+or VM for code you do not trust.
+
 The same sandbox handle API works in three modes:
 
 - `Nimbus.fromEnv(env, config)` for a Worker or Durable Object with the

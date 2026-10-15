@@ -978,14 +978,14 @@ function registerWasmRuntimes(deps: {
       .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, registry: deps.registry, getHome: deps.getHome, network: deps.network })),
     'clang-runner': lazy(async () => (await import('../runtime/clang-runner.js'))
       .makeClangRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes })),
-    ...Object.fromEntries(Object.entries(GIT_RUNNER_CONTRACTS).map(([key, { restartsWaits }]) => [key, lazy(async () => {
+    ...Object.fromEntries(Object.entries(GIT_RUNNER_CONTRACTS).map(([key, contract]) => [key, lazy(async () => {
       const [{ makeGitRunnerFactory }, { sqliteGitFsmonitorState }] = await Promise.all([
         import('../runtime/git-runner.js'), import('../runtime/git-fsmonitor.js'),
       ]);
       return makeGitRunnerFactory({
         facets: deps.facets, filesystem: deps.filesystem, processes,
         fsmonitorState: sqliteGitFsmonitorState(deps.sql, deps.filesystem.namespace),
-        restartsWaits,
+        ...contract,
       });
     })])),
   };

@@ -112,8 +112,17 @@ export class ProcessInputStore {
             return { ok: false, full: true };
         return this.enqueue(state, { data, ended: false }, data.byteLength);
     }
-    /** A pipe write: ordered, split at the bound, waiting for room instead of dropping bytes. */
-    async writeBytesWait(pid, data) {
+    /** Whether `pid`'s queue has room for `bytes` more now. */
+    hasRoom(pid, bytes) {
+        const state = this.pids.get(pid);
+        return state !== undefined && !state.closed && state.bytes + bytes <= this.maxQueuedBytes;
+    }
+    /**
+     * A pipe write: ordered, split at the bound, waiting for room instead of
+     * dropping bytes. `withdraw`, while it waits (its turn, or room), ends it
+     * at once with what it has not written unwritten.
+     */
+    async writeBytesWait(pid, data, withdraw) {
         const state = this.pids.get(pid);
         if (!state || state.closed)
             return { ok: false };
@@ -122,17 +131,25 @@ export class ProcessInputStore {
             for (let at = 0; at < data.byteLength; at += this.maxQueuedBytes) {
                 const piece = data.subarray(at, Math.min(data.byteLength, at + this.maxQueuedBytes));
                 for (;;) {
+                    if (withdraw?.aborted)
+                        return;
                     const wrote = this.writeBytes(pid, piece);
                     if (wrote.ok)
                         break;
-                    if (!wrote.full || !await this.whenWritable(pid))
+                    if (!wrote.full || !await this.whenWritable(pid, withdraw))
                         return;
                 }
             }
             result = { ok: true };
         });
         state.writes = task.catch(() => { });
-        await task;
+        if (withdraw === undefined)
+            await task;
+        else
+            await Promise.race([task, new Promise((resolve) => { if (withdraw.aborted)
+                    resolve(undefined);
+                else
+                    withdraw.addEventListener('abort', resolve, { once: true }); })]);
         return result;
     }
     async endAfterWrites(pid) {
@@ -184,15 +201,28 @@ export class ProcessInputStore {
     /**
      * Resolves once `pid`'s reader has taken queued input, so a writer refused
      * for a full queue can try again: true then, false if the channel is ended
-     * or gone and will take no more.
+     * or gone and will take no more, or `withdraw` ended the wait.
      */
-    whenWritable(pid) {
+    whenWritable(pid, withdraw) {
         const state = this.pids.get(pid);
-        if (!state || state.closed)
+        if (!state || state.closed || withdraw?.aborted)
             return Promise.resolve(false);
         if (state.bytes === 0)
             return Promise.resolve(true);
-        return new Promise((resolve) => state.drained.push(() => resolve(!state.closed && this.pids.get(pid) === state)));
+        return new Promise((resolve) => {
+            const wake = () => {
+                withdraw?.removeEventListener('abort', leave);
+                resolve(!state.closed && this.pids.get(pid) === state);
+            };
+            const leave = () => {
+                const at = state.drained.indexOf(wake);
+                if (at >= 0)
+                    state.drained.splice(at, 1);
+                resolve(false);
+            };
+            state.drained.push(wake);
+            withdraw?.addEventListener('abort', leave, { once: true });
+        });
     }
     /**
      * Put input a reader took back in front of the queue, as it was: a process
@@ -247,7 +277,12 @@ export class ProcessInputStore {
             state.bytes = 0;
         }
     }
-    async read(pid, waitMs = 1000, maxBytes) {
+    /**
+     * `pid`'s next input, waiting up to `waitMs` (at most 5 s) for it: an empty
+     * packet when none came. A wait `withdraw` ends leaves at once, taking
+     * nothing: what comes next is the next read's.
+     */
+    async read(pid, waitMs = 1000, maxBytes, withdraw) {
         if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 0))
             throw new TypeError('stdin maxBytes must be a nonnegative integer');
         if (maxBytes === 0)
@@ -302,11 +337,22 @@ export class ProcessInputStore {
             throw state.failure;
         if (state.closed)
             return { data: '', ended: true };
+        if (withdraw?.aborted)
+            return { data: '', ended: false };
         return new Promise((resolve, reject) => {
+            const leave = () => {
+                const idx = state.waiters.indexOf(waiter);
+                if (idx < 0)
+                    return;
+                state.waiters.splice(idx, 1);
+                clearTimeout(waiter.timer);
+                resolve({ data: '', ended: false });
+            };
             const waiter = {
                 pid,
-                reject,
+                reject: (error) => { withdraw?.removeEventListener('abort', leave); reject(error); },
                 resolve: packet => {
+                    withdraw?.removeEventListener('abort', leave);
                     if (maxBytes === undefined || !packet.data.length) {
                         resolve(packet);
                         return;
@@ -318,6 +364,7 @@ export class ProcessInputStore {
                     resolve({ ...packet, data: bytes.subarray(0, limit), ...(bytes.length > limit ? { ended: false } : {}) });
                 },
                 timer: setTimeout(() => {
+                    withdraw?.removeEventListener('abort', leave);
                     const idx = state.waiters.indexOf(waiter);
                     if (idx >= 0)
                         state.waiters.splice(idx, 1);
@@ -325,6 +372,7 @@ export class ProcessInputStore {
                 }, Math.max(0, Math.min(waitMs, 5000))),
             };
             state.waiters.push(waiter);
+            withdraw?.addEventListener('abort', leave, { once: true });
         });
     }
 }

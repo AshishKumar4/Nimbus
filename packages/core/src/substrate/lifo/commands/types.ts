@@ -91,6 +91,12 @@ export interface CommandContext {
   isFdTerminal?: (fd: number) => boolean;
   /** Whether `fd` is a shell pipe (S_ISFIFO): its reader ends a writer by closing it. */
   isFdPipe?: (fd: number) => boolean;
+  /**
+   * The command says its program takes the shell's signals (its signal's
+   * abort is sent to the program, which decides what it does): its status
+   * is then the program's, not the signal's.
+   */
+  takesSignals?: () => void;
   /** Whether the shell running this command runs `name` itself, as a builtin (type and command -v ask). */
   isShellBuiltin?: (name: string) => boolean;
   setUmask(mask: number): void;

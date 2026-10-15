@@ -133,8 +133,18 @@ export class ProcessInputStore {
     return this.enqueue(state, { data, ended: false }, data.byteLength);
   }
 
-  /** A pipe write: ordered, split at the bound, waiting for room instead of dropping bytes. */
-  async writeBytesWait(pid: number, data: Uint8Array): Promise<{ ok: boolean }> {
+  /** Whether `pid`'s queue has room for `bytes` more now. */
+  hasRoom(pid: number, bytes: number): boolean {
+    const state = this.pids.get(pid);
+    return state !== undefined && !state.closed && state.bytes + bytes <= this.maxQueuedBytes;
+  }
+
+  /**
+   * A pipe write: ordered, split at the bound, waiting for room instead of
+   * dropping bytes. `withdraw`, while it waits (its turn, or room), ends it
+   * at once with what it has not written unwritten.
+   */
+  async writeBytesWait(pid: number, data: Uint8Array, withdraw?: AbortSignal): Promise<{ ok: boolean }> {
     const state = this.pids.get(pid);
     if (!state || state.closed) return { ok: false };
     let result = { ok: false };
@@ -142,15 +152,17 @@ export class ProcessInputStore {
       for (let at = 0; at < data.byteLength; at += this.maxQueuedBytes) {
         const piece = data.subarray(at, Math.min(data.byteLength, at + this.maxQueuedBytes));
         for (;;) {
+          if (withdraw?.aborted) return;
           const wrote = this.writeBytes(pid, piece);
           if (wrote.ok) break;
-          if (!wrote.full || !await this.whenWritable(pid)) return;
+          if (!wrote.full || !await this.whenWritable(pid, withdraw)) return;
         }
       }
       result = { ok: true };
     });
     state.writes = task.catch(() => {});
-    await task;
+    if (withdraw === undefined) await task;
+    else await Promise.race([task, new Promise((resolve) => { if (withdraw.aborted) resolve(undefined); else withdraw.addEventListener('abort', resolve, { once: true }); })]);
     return result;
   }
 
@@ -204,13 +216,25 @@ export class ProcessInputStore {
   /**
    * Resolves once `pid`'s reader has taken queued input, so a writer refused
    * for a full queue can try again: true then, false if the channel is ended
-   * or gone and will take no more.
+   * or gone and will take no more, or `withdraw` ended the wait.
    */
-  whenWritable(pid: number): Promise<boolean> {
+  whenWritable(pid: number, withdraw?: AbortSignal): Promise<boolean> {
     const state = this.pids.get(pid);
-    if (!state || state.closed) return Promise.resolve(false);
+    if (!state || state.closed || withdraw?.aborted) return Promise.resolve(false);
     if (state.bytes === 0) return Promise.resolve(true);
-    return new Promise((resolve) => state.drained.push(() => resolve(!state.closed && this.pids.get(pid) === state)));
+    return new Promise((resolve) => {
+      const wake = (): void => {
+        withdraw?.removeEventListener('abort', leave);
+        resolve(!state.closed && this.pids.get(pid) === state);
+      };
+      const leave = (): void => {
+        const at = state.drained.indexOf(wake);
+        if (at >= 0) state.drained.splice(at, 1);
+        resolve(false);
+      };
+      state.drained.push(wake);
+      withdraw?.addEventListener('abort', leave, { once: true });
+    });
   }
 
   /**
@@ -260,7 +284,12 @@ export class ProcessInputStore {
     }
   }
 
-  async read(pid: number, waitMs = 1000, maxBytes?: number): Promise<ProcessInputPacket> {
+  /**
+   * `pid`'s next input, waiting up to `waitMs` (at most 5 s) for it: an empty
+   * packet when none came. A wait `withdraw` ends leaves at once, taking
+   * nothing: what comes next is the next read's.
+   */
+  async read(pid: number, waitMs = 1000, maxBytes?: number, withdraw?: AbortSignal): Promise<ProcessInputPacket> {
     if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 0)) throw new TypeError('stdin maxBytes must be a nonnegative integer');
     if (maxBytes === 0) return { data: new Uint8Array(0), ended: false };
     if (!isValidPid(pid)) return { data: '', ended: true };
@@ -303,12 +332,21 @@ export class ProcessInputStore {
     }
     if (state.failure) throw state.failure;
     if (state.closed) return { data: '', ended: true };
+    if (withdraw?.aborted) return { data: '', ended: false };
 
     return new Promise((resolve, reject) => {
+      const leave = (): void => {
+        const idx = state.waiters.indexOf(waiter);
+        if (idx < 0) return;
+        state.waiters.splice(idx, 1);
+        clearTimeout(waiter.timer);
+        resolve({ data: '', ended: false });
+      };
       const waiter: InputWaiter = {
         pid,
-        reject,
+        reject: (error) => { withdraw?.removeEventListener('abort', leave); reject(error); },
         resolve: packet => {
+          withdraw?.removeEventListener('abort', leave);
           if (maxBytes === undefined || !packet.data.length) { resolve(packet); return; }
           const bytes = typeof packet.data === 'string' ? encoder.encode(packet.data) : packet.data;
           const limit = Math.max(1, Math.min(PROCESS_INPUT_READ_MAX_BYTES, maxBytes));
@@ -316,12 +354,14 @@ export class ProcessInputStore {
           resolve({ ...packet, data: bytes.subarray(0, limit), ...(bytes.length > limit ? { ended: false } : {}) });
         },
         timer: setTimeout(() => {
+          withdraw?.removeEventListener('abort', leave);
           const idx = state.waiters.indexOf(waiter);
           if (idx >= 0) state.waiters.splice(idx, 1);
           resolve({ data: '', ended: false });
         }, Math.max(0, Math.min(waitMs, 5000))),
       };
       state.waiters.push(waiter);
+      withdraw?.addEventListener('abort', leave, { once: true });
     });
   }
 }

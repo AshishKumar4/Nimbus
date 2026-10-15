@@ -57,6 +57,8 @@ export function makeGitRunnerFactory(deps: {
   fsmonitorState?: GitFsmonitorState;
   /** The installed image asks again a wait its host gave up on: its runner key's contract (GIT_RUNNER_CONTRACTS). */
   restartsWaits: boolean;
+  /** The installed image takes the signals sent to its process: its runner key's contract (GIT_RUNNER_CONTRACTS). */
+  takesSignals: boolean;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command {
   const fsmonitor = makeGitFsmonitor(deps.fsmonitorState);
   /**
@@ -123,7 +125,7 @@ export function makeGitRunnerFactory(deps: {
 
       let stdio: ReturnType<typeof openRuntimeStdio>;
       try {
-        stdio = openRuntimeStdio(deps, ctx, ['git', ...argv].join(' '));
+        stdio = openRuntimeStdio(deps, ctx, ['git', ...argv].join(' '), { takesSignals: deps.takesSignals });
       } catch (error) {
         ctx.stderr.write(`${binName}: ${errorMessage(error)}\n`);
         return 1;
@@ -143,6 +145,7 @@ export function makeGitRunnerFactory(deps: {
         cred,
         pid: stdio.pid,
         restartsWaits: deps.restartsWaits,
+        takesSignals: deps.takesSignals,
       };
       let outcome = 1;
       try {
@@ -216,6 +219,7 @@ globalThis.__gitRun = async function __gitRun(args) {
     stderrBytes: output.stderrBytes,
     stdinRead: (maxBytes) => args.supervisor.cpReadStdin(args.pid, 8000, undefined, maxBytes),
     restartsWaits: args.restartsWaits === true,
+    takesSignals: args.takesSignals === true,
   });
   let instance;
   try {

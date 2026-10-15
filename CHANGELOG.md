@@ -20,6 +20,28 @@ published independently in the `@nimbus-sh` npm scope.
   3.13.14-3. BusyBox is now built by the same reproducible recipe as bash.
   The catalog keeps 5.2.37-6 and 3.13.14-2 as its defaults until the next
   release publishes the new builds.
+- Fixed (real git, `NIMBUS_GIT_WASI=1`): Ctrl-C reaches `git` while it
+  waits on a credential helper, an editor, a pipe or a child, as on Linux:
+  `git credential fill` and `git commit` waiting on its editor end with
+  status 130 and the prompt comes back, where before git and its helper
+  ran on and the terminal hung. The terminal's key goes to the command's
+  whole process group; a program whose image takes its own signals (git's,
+  runner key `git-runner@2`) is sent the signal rather than killed, its
+  host ends the wait the signal came in (`NIMBUS_ESIGNAL` + the signal's
+  number), and its libc raises it before the call returns `EINTR`
+  (`wasm/nimbus-libc/nimbus-signal.c`), so git's handlers run and an
+  unhandled signal exits 128 + its number. SIGKILL still ends it. A child
+  process that a signal ended from outside its parent (its process group's,
+  `kill <pid>`) is reported to the parent as killed by that signal, as on
+  Linux (a Node parent's `'exit'` has code `null` and the signal), not with
+  whatever its program returned as it was stopped.
+- Breaking (core): `GIT_RUNNER_CONTRACTS` values are `GitRunnerContract`
+  (`{ restartsWaits, takesSignals }`), and `makeGitRunnerFactory` and
+  `GitFacetArgs` take `takesSignals`. `SessionProcessSupervisor` gains
+  `takeSignals`, `nextSignal` and `signalGroup`; a process that took its
+  signals is sent a caught signal by `kill`/`signal` instead of ending.
+  New supervisor op `cpNextSignal`.
+
 - Fixed (lifo `node` and lifo CommonJS commands, X-1/X-2): a program's
   `process.stdin` is a Readable over fd 0, as Node's: `'data'` as each piece
   arrives rather than once stdin ends, `for await`, `pipe`, `setEncoding`, and

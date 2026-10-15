@@ -204,13 +204,21 @@ export declare class ChildProcessManager {
     }>;
     private _dispatch;
     /**
+     * A child the process table ended with a signal (its process group's, a
+     * `kill <pid>`), not through this broker: it died of that signal, whatever
+     * its run returned as it was stopped. Whether it was.
+     */
+    private _stampKilled;
+    /**
      * The child's stdin as a stream over its queue: each read takes what the
      * parent has written, waiting for it, and ends when the parent ends stdin
      * or the child exits. Nothing is read ahead of the command's own reads.
      */
     private _stdinOf;
-    stdinWrite(childPid: number, data: Uint8Array): Promise<{
+    /** `writer`, the process writing, is interrupted by a signal it takes (SessionProcessSupervisor.writeInputBytesWait). */
+    stdinWrite(childPid: number, data: Uint8Array, writer?: number): Promise<{
         ok: boolean;
+        signal?: string;
     }>;
     stdinEnd(childPid: number): Promise<void>;
     /**
@@ -227,6 +235,8 @@ export declare class ChildProcessManager {
         data: Uint8Array;
         ended: boolean;
     }>;
+    /** The next signal sent to `pid`, whose program takes its own (SessionProcessSupervisor.nextSignal). */
+    nextSignal(pid: number, waitMs: number): Promise<string | null>;
     /** A broker-side text message onto the child's byte ring. */
     private _appendText;
     /** Whether this pid's descriptors belong to a child managed by this broker. */
@@ -318,6 +328,7 @@ export declare function createChildProcessSupervisor(manager: ChildProcessManage
     }>;
     cpStdinWrite: (child: number, bytes: Uint8Array) => Promise<{
         ok: boolean;
+        signal?: string;
     }>;
     cpStdinEnd: (child: number) => Promise<void>;
     cpReadOutput: (child: number, fd: 1 | 2, sinceSeq: number, waitMs?: number) => Promise<ReadOutputResult>;
@@ -329,6 +340,7 @@ export declare function createChildProcessSupervisor(manager: ChildProcessManage
     }>;
     cpCloseOutput: (child: number, fd: 1 | 2) => void;
     cpDrainOutput: (child: number) => Promise<DrainResult>;
+    cpNextSignal: (waitMs: number) => Promise<string | null>;
 };
 export {};
 //# sourceMappingURL=child-process-manager.d.ts.map
