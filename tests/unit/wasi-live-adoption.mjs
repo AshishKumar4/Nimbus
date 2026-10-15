@@ -225,7 +225,8 @@ console.log('wasi-live-adoption: silent-write-loss assertions passed');
 // adopted after it, or the program's first file call answers EBADF. The VM
 // is stood in for by a program that writes a file.
 {
-  const supervisor = memorySupervisor();
+  // Its output goes nowhere: what is checked is where the file went.
+  const supervisor = Object.assign(memorySupervisor(), { stdout: async () => {}, stderr: async () => {} });
   Object.assign(globalThis, {
     __wasiSupervisorOutput: wasiOutputRelay,
     __wasiOutputControl: outputControlReader,
