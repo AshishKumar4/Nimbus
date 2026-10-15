@@ -15,10 +15,10 @@ published independently in the `@nimbus-sh` npm scope.
   `/dev/fd/0`) and to BusyBox's `stat`, as on Linux.
 - Fixed: `python -c` flushes its `sys.stdout` once as it ends, as `python3
   -c` does; the host flushed it a second time.
-- Changed: bash 5.2.37-7 (runner contract `bash-runner@6`, core 0.23.0 or
-  later) and CPython 3.13.14-3. BusyBox is now built by the same
-  reproducible recipe as bash. The catalog keeps 5.2.37-6 and 3.13.14-2 as
-  its defaults until the next release publishes the new builds.
+- Changed: bash 5.2.37-7 (runner contract `bash-runner@6`) and CPython
+  3.13.14-3. BusyBox is now built by the same reproducible recipe as bash.
+  The catalog keeps 5.2.37-6 and 3.13.14-2 as its defaults until the next
+  release publishes the new builds.
 - Fixed: `npx` keeps each request's install apart, as npm does: in its own
   directory under `/tmp/.npx-cache`, named as npm names it, written only
   if its install succeeds. A request for a package that does not exist no
