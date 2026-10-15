@@ -67,7 +67,7 @@ const fetched = new Map<number, (response: RealmResponse | null) => void>();
 let offTheBox: RealmEgressGuest | null = null;
 /** `events` holds the realm open while anything of the program's waits on it. */
 function holdWhileBusy(): void {
-  joined.hold(fetched.size > 0 || ports.size > 0 || persistentWatches > 0 || (offTheBox?.awaited ?? 0) > 0 || settledOutput < postedOutput);
+  joined.hold(fetched.size > 0 || ports.size > 0 || persistentWatches > 0 || (offTheBox?.awaited ?? 0) > 0 || (mainDone && settledOutput < postedOutput));
 }
 
 /** End the process now with `code`, as process.exit() and a fatal error do. */
@@ -158,9 +158,10 @@ function realmOutput(fd: 1 | 2): FailableOutput & { fail(error: Error): void } {
   const listeners: ((error: Error) => void)[] = [];
   const send = (data: string | Uint8Array) => {
     if (failure !== null) return;
-    post({ type: 'output', fd, data, seq: ++postedOutput });
-    // The realm is held from the first write the host has not settled.
-    if (postedOutput === settledOutput + 1) holdWhileBusy();
+    // Once its code has run, the program waits for its writes (holdWhileBusy);
+    // while it runs, it is held by its own code, and asks nothing.
+    post({ type: 'output', fd, data, seq: ++postedOutput, settle: mainDone });
+    if (mainDone && postedOutput === settledOutput + 1) holdWhileBusy();
   };
   return {
     write: (data: string) => send(data),
@@ -267,7 +268,7 @@ events.on('message', (event) => {
 
 const fatal = (reason: unknown): never => {
   if (reason instanceof ProcessExitError) return exitNow(reason.exitCode);
-  post({ type: 'output', fd: 2, data: `${uncaughtReport(reason)}\n`, seq: ++postedOutput });
+  post({ type: 'output', fd: 2, data: `${uncaughtReport(reason)}\n`, seq: ++postedOutput, settle: false });
   return exitNow(1);
 };
 
@@ -292,7 +293,7 @@ realm.on('exit', () => {
     post({ type: 'exit', code: finalCode() });
     return;
   }
-  post({ type: 'output', fd: 2, data: `Warning: Detected unsettled top-level await at ${program.filename}\n`, seq: ++postedOutput });
+  post({ type: 'output', fd: 2, data: `Warning: Detected unsettled top-level await at ${program.filename}\n`, seq: ++postedOutput, settle: false });
   post({ type: 'exit', code: 13 });
 });
 
@@ -314,4 +315,5 @@ if (end.ended) exitNow(end.code);
 post({ type: 'exit', code: end.code });
 finalCode = end.finalCode;
 mainDone = true;
+if (settledOutput < postedOutput) post({ type: 'settle' });
 holdWhileBusy();
