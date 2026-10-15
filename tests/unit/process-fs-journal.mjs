@@ -179,7 +179,8 @@ function mortalPort(s, live = Infinity) {
   for (let i = 0; i < 400 && (grant = c.holder('home/user/out/x')) === undefined; i++) await new Promise((resolve) => setTimeout(resolve, 5));
   assert.notEqual(grant, undefined, 'the subtree was not taken');
   const applied = s.applied;
-  c.submit({ type: 'call', call: { call: 'writeFile', path: 'home/user/out/lingered', mode: 0o644, ino: c.number(grant), data: enc.encode('lingered') } }, { acknowledged: true });
+  // A node process's own write (it numbers nothing from the grant) and a mode decided there.
+  c.submit({ type: 'call', call: { call: 'writeFile', path: 'home/user/out/lingered', mode: 0o644, data: enc.encode('lingered') } }, { acknowledged: true });
   c.submit({ type: 'setattr', path: 'home/user/out/lingered', attrs: { mode: 0o600 } }, { decided: true });
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(s.applied, applied, 'what lingers was sent');
