@@ -31,8 +31,14 @@ const STANDARD = Symbol('standard stream');
 /** The tty module, as Node's is: its streams and isatty. */
 export interface TtyModule {
   readonly ReadStream: new (fd: number) => Readable;
-  readonly WriteStream: new (fd: number, standard?: typeof STANDARD) => Writable;
+  readonly WriteStream: new (fd: number) => Writable;
   isatty(fd: number): boolean;
+}
+
+/** The module, and the WriteStream a program's own process.stdout or process.stderr is in a terminal. */
+interface TtyClasses {
+  readonly module: TtyModule;
+  standardWriter(fd: 1 | 2): Writable;
 }
 
 /** A program's tty module and its standard streams, each made once, when first reached. */
@@ -62,18 +68,19 @@ export function ttyOf(stdio: ProgramStdio): ProgramTty {
 }
 
 function createTty(stdio: ProgramStdio): ProgramTty {
-  let module: TtyModule | undefined;
+  let classes: TtyClasses | undefined;
   let stdin: Readable | undefined;
   let stdout: Writable | undefined;
   let stderr: Writable | undefined;
   const isatty = (fd: number): boolean => Number.isInteger(fd) && fd >= 0 && fd <= 2 && stdio.terminal?.isatty(fd) === true;
   // The WriteStreams the program made, until they close.
   const writers = new Set<Writable>();
-  const ttyModule = (): TtyModule => module ??= ttyClasses(stdio, isatty, writers);
+  const ttyClassesOf = (): TtyClasses => classes ??= ttyClasses(stdio, isatty, writers);
+  const ttyModule = (): TtyModule => ttyClassesOf().module;
   const standardOutput = (fd: 1 | 2): Writable => {
     const output = fd === 1 ? stdio.stdout : stdio.stderr;
     if (!isatty(fd)) return standardStream(output, fd);
-    return asStandardStream(new (ttyModule().WriteStream)(fd, STANDARD), fd, output);
+    return asStandardStream(ttyClassesOf().standardWriter(fd), fd, output);
   };
   return {
     get module() { return ttyModule(); },
@@ -102,7 +109,7 @@ function ttyInitFailed(): Error {
   return nodeSystemError('ERR_TTY_INIT_FAILED', 'TTY initialization failed', { errno: -22, code: 'EINVAL', message: 'invalid argument', syscall: 'uv_tty_init' });
 }
 
-function ttyClasses(stdio: ProgramStdio, isatty: (fd: number) => boolean, writers: Set<Writable>): TtyModule {
+function ttyClasses(stdio: ProgramStdio, isatty: (fd: number) => boolean, writers: Set<Writable>): TtyClasses {
   const { Readable, Writable } = realm.getBuiltinModule('node:stream');
   const readline = realm.getBuiltinModule('node:readline');
   /** A standard descriptor libuv can stream: the terminal or a pipe. */
@@ -189,5 +196,5 @@ function ttyClasses(stdio: ProgramStdio, isatty: (fd: number) => boolean, writer
     }
   }
 
-  return { ReadStream, WriteStream, isatty };
+  return { module: { ReadStream, WriteStream, isatty }, standardWriter: (fd) => new WriteStream(fd, STANDARD) };
 }
