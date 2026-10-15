@@ -10,6 +10,7 @@ published independently in the `@nimbus-sh` npm scope.
   own process) now runs with the caller's credential, as `ruby -e` does, so
   its file calls use the resident filesystem instead of a supervisor round
   trip each.
+
 ## 2026-10-15: platform 0.11.0, core 0.22.0, fabric 0.17.0, worker 0.20.0, sdk 0.16.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4, runtime-cpython 3.13.14-2 (config 0.3.1 unchanged)
 
 The 2026-10-14 versions reached production but were never published to npm; these carry their changes too.
