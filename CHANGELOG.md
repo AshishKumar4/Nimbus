@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `cat`, `tee`, `head`, `cut`, `cksum`, `md5sum` and the other
+  `*sum` tools, `sum` and `grep` read their options as GNU's getopt_long
+  does. A long option may be any unambiguous prefix of its name
+  (`cat --numb`, `head --lin=1`); an ambiguous one lists its possibilities;
+  a missing or unwanted argument gets getopt's message. `grep -A` and `-B`
+  now win over `-C` and `-NUM` whichever comes first, and `grep -1 -0` is
+  `-0`, as in GNU grep.
 - Fixed: the shell's `node` matches Node in more of its module surface. A
   CommonJS file runs with `this` as its `module.exports`;
   `require('fs').promises` is `require('fs/promises')`, and likewise for
