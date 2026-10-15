@@ -531,8 +531,8 @@ type Ops = VFS | SyncVFS;
 
 /** A directory this namespace makes (above a mount point, or a backend root with no stat). */
 const EPOCH_STAT: VfsStat = { type: 'directory', size: 0, mtimeMs: 0, mode: 0o40755, uid: 0, gid: 0 };
-/** Where the namespace's own device numbers for mounts start (see Mount.dev). */
-const ANONYMOUS_DEV = 0x10000;
+/** Where the namespace's own device numbers for mounts start (see Mount.dev): an entry's dev at or past it is on a mount. */
+export const ANONYMOUS_DEV = 0x10000;
 
 /** Whether `error` is a synchronous caller's refusal by an asynchronous mount (one that can await may retry on the async face). */
 export function isAsyncMountRefusal(error: unknown): boolean {

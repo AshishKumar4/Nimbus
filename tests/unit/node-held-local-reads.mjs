@@ -112,7 +112,7 @@ await runScenarios(import.meta.path, {
   async 'a link out of the held subtree is the session\'s to follow; the link itself is the view\'s (T2, T8)'() {
     const { authority, fs, asked } = await boot();
     await authority.peer.writeFile('home/user/elsewhere/t1', 'one');
-    await authority.peer.writeFile('home/user/app/out/t2', 'two!');
+    await fs.promises.writeFile(`${OUT}/t2`, 'two!');
     await authority.peer.symlink('/home/user/elsewhere/t1', 'home/user/elsewhere/b');
     await fs.promises.symlink('/home/user/elsewhere/b', `${OUT}/a`);
     await fs.promises.stat(`${OUT}/a`);
