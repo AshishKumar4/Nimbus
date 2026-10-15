@@ -111,7 +111,7 @@ const text = (d) => new TextDecoder().decode(d);
     fs.fchown(id, 1000, 1001);
     const owned = fs.fstat(id);
     assert.deepEqual([owned.uid, owned.gid, owned.mode & 0o7777], [1000, 1001, 0o666], 'the owner\'s fchown to its own group, set-id cleared');
-    assert.throws(() => fs.fchown(id, 2000, -1), { code: 'EPERM' });
+    assert.throws(() => fs.fchown(id, 2000, null), { code: 'EPERM' });
   }
   assert.equal(kfs.stat('/home/u/own').gid, 1001);
   const writer = theirs.open('/home/u/own', { write: true });
