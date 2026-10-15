@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `ruby -r NAME` requires NAME as written, as Ruby does: `#{...}` in
+  it is no longer interpolated. A Ruby script (which keeps running as its
+  own process) and the `ruby` prompt now run with the caller's credential,
+  as `ruby -e` does, so their file calls use the resident filesystem
+  instead of a supervisor round trip each.
 - Fixed (local workerd: `wrangler dev`, the unit suite): a session could
   stop answering for good, its thread at 100% CPU, after a real-git run on a
   busy machine. workerd 1.20260926.1 left cppgc sweeping incremental (V8
