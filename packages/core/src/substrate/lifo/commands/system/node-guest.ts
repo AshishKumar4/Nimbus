@@ -285,12 +285,15 @@ realm.on('unhandledRejection', fatal);
 realm.on('uncaughtException', fatal);
 // The loop ran empty with the main script still waiting: an ES module whose
 // top-level await never settled.
-// The program's status once its loop runs empty: its process.exitCode then (set after main ran).
+// The program's status once its loop runs empty: its process.exitCode then
+// (set after main ran), told only when it is not the one main ended with.
 let finalCode = (): number => 0;
+let mainCode = 0;
 realm.on('exit', () => {
   if (exiting) return;
   if (mainDone) {
-    post({ type: 'exit', code: finalCode() });
+    const code = finalCode();
+    if (code !== mainCode) post({ type: 'exit', code });
     return;
   }
   post({ type: 'output', fd: 2, data: `Warning: Detected unsettled top-level await at ${program.filename}\n`, seq: ++postedOutput, settle: false });
@@ -313,6 +316,7 @@ const end = await runNodeProgram(program, {
 });
 if (end.ended) exitNow(end.code);
 post({ type: 'exit', code: end.code });
+mainCode = end.code;
 finalCode = end.finalCode;
 // The program's code has run: it hears of a write that failed before it ends,
 // as a Node process's pending writes hold it. One call waits for them all.
