@@ -6,6 +6,7 @@ import { isVfsError, strerror } from '../../../../vfs/vfs-error.js';
 import { statOrThrow, type VfsStat } from '../../../../vfs/vfs.js';
 import { shellEscape } from '../../../../_shared/shell-quote.js';
 import { blankLine, compareTexts, diffText, type DiffChange, type DiffOptions, type DiffText } from './diff-analysis.js';
+import { enc as encoder } from '../../../../_shared/bytes.js';
 
 // GNU diffutils 3.12's options, every one, so a bad one is refused as getopt
 // refuses it; those this diff does not implement are refused by name.
@@ -90,7 +91,6 @@ function headerTime(mtimeMs: number): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(nanos, 9)} ${zone}`;
 }
 
-const encoder = new TextEncoder();
 const NO_NEWLINE = encoder.encode('\\ No newline at end of file\n');
 
 /** Output assembled from pieces: text, and lines as views of their files' bytes. */

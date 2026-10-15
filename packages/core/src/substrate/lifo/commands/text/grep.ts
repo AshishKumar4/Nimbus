@@ -4,6 +4,7 @@ import { resolve } from '../../utils/path.js';
 import { concatBytes, inputChunks, readAllInput } from '../../utils/bytes-io.js';
 import { globMatch as fnmatch } from '../../utils/glob.js';
 import { NOT_WORD, PosixRegexSyntax, WORD, translate, literal } from '../../utils/posix-regex.js';
+import { enc } from '../../../../_shared/bytes.js';
 
 // GNU grep (3.12) in a UTF-8 locale. Patterns: BRE (default), ERE (-E),
 // fixed strings (-F) and Perl-style (-P, as JavaScript's regex). A line is a
@@ -23,7 +24,6 @@ export interface GrepContext {
 
 class GrepUsage extends Error {}
 
-const enc = new TextEncoder();
 const utf8 = new TextDecoder('utf-8');
 const utf8Strict = new TextDecoder('utf-8', { fatal: true });
 /** GNU's read size: a NUL anywhere in what one read brings makes that read binary. */

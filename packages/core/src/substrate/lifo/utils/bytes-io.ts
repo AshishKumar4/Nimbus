@@ -3,7 +3,7 @@
  * bytes: a byte that is not valid UTF-8 passes through unchanged. Decoding
  * with TextDecoder would turn it into U+FFFD, three different bytes.
  */
-import { concatBytes as concatParts } from '../../../_shared/bytes.js';
+import { concatBytes as concatParts, enc, dec } from '../../../_shared/bytes.js';
 import { readToEnd, type ProcessView } from '../../../runtime/process-files.js';
 import { isVfsError, syscallError } from '../../../vfs/vfs-error.js';
 import type { CommandInputStream } from '../commands/types.js';
@@ -22,7 +22,6 @@ export interface ByteOutput {
   writeBytes?(bytes: Uint8Array): unknown;
 }
 
-const enc = new TextEncoder();
 const CHUNK = 65536;
 
 export interface InputChunkOptions {
@@ -128,7 +127,7 @@ export function decodeLossless(bytes: Uint8Array): string {
   let out = '';
   let run = 0;
   const flush = (end: number) => {
-    if (end > run) out += new TextDecoder().decode(bytes.subarray(run, end));
+    if (end > run) out += dec.decode(bytes.subarray(run, end));
   };
   for (let i = 0; i < bytes.length;) {
     const b = bytes[i];

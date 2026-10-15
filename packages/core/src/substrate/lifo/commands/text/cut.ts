@@ -1,6 +1,6 @@
 import type { Command } from '../types.js';
 import { concatBytes, inputChunks } from '../../utils/bytes-io.js';
-import { dec } from '../../../../_shared/bytes.js';
+import { dec, enc } from '../../../../_shared/bytes.js';
 
 // GNU cut (coreutils 9.7), bytes in the C locale: -b and -c select bytes,
 // -f fields; lists are sorted and overlapping ranges merged; --complement,
@@ -10,7 +10,6 @@ interface Range { lo: number; hi: number }
 
 type Mode = 'bytes' | 'fields';
 
-const enc = new TextEncoder();
 
 class CutUsage extends Error {}
 

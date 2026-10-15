@@ -10,8 +10,8 @@ import type { ProcessStat } from '../../../../../runtime/process-files.js';
 import type { VfsDirentType } from '../../../../../vfs/vfs.js';
 import { direntTypeOfStat, type KnownDirentType } from '../../../../../vfs/dirent-type.js';
 import { FindUsageError } from './errors.js';
+import { enc as encoder } from '../../../../../_shared/bytes.js';
 
-const encoder = new TextEncoder();
 
 /** printf's flags, width and precision as GNU passes them through (it never takes `0` as a flag; a width starting with 0 is). */
 interface FieldSpec {
