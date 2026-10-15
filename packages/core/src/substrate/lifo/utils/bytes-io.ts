@@ -3,6 +3,7 @@
  * bytes: a byte that is not valid UTF-8 passes through unchanged. Decoding
  * with TextDecoder would turn it into U+FFFD, three different bytes.
  */
+import { concatBytes as concatParts, enc, dec } from '../../../_shared/bytes.js';
 import { readToEnd, type ProcessView } from '../../../runtime/process-files.js';
 import { isVfsError, syscallError } from '../../../vfs/vfs-error.js';
 import type { CommandInputStream, CommandOutputStream } from '../commands/types.js';
@@ -21,7 +22,6 @@ export interface ByteOutput {
   writeBytes?(bytes: Uint8Array): unknown;
 }
 
-const enc = new TextEncoder();
 const CHUNK = 65536;
 
 export interface InputChunkOptions {
@@ -106,13 +106,9 @@ export async function readAllInput(ctx: ByteInputContext, operand: string | unde
   return concatBytes(parts);
 }
 
+/** The parts as one: a single part is itself, uncopied; more are the shared concatenation (_shared/bytes.ts). */
 export function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
-  if (parts.length === 1) return parts[0];
-  const total = parts.reduce((n, part) => n + part.length, 0);
-  const out = new Uint8Array(total);
-  let at = 0;
-  for (const part of parts) { out.set(part, at); at += part.length; }
-  return out;
+  return parts.length === 1 ? parts[0] : concatParts(parts);
 }
 
 /** Write bytes as they are, to a sink that takes bytes; a text-only sink gets their lossless decoding. */
@@ -190,7 +186,7 @@ export function decodeLossless(bytes: Uint8Array): string {
   let out = '';
   let run = 0;
   const flush = (end: number) => {
-    if (end > run) out += new TextDecoder().decode(bytes.subarray(run, end));
+    if (end > run) out += dec.decode(bytes.subarray(run, end));
   };
   for (let i = 0; i < bytes.length;) {
     const b = bytes[i];

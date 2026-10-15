@@ -1,8 +1,3 @@
-/**
- * Byte input and output for the text commands. GNU's tools read and write
- * bytes: a byte that is not valid UTF-8 passes through unchanged. Decoding
- * with TextDecoder would turn it into U+FFFD, three different bytes.
- */
 import { type ProcessView } from '../../../runtime/process-files.js';
 import type { CommandInputStream, CommandOutputStream } from '../commands/types.js';
 export interface ByteInputContext {
@@ -38,6 +33,7 @@ export interface InputChunkOptions {
 export declare function inputChunks(ctx: ByteInputContext, operand: string | undefined, { readSize, fileReadSize, slice }?: InputChunkOptions): AsyncGenerator<Uint8Array>;
 /** All of an operand's bytes. */
 export declare function readAllInput(ctx: ByteInputContext, operand: string | undefined): Promise<Uint8Array>;
+/** The parts as one: a single part is itself, uncopied; more are the shared concatenation (_shared/bytes.ts). */
 export declare function concatBytes(parts: readonly Uint8Array[]): Uint8Array;
 /** Write bytes as they are, to a sink that takes bytes; a text-only sink gets their lossless decoding. */
 export declare function writeBytes(out: ByteOutput, bytes: Uint8Array): Promise<void>;

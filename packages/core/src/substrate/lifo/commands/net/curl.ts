@@ -4,6 +4,7 @@ import { type Kernel } from '../../kernel/index.js';
 import { MAX_REDIRECTS, dispatchWorkspaceRequest, hopInit, sendHop, walkRedirects, workspaceRequestPort } from './kernel-fetch.js';
 import { NIMBUS_AI_TOKEN_ENV, requestCarriesSessionAiToken } from '../../../../_shared/ai-egress.js';
 import { NIMBUS_AI_GATEWAY_PORT } from '../../../../constants.js';
+import { dec } from '../../../../_shared/bytes.js';
 
 
 type CurlOptions = {
@@ -559,7 +560,7 @@ async function writeCurlOutput(ctx: Parameters<Command>[0], options: CurlOptions
       await ctx.stdout.write(body);
       if (!body.endsWith('\n')) await ctx.stdout.write('\n');
     } else if (body instanceof Uint8Array) {
-      await ctx.stdout.write(new TextDecoder().decode(body));
+      await ctx.stdout.write(dec.decode(body));
     } else {
       await streamCurlBodyToStdout(ctx, body);
     }

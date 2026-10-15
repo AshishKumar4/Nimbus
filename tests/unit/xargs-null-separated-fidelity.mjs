@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
+import { staticStdinReader } from '../../packages/core/src/shell/stdin-adapter.ts';
 import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -71,7 +72,7 @@ async function runXargs(args, stdin) {
     cred: CRED_KERNEL,
     pid: 71,
     vfs: kfs,
-    stdin,
+    stdin: staticStdinReader(stdin),
     stdout: { write: () => {} },
     stderr: { write: (value) => { stderr += String(value); } },
     signal: new AbortController().signal,

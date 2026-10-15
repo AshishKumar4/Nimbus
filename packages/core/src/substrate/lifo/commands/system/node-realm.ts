@@ -36,6 +36,7 @@ import type { VfsEvent } from '../../../../vfs/events.js';
 import { synchronousFilesystem } from '../../node-compat/filesystem.js';
 import { SinkWriter } from '../../../../_shared/byte-stream.js';
 import { uncaughtReport, writeFailure } from '../../node-compat/output-failure.js';
+import { concatBytes, enc } from '../../../../_shared/bytes.js';
 import { VfsError } from '../../../../vfs/vfs-error.js';
 import { dispatchWorkspaceRequest } from '../net/kernel-fetch.js';
 import { isEgressGuestEvent, isEgressHostEvent, RealmEgress, type EgressGuestEvent, type EgressHostEvent } from '../../../../runtime/realm-egress.js';
@@ -371,17 +372,10 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
 
 /** All of `stdin`, to its end. */
 async function readToEnd(stdin: NonNullable<CommandContext['stdin']>): Promise<Uint8Array> {
-  if (!stdin.readBytes) return new TextEncoder().encode(await stdin.readAll());
+  if (!stdin.readBytes) return enc.encode(await stdin.readAll());
   const pieces: Uint8Array[] = [];
-  let length = 0;
-  for (let piece = await stdin.readBytes(65536); piece !== null; piece = await stdin.readBytes(65536)) {
-    pieces.push(piece);
-    length += piece.length;
-  }
-  const all = new Uint8Array(length);
-  let at = 0;
-  for (const piece of pieces) { all.set(piece, at); at += piece.length; }
-  return all;
+  for (let piece = await stdin.readBytes(65536); piece !== null; piece = await stdin.readBytes(65536)) pieces.push(piece);
+  return concatBytes(pieces);
 }
 
 /**

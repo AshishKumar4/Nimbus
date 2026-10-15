@@ -7,7 +7,7 @@
  */
 import { direntTypeOfStat } from '../../../../../vfs/dirent-type.js';
 import { FindUsageError } from './errors.js';
-const encoder = new TextEncoder();
+import { enc as encoder } from '../../../../../_shared/bytes.js';
 /** The directives GNU knows and Nimbus has no facts for: block counts, sparseness, file system type, SELinux, birth time. */
 const UNSUPPORTED_DIRECTIVES = { b: true, k: true, S: true, F: true, Z: true, B: true };
 const PATH_DIRECTIVES = {

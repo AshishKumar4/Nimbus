@@ -19,9 +19,8 @@ import { FindUsageError, quote } from './find/errors.js';
 import { parseFindCommand, type Expression, type FindPlan, type Primary, type TypeLetter } from './find/expression.js';
 import { direntTypeLetter, fileTypeLetter, renderFormat, type FileTypeLetter } from './find/format.js';
 import { FindEntry, READ_AHEAD_CALLS, Walker, type VisitResult } from './find/walk.js';
+import { dec as decoder, enc as encoder } from '../../../../_shared/bytes.js';
 
-const decoder = new TextDecoder();
-const encoder = new TextEncoder();
 
 /** What one -exec … + command line may carry, as findutils' bc_use_sensible_arg_max sets it. */
 const EXEC_ARGUMENT_BYTES = 128 * 1024;

@@ -15,6 +15,8 @@ import { resolveContext } from '../substrate/lifo/commands/registry.js';
 import { resolutionOf, searchPath } from './exec-dispatch.js';
 import { BASH_BUILTINS } from '../substrate/lifo/shell/bash-builtins.js';
 import { evaluateTest } from '../substrate/lifo/shell/test-builtin.js';
+import { TerminalStdin } from '../substrate/lifo/shell/terminal-stdin.js';
+import { staticStdinReader } from './stdin-adapter.js';
 import sedCommand from '../substrate/lifo/commands/text/sed.js';
 import grepCommand from '../substrate/lifo/commands/text/grep.js';
 import tailCommand from '../substrate/lifo/commands/text/tail.js';
@@ -40,40 +42,16 @@ import { humanReadable, parseSuffixedCount } from '../substrate/lifo/utils/size-
 import { formatUptime, uptimeSeconds } from '../substrate/lifo/utils/system-info.js';
 import { isCharacterDevice, isDirectory, fileTypeChar, lstatOrThrow, statOrThrow } from '../vfs/vfs.js';
 import { direntTypeIn } from '../vfs/dirent-type.js';
-/**
- * A resolved entry as a command this module can run. Every handler in the
- * registry takes a command context; the ones registered below read the string
- * `wrap` leaves in `stdin`, and a command dispatched from here is handed that
- * string rather than a reader.
- */
-function asResolvedCommand(resolved) {
-    return typeof resolved === 'function' ? resolved : null;
-}
-/**
- * stdin as text, read to its end when a command asks for it (and kept in
- * `ctx.stdin`, for a command it dispatches); nothing at all when there was no
- * stdin. Only a command that reads its stdin waits for its end.
- */
+/** stdin as text, read to its end; nothing when there was no stdin. Only a command that reads its stdin waits for its end. */
 async function stdinText(ctx) {
-    const stdin = ctx.stdin;
-    if (stdin === undefined || typeof stdin === 'string')
-        return stdin;
-    ctx.stdin = await stdin.readAll();
-    return ctx.stdin;
+    return await ctx.stdin?.readAll();
 }
 /**
  * A text command shared with the lifo registry: one implementation, reading
  * standard input as the byte stream it is, not a decoded string.
  */
 function textCommand(command) {
-    return wrap(withInvocationVfs(() => command), 'stream');
-}
-/** `factory`'s command over the invocation's own view, once the call carries a credential. */
-function withInvocationVfs(factory) {
-    return async (ctx) => {
-        requireVfsCred(ctx.cred, 'unix command dispatch');
-        return (await factory(ctx.vfs)(ctx));
-    };
+    return wrap(command, 'stream');
 }
 /** `drwxr-xr-x`-style permission string, shared by `ls -l` and `stat %A`. */
 function unixModeString(mode, isDir, isLink) {
@@ -109,8 +87,13 @@ async function unixGroupLabel(vfs, gid) {
         return String(gid);
     }
 }
+/**
+ * Whether `handler` is the stub a runtime that is known but not installed
+ * resolves to (the worker's shell/npm-bin-entrypoints.ts marks it), which
+ * `which` and `type` must not report as a builtin.
+ */
 function isRuntimeInstallHintHandler(handler) {
-    return !!handler && !!handler.__nimbusRuntimeInstallHint;
+    return handler !== null && '__nimbusRuntimeInstallHint' in handler && handler.__nimbusRuntimeInstallHint === true;
 }
 // ── Helpers ─────────────────────────────────────────────────────────────
 /**
@@ -225,9 +208,7 @@ const _CANONICAL_BIN_PATHS = {
 };
 async function _registryResolved(registry, name, from, options = {}) {
     try {
-        const resolved = typeof registry.resolve === 'function'
-            ? asResolvedCommand(await registry.resolve(name, from))
-            : null;
+        const resolved = (await registry.resolve(name, from)) ?? null;
         if (resolved && (options.includeInstallHints || !isRuntimeInstallHintHandler(resolved))) {
             return resolved;
         }
@@ -265,7 +246,7 @@ async function _pathExecutable(name, from) {
 async function _knownCommandPath(registry, name, from) {
     let hit = null;
     try {
-        hit = await searchPath(name, from, (path) => registry.has?.(path) === true);
+        hit = await searchPath(name, from, (path) => registry.has(path));
     }
     catch (error) {
         if (!isVfsError(error))
@@ -319,8 +300,9 @@ async function _describeCommand(registry, name, from, shellBuiltin) {
         return { kind: 'file', path };
     return hint ? null : { kind: 'builtin' };
 }
-function mkWhich(vfs, registry) {
+function mkWhich(registry) {
     return async (ctx) => {
+        const vfs = ctx.vfs;
         // Parse flags. Supports -a (show all matches), -s (silent — no
         // stdout, only exit code). Default behaviour matches GNU which.
         let showAll = false;
@@ -389,8 +371,9 @@ function mkWhich(vfs, registry) {
  * binaries on the virtual VFS; print just the binary path. With no
  * match, print just the name (matches `whereis` behavior on missing).
  */
-function mkWhereis(vfs, registry) {
+function mkWhereis(registry) {
     return async (ctx) => {
+        const vfs = ctx.vfs;
         const names = ctx.args.filter(a => !a.startsWith('-'));
         if (names.length === 0) {
             (await ctx.stderr.write('Usage: whereis name [name ...]\n'));
@@ -424,8 +407,9 @@ function mkWhereis(vfs, registry) {
  * (because the interpreter only consults aliases
  * for the head word).
  */
-function mkCommand(vfs, registry) {
+function mkCommand(registry) {
     return async (ctx) => {
+        const vfs = ctx.vfs;
         const args = [...ctx.args];
         let mode = 'invoke';
         if (args[0] === '-v') {
@@ -463,14 +447,12 @@ function mkCommand(vfs, registry) {
         // because we're calling the resolved cmd not the alias name.
         const name = args[0];
         try {
-            const resolved = asResolvedCommand(await registry.resolve(name, from));
+            const resolved = await registry.resolve(name, from);
             if (!resolved) {
                 (await ctx.stderr.write(`command: ${name}: not found\n`));
                 return 127;
             }
-            const subCtx = { ...ctx, args: args.slice(1) };
-            const code = await resolved(subCtx);
-            return typeof code === 'number' ? code : 0;
+            return await resolved({ ...ctx, args: args.slice(1) });
         }
         catch (e) {
             (await ctx.stderr.write(`command: ${name}: ${errorText(e)}\n`));
@@ -496,8 +478,9 @@ function mkCommand(vfs, registry) {
  * commands module already has access to; treat any registry resolve
  * as "shell builtin" classification.
  */
-function mkType(vfs, registry) {
+function mkType(registry) {
     return async (ctx) => {
+        const vfs = ctx.vfs;
         if (ctx.args.length === 0)
             return 0;
         let exit = 0;
@@ -530,7 +513,7 @@ function mkExport() {
     };
 }
 function mkUnset() {
-    return (ctx) => {
+    return async (ctx) => {
         for (const name of ctx.args) {
             delete ctx.env[name];
         }
@@ -863,8 +846,9 @@ function mkUptime() {
     };
 }
 /** tree: `-L n` bounds the depth (unbounded without it), `-d` lists directories alone. */
-function mkTree(vfs) {
+function mkTree() {
     return async (ctx) => {
+        const vfs = ctx.vfs;
         const level = ctx.args.indexOf('-L');
         const dirsOnly = ctx.args.includes('-d');
         // `-L n` takes the next word; the first other non-option word is the directory.
@@ -956,8 +940,9 @@ function mkTree(vfs) {
  * Failure mode: if we can't parse a statement, write a clear error
  * to stderr and exit 1 (no silent fail).
  */
-function mkAwk(vfs) {
+function mkAwk() {
     return async (ctx) => {
+        const vfs = ctx.vfs;
         const allArgs = ctx.args;
         // Parse -F separator if present.
         let separator = /\s+/;
@@ -1946,8 +1931,9 @@ function parseDuBlockSize(text) {
  * after what they hold, down to -d levels. An entry that cannot be read is
  * reported and skipped, and du then exits 1, as GNU does.
  */
-function mkDu(vfs) {
+function mkDu() {
     return async (ctx) => {
+        const vfs = ctx.vfs;
         let showAll = false, sumOnly = false, total = false, apparent = false, separateDirs = false, nul = false;
         let countLinks = false;
         let human = null;
@@ -2265,8 +2251,9 @@ function mkDu(vfs) {
  * or, under -L (the default with POSIXLY_CORRECT), $PWD when it is an
  * absolute name of that directory with no `.` or `..` in it.
  */
-function mkPwd(vfs) {
+function mkPwd() {
     return async (ctx) => {
+        const vfs = ctx.vfs;
         let logical = ctx.env.POSIXLY_CORRECT !== undefined;
         let operands = 0;
         for (let i = 0; i < ctx.args.length; i++) {
@@ -2353,8 +2340,9 @@ function mkEcho() {
  * ownership, `-d` directory itself, plus path
  * positional. Matches the shell `ls` flag surface so we don't regress.
  */
-function mkLs(vfs) {
+function mkLs() {
     return async (ctx) => {
+        const vfs = ctx.vfs;
         const args = ctx.args;
         const flags = new Set(args
             .filter((arg) => arg.startsWith('-') && !arg.startsWith('--'))
@@ -2370,7 +2358,6 @@ function mkLs(vfs) {
         const followDirOperands = !followOperands && !flagLong && !flagDirectory && !flags.has('F');
         const positionals = args.filter(a => !a.startsWith('-'));
         const targets = positionals.length > 0 ? positionals : [ctx.cwd];
-        const kvfs = ctx.vfs;
         function fmtTime(mtimeMs) {
             const d = new Date(mtimeMs);
             const mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()];
@@ -2387,7 +2374,7 @@ function mkLs(vfs) {
             // host authority reports legacy registry symlinks here too.
             let real = [];
             try {
-                real = await kvfs.readdirStat(fp);
+                real = await vfs.readdirStat(fp);
             }
             catch (e) {
                 (await ctx.stderr.write(`ls: cannot access '${dirPath}': ${strerror(e)}\n`));
@@ -2440,7 +2427,7 @@ function mkLs(vfs) {
             const fp = resolvePath(ctx.cwd, arg);
             // A link operand is shown as the link itself unless followed (above).
             const target = (await readSymlinkTarget(vfs, fp));
-            const followed = target !== null && (followOperands || (followDirOperands && (await kvfs.isDirectory(fp))));
+            const followed = target !== null && (followOperands || (followDirOperands && (await vfs.isDirectory(fp))));
             if (target !== null && !followed) {
                 fileEntries.push({
                     name: arg,
@@ -2455,7 +2442,7 @@ function mkLs(vfs) {
                 continue;
             }
             try {
-                const s = kvfs && typeof kvfs.stat === 'function' ? (await statOrThrow(kvfs, fp)) : (await statOrThrow(vfs, fp));
+                const s = await statOrThrow(vfs, fp);
                 if (s.type === 'directory' && !flagDirectory) {
                     dirArgs.push(arg);
                 }
@@ -2518,8 +2505,9 @@ function mkLs(vfs) {
  * POSIX rm: -f makes a missing target no error (exit 0), -r removes a
  * directory tree, and a failure is reported with the POSIX text.
  */
-function mkRm(vfs) {
+function mkRm() {
     return async (ctx) => {
+        const vfs = ctx.vfs;
         const recursive = ctx.args.some(arg => /^-[^-]*[rR]/.test(arg) || arg === '--recursive');
         const force = ctx.args.some(arg => /^-[^-]*f/.test(arg) || arg === '--force');
         const targets = ctx.args.filter(arg => !arg.startsWith('-'));
@@ -2597,8 +2585,9 @@ function touchErrno(error) {
  * a missing file is created empty unless -c. A missing parent directory is an
  * error, as it is for open(2).
  */
-function mkTouch(vfs) {
+function mkTouch() {
     return async (ctx) => {
+        const vfs = ctx.vfs;
         const targetVfs = ctx.vfs ?? vfs;
         const usage = async (text) => {
             await ctx.stderr.write(`touch: ${text}\nTry 'touch --help' for more information.\n`);
@@ -2919,8 +2908,9 @@ const STAT_USAGE = [
     '      --version         output version information and exit',
     '',
 ].join('\n');
-function mkStat(vfs, sqliteVfs) {
+function mkStat(sqliteVfs) {
     return async (ctx) => {
+        const vfs = ctx.vfs;
         let format = null;
         // `--printf` differs from `-c` only in not appending a newline.
         let formatAddsNewline = true;
@@ -3020,30 +3010,13 @@ function mkStat(vfs, sqliteVfs) {
         }
         const activeFormat = format ?? (terse ? STAT_TERSE_FORMAT : null);
         // Through the process's view, so mounted paths (/dev) resolve.
-        const kvfs = ctx.vfs;
         for (const f of files) {
-            let st = null;
-            let displayPath = f;
-            // Try Kernel.VFS first (sees mounts).
-            if (kvfs && typeof kvfs.stat === 'function') {
-                try {
-                    st = (await statOrThrow(kvfs, f.startsWith('/') ? f : ctx.cwd + '/' + f));
-                    displayPath = f.startsWith('/') ? f : `/${ctx.cwd}/${f}`.replace(/^\/+/, '/');
-                }
-                catch (_e) { /* fall through to SqliteVFS */ }
+            const st = await statOrThrow(vfs, f.startsWith('/') ? f : ctx.cwd + '/' + f).catch(() => null);
+            if (st === null) {
+                (await ctx.stderr.write(`stat: cannot statx '${f}': No such file or directory\n`));
+                return 1;
             }
-            // Fall back to SqliteVFS direct for non-mounted paths.
-            if (!st) {
-                try {
-                    const fp = resolvePath(ctx.cwd, f);
-                    st = (await statOrThrow(vfs, fp));
-                    displayPath = fp;
-                }
-                catch (_e) {
-                    (await ctx.stderr.write(`stat: cannot statx '${f}': No such file or directory\n`));
-                    return 1;
-                }
-            }
+            const displayPath = f.startsWith('/') ? f : `/${ctx.cwd}/${f}`.replace(/^\/+/, '/');
             const uid = st.uid ?? ctx.cred.uid;
             const gid = st.gid ?? ctx.cred.gid;
             const labels = {
@@ -3092,8 +3065,9 @@ const BASE64_SPEC = {
  * file produced base64 of something else; `-w`, which GNU wraps at 76 columns
  * by default, was not implemented at all, so `base64 -w 0` read `0` as a file.
  */
-function mkBase64(vfs) {
+function mkBase64() {
     return async (ctx) => {
+        const vfs = ctx.vfs;
         const { flags, positional, unknown } = parseArgs(ctx.args, BASE64_SPEC);
         if (unknown.length > 0) {
             (await ctx.stderr.write(`base64: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`));
@@ -3173,7 +3147,7 @@ function mkTest(bracket) {
  * meets them, -L resolves `..` before links, -s prints without resolving
  * links; -q, -z, --relative-to and --relative-base.
  */
-function mkRealpath(_vfs) {
+function mkRealpath() {
     const USAGE = "Try 'realpath --help' for more information.\n";
     const LONG = {
         'canonicalize-existing': 'e', 'canonicalize-missing': 'm', logical: 'L', physical: 'P',
@@ -3598,8 +3572,8 @@ function formatOneArg(spec, arg) {
     }
     return body;
 }
-function mkTrue() { return () => 0; }
-function mkFalse() { return () => 1; }
+function mkTrue() { return async () => 0; }
+function mkFalse() { return async () => 1; }
 /**
  * shell compatibility (2026-05-11): readlink stub.
  *
@@ -3630,13 +3604,14 @@ function mkFalse() { return () => 1; }
  * it cannot answer for exits 1 and says nothing. -n drops the newline after
  * a lone name; -z ends each with NUL.
  */
-function mkReadlink(vfs) {
+function mkReadlink() {
     const USAGE = "Try 'readlink --help' for more information.\n";
     const LONG = {
         canonicalize: 'f', 'canonicalize-existing': 'e', 'canonicalize-missing': 'm', 'no-newline': 'n',
         quiet: 'q', silent: 's', verbose: 'v', zero: 'z',
     };
     return async (ctx) => {
+        const vfs = ctx.vfs;
         let mode = null;
         let noNewline = false;
         let verbose = false;
@@ -3707,8 +3682,9 @@ function mkReadlink(vfs) {
         return exit;
     };
 }
-function mkFile(vfs) {
+function mkFile() {
     return async (ctx) => {
+        const vfs = ctx.vfs;
         for (const f of ctx.args.filter(a => !a.startsWith('-'))) {
             const fp = resolvePath(ctx.cwd, f);
             try {
@@ -4287,8 +4263,6 @@ class DumpByteSource {
     probedFirst = false;
     // Drained-string stdin is encoded once; pulls slice the encoded bytes so
     // multibyte input never advances past bytes it did not return.
-    stdinBytes = null;
-    stdinCursor = 0;
     stdinOverflow = [];
     failures = 0;
     opened = 0;
@@ -4341,20 +4315,10 @@ class DumpByteSource {
         this.currentPath = '';
         this.cursor = 0;
     }
-    /** One bounded pull; drained strings are encoded once and sliced by byte. */
+    /** One bounded pull. */
     async stdinPull(max) {
-        if (typeof this.ctx.stdin === 'string') {
-            if (this.stdinBytes === null)
-                this.stdinBytes = enc.encode(this.ctx.stdin);
-            if (this.stdinCursor >= this.stdinBytes.length)
-                return null;
-            const end = Math.min(this.stdinCursor + max, this.stdinBytes.length);
-            const chunk = this.stdinBytes.subarray(this.stdinCursor, end);
-            this.stdinCursor = end;
-            return chunk;
-        }
         const reader = this.ctx.stdin;
-        if (typeof reader?.read !== 'function')
+        if (reader === undefined)
             return null;
         // read/readAll-only embedders lose nothing: overflow bytes from a bounded
         // pull wait in stdinOverflow until the next one. A live stream hands back
@@ -5100,16 +5064,15 @@ function mkXxd() {
  * command ran, which held `printf x > f` until a child process's parent ended
  * its stdin. The terminal's own stream is the exception: the shell hands it
  * to every command and closes it only after the command returns, so its
- * already-typed text is taken in place, without awaiting its end.
+ * already-typed text is taken in place, without awaiting its end. Every
+ * command here runs as a process, with its credential.
  */
 function wrap(fn, terminalInput = 'drain') {
     return async (ctx) => {
         try {
-            const stdin = ctx.stdin;
-            if (terminalInput === 'drain' && stdin && typeof stdin !== 'string' && typeof stdin.feed === 'function') {
-                const drainable = stdin;
-                ctx.stdin = typeof drainable.drainBuffered === 'function' ? drainable.drainBuffered() : '';
-            }
+            requireVfsCred(ctx.cred, 'unix command dispatch');
+            if (terminalInput === 'drain' && ctx.stdin instanceof TerminalStdin)
+                ctx.stdin = staticStdinReader(ctx.stdin.drainBuffered());
             return await fn(ctx);
         }
         catch (e) {
@@ -5165,10 +5128,10 @@ function mkUlimit() {
     };
 }
 export function registerUnixCommands(registry, sqliteVfs) {
-    registry.register('which', wrap(withInvocationVfs((vfs) => mkWhich(vfs, registry))));
-    registry.register('whereis', wrap(withInvocationVfs((vfs) => mkWhereis(vfs, registry))));
-    registry.register('command', wrap(withInvocationVfs((vfs) => mkCommand(vfs, registry))));
-    registry.register('type', wrap(withInvocationVfs((vfs) => mkType(vfs, registry))));
+    registry.register('which', wrap(mkWhich(registry)));
+    registry.register('whereis', wrap(mkWhereis(registry)));
+    registry.register('command', wrap(mkCommand(registry)));
+    registry.register('type', wrap(mkType(registry)));
     registry.register('export', wrap(mkExport()));
     registry.register('unset', wrap(mkUnset()));
     registry.register('clear', wrap(mkClear()));
@@ -5176,7 +5139,7 @@ export function registerUnixCommands(registry, sqliteVfs) {
     registry.register('getfacl', wrap(mkGetfacl(sqliteVfs)));
     registry.register('date', wrap(mkDate()));
     registry.register('uptime', wrap(mkUptime()));
-    registry.register('tree', wrap(withInvocationVfs(mkTree)));
+    registry.register('tree', wrap(mkTree()));
     registry.register('grep', textCommand(grepCommand));
     // SHELL-R6-B2: head reads the pipe reader itself, so it terminates after
     // N lines, triggering the abort cascade for upstream producers like `yes`.
@@ -5186,29 +5149,29 @@ export function registerUnixCommands(registry, sqliteVfs) {
     registry.register('sort', textCommand(sortCommand));
     registry.register('uniq', textCommand(uniqCommand));
     registry.register('sed', textCommand(sedCommand));
-    registry.register('awk', wrap(withInvocationVfs(mkAwk)));
-    registry.register('xargs', wrap(withInvocationVfs(() => mkXargs())));
+    registry.register('awk', wrap(mkAwk()));
+    registry.register('xargs', wrap(mkXargs()));
     registry.register('tee', textCommand(teeCommand));
-    registry.register('du', wrap(withInvocationVfs(mkDu)));
+    registry.register('du', wrap(mkDu()));
     // Registry-level echo + cat for xargs cross-command dispatch.
     // Shell.builtins still wins for direct `echo X` invocations; this
     // entry is only reached when a command (xargs etc.) looks them up
     // via the registry path.
     registry.register('echo', wrap(mkEcho()));
-    registry.register('pwd', wrap(withInvocationVfs(mkPwd)));
+    registry.register('pwd', wrap(mkPwd()));
     registry.register('cat', textCommand(catCommand));
     registry.register('tac', textCommand(tacCommand));
-    registry.register('ls', wrap(withInvocationVfs(mkLs)));
-    registry.register('rm', wrap(withInvocationVfs(mkRm)));
-    registry.register('touch', wrap(withInvocationVfs(mkTouch)));
-    registry.register('stat', wrap(withInvocationVfs((v) => mkStat(v, sqliteVfs))));
-    registry.register('base64', wrap(withInvocationVfs(mkBase64)));
+    registry.register('ls', wrap(mkLs()));
+    registry.register('rm', wrap(mkRm()));
+    registry.register('touch', wrap(mkTouch()));
+    registry.register('stat', wrap(mkStat(sqliteVfs)));
+    registry.register('base64', wrap(mkBase64()));
     registry.register('id', wrap(mkId(sqliteVfs)));
-    registry.register('realpath', wrap(withInvocationVfs(mkRealpath)));
+    registry.register('realpath', wrap(mkRealpath()));
     registry.register('printf', wrap(mkPrintf()));
     registry.register('true', wrap(mkTrue()));
     registry.register('false', wrap(mkFalse()));
-    registry.register('readlink', wrap(withInvocationVfs(mkReadlink)));
+    registry.register('readlink', wrap(mkReadlink()));
     registry.register('md5sum', textCommand(checksum.md5sum));
     registry.register('sha1sum', textCommand(checksum.sha1sum));
     registry.register('sha224sum', textCommand(checksum.sha224sum));
@@ -5218,7 +5181,7 @@ export function registerUnixCommands(registry, sqliteVfs) {
     registry.register('b2sum', textCommand(checksum.b2sum));
     registry.register('cksum', textCommand(checksum.cksum));
     registry.register('sum', textCommand(checksum.sum));
-    registry.register('file', wrap(withInvocationVfs(mkFile)));
+    registry.register('file', wrap(mkFile()));
     // od/hexdump/xxd read operands and sinks through ctx.vfs — the
     // mount-aware seam the host hands every command — so they need no
     // invocation-scoped raw view of their own.
@@ -5254,25 +5217,6 @@ export function registerUnixCommands(registry, sqliteVfs) {
     }));
     registry.register('test', wrap(mkTest(false)));
     registry.register('[', wrap(mkTest(true)));
-    // read — read a line (stub, returns empty for non-interactive)
-    // shell-polish (2026-05-12): `read VAR` is registered here as a
-    // NO-OP fallback (matches the pre-existing stub behaviour). The
-    // REAL working implementation lives in src/session/init.ts as a
-    // shell builtin (shellAny.builtins.set('read', ...)).
-    //
-    // Why two registrations: the interpreter executes registered
-    // shell commands with `ctx.env = { ...this.config.env }` — a SHALLOW
-    // COPY.
-    // Mutating ctx.env inside a registered command therefore CANNOT
-    // propagate the var-assignment back to the shell. Builtins, by
-    // contrast, run inside the interp instance with direct access to
-    // `this.env` (the real shell env). The wait builtin in shell/compat/r6 uses
-    // the same workaround.
-    //
-    // Keep the registry stub so `type read` reports "shell builtin" and
-    // `which read` doesn't error; the builtin always wins dispatch
-    // (interp.executeSimpleCommand checks builtins.get BEFORE
-    // registry.resolve — index-Djm2onjx.js:5182-5186).
     // read, exit, source, ., set and trap are the shell's own builtins; run by
     // name (xargs, find -exec) they are not found, as on a system that ships no
     // /usr/bin copies of them. shopt and ulimit answer for this shell: it has

@@ -25,6 +25,13 @@ published independently in the `@nimbus-sh` npm scope.
   UTF-8 the same way for every command: a `node` program's now reads as a
   coreutil's always did (one character a byte), not as U+FFFD.
 
+- Fixed: `cat`, `tee`, `head`, `cut`, `cksum`, `md5sum` and the other
+  `*sum` tools, `sum` and `grep` read their options as GNU's getopt_long
+  does. A long option may be any unambiguous prefix of its name
+  (`cat --numb`, `head --lin=1`); an ambiguous one lists its possibilities;
+  a missing or unwanted argument gets getopt's message. `grep -A` and `-B`
+  now win over `-C` and `-NUM` whichever comes first, as in GNU grep.
+
 ## 2026-10-15: platform 0.11.0, core 0.22.0, fabric 0.17.0, worker 0.20.0, sdk 0.16.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4, runtime-cpython 3.13.14-2 (config 0.3.1 unchanged)
 
 The 2026-10-14 versions reached production but were never published to npm; these carry their changes too.

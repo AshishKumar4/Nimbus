@@ -1,6 +1,7 @@
 import { asciiBytes, concatBytes, inputChunks, isBrokenPipe, writeBytes } from '../../utils/bytes-io.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
 import { parseSuffixedCount } from '../../utils/size-units.js';
+import { getopt } from '../../utils/args.js';
 class HeadUsage extends Error {
 }
 /**
@@ -15,6 +16,14 @@ function parseCount(value, unit) {
         throw new HeadUsage(`invalid number of ${unit}: \u2018${value}\u2019`);
     return { unit, count: Math.min(count, Number.MAX_SAFE_INTEGER), allBut };
 }
+/** GNU head's options, its long ones in its table's order. */
+const HEAD_OPTIONS = {
+    short: 'c:n:qvz',
+    long: {
+        bytes: ['c', 'required'], lines: ['n', 'required'], quiet: ['q', 'none'], silent: ['q', 'none'],
+        verbose: ['v', 'none'], 'zero-terminated': ['z', 'none'],
+    },
+};
 const command = async (ctx) => {
     let mode = { unit: 'lines', count: 10, allBut: false };
     let headers = null;
@@ -25,68 +34,31 @@ const command = async (ctx) => {
         return 1;
     };
     try {
-        const args = ctx.args;
-        for (let i = 0; i < args.length; i++) {
-            const arg = args[i];
-            if (arg === '--') {
-                files.push(...args.slice(i + 1));
-                break;
-            }
-            if (arg.startsWith('--')) {
-                const [name, inline] = arg.slice(2).split(/=(.*)/s, 2);
-                if (name === 'lines' || name === 'bytes') {
-                    const value = inline ?? args[++i];
-                    if (value === undefined)
-                        return usage(`option '--${name}' requires an argument`);
-                    mode = parseCount(value, name);
-                }
-                else if (name === 'quiet' || name === 'silent')
-                    headers = false;
-                else if (name === 'verbose')
-                    headers = true;
-                else if (name === 'zero-terminated')
-                    delim = 0;
-                else
-                    return usage(`unrecognized option '--${name}'`);
-                continue;
-            }
-            if (!arg.startsWith('-') || arg === '-') {
-                files.push(arg);
-                continue;
-            }
-            if (i === 0 && /^-\d+[bkm]?[cqvlz]*$/.test(arg)) {
-                // The obsolete -N[bkm][c|l][q|v]: N lines, or N bytes with c.
-                const m = /^-(\d+)([bkm]?)([cqvlz]*)$/.exec(arg);
-                const scale = m[2] === 'b' ? 512 : m[2] === 'k' ? 1024 : m[2] === 'm' ? 1048576 : 1;
-                mode = { unit: m[3].includes('c') ? 'bytes' : 'lines', count: Number(m[1]) * scale, allBut: false };
-                if (m[3].includes('q'))
-                    headers = false;
-                if (m[3].includes('v'))
-                    headers = true;
-                if (m[3].includes('z'))
-                    delim = 0;
-                continue;
-            }
-            for (let j = 1; j < arg.length; j++) {
-                const flag = arg[j];
-                if (flag === 'n' || flag === 'c') {
-                    let value = arg.slice(j + 1);
-                    if (value === '')
-                        value = args[++i];
-                    if (value === undefined)
-                        return usage(`option requires an argument -- '${flag}'`);
-                    mode = parseCount(value, flag === 'n' ? 'lines' : 'bytes');
-                    break;
-                }
-                if (flag === 'q')
-                    headers = false;
-                else if (flag === 'v')
-                    headers = true;
-                else if (flag === 'z')
-                    delim = 0;
-                else
-                    return usage(`invalid option -- '${flag}'`);
-            }
+        // The obsolete -N[bkm][c|l][q|v], as the first word: N lines, or N bytes with c.
+        const obsolete = /^-(\d+)([bkm]?)([cqvlz]*)$/.exec(ctx.args[0] ?? '');
+        if (obsolete !== null) {
+            const scale = obsolete[2] === 'b' ? 512 : obsolete[2] === 'k' ? 1024 : obsolete[2] === 'm' ? 1048576 : 1;
+            mode = { unit: obsolete[3].includes('c') ? 'bytes' : 'lines', count: Number(obsolete[1]) * scale, allBut: false };
+            if (obsolete[3].includes('q'))
+                headers = false;
+            if (obsolete[3].includes('v'))
+                headers = true;
+            if (obsolete[3].includes('z'))
+                delim = 0;
+        }
+        for (const event of getopt(obsolete === null ? ctx.args : ctx.args.slice(1), HEAD_OPTIONS)) {
+            if (event.kind === 'error')
+                return usage(event.message);
+            if (event.kind === 'operand')
+                files.push(event.value);
+            else if (event.key === 'n' || event.key === 'c')
+                mode = parseCount(event.value ?? '', event.key === 'n' ? 'lines' : 'bytes');
+            else if (event.key === 'q')
+                headers = false;
+            else if (event.key === 'v')
+                headers = true;
+            else if (event.key === 'z')
+                delim = 0;
         }
     }
     catch (error) {

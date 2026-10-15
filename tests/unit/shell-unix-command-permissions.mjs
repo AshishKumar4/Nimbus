@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
+import { staticStdinReader } from '../../packages/core/src/shell/stdin-adapter.ts';
 import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
@@ -133,7 +134,7 @@ async function run(name, args, cred, invocationVfs = filesystemFor(cred), stdin 
     cred,
     pid: 71,
     vfs: invocationVfs,
-    stdin,
+    stdin: staticStdinReader(stdin),
     stdout: { write: (value) => { stdout += String(value); } },
     stderr: { write: (value) => { stderr += String(value); } },
     signal: new AbortController().signal,
