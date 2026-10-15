@@ -120,7 +120,7 @@ export async function npxCacheDir(specs) {
     return `${NPX_CACHE_DIR}/${Array.from(digest.subarray(0, 8), (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
 }
 /**
- * Whether the package installed at `packageDir` answers `spec`, as
+ * Whether the package installed at `packageDir`, if any, answers `spec`, as
  * libnpmexec's missingFromTree reads a tree: a spec by name alone takes
  * whatever is installed; a registry version or range, only a version that
  * satisfies it. Any other spec (a tag, a git or tarball url, a path) only
@@ -128,13 +128,6 @@ export async function npxCacheDir(specs) {
  * fetch its manifest to compare, and that directory holds what it named.
  */
 async function installedFor(vfs, packageDir, spec, ownRequest) {
-    let version;
-    try {
-        ({ version } = JSON.parse(await vfs.readFileString(_vfsKey(`${packageDir}/package.json`))));
-    }
-    catch {
-        return false;
-    }
     let parsed;
     try {
         parsed = npa(spec);
@@ -142,12 +135,18 @@ async function installedFor(vfs, packageDir, spec, ownRequest) {
     catch {
         return false;
     }
+    // By name alone, whatever is there (the bin's own lookup finds whether anything is).
     if (parsed.raw === parsed.name)
         return true;
-    if (parsed.registry && (parsed.type === 'version' || parsed.type === 'range')) {
+    if (!(parsed.registry && (parsed.type === 'version' || parsed.type === 'range')))
+        return ownRequest;
+    try {
+        const { version } = JSON.parse(await vfs.readFileString(_vfsKey(`${packageDir}/package.json`)));
         return typeof version === 'string' && satisfiesRange(version, parsed.rawSpec);
     }
-    return ownRequest;
+    catch {
+        return false;
+    }
 }
 /**
  * Resolve a binary for `npx <args>` by:
