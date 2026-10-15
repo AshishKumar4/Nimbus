@@ -229,20 +229,17 @@ function askSettle() {
     post({ type: 'settle', upTo });
     holdWhileBusy();
 }
-/** The writes the last settle call answered for, whose failures it told (settleNow). */
-let answered = { after: 0, upTo: 0 };
 /**
  * Writes after number `after`, up to the last posted, made before this
  * returns, as Node makes a write to a pipe or a file when it is written: the
- * host answers once they are made, with those that failed, each then told to
- * what wrote it.
+ * host answers once they are made, with those that failed (told only so, no
+ * event of them coming), each then told to what wrote it.
  */
 function settleNow(after) {
     const upTo = postedOutput;
     const failures = call({ op: 'settle', after, upTo });
     if (!isOutputFailures(failures))
         malformed('settle');
-    answered = { after, upTo };
     for (const failure of failures)
         taken(failure);
     if (upTo > settledOutput)
@@ -379,9 +376,6 @@ events.on('message', (event) => {
             return;
         }
         case 'output-failed':
-            // One a settle call's answer told already (settleNow) is not told twice.
-            if (event.seq > answered.after && event.seq <= answered.upTo)
-                return;
             taken(event);
             return;
         case 'output-settled': {

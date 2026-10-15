@@ -96,7 +96,11 @@ export type GuestEvent =
     readonly type: 'settle';
     readonly upTo: number;
 }
-/** The program's 'beforeExit' is about to be emitted with writes up to number `after` posted: the failures of those after it are kept for the settle call that follows. */
+/**
+ * The program's 'beforeExit' is about to be emitted with writes up to
+ * number `after` posted: the failures of those after it are the answer of
+ * the settle call that follows, and no output-failed of theirs is posted.
+ */
  | {
     readonly type: 'settle-mark';
     readonly after: number;

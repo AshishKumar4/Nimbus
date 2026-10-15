@@ -31,9 +31,13 @@
  * at once; a worker running JavaScript, or WebAssembly that calls into
  * JavaScript, Bun ends), and a process ends at SIGKILL whatever it runs.
  *
- * In a thread, calls and their answers go on a MessagePort, `calls`; the host
- * sets `wake` and notifies it after each answer, and a waiting guest waits
- * with Atomics.wait on `wake`, taking answers with receiveMessageOnPort.
+ * In a thread, calls go on a MessagePort, `calls`, and their answers on
+ * `calls`, or on `waited` for a call the guest waits for: `waited` has no
+ * listener, so a waited answer is no task of the guest's loop (Bun runs a
+ * port's listener for each message, even one receiveMessageOnPort took, and
+ * that is work its loop runs again for). The host sets `wake` and notifies
+ * it after each answer, and a waiting guest waits with Atomics.wait on
+ * `wake`, taking its answer from `waited` with receiveMessageOnPort.
  * Events go on `events`. In a process, the same messages go as frames (a
  * length, then the message's v8 serialization) on pipes ({@link REALM_FDS}):
  * the answers a guest waits for on one it only ever reads synchronously, the
@@ -60,7 +64,9 @@ export interface RealmStart {
     readonly payload: unknown;
     readonly calls: MessagePort;
     readonly events: MessagePort;
-    /** One Int32: set to 1 and notified when an answer is on `calls`. */
+    /** Where the answers to the calls the guest waits for come: read only by the call that waits. */
+    readonly waited: MessagePort;
+    /** One Int32: set to 1 and notified after each answer. */
     readonly wake: SharedArrayBuffer;
 }
 /** A call the guest makes; `wait` when the guest holds its thread for the answer. */

@@ -272,9 +272,11 @@ export async function runNodeInRealm(program, ctx, kernel) {
                 const failure = { seq, fd, code: typeof code === 'string' ? code : 'EIO', pipe: ctx.isFdPipe?.(fd) === true, source, writer };
                 if (flight !== undefined && !flight.heard)
                     unheard.push(failure);
+                // One a 'beforeExit' listener made is told by the settle call's answer, not as an event the guest's loop would run again for.
                 if (marked !== null && seq > marked.after)
                     marked.failures.push(failure);
-                post({ type: 'output-failed', ...failure });
+                else
+                    post({ type: 'output-failed', ...failure });
             }
             if (flight !== undefined && --flight.pending === 0)
                 inFlight[fd].delete(writer);
