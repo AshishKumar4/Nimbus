@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `fchmod`, `fchown` and `futimes` on a WASI program's file
+  descriptor change the file it opened. Before, they changed whatever file
+  had the name by then: after an unlink and a new file at that name, they
+  changed the new one.
+- Fixed: `fchown` on a descriptor follows `chown`'s rules: the owner may set
+  the group to one of its own groups, which clears the set-id bits. Before,
+  only root could. `futimes` with explicit times needs the owner, as
+  `utimes` does. Before, any process that opened the file to write could set
+  them.
+
 - Fixed: a WASI program (git, Python, clang, Ruby) that was killed, or that
   exited, before the session had answered its last file changes no longer
   loses the files it made in a directory it held. The session landed the
