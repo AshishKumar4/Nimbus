@@ -750,6 +750,7 @@ export function delegationHolder(options) {
                 file.mode = attrs.mode & 0o7777;
             return true;
         },
+        undecided: (key) => { decided.delete(key); },
         restat: (handleId, stat) => {
             const through = handleOf(handleId).file.through;
             if (through !== undefined)

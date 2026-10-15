@@ -1204,9 +1204,13 @@ export function residentFilesystem(session, resident, delegation) {
             return after(local, (done) => {
                 if (done !== DELEGATE)
                     return undefined;
-                if (named === undefined || holder.holds(named) || ('uid' in attrs && (attrs.uid === -1 || attrs.gid === -1)))
+                if (named === undefined || ('uid' in attrs && (attrs.uid === -1 || attrs.gid === -1)))
                     return passed.call(fs, path, ...rest);
-                return byClient(name, { type: 'setattr', path: named, attrs });
+                if (!holder.holds(named))
+                    return byClient(name, { type: 'setattr', path: named, attrs });
+                // The session's, the holder's sent first: what it decided there is the session's after.
+                const key = named;
+                return after(passed.call(fs, path, ...rest), (receipt) => { holder.undecided(key); return receipt; });
             });
         });
     }
