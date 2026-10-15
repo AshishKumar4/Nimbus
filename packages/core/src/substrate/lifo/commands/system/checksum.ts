@@ -450,6 +450,7 @@ function checksumOptions(program: string, isCksum: boolean): GetoptSpec {
 }
 
 function makeCommand(program: string, fixed: Algorithm | null): Command {
+  const options = checksumOptions(program, fixed === null);
   return async (ctx) => {
     const usage = async (message: string) => {
       await ctx.stderr.write(`${program}: ${message}\nTry '${program} --help' for more information.\n`);
@@ -473,7 +474,7 @@ function makeCommand(program: string, fixed: Algorithm | null): Command {
       else return `invalid argument \u2018${a}\u2019 for \u2018--algorithm\u2019`;
       return null;
     };
-    for (const event of getopt(ctx.args, checksumOptions(program, fixed === null))) {
+    for (const event of getopt(ctx.args, options)) {
       if (event.kind === 'error') return usage(event.message);
       if (event.kind === 'operand') { o.files.push(event.value); continue; }
       switch (event.key) {
