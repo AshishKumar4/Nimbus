@@ -98,7 +98,7 @@ export declare function createProcess(opts: ProcessOptions): LifoProcess & {
     getegid: () => number;
     getgroups: () => number[];
     /** Its mask; a new one (a number or an octal string) is what it creates with from now on, and the one before is answered. */
-    umask: (next?: number | string) => number;
+    umask: (next?: unknown) => number;
     binding: (name: string) => {
         errname: (code: number) => string;
         UV_EOF: number;

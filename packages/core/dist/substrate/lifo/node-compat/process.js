@@ -33,6 +33,29 @@ export class LifoProcess extends EventEmitter {
         return this.#stderr ??= standardStream(this.#errorOutput, 2);
     }
 }
+/**
+ * A mode argument as Node's parseFileMode reads it: an octal string of
+ * digits alone, or an unsigned 32-bit integer. Anything else is refused with
+ * Node's error, before anything changes.
+ */
+function parseFileMode(value, name) {
+    if (typeof value === 'string') {
+        if (!/^[0-7]+$/.test(value)) {
+            throw nodeError(TypeError, 'ERR_INVALID_ARG_VALUE', `The argument '${name}' must be a 32-bit unsigned integer or an octal string. Received ${JSON.stringify(value)}`);
+        }
+        return Number.parseInt(value, 8);
+    }
+    if (typeof value !== 'number') {
+        throw nodeError(TypeError, 'ERR_INVALID_ARG_TYPE', `The "${name}" argument must be of type number. Received ${value === null ? 'null' : `type ${typeof value}`}`);
+    }
+    if (!Number.isInteger(value)) {
+        throw nodeError(RangeError, 'ERR_OUT_OF_RANGE', `The value of "${name}" is out of range. It must be an integer. Received ${value}`);
+    }
+    if (value < 0 || value > 0xffff_ffff) {
+        throw nodeError(RangeError, 'ERR_OUT_OF_RANGE', `The value of "${name}" is out of range. It must be >= 0 && <= 4294967295. Received ${value}`);
+    }
+    return value;
+}
 export function createProcess(opts) {
     const startTime = Date.now();
     const { identity } = opts;
@@ -119,12 +142,9 @@ export function createProcess(opts) {
             const previous = mask;
             if (next === undefined)
                 return previous;
-            const value = typeof next === 'string' ? Number.parseInt(next, 8) : next;
-            if (!Number.isInteger(value) || value < 0 || value > 0o777) {
-                throw nodeError(TypeError, 'ERR_INVALID_ARG_VALUE', `The argument 'mask' must be a 32-bit unsigned integer or an octal string. Received ${String(next)}`);
-            }
-            mask = value;
-            identity.setUmask(value);
+            // umask(2) keeps the permission bits of what it is given.
+            mask = parseFileMode(next, 'mask') & 0o777;
+            identity.setUmask(mask);
             return previous;
         },
         // process.binding() stub — low-level Node.js internal, used by execa/errname etc.
