@@ -717,6 +717,26 @@ for (const phase of ['openWriter', 'stream']) {
   assert.equal(s.text('home/user/l/hurried'), 'hurried');
 }
 
+// ── An awaited op folded into a lingering one takes it now, not when the
+//    linger's timer would have (lingerMs here is past the test's patience) ──
+{
+  const s = session();
+  s.kernel.mkdir('home/user/f', { mode: 0o755 });
+  s.kernel.chown('home/user/f', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  const c = client(s, { grantAfter: 1, grantIdleMs: 60_000, recallPollMs: 100, lingerMs: 60_000 });
+  c.holder('home/user/f/x');
+  await until(() => c.holder('home/user/f/x'), 'the grant');
+  const whole = (data) => ({ type: 'call', call: { call: 'writeFile', path: 'home/user/f/w', mode: 0o644, data: enc.encode(data) } });
+  c.submit(whole('one'), { decided: true });
+  // Its timer armed, the pump idle.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const folded = c.submit(whole('two'));
+  const answered = await Promise.race([folded.then(() => 'answered'), new Promise((resolve) => setTimeout(() => resolve('waiting'), 2_000))]);
+  assert.equal(answered, 'answered', 'the awaited op folded into a lingering one waited for its timer');
+  await c.settle();
+  assert.equal(s.text('home/user/f/w'), 'two');
+}
+
 // ── What a held subtree decides ahead of the session is bounded ──
 {
   const s = session();

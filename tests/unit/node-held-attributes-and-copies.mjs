@@ -27,8 +27,10 @@
 
 import assert from 'node:assert/strict';
 import { createAuthority, facetSupervisor, launchResident, residentDataPlan, runScenarios, sleep, until } from './lib/resident-body.mjs';
-import { LINGER_MS } from '../../packages/core/src/_shared/process-fs-client.ts';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { drainProcessFsJournal, journalSource, LINGER_MS, sqlJournal } from '../../packages/core/src/_shared/process-fs-client.ts';
+import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
+import { journalDrainSession } from '../../packages/core/src/workspace/supervisor-op.ts';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const PROGRAM = `
 const fs = require("fs");
@@ -43,7 +45,9 @@ const OUT = '/home/user/app/out';
  * waves, and one that makes its listings fail. Root owns `out/rootfile` and
  * the unsearchable `/home/user/app/locked`.
  */
-async function boot() {
+async function boot({ journalSql } = {}) {
+  // The facet's own store, where the process logs what it changes (process-fs-journal).
+  if (journalSql !== undefined) globalThis.__nimbusFsJournalSql = journalSql;
   const authority = createAuthority();
   authority.kfs.mkdir('home/user/app/out', { recursive: true, mode: 0o755 });
   authority.kfs.mkdir('home/user/elsewhere', { mode: 0o755 });
@@ -188,6 +192,26 @@ await runScenarios(import.meta.path, {
     await Promise.all([outside, setuid]);
     assert.equal(await peerRead(authority, 'home/user/app/out/from-elsewhere.txt'), 'x');
     assert.equal(await peerRead(authority, 'home/user/app/out/tool-copy'), 'TOOL');
+  },
+
+  async 'what the log holds of an answered copy lands the bytes it answered, whatever the source becomes'() {
+    const journalSql = createSqliteVfsTestHarness().sql;
+    const { authority, fs, stall } = await boot({ journalSql });
+    const sourceMode = authority.kfs.stat('home/user/app/out/seeded.txt').mode & 0o7777;
+    stall();
+    assert.equal(await answeredAtOnce(fs.promises.copyFile(`${OUT}/seeded.txt`, `${OUT}/answered.txt`)), 'answered');
+    assert.equal(fs.readFileSync(`${OUT}/answered.txt`, 'utf8'), 'seeded');
+    // The process ends here with its log unanswered, and a peer changes the
+    // source before the log is drained: the session it drains into.
+    const after = createAuthority();
+    after.kfs.mkdir('home/user/app/out', { recursive: true, mode: 0o755 });
+    after.kfs.writeFile('home/user/app/out/seeded.txt', 'CHANGED');
+    const lease = after.files.openHost(CRED_SESSION_USER);
+    const drained = await drainProcessFsJournal({ journal: journalSource(sqlJournal(journalSql)), session: journalDrainSession(lease.fs, 1000002) })
+      .finally(() => lease.dispose());
+    assert.deepEqual(drained.failures, []);
+    assert.equal(after.read('home/user/app/out/answered.txt'), 'seeded', 'the drain copied what the source became');
+    assert.equal(after.kfs.stat('home/user/app/out/answered.txt').mode & 0o7777, sourceMode);
   },
 
   async 'a decided copy is refused where the session\'s walk to its source is (EACCES)'() {
