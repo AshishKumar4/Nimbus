@@ -133,6 +133,22 @@ await runScenarios(import.meta.path, {
     assert.equal(await peerRead(authority, 'home/user/app/out/from-seeded.txt'), 'seeded');
   },
 
+  async 'copies alone take the subtree they copy into, and are decided there from then'() {
+    const { fs, stall, release } = await boot();
+    const CO = '/home/user/app/co';
+    fs.mkdirSync(CO);
+    for (let i = 0; i < 12; i++) {
+      fs.writeFileSync(`${CO}/s${i}`, `S${i}`);
+      await fs.promises.copyFile(`${CO}/s${i}`, `${CO}/d${i}`);
+    }
+    await until(() => globalThis.__nimbusProcessFs.held('home/user/app/co/x') !== undefined, 'the copies took their subtree', 5_000);
+    stall();
+    fs.writeFileSync(`${CO}/last`, 'LAST');
+    assert.equal(await answeredAtOnce(fs.promises.copyFile(`${CO}/last`, `${CO}/last-copy`)), 'answered');
+    assert.equal(fs.readFileSync(`${CO}/last-copy`, 'utf8'), 'LAST');
+    await release();
+  },
+
   async 'a copy from outside any held subtree, or of a set-id file, is the session\'s to answer'() {
     const { authority, fs, stall, release } = await boot();
     stall();
