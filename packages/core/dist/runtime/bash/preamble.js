@@ -1268,6 +1268,8 @@ function startDeferred(s) {
  * stdin that is not a terminal), chmod and chown, and the session's
  * accounts (account).
  */
+/** (uid_t)-1 and (gid_t)-1: chown's "keep this side". */
+const KEEP_ID = 0xffffffff;
 function metadataImports(s, proc, DV, U8, fs) {
     const readPath = (ptr, length) => td.decode(U8().subarray(ptr, ptr + length));
     const at = (fd, path) => {
@@ -1332,7 +1334,22 @@ function metadataImports(s, proc, DV, U8, fs) {
         },
         chmod: (ptr, length, mode) => result(() => fs.chmod(at(-1, readPath(ptr, length)), mode), () => 0),
         fchmod: (fd, mode) => result(() => fs.fchmod(descriptor(fd), mode), () => 0),
-        chown: (fd, ptr, length, uid, gid, follow) => result(() => ptr ? fs.chown(at(fd, readPath(ptr, length)), uid, gid, { followSymlinks: !!follow }) : fs.fchown(descriptor(fd), uid, gid), () => 0),
+        // uid_t and gid_t are unsigned, and come as i32: an id above 0x7fffffff
+        // arrives negative (>>> 0 is its value), and (uid_t)-1 keeps that side,
+        // as chown(2)'s -1 does (chgrp, chown :group), read off the file first.
+        chown: (fd, ptr, length, uidBits, gidBits, follow) => result(() => {
+            const uid = uidBits >>> 0, gid = gidBits >>> 0;
+            const path = ptr ? at(fd, readPath(ptr, length)) : null;
+            const handle = path === null ? descriptor(fd) : 0;
+            const change = (owner, group) => path !== null ? fs.chown(path, owner, group, { followSymlinks: !!follow }) : fs.fchown(handle, owner, group);
+            if (uid !== KEEP_ID && gid !== KEEP_ID)
+                return change(uid, gid);
+            return after(path !== null ? fs.stat(path, { followSymlinks: !!follow }) : fs.fstat(handle), (st) => {
+                if (st === null)
+                    throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+                return change(uid === KEEP_ID ? st.uid : uid, gid === KEEP_ID ? st.gid : gid);
+            });
+        }, () => 0),
         /**
          * One getpw* or getgr* lookup (nimbus-libc/nimbus-accounts.c), in one
          * round trip: a user (kind 0) or a group (1), by id (by 0), by name (1)
@@ -1343,7 +1360,9 @@ function metadataImports(s, proc, DV, U8, fs) {
          * password, members). `needed` gets its size: ERANGE when it is more
          * than `capacity`, NOENT when no account is that one.
          */
-        account: (kind, by, ptr, length, id, out, capacity, needed) => result(() => fs.readFile(kind === 1 ? '/etc/group' : '/etc/passwd'), (bytes) => {
+        account: (kind, by, ptr, length, idBits, out, capacityBits, needed) => result(() => fs.readFile(kind === 1 ? '/etc/group' : '/etc/passwd'), (bytes) => {
+            // A uid, gid or index is unsigned, and comes as i32: one above 0x7fffffff arrives negative.
+            const id = idBits >>> 0, capacity = capacityBits >>> 0;
             const text = bytes === null ? '' : td.decode(bytes);
             const name = by === 1 ? td.decode(U8().subarray(ptr, ptr + length)) : '';
             let ids;
