@@ -238,6 +238,8 @@ console.log('wasi-live-adoption: silent-write-loss assertions passed');
       return { status: errno === 0 ? 0 : 1 };
     },
   });
+  // A one-shot run's facet of its own: no module of the resident worker's above.
+  delete globalThis.__NIMBUS_WASM;
   new Function('__wasiInitFS', '__wasiAdoptSupervisor', 'globalThis', `${RUBY_RUNNER_PREAMBLE_TAIL}
 async function __nimbusRubyEval(boot, code) { return globalThis.__testEval(code); }`)(P.__wasiInitFS, P.__wasiAdoptSupervisor, globalThis);
   globalThis.__rubyBootstrap = Promise.resolve({ ok: true, rubyInitialized: true });
