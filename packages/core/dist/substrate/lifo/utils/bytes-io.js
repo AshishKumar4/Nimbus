@@ -148,6 +148,14 @@ export function textCapture(append) {
  * which valid UTF-8 never produces). `encodeLossless` inverts it exactly.
  */
 export function decodeLossless(bytes) {
+    // Valid UTF-8, nearly all of it, decodes natively; only bytes that are not take the walk below.
+    try {
+        return validUtf8.decode(bytes);
+    }
+    catch (error) {
+        if (!(error instanceof TypeError))
+            throw error;
+    }
     let out = '';
     let run = 0;
     const flush = (end) => {
@@ -173,6 +181,8 @@ export function decodeLossless(bytes) {
     flush(bytes.length);
     return out;
 }
+/** Valid UTF-8, decoded as the walk's runs are (a leading BOM dropped, as `new TextDecoder()` drops it). */
+const validUtf8 = new TextDecoder('utf-8', { fatal: true });
 /** The length of the valid UTF-8 sequence at `i`, or 0. */
 export function utf8SequenceLength(bytes, i) {
     const b = bytes[i];

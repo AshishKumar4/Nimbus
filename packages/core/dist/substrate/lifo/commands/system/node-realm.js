@@ -44,7 +44,9 @@ export function isGuestEvent(value) {
     if (!record(value))
         return false;
     switch (value.type) {
-        case 'output': return (value.fd === 1 || value.fd === 2) && (typeof value.data === 'string' || value.data instanceof Uint8Array) && Number.isSafeInteger(value.seq);
+        case 'output': return (value.fd === 1 || value.fd === 2) && (typeof value.data === 'string' || value.data instanceof Uint8Array)
+            && Number.isSafeInteger(value.seq) && typeof value.settle === 'boolean';
+        case 'settle': return true;
         case 'fetch':
             return Number.isSafeInteger(value.id) && Number.isSafeInteger(value.port) && typeof value.url === 'string'
                 && typeof value.method === 'string' && stringRecord(value.headers)
@@ -251,11 +253,22 @@ export async function runNodeInRealm(program, ctx, kernel) {
             writers.set(fd, writer = new SinkWriter(fd === 1 ? ctx.stdout : ctx.stderr));
         return writer;
     };
-    // The program is held until the host has made (or failed) its last write:
-    // the last write waiting is told settled, and with it every one before.
+    // A program whose code has run waits until the host has made (or failed)
+    // its last write: once asked, the last write waiting is told settled, and
+    // with it every one before.
     let lastQueued = 0;
-    const write = (fd, data, seq) => {
+    let lastSettled = 0;
+    let settleWanted = false;
+    const settled = () => {
+        if (!settleWanted || lastSettled !== lastQueued)
+            return;
+        settleWanted = false;
+        post({ type: 'output-settled', seq: lastSettled });
+    };
+    const write = (fd, data, seq, settle) => {
         lastQueued = seq;
+        if (settle)
+            settleWanted = true;
         written = written.then(async () => {
             if (!failedOutputs.has(fd)) {
                 try {
@@ -270,8 +283,8 @@ export async function runNodeInRealm(program, ctx, kernel) {
                     post({ type: 'output-failed', fd, code: typeof code === 'string' ? code : 'EIO', pipe: ctx.isFdPipe?.(fd) === true });
                 }
             }
-            if (seq === lastQueued)
-                post({ type: 'output-settled', seq });
+            lastSettled = seq;
+            settled();
         });
     };
     // The realm, once it has started: a request for one of the guest's servers waits for none before.
@@ -348,7 +361,11 @@ export async function runNodeInRealm(program, ctx, kernel) {
                 return;
             switch (event.type) {
                 case 'output':
-                    write(event.fd, event.data, event.seq);
+                    write(event.fd, event.data, event.seq, event.settle);
+                    return;
+                case 'settle':
+                    settleWanted = true;
+                    settled();
                     return;
                 case 'exit':
                     code = event.code;
