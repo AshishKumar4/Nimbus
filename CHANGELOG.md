@@ -11,8 +11,9 @@ published independently in the `@nimbus-sh` npm scope.
   refused. `importModuleDynamically:
   vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER` is refused
   (`ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`) at each compile and context that
-  names it, because the engine's own loader imports past the program's
-  module map. A program's own callback is its own. `vm.SourceTextModule`
+  names it, because the engine's own loader would import the host's files
+  at the program's paths. A program's options reach the engine as they are,
+  and a program's own callback is its own. `vm.SourceTextModule`
   and `vm.SyntheticModule` are absent, as in Node without
   `--experimental-vm-modules`. `domain` stays refused.
 

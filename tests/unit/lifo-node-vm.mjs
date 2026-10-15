@@ -3,16 +3,17 @@
 // API, a program writes exactly what real `node` writes running it.
 //
 //   - vm is the engine's: contexts, scripts, compileFunction,
-//     runInThisContext, an error thrown in another context; vm's module
-//     classes are absent, as in Node without --experimental-vm-modules;
+//     runInThisContext, an error thrown in another context, a Script's
+//     cached data, the program's options as they are; vm's module classes
+//     are absent, as in Node without --experimental-vm-modules;
 //   - a dynamic import in vm code with no callback refuses as Node's does.
 //
 // And without an oracle: importModuleDynamically:
 // vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER, which imports through the
 // engine's own loader past the program's module map, is refused at each
-// compile and context that names it, read once (an accessor that names it
-// on a second read does not get it compiled), and the engine's Script is not
-// reachable from the program's to compile with it; domain stays refused
+// compile and context that names it (the program's module map kept whole:
+// core's README says a realm is no boundary, and a program that seeks the
+// engine's loader reaches it); domain stays refused
 // (it would set the engine's own process); and a lifo CommonJS command,
 // which runs in the host's realm, has the same vm.
 //
@@ -37,7 +38,7 @@ const { createLifoCommand } = await import(underBun
   ? '../../packages/core/src/substrate/lifo/pkg/lifo-runtime.ts'
   : '../../packages/core/dist/substrate/lifo/pkg/lifo-runtime.js');
 
-/** Each case: a program, and the shell line that runs it ({prog} is its name). */
+/** Each case: a program, the shell line that runs it ({prog} is its name), and the engine it is Node's on, if one. */
 const cases = {
   'contexts.js': [[
     "const vm = require('vm');",
@@ -55,6 +56,21 @@ const cases = {
     "try { vm.runInNewContext('throw new TypeError(\"inner\")', {}, { filename: '/thrower.js' }); } catch (e) { console.log(e.name, e.message, e instanceof TypeError); }",
     "console.log(typeof vm.SourceTextModule, typeof vm.SyntheticModule, 'SourceTextModule' in vm, typeof vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER);",
   ].join('\n'), 'node {prog}'],
+  // A Script's cached data, produced and taken, as the engine's.
+  'cache.js': [[
+    "const vm = require('vm');",
+    "const script = new vm.Script('1 + 1', { produceCachedData: true });",
+    "console.log('produced', script.cachedDataProduced, script.cachedData instanceof Uint8Array, script instanceof vm.Script);",
+    "const reused = new vm.Script('1 + 1', { cachedData: script.cachedData });",
+    "console.log('reused', reused.cachedDataRejected, reused.runInThisContext());",
+  ].join('\n'), 'node {prog}'],
+  // Options are the program's, as they are: a non-enumerable one too (Node only: Bun's vm ignores contextCodeGeneration).
+  'codegen.js': [[
+    "const vm = require('vm');",
+    'const options = {};',
+    "Object.defineProperty(options, 'contextCodeGeneration', { value: { strings: false, wasm: false } });",
+    "try { vm.runInNewContext('eval(\"1\")', {}, options); console.log('evaluated'); } catch (e) { console.log('codegen', e.name); }",
+  ].join('\n'), 'node {prog}', 'node'],
   'nocallback.js': [[
     "const vm = require('vm');",
     "new vm.Script(\"import('./other.mjs')\", { filename: require('path').join(__dirname, 'script.js') }).runInThisContext()",
@@ -71,7 +87,8 @@ const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1, term
 const host = mkdtempSync(join(tmpdir(), 'lifo-node-vm-'));
 const failed = [];
 try {
-  for (const [name, [source, line]] of Object.entries(cases)) {
+  for (const [name, [source, line, engine]] of Object.entries(cases)) {
+    if (engine === 'node' && underBun) continue;
     const command = line.replaceAll('{prog}', name);
     await ws.fs.writeFile(`/home/user/${name}`, source);
     writeFileSync(join(host, name), source);
@@ -95,15 +112,12 @@ try {
       "const vm = require('vm');",
       'const loader = vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER;',
       "const filename = require('path').join(__dirname, 'script.js');",
-      'let reads = 0;',
-      "const flipping = { filename, get importModuleDynamically() { return ++reads === 1 ? undefined : loader; } };",
       'const attempts = [',
       "  ['Script', () => new vm.Script(\"import('node:fs')\", { filename, importModuleDynamically: loader })],",
       "  ['compileFunction', () => vm.compileFunction(\"return import('node:fs')\", [], { filename, importModuleDynamically: loader })],",
       "  ['runInNewContext', () => vm.runInNewContext(\"import('node:fs')\", {}, { filename, importModuleDynamically: loader })],",
       "  ['createContext', () => vm.createContext({}, { importModuleDynamically: loader })],",
-      "  ['an accessor read once', () => new vm.Script(\"import('node:fs')\", flipping).runInThisContext().then(() => 'imported', (e) => e.code)],",
-      "  ['the inherited constructor', () => new (Object.getPrototypeOf(vm.Script))(\"import('node:fs')\", { filename, importModuleDynamically: loader })],",
+      "  ['createScript', () => vm.createScript(\"import('node:fs')\", { filename, importModuleDynamically: loader })],",
       '];',
       '(async () => {',
       "  for (const [label, attempt] of attempts) { try { console.log(label, 'compiled', await attempt()); } catch (e) { console.log(label, e.code ?? e.name); } }",
@@ -116,11 +130,10 @@ try {
       'compileFunction ERR_FEATURE_UNAVAILABLE_ON_PLATFORM',
       'runInNewContext ERR_FEATURE_UNAVAILABLE_ON_PLATFORM',
       'createContext ERR_FEATURE_UNAVAILABLE_ON_PLATFORM',
-      'an accessor read once compiled ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING',
-      'the inherited constructor TypeError',
+      'createScript ERR_FEATURE_UNAVAILABLE_ON_PLATFORM',
       'domain ERR_FEATURE_UNAVAILABLE_ON_PLATFORM',
       '',
-    ].join('\n'), 'each refused, naming the loader; one read once is compiled with what was read');
+    ].join('\n'), 'each refused, naming the loader');
   } catch (error) {
     failed.push(`the main-context loader: ${error.message}`);
   }
