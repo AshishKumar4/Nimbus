@@ -806,6 +806,19 @@ async function main() {
     }
   }
 
+  // 3a. Node's argument validators (parseFileMode, stringToFlags, …), which
+  //     the node shims' process and fs take, as lifo's node's do: one module.
+  const nodeArguments = await bundleAsPreamble(
+    join(coreRoot, 'src', '_shared', 'node-arguments.ts'),
+    'node-arguments',
+    { shared: ['node-error'] },
+  );
+  for (const name of ['parseFileMode', 'stringToFlags', 'validateInt32', 'validateUint32']) {
+    if (!new RegExp(`^function ${name}\\(`, 'm').test(nodeArguments)) {
+      throw new Error(`[bundle-facet-workers/node-arguments] the bundle no longer declares function ${name}`);
+    }
+  }
+
   // 3b. Node's process warnings (emitWarning and the listener it installs),
   //     which the node shims' process has, as lifo's node's has: one module.
   const nodeWarnings = await bundleAsPreamble(
@@ -931,6 +944,14 @@ async function main() {
     ' * first, for themselves and the preambles below, which use them by name.',
     ' */',
     `export const NODE_ERROR_PREAMBLE: string = ${JSON.stringify(nodeErrors)};`,
+    '',
+    '/**',
+    ' * Declares Node\'s argument validators, `function parseFileMode(value, name, def)`,',
+    ' * `function stringToFlags(flags, name)`, `function validateInt32(value, name, min, max)`',
+    ' * and `function validateUint32(value, name, positive)`, and the open(2) bits',
+    ' * O_RDONLY … O_SYNC; the node shims call them.',
+    ' */',
+    `export const NODE_ARGUMENTS_PREAMBLE: string = ${JSON.stringify(nodeArguments)};`,
     '',
     '/** Declares `function createProcessWarnings(process, write)`; the node shims call it. */',
     `export const NODE_WARNING_PREAMBLE: string = ${JSON.stringify(nodeWarnings)};`,

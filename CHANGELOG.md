@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: both `node`s check a mode, a mask and open flags as Node does,
+  with Node's errors. In a hosted program, `process.umask('022garbage')` and
+  `fs.chmodSync(f, '7a5')` took the digits they began with, and
+  `umask('40000000000')` set 0; `fs.openSync(f, 'xw')` opened for reading
+  and failed on a new file, and any other string opened for reading. The
+  shell's `node` now honours `fs.mkdirSync`'s mode and takes an octal string
+  for `chmod` and `mkdir`.
 - Fixed (lifo commands): a command's `process.exit(n)` writes nothing, as
   Node's does; it wrote `[process.exit] code=n` on the command's stderr for a
   non-zero `n`. lifo's `http` gives Readables, as Node's: a server's request
