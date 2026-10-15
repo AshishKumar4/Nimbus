@@ -205,8 +205,7 @@ await runScenarios(import.meta.path, {
   async 'a route across two held roots asks until the view has reached both certificates (T14)'() {
     const { authority, fs, asked } = await boot();
     await fs.promises.stat(`${OUT}/seeded.txt`);
-    authority.kfs.mkdir('home/user/app2', { mode: 0o755 });
-    await fs.promises.mkdir('/home/user/app2', { recursive: true });
+    await authority.peer.mkdir('home/user/app2', { mode: 0o755 });
     await fs.promises.writeFile('/home/user/app2/t', 'there');
     await fs.promises.symlink('/home/user/app2/t', `${OUT}/across`);
     await takeOut(fs, '/home/user/app2');
