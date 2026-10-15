@@ -8,7 +8,7 @@
 
 import type { RuntimeFsPath } from './os-contracts.js';
 import { fsError as nodeFsError, type FsError } from '../vfs/vfs-error.js';
-import { posixAccess, type PosixNodeType } from '../vfs/posix-access.js';
+import { modeAllows } from '../vfs/posix-access.js';
 
 export type { FsError };
 
@@ -24,11 +24,6 @@ export function fsError(
   return nodeFsError(code, syscall, name, second, options);
 }
 
-/** POSIX rwx for `cred` on a stat (posixAccess); a stat without a mode allows. An absent owner or group is no one's. */
-export function modeAllows(stat: { mode?: number; uid?: number; gid?: number; type: PosixNodeType }, want: number, cred: { uid: number; gid: number; groups: readonly number[] }): boolean {
-  if (stat.mode === undefined) return true;
-  return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1, type: stat.type }, want, cred);
-}
 
 /** One lookup a walk beneath a root asks of its filesystem: a stat that does not follow a link (null when absent), or a link's target. */
 export type BeneathLookup = { readonly stat: string } | { readonly readlink: string };
