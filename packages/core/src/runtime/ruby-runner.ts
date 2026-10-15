@@ -214,12 +214,6 @@ export function makeRubyRunnerFactory(deps: {
         rbArgv = [parsed.scriptPath, ...parsed.scriptArgs];
       }
 
-      // -r flags add prelude `require '<lib>'` lines (stdlib only).
-      const preludeRequires = parsed.requires.map((r) => `require ${JSON.stringify(r)}`).join('\n');
-      if (preludeRequires) {
-        userCode = preludeRequires + '\n' + userCode;
-      }
-
       const userEnv: Record<string, string> = { ...(ctx.env || {}) };
       if (!userEnv.HOME) userEnv.HOME = home;
       if (!userEnv.LANG) userEnv.LANG = 'C.UTF-8';
@@ -234,6 +228,7 @@ export function makeRubyRunnerFactory(deps: {
       const facetArgs = {
         wasmVfsPath: wasmVfs,
         userCode,
+        requires: parsed.requires,
         rbArgv,
         userEnv,
         progName,
@@ -590,6 +585,8 @@ interface RubyFacetArgs {
   /** Where the interpreter+stdlib image lives. */
   wasmVfsPath: string;
   userCode: string;
+  /** -r's libraries, in order (RubyFacetCallArgs.requires). */
+  requires: string[];
   rbArgv: string[];
   userEnv: Record<string, string>;
   progName: string;
@@ -603,6 +600,8 @@ interface RubyFacetArgs {
 /** What one invocation hands the VM. Identical for both process shapes. */
 export interface RubyFacetCallArgs {
   userCode: string;
+  /** -r's libraries, in order: the VM requires each by its literal name before the program runs. */
+  requires: string[];
   rbArgv: string[];
   userEnv: Record<string, string>;
   progName: string;
@@ -672,6 +671,7 @@ export function normalizeRubyFacetResult(raw: unknown): RubyFacetResult | null {
 function toRubyCallArgs(args: RubyFacetArgs): RubyFacetCallArgs {
   return {
     userCode: args.userCode,
+    requires: args.requires,
     rbArgv: args.rbArgv,
     userEnv: args.userEnv,
     progName: args.progName,
@@ -1361,7 +1361,11 @@ async function __rubyRunOnce(args) {
   // we can read it via a second rb-eval-string-protect call. Failing
   // SystemExit (raise) ends up with __NIMBUS_RUBY_EXIT = 1 + stderr
   // message.
-  const userCodeRb = rubyStringLiteral(args.userCode);
+  // -r's libraries, each a literal name (no interpolation), required as the
+  // program's first lines. A process image made before they were data has
+  // them in its userCode already.
+  const requiresRb = (args.requires ?? []).map((name) => 'require ' + rubyStringLiteral(name) + '\\n').join('');
+  const userCodeRb = rubyStringLiteral(requiresRb + args.userCode);
   const argvRb = rubyArrayLiteral(args.rbArgv.slice(1));  // exclude argv[0]
   const progNameRb = rubyStringLiteral(args.progName);
 
