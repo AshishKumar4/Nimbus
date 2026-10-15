@@ -42,6 +42,7 @@ import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js'
 import { FacetManager, type FacetManagerHooks } from './manager.js';
 import { type PortVisibility } from '../session/port-capability.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
+import type { DevServerRestoreFailure } from '../session/helpers.js';
 export type { FacetManagerHooks, LongRunningWorkerSpawnOptions, ResidentSpawnOptions, ResolvedWorkerLaunch, ResidentAppSummary, ResidentIdentity, ResidentRestartPolicy, SpawnedWorker, WorkerFacet, WorkerRecipe, } from './manager.js';
 export { FacetManager, DEFAULT_WORKER_MAIN_MODULE } from './manager.js';
 /**
@@ -79,6 +80,8 @@ export interface FacetManagerDeps {
     filesystem: ProcessFiles;
     /** The workspace's network (`workspace.network`): every process it runs goes out through it. */
     network: () => WorkspaceNetwork;
+    /** The host's restore of the dev servers its previous incarnation ran (dev-servers.ts): what a port route waits on. */
+    restoreDevServers?: () => Promise<readonly DevServerRestoreFailure[]>;
     /** The host's own SUPERVISOR for each one-shot it runs (FacetManagerHooks.supervise). */
     supervise?: Supervise;
     /**

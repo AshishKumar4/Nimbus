@@ -12,7 +12,7 @@ import type { IsolatePoolEnv } from '@nimbus-sh/fabric/isolate-pool.js';
 export interface HostedRuntimeEnv extends RuntimeCatalogEnv, IsolatePoolEnv {
     ASSETS?: Fetcher;
 }
-export type RuntimeServiceHost = Pick<SessionInternal, '_cpRegistry' | '_reportExternalExit' | '_rpcStderr' | '_rpcStdout' | 'supervisorRewindBridge' | 'bundlePool' | 'ensureBundlePool' | 'ensureFacetManager' | 'ensureSqliteFs' | 'esbuildService' | 'facetManagerComposed' | 'getFilesystemAuthority' | 'childProcessManager' | 'npmInstaller' | 'portRegistry' | 'processes' | 'runtimeWorkspace' | 'shell' | 'sqliteFs' | 'terminal'> & {
+export type RuntimeServiceHost = Pick<SessionInternal, '_cpRegistry' | '_reportExternalExit' | '_rpcStderr' | '_rpcStdout' | 'supervisorRewindBridge' | 'bundlePool' | 'ensureBundlePool' | 'ensureFacetManager' | 'ensureSqliteFs' | 'esbuildService' | 'facetManagerComposed' | 'getFilesystemAuthority' | 'childProcessManager' | 'npmInstaller' | 'portRegistry' | 'processes' | 'restoreDevServers' | 'runtimeWorkspace' | 'shell' | 'sqliteFs' | 'terminal'> & {
     webSocketRelay: WebSocketRelay | null;
 };
 export interface RuntimeServiceContext {

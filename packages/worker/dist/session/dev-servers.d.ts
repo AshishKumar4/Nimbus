@@ -63,11 +63,30 @@ export declare function devServerSpawn(processes: SessionProcessSupervisor, name
     spawn: DevServerSpawn;
     handed: ProcessEntry | undefined;
 };
-/** The dev server's process (devServerSpawn): the one handed it, now long-running, or a new child of the command. */
-export declare function devServerProcess(processes: SessionProcessSupervisor, name: string, ctx: DevServerCommandContext): {
+/**
+ * A dev server lives as long as its process `pid`: the process's end, however
+ * it comes, runs `stop`, and until then the session holds the server as the
+ * process's work (a kill reaches it, and a caller that handed the process to
+ * the command sees it still served).
+ */
+export declare function bindDevServer(processes: SessionProcessSupervisor, pid: number, stop: () => void): void;
+/**
+ * The dev server's process (devServerSpawn), bound to it (bindDevServer): the
+ * one handed it, now long-running, or a new child of the command; null when
+ * the one handed it has already ended.
+ */
+export declare function devServerProcess(processes: SessionProcessSupervisor, name: string, ctx: DevServerCommandContext, stop: () => void): {
     entry: ProcessEntry;
     adopted: boolean;
-};
+} | null;
+/**
+ * Wait for the restore of the previous incarnation's dev servers before a
+ * command starts or stops one, so the user's action comes after it rather
+ * than being undone by it. A command the restore itself runs does not wait.
+ */
+export declare function afterDevServerRestore(host: {
+    restoreDevServers(): Promise<readonly DevServerRestoreFailure[]>;
+}, processes: SessionProcessSupervisor, ctx: DevServerCommandContext): Promise<void>;
 /**
  * Record how the dev server behind `pid` was spawned, with the environment
  * its command was given and the ports it serves now, until `pid` ends.
@@ -91,4 +110,6 @@ export interface DevServerRestoreHost extends DevServerHost {
  * process's log says why.
  */
 export declare function restoreDevServers(host: DevServerRestoreHost): Promise<readonly DevServerRestoreFailure[]>;
+/** The session is destroyed: its restore runs nothing more, and writes nothing but the release of a record. */
+export declare function endDevServerRestore(host: DevServerRestoreHost): void;
 //# sourceMappingURL=dev-servers.d.ts.map

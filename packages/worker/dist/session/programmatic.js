@@ -423,6 +423,7 @@ function finishBackgroundJob(self, pid, command, exitCode) {
     // dead pid on a live port, and the app verbs identify a server by the pid
     // serving its port.
     const stillServing = self.facetManager?.hasResidentProcess(pid) === true
+        || self.processes.runsWork(pid)
         || self.portRegistry.getAll().some((live) => live.pid === pid);
     if (exitCode === 0 && stillServing)
         return;
@@ -475,23 +476,7 @@ export async function rpcKillProcess(self, pid) {
     await ensureProgrammaticReady(self);
     const n = Number(pid);
     let ok = false;
-    if (self._viteShimPid === n) {
-        try {
-            if (self.viteDevServer?.isRunning) {
-                self.viteDevServer.stop();
-                self.viteDevServer = null;
-            }
-        }
-        catch { }
-        try {
-            self.portRegistry.unregisterByPid(n);
-        }
-        catch { }
-        ok = self.processes.kill(n);
-        self._viteShimPid = null;
-        self._viteShimPort = null;
-    }
-    else if (self.facetManager) {
+    if (self.facetManager) {
         ok = self.facetManager.kill(n);
     }
     else {
@@ -1020,6 +1005,7 @@ async function destroySession(self, options) {
     // admits no process, and a request that would ready the session waits for
     // the one it makes again (rpcDestroy, ensureRuntimeReady).
     self.processes.closeAdmission(Object.assign(new Error('ESHUTDOWN: the session is being destroyed'), { code: 'ESHUTDOWN' }));
+    self.endDevServerRestore();
     hostActivity(self.ctx).close();
     endResidentKeepalive(self);
     const reason = typeof options.reason === 'string' && options.reason.trim()
@@ -1034,14 +1020,7 @@ async function destroySession(self, options) {
     for (const entry of running) {
         const pid = Number(entry.pid);
         try {
-            if (self._viteShimPid === pid) {
-                if (self.viteDevServer?.isRunning)
-                    self.viteDevServer.stop();
-                self.viteDevServer = null;
-                self._viteShimPid = null;
-                self._viteShimPort = null;
-            }
-            else if (self.facetManager?.kill?.(pid, undefined, SESSION_DESTROYED)) {
+            if (self.facetManager?.kill?.(pid, undefined, SESSION_DESTROYED)) {
                 // facetManager.kill already marks process state and unregisters ports.
             }
             else {

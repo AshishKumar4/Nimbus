@@ -343,16 +343,19 @@ export async function readoptCapability(self, port, capability) {
  * any other port is mounted at root and needs no rewriting.
  */
 export async function routeToSessionPort(self, port, request, innerPath, mountBase, capability) {
+    // The dev servers the previous incarnation ran come back first: a restored
+    // one takes back the link handed out for its port.
+    const restoreFailures = await self.restoreDevServers?.() ?? [];
     if (capability !== undefined) {
         const reservation = await readPortReservation(self.ctx, port);
+        // A link whose server did not come back is still the link handed out for its port.
         const authorized = reservation !== null
             ? reservation.capability === capability
-            : self.portRegistry.hasCapability(port, capability);
+            : self.portRegistry.hasCapability(port, capability) || (restoreFailures.length > 0 && await readPortCapability(self, port) === capability);
         if (!authorized || (request.headers.get(PUBLIC_BEARER_HEADER) !== null && reservation?.visibility !== 'public')) {
             return new Response('Not found', { status: 404 });
         }
     }
-    const restoreFailures = await self.restoreDevServers?.() ?? [];
     // The durable seam: a request on a port nothing is serving may be a
     // durable application a reset left dead — the alarm pump would re-drive
     // it eventually, but a URL in someone's hands cannot wait for eventually.
@@ -371,6 +374,9 @@ export async function routeToSessionPort(self, port, request, innerPath, mountBa
                 },
             });
         }
+    }
+    if (capability !== undefined && restoreFailures.length > 0 && !self.portRegistry.has(port)) {
+        return devServerRestoreFailedResponse(restoreFailures);
     }
     if (capability !== undefined) {
         // A rebuilt supervisor holds a capability nobody was handed; the durable

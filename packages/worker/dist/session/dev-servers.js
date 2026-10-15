@@ -67,15 +67,48 @@ export function devServerSpawn(processes, name, ctx) {
     const argv = [name, ...ctx.args];
     return { spawn: { command: argv.map(shellEscape).join(' '), argv, cwd: ctx.cwd, cred: ctx.cred, ...execIdField(processes.get(ctx.pid)) }, handed };
 }
-/** The dev server's process (devServerSpawn): the one handed it, now long-running, or a new child of the command. */
-export function devServerProcess(processes, name, ctx) {
+/**
+ * A dev server lives as long as its process `pid`: the process's end, however
+ * it comes, runs `stop`, and until then the session holds the server as the
+ * process's work (a kill reaches it, and a caller that handed the process to
+ * the command sees it still served).
+ */
+export function bindDevServer(processes, pid, stop) {
+    processes.setTerminator(pid, stop);
+    processes.subscribeTerminal(pid, stop);
+}
+/**
+ * The dev server's process (devServerSpawn), bound to it (bindDevServer): the
+ * one handed it, now long-running, or a new child of the command; null when
+ * the one handed it has already ended.
+ */
+export function devServerProcess(processes, name, ctx, stop) {
     const { spawn, handed } = devServerSpawn(processes, name, ctx);
-    if (handed !== undefined) {
+    if (handed !== undefined && handed.state !== 'running')
+        return null;
+    if (handed !== undefined)
         processes.setLongRunning(handed.pid);
-        return { entry: handed, adopted: true };
+    const entry = handed ?? processes.spawn(spawn.command, spawn.argv, spawn.cwd, { longRunning: true, parentPid: ctx.pid, cred: spawn.cred, ...execIdField(spawn) });
+    bindDevServer(processes, entry.pid, stop);
+    return { entry, adopted: handed !== undefined };
+}
+/** Whether `pid` runs inside a restore: it, or a process above it, restarts one the session lost. */
+function inRestore(processes, pid) {
+    for (let at = pid === undefined ? undefined : processes.get(pid); at !== undefined; at = at.parentPid === undefined ? undefined : processes.get(at.parentPid)) {
+        if (at.restartedFrom?.cause === 'session-restart')
+            return true;
     }
-    const entry = processes.spawn(spawn.command, spawn.argv, spawn.cwd, { longRunning: true, parentPid: ctx.pid, cred: spawn.cred, ...execIdField(spawn) });
-    return { entry, adopted: false };
+    return false;
+}
+/**
+ * Wait for the restore of the previous incarnation's dev servers before a
+ * command starts or stops one, so the user's action comes after it rather
+ * than being undone by it. A command the restore itself runs does not wait.
+ */
+export async function afterDevServerRestore(host, processes, ctx) {
+    if (inRestore(processes, ctx.pid) || inRestore(processes, ctx.__nimbusBinSpawn?.callerPid))
+        return;
+    await host.restoreDevServers();
 }
 async function release(host, key) {
     await host.ctx.storage.delete(key);
@@ -103,7 +136,7 @@ export async function recordDevServer(host, pid, spawn) {
         release(host, key).catch((error) => console.warn(`[dev-servers] the record of pid ${pid} was not released: ${errorText(error)}`));
     });
 }
-/** Each host's restore, once: the requests and the start that meet it wait on it. */
+/** Each host's restore, once: the requests and the commands that meet it wait on it; a destroy ends it. */
 const restores = new WeakMap();
 /**
  * Run again, once, each dev server a previous incarnation of the session
@@ -114,30 +147,38 @@ const restores = new WeakMap();
 export function restoreDevServers(host) {
     let restore = restores.get(host);
     if (restore === undefined) {
-        restore = restoreAll(host);
+        const ended = new AbortController();
+        restore = { done: restoreAll(host, ended.signal), ended };
         restores.set(host, restore);
         // One that could not read the records is tried again by the next caller.
-        restore.catch(() => { if (restores.get(host) === restore)
+        const tried = restore;
+        tried.done.catch(() => { if (restores.get(host) === tried)
             restores.delete(host); });
     }
-    return restore;
+    return restore.done;
 }
-async function restoreAll(host) {
+/** The session is destroyed: its restore runs nothing more, and writes nothing but the release of a record. */
+export function endDevServerRestore(host) {
+    restores.get(host)?.ended.abort();
+}
+async function restoreAll(host, ended) {
     const base = host.processes.pidBase;
     const rows = await host.ctx.storage.list({ prefix: DEV_SERVER_KEY_PREFIX });
     const failures = [];
     for (const [key, value] of rows) {
+        if (ended.aborted)
+            break;
         const pid = Number(key.slice(DEV_SERVER_KEY_PREFIX.length));
         // This incarnation's own: running, or released by its end.
         if (pid > base)
             continue;
-        const failure = await restoreOne(host, key, pid, DevServerRecordSchema.safeParse(value));
+        const failure = await restoreOne(host, ended, key, pid, DevServerRecordSchema.safeParse(value));
         if (failure !== null)
             failures.push(failure);
     }
     return failures;
 }
-async function restoreOne(host, key, from, parsed) {
+async function restoreOne(host, ended, key, from, parsed) {
     if (!parsed.success) {
         await release(host, key);
         return { command: '(unreadable)', cwd: '', pid: null, reason: `its record could not be read: ${parsed.error.message}` };
@@ -147,6 +188,8 @@ async function restoreOne(host, key, from, parsed) {
         await release(host, key);
         return { command: record.command, cwd: record.cwd, pid: null, reason: 'its start after an earlier restart of the session did not finish' };
     }
+    if (ended.aborted)
+        return null;
     await host.ctx.storage.put(key, { ...record, restoring: true });
     await host.ctx.storage.sync();
     // The links handed out for its ports: a registration that is not a restore retires them.
@@ -156,10 +199,12 @@ async function restoreOne(host, key, from, parsed) {
         if (capability !== null)
             capabilities.set(port, capability);
     }
-    let failure;
+    let failure = null;
     try {
         await host.ensureRuntimeReady();
-        failure = await runAgain(host, record, from);
+        // A destroy that came meanwhile made the session again: nothing of this one runs in it.
+        if (!ended.aborted)
+            failure = await runAgain(host, record, from);
     }
     catch (error) {
         failure = { command: record.command, cwd: record.cwd, pid: null, reason: errorText(error) };
@@ -168,7 +213,7 @@ async function restoreOne(host, key, from, parsed) {
         await release(host, key);
     }
     for (const [port, capability] of capabilities) {
-        if (host.portRegistry.has(port))
+        if (!ended.aborted && host.portRegistry.has(port))
             await readoptCapability(host, port, capability);
     }
     return failure;
@@ -189,7 +234,7 @@ async function runAgain(host, record, from) {
     });
     const pid = entry.pid;
     processes.appendOutput(pid, 'stderr', `[nimbus] the session restarted: running \`${record.command}\` again in ${record.cwd}\n`);
-    const shell = workspace.shellFor(pid, { cwd: record.cwd, env: record.env });
+    const shell = workspace.shellFor(pid, { cwd: record.cwd, env: record.env, inheritEnv: false });
     let stderr = '';
     const keep = textSink((text) => { stderr = (stderr + text).slice(-2000); });
     const stop = new AbortController();
@@ -227,14 +272,12 @@ async function runAgain(host, record, from) {
         }
     }
     if (exitCode === 0) {
-        if (!await recorded(host, pid))
+        // Not adopted: its server runs as a process of its own (real Vite's), or it served nothing.
+        if (!processes.runsWork(pid))
             processes.exit(pid, 0);
         return null;
     }
     processes.appendOutput(pid, 'stderr', `[nimbus] \`${record.command}\` did not start again (exit ${exitCode}); run it again in ${record.cwd} to start the server\n`);
     processes.exit(pid, exitCode);
     return { command: record.command, cwd: record.cwd, pid, reason: reason ? `exit ${exitCode}: ${reason}` : `exit ${exitCode}` };
-}
-async function recorded(host, pid) {
-    return (await host.ctx.storage.get(recordKey(pid))) !== undefined;
 }

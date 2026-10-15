@@ -7,6 +7,7 @@
  * again by running the `vite` command again (dev-servers.ts).
  */
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
 import { CirrusReal } from '../facets/cirrus-real.js';
 export interface StartRealViteOptions {
     /** VFS root the dev server serves from. */
@@ -31,12 +32,13 @@ export interface StartRealViteOptions {
      *  `vite` builtin can surface it on stderr). */
     onConfigError?: (message: string) => void;
 }
-/** Who a dev server's pid is: the cwd+argv its identity derives from, its credential, and its exec id when it has one. */
+/** Who a dev server's pid is: the cwd+argv its identity derives from, its credential, its exec id when it has one, and the process it restarts when it is a restore's. */
 export interface DevServerIdentity {
     cwd: string;
     argv: string[];
     cred: VfsCred;
     execId?: string;
+    restartedFrom?: ProcessRestart;
 }
 export interface StartRealViteResult {
     cirrusReal: CirrusReal;
