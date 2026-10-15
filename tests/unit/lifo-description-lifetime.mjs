@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { ProcessFile, ProcessView, withOpenFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { syscallError } from '../../packages/core/src/vfs/vfs-error.ts';
 import { hostSqlite } from './lib/host-sqlite.mjs';
 
 const eio = (what) => Object.assign(new Error(`EIO: i/o error, ${what}`), { code: 'EIO' });
@@ -43,7 +44,7 @@ class Backend extends MemoryVFS {
       write: (offset, bytes) => {
         if (name.startsWith('badwrite') || name === 'err') throw eio(`write '${path}'`);
         // nosync-*: writes are held by the description, and the flush that writes them back fails.
-        if (name.startsWith('nosync')) throw Object.assign(new Error('ENOTSUP'), { code: 'ENOTSUP' });
+        if (name.startsWith('nosync')) throw syscallError('ENOTSUP', 'write', path);
         const old = this.readFile(path);
         const next = new Uint8Array(Math.max(old.length, offset + bytes.length));
         next.set(old);
