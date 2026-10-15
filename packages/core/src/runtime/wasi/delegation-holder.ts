@@ -217,6 +217,12 @@ export interface DelegationHolder {
   fsetattr(handleId: number, attrs: W7Attrs, explicit: boolean): boolean;
   /** The session's stat of the file a through description opened, after a change through it: what fstat answers from now on. */
   restat(handleId: number, stat: Omit<ResidentEntry, 'target'>): void;
+  /**
+   * The session changed `key`'s attributes itself, after everything the
+   * holder had was sent (one it holds but did not decide): what was decided
+   * of it is the session's now, and the store answers it after its barrier.
+   */
+  undecided(key: string): void;
   /** Whether a mutation at `key` would be decided here (a held subtree holds it). */
   holds(key: string): boolean;
   /** Whether anything decided here is not sent yet. */
@@ -861,6 +867,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       if ('mode' in attrs) file.mode = attrs.mode & 0o7777;
       return true;
     },
+    undecided: (key) => { decided.delete(key); },
     restat: (handleId, stat) => {
       const through = handleOf(handleId).file.through;
       if (through !== undefined) through.entry = { ...stat, target: null };
