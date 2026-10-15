@@ -23,7 +23,7 @@ import { createCjsLoader } from '../node-compat/cjs-loader.js';
 import { createNativeEsmLoader } from '../node-compat/native-esm-loader.js';
 import { leaveStandardStreamsOpen } from '../node-compat/standard-streams.js';
 import { applySourceEdits, containsModuleSyntax } from '../../../runtime/javascript-ast.js';
-import { readModuleImportSites } from '../../../runtime/dynamic-import-rewrite.js';
+import { readModuleImportSites, unusedIdentifier } from '../../../runtime/dynamic-import-rewrite.js';
 import type { NodeContext } from '../node-compat/index.js';
 
 
@@ -104,9 +104,6 @@ function createLifoAPI(ctx: CommandContext): LifoAPI {
 
 // ─── ESM rewriting ───
 
-/** The helper a rewritten import() calls: a function declaration, so the module's own code reaches it wherever it is. */
-const CDN_IMPORT = '__lifoCdnImport';
-
 /** A bare specifier: neither relative nor absolute, and not a URL (`node:`, `https:`, `data:`). */
 const BARE_SPECIFIER = /^(?![./]|[A-Za-z][A-Za-z0-9+.-]*:)/;
 
@@ -117,17 +114,20 @@ const BARE_SPECIFIER = /^(?![./]|[A-Za-z][A-Za-z0-9+.-]*:)/;
  * computed one is mapped too. A string or a comment is the program's text.
  *
  *   import { X } from 'foo'  →  import { X } from 'https://esm.sh/foo'
- *   import('foo')             →  __lifoCdnImport('foo')
+ *   import('foo')             →  __lifoCdnImport0('foo')
  */
 function rewriteImportsToCdn(source: string, cdn: string): string {
   const sites = readModuleImportSites(source);
+  // A function declaration, so the module's code reaches it wherever it is,
+  // under a name the module never spells, so none of its bindings meets it.
+  const helperName = sites.calls.length === 0 ? '' : unusedIdentifier(source, '__lifoCdnImport');
   const edits = [
     ...sites.statics.filter((site) => BARE_SPECIFIER.test(site.specifier))
       .map((site) => ({ start: site.start, end: site.end, text: JSON.stringify(`${cdn}/${site.specifier}`) })),
-    ...sites.calls.map((site) => ({ start: site.start, end: site.open + 1, text: `${CDN_IMPORT}(` })),
+    ...sites.calls.map((site) => ({ start: site.start, end: site.open + 1, text: `${helperName}(` })),
   ];
   if (edits.length === 0) return source;
-  const helper = sites.calls.length === 0 ? '' : `\nfunction ${CDN_IMPORT}(specifier, options) { return import(typeof specifier === 'string' && ${BARE_SPECIFIER}.test(specifier) ? ${JSON.stringify(`${cdn}/`)} + specifier : specifier, options); }\n`;
+  const helper = sites.calls.length === 0 ? '' : `\nfunction ${helperName}(specifier, options) { return import(typeof specifier === 'string' && ${BARE_SPECIFIER}.test(specifier) ? ${JSON.stringify(`${cdn}/`)} + specifier : specifier, options); }\n`;
   return applySourceEdits(source, edits) + helper;
 }
 
