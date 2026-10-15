@@ -4027,8 +4027,10 @@ const __fsMod = (() => {
       let meta;
       // A thrown stat is the authority failing to answer, not an answer:
       // nothing is learned, and the miss stands.
-      // Queued on the path: the program's own later mutations of it must not overtake the stat.
+      // Queued on the path: the program's own later mutations of it must not
+      // overtake the stat, and its earlier ones, lingering, go now.
       const observe = () => __nimbusUseRpcResult(supervisor.stat(absPath), (r) => r);
+      if (_hasVfsMutationQueue() && __nimbusAncestorTails(absPath).length > 0) __nimbusHurryVfs();
       try { meta = await (_hasVfsMutationQueue() ? __nimbusQueueVfsMutation(absPath, observe, false) : observe()); }
       catch { return; }
       if (meta === null || meta === undefined) { _observedAbsent.add(k); return; }
@@ -6107,15 +6109,14 @@ const __fsMod = (() => {
   async function _copyLogged(src, dest) {
     const srcAbs = _resolveFollow(src, "copyfile");
     const destAbs = _resolveFollow(dest, "copyfile");
-    const absent = _ensureWritable(destAbs, "copyfile", src, true, dest);
+    _ensureWritable(destAbs, "copyfile", src, true, dest);
     const destK = _strip(destAbs);
     const srcK = _strip(srcAbs);
     const call = { call: "copyFile", path: _strip(_resolve(dest)), from: _strip(_resolve(src)) };
+    if (await _copiedHere(src, dest, call)) return;
     // The source as the view holds it now, and how late its bytes are.
     const content = _bundleLookup(srcAbs, false);
-    const partial = _parkedPartial.get(srcK);
-    const whole = content !== undefined && _denialCode(content) === null && (partial === undefined || partial !== __vfsWriteGenerations[srcK]);
-    if (whole && _copiedHere(src, dest, srcAbs, destAbs, absent, content, call)) return;
+    const whole = _wholeCell(srcK, content);
     const dated = whole && typeof __resident !== "undefined" ? __resident.cells.provenance(srcK) : undefined;
     // A parked write to the copy's name is logged ahead of it. What the
     // view holds of the name as the copy is asked, the copy supersedes; a
@@ -6171,29 +6172,57 @@ const __fsMod = (() => {
     else if (receipt === undefined) await _learnLive(destAbs, _supervisor());
   }
 
+  /** Whether `content`, what the view holds at `k`, is the file's whole content. */
+  function _wholeCell(k, content) {
+    const partial = _parkedPartial.get(k);
+    return content !== undefined && _denialCode(content) === null && (partial === undefined || partial !== __vfsWriteGenerations[k]);
+  }
+
   /**
-   * A copy decided here: its source this program's own whole write the
-   * session has not answered, both names in subtrees the process holds
-   * (_decidedHere) and neither through a link, so the session copies those
-   * bytes when the copy lands. The destination takes them at once, as a write
-   * of them would, with the source's mode as copyfile leaves it, and the copy
-   * is answered once logged. What this view cannot judge exactly (a set-id
-   * bit, another's file there) is the session's to answer.
+   * A copy decided here: both names in subtrees the process holds, neither
+   * through a link, and the source's bytes known under the grant that holds
+   * it — the program's own write the session has not answered, or what a
+   * read of it under that grant answered, as a cell the view admits — so the
+   * session copies those bytes when the copy lands. The destination takes
+   * them at once, as a write of them would, with the source's mode as
+   * copyfile leaves it, and the copy is answered once logged. What this view
+   * cannot judge exactly (a set-id bit, another's file there) is the
+   * session's to answer.
    */
-  function _copiedHere(src, dest, srcAbs, destAbs, absent, content, call) {
+  async function _copiedHere(src, dest, call) {
+    if (typeof __nimbusDecidedHere !== "function" || !_supervisor()) return false;
+    const srcAbs = _resolveFollow(src, "copyfile");
+    const destAbs = _resolveFollow(dest, "copyfile");
     const srcK = _strip(srcAbs);
     const destK = _strip(destAbs);
-    if (!__vfsWrites || !Object.prototype.hasOwnProperty.call(__vfsWrites, srcK)) return false;
-    if (absent === undefined || _resolve(src) !== srcAbs || _resolve(dest) !== destAbs) return false;
+    if (_resolve(src) !== srcAbs || _resolve(dest) !== destAbs) return false;
+    const client = __nimbusProcessFs();
+    const grant = client.held(srcK);
+    if (grant === undefined || client.held(destK) === undefined) return false;
+    const readable = (stat) => stat !== undefined && stat.isFile() && _modeAllows(stat, 4) && (stat.mode & 0o7000) === 0;
+    if (!readable(_statLadder(srcAbs))) return false;
+    if (!(__vfsWrites && Object.prototype.hasOwnProperty.call(__vfsWrites, srcK) && _wholeCell(srcK, __vfsWrites[srcK]))) {
+      // Read under the grant, into a cell the view admits: nothing but this
+      // process changes the file while the grant is held.
+      const size = Number(_statLadder(srcAbs).size);
+      if (typeof __resident === "undefined" || !(await __resident.admission.reserve(srcK, __nimbusResidentModule.residentFileCost(size)))) return false;
+      try { await _liveReadFile(srcAbs); }
+      catch { return false; }
+      finally { __resident.admission.release(srcK); }
+      if (client.held(srcK) !== grant) return false;
+    }
+    const content = _bundleLookup(srcAbs, false);
     const from = _statLadder(srcAbs);
-    if (from === undefined || !from.isFile() || !_modeAllows(from, 4) || (from.mode & 0o7000) !== 0) return false;
+    if (!_wholeCell(srcK, content) || !readable(from)) return false;
+    const absent = _ensureWritable(destAbs, "copyfile", src, true, dest);
+    if (absent === undefined) return false;
     if (!absent) {
       const there = _statLadder(destAbs);
       if (there === undefined || !there.isFile() || (Number(cred.uid) !== 0 && Number(there.uid) !== Number(cred.uid))) return false;
     }
     const cell = _ownedCell(content);
     const bytes = _byteLen(cell);
-    if (!_decidedHere(destAbs, bytes) || __nimbusProcessFs().held(srcK) === undefined) return false;
+    if (!_decidedHere(destAbs, bytes)) return false;
     _parkWrite(destK, cell, 0o666, absent);
     _parkedPartial.delete(destK);
     const rec = _own.get(destK);
@@ -6374,7 +6403,7 @@ const __fsMod = (() => {
   // path it changes); what only the authority can answer is its answer, awaited.
   async function _structuralAsync(queue, syscall, p, judged = true, at = _resolve(p)) {
     const decided = judged && _decidedHere(at);
-    const queued = queue();
+    const queued = decided ? __nimbusLogDecided(queue) : queue();
     if (decided) _detachStructuralMutation(__nimbusDecided(queued), syscall, p);
     else await queued;
   }

@@ -94,6 +94,18 @@ const DATA_PIECE_BYTES = WAVE_BYTES;
 export const MAX_DELEGATIONS_PER_PROCESS = 8;
 /** Mutations in a subtree before the client takes it. */
 export const GRANT_AFTER = 8;
+/**
+ * How long a change the process already answered (acknowledged, or decided
+ * here) waits to be sent while the log holds only such changes in subtrees
+ * it holds: it goes with the next change someone awaits, a flush, an effect
+ * or a recall, or after this. While a wave is out, the session's commit of
+ * it holds every answer the session gives, reads too, so a change sent the
+ * moment it is logged makes the program's next read and its next awaited
+ * change each wait out a commit. What sees the session without recalling
+ * the subtree (the file tree, another process's watch) sees the change this
+ * much later at most.
+ */
+export const LINGER_MS = 10;
 /** `op` with the process's umask now, when it makes a name with a mode and names none (ProcessFsClientOptions.umask). */
 function withUmaskOf(op, umask) {
     if (umask === undefined || op.type !== 'call')
@@ -269,6 +281,7 @@ export function processFsClient(options) {
     const grantAfter = options.grantAfter ?? GRANT_AFTER;
     const grantIdleMs = options.grantIdleMs ?? GRANT_IDLE_MS;
     const recallPollMs = options.recallPollMs ?? RECALL_POLL_MS;
+    const lingerMs = options.lingerMs ?? LINGER_MS;
     const grants = [];
     /** Mutations per candidate subtree not yet held; subtrees the session refused, and the range each was last given. */
     const mutations = new Map();
@@ -280,6 +293,8 @@ export function processFsClient(options) {
     /** The wave in flight, settled once its answer is applied. */
     let sending = null;
     let idleTimer = null;
+    /** Armed while what is unsent all lingers: sends it at the latest LINGER_MS after the first of it. */
+    let lingerTimer = null;
     let settling = false;
     const settled = (entry) => {
         pendingBytes -= entry.bytes;
@@ -518,6 +533,8 @@ export function processFsClient(options) {
             return;
         if (answer.ok || refused !== null) {
             // After a refusal, nothing more in the wave was applied: they go again, first, as numbered.
+            for (const entry of back)
+                entry.lingers = false;
             queue.unshift(...back);
             return;
         }
@@ -578,7 +595,18 @@ export function processFsClient(options) {
             return;
         if (queue.length === 0)
             return;
+        if (marks.length === 0 && queue.every((entry) => entry.lingers)) {
+            lingerTimer ??= timers.setTimeout(() => {
+                lingerTimer = null;
+                client.hurry();
+            }, lingerMs);
+            return;
+        }
         const entries = cut();
+        if (queue.length === 0 && lingerTimer !== null) {
+            timers.clearTimeout(lingerTimer);
+            lingerTimer = null;
+        }
         inFlight = entries;
         sending = send(entries).finally(() => {
             inFlight = null;
@@ -911,6 +939,7 @@ export function processFsClient(options) {
             const acknowledged = submitOptions?.acknowledged === true;
             const op = withUmaskOf(given, options.umask);
             const named = pathsOf(op);
+            const lingers = (acknowledged || submitOptions?.decided === true) && named.every((path) => heldGrant(path) !== undefined);
             for (const path of named)
                 if (!canonical(path))
                     throw fsError('EINVAL', `EINVAL: not a filesystem path the session takes: '${path}'`, path);
@@ -934,6 +963,7 @@ export function processFsClient(options) {
                 const grown = mergedBytes - tail.bytes;
                 tail.op = merged;
                 tail.bytes = mergedBytes;
+                tail.lingers &&= lingers;
                 heapBytes += grown;
                 pendingBytes += grown;
                 if (acknowledged)
@@ -958,7 +988,7 @@ export function processFsClient(options) {
                 const kept = !journal.durable || heapBytes + partBytes <= PROCESS_FS_HEAP_WINDOW_BYTES;
                 if (kept)
                     heapBytes += partBytes;
-                queue.push({ op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, resolve, reject });
+                queue.push({ op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject });
                 pendingBytes += partBytes;
                 if (acknowledged) {
                     pendingSyncBytes += partBytes;
@@ -984,6 +1014,11 @@ export function processFsClient(options) {
             if (acknowledged)
                 answer.catch(() => { });
             return answer;
+        },
+        hurry() {
+            for (const entry of queue)
+                entry.lingers = false;
+            schedule();
         },
         flush() {
             options.drain?.();

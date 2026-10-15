@@ -169,6 +169,8 @@ export interface ProcessFsClientOptions {
     readonly grantInos?: number;
     /** How long one recall poll waits before asking again. */
     readonly recallPollMs?: number;
+    /** How long the process's own answered changes in a subtree it holds wait to be sent (LINGER_MS). */
+    readonly lingerMs?: number;
     /** Every key that is a home directory itself: never taken. */
     readonly isHomeRoot?: (key: string) => boolean;
     /**
@@ -205,11 +207,16 @@ export interface ProcessFsClient {
      * its errno when refused. `acknowledged`: the program was already told
      * it succeeded (a synchronous call), so its refusal is a failure to
      * report and the answer never rejects. A synchronous op past the client's
-     * cap throws ENOMEM here, logged nowhere.
+     * cap throws ENOMEM here, logged nowhere. \`decided\`: decided here, its
+     * caller answered already, as an acknowledged one's was. Either, in a
+     * subtree the process holds, lingers (LINGER_MS).
      */
     submit(op: ProcessFsOp, options?: {
         acknowledged?: boolean;
+        decided?: boolean;
     }): Promise<ProcessFsAnswer>;
+    /** Send what lingers now: someone waits on one of the process's own changes. */
+    hurry(): void;
     /** Resolves once every op logged so far is answered (not those logged after: a writing process is never idle). */
     flush(): Promise<void>;
     /**
@@ -372,6 +379,18 @@ export declare function unsettledNoteOf(error: unknown): string;
 export declare const MAX_DELEGATIONS_PER_PROCESS = 8;
 /** Mutations in a subtree before the client takes it. */
 export declare const GRANT_AFTER = 8;
+/**
+ * How long a change the process already answered (acknowledged, or decided
+ * here) waits to be sent while the log holds only such changes in subtrees
+ * it holds: it goes with the next change someone awaits, a flush, an effect
+ * or a recall, or after this. While a wave is out, the session's commit of
+ * it holds every answer the session gives, reads too, so a change sent the
+ * moment it is logged makes the program's next read and its next awaited
+ * change each wait out a commit. What sees the session without recalling
+ * the subtree (the file tree, another process's watch) sees the change this
+ * much later at most.
+ */
+export declare const LINGER_MS = 10;
 /** A grant unused this long is given back. */
 export declare const GRANT_IDLE_MS = 2000;
 export declare function processFsClient(options: ProcessFsClientOptions): ProcessFsClient;
