@@ -5,9 +5,10 @@ import { PIPE_CAPACITY, decideRead, decideWrite, heldExitSettles, holdsExit, pip
 import { wasiOutputRelay } from '../wasi/stdio.js';
 import { outputControlReader } from '../wasi/output-control.js';
 import { clockNs, clockResolutionNs, realtimeNs } from '../wasi/clock.js';
+import { unixGroups, unixUsers } from '../../shell/unix-accounts.js';
 import { ARENA_SIZE, CaptureStore } from './capture-store.js';
 const PAGE = 65536, te = new TextEncoder(), td = new TextDecoder();
-const E = { ACCES: 2, BADF: 8, EXIST: 20, INVAL: 28, ISDIR: 31, LOOP: 32, NOENT: 44, NOSYS: 52, NOTDIR: 54, NOTEMPTY: 55, PERM: 63, SPIPE: 70, SRCH: 71 };
+const E = { ACCES: 2, BADF: 8, EXIST: 20, INVAL: 28, ISDIR: 31, LOOP: 32, NOENT: 44, NOSYS: 52, NOTDIR: 54, NOTEMPTY: 55, PERM: 63, RANGE: 68, SPIPE: 70, SRCH: 71 };
 class Exit {
     constructor(c) { this.code = c; }
 }
@@ -785,6 +786,7 @@ function makeProc(s, pid, ppid, fds) {
             U8()[p++] = 0;
         } return 0; },
     };
+    const procFs = metadataImports(s, proc, DV, U8, s.fs);
     const nimbus_proc = {
         startup_cwd: (ptr, capacity) => {
             const bytes = te.encode(proc.cwd);
@@ -797,6 +799,8 @@ function makeProc(s, pid, ppid, fds) {
             return bytes.length;
         },
         capture_cwd: (ptr, length) => { proc.cwd = td.decode(U8().subarray(ptr, ptr + length)); return 0; },
+        stat_metadata: suspend('stat_metadata', procFs.stat_metadata),
+        account: suspend('account', procFs.account),
         // A landing (the capture's own rewind, or a longjmp's) stops the rewind and runs no hook.
         setjmp: (env) => {
             if (c.rewinding) {
@@ -1257,6 +1261,139 @@ function startDeferred(s) {
 // exec re-homes the forked child onto a staged plain-WASI coreutil
 // bound to the process fd table (M2 exec-into-runner, in-facet). The
 // tool's blocking pipe reads synchronously pump the writer procs.
+/**
+ * nimbus_proc's calls for what preview1 cannot carry: a process's
+ * descriptors' and paths' mode and owner (BusyBox's stat wrappers ask at
+ * every stat, bash's own only for a stat preview1 gave no type: a pipe, a
+ * stdin that is not a terminal), chmod and chown, and the session's
+ * accounts (account).
+ */
+/** A chown side as the guest's uid_t or gid_t (an i32 here): its id, or null for (uid_t)-1, which keeps the file's. */
+function ownerSide(bits) {
+    const id = bits >>> 0;
+    return id === 0xffffffff ? null : id;
+}
+function metadataImports(s, proc, DV, U8, fs) {
+    const readPath = (ptr, length) => td.decode(U8().subarray(ptr, ptr + length));
+    const at = (fd, path) => {
+        if (path.startsWith('/'))
+            return path;
+        if (fd === -1)
+            return proc.cwd + '/' + path;
+        // Same redirection the preview1 path imports apply: a dirfd the shell
+        // claimed still names the root wasi-libc resolved it against.
+        const entry = proc.fds.get(proc.preopenMoved.get(fd) ?? fd);
+        if (entry?.kind === 'preopen')
+            return entry.vfsPath + '/' + path;
+        if (entry?.kind !== 'authority')
+            throw Object.assign(new Error('EBADF'), { code: 'EBADF' });
+        return { directory: entry.handle.id, path };
+    };
+    const descriptor = (fd) => { const entry = proc.fds.get(fd); if (entry?.kind !== 'authority')
+        throw Object.assign(new Error('EBADF'), { code: 'EBADF' }); return entry.handle.id; };
+    const metadata = (out, mode, uid, gid) => {
+        DV().setUint32(out, mode, true);
+        DV().setUint32(out + 4, uid, true);
+        DV().setUint32(out + 8, gid, true);
+        return 0;
+    };
+    // fstat's: a file's own, a stream's or a pipe's by its kind (no inode: a terminal's or a FIFO's mode, the session's owner).
+    const descriptorMetadata = (fd, out) => {
+        const entry = proc.fds.get(fd);
+        if (entry === undefined)
+            return E.BADF;
+        if (entry.kind === 'resident')
+            return metadata(out, entry.stat.mode ?? 0, entry.stat.uid, entry.stat.gid);
+        if (entry.kind === 'pipe' || entry.kind === 'stdin' || entry.kind === 'stdout' || entry.kind === 'stderr')
+            return metadata(out, hostFifo(entry) ? 0o010600 : 0o020620, s.cred.uid, s.cred.gid);
+        const stat = entry.kind === 'authority' ? () => fs.fstat(entry.handle.id) : entry.kind === 'preopen' ? () => fs.stat(entry.vfsPath) : null;
+        if (stat === null)
+            return E.BADF;
+        return result(stat, st => st ? metadata(out, st.mode ?? 0, st.uid, st.gid) : E.NOENT);
+    };
+    // The call is produced inside the guard, not handed to it: resolving the fd
+    // is itself a syscall step that can fail, and an EBADF raised while building
+    // the arguments has to answer the guest as an errno rather than escape the
+    // import and fail the whole session.
+    const result = (produce, finish) => {
+        try {
+            const next = after(produce(), finish);
+            return next instanceof Promise ? next.catch((error) => refusalErrno(error, s.gone)) : next;
+        }
+        catch (error) {
+            return refusalErrno(error, s.gone);
+        }
+    };
+    return {
+        stat_metadata: (fd, ptr, length, follow, out) => {
+            if (!ptr)
+                return descriptorMetadata(fd, out);
+            const path = readPath(ptr, length);
+            // A path naming a descriptor (/dev/fd/N) is that descriptor's, resolved as path_filestat_get resolves it.
+            const named = descriptorNamed(proc.fds, fd === -1 ? -1 : proc.preopenMoved.get(fd) ?? fd, path, proc.cwd);
+            if (named !== null)
+                return proc.fds.has(named) ? descriptorMetadata(named, out) : E.NOENT;
+            return result(() => fs.stat(at(fd, path), { followSymlinks: !!follow }), st => st ? metadata(out, st.mode ?? 0, st.uid, st.gid) : E.NOENT);
+        },
+        chmod: (ptr, length, mode) => result(() => fs.chmod(at(-1, readPath(ptr, length)), mode), () => 0),
+        fchmod: (fd, mode) => result(() => fs.fchmod(descriptor(fd), mode), () => 0),
+        // uid_t and gid_t are unsigned, and come as i32: an id above 0x7fffffff
+        // arrives negative (>>> 0 is its value), and (uid_t)-1 keeps that side,
+        // as chown(2)'s -1 does, which the session keeps in the same change (null).
+        chown: (fd, ptr, length, uidBits, gidBits, follow) => {
+            const uid = ownerSide(uidBits), gid = ownerSide(gidBits);
+            return result(() => ptr ? fs.chown(at(fd, readPath(ptr, length)), uid, gid, { followSymlinks: !!follow }) : fs.fchown(descriptor(fd), uid, gid), () => 0);
+        },
+        /**
+         * One getpw* or getgr* lookup (nimbus-libc/nimbus-accounts.c), in one
+         * round trip: a user (kind 0) or a group (1), by id (by 0), by name (1)
+         * or by index (2, getpwent's), answered from /etc/passwd or /etc/group
+         * as they are now, as unix-accounts reads them. The record goes to `out`:
+         * two u32s (uid and gid; gid and its member count), then its strings,
+         * each NUL-ended (user: name, password, gecos, home, shell; group: name,
+         * password, members). `needed` gets its size: ERANGE when it is more
+         * than `capacity`, NOENT when no account is that one.
+         */
+        account: (kind, by, ptr, length, idBits, out, capacityBits, needed) => result(() => fs.readFile(kind === 1 ? '/etc/group' : '/etc/passwd'), (bytes) => {
+            // A uid, gid or index is unsigned, and comes as i32: one above 0x7fffffff arrives negative.
+            const id = idBits >>> 0, capacity = capacityBits >>> 0;
+            const text = bytes === null ? '' : td.decode(bytes);
+            const name = by === 1 ? td.decode(U8().subarray(ptr, ptr + length)) : '';
+            let ids;
+            let strings;
+            if (kind === 1) {
+                const groups = unixGroups(text);
+                const group = by === 2 ? groups[id] : groups.find((each) => by === 1 ? each.name === name : each.gid === id);
+                if (group === undefined)
+                    return E.NOENT;
+                ids = [group.gid, group.members.length];
+                strings = [group.name, group.password, ...group.members];
+            }
+            else {
+                const users = unixUsers(text);
+                const user = by === 2 ? users[id] : users.find((each) => by === 1 ? each.name === name : each.uid === id);
+                if (user === undefined)
+                    return E.NOENT;
+                ids = [user.uid, user.gid];
+                strings = [user.name, user.password, user.gecos, user.home, user.shell];
+            }
+            const encoded = strings.map((each) => te.encode(each));
+            const size = encoded.reduce((total, each) => total + each.length + 1, 8);
+            DV().setUint32(needed, size, true);
+            if (size > capacity)
+                return E.RANGE;
+            DV().setUint32(out, ids[0], true);
+            DV().setUint32(out + 4, ids[1], true);
+            let cursor = out + 8;
+            for (const each of encoded) {
+                U8().set(each, cursor);
+                U8()[cursor + each.length] = 0;
+                cursor += each.length + 1;
+            }
+            return 0;
+        }),
+    };
+}
 async function doExec(s, proc) {
     if (!s.procs.has(proc.pid))
         return;
@@ -1408,56 +1545,6 @@ async function doExec(s, proc) {
     const fs = canPark ? s.fs : s.fs.synchronous;
     if (!fs)
         throw new Error('Synchronous authority is unavailable');
-    const readPath = (ptr, length) => td.decode(U8().subarray(ptr, ptr + length));
-    const at = (fd, path) => {
-        if (path.startsWith('/'))
-            return path;
-        if (fd === -1)
-            return proc.cwd + '/' + path;
-        // Same redirection the preview1 path imports apply: a dirfd the shell
-        // claimed still names the root wasi-libc resolved it against.
-        const entry = proc.fds.get(proc.preopenMoved.get(fd) ?? fd);
-        if (entry?.kind === 'preopen')
-            return entry.vfsPath + '/' + path;
-        if (entry?.kind !== 'authority')
-            throw Object.assign(new Error('EBADF'), { code: 'EBADF' });
-        return { directory: entry.handle.id, path };
-    };
-    const descriptor = (fd) => { const entry = proc.fds.get(fd); if (entry?.kind !== 'authority')
-        throw Object.assign(new Error('EBADF'), { code: 'EBADF' }); return entry.handle.id; };
-    const metadata = (out, mode, uid, gid) => {
-        DV().setUint32(out, mode, true);
-        DV().setUint32(out + 4, uid, true);
-        DV().setUint32(out + 8, gid, true);
-        return 0;
-    };
-    // fstat's: a file's own, a stream's or a pipe's by its kind (no inode: a terminal's or a FIFO's mode, the session's owner).
-    const descriptorMetadata = (fd, out) => {
-        const entry = proc.fds.get(fd);
-        if (entry === undefined)
-            return E.BADF;
-        if (entry.kind === 'resident')
-            return metadata(out, entry.stat.mode ?? 0, entry.stat.uid, entry.stat.gid);
-        if (entry.kind === 'pipe' || entry.kind === 'stdin' || entry.kind === 'stdout' || entry.kind === 'stderr')
-            return metadata(out, hostFifo(entry) ? 0o010600 : 0o020620, s.cred.uid, s.cred.gid);
-        const stat = entry.kind === 'authority' ? () => fs.fstat(entry.handle.id) : entry.kind === 'preopen' ? () => fs.stat(entry.vfsPath) : null;
-        if (stat === null)
-            return E.BADF;
-        return result(stat, st => st ? metadata(out, st.mode ?? 0, st.uid, st.gid) : E.NOENT);
-    };
-    // The call is produced inside the guard, not handed to it: resolving the fd
-    // is itself a syscall step that can fail, and an EBADF raised while building
-    // the arguments has to answer the guest as an errno rather than escape the
-    // import and fail the whole session.
-    const result = (produce, finish) => {
-        try {
-            const next = after(produce(), finish);
-            return next instanceof Promise ? next.catch((error) => refusalErrno(error, s.gone)) : next;
-        }
-        catch (error) {
-            return refusalErrno(error, s.gone);
-        }
-    };
     const native = {
         startup_cwd: (ptr, capacity) => { const bytes = te.encode(proc.cwd); if (!capacity)
             return bytes.length; if (capacity <= bytes.length)
@@ -1467,19 +1554,7 @@ async function doExec(s, proc) {
             s.cred = { ...s.cred, umask: field >>> 3 };
             return previous;
         } return [s.cred.uid, s.cred.gid, proc.pid, proc.ppid][field] ?? 0; },
-        stat_metadata: (fd, ptr, length, follow, out) => {
-            if (!ptr)
-                return descriptorMetadata(fd, out);
-            const path = readPath(ptr, length);
-            // A path naming a descriptor (/dev/fd/N) is that descriptor's, resolved as path_filestat_get resolves it.
-            const named = descriptorNamed(proc.fds, fd === -1 ? -1 : proc.preopenMoved.get(fd) ?? fd, path, proc.cwd);
-            if (named !== null)
-                return proc.fds.has(named) ? descriptorMetadata(named, out) : E.NOENT;
-            return result(() => fs.stat(at(fd, path), { followSymlinks: !!follow }), st => st ? metadata(out, st.mode ?? 0, st.uid, st.gid) : E.NOENT);
-        },
-        chmod: (ptr, length, mode) => result(() => fs.chmod(at(-1, readPath(ptr, length)), mode), () => 0),
-        fchmod: (fd, mode) => result(() => fs.fchmod(descriptor(fd), mode), () => 0),
-        chown: (fd, ptr, length, uid, gid, follow) => result(() => ptr ? fs.chown(at(fd, readPath(ptr, length)), uid, gid, { followSymlinks: !!follow }) : fs.fchown(descriptor(fd), uid, gid), () => 0),
+        ...metadataImports(s, proc, DV, U8, fs),
     };
     const imports = canPark ? {
         fd_prestat_get: new WebAssembly.Suspending(wasi.fd_prestat_get),
@@ -1525,7 +1600,7 @@ async function doExec(s, proc) {
         args_sizes_get: wasi.args_sizes_get, args_get: wasi.args_get,
         environ_sizes_get: wasi.environ_sizes_get, environ_get: wasi.environ_get, proc_exit: wasi.proc_exit,
     } : wasi;
-    const nativeImports = canPark ? { ...native, stat_metadata: new WebAssembly.Suspending(native.stat_metadata), chmod: new WebAssembly.Suspending(native.chmod), fchmod: new WebAssembly.Suspending(native.fchmod), chown: new WebAssembly.Suspending(native.chown) } : native;
+    const nativeImports = canPark ? { ...native, stat_metadata: new WebAssembly.Suspending(native.stat_metadata), chmod: new WebAssembly.Suspending(native.chmod), fchmod: new WebAssembly.Suspending(native.fchmod), chown: new WebAssembly.Suspending(native.chown), account: new WebAssembly.Suspending(native.account) } : native;
     instance = new WebAssembly.Instance(module, { wasi_snapshot_preview1: imports, nimbus_proc: nativeImports });
     const start = instance.exports._start;
     function isEntry(value) { return typeof value === 'function'; }

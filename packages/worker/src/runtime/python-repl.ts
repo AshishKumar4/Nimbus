@@ -84,6 +84,12 @@ export interface PythonReplDeps {
   /** The invoking process's credential; absent only for the install-time warm-up. */
   cred?: Readonly<VfsCred>;
   /**
+   * The installed image asks again a wait its host gave up on: its runner
+   * key's contract (CPYTHON_RUNNER_CONTRACTS). Absent only for the
+   * install-time warm-up, which waits on nothing.
+   */
+  restartsWaits?: boolean;
+  /**
    * Where the prompt starts: the shell's working directory, entered once
    * per interpreter, and the command that started it, which a refusal to
    * enter names. Absent only for the install-time warm-up.
@@ -93,7 +99,7 @@ export interface PythonReplDeps {
 const PythonFacetResult = z.object({ stdout: z.string(), stderr: z.string(), exitCode: z.number().int(), error: z.string().optional(), control: z.record(z.string(), z.string()).optional() });
 const PythonFacetFailure = z.object({ __nimbusFacetError: z.string() });
 type PythonReplFacetResult = z.infer<typeof PythonFacetResult>;
-type InterpreterDeps = Pick<PythonReplDeps, 'facetMgr' | 'authority' | 'installRoot' | 'home' | 'manifest' | 'pid' | 'cred' | 'start'>;
+type InterpreterDeps = Pick<PythonReplDeps, 'facetMgr' | 'authority' | 'installRoot' | 'home' | 'manifest' | 'pid' | 'cred' | 'start' | 'restartsWaits'>;
 
 
 /** Where cpython-runner's catalog spec stages the interpreter. */
@@ -336,10 +342,11 @@ class PythonReplAdapter implements ReplAdapter {
  * interpreter's setup, and `enter`, the source that starts the prompt in the
  * shell's working directory, which the facet runs once per interpreter.
  */
-export function pythonReplStep(deps: Pick<PythonReplDeps, 'home' | 'start' | 'pid' | 'cred'>, pythonHome: string, userCode: string) {
+export function pythonReplStep(deps: Pick<PythonReplDeps, 'home' | 'start' | 'pid' | 'cred' | 'restartsWaits'>, pythonHome: string, userCode: string) {
   return {
     userCode,
     cred: deps.cred,
+    restartsWaits: deps.restartsWaits === true,
     supervisorPid: deps.pid || 0,
     outputControls: [{ key: 'incomplete', prefix: INCOMPLETE_MARKER }, { key: 'exit', prefix: EXIT_MARKER, suffix: ':' }],
     pythonHome,

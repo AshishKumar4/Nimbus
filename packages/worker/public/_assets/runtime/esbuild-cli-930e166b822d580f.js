@@ -909,6 +909,7 @@ return globalThis.Go;
       if (!open) throw errno("EBADF", `fd ${fd}`);
       return open;
     };
+    const ownerSide = (id) => id === -1 ? null : id;
     const settle = (work, callback) => {
       Promise.resolve().then(work).then(
         (value) => {
@@ -1075,15 +1076,15 @@ return globalThis.Go;
         }, callback);
       },
       chown(path, uid, gid, callback) {
-        settle(() => vfs.chown(at(path), uid, gid), callback);
+        settle(() => vfs.chown(at(path), ownerSide(uid), ownerSide(gid)), callback);
       },
       lchown(path, uid, gid, callback) {
-        settle(() => vfs.chown(at(path), uid, gid, { followSymlinks: false }), callback);
+        settle(() => vfs.chown(at(path), ownerSide(uid), ownerSide(gid), { followSymlinks: false }), callback);
       },
       fchown(fd, uid, gid, callback) {
         settle(() => {
           const open = file(fd);
-          return open.kind === "handle" ? vfs.fchown(open.handle, uid, gid) : vfs.chown(open.path, uid, gid);
+          return open.kind === "handle" ? vfs.fchown(open.handle, ownerSide(uid), ownerSide(gid)) : vfs.chown(open.path, ownerSide(uid), ownerSide(gid));
         }, callback);
       },
       utimes(path, atime, mtime, callback) {

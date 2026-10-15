@@ -128,7 +128,7 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
     utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number): Promise<VfsMutationReceipt>;
     chmod(path: RuntimeFsPath, mode: number): Promise<VfsMutationReceipt>;
     access(path: RuntimeFsPath, mode: number): Promise<void>;
-    chown(path: RuntimeFsPath, uid: number, gid: number, options?: {
+    chown(path: RuntimeFsPath, uid: number | null, gid: number | null, options?: {
         followSymlinks?: boolean;
     }): Promise<VfsMutationReceipt>;
     setUmask(mask: number): Promise<number>;
@@ -211,7 +211,7 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
     fsReaddirHandle(handleId: number): Promise<Awaited<ReturnType<RuntimeFsBridge["readdirHandle"]>>>;
     fsFtruncate(handleId: number, size: number): Promise<Awaited<ReturnType<RuntimeFsBridge["ftruncate"]>>>;
     fsFchmod(handleId: number, mode: number): Promise<Awaited<ReturnType<RuntimeFsBridge["fchmod"]>>>;
-    fsFchown(handleId: number, uid: number, gid: number): Promise<Awaited<ReturnType<RuntimeFsBridge["fchown"]>>>;
+    fsFchown(handleId: number, uid: number | null, gid: number | null): Promise<Awaited<ReturnType<RuntimeFsBridge["fchown"]>>>;
     fsFutimes(handleId: number, atimeMs: number, mtimeMs: number): Promise<Awaited<ReturnType<RuntimeFsBridge["futimes"]>>>;
     fsSync(handleId?: number | undefined): Promise<Awaited<ReturnType<RuntimeFsBridge["fsync"]>>>;
     fsRealpath(path: RuntimeFsPath): Promise<Awaited<ReturnType<RuntimeFsBridge["realpath"]>>>;

@@ -255,6 +255,10 @@ stage_nimbus() {
 	# libc names are libc's own.
 	"$CC" $TARGET_CFLAGS -std=c11 -D_GNU_SOURCE=1 -Wall -Wextra -Werror \
 	  -c "$NIMBUS_LIBC/nimbus-fs.c" -o "$WORK/nimbus/nimbus-fs.o"
+	# A read or write the host gave up waiting on is asked again (the image is
+	# cpython-runner@3's, whose host answers such a wait NIMBUS_ERESTART).
+	"$CC" $TARGET_CFLAGS -std=c11 -D_GNU_SOURCE=1 -Wall -Wextra -Werror \
+	  -c "$NIMBUS_LIBC/nimbus-restart.c" -o "$WORK/nimbus/nimbus-restart.o"
 	"$AR" rcs "$DEPS/lib/libnimbuswasi.a" "$WORK/nimbus"/*.o
 }
 
@@ -295,9 +299,11 @@ stage_wasi() {
 	    -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS \
 	    -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_GETPID"
 	  # --wrap lets nimbus-net own accept and close without colliding with the
-	  # wasi-libc definitions that are still in the archive.
+	  # wasi-libc definitions that are still in the archive, and nimbus-restart
+	  # read and write (wasi-libc's stdio included).
 	  export LDFLAGS="--target=wasm32-wasi -L$DEPS/lib \
-	    -Wl,--wrap=close -Wl,--wrap=accept -Wl,--wrap=accept4"
+	    -Wl,--wrap=close -Wl,--wrap=accept -Wl,--wrap=accept4 \
+	    -Wl,--wrap=read -Wl,--wrap=readv -Wl,--wrap=write -Wl,--wrap=writev"
 	  export LIBS="-lnimbuswasi -lwasi-emulated-signal -lwasi-emulated-process-clocks \
 	    -lwasi-emulated-mman -lwasi-emulated-getpid"
 	  mkdir -p Modules && cp "$HERE/Setup.local" Modules/Setup.local

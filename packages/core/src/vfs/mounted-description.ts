@@ -243,7 +243,7 @@ class MountedDescription implements MountedFileDescription {
   }
 
   chmod(mode: number, admit?: () => void): Awaitable<void> { return this.file.chmod(mode, this.admitted('fchmod', admit)); }
-  chown(uid: number, gid: number, admit?: () => void): Awaitable<void> { return this.file.chown(uid, gid, this.admitted('fchown', admit)); }
+  chown(uid: number | null, gid: number | null, admit?: () => void): Awaitable<void> { return this.file.chown(uid, gid, this.admitted('fchown', admit)); }
   utimes(atime: number, mtime: number, admit?: () => void): Awaitable<void> { return this.file.utimes(atime, mtime, this.admitted('futimes', admit)); }
 
   /** A flush that fails loses what it held (lastClose says so): taken before it reads. */

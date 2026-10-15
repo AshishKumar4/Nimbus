@@ -5,7 +5,7 @@ import { publishPackages } from './publish-packages.mjs';
 
 export function verifiedPublishArtifacts(root, dir, commit, supplied) {
   const manifest = supplied ?? JSON.parse(readFileSync(join(dir, 'publish.json'), 'utf8'));
-  const expected = [{ name: '@nimbus-sh/runtime-cpython', version: '3.13.14-2' }, ...publishPackages(root, commit)];
+  const expected = [{ name: '@nimbus-sh/runtime-cpython', version: '3.13.14-3' }, ...publishPackages(root, commit)];
   if (manifest.commit !== commit || !manifest.job || !manifest.rows?.length || manifest.rows.some((row) => row.exitCode !== 0)
     || manifest.tarballs?.length !== expected.length) throw new Error('publish manifest is incomplete or not a verified result for this commit');
   for (let index = 0; index < expected.length; index++) {

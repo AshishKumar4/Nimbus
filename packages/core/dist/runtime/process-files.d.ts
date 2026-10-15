@@ -280,7 +280,7 @@ export declare class ProcessView implements VFS {
     /** Where the link at `path`, reading `link`, leads in this namespace (RuntimeFsBridge.linkLeadsTo), for a caller following it itself. */
     linkLeadsTo(path: string, link: string): Promise<string | null>;
     chmod(path: string, mode: number): Promise<void>;
-    /** chown(2): a null side keeps what the file has (chown -1). `follow: false` is lchown(2), a link's own. */
+    /** chown(2): a null side keeps what the file has (chown -1), in the same change. `follow: false` is lchown(2), a link's own. */
     chown(path: string, uid: number | null, gid: number | null, options?: {
         follow?: boolean;
     }): Promise<void>;

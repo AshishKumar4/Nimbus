@@ -1820,9 +1820,10 @@ export class SqliteVFS {
                 if (opened.path !== null)
                     this.chown(opened.path, uid, gid, CRED_KERNEL, true);
                 else {
-                    current().uid = uid;
-                    current().gid = gid;
-                    current().ctime = this.now();
+                    const inode = current();
+                    inode.uid = uid ?? inode.uid;
+                    inode.gid = gid ?? inode.gid;
+                    inode.ctime = this.now();
                 }
             }),
             utimes: owned((atime, mtime) => {

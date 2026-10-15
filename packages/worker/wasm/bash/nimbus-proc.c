@@ -18,6 +18,8 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <wasi/api.h>
 
 #define IMPORT(name) __attribute__((import_module("nimbus_proc"), import_name(name)))
@@ -160,14 +162,30 @@ unsigned alarm(unsigned s) { (void)s; return 0; } /* SIGALRM timers: M5 */
 int getrlimit(int res, struct rlimit *rl) { (void)res; if (rl) { rl->rlim_cur = RLIM_INFINITY; rl->rlim_max = RLIM_INFINITY; } return 0; }
 int setrlimit(int res, const struct rlimit *rl) { (void)res; (void)rl; return 0; }
 
-/* pwd: minimal single-user resolution (the session runs as one uid; S2a owns
- * real uid/gid). bash uses this for ~ expansion and $HOME fallback. */
-static struct passwd __np_pw = { "nimbus", "x", 1000, 1000, "Nimbus", "/root", "/bin/bash" };
-struct passwd *getpwnam(const char *name) { (void)name; return &__np_pw; }
-struct passwd *getpwuid(uid_t uid) { (void)uid; return &__np_pw; }
-struct passwd *getpwent(void) { return 0; }
-void setpwent(void) {}
-void endpwent(void) {}
+/* Accounts (~user, $HOME's fallback) are the session's: nimbus-libc/nimbus-accounts.c. */
+
+/* preview1 has no FIFO type: a pipe, or a stdin that is not a terminal, is
+ * "unknown" to stat, as is a path naming one (/dev/stdin, /dev/fd/N). Such a
+ * stat asks the runner for its mode and owner (bash-runner@6); one preview1
+ * typed costs nothing more. */
+IMPORT("stat_metadata") extern int __np_stat_metadata(int fd, const char *path, unsigned len, unsigned follow, unsigned out[3]);
+int __real_stat(const char *path, struct stat *st);
+int __real_lstat(const char *path, struct stat *st);
+int __real_fstat(int fd, struct stat *st);
+int __real_fstatat(int fd, const char *path, struct stat *st, int flag);
+static int typed(int failed, int fd, const char *path, unsigned follow, struct stat *st)
+{
+	if (failed || (st->st_mode & S_IFMT)) return failed;
+	unsigned out[3];
+	if (__np_stat_metadata(fd == AT_FDCWD ? -1 : fd, path, path ? strlen(path) : 0, follow, out) == 0) {
+		st->st_mode = out[0]; st->st_uid = out[1]; st->st_gid = out[2];
+	}
+	return 0;
+}
+int __wrap_stat(const char *p, struct stat *s) { return typed(__real_stat(p, s), AT_FDCWD, p, 1, s); }
+int __wrap_lstat(const char *p, struct stat *s) { return typed(__real_lstat(p, s), AT_FDCWD, p, 0, s); }
+int __wrap_fstat(int fd, struct stat *s) { return typed(__real_fstat(fd, s), fd, 0, 1, s); }
+int __wrap_fstatat(int fd, const char *p, struct stat *s, int flag) { return typed(__real_fstatat(fd, p, s, flag), fd, p, !(flag & AT_SYMLINK_NOFOLLOW), s); }
 
 char *ttyname(int fd) { (void)fd; return (char *)"/dev/tty"; }
 int ttyname_r(int fd, char *buf, size_t len) { (void)fd; if (len < 9) return ERANGE; memcpy(buf, "/dev/tty", 9); return 0; }

@@ -23,6 +23,21 @@ published independently in the `@nimbus-sh` npm scope.
   Breaking (core): `NativeModuleLoader` (`substrate/lifo/node-compat/cjs-loader.js`)
   has `registerScript`.
 
+- Fixed: `bash` and its BusyBox commands read accounts from `/etc/passwd`
+  and `/etc/group` at each lookup. `~user` is the user's home and `~root`
+  root's, a name no account has stays as written, `ls -l` and `stat` name
+  each file's real owner and group, and an account added while bash runs is
+  found. bash 5.2.37-6 answered every name with one fixed account, and
+  its BusyBox named every owner `user`, root's files in `/usr/bin` and
+  `/etc` too. A command that names owners now makes one lookup per name.
+- Fixed: a piped stdin is a FIFO to bash's `test -p` (on `/dev/stdin` and
+  `/dev/fd/0`) and to BusyBox's `stat`, as on Linux.
+- Fixed: `python -c` flushes its `sys.stdout` once as it ends, as `python3
+  -c` does; the host flushed it a second time.
+- Changed: bash 5.2.37-7 (runner contract `bash-runner@6`) and CPython
+  3.13.14-3. BusyBox is now built by the same reproducible recipe as bash.
+  The catalog keeps 5.2.37-6 and 3.13.14-2 as its defaults until the next
+  release publishes the new builds.
 - Fixed: a WASI program (git, Python, clang, Ruby) that was killed, or that
   exited, before the session had answered its last file changes no longer
   loses the files it made in a directory it held. The session landed the

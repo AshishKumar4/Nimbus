@@ -122,7 +122,8 @@ export interface VfsOpenDescription {
         type: VfsDirentType;
     }[];
     chmod(mode: number): void;
-    chown(uid: number, gid: number): void;
+    /** A null side keeps the file's. */
+    chown(uid: number | null, gid: number | null): void;
     utimes(atime: number, mtime: number): void;
     close(): void;
     /**

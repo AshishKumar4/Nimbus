@@ -167,7 +167,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   }
   chmod(path: RuntimeFsPath, mode: number): VfsMutationReceipt { this.guard(); return this.target.chmod(path, mode); }
   access(path: RuntimeFsPath, mode: number): void { this.guard(); return this.target.access(path, mode); }
-  chown(path: RuntimeFsPath, uid: number, gid: number, options?: { followSymlinks?: boolean }): VfsMutationReceipt {
+  chown(path: RuntimeFsPath, uid: number | null, gid: number | null, options?: { followSymlinks?: boolean }): VfsMutationReceipt {
     this.guard(); return this.target.chown(path, uid, gid, options);
   }
   open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): RuntimeOpenedFile { this.guard(); return this.target.open(path, flags, options); }
@@ -221,7 +221,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   readdirHandle(handleId: number): RuntimeVfsDirEntry[] { this.guard(); return this.target.readdirHandle(handleId); }
   ftruncate(handleId: number, size: number): void { this.guard(); return this.target.ftruncate(handleId, size); }
   fchmod(handleId: number, mode: number): void { this.guard(); return this.target.fchmod(handleId, mode); }
-  fchown(handleId: number, uid: number, gid: number): void { this.guard(); return this.target.fchown(handleId, uid, gid); }
+  fchown(handleId: number, uid: number | null, gid: number | null): void { this.guard(); return this.target.fchown(handleId, uid, gid); }
   futimes(handleId: number, atimeMs: number, mtimeMs: number): void { this.guard(); return this.target.futimes(handleId, atimeMs, mtimeMs); }
   writeBatch(payload: BatchWritePayload, options?: { signal?: AbortSignal }): Promise<{ inodes: number; chunks: number }> {
     this.guard();
@@ -1082,7 +1082,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       return this.receipt();
     });
   }
-  chown(path: RuntimeFsPath, uid: number, gid: number, options?: { followSymlinks?: boolean }) {
+  chown(path: RuntimeFsPath, uid: number | null, gid: number | null, options?: { followSymlinks?: boolean }) {
     return this.either([path], () => this.bridge.chown(path, uid, gid, options), async () => {
       await this.namespace.chown((await this.path(path, options?.followSymlinks !== false)), uid, gid);
       return this.receipt();
@@ -1256,7 +1256,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     return this.on(handleId, () => this.bridge.fchmod(handleId, mode), () => this.descriptors.fchmod(handleId, mode));
   }
 
-  fchown(handleId: number, uid: number, gid: number) {
+  fchown(handleId: number, uid: number | null, gid: number | null) {
     return this.on(handleId, () => this.bridge.fchown(handleId, uid, gid), () => this.descriptors.fchown(handleId, uid, gid));
   }
 
@@ -1469,16 +1469,10 @@ export class ProcessView implements VFS {
   /** Where the link at `path`, reading `link`, leads in this namespace (RuntimeFsBridge.linkLeadsTo), for a caller following it itself. */
   async linkLeadsTo(path: string, link: string): Promise<string | null> { return await this.fs.linkLeadsTo(path, link); }
   async chmod(path: string, mode: number): Promise<void> { await this.call('chmod', path, () => this.fs.chmod(path, mode)); }
-  /** chown(2): a null side keeps what the file has (chown -1). `follow: false` is lchown(2), a link's own. */
+  /** chown(2): a null side keeps what the file has (chown -1), in the same change. `follow: false` is lchown(2), a link's own. */
   async chown(path: string, uid: number | null, gid: number | null, options?: { follow?: boolean }): Promise<void> {
     const followSymlinks = options?.follow !== false;
     await this.call(followSymlinks ? 'chown' : 'lchown', path, async () => {
-      if (uid === null || gid === null) {
-        const stat = await this.fs.stat(path, { followSymlinks });
-        if (stat === null) throw syscallError('ENOENT', followSymlinks ? 'chown' : 'lchown', path);
-        uid ??= stat.uid;
-        gid ??= stat.gid;
-      }
       await this.fs.chown(path, uid, gid, { followSymlinks });
     });
   }
@@ -1785,14 +1779,7 @@ export class NamespaceFs {
     }
   }
   chmod(path: string, mode: number): void { this.fs.chmod(path, mode); }
-  chown(path: string, uid: number | null, gid: number | null): void {
-    if (uid === null || gid === null) {
-      const stat = this.stat(path);
-      uid ??= stat.uid;
-      gid ??= stat.gid;
-    }
-    this.fs.chown(path, uid, gid);
-  }
+  chown(path: string, uid: number | null, gid: number | null): void { this.fs.chown(path, uid, gid); }
   utimes(path: string, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: { followSymlinks?: boolean }): void {
     this.fs.utimes(path, atimeMs, mtimeMs, options);
   }

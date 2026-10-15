@@ -48,7 +48,7 @@ export interface MountedFileDescription {
     truncate(size: number, admit?: () => void): Awaitable<void>;
     readdir(admit?: () => void): Awaitable<RuntimeVfsDirEntry[]>;
     chmod(mode: number, admit?: () => void): Awaitable<void>;
-    chown(uid: number, gid: number, admit?: () => void): Awaitable<void>;
+    chown(uid: number | null, gid: number | null, admit?: () => void): Awaitable<void>;
     utimes(atime: number, mtime: number, admit?: () => void): Awaitable<void>;
     /** Writes what it holds; throws what that, or an earlier settle of it, failed with. */
     flush(admit?: () => void): Awaitable<void>;
@@ -218,7 +218,7 @@ export declare class Descriptors {
     /** ftruncate(2) of a descriptor not open for writing is EINVAL, as Linux answers it. */
     ftruncate(id: number, size: number): Awaitable<void>;
     fchmod(id: number, mode: number): Awaitable<void>;
-    fchown(id: number, uid: number, gid: number): Awaitable<void>;
+    fchown(id: number, uid: number | null, gid: number | null): Awaitable<void>;
     futimes(id: number, atime: number, mtime: number): Awaitable<void>;
 }
 export {};
