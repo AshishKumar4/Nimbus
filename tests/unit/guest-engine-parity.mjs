@@ -247,8 +247,8 @@ const SCENARIOS = {
     await e.hold(OUT);
     e.stall();
     await e.write(`${OUT}/last.txt`, 'LAST');
-    // Past the linger: logged, and sent to a session that does not answer.
-    await sleep(LINGER_MS * 4);
+    // The next file it makes logs this one's bytes first (the session does not answer).
+    await e.write(`${OUT}/next.txt`, 'NEXT');
     await e.end('kill');
     assert.equal(await e.peerText(`${OUT}/last.txt`), 'LAST');
     assert.doesNotMatch(e.authority.host.processes.allLogs(e.log.pid).map((log) => log.data).join(''), /refused/);
@@ -257,7 +257,7 @@ const SCENARIOS = {
     await e.hold(OUT);
     e.stall();
     await e.write(`${OUT}/last.txt`, 'LAST');
-    await sleep(LINGER_MS * 4);
+    await e.write(`${OUT}/next.txt`, 'NEXT');
     await e.end('exit');
     assert.equal(await e.peerText(`${OUT}/last.txt`), 'LAST');
   },
