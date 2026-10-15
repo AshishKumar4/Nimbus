@@ -12,7 +12,7 @@ export function isGuestEvent(value) {
     if (!record(value))
         return false;
     switch (value.type) {
-        case 'output': return (value.fd === 1 || value.fd === 2) && isOutputSource(value.source) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
+        case 'output': return (value.fd === 1 || value.fd === 2) && isOutputSource(value.source) && Number.isSafeInteger(value.writer) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
         case 'settle': return Number.isSafeInteger(value.upTo);
         case 'fetch':
             return Number.isSafeInteger(value.id) && Number.isSafeInteger(value.port) && typeof value.url === 'string'
@@ -42,7 +42,7 @@ export function isHostEvent(value) {
                 && (value.event.oldPath === undefined || typeof value.event.oldPath === 'string')
                 && typeof value.event.timestamp === 'number';
         case 'output-failed':
-            return (value.fd === 1 || value.fd === 2) && typeof value.code === 'string' && typeof value.pipe === 'boolean' && isOutputSource(value.source);
+            return (value.fd === 1 || value.fd === 2) && typeof value.code === 'string' && typeof value.pipe === 'boolean' && isOutputSource(value.source) && Number.isSafeInteger(value.writer);
         case 'output-settled': return Number.isSafeInteger(value.seq);
         case 'stdin':
             return Number.isSafeInteger(value.id) && (value.data === null || value.data instanceof Uint8Array || value.withdrawn === true

@@ -17,6 +17,8 @@ export type OutputSource = 'stream' | 'console';
  */
 export interface FailableOutput extends CommandOutputStream {
     onFailure?(listener: (error: Error, source: OutputSource) => void): void;
+    /** Another writer of the same descriptor, which hears only its own writes' failures (a tty.WriteStream a program makes). */
+    another?(): FailableOutput;
 }
 /**
  * A Writable's options over `output`: its bytes reach the output as each

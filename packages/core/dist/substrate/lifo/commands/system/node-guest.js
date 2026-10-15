@@ -77,7 +77,7 @@ function tellExit(code, explicit) {
         return programProcess.exitWith(code, explicit);
     }
     catch (error) {
-        postOutput(2, 'console', `${uncaughtReport(error, (value) => realm.getBuiltinModule('node:util').inspect(value))}\n`);
+        postOutput(2, 'console', 0, `${uncaughtReport(error, (value) => realm.getBuiltinModule('node:util').inspect(value))}\n`);
         return 1;
     }
 }
@@ -163,16 +163,23 @@ const filesystem = {
  * with what made it.
  */
 function realmOutput(fd) {
-    const listeners = [];
-    const through = (source) => ({
-        write: (data) => postOutput(fd, source, data),
-        writeBytes: (data) => postOutput(fd, source, data),
+    // Each writer of the descriptor hears its own writes' failures: 0 is process.stdout or process.stderr, and its console.
+    const listeners = new Map();
+    let writers = 0;
+    const through = (source, writer) => ({
+        write: (data) => postOutput(fd, source, writer, data),
+        writeBytes: (data) => postOutput(fd, source, writer, data),
+    });
+    const streamOf = (writer) => ({
+        ...through('stream', writer),
+        onFailure: (listener) => { listeners.set(writer, [...listeners.get(writer) ?? [], listener]); },
+        another: () => streamOf(++writers),
     });
     return {
-        stream: { ...through('stream'), onFailure: (listener) => { listeners.push(listener); } },
-        console: through('console'),
-        fail(error, source) {
-            for (const listener of listeners)
+        stream: streamOf(0),
+        console: through('console', 0),
+        fail(error, source, writer) {
+            for (const listener of listeners.get(writer) ?? [])
                 listener(error, source);
         },
     };
@@ -182,8 +189,8 @@ let postedOutput = 0;
 let settledOutput = 0;
 /** Whether the guest waits for the host to settle its writes (settle): the realm is held meanwhile. */
 let settling = false;
-function postOutput(fd, source, data) {
-    post({ type: 'output', fd, source, data });
+function postOutput(fd, source, writer, data) {
+    post({ type: 'output', fd, source, writer, data });
     postedOutput++;
 }
 const outputs = { 1: realmOutput(1), 2: realmOutput(2) };
@@ -302,7 +309,7 @@ events.on('message', (event) => {
             // A stream's failure is heard here, whatever the program makes of it: the host reports it no more.
             if (event.source === 'stream')
                 post({ type: 'heard', fd: event.fd });
-            outputs[event.fd].fail(writeFailure(event.code, event.pipe), event.source);
+            outputs[event.fd].fail(writeFailure(event.code, event.pipe), event.source, event.writer);
             return;
         case 'output-settled':
             settledOutput = event.seq;
@@ -315,7 +322,7 @@ events.on('message', (event) => {
 const fatal = (reason) => {
     if (reason instanceof ProcessExitError)
         return exitNow(reason.exitCode);
-    postOutput(2, 'console', `${uncaughtReport(reason, (value) => realm.getBuiltinModule('node:util').inspect(value))}\n`);
+    postOutput(2, 'console', 0, `${uncaughtReport(reason, (value) => realm.getBuiltinModule('node:util').inspect(value))}\n`);
     return exitNow(1);
 };
 /** An error nothing caught is the program's process's first (LifoProcess.takeUncaught); one it does not take ends it. */
@@ -363,7 +370,7 @@ realm.on('exit', () => {
             post({ type: 'exit', code, ended: false });
         return;
     }
-    postOutput(2, 'console', `Warning: Detected unsettled top-level await at ${program.filename}\n`);
+    postOutput(2, 'console', 0, `Warning: Detected unsettled top-level await at ${program.filename}\n`);
     post({ type: 'exit', code: tellExit(13, true), ended: false });
 });
 if (egress) {

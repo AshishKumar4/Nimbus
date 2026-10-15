@@ -32,6 +32,8 @@ export interface ProgramTty {
     stdin(): Readable;
     stdout(): Writable;
     stderr(): Writable;
+    /** Whether a WriteStream the program made listens for its writes' failures. */
+    writersHear(): boolean;
 }
 /**
  * The tty module of the program `stdio` is, its streams joined to its

@@ -1,6 +1,8 @@
 import realm from 'node:process';
 import { nodeError, nodeSystemError } from '../../../_shared/node-error.js';
 import { asStandardStream, joinStandardInput, leaveStandardStreamsOpen, outputSink, standardStream } from './standard-streams.js';
+/** Made by the program's own process.stdout or process.stderr, whose writer is its descriptor's first: not a WriteStream the program makes. */
+const STANDARD = Symbol('standard stream');
 const programs = new WeakMap();
 /**
  * The tty module of the program `stdio` is, its streams joined to its
@@ -17,17 +19,20 @@ export function ttyOf(stdio) {
     return tty;
 }
 function createTty(stdio) {
-    let module;
+    let classes;
     let stdin;
     let stdout;
     let stderr;
     const isatty = (fd) => Number.isInteger(fd) && fd >= 0 && fd <= 2 && stdio.terminal?.isatty(fd) === true;
-    const ttyModule = () => module ??= ttyClasses(stdio, isatty);
+    // The WriteStreams the program made, until they close.
+    const writers = new Set();
+    const ttyClassesOf = () => classes ??= ttyClasses(stdio, isatty, writers);
+    const ttyModule = () => ttyClassesOf().module;
     const standardOutput = (fd) => {
         const output = fd === 1 ? stdio.stdout : stdio.stderr;
         if (!isatty(fd))
             return standardStream(output, fd);
-        return asStandardStream(new (ttyModule().WriteStream)(fd), fd, output);
+        return asStandardStream(ttyClassesOf().standardWriter(fd), fd, output);
     };
     return {
         get module() { return ttyModule(); },
@@ -37,6 +42,7 @@ function createTty(stdio) {
             : Object.assign(joinStandardInput(new (realm.getBuiltinModule('node:stream').Readable)(), stdio.input), { fd: 0 }),
         stdout: () => stdout ??= standardOutput(1),
         stderr: () => stderr ??= standardOutput(2),
+        writersHear: () => [...writers].some((writer) => writer.listenerCount('error') > 0),
     };
 }
 /** A descriptor as Node's tty streams take it: a whole number, else ERR_INVALID_FD. */
@@ -53,7 +59,7 @@ function checkFd(fd) {
 function ttyInitFailed() {
     return nodeSystemError('ERR_TTY_INIT_FAILED', 'TTY initialization failed', { errno: -22, code: 'EINVAL', message: 'invalid argument', syscall: 'uv_tty_init' });
 }
-function ttyClasses(stdio, isatty) {
+function ttyClasses(stdio, isatty, writers) {
     const { Readable, Writable } = realm.getBuiltinModule('node:stream');
     const readline = realm.getBuiltinModule('node:readline');
     /** A standard descriptor libuv can stream: the terminal or a pipe. */
@@ -71,7 +77,10 @@ function ttyClasses(stdio, isatty) {
         }
         setRawMode(mode) {
             const raw = Boolean(mode);
-            // As uv_tty_set_mode on a descriptor that is not a terminal: its termios cannot be read.
+            // As uv_tty_set_mode: a mode the stream is already in is not set again.
+            if (raw === this.isRaw)
+                return this;
+            // On a descriptor that is not a terminal, its termios cannot be read.
             if (!isatty(0)) {
                 this.emit('error', Object.assign(new Error('setRawMode ENOTTY'), { errno: -25, code: 'ENOTTY', syscall: 'setRawMode' }));
                 return this;
@@ -86,16 +95,22 @@ function ttyClasses(stdio, isatty) {
         // The window's, on the terminal; none on a pipe, as Node has none there.
         columns;
         rows;
-        constructor(fd) {
+        constructor(fd, standard) {
             if (!streamable(checkFd(fd)))
                 throw ttyInitFailed();
-            const output = fd === 1 ? stdio.stdout : fd === 2 ? stdio.stderr : undefined;
+            const base = fd === 1 ? stdio.stdout : fd === 2 ? stdio.stderr : undefined;
+            // One the program makes writes as a writer of its own, and hears its own writes' failures, as Node's
+            // does each write's: process.stdout's are asStandardStream's to hear.
+            const output = standard === STANDARD ? base : base?.another?.() ?? base;
             super(outputSink(output));
-            // A write it made that fails later is its error, as one through process.stdout is that stream's.
-            output?.onFailure?.((error, source) => {
-                if (source === 'stream')
-                    this.destroy(error);
-            });
+            if (standard !== STANDARD) {
+                output?.onFailure?.((error, source) => {
+                    if (source === 'stream')
+                        this.destroy(error);
+                });
+                writers.add(this);
+                this.once('close', () => writers.delete(this));
+            }
             if (isatty(fd))
                 [this.columns, this.rows] = windowSize();
         }
@@ -124,5 +139,5 @@ function ttyClasses(stdio, isatty) {
             return windowSize();
         }
     }
-    return { ReadStream, WriteStream, isatty };
+    return { module: { ReadStream, WriteStream, isatty }, standardWriter: (fd) => new WriteStream(fd, STANDARD) };
 }

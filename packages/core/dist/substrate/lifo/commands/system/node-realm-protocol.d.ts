@@ -51,11 +51,13 @@ export type NodeCall = {
 /** What a standard descriptor is, as libuv tells a stream it can make from it. */
 export type FdKind = 'terminal' | 'pipe' | 'other';
 /** A write to output `fd` that failed with `code`, on a pipe or a file, made through `source`. */
+/** A failed write: its descriptor, its error, and what made it (its source, and which of the program's writers of `fd`: 0 is process.stdout or process.stderr, and its console). */
 export interface OutputFailure {
     readonly fd: 1 | 2;
     readonly code: string;
     readonly pipe: boolean;
     readonly source: OutputSource;
+    readonly writer: number;
 }
 /** A response to a request that stayed on the box, as data, either way across. */
 export interface RealmResponse {
@@ -70,6 +72,7 @@ export type GuestEvent =
     readonly type: 'output';
     readonly fd: 1 | 2;
     readonly source: OutputSource;
+    readonly writer: number;
     readonly data: string | Uint8Array;
 }
 /** The program's loop ran empty, and it would hear of a failed write: tell it once writes up to number `upTo` are made (output-settled). */
