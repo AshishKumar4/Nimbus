@@ -174,11 +174,13 @@ function readHeredocBodies(input, pos, heredocs) {
     for (const heredoc of heredocs) {
         const bodyStart = i;
         const lines = [];
+        let terminated = false;
         while (i < input.length) {
             const line = readLine(input, i);
             const comparable = heredoc.stripTabs ? stripLeadingTabs(line.text) : line.text;
             i = line.end;
             if (comparable === heredoc.delimiter) {
+                terminated = true;
                 break;
             }
             lines.push(heredoc.stripTabs ? stripLeadingTabs(line.text) : line.text);
@@ -191,6 +193,7 @@ function readHeredocBodies(input, pos, heredocs) {
             value: body,
             pos: bodyStart,
             heredocQuoted: heredoc.quoted,
+            heredocTerminated: terminated,
         });
     }
     return { tokens, end: i };

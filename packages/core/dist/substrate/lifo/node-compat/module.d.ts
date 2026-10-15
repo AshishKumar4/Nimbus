@@ -4,16 +4,13 @@
  * Provides the commonly used APIs from the `node:module` built-in:
  * - Module class with id, filename, exports, paths, require, etc.
  * - createRequire() — returns a require-like function backed by the module map
- * - builtinModules — list of shimmed built-in module names
- * - isBuiltin() — check if a module name is a built-in
+ * - builtinModules and isBuiltin() — the module map's core names (createModuleShim)
  */
-/** All built-in module names available in the Lifo node-compat layer */
-export declare const builtinModules: string[];
 /**
- * Check whether a specifier refers to a Node.js built-in module.
- * Handles both bare names ("fs") and the "node:" prefix ("node:fs").
+ * npm packages the module map serves itself (index.ts): required by name, as
+ * a built-in is, but no part of Node's core, so not in builtinModules.
  */
-export declare function isBuiltin(specifier: string): boolean;
+export declare const PROVIDED_PACKAGES: readonly ["rimraf", "esbuild"];
 export type RequireFunction = ((id: string) => unknown) & {
     resolve: ((id: string, options?: {
         paths?: string[];
@@ -40,8 +37,6 @@ export declare class Module {
     paths: string[];
     constructor(id?: string, parent?: Module | null);
     require(_id: string): unknown;
-    static builtinModules: string[];
-    static isBuiltin: typeof isBuiltin;
     static createRequire: (filename: string | URL) => RequireFunction;
     static _resolveFilename(request: string): string;
     static _cache: Record<string, unknown>;

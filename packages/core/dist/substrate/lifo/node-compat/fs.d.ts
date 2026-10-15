@@ -96,6 +96,10 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
         withFileTypes?: boolean;
     }) => string[] | Dirent[];
     unlinkSync: (path: string | URL) => void;
+    rmSync: (path: string | URL, options?: {
+        recursive?: boolean;
+        force?: boolean;
+    }) => void;
     rmdirSync: (path: string | URL, options?: {
         recursive?: boolean;
     }) => void;
@@ -135,6 +139,10 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
         withFileTypes?: boolean;
     } | Callback<string[] | Dirent[]>, cb?: Callback<string[] | Dirent[]>) => void;
     unlink: (path: string | URL, cb: Callback<void>) => void;
+    rm: (path: string | URL, optionsOrCb: {
+        recursive?: boolean;
+        force?: boolean;
+    } | Callback<void>, cb?: Callback<void>) => void;
     rename: (oldPath: string | URL, newPath: string | URL, cb: Callback<void>) => void;
     access: (path: string | URL, modeOrCb: number | Callback<void>, cb?: Callback<void>) => void;
     exists: (path: string | URL, cb: (exists: boolean) => void) => void;

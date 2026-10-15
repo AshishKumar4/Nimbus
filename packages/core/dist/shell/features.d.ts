@@ -26,6 +26,13 @@ export interface HeredocInfo {
         stripTabs: boolean;
     }>;
 }
+/**
+ * The here-documents `input` opens, when a body is still to come: null when
+ * it opens none, or every body and its terminator are there (a command
+ * recalled from history, which runs as it stands). The lexer is the one
+ * judge of a delimiter (an empty one, `<<''`, ends at an empty line) and of
+ * where a body ends.
+ */
 export declare function parseHeredoc(input: string): HeredocInfo | null;
 export declare class HeredocHandler {
     private shell;
@@ -36,8 +43,8 @@ export declare class HeredocHandler {
     private submission;
     private active;
     private heredocInfo;
-    private currentHeredocIndex;
-    private bodies;
+    /** The lines typed after the command, as typed: the lexer reads the bodies from them. */
+    private lines;
     /** Safety limit to prevent unbounded memory growth */
     private static readonly MAX_HEREDOC_LINES;
     constructor(shell: ShellLike, terminal: TerminalLike);
@@ -53,9 +60,11 @@ export declare class HeredocHandler {
     private _handleOriginalInput;
     private _executeOriginalLine;
     private _startAccumulation;
+    /** The command and every line typed after it, each ended: what runs once the lexer finds every body ended. */
+    private _script;
     /**
-     * Process a single heredoc content line (non-recursive).
-     * Returns true if this was the delimiter (heredoc is complete).
+     * Take one line after the command (non-recursive). True when the command is
+     * whole (every body ended), or the line limit stopped the collection.
      */
     private _processLine;
     /**
@@ -70,7 +79,6 @@ export declare class HeredocHandler {
      */
     private _drainPasteQueue;
     private _finishHeredoc;
-    private _currentDelimiter;
 }
 /**
  * LineEditorExtender — adds bash-readline-parity keybindings to the
