@@ -81,12 +81,10 @@ export interface RealmResponse {
 
 /** What the guest posts on `events`. */
 export type GuestEvent =
-  /**
-   * Output write number `seq` (each one more than the last, both outputs
-   * counted together); `settle`, made after the program's code has run (a
-   * timer's), which waits to be told once it is made (output-settled).
-   */
-  | { readonly type: 'output'; readonly fd: 1 | 2; readonly data: string | Uint8Array; readonly seq: number; readonly settle: boolean }
+  /** An output write: the host counts them, both outputs together, in the order they come (a flush's and a settle's numbers). */
+  | { readonly type: 'output'; readonly fd: 1 | 2; readonly data: string | Uint8Array }
+  /** A write made after the program's code has run (a timer's) waits: tell it once every write so far is made (output-settled). */
+  | { readonly type: 'settle' }
 
   | { readonly type: 'fetch'; readonly id: number; readonly port: number; readonly url: string; readonly method: string; readonly headers: Record<string, string>; readonly body: string | Uint8Array | null }
   | { readonly type: 'served'; readonly id: number; readonly response: RealmResponse | null }
@@ -106,7 +104,7 @@ export type HostEvent =
   | { readonly type: 'output-failed'; readonly fd: 1 | 2; readonly code: string; readonly pipe: boolean }
   /**
    * Every output write up to number `seq` is made or failed (a failure told
-   * first): told, for a write that asked (settle), when no later one waits.
+   * first): told, once asked (settle), when no later write waits.
    */
   | { readonly type: 'output-settled'; readonly seq: number }
   | EgressHostEvent;
@@ -141,8 +139,8 @@ export function isGuestEvent(value: unknown): value is GuestEvent {
   if (isEgressGuestEvent(value)) return true;
   if (!record(value)) return false;
   switch (value.type) {
-    case 'output': return (value.fd === 1 || value.fd === 2) && (typeof value.data === 'string' || value.data instanceof Uint8Array)
-      && Number.isSafeInteger(value.seq) && typeof value.settle === 'boolean';
+    case 'output': return (value.fd === 1 || value.fd === 2) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
+    case 'settle': return true;
     case 'fetch':
       return Number.isSafeInteger(value.id) && Number.isSafeInteger(value.port) && typeof value.url === 'string'
         && typeof value.method === 'string' && stringRecord(value.headers)
@@ -371,9 +369,8 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
     settleWanted = false;
     post({ type: 'output-settled', seq: lastSettled });
   };
-  const write = (fd: 1 | 2, data: string | Uint8Array, seq: number, settle: boolean) => {
-    lastQueued = seq;
-    if (settle) settleWanted = true;
+  const write = (fd: 1 | 2, data: string | Uint8Array) => {
+    const seq = ++lastQueued;
     written = written.then(async () => {
       if (!failedOutputs.has(fd)) {
         try {
@@ -388,10 +385,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
       }
       lastSettled = seq;
       settled();
-      for (const flush of flushes.filter((each) => each.upTo <= seq)) {
-        flushes.splice(flushes.indexOf(flush), 1);
-        flush.resolve();
-      }
+      if (flushes.length > 0 && flushes[0].upTo <= seq) flushes.shift()?.resolve();
     });
   };
   // The realm, once it has started: a request for one of the guest's servers waits for none before.
@@ -463,7 +457,11 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
       if (!isGuestEvent(event)) return;
       switch (event.type) {
         case 'output':
-          write(event.fd, event.data, event.seq, event.settle);
+          write(event.fd, event.data);
+          return;
+        case 'settle':
+          settleWanted = true;
+          settled();
           return;
         case 'exit':
           code = event.code;

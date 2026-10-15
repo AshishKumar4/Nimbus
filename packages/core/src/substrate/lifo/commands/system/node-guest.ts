@@ -160,8 +160,12 @@ function realmOutput(fd: 1 | 2): FailableOutput & { fail(error: Error): void } {
     if (failure !== null) return;
     // Once its code has run, the program waits for its writes (holdWhileBusy);
     // while it runs, it is held by its own code, and asks nothing.
-    post({ type: 'output', fd, data, seq: ++postedOutput, settle: mainDone });
-    if (mainDone && postedOutput === settledOutput + 1) holdWhileBusy();
+    postOutput(fd, data);
+    // A write after the code has run asks to be told it is made, once: the first one unsettled.
+    if (mainDone && postedOutput === settledOutput + 1) {
+      post({ type: 'settle' });
+      holdWhileBusy();
+    }
   };
   return {
     write: (data: string) => send(data),
@@ -176,6 +180,11 @@ function realmOutput(fd: 1 | 2): FailableOutput & { fail(error: Error): void } {
 /** Output writes posted, and the last the host has settled (made, or failed): the realm is held while any is not. */
 let postedOutput = 0;
 let settledOutput = 0;
+/** An output write to the host, counted as the host counts them. */
+function postOutput(fd: 1 | 2, data: string | Uint8Array): void {
+  post({ type: 'output', fd, data });
+  postedOutput++;
+}
 const outputs = { 1: realmOutput(1), 2: realmOutput(2) };
 
 /**
@@ -268,7 +277,7 @@ events.on('message', (event) => {
 
 const fatal = (reason: unknown): never => {
   if (reason instanceof ProcessExitError) return exitNow(reason.exitCode);
-  post({ type: 'output', fd: 2, data: `${uncaughtReport(reason)}\n`, seq: ++postedOutput, settle: false });
+  postOutput(2, `${uncaughtReport(reason)}\n`);
   return exitNow(1);
 };
 
@@ -296,7 +305,7 @@ realm.on('exit', () => {
     if (code !== mainCode) post({ type: 'exit', code });
     return;
   }
-  post({ type: 'output', fd: 2, data: `Warning: Detected unsettled top-level await at ${program.filename}\n`, seq: ++postedOutput, settle: false });
+  postOutput(2, `Warning: Detected unsettled top-level await at ${program.filename}\n`);
   post({ type: 'exit', code: 13 });
 });
 
