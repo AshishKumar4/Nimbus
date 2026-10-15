@@ -61,8 +61,8 @@ try {
   console.log('  ✓ process.umask is the program\'s own: its creates follow it, the shell\'s mask stays');
 
   // A mask that is not one, as Node's parseFileMode reads it, changes nothing: neither the mask nor what is made under it.
-  const refused = await run(`node -e "const fs = require('fs'); const seen = []; for (const bad of ['022garbage', '8', '', '0x12', -1, 1.5, 2 ** 32, null]) { try { process.umask(bad); seen.push('took ' + bad); } catch (e) { seen.push(e.code); } } fs.writeFileSync('after-bad.txt', 'c'); console.log(seen.join(' '), process.umask().toString(8))"`);
-  assert.equal(refused, 'ERR_INVALID_ARG_VALUE ERR_INVALID_ARG_VALUE ERR_INVALID_ARG_VALUE ERR_INVALID_ARG_VALUE ERR_OUT_OF_RANGE ERR_OUT_OF_RANGE ERR_OUT_OF_RANGE ERR_INVALID_ARG_TYPE 22\n',
+  const refused = await run(`node -e "const fs = require('fs'); const seen = []; for (const bad of ['022garbage', '8', '', '0x12', '40000000000', -1, 1.5, 2 ** 32, null]) { try { process.umask(bad); seen.push('took ' + bad); } catch (e) { seen.push(e.code); } } fs.writeFileSync('after-bad.txt', 'c'); console.log(seen.join(' '), process.umask().toString(8))"`);
+  assert.equal(refused, 'ERR_INVALID_ARG_VALUE ERR_INVALID_ARG_VALUE ERR_INVALID_ARG_VALUE ERR_INVALID_ARG_VALUE ERR_OUT_OF_RANGE ERR_OUT_OF_RANGE ERR_OUT_OF_RANGE ERR_OUT_OF_RANGE ERR_INVALID_ARG_TYPE 22\n',
     'each malformed mask is refused as Node refuses it, and the mask stays');
   assert.equal(await mode('after-bad.txt'), 0o644, 'a file made after the refusals has the mask\'s mode');
   console.log('  ✓ a malformed mask is refused as Node refuses it, and changes nothing');
