@@ -79,9 +79,9 @@ function exitNow(code: number): never {
 }
 
 /** The program's process, once runNodeProgram has made it. */
-let program: LifoProcess | null = null;
+let programProcess: LifoProcess | null = null;
 /** Whether a failed write would reach anything of the program's (LifoProcess.hearsWriteFailures). */
-const hears = (): boolean => program?.hearsWriteFailures() ?? false;
+const hears = (): boolean => programProcess?.hearsWriteFailures() ?? false;
 
 // ── The filesystem, each method's answer narrowed to what it returns ───────
 
@@ -289,13 +289,13 @@ const fatal = (reason: unknown): never => {
 
 /** An error nothing caught is the program's process's first (LifoProcess.takeUncaught); one it does not take ends it. */
 const uncaught = (origin: 'uncaughtException' | 'unhandledRejection') => (reason: unknown, promise?: Promise<unknown>): void => {
-  if (reason instanceof ProcessExitError || program === null) {
+  if (reason instanceof ProcessExitError || programProcess === null) {
     fatal(reason);
     return;
   }
   try {
-    if (origin === 'unhandledRejection' && program.emit('unhandledRejection', reason, promise)) return;
-    if (program.takeUncaught(reason, origin)) return;
+    if (origin === 'unhandledRejection' && programProcess.emit('unhandledRejection', reason, promise)) return;
+    if (programProcess.takeUncaught(reason, origin)) return;
   } catch (thrown) {
     fatal(thrown);
   }
@@ -330,7 +330,7 @@ const end = await runNodeProgram(program, {
   stderr: outputs[2],
   stdin: () => bytes(call({ op: 'stdin' }), 'stdin'),
   setUmask: (mask) => { call({ op: 'umask', mask }); },
-  started: (process) => { program = process; },
+  started: (process) => { programProcess = process; },
   portRegistry: ports,
   routeLoopback,
   dns,
