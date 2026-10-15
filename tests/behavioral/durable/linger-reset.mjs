@@ -5,12 +5,13 @@
 // process's own journal, drained by the next generation.
 //
 // HOW IT'S DRIVEN
-//   A resident takes /home/user/lr (it writes there often enough), says so,
-//   then makes three changes it answers at once (an awaited chmod and an
-//   awaited writeFile decided there, a writeFileSync) and holds its isolate
-//   in a synchronous loop, so the linger's timer cannot fire and nothing
-//   else sends them. `POST /api/_diag/abort` resets the session meanwhile.
-//   After it, the session's files have all three.
+//   A resident takes /home/user/lr (it writes there often enough) and says
+//   so; once that line is out it makes three changes it answers at once (an
+//   awaited chmod and an awaited writeFile decided there, a writeFileSync)
+//   and holds its isolate in a synchronous loop, so the linger's timer
+//   cannot fire and nothing else sends them. `POST /api/_diag/abort` resets
+//   the session meanwhile. After it, the session's files have all three.
+//   (The loop counts: a facet's clock stands still within a turn.)
 
 import { BASE, AUTH_TOKEN, makeAsserter, mintSession, deleteSession, Terminal, heredocCommand, requestHeaders, sleep } from '../_driver.mjs';
 import { afterReset } from './_reset-window.mjs';
@@ -34,11 +35,13 @@ const dir = '/home/user/lr';
   for (let i = 0; i < 16; i++) await fsp.writeFile(dir + '/warm' + i, 'w');
   for (let i = 0; i < 200 && !globalThis.__nimbusProcessFs?.held('home/user/lr/x'); i++) await new Promise((r) => setTimeout(r, 10));
   console.log('LR' + '_READY held=' + !!globalThis.__nimbusProcessFs?.held('home/user/lr/x'));
+  await new Promise((r) => setTimeout(r, 500));
   await fsp.chmod(dir + '/warm0', 0o600);
   await fsp.writeFile(dir + '/async.txt', 'ASYNC');
   fs.writeFileSync(dir + '/sync.txt', 'SYNC');
-  const until = Date.now() + 6000;
-  while (Date.now() < until) {}
+  let spun = 0;
+  for (let i = 0; i < 4e9; i++) spun += i & 1;
+  console.log('LR' + '_SPUN ' + spun);
 })();
 `;
 
