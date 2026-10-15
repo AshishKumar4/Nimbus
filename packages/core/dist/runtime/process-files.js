@@ -45,15 +45,6 @@ function immutableCredential(cred) {
     return Object.freeze({ uid: checked.uid, gid: checked.gid, groups: Object.freeze([...checked.groups]), umask: checked.umask });
 }
 /**
- * A scope still held: its caller's signal not aborted (that abort's reason),
- * and the scope not closed (EBADF: released, killed, or its lease disposed).
- */
-function assertScopeLive(scope, signal) {
-    signal?.throwIfAborted();
-    if (scope.closed)
-        throw fsError('EBADF', 'fd', 'filesystem scope closed');
-}
-/**
  * A process's bridge with three checks at the door: abort first (the caller
  * revoked), then a closed scope (EBADF, the POSIX answer for an operation on
  * a released descriptor table), then the append-process identity (a bound
@@ -67,6 +58,7 @@ class GuardedProcessBridge {
     hydrator;
     delegations;
     gate;
+    authority;
     revoked;
     constructor(target, scope, signal, pid, 
     /** N17: the lazy-import hydration job, when there is one. */
@@ -75,7 +67,9 @@ class GuardedProcessBridge {
     delegations, 
     /** The session's gate on the process's output (ProcessFiles.outputGate). */
     gate, 
-    /** Aborted when the process is released while a recovery keeps its scope (ProcessFiles.recovery): this binding ends then. */
+    /** Its binding's (ProcessFiles.bridgeFor): asked before each call, each answered in the caller's turn. */
+    authority, 
+    /** Aborted when the binding ends while a recovery keeps its scope (ProcessFiles.recovery): its stream commits stop then. */
     revoked) {
         this.target = target;
         this.scope = scope;
@@ -84,6 +78,7 @@ class GuardedProcessBridge {
         this.hydrator = hydrator;
         this.delegations = delegations;
         this.gate = gate;
+        this.authority = authority;
         this.revoked = revoked;
     }
     gateLaunch(named) {
@@ -107,10 +102,7 @@ class GuardedProcessBridge {
     }
     get synchronous() { return this; }
     guard() {
-        this.signal?.throwIfAborted();
-        this.revoked?.throwIfAborted();
-        if (this.scope.closed)
-            throw Object.assign(new Error('EBADF: filesystem scope closed'), { code: 'EBADF' });
+        this.authority();
     }
     ownPid(pid) {
         if (this.pid === undefined || pid !== this.pid) {
@@ -160,8 +152,7 @@ class GuardedProcessBridge {
     reopen(target, flags, options) { this.guard(); return this.target.reopen(target, flags, options); }
     read(handleId, offset, length) { this.guard(); return this.reading(() => this.target.read(handleId, offset, length)); }
     write(handleId, offset, bytes) { this.guard(); return this.target.write(handleId, offset, bytes); }
-    // A caller's abort leaves its own descriptors to close; a released binding's are its scope's last owner's.
-    close(handleId) { this.revoked?.throwIfAborted(); return this.target.close(handleId); }
+    close(handleId) { return this.target.close(handleId); }
     readdir(path, options) { this.guard(); return this.target.readdir(path, options); }
     mkdir(path, options) { this.guard(); return this.target.mkdir(path, options); }
     unlink(path, options) { this.guard(); return this.target.unlink(path, options); }
@@ -677,10 +668,22 @@ export class ProcessFiles {
         return andThen(lost, reportLost);
     }
     bridgeFor(scope, cred, signal, pid, landed = false, revoked) {
-        // The scope is checked again by the namespace right before each mutation
-        // reaches a backend, after the lookups it awaited: a write still
-        // resolving when the process is released or killed, or its lease is
-        // disposed, does not land.
+        // The binding's one Authority, asked right before each call of it reaches
+        // a backend, after every await: by the namespace for its paths, the
+        // descriptor table for its descriptions, the engine's bridge for its own.
+        // A call still resolving when the process is released or killed (its
+        // binding ended: `revoked`, or its scope closed), its caller's abort
+        // come, or its lease disposed, does not land. `owned`: the same, its
+        // caller's abort aside, for its closes.
+        const owned = () => {
+            revoked?.throwIfAborted();
+            if (scope.closed)
+                throw fsError('EBADF', 'fd', 'filesystem scope closed');
+        };
+        const authority = () => {
+            signal?.throwIfAborted();
+            owned();
+        };
         // A process's calls are made by the delegations it holds: its own lookups
         // recall none of them, on SQLite and through the namespace alike.
         const holds = pid === undefined ? undefined : () => this.delegations.holdsOf(pid);
@@ -693,15 +696,15 @@ export class ProcessFiles {
         const parts = () => {
             if (made !== undefined)
                 return made;
-            const namespace = this.vfs.as(cred, undefined, landed ? { landed } : undefined).scoped(() => assertScopeLive(scope, signal), undefined, holds);
-            const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues, ...(landed ? { landed } : {}) }), this.engine, scope, namespace, this.bufferedWriteBytes, this.waves);
-            made = { guarded: new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, this.outputGate, revoked), namespace };
+            const namespace = this.vfs.as(cred, undefined, landed ? { landed } : undefined).scoped(authority, undefined, holds);
+            const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues, ...(landed ? { landed } : {}) }), this.engine, scope, namespace, this.bufferedWriteBytes, this.waves, { authority, owned, ...(signal === undefined ? {} : { signal }) });
+            made = { guarded: new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, this.outputGate, authority, revoked), namespace };
             return made;
         };
         // Every other method forwards to the guarded bridge.
         const listing = pid === undefined ? () => undefined : (create) => this.listingOf(pid, create);
         const clock = () => this.engine.revision();
-        const bridge = new AwaitingProcessBridge(parts, clock, cred, new Descriptors(scope, clock), scope, listing, this.bufferedWriteBytes, signal, revoked);
+        const bridge = new AwaitingProcessBridge(parts, clock, cred, new Descriptors(scope, clock, authority, owned), scope, listing, this.bufferedWriteBytes, authority, signal);
         registerDirectoryReadBridge(bridge, scope, async (path) => {
             const real = await bridge.realpath(path);
             const view = parts().namespace;
@@ -737,14 +740,16 @@ class AwaitingProcessBridge {
     scope;
     listing;
     bufferedWriteBytes;
+    authority;
     signal;
-    revoked;
     made;
     constructor(parts, clock, cred, descriptors, scope, 
     /** Where this process's listings of mounts beyond SQLite stand (made when `create`); undefined for a host lease. */
-    listing, bufferedWriteBytes, signal, 
-    /** As GuardedProcessBridge's: the binding's end at a release a recovery outlives. */
-    revoked) {
+    listing, bufferedWriteBytes, 
+    /** Its binding's (ProcessFiles.bridgeFor): what its descriptions and namespace ask at each dispatch, asked here where a call commits to the scope itself. */
+    authority, 
+    /** Its caller's abort: a description it opens is refused once it comes (MountedDescriptionContext.signal). */
+    signal) {
         this.parts = parts;
         this.clock = clock;
         this.cred = cred;
@@ -752,8 +757,8 @@ class AwaitingProcessBridge {
         this.scope = scope;
         this.listing = listing;
         this.bufferedWriteBytes = bufferedWriteBytes;
+        this.authority = authority;
         this.signal = signal;
-        this.revoked = revoked;
     }
     get bridge() { return (this.made ??= this.parts()).guarded; }
     get namespace() { return (this.made ??= this.parts()).namespace; }
@@ -762,7 +767,7 @@ class AwaitingProcessBridge {
     revision(path) { return this.bridge.revision(path); }
     /** The process's namespace's changes at `path` and under it (CompositeVFS.watchChanges), named as its listings name them; stopped with its scope. */
     subscribe(path, listener, options) {
-        this.live();
+        this.authority();
         let stopped = false;
         const stop = this.namespace.watchChanges(path, (events) => {
             for (const event of events) {
@@ -792,11 +797,6 @@ class AwaitingProcessBridge {
     awaitRecall(owner, waitMs) { return this.bridge.awaitRecall(owner, waitMs); }
     recalled(owner, kind) { return this.bridge.recalled(owner, kind); }
     published(options) { return this.bridge.published(options); }
-    /** As the guarded bridge's guard: a released or killed process's scope answers EBADF. */
-    live() {
-        assertScopeLive(this.scope, this.signal);
-        this.revoked?.throwIfAborted();
-    }
     /**
      * One page of every name the process's view shows, in path order. SQLite
      * alone (no mount an embedder made): SQLite's own page, answered at once.
@@ -815,7 +815,7 @@ class AwaitingProcessBridge {
                 listing.table = null;
             return this.bridge.list(after, limit);
         }
-        this.live();
+        this.authority();
         return this.listMounted(after ?? null, Math.min(Math.max(1, Math.trunc(limit ?? FS_LIST_PAGE_LIMIT)), FS_LIST_PAGE_LIMIT));
     }
     async listMounted(after, want) {
@@ -826,7 +826,7 @@ class AwaitingProcessBridge {
         const walk = after !== null && held && held.next === after
             ? held.walk
             : await feed.walk(listing?.named ?? [], MOUNT_LIST_NAME_LIMIT);
-        this.live();
+        this.authority();
         // Read before the page, as SqliteVFS.list reads its cursor (VfsListPage).
         const position = feed.position();
         const root = position.feeds['/'];
@@ -863,7 +863,7 @@ class AwaitingProcessBridge {
         const listing = this.listing(false);
         if (!mountsBeyondSqlite(this.namespace) && (listing?.table ?? null) === null)
             return this.bridge.acquire(epoch, cursor, options);
-        this.live();
+        this.authority();
         const feed = this.namespace.feed;
         const table = listing?.table ?? feed.position().table;
         // A null epoch (a caller with no cursor) is SQLite's poison, as ever.
@@ -886,7 +886,7 @@ class AwaitingProcessBridge {
      */
     either(paths, sync, awaited) {
         // Relative to a descriptor whose description awaits: the bridge would refuse it.
-        const settled = () => { this.live(); return awaited(); };
+        const settled = () => awaited();
         if (paths.some((path) => typeof path !== 'string' && 'directory' in path && this.awaits(path.directory)))
             return settled();
         const refused = (error) => {
@@ -1015,7 +1015,6 @@ class AwaitingProcessBridge {
             // synchronous one does (SqliteRuntimeFsBridge.writeFileFrom), and not
             // for a process released while its source was read.
             const data = await readDeclaredSource(source, size, () => syscallError('EINVAL', 'write', p));
-            this.live();
             await this.settleAt(p);
             await this.namespace.writeFile(p, data);
             return this.clock();
@@ -1137,9 +1136,11 @@ class AwaitingProcessBridge {
                 refuse: (code, syscall) => syscallError(code, syscall, name), scope: this.scope,
                 pin: (file, follow) => files.pin(file, { follow, sync: false }),
                 sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes ?? BUFFERED_WRITE_BYTES,
+                ...(this.signal === undefined ? {} : { signal: this.signal }),
             });
+            // Its descriptor goes in the scope only for a binding that may still act.
             try {
-                this.live();
+                this.authority();
             }
             catch (error) {
                 abandon(node);
@@ -1152,7 +1153,6 @@ class AwaitingProcessBridge {
         if (!this.awaits(target.handle))
             return this.bridge.reopen(target, flags, options);
         // A file on a mount that answers by awaiting: reopened there, by the name it is held by.
-        this.live();
         const held = this.descriptors.description(target.handle);
         if (!held.mounted)
             return this.bridge.reopen(target, flags, options);
@@ -1166,9 +1166,10 @@ class AwaitingProcessBridge {
             flags: opened, mode: flags.mode, refuse: (code, syscall) => syscallError(code, syscall, name), scope: this.scope,
             pin: (file, follow) => files.pin(file, { follow, sync: false }),
             sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes ?? BUFFERED_WRITE_BYTES,
+            ...(this.signal === undefined ? {} : { signal: this.signal }),
         }), (node) => {
             try {
-                this.live();
+                this.authority();
             }
             catch (error) {
                 abandon(node);
@@ -1179,10 +1180,7 @@ class AwaitingProcessBridge {
     }
     /** The bridge's own descriptor, or this face's answer for one that awaits. */
     on(handleId, own, awaited) {
-        if (!this.awaits(handleId))
-            return own();
-        this.live();
-        return awaited();
+        return this.awaits(handleId) ? awaited() : own();
     }
     read(handleId, offset, length) {
         return this.on(handleId, () => this.bridge.read(handleId, offset, length), () => this.descriptors.read(handleId, offset, length));
@@ -1191,7 +1189,6 @@ class AwaitingProcessBridge {
         return this.on(handleId, () => this.bridge.write(handleId, offset, bytes), () => this.descriptors.write(handleId, offset, bytes));
     }
     close(handleId) {
-        this.revoked?.throwIfAborted();
         // A prefetched directory's accounting ends with its description's id, however it closes.
         directoryReadHandleClosed(this.scope, handleId);
         return this.awaits(handleId) ? this.descriptors.close(handleId) : this.bridge.close(handleId);
