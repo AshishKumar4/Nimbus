@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "7484b5328d0c098b47a6a53a3fd2f4d2bb4d2cc42ec08f24ce1e66f671651666",
+  "fingerprint": "672f6dd485f03dc8bce0f704d85abdd38ad9417bf6b0812aefcee93e42ce0c9c",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -339,7 +339,7 @@
     "packages/core/dist/runtime/bash/pipe-rules.js": "6cfe3d06052026408ce5f9e044aaa45f696786872560fcae6f29772a68509ed5",
     "packages/core/dist/runtime/bash/preamble.d.ts": "bff255dec687ae26313c6097e53514331ae97a91b4b32c44000111407cc6338b",
     "packages/core/dist/runtime/bash/preamble.d.ts.map": "125be16825c7e5c6a1d97cefb4a852c9836af0dde565c35a8ebad08c74ee1789",
-    "packages/core/dist/runtime/bash/preamble.js": "a0cdb43ccd76be46046c06f89d115f0ac0098c4ce434cd00cbdfd3a993eb7e85",
+    "packages/core/dist/runtime/bash/preamble.js": "195387fdf36562197f785a00b8dd70bb2b630a1baa2ff2ffc6b9763e936d5d51",
     "packages/core/dist/runtime/bash/types.d.ts": "aa9f36a32448a63117d617c7256d08ce05388f7cf705387e898817b06d3e829e",
     "packages/core/dist/runtime/bash/types.d.ts.map": "81496ccd76bc0c47ffb0baa8d43bf8e053ead3a3b97c4cfbcd9b75223fe4e983",
     "packages/core/dist/runtime/bash/types.js": "8e609bb71c20b858c77f0e9f90bb1319db8477b13f9f965f1a1e18524bf50881",
@@ -1451,7 +1451,7 @@
     "packages/core/src/runtime/bash-runner.ts": "85d0c1ac1b80e00ca504f1de2556151c272a746166613d060dd3e0ba69a5cd6a",
     "packages/core/src/runtime/bash/capture-store.ts": "bd83a5b3529f87dadb674ead3b0c3ca6f445ceff7677ea613447c3ea6825133b",
     "packages/core/src/runtime/bash/pipe-rules.ts": "bcc14a8d5655884f45cfdb5f25eb83e288465e46731816f98dedec484bb1a7f4",
-    "packages/core/src/runtime/bash/preamble.ts": "83cfec28ed60bc2ec0b74a26111904662977c3e12045b0a53bd3d42ad7bf64a7",
+    "packages/core/src/runtime/bash/preamble.ts": "5c5a6aa495109162a8a3210d5e64802d4da952bc161e24e81d55f1b946bc5917",
     "packages/core/src/runtime/bash/types.ts": "995cbc57b3eabba454daf80cd787309daf5601b9b83cc5920657d6ca864abffc",
     "packages/core/src/runtime/beneath-walk.ts": "06d1e796881f50f1734b2cb7e505dd20ecb3d5a1398af98c1229da034ab0bc81",
     "packages/core/src/runtime/binding-pattern.ts": "fc2fb23e00e11a5344c36d64f6e2ab3c8e0bbcf3f3542f15d5704bac24327c2a",
