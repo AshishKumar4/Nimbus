@@ -1,6 +1,6 @@
 import realm from 'node:process';
 import { nodeError, nodeSystemError } from '../../../_shared/node-error.js';
-import { asStandardStream, joinStandardInput, outputSink, standardStream } from './standard-streams.js';
+import { asStandardStream, joinStandardInput, leaveStandardStreamsOpen, outputSink, standardStream } from './standard-streams.js';
 const programs = new WeakMap();
 /**
  * The tty module of the program `stdio` is, its streams joined to its
@@ -31,7 +31,8 @@ function createTty(stdio) {
     };
     return {
         get module() { return ttyModule(); },
-        stdin: () => stdin ??= isatty(0)
+        // Before it can pipe: `process.stdin.pipe(process.stdout)` takes pipe before it makes stdout.
+        stdin: () => stdin ??= (leaveStandardStreamsOpen(), isatty(0))
             ? Object.assign(new (ttyModule().ReadStream)(0), { fd: 0 })
             : Object.assign(joinStandardInput(new (realm.getBuiltinModule('node:stream').Readable)(), stdio.input), { fd: 0 }),
         stdout: () => stdout ??= standardOutput(1),
