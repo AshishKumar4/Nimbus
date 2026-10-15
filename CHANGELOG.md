@@ -5,6 +5,9 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: `clang` reads each toolchain image only when its phase runs.
+  `clang -c`, and a compile that fails, no longer read or hold the 18.5 MiB
+  linker; a link of objects alone no longer reads the 31 MiB compiler.
 - Fixed (local workerd: `wrangler dev`, the unit suite): a session could
   stop answering for good, its thread at 100% CPU, after a real-git run on a
   busy machine. workerd 1.20260926.1 left cppgc sweeping incremental (V8
