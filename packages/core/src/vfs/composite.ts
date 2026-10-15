@@ -137,10 +137,14 @@ const SYNTH_RUNTIME_STAT: RuntimeVfsStat = {
   dev: 0, ino: 0, nlink: 1, type: 'directory', size: 0, ctime: 0, atime: 0, mtime: 0, mode: 0o40755, uid: 0, gid: 0, revision: 0,
 };
 
+/** The last revision given a stat whose backend keeps none. */
+let unversioned = 0;
+
 /**
  * A namespace entry's stat in the runtime contract's shape: its identity
- * (dev, ino) is the namespace's, and a mounted backend's entries carry no
- * SQLite revision.
+ * (dev, ino) is the namespace's, and its revision its backend's. A backend
+ * that keeps none (/proc's files, made when read) gets a new one at each
+ * stat, so nothing holds a copy of it as current.
  */
 export function runtimeStatOf(stat: VfsStat): RuntimeVfsStat {
   // Format bits the backend's mode leaves out are its coarse type's (dirent-type.ts).
@@ -149,7 +153,7 @@ export function runtimeStatOf(stat: VfsStat): RuntimeVfsStat {
   return {
     dev: stat.dev ?? 0, ino: stat.ino ?? 0, nlink: stat.nlink ?? 1, type: stat.type, size: stat.size,
     ctime: stat.ctimeMs ?? stat.mtimeMs, atime: stat.atimeMs ?? stat.mtimeMs, mtime: stat.mtimeMs,
-    mode, uid: stat.uid ?? 0, gid: stat.gid ?? 0, revision: typeof stat.revision === 'number' ? stat.revision : 0,
+    mode, uid: stat.uid ?? 0, gid: stat.gid ?? 0, revision: typeof stat.revision === 'number' ? stat.revision : ++unversioned,
   };
 }
 
