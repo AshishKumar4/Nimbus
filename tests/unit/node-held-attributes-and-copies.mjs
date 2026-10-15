@@ -13,10 +13,22 @@
 // then chmod of each file) waited out the session's durable commit twice a
 // file; every copy waited for its own; and an answered change went alone,
 // ahead of the awaited one after it.
+//
+// What is decided here is judged by the session's own rules (core
+// posix-access: the walk's search permission, chmod, chown and utimes), on
+// the one entry each call changes (a link's own, for lchown and lutimes; the
+// followed target, held or not, for chown), and what this view cannot judge
+// (the namespace unavailable) is the session's to answer. Red before: a
+// decided copy skipped the search of its source's directories, lchown judged
+// the link's target, chown was decided for a target outside the subtree,
+// utimes of another's file was answered, a chown left the set-id bits the
+// session clears, and with the namespace unavailable each async form
+// refused EAGAIN instead of asking the session.
 
 import assert from 'node:assert/strict';
 import { createAuthority, facetSupervisor, launchResident, residentDataPlan, runScenarios, sleep, until } from './lib/resident-body.mjs';
 import { LINGER_MS } from '../../packages/core/src/_shared/process-fs-client.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 
 const PROGRAM = `
 const fs = require("fs");
@@ -26,14 +38,23 @@ require("http").createServer((q, s) => s.end("up")).listen(3000);
 
 const OUT = '/home/user/app/out';
 
-/** A process holding `out`, and a switch that stops the session answering its waves. */
+/**
+ * A process holding `out`, a switch that stops the session answering its
+ * waves, and one that makes its listings fail. Root owns `out/rootfile` and
+ * the unsearchable `/home/user/app/locked`.
+ */
 async function boot() {
   const authority = createAuthority();
   authority.kfs.mkdir('home/user/app/out', { recursive: true, mode: 0o755 });
   authority.kfs.mkdir('home/user/elsewhere', { mode: 0o755 });
   authority.kfs.writeFile('home/user/elsewhere/x.txt', 'x');
   authority.kfs.writeFile('home/user/app/out/seeded.txt', 'seeded');
+  const root = authority.rawVfs.as(CRED_KERNEL);
+  root.writeFile('home/user/app/out/rootfile', 'R');
+  root.mkdir('home/user/app/locked', { mode: 0o700 });
+  root.writeFile('home/user/app/locked/inside.txt', 'inside');
   let stalled = null;
+  let listingFails = false;
   let waves = 0;
   let forward;
   const handle = facetSupervisor(authority, {
@@ -41,6 +62,10 @@ async function boot() {
       waves++;
       if (stalled !== null) await stalled.promise;
       return forward('writeBatchStream', args);
+    },
+    fsList: async (...args) => {
+      if (listingFails) throw new Error('Network connection lost.');
+      return forward('fsList', args);
     },
   });
   forward = handle.forward;
@@ -58,7 +83,9 @@ async function boot() {
   return {
     authority,
     fs,
+    root,
     waves: () => waves,
+    failListings: (fails) => { listingFails = fails; },
     stall: () => { stalled = Promise.withResolvers(); },
     release: async () => {
       stalled.resolve();
@@ -162,6 +189,75 @@ await runScenarios(import.meta.path, {
     await Promise.all([outside, setuid]);
     assert.equal(await peerRead(authority, 'home/user/app/out/from-elsewhere.txt'), 'x');
     assert.equal(await peerRead(authority, 'home/user/app/out/tool-copy'), 'TOOL');
+  },
+
+  async 'a decided copy is refused where the session\'s walk to its source is (EACCES)'() {
+    const { authority, fs } = await boot();
+    fs.mkdirSync(`${OUT}/shut`);
+    fs.writeFileSync(`${OUT}/shut/s`, 'S');
+    fs.chmodSync(`${OUT}/shut`, 0o600);
+    await assert.rejects(fs.promises.copyFile(`${OUT}/shut/s`, `${OUT}/from-shut`), { code: 'EACCES' });
+    assert.equal(fs.existsSync(`${OUT}/from-shut`), false);
+    await globalThis.__nimbusProcessFs.flush();
+    await assert.rejects(authority.peer.stat('home/user/app/out/from-shut'), { code: 'ENOENT' });
+  },
+
+  async 'lchown and lutimes judge the link itself, chown and utimes what it names, as the session does'() {
+    const { authority, fs, stall, release } = await boot();
+    fs.symlinkSync(`${OUT}/rootfile`, `${OUT}/mylink`);
+    stall();
+    assert.equal(await answeredAtOnce(fs.promises.lchown(`${OUT}/mylink`, 1000, 1000)), 'answered', 'the link is the caller\'s own');
+    assert.equal(await answeredAtOnce(fs.promises.lutimes(`${OUT}/mylink`, 3, 3)), 'answered');
+    await release();
+    assert.equal((await authority.peer.lstat('home/user/app/out/mylink')).uid, 1000);
+    await assert.rejects(fs.promises.chown(`${OUT}/mylink`, 1000, 1000), { code: 'EPERM' }, 'chown follows it to root\'s file');
+    await assert.rejects(fs.promises.utimes(`${OUT}/mylink`, 3, 3), { code: 'EPERM' }, 'and so does utimes');
+  },
+
+  async 'chown through a link to a file outside the held subtree waits for the session'() {
+    const { authority, fs, stall, release } = await boot();
+    fs.symlinkSync('/home/user/elsewhere/x.txt', `${OUT}/outward`);
+    stall();
+    const chown = fs.promises.chown(`${OUT}/outward`, 1000, 1000);
+    assert.equal(await answeredAtOnce(chown), 'waiting');
+    await release();
+    await chown;
+    assert.equal((await authority.peer.stat('home/user/elsewhere/x.txt')).uid, 1000);
+  },
+
+  async 'utimes of another\'s file is refused as the session refuses it (EPERM)'() {
+    const { fs } = await boot();
+    assert.throws(() => fs.utimesSync(`${OUT}/rootfile`, 1, 1), { code: 'EPERM' });
+    await assert.rejects(fs.promises.utimes(`${OUT}/rootfile`, 1, 1), { code: 'EPERM' });
+    assert.notEqual(fs.statSync(`${OUT}/rootfile`).mtimeMs, 1000);
+  },
+
+  async 'a chown clears the set-id bits in this view as the session does'() {
+    const { authority, fs, stall, release } = await boot();
+    fs.writeFileSync(`${OUT}/setid`, 'x');
+    fs.chmodSync(`${OUT}/setid`, 0o4755);
+    stall();
+    assert.equal(await answeredAtOnce(fs.promises.chown(`${OUT}/setid`, 1000, 1000)), 'answered');
+    assert.equal(fs.statSync(`${OUT}/setid`).mode & 0o7777, 0o755);
+    await release();
+    assert.equal((await authority.peer.stat('home/user/app/out/setid')).mode & 0o7777, 0o755);
+  },
+
+  async 'with the namespace unavailable, chmod, utimes and chown go to the session'() {
+    const { authority, fs, root, failListings } = await boot();
+    // A directory becomes searchable; the barrier that reports it relists it, and that relist fails.
+    root.chmod('home/user/app/locked', 0o755);
+    failListings(true);
+    await fs.promises.stat('/home/user/app');
+    assert.throws(() => fs.existsSync(`${OUT}/warm4`), { code: 'EAGAIN' }, 'the namespace is unavailable');
+    await fs.promises.chmod(`${OUT}/warm4`, 0o640);
+    await fs.promises.utimes(`${OUT}/warm4`, 7, 7);
+    await fs.promises.chown(`${OUT}/warm4`, 1000, 1000);
+    failListings(false);
+    await globalThis.__nimbusProcessFs.flush();
+    const stat = await authority.peer.stat('home/user/app/out/warm4');
+    assert.equal(stat.mode & 0o7777, 0o640);
+    assert.equal(Number(stat.mtime), 7000);
   },
 
   async 'an answered change in a held subtree goes with the next change someone awaits, in one wave'() {
