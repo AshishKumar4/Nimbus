@@ -38,12 +38,14 @@ export class LifoProcess extends EventEmitter {
  * digits alone, or an unsigned 32-bit integer. Anything else is refused with
  * Node's error, before anything changes.
  */
-function parseFileMode(value, name) {
+function parseFileMode(given, name) {
+    let value = given;
     if (typeof value === 'string') {
         if (!/^[0-7]+$/.test(value)) {
             throw nodeError(TypeError, 'ERR_INVALID_ARG_VALUE', `The argument '${name}' must be a 32-bit unsigned integer or an octal string. Received ${JSON.stringify(value)}`);
         }
-        return Number.parseInt(value, 8);
+        // Then checked as a number is (validateUint32): '40000000000' is 2 ** 32, out of range.
+        value = Number.parseInt(value, 8);
     }
     if (typeof value !== 'number') {
         throw nodeError(TypeError, 'ERR_INVALID_ARG_TYPE', `The "${name}" argument must be of type number. Received ${value === null ? 'null' : `type ${typeof value}`}`);
