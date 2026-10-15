@@ -1,9 +1,12 @@
 import type { NodeFilesystem } from './filesystem.js';
 import type { CommandOutputStream } from '../commands/types.js';
+import { type ProcessIdentity } from './process.js';
 import type { LoopbackRouter, VirtualRequestHandler } from '../kernel/index.js';
 import type { DNSResolver } from '../kernel/dns-resolver.js';
 export interface NodeContext {
     filesystem: () => NodeFilesystem;
+    /** The program's process: its pid and credential, and its mask's setter. */
+    identity: ProcessIdentity;
     cwd: string;
     env: Record<string, string>;
     stdout: CommandOutputStream;

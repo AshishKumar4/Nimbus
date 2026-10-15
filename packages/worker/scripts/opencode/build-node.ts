@@ -77,6 +77,17 @@ const nimbusParserWorkerRegistry = {
   },
 }
 
+// The parser installs its message handler only off the main thread
+// (`if (!isMainThread)`), and in the facet it shares the client's thread, where
+// the platform's worker_threads says main. Its own worker_threads says worker
+// (stubs/parser-worker-threads.ts).
+const nimbusParserWorkerThreads = {
+  name: "nimbus-parser-worker-threads",
+  setup(build: any) {
+    build.onResolve({ filter: /^(node:)?worker_threads$/ }, () => ({ path: path.join(dir, "parser-worker-threads.ts") }))
+  },
+}
+
 const generated = await import(path.join(dir, "script/generate.ts"))
 const nimbusModelsCatalog = {
   name: "nimbus-single-models-catalog",
@@ -169,13 +180,18 @@ const sharedConfig = {
 // routes to its own channel. `self` falls through to globalThis for every
 // non-messaging member via the polyfill's proxy. Inert for index.js (the
 // client), which is not built with this config.
+// The worker shares the client's isolate, so its globals are the client's:
+// its `self` is the context it claimed, and its console its own (the parser
+// reroutes console.log/error/warn to the client as WORKER_LOG messages; the
+// client's console stays the client's).
 const workerScopeConfig = {
-  banner: "var __nimbusWorker = globalThis.__nimbusWorkerClaim();",
+  banner: "var __nimbusWorker = globalThis.__nimbusWorkerClaim(); var __nimbusWorkerConsole = Object.create(globalThis.console);",
   define: {
     ...sharedConfig.define,
     self: "__nimbusWorker",
     postMessage: "__nimbusWorker.postMessage",
     onmessage: "__nimbusWorker.onmessage",
+    console: "__nimbusWorkerConsole",
   },
 }
 
@@ -206,6 +222,7 @@ let total = 0
   const result = await Bun.build({
     ...sharedConfig,
     ...workerScopeConfig,
+    plugins: [...sharedConfig.plugins, nimbusParserWorkerThreads],
     entrypoints: [parserWorker],
   })
   if (!result.success) {

@@ -135,7 +135,7 @@ const isFile = (path) => /\/f\d$/.test(path);
       return typeof value === 'function' ? value.bind(target) : value;
     },
   });
-  const filesystem = synchronousFilesystem({ process: untyped })();
+  const filesystem = synchronousFilesystem({ process: untyped }, () => 0o022)();
   const nodeFs = createFs(filesystem, '/');
   const byName = Object.fromEntries(nodeFs.readdirSync('/links', { withFileTypes: true }).map((d) => [d.name, [d.isSymbolicLink(), d.isDirectory(), d.isFile()]]));
   assert.deepEqual(byName, {

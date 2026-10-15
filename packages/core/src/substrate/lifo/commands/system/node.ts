@@ -9,7 +9,8 @@ import { createCjsLoader, moduleWrapper, stripShebang } from '../../node-compat/
 import { isEsModuleFile, isEsModuleInput, type PackageType } from '../../../../runtime/module-format.js';
 import { packageScopeType } from '../../../../runtime/require-resolution.js';
 import type { NodeContext } from '../../node-compat/index.js';
-import { createProcess } from '../../node-compat/process.js';
+import { createProcess, type ProcessIdentity } from '../../node-compat/process.js';
+import { NODE_VERSION } from '../../../../constants.js';
 import { createConsole } from '../../node-compat/console.js';
 import { createNativeEsmLoader } from '../../node-compat/native-esm-loader.js';
 import { pathToFileURL } from '../../node-compat/file-url.js';
@@ -19,7 +20,6 @@ import type { DNSResolver } from '../../kernel/dns-resolver.js';
 import type { CommandOutputStream } from '../types.js';
 import { runNodeInRealm } from './node-realm.js';
 
-const NODE_VERSION = 'v20.0.0';
 
 /** The same walk for the main script, through the shell's own view before any `require` runs. */
 async function mainPackageType(filename: string, vfs: ProcessView): Promise<PackageType> {
@@ -102,7 +102,8 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		const kernel = kernelOrPortRegistry instanceof Map ? { portRegistry: kernelOrPortRegistry } : kernelOrPortRegistry;
 		// The program runs in a realm of its own (a worker per run), never the
 		// host's: its globals and intrinsics are its own (node-realm.ts).
-		return runNodeInRealm({ source, filename, scriptArgs, cwd: ctx.cwd, env: ctx.env, mainType }, ctx, kernel);
+		const identity = { pid: ctx.pid, uid: ctx.cred.uid, gid: ctx.cred.gid, groups: [...ctx.cred.groups], umask: ctx.cred.umask };
+		return runNodeInRealm({ source, filename, scriptArgs, cwd: ctx.cwd, env: ctx.env, mainType, identity }, ctx, kernel);
 	};
 }
 
@@ -116,6 +117,8 @@ export interface NodeProgram {
 	readonly env: Record<string, string>;
 	/** The main script's package type, from its package.json (a `.js` entry), decided before it runs. */
 	readonly mainType: PackageType;
+	/** Its process's pid and credential, as the invocation has them. */
+	readonly identity: Omit<ProcessIdentity, 'setUmask'>;
 }
 
 /** What a run reaches outside its realm: the filesystem, its stdio, the session's ports. */
@@ -128,6 +131,8 @@ export interface NodeProgramHost {
 	readonly portRegistry?: Map<number, VirtualRequestHandler>;
 	readonly routeLoopback?: LoopbackRouter;
 	readonly dns?: DNSResolver;
+	/** umask(2): the mask the program creates with from now on. */
+	readonly setUmask: (mask: number) => void;
 }
 
 /**
@@ -152,8 +157,10 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 		const filesystem = host.filesystem;
 		const ctx = { stdout: host.stdout, stderr: host.stderr };
 		const dir = filename === '[eval]' ? program.cwd : dirname(filename);
+		const identity: ProcessIdentity = { ...program.identity, setUmask: host.setUmask };
 		const nodeCtx: NodeContext = {
 			filesystem,
+			identity,
 			cwd: program.cwd,
 			env: program.env,
 			stdout: host.stdout,
@@ -170,7 +177,7 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 		};
 
 		// One process and console, every module's, as in Node.
-		const main = { process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr }), console: createConsole(ctx.stdout, ctx.stderr) };
+		const main = { process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr, identity }), console: createConsole(ctx.stdout, ctx.stderr), global: globalThis };
 		const loader = createCjsLoader(nodeCtx, main);
 
 		// Execute main script

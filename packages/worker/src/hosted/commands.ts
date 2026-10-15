@@ -6,7 +6,7 @@ import type { Command, CommandContext } from '@nimbus-sh/core/substrate/lifo/com
 import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
-import { BASH_RUNNER, GIT_RUNNER, CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER, CPYTHON_RUNNER_CONTRACTS, GIT_RUNNER, CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
@@ -194,47 +194,45 @@ workspace.runtimes.registerRunner(
 // no flags that would consume args) drops into an interactive
 // REPL. The wrap is purely additive — args-bearing invocations
 // pass through to the existing handler unchanged.
-workspace.runtimes.registerRunner(
-  'cpython-runner',
-  (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx: CommandContext): Promise<number> {
-    const argv: string[] = ctx.args || [];
-    // No args at all → REPL session. Hand off to runPythonRepl
-    // which builds its own IsolatePool (separate from the
-    // one-shot dispatch's pool) and drives a ReplSession.
-    if (argv.length === 0 && terminal) {
-      const { runPythonRepl } = await import('../runtime/python-repl.js');
-      return await runPythonRepl({
-        facetMgr,
-        authority: workspace.filesystem,
-        terminal: terminal,
-        installRoot,
-        home: ctx.env?.HOME || shell.getEnv().HOME || DEFAULT_HOME,
-        manifest,
-        // REPL-R7-1: thread the shell so ReplSession can drain
-        // shell.pasteQueue on attach (multi-line WS frames like
-        // `python\nexit(7)` would otherwise drop the tail input).
-        shell: shell,
-        // The supervisor derives the write credential from this; without
-        // it the prompt cannot write to the session filesystem.
-        pid: ctx.pid,
-        cred: requireVfsCred(ctx.cred, 'Python REPL'),
-        start: { cwd: ctx.cwd || shell.getCwd(), binName },
-      });
-    }
-    // Args present (one-shot mode: -c, script, -m, -). Fall through
-    // to the canonical handler (imported lazily on first use).
-    const { makeCPythonRunnerFactory } = await import('@nimbus-sh/core/runtime/cpython-runner.js');
-    const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
-    const { cpythonResidentStart } = await import('../runtime/cpython-resident.js');
-    return await makeCPythonRunnerFactory({
-      facets: facetHostForManager(facetMgr),
-      filesystem: workspace.filesystem,
-      processes: self.processes,
-      startResident: cpythonResidentStart(facetMgr),
-      network: workspace.network,
-    })(manifest, installRoot, binName, binKind)(ctx);
-  },
-);
+const cpython: RunnerFactory = (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx: CommandContext): Promise<number> {
+  const argv: string[] = ctx.args || [];
+  // No args at all → REPL session. Hand off to runPythonRepl
+  // which builds its own IsolatePool (separate from the
+  // one-shot dispatch's pool) and drives a ReplSession.
+  if (argv.length === 0 && terminal) {
+    const { runPythonRepl } = await import('../runtime/python-repl.js');
+    return await runPythonRepl({
+      facetMgr,
+      authority: workspace.filesystem,
+      terminal: terminal,
+      installRoot,
+      home: ctx.env?.HOME || shell.getEnv().HOME || DEFAULT_HOME,
+      manifest,
+      // REPL-R7-1: thread the shell so ReplSession can drain
+      // shell.pasteQueue on attach (multi-line WS frames like
+      // `python\nexit(7)` would otherwise drop the tail input).
+      shell: shell,
+      // The supervisor derives the write credential from this; without
+      // it the prompt cannot write to the session filesystem.
+      pid: ctx.pid,
+      cred: requireVfsCred(ctx.cred, 'Python REPL'),
+      start: { cwd: ctx.cwd || shell.getCwd(), binName },
+    });
+  }
+  // Args present (one-shot mode: -c, script, -m, -). Fall through
+  // to the canonical handler (imported lazily on first use).
+  const { makeCPythonRunnerFactory } = await import('@nimbus-sh/core/runtime/cpython-runner.js');
+  const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
+  const { cpythonResidentStart } = await import('../runtime/cpython-resident.js');
+  return await makeCPythonRunnerFactory({
+    facets: facetHostForManager(facetMgr),
+    filesystem: workspace.filesystem,
+    processes: self.processes,
+    startResident: cpythonResidentStart(facetMgr),
+    network: workspace.network,
+  })(manifest, installRoot, binName, binKind)(ctx);
+};
+for (const key of CPYTHON_RUNNER_CONTRACTS) workspace.runtimes.registerRunner(key, cpython);
 // Ruby v1 — Ruby 3.3.4 via ruby.wasm 2.9.3-2.9.4. Same architecture
 // as python-runner: ruby+stdlib.wasm rides via LOADER modules-map,
 // bootstrap runs at child-facet module-init time, per-call

@@ -142,7 +142,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
 
   stat(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): RuntimeVfsStat | null { this.guard(); return this.target.stat(path, options); }
   readFile(path: RuntimeFsPath, options?: { followSymlinks?: boolean; cached?: boolean }): Uint8Array | null { this.guard(); return this.reading(() => this.target.readFile(path, options)); }
-  writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: { createParents?: boolean; expectedRevision?: number }): number {
+  writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: { createParents?: boolean; expectedRevision?: number; umask?: number }): number {
     this.guard(); return this.target.writeFile(path, bytes, options);
   }
   readRange(path: RuntimeFsPath, offset: number, length: number, options?: RuntimeReadOptions): Uint8Array | null {
@@ -970,7 +970,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   private settleAt(name: string): Awaitable<void> {
     return settleHeldAt(this.scope, () => this.namespace.pin(name, { follow: true, sync: false }));
   }
-  writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: { createParents?: boolean; expectedRevision?: number }) {
+  writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: { createParents?: boolean; expectedRevision?: number; umask?: number }) {
     return this.either([path], () => this.bridge.writeFile(path, bytes, options), async () => {
       // createParents makes the directories above where the write lands, in
       // the same lookup as the write (a link's target's, not the link's).
@@ -1410,16 +1410,17 @@ export class ProcessView implements VFS {
   /** Where the link at `path`, reading `link`, leads in this namespace (RuntimeFsBridge.linkLeadsTo), for a caller following it itself. */
   async linkLeadsTo(path: string, link: string): Promise<string | null> { return await this.fs.linkLeadsTo(path, link); }
   async chmod(path: string, mode: number): Promise<void> { await this.call('chmod', path, () => this.fs.chmod(path, mode)); }
-  /** chown(2): a null side keeps what the file has (chown -1). */
-  async chown(path: string, uid: number | null, gid: number | null): Promise<void> {
-    await this.call('chown', path, async () => {
+  /** chown(2): a null side keeps what the file has (chown -1). `follow: false` is lchown(2), a link's own. */
+  async chown(path: string, uid: number | null, gid: number | null, options?: { follow?: boolean }): Promise<void> {
+    const followSymlinks = options?.follow !== false;
+    await this.call(followSymlinks ? 'chown' : 'lchown', path, async () => {
       if (uid === null || gid === null) {
-        const stat = await this.fs.stat(path);
-        if (stat === null) throw syscallError('ENOENT', 'chown', path);
+        const stat = await this.fs.stat(path, { followSymlinks });
+        if (stat === null) throw syscallError('ENOENT', followSymlinks ? 'chown' : 'lchown', path);
         uid ??= stat.uid;
         gid ??= stat.gid;
       }
-      await this.fs.chown(path, uid, gid);
+      await this.fs.chown(path, uid, gid, { followSymlinks });
     });
   }
   /**

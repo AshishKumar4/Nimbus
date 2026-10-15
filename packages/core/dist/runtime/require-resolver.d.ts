@@ -26,8 +26,8 @@
  * legacy `buildVfsBundle` walked every file in node_modules. W2.6a
  * de-quarantines it as the primary content-bundle source.
  */
-import { type RequireFs, type WalkProgress } from './require-resolution.js';
-export { requireFsOverBridge, type BridgeRequireFs, type RequireFs } from './require-resolution.js';
+import { type RequireFs, type StagingRequireFs, type WalkProgress } from './require-resolution.js';
+export { fileText, requireFsOverBridge, type BridgeRequireFs, type RequireFs, type StagingRequireFs } from './require-resolution.js';
 export { requireWrapperCalls } from './require-wrappers.js';
 /**
  * Result of a prefetch walk: path → content for every reachable file.
@@ -145,8 +145,8 @@ export interface PreloadModuleRoot {
  * `conditions`: the program's own (`node --conditions`), beside Node's, for
  * `require` and `import` alike, as the process resolves under them.
  */
-export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile?: string, maxBundleBytes?: number, progress?: WalkProgress, policy?: undefined, requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>, conditions?: readonly string[]): Promise<PrefetchOutcome>;
-export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile: string | undefined, maxBundleBytes: number | undefined, progress: WalkProgress | undefined, policy: DependencyClosurePolicy, requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>, conditions?: readonly string[]): Promise<DependencyClosureOutcome>;
+export declare function prefetchForRequire(vfs: StagingRequireFs, entryCode: string, cwd: string, entryFile?: string, maxBundleBytes?: number, progress?: WalkProgress, policy?: undefined, requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>, conditions?: readonly string[]): Promise<PrefetchOutcome>;
+export declare function prefetchForRequire(vfs: StagingRequireFs, entryCode: string, cwd: string, entryFile: string | undefined, maxBundleBytes: number | undefined, progress: WalkProgress | undefined, policy: DependencyClosurePolicy, requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>, conditions?: readonly string[]): Promise<DependencyClosureOutcome>;
 /**
  * The file a deferral a dependency closure reported (PrefetchResult.deferred)
  * loads, or null; resolved as the walk resolves its own, staging nothing:

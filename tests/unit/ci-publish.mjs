@@ -16,7 +16,7 @@ const receipt = (name, version) => {
   const bytes = Buffer.from(name + '@' + version);
   return { name, version, file: name.replace(/^@/, '').replaceAll('/', '-') + '-' + version + '.tgz', sha256: hash('sha256', bytes), shasum: hash('sha1', bytes), integrity: 'sha512-' + hash('sha512', bytes), bytes: bytes.length, data: [...bytes] };
 };
-const runtime = receipt('@nimbus-sh/runtime-cpython', '3.13.14-1');
+const runtime = receipt('@nimbus-sh/runtime-cpython', '3.13.14-2');
 const packages = publishPackages(repo).map((pkg) => receipt(pkg.name, pkg.version));
 
 try {
