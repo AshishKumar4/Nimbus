@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: WASI programs and bash see their files and clocks as on Linux. A
+  small file's offset stays where a seek past its end put it after a read
+  there, and a negative `pread` offset is `EINVAL`. Each open of a `/proc`
+  file reads it anew, so two `read </proc/uptime` in one bash differ. A
+  piped stdin is no longer a character device (`[ -c /dev/stdin ]`), while
+  a terminal's still is. A `poll_oneoff` clock subscription on an unknown
+  clock gets `EINVAL` in every WASI program, as it already did in bash.
 - Fixed (local workerd: `wrangler dev`, the unit suite): a session could
   stop answering for good, its thread at 100% CPU, after a real-git run on a
   busy machine. workerd 1.20260926.1 left cppgc sweeping incremental (V8
