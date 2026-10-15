@@ -32,6 +32,7 @@ import type { NpmConfig } from './npm-config.js';
 import { installSummary, npmEngineLines, npmLogEnabled, npmRemovedLine, type NpmLogEmitter, type NpmLogLevel } from './npm-log.js';
 import { engineMismatches, type EngineMismatch } from '../../../../_shared/npm-arborist/engines.js';
 import { exists } from '../../../../vfs/vfs.js';
+import { NPM_VERSION } from '../../../../constants.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
 import { direntTypeIn } from '../../../../vfs/dirent-type.js';
 

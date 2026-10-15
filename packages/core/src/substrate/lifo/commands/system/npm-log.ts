@@ -9,7 +9,7 @@
  * honouring it means speaking npm's wire format on the same stream.
  */
 
-import { formatWithOptions } from 'node:util';
+import { format } from 'node:util';
 import { NODE_VERSION, NPM_VERSION } from '../../../../constants.js';
 import type { EngineMismatch } from '../../../../_shared/npm-arborist/engines.js';
 import { DIM, GREEN, RED, RESET, YELLOW } from '../../utils/colors.js';
@@ -125,8 +125,8 @@ export function installSummary(report: InstallReport): { stdout: string; stderr:
  */
 export function npmEngineLines(mismatch: EngineMismatch, strict: boolean): string[] {
   if (!strict) {
-    return formatWithOptions({ colors: false }, 'Unsupported engine', { package: mismatch.pkgid, required: mismatch.required, current: mismatch.current })
-      .split('\n').map((line) => `npm warn EBADENGINE ${line}`);
+    return format('Unsupported engine', { package: mismatch.pkgid, required: mismatch.required, current: mismatch.current })
+      .split('\n').map((line: string) => `npm warn EBADENGINE ${line}`);
   }
   return [
     'code EBADENGINE',
