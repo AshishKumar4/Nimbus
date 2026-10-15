@@ -6,20 +6,33 @@ import { memorySupervisor } from './lib/descriptor-supervisor.mjs';
 // hand it the SUPERVISOR stub, and hand it over AFTER __wasiInitFS. These are
 // the wiring facts that make the difference between "an authority exists" and
 // "programs use it", plus the isolate-reuse invariant that adopting a
-// per-process capability introduces.
+// per-process capability introduces. Ruby's entries are run as a facet runs
+// them: its resident worker's, and the runner's own __rubyRun over the WASI
+// host, the VM stood in for by a program that writes a file.
 
 import assert from 'node:assert';
+import { plugin } from 'bun';
 import { buildRubySocketProcessWorker } from '../../packages/worker/src/runtime/ruby-resident.ts';
+import { RUBY_RUNNER_PREAMBLE_TAIL } from '../../packages/core/src/runtime/ruby-runner.ts';
+import { wasiOutputRelay } from '../../packages/core/src/runtime/wasi/stdio.ts';
+import { outputControlReader } from '../../packages/core/src/runtime/wasi/output-control.ts';
 import { makeImportsWithoutJSPI, makeParkingImports } from './lib/wasi-imports.mjs';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { loadWasiPreamble } from './lib/wasi-authority.mjs';
 
-const RUBY_RUNNER_SRC = join(
-  dirname(fileURLToPath(import.meta.url)), '..', '..',
-  'packages', 'core', 'src', 'runtime', 'ruby-runner.ts',
-);
+// The resident worker is a Durable Object class module, as a facet loads it.
+plugin({
+  name: 'cloudflare-shims',
+  setup(build) {
+    build.module('cloudflare:workers', () => ({
+      loader: 'object',
+      exports: { DurableObject: class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } } },
+    }));
+  },
+});
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -110,19 +123,47 @@ const INIT = () => ({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }] });
 }
 
 // ── 4. Ruby's resident process adopts the filesystem on every entry ─────────
+// A server never exits, and each request may come through a new instance of
+// its worker with the session's current SUPERVISOR: the run takes the one its
+// start had, a request the one it came with, and a routed hop that brings none
+// keeps the last.
 {
-  const src = buildRubySocketProcessWorker('/* preamble */');
-  assert.ok(/__wasiAdoptSupervisor\(supervisor\)/.test(src),
-    'ruby resident entry must hand the SUPERVISOR stub to the filesystem');
-  // A server answers requests and never exits, so the adoption has to be on
-  // the request path — not only on startProcess.
-  const httpBody = src.slice(src.indexOf('async handleHttpRequest'));
-  assert.ok(/__nimbusAdoptRubySupervisor\(this\.env\)/.test(httpBody),
-    'ruby must adopt on an HTTP request, not just at startup');
-  // There is nothing to flush: a write is in the session when the syscall
-  // returns, so a park helper that "drains" would be draining nothing.
-  assert.ok(!/DrainPersist|RevalidateFS|__nimbusParkRuby/.test(src),
-    'ruby resident entry must not carry a persist queue');
+  const preamble = [
+    'function __wasiAdoptSupervisor(supervisor) { globalThis.__adoptions.push(supervisor && supervisor.name); }',
+    'globalThis.__nimbusRubyDrainOutput = async () => {};',
+    'globalThis.__nimbusRubyWriteDiagnostic = () => {};',
+    // The program binds a port and serves until the process ends.
+    'globalThis.__rubyRun = () => { globalThis.__ranWith = globalThis.__nimbusRubySupervisor.name; globalThis.__nimbusVirtualSockets.listen(8127); return new Promise(() => {}); };',
+    // Each step answers the request waiting, as the supervisor it holds then.
+    'globalThis.__nimbusRubyStep = async () => {',
+    '  const conn = globalThis.__nimbusVirtualSockets.acceptNow(8127);',
+    '  if (conn) {',
+    '    const by = globalThis.__nimbusRubySupervisor.name;',
+    '    globalThis.__nimbusVirtualSockets.send(conn.id, `HTTP/1.1 200 OK\\r\\ncontent-length: ${by.length}\\r\\n\\r\\n${by}`);',
+    '    globalThis.__nimbusVirtualSockets.close(conn.id);',
+    '  }',
+    '  return { resumed: true, alive: true, wakeAfter: null };',
+    '};',
+  ].join('\n');
+  const dir = mkdtempSync(join(tmpdir(), 'wasi-live-adoption-ruby-'));
+  try {
+    writeFileSync(join(dir, 'ruby+stdlib.wasm'), new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+    writeFileSync(join(dir, 'worker.mjs'), buildRubySocketProcessWorker(preamble));
+    globalThis.__adoptions = [];
+    const { NimbusProcess } = await import(pathToFileURL(join(dir, 'worker.mjs')).href);
+    const supervisor = (name) => ({ name, stdout: async () => {}, stderr: async () => {}, registerPort: async () => {} });
+    const started = await new NimbusProcess({ storage: {} }, { SUPERVISOR: supervisor('A') }).startProcess({ userCode: 'serve', rbArgv: [], userEnv: {}, progName: 'server.rb', cwd: '/home/user' });
+    assert.deepEqual({ state: started.state, port: started.port, ranWith: globalThis.__ranWith, adoptions: globalThis.__adoptions }, { state: 'listening', port: 8127, ranWith: 'A', adoptions: ['A'] },
+      'the start adopts its SUPERVISOR before the program runs');
+    const request = () => new Request('http://process/', { headers: { 'X-Nimbus-Port': '8127' } });
+    const answered = await new NimbusProcess({ storage: {} }, { SUPERVISOR: supervisor('B') }).handleHttpRequest(request());
+    assert.deepEqual({ status: answered.status, by: await answered.text(), adoptions: globalThis.__adoptions }, { status: 200, by: 'B', adoptions: ['A', 'B'] },
+      'a request adopts the SUPERVISOR it came with');
+    const hop = await new NimbusProcess({ storage: {} }, {}).handleHttpRequest(request());
+    assert.equal(await hop.text(), 'B', 'a routed hop with no SUPERVISOR keeps the last one');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 console.log('wasi-live-adoption: all assertions passed');
@@ -179,12 +220,32 @@ console.log('wasi-live-adoption: all assertions passed');
 
 console.log('wasi-live-adoption: silent-write-loss assertions passed');
 // ── 7. Ruby re-adopts AFTER mounting, because the mount drops the stub ───────
+// The runner's own __rubyRun over this WASI host: its mount (__wasiInitFS)
+// clears the adoption, so the supervisor the entry published has to be
+// adopted after it, or the program's first file call answers EBADF. The VM
+// is stood in for by a program that writes a file.
 {
-  const runner = readFileSync(RUBY_RUNNER_SRC, 'utf8');
-  const mount = runner.indexOf('__nimbusInstallRubyFs(args.cred, args.supervisorPid || 0);');
-  const readopt = runner.indexOf('__wasiAdoptSupervisor(globalThis.__nimbusRubySupervisor)');
-  assert.ok(mount > 0 && readopt > mount,
-    'ruby must adopt the supervisor AFTER __wasiInitFS, which clears it');
+  const supervisor = memorySupervisor();
+  Object.assign(globalThis, {
+    __wasiSupervisorOutput: wasiOutputRelay,
+    __wasiOutputControl: outputControlReader,
+    __wasiSettled: async (result) => result,
+    __nimbusRubyStep: async () => ({ resumed: false, alive: false }),
+    __testEval: async () => {
+      const h = host();
+      const { errno, fd } = await h.open('home/user/from-ruby.txt', 1 /* O_CREAT */);
+      if (errno === 0) await h.write(fd, 'written by the program');
+      return { status: errno === 0 ? 0 : 1 };
+    },
+  });
+  new Function('__wasiInitFS', '__wasiAdoptSupervisor', 'globalThis', `${RUBY_RUNNER_PREAMBLE_TAIL}
+async function __nimbusRubyEval(boot, code) { return globalThis.__testEval(code); }`)(P.__wasiInitFS, P.__wasiAdoptSupervisor, globalThis);
+  globalThis.__rubyBootstrap = Promise.resolve({ ok: true, rubyInitialized: true });
+  globalThis.__nimbusRubySupervisor = supervisor;
+  const result = await globalThis.__rubyRun({ userCode: 'File.write', requires: [], rbArgv: [], userEnv: {}, progName: 'ruby', binName: 'ruby', cwd: '/home/user', supervisorPid: 0 });
+  assert.equal(result.exitCode, 0, JSON.stringify(result));
+  assert.equal(dec.decode(supervisor.store.get('home/user/from-ruby.txt')), 'written by the program',
+    'the program writes through the supervisor adopted after the mount');
 }
 
 console.log('wasi-live-adoption: adopt-order assertions passed');
