@@ -8,10 +8,9 @@ import { EventEmitter } from 'node:events';
 import { createHttp } from './http.js';
 import { createChildProcess } from './child_process.js';
 import * as zlibModule from './zlib.js';
-import { createTty } from './tty-streams.js';
+import { ttyOf } from './tty-streams.js';
 import { createDns } from './dns.js';
 import { createModuleShim } from './module.js';
-import * as readlineModule from './readline.js';
 import { createRimraf } from './rimraf.js';
 import { createEsbuild } from './esbuild.js';
 import { createHttp2Module } from '../../../_shared/http2-module.js';
@@ -71,8 +70,7 @@ export function createModuleMap(ctx) {
             argv: ctx.argv,
             env: ctx.env,
             cwd: ctx.cwd,
-            stdout: ctx.stdout,
-            stderr: ctx.stderr,
+            stdio: ctx,
             identity: ctx.identity,
         }),
         events: () => realm.getBuiltinModule('node:events'),
@@ -92,11 +90,12 @@ export function createModuleMap(ctx) {
         crypto: () => realm.getBuiltinModule('node:crypto'),
         zlib: () => zlibModule,
         string_decoder: () => realm.getBuiltinModule('node:string_decoder'),
-        tty: () => (ctx.reachStreams?.(), createTty()),
+        tty: () => (ctx.reachStreams?.(), ttyOf(ctx).module),
         dns: dnsModule,
         'dns/promises': () => dnsModule().promises,
-        readline: () => readlineModule,
-        'readline/promises': () => readlineModule.promises,
+        // The engine's own (X-2): over process.stdin, as Node's reads its input.
+        readline: () => (ctx.reachStreams?.(), realm.getBuiltinModule('node:readline')),
+        'readline/promises': () => (ctx.reachStreams?.(), realm.getBuiltinModule('node:readline/promises')),
         constants: () => ({ ...createOs(ctx.env).constants, ...fsModule().constants }),
         // The engine's own, context-free (X-3). v8 is the engine's but for what
         // would reach the host's files or flags (a heap snapshot file, coverage,

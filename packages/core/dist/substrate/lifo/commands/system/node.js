@@ -127,10 +127,12 @@ export async function runNodeProgram(program, host) {
         routeLoopback: host.routeLoopback,
         dns: host.dns,
         stdin: host.stdin,
+        input: host.input,
+        terminal: host.terminal,
         reachStreams: leaveStandardStreamsOpen,
     };
     // One process and console, every module's, as in Node.
-    const main = { process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr, identity }), console: createConsole(ctx.stdout, ctx.stderr), global: globalThis };
+    const main = { process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdio: nodeCtx, identity }), console: createConsole(ctx.stdout, ctx.stderr), global: globalThis };
     const loader = createCjsLoader(nodeCtx, main);
     // Execute main script
     const module = { exports: {} };

@@ -1,49 +1,96 @@
 import realm from 'node:process';
-import { clearLine, clearScreenDown, cursorTo, moveCursor } from './readline.js';
+import { nodeError, nodeSystemError } from '../../../_shared/node-error.js';
+import { asStandardStream, joinStandardInput, outputSink, standardStream } from './standard-streams.js';
+const programs = new WeakMap();
 /**
- * Node.js `tty` module shim for Lifo (tty.ts is its public module).
- *
- * In the browser there is no real TTY, so ReadStream/WriteStream behave like
- * plain streams with the TTY-specific properties stubbed to sensible defaults.
+ * The tty module of the program `stdio` is, its streams joined to its
+ * descriptors: a WriteStream writes to the descriptor it is made on, in order
+ * with process.stdout, a ReadStream reads fd 0, and isatty answers for each.
+ * One per program, so that its process's streams are its module's (in a
+ * terminal, process.stdout is a tty.WriteStream). Its classes are the engine's
+ * stream classes, made when the program first reaches them.
  */
-/**
- * The tty module, its streams the engine's own stream classes, made when a
- * program requires it (the engine's stream module is loaded then). Neither
- * stream is joined to a descriptor yet: a ReadStream gives nothing, and what
- * a WriteStream is given goes nowhere, as lifo's own streams did.
- */
-export function createTty() {
+export function ttyOf(stdio) {
+    let tty = programs.get(stdio);
+    if (tty === undefined)
+        programs.set(stdio, tty = createTty(stdio));
+    return tty;
+}
+function createTty(stdio) {
+    let module;
+    let stdin;
+    let stdout;
+    let stderr;
+    const isatty = (fd) => Number.isInteger(fd) && fd >= 0 && fd <= 2 && stdio.terminal?.isatty(fd) === true;
+    const ttyModule = () => module ??= ttyClasses(stdio, isatty);
+    const standardOutput = (fd) => {
+        if (!isatty(fd))
+            return standardStream(fd === 1 ? stdio.stdout : stdio.stderr, fd);
+        return asStandardStream(new (ttyModule().WriteStream)(fd), fd);
+    };
+    return {
+        get module() { return ttyModule(); },
+        stdin: () => stdin ??= isatty(0)
+            ? Object.assign(new (ttyModule().ReadStream)(0), { fd: 0 })
+            : Object.assign(joinStandardInput(new (realm.getBuiltinModule('node:stream').Readable)(), stdio.input), { fd: 0 }),
+        stdout: () => stdout ??= standardOutput(1),
+        stderr: () => stderr ??= standardOutput(2),
+    };
+}
+/** A descriptor as Node's tty streams take it: a whole number, else ERR_INVALID_FD. */
+function checkFd(fd) {
+    if (typeof fd !== 'number' || (fd >> 0) !== fd || fd < 0)
+        throw nodeError(RangeError, 'ERR_INVALID_FD', `"fd" must be a positive integer: ${String(fd)}`);
+    return fd;
+}
+/** What uv_tty_init answers for a descriptor that is not one of the program's standard three. */
+function ttyInitFailed() {
+    return nodeSystemError('ERR_TTY_INIT_FAILED', 'TTY initialization failed', { errno: -22, code: 'EINVAL', message: 'invalid argument', syscall: 'uv_tty_init' });
+}
+function ttyClasses(stdio, isatty) {
     const { Readable, Writable } = realm.getBuiltinModule('node:stream');
+    const readline = realm.getBuiltinModule('node:readline');
+    const windowSize = () => [Number(stdio.env.COLUMNS) || 80, Number(stdio.env.LINES) || 24];
     class ReadStream extends Readable {
-        constructor() {
-            super({ read() { } });
-        }
         isTTY = true;
         isRaw = false;
-        setRawMode(_mode) {
-            // no-op – raw mode is not applicable in the browser
+        constructor(fd) {
+            if (checkFd(fd) !== 0)
+                throw ttyInitFailed();
+            super();
+            joinStandardInput(this, stdio.input);
+        }
+        setRawMode(mode) {
+            const raw = Boolean(mode);
+            stdio.terminal?.setRawMode(raw);
+            this.isRaw = raw;
             return this;
         }
     }
     class WriteStream extends Writable {
-        constructor() {
-            super({ write(_chunk, _encoding, callback) { callback(); } });
-        }
         isTTY = true;
-        columns = 80;
-        rows = 24;
+        // The window's, on the terminal; none on a pipe, as Node has none there.
+        columns;
+        rows;
+        constructor(fd) {
+            if (checkFd(fd) > 2)
+                throw ttyInitFailed();
+            super(outputSink(fd === 1 ? stdio.stdout : fd === 2 ? stdio.stderr : undefined));
+            if (isatty(fd))
+                [this.columns, this.rows] = windowSize();
+        }
         // As Node's tty.WriteStream: each cursor method is readline's, on this stream.
         clearLine(dir, cb) {
-            return clearLine(this, dir, cb);
+            return readline.clearLine(this, dir, cb);
         }
         clearScreenDown(cb) {
-            return clearScreenDown(this, cb);
+            return readline.clearScreenDown(this, cb);
         }
         cursorTo(x, y, cb) {
-            return cursorTo(this, x, y, cb);
+            return typeof y === 'function' ? readline.cursorTo(this, x, undefined, y) : readline.cursorTo(this, x, y, cb);
         }
         moveCursor(dx, dy, cb) {
-            return moveCursor(this, dx, dy, cb);
+            return readline.moveCursor(this, dx, dy, cb);
         }
         getColorDepth() {
             return 8; // 256 colours – reasonable default for a virtual terminal
@@ -54,11 +101,8 @@ export function createTty() {
             return count <= 256;
         }
         getWindowSize() {
-            return [this.columns, this.rows];
+            return windowSize();
         }
     }
     return { ReadStream, WriteStream, isatty };
-}
-function isatty(_fd) {
-    return false;
 }

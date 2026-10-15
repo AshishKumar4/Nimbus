@@ -58,7 +58,7 @@ const fetched = new Map();
 let offTheBox = null;
 /** `events` holds the realm open while anything of the program's waits on it. */
 function holdWhileBusy() {
-    joined.hold(fetched.size > 0 || ports.size > 0 || persistentWatches > 0 || (offTheBox?.awaited ?? 0) > 0);
+    joined.hold(fetched.size > 0 || ports.size > 0 || persistentWatches > 0 || stdinWaiting || (offTheBox?.awaited ?? 0) > 0);
 }
 /** End the process now with `code`, as process.exit() and a fatal error do. */
 function exitNow(code) {
@@ -139,6 +139,25 @@ const filesystem = {
         };
     },
 };
+/** fd 0, a piece at a time, each asked of the host; a read the program waits on (not one it paused) holds the realm. */
+const stdinPieces = new Map();
+let stdinReads = 0;
+let stdinWaiting = false;
+const input = {
+    read: () => new Promise((resolve) => {
+        const id = ++stdinReads;
+        stdinPieces.set(id, resolve);
+        post({ type: 'stdin-read', id });
+    }),
+    waiting: (on) => {
+        stdinWaiting = on;
+        holdWhileBusy();
+    },
+};
+const terminal = {
+    isatty: (fd) => flagOf(call({ op: 'isatty', fd }), 'isatty'),
+    setRawMode: (on) => { call({ op: 'rawMode', on }); },
+};
 const output = (fd) => ({
     write: (data) => post({ type: 'output', fd, data }),
     writeBytes: (data) => post({ type: 'output', fd, data }),
@@ -212,6 +231,10 @@ events.on('message', (event) => {
         case 'changed':
             watches.get(event.id)?.listener(event.event);
             return;
+        case 'stdin':
+            stdinPieces.get(event.id)?.(event.data);
+            stdinPieces.delete(event.id);
+            return;
     }
 });
 // ── Fatal errors, as Node ends a process on them ───────────────────────────
@@ -240,6 +263,8 @@ const end = await runNodeProgram(program, {
     stdout: output(1),
     stderr: output(2),
     stdin: () => bytes(call({ op: 'stdin' }), 'stdin'),
+    input,
+    terminal,
     setUmask: (mask) => { call({ op: 'umask', mask }); },
     portRegistry: ports,
     routeLoopback,

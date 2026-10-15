@@ -61,6 +61,16 @@ export type NodeCall = {
  | {
     readonly op: 'umask';
     readonly mask: number;
+}
+/** Whether standard descriptor `fd` is the terminal. */
+ | {
+    readonly op: 'isatty';
+    readonly fd: number;
+}
+/** The terminal's raw mode, on or off (tty.ReadStream.setRawMode). */
+ | {
+    readonly op: 'rawMode';
+    readonly on: boolean;
 };
 /** A response to a request that stayed on the box, as data, either way across. */
 export interface RealmResponse {
@@ -88,6 +98,11 @@ export type GuestEvent = {
 } | {
     readonly type: 'exit';
     readonly code: number;
+}
+/** fd 0's next piece, wanted as read `id` (process.stdin). */
+ | {
+    readonly type: 'stdin-read';
+    readonly id: number;
 } | EgressGuestEvent;
 /** What this side posts on `events`. */
 export type HostEvent = {
@@ -105,6 +120,12 @@ export type HostEvent = {
     readonly type: 'changed';
     readonly id: number;
     readonly event: VfsEvent;
+}
+/** Read `id`'s piece of fd 0; null at its end. */
+ | {
+    readonly type: 'stdin';
+    readonly id: number;
+    readonly data: Uint8Array | null;
 } | EgressHostEvent;
 /**
  * What the realm starts with: the program, the kernel's /etc/hosts its
@@ -130,6 +151,10 @@ export interface RealmServices {
     filesystem(): NodeFilesystem;
     /** fd 0, read to its end, once; empty after. */
     stdin(): Promise<Uint8Array>;
+    /** Whether standard descriptor `fd` is the terminal. */
+    isatty(fd: number): boolean;
+    /** The terminal's raw mode, on or off. */
+    setRawMode(on: boolean): void;
     listen(port: number): void;
     unlisten(port: number): void;
     /** Watch `path` as watch `id`, or stop it (null). */

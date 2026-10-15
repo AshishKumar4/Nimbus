@@ -3,6 +3,8 @@ import type { CommandOutputStream } from '../commands/types.js';
 import { type ProcessIdentity } from './process.js';
 import type { LoopbackRouter, VirtualRequestHandler } from '../kernel/index.js';
 import type { DNSResolver } from '../kernel/dns-resolver.js';
+import { type ProgramTerminal } from './tty-streams.js';
+import type { StandardInput } from './standard-streams.js';
 export interface NodeContext {
     filesystem: () => NodeFilesystem;
     /** The program's process: its pid and credential, and its mask's setter. */
@@ -18,6 +20,10 @@ export interface NodeContext {
     executeCapture?: (input: string) => Promise<string>;
     /** fd 0 to its end, blocking until stdin ends (readFileSync(0)); absent, fd 0 reads as empty. */
     stdin?: () => Uint8Array;
+    /** fd 0 a piece at a time (process.stdin, tty.ReadStream(0)); absent, it is at its end. */
+    input?: StandardInput;
+    /** Which standard descriptor is the terminal, and its modes; absent, none is. */
+    terminal?: ProgramTerminal;
     portRegistry?: Map<number, VirtualRequestHandler>;
     routeLoopback?: LoopbackRouter;
     /** The kernel's resolver, which dns.lookup answers from as curl and wget do. */

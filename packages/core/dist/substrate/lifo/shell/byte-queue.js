@@ -40,13 +40,32 @@ export class ByteQueue {
     discard() {
         this.buffer = [];
     }
-    /** Next queued chunk, a delivery waited for, or null once ended and empty. */
-    pull() {
+    /**
+     * Next queued chunk, a delivery waited for, or null once ended and empty.
+     * A wait `signal` ends is withdrawn, rejecting with its reason: the next
+     * delivery is the next reader's.
+     */
+    pull(signal) {
         if (this.buffer.length > 0)
             return Promise.resolve(this.buffer.shift() ?? null);
         if (this.ended)
             return Promise.resolve(null);
-        return new Promise((resolve) => { this.waiting.push(resolve); });
+        if (signal?.aborted)
+            return Promise.reject(signal.reason);
+        return new Promise((resolve, reject) => {
+            const waiter = (value) => {
+                signal?.removeEventListener('abort', withdraw);
+                resolve(value);
+            };
+            const withdraw = () => {
+                const at = this.waiting.indexOf(waiter);
+                if (at >= 0)
+                    this.waiting.splice(at, 1);
+                reject(signal?.reason);
+            };
+            signal?.addEventListener('abort', withdraw, { once: true });
+            this.waiting.push(waiter);
+        });
     }
     /** The next text the input holds, or null at its end. */
     async read() {
@@ -105,10 +124,10 @@ export class ByteQueue {
      * complete it would stall every reader downstream of a live producer. A
      * larger chunk gives its first maxLength bytes; the rest stays queued.
      */
-    async readBytes(maxLength) {
+    async readBytes(maxLength, signal) {
         if (maxLength <= 0)
             return new Uint8Array(0);
-        const chunk = await this.pull();
+        const chunk = await this.pull(signal);
         if (chunk === null)
             return null;
         if (chunk.length <= maxLength) {
