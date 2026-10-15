@@ -1352,17 +1352,10 @@ export class ProcessView {
     /** Where the link at `path`, reading `link`, leads in this namespace (RuntimeFsBridge.linkLeadsTo), for a caller following it itself. */
     async linkLeadsTo(path, link) { return await this.fs.linkLeadsTo(path, link); }
     async chmod(path, mode) { await this.call('chmod', path, () => this.fs.chmod(path, mode)); }
-    /** chown(2): a null side keeps what the file has (chown -1). `follow: false` is lchown(2), a link's own. */
+    /** chown(2): a null side keeps what the file has (chown -1), in the same change. `follow: false` is lchown(2), a link's own. */
     async chown(path, uid, gid, options) {
         const followSymlinks = options?.follow !== false;
         await this.call(followSymlinks ? 'chown' : 'lchown', path, async () => {
-            if (uid === null || gid === null) {
-                const stat = await this.fs.stat(path, { followSymlinks });
-                if (stat === null)
-                    throw syscallError('ENOENT', followSymlinks ? 'chown' : 'lchown', path);
-                uid ??= stat.uid;
-                gid ??= stat.gid;
-            }
             await this.fs.chown(path, uid, gid, { followSymlinks });
         });
     }
@@ -1695,14 +1688,7 @@ export class NamespaceFs {
         }
     }
     chmod(path, mode) { this.fs.chmod(path, mode); }
-    chown(path, uid, gid) {
-        if (uid === null || gid === null) {
-            const stat = this.stat(path);
-            uid ??= stat.uid;
-            gid ??= stat.gid;
-        }
-        this.fs.chown(path, uid, gid);
-    }
+    chown(path, uid, gid) { this.fs.chown(path, uid, gid); }
     utimes(path, atimeMs, mtimeMs, options) {
         this.fs.utimes(path, atimeMs, mtimeMs, options);
     }

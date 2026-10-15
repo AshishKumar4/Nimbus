@@ -732,7 +732,7 @@ function parseAttrs(value, label) {
     if (keys === 'mode')
         return { mode: u32(value.mode, `${label} mode`) };
     if (keys === 'gid,uid')
-        return { uid: u32(value.uid, `${label} uid`), gid: u32(value.gid, `${label} gid`) };
+        return { uid: ownerId(value.uid, `${label} uid`), gid: ownerId(value.gid, `${label} gid`) };
     if (keys === 'atime,mtime')
         return { atime: safeInteger(value.atime, `${label} atime`), mtime: safeInteger(value.mtime, `${label} mtime`) };
     throw new Error(`w7-frame: ${label} changes the mode, the owner or the times, one of them: got ${keys || 'nothing'}`);
@@ -851,7 +851,7 @@ function parsePathCall(value, path) {
         case 'lchown':
             if (keys !== 'call,gid,path,uid')
                 break;
-            return { call: 'lchown', path: path(value.path, 'lchown path'), uid: u32(value.uid, 'lchown uid'), gid: u32(value.gid, 'lchown gid') };
+            return { call: 'lchown', path: path(value.path, 'lchown path'), uid: ownerId(value.uid, 'lchown uid'), gid: ownerId(value.gid, 'lchown gid') };
         case 'open': {
             const flags = ['create', 'exclusive', 'nofollow', 'read', 'truncate'];
             let required = keys;
@@ -1130,6 +1130,10 @@ function safeInteger(value, label) {
         throw new Error(`w7-frame: ${label} must be a non-negative safe integer`);
     }
     return value;
+}
+/** A chown side: a uid or gid, or null, which keeps the file's. */
+function ownerId(value, label) {
+    return value === null ? null : u32(value, label);
 }
 function u32(value, label) {
     const integer = safeInteger(value, label);

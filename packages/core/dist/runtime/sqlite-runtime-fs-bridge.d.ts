@@ -73,7 +73,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     }): VfsMutationReceipt;
     chmod(path: RuntimeFsPath, mode: number): VfsMutationReceipt;
     access(path: RuntimeFsPath, mode: number): void;
-    chown(path: RuntimeFsPath, uid: number, gid: number, options?: {
+    chown(path: RuntimeFsPath, uid: number | null, gid: number | null, options?: {
         followSymlinks?: boolean;
     }): VfsMutationReceipt;
     /** `options.mutationOwner`: the exclusive-mutation lease an open for writing presents (a read-only open presents none). */
@@ -212,7 +212,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     readdirHandle(handleId: number): RuntimeVfsDirEntry[];
     ftruncate(handleId: number, size: number): void;
     fchmod(handleId: number, mode: number): void;
-    fchown(handleId: number, uid: number, gid: number): void;
+    fchown(handleId: number, uid: number | null, gid: number | null): void;
     futimes(handleId: number, atime: number, mtime: number): void;
 }
 /** A whole read's `maxBytes` (RuntimeReadFileOptions): a regular file of at most `maxBytes` bytes is read whole; a directory answers as a read does. */

@@ -213,7 +213,8 @@ export interface VFS {
     symlink?(target: string, path: string): Awaitable<void>;
     readlink?(path: string): Awaitable<string>;
     chmod?(path: string, mode: number): Awaitable<void>;
-    chown?(path: string, uid: number, gid: number): Awaitable<void>;
+    /** A null side keeps what the file has (chown(2)'s -1). */
+    chown?(path: string, uid: number | null, gid: number | null): Awaitable<void>;
     utimes?(path: string, atimeMs: number, mtimeMs: number): Awaitable<void>;
     /** Copy within this backend (SQLite copies rows, not bytes). Returns entries copied. */
     copy?(from: string, to: string, options?: VfsCopyOptions): Awaitable<number>;
@@ -319,7 +320,7 @@ export interface SyncVFS {
     symlink?(target: string, path: string): void;
     readlink?(path: string): string;
     chmod?(path: string, mode: number): void;
-    chown?(path: string, uid: number, gid: number): void;
+    chown?(path: string, uid: number | null, gid: number | null): void;
     utimes?(path: string, atimeMs: number, mtimeMs: number): void;
     copy?(from: string, to: string, options?: VfsCopyOptions): number;
     writeFileIfRevision?(path: string, data: Uint8Array, expected: VfsRevision): VfsCasResult;

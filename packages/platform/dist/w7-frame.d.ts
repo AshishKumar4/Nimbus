@@ -65,12 +65,16 @@ export interface BatchWritePayload {
      */
     ops?: W7Op[];
 }
-/** One attribute change (setattr): the mode, the owner, or the times; what chmod, chown and utimes each make. */
+/**
+ * One attribute change (setattr): the mode, the owner, or the times; what
+ * chmod, chown and utimes each make. An owner side that is null keeps what
+ * the file has when the change lands (chown's -1).
+ */
 export type W7Attrs = {
     mode: number;
 } | {
-    uid: number;
-    gid: number;
+    uid: number | null;
+    gid: number | null;
 } | {
     atime: number;
     mtime: number;
@@ -189,8 +193,8 @@ export type W7Call =
  | {
     call: 'lchown';
     path: string;
-    uid: number;
-    gid: number;
+    uid: number | null;
+    gid: number | null;
 }
 /** utimes of the link itself (lutimes). */
  | {

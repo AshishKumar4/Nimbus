@@ -71,7 +71,7 @@ export declare class SqliteFiles implements VFS {
     symlink(target: string, path: string): void;
     readlink(path: string): string;
     chmod(path: string, mode: number): void;
-    chown(path: string, uid: number, gid: number): void;
+    chown(path: string, uid: number | null, gid: number | null): void;
     utimes(path: string, atimeMs: number, mtimeMs: number): void;
     /** Copy inside the database: rows, not bytes. */
     copy(from: string, to: string, options?: VfsCopyOptions): number;

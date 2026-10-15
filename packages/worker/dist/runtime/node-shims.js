@@ -4450,10 +4450,12 @@ const __fsMod = (() => {
     await _structuralAsync(queue, syscall, p, judged, walked);
   }
 
+  // A chown side: -1 keeps what the file has, as Node's chown says, which the
+  // session makes in the same change (null).
   function _coerceId(value, syscall, p) {
     const id = Number(value);
-    if (!Number.isInteger(id) || id < 0) throw _fsErr("EINVAL", syscall, p);
-    return id;
+    if (!Number.isInteger(id) || id < -1) throw _fsErr("EINVAL", syscall, p);
+    return id === -1 ? null : id;
   }
 
   async function _chownAsync(p, uid, gid, opts, syscallOverride, fixed) {
@@ -4483,16 +4485,17 @@ const __fsMod = (() => {
       walked: { target, guarded },
       judged: entry !== undefined,
       queue: () => {
-        if (entry !== undefined) _chownLocal(target, entry.mode, nextUid, nextGid);
+        if (entry !== undefined) _chownLocal(target, entry, nextUid, nextGid);
         return _queueStructuralMutation(sent, syscall, p, (s) => _chownCall(s, sent, nextUid, nextGid, followSymlinks));
       },
     };
   }
 
-  /** A chown's effect in this view, as the session makes it: the owner over the entry's, and its mode less what chownedMode clears. */
-  function _chownLocal(target, mode, uid, gid) {
+  /** A chown's effect in this view, as the session makes it: the owner over the entry's (a kept side the entry's), and its mode less what chownedMode clears. */
+  function _chownLocal(target, entry, uid, gid) {
     const k = _strip(target);
-    _setLocalAttr("owner", k, { uid, gid }, true);
+    _setLocalAttr("owner", k, { uid: uid === null ? entry.uid : uid, gid: gid === null ? entry.gid : gid }, true);
+    const mode = entry.mode;
     const left = __nimbusResidentModule.chownedMode(mode & 0o7777, _posixCred());
     if (left !== (mode & 0o7777)) _setLocalAttr("mode", k, left, true);
   }

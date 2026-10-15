@@ -340,8 +340,12 @@ export interface RuntimeFsBridge {
     chmod(path: RuntimeFsPath, mode: number): Awaitable<VfsMutationReceipt>;
     /** Check access using the bridge's process credential. */
     access(path: RuntimeFsPath, mode: number): Awaitable<void>;
-    /** Change stored ownership, optionally operating on a symlink itself. */
-    chown(path: RuntimeFsPath, uid: number, gid: number, options?: {
+    /**
+     * Change stored ownership, optionally operating on a symlink itself. A
+     * side that is null keeps what the file has (chown(2)'s -1), in the same
+     * change: no owner set between is overwritten.
+     */
+    chown(path: RuntimeFsPath, uid: number | null, gid: number | null, options?: {
         followSymlinks?: boolean;
     }): Awaitable<VfsMutationReceipt>;
     /** `options.mutationOwner`: the lease an open for writing presents. */
@@ -446,7 +450,8 @@ export interface RuntimeFsBridge {
     readdirHandle(handleId: number): Awaitable<RuntimeVfsDirEntry[]>;
     ftruncate(handleId: number, size: number): Awaitable<void>;
     fchmod(handleId: number, mode: number): Awaitable<void>;
-    fchown(handleId: number, uid: number, gid: number): Awaitable<void>;
+    /** chown's, of an open file: a null side keeps the file's. */
+    fchown(handleId: number, uid: number | null, gid: number | null): Awaitable<void>;
     futimes(handleId: number, atimeMs: number, mtimeMs: number): Awaitable<void>;
     /** `signal`: cancels it before its commit (a released process publishes nothing). */
     writeBatch(payload: import('@nimbus-sh/platform/w7-frame.js').BatchWritePayload, options?: {

@@ -230,7 +230,7 @@ export interface HeldFile {
     replace(bytes: Uint8Array, admit?: () => void): Awaitable<void>;
     truncate(size: number, admit?: () => void): Awaitable<void>;
     chmod(mode: number, admit?: () => void): Awaitable<void>;
-    chown(uid: number, gid: number, admit?: () => void): Awaitable<void>;
+    chown(uid: number | null, gid: number | null, admit?: () => void): Awaitable<void>;
     utimes(atime: number, mtime: number, admit?: () => void): Awaitable<void>;
     readdir(): Awaitable<VfsDirent[]>;
     close(): Awaitable<void>;
@@ -982,7 +982,7 @@ export declare class CompositeVFS implements VFS {
     symlink(target: string, path: string): Promise<void>;
     readlink(path: string): Promise<string>;
     chmod(path: string, mode: number): Promise<void>;
-    chown(path: string, uid: number, gid: number): Promise<void>;
+    chown(path: string, uid: number | null, gid: number | null): Promise<void>;
     utimes(path: string, atimeMs: number, mtimeMs: number): Promise<void>;
     writeFileIfRevision(path: string, data: Uint8Array, expected: VfsRevision): Promise<VfsCasResult>;
     copy(from: string, to: string, options?: VfsCopyOptions): Promise<number>;

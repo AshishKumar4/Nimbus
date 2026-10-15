@@ -1086,6 +1086,8 @@ export function residentFilesystem(session, resident, delegation) {
      * here where the holder decides them, else by the file's name at the
      * session, once what was decided is sent.
      */
+    /** An fchown side as the guest sent it: a uid or gid, or null (keep the file's). */
+    const ownerSide = (value) => typeof value === 'number' ? value : null;
     const holderDescriptorCall = (name, handleId, rest) => {
         const key = holder.keyOf(handleId);
         if (name === 'dup')
@@ -1098,7 +1100,7 @@ export function residentFilesystem(session, resident, delegation) {
             if (name === 'fchmod')
                 return fs.chmod(path, Number(rest[0]));
             if (name === 'fchown')
-                return fs.chown(path, rest[0], rest[1]);
+                return fs.chown(path, ownerSide(rest[0]), ownerSide(rest[1]));
             return fs.utimes(path, rest[0], rest[1]);
         });
         if (attrs === null)
