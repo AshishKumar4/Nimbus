@@ -6,6 +6,9 @@
 // server, is the oracle; here its server is one on lifo's port map, as the
 // lifo node's is.
 //
+// Destroyed, it is aborted if its body was not all read, and the error it is
+// destroyed with goes only to a listener for it, as Node's.
+//
 // Red before: IncomingMessage was an EventEmitter that emitted strings:
 // no pipe, no async iterator, setEncoding a no-op.
 
@@ -38,7 +41,27 @@ module.exports = async (http) => {
   const second = await ask();
   let piped = '';
   await new Promise((resolve) => second.pipe(new Writable({ write(chunk, _enc, done) { piped += chunk; done(); } })).on('finish', resolve));
-  process.stdout.write(JSON.stringify([first instanceof Readable, chunks.every((chunk) => Buffer.isBuffer(chunk)), Buffer.concat(chunks).toString(), piped]) + '\\n');
+  // Destroyed: after it was read, before, with an error no one listens for, and with one someone does.
+  const closed = (message) => new Promise((resolve) => message.on('close', resolve));
+  first.destroy();
+  await closed(first);
+  const early = await ask();
+  let abortedEvents = 0;
+  early.on('aborted', () => { abortedEvents += 1; });
+  early.destroy();
+  await closed(early);
+  const unheard = await ask();
+  unheard.destroy(new Error('cancel'));
+  await closed(unheard);
+  const heard = await ask();
+  let seen = null;
+  heard.on('error', (error) => { seen = error.message; });
+  heard.destroy(new Error('cancel'));
+  await closed(heard);
+  process.stdout.write(JSON.stringify([
+    first instanceof Readable, chunks.every((chunk) => Buffer.isBuffer(chunk)), Buffer.concat(chunks).toString(), piped,
+    first.aborted, early.aborted, abortedEvents, unheard.aborted, seen,
+  ]) + '\\n');
   server.close();
   return 0;
 };

@@ -60,6 +60,16 @@ class IncomingMessage extends Readable {
 
   _read(): void {}
 
+  // As Node's: ended before its body was read and complete, it was aborted;
+  // the error it is destroyed with is told only to a listener for it.
+  _destroy(error: Error | null, callback: (error?: Error | null) => void): void {
+    if (!this.readableEnded || !this.complete) {
+      this.aborted = true;
+      this.emit('aborted');
+    }
+    process.nextTick(() => callback(this.listenerCount('error') === 0 ? null : error));
+  }
+
   /** Its body, then its end. */
   deliver(body: string | null): void {
     if (body) this.push(Buffer.from(body));
