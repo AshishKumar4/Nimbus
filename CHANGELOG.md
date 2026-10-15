@@ -5,6 +5,17 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `npm install` and `npm ci` read their options as npm does, from
+  the command line, `npm_config_*` and the `.npmrc` files (project, user,
+  global), like `npm init`, `npm ls` and `npm uninstall` already did.
+  `--registry` (or an `.npmrc`'s `registry=`) was parsed and dropped: an
+  install went to the session's registry (`NPM_REGISTRY`, else
+  registry.npmjs.org) whatever was asked. Now npm's setting wins, and the
+  session's applies where npm names none. Options npm spells its own way
+  are read as npm reads them: `--global=false`, abbreviations, and `-p`,
+  which is `--parseable` to npm (it was taken as `--production`; use
+  `--omit=dev`). `bun install|add -p` still means production, and bun's
+  `-d`/`--dev` now save a dev dependency as bun does.
 - Fixed: a session's `npm uninstall` and `npm ls` do what npm 10 does.
   `npm uninstall -g p` removes the global p and its commands, for good (no
   later global install links them again); it removed the project's p and
