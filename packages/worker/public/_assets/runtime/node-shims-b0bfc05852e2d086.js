@@ -356,6 +356,72 @@ function captureStack(error, above) {
 return { captureStack, determineSpecificType, hideStackFrames, invalidArgType, invalidArgValue, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, outOfRange, reshapeAsNodeError, useNodeErrorInspect };
 })();
 
+var { O_ACCMODE, O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR, O_SYNC, O_TRUNC, O_WRONLY, parseFileMode, stringToFlags, validateInt32, validateUint32 } = (() => {
+var O_RDONLY = 0;
+var O_WRONLY = 1;
+var O_RDWR = 2;
+var O_ACCMODE = 3;
+var O_CREAT = 64;
+var O_EXCL = 128;
+var O_TRUNC = 512;
+var O_APPEND = 1024;
+var O_DIRECTORY = 65536;
+var O_NOFOLLOW = 131072;
+var O_SYNC = 1052672;
+var FLAG_STRINGS = {
+  r: O_RDONLY,
+  rs: O_RDONLY | O_SYNC,
+  sr: O_RDONLY | O_SYNC,
+  "r+": O_RDWR,
+  "rs+": O_RDWR | O_SYNC,
+  "sr+": O_RDWR | O_SYNC,
+  w: O_TRUNC | O_CREAT | O_WRONLY,
+  wx: O_TRUNC | O_CREAT | O_WRONLY | O_EXCL,
+  xw: O_TRUNC | O_CREAT | O_WRONLY | O_EXCL,
+  "w+": O_TRUNC | O_CREAT | O_RDWR,
+  "wx+": O_TRUNC | O_CREAT | O_RDWR | O_EXCL,
+  "xw+": O_TRUNC | O_CREAT | O_RDWR | O_EXCL,
+  a: O_APPEND | O_CREAT | O_WRONLY,
+  ax: O_APPEND | O_CREAT | O_WRONLY | O_EXCL,
+  xa: O_APPEND | O_CREAT | O_WRONLY | O_EXCL,
+  as: O_APPEND | O_CREAT | O_WRONLY | O_SYNC,
+  sa: O_APPEND | O_CREAT | O_WRONLY | O_SYNC,
+  "a+": O_APPEND | O_CREAT | O_RDWR,
+  "ax+": O_APPEND | O_CREAT | O_RDWR | O_EXCL,
+  "xa+": O_APPEND | O_CREAT | O_RDWR | O_EXCL,
+  "as+": O_APPEND | O_CREAT | O_RDWR | O_SYNC,
+  "sa+": O_APPEND | O_CREAT | O_RDWR | O_SYNC
+};
+function validateInt32(value, name, min = -2147483648, max = 2147483647) {
+  if (typeof value !== "number") throw invalidArgType(name, "number", value);
+  if (!Number.isInteger(value)) throw outOfRange(name, "an integer", value);
+  if (value < min || value > max) throw outOfRange(name, `>= ${min} && <= ${max}`, value);
+  return value;
+}
+function validateUint32(value, name, positive = false) {
+  if (typeof value !== "number") throw invalidArgType(name, "number", value);
+  if (!Number.isInteger(value)) throw outOfRange(name, "an integer", value);
+  const min = positive ? 1 : 0;
+  if (value < min || value > 4294967295) throw outOfRange(name, `>= ${min} && <= 4294967295`, value);
+  return value;
+}
+function stringToFlags(flags, name = "flags") {
+  if (typeof flags === "number") return validateInt32(flags, name);
+  if (flags === void 0 || flags === null) return O_RDONLY;
+  if (typeof flags === "string" && Object.hasOwn(FLAG_STRINGS, flags)) return FLAG_STRINGS[flags];
+  throw invalidArgValue("flags", flags);
+}
+function parseFileMode(value, name, def) {
+  let mode = value ?? def;
+  if (typeof mode === "string") {
+    if (!/^[0-7]+$/.test(mode)) throw invalidArgValue(name, mode, "must be a 32-bit unsigned integer or an octal string");
+    mode = Number.parseInt(mode, 8);
+  }
+  return validateUint32(mode, name);
+}
+return { O_ACCMODE, O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR, O_SYNC, O_TRUNC, O_WRONLY, parseFileMode, stringToFlags, validateInt32, validateUint32 };
+})();
+
 var { createProcessWarnings } = (() => {
 function createProcessWarnings(process, write) {
   let traceHintWritten = false;
