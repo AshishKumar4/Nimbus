@@ -13,6 +13,9 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: `npx <pkg>@<version>` runs that version. A project's
   `node_modules`, or what an earlier `npx` installed, answers only a
   version or range it satisfies; before, whatever version was there ran.
+  One known difference from npm: `npx <pkg>` by name alone, with that
+  package already in its npx directory, runs what is there, where npm
+  asks the registry first for a newer version.
 - Removed: core's `createNpxCommand` (`@nimbus-sh/core/substrate/lifo`),
   a second npx no Nimbus shell registered. The session's `npx` is the one.
 - Fixed: the shell's `node` matches Node in more of its module surface. A
