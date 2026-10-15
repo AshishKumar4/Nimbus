@@ -92,8 +92,14 @@ export interface Namespace {
   deleteTree(t: ResidentTables, k: string, self: boolean): void;
   /** Drop one row and what the table keeps of it in heap. */
   forget(t: ResidentTables, k: string): void;
-  /** `own`: the process's own effects, applied at each name the walk reaches (OwnView). */
+  /**
+   * `own`: the process's own effects, applied at each name the walk reaches
+   * (OwnView). `visit`: told each name the walk looks up, in order (its
+   * directory is the one searched), before it is looked up; false stops the
+   * walk there, EACCES.
+   */
   lookup(k: string, followLeaf: boolean, own?: OwnView): Lookup | 'ELOOP';
+  lookup(k: string, followLeaf: boolean, own: OwnView | undefined, visit: (name: string) => boolean): Lookup | 'ELOOP' | 'EACCES';
   resolve(k: string, followLeaf: boolean, own?: OwnView): Resolved | null;
   unknown(k: string, followLeaf: boolean, listing: boolean, own?: OwnView): string | null;
   children(k: string): { name: string; kind: number; mode: number }[];
@@ -317,15 +323,18 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
    * followed only when `followLeaf`. Without links or own effects it is one
    * lookup. A link's target is joined to the name it was reached by.
    */
-  const lookup = (k: string, followLeaf: boolean, own?: OwnView): Lookup | 'ELOOP' => {
+  function lookup(k: string, followLeaf: boolean, own?: OwnView): Lookup | 'ELOOP';
+  function lookup(k: string, followLeaf: boolean, own: OwnView | undefined, visit: (name: string) => boolean): Lookup | 'ELOOP' | 'EACCES';
+  function lookup(k: string, followLeaf: boolean, own?: OwnView, visit?: (name: string) => boolean): Lookup | 'ELOOP' | 'EACCES' {
     const t = coherence.require();
-    if (own === undefined && links.size === 0) return { path: k, table: k, row: nsRowAt(t, k) };
+    if (own === undefined && links.size === 0 && visit === undefined) return { path: k, table: k, row: nsRowAt(t, k) };
     let path = k;
     walk: for (let hops = 0; hops <= NS_MAX_HOPS; hops++) {
       const segs = path === '' ? [] : path.split('/');
       let table: string | null = '';
       for (let i = 1; i <= segs.length; i++) {
         const prefix = segs.slice(0, i).join('/');
+        if (visit !== undefined && !visit(prefix)) return 'EACCES';
         const leaf = i === segs.length;
         const step: string | null = table === null ? null : table ? table + '/' + segs[i - 1] : segs[i - 1];
         const word = own?.(prefix);
@@ -368,7 +377,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
       return { path, table, row: table === null ? undefined : nsRowAt(t, table) };
     }
     return 'ELOOP';
-  };
+  }
 
   /** Whether the credential may search directory `row` (POSIX x). */
   const traversable = (row: NsRow | undefined): boolean => {

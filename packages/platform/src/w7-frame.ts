@@ -153,9 +153,13 @@ export type W7Call =
    * process chose), the session keeps the open description under it, its
    * access fixed now; the description's write, append and ftruncate calls
    * name it, and its `close` ends it. `ino`: the number a name it makes is
-   * given (a delegation's, as a mkdir's).
+   * given (a delegation's, as a mkdir's). `fchmod`: the file it opened then
+   * given exactly this mode (fchmod(2), as libuv's copyfile narrows its
+   * destination before a byte reaches it), part of the open: refused
+   * (EPERM: another's file), the open is refused and keeps no description,
+   * so a write through it is EBADF.
    */
-  | { call: 'open'; path: string; mode: number; ino?: number; umask?: number; read?: true; create?: true; truncate?: true; exclusive?: true; nofollow?: true; description?: string }
+  | { call: 'open'; path: string; mode: number; ino?: number; umask?: number; read?: true; create?: true; truncate?: true; exclusive?: true; nofollow?: true; description?: string; fchmod?: number }
   /** close(2) of the session's open description `description` (an `open` call's). */
   | { call: 'close'; path: string; description: string };
 
@@ -685,7 +689,7 @@ async function* decodeRecords(
           if (v3) throw new Error(`w7-frame: unknown record tag ${envelope.tag}`);
           summary.pathCount++;
           summary.opCount++;
-          const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'from', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask', 'read', 'create', 'truncate', 'exclusive', 'nofollow', 'description']);
+          const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'from', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask', 'read', 'create', 'truncate', 'exclusive', 'nofollow', 'description', 'fchmod']);
           yield { type: 'call', call: parsePathCall(value, (path, label) => ownedPaths.claim(canonicalPath(path, label))) };
           break;
         }
@@ -1150,7 +1154,7 @@ function parsePathCall(value: Record<string, unknown>, path: (value: unknown, la
     case 'open': {
       const flags = ['create', 'exclusive', 'nofollow', 'read', 'truncate'] as const;
       let required = keys;
-      for (const flag of ['create', 'description', 'exclusive', 'ino', 'nofollow', 'read', 'truncate', 'umask']) required = required.replace(`,${flag}`, '');
+      for (const flag of ['create', 'description', 'exclusive', 'fchmod', 'ino', 'nofollow', 'read', 'truncate', 'umask']) required = required.replace(`,${flag}`, '');
       if (required !== 'call,mode,path') break;
       for (const flag of flags) {
         if (value[flag] !== undefined && value[flag] !== true) throw new Error(`w7-frame: open ${flag} is true or absent`);
@@ -1165,6 +1169,7 @@ function parsePathCall(value: Record<string, unknown>, path: (value: unknown, la
         ...(value.nofollow === true ? { nofollow: true as const } : {}),
         ...(value.read === true ? { read: true as const } : {}),
         ...(value.description === undefined ? {} : { description: descriptionId(value.description, 'open description') }),
+        ...(value.fchmod === undefined ? {} : { fchmod: u32(value.fchmod, 'open fchmod') }),
       };
     }
     case 'lutimes':

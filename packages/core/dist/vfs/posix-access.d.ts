@@ -22,4 +22,41 @@ export declare function posixAccess(entry: {
     readonly gid: number;
     readonly groups: readonly number[];
 }): boolean;
+/** The caller a metadata rule judges: its uid, its primary group and its supplementary groups. */
+export interface PosixCred {
+    readonly uid: number;
+    readonly gid: number;
+    readonly groups: readonly number[];
+}
+/** chmod(2)'s rule: only the owner or root changes a mode (EPERM). */
+export declare function chmodRefusal(entry: {
+    readonly uid: number;
+}, cred: Pick<PosixCred, 'uid'>): 'EPERM' | null;
+/**
+ * The mode change a confined principal may not make (EPERM): granting a
+ * setuid, setgid, group or other bit the entry lacks, or clearing its sticky
+ * bit. A confined principal owns its own triad and nothing else.
+ */
+export declare function confinedModeRefusal(current: number, next: number): 'EPERM' | null;
+/**
+ * chown(2)'s rule (EPERM): root changes anything; the owner may keep its
+ * owner and set the group to the entry's own or one in `cred.groups`; no one else
+ * may name an owner or group at all. A null id leaves it as it is.
+ */
+export declare function chownRefusal(entry: {
+    readonly uid: number;
+    readonly gid: number;
+}, uid: number | null, gid: number | null, cred: PosixCred): 'EPERM' | null;
+/** The mode a chown leaves: a caller other than root clears the setuid and setgid bits. */
+export declare function chownedMode(mode: number, cred: Pick<PosixCred, 'uid'>): number;
+/**
+ * utimes(2)'s rule: explicit times only by the owner or root (EPERM); the
+ * current time by anyone who may write the entry (EACCES).
+ */
+export declare function utimesRefusal(entry: {
+    readonly mode: number;
+    readonly uid: number;
+    readonly gid: number;
+    readonly type: PosixNodeType;
+}, explicit: boolean, cred: PosixCred): 'EPERM' | 'EACCES' | null;
 //# sourceMappingURL=posix-access.d.ts.map

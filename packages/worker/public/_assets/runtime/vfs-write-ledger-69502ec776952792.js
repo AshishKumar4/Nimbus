@@ -24,6 +24,7 @@ var __nimbusProcessFsModule = (() => {
     DECIDED_BACKLOG_OPS: () => DECIDED_BACKLOG_OPS,
     GRANT_AFTER: () => GRANT_AFTER,
     GRANT_IDLE_MS: () => GRANT_IDLE_MS,
+    LINGER_MS: () => LINGER_MS,
     MAX_DELEGATIONS_PER_PROCESS: () => MAX_DELEGATIONS_PER_PROCESS,
     PROCESS_FS_HEAP_SYNC_CAP_BYTES: () => PROCESS_FS_HEAP_SYNC_CAP_BYTES,
     PROCESS_FS_HEAP_WINDOW_BYTES: () => PROCESS_FS_HEAP_WINDOW_BYTES,
@@ -537,7 +538,7 @@ var __nimbusProcessFsModule = (() => {
       case "open": {
         const flags = ["create", "exclusive", "nofollow", "read", "truncate"];
         let required = keys;
-        for (const flag of ["create", "description", "exclusive", "ino", "nofollow", "read", "truncate", "umask"])
+        for (const flag of ["create", "description", "exclusive", "fchmod", "ino", "nofollow", "read", "truncate", "umask"])
           required = required.replace(`,${flag}`, "");
         if (required !== "call,mode,path")
           break;
@@ -556,7 +557,8 @@ var __nimbusProcessFsModule = (() => {
           ...value.exclusive === true ? { exclusive: true } : {},
           ...value.nofollow === true ? { nofollow: true } : {},
           ...value.read === true ? { read: true } : {},
-          ...value.description === void 0 ? {} : { description: descriptionId(value.description, "open description") }
+          ...value.description === void 0 ? {} : { description: descriptionId(value.description, "open description") },
+          ...value.fchmod === void 0 ? {} : { fchmod: u32(value.fchmod, "open fchmod") }
         };
       }
       case "lutimes":
@@ -1282,6 +1284,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
   var DATA_PIECE_BYTES = WAVE_BYTES;
   var MAX_DELEGATIONS_PER_PROCESS = 8;
   var GRANT_AFTER = 8;
+  var LINGER_MS = 10;
   function withUmaskOf(op, umask) {
     if (umask === void 0 || op.type !== "call") return op;
     const call = op.call;
@@ -1432,6 +1435,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     const grantAfter = options.grantAfter ?? GRANT_AFTER;
     const grantIdleMs = options.grantIdleMs ?? GRANT_IDLE_MS;
     const recallPollMs = options.recallPollMs ?? RECALL_POLL_MS;
+    const lingerMs = options.lingerMs ?? LINGER_MS;
     const grants = [];
     const mutations =   new Map();
     const refusedRoots =   new Set();
@@ -1440,6 +1444,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     let paused = false;
     let sending = null;
     let idleTimer = null;
+    let lingerTimer = null;
     let settling = false;
     const settled = (entry) => {
       pendingBytes -= entry.bytes;
@@ -1626,6 +1631,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       if (answeredThrough >= entries[0].jid) journal.dropThrough(answeredThrough);
       if (back.length === 0) return;
       if (answer.ok || refused !== null) {
+        for (const entry of back) entry.lingers = false;
         queue.unshift(...back);
         return;
       }
@@ -1672,7 +1678,18 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       scheduled = false;
       if (inFlight !== null || paused) return;
       if (queue.length === 0) return;
+      if (marks.length === 0 && queue.every((entry) => entry.lingers)) {
+        lingerTimer ??= timers.setTimeout(() => {
+          lingerTimer = null;
+          client.hurry();
+        }, lingerMs);
+        return;
+      }
       const entries = cut();
+      if (queue.length === 0 && lingerTimer !== null) {
+        timers.clearTimeout(lingerTimer);
+        lingerTimer = null;
+      }
       inFlight = entries;
       sending = send(entries).finally(() => {
         inFlight = null;
@@ -1898,6 +1915,9 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       holds(key) {
         return grants.some((grant) => !grant.ended && within(key, grant.root));
       },
+      guards(key) {
+        return escaped === null && grants.some((grant) => !grant.ended && !grant.closing && !grant.shared && (within(key, grant.root) || within(grant.root, key)));
+      },
       pending() {
         return queue.length > 0 || inFlight !== null;
       },
@@ -1906,6 +1926,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         const acknowledged = submitOptions?.acknowledged === true;
         const op = withUmaskOf(given, options.umask);
         const named = pathsOf(op);
+        const lingers = (acknowledged || submitOptions?.decided === true) && named.every((path) => heldGrant(path) !== void 0);
         for (const path of named) if (!canonical(path)) throw fsError("EINVAL", `EINVAL: not a filesystem path the session takes: '${path}'`, path);
         if (op.type === "call" && op.call.call === "symlink" && utf8Bytes(op.call.target) > SYMLINK_TARGET_MAX) {
           throw fsError("ENAMETOOLONG", `ENAMETOOLONG: a link's target is at most ${SYMLINK_TARGET_MAX} bytes`, op.call.path);
@@ -1923,6 +1944,10 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           const grown = mergedBytes - tail.bytes;
           tail.op = merged;
           tail.bytes = mergedBytes;
+          if (tail.lingers && !lingers) {
+            tail.lingers = false;
+            schedule();
+          }
           heapBytes += grown;
           pendingBytes += grown;
           if (acknowledged) pendingSyncBytes += grown;
@@ -1949,7 +1974,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           const jid = journal.append(part);
           const kept = !journal.durable || heapBytes + partBytes <= PROCESS_FS_HEAP_WINDOW_BYTES;
           if (kept) heapBytes += partBytes;
-          queue.push({ op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, resolve, reject });
+          queue.push({ op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject });
           pendingBytes += partBytes;
           if (acknowledged) {
             pendingSyncBytes += partBytes;
@@ -1970,6 +1995,10 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         if (acknowledged) answer.catch(() => {
         });
         return answer;
+      },
+      hurry() {
+        for (const entry of queue) entry.lingers = false;
+        schedule();
       },
       flush() {
         options.drain?.();
@@ -2321,12 +2350,13 @@ function __nimbusProcessFs() {
  * taken for finished while its write is out.
  */
 function __nimbusSubmitVfs(op, acknowledged = false) {
+  const decided = __nimbusLoggingDecided;
   if (typeof globalThis.__nimbusPendingOps !== "number") globalThis.__nimbusPendingOps = 0;
   if (typeof globalThis.__nimbusAcknowledgedVfsOps !== "number") globalThis.__nimbusAcknowledgedVfsOps = 0;
   // The program's own change, as it made it: what a run made again (the
   // runner's stop-replay, where it has one) has to make the same way.
   if (typeof __nimbusStopReplay !== "undefined") __nimbusStopReplay.mutation(op);
-  const answer = __nimbusProcessFs().submit(op, { acknowledged });
+  const answer = __nimbusProcessFs().submit(op, { acknowledged, decided });
   globalThis.__nimbusPendingOps++;
   if (acknowledged) globalThis.__nimbusAcknowledgedVfsOps++;
   const settled = () => {
@@ -2375,6 +2405,20 @@ function __nimbusDecidedHere(path, bytes = 0) {
   if (__nimbusDecidedOps >= __nimbusProcessFsModule.DECIDED_BACKLOG_OPS
       || __nimbusDecidedBytes + bytes > __nimbusProcessFsModule.DECIDED_BACKLOG_BYTES) return false;
   return __nimbusProcessFs().holder(__nimbusVfsPathKey(path)) !== undefined;
+}
+
+/** Whether the changes being logged now are decided here (__nimbusLogDecided). */
+let __nimbusLoggingDecided = false;
+
+/** `log`'s changes, logged as decided here: their caller is answered already, so they linger (process-fs-client LINGER_MS). */
+function __nimbusLogDecided(log) {
+  __nimbusLoggingDecided = true;
+  try { return log(); } finally { __nimbusLoggingDecided = false; }
+}
+
+/** Send what lingers now, when something waits on one of the process's own changes. */
+function __nimbusHurryVfs() {
+  if (__nimbusProcessFsInstance !== null) __nimbusProcessFsInstance.hurry();
 }
 
 /** Changes decided here (__nimbusDecidedHere) the session has not answered: their count and bytes. */
@@ -2450,6 +2494,15 @@ function __nimbusIsDurabilityFailure(error) {
  * Tails never reject, so neither does this.
  */
 function __nimbusAwaitAncestorMutations(path) {
+  const pending = __nimbusAncestorTails(path);
+  if (pending.length === 0) return Promise.resolve();
+  // Someone waits on them: what lingers goes now.
+  __nimbusHurryVfs();
+  return Promise.all(pending).then(() => undefined);
+}
+
+/** The tails queued for `path` and each of its ancestors, as of now. */
+function __nimbusAncestorTails(path) {
   const pending = [];
   let prefix = "";
   for (const segment of __nimbusVfsPathKey(path).split("/")) {
@@ -2458,7 +2511,7 @@ function __nimbusAwaitAncestorMutations(path) {
     const tail = __vfsMutationTails.get(prefix);
     if (tail) pending.push(tail);
   }
-  return pending.length === 0 ? Promise.resolve() : Promise.all(pending).then(() => undefined);
+  return pending;
 }
 
 /**
@@ -2489,7 +2542,8 @@ function __nimbusQueueVfsMutation(path, mutation, retainFailure = true) {
   // Every queued mutation is ordered behind the structural mutations
   // pending for its ancestors — one place, so a flushed write, an fd write
   // and a queued mkdir all obey the same rule without each site knowing it.
-  const ancestors = __nimbusAwaitAncestorMutations(key);
+  const tails = __nimbusAncestorTails(key);
+  const ancestors = tails.length === 0 ? Promise.resolve() : Promise.all(tails).then(() => undefined);
   const result = previous.then(() => ancestors).then(mutation);
   __nimbusPendingVfsMutations.add(result);
   // A failed mutation rejects its own caller but must not poison later writes
@@ -2585,7 +2639,9 @@ function __nimbusReportedOwnAcknowledgements() {
       pending.push(ack.settled);
     }
   }
-  return pending.length === 0 ? null : Promise.all(pending);
+  if (pending.length === 0) return null;
+  __nimbusHurryVfs();
+  return Promise.all(pending);
 }
 
 /**
@@ -2600,6 +2656,7 @@ function __nimbusNoteUnnamedReports() {
 }
 
 async function __nimbusDrainVfsMutations() {
+  if (__nimbusPendingVfsMutations.size > 0) __nimbusHurryVfs();
   while (__nimbusPendingVfsMutations.size > 0) {
     await Promise.allSettled([...__nimbusPendingVfsMutations]);
   }
@@ -2987,7 +3044,9 @@ function __nimbusEvictLeasedCell(key) {
  */
 function __nimbusFlushVfsWrite(path) {
   const claim = __vfsWriteClaims.get(__nimbusVfsPathKey(path));
-  return claim ? claim.promise : Promise.resolve(undefined);
+  if (!claim) return Promise.resolve(undefined);
+  __nimbusHurryVfs();
+  return claim.promise;
 }
 
 /**

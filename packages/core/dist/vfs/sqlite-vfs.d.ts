@@ -2210,7 +2210,9 @@ export declare class SqliteVFS {
      * there (a link included, followed or not), ENOENT without `create`,
      * ELOOP for a link when `nofollow`, EISDIR for a directory, EACCES without
      * write permission; a name made empty with `mode` less the call's umask, or
-     * an existing file emptied when `truncate`. Its answer is the file's stat.
+     * an existing file emptied when `truncate`; then, with `fchmod`, that file
+     * given the mode (chmod's rule, EPERM for another's), all of it refused
+     * together. Its answer is the file's stat.
      */
     private openToWrite;
     /**

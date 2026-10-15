@@ -677,6 +677,66 @@ for (const phase of ['openWriter', 'stream']) {
   assert.ok(s.calls.waves <= 3, `${s.calls.waves} waves`);
 }
 
+// ── What the process answered in a held subtree lingers: it goes with the
+//    next op someone awaits, when hurried or flushed, or after lingerMs; what
+//    it answered elsewhere goes at once ──
+{
+  const s = session();
+  s.kernel.mkdir('home/user/l', { mode: 0o755 });
+  s.kernel.chown('home/user/l', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  const c = client(s, { grantAfter: 1, grantIdleMs: 60_000, recallPollMs: 100, lingerMs: 300 });
+  c.holder('home/user/l/x');
+  const grant = await until(() => c.holder('home/user/l/x'), 'the grant');
+  const made = (name) => ({ type: 'call', call: { call: 'writeFile', path: `home/user/l/${name}`, mode: 0o644, ino: c.number(grant), data: enc.encode(name) } });
+  const waves = () => s.calls.waves;
+  let before = waves();
+  c.submit(made('a'), { acknowledged: true });
+  c.submit({ type: 'setattr', path: 'home/user/l/a', attrs: { mode: 0o600 } }, { decided: true });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(waves() - before, 0, 'an answered change was sent while only answered ones were unsent');
+  await c.submit(mkdir('home/user/l/awaited'));
+  assert.equal(waves() - before, 1, 'the awaited op did not take the lingering ones with it');
+  before = waves();
+  const started = Date.now();
+  c.submit(made('timed'), { acknowledged: true });
+  await until(() => waves() - before === 1, 'the linger timer');
+  assert.ok(Date.now() - started >= 250, 'a lingering change went before lingerMs with nothing to take it');
+  before = waves();
+  c.submit(made('hurried'), { acknowledged: true });
+  c.hurry();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(waves() - before, 1, 'a hurried change lingered');
+  before = waves();
+  c.submit(writeFile('home/user/elsewhere.txt', 'e'), { acknowledged: true });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(waves() - before, 1, 'an answered change outside a held subtree lingered');
+  await c.settle();
+  assert.equal(s.text('home/user/l/a'), 'a');
+  assert.equal(s.kernel.stat('home/user/l/a').mode & 0o777, 0o600);
+  assert.equal(s.text('home/user/l/timed'), 'timed');
+  assert.equal(s.text('home/user/l/hurried'), 'hurried');
+}
+
+// ── An awaited op folded into a lingering one takes it now, not when the
+//    linger's timer would have (lingerMs here is past the test's patience) ──
+{
+  const s = session();
+  s.kernel.mkdir('home/user/f', { mode: 0o755 });
+  s.kernel.chown('home/user/f', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  const c = client(s, { grantAfter: 1, grantIdleMs: 60_000, recallPollMs: 100, lingerMs: 60_000 });
+  c.holder('home/user/f/x');
+  await until(() => c.holder('home/user/f/x'), 'the grant');
+  const whole = (data) => ({ type: 'call', call: { call: 'writeFile', path: 'home/user/f/w', mode: 0o644, data: enc.encode(data) } });
+  c.submit(whole('one'), { decided: true });
+  // Its timer armed, the pump idle.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const folded = c.submit(whole('two'));
+  const answered = await Promise.race([folded.then(() => 'answered'), new Promise((resolve) => setTimeout(() => resolve('waiting'), 2_000))]);
+  assert.equal(answered, 'answered', 'the awaited op folded into a lingering one waited for its timer');
+  await c.settle();
+  assert.equal(s.text('home/user/f/w'), 'two');
+}
+
 // ── What a held subtree decides ahead of the session is bounded ──
 {
   const s = session();

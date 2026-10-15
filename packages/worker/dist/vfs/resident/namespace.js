@@ -231,17 +231,9 @@ export function createNamespace(coherence, admission) {
         links.delete(k);
         unlisted.delete(k);
     };
-    /**
-     * Walk `k` through the symlinks the namespace holds, with the process's own
-     * effects (`own`) applied at each name it reaches, ahead of the table: a
-     * name it removed ends the walk, its links and renames redirect it, and
-     * beneath a directory it made only its own names are there. The leaf is
-     * followed only when `followLeaf`. Without links or own effects it is one
-     * lookup. A link's target is joined to the name it was reached by.
-     */
-    const lookup = (k, followLeaf, own) => {
+    function lookup(k, followLeaf, own, visit) {
         const t = coherence.require();
-        if (own === undefined && links.size === 0)
+        if (own === undefined && links.size === 0 && visit === undefined)
             return { path: k, table: k, row: nsRowAt(t, k) };
         let path = k;
         walk: for (let hops = 0; hops <= NS_MAX_HOPS; hops++) {
@@ -249,6 +241,8 @@ export function createNamespace(coherence, admission) {
             let table = '';
             for (let i = 1; i <= segs.length; i++) {
                 const prefix = segs.slice(0, i).join('/');
+                if (visit !== undefined && !visit(prefix))
+                    return 'EACCES';
                 const leaf = i === segs.length;
                 const step = table === null ? null : table ? table + '/' + segs[i - 1] : segs[i - 1];
                 const word = own?.(prefix);
@@ -303,7 +297,7 @@ export function createNamespace(coherence, admission) {
             return { path, table, row: table === null ? undefined : nsRowAt(t, table) };
         }
         return 'ELOOP';
-    };
+    }
     /** Whether the credential may search directory `row` (POSIX x). */
     const traversable = (row) => {
         if (!row || row.kind !== NS_DIR)

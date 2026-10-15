@@ -24,6 +24,34 @@ published independently in the `@nimbus-sh` npm scope.
   and failed on a new file, and any other string opened for reading. The
   shell's `node` now honours `fs.mkdirSync`'s mode and takes an octal string
   for `chmod` and `mkdir`.
+- Changed: in a directory tree a node process writes often enough to hold,
+  the changes it has already answered (its sync calls, and the async ones
+  decided there) are sent with the next change it awaits, when it flushes,
+  prints or otherwise acts outside, or 10 ms later. Sent one by one, each
+  made the program's next read and next awaited change wait out the
+  session's durable commit, about 40 ms deployed. The session's file tree
+  and other processes' watchers see such a change up to 10 ms later than
+  before. In such a tree, `fs.promises.chmod`, `utimes` and `chown` (and
+  their callback and `FileHandle` forms) now resolve once the change is
+  logged, as `mkdir`, `unlink` and a file's `rename` already did. So does
+  `fs.promises.copyFile` when both names are in held trees and the source
+  is a file the program just wrote, or one the copy reads once into the
+  program's view. `fs.promises.cp` of 200 small files takes about 3 s,
+  where it took 13 s, and 8 s before it was Node's own. An async `chown` now
+  refuses `EPERM` itself, as `chownSync` does.
+- Fixed: a file `fs.promises.copyFile` or `fs.promises.cp` made in a
+  directory the program had just made was missing to `existsSync`,
+  `statSync` and `readdirSync` until later, although it could be read.
+  It is now there as soon as the copy resolves.
+- Fixed: `chmod`, `chown` and `utimes` in node (sync, callback, promise and
+  descriptor forms) judge as the session does, by the same rules: `utimes`
+  of another user's file is `EPERM`, a directory on the path the caller may
+  not search is `EACCES`, `lchown` and `lutimes` judge the link itself (a
+  link to another's file, or to nothing, is the caller's to change), and a
+  `chown` by anyone but root clears the setuid and setgid bits in what
+  `statSync` reports. Each was accepted, or refused, where the session
+  answered otherwise. While the process's view of the filesystem is being
+  rebuilt, their async forms ask the session instead of refusing `EAGAIN`.
 - Fixed (npm): an install of many packages dropped one about one time in
   ten, its reason "Response closed due to connection limit" (pi's official
   installer, 118 packages). The install facet held registry answers open and
