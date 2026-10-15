@@ -696,8 +696,6 @@ for (const phase of ['openWriter', 'stream']) {
   assert.equal(waves() - before, 0, 'an answered change was sent while only answered ones were unsent');
   await c.submit(mkdir('home/user/l/awaited'));
   assert.equal(waves() - before, 1, 'the awaited op did not take the lingering ones with it');
-  assert.equal(s.text('home/user/l/a'), 'a');
-  assert.equal(s.kernel.stat('home/user/l/a').mode & 0o777, 0o600);
   before = waves();
   const started = Date.now();
   c.submit(made('timed'), { acknowledged: true });
@@ -713,6 +711,9 @@ for (const phase of ['openWriter', 'stream']) {
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(waves() - before, 1, 'an answered change outside a held subtree lingered');
   await c.settle();
+  assert.equal(s.text('home/user/l/a'), 'a');
+  assert.equal(s.kernel.stat('home/user/l/a').mode & 0o777, 0o600);
+  assert.equal(s.text('home/user/l/timed'), 'timed');
   assert.equal(s.text('home/user/l/hurried'), 'hurried');
 }
 
