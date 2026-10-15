@@ -739,10 +739,10 @@ function makeInstaller(pkgJson, resultFor) {
     // a registry package of its name installed before does not meet it.
     const entries = new Map();
     for (const name of ['ok-a', 'ok-b', 'ok-c', 'ok-d']) {
-      installer.npmCache.putRegistryEntries([cw(name, '1.0.0')]);
+      installer.npmCache.putRegistryEntries({ registry: 'https://registry.npmjs.org', network: '' }, [cw(name, '1.0.0')]);
       entries.set(name, { name, registryName: name, resolvedVer: '1.0.0', integrity: 'sha512-fixture', depsJson: '{}', hoistedPath: `${NM}/${name}` });
     }
-    installer.npmCache.putRegistryEntries([cw('gitpkg', '0.0.0-abc123')]);
+    installer.npmCache.putRegistryEntries({ registry: 'https://registry.npmjs.org', network: '' }, [cw('gitpkg', '0.0.0-abc123')]);
     entries.set('gitpkg', {
       name: 'gitpkg', registryName: 'gitpkg', resolvedVer: '0.0.0-abc123', integrity: 'sha512-fixture',
       depsJson: '{}', hoistedPath: `${NM}/gitpkg`,

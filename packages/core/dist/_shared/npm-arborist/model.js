@@ -187,6 +187,12 @@ export class Tree {
     global;
     edgesByName = new Map();
     byName = new Map();
+    /**
+     * Every node in the tree, the root first, in the order each joined it
+     * (npm's inventory): a node moved within the tree keeps its place, as
+     * npm's keeps a node whose root does not change.
+     */
+    inventory = new Set();
     constructor(root, global) {
         this.root = root;
         this.global = global;
@@ -206,7 +212,7 @@ export class Tree {
         if (old)
             this.detach(old);
         if (node.parent)
-            node.tree?.detach(node);
+            node.tree?.take(node, node.tree === this);
         node.parent = parent;
         parent.children.set(node.name, node);
         for (const each of [node, ...descendants(node)])
@@ -232,17 +238,22 @@ export class Tree {
     }
     /** Take `node`, and what is beneath it, out of the tree. */
     detach(node) {
+        this.take(node, false);
+    }
+    /** `node` out of its folder; `moving`: to another in this tree, its place in the inventory kept. */
+    take(node, moving) {
         const parent = node.parent;
         if (parent === null || node.tree !== this)
             return;
         parent.children.delete(node.name);
         node.parent = null;
         for (const each of [node, ...descendants(node)])
-            this.unregister(each);
+            this.unregister(each, moving);
         this.reload(node.name, parent);
     }
     register(node) {
         node.tree = this;
+        this.inventory.add(node);
         if (node !== this.root) {
             let named = this.byName.get(node.name);
             if (!named)
@@ -257,8 +268,10 @@ export class Tree {
             this.retarget(edge);
         }
     }
-    unregister(node) {
+    unregister(node, moving = false) {
         node.tree = null;
+        if (!moving)
+            this.inventory.delete(node);
         this.byName.get(node.name)?.delete(node);
         for (const edge of node.edgesOut.values()) {
             this.edgesByName.get(edge.name)?.delete(edge);

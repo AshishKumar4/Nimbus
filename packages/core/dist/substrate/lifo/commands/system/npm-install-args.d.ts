@@ -1,3 +1,9 @@
+/**
+ * npm-install-args.ts — what `npm install` and `npm ci` take from npm's
+ * configuration (npm-config.ts: the command line as npm's nopt parses it,
+ * npm_config_* and the .npmrc files), the one place npm's options are read.
+ */
+import type { NpmConfig } from './npm-config.js';
 import { type NpmLogLevel } from './npm-log.js';
 export interface NpmInstallInvocation {
     packages: string[];
@@ -6,7 +12,7 @@ export interface NpmInstallInvocation {
     /** `--loglevel`, when it names a level npm recognises; null otherwise. */
     loglevel: NpmLogLevel | null;
     /**
-     * `--production` / `-p` / `--omit=dev`: install dependencies only.
+     * `--omit=dev` (or npm's deprecated `--production`, bun's `-p`): install dependencies only.
      *
      * Both npm and bun honour this, and it is the one answer a project has to a
      * devDependency Nimbus cannot run — a headless-browser driver, a native
@@ -39,8 +45,12 @@ export interface NpmInstallInvocation {
     save: boolean;
     /** What a saved range starts with: `--save-prefix`, '' for `--save-exact`, else '^'. */
     savePrefix: string;
+    /** `--engine-strict`: a package whose engines exclude this node or npm fails the install (EBADENGINE), where npm otherwise warns. */
+    engineStrict: boolean;
+    /** The registry npm's configuration names (`--registry`, npm_config_registry, an .npmrc); null where only npm's default does. */
+    registry: string | null;
     /** Options npm has that this npm does not implement, as npm ERR! lines: the install refuses them rather than ignore them. */
     unsupported: string[];
 }
-export declare function parseNpmInstallInvocation(args: string[]): NpmInstallInvocation;
+export declare function npmInstallInvocation(config: NpmConfig): NpmInstallInvocation;
 //# sourceMappingURL=npm-install-args.d.ts.map

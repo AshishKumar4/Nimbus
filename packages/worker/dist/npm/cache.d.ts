@@ -1,5 +1,14 @@
 import type { RegistryCacheEntry } from './registry-record.js';
 /**
+ * Where a registry record was read: the registry's origin and the network it
+ * was read through (WorkspaceNetwork.id: '' for the isolate's own, else the
+ * egress's). A record answers only an install reading the same.
+ */
+export interface RecordSource {
+    readonly registry: string;
+    readonly network: string;
+}
+/**
  * One placement in a project's lockfile. The Map key is the placement path
  * (`name` at root, `<dependent>/node_modules/<name>` nested); it is what the
  * `name` column of `pkg_lockfile` holds, whose primary key predates nesting.
@@ -61,14 +70,12 @@ export declare class NpmCache {
      *  good proxy for "how much L1 data did we save fetching" — not the
      *  exact SQLite blob byte count (which would require a separate
      *  SELECT). */
-    getRegistryEntry(name: string, version: string): RegistryCacheEntry | null;
+    getRegistryEntry(source: RecordSource, name: string, version: string): RegistryCacheEntry | null;
     /**
      * getRegistryEntry for each `[name, version]`, read together: the record
      * by `name@version`, or null; each counted as getRegistryEntry counts it.
      */
-    getRegistryEntries(keys: ReadonlyArray<readonly [string, string]>): Map<string, RegistryCacheEntry | null>;
-    /** Get all cached versions for a package name. */
-    getRegistryVersions(name: string): RegistryCacheEntry[];
+    getRegistryEntries(source: RecordSource, keys: ReadonlyArray<readonly [string, string]>): Map<string, RegistryCacheEntry | null>;
     /**
      * Bulk-write registry entries in ONE call. Used by the resolver-facet
      * to flush a wave of resolved packages back to the supervisor in a
@@ -83,7 +90,7 @@ export declare class NpmCache {
      * single row fails (malformed data), it's logged and the rest still
      * commit; resolver correctness depends on cache being best-effort.
      */
-    putRegistryEntries(entries: RegistryCacheEntry[]): {
+    putRegistryEntries(source: RecordSource, entries: RegistryCacheEntry[]): {
         written: number;
         failed: number;
     };

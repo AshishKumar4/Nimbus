@@ -17,6 +17,8 @@ export declare function rangesIntersect(a: string, b: string): boolean;
 export declare function rangeSubset(inner: string, outer: string): boolean;
 /** Whether `spec` is one exact version (`1.2.3`), not a range or a tag. */
 export declare function isExactVersion(spec: string): boolean;
+/** The one version `spec` names exactly (`1.2.3`, `v1.2.3`, `=1.2.3`), or null for a range or a tag. */
+export declare function exactVersion(spec: string): string | null;
 /**
  * Whether `range` is a semver range at all (an open one included). False
  * for git:, github:, a URL, file:, a dist-tag, and other non-range specs,

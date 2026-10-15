@@ -51,7 +51,7 @@ import { EGRESS_TLS_CLIENT_SOURCE } from './egress-tls-client.js';
 import { LOOPBACK_HOSTNAMES } from '@nimbus-sh/core/_shared/loopback.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { ERRNO_DESCRIPTION } from '@nimbus-sh/core/vfs/vfs-error.js';
-import { SYSTEM_IDENTITY } from '@nimbus-sh/core/constants.js';
+import { NODE_SYSTEM, SYSTEM_IDENTITY } from '@nimbus-sh/core/constants.js';
 import { DIRENT_TYPES } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { STDIN_SYNC_READ_BYTES, STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { COMMONJS_WRAPPER_NAMES } from '@nimbus-sh/core/runtime/javascript-ast.js';
@@ -7367,7 +7367,7 @@ function __nimbusPriorityError(syscall, code) {
 // The system as uname(2) reports it (core constants.ts SYSTEM_IDENTITY): \`uname\` prints the same.
 const __nimbusSystem = ${JSON.stringify(SYSTEM_IDENTITY)};
 const __osMod = {
-  platform: () => "linux", arch: () => "x64", type: () => __nimbusSystem.sysname,
+  platform: () => ${JSON.stringify(NODE_SYSTEM.platform)}, arch: () => ${JSON.stringify(NODE_SYSTEM.arch)}, type: () => __nimbusSystem.sysname,
   release: () => __nimbusSystem.release, version: () => __nimbusSystem.version, machine: () => __nimbusSystem.machine,
   tmpdir: () => "/tmp", homedir: () => "/home/user",
   hostname: () => __nimbusSystem.nodename, devNull: "/dev/null",
@@ -10555,7 +10555,7 @@ const __processMod = Object.setPrototypeOf({
     throw new __ProcessExit(exitCode);
   },
   _exiting: false,
-  platform: "linux", arch: "x64",
+  platform: ${JSON.stringify(NODE_SYSTEM.platform)}, arch: ${JSON.stringify(NODE_SYSTEM.arch)},
   version: ${NODE_VERSION_LITERAL}, versions: ${NODE_VERSIONS_LITERAL},
   features: Object.freeze({
     inspector: false,

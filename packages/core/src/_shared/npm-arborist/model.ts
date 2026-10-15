@@ -202,6 +202,12 @@ export class Node<H extends HostPackages> {
 export class Tree<H extends HostPackages> {
   private readonly edgesByName = new Map<string, Set<Edge<H>>>();
   private readonly byName = new Map<string, Set<Node<H>>>();
+  /**
+   * Every node in the tree, the root first, in the order each joined it
+   * (npm's inventory): a node moved within the tree keeps its place, as
+   * npm's keeps a node whose root does not change.
+   */
+  readonly inventory = new Set<Node<H>>();
 
   constructor(readonly root: Node<H>, readonly global: boolean) {
     this.register(root);
@@ -221,7 +227,7 @@ export class Tree<H extends HostPackages> {
     if (node.parent === parent && parent.children.get(node.name) === node) return;
     const old = parent.children.get(node.name);
     if (old) this.detach(old);
-    if (node.parent) node.tree?.detach(node);
+    if (node.parent) node.tree?.take(node, node.tree === this);
     node.parent = parent;
     parent.children.set(node.name, node);
     for (const each of [node, ...descendants(node)]) this.register(each);
@@ -247,16 +253,22 @@ export class Tree<H extends HostPackages> {
 
   /** Take `node`, and what is beneath it, out of the tree. */
   detach(node: Node<H>): void {
+    this.take(node, false);
+  }
+
+  /** `node` out of its folder; `moving`: to another in this tree, its place in the inventory kept. */
+  private take(node: Node<H>, moving: boolean): void {
     const parent = node.parent;
     if (parent === null || node.tree !== this) return;
     parent.children.delete(node.name);
     node.parent = null;
-    for (const each of [node, ...descendants(node)]) this.unregister(each);
+    for (const each of [node, ...descendants(node)]) this.unregister(each, moving);
     this.reload(node.name, parent);
   }
 
   private register(node: Node<H>): void {
     node.tree = this;
+    this.inventory.add(node);
     if (node !== this.root) {
       let named = this.byName.get(node.name);
       if (!named) this.byName.set(node.name, named = new Set());
@@ -270,8 +282,9 @@ export class Tree<H extends HostPackages> {
     }
   }
 
-  private unregister(node: Node<H>): void {
+  private unregister(node: Node<H>, moving = false): void {
     node.tree = null;
+    if (!moving) this.inventory.delete(node);
     this.byName.get(node.name)?.delete(node);
     for (const edge of node.edgesOut.values()) {
       this.edgesByName.get(edge.name)?.delete(edge);

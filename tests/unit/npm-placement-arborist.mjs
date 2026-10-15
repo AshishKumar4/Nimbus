@@ -53,7 +53,8 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { pickPackumentVersion } from '../../packages/core/src/_shared/npm-semver.ts';
 import { parseRegistryRequest } from '../../packages/core/src/_shared/npm-spec.ts';
 import { createNpmCommand } from '../../packages/core/src/substrate/lifo/commands/system/npm.ts';
-import { parseNpmInstallInvocation } from '../../packages/core/src/substrate/lifo/commands/system/npm-install-args.ts';
+import { npmInstallInvocation } from '../../packages/core/src/substrate/lifo/commands/system/npm-install-args.ts';
+import { loadNpmConfig } from '../../packages/core/src/substrate/lifo/commands/system/npm-config.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
 import { registryRecord } from '../../packages/worker/src/npm/registry-record.ts';
@@ -294,7 +295,8 @@ function workerProject(dir = 'app') {
   return {
     installer, root, write,
     run: async (args, options = {}) => {
-      const invocation = parseNpmInstallInvocation(args.slice(1));
+      const noFiles = { async exists() { return false; }, async readFileString(path) { throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' }); } };
+      const invocation = npmInstallInvocation(await loadNpmConfig(noFiles, `/${dir}`, { HOME: '/home/user' }, args));
       try {
         const result = await installer.install(dir, {
           packages: invocation.packages.length > 0 ? invocation.packages : undefined,

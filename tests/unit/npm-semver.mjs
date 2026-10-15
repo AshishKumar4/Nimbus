@@ -23,7 +23,7 @@ import { realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 
-import { compareSemver, isSemverRange, parseSemver, pickInstalledVersion, pickPackumentVersion, resolveVersion, satisfiesRange, stagedBindingVersion } from '../../packages/core/src/_shared/npm-semver.ts';
+import { compareSemver, exactVersion, isSemverRange, parseSemver, pickInstalledVersion, pickPackumentVersion, resolveVersion, satisfiesRange, stagedBindingVersion } from '../../packages/core/src/_shared/npm-semver.ts';
 import { NPM_RESOLVE_PREAMBLE } from '../../packages/worker/src/loaders/npm-resolve-preamble.ts';
 import { NPM_RESOLVE_NODE_IMPORTS, NPM_RESOLVE_SRC } from '../../packages/worker/src/npm/resolve-libs.generated.ts';
 import { parseRegistryRequest, splitPackageSpec } from '../../packages/core/src/_shared/npm-spec.ts';
@@ -35,7 +35,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
-const embedded = await importResolvePreamble(['PARSE_SEMVER', 'COMPARE_SEMVER', 'SATISFIES_RANGE', 'RESOLVE_VERSION', 'IS_SEMVER_RANGE', 'PICK_INSTALLED_VERSION', 'STAGED_BINDING_VERSION', 'PARSE_REGISTRY_REQUEST']);
+const embedded = await importResolvePreamble(['PARSE_SEMVER', 'COMPARE_SEMVER', 'SATISFIES_RANGE', 'EXACT_VERSION', 'IS_SEMVER_RANGE', 'PICK_INSTALLED_VERSION', 'STAGED_BINDING_VERSION', 'PARSE_REGISTRY_REQUEST']);
 
 // ── parse + compare: prerelease identifiers are part of the order ───────────
 {
@@ -92,7 +92,7 @@ const embedded = await importResolvePreamble(['PARSE_SEMVER', 'COMPARE_SEMVER', 
   const corpus = ['0.0.1', '0.9.0', '1.0.0-alpha.1', '1.0.0-beta.15', '1.0.0-next.0', '1.0.0-next.29', '1.0.0', '1.0.2', '1.2.5', '1.5.3', '2.0.0', '2.1.0-rc.1', '2.1.0', 'garbage'];
   const ranges = ['1', '1.x', '^1.0.0', '~1.0.0', '1.0.0-beta.15', '^1.0.0-beta.15', '^1.0.0-next.24', '>=1.0.0 <2.0.0', '1.0.0 - 1.5.0', '1 || 2', '^2.1.0-rc.0', '*', 'latest', '', '^3'];
   for (const range of ranges) {
-    assert.equal(embedded.RESOLVE_VERSION(corpus, range), resolveVersion(corpus, range), `RESOLVE_VERSION parity: ${range}`);
+    assert.equal(embedded.EXACT_VERSION(range), exactVersion(range), `EXACT_VERSION parity: ${range}`);
     assert.equal(embedded.IS_SEMVER_RANGE(range), isSemverRange(range), `IS_SEMVER_RANGE parity: ${range}`);
     for (const v of corpus) {
       assert.equal(embedded.SATISFIES_RANGE(v, range), satisfiesRange(v, range), `SATISFIES_RANGE parity: ${v} ${range}`);
