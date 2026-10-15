@@ -15,15 +15,19 @@
 // (globalThis.fetch) answering as workerd does at its limit: six open, LRU
 // idle closed when another must wait. Eight packages at the batch's top
 // concurrency: (1) the R2 leg answering a miss after the hedge has fired;
-// (2) no R2 leg and no integrity, each body read only as fast as a slow
-// writer takes its files. And (3) a 503 whose body never comes is retried,
-// not waited on.
+// (2) no R2 leg and no integrity, with a slow writer. And an answer that is
+// not a tarball keeps only its status: (3) a 503 whose body never comes is
+// retried, not waited on; (4) a 404 whose body has failed is the 404, asked
+// once. (5) Every registry request the installer retries (its packuments
+// too) answers so: a 2xx's body read before anyone reads it, any other's
+// cancelled.
 //
 // Red before: the hedged answers sat unread until R2 answered; one was closed,
 // and its package failed with the runtime's error.
 
 import assert from 'node:assert/strict';
 import { installPackagesInFacet } from '../../packages/worker/src/npm/install-batch-facet.ts';
+import { retryingRegistryFetch } from '../../packages/worker/src/npm/registry-retry.ts';
 import { decodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { packageTarball, sriOf } from './lib/tarball-fixture.mjs';
 import './lib/install-facet-scope.mjs';
@@ -157,7 +161,7 @@ const failures = (result) => result.perPackage.filter((r) => r.errorText).map((r
   const result = await run(registry, { writeBatchStream: (stream) => writeAll(stream, 40) }, specs.map((spec) => ({ ...spec, integrity: '' })));
   assert.deepEqual(failures(result), [], 'every package installs');
   assert.equal(registry.closed(), 0, 'the runtime closed no download under the install');
-  console.log('  [2] a body is not read at the writer\'s pace');
+  console.log('  [2] no R2 leg, no integrity, a slow writer');
 }
 
 // ── 3. a 503 whose body never comes is retried, not waited on ───────────
@@ -184,5 +188,42 @@ const failures = (result) => result.perPackage.filter((r) => r.errorText).map((r
   assert.deepEqual(failures(result), [], 'the retry installs it');
   assert.equal(answers, 2, 'after one retry');
   console.log('  [3] a 503 is retried without its body');
+}
+// ── 4. a 404 whose body has failed is the 404, asked once ───────────────
+{
+  let answers = 0;
+  const broken = {
+    fetch: async () => {
+      answers += 1;
+      return new Response(new ReadableStream({ start(controller) { controller.error(new Error('the body broke')); } }), { status: 404 });
+    },
+  };
+  const result = await run(broken, { writeBatchStream: (stream) => writeAll(stream, 0) }, [specs[0]]);
+  assert.deepEqual(failures(result), ['pkg-0: HTTP 404'], 'the package fails with its status');
+  assert.equal(answers, 1, 'a 4xx is not asked again');
+  console.log('  [4] a 404 with a failed body is the 404, asked once');
+}
+// ── 5. every registry answer through the retry path is settled ──────────
+{
+  const network = { fetch: async () => { throw new Error('unused'); } };
+  let cancelled = false;
+  const missing = await retryingRegistryFetch(network, async () => new Response(new ReadableStream({
+    pull() { return new Promise(() => {}); },
+    cancel() { cancelled = true; },
+  }), { status: 404, statusText: 'Not Found' }));
+  assert.deepEqual([missing.status, missing.statusText, missing.body, cancelled], [404, 'Not Found', null, true], 'a 404 keeps its status, its body cancelled');
+  let pulled = 0;
+  const chunks = 5;
+  const found = await retryingRegistryFetch(network, async () => new Response(new ReadableStream({
+    pull(controller) {
+      pulled += 1;
+      if (pulled > chunks) controller.close();
+      else controller.enqueue(new Uint8Array(1024));
+    },
+  }, { highWaterMark: 0 }), { status: 200 }));
+  for (let i = 0; i < 20 && pulled <= chunks; i++) await new Promise((resolve) => setTimeout(resolve, 1));
+  assert.equal(pulled, chunks + 1, 'a 200 is read to its end before anyone reads it');
+  assert.equal((await found.arrayBuffer()).byteLength, chunks * 1024, 'and gives what it read');
+  console.log('  [5] the retry path settles every answer');
 }
 console.log('npm-install-connection-limit: ok');
