@@ -38,6 +38,8 @@ export declare function makeGitRunnerFactory(deps: {
     filesystem: NimbusFilesystemAuthority;
     processes: SessionProcessSupervisor;
     fsmonitorState?: GitFsmonitorState;
+    /** The installed image asks again a wait its host gave up on: its runner key's contract (GIT_RUNNER_CONTRACTS). */
+    restartsWaits: boolean;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
 export declare const GIT_RUNNER_PREAMBLE: string;
 //# sourceMappingURL=git-runner.d.ts.map

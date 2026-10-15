@@ -30,6 +30,7 @@ published independently in the `@nimbus-sh` npm scope.
   `stdio` (`{ stdout, stderr, env, input?, terminal? }`) in place of `stdout`
   and `stderr`; `substrate/lifo/node-compat/readline.js` is removed; and a
   `tty.WriteStream` needs its descriptor, as Node's does.
+- Fixed (real git, `NIMBUS_GIT_WASI=1`): a push, fetch or credential lookup whose helper took more than 8 s to answer was taken for a helper that quit: `git push` reported "failed to push some refs" (though the remote had taken the push, leaving the remote-tracking ref stale), and `git credential fill` asked its own prompt. A wait on a pipe gives up at 8 s (a suspended wasm stack outliving its bound never resumes), and git's stdio took the give-up for the end of its helper's output. Git's image now asks such a read or write again (`wasm/nimbus-libc/nimbus-restart.c`, linked over `read`, `readv`, `write`, `writev`); its host answers the give-up `NIMBUS_ERESTART` (512) to an image that declares it, and a signal still interrupts with `EINTR`. The runtime is `git/2.53.0-1` and names `git-runner@2`; an installed `git/2.53.0` keeps `git-runner` and its old answer. Breaking (core): `GIT_RUNNER` is `'git-runner@2'`; `GIT_RUNNER_CONTRACTS` lists both keys, and `makeGitRunnerFactory` takes `restartsWaits`.
 - Fixed: `gem install` and `bundle install` finish a gem whose install was
   interrupted, instead of treating it as installed once its `lib`
   directory existed. A gem is installed once its specification is written,

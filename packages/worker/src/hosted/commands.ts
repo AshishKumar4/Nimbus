@@ -6,7 +6,7 @@ import type { Command, CommandContext } from '@nimbus-sh/core/substrate/lifo/com
 import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { outputHooks } from '@nimbus-sh/core/_shared/byte-stream.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
-import { BASH_RUNNER, CPYTHON_RUNNER_CONTRACTS, GIT_RUNNER, CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER, CPYTHON_RUNNER_CONTRACTS, GIT_RUNNER_CONTRACTS, CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
@@ -152,28 +152,32 @@ registry.registerBuiltin('git-remote-https', remoteHelper);
 // the built-in answers alone again. The image cache is incarnation-local;
 // fsmonitor issued-token provenance is durable host metadata so a wake can
 // keep the VFS revision token.
-let gitFactory: Promise<RunnerFactory> | null = null;
-workspace.runtimes.registerRunner(
-  GIT_RUNNER,
-  (manifest, installRoot, binName, binKind) => {
-    let handler: Promise<Command> | null = null;
-    const realGit: Command = async (ctx) => {
-      gitFactory ??= (async () => {
-        const { makeGitRunnerFactory } = await import('@nimbus-sh/core/runtime/git-runner.js');
-        const { sqliteGitFsmonitorState } = await import('@nimbus-sh/core/runtime/git-fsmonitor.js');
-        const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
-        return makeGitRunnerFactory({
-          facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes,
-          fsmonitorState: sqliteGitFsmonitorState(self.ctx.storage.sql, workspace.filesystem.namespace),
-        });
-      })().catch((error) => { gitFactory = null; throw error; });
-      handler ??= gitFactory.then((factory) => factory(manifest, installRoot, binName, binKind))
-        .catch((error) => { handler = null; throw error; });
-      return (await handler)(ctx);
-    };
-    return binName === 'git' && binKind === undefined ? (ctx) => runGit(ctx, realGit) : realGit;
-  },
-);
+// Each runner key's build, on its own contract (GIT_RUNNER_CONTRACTS).
+for (const [key, { restartsWaits }] of Object.entries(GIT_RUNNER_CONTRACTS)) {
+  let gitFactory: Promise<RunnerFactory> | null = null;
+  workspace.runtimes.registerRunner(
+    key,
+    (manifest, installRoot, binName, binKind) => {
+      let handler: Promise<Command> | null = null;
+      const realGit: Command = async (ctx) => {
+        gitFactory ??= (async () => {
+          const { makeGitRunnerFactory } = await import('@nimbus-sh/core/runtime/git-runner.js');
+          const { sqliteGitFsmonitorState } = await import('@nimbus-sh/core/runtime/git-fsmonitor.js');
+          const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
+          return makeGitRunnerFactory({
+            facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes,
+            fsmonitorState: sqliteGitFsmonitorState(self.ctx.storage.sql, workspace.filesystem.namespace),
+            restartsWaits,
+          });
+        })().catch((error) => { gitFactory = null; throw error; });
+        handler ??= gitFactory.then((factory) => factory(manifest, installRoot, binName, binKind))
+          .catch((error) => { handler = null; throw error; });
+        return (await handler)(ctx);
+      };
+      return binName === 'git' && binKind === undefined ? (ctx) => runGit(ctx, realGit) : realGit;
+    },
+  );
+}
 workspace.runtimes.registerRunner(
   'clang-runner',
   (manifest, installRoot, binName, binKind) => async (ctx: CommandContext) => {

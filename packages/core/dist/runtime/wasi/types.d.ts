@@ -24,7 +24,16 @@ import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
  * widened at a use site. Numbers are the preview1 enum, which is alphabetical
  * and therefore not guessable; check the spec before adding one.
  */
-export type Errno = 0 | 1 | 2 | 6 | 8 | 10 | 12 | 14 | 20 | 21 | 22 | 23 | 27 | 28 | 29 | 31 | 32 | 33 | 37 | 41 | 44 | 48 | 51 | 52 | 53 | 54 | 55 | 57 | 58 | 59 | 60 | 63 | 64 | 69 | 70 | 71 | 72 | 73 | 75 | 76;
+export type Errno = 0 | 1 | 2 | 6 | 8 | 10 | 12 | 14 | 20 | 21 | 22 | 23 | 27 | 28 | 29 | 31 | 32 | 33 | 37 | 41 | 44 | 48 | 51 | 52 | 53 | 54 | 55 | 57 | 58 | 59 | 60 | 63 | 64 | 69 | 70 | 71 | 72 | 73 | 75 | 76 | typeof NIMBUS_ERESTART;
+/**
+ * Not preview1's: what a host answers a read or write it gave up waiting on
+ * (a suspended wasm stack outliving its bound never resumes), to an image
+ * whose libc asks again (wasm/nimbus-libc/nimbus-restart.{h,c}), as Linux
+ * restarts a call its ERESTARTSYS interrupted. Only to such an image
+ * (WasiMakeImportsOptions.restartsWaits); any other is answered EINTR, and a
+ * signal is EINTR to both.
+ */
+export declare const NIMBUS_ERESTART = 512;
 /**
  * What a syscall body may hand back. A cache hit answers synchronously; a body
  * that has to reach the supervisor answers with a Promise the JSPI Suspending
@@ -176,6 +185,12 @@ export interface WasiMakeImportsOptions {
      */
     stdoutBytes?: (bytes: Uint8Array) => void | Promise<void>;
     stderrBytes?: (bytes: Uint8Array) => void | Promise<void>;
+    /**
+     * The image asks again a read or write the host gave up waiting on
+     * (NIMBUS_ERESTART): its runner key says it was linked with nimbus-libc's
+     * restart wrappers. Unset, such a wait is answered EINTR.
+     */
+    restartsWaits?: boolean;
 }
 /**
  * The WASI import table, exhaustively.
