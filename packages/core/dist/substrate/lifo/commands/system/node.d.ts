@@ -1,7 +1,7 @@
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { Command } from '../types.js';
 import { type PackageType } from '../../../../runtime/module-format.js';
-import { type ProcessIdentity } from '../../node-compat/process.js';
+import { type LifoProcess, type ProcessIdentity } from '../../node-compat/process.js';
 import type { VirtualRequestHandler, Kernel, LoopbackRouter } from '../../kernel/index.js';
 import type { DNSResolver } from '../../kernel/dns-resolver.js';
 import type { CommandOutputStream } from '../types.js';
@@ -30,6 +30,8 @@ export interface NodeProgramHost {
     readonly dns?: DNSResolver;
     /** umask(2): the mask the program creates with from now on. */
     readonly setUmask: (mask: number) => void;
+    /** The program's process, once it is made: what an error nothing caught, or a failed write, reaches. */
+    readonly started: (process: LifoProcess) => void;
 }
 /**
  * How a program's main script ended: its exit code, and whether its process

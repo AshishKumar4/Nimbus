@@ -16,6 +16,22 @@ export declare class ProcessExitError extends Error {
 export declare class LifoProcess extends EventEmitter {
     #private;
     constructor(output: CommandOutputStream, errorOutput: CommandOutputStream);
+    /** Node's: `fn` takes every error nothing caught, in place of 'uncaughtException'; null clears it. */
+    setUncaughtExceptionCaptureCallback(fn: ((error: unknown) => void) | null): void;
+    hasUncaughtExceptionCaptureCallback(): boolean;
+    /**
+     * An error nothing caught, in Node's order: 'uncaughtExceptionMonitor', then
+     * the capture callback or 'uncaughtException'. False when nothing took it,
+     * and the program ends of it.
+     */
+    takeUncaught(error: unknown, origin: 'uncaughtException' | 'unhandledRejection'): boolean;
+    /**
+     * Whether a failed write would reach anything of the program's: an 'error'
+     * listener on its stdout or stderr (on, once and the prepends share one
+     * list), or one for an error nothing caught (takeUncaught's, the monitor's
+     * included).
+     */
+    hearsWriteFailures(): boolean;
     get stdout(): Writable;
     get stderr(): Writable;
 }

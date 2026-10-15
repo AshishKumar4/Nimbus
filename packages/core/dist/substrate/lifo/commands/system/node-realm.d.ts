@@ -108,9 +108,22 @@ export type GuestEvent =
     readonly type: 'served';
     readonly id: number;
     readonly response: RealmResponse | null;
-} | {
+}
+/** Its status; `ended`, it ended itself (process.exit, a fatal error): a write that fails later is no one's. */
+ | {
     readonly type: 'exit';
     readonly code: number;
+    readonly ended: boolean;
+}
+/** The program reached its stream of output `fd`, which a failed write errors: unheard, the program ends of it. */
+ | {
+    readonly type: 'stream';
+    readonly fd: 1 | 2;
+}
+/** The guest took the failure of output `fd` (output-failed): whatever the program makes of it, it is the guest's. */
+ | {
+    readonly type: 'heard';
+    readonly fd: 1 | 2;
 } | EgressGuestEvent;
 /** What this side posts on `events`. */
 export type HostEvent = {
