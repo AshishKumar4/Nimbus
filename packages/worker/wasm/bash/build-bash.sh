@@ -39,12 +39,13 @@ if [ ! -f config.status ]; then
   CPPFLAGS="-D_GNU_SOURCE" LDFLAGS="$TARGET_LDFLAGS" \
   ./configure --host=wasm32-wasi --without-bash-malloc --disable-nls \
     --cache-file=nimbus-cross.cache
-  # config.h fixes: wasi-libc HAS gethostname/tcgetattr/tcgetpgrp/termios;
+  # config.h fixes: wasi-libc HAS gethostname/tcgetattr/tcgetpgrp/termios.
   # struct passwd comes from nimbus-proc.h (nimbus-libc/posix/pwd.h, force-
-  # included), so keep HAVE_PWD_H off but HAVE_GETPWNAM on. HAVE_TERMIOS_H + HAVE_TCGETATTR make config-bot.h
-  # pick the termios tty driver (not the absent BSD sgtty one).
+  # included), so HAVE_PWD_H stays off; the getpw* calls are nimbus-libc's
+  # (cross.cache: lib/tilde expands ~name only with HAVE_GETPWENT too).
+  # HAVE_TERMIOS_H + HAVE_TCGETATTR make config-bot.h pick the termios tty
+  # driver (not the absent BSD sgtty one).
   sed -i 's|/\* #undef HAVE_GETHOSTNAME \*/|#define HAVE_GETHOSTNAME 1|;
-          s|/\* #undef HAVE_GETPWNAM \*/|#define HAVE_GETPWNAM 1|;
           s|/\* #undef HAVE_TERMIOS_H \*/|#define HAVE_TERMIOS_H 1|;
           s|/\* #undef HAVE_TCGETATTR \*/|#define HAVE_TCGETATTR 1|;
           s|/\* #undef HAVE_TCGETPGRP \*/|#define HAVE_TCGETPGRP 1|' config.h

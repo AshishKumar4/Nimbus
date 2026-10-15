@@ -64,9 +64,9 @@ ac_cv_func_getlocalename_l=${ac_cv_func_getlocalename_l=no}
 ac_cv_func_getpagesize=${ac_cv_func_getpagesize=yes}
 ac_cv_func_getpeername=${ac_cv_func_getpeername=no}
 ac_cv_func_getpgrp_void=${ac_cv_func_getpgrp_void=yes}
-ac_cv_func_getpwent=${ac_cv_func_getpwent=no}
-ac_cv_func_getpwnam=${ac_cv_func_getpwnam=no}
-ac_cv_func_getpwuid=${ac_cv_func_getpwuid=no}
+ac_cv_func_getpwent=${ac_cv_func_getpwent=yes}
+ac_cv_func_getpwnam=${ac_cv_func_getpwnam=yes}
+ac_cv_func_getpwuid=${ac_cv_func_getpwuid=yes}
 ac_cv_func_getrandom=${ac_cv_func_getrandom=no}
 ac_cv_func_getrlimit=${ac_cv_func_getrlimit=no}
 ac_cv_func_getrusage=${ac_cv_func_getrusage=yes}
