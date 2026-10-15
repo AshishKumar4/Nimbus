@@ -23,7 +23,8 @@ published independently in the `@nimbus-sh` npm scope.
   release, core's (they disagreed: v20.0.0 and v22.14.0), and
   `process.versions` no longer has a `lifo` key. `process.pid` is its pid
   in the session, `getuid`, `getgid` and `getgroups` are its credential
-  (root under `sudo`), and `process.umask()` reads and sets its live mask.
+  (root under `sudo`), and `process.umask()` reads and sets the program's
+  own mask, which its files are made with; the shell's mask stays.
   `global` is the realm's `globalThis` in every module, as in Node.
 - Fixed: opencode's TUI gets answers from its syntax-highlight parser. The
   parser runs as a Worker that the opencode facet hosts on its own thread,
