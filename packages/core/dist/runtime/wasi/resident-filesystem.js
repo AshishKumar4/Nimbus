@@ -347,15 +347,25 @@ export function residentFilesystem(session, resident, delegation) {
         const dir = parentKey(key);
         const misses = miss(dir);
         const ext = extensionOf(key);
-        const children = store.children(dir);
-        if (misses < 2 || ext === '' || children === undefined)
+        if (misses < 2 || ext === '')
             return undefined;
-        const window = READ_AHEAD_FIRST * 2 ** Math.min(misses - 2, 7);
         const name = key.slice(key.lastIndexOf('/') + 1);
-        const batch = [[key, entry]];
-        let bytes = entry.size;
-        const ordered = byCodeUnit(children.filter((child) => child.type === 'file' && child.name !== name && extensionOf(child.name) === ext));
-        const at = ordered.findIndex((child) => child.name > name);
+        return fetchAhead(dir, ext, [key, entry], name, READ_AHEAD_FIRST * 2 ** Math.min(misses - 2, 7));
+    };
+    /**
+     * One batch of `dir`'s files named with `ext` that the store does not hold,
+     * fetched together (within READ_AHEAD_* and the batch's bounds): `first`
+     * among them, and the rest from the name after `after`, wrapping round, up
+     * to `window` more. Undefined when there is nothing to fetch with it.
+     */
+    const fetchAhead = (dir, ext, first, after, window) => {
+        const children = store.children(dir);
+        if (children === undefined)
+            return undefined;
+        const batch = first === null ? [] : [first];
+        let bytes = first === null ? 0 : first[1].size;
+        const ordered = byCodeUnit(children.filter((child) => child.type === 'file' && child.name !== after && extensionOf(child.name) === ext));
+        const at = ordered.findIndex((child) => child.name > after);
         for (const child of at < 0 ? ordered : [...ordered.slice(at), ...ordered.slice(0, at)]) {
             if (batch.length > window || batch.length >= FS_READ_BATCH_PATH_LIMIT)
                 break;
@@ -373,12 +383,13 @@ export function residentFilesystem(session, resident, delegation) {
             batch.push([sibling, found]);
             bytes += found.size;
         }
-        if (batch.length === 1)
+        const ahead = batch.length - (first === null ? 0 : 1);
+        if (ahead === 0)
             return undefined;
-        readAheadBytes += bytes - entry.size;
+        readAheadBytes += bytes - (first === null ? 0 : first[1].size);
         counts.fills += batch.length;
         counts.filledBytes += bytes;
-        counts.readAhead += batch.length - 1;
+        counts.readAhead += ahead;
         const fetched = store.fillMany(batch).catch(() => { });
         for (const [path] of batch)
             fetchingAhead.set(path, fetched);
@@ -614,6 +625,14 @@ export function residentFilesystem(session, resident, delegation) {
     // is answered first, and a refusal it recorded is this sync's answer.
     fs.syncInode = () => holder?.flush();
     fs.walked = () => opening;
+    fs.prefetch = async (dir, ext) => {
+        const key = keyOf(dir);
+        // Each batch takes what none in flight has, so the batches go together and end.
+        const batches = [];
+        for (let batch = fetchAhead(key, ext, null, '', FS_READ_BATCH_PATH_LIMIT); batch !== undefined; batch = fetchAhead(key, ext, null, '', FS_READ_BATCH_PATH_LIMIT))
+            batches.push(batch);
+        await Promise.all(batches);
+    };
     fs.stats = () => ({
         ...counts,
         delegated: { ...counts.delegated },

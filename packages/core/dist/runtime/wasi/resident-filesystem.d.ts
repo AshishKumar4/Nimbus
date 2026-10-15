@@ -157,6 +157,12 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
     stats(): ResidentFilesystemStats;
     /** The directories this process opened, in order (bounded): the next run's in the same facet (ResidentDelegation.walked). */
     walked(): readonly string[];
+    /**
+     * Fetch the files of `dir` (listed already) named with `ext`, that the
+     * store does not hold, in as few batches as READ_AHEAD_* allow: what a
+     * runtime knows it reads at launch (__wasiPrepareFilesystem).
+     */
+    prefetch(dir: string, ext: string): Promise<void>;
 }
 /** A held file the session refused part of: what a run reports, naming the file. */
 export interface UnsettledWrite {

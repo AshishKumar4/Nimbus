@@ -2,7 +2,16 @@ import type { FdEntry, WasiInitOptions, WasiInstanceBundle, WasiMakeImportsOptio
 import { type ResidentFilesystemStats } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
 /** Whether another process may run in this facet after this one (FacetSpec.warm): no syscall here was abandoned. */
 export declare function __wasiReusable(): boolean;
-export declare function __wasiPrepareFilesystem(roots: readonly string[]): Promise<void>;
+/**
+ * Make what a runtime knows it reads at launch resident before its guest
+ * asks: each of `roots` listed whole (a tree past the listing's bound is left
+ * to its lookups), and the files of each `reads` directory named with its
+ * extension fetched (ResidentFilesystem.prefetch).
+ */
+export declare function __wasiPrepareFilesystem(roots: readonly string[], reads?: readonly {
+    dir: string;
+    ext: string;
+}[]): Promise<void>;
 /** This process's filesystem calls so far and who answered them (ResidentFilesystemStats), or null when the session answered them all. */
 export declare function __wasiFsStats(): ResidentFilesystemStats | null;
 /**

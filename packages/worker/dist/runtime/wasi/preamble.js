@@ -276,11 +276,18 @@ function __wasiFilesystem(parking) {
         __wasiResident = { sup, who: __wasiWho(cred), ...__wasiStartResident(sup, cred) };
     return __wasiResident.fs;
 }
-export async function __wasiPrepareFilesystem(roots) {
+/**
+ * Make what a runtime knows it reads at launch resident before its guest
+ * asks: each of `roots` listed whole (a tree past the listing's bound is left
+ * to its lookups), and the files of each `reads` directory named with its
+ * extension fetched (ResidentFilesystem.prefetch).
+ */
+export async function __wasiPrepareFilesystem(roots, reads = []) {
     __wasiFilesystem('jspi');
     const view = await __wasiResident?.ready;
-    if (!view)
+    if (!view || __wasiResident === null)
         return;
+    const { fs } = __wasiResident;
     const paths = roots.map(__wasiCanonicalize);
     const ancestors = new Set();
     for (const root of paths) {
@@ -291,6 +298,7 @@ export async function __wasiPrepareFilesystem(roots) {
     await view.lookup([...ancestors], false);
     for (const root of paths)
         await view.listTree(root);
+    await Promise.all(reads.map((read) => fs.prefetch(__wasiCanonicalize(read.dir), read.ext)));
 }
 /** This process's filesystem calls so far and who answered them (ResidentFilesystemStats), or null when the session answered them all. */
 export function __wasiFsStats() {
