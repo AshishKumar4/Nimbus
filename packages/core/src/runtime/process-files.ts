@@ -67,7 +67,7 @@ import {
   type VfsMutationReceipt,
   type RuntimeMutationOwner,
 } from './os-contracts.js';
-import { fitsWholeRead, fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
+import { fitsWholeRead, fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath, withinWholeRead } from './sqlite-runtime-fs-bridge.js';
 import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, scopeSignal, settleHeldAt, type DescriptorScope } from './descriptors.js';
 import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted, reopenMounted } from '../vfs/mounted-description.js';
 import { registerDirectoryReadBridge, directoryReadHandleClosed } from './read-directory-batch.js';
@@ -955,7 +955,8 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
         const stat = await this.namespace.stat(name, { follow });
         if (stat !== null && !fitsWholeRead(stat, options.maxBytes)) throw syscallError('EFBIG', 'read', name);
       }
-      return (await this.viewed(name, follow)) ?? this.namespace.readFile(name);
+      // The stat and the read are two awaits: the bound holds on what the read answers.
+      return withinWholeRead((await this.viewed(name, follow)) ?? await this.namespace.readFile(name), options?.maxBytes, name);
     }));
   }
   readRange(path: RuntimeFsPath, offset: number, length: number, options?: RuntimeReadOptions) {

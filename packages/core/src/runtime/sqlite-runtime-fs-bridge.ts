@@ -171,7 +171,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
             ? this.vfs.readFileUncached(located.path)
             : this.vfs.readFile(located.path);
         }
-        return this.processView(located, options.followSymlinks !== false) ?? located.mount.readFile(located.path);
+        // A mount's stat and read are two calls: the bound holds on what the read answers.
+        return withinWholeRead(this.processView(located, options.followSymlinks !== false) ?? located.mount.readFile(located.path), options.maxBytes, path);
       } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return null;
         throw error;
@@ -1083,4 +1084,10 @@ function hasErrorCode(error: unknown, code: string): boolean {
 /** A whole read's `maxBytes` (RuntimeReadFileOptions): a regular file of at most `maxBytes` bytes is read whole; a directory answers as a read does. */
 export function fitsWholeRead(stat: { readonly type: string; readonly size: number; readonly mode?: number }, maxBytes: number): boolean {
   return stat.type === 'directory' || (stat.type === 'file' && !isCharacterDevice(stat.mode) && stat.size <= maxBytes);
+}
+
+/** `bytes`, a whole read's answer, refused (EFBIG) when it is larger than its `maxBytes`. */
+export function withinWholeRead(bytes: Uint8Array, maxBytes: number | undefined, path: RuntimeFsPath): Uint8Array {
+  if (maxBytes !== undefined && bytes.length > maxBytes) throw fsError('EFBIG', 'read', path);
+  return bytes;
 }
