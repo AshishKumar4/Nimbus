@@ -56,8 +56,9 @@ const timed = "const started = Date.now(); process.on('exit', () => console.log(
 
 /** Each case: a program, and the shell line that runs it ({prog} is its name). */
 const cases = {
-  'data.js': ["process.stdin.on('data', (c) => console.log('got', Buffer.isBuffer(c), JSON.stringify(String(c)))); process.stdin.on('end', () => console.log('end'));",
-    '{ printf a; sleep 0.3; printf b; } | node {prog}'],
+  // The second piece is written once the first is read (data-seen), so each arrives alone however slow the start.
+  'data.js': ["let n = 0; process.stdin.on('data', (c) => { console.log('got', Buffer.isBuffer(c), JSON.stringify(String(c))); if (++n === 1) require('fs').writeFileSync('data-seen', ''); }); process.stdin.on('end', () => console.log('end'));",
+    'rm -f data-seen; { printf a; while [ ! -e data-seen ]; do sleep 0.05; done; printf b; } | node {prog}'],
   'encoding.js': ["process.stdin.setEncoding('utf8'); let s = ''; process.stdin.on('data', (c) => { s += c; console.log(typeof c); }); process.stdin.on('end', () => console.log(JSON.stringify(s)));",
     'node {prog} < utf8.txt'],
   'iterate.js': ["(async () => { const parts = []; for await (const c of process.stdin) parts.push(String(c)); console.log(JSON.stringify(parts.join(''))); })();",
