@@ -1,10 +1,10 @@
-// A session DO that just woke from hibernation, for driving the vite routes
-// through handleFetch: `vite-config` (or whatever `storage` seeds) is in
-// storage, nothing is in memory, and the port registry is empty.
+// A session DO for driving the vite routes through handleFetch: whatever
+// `storage` seeds is in storage, nothing is in memory, and the port registry
+// is empty. startVite runs a dev server in it.
 
 import { ISOLATE_NETWORK } from '../../../packages/core/src/_shared/workspace-network.ts';
 import { PortRegistry } from '../../../packages/core/src/runtime/port-registry.ts';
-import { CRED_SESSION_USER } from '../../../packages/core/src/runtime/os-contracts.ts';
+import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
 import { ProcessFiles } from '../../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
 
@@ -13,22 +13,6 @@ export const BASE_PATH = `/s/${SID}`;
 export const PREVIEW_BASE = `${BASE_PATH}/preview`;
 export const VITE_PORT = 5173;
 export const ROOT = 'home/user/example-app';
-
-/** What the shim dev server persists at start. */
-export const HIBERNATED = Object.freeze({
-  'vite-config': { root: ROOT, basePath: PREVIEW_BASE, port: VITE_PORT,
-    identity: { cwd: `/${ROOT}`, argv: ['vite'], cred: CRED_SESSION_USER },
-  },
-});
-
-/** What cirrus-real persists at start (see start-real-vite.ts). */
-export const HIBERNATED_REAL = Object.freeze({
-  'vite-config': {
-    devServer: 'real', root: ROOT, port: VITE_PORT,
-    basePath: PREVIEW_BASE, configDir: ROOT,
-    identity: { cwd: `/${ROOT}`, argv: ['vite'], cred: CRED_SESSION_USER },
-  },
-});
 
 /** A read-only filesystem over `files` (path → text), as the vite routes read it. */
 export function readOnlyVfs(files) {
@@ -50,14 +34,16 @@ function namespaceOf(fs) {
 }
 
 /**
- * The woken session. `vfs()` builds its filesystem on first use; `routes`
- * is the bundled session/routes.ts (its restorePersistedDevServer, and
- * acceptCirrusHmrWs when the test bundled it). `self.store` is the storage
- * map, for hibernating again.
+ * The session. `vfs()` builds its filesystem on first use; `routes` is the
+ * bundled session/routes.ts (its acceptCirrusHmrWs when the test bundled it).
+ * `restore` is what the session's restore of the dev servers a previous
+ * incarnation ran answers (dev-servers.ts; it has none by default).
+ * `self.store` is the storage map.
  */
-export function makeWokenSession(storage, { vfs, routes, bundlePool = null, pidBase = 100 }) {
+export function makeSession(storage, { vfs, routes, bundlePool = null, pidBase = 100, restore = async () => [] }) {
   const store = new Map(Object.entries(storage));
-  let nextPid = pidBase;
+  const processes = new SessionProcessSupervisor();
+  processes.setPidBase(pidBase);
   const self = {
     // The session's workspace, for what it hands a dev server: its network (no egress here).
     runtimeWorkspace: { network: ISOLATE_NETWORK },
@@ -71,21 +57,17 @@ export function makeWokenSession(storage, { vfs, routes, bundlePool = null, pidB
     cirrusReal: null,
     _viteShimPid: null,
     _viteShimPort: null,
-    _realViteRestore: null,
     sessionBasePath: BASE_PATH,
     sessionBasePathHydrated: true,
     portRegistry: new PortRegistry(),
-    processes: {
-      // An entry as the process table makes one: under the credential asked
-      // for, else the session user's.
-      spawn: (command, argv, cwd, opts = {}) => ({ pid: nextPid++, command, argv, cwd, cred: opts.cred ?? CRED_SESSION_USER }),
-      appendOutput: () => {},
-    },
+    processes,
     ctx: {
       storage: {
         async get(key) { return store.get(key); },
         async put(key, value) { store.set(key, value); },
         async delete(key) { store.delete(key); },
+        async list({ prefix = '' } = {}) { return new Map([...store].filter(([key]) => key.startsWith(prefix))); },
+        async sync() {},
         // The reservation paths run read-modify-write inside one unit; the
         // stub serializes them the way the DO storage does.
         async transaction(body) { return body(this); },
@@ -98,10 +80,19 @@ export function makeWokenSession(storage, { vfs, routes, bundlePool = null, pidB
     ensureSqliteFs() { if (!this.sqliteFs) this.sqliteFs = vfs(); },
     // Without a pool, cold /@modules/ misses take the legacy path.
     ensureBundlePool() { return this.bundlePool; },
-    restorePersistedDevServer: (onlyPort) => routes.restorePersistedDevServer(self, onlyPort),
+    restoreDevServers: restore,
     acceptCirrusHmrWs: (request) => routes.acceptCirrusHmrWs(self, request),
   };
   self.store = store;
+  return self;
+}
+
+/** Run the built-in dev server in `self` on `port`, serving ROOT, as /api/start-vite starts one. */
+export async function startVite(self, routes, port = VITE_PORT) {
+  const response = await routes.handleFetch(self, pathRequest('/api/start-vite', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ root: ROOT, port }),
+  }));
+  if (response.status !== 200) throw new Error(`/api/start-vite answered ${response.status}: ${await response.text()}`);
   return self;
 }
 

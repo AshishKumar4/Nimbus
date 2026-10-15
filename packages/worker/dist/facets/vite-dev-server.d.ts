@@ -92,7 +92,7 @@ export interface ViteDevServerOptions {
      * Absent: the options are the caller's own (/api/start-vite), never re-read.
      */
     configDir?: string;
-    /** Told each config the server reads again (null: no vite.config there now), so a restore after hibernation starts from it. */
+    /** Told each config the server reads again (null: no vite.config there now). */
     onConfigChange?: (config: ParsedViteConfig | null) => void;
     /**
      * What the project's vite.config sets for Vite's esbuild plugin
@@ -368,12 +368,8 @@ export declare class ViteDevServer {
      * port, outDir) is named in the log.
      */
     private reloadConfig;
-    /**
-     * reloadConfig, for a caller that knows the config may have changed
-     * unseen (a server restored after hibernation, when no edit was watched):
-     * settled once the config is read.
-     */
-    readConfigAgain(): Promise<void>;
+    /** reloadConfig, settled once the config is read. */
+    private readConfigAgain;
     /** Handle VFS change events → trigger HMR. */
     /** The session's changes (CompositeVFS.watchChanges), each named as SQLite names it (no leading slash). */
     private handleVfsEvents;

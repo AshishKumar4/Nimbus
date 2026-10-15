@@ -58,6 +58,7 @@ import {
 import { bindPublicPortCapability } from '../router/public-directory.js';
 import { supervisorEsbuildService } from './esbuild-transform.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
+import type { DevServerRestoreFailure } from '../session/helpers.js';
 
 export type {
   FacetManagerHooks,
@@ -109,6 +110,8 @@ export interface FacetManagerDeps {
   filesystem: ProcessFiles;
   /** The workspace's network (`workspace.network`): every process it runs goes out through it. */
   network: () => WorkspaceNetwork;
+  /** The host's restore of the dev servers its previous incarnation ran (dev-servers.ts): what a port route waits on. */
+  restoreDevServers?: () => Promise<readonly DevServerRestoreFailure[]>;
   /** The host's own SUPERVISOR for each one-shot it runs (FacetManagerHooks.supervise). */
   supervise?: Supervise;
   /**
@@ -257,10 +260,13 @@ export function composeFacetManager(deps: FacetManagerDeps): ComposedFacetManage
       routeCapabilityPort(port, capability, request, innerPath) {
         // The session's routeToSessionPort is the one implementation —
         // the capability gate AND the public-bearer visibility gate live
-        // there; a copy here dropped the latter. Session-only concerns
-        // (dev-server restore, the vite-shim branch) no-op on this host.
+        // there; a copy here dropped the latter. The vite-shim branch, a
+        // session-only concern, no-ops on this host.
         return routeCapabilityPort(
-          { ctx, portRegistry, ensureDurableAppOnPort: (p: number) => manager.ensureDurableAppOnPort(p) },
+          {
+            ctx, portRegistry, ensureDurableAppOnPort: (p: number) => manager.ensureDurableAppOnPort(p),
+            ...(deps.restoreDevServers === undefined ? {} : { restoreDevServers: deps.restoreDevServers }),
+          },
           port, capability, request, innerPath,
         );
       },

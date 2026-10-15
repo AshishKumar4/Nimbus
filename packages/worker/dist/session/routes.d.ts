@@ -25,23 +25,6 @@
  */
 type RoutesHost = any;
 /**
- * Restore the dev server a previous isolate left behind.
- *
- * Hibernation takes the ViteDevServer and the whole port registry with it;
- * only the `vite-config` blob survives in DO storage. Restoring it is the
- * first thing every route that can reach that server does, so a woken session
- * serves on all of them rather than on whichever one happened to carry the
- * restore.
- *
- * `onlyPort` scopes the restore to a config that would listen there: a
- * request for a port nothing ever persisted stays an honest 502, and a port
- * something else already holds is left alone.
- *
- * Idempotent, and silent on failure — a session with no dev server to restore
- * is the normal case, not an error.
- */
-export declare function restorePersistedDevServer(self: RoutesHost, onlyPort?: number): Promise<void>;
-/**
  * The name-addressed door: `/app/<name>/…` — what the scoped `<name>--<sid>`
  * host is forwarded as, and reachable in path form as `/s/<sid>/app/<name>/`.
  * The name is a reservation alias only this session's records know, so it

@@ -1534,11 +1534,7 @@ export class ViteDevServer {
     reloadConfig() {
         void this.readConfigAgain();
     }
-    /**
-     * reloadConfig, for a caller that knows the config may have changed
-     * unseen (a server restored after hibernation, when no edit was watched):
-     * settled once the config is read.
-     */
+    /** reloadConfig, settled once the config is read. */
     readConfigAgain() {
         const dir = this.configDir;
         if (dir === null)
@@ -1564,7 +1560,7 @@ export class ViteDevServer {
             try {
                 this.onConfigChange?.(read.path ? config : null);
             }
-            catch { /* persistence is the caller's */ }
+            catch { /* the observer's failure is its own */ }
             this.onHmrMessage({ type: 'nimbus-hmr', event: 'full-reload' });
         }).catch((e) => {
             this.log('error', `[vite-dev] reading the vite.config again failed: ${e?.message || e}`);

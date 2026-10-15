@@ -1043,8 +1043,8 @@ export interface LongRunningWorkerSpawnOptions {
     invokerPid?: number;
     /**
      * Who the process is when no invoker says: the argv its identity derives
-     * from, the credential it runs as and its exec id (a dev server restored
-     * from what it persisted). Exclusive with `invokerPid`, `resident` and
+     * from, the credential it runs as, its exec id, and the process it restarts
+     * (a dev server a new incarnation of the session runs again). Exclusive with `invokerPid`, `resident` and
      * `durable`: a journalled launch is re-driven as its row says, which keeps
      * no such identity.
      */
@@ -1052,6 +1052,7 @@ export interface LongRunningWorkerSpawnOptions {
         argv: string[];
         cred: VfsCred;
         execId?: string;
+        restartedFrom?: ProcessRestart;
     };
     /** Inline modules: source text, or small wasm carried by value. */
     modules?: Record<string, string | {

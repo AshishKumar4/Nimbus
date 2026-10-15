@@ -120,9 +120,12 @@ export function composeFacetManager(deps) {
             routeCapabilityPort(port, capability, request, innerPath) {
                 // The session's routeToSessionPort is the one implementation —
                 // the capability gate AND the public-bearer visibility gate live
-                // there; a copy here dropped the latter. Session-only concerns
-                // (dev-server restore, the vite-shim branch) no-op on this host.
-                return routeCapabilityPort({ ctx, portRegistry, ensureDurableAppOnPort: (p) => manager.ensureDurableAppOnPort(p) }, port, capability, request, innerPath);
+                // there; a copy here dropped the latter. The vite-shim branch, a
+                // session-only concern, no-ops on this host.
+                return routeCapabilityPort({
+                    ctx, portRegistry, ensureDurableAppOnPort: (p) => manager.ensureDurableAppOnPort(p),
+                    ...(deps.restoreDevServers === undefined ? {} : { restoreDevServers: deps.restoreDevServers }),
+                }, port, capability, request, innerPath);
             },
         },
     };
