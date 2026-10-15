@@ -5,6 +5,7 @@
  */
 import type { RuntimeVfsDirEntry, RuntimeVfsStat } from '../../../../runtime/os-contracts.js';
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
+import type { OutputSource } from '../../node-compat/standard-streams.js';
 import type { VfsEvent } from '../../../../vfs/events.js';
 import { type EgressGuestEvent, type EgressHostEvent } from '../../../../runtime/realm-egress.js';
 import type { NodeProgram } from './node-program.js';
@@ -35,24 +36,14 @@ export type NodeCall = {
  | {
     readonly op: 'umask';
     readonly mask: number;
-}
-/**
- * Answered once output writes up to number `upTo` are made or failed (the
- * writes come on the event channel, which this call does not wait behind):
- * the outputs that have failed (OutputFailure). The program's code has run,
- * and it hears of a failure before it ends.
- */
- | {
-    readonly op: 'flush';
-    readonly upTo: number;
 };
-/** An output whose write failed: with `code`, on a pipe or a file. */
+/** A write to output `fd` that failed with `code`, on a pipe or a file, made through `source`. */
 export interface OutputFailure {
     readonly fd: 1 | 2;
     readonly code: string;
     readonly pipe: boolean;
+    readonly source: OutputSource;
 }
-export declare function isOutputFailures(value: unknown): value is readonly OutputFailure[];
 /** A response to a request that stayed on the box, as data, either way across. */
 export interface RealmResponse {
     readonly status: number;
@@ -61,15 +52,17 @@ export interface RealmResponse {
 }
 /** What the guest posts on `events`. */
 export type GuestEvent = 
-/** An output write: the host counts them, both outputs together, in the order they come (a flush's and a settle's numbers). */
+/** An output write, through `source`: the host numbers them, both outputs together, in the order they come (a settle's numbers). */
 {
     readonly type: 'output';
     readonly fd: 1 | 2;
+    readonly source: OutputSource;
     readonly data: string | Uint8Array;
 }
-/** A write made after the program's code has run (a timer's) waits: tell it once every write so far is made (output-settled). */
+/** The program's loop ran empty, and it would hear of a failed write: tell it once writes up to number `upTo` are made (output-settled). */
  | {
     readonly type: 'settle';
+    readonly upTo: number;
 } | {
     readonly type: 'fetch';
     readonly id: number;
@@ -89,12 +82,7 @@ export type GuestEvent =
     readonly code: number;
     readonly ended: boolean;
 }
-/** The program reached its stream of output `fd`, which a failed write errors: unheard, the program ends of it. */
- | {
-    readonly type: 'stream';
-    readonly fd: 1 | 2;
-}
-/** The guest took the failure of output `fd` (output-failed): whatever the program makes of it, it is the guest's. */
+/** The guest took a failure of output `fd`'s stream (output-failed): whatever the program makes of it, it is the guest's. */
  | {
     readonly type: 'heard';
     readonly fd: 1 | 2;
@@ -116,20 +104,11 @@ export type HostEvent = {
     readonly id: number;
     readonly event: VfsEvent;
 }
-/**
- * A write to output `fd` failed with `code`, on a pipe or a file: the
- * program's stream of it errors, as Node's does, and no later write is made.
- */
- | {
+/** A write failed: the stream's, its error; the console's, heard only by a listener on the stream, as Node's console ignores it. */
+ | ({
     readonly type: 'output-failed';
-    readonly fd: 1 | 2;
-    readonly code: string;
-    readonly pipe: boolean;
-}
-/**
- * Every output write up to number `seq` is made or failed (a failure told
- * first): told, once asked (settle), when no later write waits.
- */
+} & OutputFailure)
+/** Every output write up to number `seq` is made or failed (a failure told first): told once asked (settle). */
  | {
     readonly type: 'output-settled';
     readonly seq: number;

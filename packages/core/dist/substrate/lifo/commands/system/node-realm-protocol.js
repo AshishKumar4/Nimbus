@@ -1,12 +1,9 @@
 import { isEgressGuestEvent, isEgressHostEvent } from '../../../../runtime/realm-egress.js';
-export function isOutputFailures(value) {
-    return Array.isArray(value) && value.every((failure) => record(failure) && (failure.fd === 1 || failure.fd === 2)
-        && typeof failure.code === 'string' && typeof failure.pipe === 'boolean');
-}
 // ── The protocol's messages, narrowed where they arrive ─────────────────────
 // Each side receives a structured clone it must narrow: a guard per shape.
 export const record = (value) => typeof value === 'object' && value !== null;
 const stringRecord = (value) => record(value) && Object.values(value).every((entry) => typeof entry === 'string');
+const isOutputSource = (value) => value === 'stream' || value === 'console';
 const isResponse = (value) => value === null || (record(value) && typeof value.status === 'number' && stringRecord(value.headers)
     && (typeof value.body === 'string' || value.body instanceof Uint8Array));
 export function isGuestEvent(value) {
@@ -15,15 +12,14 @@ export function isGuestEvent(value) {
     if (!record(value))
         return false;
     switch (value.type) {
-        case 'output': return (value.fd === 1 || value.fd === 2) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
-        case 'settle': return true;
+        case 'output': return (value.fd === 1 || value.fd === 2) && isOutputSource(value.source) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
+        case 'settle': return Number.isSafeInteger(value.upTo);
         case 'fetch':
             return Number.isSafeInteger(value.id) && Number.isSafeInteger(value.port) && typeof value.url === 'string'
                 && typeof value.method === 'string' && stringRecord(value.headers)
                 && (value.body === null || typeof value.body === 'string' || value.body instanceof Uint8Array);
         case 'served': return Number.isSafeInteger(value.id) && isResponse(value.response);
         case 'exit': return Number.isSafeInteger(value.code) && typeof value.ended === 'boolean';
-        case 'stream':
         case 'heard': return value.fd === 1 || value.fd === 2;
         default: return false;
     }
@@ -44,7 +40,7 @@ export function isHostEvent(value) {
                 && (value.event.oldPath === undefined || typeof value.event.oldPath === 'string')
                 && typeof value.event.timestamp === 'number';
         case 'output-failed':
-            return (value.fd === 1 || value.fd === 2) && typeof value.code === 'string' && typeof value.pipe === 'boolean';
+            return (value.fd === 1 || value.fd === 2) && typeof value.code === 'string' && typeof value.pipe === 'boolean' && isOutputSource(value.source);
         case 'output-settled': return Number.isSafeInteger(value.seq);
         default: return false;
     }

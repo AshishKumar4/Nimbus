@@ -1,6 +1,7 @@
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import { type PackageType } from '../../../../runtime/module-format.js';
 import { type LifoProcess, type ProcessIdentity } from '../../node-compat/process.js';
+import { type FailableOutput } from '../../node-compat/standard-streams.js';
 import type { VirtualRequestHandler, LoopbackRouter } from '../../kernel/index.js';
 import type { DNSResolver } from '../../kernel/dns-resolver.js';
 import type { CommandOutputStream } from '../types.js';
@@ -20,8 +21,12 @@ export interface NodeProgram {
 /** What a run reaches outside its realm: the filesystem, its stdio, the session's ports. */
 export interface NodeProgramHost {
     readonly filesystem: () => NodeFilesystem;
+    /** What its console, and the realm's own reports, write: a failure there is heard only by a listener on the stream. */
     readonly stdout: CommandOutputStream;
     readonly stderr: CommandOutputStream;
+    /** What its process.stdout and process.stderr write: a failure there is the stream's error. */
+    readonly stdoutStream: FailableOutput;
+    readonly stderrStream: FailableOutput;
     /** fd 0, read to its end: blocks until stdin ends, as a synchronous read of it does in Node. */
     readonly stdin: () => Uint8Array;
     readonly portRegistry?: Map<number, VirtualRequestHandler>;

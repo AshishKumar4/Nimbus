@@ -160,11 +160,6 @@ async function performCall(call, services) {
                 throw refused('mask that is not one');
             return services.setUmask(call.mask);
         }
-        case 'flush': {
-            if (!Number.isSafeInteger(call.upTo) || typeof call.upTo !== 'number')
-                throw refused('flush without a write number');
-            return services.flush(call.upTo);
-        }
         default: throw refused(`call ${JSON.stringify(String(call.op))}`);
     }
 }
@@ -189,52 +184,46 @@ export async function runNodeInRealm(program, ctx, kernel) {
     const filesystem = synchronousFilesystem(ctx.vfs, () => mask);
     // Output in the order it was written, each write after the last; bytes
     // for an output that takes text are decoded across writes, as one stream.
-    // A write that fails is the program's to hear of, as a Node process's
-    // stream errors (it ignores SIGPIPE): no later write to that output is made.
+    // Each write is made, as each is a write(2) in Node (which ignores SIGPIPE);
+    // one that fails is the program's to hear of, through what made it.
     let written = Promise.resolve();
     const writers = new Map();
-    const failedOutputs = new Map();
+    const streamFailures = [];
     const writerOf = (fd) => {
         let writer = writers.get(fd);
         if (writer === undefined)
             writers.set(fd, writer = new SinkWriter(fd === 1 ? ctx.stdout : ctx.stderr));
         return writer;
     };
-    // A program whose code has run waits until the host has made (or failed)
-    // its writes: those made by then with one call (flush), a later one's once
-    // the host has made it (settle: the last write waiting is told settled,
-    // and with it every one before).
+    // The guest's loop ran empty with writes it would hear of outstanding: it
+    // is told once the writes it names are made (settle).
     let lastQueued = 0;
     let lastSettled = 0;
-    let settleWanted = false;
-    const flushes = [];
+    let settleUpTo = 0;
     const settled = () => {
-        if (!settleWanted || lastSettled !== lastQueued)
+        if (settleUpTo === 0 || lastSettled < settleUpTo)
             return;
-        settleWanted = false;
+        settleUpTo = 0;
         post({ type: 'output-settled', seq: lastSettled });
     };
-    const write = (fd, data) => {
+    const write = (fd, source, data) => {
         const seq = ++lastQueued;
         written = written.then(async () => {
-            if (!failedOutputs.has(fd)) {
-                try {
-                    if (typeof data === 'string')
-                        await writerOf(fd).writeText(data);
-                    else
-                        await writerOf(fd).write(data);
-                }
-                catch (error) {
-                    const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
-                    const failure = { fd, code: typeof code === 'string' ? code : 'EIO', pipe: ctx.isFdPipe?.(fd) === true };
-                    failedOutputs.set(fd, failure);
-                    post({ type: 'output-failed', ...failure });
-                }
+            try {
+                if (typeof data === 'string')
+                    await writerOf(fd).writeText(data);
+                else
+                    await writerOf(fd).write(data);
+            }
+            catch (error) {
+                const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
+                const failure = { fd, code: typeof code === 'string' ? code : 'EIO', pipe: ctx.isFdPipe?.(fd) === true, source };
+                if (source === 'stream')
+                    streamFailures.push(failure);
+                post({ type: 'output-failed', ...failure });
             }
             lastSettled = seq;
             settled();
-            if (flushes.length > 0 && flushes[0].upTo <= seq)
-                flushes.shift()?.resolve();
         });
     };
     // The realm, once it has started: a request for one of the guest's servers waits for none before.
@@ -281,14 +270,6 @@ export async function runNodeInRealm(program, ctx, kernel) {
                 kernel?.portRegistry.delete(port);
         },
         setUmask: (next) => { mask = next; },
-        flush: async (upTo) => {
-            if (lastSettled < upTo)
-                await new Promise((resolve) => { flushes.push({ upTo, resolve }); });
-            // The guest takes them with the answer.
-            for (const fd of failedOutputs.keys())
-                heard.add(fd);
-            return [...failedOutputs.values()];
-        },
         watch: (id, path) => {
             watches.get(id)?.close();
             watches.delete(id);
@@ -303,8 +284,7 @@ export async function runNodeInRealm(program, ctx, kernel) {
     };
     let code = null;
     let endedItself = false;
-    // The outputs whose stream the program reached, and the failures the guest took.
-    const streams = new Set();
+    // The outputs whose stream's failure the guest took.
     const heard = new Set();
     // The program's process's network (WorkspaceNetwork.forProcess).
     const network = kernel?.network?.forProcess(ctx.pid);
@@ -323,18 +303,15 @@ export async function runNodeInRealm(program, ctx, kernel) {
                 return;
             switch (event.type) {
                 case 'output':
-                    write(event.fd, event.data);
+                    write(event.fd, event.source, event.data);
                     return;
                 case 'settle':
-                    settleWanted = true;
+                    settleUpTo = event.upTo;
                     settled();
                     return;
                 case 'exit':
                     code = event.code;
                     endedItself ||= event.ended;
-                    return;
-                case 'stream':
-                    streams.add(event.fd);
                     return;
                 case 'heard':
                     heard.add(event.fd);
@@ -372,12 +349,12 @@ export async function runNodeInRealm(program, ctx, kernel) {
     for (const watch of watches.values())
         watch.close();
     await written;
-    // A write to a stream of the program's that failed where the program could
-    // not hear it (it had ended, no listener holding it) ends it as the error
-    // would have: Node's report of it, and status 1. The first such failure is
-    // the one; console's failures are no one's (no stream).
+    // A write through the program's stream that failed where the program could
+    // not hear it (it had ended, nothing listening holding it) ends it as the
+    // error would have: Node's report of it, and status 1. The first such
+    // failure is the one; a console write's failure is no one's.
     const unheard = endedItself || end.terminated || end.failure !== null ? undefined
-        : [...failedOutputs.values()].find((failure) => streams.has(failure.fd) && !heard.has(failure.fd));
+        : streamFailures.find((failure) => !heard.has(failure.fd));
     if (unheard !== undefined) {
         // util is loaded only here: the guest loads this module too, and every program would pay for it.
         const { inspect } = await import('node:util');
@@ -386,9 +363,8 @@ export async function runNodeInRealm(program, ctx, kernel) {
     }
     // What a character left unfinished at the end: the program has ended, and
     // no one is left to hear that its last bytes could not be written.
-    for (const [fd, writer] of writers)
-        if (!failedOutputs.has(fd))
-            await writer.end().catch(() => { });
+    for (const writer of writers.values())
+        await writer.end().catch(() => { });
     if (end.terminated)
         return exitCodeForAbortSignal(ctx.signal);
     if (end.failure !== null) {

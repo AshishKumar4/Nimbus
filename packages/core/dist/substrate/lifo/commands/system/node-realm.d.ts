@@ -30,7 +30,6 @@ import type { CommandContext } from '../types.js';
 import type { Kernel } from '../../kernel/index.js';
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { NodeProgram } from './node-program.js';
-import { type OutputFailure } from './node-realm-protocol.js';
 /** The session services a run reaches: the kernel's ports and loopback, where the host has them. */
 export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback' | 'dns' | 'network'>>;
 /** What a run's calls are answered from. */
@@ -44,8 +43,6 @@ export interface RealmServices {
     watch(id: number, path: string | null): void;
     /** umask(2): the mask the program creates with from now on. */
     setUmask(mask: number): void;
-    /** Once output writes up to number `upTo` are made or failed: the outputs that failed. */
-    flush(upTo: number): Promise<readonly OutputFailure[]>;
 }
 /**
  * The answer to `call`, whatever the guest sent: the value of one of the calls
