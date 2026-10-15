@@ -5,6 +5,20 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `bash` and its BusyBox commands read accounts from `/etc/passwd`
+  and `/etc/group` at each lookup. `~user` is the user's home and `~root`
+  root's, a name no account has stays as written, `ls -l` and `stat` name
+  each file's real owner and group, and an account added while bash runs is
+  found. bash 5.2.37-7 answered every name with one fixed account, and
+  BusyBox named every owner `user`.
+- Fixed: a piped stdin is a FIFO to bash's `test -p` (on `/dev/stdin` and
+  `/dev/fd/0`) and to BusyBox's `stat`, as on Linux.
+- Fixed: `python -c` flushes its `sys.stdout` once as it ends, as `python3
+  -c` does; the host flushed it a second time.
+- Changed: bash 5.2.37-7 (runner contract `bash-runner@6`, core 0.23.0 or
+  later) and CPython 3.13.14-3. BusyBox is now built by the same
+  reproducible recipe as bash. The catalog keeps 5.2.37-6 and 3.13.14-2 as
+  its defaults until the next release publishes the new builds.
 - Fixed: the shell's built-in `node` hears of a write its output refused,
   as Node does: piped to a reader that closed (`node … | head -1`) or
   redirected to a full device, `process.stdout` emits the EPIPE or ENOSPC
