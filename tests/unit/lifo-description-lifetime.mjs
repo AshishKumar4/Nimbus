@@ -193,7 +193,9 @@ try {
   assert.equal(once.code, 1);
   assert.equal(once.err.split('badwrite-d').length - 1, 1, `tee reports a FILE it could not write once: ${JSON.stringify(once.err)}`);
   assert.equal(backend.held, 0);
+  backend.failWriteBack = false;
   for (const name of ['nosync-e', 'nosync-f']) backend.writeFile(`/${name}`, new Uint8Array());
+  backend.failWriteBack = true;
   await withOpenFiles(view, async (open) => {
     for (const name of ['nosync-e', 'nosync-f']) await (await open(`/m/${name}`, { write: true })).write(Uint8Array.of(1));
   }, () => { throw new Error('the report could not be made'); });
