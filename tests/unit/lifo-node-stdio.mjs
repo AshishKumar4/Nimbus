@@ -75,8 +75,11 @@ const cases = {
     '{ sleep 3; echo late; } | node {prog}'],
   'destroyed.js': [`${timed} process.stdin.resume(); setTimeout(() => process.stdin.destroy(), 20); console.log('destroys');`,
     '{ sleep 3; echo late; } | node {prog}'],
+  // Node reads on into the paused stream's buffer; Bun's own stdin ends here
+  // (bun 1.4.3: it exits after the pause), and under Bun the engine's stream
+  // is Bun's: the case is Node's.
   'pausedinhandler.js': [`${timed} process.stdin.once('data', (c) => { console.log('got', String(c).trim()); process.stdin.pause(); });`,
-    '{ sleep 0.3; echo first; sleep 2; echo late; } | node {prog}'],
+    '{ sleep 0.3; echo first; sleep 2; echo late; } | node {prog}', 'node'],
   'pausediterate.js': [`${timed} process.stdin.pause(); setTimeout(async () => { for await (const c of process.stdin) console.log('got', String(c).trim()); }, 50);`,
     '{ sleep 2; echo late; } | node {prog}'],
   'rawpipe.js': ["const r = new (require('tty').ReadStream)(0); r.on('error', (e) => console.log('error', e.code, e.syscall, e.message)); r.setRawMode(true); console.log('raw', r.isRaw); r.destroy();",
@@ -118,7 +121,8 @@ try {
   const utf8 = new Uint8Array([0x68, 0xc3, 0xa9, 0x0a]);
   await ws.fs.writeFile('/home/user/utf8.txt', utf8);
   writeFileSync(join(host, 'utf8.txt'), utf8);
-  for (const [name, [source, line]] of Object.entries(cases)) {
+  for (const [name, [source, line, engine]] of Object.entries(cases)) {
+    if (engine === 'node' && underBun) continue;
     const command = line.replaceAll('{prog}', name);
     await ws.fs.writeFile(`/home/user/${name}`, source);
     writeFileSync(join(host, name), source);
