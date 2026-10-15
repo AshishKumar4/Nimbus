@@ -148,7 +148,7 @@ async function __nimbusPyBoot(args) {
   }
 
   // nimbus_py_run flushes sys.stdout and sys.stderr before it returns, so an
-  // entry that returned needs no flush; `flush` is for one that trapped.
+  // entry that returned needs no flush; flush is for one that trapped.
   return {
     instance,
     run: (src) => withCString(src, (ptr) => __nimbusEnterVm(exports.nimbus_py_run)(ptr)),
