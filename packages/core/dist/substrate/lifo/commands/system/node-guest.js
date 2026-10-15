@@ -19,10 +19,10 @@ import { DNSResolver } from '../../kernel/dns-resolver.js';
 import { createHostsResolver } from '../../kernel/index.js';
 import { uncaughtReport, writeFailure } from '../../node-compat/output-failure.js';
 import { ProcessExitError } from '../../node-compat/index.js';
-import { runNodeProgram } from './node.js';
+import { runNodeProgram } from './node-program.js';
 import { routeFetchThroughHost } from '../../../../runtime/realm-egress-guest.js';
 import { isEgressHostEvent } from '../../../../runtime/realm-egress.js';
-import { isDirEntries, isHostEvent, isNodeRealmPayload, isOutputFailures, isStat, } from './node-realm.js';
+import { isDirEntries, isHostEvent, isNodeRealmPayload, isOutputFailures, isStat, } from './node-realm-protocol.js';
 const joined = await joinRealm();
 if (!isNodeRealmPayload(joined.payload))
     throw new Error('node-guest: started without a program');
