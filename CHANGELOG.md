@@ -5,6 +5,18 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a session's npm installs no longer take one registry's package for
+  another's. The session kept what a registry said of `name@version` (its
+  tarball, integrity and dependencies) under the name and version alone, so
+  an install against another registry (`--registry`, an `.npmrc`,
+  `NPM_REGISTRY`, or a process's own network) could install the first
+  registry's tarball. Each registry's answers, read through each network,
+  are now kept apart. What the session kept before is dropped once.
+- Fixed: a version range (`^2`) is resolved from the registry's versions, as
+  npm resolves it, never from the few versions a session happened to have
+  kept: a fresh `^2` came back 2.0.0 when 2.0.0 had been installed before,
+  with 2.1.0 published. An exact version (as a lockfile names) is still
+  answered from what the session kept.
 - Fixed: `npm install` and `npm ci` read their options as npm does, from
   the command line, `npm_config_*` and the `.npmrc` files (project, user,
   global), like `npm init`, `npm ls` and `npm uninstall` already did.
