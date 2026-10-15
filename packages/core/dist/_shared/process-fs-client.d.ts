@@ -12,8 +12,11 @@
  * of its bytes in the turn it is made, so the log is program order across
  * every file. Waves carry the log in that order, one in flight at a time:
  * an op made while none is in flight goes out at the end of its turn (a
- * lone op is a wave of one, with no timer), and whatever is made while a
- * wave is out goes in the next, up to W7's bounds.
+ * lone op is a wave of one), and whatever is made while a wave is out goes
+ * in the next, up to W7's bounds. Only ops the process already answered,
+ * in subtrees it holds, linger instead (LINGER_MS): they go with the next
+ * op something waits on, since the session's commit of a wave holds every
+ * answer it gives until it is durable.
  *
  * Every wave is numbered under the process's writer epoch (WaveSequence):
  * the session keeps the writer's cursor with each commit, so a wave whose

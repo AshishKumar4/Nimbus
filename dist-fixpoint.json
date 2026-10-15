@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "e3757797f2ea78318bc53911ad447cdfff25bece48daf227a65567af4407e3c9",
+  "fingerprint": "347aef79f5071c13a2cb607e56c12d27ad87b53653e3dbd5644f573f4af31d75",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -184,9 +184,9 @@
     "packages/core/dist/_shared/process-fs-client-source.generated.d.ts": "42814752a9da20fddaaf9a291eeceae30ef7faba81cea0a3fe9fac78bbf4482e",
     "packages/core/dist/_shared/process-fs-client-source.generated.d.ts.map": "5cf59d266233c16759ee94667575de349622e37405d0cd29dd4d4413c71b2d55",
     "packages/core/dist/_shared/process-fs-client-source.generated.js": "66a8ff4b13411a6d4a20a04f514e7644467430dfc281bf73ab89b79824f8bc3f",
-    "packages/core/dist/_shared/process-fs-client.d.ts": "5848a3e66d3e6d973d84e3a5cec6c89d50ee51e970c8292e78d9cc929351cf2b",
-    "packages/core/dist/_shared/process-fs-client.d.ts.map": "d9e28aeb7ae1437f85f02f2efd9ca0f9546ab3ea341b0873a37cb0e4778d1f50",
-    "packages/core/dist/_shared/process-fs-client.js": "e6d2ec8c6ba93fecb5182268b3721db477ea427fca82d8a8a7072e9fd5a7c319",
+    "packages/core/dist/_shared/process-fs-client.d.ts": "5815fbb6f06a1afe9db7de4ec5a95acae3e6cb305a03af6ff44e1cdf8113e8cb",
+    "packages/core/dist/_shared/process-fs-client.d.ts.map": "b3aa9efcd51e36bd3212cd0e5941e1e31ec486130e56ff882f84fb937bcac1bf",
+    "packages/core/dist/_shared/process-fs-client.js": "3a349bfc3a7dbd843cde4f007f20df6d997ec03211610d7e8aa58784c268e73c",
     "packages/core/dist/_shared/process-fs-journal-reader-source.generated.d.ts": "642c7448cf0914c6bc39781a9488e073787a7ff22504f0b4d84e5a25310bd807",
     "packages/core/dist/_shared/process-fs-journal-reader-source.generated.d.ts.map": "c72384a4091dbfc0a700068e5b6d7ebc1ba89c1ca6e63f58175494a170ad8622",
     "packages/core/dist/_shared/process-fs-journal-reader-source.generated.js": "a8804cf321904faa4f9db010b4d4e0b237d6c23c7543d77bae2f2684bd152b1a",
@@ -1391,7 +1391,7 @@
     "packages/core/src/_shared/npm-tree.ts": "f69c4b0789a13a6e946af082dba7474d9aeeceaff597dc7e7ec9490ca519e37a",
     "packages/core/src/_shared/oauth.ts": "d8f179892533235f18ccf850b786505baa77818e6db750fa17a116fbbd83da55",
     "packages/core/src/_shared/process-fs-client-source.generated.ts": "48974e2136882fb769cfa5e341227ddc8e48518bbb0d7f8991e0dfde39c22274",
-    "packages/core/src/_shared/process-fs-client.ts": "97339a4a4d8ea40fc673ab29adb8542d8265dffa1e32cb4a028eaa34b4057d19",
+    "packages/core/src/_shared/process-fs-client.ts": "ebfb44e5994d5ac613dc0605c6c6e2647e6debba5e1bb2ebf4081d8204a6c136",
     "packages/core/src/_shared/process-fs-journal-reader-source.generated.ts": "1503a7f44908f265006f6323f68b26dde36be9adc99a53892b0b04b8082a8365",
     "packages/core/src/_shared/process-fs-journal-reader.ts": "7ed559905ce8a9d9d5e9eb2a58fb3dc59d37f1084f572b11edcc62d9888d684e",
     "packages/core/src/_shared/process-fs-journal.ts": "40ff3e748bf4afa1957cadfadfd982c79b1d0895e65df82e499c402997bfdcde",
