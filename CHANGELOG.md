@@ -24,7 +24,6 @@ published independently in the `@nimbus-sh` npm scope.
   bytes left unfinished; it was lost. Captured text keeps a byte that is not
   UTF-8 the same way for every command: a `node` program's now reads as a
   coreutil's always did (one character a byte), not as U+FFFD.
-
 - Fixed: `cat`, `tee`, `head`, `cut`, `cksum`, `md5sum` and the other
   `*sum` tools, `sum` and `grep` read their options as GNU's getopt_long
   does. A long option may be any unambiguous prefix of its name
