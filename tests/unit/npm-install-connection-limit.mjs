@@ -205,25 +205,26 @@ const failures = (result) => result.perPackage.filter((r) => r.errorText).map((r
 }
 // ── 5. every registry answer through the retry path is settled ──────────
 {
-  const network = { fetch: async () => { throw new Error('unused'); } };
   let cancelled = false;
-  const missing = await retryingRegistryFetch(network, async () => new Response(new ReadableStream({
-    pull() { return new Promise(() => {}); },
-    cancel() { cancelled = true; },
-  }), { status: 404, statusText: 'Not Found' }));
-  assert.deepEqual([missing.status, missing.statusText, missing.body, cancelled], [404, 'Not Found', null, true], 'a 404 keeps its status, its body cancelled');
   let pulled = 0;
   const chunks = 5;
-  const found = await retryingRegistryFetch(network, async () => new Response(new ReadableStream({
-    pull(controller) {
-      pulled += 1;
-      if (pulled > chunks) controller.close();
-      else controller.enqueue(new Uint8Array(1024));
-    },
-  }, { highWaterMark: 0 }), { status: 200 }));
+  const network = {
+    fetch: async (url) => (String(url).endsWith('/missing')
+      ? new Response(new ReadableStream({ pull() { return new Promise(() => {}); }, cancel() { cancelled = true; } }), { status: 404, statusText: 'Not Found' })
+      : new Response(new ReadableStream({
+        pull(controller) {
+          pulled += 1;
+          if (pulled > chunks) controller.close();
+          else controller.enqueue(new Uint8Array(1024));
+        },
+      }, { highWaterMark: 0 }), { status: 200 })),
+  };
+  const missing = await retryingRegistryFetch(network, (fetchVia) => fetchVia('https://registry.invalid/missing'));
+  assert.deepEqual([missing.status, missing.statusText, missing.body, cancelled], [404, 'Not Found', null, true], 'a 404 keeps its status, its body cancelled');
+  const found = await retryingRegistryFetch(network, (fetchVia) => fetchVia('https://registry.invalid/found'));
   for (let i = 0; i < 20 && pulled <= chunks; i++) await new Promise((resolve) => setTimeout(resolve, 1));
   assert.equal(pulled, chunks + 1, 'a 200 is read to its end before anyone reads it');
   assert.equal((await found.arrayBuffer()).byteLength, chunks * 1024, 'and gives what it read');
-  console.log('  [5] the retry path settles every answer');
+  console.log('  [5] the retry path settles every answer at the network');
 }
 console.log('npm-install-connection-limit: ok');

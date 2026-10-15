@@ -24,8 +24,12 @@ import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network
 /** What a registry request is fetched through. */
 export type RegistryNetwork = Pick<WorkspaceNetwork, 'fetch'>;
 
-/** How far a registry body is read ahead of its reader: as large as the largest tarball the cache keeps (MAX_R2_TARBALL_BYTES). */
-export const REGISTRY_READ_AHEAD_BYTES = 30 * 1024 * 1024;
+/**
+ * How far a registry body is read ahead of its reader. Most tarballs are
+ * read to their end at once; a batch of eight downloads holds at most 32 MiB
+ * so, three (an install shard's) 12 MiB.
+ */
+export const REGISTRY_READ_AHEAD_BYTES = 4 * 1024 * 1024;
 
 /**
  * `answer`, holding no connection open unread. An invocation with six
@@ -87,10 +91,10 @@ export async function settleRegistryAnswer(answer: Response): Promise<Response> 
 }
 
 /**
- * `fetchOnce(fetch, n)` (try n, 0-based, fetching through `network`) under
- * the registry's retry policy: the last answer, a 5xx included once the
- * re-tries are spent, or the last failure thrown, each answer settled
- * (settleRegistryAnswer). `onRetry` hears each re-try ("HTTP 503",
+ * `fetchOnce(fetch, n)` (try n, 0-based, fetching through `network`, each
+ * answer settled as it arrives: settleRegistryAnswer) under the registry's
+ * retry policy: the last answer, a 5xx included once the re-tries are spent,
+ * or the last failure thrown. `onRetry` hears each re-try ("HTTP 503",
  * "timeout", or the error).
  */
 export function retryingRegistryFetch(
@@ -98,7 +102,7 @@ export function retryingRegistryFetch(
   fetchOnce: (fetch: RegistryNetwork['fetch'], attempt: number) => Promise<Response>,
   options?: { retries?: number; onRetry?: (retry: number, of: number, delayMs: number, reason: string) => void },
 ): Promise<Response> {
-  return retrying(async (attempt) => settleRegistryAnswer(await fetchOnce((input, init) => network.fetch(input, init), attempt)), {
+  return retrying((attempt) => fetchOnce(async (input, init) => settleRegistryAnswer(await network.fetch(input, init)), attempt), {
     retries: Math.max(0, options?.retries ?? 3),
     // The waits before each re-try.
     schedule: [500, 1500, 4500],
