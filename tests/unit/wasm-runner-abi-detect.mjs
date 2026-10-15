@@ -135,6 +135,38 @@ async function dispatch(bytes, argv, output) {
   assert.equal(processes.allLogs(pid).map(chunk => chunk.data).join(''), '7\n', 'a direct scalar result is stored in the process log even when the caller supplies a live output sink');
 }
 
+// The caller's output sink is called as its own method: one that keeps its
+// state on `this` gets every byte the program streams. Red before: the sink
+// was handed on bare, and its `this` was gone.
+{
+  const filesystem = authority({ 'home/user/program.wasm': preview0WithNeedles });
+  const processes = new SessionProcessSupervisor();
+  const run = makeWasmRunner({
+    filesystem, processes,
+    facets: {
+      parking: 'none',
+      open() {
+        return {
+          async submit(_fn, args) {
+            await processes.appendOutputBytes(args.processPid, 'stdout', new TextEncoder().encode('streamed\n'));
+            return { ok: true, mode: 'wasi', exitCode: 0, stdout: '', stderr: '', streamedOutput: true };
+          },
+          dispose() {},
+        };
+      },
+    },
+  });
+  const opts = {
+    argv: [], env: {}, cwd: '/home/user', filename: '/home/user/program.wasm', dirname: '/home/user', command: 'program.wasm', cred: USER_CRED,
+    received: [],
+    output(stream, bytes) { this.received.push(`${stream}:${new TextDecoder().decode(bytes)}`); },
+  };
+  const result = await run('', opts);
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.deepEqual(opts.received, ['stdout:streamed\n'], 'a method sink receives the stream as its own method');
+  console.log('  ✓ the caller\'s output sink is called as its method');
+}
+
 // A broker already owns the process, fd0, and byte-log delivery. In particular
 // no output callback is present here: the runner must not allocate an inner
 // process or turn its retained log tail into the returned stdout string.

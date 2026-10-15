@@ -87,6 +87,11 @@ published independently in the `@nimbus-sh` npm scope.
 - Changed: `clang` reads each toolchain image only when its phase runs.
   `clang -c`, and a compile that fails, no longer read or hold the 18.5 MiB
   linker; a link of objects alone no longer reads the 31 MiB compiler.
+- Fixed: `ruby -r NAME` requires NAME as written, as Ruby does: `#{...}` in
+  it is no longer interpolated. A Ruby script (which keeps running as its
+  own process) now runs with the caller's credential, as `ruby -e` does, so
+  its file calls use the resident filesystem instead of a supervisor round
+  trip each.
 
 ## 2026-10-15: platform 0.11.0, core 0.22.0, fabric 0.17.0, worker 0.20.0, sdk 0.16.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4, runtime-cpython 3.13.14-2 (config 0.3.1 unchanged)
 
