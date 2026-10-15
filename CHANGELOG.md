@@ -24,8 +24,10 @@ published independently in the `@nimbus-sh` npm scope.
   (`COLUMNS` x `LINES`), a typed line is read as it is typed, and
   `setRawMode` hands the program each key. `tty.isatty(fd)` answers for each
   descriptor (it was always false), and `tty.WriteStream(fd)` writes to that
-  descriptor in order with `process.stdout` (its writes went nowhere); a
-  descriptor that is not 0, 1 or 2 is refused as Node refuses it.
+  descriptor in order with `process.stdout` (its writes went nowhere) and
+  hears its own writes' failures, as Node's: one that fails after `end()`
+  is its `'error'`, not its finish, and none is heard once it is destroyed;
+  a descriptor that is not 0, 1 or 2 is refused as Node refuses it.
   Breaking: `createProcess` (`substrate/lifo/node-compat/process.js`) takes
   `stdio` (`{ stdout, stderr, env, input?, terminal? }`) in place of `stdout`
   and `stderr`; `substrate/lifo/node-compat/readline.js` is removed; and a
