@@ -152,38 +152,31 @@ async function binAt(
   return bin && !isStagedArtifactTarget(bin.targetPath) ? { name: bin.name, path: '/' + bin.targetPath, version: bin.packageVersion } : null;
 }
 
-/** npxCacheDir's answers, by the text it hashes: a session asks for few. */
-const npxCacheDirs = new Map<string, Promise<string>>();
-
 /**
  * The directory npx installs `specs` into, as libnpmexec 10.9.8 names it: the
  * first 16 hex digits of the SHA-512 of the specs as written, sorted, one a
  * line. Each request set its own, so one that fails, or names another
  * version, never touches what another installed.
  */
-export function npxCacheDir(specs: readonly string[]): Promise<string> {
+export async function npxCacheDir(specs: readonly string[]): Promise<string> {
   const text = [...specs].sort((a, b) => a.localeCompare(b, 'en')).join('\n');
-  let dir = npxCacheDirs.get(text);
-  if (dir === undefined) {
-    dir = crypto.subtle.digest('SHA-512', new TextEncoder().encode(text)).then((digest) =>
-      `${NPX_CACHE_DIR}/${Array.from(new Uint8Array(digest, 0, 8), (byte) => byte.toString(16).padStart(2, '0')).join('')}`);
-    npxCacheDirs.set(text, dir);
-  }
-  return dir;
+  const digest = await crypto.subtle.digest('SHA-512', new TextEncoder().encode(text));
+  return `${NPX_CACHE_DIR}/${Array.from(new Uint8Array(digest, 0, 8), (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
 }
 
 /**
  * Whether an installed `version` answers `spec`, as libnpmexec's
- * missingFromTree reads a tree: a spec by name alone takes whatever is
- * installed; a registry version or range, only a version that satisfies it.
- * Any other spec (a tag, a git or tarball url, a path) only the npx
- * directory of that very request answers (`ownRequest`): npm would fetch its
- * manifest to compare, and that directory holds what it named.
+ * missingFromTree reads a tree: a spec by name alone, or a wildcard, takes
+ * whatever is installed (a prerelease too); a registry version or range,
+ * only a version that satisfies it. Any other spec (a tag, a git or tarball
+ * url, a path) only the npx directory of that very request answers
+ * (`ownRequest`): npm would fetch its manifest to compare, and that
+ * directory holds what it named.
  */
 function answers(spec: NpaResult | null, version: string, ownRequest: boolean): boolean {
   if (spec === null) return false;
   if (spec.raw === spec.name) return true;
-  if (spec.registry && (spec.type === 'version' || spec.type === 'range')) return satisfiesRange(version, spec.rawSpec);
+  if (spec.registry && (spec.type === 'version' || spec.type === 'range')) return spec.rawSpec === '*' || satisfiesRange(version, spec.rawSpec);
   return ownRequest;
 }
 

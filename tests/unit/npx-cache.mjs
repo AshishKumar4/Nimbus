@@ -3,8 +3,8 @@
 // directory of its own (the first 16 hex digits of the SHA-512 of its specs,
 // sorted, one a line, under /tmp/.npx-cache), written only by that request's
 // install; and it runs what is installed only where that answers the request
-// (missingFromTree): a version or range only a version satisfying it, in the
-// project or in that directory.
+// (missingFromTree): a wildcard any version, a version or range only a
+// version satisfying it, in the project or in that directory.
 //
 // Red before: every npx installed into one shared project whose package.json
 // named the request before the install ran, so a request that failed stayed
@@ -53,6 +53,9 @@ function session(local = {}) {
   const env = makeFanoutEnv({ root, NM: 'tmp/.npx-cache/node_modules', resultFor, manifestFor: (p) => ({ name: p.name, version: p.version, bin: { [p.name]: 'cli.js' } }), filesFor: () => ({ 'cli.js': '' }) });
   const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
   const installer = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: () => {} });
+  const installs = [];
+  const install = installer.install.bind(installer);
+  installer.install = (dir, spec) => { installs.push(spec.packages); return install(dir, spec); };
   const projectView = {
     exists: async (path) => root.exists(path),
     isDirectory: async (path) => root.exists(path) && root.stat(path).type === 'directory',
@@ -62,7 +65,7 @@ function session(local = {}) {
   };
   const npx = (...args) => resolveNpxBinary(installer, projectView, CRED_KERNEL, '/home/user/app', args, () => {}, 1);
   const versionOf = (binPath) => JSON.parse(root.readFileString(`${binPath.slice(1, binPath.lastIndexOf('/'))}/package.json`)).version;
-  return { root, npx, versionOf };
+  return { root, npx, versionOf, installs };
 }
 
 /** libnpmexec's directory for `specs`. */
@@ -93,6 +96,18 @@ const npmDir = (specs) => `/tmp/.npx-cache/${createHash('sha512').update([...spe
   const again = await npx('p@2.0.0');
   assert.equal(again.source, 'npx-cache', 'the request\'s own directory answers it again');
   assert.equal(versionOf(again.binPath), '2.0.0');
+}
+
+// ── A wildcard takes any installed version, a prerelease too, as missingFromTree does ──
+// Red before: `p@*` was matched as a range, which takes no prerelease, so it installed again.
+{
+  const { npx, versionOf, installs } = session({ p: '1.0.0-beta.1' });
+  const any = await npx('p@*');
+  assert.equal(any.ok, true, any.error);
+  assert.equal(any.source, 'project-nm', 'the project\'s prerelease did not answer p@*');
+  assert.equal(versionOf(any.binPath), '1.0.0-beta.1');
+  assert.equal((await npx('p@1.0.0-beta.1')).source, 'project-nm', 'the exact prerelease did not answer itself');
+  assert.deepEqual(installs, [], 'npx installed what the project had');
 }
 
 // ── What one request installed does not answer another's version ──
