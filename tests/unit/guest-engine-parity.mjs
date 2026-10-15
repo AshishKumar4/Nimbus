@@ -331,17 +331,12 @@ const SCENARIOS = {
 };
 
 /** What each engine lacks today: each must fail, showing what it lacks. */
-const DECIDED_ATTRS = 'attribute changes decided in a held subtree';
 const PATH_FDS = 'descriptors on the open file, not on its name';
 const GAPS = {
-  'a chmod in a held subtree is answered at once, and the process sees it [holder]': { lacks: DECIDED_ATTRS, shows: 'not decided in the held subtree' },
-  'a utimes in a held subtree is answered at once [holder]': { lacks: DECIDED_ATTRS, shows: 'not decided in the held subtree' },
-  'a chown of the process\'s own file in a held subtree is answered at once [holder]': { lacks: DECIDED_ATTRS, shows: 'not decided in the held subtree' },
   'a copy of the process\'s own unanswered write is answered at once, with its bytes and its mode [holder]': { lacks: 'decided copies', shows: 'not decided in the held subtree' },
   'a decided copy is logged as what the destination became, in copyfile\'s order [holder]': { lacks: 'a decided copy logged as an open with its fchmod, a write and a close', shows: 'the copy is not logged as an open of its destination' },
   'a chown by the owner clears the set-id bits, as the process sees it [holder]': { lacks: 'its own attribute changes in its view', shows: 'the set-id bits the session clears are still set' },
   'the session hears an answered change within the linger, unasked [holder]': { lacks: 'lingering answered changes', shows: 'timed out waiting for the session heard the write' },
-  'awaited chmods alone take the subtree they change [holder]': { lacks: 'attribute changes counted toward taking a subtree', shows: 'timed out waiting for the chmods took their subtree' },
   'what the process was told it wrote lands when the session kills it at once [holder]': { lacks: 'a cooperative end: its unlogged bytes logged before its facet goes', shows: 'ENOENT' },
   'a copy of a held file the process did not write is answered once it has read it [node]': { lacks: 'decided copies of a file it read', shows: 'not decided in the held subtree' },
   'a name under a file is ENOTDIR, a looping link ELOOP [node]': { lacks: 'ENOTDIR for a name under a file it made, decided in a held subtree', shows: 'Missing expected rejection' },

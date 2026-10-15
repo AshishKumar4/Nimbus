@@ -824,32 +824,34 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const current = entryOf(key);
       if (current === undefined || current === null) return false;
       if (client.holder(key) === undefined) return false;
-      // Only the owner (or root) changes a mode or times here; anything else is the session's to refuse.
+      // Only the owner (or root) changes a mode, an owner or times here, as
+      // chmod, chown and utimes allow it; anything else is the session's to judge.
       if (store.cred.uid !== 0 && store.cred.uid !== current.uid) return false;
-      if ('uid' in attrs) return false;
+      const uid = 'uid' in attrs && attrs.uid !== -1 ? attrs.uid : null;
+      const gid = 'uid' in attrs && attrs.gid !== -1 ? attrs.gid : null;
+      if ('uid' in attrs && chownRefusal(current, uid, gid, store.cred) !== null) return false;
       // A grant a confined principal may not make: the session's to judge.
       if ('mode' in attrs && confinedModeRefusal(current.mode, attrs.mode) !== null) return false;
       if ('mode' in attrs) throughAt([key]);
-      const next: ResidentEntry = 'mode' in attrs
-        ? { ...current, mode: (current.mode & ~0o7777) | (attrs.mode & 0o7777), ctime: now() }
+      const next: ResidentEntry = 'mode' in attrs ? { ...current, mode: (current.mode & ~0o7777) | (attrs.mode & 0o7777), ctime: now() }
+        : 'uid' in attrs ? { ...current, uid: uid ?? current.uid, gid: gid ?? current.gid, mode: chownedMode(current.mode, store.cred), ctime: now() }
         : { ...current, atime: attrs.atime, mtime: attrs.mtime, ctime: now() };
       decided.set(key, next);
       const local = files.get(current.ino);
-      if (local !== undefined && 'mode' in attrs) local.mode = attrs.mode & 0o7777;
-      log({ type: 'setattr', path: key, attrs });
+      if (local !== undefined) local.mode = next.mode & 0o7777;
+      log({ type: 'setattr', path: key, attrs: 'uid' in attrs ? { uid: next.uid, gid: next.gid } : attrs });
       return true;
     },
 
     fsetattr: (handleId, attrs, explicit) => {
       const file = handleOf(handleId).file;
       if (file.through !== undefined) return false;
-      if (file.detached === undefined) return !('uid' in attrs) && holder.setattr(file.key, attrs);
+      if (file.detached === undefined) return holder.setattr(file.key, attrs);
       // Its name gone, the file is this process's alone: judged and changed here.
       const entry = file.detached;
       const uid = 'uid' in attrs && attrs.uid !== -1 ? attrs.uid : null;
       const gid = 'uid' in attrs && attrs.gid !== -1 ? attrs.gid : null;
-      // A grant a confined principal may not make is refused as the session refuses it.
-      const refused = 'mode' in attrs ? chmodRefusal(entry, store.cred) ?? confinedModeRefusal(entry.mode, attrs.mode)
+      const refused = 'mode' in attrs ? chmodRefusal(entry, store.cred)
         : 'uid' in attrs ? chownRefusal(entry, uid, gid, store.cred)
         : utimesRefusal(entry, explicit, store.cred);
       if (refused !== null) throw fsError(refused, 'mode' in attrs ? 'fchmod' : 'uid' in attrs ? 'fchown' : 'futimes', '/' + file.key);

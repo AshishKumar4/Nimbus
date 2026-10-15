@@ -1232,7 +1232,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     delegated(name);
     // A name it changes: the files the process holds open at or under it write through first.
     if (op.type === 'rename') holder!.changing([op.from, op.to]);
-    else if (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir')) holder!.changing([op.call.path]);
+    else if (op.type === 'setattr' || (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir'))) holder!.changing([op.type === 'setattr' ? op.path : op.call.path]);
     return holder!.client.submit(op).then(() => { owed = true; }, (error: unknown) => { owed = true; throw error; });
   };
   const pathOf = (path: RuntimeFsPath): string => (typeof path === 'string' ? path : path.path);
@@ -1287,6 +1287,33 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     return after(local, (done) => (done !== DELEGATE ? undefined
       : names !== undefined ? byClient('rename', { type: 'rename', from: names[0], to: names[1] }) : bySessionRename(from, to)));
   };
+  // An attribute change by name: decided here where a held subtree holds the
+  // name, else the client's where the store places it, else the session's.
+  // Not a link's own (lchown, lutimes), nor times now or one kept: the
+  // session's alone.
+  for (const name of ['chmod', 'chown', 'utimes'] as const) {
+    const passed = Reflect.get(fs, name) as (...args: unknown[]) => unknown;
+    Reflect.set(fs, name, (path: RuntimeFsPath, ...rest: unknown[]) => {
+      const options = rest[2] as { followSymlinks?: boolean } | undefined;
+      const attrs: W7Attrs | null = name === 'chmod' ? { mode: Number(rest[0]) }
+        : options?.followSymlinks === false ? null
+        : name === 'chown' ? { uid: Number(rest[0]), gid: Number(rest[1]) }
+        : typeof rest[0] === 'number' && typeof rest[1] === 'number' ? { atime: rest[0], mtime: rest[1] } : null;
+      if (holder === null || attrs === null) return passed.call(fs, path, ...rest);
+      let named: string | undefined;
+      const local = decide<void>(name, () => after(keyFor(path, true), (key) => {
+        if (key === DELEGATE) return DELEGATE;
+        named = key;
+        return holder!.setattr(key, attrs) ? undefined : DELEGATE;
+      }));
+      return after(local, (done) => {
+        if (done !== DELEGATE) return undefined;
+        // An owner or group kept (-1) is the session's to keep.
+        if (named === undefined || ('uid' in attrs && (attrs.uid === -1 || attrs.gid === -1))) return passed.call(fs, path, ...rest);
+        return byClient(name, { type: 'setattr', path: named, attrs });
+      });
+    });
+  }
   // Nothing of these is decided here: by the client when the store places the name.
   const byName = <A extends unknown[]>(name: 'rmdir' | 'symlink', passed: (...args: A) => Awaitable<void>, pathAt: number, op: (key: string, args: A) => ProcessFsOp) =>
     (...args: A): Awaitable<void> => {
