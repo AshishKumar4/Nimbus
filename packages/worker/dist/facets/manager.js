@@ -8199,6 +8199,7 @@ export class FacetManager {
         const identity = opts.identity === undefined ? undefined : {
             cred: requireVfsCred(opts.identity.cred, 'spawnWorker identity'),
             ...(opts.identity.execId === undefined ? {} : { execId: parseExecId(opts.identity.execId) }),
+            ...(opts.identity.restartedFrom === undefined ? {} : { restart: { from: opts.identity.restartedFrom, doing: 'serving' } }),
         };
         if (opts.resident && !opts.durable) {
             opts = { ...opts, durable: { owner: await deriveResidentOwner(cwd, opts.resident.argv) } };

@@ -15,16 +15,28 @@ const CHAT_URL = 'http://session.test/api/agent/messages';
 function makeHost(initialStore = new Map()) {
   const store = initialStore;
   const writes = [];
+  // Keys whose next put is refused, as SQLite refuses a value past its limit
+  // (SQLITE_TOOBIG): the whole put fails and writes nothing.
+  const refusals = new Set();
   return {
     host: {
       ctx: {
         storage: {
           // As Durable Object storage answers: a copy, never the stored value itself.
           async get(key) { const value = store.get(key); return value === undefined ? undefined : structuredClone(value); },
+          // One key and value, or an object of them, put as one.
           async put(key, value) {
-            const snapshot = structuredClone(value);
-            writes.push({ key, value: snapshot });
-            store.set(key, snapshot);
+            const entries = typeof key === 'string' ? [[key, value]] : Object.entries(key);
+            const refused = entries.find(([name]) => refusals.has(name));
+            if (refused !== undefined) {
+              refusals.delete(refused[0]);
+              throw new Error(`string or blob too big: SQLITE_TOOBIG (${refused[0]})`);
+            }
+            for (const [name, entry] of entries) {
+              const snapshot = structuredClone(entry);
+              writes.push({ key: name, value: snapshot });
+              store.set(name, snapshot);
+            }
           },
           async delete(key) { store.delete(key); },
           async deleteAll() { store.clear(); },
@@ -44,6 +56,7 @@ function makeHost(initialStore = new Map()) {
     },
     store,
     writes,
+    refuseNextPut(key) { refusals.add(key); },
   };
 }
 
@@ -254,6 +267,10 @@ function collectEvents(response) {
 }
 
 const realFetch = globalThis.fetch;
+
+function rows(messages) {
+  return messages.map((m) => `${m.role}:${m.content}`);
+}
 
 function assistantWrites(writes) {
   return writes
@@ -702,6 +719,472 @@ function assistantWrites(writes) {
     globalThis.fetch = realFetch;
   }
   console.log('ok - a turn whose question was trimmed off writes nothing back');
+}
+
+/** The provider fetch, counting the model calls it answers. */
+function countingProviderFetch(mode = 'complete') {
+  const provider = mockProviderFetch(mode);
+  const counter = { calls: 0 };
+  counter.fetch = async (input, init) => {
+    counter.calls += 1;
+    return provider(input, init);
+  };
+  return counter;
+}
+
+// ── A send repeated under its id is that message, accepted once ──────
+// SES-X1. Red before: the server ignored the client's id, so a send whose
+// response was lost and was sent again stored a second copy of the user
+// message, and answered it again.
+{
+  const { host, store } = makeHost();
+  const id = crypto.randomUUID();
+  const provider = countingProviderFetch();
+  globalThis.fetch = provider.fetch;
+  try {
+    const first = await postChat(host, { message: 'build me a site', id, stream: true });
+    await readEventsUntil(first, (list) => list.some((event) => event.type === 'done'));
+    const answered = store.get(MESSAGES_KEY);
+    const callsAnswering = provider.calls;
+
+    const repeat = await postChat(host, { message: 'build me a site', id, stream: true });
+    assert.equal(repeat.status, 200);
+    const [events] = await readEventsUntil(repeat, () => false);
+    const stored = store.get(MESSAGES_KEY);
+    assert.equal(stored.filter((m) => m.role === 'user').length, 1,
+      `the repeat adds no second user message: ${JSON.stringify(stored.map((m) => `${m.role}:${m.content}`))}`);
+    assert.deepEqual(stored, answered, 'the repeat changes nothing');
+    assert.equal(stored[0].id, id, 'the user message is stored under the id its client chose');
+    assert.equal(provider.calls, callsAnswering, 'an answered send is not answered again');
+    assert.deepEqual(events, [{ type: 'start', messages: answered }], 'the repeat is answered with the conversation that holds its turn');
+
+    const json = await postChat(host, { message: 'build me a site', id, stream: false });
+    assert.equal(json.status, 200);
+    assert.deepEqual(await json.json(), { ok: true, messages: answered }, 'the JSON form answers the same');
+    assert.deepEqual(store.get(MESSAGES_KEY), answered);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - a send repeated under its id adds no message and runs no turn');
+}
+
+// ── A repeat while its turn runs is refused, and adds nothing ────────
+{
+  const { host, store } = makeHost();
+  const id = crypto.randomUUID();
+  const provider = controlledProviderFetch();
+  globalThis.fetch = provider.fetch;
+  try {
+    const response = await postChat(host, { message: 'slow question', id, stream: true });
+    const stream = collectEvents(response);
+    await provider.ready;
+    const repeat = await postChat(host, { message: 'slow question', id, stream: true });
+    assert.equal(repeat.status, 409, 'a repeat of a running send is refused');
+    assert.equal((await repeat.json()).code, 'E_AGENT_TURN_RUNNING');
+    provider.emitText('done');
+    provider.finish();
+    await stream.done;
+    assert.deepEqual(store.get(MESSAGES_KEY).map((m) => `${m.role}:${m.content}`), ['user:slow question', 'assistant:done']);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - a repeat of a send still answering is refused');
+}
+
+/** The provider failing every request before any output. */
+async function failingProviderFetch() {
+  return new Response('upstream exploded', { status: 500 });
+}
+
+// ── A repeat of a send left unanswered answers it, under its one copy ─
+// The first request arrived and its client went away: the turn stopped
+// with no answer, or a partial one. The repeat is the user asking again.
+for (const leftover of ['none', 'partial']) {
+  const id = crypto.randomUUID();
+  const { host, store } = makeHost();
+  try {
+    if (leftover === 'none') {
+      globalThis.fetch = failingProviderFetch;
+      const first = await postChat(host, { message: 'say hello', id, stream: true });
+      await readEventsUntil(first, (list) => list.some((event) => event.type === 'error'));
+    } else {
+      globalThis.fetch = mockProviderFetch('hang');
+      const first = await postChat(host, { message: 'say hello', id, stream: true });
+      const [, reader] = await readEventsUntil(first, (list) => list.filter((event) => event.type === 'text-delta').length >= 2);
+      await reader.cancel();
+      await waitFor(() => store.get(MESSAGES_KEY)?.[1]?.status === 'interrupted', 'the partial answer');
+    }
+    assert.deepEqual(rows(store.get(MESSAGES_KEY)), leftover === 'none' ? ['user:say hello'] : ['user:say hello', 'assistant:Hello world']);
+
+    globalThis.fetch = mockProviderFetch('complete');
+    const repeat = await postChat(host, { message: 'say hello', id, stream: true });
+    const [events] = await readEventsUntil(repeat, (list) => list.some((event) => event.type === 'done'));
+    assert.ok(events.some((event) => event.type === 'done'), 'the repeat runs the turn');
+    const stored = store.get(MESSAGES_KEY);
+    assert.deepEqual(rows(stored), ['user:say hello', 'assistant:Hello world'],
+      `${leftover}: one user message, answered once: ${JSON.stringify(stored)}`);
+    assert.equal(stored[0].id, id);
+    assert.equal(stored[1].status, 'complete');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+console.log('ok - a repeat of a send left unanswered answers it without a second copy');
+
+// ── A repeat of an earlier send runs nothing ─────────────────────────
+{
+  const id = crypto.randomUUID();
+  const { host, store } = makeHost();
+  try {
+    globalThis.fetch = failingProviderFetch;
+    for (const [message, sentId] of [['first', id], ['second', crypto.randomUUID()]]) {
+      const response = await postChat(host, { message, id: sentId, stream: true });
+      await readEventsUntil(response, (list) => list.some((event) => event.type === 'error'));
+    }
+    const history = store.get(MESSAGES_KEY);
+    assert.deepEqual(rows(history), ['user:first', 'user:second']);
+    const provider = countingProviderFetch();
+    globalThis.fetch = provider.fetch;
+    const repeat = await postChat(host, { message: 'first', id, stream: true });
+    const [events] = await readEventsUntil(repeat, () => false);
+    assert.deepEqual(events, [{ type: 'start', messages: history }]);
+    assert.deepEqual(store.get(MESSAGES_KEY), history);
+    assert.equal(provider.calls, 0, 'no turn runs for a send that is no longer the last');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - a repeat of a send that is no longer the last runs nothing');
+}
+
+// ── An id is one message's: taken or malformed, it is refused ────────
+{
+  const id = crypto.randomUUID();
+  const history = [
+    { id, role: 'user', content: 'mine', createdAt: 1 },
+    { id: '00000000-0000-4000-8000-000000000000', role: 'assistant', content: 'answer', createdAt: 2, status: 'complete' },
+  ];
+  const { host, store } = makeHost(new Map([[MESSAGES_KEY, structuredClone(history)]]));
+  const provider = countingProviderFetch();
+  globalThis.fetch = provider.fetch;
+  try {
+    for (const body of [
+      { message: 'not mine', id },
+      { message: 'answer', id: history[1].id },
+    ]) {
+      const taken = await postChat(host, { ...body, stream: true });
+      assert.equal(taken.status, 409, `${JSON.stringify(body)} is refused`);
+      assert.equal((await taken.json()).code, 'E_AGENT_MESSAGE_ID_TAKEN');
+    }
+    for (const bad of ['u-1', id.toUpperCase(), 42, '']) {
+      const refused = await postChat(host, { message: 'hello', id: bad, stream: true });
+      assert.equal(refused.status, 400, `${JSON.stringify(bad)} is not an id`);
+      assert.equal((await refused.json()).code, 'E_AGENT_BAD_MESSAGE_ID');
+    }
+    assert.deepEqual(store.get(MESSAGES_KEY), history, 'nothing is stored for a refused send');
+    assert.equal(provider.calls, 0);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - an id taken by another message, or not a UUID, is refused');
+}
+
+/**
+ * A provider whose every request is its own controlled stream: `opened[i]`
+ * is the i-th request's, with emitText and finish.
+ */
+function controlledProviderQueue() {
+  const encoder = new TextEncoder();
+  const opened = [];
+  const fetch = async (input, init) => {
+    const url = String(input instanceof Request ? input.url : input);
+    assert.ok(url.includes('/accounts/test-account/ai/v1/'), `unexpected fetch: ${url}`);
+    const signal = init?.signal;
+    const body = new ReadableStream({
+      start(controller) {
+        const onAbort = () => {
+          try { controller.error(new DOMException('The operation was aborted.', 'AbortError')); } catch {}
+        };
+        if (signal?.aborted) onAbort();
+        else signal?.addEventListener('abort', onAbort, { once: true });
+        opened.push({
+          emitText(text) { controller.enqueue(encoder.encode(sseChunk(text))); },
+          finish() {
+            controller.enqueue(encoder.encode(sseChunk(null, 'stop')));
+            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+            controller.close();
+          },
+        });
+      },
+    });
+    return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+  };
+  return { fetch, opened };
+}
+
+// ── An answer's announced id is taken before its first checkpoint ─────
+// Review F1. Red before: assistant-start announced the answer's id before
+// any output was stored, and a send under that id was accepted; the
+// answer's first checkpoint then replaced that message.
+{
+  const { host, store } = makeHost();
+  const provider = controlledProviderFetch();
+  globalThis.fetch = provider.fetch;
+  try {
+    const response = await postChat(host, { message: 'question A', id: crypto.randomUUID(), stream: true });
+    const stream = collectEvents(response);
+    await provider.ready;
+    const announced = (await waitFor(() => stream.events.find((event) => event.type === 'assistant-start'), 'assistant-start')).messageId;
+    const squat = await postChat(host, { message: 'squatter', id: announced, stream: true });
+    assert.equal(squat.status, 409, 'a send under an answer\'s announced id is refused');
+    assert.equal((await squat.json()).code, 'E_AGENT_MESSAGE_ID_TAKEN');
+    provider.emitText('answer A');
+    provider.finish();
+    await stream.done;
+    assert.deepEqual(rows(store.get(MESSAGES_KEY)), ['user:question A', 'assistant:answer A']);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - an answer\'s announced id is not a client\'s to send under');
+}
+
+// ── A send trimmed off the conversation is still the one send ────────
+// Review F2. Red before: only the 80 stored rows were consulted, so a send
+// trimmed off them was taken as new when sent again: stored and answered a
+// second time, and its id was anyone's to claim with other text.
+{
+  const { host, store } = makeHost();
+  const id = crypto.randomUUID();
+  globalThis.fetch = mockProviderFetch('complete');
+  try {
+    const first = await postChat(host, { message: 'the oldest question', id, stream: true });
+    await readEventsUntil(first, (list) => list.some((event) => event.type === 'done'));
+    for (let i = 0; i < 40; i++) {
+      const later = await postChat(host, { message: `later ${i}`, id: crypto.randomUUID(), stream: true });
+      await readEventsUntil(later, (list) => list.some((event) => event.type === 'done'));
+    }
+    const before = store.get(MESSAGES_KEY);
+    assert.ok(!before.some((m) => m.id === id), 'the oldest send is trimmed off');
+
+    const provider = countingProviderFetch();
+    globalThis.fetch = provider.fetch;
+    const repeat = await postChat(host, { message: 'the oldest question', id, stream: true });
+    assert.equal(repeat.status, 200);
+    const [events] = await readEventsUntil(repeat, () => false);
+    assert.deepEqual(events, [{ type: 'start', messages: before }], 'the repeat is answered with the conversation as it is');
+    assert.equal(provider.calls, 0, 'a trimmed send is not answered again');
+    const reclaim = await postChat(host, { message: 'another text', id, stream: true });
+    assert.equal(reclaim.status, 409, 'a trimmed send\'s id is still its own');
+    assert.equal((await reclaim.json()).code, 'E_AGENT_MESSAGE_ID_TAKEN');
+    assert.deepEqual(store.get(MESSAGES_KEY), before, 'nothing is stored for either');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - a send trimmed off the conversation is neither answered again nor reclaimed');
+}
+
+// ── A running send trimmed off the conversation is not put back ──────
+// Review F2. Red before: sent again, the trimmed send was stored anew, and
+// its first producer's answer, which no longer had its question, found it
+// again and was written back.
+{
+  const { host, store } = makeHost();
+  const id = crypto.randomUUID();
+  const provider = controlledProviderFetch();
+  globalThis.fetch = provider.fetch;
+  try {
+    const response = await postChat(host, { message: 'the oldest question', id, stream: true });
+    const stream = collectEvents(response);
+    await provider.ready;
+    globalThis.fetch = mockProviderFetch('complete');
+    for (let i = 0; i < 40; i++) {
+      const later = await postChat(host, { message: `later ${i}`, id: crypto.randomUUID(), stream: true });
+      await readEventsUntil(later, (list) => list.some((event) => event.type === 'done'));
+    }
+    const before = store.get(MESSAGES_KEY);
+    const repeat = await postChat(host, { message: 'the oldest question', id, stream: true });
+    assert.equal(repeat.status, 409, 'a running send sent again is refused');
+    assert.equal((await repeat.json()).code, 'E_AGENT_TURN_RUNNING');
+    provider.emitText('the oldest answer');
+    provider.finish();
+    await stream.done;
+    assert.deepEqual(store.get(MESSAGES_KEY), before, 'its answer is not written back');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - a running send trimmed off the conversation is not stored again');
+}
+
+// ── A send sent again is matched to its own answer ───────────────────
+// Review F3. Red before: the trailing answer was taken for the last
+// question's, so B, which failed with no output while A was answering, was
+// taken as answered by A's answer and never answered.
+{
+  const { host, store } = makeHost();
+  const providerA = controlledProviderFetch();
+  globalThis.fetch = providerA.fetch;
+  const idB = crypto.randomUUID();
+  try {
+    const responseA = await postChat(host, { message: 'question A', id: crypto.randomUUID(), stream: true });
+    const streamA = collectEvents(responseA);
+    await providerA.ready;
+    globalThis.fetch = failingProviderFetch;
+    const responseB = await postChat(host, { message: 'question B', id: idB, stream: true });
+    await readEventsUntil(responseB, (list) => list.some((event) => event.type === 'error'));
+    providerA.emitText('answer A');
+    providerA.finish();
+    await streamA.done;
+    assert.deepEqual(rows(store.get(MESSAGES_KEY)), ['user:question A', 'user:question B', 'assistant:answer A']);
+
+    globalThis.fetch = mockProviderFetch('complete');
+    const resend = await postChat(host, { message: 'question B', id: idB, stream: true });
+    const [events] = await readEventsUntil(resend, (list) => list.some((event) => event.type === 'done' || event.type === 'error'));
+    assert.ok(events.some((event) => event.type === 'done'), `B sent again is answered: ${JSON.stringify(events.map((event) => event.type))}`);
+    const stored = store.get(MESSAGES_KEY);
+    assert.deepEqual(rows(stored), ['user:question A', 'user:question B', 'assistant:answer A', 'assistant:Hello world']);
+    assert.equal(stored[2].status, 'complete', 'A\'s answer stays');
+    assert.equal(stored[3].replyTo, idB, 'B\'s answer names B');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - a send sent again is matched to its own answer, not the trailing one');
+}
+
+// ── A retry removes only its own question's answer ───────────────────
+// Review F3. Red before: a retry popped the trailing answer whoever's it
+// was, so A's interrupted answer was lost to B's retry.
+{
+  const history = [
+    { id: 'u-a', role: 'user', content: 'question A', createdAt: 1 },
+    { id: 'u-b', role: 'user', content: 'question B', createdAt: 2 },
+    { id: 'a-a', role: 'assistant', content: 'half of A', createdAt: 3, status: 'interrupted', error: 'cut', replyTo: 'u-a', parts: [{ type: 'text', text: 'half of A' }] },
+  ];
+  const { host, store } = makeHost(new Map([[MESSAGES_KEY, structuredClone(history)]]));
+  globalThis.fetch = mockProviderFetch('complete');
+  try {
+    const response = await postChat(host, { retry: true, stream: true });
+    await readEventsUntil(response, (list) => list.some((event) => event.type === 'done'));
+    const stored = store.get(MESSAGES_KEY);
+    assert.deepEqual(rows(stored), ['user:question A', 'user:question B', 'assistant:half of A', 'assistant:Hello world']);
+    assert.equal(stored[3].replyTo, 'u-b');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - a retry removes only its own question\'s answer');
+}
+
+// ── A clear's leftover producer does not end the new one's turn ──────
+// Review F4. Red before: the running turns were one set of user ids, so the
+// producer a clear left running, ending, released the same id's turn in the
+// new conversation, and a repeat started a second answer beside it.
+{
+  const { host, store } = makeHost();
+  const providers = controlledProviderQueue();
+  globalThis.fetch = providers.fetch;
+  const id = crypto.randomUUID();
+  try {
+    const before = collectEvents(await postChat(host, { message: 'again', id, stream: true }));
+    const old = await waitFor(() => providers.opened[0], 'the first producer');
+    await handleAgentRequest(host, new Request(CHAT_URL, { method: 'DELETE' }), new URL(CHAT_URL));
+    const after = await postChat(host, { message: 'again', id, stream: true });
+    assert.equal(after.status, 200, 'after a clear the id is free');
+    const current = collectEvents(after);
+    const fresh = await waitFor(() => providers.opened[1], 'the second producer');
+    old.emitText('old answer');
+    old.finish();
+    await before.done;
+    const repeat = await postChat(host, { message: 'again', id, stream: true });
+    assert.equal(repeat.status, 409, 'the new conversation\'s turn is still running');
+    assert.equal((await repeat.json()).code, 'E_AGENT_TURN_RUNNING');
+    fresh.emitText('new answer');
+    fresh.finish();
+    await current.done;
+    assert.deepEqual(rows(store.get(MESSAGES_KEY)), ['user:again', 'assistant:new answer']);
+    assert.equal(providers.opened.length, 2, 'no third answer was started');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - a producer a clear left running releases only its own turn');
+}
+
+// ── A send its storage refused is not taken ──────────────────────────
+// Review 2, F1. Red before: the receipt and the message were two puts; when
+// the message's was refused (a conversation past the value limit), the
+// receipt stayed, and the send sent again was answered as a repeat of a
+// message the session never stored.
+{
+  const { host, store, refuseNextPut } = makeHost();
+  const id = crypto.randomUUID();
+  globalThis.fetch = mockProviderFetch('complete');
+  try {
+    refuseNextPut(MESSAGES_KEY);
+    await assert.rejects(postChat(host, { message: 'too much', id, stream: true }), /SQLITE_TOOBIG/);
+    assert.equal(store.get(MESSAGES_KEY), undefined, 'the message is not stored');
+    const again = await postChat(host, { message: 'too much', id, stream: true });
+    const [events] = await readEventsUntil(again, (list) => list.some((event) => event.type === 'done'));
+    assert.ok(events.some((event) => event.type === 'done'), `sent again, it is stored and answered: ${JSON.stringify(events.map((event) => event.type))}`);
+    assert.deepEqual(rows(store.get(MESSAGES_KEY)), ['user:too much', 'assistant:Hello world']);
+    assert.equal(store.get(MESSAGES_KEY)[0].id, id);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - a send whose storage was refused is taken when sent again');
+}
+
+// ── An answer that names its question is its answer, before any by place ─
+// Review 2, F2. Red before: the first answer in place won, so a legacy
+// answer stored before answers named their question was taken for B's, and
+// a second retry of B removed A's answer.
+{
+  const history = [
+    { id: 'u-a', role: 'user', content: 'question A', createdAt: 1 },
+    { id: 'u-b', role: 'user', content: 'question B', createdAt: 2 },
+    { id: 'a-b', role: 'assistant', content: 'legacy B', createdAt: 3, status: 'complete' },
+    { id: 'a-a', role: 'assistant', content: 'legacy A', createdAt: 4, status: 'complete' },
+  ];
+  const { host, store } = makeHost(new Map([[MESSAGES_KEY, structuredClone(history)]]));
+  globalThis.fetch = mockProviderFetch('complete');
+  try {
+    for (const attempt of [1, 2]) {
+      const response = await postChat(host, { retry: true, stream: true });
+      await readEventsUntil(response, (list) => list.some((event) => event.type === 'done'));
+      const stored = store.get(MESSAGES_KEY);
+      assert.deepEqual(rows(stored), ['user:question A', 'user:question B', 'assistant:legacy A', 'assistant:Hello world'],
+        `retry ${attempt} replaces B's answer alone`);
+      assert.equal(stored[3].replyTo, 'u-b');
+    }
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - an answer that names its question is found before a legacy one by place');
+}
+
+// ── Text that is not well-formed is refused ──────────────────────────
+// Review 2, F3. Red before: a lone surrogate was stored as sent, but its
+// digest was that of U+FFFD, so '\ufffd' under the same id passed as a
+// repeat of it.
+{
+  const { host, store } = makeHost();
+  const id = crypto.randomUUID();
+  const provider = countingProviderFetch();
+  globalThis.fetch = provider.fetch;
+  try {
+    for (const message of ['\ud800', 'a\udc00b', '\ude00\ud83d']) {
+      const refused = await postChat(host, { message, id, stream: true });
+      assert.equal(refused.status, 400, `${JSON.stringify(message)} is refused`);
+      assert.equal((await refused.json()).code, 'E_AGENT_BAD_MESSAGE_TEXT');
+    }
+    assert.equal(store.get(MESSAGES_KEY), undefined, 'nothing is stored for it');
+    const replacement = await postChat(host, { message: '\ufffd', id, stream: true });
+    const [events] = await readEventsUntil(replacement, (list) => list.some((event) => event.type === 'done'));
+    assert.ok(events.some((event) => event.type === 'done'), 'U+FFFD itself is a message, under the id');
+    assert.deepEqual(rows(store.get(MESSAGES_KEY)), ['user:\ufffd', 'assistant:Hello world']);
+    const pair = await postChat(host, { message: '\ud83d\ude00', id: crypto.randomUUID(), stream: true });
+    assert.equal(pair.status, 200, 'a surrogate pair is well-formed');
+    await readEventsUntil(pair, (list) => list.some((event) => event.type === 'done'));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - text with a lone surrogate is refused before it is stored or hashed');
 }
 
 console.log('agent-chat-turns: all assertions passed');

@@ -4,7 +4,10 @@
 // The streamed file is the same file writeFile would have made — same bytes,
 // same content key, same mode and owner — published whole by one transaction
 // after bounded staging ones, and nothing at all when the source ends short,
-// runs long or throws, with no staged content left behind.
+// runs long or throws, with no staged content left behind. With `atMost`,
+// `size` bounds a source of unknown length: the file is what it yields, a
+// small one the single chunk writeFile makes, and one that runs past the
+// bound publishes nothing.
 //
 // Its reason to exist is the cost of the alternative. Appending the same
 // bytes with writeRange re-cuts the file's tail at every append, and an
@@ -91,6 +94,27 @@ for (const [label, size, source, expected] of [
   const stored = rows(harness, 'SELECT COUNT(*) AS n FROM vfs_content_chunks');
   assert.equal(stored, live, `${label}: ${stored - live} staged manifest rows outlive the refusal`);
   console.log(`  ok  a source that ${label} publishes nothing and leaves no staged content`);
+}
+
+// ── atMost: a source of unknown length, up to a bound ───────────────────────
+{
+  const { harness, fs, vfs } = open();
+  for (const size of [0, 1, 40_000, 64 * 1024, 64 * 1024 + 1, 5 * MiB + 3]) {
+    const data = bytesOf(size, size + 3);
+    await fs.writeFileFrom('home/user/up-to', 8 * MiB, pieces(data, 7_001), { atMost: true });
+    fs.writeFile('home/user/whole', data);
+    assert.deepEqual(fs.readFile('home/user/up-to'), data, `${size} bytes: the file is what the source yielded`);
+    assert.equal(fs.contentKey('home/user/up-to'), fs.contentKey('home/user/whole'), `${size} bytes: cut exactly as writeFile cuts`);
+  }
+  const prior = bytesOf(100_000, 9);
+  fs.writeFile('home/user/f', prior);
+  await assert.rejects(() => fs.writeFileFrom('home/user/f', 3 * MiB, pieces(bytesOf(3 * MiB + 1)), { atMost: true }), /ran past the 3145728 bytes allowed/);
+  await assert.rejects(() => fs.writeFileFrom('home/user/f', 1000, pieces(bytesOf(1001)), { atMost: true }), /ran past the 1000 bytes allowed/);
+  assert.deepEqual(fs.readFile('home/user/f'), prior, 'a source past its bound changes nothing');
+  while (vfs.runContentMaintenance(64).transactions > 0) { /* drain the GC queue */ }
+  const live = rows(harness, "SELECT COUNT(*) AS n FROM vfs_content_chunks WHERE content_id IN (SELECT content_id FROM vfs_inodes WHERE content_id IS NOT NULL)");
+  assert.equal(rows(harness, 'SELECT COUNT(*) AS n FROM vfs_content_chunks'), live, 'and leaves no staged content');
+  console.log('  ok  atMost: a source of unknown length makes the file writeFile would, or nothing past its bound');
 }
 
 // ── Refused before a byte is read, as writeFile is refused ──────────────────

@@ -66,6 +66,7 @@ import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-d
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 import * as _routes from './routes.js';
+import { restoreDevServers } from './dev-servers.js';
 import * as _portCapability from './port-capability.js';
 // Programmatic SDK RPC surface.
 import * as _programmatic from './programmatic.js';
@@ -766,6 +767,9 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcReadFileBytes(path, pid, cred) { return _rpc._rpcReadFileBytes(this, path, pid, cred); }
     async _rpcInnerDoFetch(req) { return _rpc._rpcInnerDoFetch(this, req); }
     async _rpcInnerDoCall(req) { return _rpc._rpcInnerDoCall(this, req); }
+    async _rpcKvCall(target, call, cred) { return _rpc._rpcKvCall(this, target, call, cred); }
+    async _rpcR2Call(target, call, cred) { return _rpc._rpcR2Call(this, target, call, cred); }
+    async _rpcD1Query(target, queries) { return _rpc._rpcD1Query({ ctx: this.ctx }, target, queries); }
     async _rpcWriteFile(path, content, pid, cred) { return _rpc._rpcWriteFile(this, path, content, pid, cred); }
     async _rpcWriteProtectedRootFile(rootPath, path, content) {
         return _rpc._rpcWriteProtectedRootFile(this, rootPath, path, content);
@@ -937,9 +941,19 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcRouteCapabilityPort(port, capability, request, innerPath) {
         return _portCapability.routeCapabilityPort(this, port, capability, request, innerPath);
     }
-    /** The port route's dev-server restore, delegated — lives in routes.ts where the other session routes do. */
-    restorePersistedDevServer(onlyPort) {
-        return _routes.restorePersistedDevServer(this, onlyPort);
+    /** What restoring the dev servers reads of this session, one view per instance (its restore is the view's). */
+    devServerHost = null;
+    /** The dev servers a previous incarnation ran, started again once (dev-servers.ts): what every route to one waits on. */
+    restoreDevServers() {
+        const session = this;
+        this.devServerHost ??= {
+            ctx: this.ctx,
+            get processes() { return session.processes; },
+            get portRegistry() { return session.portRegistry; },
+            get runtimeWorkspace() { return session.runtimeWorkspace; },
+            ensureRuntimeReady: () => this.ensureRuntimeReady(),
+        };
+        return restoreDevServers(this.devServerHost);
     }
     /** The port route's in-DO HMR accept, delegated — same reason. */
     acceptCirrusHmrWs(request) {
@@ -1099,7 +1113,7 @@ export class NimbusSession extends CloudflareDurableObject {
      */
     _cpRegistry = null;
     _setCpRegistry(r) { this._cpRegistry = r; }
-    async ensureNpmInstaller(onProgress) { return this.#runtimeServices.ensureNpmInstaller(onProgress); }
+    async ensureNpmInstaller() { return this.#runtimeServices.ensureNpmInstaller(); }
     // ── Session initialization ────────────────────────────────────────────
     // ── Session initialization ────────────────────────────────────────────
     //
@@ -1270,4 +1284,4 @@ export class NimbusSession extends CloudflareDurableObject {
 // ── W10 Inner-Worker + assets binding shims live in the fabric.
 // ── Re-exported here under their public names so src/index.ts's wrangler
 // ── entry-graph reachability is preserved.
-export { NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, } from '@nimbus-sh/fabric/bindings.js';
+export { NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket, } from '@nimbus-sh/fabric/bindings.js';

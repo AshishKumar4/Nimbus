@@ -28,6 +28,8 @@
  * workerd's `DurableObjectClass` models.
  */
 
+import { facetName } from '@nimbus-sh/core/_shared/facet-name.js';
+
 const _NIMBUS_INNER_DO_CLASSES: Map<string, DurableObjectClass> = new Map();
 
 /** Look up a registered inner-DO class. Returns undefined if not found. */
@@ -55,6 +57,15 @@ export function clearInnerDoClasses(supervisorDoId: string): void {
   for (const k of _NIMBUS_INNER_DO_CLASSES.keys()) {
     if (k.startsWith(prefix)) _NIMBUS_INNER_DO_CLASSES.delete(k);
   }
+}
+
+/**
+ * The facet a `wrangler dev` Worker's Durable Object `id` of binding
+ * `bindingName` runs as: no two objects share one, whatever their names'
+ * length (and none is a D1 database's `d1:` facet).
+ */
+export function innerDoFacetName(bindingName: string, id: string): string {
+  return facetName('innerDO', [bindingName, id]);
 }
 
 /** Inner-DO facet names each incarnation has opened, by binding; keyed off ctx, so a new incarnation starts empty. */

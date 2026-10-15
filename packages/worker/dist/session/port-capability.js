@@ -26,6 +26,7 @@ import { z } from 'zod/v4';
 import { PUBLIC_BEARER_HEADER, renderSessionStatusPage } from '../_shared/session-router.js';
 import { isPreviewHostName } from '../_shared/preview-host.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from './keys.js';
+import { devServerRestoreFailedResponse } from './helpers.js';
 /** The shape `createPortCapability` mints: 12 random bytes, hex. */
 const PortCapabilitySchema = z.string().regex(/^[a-f0-9]{24}$/);
 /** 'scoped' is the default: capability-checked but never the public bearer. */
@@ -342,16 +343,19 @@ export async function readoptCapability(self, port, capability) {
  * any other port is mounted at root and needs no rewriting.
  */
 export async function routeToSessionPort(self, port, request, innerPath, mountBase, capability) {
+    // The dev servers the previous incarnation ran come back first: a restored
+    // one takes back the link handed out for its port.
+    const restoreFailures = await self.restoreDevServers?.() ?? [];
     if (capability !== undefined) {
         const reservation = await readPortReservation(self.ctx, port);
+        // A link whose server did not come back is still the link handed out for its port.
         const authorized = reservation !== null
             ? reservation.capability === capability
-            : self.portRegistry.hasCapability(port, capability);
+            : self.portRegistry.hasCapability(port, capability) || (restoreFailures.length > 0 && await readPortCapability(self, port) === capability);
         if (!authorized || (request.headers.get(PUBLIC_BEARER_HEADER) !== null && reservation?.visibility !== 'public')) {
             return new Response('Not found', { status: 404 });
         }
     }
-    await self.restorePersistedDevServer?.(port);
     // The durable seam: a request on a port nothing is serving may be a
     // durable application a reset left dead — the alarm pump would re-drive
     // it eventually, but a URL in someone's hands cannot wait for eventually.
@@ -370,6 +374,9 @@ export async function routeToSessionPort(self, port, request, innerPath, mountBa
                 },
             });
         }
+    }
+    if (capability !== undefined && restoreFailures.length > 0 && !self.portRegistry.has(port)) {
+        return devServerRestoreFailedResponse(restoreFailures);
     }
     if (capability !== undefined) {
         // A rebuilt supervisor holds a capability nobody was handed; the durable
@@ -406,6 +413,8 @@ export async function routeToSessionPort(self, port, request, innerPath, mountBa
         : await self.portRegistry.routeCapabilityRequest(port, capability, request, innerPath);
     if (proxied)
         return proxied;
+    if (restoreFailures.length > 0)
+        return devServerRestoreFailedResponse(restoreFailures);
     const ended = self.portRegistry.ended(port);
     return new Response(`No process listening on port ${port}${ended === undefined ? '' : `: ${ended}`}`, { status: 502 });
 }

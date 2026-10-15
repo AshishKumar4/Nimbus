@@ -16,7 +16,7 @@ import { PortRegistry, createPortCapability } from '@nimbus-sh/core/runtime/port
 import { CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import { SessionProcessLogsOptionsSchema, } from '@nimbus-sh/core/runtime/session-protocol.js';
-import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX, VITE_CONFIG_KEY } from './keys.js';
+import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX } from './keys.js';
 import { clearPortCapability, persistPortCapability, portRecordKey, readPortReservation, readPortReservationByName, readPortReservationByOwner, reservePort, rotatePortCapability } from './port-capability.js';
 import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/public-directory.js';
 import { isPreviewHostName, isPreviewHostSafeSid, previewHostUrl, readPreviewHostSuffix } from '../_shared/preview-host.js';
@@ -423,6 +423,7 @@ function finishBackgroundJob(self, pid, command, exitCode) {
     // dead pid on a live port, and the app verbs identify a server by the pid
     // serving its port.
     const stillServing = self.facetManager?.hasResidentProcess(pid) === true
+        || self.processes.runsWork(pid)
         || self.portRegistry.getAll().some((live) => live.pid === pid);
     if (exitCode === 0 && stillServing)
         return;
@@ -475,27 +476,7 @@ export async function rpcKillProcess(self, pid) {
     await ensureProgrammaticReady(self);
     const n = Number(pid);
     let ok = false;
-    if (self._viteShimPid === n) {
-        try {
-            if (self.viteDevServer?.isRunning) {
-                self.viteDevServer.stop();
-                self.viteDevServer = null;
-                try {
-                    await self.ctx.storage.delete(VITE_CONFIG_KEY);
-                }
-                catch { }
-            }
-        }
-        catch { }
-        try {
-            self.portRegistry.unregisterByPid(n);
-        }
-        catch { }
-        ok = self.processes.kill(n);
-        self._viteShimPid = null;
-        self._viteShimPort = null;
-    }
-    else if (self.facetManager) {
+    if (self.facetManager) {
         ok = self.facetManager.kill(n);
     }
     else {
@@ -1038,18 +1019,7 @@ async function destroySession(self, options) {
     for (const entry of running) {
         const pid = Number(entry.pid);
         try {
-            if (self._viteShimPid === pid) {
-                if (self.viteDevServer?.isRunning)
-                    self.viteDevServer.stop();
-                self.viteDevServer = null;
-                try {
-                    await self.ctx.storage.delete(VITE_CONFIG_KEY);
-                }
-                catch { }
-                self._viteShimPid = null;
-                self._viteShimPort = null;
-            }
-            else if (self.facetManager?.kill?.(pid, undefined, SESSION_DESTROYED)) {
+            if (self.facetManager?.kill?.(pid, undefined, SESSION_DESTROYED)) {
                 // facetManager.kill already marks process state and unregisters ports.
             }
             else {

@@ -602,7 +602,11 @@ export class CirrusReal {
                 },
                 ...(hmrBinding ? { bindings: { CIRRUS_HMR: hmrBinding } } : {}),
                 port: this.port,
-                identity: { argv: identity.argv, cred: identity.cred, ...(identity.execId === undefined ? {} : { execId: identity.execId }) },
+                identity: {
+                    argv: identity.argv, cred: identity.cred,
+                    ...(identity.execId === undefined ? {} : { execId: identity.execId }),
+                    ...(identity.restartedFrom === undefined ? {} : { restartedFrom: identity.restartedFrom }),
+                },
             }));
         }
         catch (error) {

@@ -130,6 +130,7 @@ import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-
 import { openSupervisorDeliveries, type SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import type { HostedHttpRequest, HostedHttpResponse, PeerHost } from '@nimbus-sh/fabric/peer-host.js';
 import type { FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
+import type { D1QueryResponse, D1QuerySql, KvCall, R2Call } from '@nimbus-sh/fabric/inner-storage-env.js';
 // The supervisor terminates a facet's outbound sockets so inbound frames
 // arrive as supervisor replies (VFS coherence witness 3).
 // The supervisor terminates a facet's outbound sockets so inbound frames
@@ -138,6 +139,8 @@ import { WebSocketRelay } from './ws-relay.js';
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 import * as _routes from './routes.js';
+import { restoreDevServers, type DevServerRestoreHost } from './dev-servers.js';
+import type { DevServerRestoreFailure } from './helpers.js';
 import * as _portCapability from './port-capability.js';
 // Programmatic SDK RPC surface.
 import * as _programmatic from './programmatic.js';
@@ -891,6 +894,9 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   async _rpcReadFileBytes(path: string, pid?: number, cred?: VfsCred): Promise<Uint8Array | null> { return _rpc._rpcReadFileBytes(this as any, path, pid, cred); }
   async _rpcInnerDoFetch(req: any): Promise<any> { return _rpc._rpcInnerDoFetch(this as any, req); }
   async _rpcInnerDoCall(req: any): Promise<unknown> { return _rpc._rpcInnerDoCall(this as any, req); }
+  async _rpcKvCall(target: { root: string; store: string }, call: KvCall, cred?: VfsCred) { return _rpc._rpcKvCall(this, target, call, cred); }
+  async _rpcR2Call(target: { root: string; store: string }, call: R2Call, cred?: VfsCred) { return _rpc._rpcR2Call(this, target, call, cred); }
+  async _rpcD1Query(target: { root: string; store: string }, queries: D1QuerySql[]): Promise<D1QueryResponse> { return _rpc._rpcD1Query({ ctx: this.ctx }, target, queries); }
   async _rpcWriteFile(path: string, content: string | Uint8Array, pid?: number, cred?: VfsCred): Promise<number> { return _rpc._rpcWriteFile(this as any, path, content, pid, cred); }
   async _rpcWriteProtectedRootFile(rootPath: string, path: string, content: string | Uint8Array) {
     return _rpc._rpcWriteProtectedRootFile(this as any, rootPath, path, content);
@@ -1069,9 +1075,19 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
     return _portCapability.routeCapabilityPort(this as any, port, capability, request, innerPath);
   }
 
-  /** The port route's dev-server restore, delegated — lives in routes.ts where the other session routes do. */
-  restorePersistedDevServer(onlyPort?: number): Promise<void> {
-    return _routes.restorePersistedDevServer(this as any, onlyPort);
+  /** What restoring the dev servers reads of this session, one view per instance (its restore is the view's). */
+  private devServerHost: DevServerRestoreHost | null = null;
+  /** The dev servers a previous incarnation ran, started again once (dev-servers.ts): what every route to one waits on. */
+  restoreDevServers(): Promise<readonly DevServerRestoreFailure[]> {
+    const session = this;
+    this.devServerHost ??= {
+      ctx: this.ctx,
+      get processes() { return session.processes; },
+      get portRegistry() { return session.portRegistry; },
+      get runtimeWorkspace() { return session.runtimeWorkspace; },
+      ensureRuntimeReady: () => this.ensureRuntimeReady(),
+    };
+    return restoreDevServers(this.devServerHost);
   }
   /** The port route's in-DO HMR accept, delegated — same reason. */
   acceptCirrusHmrWs(request: Request): Response {
@@ -1265,7 +1281,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   _cpRegistry: CommandRegistry | null = null;
   _setCpRegistry(r: CommandRegistry) { this._cpRegistry = r; }
 
-  async ensureNpmInstaller(onProgress?: (msg: string) => void): Promise<NpmInstaller> { return this.#runtimeServices.ensureNpmInstaller( onProgress); }
+  async ensureNpmInstaller(): Promise<NpmInstaller> { return this.#runtimeServices.ensureNpmInstaller(); }
 
   // ── Session initialization ────────────────────────────────────────────
 
@@ -1453,4 +1469,7 @@ export {
   NimbusLoadedEntrypoint,
   NimbusDurableObjectNamespace,
   NimbusDOStub,
+  NimbusKVNamespace,
+  NimbusD1Binding,
+  NimbusR2Bucket,
 } from '@nimbus-sh/fabric/bindings.js';

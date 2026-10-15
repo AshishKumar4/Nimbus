@@ -79,6 +79,8 @@ export interface SessionInternal extends Pick<SessionRouterRpc,
 > {
   routeLoopback(port: number, request: Request): Promise<Response | null>;
   runtimeWorkspace: NimbusWorkspace | null;
+  /** The dev servers a previous incarnation ran, started again once (dev-servers.ts). */
+  restoreDevServers(): Promise<readonly import('./helpers.js').DevServerRestoreFailure[]>;
   // ── Core session state (always set after first request) ─────────────
   /** The session's filesystem resource (session-filesystem.ts); `sqliteFs` is its engine. */
   filesystem: import('./session-filesystem.js').SessionFilesystem | null;
@@ -176,7 +178,7 @@ export interface SessionInternal extends Pick<SessionRouterRpc,
   ensureFacetManager(): ComposedFacetManager;
   ensureBundlePool(): PrebundlePool;
   _ensureChildProcessManager(): ChildProcessManager;
-  ensureNpmInstaller(onProgress?: (msg: string) => void): Promise<NpmInstaller>;
+  ensureNpmInstaller(): Promise<NpmInstaller>;
   _setCpRegistry(r: CommandRegistry): void;
   hydrateSessionBasePath(request: Request): Promise<void>;
   ensureGlobalPrefixDirs(prefix: string, cred: Readonly<VfsCred>): void;

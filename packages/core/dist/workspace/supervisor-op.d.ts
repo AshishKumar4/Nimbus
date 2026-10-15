@@ -115,10 +115,10 @@ export interface SupervisorOpDeps {
 /**
  * One slot in an op's argument plan: a number takes `envelope.args[n]`, a
  * name takes the envelope's identity field (`pid`, `writerId`, `stream`,
- * `mutationOwner`). The envelope is always the shape — a host never
- * re-parses it.
+ * `mutationOwner`, a host call's `cred`). The envelope is always the shape —
+ * a host never re-parses it.
  */
-export type SupervisorOpArg = number | 'pid' | 'writerId' | 'run' | 'stream' | 'mutationOwner';
+export type SupervisorOpArg = number | 'pid' | 'writerId' | 'run' | 'stream' | 'mutationOwner' | 'cred';
 export interface SupervisorOpRoute {
     /** The host method this op dispatches to. */
     readonly method: string;

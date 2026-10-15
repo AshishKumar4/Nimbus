@@ -4985,12 +4985,12 @@ export interface LongRunningWorkerSpawnOptions {
   invokerPid?: number;
   /**
    * Who the process is when no invoker says: the argv its identity derives
-   * from, the credential it runs as and its exec id (a dev server restored
-   * from what it persisted). Exclusive with `invokerPid`, `resident` and
+   * from, the credential it runs as, its exec id, and the process it restarts
+   * (a dev server a new incarnation of the session runs again). Exclusive with `invokerPid`, `resident` and
    * `durable`: a journalled launch is re-driven as its row says, which keeps
    * no such identity.
    */
-  identity?: { argv: string[]; cred: VfsCred; execId?: string };
+  identity?: { argv: string[]; cred: VfsCred; execId?: string; restartedFrom?: ProcessRestart };
   /** Inline modules: source text, or small wasm carried by value. */
   modules?: Record<string, string | { wasm: ArrayBuffer }>;
   /**
@@ -9317,6 +9317,7 @@ export class FacetManager {
     const identity = opts.identity === undefined ? undefined : {
       cred: requireVfsCred(opts.identity.cred, 'spawnWorker identity'),
       ...(opts.identity.execId === undefined ? {} : { execId: parseExecId(opts.identity.execId) }),
+      ...(opts.identity.restartedFrom === undefined ? {} : { restart: { from: opts.identity.restartedFrom, doing: 'serving' } }),
     };
     if (opts.resident && !opts.durable) {
       opts = { ...opts, durable: { owner: await deriveResidentOwner(cwd, opts.resident.argv) } };

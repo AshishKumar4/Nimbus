@@ -4,8 +4,10 @@
 // `nodejs_compat`; bun and node natively.
 declare module 'node:crypto' {
   interface Hash {
-    update(data: Uint8Array): Hash;
+    /** A string is hashed as its UTF-8 bytes. */
+    update(data: Uint8Array | string): Hash;
     digest(): Uint8Array;
+    digest(encoding: 'hex'): string;
   }
   export function createHash(algorithm: 'md5' | 'sha1' | 'sha224' | 'sha256' | 'sha384' | 'sha512'): Hash;
   const crypto: { createHash: typeof createHash };

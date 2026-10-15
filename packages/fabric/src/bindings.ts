@@ -14,8 +14,9 @@
  * through that RPC stub. Co-located here for grep-ability.
  *
  * NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker,
- * NimbusLoadedEntrypoint, NimbusDurableObjectNamespace and NimbusDOStub are
- * public API of the embedder's Worker: wrangler resolves them by class name
+ * NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub,
+ * NimbusKVNamespace, NimbusD1Binding and NimbusR2Bucket are public API of
+ * the embedder's Worker: wrangler resolves them by class name
  * and ctx.exports auto-populates them by export name, so the embedder's entry
  * module re-exports them under exactly these names.
  *
@@ -30,6 +31,7 @@ import { hostNamespace, stagedBootAssembler } from './composition.js';
 import type { HostRoute } from './composition.js';
 import { hostNamespaceBinding, hostOpDispatch, type HostOpDispatch } from './host-dispatch.js';
 import { innerDoIdFromName } from './inner-do-env.js';
+import type { D1QueryRequest, D1QueryResponse, D1QuerySql, KvCall, KvGetOptions, KvListOptions, KvPutOptions, KvPutValue, R2Call, R2PutBody, R2WireGetOptions, R2WireListOptions, R2WirePutOptions } from './inner-storage-env.js';
 import { assertModuleMapWithinCodeLimit } from './budgets.js';
 import { applyFacetLimits, facetLimits, guestFacetPolicy, effectiveFacetLimits, facetLoaderKey, FACET_LIMITS, type FacetCodePolicy, type FacetKind } from './facet-limits.js';
 import { bindingSupervisor, egressMarker, workspaceOutbound, type SupervisorBindingProps } from './supervisor-props.js';
@@ -772,7 +774,7 @@ interface NimbusDoNamespaceProps {
  * session's isolate). The inner Worker does not use it as its namespace: a
  * DurableObjectNamespace's API is synchronous, and this one's answers are
  * RpcPromises, which cannot travel as arguments. The inner Worker replaces it
- * with a local namespace (inner-do-env.ts, innerWorkerModules) that makes ids
+ * with a local namespace (inner-do-env.ts, inner-env.ts) that makes ids
  * and stubs itself, and relays each member a stub's caller reaches, its
  * fetch included, to `callOn` or `getOn`.
  *
@@ -929,5 +931,129 @@ async function innerDoMember(env: object | undefined, props: NimbusDoStubProps, 
 export class NimbusDOStub extends WorkerEntrypoint<object, NimbusDoStubProps> {
   async fetch(request: Request): Promise<Response> {
     return innerDoFetch(this.env, this.ctx.props || {}, request);
+  }
+}
+
+// ── KV, D1 and R2 bindings ──────────────────────────────────────────────────
+//
+// Inner Worker code:
+//   await env.KV.put('k', 'v');
+//   await env.DB.prepare('SELECT ?').bind(1).first();
+//   await (await env.BUCKET.get('k')).text();
+// Each binding is minted by the session for one store of one project: a KV
+// namespace or an R2 bucket (its files under the project's .nimbus, read
+// and written as the process that started the server) or a D1 database
+// (a facet of the session, its own SQLite). The props name that store and
+// nothing a guest supplies does, so a binding reaches its own store only.
+// Each call is a supervisor op the session serves (kvCall, d1Query,
+// r2Call). The D1 and R2 bindings are not the Worker's env.DB and
+// env.BUCKET as they are: inner-storage-env.ts makes those over them.
+
+/** Props a storage binding is minted with: its store, and the way to the session that holds it. */
+interface NimbusStorageProps {
+  /** The session Durable Object whose storage holds the store. */
+  doId?: string;
+  /** The way back to that DO, minted with the binding. */
+  route?: HostRoute;
+  /** The project the binding is declared in. */
+  root?: string;
+  /** The store: a KV namespace's or R2 bucket's binding name, a D1 database's id. */
+  store?: string;
+  /** What a KV or R2 store's files are read and written as: the process that started the server. */
+  cred?: VfsCred;
+}
+
+/** The ops a storage binding sends, each with the call it carries. */
+type StorageOp =
+  | { op: 'kvCall'; call: KvCall }
+  | { op: 'r2Call'; call: R2Call }
+  | { op: 'd1Query'; call: D1QuerySql[] };
+
+/**
+ * `op` sent to the session for the binding's own store, as the props name
+ * it: the session's answer, or what it threw.
+ */
+async function storageOp(env: object, props: NimbusStorageProps | undefined, usage: string, { op, call }: StorageOp): ReturnType<HostOpDispatch> {
+  const doId = props?.doId;
+  const root = props?.root;
+  const store = props?.store;
+  if (!doId || root === undefined || !store) throw new Error(`Nimbus: this ${usage} binding was minted without its store`);
+  let stub: DurableObjectStub | null = null;
+  try {
+    const ns = hostNamespaceBinding(env, usage, props?.route);
+    stub = ns.get(ns.idFromString(doId));
+    return await hostOpDispatch(stub, usage, props?.route)({
+      op,
+      args: [{ root, store }, call],
+      ...(props?.cred === undefined ? {} : { cred: props.cred }),
+    });
+  } finally {
+    disposeRpcResource(stub);
+  }
+}
+
+/** env.KV: a KV namespace, the methods of Cloudflare's API and nothing else. */
+export class NimbusKVNamespace extends WorkerEntrypoint<object, NimbusStorageProps> {
+  get(key: string | string[], options?: string | KvGetOptions) {
+    return storageOp(this.env, this.ctx.props, 'NimbusKVNamespace', { op: 'kvCall', call: { method: 'get', key, options } });
+  }
+
+  getWithMetadata(key: string | string[], options?: string | KvGetOptions) {
+    return storageOp(this.env, this.ctx.props, 'NimbusKVNamespace', { op: 'kvCall', call: { method: 'getWithMetadata', key, options } });
+  }
+
+  put(key: string, value: KvPutValue, options?: KvPutOptions) {
+    return storageOp(this.env, this.ctx.props, 'NimbusKVNamespace', { op: 'kvCall', call: { method: 'put', key, value, options } });
+  }
+
+  delete(key: string) {
+    return storageOp(this.env, this.ctx.props, 'NimbusKVNamespace', { op: 'kvCall', call: { method: 'delete', key } });
+  }
+
+  list(options?: KvListOptions) {
+    return storageOp(this.env, this.ctx.props, 'NimbusKVNamespace', { op: 'kvCall', call: { method: 'list', options } });
+  }
+}
+
+/** A D1 database's binding: D1's own binding contract, `query`, and nothing else. */
+export class NimbusD1Binding extends WorkerEntrypoint<object, NimbusStorageProps> {
+  /**
+   * All of `request`'s queries, run in one transaction, answered with the
+   * database's bookmark after them. The request's bookmark is not sent on:
+   * the database has one copy, which every bookmark is already met by.
+   */
+  async query(request: D1QueryRequest): Promise<D1QueryResponse> {
+    const queries = Array.isArray(request?.queries) ? request.queries : [];
+    const answer = await storageOp(this.env, this.ctx.props, 'NimbusD1Binding', { op: 'd1Query', call: queries });
+    if (!isD1QueryResponse(answer)) throw new Error('Nimbus: d1Query returned an invalid result');
+    return answer;
+  }
+}
+
+function isD1QueryResponse(value: unknown): value is D1QueryResponse {
+  return value !== null && typeof value === 'object' && 'success' in value
+    && (value.success === true ? 'results' in value : 'error' in value);
+}
+
+/** An R2 bucket's binding: the methods of Cloudflare's API, taking and answering the fields its objects are made of. */
+export class NimbusR2Bucket extends WorkerEntrypoint<object, NimbusStorageProps> {
+  head(key: string) {
+    return storageOp(this.env, this.ctx.props, 'NimbusR2Bucket', { op: 'r2Call', call: { method: 'head', key } });
+  }
+
+  get(key: string, options: R2WireGetOptions) {
+    return storageOp(this.env, this.ctx.props, 'NimbusR2Bucket', { op: 'r2Call', call: { method: 'get', key, options } });
+  }
+
+  put(key: string, value: R2PutBody, options: R2WirePutOptions) {
+    return storageOp(this.env, this.ctx.props, 'NimbusR2Bucket', { op: 'r2Call', call: { method: 'put', key, value, options } });
+  }
+
+  delete(keys: string | string[]) {
+    return storageOp(this.env, this.ctx.props, 'NimbusR2Bucket', { op: 'r2Call', call: { method: 'delete', keys } });
+  }
+
+  list(options: R2WireListOptions) {
+    return storageOp(this.env, this.ctx.props, 'NimbusR2Bucket', { op: 'r2Call', call: { method: 'list', options } });
   }
 }
