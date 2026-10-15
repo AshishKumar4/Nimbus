@@ -58,6 +58,7 @@ declare module 'node:stream' {
     /** Pipes into `destination`, and answers it. */
     pipe(destination: Writable, options?: PipeOptions): Writable;
     readonly readable: boolean;
+    readonly readableEnded: boolean;
     push(chunk: Uint8Array | string | null, encoding?: string): boolean;
     setEncoding(encoding: string): this;
     destroy(error?: Error): this;

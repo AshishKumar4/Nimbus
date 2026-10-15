@@ -11,6 +11,7 @@ declare const tty: {
             setRawMode(_mode: boolean): /*elided*/ any;
             pipe(destination: import("node:stream").Writable, options?: import("node:stream").PipeOptions): import("node:stream").Writable;
             readonly readable: boolean;
+            readonly readableEnded: boolean;
             push(chunk: Uint8Array | string | null, encoding?: string): boolean;
             setEncoding(encoding: string): /*elided*/ any;
             destroy(error?: Error): /*elided*/ any;
@@ -69,6 +70,7 @@ export declare const ReadStream: {
         setRawMode(_mode: boolean): /*elided*/ any;
         pipe(destination: import("node:stream").Writable, options?: import("node:stream").PipeOptions): import("node:stream").Writable;
         readonly readable: boolean;
+        readonly readableEnded: boolean;
         push(chunk: Uint8Array | string | null, encoding?: string): boolean;
         setEncoding(encoding: string): /*elided*/ any;
         destroy(error?: Error): /*elided*/ any;

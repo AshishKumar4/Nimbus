@@ -16,6 +16,12 @@ published independently in the `@nimbus-sh` npm scope.
   4 MiB, which most tarballs fit), any other answer's body is cancelled and
   only its status kept, so a 503 is retried without waiting on its body; and
   a package's download is ended however the package ends.
+- Fixed (lifo commands): a command's `process.exit(n)` writes nothing, as
+  Node's does; it wrote `[process.exit] code=n` on the command's stderr for a
+  non-zero `n`. lifo's `http` gives Readables, as Node's: a server's request
+  and a client's response push their body as a Buffer and end, so `pipe`,
+  `for await`, `setEncoding` and `'data'` work as in Node, and `'end'` comes
+  only once the body is read.
 - Fixed: `tee`, `dd` and the commands that read a file operand (`cat`, `wc`,
   `grep` and the rest) open each file once, as their GNU tools do. If
   another command moved the file aside and a new file took its name while
