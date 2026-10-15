@@ -34,7 +34,8 @@
  * a guest that waits in a syscall lets it run; one computing does not
  * (the documented limit, answered by the session's recall timeout).
  */
-import { fsError, modeAllows } from '../beneath-walk.js';
+import { fsError } from '../beneath-walk.js';
+import { modeAllows } from '../../vfs/posix-access.js';
 import { processFsClient } from '../../_shared/process-fs-client.js';
 /** Descriptors this holder opens are numbered below every session descriptor. */
 const FIRST_LOCAL_HANDLE = -1;

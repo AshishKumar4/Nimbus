@@ -6,9 +6,10 @@ import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
 import { abandon, andThen, isCharacterDevice, isPromise, readDeclaredSource, readRangeOrWhole, syncValue, type Awaitable, type SyncVFS, type VfsRemoval } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
-import { fsError, MAX_LINK_HOPS, modeAllows, walkBeneath, type FsError } from './beneath-walk.js';
+import { fsError, MAX_LINK_HOPS, walkBeneath, type FsError } from './beneath-walk.js';
+import { modeAllows } from '../vfs/posix-access.js';
 
-export { fsError, modeAllows, walkBeneath, type BeneathLookup } from './beneath-walk.js';
+export { fsError, walkBeneath, type BeneathLookup } from './beneath-walk.js';
 import type {
   RuntimeFileHandle,
   RuntimeOpenedFile,
