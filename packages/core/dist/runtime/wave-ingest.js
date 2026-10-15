@@ -664,7 +664,6 @@ export class WaveIngest {
                     return {
                         ok: false,
                         ...progress,
-                        revision: scope.revision(),
                         error: { code: 'ERR_WRITE_BATCH_STREAM', phase: 'publish', message: opened.refused.message, errno: opened.refused.errno },
                     };
                 }
@@ -880,7 +879,7 @@ export class WaveIngest {
                         await recordIterator.return();
                     recordIteratorFinished = true;
                     drain.end();
-                    return { ok: true, ...progress, revision: scope.revision() };
+                    return { ok: true, ...progress };
                 }
             }
         }
@@ -917,7 +916,6 @@ export class WaveIngest {
             return {
                 ok: false,
                 ...progress,
-                revision: scope.revision(),
                 error: {
                     code: 'ERR_WRITE_BATCH_STREAM',
                     phase,

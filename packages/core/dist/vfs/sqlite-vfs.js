@@ -8323,7 +8323,8 @@ export class SqliteVFS {
      * A wave on this filesystem as `cred`'s caller (WaveIngest): the
      * delegations it holds and whether its view continues as it is answered,
      * taken in the caller's turn; `work` applies the wave through the scope.
-     * Answered once what it committed is published, or held (`held`).
+     * Answered once what it committed is published, with the revision then
+     * (`revision`), or held (`held`).
      */
     wave(options, work, cred, origin) {
         // The delegations its caller holds, in the caller's turn: its records apply as them. A process's
@@ -8355,14 +8356,15 @@ export class SqliteVFS {
                     await published;
             }
             // Whatever else its writer holds: a resend's own records are the
-            // attempt's before it, which may still be held.
+            // attempt's before it, which may still be held. Answered with the
+            // clock once all of it is published.
             const held = holds === null ? null : this.publishedFor(holds);
             if (held === null)
-                return result;
+                return { ...result, revision: this._revision };
             if (pipeline.continues)
                 return { ...result, held: true };
             await held;
-            return result;
+            return { ...result, revision: this._revision };
         }, options.mutationOwner);
     }
     /** The storage one wave composes: each operation as its writer (`holds`, `pipeline`) or its caller (`origin`, its lease). */

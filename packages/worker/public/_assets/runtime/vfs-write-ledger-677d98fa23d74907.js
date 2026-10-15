@@ -1414,6 +1414,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     let heldWaves = 0;
     let publishedThrough = 0;
     let ownThrough = 0;
+    let ownHeld = false;
     let escaped = null;
     let escapeLanded = false;
     const marks = [];
@@ -1602,7 +1603,8 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         return;
       }
       ack = Math.max(ack, cursor);
-      ownThrough = Math.max(ownThrough, answer.revision ?? Infinity);
+      ownHeld = answer.held === true;
+      if (!ownHeld) ownThrough = Math.max(ownThrough, answer.revision ?? Infinity);
       const refused = writer === null ? error?.errno !== void 0 && SYSCALL_VERDICTS.has(error.errno) ? { seq: cursor + 1, errno: error.errno, message: error.message } : null : answer.sequence?.refused ?? null;
       let receipt = 0;
       const back = [];
@@ -1926,7 +1928,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         return grants.some((grant) => !grant.ended && within(key, grant.root));
       },
       vouch(key, cursor) {
-        if (escaped !== null || client.pending() || cursor.rev < ownThrough) return void 0;
+        if (escaped !== null || client.pending() || ownHeld || cursor.rev < ownThrough) return void 0;
         let found;
         for (const grant of grants) {
           const certificate = grant.certificate;

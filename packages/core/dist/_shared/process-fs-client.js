@@ -275,12 +275,15 @@ export function processFsClient(options) {
     let heldWaves = 0;
     let publishedThrough = 0;
     /**
-     * The session's revision as it last answered a wave (its `revision`): every
-     * change of the process's own it has answered is at or before it, so a view
+     * The session's revision as it last answered a wave with nothing of the
+     * process's held for publication (its `revision`): every change of the
+     * process's own it has answered is published at or before it, so a view
      * short of it may lack one (vouch). Past every revision once a change's
-     * fate is unknown, or an answer does not say it.
+     * fate is unknown, or an answer does not say it. `ownHeld`: the last answer
+     * came ahead of a publication (`held`), at a revision none has said yet.
      */
     let ownThrough = 0;
+    let ownHeld = false;
     /**
      * The session told of a raw socket (rawSocket): every wave after it is
      * sent once it lands, and nothing is decided here from then on. Landed:
@@ -505,7 +508,9 @@ export function processFsClient(options) {
             return;
         }
         ack = Math.max(ack, cursor);
-        ownThrough = Math.max(ownThrough, answer.revision ?? Infinity);
+        ownHeld = answer.held === true;
+        if (!ownHeld)
+            ownThrough = Math.max(ownThrough, answer.revision ?? Infinity);
         const refused = writer === null
             ? (error?.errno !== undefined && SYSCALL_VERDICTS.has(error.errno) ? { seq: cursor + 1, errno: error.errno, message: error.message } : null)
             : answer.sequence?.refused ?? null;
@@ -952,7 +957,7 @@ export function processFsClient(options) {
             return grants.some((grant) => !grant.ended && within(key, grant.root));
         },
         vouch(key, cursor) {
-            if (escaped !== null || client.pending() || cursor.rev < ownThrough)
+            if (escaped !== null || client.pending() || ownHeld || cursor.rev < ownThrough)
                 return undefined;
             let found;
             for (const grant of grants) {

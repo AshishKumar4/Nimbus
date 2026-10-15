@@ -2175,7 +2175,8 @@ export declare class SqliteVFS {
      * A wave on this filesystem as `cred`'s caller (WaveIngest): the
      * delegations it holds and whether its view continues as it is answered,
      * taken in the caller's turn; `work` applies the wave through the scope.
-     * Answered once what it committed is published, or held (`held`).
+     * Answered once what it committed is published, with the revision then
+     * (`revision`), or held (`held`).
      */
     private wave;
     /** The storage one wave composes: each operation as its writer (`holds`, `pipeline`) or its caller (`origin`, its lease). */
