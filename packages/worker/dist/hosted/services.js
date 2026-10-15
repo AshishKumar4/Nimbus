@@ -54,6 +54,7 @@ export function ensureFacetManager(self, runtimeContext) {
             vfs: filesystem.engine,
             filesystem,
             network: runtimeContext.network,
+            restoreDevServers: () => self.restoreDevServers(),
             supervise: (props) => new ProcessSupervisor(props, runtimeContext.env, runtimeContext.supervisorOp),
             ...(self.esbuildService ? { esbuild: self.esbuildService } : {}),
             hooks: {

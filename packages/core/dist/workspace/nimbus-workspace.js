@@ -469,7 +469,8 @@ export class NimbusWorkspace {
      * A shell of its own for process `pid`, a second cwd and environment over
      * the workspace shell's filesystem, commands and kernel. It starts in
      * `state.cwd` with the workspace shell's environment and `state.env` on
-     * top. Its commands act as `pid` (`$$`, and the credential and umask
+     * top; with `inheritEnv: false`, with `state.env` alone (a command run again
+     * as it was once run). Its commands act as `pid` (`$$`, and the credential and umask
      * {@link processes} holds for it); `sudo` and `su` go through the workspace
      * shell's identity, and `kill` reaches what the workspace shell's does.
      *
@@ -479,7 +480,7 @@ export class NimbusWorkspace {
      */
     shellFor(pid, state) {
         const processes = this.processes;
-        const shell = new Shell(new HeadlessTerminal(), this.filesystem, this.registry, { ...this.shell.getEnv(), ...state.env }, processes, {
+        const shell = new Shell(new HeadlessTerminal(), this.filesystem, this.registry, { ...(state.inheritEnv === false ? {} : this.shell.getEnv()), ...state.env }, processes, {
             pid,
             get cred() { return processes.cred(pid); },
             setUmask: (mask) => processes.setUmask(pid, mask),

@@ -37,12 +37,9 @@ import {
   getRecoveryEvents, recordRecoveryEvent, resetRecoveryEvents,
   type SessionState,
 } from '@nimbus-sh/platform/oom-discriminator.js';
-import { DEFAULT_VITE_PORT, LRU_MAX_ENTRIES } from '@nimbus-sh/core/constants.js';
+import { LRU_MAX_ENTRIES } from '@nimbus-sh/core/constants.js';
 import { SEED_PROJECT_DIR, SEED_PROJECT_NAME } from '@nimbus-sh/core/vfs/seed-project.js';
 import { BASE_PATH_HEADER } from '../_shared/session-router.js';
-import { VITE_CONFIG_KEY } from './keys.js';
-import type { ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
-import { isViteEsbuildSettings, viteEsbuildSettings } from '@nimbus-sh/core/runtime/vite-esbuild-options.js';
 import { estimateSupervisorHeap, WORKERD_EVICTION_LABELS } from '@nimbus-sh/platform/heap-estimate.js';
 import { loadShellState, getScrollbackStats, clearSessionState, loadScrollback } from './state-store.js';
 import { classifyWsUpgrade, joinExistingSession } from './init-phases.js';
@@ -53,7 +50,8 @@ import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 import { makeLongRunningPortStub } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { documentPolicyOf } from '@nimbus-sh/core/runtime/document-policy.js';
-import { devServerIdentity, persistedIdentity, startRealVite } from './start-real-vite.js';
+import { bindDevServer, recordDevServer, spawnOf } from './dev-servers.js';
+import { stopViteServers, viteShimTeardown, type ViteShim } from './vite-command.js';
 import { withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { getLoadedCodesStats } from '@nimbus-sh/fabric/bindings.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
@@ -64,17 +62,15 @@ import { isHostedWebSocket, isHostedWatch, isHostedResidency } from '@nimbus-sh/
 import {
   isCirrusHmrPath,
   persistPortCapability,
-  readPortCapability,
   normalizeForwardedHttpPath,
   readPortReservationByName,
-  readoptCapability,
   routeCapabilityPort,
   routeToSessionPort,
   restorePortCapability,
 } from './port-capability.js';
 import { registerServingPort } from './serving-port.js';
 import { PREVIEW_CAPABILITY_HEADER, PUBLIC_BEARER_HEADER, CALLER_SCOPES_HEADER, renderSessionStatusPage } from '../_shared/session-router.js';
-import { renderNoDevServerHtml } from './helpers.js';
+import { devServerRestoreFailedResponse, renderNoDevServerHtml } from './helpers.js';
 import { handleAgentRequest } from './agent.js';
 import { captureSessionAiCredential } from './ai.js';
 import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -132,135 +128,6 @@ const RecoverySessionStateSchema: z.ZodType<SessionState> = z.enum([
   'online',
 ]);
 
-
-/**
- * Restore the dev server a previous isolate left behind.
- *
- * Hibernation takes the ViteDevServer and the whole port registry with it;
- * only the `vite-config` blob survives in DO storage. Restoring it is the
- * first thing every route that can reach that server does, so a woken session
- * serves on all of them rather than on whichever one happened to carry the
- * restore.
- *
- * `onlyPort` scopes the restore to a config that would listen there: a
- * request for a port nothing ever persisted stays an honest 502, and a port
- * something else already holds is left alone.
- *
- * Idempotent, and silent on failure — a session with no dev server to restore
- * is the normal case, not an error.
- */
-export async function restorePersistedDevServer(self: RoutesHost, onlyPort?: number): Promise<void> {
-  if (self.cirrusReal?.isRunning || self.viteDevServer?.isRunning) return;
-  if (onlyPort != null && self.portRegistry.has(onlyPort)) return;
-  try {
-    const config = await self.ctx.storage.get(VITE_CONFIG_KEY) as any;
-    // A parallel request may have restored the server while this one waited
-    // on storage — a woken page fetches several URLs at once. Everything
-    // below runs without yielding UNTIL the first await, so re-check there.
-    if (self.viteDevServer?.isRunning || self.cirrusReal?.isRunning) return;
-    if (!config?.root) return;
-    // The port the saved config listens on; configs written before ports
-    // were recorded predate P5 and are vite's default.
-    const port = (config.port && Number.isFinite(config.port)) ? config.port : DEFAULT_VITE_PORT;
-    if (onlyPort != null && onlyPort !== port) return;
-    // Who the server ran as. A config written before it recorded that is not
-    // restored: it would read the project as someone else.
-    const identity = persistedIdentity(config.identity);
-    if (identity === undefined) {
-      console.warn(`[routes] the dev server persisted for port ${port} records no credential it ran as; not restoring it — run vite again`);
-      return;
-    }
-    // Read BEFORE the restore: bringing the server back re-registers the port,
-    // and a fresh registration mints a capability nobody was ever handed.
-    const persistedCapability = await readPortCapability(self, port);
-
-    // A cirrus-real session rebuilds the real-vite facet, not the Cirrus shim —
-    // same key, same starter the `vite` builtin uses, so a woken real-vite
-    // session comes back as real-vite rather than degrading to the shim.
-    if (config.devServer === 'real') {
-      // Booting the facet yields (heavy-alloc gate, ASSETS fetch), so a woken
-      // page's parallel requests could each start one. Coalesce onto a single
-      // in-flight boot; the ViteDevServer path below needs no such guard
-      // because it runs to completion without yielding.
-      if (self._realViteRestore) { await self._realViteRestore; return; }
-      self.ensureSqliteFs();
-      self._realViteRestore = startRealVite(self, {
-        root: config.root,
-        port,
-        basePath: config.basePath || self.viteBasePath,
-        configDir: config.configDir || config.root,
-        identity,
-      }).finally(() => { self._realViteRestore = null; });
-      await self._realViteRestore;
-      await readoptCapability(self, port, persistedCapability);
-      return;
-    }
-
-    self.ensureSqliteFs();
-    if (!self.esbuildService) {
-      if (!self.sqliteFs) throw new Error('Session VFS is not initialized');
-      self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_SESSION_USER));
-    }
-    // Prefer the current request's basePath (just captured from the
-    // X-Nimbus-Base header) over the stored one — the latter is only
-    // a fallback for cold rehydrates that precede any header hit.
-    const basePath = self.viteBasePath || config.basePath;
-    // process diagnostics support: re-allocate a PID so log streaming has
-    // somewhere to land. Without this, the restored server would be silent.
-    // The restored server is the same application the persisted config
-    // describes: its pid is given the cwd+argv the original had, so the
-    // identity the app verbs derive from the process table is unchanged
-    // across the hibernation — a reservation exposed under a name re-adopts
-    // its capability at registration below.
-    const entry = self.processes.spawn(
-      'vite (rehydrated, ' + config.root + ')',
-      identity.argv,
-      identity.cwd,
-      { longRunning: true, cred: identity.cred, execId: identity.execId },
-    );
-
-    self.viteDevServer = new ViteDevServer({
-      vfs: self.sqliteFs!, cred: entry.cred, namespace: self.getFilesystemAuthority().vfs, esbuild: self.esbuildService!, root: config.root,
-      aliases: config.aliases, define: config.define,
-      // What its vite.config sets for Vite's esbuild plugin, as `vite` read it (none before this was kept).
-      ...(isViteEsbuildSettings(config.viteEsbuild) ? { viteEsbuild: config.viteEsbuild } : {}),
-      // A server `vite` started reads its vite.config again on an edit, as before the hibernation.
-      ...(typeof config.configDir === 'string' ? {
-        configDir: config.configDir,
-        onConfigChange: (next: ParsedViteConfig | null) => {
-          self.ctx.storage.put(VITE_CONFIG_KEY, {
-            ...config, aliases: next?.alias, define: next?.define, injectBasename: next?.injectBasename, viteEsbuild: viteEsbuildSettings(next),
-          }).catch(() => {});
-        },
-      } : {}),
-      // The browser's reloads go where `vite`'s did: the session terminal's socket.
-      onHmrMessage: (msg) => {
-        if (self.terminal) try { self.terminal.ws.send(JSON.stringify({ type: 'hmr', data: msg })); } catch {}
-      },
-      sql: self.ctx.storage.sql,
-      injectBasename: config.injectBasename,
-      basePath,
-      env: self.env,
-      ctx: self.ctx,
-      bundlePool: self.ensureBundlePool(),
-      port,
-      pid: entry.pid,
-      processes: self.processes,
-    });
-    self.viteDevServer.start();
-    // Its vite.config may have changed while nothing watched it.
-    if (typeof config.configDir === 'string') void self.viteDevServer.readConfigAgain();
-    // Re-register the port so every port-addressed route reaches the
-    // restored server across hibernation cycles.
-    try {
-      self.portRegistry.bindFacetStub(entry.pid, makeLongRunningPortStub(self.viteDevServer));
-      await registerServingPort(self, entry.pid, port);
-      await readoptCapability(self, port, persistedCapability);
-      self._viteShimPid = entry.pid;
-      self._viteShimPort = port;
-    } catch { /* registry full / unavailable — the server still serves /preview/ */ }
-  } catch { /* nothing to restore — callers fall through to their own empty-state response */ }
-}
 
 /**
  * The public URL prefix a port-routed request is mounted at. `<port>--<sid>`
@@ -613,21 +480,8 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         const isViteShim = self._viteShimPid === pid;
         const isDevServer = isViteShim || (self.cirrusReal?.isRunning === true && self.cirrusReal.pid === pid);
         try {
-          if (isViteShim) {
-            // Same teardown the `kill` shell handler does. Centralised
-            // here so the UI doesn't need to reimplement it.
-            try {
-              if (self.viteDevServer?.isRunning) {
-                self.viteDevServer.stop();
-                self.viteDevServer = null;
-                try { await self.ctx.storage.delete(VITE_CONFIG_KEY); } catch {}
-              }
-            } catch { /* keep going to teardown process + port state */ }
-            try { self.portRegistry.unregisterByPid(pid); } catch {}
-            try { self.processes.kill(pid); } catch {}
-            self._viteShimPid = null;
-            self._viteShimPort = null;
-          } else if (self.facetManager) {
+          // A dev server ends with its process (bindDevServer), whatever kills it.
+          if (self.facetManager) {
             const ok = self.facetManager.kill(pid);
             if (!ok) return json(404, { error: 'facetManager.kill returned false', pid });
           } else {
@@ -1249,8 +1103,9 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         const body = await parseJsonBody(request, StartViteBodySchema);
         const root = (body.root || 'home/user').replace(/^\/+/, '');
 
-        // Stop existing server
-        if (self.viteDevServer?.isRunning) self.viteDevServer.stop();
+        // After the servers the session ran before it restarted are back, so this one replaces them, not they it.
+        await self.restoreDevServers();
+        stopViteServers(self, { replacing: true });
 
         // Start in-process ViteDevServer
         if (!self.esbuildService) {
@@ -1264,12 +1119,17 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         // diagnostics into the Process tab.
         const apiVitePort = (typeof body.port === 'number' && body.port > 0) ? body.port : 5173;
         // The route's caller is the session's owner, so the server runs as
-        // the session user.
+        // the session user. Its process is spawned as the command line that
+        // starts the same server, which is what a restore runs again: it reads
+        // the project's vite.config, not this request's options.
+        const apiViteArgv = ['vite', '--port', String(apiVitePort), '--no-install-check'];
         const apiViteEntry = self.processes.spawn(
-          'vite (api/start-vite, ' + root + ')', ['vite', '--port', String(apiVitePort)], root,
+          apiViteArgv.join(' '), apiViteArgv, '/' + root,
           { longRunning: true, cred: CRED_SESSION_USER },
         );
-        self.viteDevServer = new ViteDevServer({
+        const shim: ViteShim = { server: null, pid: apiViteEntry.pid };
+        bindDevServer(self.processes, apiViteEntry.pid, viteShimTeardown(self, shim));
+        self.viteDevServer = shim.server = new ViteDevServer({
           vfs: self.sqliteFs!, cred: apiViteEntry.cred, namespace: self.getFilesystemAuthority().vfs, esbuild: self.esbuildService!, root,
           aliases: body.aliases, define: body.define,
           onHmrMessage: () => {},
@@ -1297,16 +1157,8 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
           self._viteShimPort = apiVitePort;
         } catch {}
 
-        // Persist so vite survives DO hibernation. basePath included so the
-        // rehydrated server after DO sleep emits URLs under the same prefix
-        // even before the next forwarded request updates sessionBasePath;
-        // port so a server started here on a non-default port comes back on
-        // the port it was actually listening on rather than vite's default.
-        await self.ctx.storage.put(VITE_CONFIG_KEY, {
-          root, aliases: body.aliases, define: body.define,
-          injectBasename: body.injectBasename, basePath, port: apiVitePort,
-          identity: devServerIdentity(apiViteEntry),
-        });
+        // Its environment is the session shell's now: what a command run in it would be given.
+        await recordDevServer(self, apiViteEntry.pid, { ...spawnOf(apiViteEntry), env: { ...self.shell?.getEnv() }, root });
 
         return Response.json({ ok: true, root, running: true });
       } catch (e: any) {
@@ -1371,12 +1223,9 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         return routeToSessionPort(self, queryPort, request, previewInner, self.viteBasePath);
       }
 
-      // Rebuild whatever dev server a previous isolate left behind BEFORE the
-      // serving checks below — a woken real-vite session must be restored (and
-      // then served) through the cirrus-real branch, and a woken Cirrus-shim
-      // session through the branch after it. Restoring only before the shim
-      // check (as it once was) left a rehydrated real-vite server unserved.
-      await restorePersistedDevServer(self);
+      // The dev servers a previous incarnation ran start again BEFORE the
+      // serving checks below, whichever kind each is.
+      const restoreFailures = await self.restoreDevServers();
 
       // ── Real-vite takes precedence if running ───────────────────────
       // Cirrus shim and real-vite are mutually exclusive per session.
@@ -1402,6 +1251,7 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         // `/s/<sid>/preview`.
         return self.viteDevServer.handleRequest(request, previewPath, self.viteBasePath);
       }
+      if (restoreFailures.length > 0) return devServerRestoreFailedResponse(restoreFailures);
       // Polished placeholder — auto-reloads when vite starts.
       // Checks the VFS for the starter app so we can offer a context-aware hint.
       const hasSeed = await withRecall(() => {
@@ -1436,7 +1286,10 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
     const isLegacyWorkerPath =
       url.pathname.startsWith('/worker/') || url.pathname === '/worker';
     if (workerPathMatch) {
+      // A `wrangler dev` a previous incarnation ran starts again first.
+      const restoreFailures = await self.restoreDevServers();
       if (!self.nimbusWrangler?.isRunning) {
+        if (restoreFailures.length > 0) return devServerRestoreFailedResponse(restoreFailures);
         // Mirror the polished /preview/ placeholder — auto-reloads when
         // nimbus-wrangler starts. The placeholder references BOTH command
         // names so users coming from either `wrangler dev` or
