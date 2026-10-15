@@ -34,7 +34,8 @@ export type NodeCall =
 export type FdKind = 'terminal' | 'pipe' | 'other';
 
 /** A write to output `fd` that failed with `code`, on a pipe or a file, made through `source`. */
-export interface OutputFailure { readonly fd: 1 | 2; readonly code: string; readonly pipe: boolean; readonly source: OutputSource }
+/** A failed write: its descriptor, its error, and what made it (its source, and which of the program's writers of `fd`: 0 is process.stdout or process.stderr, and its console). */
+export interface OutputFailure { readonly fd: 1 | 2; readonly code: string; readonly pipe: boolean; readonly source: OutputSource; readonly writer: number }
 
 /** A response to a request that stayed on the box, as data, either way across. */
 export interface RealmResponse {
@@ -46,7 +47,7 @@ export interface RealmResponse {
 /** What the guest posts on `events`. */
 export type GuestEvent =
   /** An output write, through `source`: the host numbers them, both outputs together, in the order they come (a settle's numbers). */
-  | { readonly type: 'output'; readonly fd: 1 | 2; readonly source: OutputSource; readonly data: string | Uint8Array }
+  | { readonly type: 'output'; readonly fd: 1 | 2; readonly source: OutputSource; readonly writer: number; readonly data: string | Uint8Array }
   /** The program's loop ran empty, and it would hear of a failed write: tell it once writes up to number `upTo` are made (output-settled). */
   | { readonly type: 'settle'; readonly upTo: number }
 
@@ -110,7 +111,7 @@ export function isGuestEvent(value: unknown): value is GuestEvent {
   if (isEgressGuestEvent(value)) return true;
   if (!record(value)) return false;
   switch (value.type) {
-    case 'output': return (value.fd === 1 || value.fd === 2) && isOutputSource(value.source) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
+    case 'output': return (value.fd === 1 || value.fd === 2) && isOutputSource(value.source) && Number.isSafeInteger(value.writer) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
     case 'settle': return Number.isSafeInteger(value.upTo);
     case 'fetch':
       return Number.isSafeInteger(value.id) && Number.isSafeInteger(value.port) && typeof value.url === 'string'
@@ -139,7 +140,7 @@ export function isHostEvent(value: unknown): value is HostEvent {
         && (value.event.oldPath === undefined || typeof value.event.oldPath === 'string')
         && typeof value.event.timestamp === 'number';
     case 'output-failed':
-      return (value.fd === 1 || value.fd === 2) && typeof value.code === 'string' && typeof value.pipe === 'boolean' && isOutputSource(value.source);
+      return (value.fd === 1 || value.fd === 2) && typeof value.code === 'string' && typeof value.pipe === 'boolean' && isOutputSource(value.source) && Number.isSafeInteger(value.writer);
     case 'output-settled': return Number.isSafeInteger(value.seq);
     case 'stdin':
       return Number.isSafeInteger(value.id) && (value.data === null || value.data instanceof Uint8Array || value.withdrawn === true

@@ -87,6 +87,14 @@ const cases = {
     'printf x | node {prog}'],
   'tla.mjs': ["process.on('exit', (code) => { console.log('exit', code); process.exitCode = 4; }); await new Promise(() => {});",
     'node {prog} 2>/dev/null; echo status $?'],
+  // A write's failure is the stream's that wrote it: an unused WriteStream of the descriptor does not hear it,
+  // and one the program made that listens for it is heard before the program ends.
+  'epipe.js': ["new (require('tty').WriteStream)(1); process.stdout.on('error', (e) => require('fs').writeFileSync('epipe.txt', e.code)); setTimeout(() => process.stdout.write('x'.repeat(100000)), 300);",
+    'rm -f epipe.txt st.txt; { node {prog}; echo "status $?" > st.txt; } | true; cat epipe.txt st.txt'],
+  'ttyepipe.js': ["const w = new (require('tty').WriteStream)(1); w.on('error', () => { process.exitCode = 7; }); setTimeout(() => w.write('x'.repeat(100000)), 300);",
+    'rm -f st.txt; { node {prog}; echo "status $?" > st.txt; } | true; cat st.txt'],
+  'rawcooked.js': ["const r = new (require('tty').ReadStream)(0); r.on('error', (e) => console.log('error', e.code)); r.setRawMode(false); console.log('cooked ok', r.isRaw); r.setRawMode(true); console.log('raw', r.isRaw); r.setRawMode(false); console.log('cooked again', r.isRaw); r.destroy();",
+    'printf x | node {prog}'],
   'whole.js': ["const all = require('fs').readFileSync(0, 'utf8'); console.log(JSON.stringify(all)); process.stdin.on('data', (c) => console.log('more', String(c))).on('end', () => console.log('end'));",
     "printf 'all of it' | node {prog}"],
   'empty.js': ["process.stdin.on('data', (c) => console.log('data', String(c))).on('end', () => console.log('end'));",
@@ -174,6 +182,11 @@ try {
   // reader in the line gets the next line.
   await ws.fs.writeFile('/home/user/rawexit.js', "process.stdin.setRawMode(true); console.log('raw on'); process.exit(0);");
   await ws.fs.writeFile('/home/user/pending.js', "process.stdin.once('data', () => {}); setTimeout(() => { console.log('bye'); process.exit(0); }, 100);");
+  // One that changed the mode it inherited leaves the one it inherited.
+  await ws.fs.writeFile('/home/user/toggle.js', "process.stdin.setRawMode(true); process.stdin.setRawMode(false); console.log('toggled'); process.stdin.destroy();");
+  terminalOutput = '';
+  await within(10_000, shell.executeLine('stty raw; node toggle.js; stty; stty sane'), 'a program in an inherited raw terminal');
+  assert.equal(/toggled[^]*?\b(raw|cooked)\b/.exec(terminalOutput)?.[1], 'raw', `the mode it inherited: ${JSON.stringify(terminalOutput.slice(-300))}`);
   for (const [program, marker] of [['rawexit.js', 'raw on'], ['pending.js', 'bye']]) {
     terminalOutput = '';
     const line = shell.executeLine(`node ${program}; head -n1`);
@@ -191,10 +204,11 @@ try {
   // ── a lifo CommonJS command (no oracle: a Node process is not one) ────────
   try {
     await ws.fs.mkdir('/home/user/pkg', { recursive: true });
-    await ws.fs.writeFile('/home/user/pkg/reader.js', "module.exports = async () => { process.on('exit', (code) => console.log('exit', code)); process.stdin.resume(); process.stdin.on('data', (c) => console.log('data', String(c).trim())); await new Promise((resolve) => setTimeout(resolve, 50)); return 3; };\n");
+    await ws.fs.writeFile('/home/user/pkg/late.mjs', "export const value = 'late';\n");
+    await ws.fs.writeFile('/home/user/pkg/reader.js', "module.exports = async () => { process.on('exit', (code) => console.log('exit', code, require('./late.mjs').value)); process.stdin.resume(); process.stdin.on('data', (c) => console.log('data', String(c).trim())); await new Promise((resolve) => setTimeout(resolve, 50)); return 3; };\n");
     ws.registry.register('reader', createLifoCommand('/home/user/pkg/reader.js', ws.filesystem.view({ pid: 900, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } })));
     const ran = await within(30_000, ws.exec('{ sleep 1; echo late; } | reader; echo status $?', { cwd: '/home/user' }), 'reader');
-    assert.equal(ran.stdout, 'exit 3\nstatus 3\n', 'its process hears exit with its status, and its read pending at its end is withdrawn, not an error');
+    assert.equal(ran.stdout, 'exit 3 late\nstatus 3\n', 'its process hears exit with its status (a listener may still load a module), and its read pending at its end is withdrawn, not an error');
     assert.equal(ran.stderr, '');
   } catch (error) {
     failed.push(`a lifo CommonJS command: ${error.message}`);

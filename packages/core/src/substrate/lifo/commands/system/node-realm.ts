@@ -232,7 +232,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
     settleUpTo = 0;
     post({ type: 'output-settled', seq: lastSettled });
   };
-  const write = (fd: 1 | 2, source: OutputSource, data: string | Uint8Array) => {
+  const write = (fd: 1 | 2, source: OutputSource, writer: number, data: string | Uint8Array) => {
     const seq = ++lastQueued;
     written = written.then(async () => {
       try {
@@ -240,7 +240,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
         else await writerOf(fd).write(data);
       } catch (error) {
         const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
-        const failure: OutputFailure = { fd, code: typeof code === 'string' ? code : 'EIO', pipe: ctx.isFdPipe?.(fd) === true, source };
+        const failure: OutputFailure = { fd, code: typeof code === 'string' ? code : 'EIO', pipe: ctx.isFdPipe?.(fd) === true, source, writer };
         if (source === 'stream') streamFailures.push(failure);
         post({ type: 'output-failed', ...failure });
       }
@@ -274,15 +274,33 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   // taken in the order asked for. A piece it left waiting for when it ended
   // is withdrawn, so what is typed next is the shell's, not swallowed.
   const ended = new AbortController();
-  // The terminal's mode as the program left it: a program's end restores it, as a process's end restores its tty's.
-  let rawMode = false;
+  // The terminal's mode before the program first changed it, which its end restores, as libuv restores the
+  // termios it saved (uv_tty_reset_mode); undefined while it has changed nothing.
+  let entryRawMode: boolean | undefined;
   let stdinAtEnd = false;
-  let stdinReads: Promise<unknown> = Promise.resolve();
-  const fromStdin = <T>(read: () => Promise<T>): Promise<T> => {
-    const next = stdinReads.then(read);
-    stdinReads = next.catch(() => {});
-    return next;
-  };
+  // Reads waiting for their turn; one `signal` withdraws leaves at once, taking nothing.
+  const stdinQueue: Array<() => void> = [];
+  let stdinBusy = false;
+  const fromStdin = <T>(read: () => Promise<T>, signal?: AbortSignal): Promise<T> => new Promise<T>((resolve, reject) => {
+    if (signal?.aborted) { reject(signal.reason); return; }
+    const leave = () => {
+      const at = stdinQueue.indexOf(turn);
+      if (at < 0) return;
+      stdinQueue.splice(at, 1);
+      reject(signal?.reason);
+    };
+    const turn = () => {
+      signal?.removeEventListener('abort', leave);
+      stdinBusy = true;
+      read().then(resolve, reject).finally(() => {
+        stdinBusy = false;
+        stdinQueue.shift()?.();
+      });
+    };
+    if (!stdinBusy) { turn(); return; }
+    signal?.addEventListener('abort', leave, { once: true });
+    stdinQueue.push(turn);
+  });
   /** fd 0's next piece, never an empty one, until `signal` ends: a read withdrawn takes nothing. */
   const stdinPiece = (signal: AbortSignal): Promise<Uint8Array | null> => fromStdin(async () => {
     const stdin = ctx.stdin;
@@ -293,7 +311,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
       if (piece === null) stdinAtEnd = true;
       if (piece === null || piece.length > 0) return piece;
     }
-  });
+  }, signal);
   /** The program's reads of fd 0 in flight, each withdrawn when it cancels or ends. */
   const stdinInFlight = new Map<number, AbortController>();
   const services: RealmServices = {
@@ -305,7 +323,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
     }),
     fdKind: (fd) => (ctx.isFdTerminal?.(fd) ? 'terminal' : ctx.isFdPipe?.(fd) ? 'pipe' : 'other'),
     setRawMode: (on) => {
-      rawMode = on;
+      entryRawMode ??= ctx.getRawMode?.() ?? false;
       ctx.setRawMode?.(on);
     },
     listen: (port) => {
@@ -346,7 +364,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
       if (!isGuestEvent(event)) return;
       switch (event.type) {
         case 'output':
-          write(event.fd, event.source, event.data);
+          write(event.fd, event.source, event.writer, event.data);
           return;
         case 'settle':
           settleUpTo = event.upTo;
@@ -401,7 +419,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
 
   const end = await realm.ended;
   ended.abort();
-  if (rawMode) ctx.setRawMode?.(false);
+  if (entryRawMode !== undefined && ctx.getRawMode?.() !== entryRawMode) ctx.setRawMode?.(entryRawMode);
   ctx.signal.removeEventListener('abort', abort);
   for (const port of ports) kernel?.portRegistry.delete(port);
   for (const respond of pending.values()) respond(null);

@@ -203,8 +203,8 @@ async function executeCjsCommand(
   let mask = ctx.cred.umask;
   // fd 0 a piece at a time: a read still waiting when the command ends is withdrawn.
   const ended = new AbortController();
-  // The terminal's mode as the command left it: its end restores it.
-  let rawMode = false;
+  // The terminal's mode before the command first changed it, which its end restores (uv_tty_reset_mode).
+  let entryRawMode: boolean | undefined;
   const stdin = ctx.stdin;
   const nodeCtx: NodeContext = {
     filesystem: synchronousFilesystem(ctx.vfs, () => mask),
@@ -234,7 +234,7 @@ async function executeCjsCommand(
         isatty: (fd) => ctx.isFdTerminal?.(fd) ?? false,
         isPipe: (fd) => ctx.isFdPipe?.(fd) ?? false,
         setRawMode: (on) => {
-          rawMode = on;
+          entryRawMode ??= ctx.getRawMode?.() ?? false;
           ctx.setRawMode?.(on);
         },
       },
@@ -248,17 +248,10 @@ async function executeCjsCommand(
   const scope = { process, console, global: { process, Buffer, console } };
   const loader = createCjsLoader(nodeCtx, scope);
   try {
-    const code = await commandsRunning().run(scope.process, () => runCjsCommand(entryPath, source, ctx, lifo, nodeCtx, loader));
-    // Its process hears 'exit' with the status it ends with, as a Node process does.
-    try {
-      return scope.process.exitWith(code, true);
-    } catch (error) {
-      await ctx.stderr.write(error instanceof Error ? `${error.stack || error.message}\n` : `${String(error)}\n`);
-      return 1;
-    }
+    return await commandsRunning().run(scope.process, () => runCjsCommand(entryPath, source, ctx, lifo, nodeCtx, loader, scope.process));
   } finally {
     ended.abort();
-    if (rawMode) ctx.setRawMode?.(false);
+    if (entryRawMode !== undefined && ctx.getRawMode?.() !== entryRawMode) ctx.setRawMode?.(entryRawMode);
   }
 }
 
@@ -314,26 +307,41 @@ async function runCjsCommand(
   lifo: LifoAPI,
   nodeCtx: NodeContext,
   loader: ReturnType<typeof createCjsLoader>,
+  process: CommandProcess,
 ): Promise<number> {
   let native: Awaited<ReturnType<typeof createNativeEsmLoader>> | undefined;
-  try {
-    native = await createNativeEsmLoader(nodeCtx, loader);
-    // Its own source, already read: an entry with no dependencies needs no synchronous read at all.
-    const exported = loader.load(entryPath, { source, esm: false });
-    const handler = typeof exported === 'function'
-      ? exported
-      : (exported as Record<string, unknown> | null)?.default;
-
-    if (typeof handler !== 'function') {
-      await ctx.stderr.write(`lifo: ${entryPath} does not export a command function\n`);
-      return 1;
-    }
-    const code = await (handler as (c: CommandContext, l: LifoAPI) => Promise<number>)(ctx, lifo);
-    return typeof code === 'number' ? code : 0;
-  } catch (e) {
+  const failed = async (e: unknown): Promise<number> => {
     if (e instanceof ProcessExitError) return e.exitCode;
     await ctx.stderr.write(e instanceof Error ? `${e.stack || e.message}\n` : `${String(e)}\n`);
     return 1;
+  };
+  try {
+    let code: number;
+    try {
+      native = await createNativeEsmLoader(nodeCtx, loader);
+      // Its own source, already read: an entry with no dependencies needs no synchronous read at all.
+      const exported = loader.load(entryPath, { source, esm: false });
+      const handler = typeof exported === 'function'
+        ? exported
+        : (exported as Record<string, unknown> | null)?.default;
+
+      if (typeof handler !== 'function') {
+        await ctx.stderr.write(`lifo: ${entryPath} does not export a command function\n`);
+        code = 1;
+      } else {
+        const returned = await (handler as (c: CommandContext, l: LifoAPI) => Promise<number>)(ctx, lifo);
+        code = typeof returned === 'number' ? returned : 0;
+      }
+    } catch (e) {
+      code = await failed(e);
+    }
+    // Its process hears 'exit' with the status it ends with, as a Node process does, while its
+    // modules can still be loaded (a listener may require one).
+    try {
+      return process.exitWith(code, true);
+    } catch (e) {
+      return failed(e);
+    }
   } finally {
     native?.dispose();
   }

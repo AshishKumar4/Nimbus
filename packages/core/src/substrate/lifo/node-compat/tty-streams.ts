@@ -25,10 +25,13 @@ export interface ProgramStdio {
   readonly env: Record<string, string>;
 }
 
+/** Made by the program's own process.stdout or process.stderr, whose writer is its descriptor's first: not a WriteStream the program makes. */
+const STANDARD = Symbol('standard stream');
+
 /** The tty module, as Node's is: its streams and isatty. */
 export interface TtyModule {
   readonly ReadStream: new (fd: number) => Readable;
-  readonly WriteStream: new (fd: number) => Writable;
+  readonly WriteStream: new (fd: number, standard?: typeof STANDARD) => Writable;
   isatty(fd: number): boolean;
 }
 
@@ -38,6 +41,8 @@ export interface ProgramTty {
   stdin(): Readable;
   stdout(): Writable;
   stderr(): Writable;
+  /** Whether a WriteStream the program made listens for its writes' failures. */
+  writersHear(): boolean;
 }
 
 const programs = new WeakMap<ProgramStdio, ProgramTty>();
@@ -62,11 +67,13 @@ function createTty(stdio: ProgramStdio): ProgramTty {
   let stdout: Writable | undefined;
   let stderr: Writable | undefined;
   const isatty = (fd: number): boolean => Number.isInteger(fd) && fd >= 0 && fd <= 2 && stdio.terminal?.isatty(fd) === true;
-  const ttyModule = (): TtyModule => module ??= ttyClasses(stdio, isatty);
+  // The WriteStreams the program made, until they close.
+  const writers = new Set<Writable>();
+  const ttyModule = (): TtyModule => module ??= ttyClasses(stdio, isatty, writers);
   const standardOutput = (fd: 1 | 2): Writable => {
     const output = fd === 1 ? stdio.stdout : stdio.stderr;
     if (!isatty(fd)) return standardStream(output, fd);
-    return asStandardStream(new (ttyModule().WriteStream)(fd), fd, output);
+    return asStandardStream(new (ttyModule().WriteStream)(fd, STANDARD), fd, output);
   };
   return {
     get module() { return ttyModule(); },
@@ -76,6 +83,7 @@ function createTty(stdio: ProgramStdio): ProgramTty {
       : Object.assign(joinStandardInput(new (realm.getBuiltinModule('node:stream').Readable)(), stdio.input), { fd: 0 }),
     stdout: () => stdout ??= standardOutput(1),
     stderr: () => stderr ??= standardOutput(2),
+    writersHear: () => [...writers].some((writer) => writer.listenerCount('error') > 0),
   };
 }
 
@@ -94,7 +102,7 @@ function ttyInitFailed(): Error {
   return nodeSystemError('ERR_TTY_INIT_FAILED', 'TTY initialization failed', { errno: -22, code: 'EINVAL', message: 'invalid argument', syscall: 'uv_tty_init' });
 }
 
-function ttyClasses(stdio: ProgramStdio, isatty: (fd: number) => boolean): TtyModule {
+function ttyClasses(stdio: ProgramStdio, isatty: (fd: number) => boolean, writers: Set<Writable>): TtyModule {
   const { Readable, Writable } = realm.getBuiltinModule('node:stream');
   const readline = realm.getBuiltinModule('node:readline');
   /** A standard descriptor libuv can stream: the terminal or a pipe. */
@@ -114,7 +122,9 @@ function ttyClasses(stdio: ProgramStdio, isatty: (fd: number) => boolean): TtyMo
 
     setRawMode(mode: boolean): this {
       const raw = Boolean(mode);
-      // As uv_tty_set_mode on a descriptor that is not a terminal: its termios cannot be read.
+      // As uv_tty_set_mode: a mode the stream is already in is not set again.
+      if (raw === this.isRaw) return this;
+      // On a descriptor that is not a terminal, its termios cannot be read.
       if (!isatty(0)) {
         this.emit('error', Object.assign(new Error('setRawMode ENOTTY'), { errno: -25, code: 'ENOTTY', syscall: 'setRawMode' }));
         return this;
@@ -131,14 +141,20 @@ function ttyClasses(stdio: ProgramStdio, isatty: (fd: number) => boolean): TtyMo
     columns: number | undefined;
     rows: number | undefined;
 
-    constructor(fd: number) {
+    constructor(fd: number, standard?: typeof STANDARD) {
       if (!streamable(checkFd(fd))) throw ttyInitFailed();
-      const output = fd === 1 ? stdio.stdout : fd === 2 ? stdio.stderr : undefined;
+      const base = fd === 1 ? stdio.stdout : fd === 2 ? stdio.stderr : undefined;
+      // One the program makes writes as a writer of its own, and hears its own writes' failures, as Node's
+      // does each write's: process.stdout's are asStandardStream's to hear.
+      const output = standard === STANDARD ? base : base?.another?.() ?? base;
       super(outputSink(output));
-      // A write it made that fails later is its error, as one through process.stdout is that stream's.
-      output?.onFailure?.((error, source) => {
-        if (source === 'stream') this.destroy(error);
-      });
+      if (standard !== STANDARD) {
+        output?.onFailure?.((error, source) => {
+          if (source === 'stream') this.destroy(error);
+        });
+        writers.add(this);
+        this.once('close', () => writers.delete(this));
+      }
       if (isatty(fd)) [this.columns, this.rows] = windowSize();
     }
 
