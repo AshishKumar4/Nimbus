@@ -163,12 +163,14 @@ const filesystem = {
  * with what made it.
  */
 function realmOutput(fd) {
-    // Each writer of the descriptor hears its own writes' failures: 0 is process.stdout or process.stderr, and its console.
+    // Each writer of the descriptor hears its own writes' failures, and its end waits for its own writes (its last
+    // one's number): 0 is process.stdout or process.stderr, and its console.
     const listeners = new Map();
+    const lastWrites = new Map();
     let writers = 0;
     const through = (source, writer) => ({
-        write: (data) => postOutput(fd, source, writer, data),
-        writeBytes: (data) => postOutput(fd, source, writer, data),
+        write: (data) => { lastWrites.set(writer, postOutput(fd, source, writer, data)); },
+        writeBytes: (data) => { lastWrites.set(writer, postOutput(fd, source, writer, data)); },
     });
     const streamOf = (writer) => ({
         ...through('stream', writer),
@@ -182,11 +184,12 @@ function realmOutput(fd) {
                 }
                 // A writer no one hears any more: its writes' failures are no one's, as a destroyed stream's are in Node.
                 listeners.delete(writer);
+                lastWrites.delete(writer);
                 post({ type: 'heard', fd, writer });
             };
         },
         another: () => streamOf(++writers),
-        settled: () => outputSettled(postedOutput),
+        settled: () => outputSettled(lastWrites.get(writer) ?? 0),
     });
     return {
         stream: streamOf(0),
@@ -202,8 +205,9 @@ let postedOutput = 0;
 let settledOutput = 0;
 /** Whether the guest waits for the host to settle its writes (settle): the realm is held meanwhile. */
 let settling = false;
-/** What waits for writes up to a number to be settled. */
+/** What waits for writes up to a number to be settled, and the number the request outstanding names. */
 const settleWaits = [];
+let askedUpTo = 0;
 /** Once the host settled writes up to number `upTo`, a failure told first: asked of it, holding the realm meanwhile. */
 function outputSettled(upTo) {
     if (settledOutput >= upTo)
@@ -213,16 +217,20 @@ function outputSettled(upTo) {
         askSettle();
     });
 }
+/** Ask the host for the nearest number a wait needs: a request outstanding for a later one is lowered, so that no wait waits on writes after its own. */
 function askSettle() {
-    if (settling)
+    const upTo = settleWaits.reduce((nearest, wait) => Math.min(nearest, wait.upTo), Infinity);
+    if (settling && askedUpTo <= upTo)
         return;
     settling = true;
-    post({ type: 'settle', upTo: postedOutput });
+    askedUpTo = upTo;
+    post({ type: 'settle', upTo });
     holdWhileBusy();
 }
+/** Its number. */
 function postOutput(fd, source, writer, data) {
     post({ type: 'output', fd, source, writer, data });
-    postedOutput++;
+    return ++postedOutput;
 }
 const outputs = { 1: realmOutput(1), 2: realmOutput(2) };
 /** fd 0, a piece at a time, each read asked of the host and answered once; the readers waiting on it hold the realm. */
@@ -392,7 +400,7 @@ realm.on('uncaughtException', uncaught('uncaughtException'));
 realm.on('beforeExit', () => {
     if (settledOutput === postedOutput || programProcess?.hearsWriteFailures() !== true)
         return;
-    askSettle();
+    void outputSettled(postedOutput);
 });
 // The loop ran empty with the main script still waiting: an ES module whose
 // top-level await never settled.
