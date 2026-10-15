@@ -13,7 +13,7 @@
  *   - PARSE_SEMVER(v) → [major, minor, patch, prerelease[]] | null
  *   - COMPARE_SEMVER(a, b) → number
  *   - SATISFIES_RANGE(version, range) → boolean
- *   - RESOLVE_VERSION(versions, range) → string | null
+ *   - EXACT_VERSION(spec) → the one version spec names exactly | null
  *   - IS_SEMVER_RANGE(range)    → boolean
  *   - PICK_INSTALLED_VERSION(versions, distTags, range, staged) → string | null
  *   - STAGED_BINDING_VERSION(staged, range) → string | null
@@ -88,7 +88,7 @@ ${NPM_RESOLVE_SRC}
 function PARSE_SEMVER(v) { return __nimbusNpmResolve.parseSemver(v); }
 function COMPARE_SEMVER(a, b) { return __nimbusNpmResolve.compareSemver(a, b); }
 function SATISFIES_RANGE(version, range) { return __nimbusNpmResolve.satisfiesRange(version, range); }
-function RESOLVE_VERSION(versions, range) { return __nimbusNpmResolve.resolveVersion(versions, range); }
+function EXACT_VERSION(spec) { return __nimbusNpmResolve.exactVersion(spec); }
 function IS_SEMVER_RANGE(range) { return __nimbusNpmResolve.isSemverRange(range); }
 function PICK_INSTALLED_VERSION(versions, distTags, range, staged) { return __nimbusNpmResolve.pickInstalledVersion(versions, distTags, range, staged); }
 function STAGED_BINDING_VERSION(staged, range) { return __nimbusNpmResolve.stagedBindingVersion(staged, range); }

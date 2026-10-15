@@ -160,13 +160,14 @@ const REGISTRY = {
   console.log('  explicit alias to a listed package → the advisory follows the registry identity');
 }
 
-// ── Warm cache: the entry the first install wrote answers the second ─────
+// ── Warm cache: the entry the first install wrote answers the second, at
+//    the version it locked ───────────────────────────────────────────────
 {
   const { env, asked } = registry(REGISTRY);
   const first = await resolveOnePackumentInFacet(spec({ range: applySwaps({ esbuild: '^0.20.0' }).specs.esbuild }), env);
   const cachedEntries = first.cacheWrites;
   const second = await resolveOnePackumentInFacet(
-    spec({ range: applySwaps({ esbuild: '^0.20.0' }).specs.esbuild, cachedEntries }),
+    spec({ range: applySwaps({ esbuild: first.pkg.version }).specs.esbuild, cachedEntries }),
     env,
   );
   assert.deepEqual(asked, ['esbuild-wasm'], 'the second resolve is a cache hit — no second packument fetch');

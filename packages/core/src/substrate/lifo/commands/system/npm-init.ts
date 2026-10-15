@@ -30,7 +30,7 @@ import { normalizePackageJsonBin } from '../../../../runtime/npm-bin-map.js';
 import type { CommandContext } from '../types.js';
 import type { ProcessView as VFS } from '../../../../runtime/process-files.js';
 import { join } from '../../utils/path.js';
-import { loadNpmConfig, type NpmConfig } from './npm-config.js';
+import type { NpmConfig } from './npm-config.js';
 
 type Json = Record<string, unknown>;
 const isObject = (value: unknown): value is Json => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -99,16 +99,13 @@ export function npmInitializerPackage(initializer: string): string {
  * without, npm's own package.json, asked for on the command's input unless
  * under `yes`.
  */
-export async function npmInitCommand(ctx: CommandContext): Promise<number> {
+export async function npmInitCommand(ctx: CommandContext, config: NpmConfig): Promise<number> {
   const fail = async (error: unknown): Promise<number> => {
     if (!(error instanceof NpmError)) throw error;
     if (error.code) await ctx.stderr.write(`npm error code ${error.code}\n`);
     for (const line of error.message.split('\n')) await ctx.stderr.write(`npm error ${line}\n`);
     return 1;
   };
-  const config = await loadNpmConfig(ctx.vfs, ctx.cwd, ctx.env, ctx.args);
-  for (const warning of config.warnings) await ctx.stderr.write(`npm warn ${warning}\n`);
-  if (config.get('force')) await ctx.stderr.write('npm warn using --force Recommended protections disabled.\n');
   const [initializer, ...rest] = config.positionals.slice(1);
   if (initializer !== undefined) {
     let initializerPackage: string;

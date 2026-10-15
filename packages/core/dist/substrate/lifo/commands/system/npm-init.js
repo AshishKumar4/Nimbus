@@ -26,7 +26,6 @@ import validateLicense from 'validate-npm-package-license';
 import { packageJsonText } from '../../../../_shared/npm-tree.js';
 import { normalizePackageJsonBin } from '../../../../runtime/npm-bin-map.js';
 import { join } from '../../utils/path.js';
-import { loadNpmConfig } from './npm-config.js';
 const isObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 const NO_TEST = 'echo "Error: no test specified" && exit 1';
 const NO_README = 'ERROR: No README data found!';
@@ -89,7 +88,7 @@ export function npmInitializerPackage(initializer) {
  * without, npm's own package.json, asked for on the command's input unless
  * under `yes`.
  */
-export async function npmInitCommand(ctx) {
+export async function npmInitCommand(ctx, config) {
     const fail = async (error) => {
         if (!(error instanceof NpmError))
             throw error;
@@ -99,11 +98,6 @@ export async function npmInitCommand(ctx) {
             await ctx.stderr.write(`npm error ${line}\n`);
         return 1;
     };
-    const config = await loadNpmConfig(ctx.vfs, ctx.cwd, ctx.env, ctx.args);
-    for (const warning of config.warnings)
-        await ctx.stderr.write(`npm warn ${warning}\n`);
-    if (config.get('force'))
-        await ctx.stderr.write('npm warn using --force Recommended protections disabled.\n');
     const [initializer, ...rest] = config.positionals.slice(1);
     if (initializer !== undefined) {
         let initializerPackage;

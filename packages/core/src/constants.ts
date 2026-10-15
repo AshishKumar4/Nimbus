@@ -69,6 +69,8 @@ export const NIMBUS_VERSION = '2.0.0';
 const NODE_RELEASE = '22.22.3';
 export const NODE_VERSION = `v${NODE_RELEASE}`;
 export const NODE_VERSIONS = { node: NODE_RELEASE, v8: '12.4.254.21-node.56', modules: '127' };
+/** The npm this runtime's npm answers as (`npm --version`, npm's engine check). */
+export const NPM_VERSION = '10.0.0';
 export const ESBUILD_VERSION = '0.24.2';
 //
 // sql.js (Emscripten SQLite) version, backing the node:sqlite shim. The
@@ -348,6 +350,8 @@ export const SYSTEM_IDENTITY = {
   version: '#1 Nimbus',
   machine: 'wasm',
 } as const;
+/** What node reports of that system (process.platform and arch, os.platform() and arch()), and npm reads. */
+export const NODE_SYSTEM = { platform: 'linux', arch: 'x64' } as const;
 export const DEFAULT_HOME = '/home/user';
 export const DEFAULT_USER = 'user';
 export const DEFAULT_SHELL = '/bin/sh';

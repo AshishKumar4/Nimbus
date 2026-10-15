@@ -31,6 +31,8 @@ export interface ResolvedPackage {
   os?: string[];
   cpu?: string[];
   libc?: string[];
+  /** `engines` as published: what it asks of node and npm (npm's engine check, core npm-arborist/engines.ts). */
+  engines?: Readonly<Record<string, unknown>>;
   exports: any;
   main: string;
   module: string;

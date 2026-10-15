@@ -33,6 +33,52 @@ published independently in the `@nimbus-sh` npm scope.
   `statSync` reports. Each was accepted, or refused, where the session
   answered otherwise. While the process's view of the filesystem is being
   rebuilt, their async forms ask the session instead of refusing `EAGAIN`.
+- Added: `npm install` and `npm ci` check engines as npm does: the
+  project's (unless it declares `devEngines`) and every required package's
+  `engines`, a lock's packages included, against this runtime's Node and
+  npm, with npm's `npm warn EBADENGINE` warning for each mismatch, in npm's
+  order. Under `--engine-strict`, or an `.npmrc`'s `engine-strict=true` (as
+  `sv create` writes), the first mismatch fails the install with npm's
+  error, and nothing changes. An optional package whose engines exclude
+  this runtime is left out, as npm leaves it out. Before, no engine was
+  checked, and `--engine-strict` was refused.
+- Added: every `npm` command but a global one checks the project's
+  `devEngines` first, as npm does: npm's `EBADDEVENGINES` error ends it
+  (`onFail: "error"`, the default), npm's warning lets it run
+  (`onFail: "warn"`, or any under `--force`). `--force` now says npm's
+  "Recommended protections disabled" for every command, not only
+  `npm init`.
+- Fixed: `npm install --no-production` (and `--include=dev`, `--dev`,
+  `--also=dev`) installs devDependencies where `NODE_ENV=production` would
+  omit them, and `--optional=true` keeps optional dependencies
+  `--omit=optional` would leave out, as npm reads them.
+- Fixed: npm's defaults that npm takes from its own environment (`omit` from
+  `NODE_ENV`, `editor`, `shell`, `unicode`, `color`) come from the session's
+  environment, not the Worker's. The Worker's production build made
+  `npm ls`, `npm uninstall` and `npm init` read `omit=dev` as the default.
+- Fixed: a session's npm installs no longer take one registry's package for
+  another's. The session kept what a registry said of `name@version` (its
+  tarball, integrity and dependencies) under the name and version alone, so
+  an install against another registry (`--registry`, an `.npmrc`,
+  `NPM_REGISTRY`, or a process's own network) could install the first
+  registry's tarball. Each registry's answers, read through each network,
+  are now kept apart. What the session kept before is dropped once.
+- Fixed: a version range (`^2`) is resolved from the registry's versions, as
+  npm resolves it, never from the few versions a session happened to have
+  kept: a fresh `^2` came back 2.0.0 when 2.0.0 had been installed before,
+  with 2.1.0 published. An exact version (as a lockfile names) is still
+  answered from what the session kept.
+- Fixed: `npm install` and `npm ci` read their options as npm does, from
+  the command line, `npm_config_*` and the `.npmrc` files (project, user,
+  global), like `npm init`, `npm ls` and `npm uninstall` already did.
+  `--registry` (or an `.npmrc`'s `registry=`) was parsed and dropped: an
+  install went to the session's registry (`NPM_REGISTRY`, else
+  registry.npmjs.org) whatever was asked. Now npm's setting wins, and the
+  session's applies where npm names none. Options npm spells its own way
+  are read as npm reads them: `--global=false`, abbreviations, and `-p`,
+  which is `--parseable` to npm (it was taken as `--production`; use
+  `--omit=dev`). `bun install|add -p` still means production, and bun's
+  `-d`/`--dev` now save a dev dependency as bun does.
 - Fixed (lifo commands): a command's `process.exit(n)` writes nothing, as
   Node's does; it wrote `[process.exit] code=n` on the command's stderr for a
   non-zero `n`. lifo's `http` gives Readables, as Node's: a server's request

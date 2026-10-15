@@ -13,6 +13,7 @@ const libraries = {
   typeDescription: '@npmcli/config/lib/type-description.js',
   ini: 'ini',
   nopt: 'nopt',
+  npmInstallChecks: 'npm-install-checks',
   validateName: 'validate-npm-package-name',
 };
 const { module } = await compiledBodies({
