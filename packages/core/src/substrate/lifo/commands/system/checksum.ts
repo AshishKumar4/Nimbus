@@ -1,5 +1,6 @@
 import type { Command, CommandContext } from '../types.js';
 import { createHash } from 'node:crypto';
+import { crc32 } from '@nimbus-sh/platform/crc32.js';
 import { decodeLossless, encodeLossless, inputChunks, readAllInput, writeBytes } from '../../utils/bytes-io.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
 import { shellEscape } from '../../../../_shared/shell-quote.js';
@@ -136,15 +137,6 @@ const CRC_POSIX = (() => {
   }
   return table;
 })();
-const CRC_32B = (() => {
-  const table = new Uint32Array(256);
-  for (let i = 0; i < 256; i++) {
-    let c = i;
-    for (let k = 0; k < 8; k++) c = c & 1 ? (c >>> 1) ^ 0xedb88320 : c >>> 1;
-    table[i] = c >>> 0;
-  }
-  return table;
-})();
 
 /** A counting "hash": the value cksum/sum print, and the input's size. */
 interface Counter { update(bytes: Uint8Array): void; result(): { value: number; size: number } }
@@ -165,15 +157,16 @@ function crcPosix(): Counter {
   };
 }
 
+/** IEEE CRC-32 (zlib's), the platform's: each update continues the finished value before it. */
 function crc32b(): Counter {
-  let crc = 0xffffffff;
+  let crc = 0;
   let size = 0;
   return {
     update(bytes) {
-      for (const b of bytes) crc = (crc >>> 8) ^ CRC_32B[(crc ^ b) & 0xff];
+      crc = crc32(bytes, crc);
       size += bytes.length;
     },
-    result: () => ({ value: (crc ^ 0xffffffff) >>> 0, size }),
+    result: () => ({ value: crc, size }),
   };
 }
 
