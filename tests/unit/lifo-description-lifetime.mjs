@@ -65,6 +65,12 @@ class Backend extends MemoryVFS {
     if (this.failWriteBack && base(path).startsWith('nosync')) throw eio(`write '${path}'`);
     return super.writeFile(path, data, options);
   }
+  // Whole reads of each name: a whole read a mount cannot bound is not made.
+  wholeReads = new Map();
+  readFile(path) {
+    this.wholeReads.set(base(path), (this.wholeReads.get(base(path)) ?? 0) + 1);
+    return super.readFile(path);
+  }
   // grows-*: a stat answers the size the file had, and the file has grown since (another writer).
   stat(path, options) {
     const stat = super.stat(path, options);
@@ -180,13 +186,14 @@ try {
   backend.writeFile('/grows-s', grown);
   later.writeFile('/grows-a', grown);
   const view = ws.filesystem.view({ pid: 4242, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
-  for (const path of ['/m/grows-s', '/a/grows-a']) {
+  for (const [path, mount] of [['/m/grows-s', backend], ['/a/grows-a', later]]) {
     await assert.rejects(view.readFile(path, { maxBytes: 65536 }), (error) => error.code === 'EFBIG',
       `${path}: a whole read of a file grown past its stat is refused, not answered at its new size`);
+    assert.equal(mount.wholeReads.get(base(path)) ?? 0, 0, `${path}: and the mount is not asked for the whole file: it cannot bound the read`);
     const whole = await sh(`cat ${path} | wc -c`);
     assert.equal(whole.out.trim(), '100000', `${path}: cat reads it all, through a description`);
   }
-  console.log('  ✓ a whole read refuses a file grown past its stat, synchronous and awaited mounts alike');
+  console.log('  ✓ a bounded whole read is not made on a mount, which cannot bound it: synchronous and awaited alike');
 
   // ── one report a failure, and every description closed ─────────────────
   backend.writeFile('/badwrite-d', new Uint8Array());
