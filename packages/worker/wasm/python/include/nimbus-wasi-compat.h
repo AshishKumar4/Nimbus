@@ -1,4 +1,5 @@
-/* Declarations for the wasi-libc gaps nimbus-wasi-compat.c fills. Force-included
+/* Declarations for the wasi-libc gaps nimbus-wasi-compat.c and nimbus-libc's
+ * nimbus-fs.c (the identity calls: the session's credential) fill. Force-included
  * into every translation unit, so that third-party sources see them without
  * edits; the sysroot hides these behind __wasilibc_unmodified_upstream, which
  * cannot be defined selectively.
@@ -30,5 +31,12 @@ mode_t umask(mode_t);
 
 #ifdef __cplusplus
 }
+#else
+/* open(2) is nimbus-libc's (nimbus-fs.h): it makes a file with the mode asked
+ * for, under the live umask, which preview1 cannot carry. Mapped by name, as
+ * git's compat header maps it, with no header in scope; C only, because C++'s
+ * own headers name member functions open. */
+int nimbus_open(const char *path, int flags, ...);
+#define open(...) nimbus_open(__VA_ARGS__)
 #endif
 #endif /* NIMBUS_WASI_COMPAT_H */

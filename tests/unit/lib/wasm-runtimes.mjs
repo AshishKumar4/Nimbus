@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 
 // The source under Bun, the built package under Node.
-const { BASH_RUNNER, GIT_RUNNER } = await import(typeof process.versions.bun === 'string'
+const { BASH_RUNNER, CPYTHON_RUNNER, GIT_RUNNER } = await import(typeof process.versions.bun === 'string'
   ? '../../../packages/core/src/runtime/os-contracts.ts'
   : '../../../packages/core/dist/runtime/os-contracts.js');
 
@@ -36,8 +36,8 @@ export const RUNTIMES = [
     version: '3.13.14',
     license: 'PSF-2.0',
     entrypoints: [
-      { binName: 'python', runner: 'cpython-runner', args: [] },
-      { binName: 'python3', runner: 'cpython-runner', args: [] },
+      { binName: 'python', runner: CPYTHON_RUNNER, args: [] },
+      { binName: 'python3', runner: CPYTHON_RUNNER, args: [] },
     ],
     files: [
       ['share/cpython/python.wasm', `${WASM_DIR}python/python.wasm`],

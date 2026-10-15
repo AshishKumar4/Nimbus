@@ -7,7 +7,7 @@
  * the `latest` build. A runtime joins the npm set by gaining an `npm` entry.
  */
 
-import { BASH_RUNNER, GIT_RUNNER } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER, CPYTHON_RUNNER, GIT_RUNNER } from '@nimbus-sh/core/runtime/os-contracts.js';
 
 /**
  * Static per-runtime spec. Each entry says where to fetch the upstream
@@ -227,13 +227,18 @@ export const SPECS = {
   // -1: the same CPython 3.13.14 rebuilt by build-python.sh, now reproducible
   // (fixed stamps), at neutral build paths: 3.13.14's files carried the build
   // machine's paths (OpenSSL's directories, .pyc source paths, sysconfig).
-  'cpython/3.13.14-1': {
+  // -2: linked with nimbus-libc (the nimbus_fs and nimbus_proc imports), so
+  // its umask is the host's live one, a file is made with the mode asked for,
+  // and getuid is the session's; and a full name table refuses a new name.
+  'cpython/3.13.14-2': {
     license: 'PSF-2.0',
     wasi_namespace: 'wasi_snapshot_preview1',
     local_base: '../wasm/python',
     npm: {
       name: '@nimbus-sh/runtime-cpython',
       summary: 'CPython 3.13.14, cross-compiled to wasm32-wasi, with its stdlib',
+      // The first core whose cpython-runner gives the module nimbus_fs and nimbus_proc.
+      core: '>=0.21.0',
     },
     files: [
       { src: 'python.wasm',   vfs: 'share/cpython/python.wasm' },
@@ -260,8 +265,8 @@ export const SPECS = {
       // at this. Mozilla's bundle, as published by curl.se.
       { src: 'cacert.pem',     vfs: 'etc/ssl/cert.pem' },
       { src: 'STDLIB_MARKER', vfs: 'lib/python3.13/os.py' },
-      { src: 'BIN_MARKER', vfs: 'bin/python',  mode: 'exec', runner: 'cpython-runner', binName: 'python' },
-      { src: 'BIN_MARKER', vfs: 'bin/python3', mode: 'exec', runner: 'cpython-runner', binName: 'python3' },
+      { src: 'BIN_MARKER', vfs: 'bin/python',  mode: 'exec', runner: CPYTHON_RUNNER, binName: 'python' },
+      { src: 'BIN_MARKER', vfs: 'bin/python3', mode: 'exec', runner: CPYTHON_RUNNER, binName: 'python3' },
     ],
     license_text: PSF_LICENSE_NOTICE(),
     /** Source 'BIN_MARKER' is synthesised, not fetched. */
