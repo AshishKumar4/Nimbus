@@ -209,6 +209,7 @@ function readHeredocBodies(
   for (const heredoc of heredocs) {
     const bodyStart = i;
     const lines: string[] = [];
+    let terminated = false;
 
     while (i < input.length) {
       const line = readLine(input, i);
@@ -216,6 +217,7 @@ function readHeredocBodies(
       i = line.end;
 
       if (comparable === heredoc.delimiter) {
+        terminated = true;
         break;
       }
 
@@ -229,6 +231,7 @@ function readHeredocBodies(
       value: body,
       pos: bodyStart,
       heredocQuoted: heredoc.quoted,
+      heredocTerminated: terminated,
     });
   }
 

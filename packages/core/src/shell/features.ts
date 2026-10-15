@@ -32,6 +32,13 @@ export interface HeredocInfo {
   }>;
 }
 
+/**
+ * The here-documents `input` opens, when a body is still to come: null when
+ * it opens none, or every body and its terminator are there (a command
+ * recalled from history, which runs as it stands). The lexer is the one
+ * judge of a delimiter (an empty one, `<<''`, ends at an empty line) and of
+ * where a body ends.
+ */
 export function parseHeredoc(input: string): HeredocInfo | null {
   const tokens = lex(input);
   const delimiters: HeredocInfo['delimiters'] = [];
@@ -39,34 +46,13 @@ export function parseHeredoc(input: string): HeredocInfo | null {
     const token = tokens[i];
     if (token.kind === TokenKind.Heredoc || token.kind === TokenKind.HeredocStripTabs) {
       const delimiter = tokens[i + 1];
-      if (!delimiter || delimiter.kind !== TokenKind.Word || !delimiter.value) {
-        return null;
-      }
-      delimiters.push({
-        delimiter: delimiter.value,
-        stripTabs: token.kind === TokenKind.HeredocStripTabs,
-      });
+      if (!delimiter || delimiter.kind !== TokenKind.Word) return null;
+      delimiters.push({ delimiter: delimiter.value, stripTabs: token.kind === TokenKind.HeredocStripTabs });
     }
   }
-
-  if (delimiters.length === 0 || heredocBodiesComplete(input, delimiters)) return null;
+  const terminated = tokens.filter((token) => token.kind === TokenKind.HeredocBody && token.heredocTerminated === true).length;
+  if (delimiters.length === 0 || terminated >= delimiters.length) return null;
   return { command: input, delimiters };
-}
-
-/**
- * Whether `input` already holds every here-document's body and terminator,
- * in order, after its first line: a command recalled from history, which
- * runs as it stands rather than reading its bodies again.
- */
-function heredocBodiesComplete(input: string, delimiters: HeredocInfo['delimiters']): boolean {
-  const lines = input.split('\n').slice(1);
-  let at = 0;
-  for (const { delimiter, stripTabs } of delimiters) {
-    while (at < lines.length && (stripTabs ? lines[at].replace(/^\t+/, '') : lines[at]) !== delimiter) at++;
-    if (at === lines.length) return false;
-    at++;
-  }
-  return true;
 }
 
 export class HeredocHandler {
@@ -80,8 +66,8 @@ export class HeredocHandler {
   // ── Accumulation state ──
   private active = false;
   private heredocInfo: HeredocInfo | null = null;
-  private currentHeredocIndex = 0;
-  private bodies: string[][] = [];
+  /** The lines typed after the command, as typed: the lexer reads the bodies from them. */
+  private lines: string[] = [];
 
   /** Safety limit to prevent unbounded memory growth */
   private static readonly MAX_HEREDOC_LINES = 50000;
@@ -105,8 +91,7 @@ export class HeredocHandler {
   private _cancel(): void {
     this.active = false;
     this.heredocInfo = null;
-    this.currentHeredocIndex = 0;
-    this.bodies = [];
+    this.lines = [];
     this.submission = undefined;
   }
 
@@ -175,8 +160,8 @@ export class HeredocHandler {
 
     this.shell.executeLine = async (line: string, submission?: ShellInputSubmission): Promise<void> => {
       if (this.active) {
-        const current = this._currentDelimiter();
-        const rawLine = (current?.stripTabs && this.shell.lineBuffer)
+        // A `<<-` body's tabs are the lexer's to strip: the line as it was typed.
+        const rawLine = (this.heredocInfo?.delimiters.some((delimiter) => delimiter.stripTabs) && this.shell.lineBuffer)
           ? this.shell.lineBuffer
           : line;
         await this._accumulateLine(rawLine);
@@ -223,40 +208,31 @@ export class HeredocHandler {
   private async _startAccumulation(info: HeredocInfo): Promise<void> {
     this.active = true;
     this.heredocInfo = info;
-    this.currentHeredocIndex = 0;
-    this.bodies = info.delimiters.map(() => []);
+    this.lines = [];
     this.shell.printContinuationPrompt();
     await this._drainPasteQueue();
   }
 
+  /** The command and every line typed after it, each ended: what runs once the lexer finds every body ended. */
+  private _script(): string {
+    return `${this.heredocInfo?.command ?? ''}\n${this.lines.map((line) => `${line}\n`).join('')}`;
+  }
+
   /**
-   * Process a single heredoc content line (non-recursive).
-   * Returns true if this was the delimiter (heredoc is complete).
+   * Take one line after the command (non-recursive). True when the command is
+   * whole (every body ended), or the line limit stopped the collection.
    */
   private _processLine(line: string): boolean {
-    const delimiter = this._currentDelimiter();
-    if (!delimiter) return true;
-
-    const cleaned = line.replace(/[\r\n]+$/, '');
-
-    const checkLine = delimiter.stripTabs ? stripLeadingTabs(cleaned) : cleaned;
-    if (checkLine === delimiter.delimiter) {
-      this.currentHeredocIndex++;
-      return this.currentHeredocIndex >= this.bodies.length;
-    }
-
-    const lines = this.bodies[this.currentHeredocIndex];
-    if (!lines || lines.length >= HeredocHandler.MAX_HEREDOC_LINES) {
+    if (this.heredocInfo === null) return true;
+    if (this.lines.length >= HeredocHandler.MAX_HEREDOC_LINES) {
       this.terminal.write(`\x1b[31mheredoc: exceeded ${HeredocHandler.MAX_HEREDOC_LINES} line limit\x1b[0m\r\n`);
       this.shell.rejectQueuedInput();
       this._cancel();
       this._printPrompt();
       return true; // stop accumulation
     }
-
-    const processedLine = delimiter.stripTabs ? stripLeadingTabs(cleaned) : cleaned;
-    lines.push(processedLine);
-    return false;
+    this.lines.push(line.replace(/[\r\n]+$/, ''));
+    return parseHeredoc(this._script()) === null;
   }
 
   /**
@@ -302,19 +278,11 @@ export class HeredocHandler {
     if (!info) return;
     const submission = this.submission;
     this.submission = undefined;
-    const script = [
-      info.command,
-      ...info.delimiters.flatMap((delimiter, index) => {
-        const lines = this.bodies[index] ?? [];
-        return lines.length > 0 ? [lines.join('\n'), delimiter.delimiter] : [delimiter.delimiter];
-      }),
-      '',
-    ].join('\n');
+    const script = this._script();
 
     this.active = false;
     this.heredocInfo = null;
-    this.currentHeredocIndex = 0;
-    this.bodies = [];
+    this.lines = [];
 
     try {
       await this._executeOriginalLine(script, submission);
@@ -324,16 +292,6 @@ export class HeredocHandler {
       await this.shell.drainPasteQueue();
     }
   }
-
-  private _currentDelimiter(): HeredocInfo['delimiters'][number] | null {
-    return this.heredocInfo?.delimiters[this.currentHeredocIndex] ?? null;
-  }
-}
-
-function stripLeadingTabs(input: string): string {
-  let i = 0;
-  while (input[i] === '\t') i++;
-  return input.slice(i);
 }
 
 function errorMessage(error: unknown): string {

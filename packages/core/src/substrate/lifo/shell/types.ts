@@ -36,6 +36,7 @@ export interface Token {
   pos: number;
   fd?: number;       // only for redirection tokens with an explicit fd prefix
   heredocQuoted?: boolean; // only for HeredocBody tokens
+  heredocTerminated?: boolean; // only for HeredocBody tokens: its delimiter line was found
   parts?: WordPart[];  // only for Word tokens
 }
 
