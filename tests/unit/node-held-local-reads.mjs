@@ -33,7 +33,9 @@ const STAT_FIELDS = ['mode', 'size', 'ino', 'uid', 'gid', 'nlink', 'mtimeMs', 'c
  * held `out` (taken by writing there) unless `take` is false. `strip`: the
  * session's grants come without their certificate (a session before them).
  * `slow`: ms each write wave's answer is held back after it commits.
- * `relists`: a gate the namespace's relists wait on, when set.
+ * `counted.lose`: how many write waves' answers are lost after they commit
+ * (the client sends them again). `counted.relistGate`: a gate the
+ * namespace's relists wait on, when set.
  */
 async function boot({ take = true, strip = false, slow = 0 } = {}) {
   const authority = createAuthority();
@@ -43,7 +45,7 @@ async function boot({ take = true, strip = false, slow = 0 } = {}) {
   authority.kfs.writeFile('home/user/app/out/seeded.txt', 'seeded');
   const root = authority.rawVfs.as(CRED_KERNEL);
   root.mkdir('home/user/app/locked', { mode: 0o700 });
-  const counted = { asked: 0, relistGate: null };
+  const counted = { asked: 0, relistGate: null, lose: 0 };
   let forward;
   const handle = facetSupervisor(authority, {
     fsAcquired: async (acquire, op, args) => {
@@ -54,13 +56,15 @@ async function boot({ take = true, strip = false, slow = 0 } = {}) {
       if (counted.relistGate !== null) await counted.relistGate.promise;
       return forward('fsList', args);
     },
-    ...(slow > 0 ? {
-      writeBatchStream: async (...args) => {
-        const answer = await forward('writeBatchStream', args);
-        await sleep(slow);
-        return answer;
-      },
-    } : {}),
+    writeBatchStream: async (...args) => {
+      const answer = await forward('writeBatchStream', args);
+      if (counted.lose > 0) {
+        counted.lose--;
+        throw Object.assign(new Error('Network connection lost.'), { retryable: true });
+      }
+      if (slow > 0) await sleep(slow);
+      return answer;
+    },
     ...(strip ? {
       fsAcquireExclusiveMutation: async (...args) => {
         const { certificate, ...granted } = await forward('fsAcquireExclusiveMutation', args);
@@ -189,14 +193,16 @@ await runScenarios(import.meta.path, {
       (fs) => fs.promises.rename(`${OUT}/seeded.txt`, `${OUT}/moved.txt`),
       (fs) => fs.promises.unlink(`${OUT}/seeded.txt`),
       (fs) => fs.promises.rmdir(`${OUT}/sub`),
+      (fs, counted) => { counted.lose = 1; return fs.promises.writeFile(`${OUT}/answered-again.txt`, 'a'); },
     ]) {
-      const { authority, fs } = await boot();
+      const { authority, fs, counted } = await boot();
       await fs.promises.mkdir(`${OUT}/sub`).catch(() => {});
       await globalThis.__nimbusProcessFs.flush();
       await fs.promises.stat(OUT);
       await sleep(5);
-      await change(fs);
+      await change(fs, counted);
       await globalThis.__nimbusProcessFs.flush();
+      assert.equal(counted.lose, 0, 'the answer to lose was never sent');
       const local = await fs.promises.stat(OUT);
       const session = await authority.peer.stat('home/user/app/out');
       assert.deepEqual(

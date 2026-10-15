@@ -544,6 +544,34 @@ for (const change of [
   await c.settle();
 }
 
+// ── A change of the process's own is vouched for in no view short of the
+//    session's revision as it answered, its first answer lost or not
+//    (held-local-reads) ──
+// Red before: a re-sent wave's answer skips what the lost attempt committed
+// and carries no mutation for it, so a view from before the change was
+// still vouched for, and a held stat answered a directory's old times.
+for (const lose of [0, 1]) {
+  const s = session();
+  s.kernel.mkdir('home/user/v', { mode: 0o755 });
+  s.kernel.chown('home/user/v', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  const c = client(s, { grantAfter: 1, grantIdleMs: 60_000, recallPollMs: 100 });
+  c.holder('home/user/v/x');
+  const grant = await until(() => c.holder('home/user/v/x'), 'the grant');
+  const view = { epoch: grant.certificate.epoch, rev: s.engine.revision() };
+  assert.equal(c.vouch('home/user/v', view), 'held', 'a view at the session\'s revision was not vouched for');
+  let lost = lose;
+  s.fault = async (deliver) => {
+    const answer = await deliver();
+    if (lost-- > 0) throw Object.assign(new Error('Network connection lost.'), { retryable: true });
+    return answer;
+  };
+  await c.submit(writeFile('home/user/v/made', 'm'));
+  assert.equal(c.stats().resends, lose);
+  assert.equal(c.vouch('home/user/v', view), undefined, 'a view from before the change was vouched for');
+  assert.equal(c.vouch('home/user/v', { ...view, rev: s.engine.revision() }), 'held');
+  await c.settle();
+}
+
 // ── An idle grant is given back; a refused subtree is not asked for again ──
 {
   const s = session();

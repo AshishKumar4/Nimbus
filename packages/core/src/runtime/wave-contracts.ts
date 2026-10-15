@@ -46,6 +46,12 @@ export interface WriteBatchStreamProgress {
   /** Each call, rename, truncate and attribute change the wave committed here (not on a mount): what its maker dates its own copy by. */
   mutations?: WaveMutation[];
   /**
+   * The session's revision as it answers: every op of the wave committed
+   * here, in this attempt or an earlier one whose answer was lost, is at or
+   * before it.
+   */
+  revision?: number;
+  /**
    * Answered at its commit while a commit of its writer's is held for its
    * publication (SqliteVFS.as's `continues`; its own, or, for a resend, the
    * attempt's before it): what its writer's runtime waits for before an
