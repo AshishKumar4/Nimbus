@@ -30,7 +30,7 @@ import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { ReplAdapter, ReplPushResult } from './repl-session.js';
 import { ReplSession } from './repl-session.js';
 import { buildRubyPreamble } from '@nimbus-sh/core/runtime/ruby-runner.js';
-import { CRED_KERNEL, type NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, type NimbusFilesystemAuthority, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { withHostView } from '@nimbus-sh/core/runtime/process-files.js';
 import { exists } from '@nimbus-sh/core/vfs/vfs.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
@@ -52,6 +52,8 @@ export interface RubyReplDeps {
    * the caller's, as the caller sees it.
    */
   pid: number;
+  /** The invoking process's credential: the prompt's filesystem is its resident one, as a one-shot run's is. */
+  cred: VfsCred;
   /** The caller's HOME. */
   home: string;
   /** The shell's working directory: where the prompt starts. */
@@ -215,8 +217,8 @@ class RubyReplAdapter implements ReplAdapter {
   private async submitFacetFn(userCode: string): Promise<RubyReplFacetResult> {
     const { pool, wasmBytesAB } = this;
     if (!pool || !wasmBytesAB) throw new Error('Ruby REPL is not initialized');
-    const { home, cwd, binName } = this.deps;
-    const step: RubyReplStep = { userCode, home, cwd, binName, supervisorPid: this.deps.pid };
+    const { home, cwd, binName, cred } = this.deps;
+    const step: RubyReplStep = { userCode, home, cwd, binName, supervisorPid: this.deps.pid, cred };
     return await pool.submit(RUBY_REPL_TASK, step, {
       wasmModules: { 'ruby+stdlib.wasm': wasmBytesAB },
     });

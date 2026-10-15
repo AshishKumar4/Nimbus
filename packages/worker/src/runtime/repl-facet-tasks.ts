@@ -1,5 +1,6 @@
 /** REPL entries compiled without the host's interpreter/bootstrap modules. */
 import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
+import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 /**
  * Facet-side, request-shaped: compiled at build time into the
  * pool's fetch entrypoint, so it captures nothing and names no import —
@@ -41,6 +42,8 @@ export interface RubyReplStep {
     cwd: string;
     binName: string;
     supervisorPid: number;
+    /** The invoking process's credential: its filesystem is its resident one, as a one-shot run's is. */
+    cred: VfsCred;
 }
 export interface RubyReplFacetResult {
     stdout: string;
@@ -82,12 +85,14 @@ export function rubyReplStepFacetFn(args: RubyReplStep, facetEnv: {
         Reflect.set(globalThis, '__nimbusRubyPromptStarted', true);
         const r = await fn({
             userCode: args.userCode,
+            requires: [],
             rbArgv: ['ruby', '-e', args.userCode],
             userEnv: { HOME: args.home },
             progName: 'ruby',
             binName: args.binName,
             cwd: started ? undefined : args.cwd,
             supervisorPid: args.supervisorPid,
+            cred: args.cred,
             outputControls: [{ key: 'incomplete', prefix: '__NIMBUS_INCOMPLETE__' }],
         });
         return {
