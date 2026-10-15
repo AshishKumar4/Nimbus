@@ -342,6 +342,8 @@ interface Views {
     refs: Map<string, WeakRef<CompositeVFS>>;
     gone: FinalizationRegistry<string>;
 }
+/** Where the namespace's own device numbers for mounts start (see Mount.dev): an entry's dev at or past it is on a mount. */
+export declare const ANONYMOUS_DEV = 65536;
 /** Whether `error` is a synchronous caller's refusal by an asynchronous mount (one that can await may retry on the async face). */
 export declare function isAsyncMountRefusal(error: unknown): boolean;
 /** `/a/b`, from any spelling; `..` stops at the root. */

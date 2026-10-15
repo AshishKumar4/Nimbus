@@ -154,6 +154,7 @@ import { createSync } from './sync.js';
 import { createTransport } from './transport.js';
 import { heapTables, sqlTables } from './tables.js';
 export { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, posixAccess, utimesRefusal } from '@nimbus-sh/core/vfs/posix-access.js';
+export { ANONYMOUS_DEV } from '@nimbus-sh/core/vfs/composite.js';
 export { namespaceRowBytes, residentFileCost } from './cell-cost.js';
 export { NS_DIR, NS_FILE, NS_LINK } from './tables.js';
 export function createResidentStore(options = {}) {

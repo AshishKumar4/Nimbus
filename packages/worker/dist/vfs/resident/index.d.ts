@@ -153,6 +153,7 @@ import { type Namespace } from './namespace.js';
 import { type Sync } from './sync.js';
 import { type Transport } from './transport.js';
 export { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, posixAccess, utimesRefusal } from '@nimbus-sh/core/vfs/posix-access.js';
+export { ANONYMOUS_DEV } from '@nimbus-sh/core/vfs/composite.js';
 export { namespaceRowBytes, residentFileCost } from './cell-cost.js';
 export { NS_DIR, NS_FILE, NS_LINK } from './tables.js';
 export type { ResidentCell } from './cell-cost.js';
