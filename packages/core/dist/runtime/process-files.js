@@ -67,13 +67,16 @@ class GuardedProcessBridge {
     hydrator;
     delegations;
     gate;
+    revoked;
     constructor(target, scope, signal, pid, 
     /** N17: the lazy-import hydration job, when there is one. */
     hydrator, 
     /** The session's delegations: a process's own are granted, recalled and released here. */
     delegations, 
     /** The session's gate on the process's output (ProcessFiles.outputGate). */
-    gate) {
+    gate, 
+    /** Aborted when the process is released while a recovery keeps its scope (ProcessFiles.recovery): this binding ends then. */
+    revoked) {
         this.target = target;
         this.scope = scope;
         this.signal = signal;
@@ -81,6 +84,7 @@ class GuardedProcessBridge {
         this.hydrator = hydrator;
         this.delegations = delegations;
         this.gate = gate;
+        this.revoked = revoked;
     }
     gateLaunch(named) {
         return this.hydrator === null ? Promise.resolve() : this.hydrator.gate([...named]);
@@ -104,6 +108,7 @@ class GuardedProcessBridge {
     get synchronous() { return this; }
     guard() {
         this.signal?.throwIfAborted();
+        this.revoked?.throwIfAborted();
         if (this.scope.closed)
             throw Object.assign(new Error('EBADF: filesystem scope closed'), { code: 'EBADF' });
     }
@@ -155,7 +160,8 @@ class GuardedProcessBridge {
     reopen(target, flags, options) { this.guard(); return this.target.reopen(target, flags, options); }
     read(handleId, offset, length) { this.guard(); return this.reading(() => this.target.read(handleId, offset, length)); }
     write(handleId, offset, bytes) { this.guard(); return this.target.write(handleId, offset, bytes); }
-    close(handleId) { return this.target.close(handleId); }
+    // A caller's abort leaves its own descriptors to close; a released binding's are its scope's last owner's.
+    close(handleId) { this.revoked?.throwIfAborted(); return this.target.close(handleId); }
     readdir(path, options) { this.guard(); return this.target.readdir(path, options); }
     mkdir(path, options) { this.guard(); return this.target.mkdir(path, options); }
     unlink(path, options) { this.guard(); return this.target.unlink(path, options); }
@@ -211,14 +217,14 @@ class GuardedProcessBridge {
     writeBatch(payload, options) {
         this.guard();
         // As writeStream: closing the scope cancels the commit.
-        const linked = linkedSignal([options?.signal, this.signal, scopeSignal(this.scope)]);
+        const linked = linkedSignal([options?.signal, this.signal, this.revoked, scopeSignal(this.scope)]);
         return Promise.resolve(this.target.writeBatch(payload, { signal: linked.signal })).finally(linked.dispose);
     }
     writeStream(stream, options) {
         this.guard();
         // Closing the scope cancels the commit, so a released process cannot keep
         // publishing groups into a filesystem it no longer holds descriptors on.
-        const linked = linkedSignal([options?.signal, this.signal, scopeSignal(this.scope)]);
+        const linked = linkedSignal([options?.signal, this.signal, this.revoked, scopeSignal(this.scope)]);
         return this.target.writeStream(stream, { ...options, signal: linked.signal }).finally(linked.dispose);
     }
     acquireExclusiveMutation(path, options) {
@@ -410,7 +416,7 @@ export class ProcessFiles {
             bound = new AbortController();
             this.bound.set(pid, bound);
         }
-        return this.bridgeFor(this.scopeOf(pid), immutableCredential(cred), signal === undefined ? bound.signal : AbortSignal.any([signal, bound.signal]), pid);
+        return this.bridgeFor(this.scopeOf(pid), immutableCredential(cred), signal, pid, false, bound.signal);
     }
     recovery(pid, cred) {
         if (!Number.isSafeInteger(pid) || pid <= 0)
@@ -550,30 +556,21 @@ export class ProcessFiles {
     releaseProcess(pid) {
         this.retired.add(pid);
         this.listings.delete(pid);
-        const bound = this.bound.get(pid);
+        // Its bindings end now (EBADF, as a closed scope answers), every call
+        // through them, a close too.
+        this.bound.get(pid)?.abort(fsError('EBADF', 'fd', 'filesystem scope closed'));
         this.bound.delete(pid);
         const recovery = this.recoveries.get(pid);
-        // Its scope's close ends its bindings.
         if (recovery === undefined)
             return this.closeProcess(pid);
-        if (recovery.release !== null)
-            return recovery.release.done;
-        // Its log is draining: what it wrote to a mount is flushed now, as a
-        // release flushes it, by the bindings that opened it; then they end
-        // (EBADF, as a closed scope answers), and its other descriptions and its
-        // grants stay for the recovery. The release settles when that ends.
-        const scope = this.processes.get(pid);
-        const flushed = scope === undefined ? [] : closeDescriptions(scope, true);
-        bound?.abort(fsError('EBADF', 'fd', 'filesystem scope closed'));
-        let run;
-        const closed = new Promise((resolve, reject) => { run = () => this.closeProcess(pid).then(resolve, reject); });
-        // Settled once both are, with the first failure.
-        const done = Promise.allSettled([Promise.resolve(flushed).then(reportLost), closed]).then((results) => {
-            for (const result of results)
-                if (result.status === 'rejected')
-                    throw result.reason;
-        });
-        recovery.release = { run, done };
+        // Its log is draining: its scope is the recovery's, every description in
+        // it, until the drain ends; then it is closed, each last close flushing,
+        // and the release settles.
+        if (recovery.release === null) {
+            let run;
+            const done = new Promise((resolve, reject) => { run = () => this.closeProcess(pid).then(resolve, reject); });
+            recovery.release = { run, done };
+        }
         return recovery.release.done;
     }
     /** `pid`'s scope closed for good, its descriptors' last closes flushing, and its grants given up. */
@@ -679,7 +676,7 @@ export class ProcessFiles {
         closeScopeSignal(scope);
         return andThen(lost, reportLost);
     }
-    bridgeFor(scope, cred, signal, pid, landed = false) {
+    bridgeFor(scope, cred, signal, pid, landed = false, revoked) {
         // The scope is checked again by the namespace right before each mutation
         // reaches a backend, after the lookups it awaited: a write still
         // resolving when the process is released or killed, or its lease is
@@ -698,13 +695,13 @@ export class ProcessFiles {
                 return made;
             const namespace = this.vfs.as(cred, undefined, landed ? { landed } : undefined).scoped(() => assertScopeLive(scope, signal), undefined, holds);
             const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues, ...(landed ? { landed } : {}) }), this.engine, scope, namespace, this.bufferedWriteBytes, this.waves);
-            made = { guarded: new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, this.outputGate), namespace };
+            made = { guarded: new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, this.outputGate, revoked), namespace };
             return made;
         };
         // Every other method forwards to the guarded bridge.
         const listing = pid === undefined ? () => undefined : (create) => this.listingOf(pid, create);
         const clock = () => this.engine.revision();
-        const bridge = new AwaitingProcessBridge(parts, clock, cred, new Descriptors(scope, clock), scope, listing, this.bufferedWriteBytes, signal);
+        const bridge = new AwaitingProcessBridge(parts, clock, cred, new Descriptors(scope, clock), scope, listing, this.bufferedWriteBytes, signal, revoked);
         registerDirectoryReadBridge(bridge, scope, async (path) => {
             const real = await bridge.realpath(path);
             const view = parts().namespace;
@@ -741,10 +738,13 @@ class AwaitingProcessBridge {
     listing;
     bufferedWriteBytes;
     signal;
+    revoked;
     made;
     constructor(parts, clock, cred, descriptors, scope, 
     /** Where this process's listings of mounts beyond SQLite stand (made when `create`); undefined for a host lease. */
-    listing, bufferedWriteBytes, signal) {
+    listing, bufferedWriteBytes, signal, 
+    /** As GuardedProcessBridge's: the binding's end at a release a recovery outlives. */
+    revoked) {
         this.parts = parts;
         this.clock = clock;
         this.cred = cred;
@@ -753,6 +753,7 @@ class AwaitingProcessBridge {
         this.listing = listing;
         this.bufferedWriteBytes = bufferedWriteBytes;
         this.signal = signal;
+        this.revoked = revoked;
     }
     get bridge() { return (this.made ??= this.parts()).guarded; }
     get namespace() { return (this.made ??= this.parts()).namespace; }
@@ -794,6 +795,7 @@ class AwaitingProcessBridge {
     /** As the guarded bridge's guard: a released or killed process's scope answers EBADF. */
     live() {
         assertScopeLive(this.scope, this.signal);
+        this.revoked?.throwIfAborted();
     }
     /**
      * One page of every name the process's view shows, in path order. SQLite
@@ -1189,6 +1191,7 @@ class AwaitingProcessBridge {
         return this.on(handleId, () => this.bridge.write(handleId, offset, bytes), () => this.descriptors.write(handleId, offset, bytes));
     }
     close(handleId) {
+        this.revoked?.throwIfAborted();
         // A prefetched directory's accounting ends with its description's id, however it closes.
         directoryReadHandleClosed(this.scope, handleId);
         return this.awaits(handleId) ? this.descriptors.close(handleId) : this.bridge.close(handleId);
