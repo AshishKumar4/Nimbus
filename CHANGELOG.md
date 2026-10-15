@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: in a directory tree a node process holds (one it writes often
+  enough to take), `fs.promises.stat` and `fs.promises.lstat` answer from
+  the process's own view, without a round trip to the session, once that
+  view is known to be the session's for everything the answer depends on.
+  Everywhere else, and for anything the process changed and the session
+  has not answered yet, they ask the session as before. A mount or unmount
+  overlapping a held tree now gives that tree back first.
 - Changed: in a directory tree a node process writes often enough to hold,
   the changes it has already answered (its sync calls, and the async ones
   decided there) are sent with the next change it awaits, when it flushes,
