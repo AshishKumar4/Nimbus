@@ -1623,8 +1623,11 @@ export async function withOpenFiles<T>(
           await file.close();
         }
       } catch (error) {
-        // A report that cannot be made leaves no other description open.
-        await failed(file, error).catch(() => undefined);
+        try {
+          await failed(file, error);
+        } catch {
+          // A report that cannot be made, at once or later, leaves no other description open.
+        }
       }
     }
   }
