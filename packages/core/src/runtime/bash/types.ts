@@ -77,7 +77,9 @@ export interface BashSlice {
  * having narrowed to a kind that has one.
  */
 export type BashFdEntry =
-  | { kind: 'stdin' | 'stdout' | 'stderr' }
+  /** The session's stdin, a terminal or not (a pipe's or a redirect's bytes), as the runner found it. */
+  | { kind: 'stdin'; readonly terminal: boolean }
+  | { kind: 'stdout' | 'stderr' }
   | AuthorityPreopen
   | AuthorityFd
   // A read-only open the codec answers from a copy of the file (WASI_RESIDENT_FILE_CAP_BYTES).
@@ -319,7 +321,6 @@ export interface BashSession {
   cwd: string;
   argv: string[];
   environ: string[];
-  stdinTty: boolean;
   stdin: BashStdin;
   processPid: number;
   sharedInput: boolean;

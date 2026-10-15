@@ -34,6 +34,13 @@ published independently in the `@nimbus-sh` npm scope.
   every other command's does: a thrown object's message instead of
   `[object Object]`, and `Error` instead of nothing for an error without a
   message.
+- Fixed: WASI programs and bash see their files and clocks as on Linux. A
+  small file's offset stays where a seek past its end put it after a read
+  there, and a negative `pread` offset is `EINVAL`. Each open of a `/proc`
+  file reads it anew, so two `read </proc/uptime` in one bash differ. A
+  piped stdin is no longer a character device (`[ -c /dev/stdin ]`), while
+  a terminal's still is. A `poll_oneoff` clock subscription on an unknown
+  clock gets `EINVAL` in every WASI program, as it already did in bash.
 
 ## 2026-10-15: platform 0.11.0, core 0.22.0, fabric 0.17.0, worker 0.20.0, sdk 0.16.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4, runtime-cpython 3.13.14-2 (config 0.3.1 unchanged)
 
