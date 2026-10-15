@@ -1589,6 +1589,12 @@ export declare class SqliteVFS {
     private publishMetadata;
     private utimes;
     /**
+     * utimes(2) on `inode`, by name or by a description of it (`path` null:
+     * one whose name is gone), judged alike (utimesRefusal): explicit times by
+     * the owner or root, now by anyone who may write it.
+     */
+    private utimesInode;
+    /**
      * Set the permission bits durably. Follows symlinks (POSIX chmod).
      *
      * The stored value is a full POSIX st_mode: S_IF* filetype bits ORed
@@ -1611,6 +1617,12 @@ export declare class SqliteVFS {
     private setDefaultAcl;
     private getDefaultAcl;
     private chown;
+    /**
+     * chown's judgement of giving `inode` owner `uid` and group `gid` (null:
+     * as it is), by name or by a description of it, and what it leaves: EINVAL,
+     * EPERM (chownRefusal), the set-id bits cleared as chownedMode clears them.
+     */
+    private ownerChange;
     /**
      * Enumerate the filesystem, one bounded page at a time.
      *
