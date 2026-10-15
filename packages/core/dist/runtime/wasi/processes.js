@@ -46,9 +46,13 @@ const WNOHANG = 1;
  * The longest a guest waits on a child in one call. A wasm stack suspended
  * past about 15 s in a facet never resumes (wasi/preamble.ts, park
  * watchdog), and a child may run for minutes, so a wait for its output or its
- * end gives up at this and answers EINTR, which git (xread, wait_or_whine,
- * pump_io's poll) retries. Under the watchdog's own 10 s, which still guards
- * poll_oneoff and would answer EAGAIN, which git's poll loop does not retry.
+ * end gives up at this. A pipe's read or write answers what the instance's
+ * image asks again (ProcessHostOptions.gaveUp: NIMBUS_ERESTART, or EINTR to
+ * an image that does not restart: git's xread retries it, its stdio does not,
+ * and takes it for EOF); a wait for a child answers EINTR, which its callers
+ * (wait_or_whine, the spawn shim) retry. Under the watchdog's own 10 s, which
+ * still guards poll_oneoff and would answer EAGAIN, which git's poll loop
+ * does not retry.
  */
 export const PROCESS_PARK_MS = 8_000;
 function newPipe() {
@@ -535,8 +539,11 @@ export function processHost(opts) {
                     opts.inbound();
                     return E.SUCCESS;
                 }
-                if (packet.signal || !packet.ended)
+                // A signal interrupts the read; a read that only gave up waiting is asked again.
+                if (packet.signal)
                     return E.INTR;
+                if (!packet.ended)
+                    return opts.gaveUp;
                 view().setUint32(nread, 0, true);
                 return E.SUCCESS;
             };
@@ -578,7 +585,7 @@ export function processHost(opts) {
             return now;
         if (((entry.fdflags ?? 0) & FDFLAGS_NONBLOCK) !== 0)
             return E.AGAIN;
-        return opts.park(parkedWait((wake) => pipe.waiters.push(wake), answer).ready.then((read) => read ?? E.INTR));
+        return opts.park(parkedWait((wake) => pipe.waiters.push(wake), answer).ready.then((read) => read ?? opts.gaveUp));
     };
     // Pipes and the guest's own streams; a file's descriptor is the codec's, and not shared this way.
     const duplicate = (fd) => {
@@ -632,7 +639,7 @@ export function processHost(opts) {
             return now;
         if (((entry.fdflags ?? 0) & FDFLAGS_NONBLOCK) !== 0)
             return E.AGAIN;
-        return opts.park(parkedWait((wake) => pipe.waiters.push(wake), admit).ready.then((written) => written ?? E.INTR));
+        return opts.park(parkedWait((wake) => pipe.waiters.push(wake), admit).ready.then((written) => written ?? opts.gaveUp));
     };
     const close = (fd) => {
         const entry = pipeEntry(fd);

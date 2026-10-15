@@ -218,8 +218,9 @@ export interface NimbusFilesystemAuthority {
      * What a drain of process `pid`'s write log writes through, taken when its
      * log is booked: the pid's own binding, so its log lands as the process
      * would have landed it, with the descriptions it opened and the grants it
-     * holds (their reserved inodes). Its release keeps them until the lease is
-     * disposed, then completes; nothing else binds the pid once it is released.
+     * holds (their reserved inodes). One per process (EBUSY). Its release ends
+     * every other binding at once and keeps these until the lease is disposed,
+     * and settles then.
      */
     recovery(pid: number, cred: Readonly<VfsCred>): NimbusHostFilesystemLease;
     releaseProcess(pid: number): Promise<void>;
@@ -801,8 +802,19 @@ export declare const CPYTHON_RUNNER = "cpython-runner@2";
  * instantiation ignores the ones a module does not import.
  */
 export declare const CPYTHON_RUNNER_CONTRACTS: readonly string[];
-/** Git's first runtime build imports the shared Nimbus filesystem/process extensions. */
-export declare const GIT_RUNNER = "git-runner";
+/**
+ * Git's runner keys, and what each build asks of its host. The first imports
+ * the shared Nimbus filesystem/process extensions; @2's libc also asks again
+ * a read or write the host gave up waiting on (wasm/nimbus-libc
+ * nimbus-restart.c), which a host answers NIMBUS_ERESTART only to it
+ * (runtime/wasi/types.ts): to the first, EINTR, which its stdio took for an
+ * end. One runner serves both.
+ */
+export declare const GIT_RUNNER_CONTRACTS: Readonly<Record<string, {
+    readonly restartsWaits: boolean;
+}>>;
+/** The key this tree's git build names. */
+export declare const GIT_RUNNER = "git-runner@2";
 /**
  * Set in real git's environment (the git runner): a `git` it starts (a
  * hook's, a subcommand's) carries it, and is real git too, wherever a
@@ -819,8 +831,8 @@ export declare const GIT_WASI_ENV = "NIMBUS_GIT_WASI";
  * bound by BASH_RUNNER). The git build's verify stage checks its image
  * against this list (packages/worker/wasm/git/build-git.sh). An image
  * importing an extension needs a host that provides it, so the runtime names
- * a runner key no older host registers: git's first build names
- * {@link GIT_RUNNER}.
+ * a runner key no older host registers: git's builds name the keys of
+ * {@link GIT_RUNNER_CONTRACTS}.
  */
 export declare const WASI_RUNTIME_IMPORT_MODULES: readonly string[];
 /** Name-to-name package rewrite at the resolver/installer boundary. */

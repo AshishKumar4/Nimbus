@@ -184,19 +184,23 @@ export function settleHeldAt(scope: DescriptorScope, file: () => Awaitable<{ key
 }
 
 /**
- * Closes every description `scope` holds, each whatever another's flush
- * answers, and empties it at once. The closes that failed (lastClose's
- * errors) are answered once every one has (an awaiting description's backend
- * close awaits), for the caller to report once the rest of its teardown is
- * done (reportLost): a teardown that stopped at the first one would keep the
- * scope, and everything it revokes, open.
+ * Closes every description `scope` holds (those on a mount alone, with
+ * `mounted`), each whatever another's flush answers, and drops them at once.
+ * The closes that failed (lastClose's errors) are answered once every one
+ * has (an awaiting description's backend close awaits), for the caller to
+ * report once the rest of its teardown is done (reportLost): a teardown that
+ * stopped at the first one would keep the scope, and everything it revokes,
+ * open.
  */
-export function closeDescriptions(scope: DescriptorScope): Awaitable<unknown[]> {
+export function closeDescriptions(scope: DescriptorScope, mounted = false): Awaitable<unknown[]> {
   const lost: unknown[] = [];
   const closing: Promise<void>[] = [];
-  for (const opened of scope.handles.values()) {
+  for (const [id, opened] of scope.handles) {
+    if (mounted && !opened.node.mounted) continue;
+    if (mounted) scope.handles.delete(id);
     if (--opened.refs !== 0) continue;
     opened.handle.closed = true;
+    if (opened.node.mounted) scope.held.delete(opened.node);
     try {
       const closed = lastClose(opened.node);
       if (isPromise(closed)) closing.push(closed.catch((error: unknown) => { lost.push(error); }));
@@ -204,9 +208,11 @@ export function closeDescriptions(scope: DescriptorScope): Awaitable<unknown[]> 
       lost.push(error);
     }
   }
-  scope.handles.clear();
-  scope.held.clear();
-  scope.waveDescriptions.clear();
+  if (!mounted) {
+    scope.handles.clear();
+    scope.held.clear();
+    scope.waveDescriptions.clear();
+  }
   return closing.length === 0 ? lost : Promise.all(closing).then(() => lost);
 }
 

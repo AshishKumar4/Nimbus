@@ -304,9 +304,10 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   private readonly processes = new Map<number, DescriptorScope>();
   private readonly namespaces = new Map<string, NamespaceFs>();
   private readonly retired = new Set<number>();
-  /** Per process: the recovery leases taken for its log's drain, and its release, deferred until the last is disposed. */
-  private readonly recovering = new Map<number, number>();
-  private readonly releasing = new Map<number, () => Promise<void>>();
+  /** Per process: what ends its ordinary bindings at its release, whatever keeps its scope open after. */
+  private readonly bound = new Map<number, AbortController>();
+  /** Per process whose log is draining: its one recovery, and the release it defers until the drain ends. */
+  private readonly recoveries = new Map<number, { release: { run(): Promise<void>; done: Promise<void> } | null }>();
   /** Per process: where its listings of the mounts beyond SQLite stand (MountListing). */
   private readonly listings = new Map<number, MountListing>();
   /** Inode numbers for mounted entries whose backend keeps none: stable per path for the session. */
@@ -433,28 +434,34 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   bind({ pid, cred, signal }: NimbusFilesystemBinding): RuntimeFsBridge {
     if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('filesystem binding requires a process pid');
     if (this.retired.has(pid)) throw Object.assign(new Error('ESTALE: process released'), { code: 'ESTALE' });
-    let scope = this.processes.get(pid);
-    if (!scope) { scope = createDescriptorScope(); this.processes.set(pid, scope); }
-    return this.bridgeFor(scope, immutableCredential(cred), signal, pid);
+    let bound = this.bound.get(pid);
+    if (!bound) { bound = new AbortController(); this.bound.set(pid, bound); }
+    return this.bridgeFor(this.scopeOf(pid), immutableCredential(cred), signal === undefined ? bound.signal : AbortSignal.any([signal, bound.signal]), pid);
   }
 
   recovery(pid: number, cred: Readonly<VfsCred>): NimbusHostFilesystemLease {
-    const fs = this.bind({ pid, cred });
-    this.recovering.set(pid, (this.recovering.get(pid) ?? 0) + 1);
-    let disposed = false;
+    if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('filesystem recovery requires a process pid');
+    if (this.retired.has(pid)) throw Object.assign(new Error('ESTALE: process released'), { code: 'ESTALE' });
+    if (this.recoveries.has(pid)) throw Object.assign(new Error(`EBUSY: the log of process ${pid} is draining already`), { code: 'EBUSY' });
+    const recovery: { release: { run(): Promise<void>; done: Promise<void> } | null } = { release: null };
+    this.recoveries.set(pid, recovery);
+    // Not ended by the release: the drain is what ends it.
+    const fs = this.bridgeFor(this.scopeOf(pid), immutableCredential(cred), undefined, pid);
     return {
       fs,
       dispose: async () => {
-        if (disposed) return;
-        disposed = true;
-        const left = (this.recovering.get(pid) ?? 1) - 1;
-        if (left > 0) { this.recovering.set(pid, left); return; }
-        this.recovering.delete(pid);
-        const release = this.releasing.get(pid);
-        this.releasing.delete(pid);
-        await release?.();
+        if (this.recoveries.get(pid) !== recovery) return;
+        this.recoveries.delete(pid);
+        await recovery.release?.run();
       },
     };
+  }
+
+  /** `pid`'s descriptor scope, made on its first binding. */
+  private scopeOf(pid: number): DescriptorScope {
+    let scope = this.processes.get(pid);
+    if (!scope) { scope = createDescriptorScope(); this.processes.set(pid, scope); }
+    return scope;
   }
 
   openHost(cred: Readonly<VfsCred>, options: { signal?: AbortSignal } = {}): NimbusHostFilesystemLease {
@@ -566,23 +573,43 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     this.delegations.endReads(pid);
   }
 
-  async releaseProcess(pid: number): Promise<void> {
+  releaseProcess(pid: number): Promise<void> {
     this.retired.add(pid);
     this.listings.delete(pid);
-    const release = async (): Promise<void> => {
-      const scope = this.processes.get(pid);
-      try {
-        // Its descriptors' last closes flush; one whose flush fails is reported
-        // once the process is released all the same.
-        if (scope) await this.closeScope(scope);
-      } finally {
-        this.processes.delete(pid);
-        this.retireWriter(pid);
-      }
-    };
-    // Its log is draining (recovery): what it opened and holds stay until the drain ends.
-    if (this.recovering.has(pid)) this.releasing.set(pid, release);
-    else await release();
+    const bound = this.bound.get(pid);
+    this.bound.delete(pid);
+    const recovery = this.recoveries.get(pid);
+    // Its scope's close ends its bindings.
+    if (recovery === undefined) return this.closeProcess(pid);
+    if (recovery.release !== null) return recovery.release.done;
+    // Its log is draining: what it wrote to a mount is flushed now, as a
+    // release flushes it, by the bindings that opened it; then they end
+    // (EBADF, as a closed scope answers), and its other descriptions and its
+    // grants stay for the recovery. The release settles when that ends.
+    const scope = this.processes.get(pid);
+    const flushed = scope === undefined ? [] : closeDescriptions(scope, true);
+    bound?.abort(fsError('EBADF', 'fd', 'filesystem scope closed'));
+    let run!: () => Promise<void>;
+    const closed = new Promise<void>((resolve, reject) => { run = () => this.closeProcess(pid).then(resolve, reject); });
+    // Settled once both are, with the first failure.
+    const done = Promise.allSettled([Promise.resolve(flushed).then(reportLost), closed]).then((results) => {
+      for (const result of results) if (result.status === 'rejected') throw result.reason;
+    });
+    recovery.release = { run, done };
+    return recovery.release.done;
+  }
+
+  /** `pid`'s scope closed for good, its descriptors' last closes flushing, and its grants given up. */
+  private async closeProcess(pid: number): Promise<void> {
+    const scope = this.processes.get(pid);
+    try {
+      // Its descriptors' last closes flush; one whose flush fails is reported
+      // once the process is released all the same.
+      if (scope) await this.closeScope(scope);
+    } finally {
+      this.processes.delete(pid);
+      this.retireWriter(pid);
+    }
   }
 
   /** See NimbusFilesystemAuthority.rewindProcess. */
@@ -605,6 +632,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   killProcess(pid: number): { lost: number[] } {
     this.retired.add(pid);
     this.listings.delete(pid);
+    this.bound.delete(pid);
     const scope = this.processes.get(pid);
     this.processes.delete(pid);
     this.retireWriter(pid);

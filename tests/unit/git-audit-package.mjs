@@ -10,7 +10,7 @@ const root = new URL('../../', import.meta.url).pathname;
 const dir = mkdtempSync(join(tmpdir(), 'nimbus-git-audit-package-'));
 try {
   const pkg = join(dir, 'git');
-  execFileSync('node', ['packages/worker/scripts/bundle-runtime.mjs', 'git', '2.53.0', '--npm-package', pkg], { cwd: root, stdio: 'pipe' });
+  execFileSync('node', ['packages/worker/scripts/bundle-runtime.mjs', 'git', '2.53.0-1', '--npm-package', pkg], { cwd: root, stdio: 'pipe' });
   const manifest = JSON.parse(readFileSync(join(pkg, 'manifest.json'), 'utf8'));
   const blobs = [];
   for (const file of manifest.files) {

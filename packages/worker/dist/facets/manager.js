@@ -4308,8 +4308,8 @@ export class FacetManager {
     processFabric;
     /** The residents whose write log may still hold changes (process-journals.ts). */
     processJournals;
-    /** Residents whose log is being drained as their facet is released. */
-    journalDraining = new Set();
+    /** Per resident whose log is being drained as its facet is released: the drain. */
+    journalDrains = new Map();
     /** Per resident with a booked log: the binding its drain writes through (NimbusFilesystemAuthority.recovery). */
     recoveries = new Map();
     /** An exit a signal decided, told once its process's log is drained (`_endBySignal`). */
@@ -4512,17 +4512,19 @@ export class FacetManager {
                     if (this.filesystem !== null && !this.recoveries.has(pid))
                         this.recoveries.set(pid, this.filesystem.recovery(pid, cred));
                 },
-                drain: async (journal) => {
-                    this.journalDraining.add(pid);
-                    try {
-                        await this._drainProcessJournal(pid, journal);
-                    }
-                    finally {
-                        this.journalDraining.delete(pid);
+                // One drain per log: a second joins it.
+                drain: (journal) => {
+                    const running = this.journalDrains.get(pid);
+                    if (running !== undefined)
+                        return running;
+                    const drained = this._drainProcessJournal(pid, journal).finally(() => {
+                        this.journalDrains.delete(pid);
                         const end = this.endsAfterDrain.get(pid);
                         this.endsAfterDrain.delete(pid);
                         end?.();
-                    }
+                    });
+                    this.journalDrains.set(pid, drained);
+                    return drained;
                 },
             }),
         });
@@ -4650,7 +4652,7 @@ export class FacetManager {
         // A resident's release drains its write log: an end from outside it is
         // told after, so what reads its files next (the next prompt, its parent)
         // sees them. A kill is recorded at once.
-        if (ending.cause !== undefined && !ending.killed && this.journalDraining.has(pid))
+        if (ending.cause !== undefined && !ending.killed && this.journalDrains.has(pid))
             this.endsAfterDrain.set(pid, record);
         else
             record();

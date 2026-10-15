@@ -34,9 +34,10 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     private readonly processes;
     private readonly namespaces;
     private readonly retired;
-    /** Per process: the recovery leases taken for its log's drain, and its release, deferred until the last is disposed. */
-    private readonly recovering;
-    private readonly releasing;
+    /** Per process: what ends its ordinary bindings at its release, whatever keeps its scope open after. */
+    private readonly bound;
+    /** Per process whose log is draining: its one recovery, and the release it defers until the drain ends. */
+    private readonly recoveries;
     /** Per process: where its listings of the mounts beyond SQLite stand (MountListing). */
     private readonly listings;
     /** Inode numbers for mounted entries whose backend keeps none: stable per path for the session. */
@@ -101,6 +102,8 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     private createListing;
     bind({ pid, cred, signal }: NimbusFilesystemBinding): RuntimeFsBridge;
     recovery(pid: number, cred: Readonly<VfsCred>): NimbusHostFilesystemLease;
+    /** `pid`'s descriptor scope, made on its first binding. */
+    private scopeOf;
     openHost(cred: Readonly<VfsCred>, options?: {
         signal?: AbortSignal;
     }): NimbusHostFilesystemLease;
@@ -164,6 +167,8 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     /** Process `pid` has ended (exited, killed, its host lost): see Delegations.endReads. */
     processEnded(pid: number): void;
     releaseProcess(pid: number): Promise<void>;
+    /** `pid`'s scope closed for good, its descriptors' last closes flushing, and its grants given up. */
+    private closeProcess;
     /** See NimbusFilesystemAuthority.rewindProcess. */
     rewindProcess(pid: number): Promise<void>;
     /**

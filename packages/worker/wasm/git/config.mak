@@ -13,9 +13,13 @@ AR = $(WASI_SDK)/bin/llvm-ar
 # it: 60 MiB for a history of two million objects, in a 128 MiB isolate).
 CFLAGS = -O2 -g0 -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_GETPID \
   -I$(GIT_WASI_DIR)/include -I$(GIT_WASI_DIR)/../nimbus-libc -I$(SYSROOT_EXTRA)/include -include $(GIT_WASI_COMPAT_H)
+# --wrap: a read or write the host gave up waiting on is asked again
+# (wasm/nimbus-libc/nimbus-restart.c), stdio's included; the image is
+# git-runner@2's, whose host answers such a wait NIMBUS_ERESTART.
 LDFLAGS = -L$(SYSROOT_EXTRA)/lib -lwasi-emulated-signal -lwasi-emulated-process-clocks -lwasi-emulated-getpid \
-  -Wl,-z,stack-size=8388608 -Wl,--initial-memory=12582912 -Wl,--max-memory=2147483648
-COMPAT_OBJS += compat/git-wasi-compat.o compat/nimbus-fs.o compat/nimbus-proc.o
+  -Wl,-z,stack-size=8388608 -Wl,--initial-memory=12582912 -Wl,--max-memory=2147483648 \
+  -Wl,--wrap=read -Wl,--wrap=readv -Wl,--wrap=write -Wl,--wrap=writev
+COMPAT_OBJS += compat/git-wasi-compat.o compat/nimbus-fs.o compat/nimbus-proc.o compat/nimbus-restart.o
 # Git's default prefix is the builder's $HOME, baked into the binary as the
 # root of its template, exec and documentation paths. /usr is where a
 # session's git claims to live; the system configuration comes from

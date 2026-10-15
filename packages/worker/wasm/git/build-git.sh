@@ -52,7 +52,7 @@ cd "git-$GIT_VERSION"
 for patch in "$HERE"/patches/*.patch; do patch -p1 --quiet < "$patch"; done
 cp "$HERE/config.mak" config.mak
 cp "$HERE/git-wasi-compat.c" "$HERE/git-wasi-compat.h" "$HERE/../nimbus-libc/nimbus-fs.c" compat/
-cp "$HERE/../nimbus-libc/nimbus-proc.c" compat/
+cp "$HERE/../nimbus-libc/nimbus-proc.c" "$HERE/../nimbus-libc/nimbus-restart.c" compat/
 cp "$HERE/git-mmap-paged.c" compat/mmap-paged.c
 make -j"$GIT_BUILD_JOBS" GIT_WASI_DIR="$HERE" WASI_SDK="$WASI_SDK" SYSROOT_EXTRA="$BUILD/sysroot" \
   uname_S=WASI uname_M=wasm32 uname_O=WASI uname_R=1 uname_V=1 git
