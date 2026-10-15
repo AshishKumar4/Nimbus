@@ -3,7 +3,7 @@
 // harness), one name a line. build-in-bwrap.sh writes it after the build.
 //
 //   node list-applets.mjs <busybox.wasm> > busybox.applets
-import { closeSync, openSync, readFileSync, rmSync } from 'node:fs';
+import { closeSync, mkdtempSync, openSync, readFileSync, rmSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,7 +11,9 @@ import { WASI } from 'node:wasi';
 
 const listed = join(tmpdir(), `busybox-applets-${process.pid}`);
 const stderr = openSync(listed, 'w');
-const wasi = new WASI({ version: 'preview1', args: ['busybox', '--list'], stderr, returnOnExit: true });
+// BusyBox enters its startup directory, /: an empty one.
+const root = mkdtempSync(join(tmpdir(), 'busybox-root-'));
+const wasi = new WASI({ version: 'preview1', args: ['busybox', '--list'], stderr, preopens: { '/': root }, returnOnExit: true });
 const mod = await WebAssembly.compile(await readFile(process.argv[2]));
 let instance;
 instance = await WebAssembly.instantiate(mod, { ...wasi.getImportObject(), nimbus_proc: {
@@ -24,3 +26,4 @@ wasi.start(instance);
 closeSync(stderr);
 process.stdout.write(readFileSync(listed, 'utf8'));
 rmSync(listed);
+rmSync(root, { recursive: true });
