@@ -5,6 +5,7 @@ import { concatBytes, inputChunks, readAllInput } from '../../utils/bytes-io.js'
 import { globMatch as fnmatch } from '../../utils/glob.js';
 import { NOT_WORD, PosixRegexSyntax, WORD, translate, literal } from '../../utils/posix-regex.js';
 import { enc } from '../../../../_shared/bytes.js';
+import { getopt, type GetoptSpec } from '../../utils/args.js';
 
 // GNU grep (3.12) in a UTF-8 locale. Patterns: BRE (default), ERE (-E),
 // fixed strings (-F) and Perl-style (-P, as JavaScript's regex). A line is a
@@ -110,22 +111,30 @@ interface Options {
   operands: string[];
 }
 
-const LONG: Readonly<Record<string, { arg: 'none' | 'required' | 'optional' }>> = {
-  'extended-regexp': { arg: 'none' }, 'fixed-strings': { arg: 'none' }, 'basic-regexp': { arg: 'none' }, 'perl-regexp': { arg: 'none' },
-  regexp: { arg: 'required' }, file: { arg: 'required' }, 'ignore-case': { arg: 'none' }, 'no-ignore-case': { arg: 'none' },
-  'word-regexp': { arg: 'none' }, 'line-regexp': { arg: 'none' }, 'null-data': { arg: 'none' }, 'no-messages': { arg: 'none' },
-  'invert-match': { arg: 'none' }, version: { arg: 'none' }, help: { arg: 'none' }, 'max-count': { arg: 'required' },
-  'byte-offset': { arg: 'none' }, 'line-number': { arg: 'none' }, 'no-line-number': { arg: 'none' }, 'line-buffered': { arg: 'none' },
-  'with-filename': { arg: 'none' }, 'no-filename': { arg: 'none' }, label: { arg: 'required' }, 'only-matching': { arg: 'none' },
-  quiet: { arg: 'none' }, silent: { arg: 'none' }, 'binary-files': { arg: 'required' }, text: { arg: 'none' },
-  directories: { arg: 'required' }, devices: { arg: 'required' }, recursive: { arg: 'none' }, 'dereference-recursive': { arg: 'none' },
-  include: { arg: 'required' }, exclude: { arg: 'required' }, 'exclude-from': { arg: 'required' }, 'exclude-dir': { arg: 'required' },
-  'files-without-match': { arg: 'none' }, 'files-with-matches': { arg: 'none' }, count: { arg: 'none' }, 'initial-tab': { arg: 'none' },
-  null: { arg: 'none' }, 'before-context': { arg: 'required' }, 'after-context': { arg: 'required' }, context: { arg: 'required' },
-  'group-separator': { arg: 'required' }, 'no-group-separator': { arg: 'none' }, color: { arg: 'optional' }, colour: { arg: 'optional' },
-  binary: { arg: 'none' },
+/**
+ * GNU grep's options (a digit is -NUM's), its long ones in its table's order,
+ * each keyed by its short letter or its own name: aliases share a key
+ * (--colour is --color), so a prefix of both is not ambiguous.
+ */
+const GREP_OPTIONS: GetoptSpec = {
+  short: '0123456789A:B:C:D:EFGHILPRTUVZabcd:e:f:hilm:noqrsvwxyz',
+  long: {
+    'basic-regexp': ['G', 'none'], 'extended-regexp': ['E', 'none'], 'fixed-regexp': ['F', 'none'], 'fixed-strings': ['F', 'none'],
+    'perl-regexp': ['P', 'none'], 'after-context': ['A', 'required'], 'before-context': ['B', 'required'],
+    'binary-files': ['binary-files', 'required'], 'byte-offset': ['b', 'none'], context: ['C', 'required'],
+    color: ['color', 'optional'], colour: ['color', 'optional'], count: ['c', 'none'], devices: ['D', 'required'],
+    directories: ['d', 'required'], 'dereference-recursive': ['R', 'none'], exclude: ['exclude', 'required'],
+    'exclude-from': ['exclude-from', 'required'], 'exclude-dir': ['exclude-dir', 'required'], file: ['f', 'required'],
+    'files-with-matches': ['l', 'none'], 'files-without-match': ['L', 'none'], 'group-separator': ['group-separator', 'required'],
+    help: ['help', 'none'], include: ['include', 'required'], 'ignore-case': ['i', 'none'], 'no-ignore-case': ['no-ignore-case', 'none'],
+    'initial-tab': ['T', 'none'], label: ['label', 'required'], 'line-buffered': ['line-buffered', 'none'], 'line-number': ['n', 'none'],
+    'no-line-number': ['no-line-number', 'none'], 'line-regexp': ['x', 'none'], 'max-count': ['m', 'required'],
+    'no-filename': ['h', 'none'], 'no-group-separator': ['no-group-separator', 'none'], 'no-messages': ['s', 'none'],
+    null: ['Z', 'none'], 'null-data': ['z', 'none'], 'only-matching': ['o', 'none'], quiet: ['q', 'none'], recursive: ['r', 'none'],
+    regexp: ['e', 'required'], 'invert-match': ['v', 'none'], silent: ['q', 'none'], text: ['a', 'none'], binary: ['U', 'none'],
+    version: ['V', 'none'], 'with-filename': ['H', 'none'], 'word-regexp': ['w', 'none'],
+  },
 };
-const SHORT_WITH_ARG = new Set(['e', 'f', 'm', 'A', 'B', 'C', 'd', 'D']);
 
 function contextCount(value: string): number {
   if (!/^\d+$/.test(value)) throw new GrepUsage(`${value}: invalid context length argument`);
@@ -141,109 +150,86 @@ function parseArgs(args: string[]): Options {
     binaryFiles: 'binary', directories: 'read', followLinks: false, include: [], exclude: [], excludeDir: [],
     nullData: false, operands: [],
   };
-  let digits = '';
-  const apply = (name: string, value: string | undefined): void => {
+  let after: number | null = null;
+  let before: number | null = null;
+  let context = 0;
+  const apply = (name: string, value: string): void => {
     switch (name) {
-      case 'E': case 'extended-regexp': o.syntax = 'E'; break;
-      case 'F': case 'fixed-strings': o.syntax = 'F'; break;
-      case 'G': case 'basic-regexp': o.syntax = 'G'; break;
-      case 'P': case 'perl-regexp': o.syntax = 'P'; break;
-      case 'e': case 'regexp': (o.patterns ??= []).push(...value!.split('\n')); break;
-      case 'f': case 'file': o.patternFiles.push(value!); (o.patterns ??= []); break;
-      case 'i': case 'y': case 'ignore-case': o.ignoreCase = true; break;
+      case 'E': o.syntax = 'E'; break;
+      case 'F': o.syntax = 'F'; break;
+      case 'G': o.syntax = 'G'; break;
+      case 'P': o.syntax = 'P'; break;
+      case 'e': (o.patterns ??= []).push(...value.split('\n')); break;
+      case 'f': o.patternFiles.push(value); (o.patterns ??= []); break;
+      case 'i': case 'y': o.ignoreCase = true; break;
       case 'no-ignore-case': o.ignoreCase = false; break;
-      case 'w': case 'word-regexp': o.word = true; break;
-      case 'x': case 'line-regexp': o.whole = true; break;
-      case 'z': case 'null-data': o.nullData = true; break;
-      case 's': case 'no-messages': o.noMessages = true; break;
-      case 'v': case 'invert-match': o.invert = true; break;
-      case 'm': case 'max-count': {
-        if (!/^-?\d+$/.test(value!)) throw new GrepUsage(`invalid max count`);
+      case 'w': o.word = true; break;
+      case 'x': o.whole = true; break;
+      case 'z': o.nullData = true; break;
+      case 's': o.noMessages = true; break;
+      case 'v': o.invert = true; break;
+      case 'm': {
+        if (!/^-?\d+$/.test(value)) throw new GrepUsage(`invalid max count`);
         const n = Number(value);
         o.max = n < 0 ? Infinity : n;
         break;
       }
-      case 'b': case 'byte-offset': o.byteOffset = true; break;
-      case 'n': case 'line-number': o.lineNumber = true; break;
+      case 'b': o.byteOffset = true; break;
+      case 'n': o.lineNumber = true; break;
       case 'no-line-number': o.lineNumber = false; break;
-      case 'H': case 'with-filename': o.withName = true; break;
-      case 'h': case 'no-filename': o.withName = false; break;
-      case 'label': o.label = value!; break;
-      case 'o': case 'only-matching': o.onlyMatching = true; break;
-      case 'q': case 'quiet': case 'silent': o.quiet = true; break;
+      case 'H': o.withName = true; break;
+      case 'h': o.withName = false; break;
+      case 'label': o.label = value; break;
+      case 'o': o.onlyMatching = true; break;
+      case 'q': o.quiet = true; break;
       case 'binary-files':
         if (value !== 'binary' && value !== 'text' && value !== 'without-match') throw new GrepUsage('unknown binary-files type');
         o.binaryFiles = value;
         break;
-      case 'a': case 'text': o.binaryFiles = 'text'; break;
+      case 'a': o.binaryFiles = 'text'; break;
       case 'I': o.binaryFiles = 'without-match'; break;
-      case 'd': case 'directories':
+      case 'd':
         if (value !== 'read' && value !== 'skip' && value !== 'recurse') throw new GrepUsage(`invalid argument '${value}' for '--directories'`);
         o.directories = value;
         break;
-      case 'D': case 'devices': break;
-      case 'r': case 'recursive': o.directories = 'recurse'; o.followLinks = false; break;
-      case 'R': case 'dereference-recursive': o.directories = 'recurse'; o.followLinks = true; break;
-      case 'include': o.include.push(value!); break;
-      case 'exclude': o.exclude.push(value!); break;
-      case 'exclude-dir': o.excludeDir.push(value!); break;
-      case 'L': case 'files-without-match': o.filesWithout = true; o.filesWith = false; break;
-      case 'l': case 'files-with-matches': o.filesWith = true; o.filesWithout = false; break;
-      case 'c': case 'count': o.count = true; break;
-      case 'T': case 'initial-tab': o.initialTab = true; break;
-      case 'Z': case 'null': o.nullName = true; break;
-      case 'A': case 'after-context': o.after = contextCount(value!); o.contextGiven = true; break;
-      case 'B': case 'before-context': o.before = contextCount(value!); o.contextGiven = true; break;
-      case 'C': case 'context': o.after = o.before = contextCount(value!); o.contextGiven = true; break;
-      case 'group-separator': o.groupSeparator = value!; break;
+      case 'D': break;
+      case 'r': o.directories = 'recurse'; o.followLinks = false; break;
+      case 'R': o.directories = 'recurse'; o.followLinks = true; break;
+      case 'include': o.include.push(value); break;
+      case 'exclude': o.exclude.push(value); break;
+      case 'exclude-dir': o.excludeDir.push(value); break;
+      case 'L': o.filesWithout = true; o.filesWith = false; break;
+      case 'l': o.filesWith = true; o.filesWithout = false; break;
+      case 'c': o.count = true; break;
+      case 'T': o.initialTab = true; break;
+      case 'Z': o.nullName = true; break;
+      case 'A': after = contextCount(value); o.contextGiven = true; break;
+      case 'B': before = contextCount(value); o.contextGiven = true; break;
+      case 'C': context = contextCount(value); o.contextGiven = true; break;
+      case 'group-separator': o.groupSeparator = value; break;
       case 'no-group-separator': o.groupSeparator = null; break;
-      case 'U': case 'binary': case 'line-buffered': case 'color': case 'colour': break;
-      case 'V': case 'version': case 'help': break;
+      case 'U': case 'line-buffered': case 'color': break;
+      case 'V': case 'help': break;
       default: throw new GrepUsage(`invalid option -- '${name}'`);
     }
   };
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === '--') { o.operands.push(...args.slice(i + 1)); break; }
-    if (arg.startsWith('--')) {
-      const eq = arg.indexOf('=');
-      const given = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
-      const names = Object.keys(LONG).filter((name) => name === given || name.startsWith(given));
-      const name = names.includes(given) ? given : names.length === 1 ? names[0] : undefined;
-      if (name === undefined) {
-        throw new GrepUsage(names.length > 1 ? `option '--${given}' is ambiguous` : `unrecognized option '--${given}'`);
-      }
-      let value = eq === -1 ? undefined : arg.slice(eq + 1);
-      if (LONG[name].arg === 'required' && value === undefined) {
-        value = args[++i];
-        if (value === undefined) throw new GrepUsage(`option '--${name}' requires an argument`);
-      }
-      if (LONG[name].arg === 'none' && value !== undefined) throw new GrepUsage(`option '--${name}' doesn't allow an argument`);
-      apply(name, value);
+  // -NUM is -C NUM: the digits of one word, run together (-12), a later run restarting it.
+  let run: { readonly word: number; readonly digits: string } | null = null;
+  for (const event of getopt(args, GREP_OPTIONS)) {
+    if (event.kind === 'error') throw new GrepUsage(event.message);
+    if (event.kind === 'operand') { o.operands.push(event.value); run = null; continue; }
+    if (/^\d$/.test(event.key)) {
+      run = run !== null && run.word === event.word ? { word: event.word, digits: run.digits + event.key } : { word: event.word, digits: event.key };
+      context = Number(run.digits);
+      o.contextGiven = true;
       continue;
     }
-    if (!arg.startsWith('-') || arg === '-') { o.operands.push(arg); continue; }
-    for (let j = 1; j < arg.length; j++) {
-      const flag = arg[j];
-      if (/\d/.test(flag)) {
-        // -NUM is -C NUM.
-        digits = '';
-        while (j < arg.length && /\d/.test(arg[j])) digits += arg[j++];
-        j--;
-        o.after = o.before = Number(digits);
-        o.contextGiven = true;
-        continue;
-      }
-      if (SHORT_WITH_ARG.has(flag)) {
-        let value: string | undefined = arg.slice(j + 1);
-        if (value === '') value = args[++i];
-        if (value === undefined) throw new GrepUsage(`option requires an argument -- '${flag}'`);
-        apply(flag, value);
-        break;
-      }
-      apply(flag, undefined);
-    }
+    run = null;
+    apply(event.key, event.value ?? '');
   }
+  // -A and -B, whatever their place, over -C and -NUM, as GNU's.
+  o.after = after ?? context;
+  o.before = before ?? context;
   return o;
 }
 

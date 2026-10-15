@@ -4,7 +4,8 @@
 // option may be any unambiguous prefix of its name (`--numb`, `--lin=1`), an
 // ambiguous one names its possibilities, an option given an argument it does
 // not take or missing one it needs is refused with getopt's words, and each
-// command's own forms (head -N, grep -NUM) keep working.
+// command's own forms (head -N, grep -NUM) keep working. grep's -A and -B
+// win over -C and -NUM, whichever comes first.
 //
 // Red before: each of these commands scanned its own options: exact long
 // names only (cat, head, cut, cksum, tee), and messages of their own.
@@ -30,6 +31,8 @@ const CASES = [
   'cksum --alg=crc32b g', 'cksum --unt -a md5 g', 'cksum -a', 'cksum --algorithm', 'md5sum --ta g', 'md5sum -X g', 'sum -r g', 'sum -X g', 'sum --sysv g',
   // grep
   'grep --ign ALPHA g', 'grep --co a g', 'grep -e', 'grep --regexp', 'grep -1 beta g', 'grep --max=1 a g', 'grep --cou a g',
+  'grep -10 beta g', 'grep -1 -0 beta g', 'grep -1n beta g', 'grep -A 0 -1 beta g', 'grep -1 -A 0 beta g', 'grep -C 0 -B 1 gamma g',
+  'grep --fixed a g', 'grep --col=never a g',
 ];
 
 const run = (line) => `${line}; echo "status=$?"`;

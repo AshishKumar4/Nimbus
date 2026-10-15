@@ -20,6 +20,9 @@ export interface GetoptSpec {
   readonly long: Readonly<Record<string, readonly [key: string, argument: LongArgument]>>;
 }
 
+/** An option, by key, with its argument, and the index of the word that named it (`-k2`'s, or `-k`'s in `-k 2`). */
+export interface ScanOption { readonly kind: 'option'; readonly key: string; readonly value?: string; readonly word: number }
+
 /**
  * One step of a scan: an option (by key, with its argument) or an operand;
  * or an option the spec cannot take: one it does not have (`option` is `-x`
@@ -28,7 +31,7 @@ export interface GetoptSpec {
  * not take. The scan goes on after each; a policy decides what it means.
  */
 export type ScanEvent =
-  | { readonly kind: 'option'; readonly key: string; readonly value?: string }
+  | ScanOption
   | { readonly kind: 'operand'; readonly value: string }
   | { readonly kind: 'unknown'; readonly option: string; readonly written: string }
   | { readonly kind: 'ambiguous'; readonly written: string; readonly candidates: readonly string[] }
@@ -89,9 +92,9 @@ export function* scanOptions(
       if (argument === 'none' && inline !== undefined) {
         yield { kind: 'unwanted', key, option: `--${name}`, value: inline };
       } else if (argument === 'required' && inline === undefined) {
-        yield i + 1 < args.length ? { kind: 'option', key, value: args[++i] } : { kind: 'missing', key, option: `--${name}` };
+        yield i + 1 < args.length ? { kind: 'option', key, value: args[i + 1], word: i++ } : { kind: 'missing', key, option: `--${name}` };
       } else {
-        yield inline === undefined ? { kind: 'option', key } : { kind: 'option', key, value: inline };
+        yield inline === undefined ? { kind: 'option', key, word: i } : { kind: 'option', key, value: inline, word: i };
       }
       continue;
     }
@@ -99,10 +102,10 @@ export function* scanOptions(
     for (let j = 1; j < arg.length; j++) {
       const letter = arg[j];
       if (letter === ':' || !spec.short.includes(letter)) { yield { kind: 'unknown', option: `-${letter}`, written: arg }; continue; }
-      if (!takesArgument(letter)) { yield { kind: 'option', key: letter }; continue; }
+      if (!takesArgument(letter)) { yield { kind: 'option', key: letter, word: i }; continue; }
       const rest = arg.slice(j + 1);
-      if (rest !== '') yield { kind: 'option', key: letter, value: rest };
-      else yield i + 1 < args.length ? { kind: 'option', key: letter, value: args[++i] } : { kind: 'missing', key: letter, option: `-${letter}` };
+      if (rest !== '') yield { kind: 'option', key: letter, value: rest, word: i };
+      else yield i + 1 < args.length ? { kind: 'option', key: letter, value: args[i + 1], word: i++ } : { kind: 'missing', key: letter, option: `-${letter}` };
       break;
     }
   }
@@ -110,7 +113,7 @@ export function* scanOptions(
 
 /** An option or an operand, or the diagnostic GNU getopt prints for a bad option. */
 export type GetoptEvent =
-  | { readonly kind: 'option'; readonly key: string; readonly value?: string }
+  | ScanOption
   | { readonly kind: 'operand'; readonly value: string }
   | { readonly kind: 'error'; readonly message: string };
 
