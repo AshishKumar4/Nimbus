@@ -44,7 +44,7 @@
  * session refused is not asked for again.
  */
 import { type W7Attrs, type W7Call } from '@nimbus-sh/platform/w7-frame.js';
-import type { ExclusiveMutationGrant, RecallKind } from '../runtime/os-contracts.js';
+import type { ExclusiveMutationGrant, GrantCertificate, RecallKind } from '../runtime/os-contracts.js';
 import { type WaveFence, type WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 import { SYSCALL_VERDICTS } from '../vfs/vfs-error.js';
 import type { WriteStreamReceipt } from '../runtime/wave-contracts.js';
@@ -112,6 +112,8 @@ export interface ProcessFsGrant {
     readonly owner: string;
     /** The umask the session applies to the process's creates. */
     readonly umask: number;
+    /** Where the session stood when it recorded the grant (vouch); a session before it gives none. */
+    readonly certificate?: GrantCertificate;
 }
 /** The session's stat of a file a data call published (its receipt, less the path). */
 export type ProcessFsReceipt = Omit<WriteStreamReceipt, 'path'>;
@@ -289,6 +291,20 @@ export interface ProcessFsClient {
      * stays placed there until the process has answered.
      */
     guards(key: string): boolean;
+    /**
+     * What vouches for `key` in a view whose applied cursor is `cursor`: a
+     * subtree the process holds alone (not shared, not closing, no raw socket)
+     * whose certificate the cursor has reached, in its epoch, so the view has
+     * every change before the grant and none came after it unrecalled. 'held':
+     * `key` is at or beneath its root, everything about it vouched for; 'above':
+     * an ancestor of its root, whose own change (its mode, its rename) recalls
+     * the grant, though a change beneath it elsewhere does not. Undefined:
+     * nothing does, and only the session can answer.
+     */
+    vouch(key: string, cursor: {
+        readonly epoch: string | null;
+        readonly rev: number;
+    }): 'held' | 'above' | undefined;
     /** Whether any op is logged and not yet answered. */
     pending(): boolean;
     /**

@@ -32,7 +32,7 @@ export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { type Principal, type VfsDirentType, type VfsRemoval, type VfsWriteEvent } from './vfs.js';
 import { type WaveScope, type WriteBatchStreamResult, type WriteStreamOptions } from '../runtime/wave-contracts.js';
 import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
-import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
+import { type GrantCertificate, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
 /** The tables the store keeps (dropped whole by a reset of an older store; listed by an embedder's destroy). */
 export declare const STORE_TABLES: readonly ["vfs_state", "vfs_inodes", "vfs_chunks", "vfs_contents", "vfs_content_chunks", "vfs_inode_history", "vfs_tombstones", "vfs_cold_trash", "vfs_gc_queue", "vfs_snapshots", "vfs_jobs", "vfs_wave_cursors", "vfs_wave_descriptions"];
 /** The root directory has no row; this is what it is. */
@@ -47,6 +47,8 @@ export interface ExclusiveMutationLease {
     readonly inos?: InodeRange;
     /** A delegation's storage bytes, reserved for what its holder writes. */
     readonly bytes?: number;
+    /** A delegation whose reads recall it: the epoch and revision it was recorded at. */
+    readonly certificate?: GrantCertificate;
 }
 /** Inode numbers reserved for a delegation's holder: [first, end). */
 export interface InodeRange {
@@ -1391,6 +1393,13 @@ export declare class SqliteVFS {
      * mutations are refused with; a namespace that lays other filesystems over
      * this one asks it before it mutates one of them (CompositeVFS.guardMutations).
      */
+    /**
+     * A change of what `path` routes to (a mount or an unmount there): each
+     * delegation whose root it overlaps either way gives the subtree up first
+     * (RecallRequired), as a change of its own names would make it: its
+     * holder's view of the subtree is no longer the session's.
+     */
+    recallRouting(path: string): void;
     mutationRefusal(path: string, cred: VfsCred, owner?: string): MutationRefusal | null;
     /**
      * `owner`: the lease the mutation presents (null for none). A routed or

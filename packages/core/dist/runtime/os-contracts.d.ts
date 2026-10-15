@@ -517,6 +517,19 @@ export interface ExclusiveMutationGrant {
     readonly bytes?: number;
     /** The umask the session applies to what the holder creates (its process's): the holder decides creates with it. */
     readonly umask?: number;
+    /** A delegation that recalls on reads: where the session stood when it recorded it (GrantCertificate). */
+    readonly certificate?: GrantCertificate;
+}
+/**
+ * The session's published epoch and revision when it recorded a grant whose
+ * reads recall it. A holder whose view has applied the session's changes up
+ * to it (its cursor in the same epoch, at or past the revision) has every
+ * change before the grant, and none can come after it unrecalled: what the
+ * grant guards it may answer from its view.
+ */
+export interface GrantCertificate {
+    readonly epoch: string;
+    readonly revision: number;
 }
 /** What a recall asks of a delegation's holder: keep sending each operation ('share'), or give the subtree up ('revoke'). */
 export type RecallKind = 'share' | 'revoke';

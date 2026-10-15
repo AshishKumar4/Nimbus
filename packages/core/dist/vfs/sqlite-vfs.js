@@ -3281,7 +3281,10 @@ export class SqliteVFS {
             root, delegation: options.delegation ?? null, inos, numbered: new Map(), reservation: bytes > 0 ? owner : null, shared: false, recalling: null, reason: null,
             ...(options.stoppable === true ? { stoppable: true } : {}),
         });
-        return { root, owner, ...(inos === null ? {} : { inos }), ...(bytes > 0 ? { bytes } : {}) };
+        return {
+            root, owner, ...(inos === null ? {} : { inos }), ...(bytes > 0 ? { bytes } : {}),
+            ...(options.delegation?.reads === true ? { certificate: { epoch: this._epoch, revision: this._revision } } : {}),
+        };
     }
     /**
      * Hold the whole session for one owner. `reason`, when given, is what a
@@ -3818,6 +3821,19 @@ export class SqliteVFS {
      * mutations are refused with; a namespace that lays other filesystems over
      * this one asks it before it mutates one of them (CompositeVFS.guardMutations).
      */
+    /**
+     * A change of what `path` routes to (a mount or an unmount there): each
+     * delegation whose root it overlaps either way gives the subtree up first
+     * (RecallRequired), as a change of its own names would make it: its
+     * holder's view of the subtree is no longer the session's.
+     */
+    recallRouting(path) {
+        const key = normalizeVfsPath(path);
+        for (const [holder, lease] of this.exclusiveMutationLeases) {
+            if (lease.delegation !== null && this.mutationMeets(lease, key))
+                throw this.recallRequired(holder, lease, 'revoke', key);
+        }
+    }
     mutationRefusal(path, cred, owner) {
         return this.refusalAt(this.lexicalKey(path, cred).value, owner ?? this.activeMutationOwner);
     }

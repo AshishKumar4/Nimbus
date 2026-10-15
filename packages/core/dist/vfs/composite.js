@@ -582,6 +582,7 @@ export class CompositeVFS {
             throw syscallError('EBUSY', 'mount', point, { detail: 'the root is mounted at construction' });
         if (this.table.mounts.has(at))
             throw syscallError('EBUSY', 'mount', point, { detail: 'something is already mounted there' });
+        this.table.routing?.(at);
         const mount = { point: at, under: `${at}/`, source, options, dev: ANONYMOUS_DEV + ++this.nextDev, inos: new Map() };
         this.table.mounts.set(at, mount);
         this.table.generation++;
@@ -608,6 +609,7 @@ export class CompositeVFS {
         const mount = this.table.mounts.get(at);
         if (at === ROOT_POINT || mount === undefined)
             throw syscallError('EINVAL', 'umount', point, { detail: 'nothing is mounted there' });
+        this.table.routing?.(at);
         this.table.mounts.delete(at);
         this.table.generation++;
         this.table.writes?.subscribed.get(mount)?.();
@@ -1880,6 +1882,15 @@ export class CompositeVFS {
     /** `moved` is told of every mount and unmount after it is made, for every view of this table. */
     watchMounts(moved) {
         this.table.moved = moved;
+    }
+    /**
+     * `routing` is asked before a mount or unmount at a point changes what
+     * anything at, beneath or above it routes to, before the table moves: it
+     * throws to stop the change (RecallRequired: a held subtree is given up
+     * first, and the change is made again, withRecall's).
+     */
+    guardRouting(routing) {
+        this.table.routing = routing;
     }
     /**
      * This view, for one holder: `check` is asked right before each mutation

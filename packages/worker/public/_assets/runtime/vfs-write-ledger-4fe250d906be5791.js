@@ -1856,6 +1856,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           root: granted.root,
           owner: granted.owner,
           umask: granted.umask ?? 18,
+          ...granted.certificate === void 0 ? {} : { certificate: granted.certificate },
           nextIno: granted.inos?.first ?? 0,
           endIno: granted.inos?.end ?? 0,
           inos,
@@ -1914,6 +1915,18 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       },
       holds(key) {
         return grants.some((grant) => !grant.ended && within(key, grant.root));
+      },
+      vouch(key, cursor) {
+        if (escaped !== null) return void 0;
+        let found;
+        for (const grant of grants) {
+          const certificate = grant.certificate;
+          if (grant.ended || grant.closing || grant.shared || certificate === void 0) continue;
+          if (certificate.epoch !== cursor.epoch || cursor.rev < certificate.revision) continue;
+          if (within(key, grant.root)) return "held";
+          if (within(grant.root, key)) found = "above";
+        }
+        return found;
       },
       guards(key) {
         return escaped === null && grants.some((grant) => !grant.ended && !grant.closing && !grant.shared && (within(key, grant.root) || within(grant.root, key)));
