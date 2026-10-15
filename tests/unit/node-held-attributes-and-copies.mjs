@@ -196,8 +196,8 @@ await runScenarios(import.meta.path, {
 
   async 'what the log holds of an answered copy lands the bytes it answered, whatever the source becomes'() {
     const journalSql = createSqliteVfsTestHarness().sql;
-    const { authority, fs, stall } = await boot({ journalSql });
-    const sourceMode = authority.kfs.stat('home/user/app/out/seeded.txt').mode & 0o7777;
+    const { fs, stall } = await boot({ journalSql });
+    const sourceMode = fs.statSync(`${OUT}/seeded.txt`).mode & 0o7777;
     stall();
     assert.equal(await answeredAtOnce(fs.promises.copyFile(`${OUT}/seeded.txt`, `${OUT}/answered.txt`)), 'answered');
     assert.equal(fs.readFileSync(`${OUT}/answered.txt`, 'utf8'), 'seeded');
