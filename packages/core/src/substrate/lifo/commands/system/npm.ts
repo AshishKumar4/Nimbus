@@ -25,9 +25,10 @@ import {
 	type RegistryVersionInfo,
 } from './registry-schemas.js';
 import {
-  parseNpmInstallInvocation,
+  npmInstallInvocation,
   type NpmInstallInvocation,
 } from './npm-install-args.js';
+import type { NpmConfig } from './npm-config.js';
 import { installSummary, npmLogEnabled, npmRemovedLine, type NpmLogEmitter } from './npm-log.js';
 import { exists } from '../../../../vfs/vfs.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
@@ -155,6 +156,23 @@ export function npmRegistryOrigin(configured: string | undefined): string {
 
 function getRegistry(env: Record<string, string>): string {
 	return npmRegistryOrigin(env.NPM_REGISTRY);
+}
+
+/** An install's registry: the one npm's configuration names, else the session's (getRegistry). */
+function registryOf(ctx: CommandContext, invocation: NpmInstallInvocation): string {
+	return invocation.registry === null ? getRegistry(ctx.env) : npmRegistryOrigin(invocation.registry);
+}
+
+/**
+ * npm's configuration for this command (npm-config.ts: npm's definitions and
+ * nopt, so `--global=false` is local and `--location=global` global; its
+ * .npmrc files and npm_config_* too), its warnings printed. npm's libraries
+ * load the first time a session runs one.
+ */
+async function npmConfigOf(ctx: CommandContext): Promise<NpmConfig> {
+	const config = await (await import('./npm-config.js')).loadNpmConfig(ctx.vfs, ctx.cwd, ctx.env, ctx.args);
+	for (const warning of config.warnings) await ctx.stderr.write(`npm warn ${warning}\n`);
+	return config;
 }
 
 // ─── Registry fetch ───
@@ -581,8 +599,7 @@ async function npmInstall(
 	kernel?: Kernel,
 	deps?: NpmCommandDeps,
 ): Promise<number> {
-	const args = ctx.args.slice(1);
-	const invocation = parseNpmInstallInvocation(args);
+	const invocation = npmInstallInvocation(await npmConfigOf(ctx));
 	const packages = invocation.packages;
 	if (invocation.unsupported.length > 0) {
 		for (const line of invocation.unsupported) await ctx.stderr.write(`npm ERR! ${line}\n`);
@@ -609,7 +626,7 @@ async function npmInstall(
 	const globalPrefix = resolveNpmPrefixVfs(ctx.cwd, ctx.env, invocation.prefix);
 	const globalBinDir = `${globalPrefix}/bin`;
 
-	const npmRegistry = getRegistry(ctx.env);
+	const npmRegistry = registryOf(ctx, invocation);
 	const startTime = Date.now();
 
 	// The port owns the install, prefix dirs and bin materialisation: the
@@ -731,8 +748,7 @@ function resolveNpmPrefixVfs(cwd: string, env: Record<string, string>, explicit:
  * npm's libraries load the first time a session runs one.
  */
 async function npmInvocation(ctx: CommandContext): Promise<{ names: readonly string[]; prefix: string | null; save: boolean }> {
-	const config = await (await import('./npm-config.js')).loadNpmConfig(ctx.vfs, ctx.cwd, ctx.env, ctx.args);
-	for (const warning of config.warnings) await ctx.stderr.write(`npm warn ${warning}\n`);
+	const config = await npmConfigOf(ctx);
 	const global = config.get('global') === true || config.get('location') === 'global';
 	return {
 		names: config.positionals.slice(1),
@@ -1207,7 +1223,7 @@ export function createNpmCommand(
  * the install with the project untouched.
  */
 async function npmCi(ctx: CommandContext, deps?: NpmCommandDeps): Promise<number> {
-	const invocation = parseNpmInstallInvocation(ctx.args.slice(1));
+	const invocation = npmInstallInvocation(await npmConfigOf(ctx));
 	if (invocation.unsupported.length > 0) {
 		for (const line of invocation.unsupported) await ctx.stderr.write(`npm ERR! ${line}\n`);
 		return 1;
@@ -1246,7 +1262,7 @@ async function npmCi(ctx: CommandContext, deps?: NpmCommandDeps): Promise<number
 			global: false,
 			pid: ctx.pid,
 			signal: ctx.signal,
-			registry: getRegistry(ctx.env),
+			registry: registryOf(ctx, invocation),
 			production: invocation.production,
 			omitOptional: invocation.omitOptional,
 			omitPeer: invocation.omitPeer,

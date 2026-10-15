@@ -64,6 +64,26 @@ await ws.exec('mkdir -p /home/user/nopkg');
   assert.equal(calls.length, before, 'pre-check must not reach the port');
   assert.match(r.stderr, /npm ERR! no package\.json found/);
 }
+// ── The registry is npm's configuration's: the command line, npm_config_registry, an .npmrc; else the session's (NPM_REGISTRY) ──
+// Red before: --registry was parsed and dropped, and an .npmrc's registry never read.
+{
+  let r = await ws.exec('cd /home/user/proj && npm install example');
+  assert.equal(calls.at(-1).registry, 'https://registry.npmjs.org');
+  r = await ws.exec('cd /home/user/proj && npm install --registry=https://mirror.example/ example');
+  assert.equal(r.exitCode, 0, r.stderr);
+  assert.equal(calls.at(-1).registry, 'https://mirror.example', 'the command line\'s --registry');
+  r = await ws.exec('cd /home/user/proj && npm_config_registry=https://env.example npm install example');
+  assert.equal(calls.at(-1).registry, 'https://env.example', 'npm_config_registry');
+  await ws.exec('sh -c \'echo "registry=https://project.example/" > /home/user/proj/.npmrc\'');
+  r = await ws.exec('cd /home/user/proj && npm install example');
+  assert.equal(calls.at(-1).registry, 'https://project.example', 'the project\'s .npmrc');
+  r = await ws.exec('cd /home/user/proj && NPM_REGISTRY=https://session.example npm install example');
+  assert.equal(calls.at(-1).registry, 'https://project.example', 'npm\'s configuration over the session\'s default');
+  await ws.exec('rm /home/user/proj/.npmrc');
+  r = await ws.exec('cd /home/user/proj && NPM_REGISTRY=https://session.example npm install example');
+  assert.equal(calls.at(-1).registry, 'https://session.example', 'the session\'s NPM_REGISTRY where npm names none');
+}
+
 // ── Global install: --prefix is honoured in the spec ────────────────────
 {
   const r = await ws.exec('cd /home/user/proj && npm install -g example --prefix /custom');

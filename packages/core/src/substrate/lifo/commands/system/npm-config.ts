@@ -35,6 +35,8 @@ for (const [key, definition] of Object.entries(definitions)) {
 /** npm's configuration, loaded: each key from the first layer that sets it, then npm's default. */
 export interface NpmConfig {
   get(key: string): unknown;
+  /** The layer that sets `key` (@npmcli/config's find): cli, env, project, user, global, or default. */
+  find(key: string): string;
   /** npm's default for `key`. */
   default(key: string): unknown;
   /** The directory whose `.npmrc` is the project's. */
@@ -137,6 +139,7 @@ export async function loadNpmConfig(vfs: VFS, cwd: string, env: Record<string, s
 
   return {
     get,
+    find: (key) => layers.find(({ data }) => key in data)?.where ?? 'default',
     default: (key) => DEFAULTS[key],
     localPrefix,
     positionals: remain,

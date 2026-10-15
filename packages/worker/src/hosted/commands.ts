@@ -488,6 +488,22 @@ const readPackageScripts = async (vfs: ProcessView, cwd: string): Promise<Record
   }
 };
 
+/**
+ * `bun install|i|add …` as npm's install: bun's own spellings that npm reads
+ * otherwise (-p/--production, -d/--dev, --optional, --exact) said npm's way,
+ * so npm's configuration (npm-config.ts) is the one reader of the rest.
+ */
+async function bunInstall(ctx: any, reg: any, verb: string): Promise<number> {
+  const npmCmd = await reg.resolve('npm');
+  if (!npmCmd) {
+    ctx.stderr.write(`bun ${verb}: npm handler unavailable\n`);
+    return 1;
+  }
+  const BUN_TO_NPM: Record<string, string> = { '-p': '--omit=dev', '--production': '--omit=dev', '-d': '--save-dev', '--dev': '--save-dev', '--optional': '--save-optional', '--exact': '--save-exact' };
+  const args = (ctx.args || []).slice(1).map((arg: string) => BUN_TO_NPM[arg] ?? arg);
+  return await npmCmd({ ...ctx, args: ['install', ...args] });
+}
+
 const bunSpec: RuntimeSpec = {
   name: 'bun',
   version: BUN_VERSION,
@@ -508,30 +524,9 @@ const bunSpec: RuntimeSpec = {
   repl: jsReplProgram(`Welcome to Bun v${BUN_VERSION}\nType ".help" for more information.\n`),
   subcommands: {
     // bun install / i / add → npm install (same VFS, same R2 caches).
-    install: async (ctx: any, reg) => {
-      const npmCmd = await reg.resolve('npm');
-      if (npmCmd) {
-        return await npmCmd({ ...ctx, args: ['install', ...(ctx.args || []).slice(1)] });
-      }
-      ctx.stderr.write('bun install: npm handler unavailable\n');
-      return 1;
-    },
-    i: async (ctx: any, reg) => {
-      const npmCmd = await reg.resolve('npm');
-      if (npmCmd) {
-        return await npmCmd({ ...ctx, args: ['install', ...(ctx.args || []).slice(1)] });
-      }
-      ctx.stderr.write('bun i: npm handler unavailable\n');
-      return 1;
-    },
-    add: async (ctx: any, reg) => {
-      const npmCmd = await reg.resolve('npm');
-      if (npmCmd) {
-        return await npmCmd({ ...ctx, args: ['install', ...(ctx.args || []).slice(1)] });
-      }
-      ctx.stderr.write('bun add: npm handler unavailable\n');
-      return 1;
-    },
+    install: (ctx: any, reg) => bunInstall(ctx, reg, 'install'),
+    i: (ctx: any, reg) => bunInstall(ctx, reg, 'i'),
+    add: (ctx: any, reg) => bunInstall(ctx, reg, 'add'),
     // bun run <target> — a package.json script, or a file.
     //
     // Real bun's precedence, and the reason this is not just a script
