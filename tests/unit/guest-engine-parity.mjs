@@ -187,6 +187,7 @@ const SCENARIOS = {
 
   // ── Waves ───────────────────────────────────────────────────────────────
   async 'an answered change goes with the next change the process awaits, in one wave'(e) {
+    await e.authority.peer.mkdir('home/user/other');
     await e.hold(OUT);
     await e.write(`${OUT}/w.txt`, 'w');
     await sleep(LINGER_MS * 4);
@@ -266,6 +267,23 @@ const SCENARIOS = {
 };
 
 /** What each engine lacks today: each must fail, showing what it lacks. */
-const GAPS = {};
+const DECIDED_ATTRS = 'attribute changes decided in a held subtree';
+const PATH_FDS = 'descriptors on the open file, not on its name';
+const GAPS = {
+  'a chmod in a held subtree is answered at once, and the process sees it [holder]': { lacks: DECIDED_ATTRS, shows: 'not decided in the held subtree' },
+  'a utimes in a held subtree is answered at once [holder]': { lacks: DECIDED_ATTRS, shows: 'not decided in the held subtree' },
+  'a chown of the process\'s own file in a held subtree is answered at once [holder]': { lacks: DECIDED_ATTRS, shows: 'not decided in the held subtree' },
+  'a copy of the process\'s own unanswered write is answered at once, with its bytes and its mode [holder]': { lacks: 'decided copies', shows: 'not decided in the held subtree' },
+  'a decided copy is logged as what the destination became, in copyfile\'s order [holder]': { lacks: 'a decided copy logged as an open with its fchmod, a write and a close', shows: 'the copy is not logged as an open of its destination' },
+  'a chown by the owner clears the set-id bits, as the process sees it [holder]': { lacks: 'its own attribute changes in its view', shows: 'the set-id bits the session clears are still set' },
+  'the session hears an answered change within the linger, unasked [holder]': { lacks: 'lingering answered changes', shows: 'timed out waiting for the session heard the write' },
+  'awaited chmods alone take the subtree they change [holder]': { lacks: 'attribute changes counted toward taking a subtree', shows: 'timed out waiting for the chmods took their subtree' },
+  'what the process answered and never sent is in its log, and a drain lands it [holder]': { lacks: 'a log a drain replays whole: a write through a description logged with the open it writes through', shows: 'no open description' },
+  'a copy of a held file the process did not write is answered once it has read it [node]': { lacks: 'decided copies of a file it read', shows: 'not decided in the held subtree' },
+  'a name under a file is ENOTDIR, a looping link ELOOP [node]': { lacks: 'ENOTDIR for a name under a file it made, decided in a held subtree', shows: 'Missing expected rejection' },
+  'an open description reads the file it opened after its name is unlinked [node]': { lacks: PATH_FDS, shows: 'the description read the name\'s new file' },
+  'a description writes the file it opened after its name is renamed [node]': { lacks: PATH_FDS, shows: 'the write did not reach the renamed file' },
+  'fstat of a description whose file lost its name says so [node]': { lacks: PATH_FDS, shows: 'ENOENT' },
+};
 
 await runScenarios(import.meta.path, ledgerScenarios(SCENARIOS), { gaps: GAPS });
