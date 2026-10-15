@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { ProcessFiles, ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
@@ -13,6 +14,7 @@ vfs.mkdir('home/user/native-link', { recursive: true });
 vfs.writeFile('home/user/native-link/target.txt', 'target-ok\n');
 vfs.symlink('target.txt', 'home/user/native-link/link.txt');
 
+const view = new ProcessView(new ProcessFiles(rawVfs).openHost(CRED_KERNEL).fs);
 const commands = new Map();
 registerUnixCommands({ register: (name, handler) => commands.set(name, handler) }, rawVfs);
 
@@ -24,7 +26,8 @@ async function run(name, args) {
     cwd: '/home/user/native-link',
     env: {},
     cred: CRED_KERNEL,
-    vfs,
+    // What a command is handed: a process's view of the namespace.
+    vfs: view,
     stdout: { write: (value) => { stdout += String(value); } },
     stderr: { write: (value) => { stderr += String(value); } },
   });

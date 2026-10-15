@@ -43,6 +43,12 @@ export interface ImportSites {
  */
 export declare function readModuleImportSites(code: string): ImportSites;
 /**
+ * `prefix` and a number, the first that `code` never spells, raw or with
+ * unicode escapes: a name added to it binds nothing of the module's, and
+ * nothing of the module's hides it.
+ */
+export declare function unusedIdentifier(code: string, prefix: string): string;
+/**
  * The names `code` spells with unicode escapes: an added name must be none of
  * them, nor any ordinary spelling in the text (raw membership). Each word is
  * decoded alone; a word in text may over-exclude, which is safe.

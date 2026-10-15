@@ -2,7 +2,7 @@ import { resolve, dirname } from '../../utils/path.js';
 import { parseArgs } from '../../utils/args.js';
 import { resolveCopyTargets } from './copy-targets.js';
 import { isVfsError, strerror, syscallError } from '../../../../vfs/vfs-error.js';
-import { lstatOrThrow } from '../../../../vfs/vfs.js';
+import { lstatOrThrow, statOrThrow } from '../../../../vfs/vfs.js';
 const spec = {
     recursive: { type: 'boolean', short: 'r' },
     'recursive-upper': { type: 'boolean', short: 'R' },
@@ -10,6 +10,8 @@ const spec = {
     preserve: { type: 'boolean', short: 'p' },
     force: { type: 'boolean', short: 'f' },
     'no-clobber': { type: 'boolean', short: 'n' },
+    'no-dereference': { type: 'boolean', short: 'P' },
+    'no-dereference-links': { type: 'boolean', short: 'd' },
     verbose: { type: 'boolean', short: 'v' },
     'target-directory': { type: 'string', short: 't' },
     help: { type: 'boolean' },
@@ -17,10 +19,11 @@ const spec = {
 const command = async (ctx) => {
     const { flags, positional, unknown } = parseArgs(ctx.args, spec);
     if (flags.help) {
-        await ctx.stdout.write('Usage: cp [-rRapfnv] SOURCE... DEST\n');
+        await ctx.stdout.write('Usage: cp [-rRapPdfnv] SOURCE... DEST\n');
         await ctx.stdout.write('  -r, -R      copy directories recursively\n');
         await ctx.stdout.write('  -p          preserve mode, ownership and timestamps\n');
-        await ctx.stdout.write('  -a          same as -R -p\n');
+        await ctx.stdout.write('  -a          same as -R -P -p\n');
+        await ctx.stdout.write('  -P, -d      copy a symbolic link SOURCE as the link\n');
         await ctx.stdout.write('  -f          overwrite the destination without prompting\n');
         await ctx.stdout.write('  -n          never overwrite an existing destination\n');
         await ctx.stdout.write('  -v          print each copy\n');
@@ -33,6 +36,9 @@ const command = async (ctx) => {
     }
     const recursive = flags.recursive === true || flags['recursive-upper'] === true || flags.archive === true;
     const preserve = flags.preserve === true || flags.archive === true;
+    // GNU's rule: a link named on the command line is followed, unless the
+    // copy is recursive or asked not to (-P, -d, -a).
+    const followOperand = !recursive && flags['no-dereference'] !== true && flags['no-dereference-links'] !== true;
     const targets = await resolveCopyTargets(ctx, positional, typeof flags['target-directory'] === 'string' && flags['target-directory'] ? flags['target-directory'] : null);
     if (typeof targets === 'string' || targets === null) {
         await ctx.stderr.write(`cp: ${targets ?? 'missing operand'}\n`);
@@ -40,10 +46,14 @@ const command = async (ctx) => {
     }
     const { sources, rawDest } = targets;
     let exitCode = 0;
+    const copying = {
+        ctx, preserve, noClobber: flags['no-clobber'] === true,
+        failed: async (message) => { await ctx.stderr.write(`cp: ${message}\n`); exitCode = 1; },
+    };
     for (const source of sources) {
         const src = resolve(ctx.cwd, source);
         const target = targets.targetFor(src);
-        const stat = await lstatOrThrow(ctx.vfs, src).catch(async (e) => {
+        const stat = await statOrThrow(ctx.vfs, src, { follow: followOperand }).catch(async (e) => {
             if (!isVfsError(e))
                 throw e;
             await ctx.stderr.write(`cp: cannot stat '${source}': ${strerror(e)}\n`);
@@ -65,12 +75,12 @@ const command = async (ctx) => {
                     exitCode = 1;
                     continue;
                 }
-                await copyTree(ctx, src, target, preserve, flags['no-clobber'] === true);
+                await copyTree(copying, src, target);
             }
             else {
-                if (flags['no-clobber'] && (await ctx.vfs.exists(target)))
+                if (copying.noClobber && (await ctx.vfs.exists(target)))
                     continue;
-                await copyEntry(ctx, src, target, stat, preserve);
+                await copyEntry(copying, src, target, stat);
             }
             if (flags.verbose)
                 await ctx.stdout.write(`'${source}' -> '${target}'\n`);
@@ -91,10 +101,11 @@ function errorCode(error) {
 }
 /**
  * A new destination is one copy of inode rows (the filesystem shares the
- * bytes). An existing one is merged into, and a copy the filesystem cannot
- * make in one piece (across mounts) goes entry by entry.
+ * bytes, and keeps what -p keeps). An existing one is merged into, and a copy
+ * the filesystem cannot make in one piece (across mounts) goes entry by entry.
  */
-async function copyTree(ctx, src, target, preserve, noClobber) {
+async function copyTree(copying, src, target) {
+    const { ctx, preserve, noClobber } = copying;
     if (!(await ctx.vfs.exists(target))) {
         try {
             await ctx.vfs.copy(src, target, { recursive: true, preserve });
@@ -115,14 +126,15 @@ async function copyTree(ctx, src, target, preserve, noClobber) {
         const to = resolve(target, entry.name);
         const child = await lstatOrThrow(ctx.vfs, from);
         if (child.type === 'directory')
-            await copyTree(ctx, from, to, preserve, noClobber);
+            await copyTree(copying, from, to);
         else if (!(noClobber && (await ctx.vfs.exists(to))))
-            await copyEntry(ctx, from, to, child, preserve);
+            await copyEntry(copying, from, to, child);
     }
     if (preserve)
-        await applyPreserved(ctx, target, stat);
+        await applyPreserved(copying, target, stat);
 }
-async function copyEntry(ctx, src, target, stat, preserve) {
+async function copyEntry(copying, src, target, stat) {
+    const { ctx, preserve } = copying;
     if (!(await ctx.vfs.exists(dirname(target))))
         throw syscallError('ENOENT', 'copyfile', src, { dest: target });
     if (stat.type === 'symlink') {
@@ -130,14 +142,34 @@ async function copyEntry(ctx, src, target, stat, preserve) {
         if (await ctx.vfs.exists(target))
             await ctx.vfs.unlink(target);
         await ctx.vfs.symlink(link, target);
-        return;
     }
-    await ctx.vfs.copy(src, target);
+    else {
+        await ctx.vfs.copy(src, target);
+    }
     if (preserve)
-        await applyPreserved(ctx, target, stat);
+        await applyPreserved(copying, target, stat);
 }
-async function applyPreserved(ctx, target, stat) {
-    await ctx.vfs.chmod(target, stat.mode);
-    await ctx.vfs.utimes(target, stat.atimeMs ?? stat.mtimeMs, stat.mtimeMs);
+/**
+ * -p: the source's mode, owner and times on `target`; a link's own owner and
+ * times, and no mode (a link has none of its own). A caller that may not give
+ * the file the source's owner keeps its own, silently, as GNU cp does; for
+ * root, who may, a refusal is told and the copy goes on (status 1).
+ */
+async function applyPreserved(copying, target, stat) {
+    const { ctx } = copying;
+    const follow = stat.type !== 'symlink';
+    try {
+        await ctx.vfs.chown(target, stat.uid, stat.gid, { follow });
+    }
+    catch (error) {
+        const code = errorCode(error);
+        if (!isVfsError(error) || (code !== 'EPERM' && code !== 'EINVAL'))
+            throw error;
+        if (ctx.cred.uid === 0)
+            await copying.failed(`failed to preserve ownership for '${target}': ${strerror(error)}`);
+    }
+    if (follow)
+        await ctx.vfs.chmod(target, stat.mode);
+    await ctx.vfs.utimes(target, stat.atimeMs, stat.mtimeMs, { follow });
 }
 export default command;

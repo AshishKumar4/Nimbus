@@ -901,6 +901,9 @@ class AwaitingProcessBridge {
         return this.either([path], () => this.bridge.readFile(path, options), () => this.absent(async () => {
             const follow = options?.followSymlinks !== false;
             const name = await this.path(path, follow);
+            // Only SQLite bounds a whole read (SqliteRuntimeFsBridge.readFile): a mount answers EFBIG, unread.
+            if (options?.maxBytes !== undefined)
+                throw syscallError('EFBIG', 'read', name);
             return (await this.viewed(name, follow)) ?? this.namespace.readFile(name);
         }));
     }
@@ -1263,8 +1266,9 @@ export class ProcessView {
     async isSymlink(path) { return (await this.probe(path, false))?.type === 'symlink'; }
     /** The file's bytes as UTF-8 text. */
     async readFileString(path) { return await readText(this, path); }
-    async readFile(path) {
-        const bytes = await this.call('open', path, () => this.fs.readFile(path));
+    /** `maxBytes`: only a regular file of at most that many bytes, read whole; a larger one or a device is EFBIG, unread (RuntimeReadFileOptions). */
+    async readFile(path, options) {
+        const bytes = await this.call('open', path, () => this.fs.readFile(path, options));
         if (bytes === null)
             throw syscallError('ENOENT', 'open', path);
         return bytes;
@@ -1345,17 +1349,18 @@ export class ProcessView {
     /** Where the link at `path`, reading `link`, leads in this namespace (RuntimeFsBridge.linkLeadsTo), for a caller following it itself. */
     async linkLeadsTo(path, link) { return await this.fs.linkLeadsTo(path, link); }
     async chmod(path, mode) { await this.call('chmod', path, () => this.fs.chmod(path, mode)); }
-    /** chown(2): a null side keeps what the file has (chown -1). */
-    async chown(path, uid, gid) {
-        await this.call('chown', path, async () => {
+    /** chown(2): a null side keeps what the file has (chown -1). `follow: false` is lchown(2), a link's own. */
+    async chown(path, uid, gid, options) {
+        const followSymlinks = options?.follow !== false;
+        await this.call(followSymlinks ? 'chown' : 'lchown', path, async () => {
             if (uid === null || gid === null) {
-                const stat = await this.fs.stat(path);
+                const stat = await this.fs.stat(path, { followSymlinks });
                 if (stat === null)
-                    throw syscallError('ENOENT', 'chown', path);
+                    throw syscallError('ENOENT', followSymlinks ? 'chown' : 'lchown', path);
                 uid ??= stat.uid;
                 gid ??= stat.gid;
             }
-            await this.fs.chown(path, uid, gid);
+            await this.fs.chown(path, uid, gid, { followSymlinks });
         });
     }
     /**
@@ -1425,6 +1430,15 @@ export class ProcessView {
     /** access(2): `mode` is F_OK or any of R_OK, W_OK, X_OK. */
     async access(path, mode) { await this.call('access', path, () => this.fs.access(path, mode)); }
     async realpath(path) { return await this.call('realpath', path, () => this.fs.realpath(path)); }
+    /**
+     * An open file description of this process on `path` (open(2)): its reads
+     * and writes are the file the open found, whatever the name names after,
+     * at its own position, until it is closed.
+     */
+    async open(path, flags) {
+        const opened = await this.call('open', path, () => this.fs.open(path, flags));
+        return new ProcessFile(this.fs, path, opened.id, vfsStatOf(opened.stat), flags.write === true || flags.append === true);
+    }
     /** Append through an O_APPEND descriptor, so concurrent appenders never overwrite each other. */
     async appendFile(path, content) {
         const data = typeof content === 'string' ? new TextEncoder().encode(content) : content;
@@ -1443,6 +1457,135 @@ export class ProcessView {
                 await this.fs.close(handle.id);
             }
         });
+    }
+}
+/** A process's open file description (ProcessView.open), by its descriptor; every failure is a `VfsError`. */
+export class ProcessFile {
+    fs;
+    path;
+    handle;
+    stat;
+    writes;
+    #closed = false;
+    constructor(fs, path, handle, 
+    /** Its file as the open found it. */
+    stat, 
+    /** Opened to write: what it wrote is synced before it closes (withOpenFiles). */
+    writes) {
+        this.fs = fs;
+        this.path = path;
+        this.handle = handle;
+        this.stat = stat;
+        this.writes = writes;
+    }
+    /** Up to `length` bytes at `offset`, or (null) at its position, which then moves: none only at the end (readToEnd). */
+    async read(length, offset = null) {
+        try {
+            return await this.fs.read(this.handle, offset, length);
+        }
+        catch (error) {
+            throw toVfsError(error, 'read', this.path);
+        }
+    }
+    /** All of `bytes`, at `offset` or (null) at its position (its end, opened to append), which then moves. */
+    async write(bytes, offset = null) {
+        try {
+            for (let done = 0; done < bytes.length;) {
+                const written = await this.fs.write(this.handle, offset === null ? null : offset + done, bytes.subarray(done));
+                if (written <= 0 || written > bytes.length - done)
+                    throw syscallError('EIO', 'write', this.path, { detail: 'short write' });
+                done += written;
+            }
+        }
+        catch (error) {
+            throw toVfsError(error, 'write', this.path);
+        }
+    }
+    /** ftruncate(2): the file this description holds, whatever its name names now. */
+    async truncate(size) {
+        try {
+            await this.fs.ftruncate(this.handle, size);
+        }
+        catch (error) {
+            throw toVfsError(error, 'ftruncate', this.path);
+        }
+    }
+    /** What the filesystem still holds for its file, written (fsync): a write it could not make fails here. */
+    async sync() {
+        try {
+            await this.fs.fsync(this.handle);
+        }
+        catch (error) {
+            throw toVfsError(error, 'fsync', this.path);
+        }
+    }
+    /** Whether it is closed: nothing is read, written or synced through it after. */
+    get closed() { return this.#closed; }
+    /** Closed once, whoever closes it first: a later close does nothing. */
+    async close() {
+        if (this.#closed)
+            return;
+        this.#closed = true;
+        try {
+            await this.fs.close(this.handle);
+        }
+        catch (error) {
+            throw toVfsError(error, 'close', this.path);
+        }
+    }
+}
+/**
+ * `file`'s bytes from `from`, `size` at a time, to a read that answers none
+ * (its end: a read may answer fewer bytes than it asks and the file go on),
+ * or until `limit` bytes.
+ */
+export async function* readToEnd(file, size, { from = 0, limit = Number.POSITIVE_INFINITY } = {}) {
+    for (let done = 0; done < limit;) {
+        const chunk = await file.read(Math.min(size, limit - done), from + done);
+        if (chunk.length === 0)
+            return;
+        yield chunk;
+        done += chunk.length;
+    }
+}
+/**
+ * `use`, with every description it opens through `open` closed when it ends,
+ * however it ends: one opened to write synced first, then closed whether the
+ * sync succeeded or not; one `use` closed itself is left as it is. What a
+ * sync or a close fails with is told to `failed`, and the rest are closed all
+ * the same, also when `failed` throws.
+ */
+export async function withOpenFiles(view, use, failed) {
+    const opened = [];
+    try {
+        return await use(async (path, flags) => {
+            const file = await view.open(path, flags);
+            opened.push(file);
+            return file;
+        });
+    }
+    finally {
+        for (const file of opened) {
+            if (file.closed)
+                continue;
+            try {
+                try {
+                    if (file.writes)
+                        await file.sync();
+                }
+                finally {
+                    await file.close();
+                }
+            }
+            catch (error) {
+                try {
+                    await failed(file, error);
+                }
+                catch {
+                    // A report that cannot be made, at once or later, leaves no other description open.
+                }
+            }
+        }
     }
 }
 function vfsStatOf(stat) {

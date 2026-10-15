@@ -3,7 +3,7 @@ import { BUFFERED_WRITE_BYTES, describeMounted, flagsRefusal, openAccess, openFo
 import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt } from './descriptors.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf } from '../vfs/composite.js';
-import { abandon, andThen, isPromise, readDeclaredSource, readRangeOrWhole, syncValue } from '../vfs/vfs.js';
+import { abandon, andThen, isCharacterDevice, isPromise, readDeclaredSource, readRangeOrWhole, syncValue } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { fsError, MAX_LINK_HOPS, modeAllows, walkBeneath } from './beneath-walk.js';
 export { fsError, modeAllows, walkBeneath } from './beneath-walk.js';
@@ -144,6 +144,15 @@ export class SqliteRuntimeFsBridge {
             if (located === null || located.absent)
                 return null;
             try {
+                if (options.maxBytes !== undefined) {
+                    // A bounded whole read is SQLite's alone, where the size check and
+                    // the read are one turn: a mount's stat and read are two calls, and
+                    // its read is of the whole file, whatever it has grown to.
+                    if (located.mount)
+                        throw fsError('EFBIG', 'read', path);
+                    if (!fitsWholeRead(this.vfs.stat(located.path), options.maxBytes))
+                        throw fsError('EFBIG', 'read', path);
+                }
                 // cached === false reads straight from SQL, neither consulting nor
                 // populating the LRU: a whole runtime image is read once for a
                 // facet's module map, never re-read from this isolate. Mount
@@ -187,7 +196,7 @@ export class SqliteRuntimeFsBridge {
             this.assertExpectedRevision(p, options.expectedRevision);
             if (options.createParents === true)
                 this.ensureParent(p);
-            this.vfs.writeFile(p, bytes);
+            this.vfs.writeFile(p, bytes, { umask: options.umask });
             // Read back in the same synchronous turn as the mutation, so nothing can
             // interleave: this is exactly the revision this write produced. Asking
             // again after an await would report a peer's clock as our own.
@@ -1077,4 +1086,8 @@ function called(call, run) {
 }
 function hasErrorCode(error, code) {
     return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
+}
+/** A whole read's `maxBytes` (RuntimeReadFileOptions): a regular file of at most `maxBytes` bytes is read whole; a directory answers as a read does. */
+export function fitsWholeRead(stat, maxBytes) {
+    return stat.type === 'directory' || (stat.type === 'file' && !isCharacterDevice(stat.mode) && stat.size <= maxBytes);
 }

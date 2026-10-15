@@ -3,10 +3,12 @@
  * bytes: a byte that is not valid UTF-8 passes through unchanged. Decoding
  * with TextDecoder would turn it into U+FFFD, three different bytes.
  */
-import type { ProcessView } from '../../../runtime/process-files.js';
+import { readToEnd, type ProcessView } from '../../../runtime/process-files.js';
+import { isVfsError, syscallError } from '../../../vfs/vfs-error.js';
 import type { CommandInputStream } from '../commands/types.js';
 import { resolve } from './path.js';
 import { direntTypeOfStat } from '../../../vfs/dirent-type.js';
+import { fitsWholeRead } from '../../../runtime/sqlite-runtime-fs-bridge.js';
 
 export interface ByteInputContext {
   cwd: string;
@@ -65,24 +67,35 @@ export async function* inputChunks(
     return;
   }
   const path = resolve(ctx.cwd, operand);
-  const stat = await ctx.vfs.stat(path);
-  if (stat === null) throw Object.assign(new Error(`${operand}: No such file or directory`), { code: 'ENOENT' });
-  if (stat.type === 'directory') throw Object.assign(new Error(`${operand}: Is a directory`), { code: 'EISDIR' });
-  const characterDevice = direntTypeOfStat(stat) === 'character';
-  if (stat.size === 0 && (!characterDevice || !slice)) {
-    // Empty, a file whose size says nothing (a synthesized /proc entry), or a
-    // device read to its end: read whole.
-    const bytes = await ctx.vfs.readFile(path);
-    if (bytes.length > 0) yield bytes;
+  // A file one read holds is read whole, in one call, as the one file the
+  // name leads to; a larger one, or a device, through one description from
+  // its first byte to a read that answers none (its end), closed however the
+  // reader stops: either way the bytes are one file's, whatever the name
+  // names after.
+  const whole = await wholeRead(ctx, path, fileReadSize);
+  if (whole !== null) {
+    if (whole.length > 0) yield whole;
     return;
   }
-  // A regular file to its end; a character device (/dev/zero) for as long
-  // as its slice reader keeps asking, which is why this is a generator.
-  for (let offset = 0; ; ) {
-    const chunk = await ctx.vfs.readRange(path, offset, fileReadSize);
-    if (chunk.length === 0) return;
-    yield chunk;
-    offset += chunk.length;
+  yield* descriptionChunks(ctx, path, fileReadSize, slice);
+}
+
+/** The file at `path` through one description from its first byte to its end, closed however the reader stops. */
+async function* descriptionChunks(ctx: ByteInputContext, path: string, fileReadSize: number, slice: boolean): AsyncGenerator<Uint8Array> {
+  const file = await ctx.vfs.open(path, { read: true });
+  try {
+    if (file.stat.type === 'directory') throw syscallError('EISDIR', 'read', path);
+    if (direntTypeOfStat(file.stat) === 'character' && !slice) {
+      // A reader that wants the operand to its end asks the device for all of
+      // it, which the device answers: /dev/null is empty, and an endless
+      // device (/dev/zero) refuses.
+      const bytes = await ctx.vfs.readFile(path);
+      if (bytes.length > 0) yield bytes;
+      return;
+    }
+    yield* readToEnd(file, fileReadSize);
+  } finally {
+    await file.close();
   }
 }
 
@@ -227,4 +240,21 @@ export function asciiUpper(byte: number): number {
 
 export function asciiBytes(text: string): Uint8Array {
   return enc.encode(text);
+}
+
+/**
+ * The file at `path` read whole when one read holds it (fitsWholeRead); null
+ * when it is larger, or a device. The stat only chooses whether to try: a
+ * refusal that throws costs a deep stack's capture, as a stat does not, and
+ * a file that grew past the stat is refused by the read itself (EFBIG).
+ */
+async function wholeRead(ctx: ByteInputContext, path: string, fileReadSize: number): Promise<Uint8Array | null> {
+  const seen = await ctx.vfs.stat(path);
+  if (seen !== null && !fitsWholeRead(seen, fileReadSize)) return null;
+  try {
+    return await ctx.vfs.readFile(path, { maxBytes: fileReadSize });
+  } catch (error) {
+    if (!isVfsError(error) || error.code !== 'EFBIG') throw error;
+    return null;
+  }
 }

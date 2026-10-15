@@ -25,7 +25,7 @@ kernel.mkdir('t/dir/sub', { recursive: true });
 kernel.writeFile('t/file', 'hello');
 kernel.chown('t/file', 1234, 5678);
 kernel.utimes('t/file', 1_000_000, 2_000_000);
-const filesystem = synchronousFilesystem({ process: processBridge(rawVfs, CRED_KERNEL) })();
+const filesystem = synchronousFilesystem({ process: processBridge(rawVfs, CRED_KERNEL) }, () => CRED_KERNEL.umask)();
 const fs = createFs(filesystem, '/t');
 try {
   for (const path of ['/t/file', '/t/dir']) {
