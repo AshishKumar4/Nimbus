@@ -27,7 +27,6 @@ for (const [call, want] of calls) {
   });
   assert.equal(viaReadline, want, `readline: ${call}`);
 }
-let called = false;
-new WriteStream(1).cursorTo(0, () => { called = true; });
-assert.ok(called, 'cursorTo(x, callback) calls back');
+// Once its write is done, as Node's: the callback is the write's.
+await new Promise((resolve) => new WriteStream(1).cursorTo(0, resolve));
 console.log('tty-cursor-sequences: ok');

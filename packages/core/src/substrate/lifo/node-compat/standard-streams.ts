@@ -121,11 +121,19 @@ export function joinStandardInput<T extends Readable>(stream: T, input: Standard
     };
     next();
   };
+  // A read in flight is not asked again when the stream flows again: its wait holds the program again here.
   const pause = stream.pause;
+  const resume = stream.resume;
   stream.pause = function (this: T): T {
     stopped = true;
     want();
     pause.call(this);
+    return this;
+  };
+  stream.resume = function (this: T): T {
+    stopped = false;
+    want();
+    resume.call(this);
     return this;
   };
   return stream;

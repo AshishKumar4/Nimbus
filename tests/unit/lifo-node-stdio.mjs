@@ -72,6 +72,9 @@ const cases = {
     'node {prog} > out.txt; cat out.txt'],
 };
 
+/** `promise`, or a failure naming `what` once `ms` pass: a program that waits forever fails its case, not the run. */
+const within = (ms, promise, what) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what}: still running after ${ms} ms`)), ms))]);
+
 const { sql, transactions } = await hostSqlite();
 let terminalOutput = '';
 const terminal = {
@@ -88,7 +91,13 @@ try {
     writeFileSync(join(host, name), source);
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'NODE_NO_WARNINGS' && key !== 'NODE_OPTIONS'));
     const node = spawnSync('sh', ['-c', command], { cwd: host, env, encoding: 'utf8', timeout: 60_000 });
-    const lifo = await ws.exec(command, { cwd: '/home/user' });
+    let lifo;
+    try {
+      lifo = await within(30_000, ws.exec(command, { cwd: '/home/user' }), name);
+    } catch (error) {
+      failed.push(`${name}: ${command}\n  node (exit ${node.status}): ${JSON.stringify(node.stdout + node.stderr)}\n  lifo: ${error.message}`);
+      continue;
+    }
     if (lifo.exitCode !== node.status || lifo.stdout !== node.stdout || lifo.stderr !== node.stderr) {
       failed.push(`${name}: ${command}\n  node (exit ${node.status}): ${JSON.stringify(node.stdout + node.stderr)}\n  lifo (exit ${lifo.exitCode}): ${JSON.stringify(lifo.stdout + lifo.stderr)}`);
     }
@@ -120,13 +129,13 @@ try {
   shell.handleInput('q');
   await settle(() => terminalOutput.includes('key '), 'a key in raw mode reaches the program without Enter');
   assert.match(terminalOutput, /key "q"/);
-  await ran;
+  await within(10_000, ran, 'the program in the terminal');
   } catch (error) {
     failed.push(`in a terminal: ${error.message}`);
   }
 } finally {
-  await ws.close();
   rmSync(host, { recursive: true, force: true });
+  await within(10_000, ws.close(), 'the workspace closes').catch((error) => failed.push(error.message));
 }
 
 if (underBun) {
