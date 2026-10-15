@@ -120,7 +120,7 @@ export function supervisorCalls(base) {
             if (props?.bindingKind === 'infrastructure') {
                 if (run !== undefined)
                     throw new Error('infrastructure supervisor cannot carry a process run');
-                if (['stdout', 'stderr', 'reportExit', 'reportRuntimeCode', 'cpSpawn', 'cpStdinWrite', 'cpStdinEnd', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpCloseOutput', 'cpKill', 'cpWait', 'cpBlocked', 'replayBoundary', 'stdinFileRead', 'stdinPrepared', 'netTls', 'outbound'].includes(envelope.op)) {
+                if (['stdout', 'stderr', 'reportExit', 'reportRuntimeCode', 'cpSpawn', 'cpStdinWrite', 'cpStdinEnd', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpCloseOutput', 'cpKill', 'cpWait', 'cpNextSignal', 'cpBlocked', 'replayBoundary', 'stdinFileRead', 'stdinPrepared', 'netTls', 'outbound'].includes(envelope.op)) {
                     throw new Error('infrastructure supervisor refuses guest-originated operations');
                 }
             }
@@ -892,6 +892,14 @@ export function supervisorCalls(base) {
          */
         async cpWait(childPid, waitMs, acquire, knownStarted) {
             return this[CALL](this[OP]('cpWait', [childPid, waitMs, acquire ?? null, knownStarted !== false], { pid: this[REPORTING_PID]() }));
+        }
+        /**
+         * The next signal sent to this process, whose program takes its own
+         * (SessionProcessSupervisor.takeSignals), waiting up to `waitMs` for one:
+         * null if none came.
+         */
+        async cpNextSignal(waitMs) {
+            return this[CALL](this[OP]('cpNextSignal', [waitMs], { pid: this[REPORTING_PID]() }));
         }
         /**
          * This process says whether its only remaining work is waiting on its own

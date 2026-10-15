@@ -10,8 +10,15 @@ export interface InvocationStdioSpec {
     readonly cwd: string;
     readonly parentPid: number | undefined;
     readonly cred: VfsCred;
-    /** The caller's: its abort ends the run, as a kill of its process does. */
+    /**
+     * The caller's: its abort ends the run, as a kill of its process does; or,
+     * for a program that takes its own signals (`takesSignals`), sends it and
+     * the processes below it the abort's signal, as a terminal's key does its
+     * foreground job's process group, and the run goes on until it ends.
+     */
     readonly signal: AbortSignal | undefined;
+    /** Its program takes its own signals (SessionProcessSupervisor.takeSignals): its image delivers what it is sent (NIMBUS_ESIGNAL). */
+    readonly takesSignals?: boolean;
     /** What fd 0 reads, pumped in; null when it reads nothing of the caller's (a broker's input, or stdin already read). */
     readonly input: Pick<CommandInputStream, 'read' | 'readBytes'> | null;
     /** Where fd 1 and 2 go; null when a broker routes them. */
@@ -35,8 +42,9 @@ export declare function openInvocationStdio(processes: SessionProcessSupervisor,
 export declare function openRuntimeStdio(deps: {
     filesystem: NimbusFilesystemAuthority;
     processes: SessionProcessSupervisor;
-}, ctx: CommandContext, command: string, { consumedStdin }?: {
+}, ctx: CommandContext, command: string, { consumedStdin, takesSignals }?: {
     consumedStdin?: boolean | undefined;
+    takesSignals?: boolean | undefined;
 }): {
     pid: number;
     signal: AbortSignal;

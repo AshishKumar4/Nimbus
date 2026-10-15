@@ -1,5 +1,12 @@
 import { stdinBytesOf } from '../shell/stdin-adapter.js';
 import { outputHooks } from '../_shared/byte-stream.js';
+import { signalAbortReasonOf } from '../substrate/lifo/shell/signals.js';
+import { NIMBUS_SIGNAL_ERRNOS } from './wasi/types.js';
+import { parseProcessSignalName } from './process-io-protocol.js';
+/** The signals a WASI image that takes its own is sent (NIMBUS_SIGNAL_ERRNOS). */
+const DELIVERED_SIGNALS = Object.keys(NIMBUS_SIGNAL_ERRNOS)
+    .map(parseProcessSignalName)
+    .filter((signal) => signal !== null);
 /**
  * A run's fd0/1/2, on the process supervisor's byte channels: its process
  * (made, or the broker's), the signal that ends it, its input pumped (fd 0
@@ -16,7 +23,15 @@ export function openInvocationStdio(processes, spec) {
         throw new Error(`${spec.command}: runtime process is not running`);
     const pid = entry.pid;
     const controller = new AbortController();
-    const abort = () => controller.abort(spec.signal?.reason);
+    // Its program's for this run alone: an adopted process runs on after it.
+    const releaseSignals = spec.takesSignals ? processes.takeSignals(pid, DELIVERED_SIGNALS) : null;
+    const abort = () => {
+        const sent = spec.takesSignals && spec.signal ? signalAbortReasonOf(spec.signal) : null;
+        if (sent !== null && sent.signal !== 'KILL')
+            processes.signalGroup(pid, sent);
+        else
+            controller.abort(spec.signal?.reason);
+    };
     if (spec.signal?.aborted)
         abort();
     else
@@ -38,6 +53,7 @@ export function openInvocationStdio(processes, spec) {
         signal: controller.signal,
         release() {
             spec.signal?.removeEventListener('abort', abort);
+            releaseSignals?.();
             input?.stop();
             if (owned)
                 processes.closeInput(pid);
@@ -48,12 +64,14 @@ export function openInvocationStdio(processes, spec) {
     };
 }
 /** A runtime's fd0/1/2 for a command's run (openInvocationStdio over its CommandContext). */
-export function openRuntimeStdio(deps, ctx, command, { consumedStdin = false } = {}) {
+export function openRuntimeStdio(deps, ctx, command, { consumedStdin = false, takesSignals = false } = {}) {
     const reserved = ctx.__nimbusBinSpawn;
     // A broker already owns this input and routes its output to the parent's
     // pipes. Pumping or subscribing a second time would duplicate that path.
     const brokerIo = reserved?.liveInput === true;
     const output = brokerIo ? null : runtimeOutput(ctx);
+    if (takesSignals)
+        ctx.takesSignals?.();
     const stdio = openInvocationStdio(deps.processes, {
         existingPid: reserved?.callerPid,
         command,
@@ -62,6 +80,7 @@ export function openRuntimeStdio(deps, ctx, command, { consumedStdin = false } =
         parentPid: ctx.pid,
         cred: ctx.cred,
         signal: ctx.signal,
+        takesSignals,
         input: !brokerIo && !consumedStdin && ctx.stdin ? ctx.stdin : null,
         output: output === null ? null : (stream, bytes) => output.write(stream, bytes),
     });

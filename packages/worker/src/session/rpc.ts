@@ -1532,9 +1532,10 @@ export async function _rpcCpSpawn(self: RpcHost, req: any, parentPid?: number): 
  * the store used to take text, decoded here, which turned a byte that is not
  * UTF-8 into U+FFFD.
  */
-export async function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: Uint8Array, pid?: number): Promise<{ ok: boolean; full?: boolean }> {
+export async function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: Uint8Array, pid?: number): Promise<{ ok: boolean; signal?: string }> {
     childOf(self, childPid, pid);
-    return self.processes.writeInputBytesWait(childPid, data);
+    // A caller of a prior generation is no process here: no signal of this table's is its.
+    return self.processes.writeInputBytesWait(childPid, data, pid === undefined || isPriorGenerationPid(self, pid) ? undefined : pid);
 }
 
 export async function _rpcCpStdinEnd(self: RpcHost, childPid: number, pid?: number): Promise<void> {
@@ -1614,6 +1615,16 @@ export async function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: n
     const delivers = packet.ended || packet.signal !== undefined || packet.resize !== undefined
       || packet.data.byteLength > 0;
     return withDeliveredAcquire(self, packet, delivers, acquire, pid);
+}
+
+/**
+ * The next signal sent to `pid` (the caller's own process, whose program
+ * takes its own: SessionProcessSupervisor.takeSignals), waiting up to
+ * `waitMs`: null if none came.
+ */
+export async function _rpcCpNextSignal(self: RpcHost, pid: number | undefined, waitMs: number): Promise<string | null> {
+    if (pid === undefined || isPriorGenerationPid(self, pid)) return null;
+    return self.processes.nextSignal(pid, Number(waitMs) || 0);
 }
 
 export async function _rpcCpReadOutput(

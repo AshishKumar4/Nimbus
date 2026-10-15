@@ -82,6 +82,7 @@ export const SUPERVISOR_OP_TABLE = {
   cpCloseOutput: null,
   cpKill: null,
   cpWait: null,
+  cpNextSignal: null,
   cpBlocked: null,
   fsFstat: 'joined',
   fsDup: 'once',
@@ -154,7 +155,7 @@ export const SUPERVISOR_JOINED_READ_OPS: readonly SupervisorJoinedReadOpName[] =
 const SUPERVISOR_OPS_WITHIN: ReadonlySet<SupervisorOpName> = new Set<SupervisorOpName>([
   ...SUPERVISOR_DELIVERED_OPS, ...SUPERVISOR_JOINED_READ_OPS,
   'setUmask', 'fsStorageGrant', 'fsRead', 'writeBatchStream', 'openWaveWriter', 'retireWaveWriter', 'fsAwaitRecall', 'fsPublished',
-  'wsPoll', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpWait', 'cpBlocked', 'hmrNextEvent', 'awaitHostedBoot',
+  'wsPoll', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpWait', 'cpNextSignal', 'cpBlocked', 'hmrNextEvent', 'awaitHostedBoot',
   'stdinFileRead', 'stdinPrepared', 'replayBoundary', 'cacheResult', 'reportRuntimeCode', 'processHostProbe',
   'transform', 'allocatePort', 'getCachedTarball',
 ]);

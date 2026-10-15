@@ -34,16 +34,22 @@
 
 import { refusalErrno as filesystemErrno } from './filesystem.js';
 import { PIPE_CAPACITY, decideWrite } from '../bash/pipe-rules.js';
-import type { Errno, FdEntry, SyscallResult, WasiSupervisorStub, WasiInputPacket } from './types.js';
+import { NIMBUS_ESIGNAL, NIMBUS_SIGNAL_ERRNOS, type Errno, type FdEntry, type SignalErrno, type SyscallResult, type WasiSupervisorStub, type WasiInputPacket } from './types.js';
 import type { Awaitable } from '../os-contracts.js';
 
 /** WASI errno values these imports answer with. */
 const E = { SUCCESS: 0, AGAIN: 6, BADF: 8, CHILD: 12, INTR: 27, INVAL: 28, IO: 29, NOSYS: 52, NOTSUP: 58, PIPE: 64, SRCH: 71 } as const satisfies Record<string, Errno>;
 const FDFLAGS_NONBLOCK = 4;
 
-/** Signal numbers as wasi-libc's emulated signals number them, and their names. */
-const SIGNALS: Record<number, string> = { 1: 'SIGHUP', 2: 'SIGINT', 3: 'SIGQUIT', 9: 'SIGKILL', 13: 'SIGPIPE', 15: 'SIGTERM' };
+/** Signal numbers as wasi-libc's emulated signals number them, and their names: those a host delivers (NIMBUS_SIGNAL_ERRNOS), and SIGKILL. */
+const SIGNALS: Record<number, string> = {
+  9: 'SIGKILL',
+  ...Object.fromEntries(Object.entries(NIMBUS_SIGNAL_ERRNOS).map(([name, errno]) => [errno - NIMBUS_ESIGNAL, name])),
+};
 const SIGNAL_NUMBERS: Record<string, number> = Object.fromEntries(Object.entries(SIGNALS).map(([n, name]) => [name, Number(n)]));
+
+/** The errno a wait a signal interrupted answers an image that takes its signals with, by the signal's name. */
+const SIGNAL_ERRNOS: ReadonlyMap<string, SignalErrno> = new Map(Object.entries(NIMBUS_SIGNAL_ERRNOS));
 
 /** How long one call to the session waits for a child's output or exit before asking again. */
 const LONG_POLL_MS = 5_000;
@@ -76,7 +82,7 @@ export interface Pipe {
   readers: number;
   waiters: Array<() => void>;
   /** Set when the read end is a child's stdin. */
-  forward: ((bytes: Uint8Array) => Promise<boolean>) | null;
+  forward: ((bytes: Uint8Array) => Promise<{ ok: boolean; signal?: string }>) | null;
   end: (() => Promise<void>) | null;
   ended: boolean;
   /** The session could not deliver all of a child's output: a reader gets EIO after what did arrive. */
@@ -98,7 +104,8 @@ interface ChildProcessSupervisor {
     command: string; args: string[]; env: Record<string, string>; cwd: string;
     stdio: Array<'pipe' | 'ignore' | 'inherit'>; parentPid: number;
   }): { childPid: number } | Promise<{ childPid: number }>;
-  cpStdinWrite(childPid: number, data: Uint8Array): { ok: boolean } | Promise<{ ok: boolean }>;
+  /** A write a signal sent to the guest's own process interrupted is withdrawn and answers it (`signal`). */
+  cpStdinWrite(childPid: number, data: Uint8Array): { ok: boolean; signal?: string } | Promise<{ ok: boolean; signal?: string }>;
   cpStdinEnd(childPid: number): void | Promise<void>;
   cpReadOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number): Promise<{
     chunks: Array<{ seq: number; data: Uint8Array }>; closed: boolean; maxSeq: number; news?: number[];
@@ -106,6 +113,8 @@ interface ChildProcessSupervisor {
   /** With `knownStarted` false it answers at the child's start too (`started`); a refused spawn ends with `spawnError`, its errno's code. */
   cpWait(childPid: number, waitMs: number, acquire?: undefined, knownStarted?: boolean): Promise<ChildWait>;
   cpKill(childPid: number, signal: string): boolean | Promise<boolean>;
+  /** The next signal sent to the guest's own process (SessionProcessSupervisor.takeSignals): null if none came in `waitMs`. */
+  cpNextSignal?(waitMs: number): Promise<string | null>;
 }
 
 interface ChildWait {
@@ -158,6 +167,13 @@ export interface ProcessHostOptions {
    */
   gaveUp: Errno;
   /**
+   * The image takes the signals sent to its process (NIMBUS_ESIGNAL): while
+   * it waits, the host waits for them too (cpNextSignal), and one that comes
+   * ends the wait at once, answered NIMBUS_ESIGNAL + its number, for the
+   * guest's libc to raise. Else a wait answers EINTR on a stdin signal only.
+   */
+  takesSignals: boolean;
+  /**
    * Every answer by promise goes through here: a threaded guest's run token
    * is handed back while it waits, so the peer that would end the wait runs.
    * A poll's readiness is not: the poll that awaits it hands the token back.
@@ -190,6 +206,18 @@ export interface ProcessHost {
   close(fd: number): SyscallResult | null;
   /** Whether `fd` is a pipe descriptor. */
   isPipe(fd: number): boolean;
+  /**
+   * What a wait that ended without its answer answers (a poll's, whose pipes
+   * did): the signal that interrupted it (NIMBUS_ESIGNAL + its number), taken,
+   * else EINTR, the wait having given up.
+   */
+  interrupted(): Errno;
+  /**
+   * For an image that takes its signals, a wait that ends only when one
+   * comes (interrupted then answers it): a poll races it against its
+   * subscriptions, its clocks and sockets among them. Null for any other.
+   */
+  signalWait(): { ready: Promise<void>; cancel(): void } | null;
   /** A new descriptor on what pipe or stream descriptor `fd` holds, as dup(2); null for any other kind (AuthorityFilesystemOptions.duplicate). */
   duplicate(fd: number): number | null;
   /**
@@ -228,22 +256,67 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
   let disposed = false;
 
   /**
+   * Signals (an image that takes them: opts.takesSignals). The one sent to
+   * the guest's process that it has not taken yet; the waits in progress,
+   * each ended by one; and whether the host is waiting for one, which it
+   * does while the guest waits.
+   */
+  let pendingSignal: SignalErrno | null = null;
+  const interruptible = new Set<() => void>();
+  let watching = false;
+
+  /** A signal arrived: every wait in progress ends, for the guest to take it. */
+  const signalled = (name: string | null | undefined): void => {
+    const errno = name ? SIGNAL_ERRNOS.get(name) : undefined;
+    if (errno === undefined) return;
+    pendingSignal = errno;
+    for (const interrupt of [...interruptible]) interrupt();
+  };
+
+  /** While the guest waits, the session's next signal for it (cpNextSignal). */
+  const watchSignals = (): void => {
+    if (watching || disposed || !opts.takesSignals) return;
+    const sup = supervisor();
+    if (!sup?.cpNextSignal) return;
+    watching = true;
+    void (async () => {
+      try {
+        while (interruptible.size > 0 && pendingSignal === null && !disposed) signalled(await sup.cpNextSignal?.(LONG_POLL_MS));
+      } catch {
+        // The session is gone, and its signals with it.
+      } finally {
+        watching = false;
+      }
+    })();
+  };
+
+  /** The answer of a wait that ended without one: the signal that ended it, taken, else `gaveUp`. */
+  const unanswered = (gaveUp: Errno): Errno => {
+    const errno = pendingSignal;
+    pendingSignal = null;
+    return errno ?? gaveUp;
+  };
+
+  /**
    * A wait the guest gives up at PROCESS_PARK_MS. `attempt` answers, or gives
    * null while there is nothing to answer yet; `subscribe` asks for a wake
    * when that may have changed. Once the wait is answered, has given up or is
    * cancelled, `attempt` is never asked again, so a wait that did not answer
    * consumed nothing: the guest's retry finds it all still there.
    */
-  const parkedWait = <T>(subscribe: (wake: () => void) => void, attempt: () => T | null, accountGuest = true): { ready: Promise<T | null>; cancel(): void } => {
+  const parkedWait = <T>(subscribe: (wake: () => void) => void, attempt: () => T | null, accountGuest = true, interruptibleWait = true): { ready: Promise<T | null>; cancel(): void } => {
     let finish: (answer: T | null, ran: boolean) => void = () => {};
     const ready = new Promise<T | null>((resolve) => {
       let over = false;
       if (accountGuest && parks++ === 0) opts.news?.say(true);
       const timer = setTimeout(() => finish(null, false), PROCESS_PARK_MS);
+      // A signal ends it without an answer (unanswered takes the signal).
+      const interrupt = (): void => finish(null, true);
       finish = (answer, ran) => {
         if (over) return;
         over = true;
         clearTimeout(timer);
+        interruptible.delete(interrupt);
         if (accountGuest && --parks === 0 && ran) opts.news?.say(false);
         resolve(answer);
       };
@@ -253,6 +326,11 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
         if (answer === null) subscribe(wake);
         else finish(answer, true);
       };
+      if (opts.takesSignals && interruptibleWait) {
+        if (pendingSignal !== null) { interrupt(); return; }
+        interruptible.add(interrupt);
+        watchSignals();
+      }
       subscribe(wake);
     });
     return { ready, cancel: () => finish(null, true) };
@@ -379,7 +457,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
               const room = PIPE_CAPACITY - target.pipe.buffered;
               if (room === 0) {
                 await parkedWait((wake) => target.pipe.waiters.push(wake), () =>
-                  disposed || target.pipe.readers === 0 || target.pipe.buffered < PIPE_CAPACITY ? true : null, false).ready;
+                  disposed || target.pipe.readers === 0 || target.pipe.buffered < PIPE_CAPACITY ? true : null, false, false).ready;
                 continue;
               }
               const size = Math.min(room, chunk.data.byteLength - at);
@@ -499,7 +577,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
           // A write the session cannot take is the child's stdin gone (EPIPE).
           pipe.forward = async (bytes) => {
             await opts.release();
-            try { return (await sup.cpStdinWrite(childPid, bytes)).ok; } catch { return false; }
+            try { return await sup.cpStdinWrite(childPid, bytes); } catch { return { ok: false }; }
           };
           pipe.end = async () => { await sup.cpStdinEnd(childPid); };
           for (const chunk of pipe.chunks.splice(0)) await pipe.forward(chunk);
@@ -560,7 +638,8 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
       const now = answer();
       if (now !== null) return now;
       if (!opts.parks) return refused('start');
-      return opts.park(parkedWait((wake) => child.waiters.push(wake), answer).ready.then((started) => started ?? E.INTR));
+      // Not one a signal ends: a child's start is at hand, and the spawn shim asks again at EINTR alone.
+      return opts.park(parkedWait((wake) => child.waiters.push(wake), answer, true, false).ready.then((started) => started ?? E.INTR));
     },
 
     wait(pid, options, statusPtr, waitedPtr) {
@@ -583,7 +662,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
       if (now !== null) return now;
       if (options & WNOHANG) { view().setInt32(waitedPtr, 0, true); return E.SUCCESS; }
       if (!opts.parks) return refused('wait');
-      return opts.park(parkedWait((wake) => { for (const child of candidates) child.waiters.push(wake); }, reap).ready.then((reaped) => reaped ?? E.INTR));
+      return opts.park(parkedWait((wake) => { for (const child of candidates) child.waiters.push(wake); }, reap).ready.then((reaped) => reaped ?? unanswered(E.INTR)));
     },
 
     kill(pid, signal) {
@@ -600,6 +679,8 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
 
   const read: ProcessHost['read'] = (fd, iovs, iovsLen, nread) => {
     if (opts.fds.get(fd)?.kind === 'stdin' && opts.input) {
+      // A signal that came while the guest ran is taken first.
+      if (pendingSignal !== null) return unanswered(E.INTR);
       let room = 0;
       for (let i = 0; i < iovsLen; i++) room += view().getUint32(iovs + i * 8 + 4, true);
       if (room === 0) { view().setUint32(nread, 0, true); return E.SUCCESS; }
@@ -612,7 +693,10 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
           return E.SUCCESS;
         }
         // A signal interrupts the read; a read that only gave up waiting is asked again.
-        if (packet.signal) return E.INTR;
+        if (packet.signal) {
+          if (opts.takesSignals) signalled(packet.signal);
+          return unanswered(E.INTR);
+        }
         if (!packet.ended) return opts.gaveUp;
         view().setUint32(nread, 0, true);
         return E.SUCCESS;
@@ -644,7 +728,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
     const now = answer();
     if (now !== null) return now;
     if (((entry.fdflags ?? 0) & FDFLAGS_NONBLOCK) !== 0) return E.AGAIN;
-    return opts.park(parkedWait((wake) => pipe.waiters.push(wake), answer).ready.then((read) => read ?? opts.gaveUp));
+    return opts.park(parkedWait((wake) => pipe.waiters.push(wake), answer).ready.then((read) => read ?? unanswered(opts.gaveUp)));
   };
 
   // Pipes and the guest's own streams; a file's descriptor is the codec's, and not shared this way.
@@ -667,8 +751,13 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
     if (bytes.byteLength === 0) { view().setUint32(nwritten, 0, true); return E.SUCCESS; }
     if (pipe.readers === 0) return E.PIPE;
     if (pipe.forward) {
-      return opts.park(pipe.forward(bytes).then((ok) => {
-        if (!ok) return E.PIPE;
+      return opts.park(pipe.forward(bytes).then((answer) => {
+        // A signal interrupted it (the session withdrew it): nothing was written.
+        if (answer.signal !== undefined) {
+          if (opts.takesSignals) signalled(answer.signal);
+          return unanswered(E.INTR);
+        }
+        if (!answer.ok) return E.PIPE;
         view().setUint32(nwritten, bytes.byteLength, true);
         return E.SUCCESS;
       }));
@@ -687,7 +776,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
     const now = admit();
     if (now !== null) return now;
     if (((entry.fdflags ?? 0) & FDFLAGS_NONBLOCK) !== 0) return E.AGAIN;
-    return opts.park(parkedWait((wake) => pipe.waiters.push(wake), admit).ready.then((written) => written ?? opts.gaveUp));
+    return opts.park(parkedWait((wake) => pipe.waiters.push(wake), admit).ready.then((written) => written ?? unanswered(opts.gaveUp)));
   };
 
   const close: ProcessHost['close'] = (fd) => {
@@ -713,5 +802,21 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
     return check() ?? parkedWait((wake) => pipe.waiters.push(wake), check);
   };
 
-  return { imports, read, write, close, isPipe: (fd) => pipeEntry(fd) !== null, duplicate, readiness, dispose: () => { disposed = true; } };
+  return {
+    imports, read, write, close, isPipe: (fd) => pipeEntry(fd) !== null, duplicate, readiness,
+    interrupted: () => unanswered(E.INTR),
+    signalWait: () => {
+      if (!opts.takesSignals) return null;
+      let cancel = (): void => {};
+      const ready = new Promise<void>((resolve) => {
+        if (pendingSignal !== null) { resolve(); return; }
+        const interrupt = (): void => { interruptible.delete(interrupt); resolve(); };
+        interruptible.add(interrupt);
+        cancel = () => { interruptible.delete(interrupt); };
+        watchSignals();
+      });
+      return { ready, cancel };
+    },
+    dispose: () => { disposed = true; },
+  };
 }

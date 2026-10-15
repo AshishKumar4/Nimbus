@@ -10,6 +10,8 @@ export interface GitFacetArgs {
     pid: number;
     /** The image asks again a wait its host gave up on (GIT_RUNNER_CONTRACTS). */
     restartsWaits: boolean;
+    /** The image takes the signals sent to its process (GIT_RUNNER_CONTRACTS). */
+    takesSignals: boolean;
 }
 /** What a git run ends with; its output went to the session as it was written (SupervisorRPC stdout/stderr). */
 export interface GitFacetResult {

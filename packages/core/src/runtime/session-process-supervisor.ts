@@ -32,7 +32,7 @@ import {
   type ProcessLogReadOptions,
   type SequencedLogChunk,
 } from './process-logs.js';
-import type { ProcessSignalName } from './process-io-protocol.js';
+import { parseProcessSignalName, type ProcessSignalName } from './process-io-protocol.js';
 import type { OutputGate, ProcessOutput } from './output-gate.js';
 import { exitCodeForSignal, parseSignalName, signalDisposition, type SignalAbortReason } from '../substrate/lifo/shell/signals.js';
 import type { VfsCred } from './os-contracts.js';
@@ -84,6 +84,13 @@ export interface ProcessTerminalDescriptor {
 const ONCE = { once: true };
 const NOTHING_REAPED: Promise<number> = Promise.resolve(0);
 
+/** A process whose program takes its own signals: those it catches, those sent and not taken, and its one wait for the next. */
+interface SignalBox {
+  readonly catches: ReadonlySet<ProcessSignalName>;
+  readonly queued: ProcessSignalName[];
+  taker: ((signal: ProcessSignalName | null) => void) | null;
+}
+
 export class SessionProcessSupervisor implements ProcessOutput {
   private readonly table = new ProcessTable();
   /** Why no process is admitted any more (closeAdmission); null while they are. */
@@ -93,6 +100,11 @@ export class SessionProcessSupervisor implements ProcessOutput {
 
   /** Terminators for processes whose work is a promise this session owns. */
   private terminators = new Map<number, () => void>();
+  /**
+   * The processes whose programs take their own signals (takeSignals): the
+   * signals sent to each that it has not taken, and its one wait for the next.
+   */
+  private readonly signalBoxes = new Map<number, SignalBox>();
   /** The work this session runs on each pid's own descriptors (holdWork): how to stop each piece, and whether it was. */
   private readonly held = new Map<number, Set<{ stop: (reason?: SignalAbortReason) => void; stopped: boolean; signal?: AbortSignal; observation?: ProcessWorkObservation }>>();
   private observeWork: ((pid: number) => ProcessWorkObservation) | null = null;
@@ -514,6 +526,9 @@ export class SessionProcessSupervisor implements ProcessOutput {
    * stopped with (holdWork).
    */
   kill(pid: number, exitCode?: number, reason?: SignalAbortReason): boolean {
+    // A program that takes its own signals is sent the signal, and decides.
+    const sent = reason === undefined ? null : parseProcessSignalName(`SIG${reason.signal}`);
+    if (sent !== null && this.deliverSignal(pid, sent)) return true;
     const wasRunning = this.table.get(pid)?.state === 'running';
     const killed = this.table.kill(pid, exitCode);
     if (wasRunning) this.ended?.(pid);
@@ -732,7 +747,41 @@ export class SessionProcessSupervisor implements ProcessOutput {
     return this.input.writeBytes(pid, data);
   }
 
-  writeInputBytesWait(pid: number, data: Uint8Array): Promise<{ ok: boolean }> { return this.input.writeBytesWait(pid, data); }
+  /**
+   * A pipe write to `pid`'s input, waiting for room. When `writer`, the
+   * process writing, takes its own signals (takeSignals), a signal sent to
+   * it while it waits answers instead, as a write is interrupted, and the
+   * write is withdrawn, taking nothing.
+   */
+  async writeInputBytesWait(pid: number, data: Uint8Array, writer?: number): Promise<{ ok: boolean; signal?: ProcessSignalName }> {
+    const box = writer === undefined ? undefined : this.signalBoxes.get(writer);
+    // One there is room for does not wait, and nothing interrupts it.
+    if (writer === undefined || box === undefined || this.input.hasRoom(pid, data.byteLength)) return this.input.writeBytesWait(pid, data);
+    const withdraw = new AbortController();
+    const writing = this.input.writeBytesWait(pid, data, withdraw.signal);
+    // Its waits for a signal end at their bound, or when its program lets go of its signals: the write is then waited for alone.
+    while (this.signalBoxes.get(writer) === box) {
+      const wait = this.waitSignal(box, 5000);
+      const first = await Promise.race([writing.then((result) => ({ result })), wait.signal.then((signal) => ({ signal }))]);
+      if ('result' in first) {
+        // A signal it took as the write was made is the next wait's.
+        wait.cancel();
+        const late = await wait.signal;
+        if (late !== null) box.queued.unshift(late);
+        return first.result;
+      }
+      if (first.signal === null) continue;
+      withdraw.abort();
+      const result = await writing;
+      // Made before it could be withdrawn: the signal is the next wait's.
+      if (result.ok) {
+        box.queued.unshift(first.signal);
+        return result;
+      }
+      return { ok: false, signal: first.signal };
+    }
+    return writing;
+  }
 
   endInputAfterWrites(pid: number): Promise<void> { return this.input.endAfterWrites(pid); }
 
@@ -751,8 +800,113 @@ export class SessionProcessSupervisor implements ProcessOutput {
     this.input.close(pid);
   }
 
-  readInput(pid: number, waitMs?: number, maxBytes?: number): Promise<ProcessInputPacket> {
-    return this.input.read(pid, waitMs, maxBytes);
+  /**
+   * `pid`'s next input, waiting up to `waitMs` for it. For a program that
+   * takes its own signals (takeSignals), a signal sent to it while it waits
+   * answers instead, as a read is interrupted, and the read takes nothing.
+   */
+  async readInput(pid: number, waitMs?: number, maxBytes?: number): Promise<ProcessInputPacket> {
+    const box = this.signalBoxes.get(pid);
+    if (box === undefined) return this.input.read(pid, waitMs, maxBytes);
+    const queued = box.queued.shift();
+    if (queued !== undefined) return { data: '', ended: false, signal: queued };
+    const withdraw = new AbortController();
+    const reading = this.input.read(pid, waitMs, maxBytes, withdraw.signal);
+    const wait = this.waitSignal(box, waitMs ?? 1000);
+    const first = await Promise.race([reading.then((packet) => ({ packet })), wait.signal.then((signal) => ({ signal }))]);
+    if ('packet' in first) {
+      // A signal that came with it is the next wait's.
+      wait.cancel();
+      const late = await wait.signal;
+      if (late !== null) box.queued.unshift(late);
+      return first.packet;
+    }
+    withdraw.abort();
+    if (first.signal === null) return reading;
+    // Input that came with it goes back for the next read.
+    const packet = await reading;
+    if (packet.ended || packet.data.length > 0 || packet.resize || packet.signal) this.input.unread(pid, [packet]);
+    return { data: '', ended: false, signal: first.signal };
+  }
+
+  /**
+   * Until `pid` ends or the returned release is called (its program's run
+   * ended: the process may run another), its program takes the signals it
+   * `catches`: one sent to it (a kill, the terminal's keys, a client's
+   * frame) is queued for it to take (nextSignal), and what it does is the
+   * program's, as a process's own handlers decide. Any other, SIGKILL among
+   * them, still ends it. Its runner says so when its image takes what its
+   * host delivers (GIT_RUNNER_CONTRACTS).
+   */
+  takeSignals(pid: number, catches: readonly ProcessSignalName[]): () => void {
+    if (this.table.get(pid)?.state !== 'running' || this.signalBoxes.has(pid)) return () => {};
+    const box: SignalBox = { catches: new Set(catches.filter((signal) => signal !== 'SIGKILL')), queued: [], taker: null };
+    this.signalBoxes.set(pid, box);
+    // What was sent and not taken goes with its program.
+    const release = (): void => {
+      if (this.signalBoxes.get(pid) !== box) return;
+      this.signalBoxes.delete(pid);
+      box.taker?.(null);
+    };
+    const unsubscribe = this.subscribeTerminal(pid, release);
+    return () => {
+      unsubscribe();
+      release();
+    };
+  }
+
+  /**
+   * The next signal sent to `pid`'s program (takeSignals), waiting up to
+   * `waitMs` for one: null if none came, the process ended, or a later wait
+   * took its place (one waits at a time).
+   */
+  nextSignal(pid: number, waitMs: number): Promise<ProcessSignalName | null> {
+    const box = this.signalBoxes.get(pid);
+    return box === undefined ? Promise.resolve(null) : this.waitSignal(box, waitMs).signal;
+  }
+
+  /** {@link nextSignal}'s wait on `box`, and its cancel, which answers it null if it is still the one waiting. */
+  private waitSignal(box: SignalBox, waitMs: number): { signal: Promise<ProcessSignalName | null>; cancel(): void } {
+    const queued = box.queued.shift();
+    if (queued !== undefined) return { signal: Promise.resolve(queued), cancel: () => {} };
+    box.taker?.(null);
+    let take: (signal: ProcessSignalName | null) => void = () => {};
+    const signal = new Promise<ProcessSignalName | null>((resolve) => {
+      const timer = setTimeout(() => take(null), Math.max(0, Math.min(waitMs, 5000)));
+      take = (sent) => {
+        clearTimeout(timer);
+        if (box.taker === take) box.taker = null;
+        resolve(sent);
+      };
+      box.taker = take;
+    });
+    return { signal, cancel: () => { if (box.taker === take) take(null); } };
+  }
+
+  /**
+   * `signal` queued for `pid`'s program if it takes its own and catches it
+   * (takeSignals): whether it does. A kill path that ends a process past
+   * this table (its host's resources first) asks this before it does.
+   */
+  deliverSignal(pid: number, signal: ProcessSignalName): boolean {
+    const box = this.signalBoxes.get(pid);
+    if (!box || !box.catches.has(signal)) return false;
+    if (box.taker) box.taker(signal);
+    else box.queued.push(signal);
+    return true;
+  }
+
+  /**
+   * `reason`'s signal to `pid` and every process below it, as a terminal's
+   * key signals its foreground job's process group: each takes it as
+   * {@link kill} gives it, its program's own where it takes its signals, its
+   * end where not.
+   */
+  signalGroup(pid: number, reason: SignalAbortReason): void {
+    const group = this.getAll()
+      .filter((entry) => entry.state === 'running' && this.lineage(entry.pid).includes(pid))
+      .map((entry) => entry.pid);
+    for (const member of group) this.kill(member, exitCodeForSignal(reason.signal), reason);
   }
 
   /** See ProcessInputStore.unread: input taken back to the front of the queue. */
@@ -771,6 +925,8 @@ export class SessionProcessSupervisor implements ProcessOutput {
    * in the queue for however long the program takes to start.
    */
   signal(pid: number, signal: ProcessSignalName): { ok: boolean } {
+    // A program that takes its own signals is sent it, whatever it would do by default.
+    if (this.deliverSignal(pid, signal)) return { ok: true };
     // Whether its default action ends a process, and the status it ends with:
     // the shell's table (signals.ts), Linux's dispositions and numbers.
     const name = parseSignalName(signal);

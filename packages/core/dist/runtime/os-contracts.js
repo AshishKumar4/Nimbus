@@ -144,11 +144,13 @@ export const CPYTHON_RUNNER_CONTRACTS = ['cpython-runner', CPYTHON_RUNNER];
  * a read or write the host gave up waiting on (wasm/nimbus-libc
  * nimbus-restart.c), which a host answers NIMBUS_ERESTART only to it
  * (runtime/wasi/types.ts): to the first, EINTR, which its stdio took for an
- * end. One runner serves both.
+ * end. @2's libc also raises the signals its host sends it
+ * (nimbus-signal.c), so that git's own handling runs: to the first, a
+ * signal ends the run. One runner serves both.
  */
 export const GIT_RUNNER_CONTRACTS = Object.freeze({
-    'git-runner': { restartsWaits: false },
-    'git-runner@2': { restartsWaits: true },
+    'git-runner': { restartsWaits: false, takesSignals: false },
+    'git-runner@2': { restartsWaits: true, takesSignals: true },
 });
 /** The key this tree's git build names. */
 export const GIT_RUNNER = 'git-runner@2';

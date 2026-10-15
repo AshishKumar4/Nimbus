@@ -188,6 +188,7 @@ const INPUTS = {
   cpKill: [childPid, signal],
   cpWait: [childPid, waitMs, { epoch, cursor }, false],
   cpBlocked: [{ blocked: true, frontier: 3, seq: 4 }],
+  cpNextSignal: [waitMs],
   innerDoFetch: [{ bindingName: 'NimbusDO', id: 'inner-id', method: 'GET', url: 'https://inner.test/', headers: [] }],
   innerDoCall: [{ bindingName: 'NimbusDO', id: 'inner-id', path: ['hello'], args: [1, 'two'] }],
   kvCall: [{ root: 'home/user/app', store: 'KV' }, { method: 'get', key: 'k' }],

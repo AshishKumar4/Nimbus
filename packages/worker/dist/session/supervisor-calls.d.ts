@@ -427,7 +427,7 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
     }>;
     cpStdinWrite(childPid: number, data: Uint8Array): Promise<{
         ok: boolean;
-        full?: boolean;
+        signal?: string;
     }>;
     cpStdinEnd(childPid: number): Promise<void>;
     /**
@@ -487,6 +487,12 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
         news?: number[];
         acquired?: VfsDeliveredAcquire;
     }>;
+    /**
+     * The next signal sent to this process, whose program takes its own
+     * (SessionProcessSupervisor.takeSignals), waiting up to `waitMs` for one:
+     * null if none came.
+     */
+    cpNextSignal(waitMs: number): Promise<string | null>;
     /**
      * This process says whether its only remaining work is waiting on its own
      * children, and the contiguous run of news numbers it has applied (the
