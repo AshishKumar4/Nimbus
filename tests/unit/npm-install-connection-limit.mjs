@@ -20,7 +20,8 @@
 // retried, not waited on; (4) a 404 whose body has failed is the 404, asked
 // once. (5) Every registry request the installer retries (its packuments
 // too) answers so: a 2xx's body read before anyone reads it, any other's
-// cancelled.
+// cancelled; (6) except that a caller that reads a 2xx whole at once (the
+// packument read, in the session's isolate) has nothing read ahead of it.
 //
 // Red before: the hedged answers sat unread until R2 answered; one was closed,
 // and its package failed with the runtime's error.
@@ -226,5 +227,24 @@ const failures = (result) => result.perPackage.filter((r) => r.errorText).map((r
   assert.equal(pulled, chunks + 1, 'a 200 is read to its end before anyone reads it');
   assert.equal((await found.arrayBuffer()).byteLength, chunks * 1024, 'and gives what it read');
   console.log('  [5] the retry path settles every answer at the network');
+}
+
+// ── 6. a caller that reads a body whole at once has nothing read ahead ──
+{
+  let pulled = 0;
+  const network = {
+    fetch: async () => new Response(new ReadableStream({
+      pull(controller) {
+        pulled += 1;
+        if (pulled > 3) controller.close();
+        else controller.enqueue(new Uint8Array(1024));
+      },
+    }, { highWaterMark: 0 }), { status: 200 }),
+  };
+  const answer = await retryingRegistryFetch(network, (fetchVia) => fetchVia('https://registry.invalid/doc'), { readAheadBytes: 0 });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(pulled, 0, 'nothing read before its caller reads');
+  assert.equal((await answer.arrayBuffer()).byteLength, 3 * 1024, 'and its caller reads it all');
+  console.log('  [6] read-ahead 0: the caller reads the body itself');
 }
 console.log('npm-install-connection-limit: ok');

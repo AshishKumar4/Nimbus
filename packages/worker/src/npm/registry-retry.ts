@@ -35,17 +35,18 @@ export const REGISTRY_READ_AHEAD_BYTES = 4 * 1024 * 1024;
  * `answer`, holding no connection open unread. An invocation with six
  * connections open and none being read, while another waits, has its least
  * recently used closed by the runtime ("Response closed due to connection
- * limit"). So a 2xx's body is read as it arrives, REGISTRY_READ_AHEAD_BYTES
- * ahead of its reader (one within that is read to its end at once), and any
- * other answer's body is cancelled, keeping only its status, headers and
- * reason, whether or not it could be.
+ * limit"). So a 2xx's body is read as it arrives, `readAheadBytes` ahead of
+ * its reader (one within that is read to its end at once; none, for a caller
+ * that reads it whole at once), and any other answer's body is cancelled,
+ * keeping only its status, headers and reason, whether or not it could be.
  */
-export async function settleRegistryAnswer(answer: Response): Promise<Response> {
+export async function settleRegistryAnswer(answer: Response, readAheadBytes = REGISTRY_READ_AHEAD_BYTES): Promise<Response> {
   const init = { status: answer.status, statusText: answer.statusText, headers: answer.headers };
   if (!answer.ok || answer.body === null) {
     await answer.body?.cancel().catch(() => {});
     return new Response(null, init);
   }
+  if (readAheadBytes === 0) return answer;
   const reader = answer.body.getReader();
   const queue: Uint8Array[] = [];
   let queued = 0;
@@ -56,7 +57,7 @@ export async function settleRegistryAnswer(answer: Response): Promise<Response> 
   void (async () => {
     try {
       for (;;) {
-        while (queued >= REGISTRY_READ_AHEAD_BYTES) await new Promise<void>((resolve) => { waiting.room = resolve; });
+        while (queued >= readAheadBytes) await new Promise<void>((resolve) => { waiting.room = resolve; });
         const { value, done } = await reader.read();
         if (done) break;
         queue.push(value);
@@ -92,17 +93,18 @@ export async function settleRegistryAnswer(answer: Response): Promise<Response> 
 
 /**
  * `fetchOnce(fetch, n)` (try n, 0-based, fetching through `network`, each
- * answer settled as it arrives: settleRegistryAnswer) under the registry's
- * retry policy: the last answer, a 5xx included once the re-tries are spent,
- * or the last failure thrown. `onRetry` hears each re-try ("HTTP 503",
- * "timeout", or the error).
+ * answer settled as it arrives: settleRegistryAnswer, `readAheadBytes` ahead)
+ * under the registry's retry policy: the last answer, a 5xx included once
+ * the re-tries are spent, or the last failure thrown. `onRetry` hears each
+ * re-try ("HTTP 503", "timeout", or the error).
  */
 export function retryingRegistryFetch(
   network: RegistryNetwork,
   fetchOnce: (fetch: RegistryNetwork['fetch'], attempt: number) => Promise<Response>,
-  options?: { retries?: number; onRetry?: (retry: number, of: number, delayMs: number, reason: string) => void },
+  options?: { retries?: number; readAheadBytes?: number; onRetry?: (retry: number, of: number, delayMs: number, reason: string) => void },
 ): Promise<Response> {
-  return retrying((attempt) => fetchOnce(async (input, init) => settleRegistryAnswer(await network.fetch(input, init)), attempt), {
+  const readAheadBytes = options?.readAheadBytes ?? REGISTRY_READ_AHEAD_BYTES;
+  return retrying((attempt) => fetchOnce(async (input, init) => settleRegistryAnswer(await network.fetch(input, init), readAheadBytes), attempt), {
     retries: Math.max(0, options?.retries ?? 3),
     // The waits before each re-try.
     schedule: [500, 1500, 4500],
