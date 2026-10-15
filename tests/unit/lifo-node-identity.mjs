@@ -60,6 +60,13 @@ try {
     'a file and a directory made under umask 0 have every bit; one made after umask(old) has the old mask\'s');
   console.log('  ✓ process.umask is the program\'s own: its creates follow it, the shell\'s mask stays');
 
+  // A mask that is not one, as Node's parseFileMode reads it, changes nothing: neither the mask nor what is made under it.
+  const refused = await run(`node -e "const fs = require('fs'); const seen = []; for (const bad of ['022garbage', '8', '', '0x12', -1, 1.5, 2 ** 32, null]) { try { process.umask(bad); seen.push('took ' + bad); } catch (e) { seen.push(e.code); } } fs.writeFileSync('after-bad.txt', 'c'); console.log(seen.join(' '), process.umask().toString(8))"`);
+  assert.equal(refused, 'ERR_INVALID_ARG_VALUE ERR_INVALID_ARG_VALUE ERR_INVALID_ARG_VALUE ERR_INVALID_ARG_VALUE ERR_OUT_OF_RANGE ERR_OUT_OF_RANGE ERR_OUT_OF_RANGE ERR_INVALID_ARG_TYPE 22\n',
+    'each malformed mask is refused as Node refuses it, and the mask stays');
+  assert.equal(await mode('after-bad.txt'), 0o644, 'a file made after the refusals has the mask\'s mode');
+  console.log('  ✓ a malformed mask is refused as Node refuses it, and changes nothing');
+
   await ws.fs.writeFile('/home/user/required.js', 'module.exports = { same: global === globalThis, seen: global.SUB };\n');
   assert.equal(await run(`node -e "global.SUB = 1; const r = require('./required.js'); console.log(globalThis.SUB, global === globalThis, r.same, r.seen)"`), '1 true true 1\n',
     '`global` is globalThis, in the main script and in a required module');
