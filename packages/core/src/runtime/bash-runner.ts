@@ -37,6 +37,7 @@ import { BASH_RUNNER, CRED_KERNEL, gateSyncLaunch, requireVfsCred } from './os-c
 import { resolveVfsPath } from '../vfs/path.js';
 import { openRuntimeStdio } from './runtime-stdio.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
+import { errorText } from '../_shared/error-text.js';
 
 type BashRunnerFactory = (
   manifest: RuntimeManifest,
@@ -67,11 +68,6 @@ function normalizeSlice(raw: unknown): BashSlice | null {
     stats: parsed.data.stats,
     control: parsed.data.control,
   };
-}
-
-function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
 }
 
 export interface BashFacetSession {
@@ -366,7 +362,7 @@ export function makeBashRunnerFactory(deps: {
       } catch (e: unknown) {
         // Killed: the program ends as an interrupted one does.
         if (stdio.signal.aborted) return exitCode = exitCodeForAbortSignal(stdio.signal);
-        ctx.stderr.write(`${binName}: dispatch failed: ${errorMessage(e)}\n`);
+        ctx.stderr.write(`${binName}: dispatch failed: ${errorText(e)}\n`);
         return 1;
       } finally {
         await session?.close();

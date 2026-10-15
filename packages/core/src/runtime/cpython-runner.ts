@@ -67,6 +67,7 @@ import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 import type { NimbusFilesystemAuthority } from './os-contracts.js';
 import { openRuntimeStdio, runtimeOutput } from './runtime-stdio.js';
+import { errorText } from '../_shared/error-text.js';
 
 const PYTHON_VERSION_FLAGS = new Set(['--version', '-V']);
 const PYTHON_HELP_FLAGS = new Set(['--help', '-h']);
@@ -187,10 +188,6 @@ async function buildPythonModulePipInvocation(
 ): Promise<PipInvocation> {
   if (argv[0] !== '-m' || argv[1] !== 'pip') return { mode: 'none', code: '', exitCode: 0 };
   return await buildPipInvocation(argv.slice(2), 'pip', cwd, vfs, runtimeContext);
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 export interface CPythonFacetResult {
@@ -327,7 +324,7 @@ export function makeCPythonRunnerFactory(deps: {
           }
           userCode = new TextDecoder('utf-8').decode((await vfs.readFile(absPath)));
         } catch (e: unknown) {
-          ctx.stderr.write(`${binName}: ${parsed.scriptPath}: ${errorMessage(e)}\n`);
+          ctx.stderr.write(`${binName}: ${parsed.scriptPath}: ${errorText(e)}\n`);
           return 1;
         }
         progName = parsed.scriptPath;
@@ -444,7 +441,7 @@ export function makeCPythonRunnerFactory(deps: {
           ctx.stderr.write(unsettledNoteOf(e));
           return exitCode = exitCodeForAbortSignal(stdio.signal);
         }
-        ctx.stderr.write(`${binName}: ${errorMessage(e)}\n`);
+        ctx.stderr.write(`${binName}: ${errorText(e)}\n`);
         return 1;
       } finally {
         facet?.dispose();
