@@ -150,7 +150,8 @@ function session() {
   const recovery = s.filesystem.recovery(pid, user);
   const wave = async (through, ops) => through.writeStream(new Blob([await encodeWriteBatch({ inodes: [], chunks: [], ops })]).stream());
   const written = (offset, data) => ({ type: 'call', call: { call: 'write', path: 'home/user/m/f.txt', description: 'd1', offset, data: new TextEncoder().encode(data) } });
-  assert.equal((await wave(fs, [{ type: 'call', call: { call: 'open', path: 'home/user/m/f.txt', mode: 0o644, create: true, description: 'd1' } }, written(0, 'A')])).ok, true);
+  const opened = await wave(fs, [{ type: 'call', call: { call: 'open', path: 'home/user/m/f.txt', mode: 0o644, create: true, description: 'd1' } }, written(0, 'A')]);
+  assert.equal(opened.ok, true, JSON.stringify(opened.error));
   s.processes.kill(pid, 137);
   // The drain: what the process logged after, never answered.
   const drained = await wave(recovery.fs, [written(1, 'B')]);
