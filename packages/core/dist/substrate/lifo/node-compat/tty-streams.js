@@ -65,7 +65,8 @@ function ttyClasses(stdio, isatty) {
         constructor(fd) {
             if (checkFd(fd) !== 0 || !streamable(fd))
                 throw ttyInitFailed();
-            super();
+            // As Node's: nothing is read ahead of the program, so a paused terminal stops being read.
+            super({ highWaterMark: 0 });
             joinStandardInput(this, stdio.input);
         }
         setRawMode(mode) {
