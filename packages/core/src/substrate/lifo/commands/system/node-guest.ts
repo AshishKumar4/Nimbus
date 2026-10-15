@@ -21,7 +21,8 @@ import { createHostsResolver, type VirtualRequest, type VirtualRequestHandler, t
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { VfsEvent } from '../../../../vfs/events.js';
 import type { FailableOutput } from '../../node-compat/standard-streams.js';
-import { errnoDescription, errnoOf, VFS_ERRNO } from '../../../../vfs/vfs-error.js';
+import { uncaughtReport, writeFailure } from '../../node-compat/output-failure.js';
+import type { LifoProcess } from '../../node-compat/process.js';
 import { ProcessExitError } from '../../node-compat/index.js';
 import { runNodeProgram } from './node.js';
 import { routeFetchThroughHost, type RealmEgressGuest } from '../../../../runtime/realm-egress-guest.js';
@@ -67,15 +68,20 @@ const fetched = new Map<number, (response: RealmResponse | null) => void>();
 let offTheBox: RealmEgressGuest | null = null;
 /** `events` holds the realm open while anything of the program's waits on it. */
 function holdWhileBusy(): void {
-  joined.hold(fetched.size > 0 || ports.size > 0 || persistentWatches > 0 || (offTheBox?.awaited ?? 0) > 0 || (mainDone && settledOutput < postedOutput));
+  joined.hold(fetched.size > 0 || ports.size > 0 || persistentWatches > 0 || (offTheBox?.awaited ?? 0) > 0 || (mainDone && settledOutput < postedOutput && hears()));
 }
 
-/** End the process now with `code`, as process.exit() and a fatal error do. */
+/** End the process now with `code`, as process.exit() and a fatal error do: a write that fails later is no one's. */
 function exitNow(code: number): never {
   exiting = true;
-  post({ type: 'exit', code });
+  post({ type: 'exit', code, ended: true });
   return realm.exit(code);
 }
+
+/** The program's process, once runNodeProgram has made it. */
+let program: LifoProcess | null = null;
+/** Whether a failed write would reach anything of the program's (LifoProcess.hearsWriteFailures). */
+const hears = (): boolean => program?.hearsWriteFailures() ?? false;
 
 // ── The filesystem, each method's answer narrowed to what it returns ───────
 
@@ -158,11 +164,11 @@ function realmOutput(fd: 1 | 2): FailableOutput & { fail(error: Error): void } {
   const listeners: ((error: Error) => void)[] = [];
   const send = (data: string | Uint8Array) => {
     if (failure !== null) return;
-    // Once its code has run, the program waits for its writes (holdWhileBusy);
-    // while it runs, it is held by its own code, and asks nothing.
     postOutput(fd, data);
-    // A write after the code has run asks to be told it is made, once: the first one unsettled.
-    if (mainDone && postedOutput === settledOutput + 1) {
+    // Once its code has run, a program that would hear a failed write waits
+    // for its writes (holdWhileBusy), asking once, for the first unsettled;
+    // one that would not ends as it would, and the host reports a failure.
+    if (mainDone && postedOutput === settledOutput + 1 && hears()) {
       post({ type: 'settle' });
       holdWhileBusy();
     }
@@ -170,8 +176,17 @@ function realmOutput(fd: 1 | 2): FailableOutput & { fail(error: Error): void } {
   return {
     write: (data: string) => send(data),
     writeBytes: (data: Uint8Array) => send(data),
-    onFailure: (listener) => { if (failure === null) listeners.push(listener); else listener(failure); },
+    // The program's stream of it: a failure ends the program unless it is heard. The host is told, once.
+    onFailure: (listener) => {
+      if (failure !== null) {
+        listener(failure);
+        return;
+      }
+      if (listeners.length === 0) post({ type: 'stream', fd });
+      listeners.push(listener);
+    },
     fail(error) {
+      if (failure !== null) return;
       failure = error;
       for (const listener of listeners.splice(0)) listener(error);
     },
@@ -186,17 +201,6 @@ function postOutput(fd: 1 | 2, data: string | Uint8Array): void {
   postedOutput++;
 }
 const outputs = { 1: realmOutput(1), 2: realmOutput(2) };
-
-/**
- * Node's error for a write the output refused: a pipe's as its stream reports
- * it (`write EPIPE`), a file's as fs does (`ENOSPC: no space left on device,
- * write`), each with its fields in Node's order.
- */
-function writeFailure(code: string, pipe: boolean): Error {
-  const errno = errnoOf(code) ?? VFS_ERRNO.EIO;
-  if (pipe) return Object.assign(new Error(`write ${code}`), { errno, code, syscall: 'write' });
-  return Object.assign(new Error(`${code}: ${errnoDescription(code) ?? 'i/o error'}, write`), { errno, syscall: 'write', code });
-}
 
 /** The program's servers, as the session reaches them: listening is the host's to record, and holds the realm. */
 class RealmPorts extends Map<number, VirtualRequestHandler> {
@@ -264,6 +268,8 @@ events.on('message', (event) => {
       watches.get(event.id)?.listener(event.event);
       return;
     case 'output-failed':
+      // Heard here, whatever the program makes of it: the host reports it no more.
+      post({ type: 'heard', fd: event.fd });
       outputs[event.fd].fail(writeFailure(event.code, event.pipe));
       return;
     case 'output-settled':
@@ -277,21 +283,26 @@ events.on('message', (event) => {
 
 const fatal = (reason: unknown): never => {
   if (reason instanceof ProcessExitError) return exitNow(reason.exitCode);
-  postOutput(2, `${uncaughtReport(reason)}\n`);
+  postOutput(2, `${uncaughtReport(reason, (value) => realm.getBuiltinModule('node:util').inspect(value))}\n`);
   return exitNow(1);
 };
 
-/** What Node prints of an uncaught `reason`: an error's stack, and its own fields after it (`{ errno: -32, code: 'EPIPE', … }`). */
-function uncaughtReport(reason: unknown): string {
-  if (!(reason instanceof Error)) return String(reason);
-  const head = reason.stack ?? reason.message;
-  const fields = Object.keys(reason);
-  if (fields.length === 0) return head;
-  const { inspect } = realm.getBuiltinModule('node:util');
-  return `${head} {\n${fields.map((field) => `  ${field}: ${inspect(Reflect.get(reason, field))}`).join(',\n')}\n}`;
-}
-realm.on('unhandledRejection', fatal);
-realm.on('uncaughtException', fatal);
+/** An error nothing caught is the program's process's first (LifoProcess.takeUncaught); one it does not take ends it. */
+const uncaught = (origin: 'uncaughtException' | 'unhandledRejection') => (reason: unknown, promise?: Promise<unknown>): void => {
+  if (reason instanceof ProcessExitError || program === null) {
+    fatal(reason);
+    return;
+  }
+  try {
+    if (origin === 'unhandledRejection' && program.emit('unhandledRejection', reason, promise)) return;
+    if (program.takeUncaught(reason, origin)) return;
+  } catch (thrown) {
+    fatal(thrown);
+  }
+  fatal(reason);
+};
+realm.on('unhandledRejection', uncaught('unhandledRejection'));
+realm.on('uncaughtException', uncaught('uncaughtException'));
 // The loop ran empty with the main script still waiting: an ES module whose
 // top-level await never settled.
 // The program's status once its loop runs empty: its process.exitCode then
@@ -302,11 +313,11 @@ realm.on('exit', () => {
   if (exiting) return;
   if (mainDone) {
     const code = finalCode();
-    if (code !== mainCode) post({ type: 'exit', code });
+    if (code !== mainCode) post({ type: 'exit', code, ended: false });
     return;
   }
   postOutput(2, `Warning: Detected unsettled top-level await at ${program.filename}\n`);
-  post({ type: 'exit', code: 13 });
+  post({ type: 'exit', code: 13, ended: false });
 });
 
 if (egress) {
@@ -319,17 +330,20 @@ const end = await runNodeProgram(program, {
   stderr: outputs[2],
   stdin: () => bytes(call({ op: 'stdin' }), 'stdin'),
   setUmask: (mask) => { call({ op: 'umask', mask }); },
+  started: (process) => { program = process; },
   portRegistry: ports,
   routeLoopback,
   dns,
 });
 if (end.ended) exitNow(end.code);
-post({ type: 'exit', code: end.code });
+post({ type: 'exit', code: end.code, ended: false });
 mainCode = end.code;
 finalCode = end.finalCode;
-// The program's code has run: it hears of a write that failed before it ends,
-// as a Node process's pending writes hold it. One call waits for them all.
-if (postedOutput > 0) {
+// The program's code has run: one that would hear of a write that failed
+// hears it before it ends, as a Node process's pending writes hold it (one
+// call waits for them all). One that would not is not held: the host reports
+// a failure as the error that would have ended it.
+if (postedOutput > 0 && hears()) {
   const failures = call({ op: 'flush', upTo: postedOutput });
   if (!isOutputFailures(failures)) malformed('flush');
   for (const failure of failures) outputs[failure.fd].fail(writeFailure(failure.code, failure.pipe));

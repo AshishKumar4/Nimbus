@@ -34,7 +34,9 @@ import type { Kernel, VirtualRequest, VirtualRequestHandler, VirtualResponse } f
 import type { NodeFilesystem, NodeWatch } from '../../node-compat/filesystem.js';
 import type { VfsEvent } from '../../../../vfs/events.js';
 import { synchronousFilesystem } from '../../node-compat/filesystem.js';
+import { inspect } from 'node:util';
 import { SinkWriter } from '../../../../_shared/byte-stream.js';
+import { uncaughtReport, writeFailure } from '../../node-compat/output-failure.js';
 import { VfsError } from '../../../../vfs/vfs-error.js';
 import { dispatchWorkspaceRequest } from '../net/kernel-fetch.js';
 import { isEgressGuestEvent, isEgressHostEvent, RealmEgress, type EgressGuestEvent, type EgressHostEvent } from '../../../../runtime/realm-egress.js';
@@ -88,7 +90,12 @@ export type GuestEvent =
 
   | { readonly type: 'fetch'; readonly id: number; readonly port: number; readonly url: string; readonly method: string; readonly headers: Record<string, string>; readonly body: string | Uint8Array | null }
   | { readonly type: 'served'; readonly id: number; readonly response: RealmResponse | null }
-  | { readonly type: 'exit'; readonly code: number }
+  /** Its status; `ended`, it ended itself (process.exit, a fatal error): a write that fails later is no one's. */
+  | { readonly type: 'exit'; readonly code: number; readonly ended: boolean }
+  /** The program reached its stream of output `fd`, which a failed write errors: unheard, the program ends of it. */
+  | { readonly type: 'stream'; readonly fd: 1 | 2 }
+  /** The guest took the failure of output `fd` (output-failed): whatever the program makes of it, it is the guest's. */
+  | { readonly type: 'heard'; readonly fd: 1 | 2 }
   | EgressGuestEvent;
 
 /** What this side posts on `events`. */
@@ -146,7 +153,9 @@ export function isGuestEvent(value: unknown): value is GuestEvent {
         && typeof value.method === 'string' && stringRecord(value.headers)
         && (value.body === null || typeof value.body === 'string' || value.body instanceof Uint8Array);
     case 'served': return Number.isSafeInteger(value.id) && isResponse(value.response);
-    case 'exit': return Number.isSafeInteger(value.code);
+    case 'exit': return Number.isSafeInteger(value.code) && typeof value.ended === 'boolean';
+    case 'stream':
+    case 'heard': return value.fd === 1 || value.fd === 2;
     default: return false;
   }
 }
@@ -429,6 +438,8 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
     setUmask: (next) => { mask = next; },
     flush: async (upTo) => {
       if (lastSettled < upTo) await new Promise<void>((resolve) => { flushes.push({ upTo, resolve }); });
+      // The guest takes them with the answer.
+      for (const fd of failedOutputs.keys()) heard.add(fd);
       return [...failedOutputs.values()];
     },
     watch: (id, path) => {
@@ -444,6 +455,10 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   };
 
   let code: number | null = null;
+  let endedItself = false;
+  // The outputs whose stream the program reached, and the failures the guest took.
+  const streams = new Set<1 | 2>();
+  const heard = new Set<1 | 2>();
   // The program's process's network (WorkspaceNetwork.forProcess).
   const network = kernel?.network?.forProcess(ctx.pid);
   const payload: NodeRealmPayload = { program, hosts: kernel?.dns?.hostsFile(), egress: network?.egress !== undefined };
@@ -465,6 +480,13 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
           return;
         case 'exit':
           code = event.code;
+          endedItself ||= event.ended;
+          return;
+        case 'stream':
+          streams.add(event.fd);
+          return;
+        case 'heard':
+          heard.add(event.fd);
           return;
         case 'served':
           pending.get(event.id)?.(event.response);
@@ -496,6 +518,16 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   egress?.close();
   for (const watch of watches.values()) watch.close();
   await written;
+  // A write to a stream of the program's that failed where the program could
+  // not hear it (it had ended, no listener holding it) ends it as the error
+  // would have: Node's report of it, and status 1. The first such failure is
+  // the one; console's failures are no one's (no stream).
+  const unheard = endedItself || end.terminated || end.failure !== null ? undefined
+    : [...failedOutputs.values()].find((failure) => streams.has(failure.fd) && !heard.has(failure.fd));
+  if (unheard !== undefined) {
+    await writerOf(2).writeText(`${uncaughtReport(writeFailure(unheard.code, unheard.pipe), (value) => inspect(value))}\n`).catch(() => {});
+    code = 1;
+  }
   // What a character left unfinished at the end: the program has ended, and
   // no one is left to hear that its last bytes could not be written.
   for (const [fd, writer] of writers) if (!failedOutputs.has(fd)) await writer.end().catch(() => {});

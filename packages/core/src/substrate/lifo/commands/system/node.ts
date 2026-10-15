@@ -9,7 +9,7 @@ import { createCjsLoader, moduleWrapper, stripShebang } from '../../node-compat/
 import { isEsModuleFile, isEsModuleInput, type PackageType } from '../../../../runtime/module-format.js';
 import { packageScopeType } from '../../../../runtime/require-resolution.js';
 import type { NodeContext } from '../../node-compat/index.js';
-import { createProcess, exitCodeOf, type ProcessIdentity } from '../../node-compat/process.js';
+import { createProcess, exitCodeOf, type LifoProcess, type ProcessIdentity } from '../../node-compat/process.js';
 import { NODE_VERSION } from '../../../../constants.js';
 import { createConsole } from '../../node-compat/console.js';
 import { createNativeEsmLoader } from '../../node-compat/native-esm-loader.js';
@@ -133,6 +133,8 @@ export interface NodeProgramHost {
 	readonly dns?: DNSResolver;
 	/** umask(2): the mask the program creates with from now on. */
 	readonly setUmask: (mask: number) => void;
+	/** The program's process, once it is made: what an error nothing caught, or a failed write, reaches. */
+	readonly started: (process: LifoProcess) => void;
 }
 
 /**
@@ -180,6 +182,7 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 
 		// One process and console, every module's, as in Node.
 		const main = { process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr, identity }), console: createConsole(ctx.stdout, ctx.stderr), global: globalThis };
+		host.started(main.process);
 		const loader = createCjsLoader(nodeCtx, main);
 
 		// Execute main script
