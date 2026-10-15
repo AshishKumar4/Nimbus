@@ -35,6 +35,9 @@ const CASES = {
   umaskTakes: `console.log([process.umask('077'), process.umask(0o1022), process.umask()].map((m) => m.toString(8)).join(' '))`,
   openFlags: `const seen = []; for (const flags of ['bogus', 'rw', 'xr', 1.5, 2 ** 31]) { try { fs.openSync('f', flags); seen.push('took ' + flags); } catch (e) { seen.push(e.code + ' ' + e.message); } } console.log(seen.join(' | '))`,
   openXw: `const fd = fs.openSync('made', 'xw'); fs.writeSync(fd, 'x'); fs.closeSync(fd); let again; try { fs.openSync('made', 'xw'); again = 'opened'; } catch (e) { again = e.code; } console.log(fs.readFileSync('made', 'utf8'), again)`,
+  // A creation's mode, null or absent, is Node's default (0o666, a directory's 0o777); chmod has none.
+  nullModes: `const seen = []; for (const [what, run] of [['writeFile', () => fs.writeFileSync('w', 'x', { mode: null })], ['appendFile', () => fs.appendFileSync('a', 'x', { mode: null })], ['open', () => fs.closeSync(fs.openSync('o', 'w', null))], ['mkdir', () => fs.mkdirSync('d', { mode: null })], ['chmod', () => fs.chmodSync('f', null)]]) { try { run(); seen.push(what + ' ok'); } catch (e) { seen.push(what + ' ' + e.code); } } for (const name of ['w', 'a', 'o', 'd']) seen.push(name + ' ' + (fs.statSync(name).mode & 0o777).toString(8)); console.log(seen.join(' | '))`,
+  nullModePromise: `fs.promises.writeFile('p', 'x', { mode: null }).then(() => console.log('p', (fs.statSync('p').mode & 0o777).toString(8)), (e) => console.log('p', e.code))`,
   modes: `const seen = []; for (const bad of ['7a5', '0o755', -1]) { try { fs.chmodSync('f', bad); seen.push('took ' + bad); } catch (e) { seen.push(e.code + ' ' + e.message); } } fs.chmodSync('f', '640'); seen.push((fs.statSync('f').mode & 0o777).toString(8)); console.log(seen.join(' | '))`,
 };
 
