@@ -30,7 +30,6 @@ import { createAuthority, facetSupervisor, launchResident, residentDataPlan, run
 import { drainProcessFsJournal, journalSource, LINGER_MS, sqlJournal } from '../../packages/core/src/_shared/process-fs-client.ts';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { journalDrainSession } from '../../packages/core/src/workspace/supervisor-op.ts';
-import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const PROGRAM = `
 const fs = require("fs");
@@ -45,9 +44,7 @@ const OUT = '/home/user/app/out';
  * waves, and one that makes its listings fail. Root owns `out/rootfile` and
  * the unsearchable `/home/user/app/locked`.
  */
-async function boot({ journalSql } = {}) {
-  // The facet's own store, where the process logs what it changes (process-fs-journal).
-  if (journalSql !== undefined) globalThis.__nimbusFsJournalSql = journalSql;
+async function boot() {
   const authority = createAuthority();
   authority.kfs.mkdir('home/user/app/out', { recursive: true, mode: 0o755 });
   authority.kfs.mkdir('home/user/elsewhere', { mode: 0o755 });
@@ -195,8 +192,9 @@ await runScenarios(import.meta.path, {
   },
 
   async 'what the log holds of an answered copy lands the bytes it answered, whatever the source becomes'() {
-    const journalSql = createSqliteVfsTestHarness().sql;
-    const { fs, stall } = await boot({ journalSql });
+    const { fs, stall } = await boot();
+    // The facet's own store, where the process logs what it changes (process-fs-journal).
+    const journalSql = globalThis.__nimbusFsJournalSql;
     const sourceMode = fs.statSync(`${OUT}/seeded.txt`).mode & 0o7777;
     stall();
     assert.equal(await answeredAtOnce(fs.promises.copyFile(`${OUT}/seeded.txt`, `${OUT}/answered.txt`)), 'answered');
