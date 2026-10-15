@@ -1,7 +1,7 @@
 import realm from 'node:process';
 import type { Readable, Writable } from 'node:stream';
 import { nodeError, nodeSystemError } from '../../../_shared/node-error.js';
-import { asStandardStream, joinStandardInput, outputSink, standardStream, type FailableOutput, type StandardInput } from './standard-streams.js';
+import { asStandardStream, joinStandardInput, leaveStandardStreamsOpen, outputSink, standardStream, type FailableOutput, type StandardInput } from './standard-streams.js';
 
 /** What a program's standard descriptors are, and the terminal's modes. */
 export interface ProgramTerminal {
@@ -70,7 +70,8 @@ function createTty(stdio: ProgramStdio): ProgramTty {
   };
   return {
     get module() { return ttyModule(); },
-    stdin: () => stdin ??= isatty(0)
+    // Before it can pipe: `process.stdin.pipe(process.stdout)` takes pipe before it makes stdout.
+    stdin: () => stdin ??= (leaveStandardStreamsOpen(), isatty(0))
       ? Object.assign(new (ttyModule().ReadStream)(0), { fd: 0 })
       : Object.assign(joinStandardInput(new (realm.getBuiltinModule('node:stream').Readable)(), stdio.input), { fd: 0 }),
     stdout: () => stdout ??= standardOutput(1),
