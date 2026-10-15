@@ -18,6 +18,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
 import { encodeWriteBatch, encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+import { asyncOnly } from './lib/async-memory-vfs.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const user = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
@@ -163,6 +164,62 @@ function session() {
   await s.processes.released(pid);
   assert.equal(text(mounted.readFile('/f.txt')), 'AB');
   console.log('  a description a wave opened on a mount is the drain\'s to write through');
+}
+
+// ── An ordinary binding's call on an awaiting mount, paused past the
+//    release, is refused where it would reach the mount: a pathname change,
+//    a write through a descriptor, an fsync; the recovery's goes on ───────
+{
+  /** A mount whose next call of `method` waits until let go (arm). */
+  const pausing = () => {
+    let armed = null;
+    return {
+      arm(method) {
+        let release;
+        let reached;
+        const held = new Promise((resolve) => { release = resolve; });
+        const at = new Promise((resolve) => { reached = resolve; });
+        armed = { method, held, reached };
+        return { at, release };
+      },
+      async beforeCall(method) {
+        const now = armed;
+        if (now === null || now.method !== method) return;
+        armed = null;
+        now.reached();
+        await now.held;
+      },
+    };
+  };
+  const enc = new TextEncoder();
+  const s = session();
+  const mounted = new MemoryVFS({ uid: 1000, gid: 1000 });
+  mounted.writeFile('/doomed', 'd');
+  const pause = pausing();
+  s.filesystem.vfs.mount('/home/user/am', asyncOnly(mounted, { beforeCall: (method) => pause.beforeCall(method) }));
+  const { pid } = s.processes.spawn('git commit', [], '/home/user', { cred: user });
+  const fs = s.filesystem.bind({ pid, cred: user });
+  const opened = await fs.open('/home/user/am/w', { write: true, create: true });
+  const recovery = s.filesystem.recovery(pid, user);
+  const outcome = (call) => call.then(() => 'landed', (error) => error.code);
+  const unlinkAt = pause.arm('stat');
+  const unlinked = outcome(fs.unlink('/home/user/am/doomed'));
+  await unlinkAt.at;
+  const writeAt = pause.arm('stat');
+  const written = outcome(fs.write(opened.id, 0, enc.encode('LATE')));
+  s.processes.kill(pid, 137);
+  unlinkAt.release();
+  await writeAt.at;
+  writeAt.release();
+  assert.equal(await unlinked, 'EBADF', 'an ordinary binding\'s unlink, paused past the release, reached the mount');
+  assert.equal(text(mounted.readFile('/doomed')), 'd');
+  assert.equal(await written, 'EBADF', 'an ordinary binding\'s descriptor write, paused past the release, reached the mount');
+  assert.equal(await outcome(Promise.resolve().then(() => fs.fsync(opened.id))), 'EBADF', 'an ordinary binding\'s fsync after the release');
+  await recovery.fs.write(opened.id, 0, enc.encode('DRAINED'));
+  assert.equal(text(mounted.readFile('/w')), 'DRAINED', 'the recovery lost the process\'s descriptor');
+  await recovery.dispose();
+  await s.processes.released(pid);
+  console.log('  an ordinary binding\'s paused call is refused where it would reach the mount; the recovery\'s goes on');
 }
 
 // ── One recovery per process ─────────────────────────────────────────────
