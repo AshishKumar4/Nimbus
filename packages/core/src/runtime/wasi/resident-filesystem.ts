@@ -1232,7 +1232,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     delegated(name);
     // A name it changes: the files the process holds open at or under it write through first.
     if (op.type === 'rename') holder!.changing([op.from, op.to]);
-    else if (op.type === 'setattr' || (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir'))) holder!.changing([op.type === 'setattr' ? op.path : op.call.path]);
+    else if (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir')) holder!.changing([op.call.path]);
     return holder!.client.submit(op).then(() => { owed = true; }, (error: unknown) => { owed = true; throw error; });
   };
   const pathOf = (path: RuntimeFsPath): string => (typeof path === 'string' ? path : path.path);
@@ -1288,10 +1288,10 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       : names !== undefined ? byClient('rename', { type: 'rename', from: names[0], to: names[1] }) : bySessionRename(from, to)));
   };
   // An attribute change by name: decided here where a held subtree holds the
-  // name, else the client's where the store places it outside one, else the
-  // session's, after what the holder has (one it holds but does not decide:
-  // another's file, a grant the session judges). Not a link's own (lchown,
-  // lutimes), nor times now or an owner kept: the session's alone.
+  // name (counted toward taking it either way), else the session's, after
+  // what the holder has; one it holds but did not decide (another's file, a
+  // grant the session judges) is the session's in its view after. Not a
+  // link's own (lchown, lutimes), nor times now: the session's alone.
   for (const name of ['chmod', 'chown', 'utimes'] as const) {
     const passed = Reflect.get(fs, name) as (...args: unknown[]) => unknown;
     Reflect.set(fs, name, (path: RuntimeFsPath, ...rest: unknown[]) => {
@@ -1309,10 +1309,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       }));
       return after(local, (done) => {
         if (done !== DELEGATE) return undefined;
-        if (named === undefined || ('uid' in attrs && (attrs.uid === -1 || attrs.gid === -1))) return passed.call(fs, path, ...rest);
-        if (!holder!.holds(named)) return byClient(name, { type: 'setattr', path: named, attrs });
-        // The session's, the holder's sent first: what it decided there is the session's after.
         const key = named;
+        if (key === undefined || !holder!.holds(key)) return passed.call(fs, path, ...rest);
         return after(passed.call(fs, path, ...rest), (receipt) => { holder!.undecided(key); return receipt; });
       });
     });
