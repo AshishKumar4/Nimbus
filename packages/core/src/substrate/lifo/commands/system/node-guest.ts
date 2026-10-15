@@ -27,7 +27,7 @@ import { runNodeProgram } from './node.js';
 import { routeFetchThroughHost, type RealmEgressGuest } from '../../../../runtime/realm-egress-guest.js';
 import { isEgressHostEvent } from '../../../../runtime/realm-egress.js';
 import {
-  isDirEntries, isHostEvent, isNodeRealmPayload, isStat,
+  isDirEntries, isHostEvent, isNodeRealmPayload, isOutputFailures, isStat,
   type GuestEvent, type NodeCall, type RealmResponse,
 } from './node-realm.js';
 
@@ -314,6 +314,13 @@ const end = await runNodeProgram(program, {
 if (end.ended) exitNow(end.code);
 post({ type: 'exit', code: end.code });
 finalCode = end.finalCode;
+// The program's code has run: it hears of a write that failed before it ends,
+// as a Node process's pending writes hold it. One call waits for them all.
+if (postedOutput > 0) {
+  const failures = call({ op: 'flush' });
+  if (!isOutputFailures(failures)) malformed('flush');
+  for (const failure of failures) outputs[failure.fd].fail(writeFailure(failure.code, failure.pipe));
+  settledOutput = postedOutput;
+}
 mainDone = true;
-if (settledOutput < postedOutput) post({ type: 'settle' });
 holdWhileBusy();

@@ -55,7 +55,21 @@ export type NodeCall =
   /** Watch `path` as watch `id` (NodeFilesystem.watch); a null path stops it. */
   | { readonly op: 'watch'; readonly id: number; readonly path: string | null }
   /** umask(2): the mask the program creates with from now on (its own copy: the shell's is not changed). */
-  | { readonly op: 'umask'; readonly mask: number };
+  | { readonly op: 'umask'; readonly mask: number }
+  /**
+   * Answered once every output write made so far is made or failed: the
+   * outputs that have failed (OutputFailure). The program's code has run, and
+   * it hears of a failure before it ends.
+   */
+  | { readonly op: 'flush' };
+
+/** An output whose write failed: with `code`, on a pipe or a file. */
+export interface OutputFailure { readonly fd: 1 | 2; readonly code: string; readonly pipe: boolean }
+
+export function isOutputFailures(value: unknown): value is readonly OutputFailure[] {
+  return Array.isArray(value) && value.every((failure) => record(failure) && (failure.fd === 1 || failure.fd === 2)
+    && typeof failure.code === 'string' && typeof failure.pipe === 'boolean');
+}
 
 /** A response to a request that stayed on the box, as data, either way across. */
 export interface RealmResponse {
@@ -68,12 +82,11 @@ export interface RealmResponse {
 export type GuestEvent =
   /**
    * Output write number `seq` (each one more than the last, both outputs
-   * counted together); `settle`, the program's code has run, and it waits to
-   * be told once the writes are made (output-settled).
+   * counted together); `settle`, made after the program's code has run (a
+   * timer's), which waits to be told once it is made (output-settled).
    */
   | { readonly type: 'output'; readonly fd: 1 | 2; readonly data: string | Uint8Array; readonly seq: number; readonly settle: boolean }
-  /** The program's code has run: tell it once every write so far is made (output-settled). */
-  | { readonly type: 'settle' }
+
   | { readonly type: 'fetch'; readonly id: number; readonly port: number; readonly url: string; readonly method: string; readonly headers: Record<string, string>; readonly body: string | Uint8Array | null }
   | { readonly type: 'served'; readonly id: number; readonly response: RealmResponse | null }
   | { readonly type: 'exit'; readonly code: number }
@@ -92,7 +105,7 @@ export type HostEvent =
   | { readonly type: 'output-failed'; readonly fd: 1 | 2; readonly code: string; readonly pipe: boolean }
   /**
    * Every output write up to number `seq` is made or failed (a failure told
-   * first): told, once asked (settle), when no later write is waiting.
+   * first): told, for a write that asked (settle), when no later one waits.
    */
   | { readonly type: 'output-settled'; readonly seq: number }
   | EgressHostEvent;
@@ -129,7 +142,6 @@ export function isGuestEvent(value: unknown): value is GuestEvent {
   switch (value.type) {
     case 'output': return (value.fd === 1 || value.fd === 2) && (typeof value.data === 'string' || value.data instanceof Uint8Array)
       && Number.isSafeInteger(value.seq) && typeof value.settle === 'boolean';
-    case 'settle': return true;
     case 'fetch':
       return Number.isSafeInteger(value.id) && Number.isSafeInteger(value.port) && typeof value.url === 'string'
         && typeof value.method === 'string' && stringRecord(value.headers)
@@ -191,6 +203,8 @@ export interface RealmServices {
   watch(id: number, path: string | null): void;
   /** umask(2): the mask the program creates with from now on. */
   setUmask(mask: number): void;
+  /** Once every output write so far is made or failed: the outputs that failed. */
+  flush(): Promise<readonly OutputFailure[]>;
 }
 
 /** A call no method answers, or with arguments not of its kind. */
@@ -303,6 +317,7 @@ async function performCall(call: unknown, services: RealmServices): Promise<unkn
       if (!Number.isSafeInteger(call.mask) || typeof call.mask !== 'number' || call.mask < 0 || call.mask > 0o777) throw refused('mask that is not one');
       return services.setUmask(call.mask);
     }
+    case 'flush': return services.flush();
     default: throw refused(`call ${JSON.stringify(String(call.op))}`);
   }
 }
@@ -333,15 +348,16 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   // stream errors (it ignores SIGPIPE): no later write to that output is made.
   let written: Promise<void> = Promise.resolve();
   const writers = new Map<1 | 2, SinkWriter>();
-  const failedOutputs = new Set<1 | 2>();
+  const failedOutputs = new Map<1 | 2, OutputFailure>();
   const writerOf = (fd: 1 | 2): SinkWriter => {
     let writer = writers.get(fd);
     if (writer === undefined) writers.set(fd, writer = new SinkWriter(fd === 1 ? ctx.stdout : ctx.stderr));
     return writer;
   };
   // A program whose code has run waits until the host has made (or failed)
-  // its last write: once asked, the last write waiting is told settled, and
-  // with it every one before.
+  // its writes: those made by then with one call (flush), a later one's once
+  // the host has made it (settle: the last write waiting is told settled,
+  // and with it every one before).
   let lastQueued = 0;
   let lastSettled = 0;
   let settleWanted = false;
@@ -359,9 +375,10 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
           if (typeof data === 'string') await writerOf(fd).writeText(data);
           else await writerOf(fd).write(data);
         } catch (error) {
-          failedOutputs.add(fd);
           const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
-          post({ type: 'output-failed', fd, code: typeof code === 'string' ? code : 'EIO', pipe: ctx.isFdPipe?.(fd) === true });
+          const failure: OutputFailure = { fd, code: typeof code === 'string' ? code : 'EIO', pipe: ctx.isFdPipe?.(fd) === true };
+          failedOutputs.set(fd, failure);
+          post({ type: 'output-failed', ...failure });
         }
       }
       lastSettled = seq;
@@ -407,6 +424,10 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
       if (ports.delete(port)) kernel?.portRegistry.delete(port);
     },
     setUmask: (next) => { mask = next; },
+    flush: async () => {
+      await written;
+      return [...failedOutputs.values()];
+    },
     watch: (id, path) => {
       watches.get(id)?.close();
       watches.delete(id);
@@ -434,10 +455,6 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
       switch (event.type) {
         case 'output':
           write(event.fd, event.data, event.seq, event.settle);
-          return;
-        case 'settle':
-          settleWanted = true;
-          settled();
           return;
         case 'exit':
           code = event.code;
