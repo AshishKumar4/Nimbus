@@ -47,7 +47,7 @@ import { resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { CPYTHON_PREAMBLE_TAIL } from './cpython-preamble.js';
 import { PYTHON_SERVER_ADAPTER } from './python-server-adapter.js';
-import { gateSyncLaunch, requireVfsCred } from './os-contracts.js';
+import { CPYTHON_RUNNER, gateSyncLaunch, requireVfsCred } from './os-contracts.js';
 import { buildPipInvocation, pythonSitePackages, sessionUsesSciVariant, } from './python-pip.js';
 import { DEFAULT_HOME } from '../constants.js';
 import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.generated.js';
@@ -346,7 +346,7 @@ export function makeCPythonRunnerFactory(deps) {
                     // Two variants differ by megabytes so they would not collide today, but
                     // a warm slot serving the wrong interpreter is not a failure worth
                     // leaving to a size coincidence.
-                    tag: wantsSci ? 'cpython-runner:sci' : 'cpython-runner',
+                    tag: wantsSci ? `${CPYTHON_RUNNER}:sci` : CPYTHON_RUNNER,
                     concurrency: 1,
                     // Never absent. Without the capability the facet reads its seed and can
                     // never write anything back — the program appears to run and its output

@@ -63,8 +63,12 @@ export declare function runtimeAbiForManifest(manifest: RuntimeManifest): Runtim
  * wasm-ld, …) come from manifest entrypoints and must NOT be repeated
  * here. Mechanically validated against `NIMBUS_RUNTIME_ABIS` by
  * tests/unit/runtime-command-aliases.mjs.
+ *
+ * A row names no runner: it rides the one the manifest's own entrypoints
+ * name, the contract that build was made for (BASH_RUNNER, CPYTHON_RUNNER),
+ * so an older build's pip is bound, or not, as its python is.
  */
-export declare const RUNTIME_EXTRA_ENTRYPOINTS: Readonly<Record<string, readonly ManifestEntrypoint[]>>;
+export declare const RUNTIME_EXTRA_ENTRYPOINTS: Readonly<Record<string, readonly Omit<ManifestEntrypoint, 'runner'>[]>>;
 export declare function runtimeEntrypoints(manifest: RuntimeManifest): RuntimeManifest['entrypoints'];
 /** Where (name, version) is installed, as a key: `usr/lib/nimbus/<name>/<version>`. */
 export declare function installRoot(name: string, version: string): string;
