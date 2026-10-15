@@ -15,7 +15,10 @@
 //     a pipe is read on (its buffer fills), a terminal is not;
 //   - tty.WriteStream(fd) writes to that descriptor, in order with
 //     process.stdout; isatty answers for each descriptor; a descriptor that is
-//     not one, or a file, is refused as Node refuses it.
+//     not one, or a file, is refused as Node refuses it; a write's failure is
+//     the writer's that made it, heard even once it ended, no one's once it
+//     was destroyed, and one writer that heard its own does not hear
+//     another's.
 //
 // And in a terminal (no oracle: a terminal Node is not available here),
 // as Node documents: process.stdin and stdout are the tty module's streams,
@@ -93,6 +96,16 @@ const cases = {
     'rm -f epipe.txt st.txt; { node {prog}; echo "status $?" > st.txt; } | true; cat epipe.txt st.txt'],
   'ttyepipe.js': ["const w = new (require('tty').WriteStream)(1); w.on('error', () => { process.exitCode = 7; }); setTimeout(() => w.write('x'.repeat(100000)), 300);",
     'rm -f st.txt; { node {prog}; echo "status $?" > st.txt; } | true; cat st.txt'],
+  // Ended, it is still the one to hear its last write fail: a reader that never reads, gone after the program's loop ran empty.
+  'ttyepipeend.js': ["const w = new (require('tty').WriteStream)(1); w.on('error', () => { process.exitCode = 7; }); setTimeout(() => w.end('x'.repeat(100000)), 300);",
+    'rm -f st.txt; { node {prog}; echo "status $?" > st.txt; } | sleep 1; cat st.txt'],
+  // One writer that heard its failure is not another's: the second, which does not listen, fails after the program's
+  // loop ran empty (stdout's reader drains only after a second), and ends it as an uncaught error does.
+  'ttyepipelate.js': ["const tty = require('tty'); const w = new tty.WriteStream(2); w.on('error', () => {}); w.on('close', () => { process.stdout.write('y'.repeat(200000)); new tty.WriteStream(2).write('x'.repeat(100000)); }); setTimeout(() => w.write('x'.repeat(100000)), 300);",
+    'rm -f st.txt; { { node {prog}; echo "status $?" > st.txt; } | { sleep 1; cat > /dev/null; }; } 2>&1 | true; cat st.txt'],
+  // Destroyed, its write that fails later is no one's: Node's destroyed stream hears no failure.
+  'ttydestroy.js': ["const w = new (require('tty').WriteStream)(1); setTimeout(() => { w.write('x'.repeat(100000)); w.destroy(); }, 300);",
+    'rm -f st.txt; { node {prog}; echo "status $?" > st.txt; } | sleep 1; cat st.txt'],
   'rawcooked.js': ["const r = new (require('tty').ReadStream)(0); r.on('error', (e) => console.log('error', e.code)); r.setRawMode(false); console.log('cooked ok', r.isRaw); r.setRawMode(true); console.log('raw', r.isRaw); r.setRawMode(false); console.log('cooked again', r.isRaw); r.destroy();",
     'printf x | node {prog}'],
   'whole.js': ["const all = require('fs').readFileSync(0, 'utf8'); console.log(JSON.stringify(all)); process.stdin.on('data', (c) => console.log('more', String(c))).on('end', () => console.log('end'));",

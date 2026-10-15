@@ -31,12 +31,14 @@ export type OutputSource = 'stream' | 'console';
 /**
  * An output that can fail after it took a write (a program in a realm, whose
  * host makes the write later): `onFailure` hears of each failed write, and
- * what made it.
+ * what made it, until its disposer lets go.
  */
 export interface FailableOutput extends CommandOutputStream {
-  onFailure?(listener: (error: Error, source: OutputSource) => void): void;
+  onFailure?(listener: (error: Error, source: OutputSource) => void): () => void;
   /** Another writer of the same descriptor, which hears only its own writes' failures (a tty.WriteStream a program makes). */
   another?(): FailableOutput;
+  /** Once every write handed to it so far is made or failed, a failure heard first. */
+  settled?(): Promise<void>;
 }
 
 /**
@@ -44,10 +46,11 @@ export interface FailableOutput extends CommandOutputStream {
  * write is made, decoded across writes for an output that takes text, so
  * they keep their place among the console's, which writes the output
  * directly; an output's failure is the stream's error, and the stream
- * finishes once every write handed to the output is done. Without an output
+ * finishes once every write handed to the output is done (settled, by one
+ * that makes them later: a failure then is its error). Without an output
  * (a descriptor the program has not), every write fails EBADF.
  */
-export function outputSink(output: CommandOutputStream | undefined): WritableOptions {
+export function outputSink(output: FailableOutput | undefined): WritableOptions {
   const writer = output === undefined ? undefined : new SinkWriter(output);
   // The writes handed to the output and not yet done: the stream finishes after them.
   const pending = new Set<Promise<void>>();
@@ -68,7 +71,7 @@ export function outputSink(output: CommandOutputStream | undefined): WritableOpt
       callback();
     },
     final(callback) {
-      Promise.all(pending).then(() => writer?.end()).then(() => callback(), callback);
+      Promise.all(pending).then(() => writer?.end()).then(() => output?.settled?.()).then(() => callback(), callback);
     },
   };
 }

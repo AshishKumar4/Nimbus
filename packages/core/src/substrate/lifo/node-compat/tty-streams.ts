@@ -156,11 +156,15 @@ function ttyClasses(stdio: ProgramStdio, isatty: (fd: number) => boolean, writer
       const output = standard === STANDARD ? base : base?.another?.() ?? base;
       super(outputSink(output));
       if (standard !== STANDARD) {
-        output?.onFailure?.((error, source) => {
+        const release = output?.onFailure?.((error, source) => {
           if (source === 'stream') this.destroy(error);
         });
         writers.add(this);
-        this.once('close', () => writers.delete(this));
+        // Closed, it hears no more, as a destroyed stream of Node's does not (an ended one's writes are settled by then).
+        this.once('close', () => {
+          writers.delete(this);
+          release?.();
+        });
       }
       if (isatty(fd)) [this.columns, this.rows] = windowSize();
     }

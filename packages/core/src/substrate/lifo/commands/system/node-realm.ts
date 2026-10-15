@@ -349,8 +349,8 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
 
   let code: number | null = null;
   let endedItself = false;
-  // The outputs whose stream's failure the guest took.
-  const heard = new Set<1 | 2>();
+  // The writers of each output whose failure the guest took.
+  const heard = { 1: new Set<number>(), 2: new Set<number>() };
   // The program's process's network (WorkspaceNetwork.forProcess).
   const network = kernel?.network?.forProcess(ctx.pid);
   const payload: NodeRealmPayload = { program, hosts: kernel?.dns?.hostsFile(), egress: network?.egress !== undefined };
@@ -375,7 +375,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
           endedItself ||= event.ended;
           return;
         case 'heard':
-          heard.add(event.fd);
+          heard[event.fd].add(event.writer);
           return;
         case 'served':
           pending.get(event.id)?.(event.response);
@@ -431,7 +431,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   // error would have: Node's report of it, and status 1. The first such
   // failure is the one; a console write's failure is no one's.
   const unheard = endedItself || end.terminated || end.failure !== null ? undefined
-    : streamFailures.find((failure) => !heard.has(failure.fd));
+    : streamFailures.find((failure) => !heard[failure.fd].has(failure.writer));
   if (unheard !== undefined) {
     // util is loaded only here: the guest loads this module too, and every program would pay for it.
     const { inspect } = await import('node:util');

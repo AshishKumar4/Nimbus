@@ -55,8 +55,8 @@ export type GuestEvent =
   | { readonly type: 'served'; readonly id: number; readonly response: RealmResponse | null }
   /** Its status; `ended`, it ended itself (process.exit, a fatal error): a write that fails later is no one's. */
   | { readonly type: 'exit'; readonly code: number; readonly ended: boolean }
-  /** The guest took a failure of output `fd`'s stream (output-failed): whatever the program makes of it, it is the guest's. */
-  | { readonly type: 'heard'; readonly fd: 1 | 2 }
+  /** The guest took a failure of output `fd`'s writer `writer` (output-failed), or the writer closed: whatever the program makes of its failures, they are the guest's. */
+  | { readonly type: 'heard'; readonly fd: 1 | 2; readonly writer: number }
   /** fd 0's next piece, wanted as read `id` (process.stdin). */
   | { readonly type: 'stdin-read'; readonly id: number }
   /** Read `id` is withdrawn: what has not arrived stays on fd 0. */
@@ -119,7 +119,7 @@ export function isGuestEvent(value: unknown): value is GuestEvent {
         && (value.body === null || typeof value.body === 'string' || value.body instanceof Uint8Array);
     case 'served': return Number.isSafeInteger(value.id) && isResponse(value.response);
     case 'exit': return Number.isSafeInteger(value.code) && typeof value.ended === 'boolean';
-    case 'heard': return value.fd === 1 || value.fd === 2;
+    case 'heard': return (value.fd === 1 || value.fd === 2) && Number.isSafeInteger(value.writer);
     case 'stdin-read':
     case 'stdin-cancel': return Number.isSafeInteger(value.id);
     default: return false;
