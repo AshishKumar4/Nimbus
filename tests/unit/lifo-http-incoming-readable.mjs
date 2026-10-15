@@ -42,7 +42,7 @@ module.exports = async (http) => {
   let piped = '';
   await new Promise((resolve) => second.pipe(new Writable({ write(chunk, _enc, done) { piped += chunk; done(); } })).on('finish', resolve));
   // Destroyed: after it was read, before, with an error no one listens for, and with one someone does.
-  const closed = (message) => new Promise((resolve) => message.on('close', resolve));
+  const closed = (message) => (message.closed ? Promise.resolve() : new Promise((resolve) => message.on('close', resolve)));
   first.destroy();
   await closed(first);
   const early = await ask();
@@ -71,7 +71,7 @@ const dir = mkdtempSync(join(tmpdir(), 'lifo-http-'));
 try {
   writeFileSync(join(dir, 'program.js'), PROGRAM);
   writeFileSync(join(dir, 'run.js'), "require('./program.js')(require('http')).then((code) => process.exit(code));\n");
-  const node = spawnSync('node', ['run.js'], { cwd: dir, encoding: 'utf8' });
+  const node = spawnSync('node', ['run.js'], { cwd: dir, encoding: 'utf8', timeout: 60_000 });
   assert.equal(node.status, 0, node.stderr);
 
   const program = createRequire(import.meta.url)(join(dir, 'program.js'));
