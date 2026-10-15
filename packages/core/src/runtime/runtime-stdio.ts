@@ -3,6 +3,14 @@ import type { NimbusFilesystemAuthority, VfsCred } from './os-contracts.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 import { stdinBytesOf } from '../shell/stdin-adapter.js';
 import { outputHooks } from '../_shared/byte-stream.js';
+import { signalAbortReasonOf } from '../substrate/lifo/shell/signals.js';
+import { NIMBUS_SIGNAL_ERRNOS } from './wasi/types.js';
+import { parseProcessSignalName, type ProcessSignalName } from './process-io-protocol.js';
+
+/** The signals a WASI image that takes its own is sent (NIMBUS_SIGNAL_ERRNOS). */
+const DELIVERED_SIGNALS: readonly ProcessSignalName[] = Object.keys(NIMBUS_SIGNAL_ERRNOS)
+  .map(parseProcessSignalName)
+  .filter((signal): signal is ProcessSignalName => signal !== null);
 
 /** What one run of a runtime is: its process, and what its fd0/1/2 read and write. */
 export interface InvocationStdioSpec {
@@ -13,8 +21,15 @@ export interface InvocationStdioSpec {
   readonly cwd: string;
   readonly parentPid: number | undefined;
   readonly cred: VfsCred;
-  /** The caller's: its abort ends the run, as a kill of its process does. */
+  /**
+   * The caller's: its abort ends the run, as a kill of its process does; or,
+   * for a program that takes its own signals (`takesSignals`), sends it and
+   * the processes below it the abort's signal, as a terminal's key does its
+   * foreground job's process group, and the run goes on until it ends.
+   */
   readonly signal: AbortSignal | undefined;
+  /** Its program takes its own signals (SessionProcessSupervisor.takeSignals): its image delivers what it is sent (NIMBUS_ESIGNAL). */
+  readonly takesSignals?: boolean;
   /** What fd 0 reads, pumped in; null when it reads nothing of the caller's (a broker's input, or stdin already read). */
   readonly input: Pick<CommandInputStream, 'read' | 'readBytes'> | null;
   /** Where fd 1 and 2 go; null when a broker routes them. */
@@ -36,7 +51,13 @@ export function openInvocationStdio(processes: SessionProcessSupervisor, spec: I
   if (!entry || entry.state !== 'running') throw new Error(`${spec.command}: runtime process is not running`);
   const pid = entry.pid;
   const controller = new AbortController();
-  const abort = () => controller.abort(spec.signal?.reason);
+  // Its program's for this run alone: an adopted process runs on after it.
+  const releaseSignals = spec.takesSignals ? processes.takeSignals(pid, DELIVERED_SIGNALS) : null;
+  const abort = (): void => {
+    const sent = spec.takesSignals && spec.signal ? signalAbortReasonOf(spec.signal) : null;
+    if (sent !== null && sent.signal !== 'KILL') processes.signalGroup(pid, sent);
+    else controller.abort(spec.signal?.reason);
+  };
   if (spec.signal?.aborted) abort();
   else spec.signal?.addEventListener('abort', abort, { once: true });
   processes.setTerminator(pid, () => controller.abort());
@@ -55,6 +76,7 @@ export function openInvocationStdio(processes: SessionProcessSupervisor, spec: I
     signal: controller.signal,
     release() {
       spec.signal?.removeEventListener('abort', abort);
+      releaseSignals?.();
       input?.stop();
       if (owned) processes.closeInput(pid);
       unsubscribe?.();
@@ -68,7 +90,7 @@ export function openRuntimeStdio(
   deps: { filesystem: NimbusFilesystemAuthority; processes: SessionProcessSupervisor },
   ctx: CommandContext,
   command: string,
-  { consumedStdin = false } = {},
+  { consumedStdin = false, takesSignals = false } = {},
 ) {
   const reserved = (ctx as CommandContext & {
     __nimbusBinSpawn?: { callerPid?: number; liveInput?: boolean };
@@ -77,6 +99,7 @@ export function openRuntimeStdio(
   // pipes. Pumping or subscribing a second time would duplicate that path.
   const brokerIo = reserved?.liveInput === true;
   const output = brokerIo ? null : runtimeOutput(ctx);
+  if (takesSignals) ctx.takesSignals?.();
   const stdio = openInvocationStdio(deps.processes, {
     existingPid: reserved?.callerPid,
     command,
@@ -85,6 +108,7 @@ export function openRuntimeStdio(
     parentPid: ctx.pid,
     cred: ctx.cred,
     signal: ctx.signal,
+    takesSignals,
     input: !brokerIo && !consumedStdin && ctx.stdin ? ctx.stdin : null,
     output: output === null ? null : (stream, bytes) => output.write(stream, bytes),
   });

@@ -1138,6 +1138,7 @@ export class CompositeVFS {
                     const route = this.locate(path);
                     const ops = this.ops(route, sync);
                     if (typeof ops.landedAt === 'function') {
+                        this.check?.();
                         const found = ops.landedAt(route.rel);
                         return isPromise(found) ? found.then((there) => there === true, refused) : found === true;
                     }
@@ -1203,6 +1204,7 @@ export class CompositeVFS {
             throw error;
         };
         try {
+            this.check?.();
             const searched = face.access(relativeTo(route.mount.point, parentOf(path)), 1);
             return isPromise(searched) ? searched.then(() => true, refused) : true;
         }
@@ -1358,6 +1360,7 @@ export class CompositeVFS {
                 return keep('directory', null);
             if (!read)
                 return false;
+            this.check?.();
             if (stat.type === 'symlink')
                 return andThen(ops.readlink(rel), (target) => keep('symlink', utf8.encode(target)));
             return andThen(ops.readFile(rel), (bytes) => keep('file', bytes));
@@ -1468,15 +1471,16 @@ export class CompositeVFS {
      * refusal (it is not the file at `at` now), asked after the before-image is
      * read, before the guard. A file with no name (unlinked, held open) is no
      * name's change: only the view's own check is asked. `told`: what its
-     * change is told as (WriteSpec.told).
+     * change is told as (WriteSpec.told). `own`: the view's check is asked (a
+     * pin's, its opener's call); a held file's caller's comes in `admit`.
      */
-    changingOn(target, place, run, admit, written, still, held, told) {
+    changingOn(target, place, run, admit, written, still, held, told, own = true) {
         const { mount, backend } = target;
         if (mount.options.readOnly)
             throw new Refusal('EROFS', target.name, `${mount.point} is mounted read-only`);
         return this.reportPrepared(mount, target.name, target.sync, () => andThen(place(), (at) => {
             const admitted = () => {
-                this.guardMutation(at === null ? [] : [at.name]);
+                this.guardMutation(at === null ? [] : [at.name], own);
                 admit?.();
                 return run();
             };
@@ -1506,6 +1510,7 @@ export class CompositeVFS {
         }
         statAt(follow) {
             const { host, target } = this;
+            host.check?.();
             return andThen(target.root ? host.mountPointStat(target.backend) : target.backend.stat(target.rel, { follow }), (stat) => (stat === null ? null : host.identifyOn(target.mount, target.name, stat)));
         }
         lstat() { return this.call('lstat', () => this.statAt(false)); }
@@ -1514,7 +1519,7 @@ export class CompositeVFS {
             const { backend, rel } = this.target;
             const access = backend.access;
             if (access !== undefined)
-                return this.call('open', () => access.call(backend, rel, mode));
+                return this.call('open', () => { this.host.check?.(); return access.call(backend, rel, mode); });
         }
         create(mode, admit) {
             const { backend, rel } = this.target;
@@ -1527,10 +1532,11 @@ export class CompositeVFS {
             return this.call('open', () => this.host.changingOn(this.target, () => this.target, () => need(backend.truncate, this.target.name).call(backend, rel, size), admit, undefined, () => true));
         }
         key() {
+            this.host.check?.();
             return andThen(this.target.backend.stat(this.target.rel), (stat) => (stat === null ? null : fileKey(this.target, stat.ino)));
         }
         readAll() {
-            return this.call('open', () => this.target.backend.readFile(this.target.rel));
+            return this.call('open', () => { this.host.check?.(); return this.target.backend.readFile(this.target.rel); });
         }
         hold(rights, ino) {
             const { host, target } = this;
@@ -1542,11 +1548,12 @@ export class CompositeVFS {
                     throw new Refusal('ESTALE', target.name, 'the file the open decided on is not the one at its name now');
                 return stat;
             };
-            return this.call('open', () => andThen(target.root ? host.mountPointStat(backend) : backend.stat(rel), (there) => {
+            return this.call('open', () => andThen((host.check?.(), target.root ? host.mountPointStat(backend) : backend.stat(rel)), (there) => {
                 const stat = decided(there);
                 const openFile = backend.openFile;
                 if (stat.type !== 'file' || openFile === undefined)
                     return new CompositeVFS.Held(host, target, stat, null);
+                host.check?.();
                 return andThen(openFile.call(backend, rel, rights), (file) => {
                     const bound = (opened) => new CompositeVFS.Held(host, target, decided(opened), file);
                     try {
@@ -1591,22 +1598,23 @@ export class CompositeVFS {
         is(now) {
             return this.ino === undefined || this.target.root || now?.ino === this.ino;
         }
-        still() {
+        still(admit) {
             const { backend, rel, root } = this.target;
             if (this.ino === undefined || root)
                 return true;
+            admit?.();
             return andThen(backend.stat(rel), (now) => this.is(now));
         }
         stale() {
             throw new Refusal('ESTALE', this.target.name, 'the name this file was opened at holds another file now, or none');
         }
         /** Refused (ESTALE) once its name holds another file, or none. */
-        here() {
-            return andThen(this.still(), (still) => (still ? undefined : this.stale()));
+        here(admit) {
+            return andThen(this.still(admit), (still) => (still ? undefined : this.stale()));
         }
-        /** `run` by its name, refused (ESTALE) once the name holds another file, or none. */
-        named(run) {
-            return andThen(this.here(), run);
+        /** `run` by its name, refused (ESTALE) once the name holds another file, or none, `admit` asked before each. */
+        named(run, admit) {
+            return andThen(this.here(admit), () => { admit?.(); return run(); });
         }
         /**
          * A change through the file the backend holds open: guarded, captured and
@@ -1623,32 +1631,37 @@ export class CompositeVFS {
                 if (!still)
                     throw new Refusal('ESTALE', target.name, 'the file moved while its change was prepared');
             });
-            return this.call(syscall, () => host.changingOn(target, place, run, admit, written, there, stays));
+            return this.call(syscall, () => host.changingOn(target, place, run, admit, written, there, stays, undefined, false));
         }
-        stat() {
+        stat(admit) {
             const { host, target, file } = this;
-            const now = () => (file !== null ? file.stat()
-                : target.root ? host.mountPointStat(target.backend)
-                    : andThen(target.backend.stat(target.rel), (there) => (this.is(there) ? there : this.stale())));
+            const now = () => {
+                admit?.();
+                return file !== null ? file.stat()
+                    : target.root ? host.mountPointStat(target.backend)
+                        : andThen(target.backend.stat(target.rel), (there) => (this.is(there) ? there : this.stale()));
+            };
             return this.call('fstat', () => andThen(now(), (stat) => {
                 if (stat === null)
                     throw new Refusal('ENOENT', target.name);
                 return host.identifyOn(target.mount, target.name, stat);
             }));
         }
-        read(offset, length) {
+        read(offset, length, admit) {
             const { file, target } = this;
-            return this.call('read', () => (file !== null ? file.read(offset, length) : this.named(() => readRangeOrWhole(target.backend, target.rel, offset, length))));
+            return this.call('read', () => (file !== null ? (admit?.(), file.read(offset, length)) : this.named(() => readRangeOrWhole(target.backend, target.rel, offset, length), admit)));
         }
-        readAll() {
+        readAll(admit) {
             const { file, target } = this;
-            return this.call('read', () => (file !== null ? andThen(file.stat(), (stat) => file.read(0, stat.size)) : this.named(() => target.backend.readFile(target.rel))));
+            return this.call('read', () => (file !== null
+                ? andThen((admit?.(), file.stat()), (stat) => { admit?.(); return file.read(0, stat.size); })
+                : this.named(() => target.backend.readFile(target.rel), admit)));
         }
         write(offset, bytes, admit) {
             const { file, target } = this;
             if (file !== null)
                 return this.changing('write', file, () => file.write(offset, bytes), admit);
-            return this.call('write', () => this.host.changingOn(target, () => target, () => need(target.backend.writeRange, target.name).call(target.backend, target.rel, offset, bytes), admit, undefined, () => this.still(), () => this.here()));
+            return this.call('write', () => this.host.changingOn(target, () => target, () => need(target.backend.writeRange, target.name).call(target.backend, target.rel, offset, bytes), admit, undefined, () => this.still(admit), () => this.here(admit), undefined, false));
         }
         /** By its name, the file there after it is this one: a backend may write a whole file as a new one (a new number) at its name. */
         replace(bytes, admit) {
@@ -1657,7 +1670,7 @@ export class CompositeVFS {
             if (file !== null)
                 return this.changing('write', file, () => andThen(file.write(0, bytes), () => file.truncate(bytes.byteLength)), admit, bytes);
             const { backend, rel } = target;
-            return this.call('write', () => andThen(this.host.changingOn(target, () => target, () => backend.writeFile(rel, bytes), admit, bytes, () => true, () => this.here()), () => (this.ino === undefined ? undefined : andThen(backend.stat(rel), (now) => { if (now?.ino !== undefined)
+            return this.call('write', () => andThen(this.host.changingOn(target, () => target, () => backend.writeFile(rel, bytes), admit, bytes, () => true, () => this.here(admit), undefined, false), () => (this.ino === undefined ? undefined : andThen(backend.stat(rel), (now) => { if (now?.ino !== undefined)
                 this.ino = now.ino; }))));
         }
         truncate(size, admit) {
@@ -1678,10 +1691,10 @@ export class CompositeVFS {
         /** A mutation at its name (refused once that holds another file): `run` on its backend. */
         byName(syscall, run, admit) {
             const { target } = this;
-            return this.call(syscall, () => this.host.changingOn(target, () => target, () => run(target.backend), admit, undefined, () => this.still(), () => this.here()));
+            return this.call(syscall, () => this.host.changingOn(target, () => target, () => run(target.backend), admit, undefined, () => this.still(admit), () => this.here(admit), undefined, false));
         }
         /** A mount point's entries: its backend root's, and the mount points the namespace puts in it while that mount is still there. */
-        readdir() {
+        readdir(admit) {
             const { host, target } = this;
             return this.call('scandir', () => this.named(() => andThen(target.backend.readdir(target.rel), (entries) => {
                 if (!target.root || host.table.mounts.get(target.mount.point) !== target.mount)
@@ -1689,7 +1702,7 @@ export class CompositeVFS {
                 const mounted = host.mountedNames(target.name);
                 const covered = new Set(mounted.map((entry) => entry.name));
                 return [...entries.filter((entry) => !covered.has(entry.name)), ...mounted];
-            })));
+            }), admit));
         }
         close() {
             return this.file?.close();
@@ -1723,7 +1736,7 @@ export class CompositeVFS {
             const directory = () => { throw new Refusal('EISDIR', name); };
             return {
                 name, awaits, key: `namespace:${name}`,
-                stat: () => andThen(files.stat(name), (stat) => {
+                stat: (admit) => andThen((admit?.(), files.stat(name)), (stat) => {
                     if (stat === null)
                         throw new Refusal('ENOENT', name);
                     return stat;
@@ -1732,7 +1745,7 @@ export class CompositeVFS {
                 chmod: (mode, admit) => { admit?.(); return need(files.chmod, name).call(files, name, mode); },
                 chown: (uid, gid, admit) => { admit?.(); return need(files.chown, name).call(files, name, uid, gid); },
                 utimes: (atime, mtime, admit) => { admit?.(); return need(files.utimes, name).call(files, name, atime, mtime); },
-                readdir: () => files.readdir(name),
+                readdir: (admit) => { admit?.(); return files.readdir(name); },
                 close: () => { },
             };
         }
@@ -2118,8 +2131,10 @@ export class CompositeVFS {
             return andThen(this.reachable(path, sync), () => {
                 const ops = this.ops(route, sync);
                 const call = (fn, there = true) => {
-                    if (!write)
+                    if (!write) {
+                        this.check?.();
                         return run(fn, route.rel);
+                    }
                     // A compare-and-write landed only when it won; where nothing was, it made its file.
                     return this.reportWrite({
                         path, route, ops, follow: true, kind: 'write', landed: (result) => (casWon(result) ? [path] : []),
@@ -2199,6 +2214,7 @@ export class CompositeVFS {
             const readlink = ops.readlink;
             const look = () => {
                 try {
+                    this.check?.();
                     const out = ops.stat(route.rel, { follow: readlink === undefined });
                     return isPromise(out) ? out.catch((error) => this.walkMiss(error, prefix)) : out;
                 }
@@ -2211,6 +2227,7 @@ export class CompositeVFS {
                     shadowParent = false;
                     return () => {
                         trace?.links.push(prefix);
+                        this.check?.();
                         return readlink.call(ops, route.rel);
                     };
                 }
@@ -2262,6 +2279,7 @@ export class CompositeVFS {
     mountRoot(mount, point, sync) {
         const ops = this.ops({ mount, path: point, rel: '/' }, sync);
         try {
+            this.check?.();
             const out = ops.stat('/', { follow: true });
             return isPromise(out) ? out.catch(() => null) : out;
         }
@@ -2398,6 +2416,7 @@ export class CompositeVFS {
                     return held.mode === undefined ? { ...held, mode: EPOCH_STAT.mode, uid: 0, gid: 0 } : held;
                 });
             }
+            this.check?.();
             return this.mountPointStat(this.ops({ mount, path, rel: '/' }, sync));
         }
         return andThen(this.shadowed(path, sync), (hidden) => {
@@ -2410,6 +2429,7 @@ export class CompositeVFS {
     /** stat, with ENOENT/ENOTDIR from the backend read as "not there". */
     softStat(ops, rel, follow) {
         try {
+            this.check?.();
             const out = ops.stat(rel, { follow });
             return isPromise(out) ? out.catch((e) => this.absentOrThrow(e)) : out;
         }
@@ -2453,6 +2473,7 @@ export class CompositeVFS {
             const route = this.locate(path);
             const own = () => {
                 try {
+                    this.check?.();
                     const out = this.ops(route, sync).readdir(route.rel);
                     return isPromise(out) ? out.catch((e) => this.emptyIfMissing(e)) : out;
                 }
@@ -2479,6 +2500,7 @@ export class CompositeVFS {
         };
         const listed = () => {
             try {
+                this.check?.();
                 const out = ops.readdir(route.rel);
                 return isPromise(out) ? out.catch(notDirectoryFirst) : out;
             }
@@ -2505,7 +2527,10 @@ export class CompositeVFS {
                 });
             }
             const route = this.locate(path);
-            return andThen(this.reachable(path, sync), () => run(this.ops(route, sync), route.rel, path));
+            return andThen(this.reachable(path, sync), () => {
+                this.check?.();
+                return run(this.ops(route, sync), route.rel, path);
+            });
         });
     }
     /**
@@ -2556,12 +2581,15 @@ export class CompositeVFS {
     }
     /**
      * Refuses this view's mutation at each of `paths` (the names it was given
-     * and the namespace paths it lands at) by the table's guard
+     * and the namespace paths it lands at): by the view's own check (its
+     * binding's authority, scoped), unless the caller's comes with the call
+     * (`own` false: a held file's, whoever holds it), and by the table's guard
      * (guardMutations), for a view with a credential. Called right before the
      * backend is, on the path this namespace resolved.
      */
-    guardMutation(paths) {
-        this.check?.();
+    guardMutation(paths, own = true) {
+        if (own)
+            this.check?.();
         const guard = this.table.guard;
         const cred = this.viewer.cred;
         if (guard === undefined || cred === null)
@@ -2828,12 +2856,14 @@ export class CompositeVFS {
             if (typeof from.readlink !== 'function' || typeof to.symlink !== 'function') {
                 throw new Refusal('ENOTSUP', toRel, 'a link cannot be copied between these filesystems');
             }
+            this.check?.();
             return andThen(from.readlink(fromRel), (target) => {
                 this.guardMutation([toAt]);
                 return andThen(landed(to.symlink(target, toRel)), () => 1);
             });
         }
         if (stat.type === 'file') {
+            this.check?.();
             return andThen(from.readFile(fromRel), (bytes) => {
                 this.guardMutation([toAt]);
                 // copyfile's mode (keepMode), as libuv leaves it: the file there is
@@ -2857,12 +2887,12 @@ export class CompositeVFS {
             });
         }
         this.guardMutation([toAt]);
-        return andThen(landed(to.mkdir(toRel, mode === undefined ? undefined : { mode })), () => andThen(from.readdir(fromRel), (entries) => entries.reduce((count, entry) => andThen(count, (n) => {
+        return andThen(landed(to.mkdir(toRel, mode === undefined ? undefined : { mode })), () => andThen((this.check?.(), from.readdir(fromRel)), (entries) => entries.reduce((count, entry) => andThen(count, (n) => {
             const child = fromRel === '/' ? `/${entry.name}` : `${fromRel}/${entry.name}`;
             const dest = toRel === '/' ? `/${entry.name}` : `${toRel}/${entry.name}`;
             if (from === made.ops && child === made.rel)
                 return n;
-            return andThen(entry.stat ?? from.stat(child, { follow: false }), (childStat) => (childStat === null
+            return andThen(entry.stat ?? (this.check?.(), from.stat(child, { follow: false })), (childStat) => (childStat === null
                 ? n
                 : andThen(this.copyBytes(from, child, childStat, to, dest, `${toAt}/${entry.name}`, made), (m) => n + m)));
         }), 1)));
@@ -2873,11 +2903,13 @@ export class CompositeVFS {
             const backend = ops;
             if (typeof backend.rmdir === 'function')
                 return backend.rmdir(rel);
+            this.check?.();
             return andThen(backend.stat(rel, { follow: false }), (stat) => {
                 if (stat === null)
                     throw new Refusal('ENOENT', path);
                 if (stat.type !== 'directory')
                     throw new Refusal('ENOTDIR', path);
+                this.check?.();
                 return andThen(backend.readdir(rel), (entries) => {
                     if (entries.length > 0)
                         throw new Refusal('ENOTEMPTY', path);
@@ -2929,6 +2961,7 @@ export class CompositeVFS {
             };
             if (!entry.directory)
                 return remove();
+            this.check?.();
             return andThen(ops.stat(rel, { follow: false }), (stat) => {
                 if (stat === null)
                     throw new Refusal('ENOENT', path);
@@ -2956,8 +2989,8 @@ export class CompositeVFS {
                 remove: (r, dir) => andThen(this.onMutation(at(r), false, sync, dir ? 'removed' : 'unlinked', (backend, backendRel, named) => removeOn(backend, backendRel, dir, this.locate(named).mount, named), { told: null, recursiveEntry: true }), () => undefined),
             }
             : {
-                lstat: (r) => ops.stat(r, { follow: false }),
-                readdir: (r) => ops.readdir(r),
+                lstat: (r) => { this.check?.(); return ops.stat(r, { follow: false }); },
+                readdir: (r) => { this.check?.(); return ops.readdir(r); },
                 remove: (r, dir) => removeOn(ops, r, dir, mount, at(r)),
             };
         return walkRemoval(steps, {

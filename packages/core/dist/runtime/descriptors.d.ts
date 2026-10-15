@@ -16,6 +16,15 @@ export type EngineDescription = VfsOpenDescription & {
     readonly awaits?: undefined;
 };
 /**
+ * Who may act through a binding now: throws when it may not (EBADF once its
+ * binding has ended or its scope closed; its caller's abort reason once that
+ * aborts). Asked right before a backend is, after every await: by the
+ * descriptor table (Descriptors) for each description's call, by the
+ * namespace (CompositeVFS.scoped) for each of its calls, by the engine's
+ * bridge for each synchronous one.
+ */
+export type Authority = () => void;
+/**
  * A mounted file's description (vfs/mounted-description.ts): its answers
  * await where its mount does (`awaits`), and its stat is the mount's, which
  * never moves the SQLite clock.
@@ -30,22 +39,22 @@ export interface MountedFileDescription {
     path(): string;
     /** Which file it is (HeldFile.key): what its held writes overlay. */
     key(): string;
-    stat(): Awaitable<RuntimeVfsStat>;
-    read(offset: number, length: number): Awaitable<Uint8Array>;
-    /** `admit`: the current operation's own admission, run right before its backend is asked. */
+    /** `admit`, on each: the current operation's own admission (its Authority among it), run right before its backend is asked. */
+    stat(admit?: () => void): Awaitable<RuntimeVfsStat>;
+    read(offset: number, length: number, admit?: () => void): Awaitable<Uint8Array>;
     write(offset: number, bytes: Uint8Array, admit?: () => void): Awaitable<number>;
     /** An O_APPEND write: at the end of the file as it is then; answers that end after it. */
     append(bytes: Uint8Array, admit?: () => void): Awaitable<number>;
     truncate(size: number, admit?: () => void): Awaitable<void>;
-    readdir(): Awaitable<RuntimeVfsDirEntry[]>;
+    readdir(admit?: () => void): Awaitable<RuntimeVfsDirEntry[]>;
     chmod(mode: number, admit?: () => void): Awaitable<void>;
     chown(uid: number, gid: number, admit?: () => void): Awaitable<void>;
     utimes(atime: number, mtime: number, admit?: () => void): Awaitable<void>;
     /** Writes what it holds; throws what that, or an earlier settle of it, failed with. */
-    flush(): Awaitable<void>;
+    flush(admit?: () => void): Awaitable<void>;
     /** Writes what it holds, unasked (settleHeld): a failure is kept for its next fsync or close. */
     settle(): void;
-    close(): Awaitable<void>;
+    close(admit?: () => void): Awaitable<void>;
     /** Closes its file without writing what it holds (a killed process's): those bytes are lost. */
     discard(): Awaitable<void>;
     /**
@@ -88,6 +97,11 @@ export declare function openFlags(flags: RuntimeOpenFlags): RuntimeFileHandle['f
 /** A description on an asynchronous mount, asked of a caller that cannot wait: its mount's refusal (isAsyncMountRefusal). */
 export declare function awaitsRefusal(path: string): Error;
 export declare function createDescriptorScope(): DescriptorScope;
+/** What acts through `scope` with no binding of its own: anything, while the scope is open (EBADF once closed). */
+export declare function scopeAccess(scope: DescriptorScope): {
+    authority: Authority;
+    owned: Authority;
+};
 /** The signal `scope`'s close aborts, made on first ask: already aborted once it has closed. */
 export declare function scopeSignal(scope: DescriptorScope): AbortSignal;
 /** `scope` closes: what asked for its signal hears of it. */
@@ -107,15 +121,14 @@ export declare function settleHeldAt(scope: DescriptorScope, file: () => Awaitab
     key(): Awaitable<string | null>;
 }>): Awaitable<void>;
 /**
- * Closes every description `scope` holds (those on a mount alone, with
- * `mounted`), each whatever another's flush answers, and drops them at once.
- * The closes that failed (lastClose's errors) are answered once every one
- * has (an awaiting description's backend close awaits), for the caller to
- * report once the rest of its teardown is done (reportLost): a teardown that
- * stopped at the first one would keep the scope, and everything it revokes,
- * open.
+ * Closes every description `scope` holds, each whatever another's flush
+ * answers, and empties it at once. The closes that failed (lastClose's
+ * errors) are answered once every one has (an awaiting description's backend
+ * close awaits), for the caller to report once the rest of its teardown is
+ * done (reportLost): a teardown that stopped at the first one would keep the
+ * scope, and everything it revokes, open.
  */
-export declare function closeDescriptions(scope: DescriptorScope, mounted?: boolean): Awaitable<unknown[]>;
+export declare function closeDescriptions(scope: DescriptorScope): Awaitable<unknown[]>;
 /** Reports closeDescriptions' failures: the one, or EIO over them all. */
 export declare function reportLost(lost: readonly unknown[]): void;
 /** A file as a path read finds it (PinnedName), or as a description holds it (HeldFile): which file, and its content. */
@@ -138,11 +151,33 @@ export declare class Descriptors {
     private readonly scope;
     /** The SQLite clock: the revision an fstat of a description on SQLite reports. */
     private readonly clock;
+    /**
+     * Its binding's: asked as each call reaches its description, and passed
+     * to a mount's description to ask right before the mount is.
+     */
+    private readonly authority;
+    /**
+     * Its binding's own standing, its caller's abort aside: what a close (and
+     * the table's own bookkeeping, dup) asks, so a caller that gave up still
+     * closes what it opened, and an ended binding closes nothing.
+     */
+    private readonly owned;
     /** A synchronous face's: a description that awaits refuses its operations (awaitsRefusal), as its mount does; every other answers at once. */
     private readonly synchronous;
     constructor(scope: DescriptorScope, 
     /** The SQLite clock: the revision an fstat of a description on SQLite reports. */
     clock: () => number, 
+    /**
+     * Its binding's: asked as each call reaches its description, and passed
+     * to a mount's description to ask right before the mount is.
+     */
+    authority: Authority, 
+    /**
+     * Its binding's own standing, its caller's abort aside: what a close (and
+     * the table's own bookkeeping, dup) asks, so a caller that gave up still
+     * closes what it opened, and an ended binding closes nothing.
+     */
+    owned: Authority, 
     /** A synchronous face's: a description that awaits refuses its operations (awaitsRefusal), as its mount does; every other answers at once. */
     synchronous?: boolean);
     /** A descriptor for `node`, new, at offset 0, opened at `path` (the description's own name for its file unless the opener has it). */

@@ -838,18 +838,24 @@ export class Shell {
     }
   }
 
-  private handleStdinInput(data: string): void {
+  /**
+   * The tty's canonical line discipline over stdin: `data` edits the line a
+   * reader is given at Enter, echoed as it is typed (`echo`: type-ahead was
+   * echoed when typed, and is not again).
+   */
+  private handleStdinInput(data: string, echo = true): void {
     if (data.length > 1 && !isTerminalControlSequence(data)) {
-      for (const ch of data) this.handleStdinInput(ch);
+      for (const ch of data) this.handleStdinInput(ch, echo);
       return;
     }
+    const write = (text: string): void => { if (echo) this.terminal.write(text); };
 
     // Arrow keys for line editing
     if (data === '\x1b[D') {
       // Left arrow
       if (this.stdinCursorPos > 0) {
         this.stdinCursorPos--;
-        this.terminal.write('\x1b[D');
+        write('\x1b[D');
       }
       return;
     }
@@ -857,14 +863,14 @@ export class Shell {
       // Right arrow
       if (this.stdinCursorPos < this.stdinLineBuffer.length) {
         this.stdinCursorPos++;
-        this.terminal.write('\x1b[C');
+        write('\x1b[C');
       }
       return;
     }
     if (data === '\x1b[H' || data === '\x01') {
       // Home / Ctrl+A
       if (this.stdinCursorPos > 0) {
-        this.terminal.write(`\x1b[${this.stdinCursorPos}D`);
+        write(`\x1b[${this.stdinCursorPos}D`);
         this.stdinCursorPos = 0;
       }
       return;
@@ -873,7 +879,7 @@ export class Shell {
       // End / Ctrl+E
       const diff = this.stdinLineBuffer.length - this.stdinCursorPos;
       if (diff > 0) {
-        this.terminal.write(`\x1b[${diff}C`);
+        write(`\x1b[${diff}C`);
         this.stdinCursorPos = this.stdinLineBuffer.length;
       }
       return;
@@ -884,7 +890,7 @@ export class Shell {
 
     // Enter -- feed line to stdin
     if (data === '\r') {
-      this.terminal.write('\r\n');
+      write('\r\n');
       this.terminalStdin!.feed(this.stdinLineBuffer + '\n');
       this.stdinLineBuffer = '';
       this.stdinCursorPos = 0;
@@ -899,11 +905,11 @@ export class Shell {
         this.stdinLineBuffer = before + after;
         this.stdinCursorPos--;
         // Redraw: move back, write rest + space to clear, reposition cursor
-        this.terminal.write('\b' + after + ' ');
+        write('\b' + after + ' ');
         // Move cursor back to position
         const moveBack = after.length + 1;
         if (moveBack > 0) {
-          this.terminal.write(`\x1b[${moveBack}D`);
+          write(`\x1b[${moveBack}D`);
         }
       }
       return;
@@ -916,9 +922,9 @@ export class Shell {
       this.stdinLineBuffer = before + data + after;
       this.stdinCursorPos += data.length;
       // Write char + rest of line, reposition cursor
-      this.terminal.write(data + after);
+      write(data + after);
       if (after.length > 0) {
-        this.terminal.write(`\x1b[${after.length}D`);
+        write(`\x1b[${after.length}D`);
       }
     }
   }
@@ -1205,6 +1211,30 @@ export class Shell {
   private consumeQueuedStdin(): void {
     const stdin = this.terminalStdin;
     if (!stdin) return;
+    // Canonical mode: what was typed before the read is edited into a line,
+    // as a tty's line discipline holds it, and the reader gets a whole line
+    // or waits for the rest; a raw reader takes it as it was typed.
+    if (this.pasteQueue.length === 0 && !stdin.rawMode) {
+      while (this.typeAhead.length > 0 && !stdin.ready) {
+        const next = this.typeAhead.shift();
+        if (next === undefined) break;
+        if (typeof next !== 'string') {
+          this.activeInput?.bind(next.submission);
+          next.release();
+          next.resolve?.();
+        }
+        const data = (typeof next === 'string' ? next : next.data).replace(/\r\n?|\n/g, '\r');
+        const eof = data.indexOf('\x04');
+        this.handleStdinInput(eof < 0 ? data : data.slice(0, eof), false);
+        if (eof < 0) continue;
+        // EOF: the line so far goes as it is; on an empty line, the input ends.
+        if (this.stdinLineBuffer === '') stdin.close();
+        else stdin.feed(this.stdinLineBuffer);
+        this.stdinLineBuffer = '';
+        this.stdinCursorPos = 0;
+      }
+      return;
+    }
     const pasted = this.pasteQueue.length > 0;
     const next = pasted ? this.pasteQueue.shift() : this.typeAhead.shift();
     if (next === undefined) return;

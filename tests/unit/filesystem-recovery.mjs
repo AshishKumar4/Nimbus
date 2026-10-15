@@ -16,8 +16,9 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
-import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
+import { encodeWriteBatch, encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+import { asyncOnly } from './lib/async-memory-vfs.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const user = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
@@ -56,6 +57,7 @@ function session() {
   assert.throws(() => fs.readFile('/home/user/repo/kept'), { code: 'EBADF' }, 'an ordinary binding read after the release');
   assert.throws(() => fs.writeFile('/home/user/repo/late', 'l'), { code: 'EBADF' }, 'an ordinary binding wrote after the release');
   assert.throws(() => fs.read(opened.id, 0, 1), { code: 'EBADF' });
+  assert.throws(() => fs.close(opened.id), { code: 'EBADF' }, 'an ordinary binding closed a descriptor after the release');
   assert.equal(text(recovery.fs.readFile('/home/user/repo/kept')), 'k', 'the recovery lost the binding');
   assert.equal(text(recovery.fs.read(opened.id, 0, 1)), 'k', 'the recovery lost the process\'s descriptions');
   assert.equal(s.engine.hasExclusiveMutation(), true, 'the grant went before the drain ended');
@@ -138,6 +140,91 @@ function session() {
   console.log('  what an ordinary binding wrote to a mount is flushed by the release');
 }
 
+// ── A description a wave opened on a mount, its open answered and a write
+//    through it not, lands when the drain sends that write ──────────────────
+{
+  const s = session();
+  const mounted = new MemoryVFS({ uid: 1000, gid: 1000 });
+  s.filesystem.vfs.mount('/home/user/m', mounted);
+  const { pid } = s.processes.spawn('git commit', [], '/home/user', { cred: user });
+  const fs = s.filesystem.bind({ pid, cred: user });
+  const recovery = s.filesystem.recovery(pid, user);
+  const wave = async (through, ops) => {
+    const bytes = await encodeWriteBatch({ inodes: [], chunks: [], ops });
+    return through.writeStream(new ReadableStream({ type: 'bytes', start(controller) { controller.enqueue(bytes); controller.close(); } }));
+  };
+  const written = (offset, data) => ({ type: 'call', call: { call: 'write', path: 'home/user/m/f.txt', description: 'd1', offset, data: new TextEncoder().encode(data) } });
+  const opened = await wave(fs, [{ type: 'call', call: { call: 'open', path: 'home/user/m/f.txt', mode: 0o644, create: true, description: 'd1' } }, written(0, 'A')]);
+  assert.equal(opened.ok, true, JSON.stringify(opened.error));
+  s.processes.kill(pid, 137);
+  // The drain: what the process logged after, never answered.
+  const drained = await wave(recovery.fs, [written(1, 'B')]);
+  assert.equal(drained.ok, true, `the drain lost the description its log names: ${JSON.stringify(drained.error)}`);
+  await recovery.dispose();
+  await s.processes.released(pid);
+  assert.equal(text(mounted.readFile('/f.txt')), 'AB');
+  console.log('  a description a wave opened on a mount is the drain\'s to write through');
+}
+
+// ── An ordinary binding's call on an awaiting mount, paused past the
+//    release, is refused where it would reach the mount: a pathname change,
+//    a write through a descriptor, an fsync; the recovery's goes on ───────
+{
+  /** A mount whose next call of `method` waits until let go (arm). */
+  const pausing = () => {
+    let armed = null;
+    return {
+      arm(method) {
+        let release;
+        let reached;
+        const held = new Promise((resolve) => { release = resolve; });
+        const at = new Promise((resolve) => { reached = resolve; });
+        armed = { method, held, reached };
+        return { at, release };
+      },
+      async beforeCall(method) {
+        const now = armed;
+        if (now === null || now.method !== method) return;
+        armed = null;
+        now.reached();
+        await now.held;
+      },
+    };
+  };
+  const enc = new TextEncoder();
+  const s = session();
+  const mounted = new MemoryVFS({ uid: 1000, gid: 1000 });
+  mounted.writeFile('/doomed', new TextEncoder().encode('d'));
+  const pause = pausing();
+  s.filesystem.vfs.mount('/home/user/am', asyncOnly(mounted, { beforeCall: (method) => pause.beforeCall(method) }));
+  const { pid } = s.processes.spawn('git commit', [], '/home/user', { cred: user });
+  const fs = s.filesystem.bind({ pid, cred: user });
+  const opened = await fs.open('/home/user/am/w', { write: true, create: true });
+  const recovery = s.filesystem.recovery(pid, user);
+  const outcome = (call) => call.then(() => 'landed', (error) => error.code);
+  const unlinkAt = pause.arm('stat');
+  const unlinked = outcome(fs.unlink('/home/user/am/doomed'));
+  await unlinkAt.at;
+  const writeAt = pause.arm('stat');
+  const written = outcome(fs.write(opened.id, 0, enc.encode('LATE')));
+  s.processes.kill(pid, 137);
+  unlinkAt.release();
+  await writeAt.at;
+  writeAt.release();
+  const synced = await outcome(Promise.resolve().then(() => fs.fsync(opened.id)));
+  assert.deepEqual(
+    { unlink: await unlinked, write: await written, fsync: synced },
+    { unlink: 'EBADF', write: 'EBADF', fsync: 'EBADF' },
+    'an ordinary binding\'s call, paused past the release (or after it), reached the mount',
+  );
+  assert.equal(text(mounted.readFile('/doomed')), 'd');
+  await recovery.fs.write(opened.id, 0, enc.encode('DRAINED'));
+  assert.equal(text(mounted.readFile('/w')), 'DRAINED', 'the recovery lost the process\'s descriptor');
+  await recovery.dispose();
+  await s.processes.released(pid);
+  console.log('  an ordinary binding\'s paused call is refused where it would reach the mount; the recovery\'s goes on');
+}
+
 // ── One recovery per process ─────────────────────────────────────────────
 {
   const s = session();
@@ -147,6 +234,50 @@ function session() {
   assert.throws(() => s.filesystem.recovery(pid, user), { code: 'EBUSY' }, 'a second recovery was granted beside the first');
   await recovery.dispose();
   console.log('  one recovery per process');
+}
+
+// ── A binding's stream commits leave no listener on the signals it is bound
+//    under: 10,000 of them, landed and refused ────────────────────────────
+{
+  const s = session();
+  s.kernel.mkdir('home/root-only', { mode: 0o755 });
+  const { pid } = s.processes.spawn('git commit', [], '/home/user', { cred: user });
+  const fs = s.filesystem.bind({ pid, cred: user });
+  const recovery = s.filesystem.recovery(pid, user);
+  const live = new Map();
+  let added = 0;
+  const add = EventTarget.prototype.addEventListener;
+  const remove = EventTarget.prototype.removeEventListener;
+  EventTarget.prototype.addEventListener = function (type, ...rest) {
+    if (type === 'abort') { added++; live.set(this, (live.get(this) ?? 0) + 1); }
+    return add.call(this, type, ...rest);
+  };
+  EventTarget.prototype.removeEventListener = function (type, ...rest) {
+    if (type === 'abort') live.set(this, (live.get(this) ?? 0) - 1);
+    return remove.call(this, type, ...rest);
+  };
+  const commit = (path) => fs.writeStream(encodeWriteBatchStream({
+    inodes: [{ path, parentPath: path.slice(0, path.lastIndexOf('/')), isDir: false, size: 1, mtime: 1, mode: 0o644, chunkCount: 1 }],
+    chunks: [{ path, chunkId: 0, data: new Uint8Array([120]) }],
+  }));
+  try {
+    let landed = 0;
+    let refused = 0;
+    for (let i = 0; i < 5_000; i++) {
+      if ((await commit(`home/user/repo/f${i % 10}`)).ok) landed++;
+      const outcome = await commit('home/root-only/f').then((result) => result.ok, () => false);
+      if (!outcome) refused++;
+    }
+    assert.deepEqual([landed, refused], [5_000, 5_000], 'the commits did not land and refuse as set up');
+  } finally {
+    EventTarget.prototype.addEventListener = add;
+    EventTarget.prototype.removeEventListener = remove;
+  }
+  assert.ok(added >= 20_000, `the commits were not seen listening (${added} listeners added)`);
+  const left = [...live.values()].filter((count) => count > 0);
+  assert.deepEqual(left, [], 'a stream commit left an abort listener behind');
+  await recovery.dispose();
+  console.log('  10,000 stream commits leave no abort listener behind');
 }
 
 console.log('filesystem recovery: ok');

@@ -120,7 +120,7 @@ declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
     }>;
     cpStdinWrite(childPid: number, data: Uint8Array): Promise<{
         ok: boolean;
-        full?: boolean;
+        signal?: string;
     }>;
     cpStdinEnd(childPid: number): Promise<void>;
     replayBoundary(): Promise<void>;
@@ -167,6 +167,7 @@ declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
         news?: number[];
         acquired?: import("./rpc.js").VfsDeliveredAcquire;
     }>;
+    cpNextSignal(waitMs: number): Promise<string | null>;
     cpBlocked(report: {
         blocked: boolean;
         frontier: number;

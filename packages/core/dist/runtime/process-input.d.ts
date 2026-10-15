@@ -45,8 +45,14 @@ export declare class ProcessInputStore {
         ok: boolean;
         full?: boolean;
     };
-    /** A pipe write: ordered, split at the bound, waiting for room instead of dropping bytes. */
-    writeBytesWait(pid: number, data: Uint8Array): Promise<{
+    /** Whether `pid`'s queue has room for `bytes` more now. */
+    hasRoom(pid: number, bytes: number): boolean;
+    /**
+     * A pipe write: ordered, split at the bound, waiting for room instead of
+     * dropping bytes. `withdraw`, while it waits (its turn, or room), ends it
+     * at once with what it has not written unwritten.
+     */
+    writeBytesWait(pid: number, data: Uint8Array, withdraw?: AbortSignal): Promise<{
         ok: boolean;
     }>;
     endAfterWrites(pid: number): Promise<void>;
@@ -64,9 +70,9 @@ export declare class ProcessInputStore {
     /**
      * Resolves once `pid`'s reader has taken queued input, so a writer refused
      * for a full queue can try again: true then, false if the channel is ended
-     * or gone and will take no more.
+     * or gone and will take no more, or `withdraw` ended the wait.
      */
-    whenWritable(pid: number): Promise<boolean>;
+    whenWritable(pid: number, withdraw?: AbortSignal): Promise<boolean>;
     /**
      * Put input a reader took back in front of the queue, as it was: a process
      * that stopped before using it, run again (worker runtime/stop-replay.ts).
@@ -76,6 +82,11 @@ export declare class ProcessInputStore {
     unread(pid: number, packets: readonly ProcessInputPacket[]): void;
     end(pid: number): void;
     close(pid: number): void;
-    read(pid: number, waitMs?: number, maxBytes?: number): Promise<ProcessInputPacket>;
+    /**
+     * `pid`'s next input, waiting up to `waitMs` (at most 5 s) for it: an empty
+     * packet when none came. A wait `withdraw` ends leaves at once, taking
+     * nothing: what comes next is the next read's.
+     */
+    read(pid: number, waitMs?: number, maxBytes?: number, withdraw?: AbortSignal): Promise<ProcessInputPacket>;
 }
 //# sourceMappingURL=process-input.d.ts.map

@@ -19,7 +19,55 @@ published independently in the `@nimbus-sh` npm scope.
   exited, before the session had answered its last file changes no longer
   loses the files it made in a directory it held. The session landed the
   rest of what the program had logged but refused those files.
+- Fixed (real git, `NIMBUS_GIT_WASI=1`): Ctrl-C reaches `git` while it
+  waits on a credential helper, an editor, a pipe or a child, as on Linux:
+  `git credential fill` and `git commit` waiting on its editor end with
+  status 130 and the prompt comes back, where before git and its helper
+  ran on and the terminal hung. The terminal's key goes to the command's
+  whole process group; a program whose image takes its own signals (git's,
+  runner key `git-runner@2`) is sent the signal rather than killed, its
+  host ends the wait the signal came in (`NIMBUS_ESIGNAL` + the signal's
+  number), and its libc raises it before the call returns `EINTR`
+  (`wasm/nimbus-libc/nimbus-signal.c`), so git's handlers run and an
+  unhandled signal exits 128 + its number. SIGKILL still ends it. A child
+  process that a signal ended from outside its parent (its process group's,
+  `kill <pid>`) is reported to the parent as killed by that signal, as on
+  Linux (a Node parent's `'exit'` has code `null` and the signal), not with
+  whatever its program returned as it was stopped.
+- Breaking (core): `GIT_RUNNER_CONTRACTS` values are `GitRunnerContract`
+  (`{ restartsWaits, takesSignals }`), and `makeGitRunnerFactory` and
+  `GitFacetArgs` take `takesSignals`. `SessionProcessSupervisor` gains
+  `takeSignals`, `nextSignal` and `signalGroup`; a process that took its
+  signals is sent a caught signal by `kill`/`signal` instead of ending.
+  New supervisor op `cpNextSignal`.
 
+- Fixed (lifo `node` and lifo CommonJS commands, X-1/X-2): a program's
+  `process.stdin` is a Readable over fd 0, as Node's: `'data'` as each piece
+  arrives rather than once stdin ends, `for await`, `pipe`, `setEncoding`, and
+  readline over it (the engine's own readline now; lifo's copy, which split a
+  line arriving in two pieces into two lines, is gone). A program that never
+  reads stdin, pauses it or destroys it, no longer waits for it to end, and
+  a read it left pending takes nothing typed after it ends. A program's
+  process (a lifo CommonJS command's too) now hears `'exit'` as it ends (by
+  itself, by `process.exit()`, or of an error nothing caught), and its
+  listeners decide its status through `process.exitCode`, as in Node; no
+  listener ever heard it before. A program that ends in raw mode leaves the
+  terminal in the mode it found it. And in the shell, what is typed while a
+  command runs and before it reads is edited into a line, as a tty's line
+  discipline holds it: a reader gets the whole line, not its first key. In a terminal,
+  `process.stdin`, `process.stdout` and `process.stderr` are the tty module's
+  streams, as in Node: `isTTY` is true, `columns` and `rows` are the window's
+  (`COLUMNS` x `LINES`), a typed line is read as it is typed, and
+  `setRawMode` hands the program each key. `tty.isatty(fd)` answers for each
+  descriptor (it was always false), and `tty.WriteStream(fd)` writes to that
+  descriptor in order with `process.stdout` (its writes went nowhere) and
+  hears its own writes' failures, as Node's: one that fails after `end()`
+  is its `'error'`, not its finish, and none is heard once it is destroyed;
+  a descriptor that is not 0, 1 or 2 is refused as Node refuses it.
+  Breaking: `createProcess` (`substrate/lifo/node-compat/process.js`) takes
+  `stdio` (`{ stdout, stderr, env, input?, terminal? }`) in place of `stdout`
+  and `stderr`; `substrate/lifo/node-compat/readline.js` is removed; and a
+  `tty.WriteStream` needs its descriptor, as Node's does.
 - Fixed (real git, `NIMBUS_GIT_WASI=1`): a push, fetch or credential lookup whose helper took more than 8 s to answer was taken for a helper that quit: `git push` reported "failed to push some refs" (though the remote had taken the push, leaving the remote-tracking ref stale), and `git credential fill` asked its own prompt. A wait on a pipe gives up at 8 s (a suspended wasm stack outliving its bound never resumes), and git's stdio took the give-up for the end of its helper's output. Git's image now asks such a read or write again (`wasm/nimbus-libc/nimbus-restart.c`, linked over `read`, `readv`, `write`, `writev`); its host answers the give-up `NIMBUS_ERESTART` (512) to an image that declares it, and a signal still interrupts with `EINTR`. The runtime is `git/2.53.0-1` and names `git-runner@2`; an installed `git/2.53.0` keeps `git-runner` and its old answer. Breaking (core): `GIT_RUNNER` is `'git-runner@2'`; `GIT_RUNNER_CONTRACTS` lists both keys, and `makeGitRunnerFactory` takes `restartsWaits`.
 - Fixed: `gem install` and `bundle install` finish a gem whose install was
   interrupted, instead of treating it as installed once its `lib`

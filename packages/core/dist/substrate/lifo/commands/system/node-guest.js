@@ -24,6 +24,7 @@ import { runNodeProgram } from './node-program.js';
 import { routeFetchThroughHost } from '../../../../runtime/realm-egress-guest.js';
 import { isEgressHostEvent } from '../../../../runtime/realm-egress.js';
 import { isDirEntries, isHostEvent, isNodeRealmPayload, isStat, } from './node-realm-protocol.js';
+import { fromRealmError } from '../../../../runtime/realm.js';
 // Node's errors show a value as util.inspect does ('a string' quoted), the program's realm's.
 useNodeErrorInspect((value, options) => realm.getBuiltinModule('node:util').inspect(value, options));
 const joined = await joinRealm();
@@ -59,13 +60,26 @@ const fetched = new Map();
 let offTheBox = null;
 /** `events` holds the realm open while anything of the program's waits on it. */
 function holdWhileBusy() {
-    joined.hold(fetched.size > 0 || ports.size > 0 || persistentWatches > 0 || (offTheBox?.awaited ?? 0) > 0 || settling);
+    joined.hold(fetched.size > 0 || ports.size > 0 || persistentWatches > 0 || (offTheBox?.awaited ?? 0) > 0 || settling || stdinHolds > 0);
 }
 /** End the process now with `code`, as process.exit() and a fatal error do: a write that fails later is no one's. */
 function exitNow(code) {
+    const status = exiting ? code : tellExit(code, true);
     exiting = true;
-    post({ type: 'exit', code, ended: true });
-    return realm.exit(code);
+    post({ type: 'exit', code: status, ended: true });
+    return realm.exit(status);
+}
+/** The program's process hears 'exit' (LifoProcess.exitWith), and its status is then what its listeners leave. */
+function tellExit(code, explicit) {
+    if (programProcess === null)
+        return code;
+    try {
+        return programProcess.exitWith(code, explicit);
+    }
+    catch (error) {
+        postOutput(2, 'console', 0, `${uncaughtReport(error, (value) => realm.getBuiltinModule('node:util').inspect(value))}\n`);
+        return 1;
+    }
 }
 /** The program's process, once runNodeProgram has made it. */
 let programProcess = null;
@@ -149,16 +163,39 @@ const filesystem = {
  * with what made it.
  */
 function realmOutput(fd) {
-    const listeners = [];
-    const through = (source) => ({
-        write: (data) => postOutput(fd, source, data),
-        writeBytes: (data) => postOutput(fd, source, data),
+    // Each writer of the descriptor hears its own writes' failures, and its end waits for its own writes (its last
+    // one's number): 0 is process.stdout or process.stderr, and its console.
+    const listeners = new Map();
+    const lastWrites = new Map();
+    let writers = 0;
+    const through = (source, writer) => ({
+        write: (data) => { lastWrites.set(writer, postOutput(fd, source, writer, data)); },
+        writeBytes: (data) => { lastWrites.set(writer, postOutput(fd, source, writer, data)); },
+    });
+    const streamOf = (writer) => ({
+        ...through('stream', writer),
+        onFailure: (listener) => {
+            listeners.set(writer, [...listeners.get(writer) ?? [], listener]);
+            return () => {
+                const rest = (listeners.get(writer) ?? []).filter((heard) => heard !== listener);
+                if (rest.length > 0) {
+                    listeners.set(writer, rest);
+                    return;
+                }
+                // A writer no one hears any more: its writes' failures are no one's, as a destroyed stream's are in Node.
+                listeners.delete(writer);
+                lastWrites.delete(writer);
+                post({ type: 'heard', fd, writer });
+            };
+        },
+        another: () => streamOf(++writers),
+        settled: () => outputSettled(lastWrites.get(writer) ?? 0),
     });
     return {
-        stream: { ...through('stream'), onFailure: (listener) => { listeners.push(listener); } },
-        console: through('console'),
-        fail(error, source) {
-            for (const listener of listeners)
+        stream: streamOf(0),
+        console: through('console', 0),
+        fail(error, source, writer) {
+            for (const listener of listeners.get(writer) ?? [])
                 listener(error, source);
         },
     };
@@ -168,11 +205,67 @@ let postedOutput = 0;
 let settledOutput = 0;
 /** Whether the guest waits for the host to settle its writes (settle): the realm is held meanwhile. */
 let settling = false;
-function postOutput(fd, source, data) {
-    post({ type: 'output', fd, source, data });
-    postedOutput++;
+/** What waits for writes up to a number to be settled, and the number the request outstanding names. */
+const settleWaits = [];
+let askedUpTo = 0;
+/** Once the host settled writes up to number `upTo`, a failure told first: asked of it, holding the realm meanwhile. */
+function outputSettled(upTo) {
+    if (settledOutput >= upTo)
+        return Promise.resolve();
+    return new Promise((resolve) => {
+        settleWaits.push({ upTo, resolve });
+        askSettle();
+    });
+}
+/** Ask the host for the nearest number a wait needs: a request outstanding for a later one is lowered, so that no wait waits on writes after its own. */
+function askSettle() {
+    const upTo = settleWaits.reduce((nearest, wait) => Math.min(nearest, wait.upTo), Infinity);
+    if (settling && askedUpTo <= upTo)
+        return;
+    settling = true;
+    askedUpTo = upTo;
+    post({ type: 'settle', upTo });
+    holdWhileBusy();
+}
+/** Its number. */
+function postOutput(fd, source, writer, data) {
+    post({ type: 'output', fd, source, writer, data });
+    return ++postedOutput;
 }
 const outputs = { 1: realmOutput(1), 2: realmOutput(2) };
+/** fd 0, a piece at a time, each read asked of the host and answered once; the readers waiting on it hold the realm. */
+const stdinAnswers = new Map();
+let stdinReads = 0;
+let stdinHolds = 0;
+const input = {
+    read: () => {
+        const id = ++stdinReads;
+        const piece = new Promise((resolve, reject) => { stdinAnswers.set(id, { resolve, reject }); });
+        post({ type: 'stdin-read', id });
+        return { piece, cancel: () => { if (stdinAnswers.has(id))
+                post({ type: 'stdin-cancel', id }); } };
+    },
+    hold: (on) => {
+        stdinHolds += on ? 1 : -1;
+        holdWhileBusy();
+    },
+};
+/** What a standard descriptor is, asked of the host once. */
+const fdKinds = new Map();
+const fdKind = (fd) => {
+    let kind = fdKinds.get(fd);
+    if (kind === undefined) {
+        const answer = call({ op: 'fdKind', fd });
+        kind = answer === 'terminal' || answer === 'pipe' || answer === 'other' ? answer : malformed('fdKind');
+        fdKinds.set(fd, kind);
+    }
+    return kind;
+};
+const terminal = {
+    isatty: (fd) => fdKind(fd) === 'terminal',
+    isPipe: (fd) => fdKind(fd) === 'pipe',
+    setRawMode: (on) => { call({ op: 'rawMode', on }); },
+};
 /** The program's servers, as the session reaches them: listening is the host's to record, and holds the realm. */
 class RealmPorts extends Map {
     set(port, handler) {
@@ -242,24 +335,43 @@ events.on('message', (event) => {
         case 'changed':
             watches.get(event.id)?.listener(event.event);
             return;
+        case 'stdin': {
+            const answer = stdinAnswers.get(event.id);
+            stdinAnswers.delete(event.id);
+            if ('error' in event)
+                answer?.reject(fromRealmError(event.error));
+            else
+                answer?.resolve('withdrawn' in event ? 'withdrawn' : event.data);
+            return;
+        }
         case 'output-failed':
             // A stream's failure is heard here, whatever the program makes of it: the host reports it no more.
             if (event.source === 'stream')
-                post({ type: 'heard', fd: event.fd });
-            outputs[event.fd].fail(writeFailure(event.code, event.pipe), event.source);
+                post({ type: 'heard', fd: event.fd, writer: event.writer });
+            outputs[event.fd].fail(writeFailure(event.code, event.pipe), event.source, event.writer);
             return;
-        case 'output-settled':
+        case 'output-settled': {
             settledOutput = event.seq;
             settling = false;
+            const waiting = settleWaits.splice(0);
+            for (const wait of waiting) {
+                if (wait.upTo <= settledOutput)
+                    wait.resolve();
+                else
+                    settleWaits.push(wait);
+            }
+            if (settleWaits.length > 0)
+                askSettle();
             holdWhileBusy();
             return;
+        }
     }
 });
 // ── Fatal errors, as Node ends a process on them ───────────────────────────
 const fatal = (reason) => {
     if (reason instanceof ProcessExitError)
         return exitNow(reason.exitCode);
-    postOutput(2, 'console', `${uncaughtReport(reason, (value) => realm.getBuiltinModule('node:util').inspect(value))}\n`);
+    postOutput(2, 'console', 0, `${uncaughtReport(reason, (value) => realm.getBuiltinModule('node:util').inspect(value))}\n`);
     return exitNow(1);
 };
 /** An error nothing caught is the program's process's first (LifoProcess.takeUncaught); one it does not take ends it. */
@@ -286,11 +398,9 @@ realm.on('uncaughtException', uncaught('uncaughtException'));
 // writes, as a Node process's are made before it ends. What it hears may run
 // more of it, and the loop runs empty again.
 realm.on('beforeExit', () => {
-    if (settling || settledOutput === postedOutput || programProcess?.hearsWriteFailures() !== true)
+    if (settledOutput === postedOutput || programProcess?.hearsWriteFailures() !== true)
         return;
-    settling = true;
-    post({ type: 'settle', upTo: postedOutput });
-    holdWhileBusy();
+    void outputSettled(postedOutput);
 });
 // The loop ran empty with the main script still waiting: an ES module whose
 // top-level await never settled.
@@ -302,13 +412,13 @@ realm.on('exit', () => {
     if (exiting)
         return;
     if (mainDone) {
-        const code = finalCode();
+        const code = tellExit(finalCode(), false);
         if (code !== mainCode)
             post({ type: 'exit', code, ended: false });
         return;
     }
-    postOutput(2, 'console', `Warning: Detected unsettled top-level await at ${program.filename}\n`);
-    post({ type: 'exit', code: 13, ended: false });
+    postOutput(2, 'console', 0, `Warning: Detected unsettled top-level await at ${program.filename}\n`);
+    post({ type: 'exit', code: tellExit(13, true), ended: false });
 });
 if (egress) {
     offTheBox = routeFetchThroughHost(post, holdWhileBusy);
@@ -321,6 +431,8 @@ const end = await runNodeProgram(program, {
     stdoutStream: outputs[1].stream,
     stderrStream: outputs[2].stream,
     stdin: () => bytes(call({ op: 'stdin' }), 'stdin'),
+    input,
+    terminal,
     setUmask: (mask) => { call({ op: 'umask', mask }); },
     started: (process) => { programProcess = process; },
     portRegistry: ports,

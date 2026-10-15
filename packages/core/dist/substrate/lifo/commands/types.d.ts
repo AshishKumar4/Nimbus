@@ -20,9 +20,11 @@ export interface CommandInputStream {
     /**
      * Bounded raw-byte read. Byte-capable sources (shell pipes, dumps) return
      * the original bytes; text-only sources encode what they hold. Null means
-     * EOF with nothing returned.
+     * EOF with nothing returned. A read `signal` ends before anything arrives
+     * takes nothing: it rejects with the signal's reason, and what arrives
+     * next is the next read's.
      */
-    readBytes?(maxLength: number): Promise<Uint8Array | null>;
+    readBytes?(maxLength: number, signal?: AbortSignal): Promise<Uint8Array | null>;
     /**
      * The regular file a `< file` redirect opened, and how far into it this
      * stream has read: a command may read the file itself from there (at a
@@ -87,6 +89,12 @@ export interface CommandContext {
     isFdTerminal?: (fd: number) => boolean;
     /** Whether `fd` is a shell pipe (S_ISFIFO): its reader ends a writer by closing it. */
     isFdPipe?: (fd: number) => boolean;
+    /**
+     * The command says its program takes the shell's signals (its signal's
+     * abort is sent to the program, which decides what it does): its status
+     * is then the program's, not the signal's.
+     */
+    takesSignals?: () => void;
     /** Whether the shell running this command runs `name` itself, as a builtin (type and command -v ask). */
     isShellBuiltin?: (name: string) => boolean;
     setUmask(mask: number): void;

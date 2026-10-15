@@ -759,6 +759,7 @@ function withParkDeadline(fn, mayTimeOut) {
                 __wasiAbandoned++;
                 __wasiResident?.fs.cancelPendingDirectories();
                 call.current = false;
+                call.abandon?.();
                 resolve(__WASI_EAGAIN);
             }, __WASI_PARK_DEADLINE_MS);
             const finish = (value) => {
@@ -943,6 +944,7 @@ export function __wasiMakeImports(opts) {
         parks: procParks,
         park: __wasiThreadPark,
         gaveUp: opts.restartsWaits === true ? NIMBUS_ERESTART : __WASI_EINTR,
+        takesSignals: opts.takesSignals === true,
     });
     const imports = {
         // ── args / env ──
@@ -1591,8 +1593,32 @@ export function __wasiMakeImports(opts) {
             });
             // Race them. After the FIRST one resolves, check whether ANY others
             // also have results pending (they could have resolved synchronously
-            // before the race even began, e.g. always-ready file fds).
-            const winnerResult = await Promise.race(promises);
+            // before the race even began, e.g. always-ready file fds). A signal
+            // sent to an image that takes its own ends the poll whatever it waits
+            // on (a clock, a socket), as it ends poll(2): it answers the signal.
+            const signalWait = proc.signalWait();
+            // A poll the deadline answered waits for no signal: one that comes is the guest's next wait's.
+            if (call && signalWait)
+                call.abandon = () => signalWait.cancel();
+            const winner = await Promise.race(signalWait === null ? promises : [...promises, signalWait.ready.then(() => null)]);
+            signalWait?.cancel();
+            if (winner === null) {
+                if (call && !call.current)
+                    return __WASI_EAGAIN;
+                for (let i = 0; i < promises.length; i++) {
+                    if (timerIds[i] !== null) {
+                        try {
+                            clearTimeout(timerIds[i]);
+                        }
+                        catch { }
+                        timerIds[i] = null;
+                    }
+                    pipeWaits[i]?.();
+                }
+                writeU32LE(retNeventsPtr, 0);
+                return proc.interrupted();
+            }
+            const winnerResult = winner;
             // Now collect all currently-resolved promises. Strategy: tag each
             // with a marker via Promise.race against a sentinel — anything
             // that resolved BEFORE OR AT the same time as the winner is ready.
@@ -1633,10 +1659,12 @@ export function __wasiMakeImports(opts) {
             // The deadline answered this poll: its events are not the guest's.
             if (call && !call.current)
                 return __WASI_EAGAIN;
-            // Only a pipe's wait that gave up wins with EINTR: nothing else was ready.
+            // Only a pipe's wait that ended without an answer wins with EINTR,
+            // nothing else being ready: the poll answers the signal that ended it,
+            // or, it having given up, EINTR.
             if (winnerResult.error === __WASI_EINTR) {
                 writeU32LE(retNeventsPtr, 0);
-                return __WASI_EINTR;
+                return proc.interrupted();
             }
             // Write events.
             let nevents = 0;

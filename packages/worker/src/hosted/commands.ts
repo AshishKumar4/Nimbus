@@ -153,7 +153,7 @@ registry.registerBuiltin('git-remote-https', remoteHelper);
 // fsmonitor issued-token provenance is durable host metadata so a wake can
 // keep the VFS revision token.
 // Each runner key's build, on its own contract (GIT_RUNNER_CONTRACTS).
-for (const [key, { restartsWaits }] of Object.entries(GIT_RUNNER_CONTRACTS)) {
+for (const [key, contract] of Object.entries(GIT_RUNNER_CONTRACTS)) {
   let gitFactory: Promise<RunnerFactory> | null = null;
   workspace.runtimes.registerRunner(
     key,
@@ -167,7 +167,7 @@ for (const [key, { restartsWaits }] of Object.entries(GIT_RUNNER_CONTRACTS)) {
           return makeGitRunnerFactory({
             facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes,
             fsmonitorState: sqliteGitFsmonitorState(self.ctx.storage.sql, workspace.filesystem.namespace),
-            restartsWaits,
+            ...contract,
           });
         })().catch((error) => { gitFactory = null; throw error; });
         handler ??= gitFactory.then((factory) => factory(manifest, installRoot, binName, binKind))

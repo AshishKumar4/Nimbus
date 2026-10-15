@@ -340,6 +340,7 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, Nat
   cpCloseOutput: { method: '_rpcCpCloseOutput', args: [0,1,'pid'] },
   cpKill: { method: '_rpcCpKill', args: [0,1,'pid'] },
   cpWait: { method: '_rpcCpWait', args: [0,1,2,'pid',3] },
+  cpNextSignal: { method: '_rpcCpNextSignal', args: ['pid',0] },
   cpBlocked: { method: '_rpcCpBlocked', args: ['pid',0] },
   innerDoFetch: { method: '_rpcInnerDoFetch', args: [0] },
   innerDoCall: { method: '_rpcInnerDoCall', args: [0] },

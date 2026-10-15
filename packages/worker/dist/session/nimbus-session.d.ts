@@ -475,6 +475,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     }>;
     _rpcCpStdinWrite(childPid: number, data: Uint8Array, pid?: number): Promise<{
         ok: boolean;
+        signal?: string;
     }>;
     _rpcCpStdinEnd(childPid: number, pid?: number): Promise<void>;
     _rpcCpReadStdin(childPid: number, waitMs: number, acquire?: unknown, pid?: number, writerId?: string, maxBytes?: number): Promise<{
@@ -495,6 +496,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     _rpcCpKill(childPid: number, signal: string, pid?: number): Promise<boolean>;
     _rpcCpWait(childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean): Promise<any>;
     _rpcCpBlocked(pid: number, report: unknown): Promise<void>;
+    _rpcCpNextSignal(pid: number, waitMs: number): Promise<string | null>;
     _rpcReady(options?: SessionReadyOptions): Promise<{
         ok: true;
         preinstalled: string[];

@@ -789,8 +789,10 @@ export class Interpreter {
                             // thread lends it its unit while it runs.
                             const endWork = io.workThread ? io.workThread.beginWork() : identity.beginWork?.();
                             let ended;
+                            let tookSignals = false;
                             try {
                                 ended = await this.runCommand(command, name, args, {
+                                    takesSignals: () => { tookSignals = true; },
                                     commandContext: io.commandContext,
                                     identity,
                                     cwd: this.config.getCwd(),
@@ -817,7 +819,8 @@ export class Interpreter {
                             // ctx.signal aborted, and cannot tell SIGINT (130) from
                             // SIGQUIT (131). The shell holds the reason, so it decides.
                             const signalledCode = this.abortExitCode(io);
-                            if (signalledCode !== null)
+                            // A program that took the signal itself ends as it decided (git dies of it, or handles it).
+                            if (signalledCode !== null && !tookSignals)
                                 exitCode = signalledCode;
                         }
                     }
@@ -911,6 +914,7 @@ export class Interpreter {
                 : undefined,
             isFdTerminal: spec.isFdTerminal,
             isFdPipe: spec.isFdPipe,
+            takesSignals: spec.takesSignals,
             isShellBuiltin: (builtin) => this.config.builtins.has(builtin),
             setUmask: identity.setUmask,
             runAs: async (cred, argv, options) => spec.runAs

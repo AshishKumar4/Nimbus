@@ -171,17 +171,17 @@ class MountedDescription {
     /** The namespace's name for it, when it was opened. */
     path() { return this.file.name; }
     key() { return this.file.key; }
-    stat() {
-        return andThen(this.file.stat(), (there) => {
+    stat(admit) {
+        return andThen(this.file.stat(this.admitted('fstat', admit)), (there) => {
             const now = runtimeStatOf(there);
-            return andThen(this.viewed(), (view) => (view ? { ...now, size: view.byteLength } : now));
+            return andThen(this.viewed(admit), (view) => (view ? { ...now, size: view.byteLength } : now));
         });
     }
-    read(offset, length) {
-        const view = this.viewed();
+    read(offset, length, admit) {
+        const view = this.viewed(admit);
         if (view === undefined)
-            return this.file.read(offset, length);
-        return andThen(view, (bytes) => (bytes ? bytes.slice(offset, offset + length) : this.file.read(offset, length)));
+            return this.file.read(offset, length, this.admitted('read', admit));
+        return andThen(view, (bytes) => (bytes ? bytes.slice(offset, offset + length) : this.file.read(offset, length, this.admitted('read', admit))));
     }
     write(offset, bytes, admit) {
         const written = this.inPlaceAt(offset, bytes, admit);
@@ -193,7 +193,7 @@ class MountedDescription {
     append(bytes, admit) {
         if (!this.inPlace)
             return this.heldAppend(bytes, admit);
-        return andThen(this.file.stat(), (there) => {
+        return andThen(this.file.stat(this.admitted('write', admit)), (there) => {
             const written = this.inPlaceAt(there.size, bytes, admit);
             if (written === undefined)
                 return this.heldAppend(bytes, admit);
@@ -205,8 +205,8 @@ class MountedDescription {
         settleHeld(this.options.scope, this.file.key);
         return this.file.truncate(size, this.admitted('ftruncate', admit));
     }
-    readdir() {
-        return andThen(this.file.readdir(), (entries) => entries.map((entry) => ({ name: entry.name, type: entry.type })));
+    readdir(admit) {
+        return andThen(this.file.readdir(this.admitted('scandir', admit)), (entries) => entries.map((entry) => ({ name: entry.name, type: entry.type })));
     }
     chmod(mode, admit) { return this.file.chmod(mode, this.admitted('fchmod', admit)); }
     chown(uid, gid, admit) { return this.file.chown(uid, gid, this.admitted('fchown', admit)); }
@@ -224,7 +224,7 @@ class MountedDescription {
         this.pending = [];
         this.held = 0;
         this.options.scope.held.delete(this);
-        return andThen(this.file.readAll(), (base) => this.file.replace(apply(writes, base), this.admitted('write', admit)));
+        return andThen(this.file.readAll(this.admitted('write', admit)), (base) => this.file.replace(apply(writes, base), this.admitted('write', admit)));
     }
     /** A settle it did not ask for (settleHeld): what it fails with is kept for its next fsync or close. */
     settle() {
@@ -238,10 +238,10 @@ class MountedDescription {
         }
     }
     /** Its file closed whatever the flush answers: the flush's failure, else the close's, is its answer. */
-    close() {
+    close(admit) {
         let flushed;
         try {
-            flushed = this.flush();
+            flushed = this.flush(admit);
         }
         catch (error) {
             return this.closeAfter(error);
@@ -279,12 +279,12 @@ class MountedDescription {
      * its descriptions (processView): this one's own O_SYNC governs only its
      * writes.
      */
-    viewed() {
+    viewed(admit) {
         const { file } = this;
-        return processView(this.options.scope, () => ({ key: () => file.key, readAll: () => file.readAll() }));
+        return processView(this.options.scope, () => ({ key: () => file.key, readAll: () => file.readAll(this.admitted('read', admit)) }));
     }
     heldAppend(bytes, admit) {
-        return andThen(this.hold({ offset: null, bytes: bytes.slice() }, bytes.byteLength, admit), () => andThen(this.stat(), (now) => now.size));
+        return andThen(this.hold({ offset: null, bytes: bytes.slice() }, bytes.byteLength, admit), () => andThen(this.stat(admit), (now) => now.size));
     }
     /**
      * `bytes` written in place at `offset`: the end written. Undefined from
@@ -305,15 +305,17 @@ class MountedDescription {
         return isPromise(written) ? written.then(() => end, (error) => this.cannot(error)) : end;
     }
     /**
-     * `admit` (the operation's own admission), after the description's: its
-     * process's descriptors still open (EBADF once released). Run right before
-     * the mount is asked, after every await.
+     * `admit` (the operation's own admission: its caller's Authority, the
+     * wave's), after the description's own: its process's descriptors still
+     * open (EBADF once its scope is closed), the opener's own abort not come.
+     * Run right before the mount is asked, after every await.
      */
     admitted(syscall, admit) {
-        const { scope, refuse } = this.options;
+        const { scope, refuse, signal } = this.options;
         return () => {
             if (scope.closed)
                 throw refuse('EBADF', syscall);
+            signal?.throwIfAborted();
             admit?.();
         };
     }

@@ -1333,7 +1333,8 @@ export async function _rpcCpSpawn(self, req, parentPid) {
  */
 export async function _rpcCpStdinWrite(self, childPid, data, pid) {
     childOf(self, childPid, pid);
-    return self.processes.writeInputBytesWait(childPid, data);
+    // A caller of a prior generation is no process here: no signal of this table's is its.
+    return self.processes.writeInputBytesWait(childPid, data, pid === undefined || isPriorGenerationPid(self, pid) ? undefined : pid);
 }
 export async function _rpcCpStdinEnd(self, childPid, pid) {
     childOf(self, childPid, pid);
@@ -1406,6 +1407,16 @@ export async function _rpcCpReadStdin(self, childPid, waitMs, acquire, pid, writ
     const delivers = packet.ended || packet.signal !== undefined || packet.resize !== undefined
         || packet.data.byteLength > 0;
     return withDeliveredAcquire(self, packet, delivers, acquire, pid);
+}
+/**
+ * The next signal sent to `pid` (the caller's own process, whose program
+ * takes its own: SessionProcessSupervisor.takeSignals), waiting up to
+ * `waitMs`: null if none came.
+ */
+export async function _rpcCpNextSignal(self, pid, waitMs) {
+    if (pid === undefined || isPriorGenerationPid(self, pid))
+        return null;
+    return self.processes.nextSignal(pid, Number(waitMs) || 0);
 }
 export async function _rpcCpReadOutput(self, childPid, fd, sinceSeq, waitMs, acquire, pid) {
     childOf(self, childPid, pid);
