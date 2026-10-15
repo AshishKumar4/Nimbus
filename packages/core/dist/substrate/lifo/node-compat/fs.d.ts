@@ -89,8 +89,8 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
     lstatSync: (path: string | URL) => NodeStat;
     mkdirSync: (path: string | URL, options?: {
         recursive?: boolean;
-        mode?: number;
-    } | number) => void;
+        mode?: number | string;
+    } | number | string) => void;
     readdirSync: (path: string | URL, options?: {
         encoding?: string;
         withFileTypes?: boolean;
@@ -101,7 +101,7 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
     }) => void;
     renameSync: (oldPath: string | URL, newPath: string | URL) => void;
     copyFileSync: (src: string | URL, dest: string | URL) => void;
-    chmodSync: (path: string | URL, mode: number) => void;
+    chmodSync: (path: string | URL, mode: number | string) => void;
     chownSync: (_path: string | URL, _uid: number, _gid: number) => void;
     accessSync: (path: string | URL, _mode?: number) => void;
     realpathSync: ((path: string | URL) => string) & {
@@ -256,7 +256,7 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
         access: (path: string | URL, mode?: number) => Promise<void>;
         realpath: (path: string | URL) => Promise<string>;
         truncate: (path: string | URL, len?: number) => Promise<void>;
-        chmod: (path: string | URL, mode: number) => Promise<void>;
+        chmod: (path: string | URL, mode: number | string) => Promise<void>;
         chown: (_path: string | URL, _uid: number, _gid: number) => Promise<void>;
         open: (path: string | URL, flags?: string | number, mode?: number) => Promise<{
             fd: number;

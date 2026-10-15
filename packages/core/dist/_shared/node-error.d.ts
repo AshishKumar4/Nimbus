@@ -44,6 +44,10 @@ export declare function determineSpecificType(value: unknown): string;
  * (`Buffer`) or anything else (`Array-like Object`) — and was `actual`.
  */
 export declare function invalidArgType(name: string, expected: string | readonly string[], actual: unknown): Error;
+/** Node's ERR_INVALID_ARG_VALUE: `name` was `value`, refused for `reason` (`is invalid`, or what it must be). */
+export declare function invalidArgValue(name: string, value: unknown, reason?: string): Error;
+/** Node's ERR_OUT_OF_RANGE: `name` must be `range` (`an integer`, `>= 0 && <= 4294967295`), and was `input`. */
+export declare function outOfRange(name: string, range: string, input: unknown): Error;
 /** `new codes.ERR_X(...args)`: Node's error for the code, its stack from where it was made. */
 export type NodeErrorConstructor = ((...args: never[]) => Error) & {
     [base: string]: NodeErrorConstructor;

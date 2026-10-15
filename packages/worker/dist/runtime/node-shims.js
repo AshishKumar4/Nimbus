@@ -1532,9 +1532,9 @@ const __fsMod = (() => {
    * option), before the umask: 0666 unless it says. The authority applies them
    * only to a file the call makes; one already there keeps its own.
    */
-  function _createMode(opts, syscall, p) {
+  function _createMode(opts) {
     const mode = opts !== null && typeof opts === "object" ? opts.mode : undefined;
-    return mode === undefined ? 0o666 : _coerceMode(mode, syscall, p);
+    return mode === undefined ? 0o666 : _coerceMode(mode);
   }
 
   function _forgetSyncTree(k) {
@@ -1986,10 +1986,9 @@ const __fsMod = (() => {
     return at;
   }
 
-  function _coerceMode(value, syscall, p) {
-    const n = typeof value === "string" ? parseInt(value, 8) : Number(value);
-    if (!Number.isInteger(n) || n < 0) throw _fsErr("EINVAL", syscall, p);
-    return n & 0o7777;
+  // A mode argument as Node reads it (parseFileMode, node-arguments.ts): its permission bits.
+  function _coerceMode(value) {
+    return parseFileMode(value, "mode") & 0o7777;
   }
 
   function _coerceTimeMs(value, syscall, p) {
@@ -4039,7 +4038,7 @@ const __fsMod = (() => {
   async function _symlinkAsync(target, path) { await _structuralAsync(() => _symlinkQueued(target, path, true), "symlink", path); }
 
   async function _writeFileAsync(p, data, opts) {
-    const mode = _createMode(opts, "open", p);
+    const mode = _createMode(opts);
     const absPath = _resolveFollow(p, "open");
     const supervisor = _supervisor();
     // A target this view cannot judge (on a mount, where the launch did not
@@ -4246,7 +4245,7 @@ const __fsMod = (() => {
     if (!existsSync(p)) throw _absentErr(_resolve(p), "chmod", p, "fs.promises.chmod");
     const absPath = _resolveFollow(p, "chmod");
     _ensureModeOwner(absPath, "chmod", p);
-    _detachStructuralMutation(_chmodQueued(absPath, _coerceMode(mode, "chmod", p), "chmod", p), "chmod", p);
+    _detachStructuralMutation(_chmodQueued(absPath, _coerceMode(mode), "chmod", p), "chmod", p);
   }
 
   // A sync chmod's effect: the local mode at once (statSync's overlay), and the
@@ -4267,7 +4266,7 @@ const __fsMod = (() => {
     if (!localExists && !supervisor) {
       throw _fsErr("ENOENT", "chmod", p);
     }
-    const m = _coerceMode(mode, "chmod", p);
+    const m = _coerceMode(mode);
     if (localExists) _ensureModeOwner(absPath, "chmod", p);
     // Delivered with the path's next flush (_flushHeld), once.
     _setLocalAttr("mode", _strip(absPath), m, false, true);
@@ -4533,7 +4532,7 @@ const __fsMod = (() => {
   // (the hot path for source code / package.json / user JS).
   // Anything else is stringified (Node's behaviour for e.g. numbers).
   function writeFileSync(p, data, opts) {
-    const mode = _createMode(opts, "open", p);
+    const mode = _createMode(opts);
     const k = _parkWholeWrite(p, data, false, mode);
     _logParked("/" + k, { type: "call", call: { call: "writeFile", path: k, mode, data: __nimbusVfsCellBytes(__vfsWrites[k]) } }, { acknowledged: true });
   }
@@ -4575,7 +4574,7 @@ const __fsMod = (() => {
   // the program was told it succeeded). The cell is the file's whole content
   // only when it extends a parked cell of this process's that was whole.
   function _appendLocal(p, data, opts, acknowledged) {
-    const mode = _createMode(opts, "open", p);
+    const mode = _createMode(opts);
     const absPath = _resolveFollow(p, "open");
     const absent = _ensureWritable(absPath, "open", p);
     const k = _strip(absPath);
@@ -4725,7 +4724,7 @@ const __fsMod = (() => {
     }
     // A directory the view already shows (the namespace's, or one this
     // process made, whose mkdir is ahead in the log) is not made again.
-    const mode = opts?.mode === undefined ? 0o777 : _coerceMode(opts.mode, "mkdir", p);
+    const mode = opts?.mode === undefined ? 0o777 : _coerceMode(opts.mode);
     const known = new Set();
     for (const [, dir] of created) {
       __vfsDirs[dir] = true;
@@ -5222,27 +5221,19 @@ const __fsMod = (() => {
     _accessAsync(p, mode).then(() => cb(null)).catch((e) => cb(e));
   }
 
-  // ── open-flag parsing for fs.promises.open ──
+  // ── open flags, as Node reads them (stringToFlags, node-arguments.ts) ──
   function _parseOpenFlags(flags) {
-    if (typeof flags === "number") {
-      const { O_WRONLY, O_RDWR, O_CREAT, O_EXCL, O_TRUNC, O_APPEND, O_DIRECTORY } = __fsConstants;
-      return {
-        read: (flags & O_WRONLY) === 0,
-        write: (flags & (O_WRONLY | O_RDWR)) !== 0,
-        append: (flags & O_APPEND) !== 0,
-        create: (flags & O_CREAT) !== 0,
-        truncate: (flags & O_TRUNC) !== 0,
-        exclusive: (flags & O_EXCL) !== 0,
-        directory: (flags & O_DIRECTORY) !== 0,
-      };
-    }
-    const s = String(flags === undefined || flags === null ? "r" : flags);
-    const plus = s.indexOf("+") !== -1;
-    const exclusive = s.indexOf("x") !== -1;
-    const base = s.charAt(0);
-    if (base === "w") return { read: plus, write: true, append: false, create: true, truncate: true, exclusive, directory: false };
-    if (base === "a") return { read: plus, write: true, append: true, create: true, truncate: false, exclusive, directory: false };
-    return { read: true, write: plus, append: false, create: false, truncate: false, exclusive, directory: false };
+    const bits = stringToFlags(flags);
+    const access = bits & O_ACCMODE;
+    return {
+      read: access !== O_WRONLY,
+      write: access !== O_RDONLY,
+      append: (bits & O_APPEND) !== 0,
+      create: (bits & O_CREAT) !== 0,
+      truncate: (bits & O_TRUNC) !== 0,
+      exclusive: (bits & O_EXCL) !== 0,
+      directory: (bits & O_DIRECTORY) !== 0,
+    };
   }
 
   // ── FileHandle — returned from fs.promises.open ──
@@ -5548,7 +5539,7 @@ const __fsMod = (() => {
 
   async function _openAsync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
-    const createMode = mode === undefined || mode === null ? 0o666 : _coerceMode(mode, "open", path);
+    const createMode = mode === undefined || mode === null ? 0o666 : _coerceMode(mode);
     const absPath = _resolveFollow(path, "open");
     const supervisor = _supervisor();
     let liveMeta = null;
@@ -5583,7 +5574,7 @@ const __fsMod = (() => {
 
   function openSync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
-    const createMode = mode === undefined || mode === null ? 0o666 : _coerceMode(mode, "open", path);
+    const createMode = mode === undefined || mode === null ? 0o666 : _coerceMode(mode);
     const absPath = _resolveFollow(path, "open");
     _ensureAncestorsTraversable(absPath, "open", path);
     const st = statSync(path, { throwIfNoEntry: false });
@@ -5721,7 +5712,7 @@ const __fsMod = (() => {
     if (_isStdioFd(fd)) throw _fsErr("EINVAL", "fchmod", fd);
     const handle = _fdHandle(fd, "fchmod");
     _ensureModeOwner(handle._abs, "fchmod", handle._path);
-    _detachStructuralMutation(_chmodQueued(handle._abs, _coerceMode(mode, "fchmod", handle._path), "fchmod", handle._path), "fchmod", handle._path);
+    _detachStructuralMutation(_chmodQueued(handle._abs, _coerceMode(mode), "fchmod", handle._path), "fchmod", handle._path);
   }
   function fchownSync(fd, uid, gid) {
     if (_isStdioFd(fd)) throw _fsErr("EINVAL", "fchown", fd);
@@ -10633,11 +10624,8 @@ const __processMod = Object.setPrototypeOf({
   umask: (mask) => {
     const previous = __processUmask;
     if (mask === undefined) return previous;
-    const next = typeof mask === "string" ? parseInt(mask, 8) : Number(mask);
-    if (!Number.isInteger(next) || next < 0 || next > 0o777) {
-      const error = nodeError(TypeError, "ERR_INVALID_ARG_VALUE", "The value of mask is out of range");
-      throw error;
-    }
+    // umask(2) keeps the permission bits of what parseFileMode (node-arguments.ts) takes.
+    const next = parseFileMode(mask, "mask") & 0o777;
     __processUmask = next;
     if (__supervisor && typeof __supervisor.setUmask === "function") {
       const task = __nimbusUseRpcResult(__supervisor.setUmask(next), () => undefined);

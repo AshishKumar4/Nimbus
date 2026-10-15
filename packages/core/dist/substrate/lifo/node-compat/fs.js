@@ -7,6 +7,7 @@ import { errnoCodeOf, fsError, isVfsError } from '../../../vfs/vfs-error.js';
 import { DIRENT_TYPES, direntTypeOfStat } from '../../../vfs/dirent-type.js';
 import { S_IFMT } from '../../../vfs/vfs.js';
 import { invalidArgType, nodeError } from '../../../_shared/node-error.js';
+import { O_ACCMODE, O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR, O_SYNC, O_TRUNC, O_WRONLY, parseFileMode, stringToFlags, } from '../../../_shared/node-arguments.js';
 /**
  * Node's Stats for a filesystem stat: its identity, links, owner, mode and
  * times as the filesystem has them (no birth time is kept: ctime stands in),
@@ -48,37 +49,10 @@ function resolvePath(cwd, p) {
     return resolve(cwd, str);
 }
 // ─── Open flags ───
-const O_RDONLY = 0;
-const O_WRONLY = 1;
-const O_RDWR = 2;
-const O_ACCMODE = 3;
-const O_CREAT = 64;
-const O_EXCL = 128;
-const O_TRUNC = 512;
-const O_APPEND = 1024;
-const O_DIRECTORY = 65536;
-const O_NOFOLLOW = 131072;
-const O_SYNC = 1052672;
-/** Node's flag strings (stringToFlags), as bits. */
-const FLAG_STRINGS = {
-    r: O_RDONLY, rs: O_RDONLY | O_SYNC, sr: O_RDONLY | O_SYNC,
-    'r+': O_RDWR, 'rs+': O_RDWR | O_SYNC, 'sr+': O_RDWR | O_SYNC,
-    w: O_TRUNC | O_CREAT | O_WRONLY, wx: O_TRUNC | O_CREAT | O_WRONLY | O_EXCL, xw: O_TRUNC | O_CREAT | O_WRONLY | O_EXCL,
-    'w+': O_TRUNC | O_CREAT | O_RDWR, 'wx+': O_TRUNC | O_CREAT | O_RDWR | O_EXCL, 'xw+': O_TRUNC | O_CREAT | O_RDWR | O_EXCL,
-    a: O_APPEND | O_CREAT | O_WRONLY, ax: O_APPEND | O_CREAT | O_WRONLY | O_EXCL, xa: O_APPEND | O_CREAT | O_WRONLY | O_EXCL,
-    as: O_APPEND | O_CREAT | O_WRONLY | O_SYNC, sa: O_APPEND | O_CREAT | O_WRONLY | O_SYNC,
-    'a+': O_APPEND | O_CREAT | O_RDWR, 'ax+': O_APPEND | O_CREAT | O_RDWR | O_EXCL, 'xa+': O_APPEND | O_CREAT | O_RDWR | O_EXCL,
-    'as+': O_APPEND | O_CREAT | O_RDWR | O_SYNC, 'sa+': O_APPEND | O_CREAT | O_RDWR | O_SYNC,
-};
 /** An open's flags, as Node takes them (a string or bits), for the process's open: the decisions are its. */
 function openFlagsOf(flags, mode) {
-    if (typeof flags === 'number' && (!Number.isInteger(flags) || flags < -0x80000000 || flags > 0x7fffffff)) {
-        throw Object.assign(new RangeError(`The value of "flags" is out of range. It must be an integer. Received ${String(flags)}`), { code: 'ERR_OUT_OF_RANGE' });
-    }
-    const bits = flags === undefined || flags === null ? O_RDONLY : typeof flags === 'number' ? flags : Object.hasOwn(FLAG_STRINGS, flags) ? FLAG_STRINGS[flags] : undefined;
-    if (bits === undefined) {
-        throw Object.assign(new TypeError(`The argument 'flags' is invalid. Received '${String(flags)}'`), { code: 'ERR_INVALID_ARG_VALUE' });
-    }
+    const bits = stringToFlags(flags);
+    const parsedMode = mode === undefined ? undefined : parseFileMode(mode, 'mode');
     const access = bits & O_ACCMODE;
     return {
         read: access !== O_WRONLY,
@@ -90,7 +64,7 @@ function openFlagsOf(flags, mode) {
         directory: (bits & O_DIRECTORY) !== 0,
         followSymlinks: (bits & O_NOFOLLOW) === 0,
         ...((bits & O_SYNC) === O_SYNC ? { sync: true } : {}),
-        ...(mode === undefined ? {} : { mode }),
+        ...(parsedMode === undefined ? {} : { mode: parsedMode }),
     };
 }
 /** A position as Node takes it: null or -1 is the descriptor's own offset. */
@@ -186,8 +160,8 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
     }
     function mkdirSync(path, options) {
         const abs = resolvePath(cwd, path);
-        const opts = typeof options === 'number' ? {} : options;
-        vfs.mkdir(abs, { recursive: opts?.recursive });
+        const opts = typeof options === 'object' ? options : { mode: options };
+        vfs.mkdir(abs, { recursive: opts?.recursive, mode: parseFileMode(opts?.mode, 'mode', 0o777) });
     }
     function readdirSync(path, options) {
         const abs = resolvePath(cwd, path);
@@ -235,7 +209,7 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
         vfs.copyFile(abs1, abs2);
     }
     function chmodSync(path, mode) {
-        vfs.chmod(resolvePath(cwd, path), mode);
+        vfs.chmod(resolvePath(cwd, path), parseFileMode(mode, 'mode'));
     }
     function chownSync(_path, _uid, _gid) {
         // No-op in VFS
