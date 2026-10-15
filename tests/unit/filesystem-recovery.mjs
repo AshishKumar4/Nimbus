@@ -16,7 +16,7 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
-import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
+import { encodeWriteBatch, encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
@@ -56,6 +56,7 @@ function session() {
   assert.throws(() => fs.readFile('/home/user/repo/kept'), { code: 'EBADF' }, 'an ordinary binding read after the release');
   assert.throws(() => fs.writeFile('/home/user/repo/late', 'l'), { code: 'EBADF' }, 'an ordinary binding wrote after the release');
   assert.throws(() => fs.read(opened.id, 0, 1), { code: 'EBADF' });
+  assert.throws(() => fs.close(opened.id), { code: 'EBADF' }, 'an ordinary binding closed a descriptor after the release');
   assert.equal(text(recovery.fs.readFile('/home/user/repo/kept')), 'k', 'the recovery lost the binding');
   assert.equal(text(recovery.fs.read(opened.id, 0, 1)), 'k', 'the recovery lost the process\'s descriptions');
   assert.equal(s.engine.hasExclusiveMutation(), true, 'the grant went before the drain ended');
@@ -136,6 +137,28 @@ function session() {
   await s.processes.released(pid);
   assert.equal(text(mounted.readFile('/l.txt')), 'flushed', 'the release lost what was written to a mount');
   console.log('  what an ordinary binding wrote to a mount is flushed by the release');
+}
+
+// ── A description a wave opened on a mount, its open answered and a write
+//    through it not, lands when the drain sends that write ──────────────────
+{
+  const s = session();
+  const mounted = new MemoryVFS({ uid: 1000, gid: 1000 });
+  s.filesystem.vfs.mount('/home/user/m', mounted);
+  const { pid } = s.processes.spawn('git commit', [], '/home/user', { cred: user });
+  const fs = s.filesystem.bind({ pid, cred: user });
+  const recovery = s.filesystem.recovery(pid, user);
+  const wave = async (through, ops) => through.writeStream(new Blob([await encodeWriteBatch({ inodes: [], chunks: [], ops })]).stream());
+  const written = (offset, data) => ({ type: 'call', call: { call: 'write', path: 'home/user/m/f.txt', description: 'd1', offset, data: new TextEncoder().encode(data) } });
+  assert.equal((await wave(fs, [{ type: 'call', call: { call: 'open', path: 'home/user/m/f.txt', mode: 0o644, create: true, description: 'd1' } }, written(0, 'A')])).ok, true);
+  s.processes.kill(pid, 137);
+  // The drain: what the process logged after, never answered.
+  const drained = await wave(recovery.fs, [written(1, 'B')]);
+  assert.equal(drained.ok, true, `the drain lost the description its log names: ${JSON.stringify(drained.error)}`);
+  await recovery.dispose();
+  await s.processes.released(pid);
+  assert.equal(text(mounted.readFile('/f.txt')), 'AB');
+  console.log('  a description a wave opened on a mount is the drain\'s to write through');
 }
 
 // ── One recovery per process ─────────────────────────────────────────────

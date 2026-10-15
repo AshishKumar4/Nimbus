@@ -108,6 +108,8 @@ class GuardedProcessBridge implements RuntimeFsBridge {
     private readonly delegations: Delegations,
     /** The session's gate on the process's output (ProcessFiles.outputGate). */
     private readonly gate: Required<OutputGate>,
+    /** Aborted when the process is released while a recovery keeps its scope (ProcessFiles.recovery): this binding ends then. */
+    private readonly revoked?: AbortSignal,
   ) {}
 
   gateLaunch(named: readonly string[]): Promise<void> {
@@ -133,6 +135,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
 
   private guard(): void {
     this.signal?.throwIfAborted();
+    this.revoked?.throwIfAborted();
     if (this.scope.closed) throw Object.assign(new Error('EBADF: filesystem scope closed'), { code: 'EBADF' });
   }
 
@@ -180,7 +183,8 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   reopen(target: RuntimeReopenTarget, flags: RuntimeOpenFlags, options?: RuntimeMutationOwner): RuntimeOpenedFile { this.guard(); return this.target.reopen(target, flags, options); }
   read(handleId: number, offset: number | null, length: number): Uint8Array { this.guard(); return this.reading(() => this.target.read(handleId, offset, length)); }
   write(handleId: number, offset: number | null, bytes: Uint8Array): number { this.guard(); return this.target.write(handleId, offset, bytes); }
-  close(handleId: number): void { return this.target.close(handleId); }
+  // A caller's abort leaves its own descriptors to close; a released binding's are its scope's last owner's.
+  close(handleId: number): void { this.revoked?.throwIfAborted(); return this.target.close(handleId); }
   readdir(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): RuntimeVfsDirEntry[] { this.guard(); return this.target.readdir(path, options); }
   mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number } & RuntimeMutationOwner): void { this.guard(); return this.target.mkdir(path, options); }
   unlink(path: RuntimeFsPath, options?: RuntimeMutationOwner): void { this.guard(); return this.target.unlink(path, options); }
@@ -232,7 +236,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   writeBatch(payload: BatchWritePayload, options?: { signal?: AbortSignal }): Promise<{ inodes: number; chunks: number }> {
     this.guard();
     // As writeStream: closing the scope cancels the commit.
-    const linked = linkedSignal([options?.signal, this.signal, scopeSignal(this.scope)]);
+    const linked = linkedSignal([options?.signal, this.signal, this.revoked, scopeSignal(this.scope)]);
     return Promise.resolve(this.target.writeBatch(payload, { signal: linked.signal })).finally(linked.dispose);
   }
   writeStream(
@@ -242,7 +246,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
     this.guard();
     // Closing the scope cancels the commit, so a released process cannot keep
     // publishing groups into a filesystem it no longer holds descriptors on.
-    const linked = linkedSignal([options?.signal, this.signal, scopeSignal(this.scope)]);
+    const linked = linkedSignal([options?.signal, this.signal, this.revoked, scopeSignal(this.scope)]);
     return this.target.writeStream(stream, { ...options, signal: linked.signal }).finally(linked.dispose);
   }
   acquireExclusiveMutation(path: RuntimeFsPath, options?: ExclusiveMutationRequest): ExclusiveMutationGrant {
@@ -436,7 +440,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     if (this.retired.has(pid)) throw Object.assign(new Error('ESTALE: process released'), { code: 'ESTALE' });
     let bound = this.bound.get(pid);
     if (!bound) { bound = new AbortController(); this.bound.set(pid, bound); }
-    return this.bridgeFor(this.scopeOf(pid), immutableCredential(cred), signal === undefined ? bound.signal : AbortSignal.any([signal, bound.signal]), pid);
+    return this.bridgeFor(this.scopeOf(pid), immutableCredential(cred), signal, pid, false, bound.signal);
   }
 
   recovery(pid: number, cred: Readonly<VfsCred>): NimbusHostFilesystemLease {
@@ -576,26 +580,20 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   releaseProcess(pid: number): Promise<void> {
     this.retired.add(pid);
     this.listings.delete(pid);
-    const bound = this.bound.get(pid);
+    // Its bindings end now (EBADF, as a closed scope answers), every call
+    // through them, a close too.
+    this.bound.get(pid)?.abort(fsError('EBADF', 'fd', 'filesystem scope closed'));
     this.bound.delete(pid);
     const recovery = this.recoveries.get(pid);
-    // Its scope's close ends its bindings.
     if (recovery === undefined) return this.closeProcess(pid);
-    if (recovery.release !== null) return recovery.release.done;
-    // Its log is draining: what it wrote to a mount is flushed now, as a
-    // release flushes it, by the bindings that opened it; then they end
-    // (EBADF, as a closed scope answers), and its other descriptions and its
-    // grants stay for the recovery. The release settles when that ends.
-    const scope = this.processes.get(pid);
-    const flushed = scope === undefined ? [] : closeDescriptions(scope, true);
-    bound?.abort(fsError('EBADF', 'fd', 'filesystem scope closed'));
-    let run!: () => Promise<void>;
-    const closed = new Promise<void>((resolve, reject) => { run = () => this.closeProcess(pid).then(resolve, reject); });
-    // Settled once both are, with the first failure.
-    const done = Promise.allSettled([Promise.resolve(flushed).then(reportLost), closed]).then((results) => {
-      for (const result of results) if (result.status === 'rejected') throw result.reason;
-    });
-    recovery.release = { run, done };
+    // Its log is draining: its scope is the recovery's, every description in
+    // it, until the drain ends; then it is closed, each last close flushing,
+    // and the release settles.
+    if (recovery.release === null) {
+      let run!: () => Promise<void>;
+      const done = new Promise<void>((resolve, reject) => { run = () => this.closeProcess(pid).then(resolve, reject); });
+      recovery.release = { run, done };
+    }
     return recovery.release.done;
   }
 
@@ -699,7 +697,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     return andThen(lost, reportLost);
   }
 
-  private bridgeFor(scope: DescriptorScope, cred: VfsCred, signal?: AbortSignal, pid?: number, landed = false): RuntimeFsBridge {
+  private bridgeFor(scope: DescriptorScope, cred: VfsCred, signal?: AbortSignal, pid?: number, landed = false, revoked?: AbortSignal): RuntimeFsBridge {
     // The scope is checked again by the namespace right before each mutation
     // reaches a backend, after the lookups it awaited: a write still
     // resolving when the process is released or killed, or its lease is
@@ -717,13 +715,13 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
       if (made !== undefined) return made;
       const namespace = this.vfs.as(cred, undefined, landed ? { landed } : undefined).scoped(() => assertScopeLive(scope, signal), undefined, holds);
       const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds, continues, ...(landed ? { landed } : {}) }), this.engine, scope, namespace, this.bufferedWriteBytes, this.waves);
-      made = { guarded: new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, this.outputGate), namespace };
+      made = { guarded: new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations, this.outputGate, revoked), namespace };
       return made;
     };
     // Every other method forwards to the guarded bridge.
     const listing = pid === undefined ? () => undefined : (create: boolean) => this.listingOf(pid, create);
     const clock = () => this.engine.revision();
-    const bridge = new AwaitingProcessBridge(parts, clock, cred, new Descriptors(scope, clock), scope, listing, this.bufferedWriteBytes, signal);
+    const bridge = new AwaitingProcessBridge(parts, clock, cred, new Descriptors(scope, clock), scope, listing, this.bufferedWriteBytes, signal, revoked);
     registerDirectoryReadBridge(bridge, scope, async (path) => {
       const real = await bridge.realpath(path);
       const view = parts().namespace;
@@ -800,6 +798,8 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     private readonly listing: (create: boolean) => MountListing | undefined,
     private readonly bufferedWriteBytes: number | undefined,
     private readonly signal?: AbortSignal,
+    /** As GuardedProcessBridge's: the binding's end at a release a recovery outlives. */
+    private readonly revoked?: AbortSignal,
   ) {}
 
   private get bridge(): GuardedProcessBridge { return (this.made ??= this.parts()).guarded; }
@@ -846,6 +846,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   /** As the guarded bridge's guard: a released or killed process's scope answers EBADF. */
   private live(): void {
     assertScopeLive(this.scope, this.signal);
+    this.revoked?.throwIfAborted();
   }
 
   /**
@@ -1226,6 +1227,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   }
 
   close(handleId: number) {
+    this.revoked?.throwIfAborted();
     // A prefetched directory's accounting ends with its description's id, however it closes.
     directoryReadHandleClosed(this.scope, handleId);
     return this.awaits(handleId) ? this.descriptors.close(handleId) : this.bridge.close(handleId);
