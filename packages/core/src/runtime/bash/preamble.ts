@@ -163,7 +163,7 @@ function wakeWriters(pp: BashPipe): void {
 /**
  * Whether a descriptor the host answers for is a FIFO: a pipe, and stdin
  * that is not a terminal (a pipe's or a redirect's bytes). WASI has no FIFO
- * filetype (unknown, as wasmtime says too); its stat mode does. The
+ * filetype (unknown, as wasmtime says too); stat_metadata's mode does. The
  * terminal's stdin and the output streams are character devices.
  */
 function hostFifo(e: BashFdEntry): boolean { return e.kind === 'pipe' || (e.kind === 'stdin' && !e.terminal); }

@@ -10,9 +10,11 @@
 //     moves nothing, pread never moves it, and a negative pread is EINVAL;
 //   - a file whose bytes are made when read (/proc's) is read anew at each
 //     open, though its stat names no revision;
-//   - stdin that is not a terminal is a FIFO (`[ -p /dev/stdin ]`), as are
-//     its duplicates and a subshell's, and `test -t 0` is false for it; a
-//     terminal's is a character device;
+//   - stdin that is not a terminal is no character device, nor are its
+//     duplicates and a subshell's, and `test -t 0` is false for it; a
+//     terminal's is one. (Linux calls a piped stdin a FIFO, which preview1
+//     has no filetype for: the libc's stat takes only the permission bits
+//     from stat_metadata, so `[ -p /dev/stdin ]` stays false.)
 //   - a poll on a clock no host has is that subscription's EINVAL event,
 //     as clock_time_get refuses the same clock.
 //
@@ -53,11 +55,11 @@ const extraWasm = probeWasmEntry();
 }
 
 {
-  const kinds = '[ -p /dev/stdin ] && echo fifo || echo nofifo; [ -c /dev/stdin ] && echo chr || echo nochr; '
-    + 'exec 4<&0; [ -p /dev/fd/4 ] && echo fifo4 || echo nofifo4; ( [ -p /dev/fd/4 ] && echo sub || echo nosub )';
-  check('stdin that is not a terminal is a FIFO, so are its duplicate and a subshell\'s, and test -t is false',
-    (await runScript(`${kinds}; test -t 0 && echo tty || echo notty`, { stdin: 'x' })).stdout, 'fifo\nnochr\nfifo4\nsub\nnotty\n');
-  check('a terminal stdin is a character device', (await runScript(kinds, { stdinTty: true })).stdout, 'nofifo\nchr\nnofifo4\nnosub\n');
+  const kinds = '[ -c /dev/stdin ] && echo chr || echo nochr; exec 4<&0; [ -c /dev/fd/4 ] && echo chr4 || echo nochr4; '
+    + '( [ -c /dev/fd/4 ] && echo sub || echo nosub )';
+  check('stdin that is not a terminal is no character device, nor are its duplicate and a subshell\'s, and test -t is false',
+    (await runScript(`${kinds}; test -t 0 && echo tty || echo notty`, { stdin: 'x' })).stdout, 'nochr\nnochr4\nnosub\nnotty\n');
+  check('a terminal stdin is a character device', (await runScript(kinds, { stdinTty: true })).stdout, 'chr\nchr4\nsub\n');
 }
 
 {
