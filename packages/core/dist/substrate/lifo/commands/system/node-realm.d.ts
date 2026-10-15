@@ -69,10 +69,13 @@ export interface RealmResponse {
     readonly body: string | Uint8Array;
 }
 /** What the guest posts on `events`. */
-export type GuestEvent = {
+export type GuestEvent = 
+/** Output write number `seq` (each one more than the last, both outputs counted together). */
+{
     readonly type: 'output';
     readonly fd: 1 | 2;
     readonly data: string | Uint8Array;
+    readonly seq: number;
 } | {
     readonly type: 'fetch';
     readonly id: number;
@@ -115,6 +118,15 @@ export type HostEvent = {
     readonly fd: 1 | 2;
     readonly code: string;
     readonly pipe: boolean;
+}
+/**
+ * Every output write up to number `seq` is made or failed (a failure told
+ * first): told when no later write is waiting, so a program writing on is
+ * told once it pauses.
+ */
+ | {
+    readonly type: 'output-settled';
+    readonly seq: number;
 } | EgressHostEvent;
 /**
  * What the realm starts with: the program, the kernel's /etc/hosts its

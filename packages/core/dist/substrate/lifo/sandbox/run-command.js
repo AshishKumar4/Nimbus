@@ -1,4 +1,4 @@
-import { SinkWriter } from '../../../_shared/byte-stream.js';
+import { textCapture } from '../utils/bytes-io.js';
 /**
  * Run one command line on `shell` and collect its result. Whatever shell it is
  * given is the one the command acts on; it queues nothing, so two calls on two
@@ -30,9 +30,9 @@ export async function runCommand(shell, cmd, options) {
         });
     }
     finally {
-        // The decoders end with the run: a character its last bytes left unfinished is in the result.
-        await stdoutTee?.end();
-        await stderrTee?.end();
+        // The captures end with the run: bytes a character left unfinished are in the result.
+        stdoutTee?.end();
+        stderrTee?.end();
     }
     return {
         exitCode: result.exitCode,
@@ -40,17 +40,14 @@ export async function runCommand(shell, cmd, options) {
         stderr: onStderr ? stderr : result.stderr,
     };
 }
-/** `sink`'s bytes, and their text to `capture` through one decoder, which `end` ends. */
+/** `sink`'s bytes, and their text to `capture` as the shell captures text (textCapture), which `end` ends. */
 function tee(sink, capture) {
-    const decoder = new SinkWriter({ write: capture });
-    let decoded = Promise.resolve();
+    const text = textCapture(capture);
     return {
         write: (data) => {
-            // Decoded as the bytes arrive (a SinkWriter decodes before it awaits), so a sink that reuses its buffer loses nothing.
-            const written = decoder.write(data);
-            decoded = decoded.then(() => written);
+            text.stream.writeBytes(data);
             sink(data);
         },
-        end: () => decoded.then(() => decoder.end()),
+        end: () => text.end(),
     };
 }

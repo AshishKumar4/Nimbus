@@ -135,8 +135,9 @@ export function textCapture(append) {
     return {
         stream: {
             writeBytes: (bytes) => { append(decoder.decode(bytes)); },
-            // Text after bytes that left a character unfinished: those bytes decode alone first.
-            write: (text) => { append(decoder.end() + text); },
+            // Text after bytes that left a character unfinished: those bytes decode alone first. No text is no write.
+            write: (text) => { if (text !== '')
+                append(decoder.end() + text); },
         },
         end: () => { append(decoder.end()); },
     };

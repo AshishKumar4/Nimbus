@@ -57,7 +57,9 @@ export declare class LosslessDecoder {
  * reader would read them, and `end`ed when the capture is read.
  */
 export declare function textCapture(append: (text: string) => void): {
-    readonly stream: CommandOutputStream;
+    readonly stream: CommandOutputStream & {
+        writeBytes(bytes: Uint8Array): void;
+    };
     end(): void;
 };
 /**

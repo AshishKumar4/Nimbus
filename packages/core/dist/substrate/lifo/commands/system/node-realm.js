@@ -44,7 +44,7 @@ export function isGuestEvent(value) {
     if (!record(value))
         return false;
     switch (value.type) {
-        case 'output': return (value.fd === 1 || value.fd === 2) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
+        case 'output': return (value.fd === 1 || value.fd === 2) && (typeof value.data === 'string' || value.data instanceof Uint8Array) && Number.isSafeInteger(value.seq);
         case 'fetch':
             return Number.isSafeInteger(value.id) && Number.isSafeInteger(value.port) && typeof value.url === 'string'
                 && typeof value.method === 'string' && stringRecord(value.headers)
@@ -71,6 +71,7 @@ export function isHostEvent(value) {
                 && typeof value.event.timestamp === 'number';
         case 'output-failed':
             return (value.fd === 1 || value.fd === 2) && typeof value.code === 'string' && typeof value.pipe === 'boolean';
+        case 'output-settled': return Number.isSafeInteger(value.seq);
         default: return false;
     }
 }
@@ -250,21 +251,27 @@ export async function runNodeInRealm(program, ctx, kernel) {
             writers.set(fd, writer = new SinkWriter(fd === 1 ? ctx.stdout : ctx.stderr));
         return writer;
     };
-    const write = (fd, data) => {
+    // The program is held until the host has made (or failed) its last write:
+    // the last write waiting is told settled, and with it every one before.
+    let lastQueued = 0;
+    const write = (fd, data, seq) => {
+        lastQueued = seq;
         written = written.then(async () => {
-            if (failedOutputs.has(fd))
-                return;
-            try {
-                if (typeof data === 'string')
-                    await writerOf(fd).writeText(data);
-                else
-                    await writerOf(fd).write(data);
+            if (!failedOutputs.has(fd)) {
+                try {
+                    if (typeof data === 'string')
+                        await writerOf(fd).writeText(data);
+                    else
+                        await writerOf(fd).write(data);
+                }
+                catch (error) {
+                    failedOutputs.add(fd);
+                    const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
+                    post({ type: 'output-failed', fd, code: typeof code === 'string' ? code : 'EIO', pipe: ctx.isFdPipe?.(fd) === true });
+                }
             }
-            catch (error) {
-                failedOutputs.add(fd);
-                const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
-                post({ type: 'output-failed', fd, code: typeof code === 'string' ? code : 'EIO', pipe: ctx.isFdPipe?.(fd) === true });
-            }
+            if (seq === lastQueued)
+                post({ type: 'output-settled', seq });
         });
     };
     // The realm, once it has started: a request for one of the guest's servers waits for none before.
@@ -341,7 +348,7 @@ export async function runNodeInRealm(program, ctx, kernel) {
                 return;
             switch (event.type) {
                 case 'output':
-                    write(event.fd, event.data);
+                    write(event.fd, event.data, event.seq);
                     return;
                 case 'exit':
                     code = event.code;

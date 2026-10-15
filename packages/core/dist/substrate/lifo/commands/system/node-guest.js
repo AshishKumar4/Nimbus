@@ -56,7 +56,7 @@ const fetched = new Map();
 let offTheBox = null;
 /** `events` holds the realm open while anything of the program's waits on it. */
 function holdWhileBusy() {
-    joined.hold(fetched.size > 0 || ports.size > 0 || persistentWatches > 0 || (offTheBox?.awaited ?? 0) > 0);
+    joined.hold(fetched.size > 0 || ports.size > 0 || persistentWatches > 0 || (offTheBox?.awaited ?? 0) > 0 || settledOutput < postedOutput);
 }
 /** End the process now with `code`, as process.exit() and a fatal error do. */
 function exitNow(code) {
@@ -146,11 +146,17 @@ const filesystem = {
 function realmOutput(fd) {
     let failure = null;
     const listeners = [];
+    const send = (data) => {
+        if (failure !== null)
+            return;
+        post({ type: 'output', fd, data, seq: ++postedOutput });
+        // The realm is held from the first write the host has not settled.
+        if (postedOutput === settledOutput + 1)
+            holdWhileBusy();
+    };
     return {
-        write: (data) => { if (failure === null)
-            post({ type: 'output', fd, data }); },
-        writeBytes: (data) => { if (failure === null)
-            post({ type: 'output', fd, data }); },
+        write: (data) => send(data),
+        writeBytes: (data) => send(data),
         onFailure: (listener) => { if (failure === null)
             listeners.push(listener);
         else
@@ -162,6 +168,9 @@ function realmOutput(fd) {
         },
     };
 }
+/** Output writes posted, and the last the host has settled (made, or failed): the realm is held while any is not. */
+let postedOutput = 0;
+let settledOutput = 0;
 const outputs = { 1: realmOutput(1), 2: realmOutput(2) };
 /**
  * Node's error for a write the output refused: a pipe's as its stream reports
@@ -246,13 +255,17 @@ events.on('message', (event) => {
         case 'output-failed':
             outputs[event.fd].fail(writeFailure(event.code, event.pipe));
             return;
+        case 'output-settled':
+            settledOutput = event.seq;
+            holdWhileBusy();
+            return;
     }
 });
 // ── Fatal errors, as Node ends a process on them ───────────────────────────
 const fatal = (reason) => {
     if (reason instanceof ProcessExitError)
         return exitNow(reason.exitCode);
-    post({ type: 'output', fd: 2, data: `${uncaughtReport(reason)}\n` });
+    post({ type: 'output', fd: 2, data: `${uncaughtReport(reason)}\n`, seq: ++postedOutput });
     return exitNow(1);
 };
 /** What Node prints of an uncaught `reason`: an error's stack, and its own fields after it (`{ errno: -32, code: 'EPIPE', … }`). */
@@ -279,7 +292,7 @@ realm.on('exit', () => {
         post({ type: 'exit', code: finalCode() });
         return;
     }
-    post({ type: 'output', fd: 2, data: `Warning: Detected unsettled top-level await at ${program.filename}\n` });
+    post({ type: 'output', fd: 2, data: `Warning: Detected unsettled top-level await at ${program.filename}\n`, seq: ++postedOutput });
     post({ type: 'exit', code: 13 });
 });
 if (egress) {
