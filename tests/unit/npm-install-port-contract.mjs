@@ -76,7 +76,7 @@ await ws.exec('mkdir -p /home/user/nopkg');
   assert.equal(calls.at(-1).registry, 'https://env.example', 'npm_config_registry');
   await ws.exec('sh -c \'echo "registry=https://project.example/" > /home/user/proj/.npmrc\'');
   r = await ws.exec('cd /home/user/proj && npm install example');
-  assert.equal(calls.at(-1).registry, 'https://project.example', 'the project\'s .npmrc');
+  assert.equal(calls.at(-1).registry, 'https://project.example', `the project's .npmrc: ${JSON.stringify((await ws.exec('cat /home/user/proj/.npmrc; ls -la /home/user/proj')).stdout)} ${r.stderr}`);
   r = await ws.exec('cd /home/user/proj && NPM_REGISTRY=https://session.example npm install example');
   assert.equal(calls.at(-1).registry, 'https://project.example', 'npm\'s configuration over the session\'s default');
   await ws.exec('rm /home/user/proj/.npmrc');

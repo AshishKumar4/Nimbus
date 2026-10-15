@@ -296,7 +296,7 @@ function workerProject(dir = 'app') {
     installer, root, write,
     run: async (args, options = {}) => {
       const noFiles = { async exists() { return false; }, async readFileString(path) { throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' }); } };
-      const invocation = npmInstallInvocation(await loadNpmConfig(noFiles, dir, { HOME: '/home/user' }, args));
+      const invocation = npmInstallInvocation(await loadNpmConfig(noFiles, `/${dir}`, { HOME: '/home/user' }, args));
       try {
         const result = await installer.install(dir, {
           packages: invocation.packages.length > 0 ? invocation.packages : undefined,

@@ -53,11 +53,11 @@ async function parseNpmInstallInvocation(args, files = {}, env = {}) {
   assert.equal(plain.save, true, 'what is named is saved unless told not to');
   assert.equal(plain.savePrefix, '^');
   assert.deepEqual(plain.unsupported, []);
-  assert.equal(await parseNpmInstallInvocation(['--no-save', 'xc']).save, false);
-  assert.equal(await parseNpmInstallInvocation(['-E', 'xc']).savePrefix, '');
-  assert.equal(await parseNpmInstallInvocation(['--save-prefix=~', 'xc']).savePrefix, '~');
-  assert.equal(await parseNpmInstallInvocation(['--strict-peer-deps', 'xc']).strictPeerDeps, true);
-  assert.equal(await parseNpmInstallInvocation(['--prefer-dedupe', 'xc']).preferDedupe, true);
+  assert.equal((await parseNpmInstallInvocation(['--no-save', 'xc'])).save, false);
+  assert.equal((await parseNpmInstallInvocation(['-E', 'xc'])).savePrefix, '');
+  assert.equal((await parseNpmInstallInvocation(['--save-prefix=~', 'xc'])).savePrefix, '~');
+  assert.equal((await parseNpmInstallInvocation(['--strict-peer-deps', 'xc'])).strictPeerDeps, true);
+  assert.equal((await parseNpmInstallInvocation(['--prefer-dedupe', 'xc'])).preferDedupe, true);
   const omits = await parseNpmInstallInvocation(['--omit=dev', '--omit=optional', '--omit', 'peer', '--include=optional']);
   assert.deepEqual([omits.production, omits.omitOptional, omits.omitPeer], [true, false, true], '--include wins over --omit');
 }
@@ -70,8 +70,8 @@ for (const args of [['--install-strategy=nested'], ['--global-style'], ['--legac
   assert.deepEqual(parsed.packages, ['xc'], args.join(' '));
 }
 // A global install is always shallow: the strategy asked for is npm's to ignore.
-assert.deepEqual(await parseNpmInstallInvocation(['-g', '--install-strategy=nested', 'xc']).unsupported, []);
-assert.deepEqual(await parseNpmInstallInvocation(['-g', '--global-style', 'xc']).unsupported, []);
+assert.deepEqual((await parseNpmInstallInvocation(['-g', '--install-strategy=nested', 'xc'])).unsupported, []);
+assert.deepEqual((await parseNpmInstallInvocation(['-g', '--global-style', 'xc'])).unsupported, []);
 
 console.log('npm-install-args: ok');
 

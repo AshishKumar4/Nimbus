@@ -56,9 +56,9 @@ function piLabel(line) {
   assert.deepEqual(parsed.packages, ['@earendil-works/pi-coding-agent']);
   assert.equal(parsed.global, true);
   assert.equal(parsed.loglevel, 'verbose');
-  assert.equal(await parseNpmInstallInvocation(['react']).loglevel, null);
+  assert.equal((await parseNpmInstallInvocation(['react'])).loglevel, null);
   // An unknown level names no level rather than inventing one.
-  assert.equal(await parseNpmInstallInvocation(['--loglevel=chatty', 'react']).loglevel, null);
+  assert.equal((await parseNpmInstallInvocation(['--loglevel=chatty', 'react'])).loglevel, null);
   assert.equal(parseNpmLogLevel('silly'), 'silly');
   assert.equal(parseNpmLogLevel(undefined), null);
 }
