@@ -83,7 +83,6 @@ async function boot() {
   return {
     authority,
     fs,
-    root,
     waves: () => waves,
     failListings: (fails) => { listingFails = fails; },
     stall: () => { stalled = Promise.withResolvers(); },
@@ -244,9 +243,9 @@ await runScenarios(import.meta.path, {
   },
 
   async 'with the namespace unavailable, chmod, utimes and chown go to the session'() {
-    const { authority, fs, root, failListings } = await boot();
+    const { authority, fs, failListings } = await boot();
     // A directory becomes searchable; the barrier that reports it relists it, and that relist fails.
-    root.chmod('home/user/app/locked', 0o755);
+    await authority.peerAs(CRED_KERNEL).chmod('home/user/app/locked', 0o755);
     failListings(true);
     await fs.promises.stat('/home/user/app');
     assert.throws(() => fs.existsSync(`${OUT}/warm4`), { code: 'EAGAIN' }, 'the namespace is unavailable');
