@@ -2265,6 +2265,14 @@ const __fsMod = (() => {
 
   const _cursor = globalThis.__nimbusVfsCursor
     || (globalThis.__nimbusVfsCursor = { epoch: null, rev: 0 });
+  // Admissions under way: from a delta's admission until the last directory
+  // it made searchable is relisted, the cursor can be past rows the
+  // namespace does not hold yet. Nothing is answered from the view then (_heldStat).
+  let _admissions = 0;
+  async function _admitting(admit) {
+    _admissions++;
+    try { return await admit(); } finally { _admissions--; }
+  }
 
   // Whether any of this is working is a measurement, not an opinion: a fill
   // rate and an invalidation count. Same shape and the same reporting path
@@ -2539,8 +2547,11 @@ const __fsMod = (() => {
     if (!delta || delta.poison === true || typeof delta.rev !== "number" || delta.epoch !== floor.epoch) return false;
     if (Array.isArray(delta.paths)) for (const entry of delta.paths) _noteReport(entry);
     await __resident.admission.roomForPushed(delta);
-    const applied = __resident.cells.admit(delta);
-    for (const dir of applied.relist) await __resident.transport.relist(supervisor, dir);
+    const applied = await _admitting(async () => {
+      const admitted = __resident.cells.admit(delta);
+      for (const dir of admitted.relist) await __resident.transport.relist(supervisor, dir);
+      return admitted;
+    });
     if (!_nsActive()) return false;
     _cursor.epoch = applied.cursor.epoch;
     _cursor.rev = applied.cursor.rev;
@@ -2579,6 +2590,7 @@ const __fsMod = (() => {
       // repopulate what it just dropped. An answer with a cursor is admitted as
       // it would have been; a barrier with no answer drops every dated row and
       // keeps the cursor it had, which the next delta is still owed from.
+      _admissions++;
       if (result) {
         __resident.cells.admit(result);
         _cursor.epoch = result.epoch;
@@ -2588,6 +2600,7 @@ const __fsMod = (() => {
       }
       try { repaired = await __resident.sync.synchronize(supervisor); }
       catch { repaired = null; }
+      finally { _admissions--; }
     } else if (repaired.reconciled) {
       _stats.reconciles++;
     }
@@ -2779,11 +2792,14 @@ const __fsMod = (() => {
       }
       // N18: room for what it pushes, before it is held.
       await __resident.admission.roomForPushed(result);
-      const applied = __resident.cells.admit(result);
-      _cursor.epoch = applied.cursor.epoch;
-      _cursor.rev = applied.cursor.rev;
-      // A directory that became searchable has descendants no delta names.
-      for (const dir of applied.relist) await __resident.transport.relist(supervisor, dir);
+      const applied = await _admitting(async () => {
+        const admitted = __resident.cells.admit(result);
+        _cursor.epoch = admitted.cursor.epoch;
+        _cursor.rev = admitted.cursor.rev;
+        // A directory that became searchable has descendants no delta names.
+        for (const dir of admitted.relist) await __resident.transport.relist(supervisor, dir);
+        return admitted;
+      });
       _nsRetire(begin);
       // The read lease this answer carried, from the moment it was asked:
       // what it vouches for is this answer, applied now.
@@ -3803,12 +3819,57 @@ const __fsMod = (() => {
     return answer ? answer.value : null;
   }
 
+  /**
+   * An async stat or lstat answered from this view, with no session call,
+   * where the view is exactly the session's for all the answer depends on
+   * (held-local-reads): nothing admitted halfway (_admissions), and a walk
+   * to the entry crossing only names a held grant the view is fresh for
+   * vouches for (ProcessFsClient.vouch: the entry itself held, and every
+   * change of the process's own already in the view, a directory's entries
+   * and a file's times with it), each as the namespace's own row: no effect
+   * of this process's still laid over any of them (_own, a write), no
+   * mount, no link whose target climbs (..), each directory searched as the
+   * session allows. Undefined where any of that fails, and the session
+   * answers, as before.
+   */
+  function _heldStat(p, follow) {
+    if (_admissions > 0 || !_nsActive() || !_supervisor() || typeof __nimbusProcessFs !== "function") return undefined;
+    const client = __nimbusProcessFs();
+    // The name as asked must be held before anything is walked: most are not, and they cost nothing here.
+    const k = _strip(_resolve(p));
+    if (client.vouch(k, _cursor) !== "held" || /(^|\\/)\\.\\.(\\/|$)/.test(String(p))) return undefined;
+    const ns = __resident.namespace;
+    // An entry whose device is one the namespace gave a mount is on that mount, which no grant covers.
+    const mounted = (row) => Number(row.dev) >= __nimbusResidentModule.ANONYMOUS_DEV;
+    let vouched = true;
+    const visit = (name) => {
+      if (!vouched || _own.has(name) || client.vouch(name, _cursor) === undefined) return (vouched = false);
+      const searched = ns.rowAt(name.slice(0, Math.max(0, name.lastIndexOf("/"))));
+      const row = ns.rowAt(name);
+      vouched = searched !== undefined && !mounted(searched) && _modeAllows(_nsRowMeta(searched), 1)
+        && (row === undefined || (!mounted(row) && !(Number(row.kind) === 2 && /(^|\\/)\\.\\.(\\/|$)/.test(String(row.target ?? "")))));
+      return vouched;
+    };
+    try {
+      const found = ns.lookup(k, follow, undefined, visit);
+      if (!vouched || found === "ELOOP" || found === "EACCES" || found.row === undefined || found.own !== undefined) return undefined;
+      const at = found.path;
+      if (client.vouch(at, _cursor) !== "held" || _own.has(at)) return undefined;
+      if ((__vfsWrites && Object.prototype.hasOwnProperty.call(__vfsWrites, at)) || __nimbusAncestorTails("/" + at).length > 0) return undefined;
+      return _statObject(_nsRowMeta(found.row));
+    } catch {
+      return undefined;
+    }
+  }
+
   async function _statAsync(p) { return _statAsyncAs("stat", p); }
   async function _lstatAsync(p) { return _statAsyncAs("lstat", p); }
   async function _statAsyncAs(syscall, p) {
     const absPath = _resolve(p);
     const supervisor = _supervisor();
     if (supervisor && typeof supervisor[syscall] === "function") {
+      const held = _heldStat(p, syscall === "stat");
+      if (held !== undefined) return held;
       await _flushLocalPathToSupervisor(absPath, supervisor, syscall === "stat");
       const rpc = (promise) => _fsRpc(promise, syscall, p, (result) => result);
       let meta;
@@ -4210,8 +4271,9 @@ const __fsMod = (() => {
   // (\`walked\`, _walk's) crossed only guarded names; what only the authority
   // can answer is its answer, awaited.
   async function _structuralAsync(queue, syscall, p, judged, walked) {
-    // Counted toward taking the subtree whether or not it is decided here (_decidedHere).
-    const decided = judged && _decidedHere(walked.target) && walked.guarded;
+    // Asked on its own: _decidedHere also counts the change toward taking its subtree, guarded or not.
+    const here = judged && _decidedHere(walked.target);
+    const decided = here && walked.guarded;
     const queued = decided ? __nimbusLogDecided(queue) : queue();
     if (decided) _detachStructuralMutation(__nimbusDecided(queued), syscall, p);
     else await queued;

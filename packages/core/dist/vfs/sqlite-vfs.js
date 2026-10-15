@@ -3281,7 +3281,10 @@ export class SqliteVFS {
             root, delegation: options.delegation ?? null, inos, numbered: new Map(), reservation: bytes > 0 ? owner : null, shared: false, recalling: null, reason: null,
             ...(options.stoppable === true ? { stoppable: true } : {}),
         });
-        return { root, owner, ...(inos === null ? {} : { inos }), ...(bytes > 0 ? { bytes } : {}) };
+        return {
+            root, owner, ...(inos === null ? {} : { inos }), ...(bytes > 0 ? { bytes } : {}),
+            ...(options.delegation?.reads === true ? { certificate: { epoch: this._epoch, revision: this._revision } } : {}),
+        };
     }
     /**
      * Hold the whole session for one owner. `reason`, when given, is what a
@@ -3818,6 +3821,19 @@ export class SqliteVFS {
      * mutations are refused with; a namespace that lays other filesystems over
      * this one asks it before it mutates one of them (CompositeVFS.guardMutations).
      */
+    /**
+     * A change of what `path` routes to (a mount or an unmount there): each
+     * delegation whose root it overlaps either way gives the subtree up first
+     * (RecallRequired), as a change of its own names would make it: its
+     * holder's view of the subtree is no longer the session's.
+     */
+    recallRouting(path) {
+        const key = normalizeVfsPath(path);
+        for (const [holder, lease] of this.exclusiveMutationLeases) {
+            if (lease.delegation !== null && this.mutationMeets(lease, key))
+                throw this.recallRequired(holder, lease, 'revoke', key);
+        }
+    }
     mutationRefusal(path, cred, owner) {
         return this.refusalAt(this.lexicalKey(path, cred).value, owner ?? this.activeMutationOwner);
     }
@@ -8307,7 +8323,8 @@ export class SqliteVFS {
      * A wave on this filesystem as `cred`'s caller (WaveIngest): the
      * delegations it holds and whether its view continues as it is answered,
      * taken in the caller's turn; `work` applies the wave through the scope.
-     * Answered once what it committed is published, or held (`held`).
+     * Answered once what it committed is published, with the revision then
+     * (`revision`), or held (`held`).
      */
     wave(options, work, cred, origin) {
         // The delegations its caller holds, in the caller's turn: its records apply as them. A process's
@@ -8339,14 +8356,15 @@ export class SqliteVFS {
                     await published;
             }
             // Whatever else its writer holds: a resend's own records are the
-            // attempt's before it, which may still be held.
+            // attempt's before it, which may still be held. Answered with the
+            // clock once all of it is published.
             const held = holds === null ? null : this.publishedFor(holds);
             if (held === null)
-                return result;
+                return { ...result, revision: this._revision };
             if (pipeline.continues)
                 return { ...result, held: true };
             await held;
-            return result;
+            return { ...result, revision: this._revision };
         }, options.mutationOwner);
     }
     /** The storage one wave composes: each operation as its writer (`holds`, `pipeline`) or its caller (`origin`, its lease). */

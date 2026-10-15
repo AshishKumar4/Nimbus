@@ -146,6 +146,7 @@ function assertBounded(stats) {
     committedOps: 1,
     inodes: 1,
     chunks: entries.length,
+    revision: rawVfs.revision(),
   });
   assert.deepEqual(receipts.map((receipt) => [receipt.path, receipt.size]), [['stream.bin', data.length]]);
   // The blob bound alone forces one commit per megabyte of payload; the

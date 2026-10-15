@@ -21,6 +21,7 @@ var __nimbusResidentModule = (() => {
   // src/vfs/resident/index.ts
   var index_exports = {};
   __export(index_exports, {
+    ANONYMOUS_DEV: () => ANONYMOUS_DEV,
     NS_DIR: () => NS_DIR,
     NS_FILE: () => NS_FILE,
     NS_LINK: () => NS_LINK,
@@ -2850,6 +2851,10 @@ var __nimbusResidentModule = (() => {
       }
     };
   }
+
+  // ../core/dist/vfs/composite.js
+  var ANONYMOUS_DEV = 65536;
+  var utf8 = new TextEncoder();
 
   // src/vfs/resident/index.ts
   function createResidentStore(options = {}) {

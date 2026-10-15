@@ -521,6 +521,95 @@ for (const phase of ['openWriter', 'stream']) {
   assert.equal(s.files.delegations.size, 0, 'settle left a grant held');
 }
 
+// ── A change above a held subtree's root recalls it first: an ancestor's
+//    chmod, and its rename, find what the holder decided already sent, and
+//    the holder holds nothing there after (held-local-reads T7's ground) ──
+for (const change of [
+  (kernel) => kernel.chmod('home/user/anc', 0o700),
+  (kernel) => kernel.rename('home/user/anc', 'home/user/anc2'),
+]) {
+  const s = session();
+  s.kernel.mkdir('home/user/anc/held', { recursive: true, mode: 0o755 });
+  for (const dir of ['home/user/anc', 'home/user/anc/held']) s.kernel.chown(dir, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  const c = client(s, { grantAfter: 1, grantIdleMs: 60_000, recallPollMs: 100 });
+  c.holder('home/user/anc/held/x');
+  const grant = await until(() => c.holder('home/user/anc/held/x'), 'the grant');
+  assert.equal(grant.root, 'home/user/anc/held');
+  c.submit({ type: 'call', call: { call: 'writeFile', path: 'home/user/anc/held/x', mode: 0o644, ino: c.number(grant), data: enc.encode('decided') } }, { acknowledged: true });
+  await withRecall(() => change(s.kernel));
+  assert.equal(c.stats().recalls, 1, 'the change above the root did not recall the grant');
+  assert.equal(c.holder('home/user/anc/held/y'), undefined, 'the holder still decides beneath a changed ancestor');
+  const landed = s.text('home/user/anc/held/x') ?? s.text('home/user/anc2/held/x');
+  assert.equal(landed, 'decided', 'the change applied before what the holder decided was sent');
+  await c.settle();
+}
+
+// ── A change of the process's own is vouched for in no view short of the
+//    session's revision as it answered, its first answer lost or not
+//    (held-local-reads) ──
+// Red before: a re-sent wave's answer skips what the lost attempt committed
+// and carries no mutation for it, so a view from before the change was
+// still vouched for, and a held stat answered a directory's old times.
+for (const lose of [0, 1]) {
+  const s = session();
+  s.kernel.mkdir('home/user/v', { mode: 0o755 });
+  s.kernel.chown('home/user/v', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  const c = client(s, { grantAfter: 1, grantIdleMs: 60_000, recallPollMs: 100 });
+  c.holder('home/user/v/x');
+  const grant = await until(() => c.holder('home/user/v/x'), 'the grant');
+  const view = { epoch: grant.certificate.epoch, rev: s.engine.revision() };
+  assert.equal(c.vouch('home/user/v', view), 'held', 'a view at the session\'s revision was not vouched for');
+  let lost = lose;
+  s.fault = async (deliver) => {
+    const answer = await deliver();
+    if (lost-- > 0) throw Object.assign(new Error('Network connection lost.'), { retryable: true });
+    return answer;
+  };
+  await c.submit(writeFile('home/user/v/made', 'm'));
+  assert.equal(c.stats().resends, lose);
+  assert.equal(c.vouch('home/user/v', view), undefined, 'a view from before the change was vouched for');
+  assert.equal(c.vouch('home/user/v', { ...view, rev: s.engine.revision() }), 'held');
+  await c.settle();
+}
+
+// ── A change committed ahead of another's read-lease recall is vouched for
+//    in no view until it is published, and then only in one at or past its
+//    publication: answered ahead of it (`continues`) or once it is ──
+// Red before: the answer's revision was read before the publication, the
+// published clock still short of the commit, so a view from before the
+// change was vouched for.
+for (const continues of [true, false]) {
+  const s = session();
+  s.kernel.mkdir('home/user/v', { mode: 0o755 });
+  s.kernel.chown('home/user/v', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  if (continues) {
+    s.files.holdOutput(new SessionProcessSupervisor());
+    s.files.continueAtCommit(PID);
+  }
+  const c = client(s, { grantAfter: 1, grantIdleMs: 60_000, recallPollMs: 100 });
+  c.holder('home/user/v/x');
+  const grant = await until(() => c.holder('home/user/v/x'), 'the grant');
+  const reader = s.files.bind({ pid: 7, cred: CRED_SESSION_USER });
+  const { readLease } = reader.acquire(s.engine.epoch, s.engine.revision(), { lease: true });
+  assert.ok(readLease, 'the reader holds no read lease');
+  const view = { epoch: grant.certificate.epoch, rev: s.engine.revision() };
+  assert.equal(c.vouch('home/user/v', view), 'held', 'a view at the session\'s revision was not vouched for');
+  const written = c.submit(writeFile('home/user/v/made', 'm'));
+  assert.equal(await reader.awaitRecall(readLease.owner, 1000), 'revoke');
+  if (!continues) setTimeout(() => reader.recalled(readLease.owner, 'revoke'), 20);
+  await written;
+  assert.equal(c.vouch('home/user/v', view), undefined, 'a view from before the change was vouched for');
+  if (continues) {
+    assert.notEqual(s.engine.publishedFor(), null, 'the change was published before its answer');
+    assert.equal(c.vouch('home/user/v', { ...view, rev: s.engine.revision() }), undefined, 'a change not yet published was vouched for');
+    reader.recalled(readLease.owner, 'revoke');
+    await s.engine.publishedFor();
+    await c.submit(writeFile('home/user/v/after', 'a'));
+  }
+  assert.equal(c.vouch('home/user/v', { ...view, rev: s.engine.revision() }), 'held');
+  await c.settle();
+}
+
 // ── An idle grant is given back; a refused subtree is not asked for again ──
 {
   const s = session();

@@ -128,8 +128,8 @@ function fileKey(target, ino) {
 }
 /** A directory this namespace makes (above a mount point, or a backend root with no stat). */
 const EPOCH_STAT = { type: 'directory', size: 0, mtimeMs: 0, mode: 0o40755, uid: 0, gid: 0 };
-/** Where the namespace's own device numbers for mounts start (see Mount.dev). */
-const ANONYMOUS_DEV = 0x10000;
+/** Where the namespace's own device numbers for mounts start (see Mount.dev): an entry's dev at or past it is on a mount. */
+export const ANONYMOUS_DEV = 0x10000;
 /** Whether `error` is a synchronous caller's refusal by an asynchronous mount (one that can await may retry on the async face). */
 export function isAsyncMountRefusal(error) {
     return typeof error === 'object' && error !== null && error.asyncMount === true;
@@ -582,6 +582,7 @@ export class CompositeVFS {
             throw syscallError('EBUSY', 'mount', point, { detail: 'the root is mounted at construction' });
         if (this.table.mounts.has(at))
             throw syscallError('EBUSY', 'mount', point, { detail: 'something is already mounted there' });
+        this.table.routing?.(at);
         const mount = { point: at, under: `${at}/`, source, options, dev: ANONYMOUS_DEV + ++this.nextDev, inos: new Map() };
         this.table.mounts.set(at, mount);
         this.table.generation++;
@@ -608,6 +609,7 @@ export class CompositeVFS {
         const mount = this.table.mounts.get(at);
         if (at === ROOT_POINT || mount === undefined)
             throw syscallError('EINVAL', 'umount', point, { detail: 'nothing is mounted there' });
+        this.table.routing?.(at);
         this.table.mounts.delete(at);
         this.table.generation++;
         this.table.writes?.subscribed.get(mount)?.();
@@ -1880,6 +1882,15 @@ export class CompositeVFS {
     /** `moved` is told of every mount and unmount after it is made, for every view of this table. */
     watchMounts(moved) {
         this.table.moved = moved;
+    }
+    /**
+     * `routing` is asked before a mount or unmount at a point changes what
+     * anything at, beneath or above it routes to, before the table moves: it
+     * throws to stop the change (RecallRequired: a held subtree is given up
+     * first, and the change is made again, withRecall's).
+     */
+    guardRouting(routing) {
+        this.table.routing = routing;
     }
     /**
      * This view, for one holder: `check` is asked right before each mutation
