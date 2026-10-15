@@ -95,6 +95,8 @@ try {
   }
 
   // ── in a terminal ─────────────────────────────────────────────────────────
+  // A failure here is reported with the oracle's, not instead of them.
+  try {
   const shell = ws.shell;
   const settle = async (until, what) => {
     for (let i = 0; i < 400 && !until(); i++) await new Promise((resolve) => setTimeout(resolve, 10));
@@ -119,6 +121,9 @@ try {
   await settle(() => terminalOutput.includes('key '), 'a key in raw mode reaches the program without Enter');
   assert.match(terminalOutput, /key "q"/);
   await ran;
+  } catch (error) {
+    failed.push(`in a terminal: ${error.message}`);
+  }
 } finally {
   await ws.close();
   rmSync(host, { recursive: true, force: true });
