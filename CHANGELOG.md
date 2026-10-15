@@ -10,8 +10,7 @@ published independently in the `@nimbus-sh` npm scope.
   does. A long option may be any unambiguous prefix of its name
   (`cat --numb`, `head --lin=1`); an ambiguous one lists its possibilities;
   a missing or unwanted argument gets getopt's message. `grep -A` and `-B`
-  now win over `-C` and `-NUM` whichever comes first, and `grep -1 -0` is
-  `-0`, as in GNU grep.
+  now win over `-C` and `-NUM` whichever comes first, as in GNU grep.
 - Fixed (local workerd: `wrangler dev`, the unit suite): a session could
   stop answering for good, its thread at 100% CPU, after a real-git run on a
   busy machine. workerd 1.20260926.1 left cppgc sweeping incremental (V8
