@@ -119,8 +119,8 @@ export class ProcessInputStore {
     }
     /**
      * A pipe write: ordered, split at the bound, waiting for room instead of
-     * dropping bytes. `withdraw`, while it waits for room, ends it with what it
-     * has not written unwritten.
+     * dropping bytes. `withdraw`, while it waits (its turn, or room), ends it
+     * at once with what it has not written unwritten.
      */
     async writeBytesWait(pid, data, withdraw) {
         const state = this.pids.get(pid);
@@ -136,14 +136,20 @@ export class ProcessInputStore {
                     const wrote = this.writeBytes(pid, piece);
                     if (wrote.ok)
                         break;
-                    if (!wrote.full || !await this.whenWritable(pid))
+                    if (!wrote.full || !await this.whenWritable(pid, withdraw))
                         return;
                 }
             }
             result = { ok: true };
         });
         state.writes = task.catch(() => { });
-        await task;
+        if (withdraw === undefined)
+            await task;
+        else
+            await Promise.race([task, new Promise((resolve) => { if (withdraw.aborted)
+                    resolve(undefined);
+                else
+                    withdraw.addEventListener('abort', resolve, { once: true }); })]);
         return result;
     }
     async endAfterWrites(pid) {
@@ -195,15 +201,28 @@ export class ProcessInputStore {
     /**
      * Resolves once `pid`'s reader has taken queued input, so a writer refused
      * for a full queue can try again: true then, false if the channel is ended
-     * or gone and will take no more.
+     * or gone and will take no more, or `withdraw` ended the wait.
      */
-    whenWritable(pid) {
+    whenWritable(pid, withdraw) {
         const state = this.pids.get(pid);
-        if (!state || state.closed)
+        if (!state || state.closed || withdraw?.aborted)
             return Promise.resolve(false);
         if (state.bytes === 0)
             return Promise.resolve(true);
-        return new Promise((resolve) => state.drained.push(() => resolve(!state.closed && this.pids.get(pid) === state)));
+        return new Promise((resolve) => {
+            const wake = () => {
+                withdraw?.removeEventListener('abort', leave);
+                resolve(!state.closed && this.pids.get(pid) === state);
+            };
+            const leave = () => {
+                const at = state.drained.indexOf(wake);
+                if (at >= 0)
+                    state.drained.splice(at, 1);
+                resolve(false);
+            };
+            state.drained.push(wake);
+            withdraw?.addEventListener('abort', leave, { once: true });
+        });
     }
     /**
      * Put input a reader took back in front of the queue, as it was: a process

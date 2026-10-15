@@ -3,7 +3,7 @@ import { errorText } from '../_shared/error-text.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { parseShellInvocation } from '../shell/shell-invocation.js';
 import { enc } from '../_shared/bytes.js';
-import { exitCodeForSignal, parseSignalName, signalDisposition } from '../substrate/lifo/shell/signals.js';
+import { exitCodeForSignal, parseSignalName, signalDisposition, signalOfStatus } from '../substrate/lifo/shell/signals.js';
 import { pulledStdinReader } from '../shell/stdin-adapter.js';
 import { parseProcessSignalName } from './process-io-protocol.js';
 /** A text producer's edge onto the byte hooks. */
@@ -264,6 +264,8 @@ export class ChildProcessManager {
                 env: { ...child.env }, stdio: child.stdio,
                 stdin: this._stdinOf(child), output: hooks, onStarted,
             });
+            if (this._stampKilled(child))
+                return;
             if (typeof result === 'number') {
                 this._stampExit(child, result, null);
             }
@@ -277,9 +279,26 @@ export class ChildProcessManager {
             }
         }
         catch (error) {
+            if (this._stampKilled(child))
+                return;
             this._appendText(child, 2, `Error: ${errorText(error)}\n`);
             this._stampExit(child, 1, null);
         }
+    }
+    /**
+     * A child the process table ended with a signal (its process group's, a
+     * `kill <pid>`), not through this broker: it died of that signal, whatever
+     * its run returned as it was stopped. Whether it was.
+     */
+    _stampKilled(child) {
+        const entry = this.deps.processes.get(child.pid);
+        if (entry?.state !== 'killed' || entry.exitCode === null)
+            return false;
+        const name = signalOfStatus(entry.exitCode);
+        if (name === null)
+            return false;
+        this._stampExit(child, entry.exitCode, `SIG${name}`);
+        return true;
     }
     /**
      * The child's stdin as a stream over its queue: each read takes what the

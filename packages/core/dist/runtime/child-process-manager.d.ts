@@ -204,6 +204,12 @@ export declare class ChildProcessManager {
     }>;
     private _dispatch;
     /**
+     * A child the process table ended with a signal (its process group's, a
+     * `kill <pid>`), not through this broker: it died of that signal, whatever
+     * its run returned as it was stopped. Whether it was.
+     */
+    private _stampKilled;
+    /**
      * The child's stdin as a stream over its queue: each read takes what the
      * parent has written, waiting for it, and ends when the parent ends stdin
      * or the child exits. Nothing is read ahead of the command's own reads.

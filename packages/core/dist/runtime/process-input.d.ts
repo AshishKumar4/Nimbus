@@ -49,8 +49,8 @@ export declare class ProcessInputStore {
     hasRoom(pid: number, bytes: number): boolean;
     /**
      * A pipe write: ordered, split at the bound, waiting for room instead of
-     * dropping bytes. `withdraw`, while it waits for room, ends it with what it
-     * has not written unwritten.
+     * dropping bytes. `withdraw`, while it waits (its turn, or room), ends it
+     * at once with what it has not written unwritten.
      */
     writeBytesWait(pid: number, data: Uint8Array, withdraw?: AbortSignal): Promise<{
         ok: boolean;
@@ -70,9 +70,9 @@ export declare class ProcessInputStore {
     /**
      * Resolves once `pid`'s reader has taken queued input, so a writer refused
      * for a full queue can try again: true then, false if the channel is ended
-     * or gone and will take no more.
+     * or gone and will take no more, or `withdraw` ended the wait.
      */
-    whenWritable(pid: number): Promise<boolean>;
+    whenWritable(pid: number, withdraw?: AbortSignal): Promise<boolean>;
     /**
      * Put input a reader took back in front of the queue, as it was: a process
      * that stopped before using it, run again (worker runtime/stop-replay.ts).

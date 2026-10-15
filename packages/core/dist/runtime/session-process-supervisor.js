@@ -704,9 +704,14 @@ export class SessionProcessSupervisor {
         const writing = this.input.writeBytesWait(pid, data, withdraw.signal);
         // Its waits for a signal end at their bound, or when its program lets go of its signals: the write is then waited for alone.
         while (this.signalBoxes.get(writer) === box) {
-            const first = await Promise.race([writing.then((result) => ({ result })), this.nextSignal(writer, 5000).then((signal) => ({ signal }))]);
+            const wait = this.waitSignal(box, 5000);
+            const first = await Promise.race([writing.then((result) => ({ result })), wait.signal.then((signal) => ({ signal }))]);
             if ('result' in first) {
-                this.dropTaker(writer);
+                // A signal it took as the write was made is the next wait's.
+                wait.cancel();
+                const late = await wait.signal;
+                if (late !== null)
+                    box.queued.unshift(late);
                 return first.result;
             }
             if (first.signal === null)
@@ -741,22 +746,22 @@ export class SessionProcessSupervisor {
      * answers instead, as a read is interrupted, and the read takes nothing.
      */
     async readInput(pid, waitMs, maxBytes) {
-        if (!this.signalBoxes.has(pid))
+        const box = this.signalBoxes.get(pid);
+        if (box === undefined)
             return this.input.read(pid, waitMs, maxBytes);
-        const queued = this.signalBoxes.get(pid)?.queued.shift();
+        const queued = box.queued.shift();
         if (queued !== undefined)
             return { data: '', ended: false, signal: queued };
         const withdraw = new AbortController();
         const reading = this.input.read(pid, waitMs, maxBytes, withdraw.signal);
-        const signalled = this.nextSignal(pid, waitMs ?? 1000);
-        const first = await Promise.race([reading.then((packet) => ({ packet })), signalled.then((signal) => ({ signal }))]);
+        const wait = this.waitSignal(box, waitMs ?? 1000);
+        const first = await Promise.race([reading.then((packet) => ({ packet })), wait.signal.then((signal) => ({ signal }))]);
         if ('packet' in first) {
             // A signal that came with it is the next wait's.
-            const late = await Promise.race([signalled, Promise.resolve(null)]);
+            wait.cancel();
+            const late = await wait.signal;
             if (late !== null)
-                this.signalBoxes.get(pid)?.queued.unshift(late);
-            else
-                this.dropTaker(pid);
+                box.queued.unshift(late);
             return first.packet;
         }
         withdraw.abort();
@@ -802,27 +807,27 @@ export class SessionProcessSupervisor {
      */
     nextSignal(pid, waitMs) {
         const box = this.signalBoxes.get(pid);
-        if (!box)
-            return Promise.resolve(null);
+        return box === undefined ? Promise.resolve(null) : this.waitSignal(box, waitMs).signal;
+    }
+    /** {@link nextSignal}'s wait on `box`, and its cancel, which answers it null if it is still the one waiting. */
+    waitSignal(box, waitMs) {
         const queued = box.queued.shift();
         if (queued !== undefined)
-            return Promise.resolve(queued);
+            return { signal: Promise.resolve(queued), cancel: () => { } };
         box.taker?.(null);
-        return new Promise((resolve) => {
-            const timer = setTimeout(() => { if (box.taker === take)
-                box.taker = null; resolve(null); }, Math.max(0, Math.min(waitMs, 5000)));
-            const take = (signal) => {
+        let take = () => { };
+        const signal = new Promise((resolve) => {
+            const timer = setTimeout(() => take(null), Math.max(0, Math.min(waitMs, 5000)));
+            take = (sent) => {
                 clearTimeout(timer);
                 if (box.taker === take)
                     box.taker = null;
-                resolve(signal);
+                resolve(sent);
             };
             box.taker = take;
         });
-    }
-    /** `pid`'s wait for a signal answered null, its place given up. */
-    dropTaker(pid) {
-        this.signalBoxes.get(pid)?.taker?.(null);
+        return { signal, cancel: () => { if (box.taker === take)
+                take(null); } };
     }
     /**
      * `signal` queued for `pid`'s program if it takes its own and catches it

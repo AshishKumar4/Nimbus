@@ -759,6 +759,7 @@ function withParkDeadline(fn, mayTimeOut) {
                 __wasiAbandoned++;
                 __wasiResident?.fs.cancelPendingDirectories();
                 call.current = false;
+                call.abandon?.();
                 resolve(__WASI_EAGAIN);
             }, __WASI_PARK_DEADLINE_MS);
             const finish = (value) => {
@@ -1596,9 +1597,14 @@ export function __wasiMakeImports(opts) {
             // sent to an image that takes its own ends the poll whatever it waits
             // on (a clock, a socket), as it ends poll(2): it answers the signal.
             const signalWait = proc.signalWait();
+            // A poll the deadline answered waits for no signal: one that comes is the guest's next wait's.
+            if (call && signalWait)
+                call.abandon = () => signalWait.cancel();
             const winner = await Promise.race(signalWait === null ? promises : [...promises, signalWait.ready.then(() => null)]);
             signalWait?.cancel();
             if (winner === null) {
+                if (call && !call.current)
+                    return __WASI_EAGAIN;
                 for (let i = 0; i < promises.length; i++) {
                     if (timerIds[i] !== null) {
                         try {

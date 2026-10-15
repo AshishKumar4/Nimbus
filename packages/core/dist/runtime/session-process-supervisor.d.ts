@@ -391,8 +391,8 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * took its place (one waits at a time).
      */
     nextSignal(pid: number, waitMs: number): Promise<ProcessSignalName | null>;
-    /** `pid`'s wait for a signal answered null, its place given up. */
-    private dropTaker;
+    /** {@link nextSignal}'s wait on `box`, and its cancel, which answers it null if it is still the one waiting. */
+    private waitSignal;
     /**
      * `signal` queued for `pid`'s program if it takes its own and catches it
      * (takeSignals): whether it does. A kill path that ends a process past
