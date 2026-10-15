@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "ff4bbdbaaa9f62202df353b1b4837f222b4f3d20f15d9dbdab8374a1ec5a3e03",
+  "fingerprint": "fed4557849a81676fe144bf5b4ec6e4238aa64d9c1b34366dfecc49f6ab454d2",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2930,7 +2930,7 @@
     "packages/worker/public/_assets/napi-wasm/astro-compiler/0.5.2/astro-compiler.wasm": "8d5bb39f31cc53eacb7943517a33c6a1d408549d4420186df4bdf460b0325f77",
     "packages/worker/public/_assets/napi-wasm/astro-compiler/0.5.2/provenance.json": "d4abd308896538e184c8afb63ee5d8b94a0aad59ac7e24edae8ecfa6b3bb2679",
     "packages/worker/public/_assets/napi-wasm/loader/db055a3706469557/napi-wasm-loader.mjs": "aa19196d1c109822735a1150d25d9136729b2f035b381f86cd538371f2dfd38e",
-    "packages/worker/public/_assets/napi-wasm/loader/db055a3706469557/provenance.json": "519de36dfd0de7b4fb985f8b402c07f8223d551a4d18a99505af89dbdc009f35",
+    "packages/worker/public/_assets/napi-wasm/loader/db055a3706469557/provenance.json": "43820f1b84c3c001590594c1e343196c6f24324506fafebfe8788fe10463633b",
     "packages/worker/public/_assets/napi-wasm/loader/db055a3706469557/wasi-trampoline.wasm": "0ad53da157e16656eee42877724d38aaa9876de20369f975f44b8a5e5d6f9cf6",
     "packages/worker/public/_assets/napi-wasm/rolldown/1.2.11/provenance.json": "540224e501592d93b7c0827e1687b8d39bd55688a07536db2317bc556d358ddc",
     "packages/worker/public/_assets/napi-wasm/rolldown/1.2.11/rolldown.wasm": "9e38287a3d6f106d50fa9eeb774f264130fd960a39f194d6380de731a4d7ed58",
