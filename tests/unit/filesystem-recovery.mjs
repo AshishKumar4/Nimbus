@@ -158,10 +158,11 @@ function session() {
   const fs = s.filesystem.bind({ pid, cred: user });
   const recovery = s.filesystem.recovery(pid, user);
   const live = new Map();
+  let added = 0;
   const add = EventTarget.prototype.addEventListener;
   const remove = EventTarget.prototype.removeEventListener;
   EventTarget.prototype.addEventListener = function (type, ...rest) {
-    if (type === 'abort') live.set(this, (live.get(this) ?? 0) + 1);
+    if (type === 'abort') { added++; live.set(this, (live.get(this) ?? 0) + 1); }
     return add.call(this, type, ...rest);
   };
   EventTarget.prototype.removeEventListener = function (type, ...rest) {
@@ -185,6 +186,7 @@ function session() {
     EventTarget.prototype.addEventListener = add;
     EventTarget.prototype.removeEventListener = remove;
   }
+  assert.ok(added >= 20_000, `the commits were not seen listening (${added} listeners added)`);
   const left = [...live.values()].filter((count) => count > 0);
   assert.deepEqual(left, [], 'a stream commit left an abort listener behind');
   await recovery.dispose();
