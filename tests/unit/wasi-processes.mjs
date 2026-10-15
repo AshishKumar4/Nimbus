@@ -738,6 +738,22 @@ let checks = 0;
   checks++;
 }
 
+// A poll the park deadline answered (EAGAIN) waits for no signal after it: the session is asked for none, and the next wait takes the one that comes.
+{
+  const g = await guest({ takesSignals: true });
+  assert.equal(await g.sleep(15_000), E.AGAIN, 'the deadline answers a long poll');
+  const asked = g.sup.signalWaits;
+  await new Promise((resolve) => setTimeout(resolve, 5_500));
+  assert.equal(g.sup.signalWaits, asked, 'nothing waits for a signal for it any more');
+  const [r] = g.pipe();
+  const reading = g.read(r);
+  await settle();
+  g.control.signal('SIGINT');
+  assert.deepEqual(await reading, { errno: ESIGINT, text: null }, 'the guest\'s next wait takes the signal');
+  g.dispose();
+  checks++;
+}
+
 // Only the guest's own waits are a signal's: a child's output held in a full pipe asks the session for none.
 {
   const g = await guest({ takesSignals: true });

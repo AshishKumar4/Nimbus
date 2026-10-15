@@ -800,7 +800,8 @@ function __wasiChildNews(): ChildNews {
  * writes run in the one microtask its last await resumes in, so the
  * deadline's timer cannot fall between them.
  */
-interface WasiParkCall { current: boolean }
+/** `abandon`, which the body may set, lets go of what it waits on once the deadline answered the call. */
+interface WasiParkCall { current: boolean; abandon?: () => void }
 /** The call of the guard now invoking a body; null outside one (a body nothing guards answers when it can). */
 let __wasiParkCall: WasiParkCall | null = null;
 
@@ -828,6 +829,7 @@ function withParkDeadline(fn: WasiSyscallFn, mayTimeOut: (args: readonly unknown
         __wasiAbandoned++;
         __wasiResident?.fs.cancelPendingDirectories();
         call.current = false;
+        call.abandon?.();
         resolve(__WASI_EAGAIN);
       }, __WASI_PARK_DEADLINE_MS);
       const finish = (value: Errno) => {
@@ -1610,9 +1612,12 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       // sent to an image that takes its own ends the poll whatever it waits
       // on (a clock, a socket), as it ends poll(2): it answers the signal.
       const signalWait = proc.signalWait();
+      // A poll the deadline answered waits for no signal: one that comes is the guest's next wait's.
+      if (call && signalWait) call.abandon = () => signalWait.cancel();
       const winner = await Promise.race(signalWait === null ? promises : [...promises, signalWait.ready.then(() => null)]);
       signalWait?.cancel();
       if (winner === null) {
+        if (call && !call.current) return __WASI_EAGAIN;
         for (let i = 0; i < promises.length; i++) {
           if (timerIds[i] !== null) { try { clearTimeout(timerIds[i]); } catch {} timerIds[i] = null; }
           pipeWaits[i]?.();

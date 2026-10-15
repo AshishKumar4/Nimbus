@@ -15,7 +15,11 @@ published independently in the `@nimbus-sh` npm scope.
   host ends the wait the signal came in (`NIMBUS_ESIGNAL` + the signal's
   number), and its libc raises it before the call returns `EINTR`
   (`wasm/nimbus-libc/nimbus-signal.c`), so git's handlers run and an
-  unhandled signal exits 128 + its number. SIGKILL still ends it.
+  unhandled signal exits 128 + its number. SIGKILL still ends it. A child
+  process that a signal ended from outside its parent (its process group's,
+  `kill <pid>`) is reported to the parent as killed by that signal, as on
+  Linux (a Node parent's `'exit'` has code `null` and the signal), not with
+  whatever its program returned as it was stopped.
 - Breaking (core): `GIT_RUNNER_CONTRACTS` values are `GitRunnerContract`
   (`{ restartsWaits, takesSignals }`), and `makeGitRunnerFactory` and
   `GitFacetArgs` take `takesSignals`. `SessionProcessSupervisor` gains

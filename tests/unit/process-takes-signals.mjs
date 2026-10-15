@@ -16,8 +16,10 @@
 //     its signals, its end where not; the run is not ended by it;
 //   - its command's status is its program's (CommandContext.takesSignals);
 //   - a run on an adopted process takes its signals for that run alone;
-//   - a parent's kill of it (the child broker's) is delivered, not its end;
-//   - its write to a full pipe waits until a signal, which withdraws it.
+//   - a parent's kill of it (the child broker's) is delivered, not its end,
+//     and a child its group's signal ended is reported killed by it;
+//   - its write to a full pipe waits until a signal, which withdraws it at
+//     once; a signal that comes as the write is made is the next wait's.
 
 import assert from 'node:assert/strict';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -167,6 +169,26 @@ const within = (ms, promise) => Promise.race([promise, new Promise((resolve) => 
   assert.deepEqual([(await manager.wait(childPid, 1000)).signal], ['SIGUSR1'], 'one it does not catch ends it');
 }
 
+// ── a child its process group's signal ended died of that signal ─────────
+// Its parent (git, waiting for its editor) sees it killed by SIGINT, as
+// Linux reports it, whatever the child's run returned as it was stopped.
+{
+  const processes = new SessionProcessSupervisor();
+  const parent = processes.spawn('git', ['git'], '/home/user');
+  const manager = new ChildProcessManager({
+    processes,
+    terminate(pid) { return processes.kill(pid, 143); },
+    async resolve() { return { run: (context) => new Promise((resolve) => { context.onStarted(); processes.subscribeTerminal(context.pid, () => resolve(1)); }) }; },
+  });
+  processes.takeSignals(parent.pid, CATCHES);
+  const { childPid } = await manager.spawn({ parentPid: parent.pid, command: 'sh', args: ['-c', 'sleep 60'], cwd: '/home/user', env: {}, stdio: ['pipe', 'pipe', 'pipe'] });
+  await manager.wait(childPid, 100, false);
+  processes.signalGroup(parent.pid, signalAbortReason('INT'));
+  assert.equal(await processes.nextSignal(parent.pid, 100), 'SIGINT', 'git is sent it');
+  const exit = await manager.wait(childPid, 1000);
+  assert.deepEqual([exit.done, exit.exitCode, exit.signal], [true, null, 'SIGINT'], 'its parent sees it killed by SIGINT');
+}
+
 // ── its write to a full pipe is interrupted, and withdrawn ───────────────
 {
   const processes = new SessionProcessSupervisor();
@@ -185,6 +207,32 @@ const within = (ms, promise) => Promise.race([promise, new Promise((resolve) => 
   const drained = await processes.readInput(helper.pid, 100, 512 * 1024);
   assert.equal(drained.data.byteLength, 256 * 1024);
   assert.equal(await within(200, processes.readInput(helper.pid, 50)).then((packet) => packet.data.length), 0, 'and wrote nothing');
+}
+
+// ── a signal that comes as its write is made is not lost ───────────────
+// The reader makes room and the signal comes, a number of microtasks apart:
+// the write is made and the signal is its next wait's, or it is withdrawn and
+// answers the signal; never made with the signal gone.
+for (let ticks = 0; ticks < 16; ticks++) {
+  const processes = new SessionProcessSupervisor();
+  const git = processes.spawn('git', ['git'], '/home/user');
+  const helper = processes.spawn('cat', ['cat'], '/home/user', { parentPid: git.pid });
+  processes.openInput(helper.pid);
+  processes.takeSignals(git.pid, CATCHES);
+  await processes.writeInputBytesWait(helper.pid, new Uint8Array(256 * 1024), git.pid);
+  const held = processes.writeInputBytesWait(helper.pid, new Uint8Array([2]), git.pid);
+  await settle();
+  const drain = processes.readInput(helper.pid, 100, 512 * 1024);
+  for (let i = 0; i < ticks; i++) await Promise.resolve();
+  processes.signal(git.pid, 'SIGINT');
+  const answer = await within(1000, held);
+  const written = (await drain).data.length + (await within(200, processes.readInput(helper.pid, 50))).data.length - 256 * 1024;
+  if (answer.ok === true) {
+    assert.equal(written, 1, `${ticks}: the write was made`);
+    assert.equal(await processes.nextSignal(git.pid, 50), 'SIGINT', `${ticks}: and the signal that came with it is the next wait's`);
+  } else {
+    assert.deepEqual([answer, written], [{ ok: false, signal: 'SIGINT' }, 0], `${ticks}: or it answered the signal and wrote nothing`);
+  }
 }
 
 console.log('process-takes-signals: ok');

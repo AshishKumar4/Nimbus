@@ -5,7 +5,7 @@ import { parseShellInvocation, type ShellName } from '../shell/shell-invocation.
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 import type { ProcessView } from './process-files.js';
 import { enc } from '../_shared/bytes.js';
-import { exitCodeForSignal, parseSignalName, signalDisposition } from '../substrate/lifo/shell/signals.js';
+import { exitCodeForSignal, parseSignalName, signalDisposition, signalOfStatus } from '../substrate/lifo/shell/signals.js';
 import { pulledStdinReader } from '../shell/stdin-adapter.js';
 import type { CommandInputStream } from '../substrate/lifo/commands/types.js';
 import { parseProcessSignalName } from './process-io-protocol.js';
@@ -466,6 +466,7 @@ export class ChildProcessManager {
         env: { ...child.env }, stdio: child.stdio,
         stdin: this._stdinOf(child), output: hooks, onStarted,
       });
+      if (this._stampKilled(child)) return;
       if (typeof result === 'number') {
         this._stampExit(child, result, null);
       } else if (!child.started) {
@@ -476,9 +477,24 @@ export class ChildProcessManager {
         this._stampExit(child, 1, null);
       }
     } catch (error) {
+      if (this._stampKilled(child)) return;
       this._appendText(child, 2, `Error: ${errorText(error)}\n`);
       this._stampExit(child, 1, null);
     }
+  }
+
+  /**
+   * A child the process table ended with a signal (its process group's, a
+   * `kill <pid>`), not through this broker: it died of that signal, whatever
+   * its run returned as it was stopped. Whether it was.
+   */
+  private _stampKilled(child: ChildEntry): boolean {
+    const entry = this.deps.processes.get(child.pid);
+    if (entry?.state !== 'killed' || entry.exitCode === null) return false;
+    const name = signalOfStatus(entry.exitCode);
+    if (name === null) return false;
+    this._stampExit(child, entry.exitCode, `SIG${name}`);
+    return true;
   }
 
   /**
