@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a WASI program (git, Python, clang, Ruby) that was killed, or that
+  exited, before the session had answered its last file changes no longer
+  loses the files it made in a directory it held. The session landed the
+  rest of what the program had logged but refused those files.
+
 - Fixed: `gem install` and `bundle install` finish a gem whose install was
   interrupted, instead of treating it as installed once its `lib`
   directory existed. A gem is installed once its specification is written,
