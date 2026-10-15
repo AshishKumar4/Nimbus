@@ -126,7 +126,7 @@ function newSession(args: BashBootArgs): BashSession {
     stdin: { chunks: args.stdinData ? [te.encode(args.stdinData)] : [], queued: 0, closed: !!args.stdinClosed, waiters: [] },
     processPid: args.processPid || 0, sharedInput: args.sharedInput === true,
     procs: new Map(), idle: [], pipes: new Map(), runnable: [], deferred: [], wake: null, suspended: new Set(), exitStatus: new Map(), heldExits: new Map(), waiters: [],
-    pidNext: 100, pipeNext: 1, rootPid: 0, rootExit: null, steps: 0,
+    pidNext: 100, pipeNext: 1, rootExit: null, steps: 0,
     outputControl,
     output: wasiOutputRelay({ stdout: bytes => target.stdout(bytes), stderr: bytes => { const data = outputControl ? outputControl.feed(bytes) : bytes; if (data.length) return target.stderr(data); } }),
     missingWasi: new Set(),
@@ -598,8 +598,8 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
       }
       const result = call(...args);
       if (!(result instanceof Promise)) return result;
-      const pending = { name, settled: false, value: 0, promise: Promise.resolve() };
-      pending.promise = result.then(value => { pending.value = value; pending.settled = true; }, error => { pending.value = refusalErrno(error, s.gone); pending.settled = true; });
+      const pending = { name, value: 0, promise: Promise.resolve() };
+      pending.promise = result.then(value => { pending.value = value; }, error => { pending.value = refusalErrno(error, s.gone); });
       proc.pendingFs = pending;
       c.reason = 'filesystem';
       startUnwind();
@@ -1549,7 +1549,6 @@ globalThis.__bashBoot = async function __bashBoot(args: BashBootArgs): Promise<B
       [0, { kind: 'stdin' }], [1, { kind: 'stdout' }], [2, { kind: 'stderr' }],
       [3, { kind: 'preopen', vfsPath: '/', wasiPath: '/' }],
     ]));
-    S.rootPid = root.pid;
     setupArena(root);
     S.runnable.push(root);
     return pump(S);

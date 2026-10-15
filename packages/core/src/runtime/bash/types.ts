@@ -247,7 +247,7 @@ export interface BashProc {
    */
   preopenMoved: Map<number, number>;
   cwd: string;
-  pendingFs?: { name: string; value?: number; settled: boolean; promise: Promise<void> };
+  pendingFs?: { name: string; value?: number; promise: Promise<void> };
   inst: BashInstance;
   /** The owning session, so a resumed process can find its run queue. */
   __s: BashSession;
@@ -361,7 +361,6 @@ export interface BashSession {
   waiters: BashWaitEntry[];
   pidNext: number;
   pipeNext: number;
-  rootPid: number;
   rootExit: number | null;
   steps: number;
   output: ReturnType<typeof import('../wasi/stdio.js').wasiOutputRelay>;
