@@ -69,9 +69,9 @@ function receiptOf(path: string, now: RuntimeVfsStat, handle?: number): WriteStr
 }
 
 /** A re-sent open of a description the binding keeps on a mount: its answer again, as SqliteVFS.reopened gives one; null once its file is gone. */
-async function reopenedOnMount(path: string, node: MountedFileDescription, handle: number | undefined): Promise<WriteStreamReceipt | null> {
+async function reopenedOnMount(path: string, node: MountedFileDescription, handle: number | undefined, admit: () => void): Promise<WriteStreamReceipt | null> {
   try {
-    return receiptOf(path, await node.stat(), handle);
+    return receiptOf(path, await node.stat(admit), handle);
   } catch (error) {
     const code = errnoCodeOf(error);
     if (code === 'ENOENT' || code === 'ESTALE') return null;
@@ -790,7 +790,7 @@ export class WaveIngest {
                 const receipt = mounted === undefined
                   ? scope.asWriter(() => scope.reopened(path, description))
                   // Its mount's answer, which the wave's cut does not wait for (untilAborted), as every routed one.
-                  : await untilAborted(reopenedOnMount(path, mounted, options.descriptions?.handle(description)), scope.signal);
+                  : await untilAborted(reopenedOnMount(path, mounted, options.descriptions?.handle(description), () => scope.signal.throwIfAborted()), scope.signal);
                 if (receipt !== null) progress.receipts.push(receipt);
               }
               continue;
@@ -1224,7 +1224,7 @@ export class WaveIngest {
           const node = file.described;
           if (node !== undefined) {
             await backend(Promise.resolve(file.call === 'append' ? node.append(bytes, at.guard) : node.write(file.offset ?? 0, bytes, at.guard)));
-            at.committed(receiptOf(file.named, await backend(Promise.resolve(node.stat()))), bytes.byteLength);
+            at.committed(receiptOf(file.named, await backend(Promise.resolve(node.stat(at.guard)))), bytes.byteLength);
             return true;
           }
           const stat = await backend(router.apply(file.call !== undefined

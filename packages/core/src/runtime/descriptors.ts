@@ -17,6 +17,16 @@ import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeOpenFlags, RuntimeVfs
 export type EngineDescription = VfsOpenDescription & { readonly mounted?: undefined; readonly awaits?: undefined };
 
 /**
+ * Who may act through a binding now: throws when it may not (EBADF once its
+ * binding has ended or its scope closed; its caller's abort reason once that
+ * aborts). Asked right before a backend is, after every await: by the
+ * descriptor table (Descriptors) for each description's call, by the
+ * namespace (CompositeVFS.scoped) for each of its calls, by the engine's
+ * bridge for each synchronous one.
+ */
+export type Authority = () => void;
+
+/**
  * A mounted file's description (vfs/mounted-description.ts): its answers
  * await where its mount does (`awaits`), and its stat is the mount's, which
  * never moves the SQLite clock.
@@ -31,22 +41,22 @@ export interface MountedFileDescription {
   path(): string;
   /** Which file it is (HeldFile.key): what its held writes overlay. */
   key(): string;
-  stat(): Awaitable<RuntimeVfsStat>;
-  read(offset: number, length: number): Awaitable<Uint8Array>;
-  /** `admit`: the current operation's own admission, run right before its backend is asked. */
+  /** `admit`, on each: the current operation's own admission (its Authority among it), run right before its backend is asked. */
+  stat(admit?: () => void): Awaitable<RuntimeVfsStat>;
+  read(offset: number, length: number, admit?: () => void): Awaitable<Uint8Array>;
   write(offset: number, bytes: Uint8Array, admit?: () => void): Awaitable<number>;
   /** An O_APPEND write: at the end of the file as it is then; answers that end after it. */
   append(bytes: Uint8Array, admit?: () => void): Awaitable<number>;
   truncate(size: number, admit?: () => void): Awaitable<void>;
-  readdir(): Awaitable<RuntimeVfsDirEntry[]>;
+  readdir(admit?: () => void): Awaitable<RuntimeVfsDirEntry[]>;
   chmod(mode: number, admit?: () => void): Awaitable<void>;
   chown(uid: number, gid: number, admit?: () => void): Awaitable<void>;
   utimes(atime: number, mtime: number, admit?: () => void): Awaitable<void>;
   /** Writes what it holds; throws what that, or an earlier settle of it, failed with. */
-  flush(): Awaitable<void>;
+  flush(admit?: () => void): Awaitable<void>;
   /** Writes what it holds, unasked (settleHeld): a failure is kept for its next fsync or close. */
   settle(): void;
-  close(): Awaitable<void>;
+  close(admit?: () => void): Awaitable<void>;
   /** Closes its file without writing what it holds (a killed process's): those bytes are lost. */
   discard(): Awaitable<void>;
   /**
@@ -116,6 +126,14 @@ export function createDescriptorScope(): DescriptorScope {
   return { nextId: 1, handles: new Map(), held: new Set(), waveDescriptions: new Map(), closed: false, abort: null, subscriptions: new Set(), leases: new Map() };
 }
 
+/** What acts through `scope` with no binding of its own: anything, while the scope is open (EBADF once closed). */
+export function scopeAccess(scope: DescriptorScope): { authority: Authority; owned: Authority } {
+  const open: Authority = () => {
+    if (scope.closed) throw fsError('EBADF', 'fd', 'filesystem scope closed');
+  };
+  return { authority: open, owned: open };
+}
+
 /** The signal `scope`'s close aborts, made on first ask: already aborted once it has closed. */
 export function scopeSignal(scope: DescriptorScope): AbortSignal {
   if (scope.abort === null) {
@@ -137,14 +155,14 @@ export function closeScopeSignal(scope: DescriptorScope): void {
  * the failure as its cause (EIO where it carries no code: an abort, a dropped
  * call). Node's close reports a deferred write's failure the same way.
  */
-function lastClose(node: Description): Awaitable<void> {
+function lastClose(node: Description, admit?: Authority): Awaitable<void> {
   const lost = (error: unknown): never => {
     const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : 'EIO';
     const reason = error instanceof Error ? error.message : String(error);
     throw fsError(code, 'close', node.path(), undefined, { detail: `its buffered writes are lost (${reason})`, cause: error });
   };
   try {
-    const closed = node.close();
+    const closed = node.mounted ? node.close(admit) : node.close();
     return isPromise(closed) ? closed.catch(lost) : closed;
   } catch (error) {
     return lost(error);
@@ -248,6 +266,17 @@ export class Descriptors {
     private readonly scope: DescriptorScope,
     /** The SQLite clock: the revision an fstat of a description on SQLite reports. */
     private readonly clock: () => number,
+    /**
+     * Its binding's: asked as each call reaches its description, and passed
+     * to a mount's description to ask right before the mount is.
+     */
+    private readonly authority: Authority,
+    /**
+     * Its binding's own standing, its caller's abort aside: what a close (and
+     * the table's own bookkeeping, dup) asks, so a caller that gave up still
+     * closes what it opened, and an ended binding closes nothing.
+     */
+    private readonly owned: Authority,
     /** A synchronous face's: a description that awaits refuses its operations (awaitsRefusal), as its mount does; every other answers at once. */
     private readonly synchronous = false,
   ) {}
@@ -267,7 +296,7 @@ export class Descriptors {
   open(node: Description, flags: RuntimeFileHandle['flags'], path = node.path(), revision?: number): Awaitable<RuntimeOpenedFile> {
     const handle: RuntimeFileHandle = { id: this.scope.nextId++, path, flags: Object.freeze(flags), position: 0, closed: false };
     this.scope.handles.set(handle.id, { handle, node, refs: 1 });
-    if (node.mounted) return andThen(node.stat(), (stat) => ({ ...handle, stat: revision === undefined ? stat : { ...stat, revision } }));
+    if (node.mounted) return andThen(node.stat(this.authority), (stat) => ({ ...handle, stat: revision === undefined ? stat : { ...stat, revision } }));
     return { ...handle, stat: { ...node.stat(), revision: revision ?? this.clock() } };
   }
 
@@ -276,15 +305,16 @@ export class Descriptors {
     return this.answering(id).node;
   }
 
-  private opened(id: number): Opened {
+  private opened(id: number, check: Authority = this.owned): Opened {
+    check();
     const opened = this.scope.handles.get(id);
-    if (!opened || this.scope.closed) throw fsError('EBADF', 'fd', String(id));
+    if (!opened) throw fsError('EBADF', 'fd', String(id));
     return opened;
   }
 
   /** Descriptor `id`, for an operation that answers: refused on a synchronous face where its description awaits. */
   private answering(id: number): Opened {
-    const opened = this.opened(id);
+    const opened = this.opened(id, this.authority);
     if (this.synchronous && opened.node.awaits === true) throw awaitsRefusal(opened.node.path());
     return opened;
   }
@@ -298,7 +328,7 @@ export class Descriptors {
     if (!handle.flags.read) throw fsError('EBADF', 'read', handle.path);
     if (offset != null && offset < 0) throw fsError('EINVAL', 'read', handle.path);
     const start = offset ?? handle.position;
-    const out = node.read(start, Math.max(0, length));
+    const out = node.mounted ? node.read(start, Math.max(0, length), this.authority) : node.read(start, Math.max(0, length));
     if (offset != null) return out;
     if (isPromise(out)) return out.then((bytes) => read(handle, start, bytes));
     return read(handle, start, out);
@@ -310,7 +340,7 @@ export class Descriptors {
     if (offset != null && offset < 0) throw fsError('EINVAL', 'write', handle.path);
     // A positional write moves no offset, O_APPEND's at the end included (pwrite(2) on Linux).
     if (handle.flags.append && node.mounted) {
-      const end = node.append(bytes);
+      const end = node.append(bytes, this.authority);
       if (offset != null) return isPromise(end) ? end.then(() => bytes.byteLength) : bytes.byteLength;
       if (isPromise(end)) return end.then((at) => moved(handle, at, bytes));
       return moved(handle, end, bytes);
@@ -321,7 +351,7 @@ export class Descriptors {
   }
 
   private writeAt(handle: RuntimeFileHandle, node: Description, at: number, offset: number | null, bytes: Uint8Array): Awaitable<number> {
-    const written = node.write(at, bytes);
+    const written = node.mounted ? node.write(at, bytes, this.authority) : node.write(at, bytes);
     if (offset != null) return isPromise(written) ? written.then(() => bytes.byteLength) : bytes.byteLength;
     if (isPromise(written)) return written.then(() => moved(handle, at + bytes.byteLength, bytes));
     return moved(handle, at + bytes.byteLength, bytes);
@@ -333,7 +363,7 @@ export class Descriptors {
     this.scope.handles.delete(id);
     if (--opened.refs !== 0) return;
     opened.handle.closed = true;
-    return lastClose(opened.node);
+    return lastClose(opened.node, this.owned);
   }
 
   /**
@@ -342,7 +372,9 @@ export class Descriptors {
    * in the store before its call returned.
    */
   fsync(id?: number): Awaitable<void> {
-    if (id !== undefined) return this.answering(id).node.flush?.();
+    if (id === undefined) return;
+    const node = this.answering(id).node;
+    return node.mounted ? node.flush(this.authority) : node.flush?.();
   }
 
   /** The absolute path a descriptor was opened at. */
@@ -357,7 +389,7 @@ export class Descriptors {
 
   fstat(id: number): Awaitable<RuntimeVfsStat> {
     const node = this.answering(id).node;
-    return node.mounted ? node.stat() : { ...node.stat(), revision: this.clock() };
+    return node.mounted ? node.stat(this.authority) : { ...node.stat(), revision: this.clock() };
   }
 
   dup(id: number): RuntimeFileHandle {
@@ -384,18 +416,30 @@ export class Descriptors {
     if (status.append !== undefined) handle.flags = Object.freeze({ ...handle.flags, append: status.append });
   }
 
-  readdir(id: number): Awaitable<RuntimeVfsDirEntry[]> { return this.answering(id).node.readdir(); }
+  readdir(id: number): Awaitable<RuntimeVfsDirEntry[]> {
+    const node = this.answering(id).node;
+    return node.mounted ? node.readdir(this.authority) : node.readdir();
+  }
 
   /** ftruncate(2) of a descriptor not open for writing is EINVAL, as Linux answers it. */
   ftruncate(id: number, size: number): Awaitable<void> {
     const { handle, node } = this.answering(id);
     if (!handle.flags.write) throw fsError('EINVAL', 'ftruncate', handle.path);
-    return node.truncate(size);
+    return node.mounted ? node.truncate(size, this.authority) : node.truncate(size);
   }
 
-  fchmod(id: number, mode: number): Awaitable<void> { return this.answering(id).node.chmod(mode); }
-  fchown(id: number, uid: number, gid: number): Awaitable<void> { return this.answering(id).node.chown(uid, gid); }
-  futimes(id: number, atime: number, mtime: number): Awaitable<void> { return this.answering(id).node.utimes(atime, mtime); }
+  fchmod(id: number, mode: number): Awaitable<void> {
+    const node = this.answering(id).node;
+    return node.mounted ? node.chmod(mode, this.authority) : node.chmod(mode);
+  }
+  fchown(id: number, uid: number, gid: number): Awaitable<void> {
+    const node = this.answering(id).node;
+    return node.mounted ? node.chown(uid, gid, this.authority) : node.chown(uid, gid);
+  }
+  futimes(id: number, atime: number, mtime: number): Awaitable<void> {
+    const node = this.answering(id).node;
+    return node.mounted ? node.utimes(atime, mtime, this.authority) : node.utimes(atime, mtime);
+  }
 }
 
 /** A read at the descriptor's offset: the offset moved past what it read. */

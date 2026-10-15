@@ -1,6 +1,6 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type DelegationTerms, type SqliteVFS, type VfsNameResolution, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import { BUFFERED_WRITE_BYTES, describeMounted, flagsRefusal, openAccess, openFollows, openMounted, reopenMounted } from '../vfs/mounted-description.js';
-import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, settleHeldAt, type Description } from './descriptors.js';
+import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, scopeAccess, settleHeldAt, type Authority, type Description } from './descriptors.js';
 import type { WaveDescriptions, WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
@@ -50,10 +50,12 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private readonly bufferedWriteBytes: number = BUFFERED_WRITE_BYTES,
     /** The namespace's wave ingestion (ProcessFiles.waves); without a namespace, none places anything elsewhere. */
     private readonly waves: WaveIngest = new WaveIngest(null),
+    /** Its binding's Authority, its standing (Descriptors' `owned`), and its caller's abort; else its scope alone. */
+    private readonly access: { authority: Authority; owned: Authority; signal?: AbortSignal } = scopeAccess(scope),
   ) {
     this.vfs = vfs;
     this.mounted = namespace?.sync;
-    this.descriptors = new Descriptors(scope, () => rawVfs.revision(), true);
+    this.descriptors = new Descriptors(scope, () => rawVfs.revision(), access.authority, access.owned, true);
   }
 
   dispose(): Awaitable<void> {
@@ -407,7 +409,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         return syncValue(this.descriptors.open(syncValue(openMounted({
           name: located.path, flags: normalizedFlags, mode: flags.mode,
           refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, pin: (name, follow) => namespace.pin(name, { follow, sync: true }),
-          sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
+          sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes, ...(this.access.signal === undefined ? {} : { signal: this.access.signal }),
         })), normalizedFlags));
       }
       const p = located.path;
@@ -938,6 +940,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         return syncValue(this.descriptors.open(syncValue(reopenMounted(held, {
           flags: normalizedFlags, mode: flags.mode, refuse: (code, syscall) => fsError(code, syscall, named), scope: this.scope,
           pin: (name, follow) => namespace.pin(name, { follow, sync: true }), sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
+          ...(this.access.signal === undefined ? {} : { signal: this.access.signal }),
         })), normalizedFlags));
       }
       if (held.ino === ROOT_INODE) return this.openRoot(named, normalizedFlags);
