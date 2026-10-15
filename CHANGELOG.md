@@ -5,6 +5,17 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Added: `npm install` and `npm ci` check engines as npm does: the
+  project's and every required package's `engines` against this runtime's
+  Node and npm, with npm's `npm warn EBADENGINE` warning for each mismatch.
+  Under `--engine-strict`, or an `.npmrc`'s `engine-strict=true` (as
+  `sv create` writes), the first mismatch fails the install with npm's
+  error, and nothing changes. Before, no engine was checked, and
+  `--engine-strict` was refused.
+- Fixed: npm's defaults that npm takes from its own environment (`omit` from
+  `NODE_ENV`, `editor`, `shell`, `unicode`, `color`) come from the session's
+  environment, not the Worker's. The Worker's production build made
+  `npm ls`, `npm uninstall` and `npm init` read `omit=dev` as the default.
 - Fixed: a session's npm installs no longer take one registry's package for
   another's. The session kept what a registry said of `name@version` (its
   tarball, integrity and dependencies) under the name and version alone, so

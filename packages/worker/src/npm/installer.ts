@@ -44,9 +44,10 @@ import {
 } from './resolver.js';
 import {
   bundledNames, canonicalTreePath, holdTree, lockRootMatches, namedPackages, packageJsonDocument, parentPlacement, placementName, projectRoots, readPackageJson, saveNamed,
-  type NamedPackage, type TreeRoot,
+  type NamedPackage, type ProjectManifest, type TreeRoot,
 } from '@nimbus-sh/core/_shared/npm-tree.js';
 import { planTree, type InstalledPackage, type OmitTypes, type PlanOptions, type TreePlan, type TreeResolution } from '@nimbus-sh/core/_shared/npm-arborist/plan.js';
+import { engineMismatches, type EngineMismatch } from '@nimbus-sh/core/_shared/npm-arborist/engines.js';
 import { parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
 import {
@@ -194,8 +195,10 @@ export interface NpmInstallOptions {
   save?: boolean;
   /** What a saved range starts with ('' for `--save-exact`); '^' when not given. */
   savePrefix?: string;
-  /** `--force`: a peer conflict the project owns is a warning. */
+  /** `--force`: a peer conflict the project owns is a warning, and node's engine is not checked. */
   force?: boolean;
+  /** `--engine-strict`: a package whose engines exclude this node or npm fails the install, which changes nothing. */
+  engineStrict?: boolean;
   /** `--strict-peer-deps`: any peer conflict is ERESOLVE unless forced. */
   strictPeerDeps?: boolean;
   /** `--legacy-peer-deps`: peers are neither installed nor checked. */
@@ -219,6 +222,8 @@ export interface NpmInstallResult {
   phases: Record<string, number>; // phase → ms
   /** The bins `whileHeld` linked. */
   linkedBins?: number;
+  /** Each EBADENGINE of the tree (npm's engine check): warnings, or under --engine-strict the install's failure. */
+  engines?: EngineMismatch[];
 }
 
 /** What a lockfile says is installed: each placement's package, by its registry identity, version and integrity, in placement order. */
@@ -378,7 +383,7 @@ export class NpmInstaller {
     if (tmp !== null) this.sweepStaging(tmp);
     const principal = { pid: opts.pid, cred: opts.cred, view, tmp };
     const lockfile = this.cache.readLockfile(projDir);
-    const { roots, named, devOnly, advised } = await this.buildRoots(projDir, project, opts, log);
+    const { roots, named, devOnly, advised, manifest } = await this.buildRoots(projDir, project, opts, log);
     const omit = { dev: opts.production === true, optional: opts.omitOptional === true, peer: opts.omitPeer === true };
     const engine = {
       devOnly, advised, registry, omit,
@@ -436,6 +441,12 @@ export class NpmInstaller {
       log(`npm ERR! install incomplete — ${failed.length} missing: ${failed.join(', ')}`);
       return { installed: [], failed, totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases };
     }
+    // npm's engine check of the tree: under --engine-strict a mismatch fails
+    // the install before anything changes; otherwise npm warns of each.
+    const engines = engineMismatches(manifest, plan, opts.force === true);
+    if (opts.engineStrict === true && engines.length > 0) {
+      return { installed: [], failed: [engines[0]!.pkgid ?? projDir], totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases, engines };
+    }
 
     // ── Phase 2: Hoist ────────────────────────────────────────────────
     // The tree to install: what the plan holds, but what it leaves out and,
@@ -478,7 +489,7 @@ export class NpmInstaller {
     }
     if (failed.length > 0) {
       log(`npm ERR! install incomplete — ${failed.length} missing: ${failed.join(', ')}`);
-      return { installed: [], failed, totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases };
+      return { installed: [], failed, totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases, engines };
     }
 
     // npm ci installs the lock into an empty node_modules: the old tree
@@ -688,7 +699,7 @@ export class NpmInstaller {
     // that object ran meanwhile (tests/behavioral/perf-regression/install-warm.mjs).
     console.log(`[npm:phases] ${JSON.stringify({ installed: installed.length, failed: failed.length, cachedHits, elapsed, commits: commitCount, phases })}`);
 
-    return { installed, failed, totalFiles, elapsed, cachedHits, phases };
+    return { installed, failed, totalFiles, elapsed, cachedHits, phases, engines };
   }
 
   // ── Single-resolver / single-fetcher invariant ───────────────────────
@@ -1501,7 +1512,7 @@ export class NpmInstaller {
     fs: ProjectFs,
     opts: { packages?: string[]; production?: boolean; saveDev?: boolean; saveOptional?: boolean; global?: boolean; legacyPeerDeps?: boolean },
     log: (msg: string) => void,
-  ): Promise<{ roots: TreeRoot[]; named: NamedPackage[]; devOnly: Set<string>; advised: Set<string> }> {
+  ): Promise<{ roots: TreeRoot[]; named: NamedPackage[]; devOnly: Set<string>; advised: Set<string>; manifest: ProjectManifest | null }> {
     // Which names only a devDependency asked for — diagnostics only, so an
     // advisory can say whether anything this project RUNS actually needs
     // the package. A devDependency is still a required root.
@@ -1522,7 +1533,7 @@ export class NpmInstaller {
     // A devDependency `--omit=dev` leaves out is planned, and not announced.
     const omitted = new Set(opts.production ? roots.filter(({ type }) => type === 'dev').map(({ name }) => name) : []);
     const swapped = this.applyW6Registry(Object.fromEntries(roots.map(({ name, range }) => [name, range])), log, { devOnly, advised, omitted });
-    return { roots: roots.map((root) => ({ ...root, range: swapped[root.name] ?? root.range })), named, devOnly, advised };
+    return { roots: roots.map((root) => ({ ...root, range: swapped[root.name] ?? root.range })), named, devOnly, advised, manifest };
   }
 
   /**

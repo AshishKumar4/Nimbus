@@ -1,4 +1,4 @@
-import { Shell, createCurlCommand, createNpmCommand, NPM_VERSION, createTopCommand, createWatchCommand, createHelpCommand } from '@nimbus-sh/core/substrate/lifo/index.js';
+import { Shell, createCurlCommand, createNpmCommand, createTopCommand, createWatchCommand, createHelpCommand } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { createKillCommand, type HostProcessSignals } from '@nimbus-sh/core/substrate/lifo/commands/system/kill.js';
 import { installSummary } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
 import { signalAbortReason, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
@@ -31,7 +31,7 @@ import { rpcExposeApp, rpcListApps, rpcRemoveApp, rpcRotateLink } from '../sessi
 import { listInstalledRuntimes, type RunnerFactory } from '@nimbus-sh/core/runtime/installed-runtimes.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi, type LogChunk } from '@nimbus-sh/core/runtime/process-logs.js';
-import { DEFAULT_HOME, NODE_VERSION } from '@nimbus-sh/core/constants.js';
+import { DEFAULT_HOME, NODE_VERSION, NPM_VERSION } from '@nimbus-sh/core/constants.js';
 import { afterDevServerRestore, devServerProcess, recordDevServer, spawnOf } from '../session/dev-servers.js';
 import type { SessionInternal } from '../session/internal.js';
 

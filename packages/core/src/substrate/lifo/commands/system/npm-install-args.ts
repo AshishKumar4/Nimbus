@@ -46,6 +46,8 @@ export interface NpmInstallInvocation {
   save: boolean;
   /** What a saved range starts with: `--save-prefix`, '' for `--save-exact`, else '^'. */
   savePrefix: string;
+  /** `--engine-strict`: a package whose engines exclude this node or npm fails the install (EBADENGINE), where npm otherwise warns. */
+  engineStrict: boolean;
   /** The registry npm's configuration names (`--registry`, npm_config_registry, an .npmrc); null where only npm's default does. */
   registry: string | null;
   /** Options npm has that this npm does not implement, as npm ERR! lines: the install refuses them rather than ignore them. */
@@ -77,7 +79,6 @@ export function npmInstallInvocation(config: NpmConfig): NpmInstallInvocation {
     ...(config.get('bin-links') === false ? ['--no-bin-links is not supported here'] : []),
     ...(config.get('before') !== null && config.get('before') !== undefined ? ['--before is not supported here'] : []),
     ...(['cpu', 'os', 'libc'] as const).flatMap((name) => (text(name) !== null ? [`--${name} is not supported here: platforms are this runtime's`] : [])),
-    ...(flag('engine-strict') ? ['--engine-strict is not supported here: engines are not checked'] : []),
   ];
   return {
     packages: config.positionals.slice(1),
@@ -95,6 +96,7 @@ export function npmInstallInvocation(config: NpmConfig): NpmInstallInvocation {
     preferDedupe: flag('prefer-dedupe'),
     save: config.get('save') !== false,
     savePrefix: flag('save-exact') ? '' : text('save-prefix') ?? '',
+    engineStrict: flag('engine-strict'),
     registry: set('registry') ? text('registry') : null,
     unsupported,
   };

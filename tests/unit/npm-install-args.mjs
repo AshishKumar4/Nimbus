@@ -64,11 +64,15 @@ async function parseNpmInstallInvocation(args, files = {}, env = {}) {
 
 // An option that changes the tree, and that this npm does not implement, is refused, not ignored; its value is not a package.
 for (const args of [['--install-strategy=nested'], ['--global-style'], ['--legacy-bundling'], ['-w', 'pkg'], ['--workspaces'], ['--dry-run'],
-  ['--package-lock-only'], ['--no-bin-links'], ['--before', '2020-01-01'], ['--cpu=arm64'], ['--os', 'darwin'], ['--libc=musl'], ['--engine-strict']]) {
+  ['--package-lock-only'], ['--no-bin-links'], ['--before', '2020-01-01'], ['--cpu=arm64'], ['--os', 'darwin'], ['--libc=musl']]) {
   const parsed = await parseNpmInstallInvocation([...args, 'xc']);
   assert.equal(parsed.unsupported.length, 1, args.join(' '));
   assert.deepEqual(parsed.packages, ['xc'], args.join(' '));
 }
+// --engine-strict is npm's engine check made fatal, from the command line or an .npmrc (sv create writes one).
+assert.equal((await parseNpmInstallInvocation(['--engine-strict', 'xc'])).engineStrict, true);
+assert.equal((await parseNpmInstallInvocation(['xc'], { '/home/user/app/package.json': '{}', '/home/user/app/.npmrc': 'engine-strict=true\n' })).engineStrict, true);
+assert.equal((await parseNpmInstallInvocation(['xc'])).engineStrict, false);
 // A global install is always shallow: the strategy asked for is npm's to ignore.
 assert.deepEqual((await parseNpmInstallInvocation(['-g', '--install-strategy=nested', 'xc'])).unsupported, []);
 assert.deepEqual((await parseNpmInstallInvocation(['-g', '--global-style', 'xc'])).unsupported, []);

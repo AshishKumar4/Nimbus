@@ -123,6 +123,7 @@ export class NpmCache {
       peer_meta_json TEXT NOT NULL DEFAULT '{}',
       registry_name  TEXT NOT NULL DEFAULT '',
       bundle_json    TEXT NOT NULL DEFAULT '',
+      engines_json   TEXT NOT NULL DEFAULT '',
       fetched_at     INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (registry, network, name, version)
     )`);
@@ -194,7 +195,7 @@ export class NpmCache {
   // ── Registry cache ────────────────────────────────────────────────────
 
   private static readonly REGISTRY_COLUMNS =
-    'name, version, tarball_url, integrity, deps_json, peer_deps_json, exports_json, main, module_field, bin_json, platform_json, optional_deps_json, peer_meta_json, registry_name, bundle_json, fetched_at';
+    'name, version, tarball_url, integrity, deps_json, peer_deps_json, exports_json, main, module_field, bin_json, platform_json, optional_deps_json, peer_meta_json, registry_name, bundle_json, engines_json, fetched_at';
 
   private rowToRegistryEntry(r: Record<string, unknown>): RegistryCacheEntry {
     return {
@@ -213,6 +214,7 @@ export class NpmCache {
       peerMetaJson: String(r.peer_meta_json ?? '{}'),
       registryName: String(r.registry_name ?? ''),
       bundleJson: String(r.bundle_json ?? ''),
+      enginesJson: String(r.engines_json ?? ''),
       fetchedAt: Number(r.fetched_at),
     };
   }
@@ -301,12 +303,12 @@ export class NpmCache {
         this.sql.exec(
           `INSERT OR REPLACE INTO pkg_registry_records
            (registry, network, ${NpmCache.REGISTRY_COLUMNS})
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           source.registry, source.network, entry.name, entry.version, entry.tarballUrl, entry.integrity,
           entry.depsJson, entry.peerDepsJson || '{}',
           entry.exportsJson, entry.main, entry.moduleField,
           entry.binJson, entry.platformJson || '{}', entry.optionalDepsJson || '{}',
-          entry.peerMetaJson || '{}', entry.registryName ?? '', entry.bundleJson ?? '',
+          entry.peerMetaJson || '{}', entry.registryName ?? '', entry.bundleJson ?? '', entry.enginesJson ?? '',
           entry.fetchedAt,
         );
         written++;

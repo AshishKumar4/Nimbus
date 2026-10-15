@@ -40,6 +40,7 @@ const packument = {
       peerDependenciesMeta: { maybe: { optional: true } },
       os: ['!win32'],
       cpu: ['!ia32'],
+      engines: { node: '>=18', npm: '>=9' },
       exports: { '.': { import: './index.mjs', require: './index.js' } },
       main: 'index.js',
       module: 'index.mjs',
@@ -55,6 +56,7 @@ const cold = await resolveOnePackumentInFacet(spec({ name: 'pkg', range: '^2.0.0
 assert.ok(cold.pkg, `the cold resolve answered: ${JSON.stringify(cold.error ?? cold.messages)}`);
 assert.deepEqual(plain(cold.pkg.peerDependencies), { react: '^18.0.0', maybe: '*' }, 'the cold resolve keeps every peer');
 assert.deepEqual(plain(cold.pkg.peerDependenciesMeta), { maybe: { optional: true } }, 'and which are optional');
+assert.deepEqual(plain(cold.pkg.engines), { node: '>=18', npm: '>=9' }, 'and what it asks of node and npm');
 const record = cold.cacheWrites.find((entry) => entry.version === '2.1.0');
 assert.ok(record, 'the cold resolve staged its version');
 

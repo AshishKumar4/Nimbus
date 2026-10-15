@@ -48,6 +48,8 @@ export interface RegistryCacheEntry {
   peerMetaJson?: string;
   /** JSON-encoded `bundleDependencies` as published; '' for none (and rows written before it was kept). */
   bundleJson?: string;
+  /** JSON-encoded `engines` as published; '' for none. */
+  enginesJson?: string;
   fetchedAt: number;
 }
 
@@ -102,6 +104,7 @@ export function registryRecord(pkg: ResolvedPackage, fetchedAt: number): Registr
     optionalDepsJson: JSON.stringify(pkg.optionalDependencies ?? {}),
     peerMetaJson: JSON.stringify(pkg.peerDependenciesMeta ?? {}),
     bundleJson: pkg.bundleDependencies === undefined ? '' : JSON.stringify(pkg.bundleDependencies),
+    enginesJson: pkg.engines === undefined ? '' : JSON.stringify(pkg.engines),
     fetchedAt,
   };
 }
@@ -113,6 +116,7 @@ export function resolvedFromRecord(record: RegistryCacheEntry): ResolvedPackage 
   const platform: Platform = record.platformJson === '{}' ? NO_PLATFORM : decoded(record.platformJson, isObject, NO_PLATFORM);
   const peerMeta = decoded(record.peerMetaJson, isPeerMeta, {});
   const bundle: unknown = record.bundleJson ? decoded(record.bundleJson, isAnyJson, undefined) : undefined;
+  const engines = record.enginesJson ? decoded(record.enginesJson, isObject, undefined) : undefined;
   return {
     name: record.name,
     version: record.version,
@@ -127,6 +131,7 @@ export function resolvedFromRecord(record: RegistryCacheEntry): ResolvedPackage 
     os: isStringList(platform.os) ? platform.os : undefined,
     cpu: isStringList(platform.cpu) ? platform.cpu : undefined,
     libc: isStringList(platform.libc) ? platform.libc : undefined,
+    ...(engines === undefined ? {} : { engines }),
     exports: decoded(record.exportsJson, isAnyJson, null),
     main: record.main,
     module: record.moduleField,

@@ -11,3 +11,5 @@ export const typeDescription: typeof import('@npmcli/config/lib/type-description
 export const ini: typeof import('ini').default = compiled.ini;
 export const nopt: typeof import('nopt').default = compiled.nopt;
 export const validateName: typeof import('validate-npm-package-name').default = compiled.validateName;
+/** npm-install-checks' checkEngine: throws npm's EBADENGINE where `target.engines` excludes `nodeVer` (unless `force`) or `npmVer`. */
+export const checkEngine: (target: { readonly engines?: unknown; readonly _id?: string }, npmVer: string, nodeVer: string, force?: boolean) => void = compiled.npmInstallChecks.checkEngine;

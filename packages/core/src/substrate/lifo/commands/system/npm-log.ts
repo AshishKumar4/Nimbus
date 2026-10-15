@@ -9,6 +9,9 @@
  * honouring it means speaking npm's wire format on the same stream.
  */
 
+import { formatWithOptions } from 'node:util';
+import { NODE_VERSION, NPM_VERSION } from '../../../../constants.js';
+import type { EngineMismatch } from '../../../../_shared/npm-arborist/engines.js';
 import { DIM, GREEN, RED, RESET, YELLOW } from '../../utils/colors.js';
 
 export type NpmLogLevel =
@@ -112,4 +115,25 @@ export function installSummary(report: InstallReport): { stdout: string; stderr:
   if (report.fromCacheHits) stdout += `${DIM}  (${report.fromCacheHits} from cache)${RESET}\n`;
   if (report.linkedBins) stdout += `${DIM}  linked ${report.linkedBins} bin${report.linkedBins === 1 ? '' : 's'} into ${report.globalBinDir}${RESET}\n`;
   return { stdout, stderr };
+}
+
+/**
+ * What npm says of an EBADENGINE: the warning it lets pass (arborist's
+ * log.warn(code, message, { package, required, current }), each line as
+ * npm's display prefixes it), or under `--engine-strict` the error it ends
+ * with (error-message.js's summary and detail).
+ */
+export function npmEngineLines(mismatch: EngineMismatch, strict: boolean): string[] {
+  if (!strict) {
+    return formatWithOptions({ colors: false }, 'Unsupported engine', { package: mismatch.pkgid, required: mismatch.required, current: mismatch.current })
+      .split('\n').map((line) => `npm warn EBADENGINE ${line}`);
+  }
+  return [
+    'code EBADENGINE',
+    'engine Unsupported engine',
+    `engine Not compatible with your version of node/npm: ${mismatch.pkgid}`,
+    `notsup Not compatible with your version of node/npm: ${mismatch.pkgid}`,
+    `notsup Required: ${JSON.stringify(mismatch.required)}`,
+    `notsup Actual:   ${JSON.stringify({ npm: NPM_VERSION, node: NODE_VERSION })}`,
+  ].map((line) => `npm error ${line}`);
 }

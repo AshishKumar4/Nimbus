@@ -58,6 +58,10 @@ export interface TreeManifest {
   readonly peerDependenciesMeta?: Readonly<Record<string, { readonly optional?: boolean }>>;
   /** `bundleDependencies` as published (npm also reads `bundledDependencies`): what its archive carries in its own node_modules, read by bundledNames. */
   readonly bundleDependencies?: unknown;
+  /** What it asks of node and npm, as published (npm's engine check, npm-arborist/engines.ts). */
+  readonly engines?: unknown;
+  /** A project's devEngines, which take the place of its own engines check. */
+  readonly devEngines?: unknown;
 }
 
 /** The names a manifest bundles: its `bundleDependencies` list, or every dependency for `true`. They are not resolved, nor deduped away. */
@@ -165,6 +169,9 @@ export function meets(version: string, edge: Pick<TreeEdge, 'name' | 'range'>): 
 /** The project's package.json, as its roots and saves read it. */
 export interface ProjectManifest extends TreeManifest {
   readonly devDependencies?: DependencyMap;
+  /** As written: what npm's engine check names the project by (its _id). */
+  readonly name?: unknown;
+  readonly version?: unknown;
 }
 
 /** A dependency field as npm reads it: its string ranges (an entry of another shape names no dependency). */
@@ -179,6 +186,10 @@ const ProjectManifestSchema = z.object({
   peerDependenciesMeta: z.record(z.string(), z.object({ optional: z.boolean().optional().catch(undefined) }).catch({})).optional().catch(undefined),
   bundleDependencies: z.unknown().optional(),
   bundledDependencies: z.unknown().optional(),
+  name: z.unknown().optional(),
+  version: z.unknown().optional(),
+  engines: z.unknown().optional(),
+  devEngines: z.unknown().optional(),
 }).transform(({ bundleDependencies, bundledDependencies, ...manifest }): ProjectManifest => {
   const bundle = bundleDependencies ?? bundledDependencies;
   return bundle === undefined ? manifest : { ...manifest, bundleDependencies: bundle };
