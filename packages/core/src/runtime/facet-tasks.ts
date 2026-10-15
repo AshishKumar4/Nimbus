@@ -117,16 +117,8 @@ export const rubyFacetCall = async function rubyFacetCall(inArgs: RubyFacetCallA
     if (supervisor)
         Reflect.set(globalThis, '__nimbusRubySupervisor', supervisor);
     adopt?.(supervisor);
-    return fn({
-        userCode: inArgs.userCode,
-        rbArgv: inArgs.rbArgv,
-        userEnv: inArgs.userEnv,
-        progName: inArgs.progName,
-        binName: inArgs.binName,
-        cwd: inArgs.cwd,
-        cred: inArgs.cred,
-        supervisorPid: inArgs.supervisorPid,
-    });
+    // The invocation as the runner made it: a field it adds reaches the VM.
+    return fn(inArgs);
 };
 // ── facet-side globals injected by the WASI preamble ─────────────────
 // The preamble (WASI_INSTANCE_PREAMBLE_SRC) runs at facet module-init
