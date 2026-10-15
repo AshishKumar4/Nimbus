@@ -356,7 +356,7 @@ interface FacetVfsState {
     };
     /** Diagnostics: how many files survived the cap (post-greedy-oversample). */
     reachableCount: number;
-    /** Diagnostics: was the bundle truncated by the encoded-size cap? */
+    /** Diagnostics: did the snapshot's raw-byte bound evict optional files? */
     truncated: boolean;
     /**
      * The raw bytes the snapshot's guard counted for the cells it kept: a
@@ -399,8 +399,6 @@ interface FacetVfsState {
      * not exceed the main module's text-size ceiling.
      */
     bundleSource?: FacetVfsBundleSource;
-    /** Move the bundle out of the main module when combined state exceeds its ceiling. */
-    bundleSideModulesRequired?: boolean;
     /**
      * The wasm images the closure holds, by path and content digest — see
      * `collectClosureWasmImages`. A launch stages each as a wasm map entry.
@@ -523,26 +521,6 @@ interface FacetVfsBundleSource {
     storageBytes: number;
 }
 /**
- * Running UTF-8 byte length of `JSON.stringify({ bundle, manifest })`,
- * accumulated one cell at a time.
- *
- * Measuring it by materializing the payload — `encode(stringify(...))`,
- * which the eviction loop used to redo after every single eviction — puts
- * several full copies of a multi-megabyte bundle in the supervisor DO at
- * once. On a working tree carrying one large data file that is enough to
- * reset the DO, which drops the shell's WebSocket server-side without
- * closing it and wedges the user's terminal with no error anywhere.
- *
- * JSON object serialization is `{` + `"key":value` joined by `,` + `}`, so
- * the total is a sum of independent per-cell terms: exact, incremental, and
- * never holding more than one cell's worth of scratch.
- */
-export declare function encodedBundleSize(bundle: FacetVfsBundle): {
-    add(path: string, cell: FacetVfsBundle[string]): void;
-    remove(path: string): void;
-    readonly bytes: number;
-};
-/**
  * Serialize a VFS bundle for Worker Loader without dropping required files.
  *
  * Every code cell becomes its own `{ cjs }` module (commonjs-cell.ts), which
@@ -560,7 +538,7 @@ export declare function encodedBundleSize(bundle: FacetVfsBundle): {
  * split into ordered fragments; the merge expression concatenates those
  * fragments back to the original string or Uint8Array.
  */
-export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: TurnBudget, { consume, emits, esm, codeOnly, dataModules, runtimeCode, }?: {
+export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, pacer?: TurnBudget, { consume, emits, esm, codeOnly, dataModules, runtimeCode, }?: {
     consume?: boolean;
     /** The module of each cell a transform changed (FacetVfsState.emits). */
     emits?: ReadonlyMap<string, string>;
@@ -577,8 +555,8 @@ export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceS
  * A staged spec crosses the fabric as ONE RPC payload, so its snapshot has
  * no side-module relief: `MAX_RPC_SAFE_PAYLOAD_BYTES` is a hard physical
  * ceiling, not a policy knob that can be raised. Base64-reviving binary
- * cells inflates the serialized form ~4/3 over the raw bytes the encoded-size
- * pass measured, so the payload can clear that pass and still not fit.
+ * cells inflates the serialized form ~4/3 over the raw bytes the snapshot's
+ * guard measured, so the payload can clear that guard and still not fit.
  *
  * Fail here, naming the cells that dominate the snapshot. Shipping a
  * shortened one instead would surface inside the facet as an
@@ -668,104 +646,6 @@ export declare function greedyAddMainEntries(vfs: LaunchFs, cwd: string, bundle:
  */
 export declare function speculativePackageDirs(vfs: LaunchFs, cwdStripped: string, bundle: Record<string, string | Uint8Array>): Promise<string[]>;
 /**
- * X.5-Z3: scan every JS source already in `bundle` for static
- * `fs.readFileSync(path.resolve(__dirname, "<rel>"))` shapes and pull
- * the matched asset files (.css / .html / .htm / .svg / .txt / .json)
- * into the bundle. The motivating case is jsdom's
- * `lib/jsdom/living/css/helpers/computed-style.js:16-19`, which loads
- * `default-stylesheet.css` at module-eval time:
- *
- *   const defaultStyleSheet = fs.readFileSync(
- *     path.resolve(__dirname, "../../../browser/default-stylesheet.css"),
- *     { encoding: "utf-8" },
- *   );
- *
- * The fs shim's `readFileSync` (`src/node-shims.ts:202-215`) consults
- * only `__vfsBundle` + `__vfsWrites`; runtime asset files that the
- * require-graph walker doesn't reach (it's bounded to .js/.mjs/.cjs)
- * are absent from the bundle and ENOENT at runtime. This helper closes
- * that gap as a sibling of `greedyAddMainEntries` (W2.6a) +
- * `transformEsmInBundle` (W3.5 Fix B).
- *
- * Pattern matched: literal-only, conservative.
- *
- *   fs.readFileSync(path.resolve(__dirname, "<rel>"), …)
- *   readFileSync(path.resolve(__dirname, "<rel>"), …)
- *
- * `<rel>` is a string literal (single, double, OR backtick — provided
- * the backtick form has no `${}` interpolation). Template-literal,
- * variable, and concatenation forms are **deliberately skipped** —
- * they're an unbounded class. Comment-stripped first to avoid
- * matching the pattern inside `//` / `/* *​/`.
- *
- * Returns the count of asset files added (for diagnostics). Errors
- * are swallowed: missing assets, unreadable VFS, and non-string
- * readFile inputs are silent skips.
- *
- * Same budget shape as `greedyAddMainEntries` — shares the same
- * VFS_BUNDLE_MAX_FILES / VFS_BUNDLE_MAX_BYTES caps via the
- * `budgetState` counter.
- */
-export declare function addStaticReadFileAssets(vfs: LaunchFs, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
-    totalBytes: number;
-    fileCount: number;
-}): Promise<{
-    added: number;
-}>;
-/**
- * X.5-U: scan every JS source already in `bundle` for static
- * readFileSync of a `__dirname`-relative dotfile or "digest/hash/version/
- * sha/md5"-shaped sentinel, AND match the SWC/TypeScript-compiled
- * `(0, fs_1.readFileSync)((0, path_1.resolve)(__dirname, "<rel>"))`
- * call shape that X.5-Z3's `addStaticReadFileAssets` regex misses.
- *
- * Motivating case: ts-jest@29.x's
- * `package/dist/legacy/config/config-set.js:105`:
- *
- *   var fs_1 = require("fs");
- *   var path_1 = require("path");
- *   exports.MY_DIGEST = (0, fs_1.readFileSync)(
- *     (0, path_1.resolve)(__dirname, '../../../.ts-jest-digest'), 'utf8');
- *
- * The install pipeline writes `.ts-jest-digest` to VFS correctly
- * (the namespace lists it). But the runtime
- * fs shim's readFileSync (`src/node-shims.ts:202-215`) consults
- * `__vfsBundle` only, and none of the existing bundle-population
- * passes — `prefetchForRequire` (require-graph), `greedyAddMainEntries`
- * (pkg main entries), `addStaticReadFileAssets` (X.5-Z3, restricted to
- * `.css|html|svg|txt|json` and to direct `path.resolve(__dirname,…)`)
- * — picks the dotfile up. Result: ENOENT at facet runtime even though
- * `fs.readdirSync` and `fs.statSync` both see the file via the manifest.
- *
- * Bounded heuristic: filename must EITHER start with `.` (dotfile) OR
- * match `/digest|hash|version|sha|md5/i` (small-metadata-sentinel
- * pattern). Without this gate, an unconstrained "match any
- * __dirname-relative readFileSync filename" would pull arbitrary large
- * runtime-loaded files (compiled WASM, JSON dictionaries, …) on
- * packages that read them via this exact shape — bundle bloat with no
- * payoff. The heuristic narrows to the ts-jest class. Trade-off
- * documented; future packages outside this shape can extend the
- * predicate.
- *
- * Quote chars supported: `'`, `"`, and backticks WITHOUT `${}`
- * interpolation. Dynamic specifiers (variable, concatenation,
- * interpolation) are deliberately skipped.
- *
- * Same budget shape as `greedyAddMainEntries` /
- * `addStaticReadFileAssets` — shares the same VFS_BUNDLE_MAX_FILES /
- * VFS_BUNDLE_MAX_BYTES caps via `budgetState`. Returns the count of
- * files added (for diagnostics).
- *
- * Errors are swallowed: missing assets, unreadable VFS, and
- * non-string readFile inputs are silent skips — matches Z3 posture.
- */
-export declare function addStaticReadFileDotfilesAndCompiled(vfs: LaunchFs, cwd: string, bundle: Record<string, string | Uint8Array>, budgetState: {
-    totalBytes: number;
-    fileCount: number;
-}): Promise<{
-    added: number;
-}>;
-/**
  * G3 (runtime-pkg wave) — bin-target sibling oversample.
  *
  * When the entry script lives at `node_modules/<pkg>/...` (typical
@@ -774,9 +654,9 @@ export declare function addStaticReadFileDotfilesAndCompiled(vfs: LaunchFs, cwd:
  * the static walker can't see (computed paths, package-internal
  * data files, .cow / .pem / .wasm / .ttf / etc.).
  *
- * Pre-fix: addStaticReadFileAssets only covers a hardcoded ASSET_EXT
- * whitelist (.css/.html/.htm/.svg/.txt/.json). Cowsay's `.cow` files
- * ENOENT at runtime.
+ * Pre-fix: the static asset reads (STATIC_ASSET_READS) cover only a
+ * hardcoded extension list (.css/.html/.htm/.svg/.txt/.json). Cowsay's
+ * `.cow` files ENOENT at runtime.
  *
  * Fix shape: when entry is inside a `node_modules/<pkg>` directory,
  * walk that pkg dir's contents and pull runtime package files under
@@ -1319,6 +1199,8 @@ export declare class FacetManager {
      * memory only grows.
      */
     private esbuild;
+    /** The store `_transformStore` opened over the current VFS and esbuild service; their setters drop it. */
+    private transformStore;
     /**
      * Prefetch-bundle cache. buildPrefetchBundle does a full VFS reachable-set
      * walk + greedy oversample + the module pass on EVERY foreground
@@ -1327,7 +1209,7 @@ export declare class FacetManager {
      * (bundleProfile, cwd, scriptPath, entryCode identity).
      *
      * Correctness watermark: the GLOBAL SqliteVFS revision. buildPrefetchBundle
-     * reads from paths that can lie anywhere in the VFS (addEntryAbsPathReads
+     * reads from paths that can lie anywhere in the VFS (STATIC_ABSOLUTE_LITERALS
      * pulls absolute-path literals like /tmp/x),
      * so a cwd-scoped subtree revision cannot guarantee invalidation. The
      * global revision bumps on ANY write, so the cache invalidates on every
@@ -1542,7 +1424,8 @@ export declare class FacetManager {
      * session's database, admitted through its storage ledger, bound to the
      * esbuild service's transform host. None when the host has no identity (a
      * result could not be told apart from another host's) or there is no
-     * filesystem to admit against.
+     * filesystem to admit against. One store serves every launch and module
+     * until either changes: it opens its schema once, not per transform.
      */
     private _transformStore;
     /**
@@ -1993,6 +1876,7 @@ export declare class FacetManager {
      * when it did — live-diagnosed 2026-07-16).
      */
     private _stageOpencodeFacet;
+    private _stageOpencodeSpec;
     /**
      * Run a headless `opencode serve` as a resident, routeable server facet. The
      * server binds a KNOWN loopback port (honouring an explicit --port/-p/env.PORT,

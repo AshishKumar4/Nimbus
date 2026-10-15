@@ -12,7 +12,7 @@
 // happens, once.
 import assert from 'node:assert/strict';
 import { facetWasmImportsSource } from '../../packages/worker/src/facets/manager.ts';
-import { wasmImageDigest } from '../../packages/worker/src/facets/wasm-image-digest.ts';
+import { wasmImageDigest } from '../../packages/worker/src/facets/wasm-image-key.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 
 const WASM_HEADER = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];

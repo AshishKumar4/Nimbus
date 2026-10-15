@@ -9,9 +9,9 @@
 // so user-written files at /home/user/* or /tmp/* never entered the
 // facet's __vfsBundle.
 //
-// Post-fix: src/facets/manager.ts addEntryAbsPathReads() scans entry
-// code + bundled JS sources for absolute-path string literals and
-// pulls matching VFS files into the bundle within budget.
+// Post-fix: src/facets/manager.ts stages the absolute-path string
+// literals of the entry code and bundled JS sources
+// (STATIC_ABSOLUTE_LITERALS) that name VFS files, within budget.
 
 import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../_driver.mjs';
 

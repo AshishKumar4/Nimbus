@@ -21,11 +21,25 @@ export interface StaticFsRefs {
     }[];
     /** Paths relative to the process's working directory, read at a call site. */
     cwdRelative: PathRef[];
-    /** `require.resolve(spec)` / `createRequire(..).resolve(spec)` from `from`. */
+    /** `require.resolve(spec)` / `createRequire(..).resolve(spec)` from `from`: what Node's require resolves. */
     resolves: {
         from: string;
         spec: string;
     }[];
+    /**
+     * Package subpaths spelled as data (BARE_SUBPATH: "astro/runtime/client/x.js"
+     * in a bundler's include list) from `from`: read by whatever resolves them.
+     */
+    subpaths: {
+        from: string;
+        spec: string;
+    }[];
+    /**
+     * Absolute paths spelled as string literals anywhere (ABSOLUTE_LITERAL),
+     * named by no call this analysis follows: a guess at a file the module
+     * reads, which a launch stages when it is there.
+     */
+    literals: string[];
 }
 /**
  * Every statically named path in `source`, a module whose own path is
@@ -44,9 +58,11 @@ export declare const STATIC_AST_MAX_SOURCE: number;
 /**
  * The same references, found in a token stream with O(1) memory: the
  * literal shapes that need no bindings. `join|resolve(__dirname | import.meta.
- * dirname, 'lit', ...)`, `new URL('lit', import.meta.url)`, a read call on an
- * absolute literal, and package-subpath literals. What folding through
- * bindings would add is not found here.
+ * dirname, 'lit', ...)` (a synchronous read when it is readFileSync's first
+ * argument), `new URL('lit', import.meta.url)`, a read call on an absolute
+ * literal, and package-subpath and absolute-path literals, a template with
+ * no substitution being the string it spells. What folding through bindings
+ * would add is not found here.
  */
 export declare function scanStaticFsTokens(source: string, filename: string): StaticFsRefs;
 //# sourceMappingURL=static-fs-refs.d.ts.map
