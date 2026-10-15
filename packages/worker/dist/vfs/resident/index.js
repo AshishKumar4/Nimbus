@@ -153,7 +153,7 @@ import { createNamespace } from './namespace.js';
 import { createSync } from './sync.js';
 import { createTransport } from './transport.js';
 import { heapTables, sqlTables } from './tables.js';
-export { posixAccess } from '@nimbus-sh/core/vfs/posix-access.js';
+export { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, posixAccess, utimesRefusal } from '@nimbus-sh/core/vfs/posix-access.js';
 export { namespaceRowBytes, residentFileCost } from './cell-cost.js';
 export { NS_DIR, NS_FILE, NS_LINK } from './tables.js';
 export function createResidentStore(options = {}) {

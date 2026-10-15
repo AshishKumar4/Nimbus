@@ -40,7 +40,7 @@ import { concatBytes, dec, enc } from '../_shared/bytes.js';
 import { w7ChunkCount, w7Chunks, } from '@nimbus-sh/platform/w7-frame.js';
 import { WeightedCreditPool, } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { createHash } from 'node:crypto';
-import { posixAccess } from './posix-access.js';
+import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, posixAccess, utimesRefusal } from './posix-access.js';
 import { RecallRequired, recallOf, withRecall } from './recall.js';
 import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../_shared/read-lease-cover.js';
 export { RecallRequired, recallOf, withRecall } from './recall.js';
@@ -2127,12 +2127,7 @@ export class SqliteVFS {
      * or by descriptor, goes through here with the caller's own credential.
      */
     assertConfinedModeChange(inode, mode, cred, path) {
-        if (!this.isConfined(cred))
-            return;
-        const current = inode.mode & 0o7777;
-        const granted = (mode & 0o6077) & ~current;
-        const unstuck = current & ~mode & 0o1000;
-        if (granted === 0 && unstuck === 0)
+        if (!this.isConfined(cred) || confinedModeRefusal(inode.mode, mode) === null)
             return;
         throw vfsError('EPERM', path, 'mode change would grant permission outside your own principal; use u+x');
     }
@@ -4774,13 +4769,9 @@ export class SqliteVFS {
         this.admit(this.lexicalKey(path, cred), this.physicalKey(inode.path));
         // Nothing explicit: only now (null) and omit (undefined).
         const useNow = typeof atimeMs !== 'number' && typeof mtimeMs !== 'number';
-        if (useNow) {
-            if (!this.accessInode(inode, 0o2, cred))
-                throw vfsKeyError('EACCES', resolved.path);
-        }
-        else if (cred.uid !== 0 && cred.uid !== inode.uid) {
-            throw vfsKeyError('EPERM', resolved.path);
-        }
+        const refused = utimesRefusal({ mode: inode.mode, uid: inode.uid, gid: inode.gid, type: inode.kind }, !useNow, cred);
+        if (refused !== null)
+            throw vfsKeyError(refused, resolved.path);
         const at = (value, kept) => (value === undefined ? kept : value !== null && Number.isFinite(value) ? Math.trunc(value) : this.now());
         const atime = at(atimeMs, inode.atime);
         const mtime = at(mtimeMs, inode.mtime);
@@ -4822,7 +4813,7 @@ export class SqliteVFS {
      * confined rule. Every mode change asks it (chmod, copyfile's keepMode).
      */
     modeChange(inode, mode, cred, path) {
-        if (cred.uid !== 0 && cred.uid !== inode.uid)
+        if (chmodRefusal(inode, cred) !== null)
             throw vfsKeyError('EPERM', path ?? 'detached inode');
         if (path !== null)
             this.sharedAdmission(path, cred);
@@ -4868,21 +4859,13 @@ export class SqliteVFS {
             throw vfsError('EINVAL', `invalid uid ${uid}`);
         if (gid !== null && (!Number.isSafeInteger(gid) || gid < 0))
             throw vfsError('EINVAL', `invalid gid ${gid}`);
-        const owner = cred.uid === inode.uid;
-        if (uid !== null && uid !== inode.uid && cred.uid !== 0)
-            throw vfsKeyError('EPERM', resolved.path);
-        if (uid !== null && uid === inode.uid && cred.uid !== 0 && !owner)
-            throw vfsKeyError('EPERM', resolved.path);
-        if (gid !== null && gid !== inode.gid && cred.uid !== 0 && (!owner || !cred.groups.includes(gid))) {
-            throw vfsKeyError('EPERM', resolved.path);
-        }
-        if (gid !== null && gid === inode.gid && cred.uid !== 0 && !owner)
+        if (chownRefusal(inode, uid, gid, cred) !== null)
             throw vfsKeyError('EPERM', resolved.path);
         this.admit(this.lexicalKey(path, cred), this.physicalKey(inode.path));
         this.publishMetadata(inode, {
             uid: uid ?? inode.uid,
             gid: gid ?? inode.gid,
-            mode: cred.uid === 0 ? inode.mode : inode.mode & ~0o6000,
+            mode: chownedMode(inode.mode, cred),
         });
     }
     /**

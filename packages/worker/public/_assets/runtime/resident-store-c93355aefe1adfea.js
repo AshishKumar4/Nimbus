@@ -24,10 +24,15 @@ var __nimbusResidentModule = (() => {
     NS_DIR: () => NS_DIR,
     NS_FILE: () => NS_FILE,
     NS_LINK: () => NS_LINK,
+    chmodRefusal: () => chmodRefusal,
+    chownRefusal: () => chownRefusal,
+    chownedMode: () => chownedMode,
+    confinedModeRefusal: () => confinedModeRefusal,
     createResidentStore: () => createResidentStore,
     namespaceRowBytes: () => namespaceRowBytes,
     posixAccess: () => posixAccess,
-    residentFileCost: () => residentFileCost
+    residentFileCost: () => residentFileCost,
+    utimesRefusal: () => utimesRefusal
   });
 
   // ../platform/dist/limits.js
@@ -321,6 +326,33 @@ var __nimbusResidentModule = (() => {
       return (requested & 1) === 0 || (permissions & 73) !== 0 || entry.type === "directory";
     const shift = cred.uid === entry.uid ? 6 : cred.gid === entry.gid || cred.groups.includes(entry.gid) ? 3 : 0;
     return (permissions >> shift & requested) === requested;
+  }
+  function chmodRefusal(entry, cred) {
+    return cred.uid !== 0 && cred.uid !== entry.uid ? "EPERM" : null;
+  }
+  function confinedModeRefusal(current, next) {
+    const held = current & 4095;
+    const granted = next & 3135 & ~held;
+    const unstuck = held & ~next & 512;
+    return granted === 0 && unstuck === 0 ? null : "EPERM";
+  }
+  function chownRefusal(entry, uid, gid, cred) {
+    if (cred.uid === 0)
+      return null;
+    const owner = cred.uid === entry.uid;
+    if (uid !== null && (uid !== entry.uid || !owner))
+      return "EPERM";
+    if (gid !== null && (!owner || gid !== entry.gid && !cred.groups.includes(gid)))
+      return "EPERM";
+    return null;
+  }
+  function chownedMode(mode, cred) {
+    return cred.uid === 0 ? mode : mode & ~3072;
+  }
+  function utimesRefusal(entry, explicit, cred) {
+    if (!explicit)
+      return posixAccess(entry, 2, cred) ? null : "EACCES";
+    return cred.uid !== 0 && cred.uid !== entry.uid ? "EPERM" : null;
   }
 
   // src/vfs/resident/permissions.ts

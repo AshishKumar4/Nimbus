@@ -3961,7 +3961,7 @@ const __fsMod = (() => {
    * session's to answer.
    */
   async function _copiedHere(src, dest, call) {
-    if (typeof __nimbusDecidedHere !== "function" || !_supervisor()) return false;
+    if (typeof __nimbusDecidedHere !== "function" || !_supervisor() || !_nsActive()) return false;
     const srcAbs = _resolveFollow(src, "copyfile");
     const destAbs = _resolveFollow(dest, "copyfile");
     const srcK = _strip(srcAbs);
@@ -3972,8 +3972,9 @@ const __fsMod = (() => {
     if (!_decidedHere(destAbs)) return false;
     const grant = client.held(srcK);
     if (grant === undefined) return false;
+    // The source as the session's copy reads it: searched to, and readable.
     const readable = (stat) => stat !== undefined && stat.isFile() && _modeAllows(stat, 4) && (stat.mode & 0o7000) === 0;
-    if (!readable(_statLadder(srcAbs))) return false;
+    if (!_ancestorsSearchable(srcAbs) || !readable(_statLadder(srcAbs))) return false;
     if (!(__vfsWrites && Object.prototype.hasOwnProperty.call(__vfsWrites, srcK) && _wholeCell(srcK, __vfsWrites[srcK]))) {
       // Read under the grant, into a cell the view admits: nothing but this
       // process changes the file while the grant is held.
@@ -4243,15 +4244,15 @@ const __fsMod = (() => {
     _detachStructuralMutation(_utimesJudged(p, atime, mtime, false, "lutimes", false).queue(), "lutimes", p);
   }
 
-  // utimes as this view judges \`p\` (a name it lists, else ENOENT or the
-  // namespace's refusal), its times answered here at once. \`live\`: the async
-  // form, which asks the session about a name this view does not list.
+  // utimes as this view judges its target (_attrTarget) by the session's rule
+  // (core posix-access utimesRefusal: Node's utimes always names its times),
+  // its times answered here at once.
   function _utimesJudged(p, atime, mtime, follow, syscall, live) {
-    const judged = existsSync(p);
-    if (!judged && !(live && _supervisor())) throw _absentErr(_resolve(p), syscall, p, follow ? "fs.promises.utimes" : "fs.promises.lutimes", follow ? undefined : false);
-    const absPath = follow ? _resolveFollow(p, syscall) : _resolve(p);
-    const time = _recordLocalTimes(absPath, atime, mtime, syscall, p).value;
-    return { absPath, judged, queue: () => _utimesQueued(absPath, time, follow, syscall, p) };
+    const { target, entry } = _attrTarget(p, follow, syscall, follow ? "fs.promises.utimes" : "fs.promises.lutimes", live);
+    const refused = entry === undefined ? null : __nimbusResidentModule.utimesRefusal(entry, true, _posixCred());
+    if (refused !== null) throw _fsErr(refused, syscall, p);
+    const time = _recordLocalTimes(target, atime, mtime, syscall, p).value;
+    return { target, judged: entry !== undefined, queue: () => _utimesQueued(target, time, follow, syscall, p) };
   }
 
   // A sync utimes' effect: the local times at once (statSync's overlay), and
@@ -4270,37 +4271,51 @@ const __fsMod = (() => {
   async function _utimesAsync(p, atime, mtime, opts, syscallOverride) {
     const follow = !(opts && opts.followSymlinks === false);
     const syscall = syscallOverride || (follow ? "utimes" : "lutimes");
-    const { absPath, judged, queue } = _utimesJudged(p, atime, mtime, follow, syscall, true);
-    await _structuralAsync(queue, syscall, p, judged, absPath);
+    const { target, judged, queue } = _utimesJudged(p, atime, mtime, follow, syscall, true);
+    await _structuralAsync(queue, syscall, p, judged, target);
   }
 
   /**
-   * chmod(2): only the owner or root changes a mode (EPERM). The local
-   * overlay is what statSync reports and what the local permission checks
-   * read, so a mode set here without that check made a root-owned file
-   * writable in the process's own view.
+   * The entry a metadata call (chmod, chown, utimes) changes, as this view
+   * knows it: the call's target resolved once, followed or not as the call
+   * is, and the target's own stat (\`entry\`, as the shared POSIX rules read
+   * it), its ancestors searched (EACCES). A sync call answers what this view
+   * cannot (ENOENT, the namespace's refusal) itself; the async form (\`live\`)
+   * asks the session instead: \`entry\` undefined, for a name this view does
+   * not list or cannot say anything of (the namespace unavailable).
    */
-  function _ensureModeOwner(absPath, syscall, p) {
-    if (Number(cred.uid) === 0) return;
-    const stat = _statLadder(absPath);
-    if (stat === undefined) throw _absentErr(absPath, syscall, p, "fs.promises.chmod");
-    if (Number(stat.uid) !== Number(cred.uid)) throw _fsErr("EPERM", syscall, p);
+  function _attrTarget(p, follow, syscall, asyncForm, live) {
+    try {
+      _nsRequire(syscall, p, asyncForm);
+      const target = follow ? _resolveFollow(p, syscall) : _resolve(p);
+      const stat = _statLadder(target, !follow);
+      if (stat === undefined) {
+        if (live && _supervisor()) return { target, entry: undefined };
+        throw _absentErr(_resolve(p), syscall, p, asyncForm, follow ? undefined : false);
+      }
+      _ensureAncestorsTraversable(target, syscall, p);
+      const entry = _posixEntry(stat);
+      return { target, entry: entry === null ? undefined : { ...entry } };
+    } catch (error) {
+      if (live && error?.code === "EAGAIN" && _supervisor()) return { target: _resolve(p), entry: undefined };
+      throw error;
+    }
   }
 
   function chmodSync(p, mode) {
     _detachStructuralMutation(_chmodJudged(p, mode, false).queue(), "chmod", p);
   }
 
-  // chmod as this view judges \`p\`: a name it lists (else ENOENT or the
-  // namespace's refusal) whose owner is the caller. \`live\`: the async form,
-  // which asks the session about a name this view does not list.
-  function _chmodJudged(p, mode, live) {
-    const judged = existsSync(p);
-    if (!judged && !(live && _supervisor())) throw _absentErr(_resolve(p), "chmod", p, "fs.promises.chmod");
-    const absPath = _resolveFollow(p, "chmod");
-    if (judged) _ensureModeOwner(absPath, "chmod", p);
-    const m = _coerceMode(mode, "chmod", p);
-    return { absPath, judged, queue: () => _chmodQueued(absPath, m, "chmod", p) };
+  // chmod as this view judges its target (_attrTarget) by the session's rule
+  // (core posix-access chmodRefusal). Whether a mode a confined principal may
+  // not grant is this caller's to grant, this view does not know: such a
+  // change is the session's to answer.
+  function _chmodJudged(p, mode, live, syscall = "chmod") {
+    const { target, entry } = _attrTarget(p, true, syscall, "fs.promises.chmod", live);
+    if (entry !== undefined && __nimbusResidentModule.chmodRefusal(entry, _posixCred()) !== null) throw _fsErr("EPERM", syscall, p);
+    const m = _coerceMode(mode, syscall, p);
+    const judged = entry !== undefined && __nimbusResidentModule.confinedModeRefusal(entry.mode, m) === null;
+    return { target, judged, queue: () => _chmodQueued(target, m, syscall, p) };
   }
 
   // A chmod's effect: the local mode at once (statSync's overlay), and the
@@ -4314,8 +4329,8 @@ const __fsMod = (() => {
   }
 
   async function _chmodAsync(p, mode) {
-    const { absPath, judged, queue } = _chmodJudged(p, mode, true);
-    await _structuralAsync(queue, "chmod", p, judged, absPath);
+    const { target, judged, queue } = _chmodJudged(p, mode, true);
+    await _structuralAsync(queue, "chmod", p, judged, target);
   }
 
   function _coerceId(value, syscall, p) {
@@ -4326,17 +4341,18 @@ const __fsMod = (() => {
 
   async function _chownAsync(p, uid, gid, opts, syscallOverride) {
     const syscall = syscallOverride || (opts && opts.followSymlinks === false ? "lchown" : "chown");
-    const { absPath, judged, queue } = _chownJudged(p, uid, gid, opts, syscall, true);
-    await _structuralAsync(queue, syscall, p, judged, absPath);
+    const { target, judged, queue } = _chownJudged(p, uid, gid, opts, syscall, true);
+    await _structuralAsync(queue, syscall, p, judged, target);
   }
 
-  // Ownership as this view judges it: the stat record updated locally at once
-  // and the change logged now, in program order. Without an authority there
-  // is no owner table to change (ENOSYS). \`live\`: the async form, which asks
-  // the session about a name this view does not list.
+  // Ownership as this view judges its target (_attrTarget) by the session's
+  // rule (core posix-access chownRefusal), checked before the local row
+  // changes: that row is what the local permission checks read. The row then
+  // changes as the session's will (chownedMode), and the change is logged
+  // now, in program order. Without an authority there is no owner table to
+  // change (ENOSYS).
   function _chownJudged(p, uid, gid, opts, syscall, live) {
     const followSymlinks = !(opts && opts.followSymlinks === false);
-    const absPath = _resolve(p);
     const supervisor = _supervisor();
     if (!supervisor || typeof supervisor.chown !== "function") {
       if (!existsSync(p)) throw _fsErr("ENOENT", syscall, p);
@@ -4344,27 +4360,29 @@ const __fsMod = (() => {
     }
     const nextUid = _coerceId(uid, syscall, p);
     const nextGid = _coerceId(gid, syscall, p);
-    const stat = _statLadder(absPath);
-    // chown(2): root changes anything; the owner may only set the group to
-    // one of its own groups, and never the owner. Checked before the local
-    // row changes: that row is what the local permission checks read.
-    if (Number(cred.uid) !== 0) {
-      if (stat === undefined && !live) throw _absentErr(absPath, syscall, p, "fs.promises.chown", followSymlinks);
-      const groups = [Number(cred.gid), ...cred.groups.map(Number)];
-      if (stat !== undefined && (Number(stat.uid) !== Number(cred.uid) || nextUid !== Number(stat.uid)
-        || (nextGid !== Number(stat.gid) && !groups.includes(nextGid)))) {
-        throw _fsErr("EPERM", syscall, p);
-      }
-    }
+    const { target, entry } = _attrTarget(p, followSymlinks, syscall, followSymlinks ? "fs.promises.chown" : "fs.promises.lchown", live);
+    if (entry !== undefined && __nimbusResidentModule.chownRefusal(entry, nextUid, nextGid, _posixCred()) !== null) throw _fsErr("EPERM", syscall, p);
     return {
-      absPath,
-      judged: stat !== undefined,
+      target,
+      judged: entry !== undefined,
       queue: () => {
-        const meta = _metadata(absPath);
-        if (meta) { meta.uid = nextUid; meta.gid = nextGid; }
-        return _queueStructuralMutation(absPath, syscall, p, (s) => _chownCall(s, absPath, nextUid, nextGid, followSymlinks));
+        if (entry !== undefined) _chownLocal(target, followSymlinks, nextUid, nextGid);
+        return _queueStructuralMutation(target, syscall, p, (s) => _chownCall(s, target, nextUid, nextGid, followSymlinks));
       },
     };
+  }
+
+  /** A chown's effect on this view's own row, and on its own mode, as the session makes it. */
+  function _chownLocal(target, follow, uid, gid) {
+    const k = _strip(target);
+    const meta = _nsMeta(k, follow);
+    if (meta && typeof meta === "object") {
+      meta.uid = uid;
+      meta.gid = gid;
+      if (meta.mode !== undefined) meta.mode = __nimbusResidentModule.chownedMode(Number(meta.mode), _posixCred());
+    }
+    const own = _localAttr("mode", k);
+    if (own !== null) own.value = __nimbusResidentModule.chownedMode(own.value, _posixCred());
   }
 
   // chown follows the name's link, as an attribute record does; lchown's is
@@ -4392,28 +4410,44 @@ const __fsMod = (() => {
    */
   function _modeAllows(meta, want) {
     if (want === 0) return true;
+    const entry = _posixEntry(meta);
+    return entry !== null && _posixAccess(entry, want, _posixCred());
+  }
+  /**
+   * \`meta\` (a Stats, or the namespace's metadata) as the shared POSIX rules
+   * read an entry, in the one reused record; null where it does not state its
+   * owner, group and mode, which no rule judges.
+   */
+  function _posixEntry(meta) {
     const mode = Number(meta?.mode);
     const uid = Number(meta?.uid);
     const gid = Number(meta?.gid);
-    if (!Number.isInteger(mode) || !Number.isInteger(uid) || !Number.isInteger(gid)) return false;
-    _accessCred ??= { uid: Number(cred.uid), gid: Number(cred.gid), groups: cred.groups.map(Number) };
+    if (!Number.isInteger(mode) || !Number.isInteger(uid) || !Number.isInteger(gid)) return null;
     _accessEntry.mode = mode;
     _accessEntry.uid = uid;
     _accessEntry.gid = gid;
-    // Its type as the entry says (a Stats, or the namespace's metadata), never its mode bits.
+    // Its type as the entry says, never its mode bits.
     _accessEntry.type = typeof meta.isDirectory === "function"
       ? (meta.isDirectory() ? "directory" : meta.isSymbolicLink() ? "symlink" : "file")
       : meta.type;
-    return _posixAccess(_accessEntry, want, _accessCred);
+    return _accessEntry;
+  }
+  function _posixCred() {
+    return _accessCred ??= { uid: Number(cred.uid), gid: Number(cred.gid), groups: cred.groups.map(Number) };
   }
 
   /** \`p\` and \`dest\`: what a refusal names, the call's own paths, whichever of them \`absPath\` is. */
   function _ensureAncestorsTraversable(absPath, syscall, p, dest) {
+    if (!_ancestorsSearchable(absPath)) throw _fsErr("EACCES", syscall, p, dest);
+  }
+  /** Whether each ancestor of \`absPath\` this view knows may be searched (x), as the session's walk to it must. */
+  function _ancestorsSearchable(absPath) {
     const parts = _strip(absPath).split("/").filter(Boolean);
     for (let index = 1; index < parts.length; index++) {
       const ancestorMeta = _metadata("/" + parts.slice(0, index).join("/"));
-      if (ancestorMeta && !_modeAllows(ancestorMeta, 1)) throw _fsErr("EACCES", syscall, p, dest);
+      if (ancestorMeta && !_modeAllows(ancestorMeta, 1)) return false;
     }
+    return true;
   }
 
   /**
@@ -5736,13 +5770,12 @@ const __fsMod = (() => {
   function futimesSync(fd, atime, mtime) {
     if (_isStdioFd(fd)) throw _fsErr("EINVAL", "futimes", fd);
     const handle = _fdHandle(fd, "futimes");
-    _detachStructuralMutation(_utimesQueued(handle._abs, _recordLocalTimes(handle._abs, atime, mtime, "futimes", handle._path).value, true, "futimes", handle._path), "futimes", handle._path);
+    _detachStructuralMutation(_utimesJudged(handle._path, atime, mtime, true, "futimes", false).queue(), "futimes", handle._path);
   }
   function fchmodSync(fd, mode) {
     if (_isStdioFd(fd)) throw _fsErr("EINVAL", "fchmod", fd);
     const handle = _fdHandle(fd, "fchmod");
-    _ensureModeOwner(handle._abs, "fchmod", handle._path);
-    _detachStructuralMutation(_chmodQueued(handle._abs, _coerceMode(mode, "fchmod", handle._path), "fchmod", handle._path), "fchmod", handle._path);
+    _detachStructuralMutation(_chmodJudged(handle._path, mode, false, "fchmod").queue(), "fchmod", handle._path);
   }
   function fchownSync(fd, uid, gid) {
     if (_isStdioFd(fd)) throw _fsErr("EINVAL", "fchown", fd);
