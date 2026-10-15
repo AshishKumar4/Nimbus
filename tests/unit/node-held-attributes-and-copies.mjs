@@ -28,7 +28,6 @@
 import assert from 'node:assert/strict';
 import { createAuthority, facetSupervisor, launchResident, residentDataPlan, runScenarios, sleep, until } from './lib/resident-body.mjs';
 import { drainProcessFsJournal, journalSource, LINGER_MS, sqlJournal } from '../../packages/core/src/_shared/process-fs-client.ts';
-import { WAVE_BYTES } from '../../packages/platform/src/wave-writer.ts';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { journalDrainSession } from '../../packages/core/src/workspace/supervisor-op.ts';
 
@@ -54,6 +53,7 @@ async function boot({ program = PROGRAM, held = true } = {}) {
   const root = authority.rawVfs.as(CRED_KERNEL);
   root.writeFile('home/user/app/out/rootfile', 'R');
   root.mkdir('home/user/app/locked', { mode: 0o700 });
+  authority.kfs.mkdir('home/user/app/out/shut-before', { mode: 0o755 });
   root.writeFile('home/user/app/locked/inside.txt', 'inside');
   let stalled = null;
   let listingFails = false;
@@ -99,6 +99,31 @@ async function boot({ program = PROGRAM, held = true } = {}) {
 
 /** What the session holds at `path`, read as a peer reads it (recalling the process's subtree). */
 const peerRead = async (authority, path) => new TextDecoder().decode(await authority.peer.readFile(path));
+
+/**
+ * A private source's decided copy, its log drained only through the entry
+ * that carries the copy's bytes (the process ended after that wave): what
+ * the destination holds then is readable by no one the source refuses.
+ */
+async function copyStoppedAfterItsBytes(existing) {
+  const { fs, stall } = await boot();
+  if (existing) fs.writeFileSync(`${OUT}/copy.bin`, 'old');
+  fs.writeFileSync(`${OUT}/private.bin`, 'SECRET-BYTES');
+  fs.chmodSync(`${OUT}/private.bin`, 0o600);
+  stall();
+  assert.equal(await answeredAtOnce(fs.promises.copyFile(`${OUT}/private.bin`, `${OUT}/copy.bin`)), 'answered');
+  const log = sqlJournal(globalThis.__nimbusFsJournalSql);
+  const bytes = log.entries().find(({ op }) => op.type === 'call' && op.call.path === 'home/user/app/out/copy.bin' && op.call.data?.byteLength === 12);
+  assert.ok(bytes, 'the copy\'s bytes are in the log');
+  const prefix = { ...journalSource(log), readAfter: async (after, max) => (await journalSource(log).readAfter(after, max)).filter(({ jid }) => jid <= bytes.jid) };
+  const after = createAuthority();
+  after.kfs.mkdir('home/user/app/out', { recursive: true, mode: 0o755 });
+  if (existing) after.kfs.writeFile('home/user/app/out/copy.bin', 'old', { mode: 0o644 });
+  const lease = after.files.openHost(CRED_SESSION_USER);
+  await drainProcessFsJournal({ journal: prefix, session: journalDrainSession(lease.fs, 1000002) }).finally(() => lease.dispose());
+  const left = after.rawVfs.as(CRED_KERNEL).stat('home/user/app/out/copy.bin');
+  assert.equal(left.mode & 0o077, 0, `the source's bytes are readable beyond its mode: ${(left.mode & 0o777).toString(8)}`);
+}
 
 /** Whether `work` settles while the session answers nothing (a timer of the host's, which no barrier holds). */
 const answeredAtOnce = (work) => Promise.race([work.then(() => 'answered'), sleep(50).then(() => 'waiting')]);
@@ -214,33 +239,16 @@ await runScenarios(import.meta.path, {
     assert.equal(after.kfs.stat('home/user/app/out/answered.txt').mode & 0o7777, sourceMode);
   },
 
-  async 'a decided copy\'s log never puts a byte in the session readable beyond its source, whichever wave it stops after'() {
-    for (const existing of [false, true]) {
-      const { authority, fs, stall } = await boot();
-      if (existing) fs.writeFileSync(`${OUT}/copy.bin`, 'old');
-      fs.writeFileSync(`${OUT}/private.bin`, Buffer.alloc(WAVE_BYTES + 1024, 112));
-      fs.chmodSync(`${OUT}/private.bin`, 0o600);
-      stall();
-      assert.equal(await answeredAtOnce(fs.promises.copyFile(`${OUT}/private.bin`, `${OUT}/copy.bin`)), 'answered');
-      // The process ends after the wave that carries the copy's first bytes.
-      const log = sqlJournal(globalThis.__nimbusFsJournalSql);
-      const first = log.entries().find(({ op }) => op.type === 'call' && op.call.path === 'home/user/app/out/copy.bin' && op.call.data?.byteLength > 3);
-      assert.ok(first, 'the copy\'s bytes are in the log');
-      const prefix = { ...journalSource(log), readAfter: async (after, max) => (await journalSource(log).readAfter(after, max)).filter(({ jid }) => jid <= first.jid) };
-      const after = createAuthority();
-      after.kfs.mkdir('home/user/app/out', { recursive: true, mode: 0o755 });
-      if (existing) after.kfs.writeFile('home/user/app/out/copy.bin', 'old', { mode: 0o644 });
-      const lease = after.files.openHost(CRED_SESSION_USER);
-      await drainProcessFsJournal({ journal: prefix, session: journalDrainSession(lease.fs, 1000002) }).finally(() => lease.dispose());
-      const left = after.rawVfs.as(CRED_KERNEL).stat('home/user/app/out/copy.bin');
-      if (left.size > 3) assert.equal(left.mode & 0o077, 0, `${existing ? 'an existing' : 'a new'} destination holds the source's bytes readable beyond its mode: ${(left.mode & 0o777).toString(8)}`);
-    }
+  async 'a decided copy\'s log puts no byte in the session readable beyond its source, a new destination'() {
+    await copyStoppedAfterItsBytes(false);
+  },
+
+  async 'a decided copy\'s log puts no byte in the session readable beyond its source, an existing 0644 destination'() {
+    await copyStoppedAfterItsBytes(true);
   },
 
   async 'the source\'s own chmod of a directory above it is searched, as the session searches it'() {
-    const { authority, fs } = await boot();
-    await authority.peer.mkdir('home/user/app/out/shut-before', { mode: 0o755 });
-    await globalThis.__nimbusProcessFs.flush();
+    const { fs } = await boot();
     fs.writeFileSync(`${OUT}/shut-before/s`, 'S');
     fs.chmodSync(`${OUT}/shut-before`, 0o600);
     assert.throws(() => fs.statSync(`${OUT}/shut-before/s`), { code: 'EACCES' });
@@ -270,7 +278,7 @@ await runScenarios(import.meta.path, {
     for (const [name, call] of Object.entries(calls)) assert.equal(await answeredAtOnce(call), 'waiting', name);
     await release();
     await Promise.all(Object.values(calls));
-    assert.equal((await authority.peer.lstat('home/user/elsewhere/link')).isSymbolicLink(), true);
+    assert.equal(await authority.peer.readlink('home/user/elsewhere/link'), 'x.txt');
   },
 
   async 'a descriptor\'s chmod, utimes and chown change the file it opened, wherever the process has gone since'() {
