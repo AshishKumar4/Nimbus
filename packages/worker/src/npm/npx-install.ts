@@ -164,7 +164,7 @@ export async function npxCacheDir(specs: readonly string[]): Promise<string> {
 }
 
 /**
- * Whether the package installed at `packageDir` answers `spec`, as
+ * Whether the package installed at `packageDir`, if any, answers `spec`, as
  * libnpmexec's missingFromTree reads a tree: a spec by name alone takes
  * whatever is installed; a registry version or range, only a version that
  * satisfies it. Any other spec (a tag, a git or tarball url, a path) only
@@ -177,23 +177,21 @@ async function installedFor(
   spec: string,
   ownRequest: boolean,
 ): Promise<boolean> {
-  let version: unknown;
-  try {
-    ({ version } = JSON.parse(await vfs.readFileString(_vfsKey(`${packageDir}/package.json`))));
-  } catch {
-    return false;
-  }
   let parsed: ReturnType<typeof npa>;
   try {
     parsed = npa(spec);
   } catch {
     return false;
   }
+  // By name alone, whatever is there (the bin's own lookup finds whether anything is).
   if (parsed.raw === parsed.name) return true;
-  if (parsed.registry && (parsed.type === 'version' || parsed.type === 'range')) {
+  if (!(parsed.registry && (parsed.type === 'version' || parsed.type === 'range'))) return ownRequest;
+  try {
+    const { version } = JSON.parse(await vfs.readFileString(_vfsKey(`${packageDir}/package.json`)));
     return typeof version === 'string' && satisfiesRange(version, parsed.rawSpec);
+  } catch {
+    return false;
   }
-  return ownRequest;
 }
 
 /**
