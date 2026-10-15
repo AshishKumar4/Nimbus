@@ -58,6 +58,7 @@ function session(local = {}) {
     isDirectory: async (path) => root.exists(path) && root.stat(path).type === 'directory',
     readFileString: async (path) => root.readFileString(path),
     mkdir: async (path, options) => root.mkdir(path, options),
+    writeFile: async (path, data) => root.writeFile(path, data),
   };
   const npx = (...args) => resolveNpxBinary(installer, projectView, CRED_KERNEL, '/home/user/app', args, () => {}, 1);
   const versionOf = (binPath) => JSON.parse(root.readFileString(`${binPath.slice(1, binPath.lastIndexOf('/'))}/package.json`)).version;
