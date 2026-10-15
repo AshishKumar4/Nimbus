@@ -1,6 +1,7 @@
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { Command } from '../types.js';
 import { type PackageType } from '../../../../runtime/module-format.js';
+import { type ProcessIdentity } from '../../node-compat/process.js';
 import type { VirtualRequestHandler, Kernel, LoopbackRouter } from '../../kernel/index.js';
 import type { DNSResolver } from '../../kernel/dns-resolver.js';
 import type { CommandOutputStream } from '../types.js';
@@ -14,6 +15,8 @@ export interface NodeProgram {
     readonly env: Record<string, string>;
     /** The main script's package type, from its package.json (a `.js` entry), decided before it runs. */
     readonly mainType: PackageType;
+    /** Its process's pid and credential, as the invocation has them. */
+    readonly identity: Omit<ProcessIdentity, 'setUmask'>;
 }
 /** What a run reaches outside its realm: the filesystem, its stdio, the session's ports. */
 export interface NodeProgramHost {
@@ -25,6 +28,8 @@ export interface NodeProgramHost {
     readonly portRegistry?: Map<number, VirtualRequestHandler>;
     readonly routeLoopback?: LoopbackRouter;
     readonly dns?: DNSResolver;
+    /** umask(2): the mask the program creates with from now on. */
+    readonly setUmask: (mask: number) => void;
 }
 /**
  * How a program's main script ended: its exit code, and whether its process

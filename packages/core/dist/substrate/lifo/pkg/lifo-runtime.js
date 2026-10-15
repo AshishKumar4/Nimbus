@@ -8,7 +8,8 @@ import { ProcessExitError } from '../node-compat/index.js';
 import { createCjsLoader } from '../node-compat/cjs-loader.js';
 import { createNativeEsmLoader } from '../node-compat/native-esm-loader.js';
 import { leaveStandardStreamsOpen } from '../node-compat/standard-streams.js';
-import { containsModuleSyntax } from '../../../runtime/javascript-ast.js';
+import { applySourceEdits, containsModuleSyntax } from '../../../runtime/javascript-ast.js';
+import { readModuleImportSites, unusedIdentifier } from '../../../runtime/dynamic-import-rewrite.js';
 // ─── CDN + WASM module registry ───
 const DEFAULT_CDN = 'https://esm.sh';
 /** In-memory cache for CDN imports (survives across command invocations). */
@@ -50,19 +51,31 @@ function createLifoAPI(ctx) {
 }
 // ─── Command loader ───
 // ─── ESM rewriting ───
+/** A bare specifier: neither relative nor absolute, and not a URL (`node:`, `https:`, `data:`). */
+const BARE_SPECIFIER = /^(?![./]|[A-Za-z][A-Za-z0-9+.-]*:)/;
 /**
- * Rewrite bare specifier imports/exports to CDN URLs so the module
- * can be loaded via blob URL + import().
+ * The module with its bare module requests sent to the CDN, as the language
+ * reads them (readModuleImportSites): each static specifier, and every
+ * import() through one helper that maps its specifier when it is bare, so a
+ * computed one is mapped too. A string or a comment is the program's text.
  *
  *   import { X } from 'foo'  →  import { X } from 'https://esm.sh/foo'
- *   import('foo')             →  import('https://esm.sh/foo')
+ *   import('foo')             →  __lifoCdnImport0('foo')
  */
 function rewriteImportsToCdn(source, cdn) {
-    // Static imports/re-exports: from 'specifier' or from "specifier"
-    let result = source.replace(/(from\s+)(["'])([^"'./][^"']*)\2/g, (_, prefix, quote, spec) => `${prefix}${quote}${cdn}/${spec}${quote}`);
-    // Dynamic import(): import('specifier') or import("specifier")
-    result = result.replace(/(import\s*\(\s*)(["'])([^"'./][^"']*)\2(\s*\))/g, (_, prefix, quote, spec, suffix) => `${prefix}${quote}${cdn}/${spec}${quote}${suffix}`);
-    return result;
+    const sites = readModuleImportSites(source);
+    // A function declaration, so the module's code reaches it wherever it is,
+    // under a name the module never spells, so none of its bindings meets it.
+    const helperName = sites.calls.length === 0 ? '' : unusedIdentifier(source, '__lifoCdnImport');
+    const edits = [
+        ...sites.statics.filter((site) => BARE_SPECIFIER.test(site.specifier))
+            .map((site) => ({ start: site.start, end: site.end, text: JSON.stringify(`${cdn}/${site.specifier}`) })),
+        ...sites.calls.map((site) => ({ start: site.start, end: site.open + 1, text: `${helperName}(` })),
+    ];
+    if (edits.length === 0)
+        return source;
+    const helper = sites.calls.length === 0 ? '' : `\nfunction ${helperName}(specifier, options) { return import(typeof specifier === 'string' && ${BARE_SPECIFIER}.test(specifier) ? ${JSON.stringify(`${cdn}/`)} + specifier : specifier, options); }\n`;
+    return applySourceEdits(source, edits) + helper;
 }
 /**
  * Create a Command that executes a lifo-native package entry.
@@ -84,11 +97,9 @@ export function createLifoCommand(entryPath, vfs) {
     };
 }
 async function executeEsmCommand(source, ctx, lifo) {
-    const cdn = getCdn(ctx.env);
-    const rewritten = rewriteImportsToCdn(source, cdn);
-    const encoded = Buffer.from(rewritten, 'utf-8').toString('base64');
-    const url = `data:text/javascript;base64,${encoded}`;
     try {
+        const rewritten = rewriteImportsToCdn(source, getCdn(ctx.env));
+        const url = `data:text/javascript;base64,${Buffer.from(rewritten, 'utf-8').toString('base64')}`;
         const mod = await import(/* @vite-ignore */ url);
         const handler = mod.default;
         if (typeof handler !== 'function') {
@@ -117,8 +128,11 @@ async function executeEsmCommand(source, ctx, lifo) {
  * lifo are the shell's own objects.
  */
 async function executeCjsCommand(entryPath, source, ctx, lifo) {
+    // The command's own mask, a copy of the shell's as it started, as a child's is.
+    let mask = ctx.cred.umask;
     const nodeCtx = {
-        filesystem: synchronousFilesystem(ctx.vfs),
+        filesystem: synchronousFilesystem(ctx.vfs, () => mask),
+        identity: { pid: ctx.pid, uid: ctx.cred.uid, gid: ctx.cred.gid, groups: ctx.cred.groups, umask: mask, setUmask: (next) => { mask = next; } },
         cwd: ctx.cwd,
         env: ctx.env,
         stdout: ctx.stdout,
@@ -129,10 +143,11 @@ async function executeCjsCommand(entryPath, source, ctx, lifo) {
         signal: ctx.signal,
         reachStreams: leaveStandardStreamsOpen,
     };
-    const scope = {
-        process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr }),
-        console: createConsole(ctx.stdout, ctx.stderr),
-    };
+    const process = createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr, identity: nodeCtx.identity });
+    const console = createConsole(ctx.stdout, ctx.stderr);
+    // A command runs in the shell's realm, whose globalThis is the shell's: its
+    // modules share a global of their own instead.
+    const scope = { process, console, global: { process, Buffer, console } };
     const loader = createCjsLoader(nodeCtx, scope);
     return commandsRunning().run(scope.process, () => runCjsCommand(entryPath, source, ctx, lifo, nodeCtx, loader));
 }

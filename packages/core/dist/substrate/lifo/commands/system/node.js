@@ -6,12 +6,12 @@ import { createCjsLoader, moduleWrapper, stripShebang } from '../../node-compat/
 import { isEsModuleFile, isEsModuleInput } from '../../../../runtime/module-format.js';
 import { packageScopeType } from '../../../../runtime/require-resolution.js';
 import { createProcess } from '../../node-compat/process.js';
+import { NODE_VERSION } from '../../../../constants.js';
 import { createConsole } from '../../node-compat/console.js';
 import { createNativeEsmLoader } from '../../node-compat/native-esm-loader.js';
 import { pathToFileURL } from '../../node-compat/file-url.js';
 import { leaveStandardStreamsOpen } from '../../node-compat/standard-streams.js';
 import { runNodeInRealm } from './node-realm.js';
-const NODE_VERSION = 'v20.0.0';
 /** The same walk for the main script, through the shell's own view before any `require` runs. */
 async function mainPackageType(filename, vfs) {
     return packageScopeType({
@@ -95,7 +95,8 @@ function createNodeImpl(kernelOrPortRegistry) {
         const kernel = kernelOrPortRegistry instanceof Map ? { portRegistry: kernelOrPortRegistry } : kernelOrPortRegistry;
         // The program runs in a realm of its own (a worker per run), never the
         // host's: its globals and intrinsics are its own (node-realm.ts).
-        return runNodeInRealm({ source, filename, scriptArgs, cwd: ctx.cwd, env: ctx.env, mainType }, ctx, kernel);
+        const identity = { pid: ctx.pid, uid: ctx.cred.uid, gid: ctx.cred.gid, groups: [...ctx.cred.groups], umask: ctx.cred.umask };
+        return runNodeInRealm({ source, filename, scriptArgs, cwd: ctx.cwd, env: ctx.env, mainType, identity }, ctx, kernel);
     };
 }
 /**
@@ -110,8 +111,10 @@ export async function runNodeProgram(program, host) {
     const filesystem = host.filesystem;
     const ctx = { stdout: host.stdout, stderr: host.stderr };
     const dir = filename === '[eval]' ? program.cwd : dirname(filename);
+    const identity = { ...program.identity, setUmask: host.setUmask };
     const nodeCtx = {
         filesystem,
+        identity,
         cwd: program.cwd,
         env: program.env,
         stdout: host.stdout,
@@ -127,7 +130,7 @@ export async function runNodeProgram(program, host) {
         reachStreams: leaveStandardStreamsOpen,
     };
     // One process and console, every module's, as in Node.
-    const main = { process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr }), console: createConsole(ctx.stdout, ctx.stderr) };
+    const main = { process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr, identity }), console: createConsole(ctx.stdout, ctx.stderr), global: globalThis };
     const loader = createCjsLoader(nodeCtx, main);
     // Execute main script
     const module = { exports: {} };

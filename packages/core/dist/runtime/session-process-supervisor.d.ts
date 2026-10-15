@@ -213,7 +213,7 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * one rule every kill path a process or user takes asks.
      */
     maySignal(caller: Readonly<VfsCred>, pid: number): boolean;
-    /** {@link kill}, as `caller`: refused with EPERM where {@link maySignal} refuses it. */
+    /** {@link kill}, as `caller`: refused with EPERM where {@link maySignal} refuses it (isKillRefusal). */
     killAs(caller: Readonly<VfsCred>, pid: number, exitCode?: number, reason?: SignalAbortReason): boolean;
     /** `pid` and the processes above it, nearest first, as the table has them now. */
     lineage(pid: number): number[];
@@ -449,4 +449,6 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      */
     resetLogStore(): void;
 }
+/** Whether `error` is {@link SessionProcessSupervisor.killAs}'s refusal: kill(2)'s rule does not let the caller signal the process. */
+export declare function isKillRefusal(error: unknown): boolean;
 //# sourceMappingURL=session-process-supervisor.d.ts.map
