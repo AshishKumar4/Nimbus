@@ -306,11 +306,7 @@ supervisor.env = {
 
 // The ops a process is not allowed to perform at all: the refusal from the
 // real filesystem IS their behaviour, so they assert on the error.
-const NATIVE_REFUSED = {
-  // A descriptor chown is root-only in the VFS (sqlite-vfs.ts openNode.chown),
-  // even to the owner's own uid, which the path-based chown does allow.
-  fsFchown: /EPERM/,
-};
+const NATIVE_REFUSED = {};
 
 // The five partial mutations answer with the path's revision on either
 // side of the mutation (VfsMutationReceipt), which the facet's stamp rule
@@ -419,6 +415,11 @@ const nativeAssert = {
   },
   fsFtruncate: () => assert.equal(kernelVfs.stat('home/user/owned/handle').size, size, 'fsFtruncate sized the open file'),
   fsFchmod: () => assert.equal(kernelVfs.stat('home/user/owned/handle').mode & 0o777, mode, 'fsFchmod applied'),
+  // The owner's own owner and group, as chown(2) allows it by a descriptor as by a name.
+  fsFchown: () => {
+    const stat = kernelVfs.stat('home/user/owned/handle');
+    assert.deepEqual([stat.uid, stat.gid], [uid, gid], 'fsFchown applied');
+  },
   fsFutimes: () => {
     const stat = kernelVfs.stat('home/user/owned/handle');
     assert.deepEqual([stat.atime, stat.mtime], [atimeMs, mtimeMs], 'fsFutimes applied');
