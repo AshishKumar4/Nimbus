@@ -1413,6 +1413,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     let answered = 0;
     let heldWaves = 0;
     let publishedThrough = 0;
+    let ownThrough = 0;
     let escaped = null;
     let escapeLanded = false;
     const marks = [];
@@ -1625,7 +1626,10 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
             answered2 = { receipt: stat };
           }
           const mutation = mutations2.get(index);
-          if (mutation !== void 0) answered2.mutation = { before: mutation.before, after: mutation.after };
+          if (mutation !== void 0) {
+            answered2.mutation = { before: mutation.before, after: mutation.after };
+            ownThrough = Math.max(ownThrough, mutation.after);
+          }
           entry.resolve(answered2);
           continue;
         }
@@ -1649,6 +1653,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       journal.dropThrough(entries[entries.length - 1].jid);
       if (writer !== null) retiring.push(writer);
       epoch = null;
+      ownThrough = Infinity;
       for (const entry of queue) entry.seq = 0;
     };
     const endedProcess = (entries, refusal, writer) => {
@@ -1664,6 +1669,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       journal.dropThrough(ended[ended.length - 1].jid);
       if (writer !== null) retiring.push(writer);
       epoch = null;
+      ownThrough = Infinity;
     };
     const exhaustedInvocation = (entries, refusal) => {
       processGone ??= fsError("EIO", refusal.message, "");
@@ -1677,6 +1683,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       }
       if (!journal.durable) journal.dropThrough(stopped[stopped.length - 1].jid);
       epoch = null;
+      ownThrough = Infinity;
     };
     const pump = () => {
       scheduled = false;
@@ -1921,7 +1928,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         return grants.some((grant) => !grant.ended && within(key, grant.root));
       },
       vouch(key, cursor) {
-        if (escaped !== null) return void 0;
+        if (escaped !== null || client.pending() || cursor.rev < ownThrough) return void 0;
         let found;
         for (const grant of grants) {
           const certificate = grant.certificate;

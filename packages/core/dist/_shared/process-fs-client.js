@@ -275,6 +275,12 @@ export function processFsClient(options) {
     let heldWaves = 0;
     let publishedThrough = 0;
     /**
+     * The session's revision after the last of the process's own changes it
+     * answered (ProcessFsAnswer.mutation): a view short of it lacks one
+     * (vouch). Past every revision once a change's fate is unknown.
+     */
+    let ownThrough = 0;
+    /**
      * The session told of a raw socket (rawSocket): every wave after it is
      * sent once it lands, and nothing is decided here from then on. Landed:
      * the session answered it, everything it held of the process's published.
@@ -527,8 +533,10 @@ export function processFsClient(options) {
                     answered = { receipt: stat };
                 }
                 const mutation = mutations.get(index);
-                if (mutation !== undefined)
+                if (mutation !== undefined) {
                     answered.mutation = { before: mutation.before, after: mutation.after };
+                    ownThrough = Math.max(ownThrough, mutation.after);
+                }
                 entry.resolve(answered);
                 continue;
             }
@@ -566,6 +574,7 @@ export function processFsClient(options) {
         if (writer !== null)
             retiring.push(writer);
         epoch = null;
+        ownThrough = Infinity;
         for (const entry of queue)
             entry.seq = 0;
     };
@@ -583,6 +592,7 @@ export function processFsClient(options) {
         if (writer !== null)
             retiring.push(writer);
         epoch = null;
+        ownThrough = Infinity;
     };
     const exhaustedInvocation = (entries, refusal) => {
         processGone ??= fsError('EIO', refusal.message, '');
@@ -597,6 +607,7 @@ export function processFsClient(options) {
         if (!journal.durable)
             journal.dropThrough(stopped[stopped.length - 1].jid);
         epoch = null;
+        ownThrough = Infinity;
     };
     const pump = () => {
         scheduled = false;
@@ -941,7 +952,7 @@ export function processFsClient(options) {
             return grants.some((grant) => !grant.ended && within(key, grant.root));
         },
         vouch(key, cursor) {
-            if (escaped !== null)
+            if (escaped !== null || client.pending() || cursor.rev < ownThrough)
                 return undefined;
             let found;
             for (const grant of grants) {

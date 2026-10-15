@@ -3824,11 +3824,13 @@ const __fsMod = (() => {
    * where the view is exactly the session's for all the answer depends on
    * (held-local-reads): nothing admitted halfway (_admissions), and a walk
    * to the entry crossing only names a held grant the view is fresh for
-   * vouches for (ProcessFsClient.vouch; the entry itself held), each as the
-   * namespace's own row: no effect of this process's on any of them it has
-   * not been answered for (_own, a write), no mount, no link whose target
-   * climbs (..), each directory searched as the session allows. Undefined
-   * where any of that fails, and the session answers, as before.
+   * vouches for (ProcessFsClient.vouch: the entry itself held, and every
+   * change of the process's own already in the view, a directory's entries
+   * and a file's times with it), each as the namespace's own row: no effect
+   * of this process's still laid over any of them (_own, a write), no
+   * mount, no link whose target climbs (..), each directory searched as the
+   * session allows. Undefined where any of that fails, and the session
+   * answers, as before.
    */
   function _heldStat(p, follow) {
     if (_admissions > 0 || !_nsActive() || !_supervisor() || typeof __nimbusProcessFs !== "function") return undefined;

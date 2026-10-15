@@ -295,7 +295,9 @@ export interface ProcessFsClient {
      * What vouches for `key` in a view whose applied cursor is `cursor`: a
      * subtree the process holds alone (not shared, not closing, no raw socket)
      * whose certificate the cursor has reached, in its epoch, so the view has
-     * every change before the grant and none came after it unrecalled. 'held':
+     * every change before the grant and none came after it unrecalled; and
+     * every change of the process's own: none logged and unanswered, the
+     * session's revision after each answered one reached. 'held':
      * `key` is at or beneath its root, everything about it vouched for; 'above':
      * an ancestor of its root, whose own change (its mode, its rename) recalls
      * the grant, though a change beneath it elsewhere does not. Undefined:
