@@ -40,6 +40,9 @@ try {
   const handled = await ws.exec(`node -e 'process.stdout.on("error", (e) => { console.error("handled", e.code); process.exitCode = 4 }); process.stdout.write("x\\n")' > /slow/out; echo "status=$?"`, { cwd: '/home/user' });
   assert.deepEqual({ stdout: handled.stdout, stderr: handled.stderr }, { stdout: 'status=4\n', stderr: 'handled EIO\n' }, 'and its handler hears of it, and decides');
   console.log('  ✓ a write refused after the program\'s code ran reaches the program, handled or not');
+  const listenedLate = await ws.exec(`node -e 'setImmediate(() => { process.stdout.write("x\\n"); process.stdout.on("error", (e) => { console.error("handled", e.code); process.exitCode = 4 }) })' > /slow/out; echo "status=$?"`, { cwd: '/home/user' });
+  assert.deepEqual({ stdout: listenedLate.stdout, stderr: listenedLate.stderr }, { stdout: 'status=4\n', stderr: 'handled EIO\n' }, 'a listener added after the write hears it, as the program ends later');
+  console.log('  ✓ a listener added after a late write, before the program ends, hears its failure');
 } finally {
   await ws.close();
 }

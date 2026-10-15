@@ -7,11 +7,14 @@
 //     its stack and status 1; handled, the program goes on;
 //   - a write the file refuses (/dev/full) is the same with its own errno
 //     ("ENOSPC: no space left on device, write");
-//   - console.log's writes never throw: a failure there is ignored;
+//   - console.log's writes never throw: a failure there is heard only by an
+//     'error' listener on its stream (Node's console ignores it otherwise),
+//     and a later write through the stream is made, and fails, on its own;
 //   - a program hears it through an 'error' listener on the stream (on,
 //     once, prependListener, prependOnceListener), or as an error nothing
 //     caught ('uncaughtException', its monitor, a capture callback); with
-//     none, it ends of it, whenever the write fails.
+//     none, it ends of it, whenever the write fails; a listener added any
+//     time before the program ends hears a late write's failure.
 //
 // Each line runs in the workspace's shell (the built-in node) and in bash
 // with the host's node; their stdout, every pipeline status and what stderr
@@ -35,6 +38,15 @@ const CASES = [
   [`node -e 'process.stdout.on("error", (e) => { console.error("handled", e.code, e.syscall, e.errno, e.message); process.exitCode = 3 }); process.stdout.write("x\\n")' > /dev/full; echo "full=$?"`,
     'a handled ENOSPC is the program\'s to answer'],
   [`node -e 'console.log("x")' > /dev/full; echo "full=$?"`, 'console.log ignores its failed write'],
+  [`node -e 'console.log(process.stdout.fd)' > /dev/full; echo "full=$?"`, 'though the program reached its stream'],
+  [`node -e 'process.on("uncaughtException", (e) => { console.error("caught", e.code) }); console.log("x")' > /dev/full; echo "full=$?"`, 'and an uncaughtException listener never sees it'],
+  [`node -e 'process.stdout.on("error", (e) => { console.error("heard", e.code); process.exitCode = 5 }); console.log("x")' > /dev/full; echo "full=$?"`, 'a listener on the stream hears console.log\'s failed write'],
+  [`node -e 'process.stderr.on("error", (e) => { console.log("heard", e.code); process.exitCode = 5 }); console.error("x")' 2>/dev/full; echo "full=$?"`, 'and console.error\'s'],
+  [`node -e 'console.log("x"); setTimeout(() => process.stdout.write("y\\n"), 50)' > /dev/full; echo "full=$?"`, 'a stream write after a failed console.log fails on its own'],
+  [`node -e 'setImmediate(() => { process.stdout.write("x\\n"); process.stdout.on("error", (e) => { console.error("handled", e.code); process.exitCode = 4 }) })' > /dev/full; echo "full=$?"`,
+    'a listener added after a late write hears its failure'],
+  [`node -e 'process.stdout.on("error", () => {}); setTimeout(() => { process.stdout.write("a\\n"); const end = Date.now() + 200; while (Date.now() < end); process.stdout.write("b\\n") }, 10)' > late.out; echo "status=$?"; cat late.out; rm -f late.out`,
+    'late writes a listener could hear are all made, and the program ends'],
   // Every way a program hears a failed write, each against host Node:
   [`node -e 'process.stdout.once("error", (e) => { console.error("once", e.code); process.exitCode = 3 }); process.stdout.write("x\\n")' > /dev/full; echo "full=$?"`, 'a once listener hears it'],
   [`node -e 'process.stdout.prependListener("error", (e) => { console.error("prepended", e.code); process.exitCode = 3 }); process.stdout.write("x\\n")' > /dev/full; echo "full=$?"`, 'a prepended listener hears it'],
