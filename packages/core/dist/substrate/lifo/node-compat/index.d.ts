@@ -27,13 +27,6 @@ export interface NodeContext {
     dns?: DNSResolver;
     /** Told when the program first reaches the engine's stream classes (a stream module, an fs or tty stream, process.stdout). */
     reachStreams?: () => void;
-    /**
-     * The program runs in a realm of its own (the inline `node`'s): the
-     * engine's process is its, and so is domain, which sets that process.
-     * Absent, it runs in the host's realm (a lifo command), and domain is
-     * refused.
-     */
-    ownRealm?: boolean;
 }
 export declare function createModuleMap(ctx: NodeContext): Record<string, () => unknown>;
 export { ProcessExitError } from './process.js';

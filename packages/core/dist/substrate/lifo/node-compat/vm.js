@@ -6,46 +6,43 @@ const MODULE_CLASSES = new Set(['SourceTextModule', 'SyntheticModule', 'Module']
  * The engine's vm, a program's: its contexts, scripts and functions are the
  * engine's. Code it compiles reaches a module loader only through
  * `importModuleDynamically: constants.USE_MAIN_CONTEXT_DEFAULT_LOADER`, the
- * engine's own; there, the import goes through the program's loader instead
- * (`scripts` is told the code's filename, which the engine resolves it
- * against), so it loads the program's modules, not the host's. Code with no
- * absolute filename gives an import no referrer of the program's, and is
- * refused that loader; so is a context made with it, whose imports have no
- * script at all. Without `scripts` (no loader) the loader is refused
- * outright. A program's own callback is its own. vm's module classes are
- * absent, as in Node without --experimental-vm-modules.
+ * engine's own, which imports past the program's module map: refused, at
+ * each compile and context that names it. Options are read once, and the
+ * engine is given what was read, so what it compiles with is what was
+ * refused or not. A program's own callback is its own. vm's module classes
+ * are absent, as in Node without --experimental-vm-modules, and so is the
+ * engine's Script: a program's Script holds one.
  */
-export function createVm(scripts) {
+export function createVm() {
     const engine = realm.getBuiltinModule('node:vm');
     const loader = engine.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER;
-    const serve = (options) => {
-        if (typeof options !== 'object' || options.importModuleDynamically !== loader)
-            return;
-        if (scripts === null)
+    const checked = (options) => {
+        const read = { ...options };
+        if (read.importModuleDynamically === loader)
             unavailable('vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER');
-        const { filename } = options;
-        if (typeof filename !== 'string' || !filename.startsWith('/'))
-            unavailable('vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER without an absolute filename');
-        scripts(filename);
+        return read;
     };
-    class Script extends engine.Script {
+    const either = (options) => (typeof options === 'object' && options !== null ? checked(options) : options);
+    class Script {
+        #script;
         constructor(code, options) {
-            serve(options);
-            super(code, options);
+            this.#script = new engine.Script(code, either(options));
         }
+        runInThisContext(options) { return this.#script.runInThisContext(options); }
+        runInContext(context, options) { return this.#script.runInContext(context, options); }
+        runInNewContext(context, options) { return this.#script.runInNewContext(context, options); }
+        createCachedData() { return this.#script.createCachedData(); }
+        get cachedDataRejected() { return this.#script.cachedDataRejected; }
+        get sourceMapURL() { return this.#script.sourceMapURL; }
     }
     return {
         ...Object.fromEntries(Object.entries(engine).filter(([name]) => !MODULE_CLASSES.has(name))),
         Script,
         createScript: (code, options) => new Script(code, options),
-        createContext: (contextObject, options) => {
-            if (options?.importModuleDynamically === loader)
-                unavailable("vm.createContext's importModuleDynamically: constants.USE_MAIN_CONTEXT_DEFAULT_LOADER");
-            return engine.createContext(contextObject, options);
-        },
-        runInThisContext: (code, options) => { serve(options); return engine.runInThisContext(code, options); },
-        runInContext: (code, context, options) => { serve(options); return engine.runInContext(code, context, options); },
-        runInNewContext: (code, context, options) => { serve(options); return engine.runInNewContext(code, context, options); },
-        compileFunction: (code, params, options) => { serve(options); return engine.compileFunction(code, params, options); },
+        createContext: (contextObject, options) => engine.createContext(contextObject, options && checked(options)),
+        runInThisContext: (code, options) => engine.runInThisContext(code, either(options)),
+        runInContext: (code, context, options) => engine.runInContext(code, context, either(options)),
+        runInNewContext: (code, context, options) => engine.runInNewContext(code, context, either(options)),
+        compileFunction: (code, params, options) => engine.compileFunction(code, params, options && checked(options)),
     };
 }

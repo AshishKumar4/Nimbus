@@ -96,17 +96,16 @@ export function createModuleMap(ctx) {
         constants: () => ({ ...createOs(ctx.env).constants, ...fsModule().constants }),
         // The engine's own, context-free (X-3). v8 is the engine's but for what
         // would reach the host's files or flags (a heap snapshot file, coverage,
-        // V8 flags), each refused. vm is the engine's, its main-context loader
-        // the program's (vm.ts: the CommonJS loader's, which has the program's
-        // module loader; refused here, where none is). domain sets the engine's own process (its domain
-        // and uncaught-exception capture): the program's in a realm of its own,
-        // the host's otherwise, where it is refused. trace_events and wasi reach
-        // the host's files, and are refused whole.
+        // V8 flags), each refused. vm is the engine's but for its main-context
+        // loader, which imports past the program's module map (vm.ts). domain,
+        // trace_events and wasi are refused whole: domain sets the engine's own
+        // process (its domain and uncaught-exception capture), and trace_events
+        // and wasi reach the host's files.
         assert: () => realm.getBuiltinModule('node:assert'),
         'assert/strict': () => realm.getBuiltinModule('node:assert/strict'),
         async_hooks: () => realm.getBuiltinModule('node:async_hooks'),
         diagnostics_channel: () => realm.getBuiltinModule('node:diagnostics_channel'),
-        domain: () => (ctx.ownRealm ? realm.getBuiltinModule('node:domain') : unavailable('domain')),
+        domain: () => unavailable('domain'),
         perf_hooks: () => realm.getBuiltinModule('node:perf_hooks'),
         punycode: () => realm.getBuiltinModule('node:punycode'),
         querystring: () => realm.getBuiltinModule('node:querystring'),
@@ -115,7 +114,7 @@ export function createModuleMap(ctx) {
         'timers/promises': () => realm.getBuiltinModule('node:timers/promises'),
         'util/types': () => realm.getBuiltinModule('node:util/types'),
         v8: () => withoutHostReach(realm.getBuiltinModule('node:v8'), 'v8', ['writeHeapSnapshot', 'setFlagsFromString', 'setHeapSnapshotNearHeapLimit', 'takeCoverage', 'stopCoverage']),
-        vm: () => createVm(null),
+        vm: createVm,
         trace_events: () => unavailable('trace_events'),
         wasi: () => unavailable('wasi'),
         // net — stub (vite imports it but only uses it for actual TCP in server mode)

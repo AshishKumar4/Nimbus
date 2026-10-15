@@ -21,12 +21,10 @@ const PRIVATE_ROOT = `file://${PRIVATE_PATH}`;
 const ACCESSOR = '__nimbusLifoNativeModules';
 const ASYNC_REQUIRE_MESSAGE = 'require() cannot be used on an ESM graph with top-level await. Use import() instead. To see where the top-level await comes from, use --experimental-print-required-tla.';
 const loaders = new Map();
-/** Code vm compiled that imports through a loader (registerScript): its referrer, a file URL, and the loader's id. */
-const scripts = new Map();
 let nextLoader = 0;
 let installed;
 function owner(url) {
-    const id = scripts.get(url) ?? new URL(url).pathname.slice(PRIVATE_PATH.length).split('/')[0];
+    const id = new URL(url).pathname.slice(PRIVATE_PATH.length).split('/')[0];
     const loader = loaders.get(id);
     if (!loader)
         throw new Error(`lifo: native module loader ${id} is no longer available`);
@@ -34,8 +32,6 @@ function owner(url) {
 }
 const privateUrl = (url) => url?.startsWith(PRIVATE_ROOT) === true;
 const privatePath = (path) => path.startsWith(PRIVATE_PATH);
-/** Whether `path` (an importer as Bun names it) is code vm compiled for a loader. */
-const scriptPath = (path) => scripts.size > 0 && path.startsWith('/') && scripts.has(pathToFileURL(path).href);
 /** Installed once in a realm, including a host realm shared by lifo commands. */
 function installHooks() {
     return installed ??= (async () => {
@@ -51,11 +47,10 @@ function installHooks() {
             bun.plugin({ name: 'nimbus-lifo-native-esm', setup(build) {
                     build.onResolve({ filter: /.*/ }, ({ path, importer }) => {
                         const url = path.startsWith('file:') ? path : privatePath(path) ? pathToFileURL(path).href : undefined;
-                        const parent = importer.startsWith('file:') ? importer : privatePath(importer) || scriptPath(importer) ? pathToFileURL(importer).href : undefined;
-                        const from = privateUrl(url) ? url : parent;
-                        if (from === undefined || !privateUrl(from) && !scripts.has(from))
+                        const parent = importer.startsWith('file:') ? importer : privatePath(importer) ? pathToFileURL(importer).href : undefined;
+                        if (!privateUrl(url) && !privateUrl(parent))
                             return;
-                        const target = owner(from).resolve(path, parent);
+                        const target = owner(url ?? parent).resolve(path, parent);
                         return { path: fileURLToPath(target) };
                     });
                     build.onLoad({ filter: /^\/__nimbus_lifo__\// }, ({ path }) => {
@@ -71,7 +66,7 @@ function installHooks() {
             module.registerHooks({
                 resolve(specifier, context, nextResolve) {
                     const url = privatePath(specifier) ? pathToFileURL(specifier).href : specifier;
-                    if (!privateUrl(url) && !privateUrl(context.parentURL) && !scripts.has(context.parentURL ?? ''))
+                    if (!privateUrl(url) && !privateUrl(context.parentURL))
                         return nextResolve(specifier, context);
                     return { url: owner(privateUrl(url) ? url : context.parentURL).resolve(url, context.parentURL), format: 'module', shortCircuit: true };
                 },
@@ -137,7 +132,6 @@ export async function createNativeEsmLoader(context, cjs, main) {
     const id = String(++nextLoader);
     const root = `${PRIVATE_ROOT}${id}/`;
     const records = new Map();
-    const ownScripts = new Set();
     const byId = [];
     const byName = new Map();
     const exportNames = new Map();
@@ -367,26 +361,13 @@ export async function createNativeEsmLoader(context, cjs, main) {
                 return explain(error);
             }
         },
-        registerScript(filename) {
-            const url = pathToFileURL(filename).href;
-            scripts.set(url, id);
-            ownScripts.add(url);
-        },
-        dispose() {
-            loaders.delete(id);
-            for (const url of ownScripts)
-                if (scripts.get(url) === id)
-                    scripts.delete(url);
-        },
+        dispose() { loaders.delete(id); },
     };
     const hooks = {
         resolve(specifier, parent) {
             const requested = privatePath(specifier) ? pathToFileURL(specifier).href : specifier;
             if (requested.startsWith(root))
                 return requested;
-            // Code vm compiled: its referrer is its own filename, public.
-            if (parent !== undefined && ownScripts.has(parent))
-                return root + resolveRecord(specifier, parent).name;
             if (!parent?.startsWith(root))
                 throw new Error(`lifo: import outside its module graph: ${specifier}`);
             const relative = new URL(specifier, parent).href;

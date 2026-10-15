@@ -22,8 +22,6 @@ export interface ModuleScope {
 export interface NativeModuleLoader {
     importModule(specifier: string, parentUrl: string, options?: unknown): Promise<unknown>;
     requireModule(filename: string, parentFilename?: string): unknown;
-    /** Code at `filename` (an absolute path) that vm compiled imports through this loader, as its referrer. */
-    registerScript(filename: string): void;
 }
 export interface CjsLoader {
     /** The built-ins `require` serves; `module`'s createRequire is this loader's. */
