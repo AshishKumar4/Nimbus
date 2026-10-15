@@ -333,8 +333,6 @@ const SCENARIOS = {
 /** What each engine lacks today: each must fail, showing what it lacks. */
 const PATH_FDS = 'descriptors on the open file, not on its name';
 const GAPS = {
-  'a copy of the process\'s own unanswered write is answered at once, with its bytes and its mode [holder]': { lacks: 'decided copies', shows: 'not decided in the held subtree' },
-  'a decided copy is logged as what the destination became, in copyfile\'s order [holder]': { lacks: 'a decided copy logged as an open with its fchmod, a write and a close', shows: 'the copy is not logged as an open of its destination' },
   'the session hears an answered change within the linger, unasked [holder]': { lacks: 'lingering answered changes', shows: 'timed out waiting for the session heard the write' },
   'what the process was told it wrote lands when the session kills it at once [holder]': { lacks: 'a cooperative end: its unlogged bytes logged before its facet goes', shows: 'ENOENT' },
   'a copy of a held file the process did not write is answered once it has read it [node]': { lacks: 'decided copies of a file it read', shows: 'not decided in the held subtree' },

@@ -39,6 +39,7 @@ import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '..
 import type { ResidentEntry } from './resident-filesystem.js';
 import { fsError } from '../beneath-walk.js';
 import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, modeAllows, utimesRefusal } from '../../vfs/posix-access.js';
+import { copiedPermissions, copyfileMode } from '../../vfs/vfs.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import { processFsClient, type ProcessFsClient, type ProcessFsGrant, type ProcessFsJournal, type ProcessFsOp, type ProcessFsSession } from '../../_shared/process-fs-client.js';
 
@@ -198,6 +199,18 @@ export interface DelegationHolder {
    * to decide it (by the file's identity, once what was decided is sent).
    */
   reopen(handleId: number, flags: { read?: boolean; write?: boolean; append?: boolean; create?: boolean; exclusive?: boolean; truncate?: boolean }): RuntimeFileHandle | undefined;
+  /**
+   * Decide a copy of the file at `from` to `to` (both resolved): true when
+   * decided here, its bytes `bytes` where they are not the holder's own
+   * (what the store read of it under the grant). Its mode as the session's
+   * copy leaves it: cp(1)'s (a new file the source's permission bits less
+   * the umask, one there its own), or with `keepMode` copyfile's
+   * (copyfileMode). Logged as the copy is made, through one description:
+   * the destination opened (O_CREAT|O_TRUNC; with `keepMode` its fchmod,
+   * part of the open, as libuv's copyfile makes it), the bytes written
+   * through it, and its close.
+   */
+  copyFile(from: string, to: string, path: string, bytes: Uint8Array | undefined, keepMode: boolean): boolean;
   /** Decide a mkdir at `key`: true when decided here (and done), false when the session is to. */
   mkdir(key: string, path: string, mode: number, umask?: number): boolean;
   /** Decide an unlink of `key` (a file or link): true when decided here. */
@@ -508,6 +521,54 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       for (const child of base ?? []) if (!gone?.has(child.name)) out.set(child.name, child.type);
       for (const [name, type] of made ?? []) out.set(name, type);
       return [...out].map(([name, type]) => ({ name, type }));
+    },
+
+    copyFile: (from, to, path, stored, keepMode) => {
+      const source = entryOf(from);
+      // The source as the session's copy reads it: a file it may read, no set-id bit (the session's to judge).
+      if (source === undefined || source === null || source.type !== 'file' || (source.mode & 0o7000) !== 0) return false;
+      if (!modeAllows(source, 4, store.cred)) return false;
+      const target = entryOf(to);
+      if (target === undefined || (target !== null && target.type !== 'file')) return false;
+      // Counted toward taking the destination's subtree, as any change there is.
+      const grant = client.holder(to);
+      if (grant === undefined || client.held(from) === undefined) return false;
+      const bytes = holder.content(source) ?? stored;
+      if (bytes === undefined) return false;
+      const known = target === null ? undefined : files.get(target.ino);
+      // Another's file there, or one this process holds open, is the session's to copy over.
+      if (target !== null && ((store.cred.uid !== 0 && target.uid !== store.cred.uid) || (known !== undefined && isOpen(known)))) return false;
+      const umask = grant.umask;
+      const asked = copiedPermissions(source.mode, false);
+      // What the open leaves (cp(1)'s mode), and with keepMode its fchmod to the source's: one a confined principal may not grant is the session's.
+      const opened = target === null ? asked & ~umask : target.mode & 0o7777;
+      const mode = keepMode ? copyfileMode(source.mode, bytes.byteLength, store.cred.uid) : opened;
+      if (keepMode && confinedModeRefusal(opened, mode) !== null) return false;
+      let entry: ResidentEntry;
+      let made: number | undefined;
+      if (target === null) {
+        const parent = writableParent(to, path, 'copyfile');
+        if (parent === undefined) return false;
+        made = client.number(grant);
+        if (made === undefined) return false;
+        const { uid, gid } = ownership(parent);
+        const stamp = now();
+        entry = { type: 'file', dev: store.device, ino: made, nlink: 1, size: bytes.byteLength, atime: stamp, mtime: stamp, ctime: stamp, mode: 0o100000 | mode, uid, gid, revision: 0, target: null };
+        note(parentKey(to), nameOf(to), 'file');
+      } else {
+        if (!modeAllows(target, 2, store.cred)) throw fsError('EACCES', 'copyfile', path);
+        entry = { ...target, size: bytes.byteLength, mode: (target.mode & ~0o7777) | mode, mtime: now(), ctime: now() };
+      }
+      // After everything decided before it, the destination's own bytes among them.
+      drain();
+      decided.set(to, entry);
+      files.set(entry.ino, { key: to, bytes: bytes.slice(), length: bytes.byteLength, mode });
+      const description = descriptionId();
+      changes++;
+      client.submit({ type: 'call', call: { call: 'open', path: to, mode: asked, ...(made === undefined ? {} : { ino: made, umask }), create: true, truncate: true, ...(keepMode ? { fchmod: mode } : {}), description } }, { acknowledged: true });
+      client.submit({ type: 'call', call: { call: 'write', path: to, ...(made === undefined ? {} : { ino: made }), description, offset: 0, data: bytes.slice() } }, { acknowledged: true });
+      client.submit({ type: 'call', call: { call: 'close', path: to, description } }, { acknowledged: true });
+      return true;
     },
 
     content: (entry) => {

@@ -135,7 +135,11 @@ async function holderBridge(supervisor) {
   if (fs === null || typeof fs.holding !== 'function') throw new Error('the WASI body gave no resident filesystem (no JSPI here?)');
   await P.__wasiPrepareFilesystem([]);
   // A codec awaits each call: one that refuses at once is a rejection, as Node's is.
-  return new Proxy(fs, { get: (target, name) => (typeof target[name] === 'function' ? async (...args) => target[name](...args) : target[name]) });
+  // A copy is copyfile(3)'s, as Node's fs.copyFile makes it (libuv): its mode kept.
+  return new Proxy(fs, {
+    get: (target, name) => (name === 'copyFile' ? async (from, to) => target.copyFile(from, to, { keepMode: true })
+      : typeof target[name] === 'function' ? async (...args) => target[name](...args) : target[name]),
+  });
 }
 
 /** Whether `work` settles while the session answers no wave (a timer of the host's, which no barrier holds). */
