@@ -82,7 +82,7 @@ async function takeOut(fs, dir = OUT) {
 /** The Stats fields a local and a session answer must agree on. */
 const fieldsOf = (stats) => Object.fromEntries(STAT_FIELDS.map((field) => [field, stats[field]]));
 
-await runScenarios({
+await runScenarios(import.meta.path, {
   async 'in a held subtree the view is fresh for, stat and lstat ask the session nothing (T5, T12)'() {
     const { fs, asked } = await boot();
     // The first read's barrier brings the view to the grant's certificate.
