@@ -2004,7 +2004,7 @@ const __fsMod = (() => {
     return at;
   }
 
-  // A mode argument as Node reads it (parseFileMode, node-arguments.ts), `def` when none is given (chmod has none): its permission bits.
+  // A mode argument as Node reads it (parseFileMode, node-arguments.ts), def when none is given (chmod has none): its permission bits.
   function _coerceMode(value, def) {
     return parseFileMode(value, "mode", def) & 0o7777;
   }
