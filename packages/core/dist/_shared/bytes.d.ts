@@ -34,13 +34,6 @@ export declare class StreamTextDecoders<K> {
     /** Flush what a truncated final character left behind, then forget the key. */
     drop(key: K): string;
 }
-/**
- * A text writer's edge over a byte hook: an `onStdout`-shaped callback whose
- * bytes reach `write` as text through its own {@link SinkWriter}, so a text
- * consumer reads whole characters even when a multibyte one straddles two
- * chunks. One per stream; do not share a sink between stdout and stderr.
- */
-export declare function textSink(write: (text: string) => void | Promise<void>): (bytes: Uint8Array) => Promise<void>;
 /** `parts`, one after another, in one array. */
 export declare function concatBytes(parts: readonly Uint8Array[]): Uint8Array;
 //# sourceMappingURL=bytes.d.ts.map

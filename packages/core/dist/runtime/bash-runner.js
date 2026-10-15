@@ -326,7 +326,7 @@ export function makeBashRunnerFactory(deps) {
             }
             finally {
                 await session?.close();
-                stdio.finish(exitCode);
+                await stdio.finish(exitCode);
             }
         };
     };
