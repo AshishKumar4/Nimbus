@@ -8,6 +8,7 @@ import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { VfsEvent } from '../../../../vfs/events.js';
 import { isEgressGuestEvent, isEgressHostEvent, type EgressGuestEvent, type EgressHostEvent } from '../../../../runtime/realm-egress.js';
 import type { NodeProgram } from './node-program.js';
+import type { VirtualRequest } from '../../kernel/index.js';
 
 /** The filesystem methods a call names: NodeFilesystem's, but its watch (a call of its own). */
 export type FsMethod = Exclude<keyof NodeFilesystem, 'watch'>;
