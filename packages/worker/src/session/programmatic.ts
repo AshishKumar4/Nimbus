@@ -76,8 +76,6 @@ interface ProgrammaticViteServer {
 export interface ProgrammaticHost extends TimerHost {
   readonly runtimeManager: RuntimeManager;
   ensureRuntimeReady(): Promise<void>;
-  /** A destroy ends the restore of the dev servers the previous incarnation ran (dev-servers.ts): it runs nothing in the session made again. */
-  endDevServerRestore(): void;
   /** The destroy running (rpcDestroy), until it is answered. */
   destroying?: Promise<SessionDestroyResult> | null;
   _w1SessionDestroyed: boolean;
@@ -1242,7 +1240,6 @@ async function destroySession(
   // admits no process, and a request that would ready the session waits for
   // the one it makes again (rpcDestroy, ensureRuntimeReady).
   self.processes.closeAdmission(Object.assign(new Error('ESHUTDOWN: the session is being destroyed'), { code: 'ESHUTDOWN' }));
-  self.endDevServerRestore();
   hostActivity(self.ctx).close();
   endResidentKeepalive(self);
   const reason = typeof options.reason === 'string' && options.reason.trim()

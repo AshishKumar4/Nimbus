@@ -138,7 +138,7 @@ import { WebSocketRelay } from './ws-relay.js';
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 import * as _routes from './routes.js';
-import { endDevServerRestore, restoreDevServers, type DevServerRestoreHost } from './dev-servers.js';
+import { restoreDevServers, type DevServerRestoreHost } from './dev-servers.js';
 import type { DevServerRestoreFailure } from './helpers.js';
 import * as _portCapability from './port-capability.js';
 // Programmatic SDK RPC surface.
@@ -1084,11 +1084,6 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
       ensureRuntimeReady: () => this.ensureRuntimeReady(),
     };
     return restoreDevServers(this.devServerHost);
-  }
-  /** A destroy ends the restore under way, and the session made again restores nothing of this one's. */
-  endDevServerRestore(): void {
-    if (this.devServerHost !== null) endDevServerRestore(this.devServerHost);
-    this.devServerHost = null;
   }
   /** The port route's in-DO HMR accept, delegated — same reason. */
   acceptCirrusHmrWs(request: Request): Response {

@@ -181,8 +181,13 @@ export interface DevServerRestoreHost extends DevServerHost {
   ensureRuntimeReady(): Promise<void>;
 }
 
-/** Each host's restore, once: the requests and the commands that meet it wait on it; a destroy ends it. */
-const restores = new WeakMap<object, { readonly done: Promise<readonly DevServerRestoreFailure[]>; readonly ended: AbortController }>();
+/**
+ * Each host's restore, once per incarnation of its session (its pid range):
+ * the requests and the commands that meet it wait on it. A destroy makes the
+ * session again with a range of its own, which ends the restore under way
+ * and gives the new session one of its own.
+ */
+const restores = new WeakMap<object, { readonly base: number; readonly done: Promise<readonly DevServerRestoreFailure[]> }>();
 
 /**
  * Run again, once, each dev server a previous incarnation of the session
@@ -191,10 +196,10 @@ const restores = new WeakMap<object, { readonly done: Promise<readonly DevServer
  * process's log says why.
  */
 export function restoreDevServers(host: DevServerRestoreHost): Promise<readonly DevServerRestoreFailure[]> {
+  const base = host.processes.pidBase;
   let restore = restores.get(host);
-  if (restore === undefined) {
-    const ended = new AbortController();
-    restore = { done: restoreAll(host, ended.signal), ended };
+  if (restore === undefined || restore.base !== base) {
+    restore = { base, done: restoreAll(host, base) };
     restores.set(host, restore);
     // One that could not read the records is tried again by the next caller.
     const tried = restore;
@@ -203,28 +208,25 @@ export function restoreDevServers(host: DevServerRestoreHost): Promise<readonly 
   return restore.done;
 }
 
-/** The session is destroyed: its restore runs nothing more, and writes nothing but the release of a record. */
-export function endDevServerRestore(host: DevServerRestoreHost): void {
-  restores.get(host)?.ended.abort();
-}
-
-async function restoreAll(host: DevServerRestoreHost, ended: AbortSignal): Promise<readonly DevServerRestoreFailure[]> {
-  const base = host.processes.pidBase;
+async function restoreAll(host: DevServerRestoreHost, base: number): Promise<readonly DevServerRestoreFailure[]> {
+  // The session it began in is still the host's: a destroy made it again, and
+  // then this restore runs nothing more and writes nothing but releases.
+  const ours = (): boolean => host.processes.pidBase === base;
   const rows = await host.ctx.storage.list({ prefix: DEV_SERVER_KEY_PREFIX });
   const failures: DevServerRestoreFailure[] = [];
   for (const [key, value] of rows) {
-    if (ended.aborted) break;
+    if (!ours()) break;
     const pid = Number(key.slice(DEV_SERVER_KEY_PREFIX.length));
     // This incarnation's own: running, or released by its end.
     if (pid > base) continue;
-    const failure = await restoreOne(host, ended, key, pid, DevServerRecordSchema.safeParse(value));
+    const failure = await restoreOne(host, ours, key, pid, DevServerRecordSchema.safeParse(value));
     if (failure !== null) failures.push(failure);
   }
   return failures;
 }
 
 async function restoreOne(
-  host: DevServerRestoreHost, ended: AbortSignal, key: string, from: number, parsed: ReturnType<typeof DevServerRecordSchema.safeParse>,
+  host: DevServerRestoreHost, ours: () => boolean, key: string, from: number, parsed: ReturnType<typeof DevServerRecordSchema.safeParse>,
 ): Promise<DevServerRestoreFailure | null> {
   if (!parsed.success) {
     await release(host, key);
@@ -235,7 +237,7 @@ async function restoreOne(
     await release(host, key);
     return { command: record.command, cwd: record.cwd, pid: null, reason: 'its start after an earlier restart of the session did not finish' };
   }
-  if (ended.aborted) return null;
+  if (!ours()) return null;
   await host.ctx.storage.put(key, { ...record, restoring: true });
   await host.ctx.storage.sync();
   // The links handed out for its ports: a registration that is not a restore retires them.
@@ -248,14 +250,14 @@ async function restoreOne(
   try {
     await host.ensureRuntimeReady();
     // A destroy that came meanwhile made the session again: nothing of this one runs in it.
-    if (!ended.aborted) failure = await runAgain(host, record, from);
+    if (ours()) failure = await runAgain(host, record, from);
   } catch (error) {
     failure = { command: record.command, cwd: record.cwd, pid: null, reason: errorText(error) };
   } finally {
     await release(host, key);
   }
   for (const [port, capability] of capabilities) {
-    if (!ended.aborted && host.portRegistry.has(port)) await readoptCapability(host, port, capability);
+    if (ours() && host.portRegistry.has(port)) await readoptCapability(host, port, capability);
   }
   return failure;
 }
