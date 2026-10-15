@@ -28,10 +28,9 @@ export const W9_FLUSH_DEBOUNCE_MS = 250;
  *  Bounded ≤20 KB by oom-discriminator.ts; persisted on ws close/error
  *  so cf-tail-style forensics survive DO hibernation. */
 export const W5_RING_STORAGE_KEY = 'w5_oom_ring_v1';
-/** Storage key for the persisted vite-config blob. Survives DO
- *  hibernation so vite resumes serving after wake without re-running
- *  /api/start-vite. */
-export const VITE_CONFIG_KEY = 'vite-config';
+/** Storage key prefix of a running dev server's spawn, one row per pid
+ *  (dev-servers.ts): what a new incarnation of the session runs again. */
+export const DEV_SERVER_KEY_PREFIX = 'dev-server:';
 /**
  * Destroyed-session tombstone. Written AFTER `storage.deleteAll()` in the
  * destroy flow so a straggler facet RPC that wakes the dead DO cannot re-arm

@@ -54,6 +54,7 @@
 import { HmrBridge } from './real-vite-hmr.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
 import type { CompositeVFS } from '@nimbus-sh/core/vfs/composite.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { FacetManager } from './manager.js';
@@ -117,6 +118,7 @@ export declare class CirrusReal {
         argv: string[];
         cred: VfsCred;
         execId?: string;
+        restartedFrom?: ProcessRestart;
     }): Promise<void>;
     private stop;
     /**

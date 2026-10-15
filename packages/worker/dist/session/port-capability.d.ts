@@ -24,6 +24,7 @@
  */
 import { z } from 'zod/v4';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
+import { type DevServerRestoreFailure } from './helpers.js';
 /** The minimum a caller needs to own a port capability. */
 export interface PortCapabilityHost {
     ctx: {
@@ -177,7 +178,7 @@ export interface SessionPortHost {
         isRunning: boolean;
         port: number;
     } | null;
-    restorePersistedDevServer?: (onlyPort?: number) => Promise<void>;
+    restoreDevServers?: () => Promise<readonly DevServerRestoreFailure[]>;
     acceptCirrusHmrWs?: (request: Request) => Response;
 }
 export declare function normalizeForwardedHttpPath(path: string): string;
