@@ -128,7 +128,8 @@ async function holderBridge(supervisor) {
   const fs = P.__wasiFilesystem('jspi');
   if (fs === null || typeof fs.holding !== 'function') throw new Error('the WASI body gave no resident filesystem (no JSPI here?)');
   await P.__wasiPrepareFilesystem([]);
-  return fs;
+  // A codec awaits each call: one that refuses at once is a rejection, as Node's is.
+  return new Proxy(fs, { get: (target, name) => (typeof target[name] === 'function' ? async (...args) => target[name](...args) : target[name]) });
 }
 
 /** Whether `work` settles while the session answers no wave (a timer of the host's, which no barrier holds). */
@@ -203,8 +204,8 @@ export async function bootEngine(kind, { seed } = {}) {
       for (let i = 0; i < 64 && !engine.held(`${dir}/x`); i++) await engine.write(`${dir}/.warm${i}`, 'w');
       await until(() => engine.held(`${dir}/x`), `${kind} holds ${dir}`, 5_000);
     },
-    /** What the process's view says of `path`. */
-    stat: async (path, options) => stat(await fs.stat(path, options)),
+    /** What the process's view says of `path`: null where nothing is. */
+    stat: async (path, options) => stat(await fs.stat(path, options).catch((error) => { if (error?.code === 'ENOENT') return null; throw error; })),
     text: async (path) => dec.decode(await fs.readFile(path)),
     /** Write a file as each engine's guest writes one: Node's writeFile; a WASI guest's open, write and close. */
     write: async (path, text, mode) => {

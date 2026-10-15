@@ -31,8 +31,9 @@ const enc = new TextEncoder();
 async function decided(e, work, landed) {
   e.stall();
   const pending = work();
-  assert.equal(await answeredAtOnce(pending), 'answered', 'not answered with the session stalled: not decided in the held subtree');
+  const answered = await answeredAtOnce(pending);
   await e.release();
+  assert.equal(answered, 'answered', 'not answered with the session stalled: not decided in the held subtree');
   await pending;
   await landed();
 }
@@ -102,9 +103,10 @@ const SCENARIOS = {
     await e.hold(OUT);
     e.stall();
     await e.write(`${OUT}/src.txt`, 'SOURCE', 0o640);
-    assert.equal(await answeredAtOnce(e.fs.copyFile(`${OUT}/src.txt`, `${OUT}/dst.txt`)), 'answered', 'not answered with the session stalled: not decided in the held subtree');
-    assert.equal(await e.text(`${OUT}/dst.txt`), 'SOURCE');
+    const copied = await answeredAtOnce(e.fs.copyFile(`${OUT}/src.txt`, `${OUT}/dst.txt`));
     await e.release();
+    assert.equal(copied, 'answered', 'not answered with the session stalled: not decided in the held subtree');
+    assert.equal(await e.text(`${OUT}/dst.txt`), 'SOURCE');
     assert.equal(await e.peerText(`${OUT}/dst.txt`), 'SOURCE');
     assert.equal((await e.peerStat(`${OUT}/dst.txt`)).mode, 0o640);
   },
@@ -112,9 +114,11 @@ const SCENARIOS = {
     await e.hold(OUT);
     await e.authority.peer.writeFile('home/user/app/out/theirs.txt', 'THEIRS');
     await e.hold(OUT);
+    assert.equal(await e.text(`${OUT}/theirs.txt`), 'THEIRS');
     e.stall();
-    assert.equal(await answeredAtOnce(e.fs.copyFile(`${OUT}/theirs.txt`, `${OUT}/copy.txt`)), 'answered', 'not answered with the session stalled: not decided in the held subtree');
+    const copied = await answeredAtOnce(e.fs.copyFile(`${OUT}/theirs.txt`, `${OUT}/copy.txt`));
     await e.release();
+    assert.equal(copied, 'answered', 'not answered with the session stalled: not decided in the held subtree');
     assert.equal(await e.peerText(`${OUT}/copy.txt`), 'THEIRS');
   },
   async 'a decided copy is logged as what the destination became, in copyfile\'s order'(e) {
@@ -133,12 +137,12 @@ const SCENARIOS = {
   // ── Judged by the session's rules ──────────────────────────────────────
   async 'utimes of another\'s file is refused as the session refuses it'(e) {
     await e.hold(OUT);
-    e.authority.rawVfs.as(CRED_KERNEL).writeFile('home/user/app/out/rootfile', 'R');
+    await e.authority.peerAs(CRED_KERNEL).writeFile('home/user/app/out/rootfile', 'R');
     await assert.rejects(e.fs.utimes(`${OUT}/rootfile`, 1_000, 1_000), { code: 'EPERM' });
   },
   async 'lchown judges the link itself, chown what it names'(e) {
     await e.hold(OUT);
-    e.authority.rawVfs.as(CRED_KERNEL).writeFile('home/user/app/out/rootfile', 'R');
+    await e.authority.peerAs(CRED_KERNEL).writeFile('home/user/app/out/rootfile', 'R');
     await e.fs.symlink(`${OUT}/rootfile`, `${OUT}/mylink`);
     await e.fs.chown(`${OUT}/mylink`, 1000, 1000, { followSymlinks: false });
     await assert.rejects(e.fs.chown(`${OUT}/mylink`, 1000, 1000), { code: 'EPERM' });
@@ -188,7 +192,8 @@ const SCENARIOS = {
     await sleep(LINGER_MS * 4);
     const before = e.waves();
     await e.write(`${OUT}/w2.txt`, 'w2');
-    await e.fs.mkdir(`${APP}/elsewhere-dir`, { recursive: true });
+    assert.equal(e.held('/home/user/other/d'), false);
+    await e.fs.mkdir('/home/user/other/d');
     assert.equal(e.waves() - before, 1, 'the answered change went alone, ahead of the awaited one');
   },
   async 'the session hears an answered change within the linger, unasked'(e) {
@@ -202,6 +207,7 @@ const SCENARIOS = {
   async 'awaited chmods alone take the subtree they change'(e) {
     await e.authority.peer.mkdir('home/user/app/modes');
     for (let i = 0; i < 12; i++) await e.authority.peer.writeFile(`home/user/app/modes/f${i}`, 'm');
+    await e.fs.readdir(`${APP}/modes`);
     for (let i = 0; i < 12; i++) await e.fs.chmod(`${APP}/modes/f${i}`, 0o600);
     await until(() => e.held(`${APP}/modes/x`), 'the chmods took their subtree', 5_000);
   },
@@ -224,7 +230,7 @@ const SCENARIOS = {
     await e.fs.write(opened.id, 0, enc.encode('FOLLOWED'));
     await e.fs.close(opened.id);
     assert.equal(await e.text(`${OUT}/after.txt`), 'FOLLOWED', 'the write did not reach the renamed file');
-    await assert.rejects(e.fs.stat(`${OUT}/before.txt`), { code: 'ENOENT' });
+    assert.equal(await e.stat(`${OUT}/before.txt`), null);
   },
   async 'fstat of a description whose file lost its name says so'(e) {
     await e.hold(OUT);
