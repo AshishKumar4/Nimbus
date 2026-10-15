@@ -197,7 +197,7 @@ await runScenarios(import.meta.path, {
     for (let i = 0; i < 12; i++) await fs.promises.chmod(`/home/user/app/modes/f${i}`, 0o600);
     await until(() => globalThis.__nimbusProcessFs.held('home/user/app/modes/x') !== undefined, 'the chmods took their subtree', 5_000);
     stall();
-    assert.equal(await answeredAtOnce(fs.promises.chmod('/home/user/app/modes/f0', 0o640)), 'answered');
+    assert.equal(await answeredAtOnce(fs.promises.chmod('/home/user/app/modes/f0', 0o400)), 'answered');
     await release();
   },
 
