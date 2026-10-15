@@ -7,7 +7,6 @@
  */
 import type { RuntimeFsPath } from './os-contracts.js';
 import { type FsError } from '../vfs/vfs-error.js';
-import { type PosixNodeType } from '../vfs/posix-access.js';
 export type { FsError };
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
 export declare const MAX_LINK_HOPS = 40;
@@ -16,17 +15,6 @@ export declare function fsError(code: string, syscall: string, path: RuntimeFsPa
     detail?: string;
     cause?: unknown;
 }): FsError;
-/** POSIX rwx for `cred` on a stat (posixAccess); a stat without a mode allows. An absent owner or group is no one's. */
-export declare function modeAllows(stat: {
-    mode?: number;
-    uid?: number;
-    gid?: number;
-    type: PosixNodeType;
-}, want: number, cred: {
-    uid: number;
-    gid: number;
-    groups: readonly number[];
-}): boolean;
 /** One lookup a walk beneath a root asks of its filesystem: a stat that does not follow a link (null when absent), or a link's target. */
 export type BeneathLookup = {
     readonly stat: string;

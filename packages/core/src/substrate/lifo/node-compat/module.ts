@@ -4,52 +4,15 @@
  * Provides the commonly used APIs from the `node:module` built-in:
  * - Module class with id, filename, exports, paths, require, etc.
  * - createRequire() — returns a require-like function backed by the module map
- * - builtinModules — list of shimmed built-in module names
- * - isBuiltin() — check if a module name is a built-in
+ * - builtinModules and isBuiltin() — the module map's core names (createModuleShim)
  */
-
-/** All built-in module names available in the Lifo node-compat layer */
-export const builtinModules: string[] = [
-  'assert',
-  'buffer',
-  'child_process',
-  'console',
-  'constants',
-  'crypto',
-  'dns',
-  'dns/promises',
-  'events',
-  'fs',
-  'fs/promises',
-  'http',
-  'https',
-  'module',
-  'net',
-  'os',
-  'path',
-  'process',
-  'querystring',
-  'readline',
-  'stream',
-  'string_decoder',
-  'timers',
-  'tls',
-  'tty',
-  'url',
-  'util',
-  'vm',
-  'worker_threads',
-  'zlib',
-];
 
 /**
- * Check whether a specifier refers to a Node.js built-in module.
- * Handles both bare names ("fs") and the "node:" prefix ("node:fs").
+ * npm packages the module map serves itself (index.ts): required by name, as
+ * a built-in is, but no part of Node's core, so not in builtinModules.
  */
-export function isBuiltin(specifier: string): boolean {
-  const name = specifier.startsWith('node:') ? specifier.slice(5) : specifier;
-  return builtinModules.includes(name);
-}
+export const PROVIDED_PACKAGES = ['rimraf', 'esbuild'] as const;
+const provided: ReadonlySet<string> = new Set(PROVIDED_PACKAGES);
 
 export type RequireFunction = ((id: string) => unknown) & {
   resolve: ((id: string, options?: { paths?: string[] }) => string) & { paths?: (id: string) => string[] | null };
@@ -118,9 +81,7 @@ export class Module {
     throw new Error('Module.require() is not supported — use createRequire() instead');
   }
 
-  static builtinModules = builtinModules;
-  static isBuiltin = isBuiltin;
-  // Each `module` built-in's class has its own (createModuleShim).
+  // Each `module` built-in's class has its own (createModuleShim), as its builtinModules and isBuiltin.
   static createRequire: (filename: string | URL) => RequireFunction;
 
   static _resolveFilename(request: string): string {
@@ -140,7 +101,8 @@ export function createModuleShim(
   moduleMap: Record<string, () => unknown>,
   createRequire: (filename: string | URL) => RequireFunction = makeCreateRequire(moduleMap),
 ) {
-  const names = Object.keys(moduleMap);
+  // The map's core names: the one inventory of builtinModules, isBuiltin and Module's own.
+  const names = Object.keys(moduleMap).filter((name) => !provided.has(name));
   const isMapBuiltin = (specifier: string) => names.includes(specifier.startsWith('node:') ? specifier.slice(5) : specifier);
   // This built-in's own class: what its loader sets on it (createRequire,
   // _resolveFilename, ...) is that loader's, never another loader's, as each

@@ -89,19 +89,23 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
     lstatSync: (path: string | URL) => NodeStat;
     mkdirSync: (path: string | URL, options?: {
         recursive?: boolean;
-        mode?: number;
-    } | number) => void;
+        mode?: number | string | null;
+    } | number | string | null) => void;
     readdirSync: (path: string | URL, options?: {
         encoding?: string;
         withFileTypes?: boolean;
     }) => string[] | Dirent[];
     unlinkSync: (path: string | URL) => void;
+    rmSync: (path: string | URL, options?: {
+        recursive?: boolean;
+        force?: boolean;
+    }) => void;
     rmdirSync: (path: string | URL, options?: {
         recursive?: boolean;
     }) => void;
     renameSync: (oldPath: string | URL, newPath: string | URL) => void;
     copyFileSync: (src: string | URL, dest: string | URL) => void;
-    chmodSync: (path: string | URL, mode: number) => void;
+    chmodSync: (path: string | URL, mode: number | string) => void;
     chownSync: (_path: string | URL, _uid: number, _gid: number) => void;
     accessSync: (path: string | URL, _mode?: number) => void;
     realpathSync: ((path: string | URL) => string) & {
@@ -135,6 +139,10 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
         withFileTypes?: boolean;
     } | Callback<string[] | Dirent[]>, cb?: Callback<string[] | Dirent[]>) => void;
     unlink: (path: string | URL, cb: Callback<void>) => void;
+    rm: (path: string | URL, optionsOrCb: {
+        recursive?: boolean;
+        force?: boolean;
+    } | Callback<void>, cb?: Callback<void>) => void;
     rename: (oldPath: string | URL, newPath: string | URL, cb: Callback<void>) => void;
     access: (path: string | URL, modeOrCb: number | Callback<void>, cb?: Callback<void>) => void;
     exists: (path: string | URL, cb: (exists: boolean) => void) => void;
@@ -256,7 +264,7 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
         access: (path: string | URL, mode?: number) => Promise<void>;
         realpath: (path: string | URL) => Promise<string>;
         truncate: (path: string | URL, len?: number) => Promise<void>;
-        chmod: (path: string | URL, mode: number) => Promise<void>;
+        chmod: (path: string | URL, mode: number | string) => Promise<void>;
         chown: (_path: string | URL, _uid: number, _gid: number) => Promise<void>;
         open: (path: string | URL, flags?: string | number, mode?: number) => Promise<{
             fd: number;

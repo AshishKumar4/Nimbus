@@ -6,7 +6,8 @@ import { encode } from '../utils/encoding.js';
 import { errnoCodeOf, fsError, isVfsError } from '../../../vfs/vfs-error.js';
 import { DIRENT_TYPES, direntTypeOfStat } from '../../../vfs/dirent-type.js';
 import { S_IFMT } from '../../../vfs/vfs.js';
-import { invalidArgType, nodeError } from '../../../_shared/node-error.js';
+import { invalidArgType, nodeError, nodeSystemError } from '../../../_shared/node-error.js';
+import { O_ACCMODE, O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR, O_SYNC, O_TRUNC, O_WRONLY, parseFileMode, stringToFlags, } from '../../../_shared/node-arguments.js';
 /**
  * Node's Stats for a filesystem stat: its identity, links, owner, mode and
  * times as the filesystem has them (no birth time is kept: ctime stands in),
@@ -48,37 +49,11 @@ function resolvePath(cwd, p) {
     return resolve(cwd, str);
 }
 // ─── Open flags ───
-const O_RDONLY = 0;
-const O_WRONLY = 1;
-const O_RDWR = 2;
-const O_ACCMODE = 3;
-const O_CREAT = 64;
-const O_EXCL = 128;
-const O_TRUNC = 512;
-const O_APPEND = 1024;
-const O_DIRECTORY = 65536;
-const O_NOFOLLOW = 131072;
-const O_SYNC = 1052672;
-/** Node's flag strings (stringToFlags), as bits. */
-const FLAG_STRINGS = {
-    r: O_RDONLY, rs: O_RDONLY | O_SYNC, sr: O_RDONLY | O_SYNC,
-    'r+': O_RDWR, 'rs+': O_RDWR | O_SYNC, 'sr+': O_RDWR | O_SYNC,
-    w: O_TRUNC | O_CREAT | O_WRONLY, wx: O_TRUNC | O_CREAT | O_WRONLY | O_EXCL, xw: O_TRUNC | O_CREAT | O_WRONLY | O_EXCL,
-    'w+': O_TRUNC | O_CREAT | O_RDWR, 'wx+': O_TRUNC | O_CREAT | O_RDWR | O_EXCL, 'xw+': O_TRUNC | O_CREAT | O_RDWR | O_EXCL,
-    a: O_APPEND | O_CREAT | O_WRONLY, ax: O_APPEND | O_CREAT | O_WRONLY | O_EXCL, xa: O_APPEND | O_CREAT | O_WRONLY | O_EXCL,
-    as: O_APPEND | O_CREAT | O_WRONLY | O_SYNC, sa: O_APPEND | O_CREAT | O_WRONLY | O_SYNC,
-    'a+': O_APPEND | O_CREAT | O_RDWR, 'ax+': O_APPEND | O_CREAT | O_RDWR | O_EXCL, 'xa+': O_APPEND | O_CREAT | O_RDWR | O_EXCL,
-    'as+': O_APPEND | O_CREAT | O_RDWR | O_SYNC, 'sa+': O_APPEND | O_CREAT | O_RDWR | O_SYNC,
-};
 /** An open's flags, as Node takes them (a string or bits), for the process's open: the decisions are its. */
 function openFlagsOf(flags, mode) {
-    if (typeof flags === 'number' && (!Number.isInteger(flags) || flags < -0x80000000 || flags > 0x7fffffff)) {
-        throw Object.assign(new RangeError(`The value of "flags" is out of range. It must be an integer. Received ${String(flags)}`), { code: 'ERR_OUT_OF_RANGE' });
-    }
-    const bits = flags === undefined || flags === null ? O_RDONLY : typeof flags === 'number' ? flags : Object.hasOwn(FLAG_STRINGS, flags) ? FLAG_STRINGS[flags] : undefined;
-    if (bits === undefined) {
-        throw Object.assign(new TypeError(`The argument 'flags' is invalid. Received '${String(flags)}'`), { code: 'ERR_INVALID_ARG_VALUE' });
-    }
+    const bits = stringToFlags(flags);
+    // Node's open: none (undefined or null) is 0o666.
+    const parsedMode = parseFileMode(mode, 'mode', 0o666);
     const access = bits & O_ACCMODE;
     return {
         read: access !== O_WRONLY,
@@ -90,7 +65,7 @@ function openFlagsOf(flags, mode) {
         directory: (bits & O_DIRECTORY) !== 0,
         followSymlinks: (bits & O_NOFOLLOW) === 0,
         ...((bits & O_SYNC) === O_SYNC ? { sync: true } : {}),
-        ...(mode === undefined ? {} : { mode }),
+        mode: parsedMode,
     };
 }
 /** A position as Node takes it: null or -1 is the descriptor's own offset. */
@@ -186,8 +161,10 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
     }
     function mkdirSync(path, options) {
         const abs = resolvePath(cwd, path);
-        const opts = typeof options === 'number' ? {} : options;
-        vfs.mkdir(abs, { recursive: opts?.recursive });
+        // Node's: a mode in options is checked as given (null is refused), none is 0o777.
+        const opts = typeof options === 'object' && options !== null ? options : null;
+        const mode = opts === null ? parseFileMode(options, 'mode', 0o777) : opts.mode === undefined ? 0o777 : parseFileMode(opts.mode, 'options.mode');
+        vfs.mkdir(abs, { recursive: opts?.recursive, mode });
     }
     function readdirSync(path, options) {
         const abs = resolvePath(cwd, path);
@@ -215,6 +192,38 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
         const abs = resolvePath(cwd, path);
         vfs.unlink(abs);
     }
+    /**
+     * fs.rmSync, as Node's: the name itself (lstat), never what a link names;
+     * a directory only with `recursive` (ERR_FS_EISDIR); with `force`, a name
+     * that is not there is no error.
+     */
+    function rmSync(path, options) {
+        const abs = resolvePath(cwd, path);
+        // With force, a name gone by the look or by the removal is no error, as in Node's rimraf.
+        const gone = (e) => options?.force === true && isVfsError(e) && e.code === 'ENOENT';
+        let stat;
+        try {
+            stat = lstatSync(abs);
+        }
+        catch (e) {
+            if (gone(e))
+                return;
+            throw e;
+        }
+        if (stat.isDirectory() && !options?.recursive) {
+            throw nodeSystemError('ERR_FS_EISDIR', 'Path is a directory', { code: 'EISDIR', message: 'is a directory', path: String(path), syscall: 'rm', errno: 21 });
+        }
+        try {
+            if (stat.isDirectory())
+                vfs.rmdirRecursive(abs);
+            else
+                vfs.unlink(abs);
+        }
+        catch (e) {
+            if (!gone(e))
+                throw e;
+        }
+    }
     function rmdirSync(path, options) {
         const abs = resolvePath(cwd, path);
         if (options?.recursive) {
@@ -235,7 +244,7 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
         vfs.copyFile(abs1, abs2);
     }
     function chmodSync(path, mode) {
-        vfs.chmod(resolvePath(cwd, path), mode);
+        vfs.chmod(resolvePath(cwd, path), parseFileMode(mode, 'mode'));
     }
     function chownSync(_path, _uid, _gid) {
         // No-op in VFS
@@ -366,6 +375,12 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
         const options = typeof optionsOrCb === 'function' ? undefined : optionsOrCb;
         const callback = typeof optionsOrCb === 'function' ? optionsOrCb : cb;
         wrapCallback(() => readdirSync(path, options), callback);
+    }
+    function rm(path, optionsOrCb, cb) {
+        const options = typeof optionsOrCb === 'function' ? undefined : optionsOrCb;
+        const done = typeof optionsOrCb === 'function' ? optionsOrCb : cb;
+        if (done)
+            wrapCallback(() => rmSync(path, options), done);
     }
     function unlink(path, cb) {
         wrapCallback(() => unlinkSync(path), cb);
@@ -587,28 +602,7 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
                 truncate: async (len) => ftruncateSync(fd, len),
             };
         },
-        rm: async (path, options) => {
-            const abs = resolvePath(cwd, path);
-            try {
-                const s = vfs.stat(abs);
-                if (s.type === 'directory') {
-                    if (options?.recursive) {
-                        vfs.rmdirRecursive(abs);
-                    }
-                    else {
-                        vfs.rmdir(abs);
-                    }
-                }
-                else {
-                    vfs.unlink(abs);
-                }
-            }
-            catch (e) {
-                if (options?.force && isVfsError(e) && e.code === 'ENOENT')
-                    return;
-                throw e;
-            }
-        },
+        rm: async (path, options) => rmSync(path, options),
     };
     // ─── Constants ───
     const constants = {
@@ -641,6 +635,7 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
         mkdirSync,
         readdirSync,
         unlinkSync,
+        rmSync,
         rmdirSync,
         renameSync,
         copyFileSync,
@@ -668,6 +663,7 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
         mkdir,
         readdir,
         unlink,
+        rm,
         rename,
         access,
         exists,

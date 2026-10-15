@@ -22,6 +22,21 @@ export declare function posixAccess(entry: {
     readonly gid: number;
     readonly groups: readonly number[];
 }): boolean;
+/**
+ * posixAccess for a filesystem's stat, as the session's views judge one: a
+ * stat without a mode (a backend that keeps none) is not judged, and an
+ * owner or group it keeps none of is no one's.
+ */
+export declare function modeAllows(stat: {
+    readonly mode?: number;
+    readonly uid?: number;
+    readonly gid?: number;
+    readonly type: PosixNodeType;
+}, want: number, cred: {
+    readonly uid: number;
+    readonly gid: number;
+    readonly groups: readonly number[];
+}): boolean;
 /** The caller a metadata rule judges: its uid, its primary group and its supplementary groups. */
 export interface PosixCred {
     readonly uid: number;

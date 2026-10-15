@@ -39,6 +39,13 @@ export declare const RPC_DISPOSE_PREAMBLE: string;
  * first, for themselves and the preambles below, which use them by name.
  */
 export declare const NODE_ERROR_PREAMBLE: string;
+/**
+ * Declares Node's argument validators, `function parseFileMode(value, name, def)`,
+ * `function stringToFlags(flags, name)`, `function validateInt32(value, name, min, max)`
+ * and `function validateUint32(value, name, positive)`, and the open(2) bits
+ * O_RDONLY … O_SYNC; the node shims call them.
+ */
+export declare const NODE_ARGUMENTS_PREAMBLE: string;
 /** Declares `function createProcessWarnings(process, write)`; the node shims call it. */
 export declare const NODE_WARNING_PREAMBLE: string;
 /** Declares `function createEsmResolver(host)`; the node shims call it. */
