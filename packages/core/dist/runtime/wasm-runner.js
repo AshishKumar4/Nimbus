@@ -293,7 +293,8 @@ export function makeWasmRunner(deps) {
             cred,
             signal: opts.signal,
             input: opts.stdinPid === undefined && opts.stdin ? opts.stdin : null,
-            output: opts.output ?? null,
+            // Called as the caller's method: a sink may keep its state on `this`.
+            output: opts.output === undefined ? null : (stream, bytes) => opts.output?.(stream, bytes),
         });
         const pid = stdio.pid;
         const runSignal = stdio.signal;
