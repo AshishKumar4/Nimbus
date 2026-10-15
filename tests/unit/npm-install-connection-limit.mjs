@@ -14,7 +14,10 @@
 // Driven through installPackagesInFacet with the registry at the real seam
 // (globalThis.fetch) answering as workerd does at its limit: six open, LRU
 // idle closed when another must wait. Eight packages at the batch's top
-// concurrency, the R2 leg answering a miss after the hedge has fired.
+// concurrency: (1) the R2 leg answering a miss after the hedge has fired;
+// (2) no R2 leg and no integrity, each body read only as fast as a slow
+// writer takes its files. And (3) a 503 whose body never comes is retried,
+// not waited on.
 //
 // Red before: the hedged answers sat unread until R2 answered; one was closed,
 // and its package failed with the runtime's error.
@@ -105,33 +108,77 @@ for (let i = 0; i < 8; i++) {
   specs.push({ name, version: '1.0.0', tarballUrl: url, integrity: await sriOf(tarball), pkgDir: `node_modules/${name}`, installRoot: 'node_modules', mtime: 1, chunkSize: 65_536 });
 }
 
-const registry = limitedRegistry(tarballs);
+const writeAll = async (stream, delayMs) => {
+  const decoded = await decodeWriteBatchStream(stream);
+  let paths = 0;
+  for await (const record of decoded.records) {
+    if (record.type === 'directory' || record.type === 'file-begin') paths++;
+    if (record.type === 'file-chunk') record.retention.release();
+  }
+  if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+  return { ok: true, committedGroupSequence: paths, committedPathCount: paths, inodes: paths, chunks: 0 };
+};
 const originalFetch = globalThis.fetch;
-globalThis.fetch = registry.fetch;
-try {
-  const supervisor = {
-    async writeBatchStream(stream) {
-      const decoded = await decodeWriteBatchStream(stream);
-      let paths = 0;
-      for await (const record of decoded.records) {
-        if (record.type === 'directory' || record.type === 'file-begin') paths++;
-        if (record.type === 'file-chunk') record.retention.release();
-      }
-      return { ok: true, committedGroupSequence: paths, committedPathCount: paths, inodes: paths, chunks: 0 };
-    },
+const run = async (registry, supervisor, packages) => {
+  globalThis.fetch = registry.fetch;
+  try {
+    return await installPackagesInFacet({ packages, concurrency: 8 }, { SUPERVISOR: supervisor });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+};
+const failures = (result) => result.perPackage.filter((r) => r.errorText).map((r) => `${r.name}: ${r.errorText}`);
+
+// ── 1. hedged downloads, the R2 leg answering a miss after they fired ───
+{
+  const registry = limitedRegistry(tarballs);
+  const result = await run(registry, {
+    writeBatchStream: (stream) => writeAll(stream, 0),
     // A miss, answered after the hedge has fired (75 ms) and inside the bound (300 ms).
     async getCachedTarball() {
       await new Promise((resolve) => setTimeout(resolve, 200));
       return { bytes: null, events: [] };
     },
     async putCachedTarball() {},
-  };
-  const result = await installPackagesInFacet({ packages: specs, concurrency: 8 }, { SUPERVISOR: supervisor });
-  const failed = result.perPackage.filter((r) => r.errorText).map((r) => `${r.name}: ${r.errorText}`);
-  assert.deepEqual(failed, [], 'every package installs');
+  }, specs);
+  assert.deepEqual(failures(result), [], 'every package installs');
   assert.equal(registry.closed(), 0, 'the runtime closed no download under the install');
   assert.equal(result.facetCounters.speculativeFetches, 8, 'each download was the hedge');
-} finally {
-  globalThis.fetch = originalFetch;
+  console.log('  [1] hedged downloads are read as they arrive');
+}
+
+// ── 2. no R2 leg, no integrity, a slow writer ───────────────────────────
+{
+  const registry = limitedRegistry(tarballs);
+  const result = await run(registry, { writeBatchStream: (stream) => writeAll(stream, 40) }, specs.map((spec) => ({ ...spec, integrity: '' })));
+  assert.deepEqual(failures(result), [], 'every package installs');
+  assert.equal(registry.closed(), 0, 'the runtime closed no download under the install');
+  console.log('  [2] a body is not read at the writer\'s pace');
+}
+
+// ── 3. a 503 whose body never comes is retried, not waited on ───────────
+{
+  let answers = 0;
+  const flaky = {
+    fetch: async (url) => {
+      answers += 1;
+      if (answers === 1) return new Response(new ReadableStream({ pull() { return new Promise(() => {}); } }), { status: 503 });
+      return new Response(tarballs.get(String(url)).slice(), { status: 200 });
+    },
+  };
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms, ...rest) => realSetTimeout(fn, Math.ceil((ms ?? 0) / 100), ...rest);
+  let result;
+  try {
+    result = await Promise.race([
+      run(flaky, { writeBatchStream: (stream) => writeAll(stream, 0) }, [specs[0]]),
+      new Promise((_, reject) => realSetTimeout(() => reject(new Error('the install waited on the 503\'s body')), 10_000)),
+    ]);
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
+  assert.deepEqual(failures(result), [], 'the retry installs it');
+  assert.equal(answers, 2, 'after one retry');
+  console.log('  [3] a 503 is retried without its body');
 }
 console.log('npm-install-connection-limit: ok');
