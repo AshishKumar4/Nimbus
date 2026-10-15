@@ -30,6 +30,10 @@ published independently in the `@nimbus-sh` npm scope.
   (`cat --numb`, `head --lin=1`); an ambiguous one lists its possibilities;
   a missing or unwanted argument gets getopt's message. `grep -A` and `-B`
   now win over `-C` and `-NUM` whichever comes first, as in GNU grep.
+- Fixed: when `python`, `bash` or `clang` cannot start, the reason reads as
+  every other command's does: a thrown object's message instead of
+  `[object Object]`, and `Error` instead of nothing for an error without a
+  message.
 
 ## 2026-10-15: platform 0.11.0, core 0.22.0, fabric 0.17.0, worker 0.20.0, sdk 0.16.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4, runtime-cpython 3.13.14-2 (config 0.3.1 unchanged)
 

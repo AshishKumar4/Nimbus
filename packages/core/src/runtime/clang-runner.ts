@@ -34,15 +34,15 @@ import type { Command, CommandContext } from '../substrate/lifo/commands/types.j
 import type { Facet, FacetHost } from './facet-host.js';
 import type { ClangFacetResult } from './facet-tasks.js';
 import { CRED_KERNEL, gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI, type NimbusFilesystemAuthority, type VfsCred } from './os-contracts.js';
-import type { ResidentFilesystemStats } from './wasi/resident-filesystem.js';
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { WASI_ABI_NAMESPACE, WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 import { isRegularTarFile, streamTarRecords, tarBytes, type TarHeader } from '../_shared/tarball-stream.js';
-import { exists, isFile, statOrThrow } from '../vfs/vfs.js';
+import { statOrThrow } from '../vfs/vfs.js';
 import { openRuntimeStdio } from './runtime-stdio.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
+import { errorText } from '../_shared/error-text.js';
 
 const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
 
@@ -139,7 +139,7 @@ export function makeClangRunnerFactory(deps: {
             return 1;
           }
         } catch (error) {
-          ctx.stderr.write(`${binName}: ${input}: ${errorMessage(error)}\n`);
+          ctx.stderr.write(`${binName}: ${input}: ${errorText(error)}\n`);
           return 1;
         }
         if (isSourceExt(input)) sourceInputs.push(`/${inputVfs}`);
@@ -164,7 +164,7 @@ export function makeClangRunnerFactory(deps: {
         toolchain = await runtimePromise;
       } catch (e: unknown) {
         runtimePromise = null;
-        ctx.stderr.write(`${binName}: clang runtime warm-up failed: ${errorMessage(e)}\n`);
+        ctx.stderr.write(`${binName}: clang runtime warm-up failed: ${errorText(e)}\n`);
         return 1;
       }
 
@@ -192,7 +192,7 @@ export function makeClangRunnerFactory(deps: {
         try {
           await vfs.mkdir(scratchVfs, { recursive: true });
         } catch (error) {
-          ctx.stderr.write(`${binName}: /${scratchVfs}: ${errorMessage(error)}\n`);
+          ctx.stderr.write(`${binName}: /${scratchVfs}: ${errorText(error)}\n`);
           return 1;
         }
       }
@@ -314,7 +314,7 @@ export function makeClangRunnerFactory(deps: {
         try {
           await vfs.chmod(outputGuest.replace(/^\/+/, ''), 0o777 & ~umask);
         } catch (error) {
-          ctx.stderr.write(`${binName}: ${parsed.outputPath}: ${errorMessage(error)}\n`);
+          ctx.stderr.write(`${binName}: ${parsed.outputPath}: ${errorText(error)}\n`);
           return 1;
         }
         return 0;
@@ -452,10 +452,6 @@ function parseUserArgv(argv: string[]): ParsedArgv {
     inputPaths, includePaths, libraryPaths, libraries,
     outputPath, compileOnly, exitCode: 0,
   };
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 // ── Sysroot unpack (supervisor-side) ─────────────────────────────────
@@ -615,7 +611,7 @@ async function dispatchClangFacet(
       exitCode: 1,
       stdout: '',
       stderr: '',
-      error: `clang-runner dispatch failed: ${errorMessage(e)}`,
+      error: `clang-runner dispatch failed: ${errorText(e)}`,
     };
   }
 }

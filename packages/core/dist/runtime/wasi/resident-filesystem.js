@@ -41,8 +41,6 @@ import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT, FS_READ_BATCH_PATH
 import { RESIDENT_PAGE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { delegationHolder } from './delegation-holder.js';
 import { readDirectoryPool } from './read-directory-pool.js';
-/** A held write goes to the session in pieces of this size: each fits one call. */
-const WRITE_PIECE_BYTES = 1024 * 1024;
 /** Listings one call may take before it gives the question to the authority. */
 const MAX_LISTINGS_PER_CALL = 64;
 /** Directory opens a run records for the next run in its facet (ResidentFilesystem.walked). */
@@ -86,8 +84,6 @@ const MUTATIONS = new Set([
     'unlink', 'rmdir', 'rename', 'symlink', 'remove', 'copyFile', 'copyTree', 'ftruncate', 'fchmod', 'fchown',
     'futimes', 'writeBatch', 'writeStream',
 ]);
-/** Those that name their file by descriptor; every other one names a path, and may name a held file. */
-const DESCRIPTOR_MUTATIONS = new Set(['write', 'close', 'ftruncate', 'fchmod', 'fchown', 'futimes']);
 const DESCRIPTOR_CALLS = new Set(['read', 'write', 'close', 'fstat', 'dup', 'seek', 'setStatus', 'readdirHandle', 'ftruncate', 'fchmod', 'fchown', 'futimes', 'fsync']);
 function after(value, next) {
     return value instanceof Promise ? value.then(next) : next(value);
@@ -647,8 +643,6 @@ export function residentFilesystem(session, resident, delegation) {
             return absent(error);
         }
     }, () => authority.stat(path, options));
-    /** The session is to answer for this file (the authority has what this process logged first). */
-    const toSession = (_entry) => DELEGATE;
     fs.pinContent = (path, stat) => answer('pinContent', () => after(resolve(path, true, true), (key) => {
         if (key === DELEGATE || key === '' || key === null)
             return null;
@@ -706,7 +700,7 @@ export function residentFilesystem(session, resident, delegation) {
         if (entry.type === 'directory')
             throw fsError('EISDIR', 'open', path);
         if (entry.type !== 'file' || entry.size > WASI_RESIDENT_FILE_CAP_BYTES)
-            return toSession(entry);
+            return DELEGATE;
         return after(contentOf(key, entry), (bytes) => (bytes === undefined ? DELEGATE : bytes));
     }), () => authority.readFile(path, options));
     fs.readdir = (path, options = {}) => answer('readdir', () => after(resolve(path, options.followSymlinks !== false), (key) => {

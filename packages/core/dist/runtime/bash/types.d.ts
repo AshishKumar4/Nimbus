@@ -228,7 +228,6 @@ export interface BashProc {
     pendingFs?: {
         name: string;
         value?: number;
-        settled: boolean;
         promise: Promise<void>;
     };
     inst: BashInstance;
@@ -342,7 +341,6 @@ export interface BashSession {
     waiters: BashWaitEntry[];
     pidNext: number;
     pipeNext: number;
-    rootPid: number;
     rootExit: number | null;
     steps: number;
     output: ReturnType<typeof import('../wasi/stdio.js').wasiOutputRelay>;
