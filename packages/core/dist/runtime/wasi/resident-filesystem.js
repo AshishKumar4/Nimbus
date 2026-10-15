@@ -1180,9 +1180,10 @@ export function residentFilesystem(session, resident, delegation) {
             : names !== undefined ? byClient('rename', { type: 'rename', from: names[0], to: names[1] }) : bySessionRename(from, to)));
     };
     // An attribute change by name: decided here where a held subtree holds the
-    // name, else the client's where the store places it, else the session's.
-    // Not a link's own (lchown, lutimes), nor times now or one kept: the
-    // session's alone.
+    // name, else the client's where the store places it outside one, else the
+    // session's, after what the holder has (one it holds but does not decide:
+    // another's file, a grant the session judges). Not a link's own (lchown,
+    // lutimes), nor times now or an owner kept: the session's alone.
     for (const name of ['chmod', 'chown', 'utimes']) {
         const passed = Reflect.get(fs, name);
         Reflect.set(fs, name, (path, ...rest) => {
@@ -1203,8 +1204,7 @@ export function residentFilesystem(session, resident, delegation) {
             return after(local, (done) => {
                 if (done !== DELEGATE)
                     return undefined;
-                // An owner or group kept (-1) is the session's to keep.
-                if (named === undefined || ('uid' in attrs && (attrs.uid === -1 || attrs.gid === -1)))
+                if (named === undefined || holder.holds(named) || ('uid' in attrs && (attrs.uid === -1 || attrs.gid === -1)))
                     return passed.call(fs, path, ...rest);
                 return byClient(name, { type: 'setattr', path: named, attrs });
             });
