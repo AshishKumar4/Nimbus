@@ -20,6 +20,10 @@ published independently in the `@nimbus-sh` npm scope.
   3.13.14-3. BusyBox is now built by the same reproducible recipe as bash.
   The catalog keeps 5.2.37-6 and 3.13.14-2 as its defaults until the next
   release publishes the new builds.
+- Fixed: a WASI program (git, Python, clang, Ruby) that was killed, or that
+  exited, before the session had answered its last file changes no longer
+  loses the files it made in a directory it held. The session landed the
+  rest of what the program had logged but refused those files.
 - Fixed (real git, `NIMBUS_GIT_WASI=1`): Ctrl-C reaches `git` while it
   waits on a credential helper, an editor, a pipe or a child, as on Linux:
   `git credential fill` and `git commit` waiting on its editor end with

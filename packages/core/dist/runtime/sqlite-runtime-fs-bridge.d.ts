@@ -1,4 +1,5 @@
 import { type CredentialedVfs, type DelegationTerms, type SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { type Authority } from './descriptors.js';
 import type { WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
 import { type CompositeVFS } from '../vfs/composite.js';
@@ -14,6 +15,8 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private readonly bufferedWriteBytes;
     /** The namespace's wave ingestion (ProcessFiles.waves); without a namespace, none places anything elsewhere. */
     private readonly waves;
+    /** Its binding's Authority, its standing (Descriptors' `owned`), and its caller's abort; else its scope alone. */
+    private readonly binding;
     readonly synchronous: RuntimeSynchronousFs;
     private readonly vfs;
     /** The namespace as this caller sees it: what a path off the SQLite root reaches. */
@@ -24,7 +27,13 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     /** Bytes one buffered handle may hold before a write is EFBIG. */
     bufferedWriteBytes?: number, 
     /** The namespace's wave ingestion (ProcessFiles.waves); without a namespace, none places anything elsewhere. */
-    waves?: WaveIngest);
+    waves?: WaveIngest, 
+    /** Its binding's Authority, its standing (Descriptors' `owned`), and its caller's abort; else its scope alone. */
+    binding?: {
+        authority: Authority;
+        owned: Authority;
+        signal?: AbortSignal;
+    });
     dispose(): Awaitable<void>;
     /**
      * Where a path lives, decided only after confinement: the namespace is

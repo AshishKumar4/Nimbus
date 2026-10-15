@@ -40,6 +40,7 @@ import { nodeFacetSources } from './node-facet-sources.mjs';
 import { generatedModuleSet, writeModuleSet } from './module-map-bundle.mjs';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
 import { withRecall } from '../../../packages/core/src/vfs/recall.ts';
+import { SupervisorDeliveries } from '../../../packages/core/src/workspace/supervisor-delivery.ts';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../../packages/core/src/runtime/process-files.ts';
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -102,7 +103,7 @@ const dec = new TextDecoder();
  * the double serves every route the session serves, whichever side of the
  * native/routed line an op is on.
  */
-export function createAuthority(vfsOptions) {
+export function createAuthority(vfsOptions, { sequenced = false } = {}) {
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx, undefined, vfsOptions);
   const root = rawVfs.as(CRED_KERNEL);
@@ -121,6 +122,8 @@ export function createAuthority(vfsOptions) {
   // As a workspace composes them (nimbus-workspace.ts): a process's end and release reach its filesystem.
   processes.setRelease((pid) => files.releaseProcess(pid), (pid) => files.processEnded(pid));
   const host = { sqliteFs: rawVfs, processes, ensureSqliteFs() {}, getFilesystemAuthority: () => files };
+  // `sequenced`: a process's waves are numbered under a writer epoch, as the session's deliveries number them.
+  if (sequenced) Reflect.set(host, 'supervisorDeliveries', new SupervisorDeliveries());
   const routed = Object.fromEntries(Object.values(SUPERVISOR_OP_ROUTES).map(({ method }) => {
     const handler = Reflect.get(rpc, method);
     if (typeof handler !== 'function') throw new Error(`no rpc.ts implementation of the routed ${method}`);

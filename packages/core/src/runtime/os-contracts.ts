@@ -256,6 +256,15 @@ export interface NimbusFilesystemAuthority {
   readonly namespace: string;
   bind(binding: NimbusFilesystemBinding): RuntimeFsBridge;
   openHost(cred: Readonly<VfsCred>, options?: { signal?: AbortSignal }): NimbusHostFilesystemLease;
+  /**
+   * What a drain of process `pid`'s write log writes through, taken when its
+   * log is booked: the pid's own binding, so its log lands as the process
+   * would have landed it, with the descriptions it opened and the grants it
+   * holds (their reserved inodes). One per process (EBUSY). Its release ends
+   * every other binding at once and keeps these until the lease is disposed,
+   * and settles then.
+   */
+  recovery(pid: number, cred: Readonly<VfsCred>): NimbusHostFilesystemLease;
   releaseProcess(pid: number): Promise<void>;
   /**
    * A run of the process ended and another of the same process starts in its

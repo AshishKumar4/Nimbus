@@ -23,7 +23,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { WASI_INSTANCE_PREAMBLE_SRC } from '../../../packages/core/src/runtime/wasi-instance.ts';
-import { sqlJournal } from '../../../packages/core/src/_shared/process-fs-client.ts';
+import { journalSource, sqlJournal } from '../../../packages/core/src/_shared/process-fs-client.ts';
+import { PortRegistry } from '../../../packages/core/src/runtime/port-registry.ts';
+import { assumeGeneration } from '../../../packages/fabric/src/generation.ts';
+import { FacetManager } from '../../../packages/worker/src/facets/manager.ts';
+import { createFacetCtx, createFacetWorld } from '../facet-host-harness.mjs';
 import { CRED, createAuthority, facetSql, facetSupervisor, launchResident, sleep, until } from './resident-body.mjs';
 
 export const ENGINES = ['node', 'holder'];
@@ -143,7 +147,7 @@ export const answeredAtOnce = (work) => Promise.race([Promise.resolve(work).then
  */
 export async function bootEngine(kind, { seed } = {}) {
   if (!ENGINES.includes(kind)) throw new Error(`no engine ${kind}`);
-  const authority = createAuthority();
+  const authority = createAuthority(undefined, { sequenced: true });
   authority.kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
   seed?.(authority);
   let stalled = null;
@@ -214,6 +218,43 @@ export async function bootEngine(kind, { seed } = {}) {
       if (kind === 'node') return fs.writeFile(path, enc.encode(text), mode === undefined ? undefined : { mode });
       const opened = await fs.open(path, { write: true, create: true, truncate: true, mode: mode ?? 0o666 });
       try { await fs.write(opened.id, null, enc.encode(text)); } finally { await fs.close(opened.id); }
+    },
+    /**
+     * The process ends as the session ends a resident (FacetManager): by a
+     * kill, or by its own exit. Its facet is released and the session drains
+     * its write log as it does for any resident; the guest is not asked to
+     * flush first.
+     */
+    async end(how = 'kill', { twice = false } = {}) {
+      const name = `guest-engine-${kind}`;
+      const ctx = createFacetCtx(createFacetWorld(() => ({})), name);
+      Reflect.set(ctx.storage, 'sql', Reflect.get(authority.rawVfs, 'sql'));
+      assumeGeneration(ctx, 1);
+      // Its process host: the facet this engine runs in, released as the fabric releases one.
+      const host = {
+        async open(params) {
+          params.journal.opened(name);
+          return {
+            started: Promise.resolve({ ok: true }),
+            lost: new Promise(() => {}),
+            // `twice`: the session drains the log twice at once (one joins the other).
+            release: () => (twice
+              ? Promise.all([params.journal.drain(journalSource(engine.journal())), params.journal.drain(journalSource(engine.journal()))])
+              : params.journal.drain(journalSource(engine.journal()))),
+            describe: () => name,
+          };
+        },
+      };
+      const manager = /** @type {any} */ (new FacetManager(ctx, { LOADER: { load() {}, get() {} } }, authority.host.processes, new PortRegistry(), () => /** @type {any} */ (host)));
+      manager.setVfs(authority.rawVfs, authority.files);
+      const resident = await manager.processFabric.startResidentProcess({
+        pid: handle.log.pid, startContract: 'boot', workerKey: name, boot: { kind: 'code', code: {} }, journaled: true,
+        onWriterActivated() {}, onWriterRetired() {},
+      });
+      manager.trackProcessRpcResources(handle.log.pid, [resident]);
+      if (how === 'exit') manager.finishProcess(handle.log.pid, 0);
+      else manager.kill(handle.log.pid);
+      await resident.done;
     },
     /** What the session holds at `path`, read as a peer reads it (recalling what the process holds there). */
     peerStat: async (path, options) => stat(options?.followSymlinks === false ? await authority.peer.lstat(path.slice(1)) : await authority.peer.stat(path.slice(1))),

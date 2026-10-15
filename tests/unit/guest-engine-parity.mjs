@@ -18,10 +18,9 @@
 //   - the end of a process: its log holds what it answered.
 
 import assert from 'node:assert/strict';
-import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
-import { drainProcessFsJournal, journalSource, LINGER_MS } from '../../packages/core/src/_shared/process-fs-client.ts';
-import { journalDrainSession } from '../../packages/core/src/workspace/supervisor-op.ts';
-import { createAuthority, runScenarios, sleep, until } from './lib/resident-body.mjs';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { LINGER_MS } from '../../packages/core/src/_shared/process-fs-client.ts';
+import { runScenarios, sleep, until } from './lib/resident-body.mjs';
 import { APP, answeredAtOnce, ledgerScenarios } from './lib/guest-engines.mjs';
 
 const OUT = `${APP}/out`;
@@ -36,29 +35,6 @@ async function decided(e, work, landed) {
   assert.equal(answered, 'answered', 'not answered with the session stalled: not decided in the held subtree');
   await pending;
   await landed();
-}
-
-/** What a drain of the process's log lands in its own session, as the session drains a process that ended (FacetManager._drainJournalAs). */
-async function drainedHere(e) {
-  const lease = e.authority.files.openHost(CRED_SESSION_USER);
-  try {
-    return await drainProcessFsJournal({ journal: journalSource(e.journal()), session: journalDrainSession(lease.fs, e.log.pid) });
-  } finally {
-    await lease.dispose();
-  }
-}
-
-/** What a drain of the process's log puts in a new session, with `prepare` run on it first. */
-async function drained(e, prepare = () => {}) {
-  const after = createAuthority();
-  after.kfs.mkdir('home/user/app/out', { recursive: true, mode: 0o755 });
-  prepare(after);
-  const lease = after.files.openHost(CRED_SESSION_USER);
-  try {
-    return { after, result: await drainProcessFsJournal({ journal: journalSource(e.journal()), session: journalDrainSession(lease.fs, 1000002) }) };
-  } finally {
-    await lease.dispose();
-  }
 }
 
 const SCENARIOS = {
@@ -140,8 +116,9 @@ const SCENARIOS = {
     const open = entries.find(({ op }) => op.type === 'call' && op.call.call === 'open' && op.call.path === 'home/user/app/out/copy.bin');
     assert.ok(open, 'the copy is not logged as an open of its destination');
     assert.equal(open.op.call.fchmod, 0o600, 'the destination\'s open does not narrow it to the source\'s mode');
-    const { after } = await drained(e, (fresh) => fresh.kfs.writeFile('home/user/app/out/private.bin', 'CHANGED'));
-    assert.equal(after.read('home/user/app/out/copy.bin'), 'SECRET-BYTES', 'the drain copied what the source became');
+    await e.end('kill');
+    assert.equal(await e.peerText(`${OUT}/copy.bin`), 'SECRET-BYTES');
+    assert.equal((await e.peerStat(`${OUT}/copy.bin`)).mode, 0o600);
   },
 
   // ── Judged by the session's rules ──────────────────────────────────────
@@ -266,12 +243,40 @@ const SCENARIOS = {
   },
 
   // ── The end of a process ──────────────────────────────────────────────
-  async 'what the process answered and never sent is in its log, and a drain lands it'(e) {
+  async 'what the process logged and the session never answered lands when the session kills it'(e) {
     await e.hold(OUT);
     e.stall();
     await e.write(`${OUT}/last.txt`, 'LAST');
-    const result = await drainedHere(e);
-    assert.deepEqual(result.failures, []);
+    // The next file it makes logs this one's bytes first (the session does not answer).
+    await e.write(`${OUT}/next.txt`, 'NEXT');
+    await e.end('kill');
+    assert.equal(await e.peerText(`${OUT}/last.txt`), 'LAST');
+    assert.doesNotMatch(e.authority.host.processes.allLogs(e.log.pid).map((log) => log.data).join(''), /refused/);
+  },
+  async 'what the process logged and the session never answered lands when it exits'(e) {
+    await e.hold(OUT);
+    e.stall();
+    await e.write(`${OUT}/last.txt`, 'LAST');
+    await e.write(`${OUT}/next.txt`, 'NEXT');
+    await e.end('exit');
+    assert.equal(await e.peerText(`${OUT}/last.txt`), 'LAST');
+  },
+  async 'two drains of the process\'s log at once land each of its appends once'(e) {
+    await e.write(`${APP}/log.txt`, '');
+    const opened = await e.fs.open(`${APP}/log.txt`, { write: true, append: true });
+    await e.fs.write(opened.id, null, enc.encode('a'));
+    e.stall();
+    // Logged, and never answered.
+    for (const piece of ['b', 'c']) e.fs.write(opened.id, null, enc.encode(piece)).catch(() => {});
+    await sleep(LINGER_MS * 4);
+    await e.end('kill', { twice: true });
+    assert.equal(await e.peerText(`${APP}/log.txt`), 'abc', 'an append landed twice, or not at all');
+  },
+  async 'what the process was told it wrote lands when the session kills it at once'(e) {
+    await e.hold(OUT);
+    e.stall();
+    await e.write(`${OUT}/last.txt`, 'LAST');
+    await e.end('kill');
     assert.equal(await e.peerText(`${OUT}/last.txt`), 'LAST');
   },
 };
@@ -288,7 +293,7 @@ const GAPS = {
   'a chown by the owner clears the set-id bits, as the process sees it [holder]': { lacks: 'its own attribute changes in its view', shows: 'the set-id bits the session clears are still set' },
   'the session hears an answered change within the linger, unasked [holder]': { lacks: 'lingering answered changes', shows: 'timed out waiting for the session heard the write' },
   'awaited chmods alone take the subtree they change [holder]': { lacks: 'attribute changes counted toward taking a subtree', shows: 'timed out waiting for the chmods took their subtree' },
-  'what the process answered and never sent is in its log, and a drain lands it [holder]': { lacks: 'a log its session drains whole: a write through a description, and a file made under a grant', shows: 'no open description' },
+  'what the process was told it wrote lands when the session kills it at once [holder]': { lacks: 'a cooperative end: its unlogged bytes logged before its facet goes', shows: 'ENOENT' },
   'a copy of a held file the process did not write is answered once it has read it [node]': { lacks: 'decided copies of a file it read', shows: 'not decided in the held subtree' },
   'a name under a file is ENOTDIR, a looping link ELOOP [node]': { lacks: 'ENOTDIR for a name under a file it made, decided in a held subtree', shows: 'Missing expected rejection' },
   'an open description reads the file it opened after its name is unlinked [node]': { lacks: PATH_FDS, shows: 'the description read the name\'s new file' },
