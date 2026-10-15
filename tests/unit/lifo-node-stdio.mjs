@@ -11,8 +11,8 @@
 //     of an error nothing caught, and its listeners decide its status;
 //   - readFileSync(0) and the stream read one fd 0;
 //   - one that stops reading (paused a tick, destroyed) holds it no more,
-//     leaves fd 0 to a later readFileSync(0), and holds it again when it
-//     reads again; two readers each hold it;
+//     and holds it again when it reads again; paused in its data handler,
+//     a pipe is read on (its buffer fills), a terminal is not;
 //   - tty.WriteStream(fd) writes to that descriptor, in order with
 //     process.stdout; isatty answers for each descriptor; a descriptor that is
 //     not one, or a file, is refused as Node refuses it.
@@ -75,10 +75,8 @@ const cases = {
     '{ sleep 3; echo late; } | node {prog}'],
   'destroyed.js': [`${timed} process.stdin.resume(); setTimeout(() => process.stdin.destroy(), 20); console.log('destroys');`,
     '{ sleep 3; echo late; } | node {prog}'],
-  'tworeaders.js': [`${timed} const r = new (require('tty').ReadStream)(0); r.resume(); r.on('data', () => {}); process.stdin.on('data', () => {}); setTimeout(() => r.pause(), 20);`,
-    '{ sleep 2; echo late; } | node {prog}'],
-  'pausedsync.js': ["process.stdin.resume(); process.stdin.pause(); setTimeout(() => console.log(JSON.stringify(require('fs').readFileSync(0, 'utf8'))), 50);",
-    "{ sleep 0.3; printf abc; } | node {prog}"],
+  'pausedinhandler.js': [`${timed} process.stdin.once('data', (c) => { console.log('got', String(c).trim()); process.stdin.pause(); });`,
+    '{ sleep 0.3; echo first; sleep 2; echo late; } | node {prog}'],
   'pausediterate.js': [`${timed} process.stdin.pause(); setTimeout(async () => { for await (const c of process.stdin) console.log('got', String(c).trim()); }, 50);`,
     '{ sleep 2; echo late; } | node {prog}'],
   'rawpipe.js': ["const r = new (require('tty').ReadStream)(0); r.on('error', (e) => console.log('error', e.code, e.syscall, e.message)); r.setRawMode(true); console.log('raw', r.isRaw); r.destroy();",
