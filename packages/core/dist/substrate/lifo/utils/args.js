@@ -14,25 +14,27 @@
  * prefix of one (`--coun`); its argument follows `=` or, when required, is
  * the next word.
  */
-export function* scanOptions(args, spec, { abbreviations = true, stopAtOperand = false } = {}) {
-    const takesArgument = (letter) => spec.short[spec.short.indexOf(letter) + 1] === ':';
+export function scanOptions(args, spec, options = {}) {
+    // Every command runs one scan: a plain loop into an array, which costs what a command's own loop did.
+    const abbreviations = options.abbreviations !== false;
+    const events = [];
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
         if (arg === '--') {
-            for (const rest of args.slice(i + 1))
-                yield { kind: 'operand', value: rest };
-            return;
+            for (let rest = i + 1; rest < args.length; rest++)
+                events.push({ kind: 'operand', value: args[rest] });
+            break;
         }
-        if (!arg.startsWith('-') || arg === '-') {
-            if (!stopAtOperand) {
-                yield { kind: 'operand', value: arg };
+        if (arg.length < 2 || arg[0] !== '-') {
+            if (options.stopAtOperand !== true) {
+                events.push({ kind: 'operand', value: arg });
                 continue;
             }
-            for (const rest of args.slice(i))
-                yield { kind: 'operand', value: rest };
-            return;
+            for (let rest = i; rest < args.length; rest++)
+                events.push({ kind: 'operand', value: args[rest] });
+            break;
         }
-        if (arg.startsWith('--')) {
+        if (arg[1] === '-') {
             const eq = arg.indexOf('=');
             const written = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
             const inline = eq === -1 ? undefined : arg.slice(eq + 1);
@@ -42,44 +44,45 @@ export function* scanOptions(args, spec, { abbreviations = true, stopAtOperand =
             // Prefixes that name one option through several aliases are not ambiguous.
             const keys = new Set(candidates.map((name) => spec.long[name][0]));
             if (candidates.length === 0) {
-                yield { kind: 'unknown', option: `--${written}`, written: arg };
+                events.push({ kind: 'unknown', option: `--${written}`, written: arg });
                 continue;
             }
             if (keys.size > 1) {
-                yield { kind: 'ambiguous', written, candidates };
+                events.push({ kind: 'ambiguous', written, candidates });
                 continue;
             }
             const name = candidates[0];
             const [key, argument] = spec.long[name];
             if (argument === 'none' && inline !== undefined) {
-                yield { kind: 'unwanted', key, option: `--${name}`, value: inline };
+                events.push({ kind: 'unwanted', key, option: `--${name}`, value: inline });
             }
             else if (argument === 'required' && inline === undefined) {
-                yield i + 1 < args.length ? { kind: 'option', key, value: args[i + 1], word: i++ } : { kind: 'missing', key, option: `--${name}` };
+                events.push(i + 1 < args.length ? { kind: 'option', key, value: args[i + 1], word: i++ } : { kind: 'missing', key, option: `--${name}` });
             }
             else {
-                yield inline === undefined ? { kind: 'option', key, word: i } : { kind: 'option', key, value: inline, word: i };
+                events.push(inline === undefined ? { kind: 'option', key, word: i } : { kind: 'option', key, value: inline, word: i });
             }
             continue;
         }
         for (let j = 1; j < arg.length; j++) {
             const letter = arg[j];
-            if (letter === ':' || !spec.short.includes(letter)) {
-                yield { kind: 'unknown', option: `-${letter}`, written: arg };
+            const at = letter === ':' ? -1 : spec.short.indexOf(letter);
+            if (at === -1) {
+                events.push({ kind: 'unknown', option: `-${letter}`, written: arg });
                 continue;
             }
-            if (!takesArgument(letter)) {
-                yield { kind: 'option', key: letter, word: i };
+            if (spec.short[at + 1] !== ':') {
+                events.push({ kind: 'option', key: letter, word: i });
                 continue;
             }
-            const rest = arg.slice(j + 1);
-            if (rest !== '')
-                yield { kind: 'option', key: letter, value: rest, word: i };
+            if (j + 1 < arg.length)
+                events.push({ kind: 'option', key: letter, value: arg.slice(j + 1), word: i });
             else
-                yield i + 1 < args.length ? { kind: 'option', key: letter, value: args[i + 1], word: i++ } : { kind: 'missing', key: letter, option: `-${letter}` };
+                events.push(i + 1 < args.length ? { kind: 'option', key: letter, value: args[i + 1], word: i++ } : { kind: 'missing', key: letter, option: `-${letter}` });
             break;
         }
     }
+    return events;
 }
 /**
  * `args` as GNU getopt_long reads them (scanOptions with abbreviations, and
@@ -87,27 +90,29 @@ export function* scanOptions(args, spec, { abbreviations = true, stopAtOperand =
  * take, with getopt's own diagnostic, which the command prefixes with its
  * name.
  */
-export function* getopt(args, spec, { stopAtOperand = false } = {}) {
-    for (const event of scanOptions(args, spec, { stopAtOperand })) {
+export function getopt(args, spec, options = {}) {
+    const events = [];
+    for (const event of scanOptions(args, spec, options)) {
         switch (event.kind) {
             case 'option':
             case 'operand':
-                yield event;
+                events.push(event);
                 continue;
             case 'unknown':
-                yield { kind: 'error', message: event.option.startsWith('--') ? `unrecognized option '${event.written}'` : `invalid option -- '${event.option.slice(1)}'` };
-                return;
+                events.push({ kind: 'error', message: event.option.startsWith('--') ? `unrecognized option '${event.written}'` : `invalid option -- '${event.option.slice(1)}'` });
+                return events;
             case 'ambiguous':
-                yield { kind: 'error', message: `option '--${event.written}' is ambiguous; possibilities:${event.candidates.map((name) => ` '--${name}'`).join('')}` };
-                return;
+                events.push({ kind: 'error', message: `option '--${event.written}' is ambiguous; possibilities:${event.candidates.map((name) => ` '--${name}'`).join('')}` });
+                return events;
             case 'missing':
-                yield { kind: 'error', message: event.option.startsWith('--') ? `option '${event.option}' requires an argument` : `option requires an argument -- '${event.key}'` };
-                return;
+                events.push({ kind: 'error', message: event.option.startsWith('--') ? `option '${event.option}' requires an argument` : `option requires an argument -- '${event.key}'` });
+                return events;
             case 'unwanted':
-                yield { kind: 'error', message: `option '${event.option}' doesn't allow an argument` };
-                return;
+                events.push({ kind: 'error', message: `option '${event.option}' doesn't allow an argument` });
+                return events;
         }
     }
+    return events;
 }
 /**
  * A flag table's options, collected: scanOptions over the table without

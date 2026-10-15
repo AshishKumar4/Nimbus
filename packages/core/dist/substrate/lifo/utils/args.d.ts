@@ -71,7 +71,7 @@ export interface ScanOptions {
  * prefix of one (`--coun`); its argument follows `=` or, when required, is
  * the next word.
  */
-export declare function scanOptions(args: readonly string[], spec: GetoptSpec, { abbreviations, stopAtOperand }?: ScanOptions): Generator<ScanEvent>;
+export declare function scanOptions(args: readonly string[], spec: GetoptSpec, options?: ScanOptions): ScanEvent[];
 /** An option or an operand, or the diagnostic GNU getopt prints for a bad option. */
 export type GetoptEvent = ScanOption | {
     readonly kind: 'operand';
@@ -86,9 +86,9 @@ export type GetoptEvent = ScanOption | {
  * take, with getopt's own diagnostic, which the command prefixes with its
  * name.
  */
-export declare function getopt(args: readonly string[], spec: GetoptSpec, { stopAtOperand }?: {
-    stopAtOperand?: boolean;
-}): Generator<GetoptEvent>;
+export declare function getopt(args: readonly string[], spec: GetoptSpec, options?: {
+    readonly stopAtOperand?: boolean;
+}): GetoptEvent[];
 export interface ArgSpec {
     [key: string]: {
         type: 'boolean' | 'string';

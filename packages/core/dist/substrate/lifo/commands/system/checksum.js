@@ -473,6 +473,7 @@ function checksumOptions(program, isCksum) {
     };
 }
 function makeCommand(program, fixed) {
+    const options = checksumOptions(program, fixed === null);
     return async (ctx) => {
         const usage = async (message) => {
             await ctx.stderr.write(`${program}: ${message}\nTry '${program} --help' for more information.\n`);
@@ -499,7 +500,7 @@ function makeCommand(program, fixed) {
                 return `invalid argument \u2018${a}\u2019 for \u2018--algorithm\u2019`;
             return null;
         };
-        for (const event of getopt(ctx.args, checksumOptions(program, fixed === null))) {
+        for (const event of getopt(ctx.args, options)) {
             if (event.kind === 'error')
                 return usage(event.message);
             if (event.kind === 'operand') {
