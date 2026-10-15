@@ -689,8 +689,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     private devServerHost;
     /** The dev servers a previous incarnation ran, started again once (dev-servers.ts): what every route to one waits on. */
     restoreDevServers(): Promise<readonly DevServerRestoreFailure[]>;
-    /** A destroy ends the restore under way, and the session made again restores nothing of this one's. */
-    endDevServerRestore(): void;
     /** The port route's in-DO HMR accept, delegated — same reason. */
     acceptCirrusHmrWs(request: Request): Response;
     /**

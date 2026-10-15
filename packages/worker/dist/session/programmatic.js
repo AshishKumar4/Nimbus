@@ -1005,7 +1005,6 @@ async function destroySession(self, options) {
     // admits no process, and a request that would ready the session waits for
     // the one it makes again (rpcDestroy, ensureRuntimeReady).
     self.processes.closeAdmission(Object.assign(new Error('ESHUTDOWN: the session is being destroyed'), { code: 'ESHUTDOWN' }));
-    self.endDevServerRestore();
     hostActivity(self.ctx).close();
     endResidentKeepalive(self);
     const reason = typeof options.reason === 'string' && options.reason.trim()

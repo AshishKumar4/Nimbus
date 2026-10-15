@@ -47,8 +47,6 @@ interface ProgrammaticViteServer {
 export interface ProgrammaticHost extends TimerHost {
     readonly runtimeManager: RuntimeManager;
     ensureRuntimeReady(): Promise<void>;
-    /** A destroy ends the restore of the dev servers the previous incarnation ran (dev-servers.ts): it runs nothing in the session made again. */
-    endDevServerRestore(): void;
     /** The destroy running (rpcDestroy), until it is answered. */
     destroying?: Promise<SessionDestroyResult> | null;
     _w1SessionDestroyed: boolean;

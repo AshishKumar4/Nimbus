@@ -110,6 +110,4 @@ export interface DevServerRestoreHost extends DevServerHost {
  * process's log says why.
  */
 export declare function restoreDevServers(host: DevServerRestoreHost): Promise<readonly DevServerRestoreFailure[]>;
-/** The session is destroyed: its restore runs nothing more, and writes nothing but the release of a record. */
-export declare function endDevServerRestore(host: DevServerRestoreHost): void;
 //# sourceMappingURL=dev-servers.d.ts.map

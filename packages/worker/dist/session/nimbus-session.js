@@ -66,7 +66,7 @@ import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-d
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 import * as _routes from './routes.js';
-import { endDevServerRestore, restoreDevServers } from './dev-servers.js';
+import { restoreDevServers } from './dev-servers.js';
 import * as _portCapability from './port-capability.js';
 // Programmatic SDK RPC surface.
 import * as _programmatic from './programmatic.js';
@@ -951,12 +951,6 @@ export class NimbusSession extends CloudflareDurableObject {
             ensureRuntimeReady: () => this.ensureRuntimeReady(),
         };
         return restoreDevServers(this.devServerHost);
-    }
-    /** A destroy ends the restore under way, and the session made again restores nothing of this one's. */
-    endDevServerRestore() {
-        if (this.devServerHost !== null)
-            endDevServerRestore(this.devServerHost);
-        this.devServerHost = null;
     }
     /** The port route's in-DO HMR accept, delegated — same reason. */
     acceptCirrusHmrWs(request) {
