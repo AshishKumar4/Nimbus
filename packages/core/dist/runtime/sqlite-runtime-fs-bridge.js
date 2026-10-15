@@ -14,7 +14,7 @@ export class SqliteRuntimeFsBridge {
     namespace;
     bufferedWriteBytes;
     waves;
-    access;
+    binding;
     synchronous = this;
     vfs;
     /** The namespace as this caller sees it: what a path off the SQLite root reaches. */
@@ -27,16 +27,16 @@ export class SqliteRuntimeFsBridge {
     /** The namespace's wave ingestion (ProcessFiles.waves); without a namespace, none places anything elsewhere. */
     waves = new WaveIngest(null), 
     /** Its binding's Authority, its standing (Descriptors' `owned`), and its caller's abort; else its scope alone. */
-    access = scopeAccess(scope)) {
+    binding = scopeAccess(scope)) {
         this.rawVfs = rawVfs;
         this.scope = scope;
         this.namespace = namespace;
         this.bufferedWriteBytes = bufferedWriteBytes;
         this.waves = waves;
-        this.access = access;
+        this.binding = binding;
         this.vfs = vfs;
         this.mounted = namespace?.sync;
-        this.descriptors = new Descriptors(scope, () => rawVfs.revision(), access.authority, access.owned, true);
+        this.descriptors = new Descriptors(scope, () => rawVfs.revision(), binding.authority, binding.owned, true);
     }
     dispose() {
         const lost = closeDescriptions(this.scope);
@@ -391,7 +391,7 @@ export class SqliteRuntimeFsBridge {
                 return syncValue(this.descriptors.open(syncValue(openMounted({
                     name: located.path, flags: normalizedFlags, mode: flags.mode,
                     refuse: (code, syscall) => fsError(code, syscall, path), scope: this.scope, pin: (name, follow) => namespace.pin(name, { follow, sync: true }),
-                    sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes, ...(this.access.signal === undefined ? {} : { signal: this.access.signal }),
+                    sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes, ...(this.binding.signal === undefined ? {} : { signal: this.binding.signal }),
                 })), normalizedFlags));
             }
             const p = located.path;
@@ -960,7 +960,7 @@ export class SqliteRuntimeFsBridge {
                 return syncValue(this.descriptors.open(syncValue(reopenMounted(held, {
                     flags: normalizedFlags, mode: flags.mode, refuse: (code, syscall) => fsError(code, syscall, named), scope: this.scope,
                     pin: (name, follow) => namespace.pin(name, { follow, sync: true }), sync: flags.sync === true, bufferedWriteBytes: this.bufferedWriteBytes,
-                    ...(this.access.signal === undefined ? {} : { signal: this.access.signal }),
+                    ...(this.binding.signal === undefined ? {} : { signal: this.binding.signal }),
                 })), normalizedFlags));
             }
             if (held.ino === ROOT_INODE)

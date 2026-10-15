@@ -16,7 +16,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     /** The namespace's wave ingestion (ProcessFiles.waves); without a namespace, none places anything elsewhere. */
     private readonly waves;
     /** Its binding's Authority, its standing (Descriptors' `owned`), and its caller's abort; else its scope alone. */
-    private readonly access;
+    private readonly binding;
     readonly synchronous: RuntimeSynchronousFs;
     private readonly vfs;
     /** The namespace as this caller sees it: what a path off the SQLite root reaches. */
@@ -29,7 +29,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     /** The namespace's wave ingestion (ProcessFiles.waves); without a namespace, none places anything elsewhere. */
     waves?: WaveIngest, 
     /** Its binding's Authority, its standing (Descriptors' `owned`), and its caller's abort; else its scope alone. */
-    access?: {
+    binding?: {
         authority: Authority;
         owned: Authority;
         signal?: AbortSignal;
