@@ -37,7 +37,8 @@
 
 import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '../os-contracts.js';
 import type { ResidentEntry } from './resident-filesystem.js';
-import { fsError, modeAllows } from '../beneath-walk.js';
+import { fsError } from '../beneath-walk.js';
+import { modeAllows } from '../../vfs/posix-access.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import { processFsClient, type ProcessFsClient, type ProcessFsGrant, type ProcessFsJournal, type ProcessFsOp, type ProcessFsSession } from '../../_shared/process-fs-client.js';
 

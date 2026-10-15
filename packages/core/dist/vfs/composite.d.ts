@@ -820,7 +820,7 @@ export declare class CompositeVFS implements VFS {
     private heldDirectory;
     /** A mounted backend's root, or null when it cannot stat it. */
     private mountRoot;
-    /** Whether this view's principal has `want` (r=4, w=2, x=1) on a stat, by its mode bits. */
+    /** Whether this view's principal has `want` (r=4, w=2, x=1) on a stat (modeAllows); a view with no principal is not judged. */
     private permits;
     /** A stat that failed during the walk: absent (ENOENT) reads as nothing there; other errors stand. */
     private walkMiss;

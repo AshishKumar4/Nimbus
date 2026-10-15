@@ -26,6 +26,20 @@ export function posixAccess(
   return ((permissions >> shift) & requested) === requested;
 }
 
+/**
+ * posixAccess for a filesystem's stat, as the session's views judge one: a
+ * stat without a mode (a backend that keeps none) is not judged, and an
+ * owner or group it keeps none of is no one's.
+ */
+export function modeAllows(
+  stat: { readonly mode?: number; readonly uid?: number; readonly gid?: number; readonly type: PosixNodeType },
+  want: number,
+  cred: { readonly uid: number; readonly gid: number; readonly groups: readonly number[] },
+): boolean {
+  if (stat.mode === undefined) return true;
+  return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1, type: stat.type }, want, cred);
+}
+
 /** The caller a metadata rule judges: its uid, its primary group and its supplementary groups. */
 export interface PosixCred {
   readonly uid: number;
