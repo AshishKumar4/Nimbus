@@ -86,9 +86,10 @@ export function buildUstar(files) {
  * filesystem exactly the way the toolchain would, through the caller-bound
  * bridge the runner handed it as `syscalls.vfs`. Each positional input in
  * argv is read and the `-o` path is written, so a read the caller may not
- * make or a directory the caller may not write fails the "compile".
+ * make or a directory the caller may not write fails the "compile"; so does
+ * a source that says `#error`, as the compiler would.
  */
-function toolchainFacet(spec, calls) {
+function toolchainFacet(spec, calls, disposed) {
   if (!spec.syscalls || typeof spec.syscalls.pid !== 'number') {
     throw new Error('clang facet must be opened with the caller\'s syscalls');
   }
@@ -103,8 +104,13 @@ function toolchainFacet(spec, calls) {
         && /\.(c|cc|cpp|cxx|o|a)$/.test(a));
       try {
         for (const input of inputs) {
-          if (await fs.readFile(input.replace(/^\/+/, '')) === null) {
+          const bytes = await fs.readFile(input.replace(/^\/+/, ''));
+          if (bytes === null) {
             await spec.syscalls.processes.appendOutputBytes(spec.syscalls.pid, 'stderr', new TextEncoder().encode(`${spec.tag}: error: ${input}: ENOENT\n`));
+            return { exitCode: 1, stdout: '', stderr: '' };
+          }
+          if (new TextDecoder().decode(bytes).includes('#error')) {
+            await spec.syscalls.processes.appendOutputBytes(spec.syscalls.pid, 'stderr', new TextEncoder().encode(`${input}:1:2: error: #error\n`));
             return { exitCode: 1, stdout: '', stderr: '' };
           }
         }
@@ -116,7 +122,7 @@ function toolchainFacet(spec, calls) {
       }
       return { exitCode: 0, stdout: '', stderr: '' };
     },
-    dispose() {},
+    dispose() { disposed.push(spec.tag); },
   };
 }
 
@@ -173,9 +179,12 @@ export function makeInvocationVfs(options = {}) {
   root.chown('tmp', USER.uid, USER.gid);
 
   const calls = [];
+  // The facets the runner opened and disposed, by tag (clang-runner-clang, clang-runner-wasm-ld).
+  const opened = [];
+  const disposed = [];
   const facets = {
     parking: 'none',
-    open(spec) { return toolchainFacet(spec, calls); },
+    open(spec) { opened.push(spec.tag); return toolchainFacet(spec, calls, disposed); },
   };
   const filesystem = detachingAuthority(new ProcessFiles(raw));
   const processes = new SessionProcessSupervisor();
@@ -189,7 +198,7 @@ export function makeInvocationVfs(options = {}) {
     try { return await handler({ ...ctx, pid: parent.pid, vfs: new ProcessView(filesystem.bind({ pid: parent.pid, cred: ctx.cred })) }); }
     finally { processes.exit(parent.pid, 0); }
   };
-  return { root, run, user, calls };
+  return { root, run, user, calls, opened, disposed };
 }
 
 export function commandContext(args) {
