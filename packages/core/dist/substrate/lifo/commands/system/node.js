@@ -5,7 +5,7 @@ import { ProcessExitError } from '../../node-compat/index.js';
 import { createCjsLoader, moduleWrapper, stripShebang } from '../../node-compat/cjs-loader.js';
 import { isEsModuleFile, isEsModuleInput } from '../../../../runtime/module-format.js';
 import { packageScopeType } from '../../../../runtime/require-resolution.js';
-import { createProcess } from '../../node-compat/process.js';
+import { createProcess, exitCodeOf } from '../../node-compat/process.js';
 import { NODE_VERSION } from '../../../../constants.js';
 import { createConsole } from '../../node-compat/console.js';
 import { createNativeEsmLoader } from '../../node-compat/native-esm-loader.js';
@@ -144,7 +144,7 @@ export async function runNodeProgram(program, host) {
     }
     catch (error) {
         await ctx.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-        return { code: 1, ended: true };
+        return { code: 1, ended: true, finalCode: () => 1 };
     }
     // The realm is the program's: a module that reaches globalThis.process
     // (not a CommonJS wrapper parameter) finds the program's.
@@ -168,11 +168,12 @@ export async function runNodeProgram(program, host) {
         }
         else
             loader.load(filename, { source: cleanMainSource, esm: false });
-        return { code: 0, ended: false };
+        const finalCode = () => exitCodeOf(main.process);
+        return { code: finalCode(), ended: false, finalCode };
     }
     catch (e) {
         if (e instanceof ProcessExitError) {
-            return { code: e.exitCode, ended: true };
+            return { code: e.exitCode, ended: true, finalCode: () => e.exitCode };
         }
         if (e instanceof Error) {
             await ctx.stderr.write(`${e.stack || e.message}\n`);
@@ -180,7 +181,7 @@ export async function runNodeProgram(program, host) {
         else {
             await ctx.stderr.write(`${String(e)}\n`);
         }
-        return { code: 1, ended: true };
+        return { code: 1, ended: true, finalCode: () => 1 };
     }
 }
 export function createNodeCommand(kernel) {

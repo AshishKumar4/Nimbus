@@ -2,6 +2,8 @@ import { EventEmitter } from 'node:events';
 import type { Writable } from 'node:stream';
 import type { CommandOutputStream } from '../commands/types.js';
 import { type WarningConstructor, type WarningOptions } from '../../../_shared/node-warning.js';
+/** The status a program's process ends with when it ends by itself: its process.exitCode, as Node reads it (0 unset). */
+export declare function exitCodeOf(proc: object): number;
 export declare class ProcessExitError extends Error {
     exitCode: number;
     constructor(code: number);

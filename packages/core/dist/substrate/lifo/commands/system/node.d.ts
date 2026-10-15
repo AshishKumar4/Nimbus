@@ -39,6 +39,8 @@ export interface NodeProgramHost {
 export interface NodeProgramEnd {
     readonly code: number;
     readonly ended: boolean;
+    /** The status its process ends with when its loop runs empty: its process.exitCode then. */
+    readonly finalCode: () => number;
 }
 /**
  * Run `program` in the current realm, which is the program's own: its globals

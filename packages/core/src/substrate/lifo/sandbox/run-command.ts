@@ -1,5 +1,5 @@
 import type { Shell } from '../shell/Shell.js';
-import { textSink } from '../../../_shared/bytes.js';
+import { SinkWriter } from '../../../_shared/byte-stream.js';
 
 export interface RunOptions {
   /** Working directory for this command */
@@ -41,14 +41,19 @@ export async function runCommand(shell: Shell, cmd: string, options?: RunOptions
   let stderr = '';
   const onStdout = options?.onStdout;
   const onStderr = options?.onStderr;
+  const stdoutTee = onStdout && tee(onStdout, (text) => { stdout += text; });
+  const stderrTee = onStderr && tee(onStderr, (text) => { stderr += text; });
   const result = await shell.execute(cmd, {
     cwd: options?.cwd,
     env: options?.env,
-    onStdout: onStdout && tee(onStdout, (text) => { stdout += text; }),
-    onStderr: onStderr && tee(onStderr, (text) => { stderr += text; }),
+    onStdout: stdoutTee?.write,
+    onStderr: stderrTee?.write,
     stdin: options?.stdin,
     signal,
   });
+  // The decoders end with the run: a character its last bytes left unfinished is in the result.
+  await stdoutTee?.end();
+  await stderrTee?.end();
   return {
     exitCode: result.exitCode,
     stdout: onStdout ? stdout : result.stdout,
@@ -56,10 +61,17 @@ export async function runCommand(shell: Shell, cmd: string, options?: RunOptions
   };
 }
 
-function tee(sink: (data: Uint8Array) => void, capture: (text: string) => void): (data: Uint8Array) => void {
-  const decode = textSink(capture);
-  return (data) => {
-    decode(data);
-    sink(data);
+/** `sink`'s bytes, and their text to `capture` through one decoder, which `end` ends. */
+function tee(sink: (data: Uint8Array) => void, capture: (text: string) => void): { write(data: Uint8Array): void; end(): Promise<void> } {
+  const decoder = new SinkWriter({ write: capture });
+  let decoded: Promise<void> = Promise.resolve();
+  return {
+    write: (data) => {
+      // Decoded as the bytes arrive (a SinkWriter decodes before it awaits), so a sink that reuses its buffer loses nothing.
+      const written = decoder.write(data);
+      decoded = decoded.then(() => written);
+      sink(data);
+    },
+    end: () => decoded.then(() => decoder.end()),
   };
 }
