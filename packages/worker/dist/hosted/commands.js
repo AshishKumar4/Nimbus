@@ -3,7 +3,7 @@ import { createKillCommand } from '@nimbus-sh/core/substrate/lifo/commands/syste
 import { installSummary } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
 import { signalAbortReason, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { outputHooks } from '@nimbus-sh/core/_shared/byte-stream.js';
-import { BASH_RUNNER, CPYTHON_RUNNER_CONTRACTS, GIT_RUNNER, CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER_CONTRACTS, CPYTHON_RUNNER_CONTRACTS, GIT_RUNNER, CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
@@ -254,7 +254,7 @@ export async function registerHostedCommands(self, workspace) {
     // mechanisms). Interactive terminal invocations use the shared
     // ReplSession line editor; -c, scripts, and piped stdin retain the
     // canonical one-shot handler.
-    workspace.runtimes.registerRunner(BASH_RUNNER, (manifest, installRoot, binName, binKind) => async (ctx) => {
+    const bash = (manifest, installRoot, binName, binKind) => async (ctx) => {
         const argv = ctx.args || [];
         const explicitInteractive = argv.includes('-i');
         const terminalStdin = ctx.isFdTerminal?.(0) ?? !ctx.stdin;
@@ -278,7 +278,9 @@ export async function registerHostedCommands(self, workspace) {
         const { makeBashRunnerFactory } = await import('@nimbus-sh/core/runtime/bash-runner.js');
         const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
         return await makeBashRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes })(manifest, installRoot, binName, binKind)(ctx);
-    });
+    };
+    for (const key of BASH_RUNNER_CONTRACTS)
+        workspace.runtimes.registerRunner(key, bash);
     {
         // Cast registry to the minimal package-manager shape. CommandRegistry
         // CommandRegistry has register(name, handler) which matches.
