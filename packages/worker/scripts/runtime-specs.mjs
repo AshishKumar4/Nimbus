@@ -234,7 +234,9 @@ export const SPECS = {
   // -2: linked with nimbus-libc (the nimbus_fs and nimbus_proc imports), so
   // its umask is the host's live one, a file is made with the mode asked for,
   // and getuid is the session's; and a full name table refuses a new name.
-  'cpython/3.13.14-2': {
+  // -3: nimbus_py_run flushes before every return, its early one too, and
+  // the host no longer flushes after it; netdb's records are nimbus-libc's.
+  'cpython/3.13.14-3': {
     license: 'PSF-2.0',
     wasi_namespace: 'wasi_snapshot_preview1',
     local_base: '../wasm/python',

@@ -56,7 +56,7 @@ const cpython = (version, entrypoints) => {
 };
 // -1 as the catalog published it.
 const v1 = cpython('3.13.14-1', ['python', 'python3'].map((binName) => ({ binName, runner: 'cpython-runner', args: [] })));
-const v2 = cpython('3.13.14-2', SPECS['cpython/3.13.14-2'].files.filter((file) => file.runner !== undefined)
+const v2 = cpython('3.13.14-2', SPECS['cpython/3.13.14-3'].files.filter((file) => file.runner !== undefined)
   .map(({ binName, runner }) => ({ binName, runner, args: [] })));
 /** A shared catalog offering `builds`, its default the first. */
 const catalog = (...builds) => ({
