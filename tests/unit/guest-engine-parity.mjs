@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { LINGER_MS } from '../../packages/core/src/_shared/process-fs-client.ts';
 import { runScenarios, sleep, until } from './lib/resident-body.mjs';
-import { APP, answeredAtOnce, ledgerScenarios } from './lib/guest-engines.mjs';
+import { APP, answeredAtOnce, ledgerScenarios, stat } from './lib/guest-engines.mjs';
 
 const OUT = `${APP}/out`;
 const enc = new TextEncoder();
@@ -229,6 +229,35 @@ const SCENARIOS = {
     await e.fs.close(opened.id);
   },
 
+  async 'fchmod, fchown and futimes change the file a description opened after its name is unlinked and taken'(e) {
+    await e.hold(OUT);
+    await e.write(`${OUT}/orphan.txt`, 'O');
+    const opened = await e.fs.open(`${OUT}/orphan.txt`, { write: true });
+    await e.fs.unlink(`${OUT}/orphan.txt`);
+    await e.write(`${OUT}/orphan.txt`, 'TAKEN');
+    const taken = await e.peerStat(`${OUT}/orphan.txt`);
+    await e.fs.fchmod(opened.id, 0o4600);
+    await e.fs.fchown(opened.id, 1000, 1000);
+    await e.fs.futimes(opened.id, 5_000, 7_000);
+    const own = stat(await e.fs.fstat(opened.id));
+    assert.deepEqual([own.mode, own.mtimeMs], [0o600, 7_000], 'the description\'s own file did not change as asked');
+    await e.fs.close(opened.id);
+    const now = await e.peerStat(`${OUT}/orphan.txt`);
+    assert.deepEqual([now.mode, now.mtimeMs], [taken.mode, taken.mtimeMs], 'the file that took the name changed');
+  },
+  async 'fchmod, fchown and futimes change the file a description opened after its name is renamed'(e) {
+    await e.hold(OUT);
+    await e.write(`${OUT}/before.txt`, 'B');
+    const opened = await e.fs.open(`${OUT}/before.txt`, { write: true });
+    await e.fs.rename(`${OUT}/before.txt`, `${OUT}/after.txt`);
+    await e.fs.fchmod(opened.id, 0o4640);
+    await e.fs.fchown(opened.id, 1000, 1000);
+    await e.fs.futimes(opened.id, 5_000, 9_000);
+    await e.fs.close(opened.id);
+    const moved = await e.peerStat(`${OUT}/after.txt`);
+    assert.deepEqual([moved.mode, moved.mtimeMs], [0o640, 9_000], 'the renamed file did not change as asked');
+  },
+
   // ── The namespace unavailable ──────────────────────────────────────────
   async 'with the namespace unavailable, a chmod is the session\'s, not refused'(e) {
     await e.hold(OUT);
@@ -288,6 +317,7 @@ const GAPS = {
   'an open description reads the file it opened after its name is unlinked [node]': { lacks: PATH_FDS, shows: 'the description read the name\'s new file' },
   'a description writes the file it opened after its name is renamed [node]': { lacks: PATH_FDS, shows: 'the write did not reach the renamed file' },
   'fstat of a description whose file lost its name says so [node]': { lacks: PATH_FDS, shows: 'ENOENT' },
+  'fchmod, fchown and futimes change the file a description opened after its name is unlinked and taken [node]': { lacks: PATH_FDS, shows: 'the file that took the name changed' },
 };
 
 await runScenarios(import.meta.path, ledgerScenarios(SCENARIOS), { gaps: GAPS });
