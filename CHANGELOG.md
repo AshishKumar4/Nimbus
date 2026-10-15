@@ -33,6 +33,32 @@ published independently in the `@nimbus-sh` npm scope.
   `statSync` reports. Each was accepted, or refused, where the session
   answered otherwise. While the process's view of the filesystem is being
   rebuilt, their async forms ask the session instead of refusing `EAGAIN`.
+- Fixed: opencode's TUI gets answers from its syntax-highlight parser. The
+  parser runs as a Worker that the opencode facet hosts on its own thread,
+  where workerd's `worker_threads` reports the main thread, and the parser
+  installs its message handler only off the main thread: it never answered
+  anything the TUI sent it. Its build now gives it a `worker_threads` of its
+  own that says it is a worker. Its file reads and writes (`fs/promises`) are
+  the session's filesystem, as checked in a real facet.
+- Fixed: a long-running `node` process holds from its start the file a
+  package specifier its code resolves names as Node resolves it. A
+  `createRequire(...).resolve('pkg/data')` of a package whose `exports`
+  lists `require` and `import` targets read the `require` one, as Node's
+  require does, but the process held the `import` one, so the synchronous
+  read failed. Its program's `--conditions` count too.
+- Fixed: `node` stages what its code reads by a path it spells out even
+  after a URL string on the same line. `node -e 'const u =
+  "http://example.com"; fs.readFileSync("/home/user/data/x.txt")'` raised
+  EAGAIN for a file outside the working directory. A read through a name
+  given a path function (`const resolve = require('path').resolve`) is
+  found as one too.
+- Fixed: `node`'s `fs.readFileSync` returns a file that opens with a UTF-8
+  byte order mark with the mark, as Node does, wherever the launch staged
+  it from: a working-tree file, a required module or JSON file, an
+  installed package's `package.json`. The staged copy used to drop it, so
+  `EF BB BF 68 69` read back as two bytes synchronously and five from
+  `fs.promises.readFile`. `require()` of a JSON file and a package's
+  resolution through its `package.json` still skip the mark, as Node's do.
 - Fixed: Python's `os.umask` governs the files it creates, `os.open` makes a
   file with the mode asked for (under the umask, as Linux does), and
   `os.getuid()`/`os.getgid()` are the session user's, not 0. Before, the
@@ -193,6 +219,10 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: a process's recursive copy beneath a WASI preopen on a mount that
   answers asynchronously followed a link named as the source even when the
   copy did not ask to follow it.
+- Fixed: an `opencode` launch that fails while it is prepared (a working
+  tree whose snapshot serializes past the RPC payload ceiling, say) ends
+  the process it started, exit 1, with the reason in its exit. It was left
+  running in the process table, for a program that never started.
 - Fixed: in a core workspace, a process that ends after the exec that
   started it (a background job) leaves the process table a minute after it
   ended, at the next exec, as in a hosted session. It stayed, with its

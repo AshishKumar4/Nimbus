@@ -30,6 +30,7 @@
 import { NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, STAGED_BINDING_ARTIFACTS, } from '../napi-wasm-artifacts.generated.js';
 import { fetchStagedBytes, stagedAsset } from './staged-source.js';
 import { packageRootOf } from '../facets/data-plan.js';
+import { packageJsonText } from '@nimbus-sh/core/_shared/exports-resolver.js';
 export { NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE };
 /** Module-map names of the members every launch with a staged binding carries. */
 export const STAGED_BINDING_LOADER_MODULE = 'nimbus-napi-wasm-loader.js';
@@ -140,7 +141,7 @@ stats) {
         const text = await fs.readText('/' + dir + '/package.json');
         if (text !== null) {
             try {
-                const parsed = JSON.parse(text);
+                const parsed = JSON.parse(packageJsonText(text));
                 if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
                     manifest = parsed;
             }

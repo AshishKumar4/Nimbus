@@ -94,14 +94,18 @@ assert.deepEqual(evaluateBundleSource(inline), dictionary({
 // length put a second full copy of pi's 18.26 MB expression on the session DO.
 // A counter is only allowed to replace the encoder if it agrees with it
 // exactly, so pin both directions against the encoder at the ceiling, with
-// multi-byte content a char-count would get wrong by 2/3.
+// multi-byte content a char-count would get wrong by 2/3, and every escape
+// class JSON.stringify distinguishes: two-character escapes, \u00XX
+// controls, multi-byte code points, a surrogate pair and lone surrogates.
 const CELL = 'src/multibyte.txt';
 const overheadBytes = new TextEncoder()
   .encode((await buildFacetVfsBundleSource({ [CELL]: '' })).expression).length;
+const ESCAPES = '\b\t\n\f\r\v\0\x1f "q" \\ é € \u{1F600} \ud800 \udfff';
 
 for (const [label, char, bytesPerChar] of [
   ['three-byte', '€', 3],   // €   — BMP, 3 UTF-8 bytes, 1 UTF-16 unit
   ['four-byte', '\u{1d11e}', 4], // 𝄞  — astral, 4 UTF-8 bytes, 2 UTF-16 units
+  ['escape-class', ESCAPES, new TextEncoder().encode(JSON.stringify(ESCAPES)).length - 2],
 ]) {
   // Eight bytes under the ceiling: an inline verdict here is only correct if
   // the counter is right to within those eight bytes.

@@ -22,7 +22,7 @@
  */
 
 import { invalidArgType, nodeError } from './node-error.js';
-import { createNodePackageMapPolicy, DEFAULT_ESM_CONDITIONS, selectPackageMap } from './exports-resolver.js';
+import { createNodePackageMapPolicy, DEFAULT_ESM_CONDITIONS, packageJsonText, selectPackageMap } from './exports-resolver.js';
 
 type MaybePromise<T> = T | Promise<T>;
 /**
@@ -175,7 +175,7 @@ export function createEsmResolver(host: EsmResolverHost, options: EsmResolverOpt
     if (text === null) return { exists: false, pjsonPath, type: 'none' };
     let parsed: Record<string, unknown>;
     try {
-      parsed = JSON.parse(text);
+      parsed = JSON.parse(packageJsonText(text));
     } catch {
       // Node's message names the file and the import, not the parse error.
       throw nodeError(

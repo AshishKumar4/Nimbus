@@ -267,6 +267,7 @@ try {
   const vfs = {
     exists: (path) => existsSync(disk(path)), isDirectory: (path) => kind(disk(path)) === 'directory',
     readFileString: (path) => readFileSync(disk(path), 'utf8'), realpath: (path) => normalize(realpathSync(disk(path))),
+    readBytes: (path) => (existsSync(disk(path)) ? readFileSync(disk(path)) : null),
   };
   for (const id of ['tinydate', 'module-only', 'legacy/sub']) {
     const entry = 'require(' + JSON.stringify(id) + ');';

@@ -2590,25 +2590,32 @@ const __nimbusWasmModuleTag = Symbol.for("nimbus.precompiledWasmModule");
  */
 const __nimbusPrecompiledWasmByDigest = globalThis.__nimbusPrecompiledWasmByDigest instanceof Map
   ? globalThis.__nimbusPrecompiledWasmByDigest : new Map();
-/**
- * A synchronous content key: length and FNV-1a over every byte.
- *
- * Synchronous because new WebAssembly.Module(bytes) is, and SubtleCrypto is
- * not. Collisions do not matter for correctness the way they would in a
- * security check: the set is the handful of images one launch registered, and
- * the length is part of the key.
- */
+// The key a launch registers each image under: its own code
+// (facets/wasm-image-key.ts wasmImageDigest), not a copy of it.
+var { WASM_IMAGE_HASH_SEED, wasmImageDigest, wasmImageHash, wasmImageKey } = (() => {
+var WASM_IMAGE_HASH_SEED = 2166136261;
+function wasmImageHash(hash, bytes) {
+  for (let i = 0; i < bytes.length; i++) {
+    hash ^= bytes[i];
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash;
+}
+function wasmImageKey(length, hash) {
+  return length + ":" + hash.toString(16);
+}
+function wasmImageDigest(bytes) {
+  return wasmImageKey(bytes.length, wasmImageHash(WASM_IMAGE_HASH_SEED, bytes));
+}
+return { WASM_IMAGE_HASH_SEED, wasmImageDigest, wasmImageHash, wasmImageKey };
+})();
+
+/** The key of the bytes a compile was handed; null for anything but a Uint8Array or an ArrayBuffer. */
 function __nimbusWasmDigest(bytes) {
   const view = bytes instanceof Uint8Array
     ? bytes
     : (bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : null);
-  if (!view) return null;
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < view.length; i++) {
-    hash ^= view[i];
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return view.length + ":" + hash.toString(16);
+  return view === null ? null : wasmImageDigest(view);
 }
 (() => {
   const WA = globalThis.WebAssembly;
@@ -17934,10 +17941,13 @@ function __fileExists(path) {
 }
 // Resolution is the compiled core generator, over the guest's resident fs.
 // Metadata/refusal handling stays here; selection and probing never do.
-var { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates } = (() => {
+var { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, packageJsonText, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates } = (() => {
 var DEFAULT_ESM_CONDITIONS = ["import", "node", "node-addons", "module-sync"];
 var DEFAULT_CJS_CONDITIONS = ["require", "node", "node-addons", "module-sync"];
 var DEFAULT_BUILD_CONDITIONS = ["import", "module", "browser", "default"];
+function packageJsonText(text) {
+  return text.charCodeAt(0) === 65279 ? text.slice(1) : text;
+}
 var codeOf = (error2) => error2 !== null && typeof error2 === "object" && "code" in error2 ? error2.code : void 0;
 function patternKeyCompare(a, b) {
   const aStar = a.indexOf("*");
@@ -18249,7 +18259,7 @@ function createRequireResolver(host, options = {}) {
     }
     let pkg;
     try {
-      pkg = JSON.parse(text);
+      pkg = JSON.parse(packageJsonText(text));
     } catch {
       throw error("ERR_INVALID_PACKAGE_CONFIG", "Invalid package config " + path + ".");
     }
@@ -18490,7 +18500,8 @@ function createRequireResolver(host, options = {}) {
     packageScopeSync: (dir) => runSync(nearestPackageScope(dir, { configs:   new Map() }))
   };
 }
-var fileTextDecoder = new TextDecoder();
+var cellDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+var textDecoder = new TextDecoder("utf-8", { ignoreBOM: true });
 
 function presentedCredential(value) {
   const trimmed = value.trim();
@@ -18500,7 +18511,7 @@ function presentedCredential(value) {
 function isWebSocketUpgradeRequest(headers) {
   return headers.get("upgrade")?.toLowerCase() === "websocket";
 }
-return { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates };
+return { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, packageJsonText, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates };
 })();
 
 const __requireResolver = createRequireResolver({
@@ -18833,7 +18844,7 @@ function createEsmResolver(host, options = {}) {
     if (text === null) return { exists: false, pjsonPath, type: "none" };
     let parsed;
     try {
-      parsed = JSON.parse(text);
+      parsed = JSON.parse(packageJsonText(text));
     } catch {
       throw nodeError(
         Error,
@@ -20237,7 +20248,7 @@ function __stagedOwnerVersion(owner, fromDir) {
   if (parts.length <= depth || parts[depth - 1] === "") return { version: null, manifest: null };
   const manifest = "/" + dir.slice(0, at) + "node_modules/" + parts.slice(0, depth).join("/") + "/package.json";
   let found = null;
-  try { found = JSON.parse(builtins.fs.readFileSync(manifest, "utf8")); } catch {}
+  try { found = JSON.parse(packageJsonText(builtins.fs.readFileSync(manifest, "utf8"))); } catch {}
   if (!found || found.name !== owner || typeof found.version !== "string") return { version: null, manifest: null };
   return { version: found.version, manifest };
 }

@@ -99,6 +99,15 @@ function resolvablePackageJsonSchema(): z.ZodType<ResolvablePackageJson> {
 }
 
 /**
+ * A package.json's text as Node's reader parses it: a leading byte order
+ * mark skipped (src/node_modules.cc, whose simdjson skips one). The file
+ * itself keeps it: a copy of one, a module map's cell, is every byte.
+ */
+export function packageJsonText(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
+/**
  * The entry-point fields of a package.json read off disk, or null when the
  * text is not JSON or not an object. A caller narrows through this rather
  * than annotating `JSON.parse`, so a malformed package resolves as "no
@@ -106,7 +115,7 @@ function resolvablePackageJsonSchema(): z.ZodType<ResolvablePackageJson> {
  */
 export function parseResolvablePackageJson(text: string): ResolvablePackageJson | null {
   try {
-    const result = resolvablePackageJsonSchema().safeParse(JSON.parse(text));
+    const result = resolvablePackageJsonSchema().safeParse(JSON.parse(packageJsonText(text)));
     return result.success ? result.data : null;
   } catch { return null; }
 }
