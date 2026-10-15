@@ -62,7 +62,11 @@ export type GuestEvent =
   | { readonly type: 'output'; readonly fd: 1 | 2; readonly source: OutputSource; readonly writer: number; readonly data: string | Uint8Array }
   /** The program's loop ran empty, and it would hear of a failed write: tell it once writes up to number `upTo` are made (output-settled). */
   | { readonly type: 'settle'; readonly upTo: number }
-  /** The program's 'beforeExit' is about to be emitted with writes up to number `after` posted: the failures of those after it are kept for the settle call that follows. */
+  /**
+   * The program's 'beforeExit' is about to be emitted with writes up to
+   * number `after` posted: the failures of those after it are the answer of
+   * the settle call that follows, and no output-failed of theirs is posted.
+   */
   | { readonly type: 'settle-mark'; readonly after: number }
 
   | { readonly type: 'fetch'; readonly id: number; readonly port: number; readonly url: string; readonly method: string; readonly headers: Record<string, string>; readonly body: string | Uint8Array | null }

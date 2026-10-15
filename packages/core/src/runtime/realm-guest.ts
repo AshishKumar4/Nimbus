@@ -185,10 +185,11 @@ async function firstMessage(port: MessagePort): Promise<unknown> {
 async function joinThreadRealm(parent: MessagePort): Promise<JoinedRealm> {
   const start = await firstMessage(parent);
   if (!isRealmStart(start)) throw new Error('realm: started without a realm');
-  const { calls, events } = start;
+  const { calls, events, waited } = start;
   const flag = new Int32Array(start.wake);
   const router = new AnswerRouter();
   // Answers to asynchronous calls arrive while the event loop runs; held only while one waits.
+  // Those to waited calls come on `waited`, which has no listener: a waited call is no task of the loop.
   calls.on('message', (message) => router.deliver(message));
   calls.unref();
   return joinedRealm({
@@ -196,11 +197,11 @@ async function joinThreadRealm(parent: MessagePort): Promise<JoinedRealm> {
     send: (call) => calls.postMessage(call),
     block(id) {
       for (;;) {
-        // Cleared, then every answer already there taken, then waited for: an
-        // answer posted after the take sets the flag after it was cleared, so
-        // the wait returns at once.
+        // Cleared, then every waited answer already there taken, then waited
+        // for: an answer posted after the take sets the flag after it was
+        // cleared, so the wait returns at once.
         Atomics.store(flag, 0, 0);
-        for (let next = receiveMessageOnPort(calls); next; next = receiveMessageOnPort(calls)) router.deliver(next.message);
+        for (let next = receiveMessageOnPort(waited); next; next = receiveMessageOnPort(waited)) router.deliver(next.message);
         if (router.has(id)) return;
         Atomics.wait(flag, 0, 0);
       }

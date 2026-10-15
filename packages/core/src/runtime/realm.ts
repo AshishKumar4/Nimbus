@@ -31,9 +31,13 @@
  * at once; a worker running JavaScript, or WebAssembly that calls into
  * JavaScript, Bun ends), and a process ends at SIGKILL whatever it runs.
  *
- * In a thread, calls and their answers go on a MessagePort, `calls`; the host
- * sets `wake` and notifies it after each answer, and a waiting guest waits
- * with Atomics.wait on `wake`, taking answers with receiveMessageOnPort.
+ * In a thread, calls go on a MessagePort, `calls`, and their answers on
+ * `calls`, or on `waited` for a call the guest waits for: `waited` has no
+ * listener, so a waited answer is no task of the guest's loop (Bun runs a
+ * port's listener for each message, even one receiveMessageOnPort took, and
+ * that is work its loop runs again for). The host sets `wake` and notifies
+ * it after each answer, and a waiting guest waits with Atomics.wait on
+ * `wake`, taking its answer from `waited` with receiveMessageOnPort.
  * Events go on `events`. In a process, the same messages go as frames (a
  * length, then the message's v8 serialization) on pipes ({@link REALM_FDS}):
  * the answers a guest waits for on one it only ever reads synchronously, the
@@ -70,7 +74,9 @@ export interface RealmStart {
   readonly payload: unknown;
   readonly calls: MessagePort;
   readonly events: MessagePort;
-  /** One Int32: set to 1 and notified when an answer is on `calls`. */
+  /** Where the answers to the calls the guest waits for come: read only by the call that waits. */
+  readonly waited: MessagePort;
+  /** One Int32: set to 1 and notified after each answer. */
   readonly wake: SharedArrayBuffer;
 }
 
@@ -96,7 +102,7 @@ export interface RealmError {
 const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
 export function isRealmStart(value: unknown): value is RealmStart {
-  return record(value) && 'payload' in value && value.wake instanceof SharedArrayBuffer && record(value.calls) && record(value.events);
+  return record(value) && 'payload' in value && value.wake instanceof SharedArrayBuffer && record(value.calls) && record(value.events) && record(value.waited);
 }
 
 export function isRealmCall(value: unknown): value is RealmCall {
@@ -372,12 +378,13 @@ async function startThreadLink(options: RealmOptions, onCall: (call: RealmCall) 
   }
   const calls = new threads.MessageChannel();
   const events = new threads.MessageChannel();
+  const waited = new threads.MessageChannel();
   const wake = new SharedArrayBuffer(4);
   const flag = new Int32Array(wake);
   // Nothing of the host's environment: a worker's is a copy of it otherwise.
   const worker = new threads.Worker(options.entry, { env: {} });
-  const start: RealmStart = { payload: options.payload, calls: calls.port2, events: events.port2, wake };
-  worker.postMessage(start, [calls.port2, events.port2]);
+  const start: RealmStart = { payload: options.payload, calls: calls.port2, events: events.port2, waited: waited.port2, wake };
+  worker.postMessage(start, [calls.port2, events.port2, waited.port2]);
   calls.port1.on('message', (call) => { if (isRealmCall(call)) onCall(call); });
   events.port1.on('message', (event) => options.onEvent(event));
 
@@ -390,12 +397,13 @@ async function startThreadLink(options: RealmOptions, onCall: (call: RealmCall) 
   return {
     answer(call, outcome) {
       if (closed) return;
+      const port = call.wait ? waited.port1 : calls.port1;
       try {
-        calls.port1.postMessage({ id: call.id, ...outcome });
+        port.postMessage({ id: call.id, ...outcome });
       } catch (error) {
-        try { calls.port1.postMessage({ id: call.id, error: realmError(error) }); } catch { /* the port is gone */ }
+        try { port.postMessage({ id: call.id, error: realmError(error) }); } catch { /* the port is gone */ }
       }
-      // A guest waiting on any call takes this answer, and its own when it comes.
+      // A waiting guest looks for its answer at each.
       Atomics.store(flag, 0, 1);
       Atomics.notify(flag, 0);
     },
@@ -427,6 +435,7 @@ async function startThreadLink(options: RealmOptions, onCall: (call: RealmCall) 
       closed = true;
       calls.port1.close();
       events.port1.close();
+      waited.port1.close();
     },
   };
 }
