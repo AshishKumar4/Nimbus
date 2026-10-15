@@ -75,7 +75,7 @@ function owner(url: string): HookLoader {
 const privateUrl = (url: string | undefined): boolean => url?.startsWith(PRIVATE_ROOT) === true;
 const privatePath = (path: string): boolean => path.startsWith(PRIVATE_PATH);
 /** Whether `path` (an importer as Bun names it) is code vm compiled for a loader. */
-const scriptPath = (path: string): boolean => path.startsWith('/') && scripts.has(pathToFileURL(path).href);
+const scriptPath = (path: string): boolean => scripts.size > 0 && path.startsWith('/') && scripts.has(pathToFileURL(path).href);
 
 /** Installed once in a realm, including a host realm shared by lifo commands. */
 function installHooks(): Promise<typeof import('node:module')> {
