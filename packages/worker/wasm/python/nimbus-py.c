@@ -113,13 +113,16 @@ int nimbus_py_init(const char *home)
 /* Runs `src` in __main__, which is the same namespace every previous call used,
  * so definitions and generators persist between entries. Returns the exit
  * status: 0 for success, the SystemExit code where there was one, 1 for any
- * other exception (already printed). */
+ * other exception (already printed). Every return flushes sys.stdout and
+ * sys.stderr first (nimbus_py_flush): the host flushes only an entry that
+ * trapped. */
 __attribute__((export_name("nimbus_py_run")))
 int nimbus_py_run(const char *src)
 {
 	PyObject *main_module = PyImport_AddModule("__main__");
 	if (main_module == NULL) {
 		PyErr_Print();
+		nimbus_py_flush();
 		return 1;
 	}
 	PyObject *globals = PyModule_GetDict(main_module);
