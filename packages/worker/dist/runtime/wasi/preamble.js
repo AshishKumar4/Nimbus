@@ -1592,8 +1592,27 @@ export function __wasiMakeImports(opts) {
             });
             // Race them. After the FIRST one resolves, check whether ANY others
             // also have results pending (they could have resolved synchronously
-            // before the race even began, e.g. always-ready file fds).
-            const winnerResult = await Promise.race(promises);
+            // before the race even began, e.g. always-ready file fds). A signal
+            // sent to an image that takes its own ends the poll whatever it waits
+            // on (a clock, a socket), as it ends poll(2): it answers the signal.
+            const signalWait = proc.signalWait();
+            const winner = await Promise.race(signalWait === null ? promises : [...promises, signalWait.ready.then(() => null)]);
+            signalWait?.cancel();
+            if (winner === null) {
+                for (let i = 0; i < promises.length; i++) {
+                    if (timerIds[i] !== null) {
+                        try {
+                            clearTimeout(timerIds[i]);
+                        }
+                        catch { }
+                        timerIds[i] = null;
+                    }
+                    pipeWaits[i]?.();
+                }
+                writeU32LE(retNeventsPtr, 0);
+                return proc.interrupted();
+            }
+            const winnerResult = winner;
             // Now collect all currently-resolved promises. Strategy: tag each
             // with a marker via Promise.race against a sentinel — anything
             // that resolved BEFORE OR AT the same time as the winner is ready.

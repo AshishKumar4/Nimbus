@@ -112,8 +112,17 @@ export class ProcessInputStore {
             return { ok: false, full: true };
         return this.enqueue(state, { data, ended: false }, data.byteLength);
     }
-    /** A pipe write: ordered, split at the bound, waiting for room instead of dropping bytes. */
-    async writeBytesWait(pid, data) {
+    /** Whether `pid`'s queue has room for `bytes` more now. */
+    hasRoom(pid, bytes) {
+        const state = this.pids.get(pid);
+        return state !== undefined && !state.closed && state.bytes + bytes <= this.maxQueuedBytes;
+    }
+    /**
+     * A pipe write: ordered, split at the bound, waiting for room instead of
+     * dropping bytes. `withdraw`, while it waits for room, ends it with what it
+     * has not written unwritten.
+     */
+    async writeBytesWait(pid, data, withdraw) {
         const state = this.pids.get(pid);
         if (!state || state.closed)
             return { ok: false };
@@ -122,6 +131,8 @@ export class ProcessInputStore {
             for (let at = 0; at < data.byteLength; at += this.maxQueuedBytes) {
                 const piece = data.subarray(at, Math.min(data.byteLength, at + this.maxQueuedBytes));
                 for (;;) {
+                    if (withdraw?.aborted)
+                        return;
                     const wrote = this.writeBytes(pid, piece);
                     if (wrote.ok)
                         break;

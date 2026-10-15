@@ -23,8 +23,8 @@ export function openInvocationStdio(processes, spec) {
         throw new Error(`${spec.command}: runtime process is not running`);
     const pid = entry.pid;
     const controller = new AbortController();
-    if (spec.takesSignals)
-        processes.takeSignals(pid, DELIVERED_SIGNALS);
+    // Its program's for this run alone: an adopted process runs on after it.
+    const releaseSignals = spec.takesSignals ? processes.takeSignals(pid, DELIVERED_SIGNALS) : null;
     const abort = () => {
         const sent = spec.takesSignals && spec.signal ? signalAbortReasonOf(spec.signal) : null;
         if (sent !== null && sent.signal !== 'KILL')
@@ -53,6 +53,7 @@ export function openInvocationStdio(processes, spec) {
         signal: controller.signal,
         release() {
             spec.signal?.removeEventListener('abort', abort);
+            releaseSignals?.();
             input?.stop();
             if (owned)
                 processes.closeInput(pid);

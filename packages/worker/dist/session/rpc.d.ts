@@ -452,7 +452,7 @@ export declare function _rpcCpSpawn(self: RpcHost, req: any, parentPid?: number)
  */
 export declare function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: Uint8Array, pid?: number): Promise<{
     ok: boolean;
-    full?: boolean;
+    signal?: string;
 }>;
 export declare function _rpcCpStdinEnd(self: RpcHost, childPid: number, pid?: number): Promise<void>;
 /**

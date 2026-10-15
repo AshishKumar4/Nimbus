@@ -427,7 +427,7 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
     }>;
     cpStdinWrite(childPid: number, data: Uint8Array): Promise<{
         ok: boolean;
-        full?: boolean;
+        signal?: string;
     }>;
     cpStdinEnd(childPid: number): Promise<void>;
     /**

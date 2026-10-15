@@ -45,8 +45,14 @@ export declare class ProcessInputStore {
         ok: boolean;
         full?: boolean;
     };
-    /** A pipe write: ordered, split at the bound, waiting for room instead of dropping bytes. */
-    writeBytesWait(pid: number, data: Uint8Array): Promise<{
+    /** Whether `pid`'s queue has room for `bytes` more now. */
+    hasRoom(pid: number, bytes: number): boolean;
+    /**
+     * A pipe write: ordered, split at the bound, waiting for room instead of
+     * dropping bytes. `withdraw`, while it waits for room, ends it with what it
+     * has not written unwritten.
+     */
+    writeBytesWait(pid: number, data: Uint8Array, withdraw?: AbortSignal): Promise<{
         ok: boolean;
     }>;
     endAfterWrites(pid: number): Promise<void>;

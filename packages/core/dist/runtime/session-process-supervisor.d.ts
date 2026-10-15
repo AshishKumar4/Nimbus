@@ -352,8 +352,15 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
         ok: boolean;
         full?: boolean;
     };
-    writeInputBytesWait(pid: number, data: Uint8Array): Promise<{
+    /**
+     * A pipe write to `pid`'s input, waiting for room. When `writer`, the
+     * process writing, takes its own signals (takeSignals), a signal sent to
+     * it while it waits answers instead, as a write is interrupted, and the
+     * write is withdrawn, taking nothing.
+     */
+    writeInputBytesWait(pid: number, data: Uint8Array, writer?: number): Promise<{
         ok: boolean;
+        signal?: ProcessSignalName;
     }>;
     endInputAfterWrites(pid: number): Promise<void>;
     /** Resolves when a write refused for a full queue may succeed; false once the channel is ended or gone. */
@@ -369,14 +376,15 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      */
     readInput(pid: number, waitMs?: number, maxBytes?: number): Promise<ProcessInputPacket>;
     /**
-     * From now until `pid` ends, its program takes the signals it `catches`:
-     * one sent to it (a kill, the terminal's keys, a client's frame) is queued
-     * for it to take (nextSignal), and what it does is the program's, as a
-     * process's own handlers decide. Any other, SIGKILL among them, still ends
-     * it. Its runner says so when its image takes what its host delivers
-     * (GIT_RUNNER_CONTRACTS).
+     * Until `pid` ends or the returned release is called (its program's run
+     * ended: the process may run another), its program takes the signals it
+     * `catches`: one sent to it (a kill, the terminal's keys, a client's
+     * frame) is queued for it to take (nextSignal), and what it does is the
+     * program's, as a process's own handlers decide. Any other, SIGKILL among
+     * them, still ends it. Its runner says so when its image takes what its
+     * host delivers (GIT_RUNNER_CONTRACTS).
      */
-    takeSignals(pid: number, catches: readonly ProcessSignalName[]): void;
+    takeSignals(pid: number, catches: readonly ProcessSignalName[]): () => void;
     /**
      * The next signal sent to `pid`'s program (takeSignals), waiting up to
      * `waitMs` for one: null if none came, the process ended, or a later wait
@@ -385,8 +393,12 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
     nextSignal(pid: number, waitMs: number): Promise<ProcessSignalName | null>;
     /** `pid`'s wait for a signal answered null, its place given up. */
     private dropTaker;
-    /** `signal` queued for `pid`'s program if it takes its own (takeSignals): whether it does. */
-    private deliverSignal;
+    /**
+     * `signal` queued for `pid`'s program if it takes its own and catches it
+     * (takeSignals): whether it does. A kill path that ends a process past
+     * this table (its host's resources first) asks this before it does.
+     */
+    deliverSignal(pid: number, signal: ProcessSignalName): boolean;
     /**
      * `reason`'s signal to `pid` and every process below it, as a terminal's
      * key signals its foreground job's process group: each takes it as

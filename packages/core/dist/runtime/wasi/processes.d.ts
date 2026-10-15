@@ -58,7 +58,10 @@ export interface Pipe {
     readers: number;
     waiters: Array<() => void>;
     /** Set when the read end is a child's stdin. */
-    forward: ((bytes: Uint8Array) => Promise<boolean>) | null;
+    forward: ((bytes: Uint8Array) => Promise<{
+        ok: boolean;
+        signal?: string;
+    }>) | null;
     end: (() => Promise<void>) | null;
     ended: boolean;
     /** The session could not deliver all of a child's output: a reader gets EIO after what did arrive. */
@@ -149,6 +152,15 @@ export interface ProcessHost {
      * else EINTR, the wait having given up.
      */
     interrupted(): Errno;
+    /**
+     * For an image that takes its signals, a wait that ends only when one
+     * comes (interrupted then answers it): a poll races it against its
+     * subscriptions, its clocks and sockets among them. Null for any other.
+     */
+    signalWait(): {
+        ready: Promise<void>;
+        cancel(): void;
+    } | null;
     /** A new descriptor on what pipe or stream descriptor `fd` holds, as dup(2); null for any other kind (AuthorityFilesystemOptions.duplicate). */
     duplicate(fd: number): number | null;
     /**

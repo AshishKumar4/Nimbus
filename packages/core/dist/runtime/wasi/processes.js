@@ -33,13 +33,14 @@
  */
 import { refusalErrno as filesystemErrno } from './filesystem.js';
 import { PIPE_CAPACITY, decideWrite } from '../bash/pipe-rules.js';
-import { NIMBUS_SIGNAL_ERRNOS } from './types.js';
+import { NIMBUS_ESIGNAL, NIMBUS_SIGNAL_ERRNOS } from './types.js';
 /** WASI errno values these imports answer with. */
 const E = { SUCCESS: 0, AGAIN: 6, BADF: 8, CHILD: 12, INTR: 27, INVAL: 28, IO: 29, NOSYS: 52, NOTSUP: 58, PIPE: 64, SRCH: 71 };
 const FDFLAGS_NONBLOCK = 4;
-/** Signal numbers as wasi-libc's emulated signals number them, and their names. */
+/** Signal numbers as wasi-libc's emulated signals number them, and their names: those a host delivers (NIMBUS_SIGNAL_ERRNOS), and SIGKILL. */
 const SIGNALS = {
-    1: 'SIGHUP', 2: 'SIGINT', 3: 'SIGQUIT', 9: 'SIGKILL', 10: 'SIGUSR1', 12: 'SIGUSR2', 13: 'SIGPIPE', 14: 'SIGALRM', 15: 'SIGTERM',
+    9: 'SIGKILL',
+    ...Object.fromEntries(Object.entries(NIMBUS_SIGNAL_ERRNOS).map(([name, errno]) => [errno - NIMBUS_ESIGNAL, name])),
 };
 const SIGNAL_NUMBERS = Object.fromEntries(Object.entries(SIGNALS).map(([n, name]) => [name, Number(n)]));
 /** The errno a wait a signal interrupted answers an image that takes its signals with, by the signal's name. */
@@ -306,7 +307,7 @@ export function processHost(opts) {
                         while (at < chunk.data.byteLength && !disposed && target.pipe.readers > 0) {
                             const room = PIPE_CAPACITY - target.pipe.buffered;
                             if (room === 0) {
-                                await parkedWait((wake) => target.pipe.waiters.push(wake), () => disposed || target.pipe.readers === 0 || target.pipe.buffered < PIPE_CAPACITY ? true : null, false).ready;
+                                await parkedWait((wake) => target.pipe.waiters.push(wake), () => disposed || target.pipe.readers === 0 || target.pipe.buffered < PIPE_CAPACITY ? true : null, false, false).ready;
                                 continue;
                             }
                             const size = Math.min(room, chunk.data.byteLength - at);
@@ -446,10 +447,10 @@ export function processHost(opts) {
                     pipe.forward = async (bytes) => {
                         await opts.release();
                         try {
-                            return (await sup.cpStdinWrite(childPid, bytes)).ok;
+                            return await sup.cpStdinWrite(childPid, bytes);
                         }
                         catch {
-                            return false;
+                            return { ok: false };
                         }
                     };
                     pipe.end = async () => { await sup.cpStdinEnd(childPid); };
@@ -682,8 +683,14 @@ export function processHost(opts) {
         if (pipe.readers === 0)
             return E.PIPE;
         if (pipe.forward) {
-            return opts.park(pipe.forward(bytes).then((ok) => {
-                if (!ok)
+            return opts.park(pipe.forward(bytes).then((answer) => {
+                // A signal interrupted it (the session withdrew it): nothing was written.
+                if (answer.signal !== undefined) {
+                    if (opts.takesSignals)
+                        signalled(answer.signal);
+                    return unanswered(E.INTR);
+                }
+                if (!answer.ok)
                     return E.PIPE;
                 view().setUint32(nwritten, bytes.byteLength, true);
                 return E.SUCCESS;
@@ -737,6 +744,22 @@ export function processHost(opts) {
     return {
         imports, read, write, close, isPipe: (fd) => pipeEntry(fd) !== null, duplicate, readiness,
         interrupted: () => unanswered(E.INTR),
+        signalWait: () => {
+            if (!opts.takesSignals)
+                return null;
+            let cancel = () => { };
+            const ready = new Promise((resolve) => {
+                if (pendingSignal !== null) {
+                    resolve();
+                    return;
+                }
+                const interrupt = () => { interruptible.delete(interrupt); resolve(); };
+                interruptible.add(interrupt);
+                cancel = () => { interruptible.delete(interrupt); };
+                watchSignals();
+            });
+            return { ready, cancel };
+        },
         dispose: () => { disposed = true; },
     };
 }

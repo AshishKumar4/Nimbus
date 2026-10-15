@@ -120,7 +120,7 @@ declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
     }>;
     cpStdinWrite(childPid: number, data: Uint8Array): Promise<{
         ok: boolean;
-        full?: boolean;
+        signal?: string;
     }>;
     cpStdinEnd(childPid: number): Promise<void>;
     replayBoundary(): Promise<void>;

@@ -5,6 +5,7 @@ import { parseShellInvocation } from '../shell/shell-invocation.js';
 import { enc } from '../_shared/bytes.js';
 import { exitCodeForSignal, parseSignalName, signalDisposition } from '../substrate/lifo/shell/signals.js';
 import { pulledStdinReader } from '../shell/stdin-adapter.js';
+import { parseProcessSignalName } from './process-io-protocol.js';
 /** A text producer's edge onto the byte hooks. */
 export function textBytes(text) {
     return enc.encode(text);
@@ -297,11 +298,12 @@ export class ChildProcessManager {
         });
     }
     // ── stdin queue ─────────────────────────────────────────────────────────
-    async stdinWrite(childPid, data) {
+    /** `writer`, the process writing, is interrupted by a signal it takes (SessionProcessSupervisor.writeInputBytesWait). */
+    async stdinWrite(childPid, data, writer) {
         const child = this.children.get(childPid);
         if (!child || child.exitCode !== null)
             return { ok: false };
-        return this.deps.processes.writeInputBytesWait(childPid, data);
+        return this.deps.processes.writeInputBytesWait(childPid, data, writer);
     }
     async stdinEnd(childPid) {
         const child = this.children.get(childPid);
@@ -324,13 +326,13 @@ export class ChildProcessManager {
      * Long-poll: child facet asks the supervisor for its next stdin chunk.
      * Returns immediately if data is already queued OR if stdin is closed.
      */
-    /** The next signal sent to `pid`, whose program takes its own (SessionProcessSupervisor.nextSignal). */
-    nextSignal(pid, waitMs) {
-        return this.deps.processes.nextSignal(pid, waitMs);
-    }
     async cpReadStdin(childPid, waitMs, maxBytes) {
         const packet = await this.deps.processes.readInput(childPid, waitMs, maxBytes);
         return { ...packet, data: typeof packet.data === 'string' ? textBytes(packet.data) : packet.data };
+    }
+    /** The next signal sent to `pid`, whose program takes its own (SessionProcessSupervisor.nextSignal). */
+    nextSignal(pid, waitMs) {
+        return this.deps.processes.nextSignal(pid, waitMs);
     }
     // ── output queue ────────────────────────────────────────────────────────
     /** A broker-side text message onto the child's byte ring. */
@@ -531,6 +533,10 @@ export class ChildProcessManager {
         const name = parseSignalName(String(signal));
         if (name === null || name === '0' || signalDisposition(name) !== 'terminate')
             return false;
+        // One its program takes is its program's: the child runs on.
+        const sent = parseProcessSignalName(`SIG${name}`);
+        if (sent !== null && this.deps.processes.deliverSignal(child.pid, sent))
+            return true;
         child.killed = true;
         this.deps.terminate(child.pid, name);
         this._stampExit(child, exitCodeForSignal(name), `SIG${name}`); // 128+signo, as the shell reports it
@@ -699,7 +705,7 @@ export class ChildProcessManager {
 export function createChildProcessSupervisor(manager, pid) {
     return {
         cpSpawn: (request) => manager.spawn({ ...request, parentPid: pid }),
-        cpStdinWrite: (child, bytes) => manager.stdinWrite(child, bytes),
+        cpStdinWrite: (child, bytes) => manager.stdinWrite(child, bytes, pid),
         cpStdinEnd: (child) => manager.stdinEnd(child),
         cpReadOutput: (child, fd, sinceSeq, waitMs) => manager.readOutput(child, fd, sinceSeq, waitMs),
         cpWait: (child, waitMs, _acquire, knownStarted = true) => manager.wait(child, waitMs, knownStarted),

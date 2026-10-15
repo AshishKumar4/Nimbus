@@ -209,8 +209,10 @@ export declare class ChildProcessManager {
      * or the child exits. Nothing is read ahead of the command's own reads.
      */
     private _stdinOf;
-    stdinWrite(childPid: number, data: Uint8Array): Promise<{
+    /** `writer`, the process writing, is interrupted by a signal it takes (SessionProcessSupervisor.writeInputBytesWait). */
+    stdinWrite(childPid: number, data: Uint8Array, writer?: number): Promise<{
         ok: boolean;
+        signal?: string;
     }>;
     stdinEnd(childPid: number): Promise<void>;
     /**
@@ -223,12 +225,12 @@ export declare class ChildProcessManager {
      * Long-poll: child facet asks the supervisor for its next stdin chunk.
      * Returns immediately if data is already queued OR if stdin is closed.
      */
-    /** The next signal sent to `pid`, whose program takes its own (SessionProcessSupervisor.nextSignal). */
-    nextSignal(pid: number, waitMs: number): Promise<string | null>;
     cpReadStdin(childPid: number, waitMs: number, maxBytes?: number): Promise<{
         data: Uint8Array;
         ended: boolean;
     }>;
+    /** The next signal sent to `pid`, whose program takes its own (SessionProcessSupervisor.nextSignal). */
+    nextSignal(pid: number, waitMs: number): Promise<string | null>;
     /** A broker-side text message onto the child's byte ring. */
     private _appendText;
     /** Whether this pid's descriptors belong to a child managed by this broker. */
@@ -320,6 +322,7 @@ export declare function createChildProcessSupervisor(manager: ChildProcessManage
     }>;
     cpStdinWrite: (child: number, bytes: Uint8Array) => Promise<{
         ok: boolean;
+        signal?: string;
     }>;
     cpStdinEnd: (child: number) => Promise<void>;
     cpReadOutput: (child: number, fd: 1 | 2, sinceSeq: number, waitMs?: number) => Promise<ReadOutputResult>;
