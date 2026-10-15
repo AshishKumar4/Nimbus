@@ -582,7 +582,10 @@ for (const continues of [true, false]) {
   const s = session();
   s.kernel.mkdir('home/user/v', { mode: 0o755 });
   s.kernel.chown('home/user/v', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
-  if (continues) s.files.continueAtCommit(PID);
+  if (continues) {
+    s.files.holdOutput(new SessionProcessSupervisor());
+    s.files.continueAtCommit(PID);
+  }
   const c = client(s, { grantAfter: 1, grantIdleMs: 60_000, recallPollMs: 100 });
   c.holder('home/user/v/x');
   const grant = await until(() => c.holder('home/user/v/x'), 'the grant');
@@ -597,6 +600,7 @@ for (const continues of [true, false]) {
   await written;
   assert.equal(c.vouch('home/user/v', view), undefined, 'a view from before the change was vouched for');
   if (continues) {
+    assert.notEqual(s.engine.publishedFor(), null, 'the change was published before its answer');
     assert.equal(c.vouch('home/user/v', { ...view, rev: s.engine.revision() }), undefined, 'a change not yet published was vouched for');
     reader.recalled(readLease.owner, 'revoke');
     await s.engine.publishedFor();
