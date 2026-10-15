@@ -20,16 +20,19 @@ import { DNSResolver } from '../../kernel/dns-resolver.js';
 import { createHostsResolver, type VirtualRequest, type VirtualRequestHandler, type VirtualResponse } from '../../kernel/index.js';
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { VfsEvent } from '../../../../vfs/events.js';
+import type { FailableOutput, OutputSource } from '../../node-compat/standard-streams.js';
 import type { CommandOutputStream } from '../types.js';
+import { uncaughtReport, writeFailure } from '../../node-compat/output-failure.js';
+import type { LifoProcess } from '../../node-compat/process.js';
 import { ProcessExitError } from '../../node-compat/index.js';
 import { useNodeErrorInspect } from '../../../../_shared/node-error.js';
-import { runNodeProgram } from './node.js';
+import { runNodeProgram } from './node-program.js';
 import { routeFetchThroughHost, type RealmEgressGuest } from '../../../../runtime/realm-egress-guest.js';
 import { isEgressHostEvent } from '../../../../runtime/realm-egress.js';
 import {
   isDirEntries, isHostEvent, isNodeRealmPayload, isStat,
   type GuestEvent, type NodeCall, type RealmResponse,
-} from './node-realm.js';
+} from './node-realm-protocol.js';
 
 // Node's errors show a value as util.inspect does ('a string' quoted), the program's realm's.
 useNodeErrorInspect((value, options) => realm.getBuiltinModule('node:util').inspect(value, options));
@@ -70,15 +73,18 @@ const fetched = new Map<number, (response: RealmResponse | null) => void>();
 let offTheBox: RealmEgressGuest | null = null;
 /** `events` holds the realm open while anything of the program's waits on it. */
 function holdWhileBusy(): void {
-  joined.hold(fetched.size > 0 || ports.size > 0 || persistentWatches > 0 || (offTheBox?.awaited ?? 0) > 0);
+  joined.hold(fetched.size > 0 || ports.size > 0 || persistentWatches > 0 || (offTheBox?.awaited ?? 0) > 0 || settling);
 }
 
-/** End the process now with `code`, as process.exit() and a fatal error do. */
+/** End the process now with `code`, as process.exit() and a fatal error do: a write that fails later is no one's. */
 function exitNow(code: number): never {
   exiting = true;
-  post({ type: 'exit', code });
+  post({ type: 'exit', code, ended: true });
   return realm.exit(code);
 }
+
+/** The program's process, once runNodeProgram has made it. */
+let programProcess: LifoProcess | null = null;
 
 // ── The filesystem, each method's answer narrowed to what it returns ───────
 
@@ -150,10 +156,36 @@ const filesystem: NodeFilesystem = {
   },
 };
 
-const output = (fd: 1 | 2): CommandOutputStream => ({
-  write: (data: string) => post({ type: 'output', fd, data }),
-  writeBytes: (data: Uint8Array) => post({ type: 'output', fd, data }),
-});
+/**
+ * The program's output `fd`, as its stream (process.stdout, process.stderr)
+ * and its console write it: each write crosses to the host, which makes it
+ * later. One the host could not make is told to the stream (FailableOutput),
+ * with what made it.
+ */
+function realmOutput(fd: 1 | 2): { readonly stream: FailableOutput; readonly console: CommandOutputStream; fail(error: Error, source: OutputSource): void } {
+  const listeners: ((error: Error, source: OutputSource) => void)[] = [];
+  const through = (source: OutputSource): CommandOutputStream => ({
+    write: (data: string) => postOutput(fd, source, data),
+    writeBytes: (data: Uint8Array) => postOutput(fd, source, data),
+  });
+  return {
+    stream: { ...through('stream'), onFailure: (listener) => { listeners.push(listener); } },
+    console: through('console'),
+    fail(error, source) {
+      for (const listener of listeners) listener(error, source);
+    },
+  };
+}
+/** Output writes posted, and the last the host has settled (made, or failed). */
+let postedOutput = 0;
+let settledOutput = 0;
+/** Whether the guest waits for the host to settle its writes (settle): the realm is held meanwhile. */
+let settling = false;
+function postOutput(fd: 1 | 2, source: OutputSource, data: string | Uint8Array): void {
+  post({ type: 'output', fd, source, data });
+  postedOutput++;
+}
+const outputs = { 1: realmOutput(1), 2: realmOutput(2) };
 
 /** The program's servers, as the session reaches them: listening is the host's to record, and holds the realm. */
 class RealmPorts extends Map<number, VirtualRequestHandler> {
@@ -220,6 +252,16 @@ events.on('message', (event) => {
     case 'changed':
       watches.get(event.id)?.listener(event.event);
       return;
+    case 'output-failed':
+      // A stream's failure is heard here, whatever the program makes of it: the host reports it no more.
+      if (event.source === 'stream') post({ type: 'heard', fd: event.fd });
+      outputs[event.fd].fail(writeFailure(event.code, event.pipe), event.source);
+      return;
+    case 'output-settled':
+      settledOutput = event.seq;
+      settling = false;
+      holdWhileBusy();
+      return;
   }
 });
 
@@ -227,17 +269,51 @@ events.on('message', (event) => {
 
 const fatal = (reason: unknown): never => {
   if (reason instanceof ProcessExitError) return exitNow(reason.exitCode);
-  post({ type: 'output', fd: 2, data: `${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}\n` });
+  postOutput(2, 'console', `${uncaughtReport(reason, (value) => realm.getBuiltinModule('node:util').inspect(value))}\n`);
   return exitNow(1);
 };
-realm.on('unhandledRejection', fatal);
-realm.on('uncaughtException', fatal);
+
+/** An error nothing caught is the program's process's first (LifoProcess.takeUncaught); one it does not take ends it. */
+const uncaught = (origin: 'uncaughtException' | 'unhandledRejection') => (reason: unknown, promise?: Promise<unknown>): void => {
+  if (reason instanceof ProcessExitError || programProcess === null) {
+    fatal(reason);
+    return;
+  }
+  try {
+    if (origin === 'unhandledRejection' && programProcess.emit('unhandledRejection', reason, promise)) return;
+    if (programProcess.takeUncaught(reason, origin)) return;
+  } catch (thrown) {
+    fatal(thrown);
+  }
+  fatal(reason);
+};
+realm.on('unhandledRejection', uncaught('unhandledRejection'));
+realm.on('uncaughtException', uncaught('uncaughtException'));
+// The loop ran empty: a program that would hear of a failed write
+// (LifoProcess.hearsWriteFailures), whenever it began to listen, waits for its
+// writes, as a Node process's are made before it ends. What it hears may run
+// more of it, and the loop runs empty again.
+realm.on('beforeExit', () => {
+  if (settling || settledOutput === postedOutput || programProcess?.hearsWriteFailures() !== true) return;
+  settling = true;
+  post({ type: 'settle', upTo: postedOutput });
+  holdWhileBusy();
+});
 // The loop ran empty with the main script still waiting: an ES module whose
 // top-level await never settled.
+// The program's status once its loop runs empty: its process.exitCode then
+// (set after main ran), told only when it is not the one main ended with.
+let finalCode = (): number => 0;
+let mainCode = 0;
 realm.on('exit', () => {
-  if (exiting || mainDone) return;
-  post({ type: 'output', fd: 2, data: `Warning: Detected unsettled top-level await at ${program.filename}\n` });
-  post({ type: 'exit', code: 13 });
+  if (exiting) return;
+  if (mainDone) {
+    const code = finalCode();
+    if (code !== mainCode) post({ type: 'exit', code, ended: false });
+    return;
+  }
+  postOutput(2, 'console', `Warning: Detected unsettled top-level await at ${program.filename}\n`);
+  post({ type: 'exit', code: 13, ended: false });
 });
 
 if (egress) {
@@ -246,15 +322,19 @@ if (egress) {
 holdWhileBusy();
 const end = await runNodeProgram(program, {
   filesystem: () => filesystem,
-  stdout: output(1),
-  stderr: output(2),
+  stdout: outputs[1].console,
+  stderr: outputs[2].console,
+  stdoutStream: outputs[1].stream,
+  stderrStream: outputs[2].stream,
   stdin: () => bytes(call({ op: 'stdin' }), 'stdin'),
   setUmask: (mask) => { call({ op: 'umask', mask }); },
+  started: (process) => { programProcess = process; },
   portRegistry: ports,
   routeLoopback,
   dns,
 });
 if (end.ended) exitNow(end.code);
-post({ type: 'exit', code: end.code });
+post({ type: 'exit', code: end.code, ended: false });
+mainCode = end.code;
+finalCode = end.finalCode;
 mainDone = true;
-holdWhileBusy();

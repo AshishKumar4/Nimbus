@@ -402,8 +402,14 @@ export function makeCPythonRunnerFactory(deps: {
         }
         const command = [binName, ...argv].map((part) =>
           (/^[A-Za-z0-9_./:=@+-]+$/.test(part) ? part : JSON.stringify(part))).join(' ');
-        const spawnResult = await deps.startResident(
-          { wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid, signal: ctx.signal, write: runtimeOutput(ctx) });
+        const output = runtimeOutput(ctx);
+        let spawnResult: CPythonFacetResult;
+        try {
+          spawnResult = await deps.startResident(
+            { wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid, signal: ctx.signal, write: output.write });
+        } finally {
+          await output.end();
+        }
         if (spawnResult.stdout) ctx.stdout.write(spawnResult.stdout);
         if (spawnResult.stderr) ctx.stderr.write(spawnResult.stderr);
         return spawnResult.exitCode;
@@ -450,7 +456,7 @@ export function makeCPythonRunnerFactory(deps: {
         return 1;
       } finally {
         facet?.dispose();
-        stdio.finish(exitCode);
+        await stdio.finish(exitCode);
       }
     };
   };

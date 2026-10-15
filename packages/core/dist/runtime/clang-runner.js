@@ -314,7 +314,7 @@ export function makeClangRunnerFactory(deps) {
                 return outcome;
             }
             finally {
-                stdio.finish(outcome);
+                await stdio.finish(outcome);
             }
         }
     };

@@ -325,7 +325,7 @@ export function makeClangRunnerFactory(deps: {
       }
       };
       try { outcome = await execute(); return outcome; }
-      finally { stdio.finish(outcome); }
+      finally { await stdio.finish(outcome); }
     }
   };
 }

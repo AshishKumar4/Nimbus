@@ -5,6 +5,26 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: the shell's built-in `node` hears of a write its output refused,
+  as Node does: piped to a reader that closed (`node … | head -1`) or
+  redirected to a full device, `process.stdout` emits the EPIPE or ENOSPC
+  error; unhandled, the program ends with its stack and status 1, and a
+  program that handles it goes on. A write that fails after the program's
+  code ran reaches any listener the program added before it ended.
+  `console.log`'s failures are heard only by an `'error'` listener on its
+  stream, as in Node. One known difference: Node's `console.log` in a loop
+  into a closed pipe can end the program with an unhandled EPIPE (status 1);
+  here it is ignored. A status set in `process.exitCode` after the main
+  script ran is now the program's, and `process.exit(n)` no longer prints a
+  `[process.exit]` line.
+- Fixed: text the shell captures (exec's stdout and stderr, `$( )`) decodes
+  a multibyte character that a command's writes split, instead of two
+  stray bytes. A streamed exec's result, `bun run`, `npm run`, shell
+  scripts and the WASI runtimes now write the character their output's last
+  bytes left unfinished; it was lost. Captured text keeps a byte that is not
+  UTF-8 the same way for every command: a `node` program's now reads as a
+  coreutil's always did (one character a byte), not as U+FFFD.
+
 ## 2026-10-15: platform 0.11.0, core 0.22.0, fabric 0.17.0, worker 0.20.0, sdk 0.16.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4, runtime-cpython 3.13.14-2 (config 0.3.1 unchanged)
 
 The 2026-10-14 versions reached production but were never published to npm; these carry their changes too.

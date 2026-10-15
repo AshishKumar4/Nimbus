@@ -5,7 +5,7 @@
  */
 import { readToEnd, type ProcessView } from '../../../runtime/process-files.js';
 import { isVfsError, syscallError } from '../../../vfs/vfs-error.js';
-import type { CommandInputStream } from '../commands/types.js';
+import type { CommandInputStream, CommandOutputStream } from '../commands/types.js';
 import { resolve } from './path.js';
 import { direntTypeOfStat } from '../../../vfs/dirent-type.js';
 import { fitsWholeRead } from '../../../runtime/sqlite-runtime-fs-bridge.js';
@@ -123,11 +123,70 @@ export async function writeBytes(out: ByteOutput, bytes: Uint8Array): Promise<vo
 }
 
 /**
+ * {@link decodeLossless} across writes: a sequence a write leaves unfinished
+ * is held for the next, so a character split between writes decodes whole;
+ * what is held at the end decodes byte by byte, as decodeLossless has it.
+ */
+export class LosslessDecoder {
+  private held: Uint8Array = NOTHING_HELD;
+
+  decode(bytes: Uint8Array): string {
+    const all = this.held.length === 0 ? bytes : concatBytes([this.held, bytes]);
+    const cut = unfinishedTail(all);
+    this.held = cut === all.length ? NOTHING_HELD : all.slice(cut);
+    return decodeLossless(cut === all.length ? all : all.subarray(0, cut));
+  }
+
+  end(): string {
+    const rest = this.held;
+    this.held = NOTHING_HELD;
+    return rest.length === 0 ? '' : decodeLossless(rest);
+  }
+}
+
+const NOTHING_HELD = new Uint8Array(0);
+
+/** Where a UTF-8 sequence that `bytes` ends inside begins: their length when none does. */
+function unfinishedTail(bytes: Uint8Array): number {
+  for (let back = 1; back <= 3 && back <= bytes.length; back++) {
+    const at = bytes.length - back;
+    const b = bytes[at];
+    if (b >= 0x80 && b < 0xc0) continue;
+    const length = b >= 0xf0 && b <= 0xf4 ? 4 : b >= 0xe0 && b < 0xf0 ? 3 : b >= 0xc2 && b < 0xe0 ? 2 : 1;
+    return length > back ? at : bytes.length;
+  }
+  return bytes.length;
+}
+
+/**
+ * An output the shell captures as text (exec's stdout and stderr, `$( )`):
+ * the bytes of every command writing to it decoded as one stream, as its
+ * reader would read them, and `end`ed when the capture is read.
+ */
+export function textCapture(append: (text: string) => void): { readonly stream: CommandOutputStream & { writeBytes(bytes: Uint8Array): void }; end(): void } {
+  const decoder = new LosslessDecoder();
+  return {
+    stream: {
+      writeBytes: (bytes) => { append(decoder.decode(bytes)); },
+      // Text after bytes that left a character unfinished: those bytes decode alone first. No text is no write.
+      write: (text) => { if (text !== '') append(decoder.end() + text); },
+    },
+    end: () => { append(decoder.end()); },
+  };
+}
+
+/**
  * Bytes as a string without loss: valid UTF-8 decodes to its characters,
  * and every byte of an invalid sequence to U+DC80 + byte (a lone surrogate,
  * which valid UTF-8 never produces). `encodeLossless` inverts it exactly.
  */
 export function decodeLossless(bytes: Uint8Array): string {
+  // Valid UTF-8, nearly all of it, decodes natively; only bytes that are not take the walk below.
+  try {
+    return validUtf8.decode(bytes);
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+  }
   let out = '';
   let run = 0;
   const flush = (end: number) => {
@@ -146,6 +205,9 @@ export function decodeLossless(bytes: Uint8Array): string {
   flush(bytes.length);
   return out;
 }
+
+/** Valid UTF-8, decoded as the walk's runs are (a leading BOM dropped, as `new TextDecoder()` drops it). */
+const validUtf8 = new TextDecoder('utf-8', { fatal: true });
 
 /** The length of the valid UTF-8 sequence at `i`, or 0. */
 export function utf8SequenceLength(bytes: Uint8Array, i: number): number {

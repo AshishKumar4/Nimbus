@@ -325,7 +325,14 @@ export function makeCPythonRunnerFactory(deps) {
                     return 1;
                 }
                 const command = [binName, ...argv].map((part) => (/^[A-Za-z0-9_./:=@+-]+$/.test(part) ? part : JSON.stringify(part))).join(' ');
-                const spawnResult = await deps.startResident({ wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid, signal: ctx.signal, write: runtimeOutput(ctx) });
+                const output = runtimeOutput(ctx);
+                let spawnResult;
+                try {
+                    spawnResult = await deps.startResident({ wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid, signal: ctx.signal, write: output.write });
+                }
+                finally {
+                    await output.end();
+                }
                 if (spawnResult.stdout)
                     ctx.stdout.write(spawnResult.stdout);
                 if (spawnResult.stderr)
@@ -375,7 +382,7 @@ export function makeCPythonRunnerFactory(deps) {
             }
             finally {
                 facet?.dispose();
-                stdio.finish(exitCode);
+                await stdio.finish(exitCode);
             }
         };
     };

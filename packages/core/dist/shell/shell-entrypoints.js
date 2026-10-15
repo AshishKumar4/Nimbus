@@ -1,5 +1,5 @@
 import { resolveVfsPath } from '../vfs/path.js';
-import { textSink } from '../_shared/bytes.js';
+import { outputHooks } from '../_shared/byte-stream.js';
 import { parseShellInvocation } from './shell-invocation.js';
 const SHELL_ALIASES = {
     sh: ['sh', '/bin/sh', '/usr/bin/sh'],
@@ -43,32 +43,38 @@ function makeShellEntrypoint(shellName, shell) {
             (await ctx.stderr.write(inheritedStdin.error + '\n'));
             return inheritedStdin.exitCode;
         }
-        const result = await shell.execute(program.body, {
-            cwd: ctx.cwd || '/home/user',
-            env: shellEnvWithPositionals(ctx.env, program.argv0, program.args),
-            isolateShellState: true,
-            shellOptions: program.options,
-            scriptMode: true,
-            stdin: inheritedStdin.stdin,
-            terminalStdin: ctx.terminalStdin,
-            onStdout: ctx.stdout.writeBytes ? (bytes) => ctx.stdout.writeBytes(bytes) : textSink((data) => ctx.stdout.write(data)),
-            onStderr: ctx.stderr.writeBytes ? (bytes) => ctx.stderr.writeBytes(bytes) : textSink((data) => ctx.stderr.write(data)),
-            runExitTrap: true,
-            terminalFds: {
-                stdin: ctx.isFdTerminal?.(0) ?? false,
-                stdout: ctx.isFdTerminal?.(1) ?? false,
-                stderr: ctx.isFdTerminal?.(2) ?? false,
-            },
-            commandContext: {
-                pid: ctx.pid,
-                cred: ctx.cred,
-                setUmask: ctx.setUmask,
-            },
-            // A child inherits from the script's command that starts it: that line's
-            // redirections and pipes, and the directory a `cd` in the script moved to.
-            runAs: async (parent, cred, argv) => (await ctx.runAs(cred, argv, { parent })),
-        });
-        return result.exitCode;
+        const hooks = outputHooks(ctx);
+        try {
+            const result = await shell.execute(program.body, {
+                cwd: ctx.cwd || '/home/user',
+                env: shellEnvWithPositionals(ctx.env, program.argv0, program.args),
+                isolateShellState: true,
+                shellOptions: program.options,
+                scriptMode: true,
+                stdin: inheritedStdin.stdin,
+                terminalStdin: ctx.terminalStdin,
+                onStdout: hooks.onStdout,
+                onStderr: hooks.onStderr,
+                runExitTrap: true,
+                terminalFds: {
+                    stdin: ctx.isFdTerminal?.(0) ?? false,
+                    stdout: ctx.isFdTerminal?.(1) ?? false,
+                    stderr: ctx.isFdTerminal?.(2) ?? false,
+                },
+                commandContext: {
+                    pid: ctx.pid,
+                    cred: ctx.cred,
+                    setUmask: ctx.setUmask,
+                },
+                // A child inherits from the script's command that starts it: that line's
+                // redirections and pipes, and the directory a `cd` in the script moved to.
+                runAs: async (parent, cred, argv) => (await ctx.runAs(cred, argv, { parent })),
+            });
+            return result.exitCode;
+        }
+        finally {
+            await hooks.end();
+        }
     };
 }
 /**

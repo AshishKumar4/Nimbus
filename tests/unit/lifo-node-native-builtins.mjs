@@ -62,6 +62,10 @@ const underBun = typeof process.versions.bun === 'string';
 const { NimbusWorkspace } = await import(underBun
   ? '../../packages/core/src/workspace/nimbus-workspace.ts'
   : '../../packages/core/dist/workspace/nimbus-workspace.js');
+// The shell captures stdout without loss (every byte that is not UTF-8 as its own character): its bytes are what node wrote.
+const { encodeLossless } = await import(underBun
+  ? '../../packages/core/src/substrate/lifo/utils/bytes-io.ts'
+  : '../../packages/core/dist/substrate/lifo/utils/bytes-io.js');
 
 // Each probe on its own line, guarded: one a lifo engine refuses (its
 // message written in the probe's place) leaves the others to be compared.
@@ -247,12 +251,14 @@ try {
     await ws.fs.writeFile(`/home/user/${name}`, source);
     writeFileSync(join(host, name), source);
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'NODE_NO_WARNINGS' && key !== 'NODE_OPTIONS'));
-    const node = spawnSync('node', [name], { cwd: host, env, encoding: 'utf8', timeout: 60_000 });
-    assert.equal(node.status, 0, `real node runs ${name}: ${node.stderr}`);
+    const node = spawnSync('node', [name], { cwd: host, env, timeout: 60_000 });
+    const nodeStderr = node.stderr.toString('utf8');
+    assert.equal(node.status, 0, `real node runs ${name}: ${nodeStderr}`);
     const lifo = await ws.exec(`node ${name}`, { cwd: '/home/user' });
-    if (lifo.exitCode !== 0 || lifo.stdout !== node.stdout || samePid(lifo.stderr) !== samePid(node.stderr)) {
-      const want = `${node.stdout}${samePid(node.stderr)}`.split('\n');
-      const got = `${lifo.stdout}${samePid(lifo.stderr)}`.split('\n');
+    const lifoStdout = Buffer.from(encodeLossless(lifo.stdout));
+    if (lifo.exitCode !== 0 || !lifoStdout.equals(node.stdout) || samePid(lifo.stderr) !== samePid(nodeStderr)) {
+      const want = `${node.stdout.toString('utf8')}${samePid(nodeStderr)}`.split('\n');
+      const got = `${lifoStdout.toString('utf8')}${samePid(lifo.stderr)}`.split('\n');
       const lines = want.flatMap((line, i) => (line === got[i] ? [] : [`  node: ${line}\n  lifo: ${got[i]}`]));
       failed.push(`${name} (exit ${lifo.exitCode}):\n${lines.join('\n')}`);
     }

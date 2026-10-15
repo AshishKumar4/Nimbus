@@ -23,7 +23,7 @@
  */
 
 import { z } from 'zod/v4';
-import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
+import { SinkWriter } from '@nimbus-sh/core/_shared/byte-stream.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { shellEscape } from '@nimbus-sh/core/_shared/shell-quote.js';
 import { isVfsCred, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -279,7 +279,7 @@ async function runAgain(host: DevServerRestoreHost, record: DevServerRecord, fro
   processes.appendOutput(pid, 'stderr', `[nimbus] the session restarted: running \`${record.command}\` again in ${record.cwd}\n`);
   const shell = workspace.shellFor(pid, { cwd: record.cwd, env: record.env, inheritEnv: false });
   let stderr = '';
-  const keep = textSink((text) => { stderr = (stderr + text).slice(-2000); });
+  const keep = new SinkWriter({ write: (text) => { stderr = (stderr + text).slice(-2000); } });
   const stop = new AbortController();
   const stopped = processes.holdWork(pid, (reason) => stop.abort(reason), stop.signal);
   let exitCode = 1;
@@ -288,7 +288,7 @@ async function runAgain(host: DevServerRestoreHost, record: DevServerRecord, fro
     const result = await shell.execute(record.command, {
       onStdout: (data) => processes.appendOutputBytes(pid, 'stdout', data),
       onStderr: async (data) => {
-        await keep(data);
+        await keep.write(data);
         await processes.appendOutputBytes(pid, 'stderr', data);
       },
       commandContext: {
@@ -300,17 +300,18 @@ async function runAgain(host: DevServerRestoreHost, record: DevServerRecord, fro
       signal: stop.signal,
     });
     exitCode = result.exitCode;
-    reason = stderr.trim().split('\n').slice(-6).join('\n');
   } catch (error) {
     reason = errorText(error);
     processes.appendOutput(pid, 'stderr', `${reason}\n`);
   } finally {
+    await keep.end();
     try {
       await shell.closeDescriptors();
     } finally {
       stopped();
     }
   }
+  reason ||= stderr.trim().split('\n').slice(-6).join('\n');
   if (exitCode === 0) {
     // Not adopted: its server runs as a process of its own (real Vite's), or it served nothing.
     if (!processes.runsWork(pid)) processes.exit(pid, 0);

@@ -6,8 +6,8 @@
  * `Array` or installed fake timers changed them for the host (in Kinu's CLI, a
  * rebound `globalThis.Array` broke the host's sqlite-vfs).
  *
- * The guest (node-guest.ts) runs node.ts's runNodeProgram. What it reaches
- * outside its realm crosses here:
+ * The guest (node-guest.ts) runs node-program.ts's runNodeProgram. What it
+ * reaches outside its realm crosses here (its messages: node-realm-protocol.ts):
  *
  *   - synchronous calls ({@link NodeCall}: the filesystem `require` and `fs`
  *     read, fd 0, the session's ports). A call this side answers
@@ -29,64 +29,11 @@ import { exitCodeForAbortSignal } from '../../shell/signals.js';
 import { realmOutcome, startRealm } from '../../../../runtime/realm.js';
 import { synchronousFilesystem } from '../../node-compat/filesystem.js';
 import { SinkWriter } from '../../../../_shared/byte-stream.js';
+import { uncaughtReport, writeFailure } from '../../node-compat/output-failure.js';
 import { VfsError } from '../../../../vfs/vfs-error.js';
 import { dispatchWorkspaceRequest } from '../net/kernel-fetch.js';
-import { isEgressGuestEvent, isEgressHostEvent, RealmEgress } from '../../../../runtime/realm-egress.js';
-// ── The protocol's messages, narrowed where they arrive ─────────────────────
-// Each side receives a structured clone it must narrow: a guard per shape.
-const record = (value) => typeof value === 'object' && value !== null;
-const stringRecord = (value) => record(value) && Object.values(value).every((entry) => typeof entry === 'string');
-const isResponse = (value) => value === null || (record(value) && typeof value.status === 'number' && stringRecord(value.headers)
-    && (typeof value.body === 'string' || value.body instanceof Uint8Array));
-export function isGuestEvent(value) {
-    if (isEgressGuestEvent(value))
-        return true;
-    if (!record(value))
-        return false;
-    switch (value.type) {
-        case 'output': return (value.fd === 1 || value.fd === 2) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
-        case 'fetch':
-            return Number.isSafeInteger(value.id) && Number.isSafeInteger(value.port) && typeof value.url === 'string'
-                && typeof value.method === 'string' && stringRecord(value.headers)
-                && (value.body === null || typeof value.body === 'string' || value.body instanceof Uint8Array);
-        case 'served': return Number.isSafeInteger(value.id) && isResponse(value.response);
-        case 'exit': return Number.isSafeInteger(value.code);
-        default: return false;
-    }
-}
-export function isHostEvent(value) {
-    if (isEgressHostEvent(value))
-        return true;
-    if (!record(value))
-        return false;
-    switch (value.type) {
-        case 'fetched': return typeof value.id === 'number' && isResponse(value.response);
-        case 'serve': return typeof value.id === 'number' && typeof value.port === 'number' && record(value.request);
-        case 'changed':
-            return Number.isSafeInteger(value.id) && record(value.event)
-                && (value.event.type === 'add' || value.event.type === 'change' || value.event.type === 'unlink'
-                    || value.event.type === 'addDir' || value.event.type === 'unlinkDir' || value.event.type === 'rename')
-                && typeof value.event.path === 'string'
-                && (value.event.oldPath === undefined || typeof value.event.oldPath === 'string')
-                && typeof value.event.timestamp === 'number';
-        default: return false;
-    }
-}
-const identityId = (value) => Number.isSafeInteger(value) && typeof value === 'number' && value >= 0;
-export function isNodeRealmPayload(value) {
-    if (!record(value) || !record(value.program) || typeof value.program.source !== 'string')
-        return false;
-    const identity = value.program.identity;
-    return record(identity) && identityId(identity.pid) && identityId(identity.uid) && identityId(identity.gid) && identityId(identity.umask)
-        && Array.isArray(identity.groups) && identity.groups.every(identityId)
-        && (value.hosts === undefined || typeof value.hosts === 'string') && typeof value.egress === 'boolean';
-}
-export function isStat(value) {
-    return record(value) && typeof value.type === 'string' && typeof value.mode === 'number' && typeof value.size === 'number';
-}
-export function isDirEntries(value) {
-    return Array.isArray(value) && value.every((entry) => record(entry) && typeof entry.name === 'string' && typeof entry.type === 'string');
-}
+import { isEgressGuestEvent, RealmEgress } from '../../../../runtime/realm-egress.js';
+import { isGuestEvent, record, } from './node-realm-protocol.js';
 /** A call no method answers, or with arguments not of its kind. */
 function refused(what) {
     return new VfsError('EINVAL', `the realm's host answers no ${what}`);
@@ -237,21 +184,47 @@ export async function runNodeInRealm(program, ctx, kernel) {
     const filesystem = synchronousFilesystem(ctx.vfs, () => mask);
     // Output in the order it was written, each write after the last; bytes
     // for an output that takes text are decoded across writes, as one stream.
+    // Each write is made, as each is a write(2) in Node (which ignores SIGPIPE);
+    // one that fails is the program's to hear of, through what made it.
     let written = Promise.resolve();
     const writers = new Map();
-    const writerOf = (stream) => {
-        let writer = writers.get(stream);
+    const streamFailures = [];
+    const writerOf = (fd) => {
+        let writer = writers.get(fd);
         if (writer === undefined)
-            writers.set(stream, writer = new SinkWriter(stream));
+            writers.set(fd, writer = new SinkWriter(fd === 1 ? ctx.stdout : ctx.stderr));
         return writer;
     };
-    const write = (stream, data) => {
+    // The guest's loop ran empty with writes it would hear of outstanding: it
+    // is told once the writes it names are made (settle).
+    let lastQueued = 0;
+    let lastSettled = 0;
+    let settleUpTo = 0;
+    const settled = () => {
+        if (settleUpTo === 0 || lastSettled < settleUpTo)
+            return;
+        settleUpTo = 0;
+        post({ type: 'output-settled', seq: lastSettled });
+    };
+    const write = (fd, source, data) => {
+        const seq = ++lastQueued;
         written = written.then(async () => {
-            if (typeof data === 'string')
-                await writerOf(stream).writeText(data);
-            else
-                await writerOf(stream).write(data);
-        }).catch(() => { });
+            try {
+                if (typeof data === 'string')
+                    await writerOf(fd).writeText(data);
+                else
+                    await writerOf(fd).write(data);
+            }
+            catch (error) {
+                const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
+                const failure = { fd, code: typeof code === 'string' ? code : 'EIO', pipe: ctx.isFdPipe?.(fd) === true, source };
+                if (source === 'stream')
+                    streamFailures.push(failure);
+                post({ type: 'output-failed', ...failure });
+            }
+            lastSettled = seq;
+            settled();
+        });
     };
     // The realm, once it has started: a request for one of the guest's servers waits for none before.
     let post = () => false;
@@ -310,6 +283,9 @@ export async function runNodeInRealm(program, ctx, kernel) {
         },
     };
     let code = null;
+    let endedItself = false;
+    // The outputs whose stream's failure the guest took.
+    const heard = new Set();
     // The program's process's network (WorkspaceNetwork.forProcess).
     const network = kernel?.network?.forProcess(ctx.pid);
     const payload = { program, hosts: kernel?.dns?.hostsFile(), egress: network?.egress !== undefined };
@@ -327,10 +303,18 @@ export async function runNodeInRealm(program, ctx, kernel) {
                 return;
             switch (event.type) {
                 case 'output':
-                    write(event.fd === 1 ? ctx.stdout : ctx.stderr, event.data);
+                    write(event.fd, event.source, event.data);
+                    return;
+                case 'settle':
+                    settleUpTo = event.upTo;
+                    settled();
                     return;
                 case 'exit':
                     code = event.code;
+                    endedItself ||= event.ended;
+                    return;
+                case 'heard':
+                    heard.add(event.fd);
                     return;
                 case 'served':
                     pending.get(event.id)?.(event.response);
@@ -365,6 +349,20 @@ export async function runNodeInRealm(program, ctx, kernel) {
     for (const watch of watches.values())
         watch.close();
     await written;
+    // A write through the program's stream that failed where the program could
+    // not hear it (it had ended, nothing listening holding it) ends it as the
+    // error would have: Node's report of it, and status 1. The first such
+    // failure is the one; a console write's failure is no one's.
+    const unheard = endedItself || end.terminated || end.failure !== null ? undefined
+        : streamFailures.find((failure) => !heard.has(failure.fd));
+    if (unheard !== undefined) {
+        // util is loaded only here: the guest loads this module too, and every program would pay for it.
+        const { inspect } = await import('node:util');
+        await writerOf(2).writeText(`${uncaughtReport(writeFailure(unheard.code, unheard.pipe), (value) => inspect(value))}\n`).catch(() => { });
+        code = 1;
+    }
+    // What a character left unfinished at the end: the program has ended, and
+    // no one is left to hear that its last bytes could not be written.
     for (const writer of writers.values())
         await writer.end().catch(() => { });
     if (end.terminated)
