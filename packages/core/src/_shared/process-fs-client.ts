@@ -264,6 +264,14 @@ export interface ProcessFsClient {
   held(key: string): ProcessFsGrant | undefined;
   /** Whether `key` is in a subtree the process holds or shares: what is decided there is not known elsewhere yet. */
   holds(key: string): boolean;
+  /**
+   * Whether `key` is guarded for the process: at, beneath or above the root
+   * of a subtree it holds (not shared), so no one changes it without first
+   * recalling that grant (the session's recall meets a change overlapping
+   * the root either way). What a walk crossing only guarded names placed
+   * stays placed there until the process has answered.
+   */
+  guards(key: string): boolean;
   /** Whether any op is logged and not yet answered. */
   pending(): boolean;
   /**
@@ -1209,6 +1217,9 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     },
     holds(key) {
       return grants.some((grant) => !grant.ended && within(key, grant.root));
+    },
+    guards(key) {
+      return escaped === null && grants.some((grant) => !grant.ended && !grant.closing && !grant.shared && (within(key, grant.root) || within(grant.root, key)));
     },
     pending() {
       return queue.length > 0 || inFlight !== null;

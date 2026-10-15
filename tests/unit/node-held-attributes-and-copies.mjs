@@ -125,6 +125,42 @@ async function copyStoppedAfterItsBytes(existing) {
   assert.equal(left.mode & 0o077, 0, `the source's bytes are readable beyond its mode: ${(left.mode & 0o777).toString(8)}`);
 }
 
+/**
+ * A private source's decided copy over the program's own `copy.bin`, its log
+ * replayed into another session, `prepare`d before, with `between` run after
+ * the copy's open and before its bytes: no file there holding the source's
+ * bytes is readable by anyone the source refuses.
+ */
+async function replayCopy(prepare, between) {
+  const { fs, stall } = await boot();
+  fs.writeFileSync(`${OUT}/copy.bin`, 'old');
+  fs.writeFileSync(`${OUT}/private.bin`, 'SECRET-BYTES');
+  fs.chmodSync(`${OUT}/private.bin`, 0o600);
+  stall();
+  assert.equal(await answeredAtOnce(fs.promises.copyFile(`${OUT}/private.bin`, `${OUT}/copy.bin`)), 'answered');
+  const log = sqlJournal(globalThis.__nimbusFsJournalSql);
+  const open = log.entries().find(({ op }) => op.type === 'call' && op.call.call === 'open' && op.call.path === 'home/user/app/out/copy.bin');
+  assert.ok(open, 'the copy\'s open is in the log');
+  const after = createAuthority();
+  const root = after.rawVfs.as(CRED_KERNEL);
+  after.kfs.mkdir('home/user/app/out', { recursive: true, mode: 0o755 });
+  prepare(after, root);
+  const drain = async (keep) => {
+    const part = { ...journalSource(log), readAfter: async (from, max) => (await journalSource(log).readAfter(from, max)).filter(({ jid }) => keep(jid)) };
+    const lease = after.files.openHost(CRED_SESSION_USER);
+    await drainProcessFsJournal({ journal: part, session: journalDrainSession(lease.fs, 1000002) }).finally(() => lease.dispose());
+  };
+  await drain((jid) => jid <= open.jid);
+  between(after, root);
+  await drain((jid) => jid > open.jid);
+  for (const { name, type } of root.readdir('home/user/app/out')) {
+    if (type !== 'file') continue;
+    const at = `home/user/app/out/${name}`;
+    if (!new TextDecoder().decode(root.readFile(at)).includes('SECRET')) continue;
+    assert.equal(root.stat(at).mode & 0o077, 0, `${name} holds the source's bytes readable beyond its mode: ${(root.stat(at).mode & 0o777).toString(8)}`);
+  }
+}
+
 /** Whether `work` settles while the session answers nothing (a timer of the host's, which no barrier holds). */
 const answeredAtOnce = (work) => Promise.race([work.then(() => 'answered'), sleep(50).then(() => 'waiting')]);
 
@@ -245,6 +281,61 @@ await runScenarios(import.meta.path, {
 
   async 'a decided copy\'s log puts no byte in the session readable beyond its source, an existing 0644 destination'() {
     await copyStoppedAfterItsBytes(true);
+  },
+
+  async 'replayed where the destination is now another\'s, the copy\'s mode is refused with its open: no byte reaches it'() {
+    await replayCopy((after, root) => {
+      root.writeFile('home/user/app/out/copy.bin', 'theirs');
+      root.chmod('home/user/app/out/copy.bin', 0o666);
+    }, () => {});
+  },
+
+  async 'replayed where the destination is replaced after the copy\'s open, its bytes reach only the file that open narrowed'() {
+    await replayCopy(() => {}, (after) => {
+      after.kfs.rename('home/user/app/out/copy.bin', 'home/user/app/out/moved.bin');
+      after.kfs.writeFile('home/user/app/out/copy.bin', 'PUBLIC', { mode: 0o644 });
+    });
+  },
+
+  async 'a walk through a directory this process may not search is refused (EACCES), the directories before a link too'() {
+    const { authority, fs } = await boot();
+    fs.mkdirSync(`${OUT}/blocked`);
+    fs.symlinkSync(OUT, `${OUT}/blocked/escape`);
+    fs.writeFileSync(`${OUT}/victim`, 'V');
+    fs.chmodSync(`${OUT}/blocked`, 0o600);
+    assert.throws(() => fs.unlinkSync(`${OUT}/blocked/escape/victim`), { code: 'EACCES' });
+    await assert.rejects(fs.promises.unlink(`${OUT}/blocked/escape/victim`), { code: 'EACCES' });
+    await assert.rejects(fs.promises.chmod(`${OUT}/blocked/escape/victim`, 0o600), { code: 'EACCES' });
+    assert.equal(fs.readFileSync(`${OUT}/victim`, 'utf8'), 'V');
+    // A loop past a directory it may not search: the search is refused first.
+    fs.mkdirSync(`${OUT}/shut-loop`);
+    fs.symlinkSync('loop', `${OUT}/shut-loop/loop`);
+    fs.chmodSync(`${OUT}/shut-loop`, 0o600);
+    await assert.rejects(fs.promises.unlink(`${OUT}/shut-loop/loop/x`), { code: 'EACCES' });
+    fs.chmodSync(`${OUT}/shut-loop`, 0o700);
+    await assert.rejects(fs.promises.unlink(`${OUT}/shut-loop/loop/x`), { code: 'ELOOP' });
+    await assert.rejects(fs.promises.mkdir(`${OUT}/shut-loop/loop/d`), { code: 'ELOOP' });
+    assert.throws(() => fs.mkdirSync(`${OUT}/shut-loop/loop/d`), { code: 'ELOOP' });
+    await globalThis.__nimbusProcessFs.flush();
+    assert.equal(await peerRead(authority, 'home/user/app/out/victim'), 'V');
+  },
+
+  async 'a call through a link a peer moved is the session\'s to resolve, by the caller\'s own spelling'() {
+    const { authority, fs } = await boot();
+    for (const dir of ['A', 'B']) {
+      await authority.peer.mkdir(`home/user/elsewhere/${dir}`);
+      await authority.peer.writeFile(`home/user/elsewhere/${dir}/victim`, dir);
+    }
+    await authority.peer.symlink('/home/user/elsewhere/A', 'home/user/elsewhere/link');
+    // The process learns the link, then a peer points it at B, unannounced.
+    assert.equal(await fs.promises.readFile('/home/user/elsewhere/link/victim', 'utf8'), 'A');
+    assert.equal(fs.readFileSync('/home/user/elsewhere/link/victim', 'utf8'), 'A');
+    await authority.peer.unlink('home/user/elsewhere/link');
+    await authority.peer.symlink('/home/user/elsewhere/B', 'home/user/elsewhere/link');
+    await fs.promises.unlink('/home/user/elsewhere/link/victim');
+    await globalThis.__nimbusProcessFs.flush();
+    assert.equal(await peerRead(authority, 'home/user/elsewhere/A/victim'), 'A', 'the stale link\'s file was removed');
+    await assert.rejects(authority.peer.stat('home/user/elsewhere/B/victim'), { code: 'ENOENT' });
   },
 
   async 'the source\'s own chmod of a directory above it is searched, as the session searches it'() {
