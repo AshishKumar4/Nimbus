@@ -328,6 +328,16 @@ export const installPackagesInFacet = async function installPackagesInFacet(
           new Promise<null>((rs) => setTimeout(() => rs(null), R2_RACE_TIMEOUT_MS)),
         ]).catch(() => null)
       : Promise.resolve(null);
+    // A registry answer is read whole as it arrives. One left unread (a
+    // hedge's while the R2 leg is out, a body read only as fast as its files
+    // are written) holds a connection idle, and an invocation at the
+    // runtime's limit of six has its least recently used idle one closed:
+    // "Response closed due to connection limit".
+    const readWhole = async (answer: Promise<Response>): Promise<Response> => {
+      const response = await answer;
+      const bytes = await response.arrayBuffer();
+      return new Response(bytes, { status: response.status, statusText: response.statusText, headers: response.headers });
+    };
     let pendingNetwork: Promise<Response> | null = null;
     let hedgeTimer: ReturnType<typeof setTimeout> | null = null;
     const hedgeAbort = new AbortController();
@@ -340,7 +350,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       hedgeTimer = setTimeout(() => {
         hedgeTimer = null;
         speculativeFetches++;
-        pendingNetwork = network.fetch(spec.tarballUrl, { signal: hedgeAbort.signal });
+        pendingNetwork = readWhole(network.fetch(spec.tarballUrl, { signal: hedgeAbort.signal }));
         // Rejections are re-awaited and rethrown in order by takeNetworkResponse;
         // this sink only stops a failure that lands while the R2 leg is still
         // outstanding from surfacing as an unhandled rejection.
@@ -351,7 +361,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       clearHedgeTimer();
       const pending = pendingNetwork;
       pendingNetwork = null;
-      return pending ? await pending : await fetchVia(spec.tarballUrl);
+      return pending ? await pending : await readWhole(fetchVia(spec.tarballUrl));
     };
     const discardPendingNetwork = (): void => {
       clearHedgeTimer();
