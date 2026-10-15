@@ -19,7 +19,12 @@ let instance;
 instance = await WebAssembly.instantiate(mod, { ...wasi.getImportObject(), nimbus_proc: {
   startup_cwd(ptr, capacity) { if (capacity) new Uint8Array(instance.exports.memory.buffer).set([47, 0], ptr); return 1; },
   identity: (field) => field === 2 ? 1 : 0,
-  stat_metadata: () => 52,
+  // Its startup check of / is the only stat: an empty directory, root's.
+  stat_metadata(fd, ptr, length, follow, out) {
+    const view = new DataView(instance.exports.memory.buffer);
+    [0o40755, 0, 0].forEach((value, i) => view.setUint32(out + i * 4, value, true));
+    return 0;
+  },
   chmod: () => 63, fchmod: () => 63, chown: () => 63,
 } });
 wasi.start(instance);
