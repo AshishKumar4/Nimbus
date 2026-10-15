@@ -37,7 +37,7 @@ import { direntTypeIn } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { LruMap } from '@nimbus-sh/core/_shared/lru-map.js';
 import { handKernelArtifact, projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { NpmCache, type LockfileEntry } from './cache.js';
+import { NpmCache, type LockfileEntry, type RecordSource } from './cache.js';
 import {
   hoistPlacements,
   type ResolvedPackage, type HoistPlan, type PackagePlacement,
@@ -61,6 +61,7 @@ import {
   emitRegistryEvent,
 } from '../facets/wasm-swap-registry.js';
 import { parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
+import { exactVersion } from '@nimbus-sh/core/_shared/npm-semver.js';
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 import type { BundlePoolProvider } from '../facets/prebundle-pool.js';
 import { Fanout, type FanoutRoute } from '@nimbus-sh/fabric/fanout.js';
@@ -221,8 +222,8 @@ export interface NpmInstallResult {
 }
 
 /** What a lockfile says is installed: each placement's package, by its registry identity, version and integrity, in placement order. */
-function lockRevision(lockfile: ReadonlyMap<string, LockfileEntry>): string {
-  let revision = '';
+function lockRevision(lockfile: ReadonlyMap<string, LockfileEntry>, source: RecordSource): string {
+  let revision = `${source.registry}\0${source.network}\n`;
   for (const [at, entry] of [...lockfile].sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0))) {
     revision += `${at}\0${entry.registryName || entry.name}\0${entry.resolvedVer}\0${entry.integrity}\n`;
   }
@@ -411,7 +412,7 @@ export class NpmInstaller {
       }
       log(`Lockfile ${locked.lockName}: ${tree.plan.nodes.size} packages to place.`);
     } else {
-      const installed = opts.global || lockfile === null ? [] : this.installedTree(projDir, lockfile);
+      const installed = opts.global || lockfile === null ? [] : this.installedTree(projDir, lockfile, { registry, network: network.id });
       tree = await this.resolveTreeViaFanout(network, roots, installed, log, npmLog, engine);
       // The lockfile answered every edge: nothing resolved, nothing failed.
       usedLockfile = lockfile !== null && !tree.plan.resolvedAny && tree.plan.failures.length === 0;
@@ -598,7 +599,7 @@ export class NpmInstaller {
       const placements = hoistPlacements(hoistPlan);
       const written = this.writeLockfile(projDir, placements, nmDir, lockfile, opts.global ? new Map([...lockfile ?? []].filter(([at]) => !inScope(at))) : null);
       // npm ci's packages are the lock's, not the registry records' an install reads.
-      if (!opts.global && !opts.fromLockfile) this.installedTrees.set(projDir, { revision: lockRevision(written), installed: placements.map(({ placement, pkg }) => ({ at: placement, pkg })) });
+      if (!opts.global && !opts.fromLockfile) this.installedTrees.set(projDir, { revision: lockRevision(written, { registry, network: network.id }), installed: placements.map(({ placement, pkg }) => ({ at: placement, pkg })) });
     }
 
     const installed = [...installedAt.values()];
@@ -841,15 +842,23 @@ export class NpmInstaller {
           if (layer.length > inFlightPeak) inFlightPeak = layer.length;
           totalLayers++;
 
-          // Build per-package tasks. Each task gets its own pre-loaded
-          // cache slice (only entries for THIS name) so the per-task RPC
-          // stays small. Bounded to 16 versions per name — enough to cover
-          // ~2 majors of typical packages, well under any RPC arg size cap.
-          const tasks = layer.map(({ name, range }) => {
+          // An exact version's record, where this registry's (through this
+          // network) is cached: the cache holds some versions of a package,
+          // never the registry's whole list, so a range is the packument's
+          // to answer (npm-pick-manifest's choice needs every version).
+          const requests = layer.map(({ name, range }) => {
+            const request = parseRegistryRequest(name, range);
+            return { request, exact: exactVersion(request.range) };
+          });
+          const records = this.cache.getRegistryEntries({ registry, network: network.id },
+            requests.flatMap(({ request, exact }): Array<[string, string]> => (exact === null ? [] : [[request.registryName, exact]])));
+          const tasks = layer.map(({ name, range }, at) => {
+            const { request, exact } = requests[at]!;
+            const record = exact === null ? null : records.get(`${request.registryName}@${exact}`) ?? null;
             const taskSpec: ResolveOneSpec = {
               name,
               range,
-              cachedEntries: this.cache.getRegistryVersions(parseRegistryRequest(name, range).registryName).slice(0, 16),
+              cachedEntries: record === null ? [] : [record],
               fetchTimeoutMs: 15_000,
               retries: 3,
               registry,
@@ -979,7 +988,7 @@ export class NpmInstaller {
     // atomically committed by the storage layer).
     let cacheWriteCount = 0;
     if (cacheWritesPending.length > 0) {
-      const r = this.cache.putRegistryEntries(cacheWritesPending);
+      const r = this.cache.putRegistryEntries({ registry, network: network.id }, cacheWritesPending);
       cacheWriteCount = r.written;
       if (r.failed > 0) log(`  resolver-fanout cache write: ${r.failed} entries failed`);
     }
@@ -1570,14 +1579,14 @@ export class NpmInstaller {
    * where the cache holds none of that exact package. `entries`' records
    * are read together, up front.
    */
-  private lockRecords(entries: Iterable<LockfileEntry> = []): (entry: LockfileEntry) => RegistryCacheEntry | null {
-    const read = this.cache.getRegistryEntries([...entries].map((entry): [string, string] => [entry.registryName || entry.name, entry.resolvedVer]));
+  private lockRecords(source: RecordSource, entries: Iterable<LockfileEntry> = []): (entry: LockfileEntry) => RegistryCacheEntry | null {
+    const read = this.cache.getRegistryEntries(source, [...entries].map((entry): [string, string] => [entry.registryName || entry.name, entry.resolvedVer]));
     return (entry) => {
       const registryName = entry.registryName || entry.name;
       const key = `${registryName}@${entry.resolvedVer}`;
       let record = read.get(key);
       if (record === undefined) {
-        record = this.cache.getRegistryEntry(registryName, entry.resolvedVer);
+        record = this.cache.getRegistryEntry(source, registryName, entry.resolvedVer);
         // A row from before records kept their registry identity may be another package's.
         if (record !== null && record.registryName !== registryName) record = null;
         read.set(key, record);
@@ -1810,11 +1819,11 @@ export class NpmInstaller {
    * whose record the cache does not hold is left out, and so planned anew;
    * a revision every record answered is kept (installedTrees).
    */
-  private installedTree(projDir: string, lockfile: ReadonlyMap<string, LockfileEntry>): ReadonlyArray<InstalledPackage<ResolvedPackage>> {
-    const revision = lockRevision(lockfile);
+  private installedTree(projDir: string, lockfile: ReadonlyMap<string, LockfileEntry>, source: RecordSource): ReadonlyArray<InstalledPackage<ResolvedPackage>> {
+    const revision = lockRevision(lockfile, source);
     const known = this.installedTrees.get(projDir);
     if (known?.revision === revision) return known.installed;
-    const recordOf = this.lockRecords(lockfile.values());
+    const recordOf = this.lockRecords(source, lockfile.values());
     const installed = [...lockfile].flatMap(([at, entry]) => {
       const record = recordOf(entry);
       return record === null ? [] : [{ at, pkg: { ...resolvedFromRecord(record), name: entry.name, registryName: record.name } }];

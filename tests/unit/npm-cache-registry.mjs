@@ -25,29 +25,30 @@ const entryFixture = {
   fetchedAt: 1700000000000,
 };
 
+const SOURCE = { registry: 'https://registry.npmjs.org', network: '' };
+
 // ── Fresh schema: platform/optional-deps metadata round-trips ──────────
 
 {
   const cache = new NpmCache(createSqliteVfsTestHarness().sql);
-  assert.deepEqual(cache.putRegistryEntries([entryFixture]), { written: 1, failed: 0 });
+  assert.deepEqual(cache.putRegistryEntries(SOURCE, [entryFixture]), { written: 1, failed: 0 });
 
-  const got = cache.getRegistryEntry('opencode-linux-x64', '1.16.2');
+  const got = cache.getRegistryEntry(SOURCE, 'opencode-linux-x64', '1.16.2');
   assert.ok(got);
   assert.deepEqual(JSON.parse(got.platformJson), { os: ['linux'], cpu: ['x64'] });
   assert.deepEqual(JSON.parse(got.optionalDepsJson), { fsevents: '^2.0.0' });
 
-  const versions = cache.getRegistryVersions('opencode-linux-x64');
-  assert.equal(versions.length, 1);
-  assert.deepEqual(JSON.parse(versions[0].platformJson), { os: ['linux'], cpu: ['x64'] });
-  assert.deepEqual(JSON.parse(versions[0].optionalDepsJson), { fsevents: '^2.0.0' });
+  const read = cache.getRegistryEntries(SOURCE, [['opencode-linux-x64', '1.16.2']]).get('opencode-linux-x64@1.16.2');
+  assert.deepEqual(JSON.parse(read.platformJson), { os: ['linux'], cpu: ['x64'] });
+  assert.deepEqual(JSON.parse(read.optionalDepsJson), { fsevents: '^2.0.0' });
 }
 
-// ── Pre-existing table: columns are added, old rows read as misses ─────
+// ── A table from before records kept their registry: its rows are no registry's, and it goes ──
 
 {
   const db = new Database(':memory:');
   // The original pre-X.5-F table shape (no peer_deps_json, no
-  // platform_json, no optional_deps_json).
+  // platform_json, no optional_deps_json), keyed by name@version alone.
   db.query(`CREATE TABLE pkg_registry_cache (
     name           TEXT NOT NULL,
     version        TEXT NOT NULL,
@@ -67,24 +68,16 @@ const entryFixture = {
   `).run();
 
   const cache = new NpmCache(createSqliteVfsTestHarness(db).sql);
-  const old = cache.getRegistryEntry('left-pad', '1.3.0');
-  assert.ok(old, 'pre-migration row must still read');
-  assert.equal(old.platformJson, '{}', 'pre-migration rows read as metadata misses');
-  assert.equal(old.optionalDepsJson, '{}');
-  assert.equal(old.peerDepsJson, '{}');
+  assert.equal(cache.getRegistryEntry(SOURCE, 'left-pad', '1.3.0'), null, 'a row of no known registry answered');
+  assert.equal(db.query(`SELECT name FROM sqlite_master WHERE name = 'pkg_registry_cache'`).all().length, 0, 'the old table stayed');
 
-  // New writes land in the upgraded table.
-  assert.deepEqual(cache.putRegistryEntries([entryFixture]), { written: 1, failed: 0 });
-  const got = cache.getRegistryEntry('opencode-linux-x64', '1.16.2');
-  assert.deepEqual(JSON.parse(got.platformJson), { os: ['linux'], cpu: ['x64'] });
-
-  const { written, failed } = cache.putRegistryEntries([
+  const { written, failed } = cache.putRegistryEntries(SOURCE, [
     { ...entryFixture, version: '1.16.3' },
     { ...entryFixture, name: 'left-pad', version: '1.3.1', platformJson: '{}', optionalDepsJson: '{}' },
   ]);
   assert.equal(written, 2);
   assert.equal(failed, 0);
-  assert.equal(cache.getRegistryVersions('opencode-linux-x64').length, 2);
+  assert.equal(cache.getRegistryEntry(SOURCE, 'left-pad', '1.3.1')?.version, '1.3.1');
 }
 
 console.log('npm-cache-registry: ok');

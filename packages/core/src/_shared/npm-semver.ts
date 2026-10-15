@@ -78,7 +78,12 @@ export function rangeSubset(inner: string, outer: string): boolean {
 
 /** Whether `spec` is one exact version (`1.2.3`), not a range or a tag. */
 export function isExactVersion(spec: string): boolean {
-  return semver.valid(String(spec).trim(), LOOSE) !== null;
+  return exactVersion(spec) !== null;
+}
+
+/** The one version `spec` names exactly (`1.2.3`, `v1.2.3`, `=1.2.3`), or null for a range or a tag. */
+export function exactVersion(spec: string): string | null {
+  return semver.valid(String(spec).trim(), LOOSE);
 }
 
 /**

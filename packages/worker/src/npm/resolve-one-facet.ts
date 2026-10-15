@@ -24,7 +24,7 @@
  *       NATIVE_EXECUTABLE_REJECT(pkg) → { from, reason, suggest? } | null
  *       PARSE_SEMVER(v) → [maj, min, patch] | null
  *       COMPARE_SEMVER(a, b) → number
- *       RESOLVE_VERSION(versions, range) → string | null
+ *       EXACT_VERSION(spec) → string | null
  *       PARSE_REGISTRY_REQUEST(name, range) → the registry request a spec makes
  *
  * What the task does NOT do (supervisor responsibility)
@@ -37,16 +37,15 @@
  * What the task DOES do
  * ─────────────────────
  *   1. Apply swap / reject-fail registry policy.
- *   2. Try in-task cache from `cachedHit` (one entry shipped from
- *      supervisor's NpmCache).
+ *   2. An exact version's record, where the supervisor's NpmCache holds
+ *      this registry's (cachedEntries).
  *   3. Ask env.SUPERVISOR.getPackument for the packument. Fetching the
  *      registry and filling the cross-tenant cache are supervisor-side;
  *      the facet only reads.
- *   4. Pick version via preamble's RESOLVE_VERSION.
+ *   4. Pick version via preamble's PICK_INSTALLED_VERSION.
  *   5. Materialise ResolvedPackage shape (versionToResolved-style).
- *   6. Stage cache writes for this version + top-5 recent versions.
- *      Returns them in `cacheWrites` so the supervisor can flush in one
- *      batched RPC.
+ *   6. Stage the cache write for this version, returned in `cacheWrites`
+ *      so the supervisor flushes every task's in one batched RPC.
  *   7. Return {pkg, cacheWrites, messages, events, packumentBytesDecoded,
  *      packumentSource, error?, nativeExecutable?}.
  */
@@ -57,10 +56,10 @@ import type { FacetRegistryEvent } from './resolve-facet.js';
 import type { PackumentReadOptions } from './r2-cache.js';
 import { registryRecord, resolvedFromRecord, type RegistryCacheEntry } from './registry-record.js';
 import type { PackageStagedArtifactEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { compareSemver, isSemverRange, ParsedSemver, parseSemver, pickInstalledVersion, resolveVersion, stagedBindingVersion as stagedBindingVersionOf } from '@nimbus-sh/core/_shared/npm-semver.js';
+import type { compareSemver, exactVersion, isSemverRange, parseSemver, pickInstalledVersion, stagedBindingVersion as stagedBindingVersionOf } from '@nimbus-sh/core/_shared/npm-semver.js';
 import type { parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
 
-declare const RESOLVE_VERSION: typeof resolveVersion;
+declare const EXACT_VERSION: typeof exactVersion;
 declare const PARSE_REGISTRY_REQUEST: typeof parseRegistryRequest;
 declare const IS_SEMVER_RANGE: typeof isSemverRange;
 declare const PICK_INSTALLED_VERSION: typeof pickInstalledVersion;
@@ -99,9 +98,10 @@ export interface ResolveOneSpec {
   name: string;
   range: string;
   /**
-   * Pre-shipped cache entries for THIS name only. Bounded to ≤16 (top
-   * versions) so the per-task RPC payload stays small. The task picks
-   * the best version that satisfies range.
+   * The record of the exact version `range` names, where the session holds
+   * this registry's (through this network): the task answers that version
+   * from it without the packument. Empty for a range, which only the
+   * registry's whole version list answers.
    */
   cachedEntries: RegistryCacheEntry[];
   /** Per-fetch timeout (ms). Default 15_000. */
@@ -344,13 +344,11 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   })();
   const stagedBindingVersion = (): string | null => STAGED_BINDING_VERSION(stagedVersions, request.range);
 
-  // 2. cachedHit fast-path. The pick over the cached versions is the same
-  //    RESOLVE_VERSION the packument path uses — a range is never reduced
-  //    to its base version. It used to be: `^3.0.0` was stripped to `3.0.0`
-  //    and answered by a cached 3.0.0 even with 3.0.1 sitting beside it,
-  //    which is how the second install in a session came back with lower
-  //    versions than the first (measured: totalist, readdirp, mrmime,
-  //    milliparsec, dot-prop, eta on json-server@1.0.0-beta.15).
+  // 2. cachedHit fast-path: the record of the exact version asked for, where
+  //    the installer holds this registry's (installer.ts supplies no other).
+  //    A range is never chosen from cached records: they are some versions
+  //    of a package, never the registry's whole list, and npm's choice needs
+  //    every one (a fresh `^2` beside a cached 2.0.0 and five 3.x is 2.1.0).
   //    Records are the registry package's (an alias's target's), by its name.
   const cached = (() => {
     const entries = spec.cachedEntries || [];
@@ -358,9 +356,8 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     // A record is trusted as the package it names only where it says so: a row from before records kept their registry identity may be another package's.
     const candidates = entries.filter((e) => e.name === request.registryName && e.registryName === request.registryName);
     if (candidates.length === 0) return null;
-    // A staged version the cache lacks is fetched, never answered by another.
-    const picked = stagedBindingVersion() ?? RESOLVE_VERSION(candidates.map((e) => e.version), request.range);
-    if (!picked) return null;
+    const picked = EXACT_VERSION(request.range);
+    if (picked === null) return null;
     return candidates.find((e) => e.version === picked) || null;
   })();
 
@@ -614,23 +611,9 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   const native = outNativeExecutable(pkg, bytes, packumentSource);
   if (native?.error) return native;
 
-  // 5. Stage cache writes: the registry package's, under its name, the one
-  //    key a record has (an alias's lockfile entry names it too).
+  // 5. Stage the cache write: the registry package's, under its name, the
+  //    one key a record has (an alias's lockfile entry names it too).
   cacheWrites.push(registryRecord({ ...pkg, name: request.registryName }, Date.now()));
-  // Top-5 sibling versions.
-  const sorted = Object.keys(data.versions)
-    .map((v) => ({ v, p: PARSE_SEMVER(v) }))
-    .filter((x): x is { v: string; p: ParsedSemver } => x.p !== null)
-    .sort((a, b) => COMPARE_SEMVER(b.p, a.p));
-  for (let i = 0; i < Math.min(5, sorted.length); i++) {
-    const otherVer = sorted[i].v;
-    if (otherVer === pkg.version) continue;
-    const otherData = readProperty(data.versions, otherVer);
-    if (!otherData) continue;
-    try {
-      cacheWrites.push(registryRecord({ ...versionToResolved(otherData), name: request.registryName }, Date.now()));
-    } catch { /* skip malformed */ }
-  }
 
   return native ?? out(pkg, bytes, packumentSource);
 };
