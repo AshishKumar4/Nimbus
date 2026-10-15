@@ -8,4 +8,9 @@ export declare const typeDescription: typeof import('@npmcli/config/lib/type-des
 export declare const ini: typeof import('ini').default;
 export declare const nopt: typeof import('nopt').default;
 export declare const validateName: typeof import('validate-npm-package-name').default;
+/** npm-install-checks' checkEngine: throws npm's EBADENGINE where `target.engines` excludes `nodeVer` (unless `force`) or `npmVer`. */
+export declare const checkEngine: (target: {
+    readonly engines?: unknown;
+    readonly _id?: string;
+}, npmVer: string, nodeVer: string, force?: boolean) => void;
 //# sourceMappingURL=npm-libs.d.ts.map

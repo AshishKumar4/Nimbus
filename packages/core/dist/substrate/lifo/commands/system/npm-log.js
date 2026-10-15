@@ -8,6 +8,8 @@
  * that label frozen at "starting npm install" for the whole install, so
  * honouring it means speaking npm's wire format on the same stream.
  */
+import { format } from 'node:util';
+import { NODE_VERSION, NPM_VERSION } from '../../../../constants.js';
 import { DIM, GREEN, RED, RESET, YELLOW } from '../../utils/colors.js';
 /** npm's own ordering: a level enables itself and everything quieter. */
 const LEVEL_RANK = {
@@ -79,4 +81,24 @@ export function installSummary(report) {
     if (report.linkedBins)
         stdout += `${DIM}  linked ${report.linkedBins} bin${report.linkedBins === 1 ? '' : 's'} into ${report.globalBinDir}${RESET}\n`;
     return { stdout, stderr };
+}
+/**
+ * What npm says of an EBADENGINE: the warning it lets pass (arborist's
+ * log.warn(code, message, { package, required, current }), each line as
+ * npm's display prefixes it), or under `--engine-strict` the error it ends
+ * with (error-message.js's summary and detail).
+ */
+export function npmEngineLines(mismatch, strict) {
+    if (!strict) {
+        return format('Unsupported engine', { package: mismatch.pkgid, required: mismatch.required, current: mismatch.current })
+            .split('\n').map((line) => `npm warn EBADENGINE ${line}`);
+    }
+    return [
+        'code EBADENGINE',
+        'engine Unsupported engine',
+        `engine Not compatible with your version of node/npm: ${mismatch.pkgid}`,
+        `notsup Not compatible with your version of node/npm: ${mismatch.pkgid}`,
+        `notsup Required: ${JSON.stringify(mismatch.required)}`,
+        `notsup Actual:   ${JSON.stringify({ npm: NPM_VERSION, node: NODE_VERSION })}`,
+    ].map((line) => `npm error ${line}`);
 }

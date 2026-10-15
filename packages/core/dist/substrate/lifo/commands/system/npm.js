@@ -12,12 +12,31 @@ import { InstallJournal } from './npm-journal.js';
 import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '../../../../_shared/tarball-integrity.js';
 import { RegistryPackumentSchema, RegistrySearchResponseSchema, renderSearchTable, } from './registry-schemas.js';
 import { npmInstallInvocation, } from './npm-install-args.js';
-import { installSummary, npmLogEnabled, npmRemovedLine } from './npm-log.js';
+import { installSummary, npmEngineLines, npmLogEnabled, npmRemovedLine } from './npm-log.js';
+import { engineMismatches } from '../../../../_shared/npm-arborist/engines.js';
+import { NPM_VERSION } from '../../../../constants.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
 import { direntTypeIn } from '../../../../vfs/dirent-type.js';
 /** The registry an install reads from when its env names none. */
 export const NPM_REGISTRY_ORIGIN = 'https://registry.npmjs.org';
-export const NPM_VERSION = '10.0.0';
+/**
+ * npm's word on the tree's EBADENGINEs, on the command's stderr: under
+ * `--engine-strict` the error the install failed with (true), else a
+ * warning of each, at npm's warn level.
+ */
+async function writeEngines(ctx, engines = [], strict, loglevel) {
+    if (strict && engines.length > 0) {
+        for (const line of npmEngineLines(engines[0], true))
+            await ctx.stderr.write(`${line}\n`);
+        return true;
+    }
+    if (loglevel !== null && !npmLogEnabled(loglevel, 'warn'))
+        return false;
+    for (const engine of engines)
+        for (const line of npmEngineLines(engine, false))
+            await ctx.stderr.write(`${line}\n`);
+    return false;
+}
 /** The end-of-install report (installSummary), on the command's own streams. */
 async function writeInstallSummary(ctx, installed, failed, opts) {
     const { stdout, stderr } = installSummary({ ...opts, installed: installed.length, failed, elapsedMs: Date.now() - opts.startedAt });
@@ -215,7 +234,7 @@ async function installedPlacements(vfs, modulesDir, top, prefix = '', out = []) 
     }
     return out;
 }
-async function installTree(roots, install) {
+async function installTree(roots, install, project) {
     const { targetBase, vfs, network, npmRegistry, signal, stdout, stderr } = install;
     const fail = async (name, message) => {
         if (message.includes('Failed to fetch') || message.includes('NetworkError') || message.includes('CORS')) {
@@ -271,6 +290,10 @@ async function installTree(roots, install) {
     for (const { id, edge } of plan.failures) {
         await stderr.write(`npm WARN optional SKIPPING OPTIONAL DEPENDENCY: ${edge.name}: ${plan.reasons.get(id)}\n`);
     }
+    // npm's engine check of the tree: under --engine-strict a mismatch fails the install before anything changes.
+    const engines = engineMismatches(project, plan, install.force === true);
+    if (install.engineStrict === true && engines.length > 0)
+        return { installed: [], failed: [engines[0].pkgid ?? targetBase], engines };
     signal.throwIfAborted();
     // ── Reify ──
     const run = Math.random().toString(36).slice(2, 10);
@@ -309,7 +332,7 @@ async function installTree(roots, install) {
         const removals = onDisk.filter((at) => !inTree(at));
         const publish = planned.filter((node) => inTree(node.at)).sort((x, y) => depthOf(x.at) - depthOf(y.at));
         if (publish.length === 0 && removals.length === 0)
-            return { installed: [], failed: [], plannedVersion };
+            return { installed: [], failed: [], plannedVersion, engines };
         const journal = InstallJournal.begin(vfs, targetBase, run);
         const retiredAt = new Map();
         // The package the step being made is for, should it fail.
@@ -362,7 +385,7 @@ async function installTree(roots, install) {
                     await linkGlobalBins(node.pkg.info, join(targetBase, node.at), install.globalBinDir, install);
             }
         }
-        return { installed: publish.map((node) => `${node.pkg.name}@${node.pkg.version}`), failed: [], plannedVersion };
+        return { installed: publish.map((node) => `${node.pkg.name}@${node.pkg.version}`), failed: [], plannedVersion, engines };
     }
     finally {
         try {
@@ -456,6 +479,7 @@ async function npmInstall(ctx, registry, kernel, deps) {
             saveDev: invocation.saveDev,
             saveOptional: invocation.saveOptional,
             force: invocation.force,
+            engineStrict: invocation.engineStrict,
             strictPeerDeps: invocation.strictPeerDeps,
             legacyPeerDeps: invocation.legacyPeerDeps,
             omitOptional: invocation.omitOptional,
@@ -467,6 +491,8 @@ async function npmInstall(ctx, registry, kernel, deps) {
             npmLog,
             onProgress: async (line) => await ctx.stdout.write(`[npm] ${line}\n`),
         });
+        if (await writeEngines(ctx, result.engines, invocation.engineStrict, invocation.loglevel))
+            return 1;
         await writeInstallSummary(ctx, result.installed, result.failed, {
             totalFiles: result.totalFiles,
             fromCacheHits: result.fromCacheHits,
@@ -500,7 +526,7 @@ function shellInstallPort(ctx, registry, kernel) {
             const tree = {
                 targetBase, vfs, network: (kernel?.network ?? ISOLATE_NETWORK).forProcess(ctx.pid), npmRegistry: spec.registry, signal,
                 stdout: ctx.stdout, stderr: ctx.stderr, registry, kernel,
-                force: spec.force === true, strictPeerDeps: spec.strictPeerDeps === true, legacyPeerDeps: spec.legacyPeerDeps === true, preferDedupe: spec.preferDedupe === true,
+                force: spec.force === true, engineStrict: spec.engineStrict === true, strictPeerDeps: spec.strictPeerDeps === true, legacyPeerDeps: spec.legacyPeerDeps === true, preferDedupe: spec.preferDedupe === true,
                 omit: { dev: spec.production === true, optional: spec.omitOptional === true, peer: spec.omitPeer === true },
                 ...(globalBinDir ? { globalBinDir } : {}),
             };
@@ -517,7 +543,7 @@ function shellInstallPort(ctx, registry, kernel) {
                 const named = namedPackages(project?.manifest ?? null, spec.packages, { saveDev: spec.saveDev, saveOptional: spec.saveOptional });
                 const roots = projectRoots(project?.manifest ?? null, named, { legacyPeerDeps: spec.legacyPeerDeps === true });
                 await ctx.stdout.write(spec.packages.length === 0 ? 'Installing dependencies...\n' : 'Installing packages...\n');
-                const result = await installTree(roots, tree);
+                const result = await installTree(roots, tree, project?.manifest ?? null);
                 if (result.failed.length > 0 || project === null || named.length === 0 || spec.save === false)
                     return result;
                 // What the command line named is saved to package.json, at the version the tree holds, once it installed.
@@ -1050,6 +1076,7 @@ async function npmCi(ctx, deps) {
             omitOptional: invocation.omitOptional,
             omitPeer: invocation.omitPeer,
             force: invocation.force,
+            engineStrict: invocation.engineStrict,
             strictPeerDeps: invocation.strictPeerDeps,
             legacyPeerDeps: invocation.legacyPeerDeps,
             preferDedupe: invocation.preferDedupe,
@@ -1057,6 +1084,8 @@ async function npmCi(ctx, deps) {
             npmLog,
             onProgress: async (line) => await ctx.stdout.write(`[npm] ${line}\n`),
         });
+        if (await writeEngines(ctx, result.engines, invocation.engineStrict, invocation.loglevel))
+            return 1;
         await writeInstallSummary(ctx, result.installed, result.failed, {
             totalFiles: result.totalFiles,
             fromCacheHits: result.fromCacheHits,

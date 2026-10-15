@@ -29,6 +29,7 @@ export function createNpmInstallPort(self, filesystem) {
                 saveDev: spec.saveDev,
                 saveOptional: spec.saveOptional,
                 force: spec.force,
+                engineStrict: spec.engineStrict,
                 strictPeerDeps: spec.strictPeerDeps,
                 legacyPeerDeps: spec.legacyPeerDeps,
                 omitOptional: spec.omitOptional,
@@ -49,6 +50,7 @@ export function createNpmInstallPort(self, filesystem) {
                 totalFiles: result.totalFiles,
                 fromCacheHits: result.cachedHits,
                 linkedBins: result.linkedBins ?? 0,
+                engines: result.engines ?? [],
             };
         },
         // The tree as the installer holds it while it installs (installer.ts

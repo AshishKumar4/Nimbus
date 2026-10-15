@@ -45,6 +45,8 @@ export interface NpmInstallInvocation {
     save: boolean;
     /** What a saved range starts with: `--save-prefix`, '' for `--save-exact`, else '^'. */
     savePrefix: string;
+    /** `--engine-strict`: a package whose engines exclude this node or npm fails the install (EBADENGINE), where npm otherwise warns. */
+    engineStrict: boolean;
     /** The registry npm's configuration names (`--registry`, npm_config_registry, an .npmrc); null where only npm's default does. */
     registry: string | null;
     /** Options npm has that this npm does not implement, as npm ERR! lines: the install refuses them rather than ignore them. */

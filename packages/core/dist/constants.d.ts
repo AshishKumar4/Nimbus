@@ -13,6 +13,8 @@ export declare const NODE_VERSIONS: {
     v8: string;
     modules: string;
 };
+/** The npm this runtime's npm answers as (`npm --version`, npm's engine check). */
+export declare const NPM_VERSION = "10.0.0";
 export declare const ESBUILD_VERSION = "0.24.2";
 export declare const SQLJS_VERSION = "1.14.1";
 export declare const OPENCODE_VERSION = "1.16.2";

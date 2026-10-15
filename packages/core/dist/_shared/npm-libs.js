@@ -10,3 +10,5 @@ export const typeDescription = compiled.typeDescription;
 export const ini = compiled.ini;
 export const nopt = compiled.nopt;
 export const validateName = compiled.validateName;
+/** npm-install-checks' checkEngine: throws npm's EBADENGINE where `target.engines` excludes `nodeVer` (unless `force`) or `npmVer`. */
+export const checkEngine = compiled.npmInstallChecks.checkEngine;

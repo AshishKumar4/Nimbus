@@ -35,6 +35,7 @@ import { NpmCache } from './cache.js';
 import { hoistPlacements, } from './resolver.js';
 import { bundledNames, canonicalTreePath, holdTree, lockRootMatches, namedPackages, packageJsonDocument, parentPlacement, placementName, projectRoots, readPackageJson, saveNamed, } from '@nimbus-sh/core/_shared/npm-tree.js';
 import { planTree } from '@nimbus-sh/core/_shared/npm-arborist/plan.js';
+import { engineMismatches } from '@nimbus-sh/core/_shared/npm-arborist/engines.js';
 import { parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
 import { npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine, } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
@@ -190,7 +191,7 @@ export class NpmInstaller {
             this.sweepStaging(tmp);
         const principal = { pid: opts.pid, cred: opts.cred, view, tmp };
         const lockfile = this.cache.readLockfile(projDir);
-        const { roots, named, devOnly, advised } = await this.buildRoots(projDir, project, opts, log);
+        const { roots, named, devOnly, advised, manifest } = await this.buildRoots(projDir, project, opts, log);
         const omit = { dev: opts.production === true, optional: opts.omitOptional === true, peer: opts.omitPeer === true };
         const engine = {
             devOnly, advised, registry, omit,
@@ -246,6 +247,12 @@ export class NpmInstaller {
             log(`npm ERR! install incomplete — ${failed.length} missing: ${failed.join(', ')}`);
             return { installed: [], failed, totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases };
         }
+        // npm's engine check of the tree: under --engine-strict a mismatch fails
+        // the install before anything changes; otherwise npm warns of each.
+        const engines = engineMismatches(manifest, plan, opts.force === true);
+        if (opts.engineStrict === true && engines.length > 0) {
+            return { installed: [], failed: [engines[0].pkgid ?? projDir], totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases, engines };
+        }
         // ── Phase 2: Hoist ────────────────────────────────────────────────
         // The tree to install: what the plan holds, but what it leaves out and,
         // with --omit=dev, what only devDependencies reach.
@@ -289,7 +296,7 @@ export class NpmInstaller {
         }
         if (failed.length > 0) {
             log(`npm ERR! install incomplete — ${failed.length} missing: ${failed.join(', ')}`);
-            return { installed: [], failed, totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases };
+            return { installed: [], failed, totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases, engines };
         }
         // npm ci installs the lock into an empty node_modules: the old tree
         // goes first, once nothing stops the install. Releases before 0.13.2
@@ -487,7 +494,7 @@ export class NpmInstaller {
         // Object: a slow install is traced there by phase, beside whatever else
         // that object ran meanwhile (tests/behavioral/perf-regression/install-warm.mjs).
         console.log(`[npm:phases] ${JSON.stringify({ installed: installed.length, failed: failed.length, cachedHits, elapsed, commits: commitCount, phases })}`);
-        return { installed, failed, totalFiles, elapsed, cachedHits, phases };
+        return { installed, failed, totalFiles, elapsed, cachedHits, phases, engines };
     }
     // ── Single-resolver / single-fetcher invariant ───────────────────────
     //
@@ -1313,7 +1320,7 @@ export class NpmInstaller {
         // A devDependency `--omit=dev` leaves out is planned, and not announced.
         const omitted = new Set(opts.production ? roots.filter(({ type }) => type === 'dev').map(({ name }) => name) : []);
         const swapped = this.applyW6Registry(Object.fromEntries(roots.map(({ name, range }) => [name, range])), log, { devOnly, advised, omitted });
-        return { roots: roots.map((root) => ({ ...root, range: swapped[root.name] ?? root.range })), named, devOnly, advised };
+        return { roots: roots.map((root) => ({ ...root, range: swapped[root.name] ?? root.range })), named, devOnly, advised, manifest };
     }
     /**
      * W6: apply the PACKAGE_ABI_POLICY swap rewrites and reject deny list

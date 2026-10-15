@@ -46,6 +46,8 @@ export interface RegistryCacheEntry {
     peerMetaJson?: string;
     /** JSON-encoded `bundleDependencies` as published; '' for none (and rows written before it was kept). */
     bundleJson?: string;
+    /** JSON-encoded `engines` as published; '' for none. */
+    enginesJson?: string;
     fetchedAt: number;
 }
 /** The record of `pkg`, fetched at `fetchedAt`, as the cache keeps it. */

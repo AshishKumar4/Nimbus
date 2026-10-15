@@ -26,7 +26,6 @@ export function npmInstallInvocation(config) {
         ...(config.get('bin-links') === false ? ['--no-bin-links is not supported here'] : []),
         ...(config.get('before') !== null && config.get('before') !== undefined ? ['--before is not supported here'] : []),
         ...['cpu', 'os', 'libc'].flatMap((name) => (text(name) !== null ? [`--${name} is not supported here: platforms are this runtime's`] : [])),
-        ...(flag('engine-strict') ? ['--engine-strict is not supported here: engines are not checked'] : []),
     ];
     return {
         packages: config.positionals.slice(1),
@@ -44,6 +43,7 @@ export function npmInstallInvocation(config) {
         preferDedupe: flag('prefer-dedupe'),
         save: config.get('save') !== false,
         savePrefix: flag('save-exact') ? '' : text('save-prefix') ?? '',
+        engineStrict: flag('engine-strict'),
         registry: set('registry') ? text('registry') : null,
         unsupported,
     };

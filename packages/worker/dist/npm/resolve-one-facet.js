@@ -429,6 +429,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             os: Array.isArray(v.os) ? v.os : undefined,
             cpu: Array.isArray(v.cpu) ? v.cpu : undefined,
             libc: Array.isArray(v.libc) ? v.libc : undefined,
+            ...(v.engines !== null && typeof v.engines === 'object' && !Array.isArray(v.engines) ? { engines: v.engines } : {}),
             exports: v.exports ?? null,
             main: v.main || '',
             module: v.module || '',
