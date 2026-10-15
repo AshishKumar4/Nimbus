@@ -6,21 +6,24 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Changed: in a directory tree a node process writes often enough to hold,
-  `fs.promises.chmod`, `utimes` and `chown` (and their callback and
-  `FileHandle` forms) now resolve once the change is logged, as `mkdir`,
-  `unlink` and a file's `rename` already did. Elsewhere they still wait for
-  the session. Each waited for the session's durable commit, about 30–40 ms
-  deployed, so `fs.promises.cp` (a copy, then a chmod, per file) took about
-  twice as long as before it became Node's own. An async `chown` now refuses
-  `EPERM` itself, as `chownSync` does.
+  the changes it has already answered (its sync calls, and the async ones
+  decided there) are sent with the next change it awaits, when it flushes,
+  prints or otherwise acts outside, or 10 ms later. Sent one by one, each
+  made the program's next read and next awaited change wait out the
+  session's durable commit, about 40 ms deployed. The session's file tree
+  and other processes' watchers see such a change up to 10 ms later than
+  before. In such a tree, `fs.promises.chmod`, `utimes` and `chown` (and
+  their callback and `FileHandle` forms) now resolve once the change is
+  logged, as `mkdir`, `unlink` and a file's `rename` already did. So does
+  `fs.promises.copyFile` when both names are in held trees and the source
+  is a file the program just wrote, or one the copy reads once into the
+  program's view. `fs.promises.cp` of 200 small files takes about 3 s,
+  where it took 13 s, and 8 s before it was Node's own. An async `chown` now
+  refuses `EPERM` itself, as `chownSync` does.
 - Fixed: a file `fs.promises.copyFile` or `fs.promises.cp` made in a
   directory the program had just made was missing to `existsSync`,
   `statSync` and `readdirSync` until later, although it could be read.
   It is now there as soon as the copy resolves.
-- Changed: `fs.promises.copyFile` of a file the program just wrote, which the
-  session has not answered yet, resolves once logged when both names are in
-  a tree the process holds. The copy reads as those bytes, with the source's
-  mode, at once.
 - Fixed: a session's `npm uninstall` and `npm ls` do what npm 10 does.
   `npm uninstall -g p` removes the global p and its commands, for good (no
   later global install links them again); it removed the project's p and
