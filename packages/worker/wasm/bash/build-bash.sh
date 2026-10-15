@@ -60,8 +60,9 @@ make -j"${NIMBUS_BUILD_JOBS:-1}" CC_FOR_BUILD='gcc -std=gnu17' CFLAGS="$TARGET_C
   || echo "make compiles all objects; final link is done explicitly below"
 
 # nimbus-proc.o: the process/setjmp/termios/signal trap layer linked into bash;
-# nimbus-accounts.o: the session's accounts (~user), shared with BusyBox.
-for unit in "$HERE/nimbus-proc.c" "$NIMBUS_LIBC/nimbus-accounts.c"; do
+# nimbus-accounts.o: the session's accounts (~user), shared with BusyBox;
+# nimbus-restart.o: a read or write the host gave up waiting on is asked again.
+for unit in "$HERE/nimbus-proc.c" "$NIMBUS_LIBC/nimbus-accounts.c" "$NIMBUS_LIBC/nimbus-restart.c"; do
   "$CC" -std=gnu17 -D_GNU_SOURCE -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS $INC -O2 \
     -c "$unit" -o "$(basename "$unit" .c).o"
 done
@@ -77,15 +78,17 @@ OBJS="shell.o eval.o y.tab.o general.o make_cmd.o print_cmd.o dispose_cmd.o exec
 # --wrap=dup,dup2,fcntl routes bash's fd-duplication onto the nimbus_proc fd
 # table (where pipe ends live) instead of wasi-libc's separate fd namespace —
 # one FdTable (the M3 layer), so pipe redirections (dup2 pipefd->1) work.
-# --wrap=stat,... gives a stat preview1 left untyped the runner's type.
+# --wrap=stat,... gives a stat preview1 left untyped the runner's type, and
+# --wrap=read,... asks again a read or write the host gave up on (bash-runner@6).
 "$CC" -O2 -o bash $OBJS \
   -L./builtins -L./lib/readline -L./lib/glob -L./lib/tilde -L./lib/sh \
   -lbuiltins -lglob -lsh -lreadline -lhistory ./lib/termcap/libtermcap.a -ltilde \
-  nimbus-proc.o nimbus-accounts.o $TARGET_LDFLAGS \
+  nimbus-proc.o nimbus-accounts.o nimbus-restart.o $TARGET_LDFLAGS \
   -Wl,--export=__stack_pointer -Wl,--export=__data_end -Wl,--export=__heap_base \
   -Wl,--allow-undefined -Wl,--no-gc-sections \
   -Wl,--wrap=dup2 -Wl,--wrap=dup -Wl,--wrap=fcntl \
-  -Wl,--wrap=stat -Wl,--wrap=lstat -Wl,--wrap=fstat -Wl,--wrap=fstatat
+  -Wl,--wrap=stat -Wl,--wrap=lstat -Wl,--wrap=fstat -Wl,--wrap=fstatat \
+  -Wl,--wrap=read -Wl,--wrap=readv -Wl,--wrap=write -Wl,--wrap=writev
 
 # fpcast-emu: bash's unwind_protect casts function pointers, which wasm's
 # type-checked call_indirect rejects at runtime (traps after the command runs).

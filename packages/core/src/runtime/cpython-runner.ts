@@ -227,6 +227,8 @@ export function makeCPythonRunnerFactory(deps: {
   network: WorkspaceNetwork;
   /** Where a program that keeps serving goes. See {@link CPythonResidentStart}. */
   startResident?: CPythonResidentStart;
+  /** The installed image asks again a wait its host gave up on: its runner key's contract (CPYTHON_RUNNER_CONTRACTS). */
+  restartsWaits: boolean;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) =>
     Command {
 
@@ -375,6 +377,7 @@ export function makeCPythonRunnerFactory(deps: {
         supervisorPid: ctx.pid,
         // What the interpreter's own copy of the namespace is read as (wasi/resident-filesystem.ts).
         cred,
+        restartsWaits: deps.restartsWaits,
       };
 
       // A script or `-m` can bind a port and keep serving, and such a program

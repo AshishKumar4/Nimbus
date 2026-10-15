@@ -198,7 +198,7 @@ workspace.runtimes.registerRunner(
 // no flags that would consume args) drops into an interactive
 // REPL. The wrap is purely additive — args-bearing invocations
 // pass through to the existing handler unchanged.
-const cpython: RunnerFactory = (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx: CommandContext): Promise<number> {
+const cpython = (restartsWaits: boolean): RunnerFactory => (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx: CommandContext): Promise<number> {
   const argv: string[] = ctx.args || [];
   // No args at all → REPL session. Hand off to runPythonRepl
   // which builds its own IsolatePool (separate from the
@@ -220,6 +220,7 @@ const cpython: RunnerFactory = (manifest, installRoot, binName, binKind) => asyn
       // it the prompt cannot write to the session filesystem.
       pid: ctx.pid,
       cred: requireVfsCred(ctx.cred, 'Python REPL'),
+      restartsWaits,
       start: { cwd: ctx.cwd || shell.getCwd(), binName },
     });
   }
@@ -234,9 +235,11 @@ const cpython: RunnerFactory = (manifest, installRoot, binName, binKind) => asyn
     processes: self.processes,
     startResident: cpythonResidentStart(facetMgr),
     network: workspace.network,
+    restartsWaits,
   })(manifest, installRoot, binName, binKind)(ctx);
 };
-for (const key of CPYTHON_RUNNER_CONTRACTS) workspace.runtimes.registerRunner(key, cpython);
+// Each runner key's build, on its own contract (CPYTHON_RUNNER_CONTRACTS).
+for (const [key, { restartsWaits }] of Object.entries(CPYTHON_RUNNER_CONTRACTS)) workspace.runtimes.registerRunner(key, cpython(restartsWaits));
 // Ruby v1 — Ruby 3.3.4 via ruby.wasm 2.9.3-2.9.4. Same architecture
 // as python-runner: ruby+stdlib.wasm rides via LOADER modules-map,
 // bootstrap runs at child-facet module-init time, per-call
@@ -311,7 +314,7 @@ const bash: RunnerFactory = (manifest, installRoot, binName, binKind) => async (
     manifest, installRoot, binName, binKind,
   )(ctx);
 };
-for (const key of BASH_RUNNER_CONTRACTS) workspace.runtimes.registerRunner(key, bash);
+for (const key of Object.keys(BASH_RUNNER_CONTRACTS)) workspace.runtimes.registerRunner(key, bash);
 {
   // Cast registry to the minimal package-manager shape. CommandRegistry
   // CommandRegistry has register(name, handler) which matches.

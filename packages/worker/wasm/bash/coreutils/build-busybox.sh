@@ -72,7 +72,7 @@ for a in */lib.a libbb/lib.a coreutils/libcoreutils/lib.a; do
   [ -f "$a" ] || { echo "missing $a — compile stage failed; re-run make without -s to see errors" >&2; exit 1; }
 done
 
-for unit in "$HERE/wasi-shim.c" "$NIMBUS_LIBC/nimbus-accounts.c"; do
+for unit in "$HERE/wasi-shim.c" "$NIMBUS_LIBC/nimbus-accounts.c" "$NIMBUS_LIBC/nimbus-restart.c"; do
   "$CC_BASE" -std=gnu17 -O2 \
     -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS \
     $INCLUDES -c "$unit" -o "$(basename "$unit" .c).o"
@@ -82,10 +82,11 @@ done
 # libbb/lib.a (appletlib.c) and nothing else roots it, so lazy archive
 # resolution would otherwise drop the whole program (proven: a 117 KB
 # _start-only stub). Archives repeated for cross-archive references.
-"$CC_BASE" -O2 -o busybox.wasm applets/applets.o wasi-shim.o nimbus-accounts.o \
+"$CC_BASE" -O2 -o busybox.wasm applets/applets.o wasi-shim.o nimbus-accounts.o nimbus-restart.o \
   -Wl,-u,__main_argc_argv -Wl,--strip-debug \
   -Wl,--wrap=stat -Wl,--wrap=lstat -Wl,--wrap=fstat -Wl,--wrap=fstatat \
   -Wl,--wrap=chmod -Wl,--wrap=fchmod -Wl,--wrap=__main_argc_argv \
+  -Wl,--wrap=read -Wl,--wrap=readv -Wl,--wrap=write -Wl,--wrap=writev \
   */lib.a */*/lib.a libbb/lib.a \
   -lsetjmp -lwasi-emulated-signal -lwasi-emulated-process-clocks -lwasi-emulated-mman
 

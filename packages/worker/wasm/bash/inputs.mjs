@@ -13,6 +13,7 @@ export async function bashInputs(root = HERE) {
     'build-bash.sh', 'build-in-bwrap.sh', 'inputs.mjs', 'cross.cache', 'nimbus-proc.c', 'nimbus-proc.h', 'patches',
     'coreutils/build-busybox.sh', 'coreutils/busybox-wasi.config', 'coreutils/wasi-shim.c', 'coreutils/overlay', 'coreutils/list-applets.mjs',
     '../nimbus-libc/posix', '../nimbus-libc/nimbus-accounts.c', '../nimbus-libc/nimbus-netdb.h',
+    '../nimbus-libc/nimbus-restart.c', '../nimbus-libc/nimbus-restart.h',
     '../../scripts/artifact-inputs.mjs',
   ]);
 }
