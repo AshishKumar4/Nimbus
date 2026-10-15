@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { createModuleMap, ProcessExitError, type NodeContext } from './index.js';
 import { createModuleShim, type RequireFunction } from './module.js';
 import { pathToFileURL } from './file-url.js';
-import { escapedIdentifierNames, rewriteDynamicImports } from '../../../runtime/dynamic-import-rewrite.js';
+import { rewriteDynamicImports, unusedIdentifier } from '../../../runtime/dynamic-import-rewrite.js';
 import { isEsModuleFile, type PackageType } from '../../../runtime/module-format.js';
 import { resolve, dirname } from '../utils/path.js';
 import { invalidArgType } from '../../../_shared/node-error.js';
@@ -59,18 +59,17 @@ const WRAPPER_PARAMS = 'exports, require, module, __filename, __dirname, console
  * including a Unicode-escaped spelling.
  */
 export function moduleWrapper(source: string, parentUrl: string): string {
-	const escaped = source.includes('\\u') ? escapedIdentifierNames(source) : new Set<string>();
-	let index = 0;
-	let loader: string;
-	do { loader = `__lifoImport${index++}`; } while (source.includes(loader) || escaped.has(loader));
+	const loader = unusedIdentifier(source, '__lifoImport');
 	const body = rewriteDynamicImports(source, parentUrl, loader);
 	return `(function(${WRAPPER_PARAMS}, ${loader}) {\n${body}\n})`;
 }
 
-/** What one module's wrapper receives as console and process. */
+/** What one module's wrapper receives as console, process and global. */
 export interface ModuleScope {
 	readonly console: unknown;
 	readonly process: unknown;
+	/** Every module's `global`: a program's realm's globalThis, as Node's is. */
+	readonly global: unknown;
 }
 
 /** The native loader installed for this CommonJS loader's module graph. */
@@ -233,7 +232,7 @@ export function createCjsLoader(context: NodeContext, scope: ModuleScope, option
 			scope.console, scope.process, Buffer,
 			globalThis.setTimeout, globalThis.setInterval,
 			globalThis.clearTimeout, globalThis.clearInterval,
-			{ process: scope.process, Buffer, console: scope.console },
+			scope.global,
 			importDynamic,
 		];
 	}

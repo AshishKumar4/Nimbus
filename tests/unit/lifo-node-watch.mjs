@@ -34,7 +34,7 @@ const kernel = rawVfs.as(CRED_KERNEL);
 kernel.mkdir('w/d', { recursive: true });
 kernel.writeFile('w/watched.txt', 'w');
 const files = new ProcessFiles(rawVfs);
-const fs = createFs(synchronousFilesystem({ process: files.bind({ pid: 4301, cred: CRED_KERNEL }) })(), '/');
+const fs = createFs(synchronousFilesystem({ process: files.bind({ pid: 4301, cred: CRED_KERNEL }) }, () => CRED_KERNEL.umask)(), '/');
 /** Node tells a watch's changes on a later turn. */
 const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
 const hearing = (path, options) => {

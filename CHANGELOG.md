@@ -14,6 +14,27 @@ published independently in the `@nimbus-sh` npm scope.
   file it cannot write once, and writes it no more; `tee` and `dd` close
   every file they open, also when a write, a sync or their own error
   report fails.
+- Fixed: a lifo ES module command sends only its real bare imports to the
+  CDN. A string or a comment that read like an import was rewritten too,
+  so `ctx.stdout.write("from 'foo'")` printed a CDN URL, and `node:`
+  builtins and URL imports were sent to the CDN. A computed `import()` of
+  a bare name now goes to the CDN as well.
+- Fixed: `cp -p` and `cp -a` keep each entry's owner on every path, as
+  GNU cp does: a single file, an overwritten one and a copy into an
+  existing directory used to be owned by whoever ran cp. A symbolic link
+  keeps its own owner and modification time. A user who may not give a
+  copy another's owner keeps their own, silently; root is told when it
+  cannot (status 1). A symbolic link named on the command line is now
+  followed, as GNU cp follows it, unless `-r`, `-a`, `-P` or `-d` copies
+  the link itself.
+- Fixed: the shell's built-in `node` is the process the shell started.
+  `node --version`, `process.version` and `process.versions` now name one
+  release, core's (they disagreed: v20.0.0 and v22.14.0), and
+  `process.versions` no longer has a `lifo` key. `process.pid` is its pid
+  in the session, `getuid`, `getgid` and `getgroups` are its credential
+  (root under `sudo`), and `process.umask()` reads and sets the program's
+  own mask, which its files are made with; the shell's mask stays.
+  `global` is the realm's `globalThis` in every module, as in Node.
 - Fixed: opencode's TUI gets answers from its syntax-highlight parser. The
   parser runs as a Worker that the opencode facet hosts on its own thread,
   where workerd's `worker_threads` reports the main thread, and the parser

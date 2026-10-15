@@ -54,6 +54,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: {
         createParents?: boolean;
         expectedRevision?: number;
+        umask?: number;
     }): number;
     writeFileFrom(path: RuntimeFsPath, size: number, source: AsyncIterable<Uint8Array>): Promise<number>;
     private writeFileFromSource;

@@ -415,7 +415,7 @@ export class SessionProcessSupervisor implements ProcessOutput {
     return this.table.credOf(pid).uid === caller.uid;
   }
 
-  /** {@link kill}, as `caller`: refused with EPERM where {@link maySignal} refuses it. */
+  /** {@link kill}, as `caller`: refused with EPERM where {@link maySignal} refuses it (isKillRefusal). */
   killAs(caller: Readonly<VfsCred>, pid: number, exitCode?: number, reason?: SignalAbortReason): boolean {
     if (!this.maySignal(caller, pid)) throw Object.assign(new Error(`EPERM: operation not permitted, kill ${pid}`), { code: 'EPERM', errno: -1 });
     return this.kill(pid, exitCode, reason);
@@ -1001,4 +1001,9 @@ export class SessionProcessSupervisor implements ProcessOutput {
     this.logActivity = null;
     this.logRetention = null;
   }
+}
+
+/** Whether `error` is {@link SessionProcessSupervisor.killAs}'s refusal: kill(2)'s rule does not let the caller signal the process. */
+export function isKillRefusal(error: unknown): boolean {
+  return error instanceof Error && Reflect.get(error, 'code') === 'EPERM';
 }

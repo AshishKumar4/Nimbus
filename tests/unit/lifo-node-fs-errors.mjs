@@ -64,7 +64,7 @@ const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
 const kernel = rawVfs.as(CRED_KERNEL);
 kernel.mkdir('t/dir', { recursive: true });
 kernel.writeFile('t/file', 'x');
-const ours = createFs(synchronousFilesystem({ process: processBridge(rawVfs, CRED_KERNEL) })(), '/t');
+const ours = createFs(synchronousFilesystem({ process: processBridge(rawVfs, CRED_KERNEL) }, () => CRED_KERNEL.umask)(), '/t');
 
 // Real Node, on the disk tree: every case's error, as `shape` reads it.
 const oracle = spawnSync('node', ['--input-type=module', '-e', `

@@ -245,6 +245,7 @@ const end = await runNodeProgram(program, {
   stdout: output(1),
   stderr: output(2),
   stdin: () => bytes(call({ op: 'stdin' }), 'stdin'),
+  setUmask: (mask) => { call({ op: 'umask', mask }); },
   portRegistry: ports,
   routeLoopback,
   dns,

@@ -248,9 +248,9 @@ async function only(backend, expected, label, run) {
   };
   assert.equal(await run('readlink /pc/l'), '/f\n', 'readlink is the text as written');
   assert.equal(await run('cat /pc/l'), 'pc f\n', 'and the link leads to the mount\'s /f');
-  assert.equal(await run('cp /pc/l /pc/l2 && readlink /pc/l2 && cat /pc/l2'), '/f\npc f\n', 'a link copied within the mount is the same link');
+  assert.equal(await run('cp -P /pc/l /pc/l2 && readlink /pc/l2 && cat /pc/l2'), '/f\npc f\n', 'a link copied within the mount is the same link');
   assert.equal(pcBacking.readlink('/l2'), '/f');
-  assert.equal(await run('cp /pc/l /qc/l3 && readlink /qc/l3 && cat /qc/l3'), '/f\nqc f\n', 'across mounts, the text as written');
+  assert.equal(await run('cp -P /pc/l /qc/l3 && readlink /qc/l3 && cat /qc/l3'), '/f\nqc f\n', 'across mounts, the text as written');
   assert.equal(qcBacking.readlink('/l3'), '/f');
   // The namespace's own copy across mounts copies the text as written too.
   assert.equal(await ws.filesystem.vfs.copy('/pc/d', '/qc/d', { recursive: true }), 2);
