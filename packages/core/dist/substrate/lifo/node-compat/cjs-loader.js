@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { createModuleMap, ProcessExitError } from './index.js';
 import { createModuleShim } from './module.js';
 import { pathToFileURL } from './file-url.js';
-import { escapedIdentifierNames, rewriteDynamicImports } from '../../../runtime/dynamic-import-rewrite.js';
+import { rewriteDynamicImports, unusedIdentifier } from '../../../runtime/dynamic-import-rewrite.js';
 import { isEsModuleFile } from '../../../runtime/module-format.js';
 import { resolve, dirname } from '../utils/path.js';
 import { invalidArgType } from '../../../_shared/node-error.js';
@@ -55,12 +55,7 @@ const WRAPPER_PARAMS = 'exports, require, module, __filename, __dirname, console
  * including a Unicode-escaped spelling.
  */
 export function moduleWrapper(source, parentUrl) {
-    const escaped = source.includes('\\u') ? escapedIdentifierNames(source) : new Set();
-    let index = 0;
-    let loader;
-    do {
-        loader = `__lifoImport${index++}`;
-    } while (source.includes(loader) || escaped.has(loader));
+    const loader = unusedIdentifier(source, '__lifoImport');
     const body = rewriteDynamicImports(source, parentUrl, loader);
     return `(function(${WRAPPER_PARAMS}, ${loader}) {\n${body}\n})`;
 }
