@@ -76,7 +76,6 @@ class StubServer extends EventEmitter {
   ref() { return this; }
 }
 
-
 /** The engine's `module` with each of `names` refused (unavailable). */
 function withoutHostReach(module: object, name: string, names: readonly string[]): object {
   const refused = Object.fromEntries(names.map((method) => [method, () => unavailable(`${name}.${method}`)]));
