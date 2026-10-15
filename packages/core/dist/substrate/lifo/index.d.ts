@@ -11,7 +11,7 @@ export { createHelpCommand } from './commands/system/help.js';
 export { createNodeCommand } from './commands/system/node.js';
 export { createCurlCommand } from './commands/net/curl.js';
 export { createLifoPkgCommand, rehydrateGlobalPackages } from './commands/system/lifo.js';
-export { NPM_VERSION, createNpmCommand, createNpxCommand } from './commands/system/npm.js';
+export { createNpmCommand, createNpxCommand } from './commands/system/npm.js';
 export { Shell } from './shell/Shell.js';
 export { JobTable } from './shell/jobs.js';
 export type { Job, ShellProcesses } from './shell/jobs.js';

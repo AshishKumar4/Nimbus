@@ -112,7 +112,7 @@ export type TreeNode<P extends TreePackage, I extends TreePackage> = {
     readonly pkg: I;
 };
 export interface TreePlan<P extends TreePackage, I extends TreePackage> {
-    /** The tree, by placement: placed and kept packages alike, the skipped among them. */
+    /** The tree, by placement: placed and kept packages alike, the skipped among them, in the order each joined it (npm's inventory). */
     readonly nodes: ReadonlyMap<string, TreeNode<P, I>>;
     /** Whether the build asked the host to resolve anything. */
     readonly resolvedAny: boolean;

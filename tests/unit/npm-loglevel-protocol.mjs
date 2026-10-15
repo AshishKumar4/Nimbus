@@ -14,7 +14,14 @@
 // installer; they are the consumer contract, so they are asserted literally.
 
 import assert from 'node:assert/strict';
-import { parseNpmInstallInvocation } from '../../packages/core/src/substrate/lifo/commands/system/npm-install-args.ts';
+import { npmInstallInvocation } from '../../packages/core/src/substrate/lifo/commands/system/npm-install-args.ts';
+import { loadNpmConfig } from '../../packages/core/src/substrate/lifo/commands/system/npm-config.ts';
+
+/** `npm install <args>` as npm's configuration reads it, with no .npmrc. */
+async function parseNpmInstallInvocation(args) {
+  const vfs = { async exists() { return false; }, async readFileString(path) { throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' }); } };
+  return npmInstallInvocation(await loadNpmConfig(vfs, '/home/user', { HOME: '/home/user' }, ['install', ...args]));
+}
 import {
   npmAddedLine,
   npmHttpCacheLine,
@@ -42,16 +49,16 @@ function piLabel(line) {
 
 // --loglevel reaches the installer instead of being dropped on the floor.
 {
-  const parsed = parseNpmInstallInvocation([
+  const parsed = await parseNpmInstallInvocation([
     '-g', '--ignore-scripts', '--no-fund', '--no-audit',
     '--loglevel=verbose', '--progress=false', '@earendil-works/pi-coding-agent',
   ]);
   assert.deepEqual(parsed.packages, ['@earendil-works/pi-coding-agent']);
   assert.equal(parsed.global, true);
   assert.equal(parsed.loglevel, 'verbose');
-  assert.equal(parseNpmInstallInvocation(['react']).loglevel, null);
+  assert.equal((await parseNpmInstallInvocation(['react'])).loglevel, null);
   // An unknown level names no level rather than inventing one.
-  assert.equal(parseNpmInstallInvocation(['--loglevel=chatty', 'react']).loglevel, null);
+  assert.equal((await parseNpmInstallInvocation(['--loglevel=chatty', 'react'])).loglevel, null);
   assert.equal(parseNpmLogLevel('silly'), 'silly');
   assert.equal(parseNpmLogLevel(undefined), null);
 }

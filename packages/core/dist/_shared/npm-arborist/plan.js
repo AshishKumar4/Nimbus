@@ -91,11 +91,13 @@ export async function planTree(roots, installed, host, options = {}) {
     for (const [at, each] of installedAt)
         if (at !== '' && each.tree !== tree)
             extraneous.add(at);
-    // The tree, as the hosts get it, before anything is left out of it.
+    // The tree, as the hosts get it, before anything is left out of it, in npm's inventory order.
     const nodes = new Map();
     const requiredAt = new Set();
     const flagsAt = new Map();
-    for (const each of tree.nodes()) {
+    for (const each of tree.inventory) {
+        if (each === project)
+            continue;
         const at = each.location;
         if (isRequired(each))
             requiredAt.add(at);

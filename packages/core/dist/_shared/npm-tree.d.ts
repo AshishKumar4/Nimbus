@@ -34,6 +34,10 @@ export interface TreeManifest {
     }>>;
     /** `bundleDependencies` as published (npm also reads `bundledDependencies`): what its archive carries in its own node_modules, read by bundledNames. */
     readonly bundleDependencies?: unknown;
+    /** What it asks of node and npm, as published (npm's engine check, npm-arborist/engines.ts). */
+    readonly engines?: unknown;
+    /** A project's devEngines, which take the place of its own engines check. */
+    readonly devEngines?: unknown;
 }
 /** The names a manifest bundles: its `bundleDependencies` list, or every dependency for `true`. They are not resolved, nor deduped away. */
 export declare function bundledNames(manifest: TreeManifest): string[];
@@ -85,6 +89,9 @@ export declare function meets(version: string, edge: Pick<TreeEdge, 'name' | 'ra
 /** The project's package.json, as its roots and saves read it. */
 export interface ProjectManifest extends TreeManifest {
     readonly devDependencies?: DependencyMap;
+    /** As written: what npm's engine check names the project by (its _id). */
+    readonly name?: unknown;
+    readonly version?: unknown;
 }
 /** package.json, read: the document as written (every field, for saving), and the dependencies npm reads from it. */
 export interface PackageJsonDocument {

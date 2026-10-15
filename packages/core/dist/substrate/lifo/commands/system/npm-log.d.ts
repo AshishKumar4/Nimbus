@@ -8,6 +8,8 @@
  * that label frozen at "starting npm install" for the whole install, so
  * honouring it means speaking npm's wire format on the same stream.
  */
+import type { EngineMismatch } from '../../../../_shared/npm-arborist/engines.js';
+import type { DevEnginesFailure } from '../../../../_shared/npm-libs.js';
 export type NpmLogLevel = 'silent' | 'error' | 'warn' | 'notice' | 'http' | 'info' | 'verbose' | 'silly';
 /** The level a line is reported at; the caller decides whether to print it. */
 export type NpmLogEmitter = (level: NpmLogLevel, line: string) => void;
@@ -52,4 +54,19 @@ export declare function installSummary(report: InstallReport): {
     stdout: string;
     stderr: string;
 };
+/**
+ * What npm says of an EBADENGINE: the warning it lets pass (arborist's
+ * log.warn(code, message, { package, required, current }), each line as
+ * npm's display prefixes it), or under `--engine-strict` the error it ends
+ * with (error-message.js's summary and detail).
+ */
+export declare function npmEngineLines(mismatch: EngineMismatch, strict: boolean): string[];
+/**
+ * What npm says of a devEngines failure (base-cmd checkDevEngines): its
+ * message (the first said with npm's preface), then what is current and
+ * what is required, each line as npm's display prefixes it; `level` warn
+ * for one npm lets pass, error for the one the command ends with
+ * (error-message.js's summary and detail).
+ */
+export declare function npmDevEnginesLines(failure: DevEnginesFailure, first: boolean, level: 'warn' | 'error'): string[];
 //# sourceMappingURL=npm-log.d.ts.map

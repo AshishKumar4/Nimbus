@@ -3,9 +3,9 @@ import { type CommandRegistry } from '../registry.js';
 import type { ProcessView as VFS } from '../../../../runtime/process-files.js';
 import type { Kernel } from '../../kernel/index.js';
 import { type NpmLogEmitter } from './npm-log.js';
+import { type EngineMismatch } from '../../../../_shared/npm-arborist/engines.js';
 /** The registry an install reads from when its env names none. */
 export declare const NPM_REGISTRY_ORIGIN = "https://registry.npmjs.org";
-export declare const NPM_VERSION = "10.0.0";
 interface PackageJson {
     name?: string;
     version?: string;
@@ -41,8 +41,10 @@ export interface NpmInstallPort {
         saveDev?: boolean;
         /** `--save-optional`: what is named is saved to optionalDependencies. */
         saveOptional?: boolean;
-        /** `--force`: a peer conflict the project owns is a warning, not ERESOLVE. */
+        /** `--force`: a peer conflict the project owns is a warning, not ERESOLVE, and node's engine is not checked. */
         force?: boolean;
+        /** `--engine-strict`: a package whose engines exclude this node or npm fails the install, which changes nothing. */
+        engineStrict?: boolean;
         /** `--strict-peer-deps`: any peer conflict is ERESOLVE unless forced. */
         strictPeerDeps?: boolean;
         /** `--legacy-peer-deps`: peers are not installed, nor checked. */
@@ -71,6 +73,7 @@ export interface NpmInstallPort {
         totalFiles?: number;
         fromCacheHits?: number;
         linkedBins?: number;
+        engines?: readonly EngineMismatch[];
     }>;
     /**
      * The host's records of the bins of `packages`, which `npm uninstall`

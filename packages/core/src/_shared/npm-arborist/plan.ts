@@ -104,7 +104,7 @@ export type TreeNode<P extends TreePackage, I extends TreePackage> =
   | { readonly at: string; readonly planned: false; readonly pkg: I };
 
 export interface TreePlan<P extends TreePackage, I extends TreePackage> {
-  /** The tree, by placement: placed and kept packages alike, the skipped among them. */
+  /** The tree, by placement: placed and kept packages alike, the skipped among them, in the order each joined it (npm's inventory). */
   readonly nodes: ReadonlyMap<string, TreeNode<P, I>>;
   /** Whether the build asked the host to resolve anything. */
   readonly resolvedAny: boolean;
@@ -198,11 +198,12 @@ export async function planTree<P extends TreePackage, I extends TreePackage>(
   const extraneous = new Set<string>();
   for (const [at, each] of installedAt) if (at !== '' && each.tree !== tree) extraneous.add(at);
 
-  // The tree, as the hosts get it, before anything is left out of it.
+  // The tree, as the hosts get it, before anything is left out of it, in npm's inventory order.
   const nodes = new Map<string, TreeNode<P, I>>();
   const requiredAt = new Set<string>();
   const flagsAt = new Map<string, LockFlags>();
-  for (const each of tree.nodes()) {
+  for (const each of tree.inventory) {
+    if (each === project) continue;
     const at = each.location;
     if (isRequired(each)) requiredAt.add(at);
     flagsAt.set(at, flagsOf(each));

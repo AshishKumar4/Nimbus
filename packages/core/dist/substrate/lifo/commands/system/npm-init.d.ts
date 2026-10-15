@@ -1,6 +1,6 @@
 import type { CommandContext } from '../types.js';
 import type { ProcessView as VFS } from '../../../../runtime/process-files.js';
-import { type NpmConfig } from './npm-config.js';
+import type { NpmConfig } from './npm-config.js';
 /** An npm error: its code, and its message's lines, each printed `npm error <line>`. */
 export declare class NpmError extends Error {
     readonly code?: string | undefined;
@@ -22,7 +22,7 @@ export declare function npmInitializerPackage(initializer: string): string;
  * without, npm's own package.json, asked for on the command's input unless
  * under `yes`.
  */
-export declare function npmInitCommand(ctx: CommandContext): Promise<number>;
+export declare function npmInitCommand(ctx: CommandContext, config: NpmConfig): Promise<number>;
 /** The terminal the template asks its questions on. */
 export interface NpmInitIo {
     /** Print `text` to standard output. */

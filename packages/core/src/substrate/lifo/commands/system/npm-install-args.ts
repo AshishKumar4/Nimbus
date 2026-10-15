@@ -1,4 +1,9 @@
-import { parseArgs } from '../../utils/args.js';
+/**
+ * npm-install-args.ts — what `npm install` and `npm ci` take from npm's
+ * configuration (npm-config.ts: the command line as npm's nopt parses it,
+ * npm_config_* and the .npmrc files), the one place npm's options are read.
+ */
+import type { NpmConfig } from './npm-config.js';
 import { parseNpmLogLevel, type NpmLogLevel } from './npm-log.js';
 
 export interface NpmInstallInvocation {
@@ -8,7 +13,7 @@ export interface NpmInstallInvocation {
   /** `--loglevel`, when it names a level npm recognises; null otherwise. */
   loglevel: NpmLogLevel | null;
   /**
-   * `--production` / `-p` / `--omit=dev`: install dependencies only.
+   * `--omit=dev` (or npm's deprecated `--production`, bun's `-p`): install dependencies only.
    *
    * Both npm and bun honour this, and it is the one answer a project has to a
    * devDependency Nimbus cannot run — a headless-browser driver, a native
@@ -41,120 +46,67 @@ export interface NpmInstallInvocation {
   save: boolean;
   /** What a saved range starts with: `--save-prefix`, '' for `--save-exact`, else '^'. */
   savePrefix: string;
+  /** `--engine-strict`: a package whose engines exclude this node or npm fails the install (EBADENGINE), where npm otherwise warns. */
+  engineStrict: boolean;
+  /** The registry npm's configuration names (`--registry`, npm_config_registry, an .npmrc); null where only npm's default does. */
+  registry: string | null;
   /** Options npm has that this npm does not implement, as npm ERR! lines: the install refuses them rather than ignore them. */
   unsupported: string[];
 }
 
-const INSTALL_ARG_SPEC = {
-  global: { type: 'boolean', short: 'g' },
-  prefix: { type: 'string' },
-  loglevel: { type: 'string' },
-  registry: { type: 'string' },
-  tag: { type: 'string' },
-  cache: { type: 'string' },
-  omit: { type: 'string' },
-  include: { type: 'string' },
-  workspace: { type: 'string', short: 'w' },
-  'min-release-age': { type: 'string' },
-  'save-prefix': { type: 'string' },
-  'ignore-scripts': { type: 'boolean' },
-  'no-fund': { type: 'boolean' },
-  fund: { type: 'boolean' },
-  'no-audit': { type: 'boolean' },
-  audit: { type: 'boolean' },
-  progress: { type: 'boolean' },
-  save: { type: 'boolean', short: 'S' },
-  'save-dev': { type: 'boolean', short: 'D' },
-  'save-prod': { type: 'boolean', short: 'P' },
-  'save-optional': { type: 'boolean', short: 'O' },
-  'save-exact': { type: 'boolean', short: 'E' },
-  'package-lock': { type: 'boolean' },
-  'dry-run': { type: 'boolean' },
-  force: { type: 'boolean', short: 'f' },
-  'strict-peer-deps': { type: 'boolean' },
-  'legacy-peer-deps': { type: 'boolean' },
-  workspaces: { type: 'boolean' },
-  'no-save': { type: 'boolean' },
-  'no-optional': { type: 'boolean' },
-  'prefer-dedupe': { type: 'boolean' },
-  'install-strategy': { type: 'string' },
-  'global-style': { type: 'boolean' },
-  'legacy-bundling': { type: 'boolean' },
-  'package-lock-only': { type: 'boolean' },
-  'no-bin-links': { type: 'boolean' },
-  before: { type: 'string' },
-  cpu: { type: 'string' },
-  os: { type: 'string' },
-  libc: { type: 'string' },
-  'engine-strict': { type: 'boolean' },
-  // bun spells it `-p`; npm's `-P` is --save-prod, and the short map is
-  // case-sensitive, so both tools' spellings land where they should.
-  production: { type: 'boolean', short: 'p' },
-} as const;
-
-export function parseNpmInstallInvocation(args: string[]): NpmInstallInvocation {
-  const parsed = parseArgs(args, INSTALL_ARG_SPEC);
-  // npm: what `--include` names is installed, whatever `--omit` says.
-  const included = repeatedValues(args, 'include');
-  const omitted = repeatedValues(args, 'omit');
+export function npmInstallInvocation(config: NpmConfig): NpmInstallInvocation {
+  const set = (key: string) => config.find(key) !== 'default';
+  const flag = (key: string) => config.get(key) === true;
+  const text = (key: string) => {
+    const value = config.get(key);
+    return typeof value === 'string' && value.length > 0 ? value : null;
+  };
+  const kinds = (key: string) => new Set((Array.isArray(config.get(key)) ? config.get(key) as unknown[] : []).map(String));
+  // @npmcli/config's buildOmitList: --omit, less what --include names, the
+  // deprecated --production, --only, --also, --dev and --optional each
+  // adding to one or the other (--no-production includes dev, as
+  // --optional includes optional).
+  const omitted = kinds('omit');
+  const included = kinds('include');
+  const only = config.get('only');
+  if ((typeof only === 'string' && /^prod(uction)?$/.test(only)) || flag('production')) omitted.add('dev');
+  else if (config.get('production') === false) included.add('dev');
+  const also = config.get('also');
+  if (typeof also === 'string' && /^dev/.test(also)) included.add('dev');
+  if (flag('dev')) included.add('dev');
+  if (config.get('optional') === false) omitted.add('optional');
+  else if (config.get('optional') === true) included.add('optional');
   const omits = (type: string) => omitted.has(type) && !included.has(type);
-  const global = parsed.flags.global === true;
+  const global = flag('global') || config.get('location') === 'global';
   // npm: --global-style is the shallow strategy, --legacy-bundling the nested one; a global install is always shallow.
-  const strategy = parsed.flags['legacy-bundling'] === true ? 'nested'
-    : parsed.flags['global-style'] === true ? 'shallow'
-    : stringFlag(parsed.flags['install-strategy']);
+  const strategy = flag('legacy-bundling') ? 'nested' : flag('global-style') ? 'shallow' : text('install-strategy');
   const unsupported = [
     ...(!global && strategy !== null && strategy !== 'hoisted' ? [`--install-strategy=${strategy} is not supported here; only hoisted is`] : []),
-    ...(stringFlag(parsed.flags.workspace) !== null || parsed.flags.workspaces === true ? ['workspaces (-w, --workspace, --workspaces) are not supported here'] : []),
-    ...(parsed.flags['dry-run'] === true ? ['--dry-run is not supported here'] : []),
-    ...(parsed.flags['package-lock-only'] === true ? ['--package-lock-only is not supported here: package-lock.json is not written'] : []),
-    ...(parsed.flags['no-bin-links'] === true ? ['--no-bin-links is not supported here'] : []),
-    ...(stringFlag(parsed.flags.before) !== null ? ['--before is not supported here'] : []),
-    ...(['cpu', 'os', 'libc'] as const).flatMap((name) => (stringFlag(parsed.flags[name]) !== null ? [`--${name} is not supported here: platforms are this runtime's`] : [])),
-    ...(parsed.flags['engine-strict'] === true ? ['--engine-strict is not supported here: engines are not checked'] : []),
+    ...(kinds('workspace').size > 0 || flag('workspaces') ? ['workspaces (-w, --workspace, --workspaces) are not supported here'] : []),
+    ...(flag('dry-run') ? ['--dry-run is not supported here'] : []),
+    ...(flag('package-lock-only') ? ['--package-lock-only is not supported here: package-lock.json is not written'] : []),
+    ...(config.get('bin-links') === false ? ['--no-bin-links is not supported here'] : []),
+    ...(config.get('before') !== null && config.get('before') !== undefined ? ['--before is not supported here'] : []),
+    ...(['cpu', 'os', 'libc'] as const).flatMap((name) => (text(name) !== null ? [`--${name} is not supported here: platforms are this runtime's`] : [])),
   ];
-  const savePrefix = stringFlag(parsed.flags['save-prefix']);
   return {
-    packages: parsed.positional,
+    packages: config.positionals.slice(1),
     global,
-    prefix: stringFlag(parsed.flags.prefix),
-    loglevel: parseNpmLogLevel(parsed.flags.loglevel),
-    production: (parsed.flags.production === true || omitted.has('dev')) && !included.has('dev'),
-    saveDev: parsed.flags['save-dev'] === true,
-    saveOptional: parsed.flags['save-optional'] === true,
-    force: parsed.flags.force === true,
-    strictPeerDeps: parsed.flags['strict-peer-deps'] === true,
-    legacyPeerDeps: parsed.flags['legacy-peer-deps'] === true,
-    omitOptional: (omits('optional') || parsed.flags['no-optional'] === true) && !included.has('optional'),
+    prefix: set('prefix') ? text('prefix') : null,
+    loglevel: set('loglevel') ? parseNpmLogLevel(config.get('loglevel')) : null,
+    production: omits('dev'),
+    saveDev: flag('save-dev'),
+    saveOptional: flag('save-optional'),
+    force: flag('force'),
+    strictPeerDeps: flag('strict-peer-deps'),
+    legacyPeerDeps: flag('legacy-peer-deps'),
+    omitOptional: omits('optional'),
     omitPeer: omits('peer'),
-    preferDedupe: parsed.flags['prefer-dedupe'] === true,
-    save: parsed.flags['no-save'] !== true,
-    savePrefix: parsed.flags['save-exact'] === true ? '' : savePrefix ?? '^',
+    preferDedupe: flag('prefer-dedupe'),
+    save: config.get('save') !== false,
+    savePrefix: flag('save-exact') ? '' : text('save-prefix') ?? '',
+    engineStrict: flag('engine-strict'),
+    registry: set('registry') ? text('registry') : null,
     unsupported,
   };
-}
-
-/**
- * Every value of `--<name>` in the invocation. npm allows `--omit` and
- * `--include` more than once (`--omit=dev --omit=optional`), and the generic
- * parser keeps only the last value — so a kind would be missed whenever a
- * caller named more than one.
- */
-function repeatedValues(args: string[], name: string): Set<string> {
-  const values = new Set<string>();
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === '--') break;
-    if (arg === `--${name}`) {
-      const value = args[++i];
-      if (value) values.add(value);
-    } else if (arg.startsWith(`--${name}=`)) {
-      values.add(arg.slice(`--${name}=`.length));
-    }
-  }
-  return values;
-}
-
-function stringFlag(value: string | boolean | undefined): string | null {
-  return typeof value === 'string' && value.length > 0 ? value : null;
 }

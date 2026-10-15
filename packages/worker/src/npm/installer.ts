@@ -37,16 +37,17 @@ import { direntTypeIn } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { LruMap } from '@nimbus-sh/core/_shared/lru-map.js';
 import { handKernelArtifact, projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { NpmCache, type LockfileEntry } from './cache.js';
+import { NpmCache, type LockfileEntry, type RecordSource } from './cache.js';
 import {
   hoistPlacements,
   type ResolvedPackage, type HoistPlan, type PackagePlacement,
 } from './resolver.js';
 import {
   bundledNames, canonicalTreePath, holdTree, lockRootMatches, namedPackages, packageJsonDocument, parentPlacement, placementName, projectRoots, readPackageJson, saveNamed,
-  type NamedPackage, type TreeRoot,
+  type NamedPackage, type ProjectManifest, type TreeRoot,
 } from '@nimbus-sh/core/_shared/npm-tree.js';
 import { planTree, type InstalledPackage, type OmitTypes, type PlanOptions, type TreePlan, type TreeResolution } from '@nimbus-sh/core/_shared/npm-arborist/plan.js';
+import { checkEngines, type EngineMismatch } from '@nimbus-sh/core/_shared/npm-arborist/engines.js';
 import { parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
 import {
@@ -61,6 +62,7 @@ import {
   emitRegistryEvent,
 } from '../facets/wasm-swap-registry.js';
 import { parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
+import { exactVersion } from '@nimbus-sh/core/_shared/npm-semver.js';
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 import type { BundlePoolProvider } from '../facets/prebundle-pool.js';
 import { Fanout, type FanoutRoute } from '@nimbus-sh/fabric/fanout.js';
@@ -79,7 +81,7 @@ import {
 import { recordCacheStatEvents } from '@nimbus-sh/core/_shared/cache-stats.js';
 import { estimateSupervisorHeap } from '@nimbus-sh/platform/heap-estimate.js';
 import { describeError } from '@nimbus-sh/platform/oom-classify.js';
-import { resolvedFromRecord, type RegistryCacheEntry } from './registry-record.js';
+import { isEngines, resolvedFromRecord, type RegistryCacheEntry } from './registry-record.js';
 import {
   type ResolveOneSpec,
   type ResolveOneResult,
@@ -193,8 +195,10 @@ export interface NpmInstallOptions {
   save?: boolean;
   /** What a saved range starts with ('' for `--save-exact`); '^' when not given. */
   savePrefix?: string;
-  /** `--force`: a peer conflict the project owns is a warning. */
+  /** `--force`: a peer conflict the project owns is a warning, and node's engine is not checked. */
   force?: boolean;
+  /** `--engine-strict`: a package whose engines exclude this node or npm fails the install, which changes nothing. */
+  engineStrict?: boolean;
   /** `--strict-peer-deps`: any peer conflict is ERESOLVE unless forced. */
   strictPeerDeps?: boolean;
   /** `--legacy-peer-deps`: peers are neither installed nor checked. */
@@ -218,11 +222,13 @@ export interface NpmInstallResult {
   phases: Record<string, number>; // phase → ms
   /** The bins `whileHeld` linked. */
   linkedBins?: number;
+  /** Each EBADENGINE of the tree (npm's engine check): warnings, or under --engine-strict the install's failure. */
+  engines?: EngineMismatch[];
 }
 
 /** What a lockfile says is installed: each placement's package, by its registry identity, version and integrity, in placement order. */
-function lockRevision(lockfile: ReadonlyMap<string, LockfileEntry>): string {
-  let revision = '';
+function lockRevision(lockfile: ReadonlyMap<string, LockfileEntry>, source: RecordSource): string {
+  let revision = `${source.registry}\0${source.network}\n`;
   for (const [at, entry] of [...lockfile].sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0))) {
     revision += `${at}\0${entry.registryName || entry.name}\0${entry.resolvedVer}\0${entry.integrity}\n`;
   }
@@ -377,7 +383,7 @@ export class NpmInstaller {
     if (tmp !== null) this.sweepStaging(tmp);
     const principal = { pid: opts.pid, cred: opts.cred, view, tmp };
     const lockfile = this.cache.readLockfile(projDir);
-    const { roots, named, devOnly, advised } = await this.buildRoots(projDir, project, opts, log);
+    const { roots, named, devOnly, advised, manifest } = await this.buildRoots(projDir, project, opts, log);
     const omit = { dev: opts.production === true, optional: opts.omitOptional === true, peer: opts.omitPeer === true };
     const engine = {
       devOnly, advised, registry, omit,
@@ -411,7 +417,7 @@ export class NpmInstaller {
       }
       log(`Lockfile ${locked.lockName}: ${tree.plan.nodes.size} packages to place.`);
     } else {
-      const installed = opts.global || lockfile === null ? [] : this.installedTree(projDir, lockfile);
+      const installed = opts.global || lockfile === null ? [] : this.installedTree(projDir, lockfile, { registry, network: network.id });
       tree = await this.resolveTreeViaFanout(network, roots, installed, log, npmLog, engine);
       // The lockfile answered every edge: nothing resolved, nothing failed.
       usedLockfile = lockfile !== null && !tree.plan.resolvedAny && tree.plan.failures.length === 0;
@@ -434,6 +440,12 @@ export class NpmInstaller {
     if (failed.length > 0) {
       log(`npm ERR! install incomplete — ${failed.length} missing: ${failed.join(', ')}`);
       return { installed: [], failed, totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases };
+    }
+    // npm's engine check of the tree: under --engine-strict a mismatch fails
+    // the install before anything changes; otherwise npm warns of each.
+    const engines = checkEngines(manifest, plan, opts.force === true);
+    if (opts.engineStrict === true && engines.length > 0) {
+      return { installed: [], failed: [engines[0]!.pkgid ?? projDir], totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases, engines };
     }
 
     // ── Phase 2: Hoist ────────────────────────────────────────────────
@@ -477,7 +489,7 @@ export class NpmInstaller {
     }
     if (failed.length > 0) {
       log(`npm ERR! install incomplete — ${failed.length} missing: ${failed.join(', ')}`);
-      return { installed: [], failed, totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases };
+      return { installed: [], failed, totalFiles: 0, elapsed: Date.now() - start, cachedHits: 0, phases, engines };
     }
 
     // npm ci installs the lock into an empty node_modules: the old tree
@@ -598,7 +610,7 @@ export class NpmInstaller {
       const placements = hoistPlacements(hoistPlan);
       const written = this.writeLockfile(projDir, placements, nmDir, lockfile, opts.global ? new Map([...lockfile ?? []].filter(([at]) => !inScope(at))) : null);
       // npm ci's packages are the lock's, not the registry records' an install reads.
-      if (!opts.global && !opts.fromLockfile) this.installedTrees.set(projDir, { revision: lockRevision(written), installed: placements.map(({ placement, pkg }) => ({ at: placement, pkg })) });
+      if (!opts.global && !opts.fromLockfile) this.installedTrees.set(projDir, { revision: lockRevision(written, { registry, network: network.id }), installed: placements.map(({ placement, pkg }) => ({ at: placement, pkg })) });
     }
 
     const installed = [...installedAt.values()];
@@ -687,7 +699,7 @@ export class NpmInstaller {
     // that object ran meanwhile (tests/behavioral/perf-regression/install-warm.mjs).
     console.log(`[npm:phases] ${JSON.stringify({ installed: installed.length, failed: failed.length, cachedHits, elapsed, commits: commitCount, phases })}`);
 
-    return { installed, failed, totalFiles, elapsed, cachedHits, phases };
+    return { installed, failed, totalFiles, elapsed, cachedHits, phases, engines };
   }
 
   // ── Single-resolver / single-fetcher invariant ───────────────────────
@@ -841,15 +853,23 @@ export class NpmInstaller {
           if (layer.length > inFlightPeak) inFlightPeak = layer.length;
           totalLayers++;
 
-          // Build per-package tasks. Each task gets its own pre-loaded
-          // cache slice (only entries for THIS name) so the per-task RPC
-          // stays small. Bounded to 16 versions per name — enough to cover
-          // ~2 majors of typical packages, well under any RPC arg size cap.
-          const tasks = layer.map(({ name, range }) => {
+          // An exact version's record, where this registry's (through this
+          // network) is cached: the cache holds some versions of a package,
+          // never the registry's whole list, so a range is the packument's
+          // to answer (npm-pick-manifest's choice needs every version).
+          const requests = layer.map(({ name, range }) => {
+            const request = parseRegistryRequest(name, range);
+            return { request, exact: exactVersion(request.range) };
+          });
+          const records = this.cache.getRegistryEntries({ registry, network: network.id },
+            requests.flatMap(({ request, exact }): Array<[string, string]> => (exact === null ? [] : [[request.registryName, exact]])));
+          const tasks = layer.map(({ name, range }, at) => {
+            const { request, exact } = requests[at]!;
+            const record = exact === null ? null : records.get(`${request.registryName}@${exact}`) ?? null;
             const taskSpec: ResolveOneSpec = {
               name,
               range,
-              cachedEntries: this.cache.getRegistryVersions(parseRegistryRequest(name, range).registryName).slice(0, 16),
+              cachedEntries: record === null ? [] : [record],
               fetchTimeoutMs: 15_000,
               retries: 3,
               registry,
@@ -979,7 +999,7 @@ export class NpmInstaller {
     // atomically committed by the storage layer).
     let cacheWriteCount = 0;
     if (cacheWritesPending.length > 0) {
-      const r = this.cache.putRegistryEntries(cacheWritesPending);
+      const r = this.cache.putRegistryEntries({ registry, network: network.id }, cacheWritesPending);
       cacheWriteCount = r.written;
       if (r.failed > 0) log(`  resolver-fanout cache write: ${r.failed} entries failed`);
     }
@@ -1492,7 +1512,7 @@ export class NpmInstaller {
     fs: ProjectFs,
     opts: { packages?: string[]; production?: boolean; saveDev?: boolean; saveOptional?: boolean; global?: boolean; legacyPeerDeps?: boolean },
     log: (msg: string) => void,
-  ): Promise<{ roots: TreeRoot[]; named: NamedPackage[]; devOnly: Set<string>; advised: Set<string> }> {
+  ): Promise<{ roots: TreeRoot[]; named: NamedPackage[]; devOnly: Set<string>; advised: Set<string>; manifest: ProjectManifest | null }> {
     // Which names only a devDependency asked for — diagnostics only, so an
     // advisory can say whether anything this project RUNS actually needs
     // the package. A devDependency is still a required root.
@@ -1513,7 +1533,7 @@ export class NpmInstaller {
     // A devDependency `--omit=dev` leaves out is planned, and not announced.
     const omitted = new Set(opts.production ? roots.filter(({ type }) => type === 'dev').map(({ name }) => name) : []);
     const swapped = this.applyW6Registry(Object.fromEntries(roots.map(({ name, range }) => [name, range])), log, { devOnly, advised, omitted });
-    return { roots: roots.map((root) => ({ ...root, range: swapped[root.name] ?? root.range })), named, devOnly, advised };
+    return { roots: roots.map((root) => ({ ...root, range: swapped[root.name] ?? root.range })), named, devOnly, advised, manifest };
   }
 
   /**
@@ -1570,16 +1590,14 @@ export class NpmInstaller {
    * where the cache holds none of that exact package. `entries`' records
    * are read together, up front.
    */
-  private lockRecords(entries: Iterable<LockfileEntry> = []): (entry: LockfileEntry) => RegistryCacheEntry | null {
-    const read = this.cache.getRegistryEntries([...entries].map((entry): [string, string] => [entry.registryName || entry.name, entry.resolvedVer]));
+  private lockRecords(source: RecordSource, entries: Iterable<LockfileEntry> = []): (entry: LockfileEntry) => RegistryCacheEntry | null {
+    const read = this.cache.getRegistryEntries(source, [...entries].map((entry): [string, string] => [entry.registryName || entry.name, entry.resolvedVer]));
     return (entry) => {
       const registryName = entry.registryName || entry.name;
       const key = `${registryName}@${entry.resolvedVer}`;
       let record = read.get(key);
       if (record === undefined) {
-        record = this.cache.getRegistryEntry(registryName, entry.resolvedVer);
-        // A row from before records kept their registry identity may be another package's.
-        if (record !== null && record.registryName !== registryName) record = null;
+        record = this.cache.getRegistryEntry(source, registryName, entry.resolvedVer);
         read.set(key, record);
       }
       return record !== null && record.integrity === entry.integrity ? record : null;
@@ -1724,6 +1742,7 @@ export class NpmInstaller {
         os: platform.os,
         cpu: platform.cpu,
         libc: platform.libc,
+        ...(isEngines(manifest.engines) ? { engines: manifest.engines } : {}),
         exports: null,
         main: '',
         module: '',
@@ -1810,11 +1829,11 @@ export class NpmInstaller {
    * whose record the cache does not hold is left out, and so planned anew;
    * a revision every record answered is kept (installedTrees).
    */
-  private installedTree(projDir: string, lockfile: ReadonlyMap<string, LockfileEntry>): ReadonlyArray<InstalledPackage<ResolvedPackage>> {
-    const revision = lockRevision(lockfile);
+  private installedTree(projDir: string, lockfile: ReadonlyMap<string, LockfileEntry>, source: RecordSource): ReadonlyArray<InstalledPackage<ResolvedPackage>> {
+    const revision = lockRevision(lockfile, source);
     const known = this.installedTrees.get(projDir);
     if (known?.revision === revision) return known.installed;
-    const recordOf = this.lockRecords(lockfile.values());
+    const recordOf = this.lockRecords(source, lockfile.values());
     const installed = [...lockfile].flatMap(([at, entry]) => {
       const record = recordOf(entry);
       return record === null ? [] : [{ at, pkg: { ...resolvedFromRecord(record), name: entry.name, registryName: record.name } }];
