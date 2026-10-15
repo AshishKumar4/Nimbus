@@ -30,6 +30,8 @@ export interface NodeFilesystem {
     rename(from: string, to: string): void;
     copyFile(from: string, to: string): void;
     chmod(path: string, mode: number): void;
+    /** chown(2), or lchown(2) when not `follow`: a null side keeps the file's, in the same change. */
+    chown(path: string, uid: number | null, gid: number | null, follow: boolean): void;
     /** open(2): the process's descriptor (its DescriptorScope's), whatever filesystem the file is on. */
     open(path: string, flags: RuntimeOpenFlags): number;
     /** read(2), at `position`, or at the descriptor's offset (null), which then moves. */
@@ -37,6 +39,8 @@ export interface NodeFilesystem {
     /** write(2), at `position`, or at the descriptor's offset (null), which then moves; an O_APPEND descriptor's at the end. */
     write(fd: number, position: number | null, data: Uint8Array): number;
     fstat(fd: number): RuntimeVfsStat;
+    /** fchown(2): a null side keeps the file's. */
+    fchown(fd: number, uid: number | null, gid: number | null): void;
     ftruncate(fd: number, size: number): void;
     fsync(fd: number): void;
     close(fd: number): void;

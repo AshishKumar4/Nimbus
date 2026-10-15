@@ -34,6 +34,8 @@ export declare class LifoProcess extends EventEmitter {
      * process.exit() among them ends it there.
      */
     exitWith(code: number, explicit: boolean): number;
+    /** Node's 'beforeExit', each time its loop runs empty but on process.exit() or a fatal error: with its process.exitCode. */
+    emitBeforeExit(): void;
     hearsWriteFailures(): boolean;
     get stdin(): Readable;
     get stdout(): Writable;

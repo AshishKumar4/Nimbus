@@ -47,12 +47,28 @@ export type NodeCall = {
  | {
     readonly op: 'rawMode';
     readonly on: boolean;
+}
+/**
+ * Answered once output writes up to number `upTo` are made, with those
+ * after number `after` that failed (since the guest's settle-mark at
+ * `after`): the writes a program's 'beforeExit' listeners made, made before
+ * its loop is asked again, as Node's writes to a pipe or a file are.
+ */
+ | {
+    readonly op: 'settle';
+    readonly after: number;
+    readonly upTo: number;
 };
 /** What a standard descriptor is, as libuv tells a stream it can make from it. */
 export type FdKind = 'terminal' | 'pipe' | 'other';
-/** A write to output `fd` that failed with `code`, on a pipe or a file, made through `source`. */
-/** A failed write: its descriptor, its error, and what made it (its source, and which of the program's writers of `fd`: 0 is process.stdout or process.stderr, and its console). */
+/**
+ * A failed write: its number (`seq`, as the host numbers writes), its
+ * descriptor, its error, and what made it (its source, and which of the
+ * program's writers of `fd`: 0 is process.stdout or process.stderr, and its
+ * console).
+ */
 export interface OutputFailure {
+    readonly seq: number;
     readonly fd: 1 | 2;
     readonly code: string;
     readonly pipe: boolean;
@@ -79,6 +95,11 @@ export type GuestEvent =
  | {
     readonly type: 'settle';
     readonly upTo: number;
+}
+/** The program's 'beforeExit' is about to be emitted with writes up to number `after` posted: the failures of those after it are kept for the settle call that follows. */
+ | {
+    readonly type: 'settle-mark';
+    readonly after: number;
 } | {
     readonly type: 'fetch';
     readonly id: number;
@@ -170,6 +191,7 @@ export interface NodeRealmPayload {
 }
 export declare const record: (value: unknown) => value is Record<string, unknown>;
 export declare function isGuestEvent(value: unknown): value is GuestEvent;
+export declare function isOutputFailures(value: unknown): value is readonly OutputFailure[];
 export declare function isHostEvent(value: unknown): value is HostEvent;
 export declare function isNodeRealmPayload(value: unknown): value is NodeRealmPayload;
 export declare function isStat(value: unknown): value is RuntimeVfsStat;
