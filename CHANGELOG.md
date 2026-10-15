@@ -18,6 +18,15 @@ published independently in the `@nimbus-sh` npm scope.
   stray bytes. A streamed exec's result, `bun run`, `npm run`, shell
   scripts and the WASI runtimes now write the character their output's last
   bytes left unfinished; it was lost.
+- Fixed: `tee`, `dd` and the commands that read a file operand (`cat`, `wc`,
+  `grep` and the rest) open each file once, as their GNU tools do. If
+  another command moved the file aside and a new file took its name while
+  they ran, the rest of the input went to, or came from, the new file.
+  They read a file to its end even where a mount answers a read with less
+  than it asked, and `dd` truncates the file it opened. `tee` now reports a
+  file it cannot write once, and writes it no more; `tee` and `dd` close
+  every file they open, also when a write, a sync or their own error
+  report fails.
 - Fixed: a lifo ES module command sends only its real bare imports to the
   CDN. A string or a comment that read like an import was rewritten too,
   so `ctx.stdout.write("from 'foo'")` printed a CDN URL, and `node:`

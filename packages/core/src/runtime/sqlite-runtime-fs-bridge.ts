@@ -4,7 +4,7 @@ import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors
 import type { WaveDescriptions, WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
-import { abandon, andThen, isPromise, readDeclaredSource, readRangeOrWhole, syncValue, type Awaitable, type SyncVFS, type VfsRemoval } from '../vfs/vfs.js';
+import { abandon, andThen, isCharacterDevice, isPromise, readDeclaredSource, readRangeOrWhole, syncValue, type Awaitable, type SyncVFS, type VfsRemoval } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { fsError, MAX_LINK_HOPS, modeAllows, walkBeneath, type FsError } from './beneath-walk.js';
 
@@ -13,6 +13,7 @@ import type {
   RuntimeFileHandle,
   RuntimeOpenedFile,
   RuntimeFsPath,
+  RuntimeReadFileOptions,
   RuntimeReadOptions,
   RuntimeSynchronousFs,
   RuntimeFsBridge,
@@ -151,11 +152,18 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  readFile(path: RuntimeFsPath, options: { followSymlinks?: boolean; cached?: boolean } = {}): Uint8Array | null {
+  readFile(path: RuntimeFsPath, options: RuntimeReadFileOptions = {}): Uint8Array | null {
     return called({ syscall: 'open', path }, () => {
       const located = this.locate(path, options.followSymlinks !== false);
       if (located === null || located.absent) return null;
       try {
+        if (options.maxBytes !== undefined) {
+          // A bounded whole read is SQLite's alone, where the size check and
+          // the read are one turn: a mount's stat and read are two calls, and
+          // its read is of the whole file, whatever it has grown to.
+          if (located.mount) throw fsError('EFBIG', 'read', path);
+          if (!fitsWholeRead(this.vfs.stat(located.path), options.maxBytes)) throw fsError('EFBIG', 'read', path);
+        }
         // cached === false reads straight from SQL, neither consulting nor
         // populating the LRU: a whole runtime image is read once for a
         // facet's module map, never re-read from this isolate. Mount
@@ -1072,4 +1080,9 @@ function called<T>(call: FsCall, run: () => T): T {
 
 function hasErrorCode(error: unknown, code: string): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
+}
+
+/** A whole read's `maxBytes` (RuntimeReadFileOptions): a regular file of at most `maxBytes` bytes is read whole; a directory answers as a read does. */
+export function fitsWholeRead(stat: { readonly type: string; readonly size: number; readonly mode?: number }, maxBytes: number): boolean {
+  return stat.type === 'directory' || (stat.type === 'file' && !isCharacterDevice(stat.mode) && stat.size <= maxBytes);
 }
