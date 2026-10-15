@@ -19,7 +19,8 @@ import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.
 import { generateOpencodeRunnerCode } from '../../packages/worker/src/runtime/opencode-facet-runner.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { _rpcStdout, _rpcReportExit } from '../../packages/worker/src/session/rpc.ts';
-import { StreamTextDecoders, textSink } from '../../packages/core/src/_shared/bytes.ts';
+import { StreamTextDecoders } from '../../packages/core/src/_shared/bytes.ts';
+import { outputHooks } from '../../packages/core/src/_shared/byte-stream.ts';
 import {
   generateEntrypointCode,
   generateLongRunningNodeCode,
@@ -189,9 +190,12 @@ console.log('  the child\'s reported text decodes split characters as one');
   assert.equal(decoders.decode('a', euro.subarray(2)), '€', 'key a completes its own character');
   assert.equal(decoders.drop('b'), '\ufffd', 'key b flushes its truncated one');
   const out = [];
-  const sink = textSink((t) => out.push(t));
-  sink(euro.subarray(0, 1)); sink(euro.subarray(1));
-  assert.deepEqual(out, ['€'], 'textSink delivers whole characters only');
+  const hooks = outputHooks({ stdout: { write: (t) => { out.push(t); } }, stderr: { write: () => {} } });
+  await hooks.onStdout(euro.subarray(0, 1));
+  await hooks.onStdout(euro.subarray(1));
+  await hooks.onStdout(euro.subarray(0, 2));
+  await hooks.end();
+  assert.deepEqual(out, ['€', '\ufffd'], 'a text output gets whole characters, and its end writes what an unfinished one decodes to');
 }
 
 // ── the generated wrappers still parse with the byte relay spliced in ────

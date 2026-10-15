@@ -1,5 +1,5 @@
 import { stdinBytesOf } from '../shell/stdin-adapter.js';
-import { textSink } from '../_shared/bytes.js';
+import { outputHooks } from '../_shared/byte-stream.js';
 /** A runtime's fd0/1/2, on the process supervisor's existing byte channels. */
 export function openRuntimeStdio(deps, ctx, command, { consumedStdin = false } = {}) {
     const reserved = ctx.__nimbusBinSpawn;
@@ -26,32 +26,38 @@ export function openRuntimeStdio(deps, ctx, command, { consumedStdin = false } =
         deps.processes.openInput(pid);
         deps.processes.endInput(pid);
     }
-    const write = runtimeOutput(ctx);
-    const unsubscribe = brokerIo ? null : deps.processes.subscribeOutputBytes(pid, ({ stream, data }) => write(stream, data));
+    const output = runtimeOutput(ctx);
+    const unsubscribe = brokerIo ? null : deps.processes.subscribeOutputBytes(pid, ({ stream, data }) => output.write(stream, data));
     if (unsubscribe)
         deps.processes.setForeground(pid, true);
     return {
         pid,
         signal: controller.signal,
         syscalls: { pid, vfs: deps.filesystem.bind({ pid, cred: entry.cred }), processes: deps.processes },
-        finish(exitCode) {
+        async finish(exitCode) {
             ctx.signal?.removeEventListener('abort', abort);
             input?.stop();
             unsubscribe?.();
             if (unsubscribe)
                 deps.processes.setForeground(pid, false);
-            if (owned) {
-                deps.processes.closeInput(pid);
-                deps.processes.exit(pid, exitCode);
+            // Its last bytes before its exit: a character they left unfinished is written.
+            try {
+                await output.end();
+            }
+            finally {
+                if (owned) {
+                    deps.processes.closeInput(pid);
+                    deps.processes.exit(pid, exitCode);
+                }
             }
         },
     };
 }
-/** A runtime's byte callback, including a text consumer's decoding edge. */
+/** A runtime's byte callback into the command's outputs, and `end`, which ends their decoding once the runtime is done. */
 export function runtimeOutput(ctx) {
-    const text = { stdout: textSink((data) => ctx.stdout.write(data)), stderr: textSink((data) => ctx.stderr.write(data)) };
-    return (stream, bytes) => {
-        const sink = stream === 'stdout' ? ctx.stdout : ctx.stderr;
-        return sink.writeBytes ? sink.writeBytes(bytes) : text[stream](bytes);
+    const hooks = outputHooks(ctx);
+    return {
+        write: (stream, bytes) => (stream === 'stdout' ? hooks.onStdout(bytes) : hooks.onStderr(bytes)),
+        end: () => hooks.end(),
     };
 }

@@ -53,6 +53,7 @@ import { DEFAULT_HOME } from '../constants.js';
 import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.generated.js';
 import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import { openRuntimeStdio, runtimeOutput } from './runtime-stdio.js';
+import { errorText } from '../_shared/error-text.js';
 const PYTHON_VERSION_FLAGS = new Set(['--version', '-V']);
 const PYTHON_HELP_FLAGS = new Set(['--help', '-h']);
 /** Where `nimbus install python` stages the interpreter inside the session. */
@@ -160,9 +161,6 @@ async function buildPythonModulePipInvocation(argv, cwd, vfs, runtimeContext) {
         return { mode: 'none', code: '', exitCode: 0 };
     return await buildPipInvocation(argv.slice(2), 'pip', cwd, vfs, runtimeContext);
 }
-function errorMessage(error) {
-    return error instanceof Error ? error.message : String(error);
-}
 export function makeCPythonRunnerFactory(deps) {
     return function cpythonRunnerFactory(manifest, installRoot, binName, _binKind) {
         const findFile = (rel) => {
@@ -256,7 +254,7 @@ export function makeCPythonRunnerFactory(deps) {
                     userCode = new TextDecoder('utf-8').decode((await vfs.readFile(absPath)));
                 }
                 catch (e) {
-                    ctx.stderr.write(`${binName}: ${parsed.scriptPath}: ${errorMessage(e)}\n`);
+                    ctx.stderr.write(`${binName}: ${parsed.scriptPath}: ${errorText(e)}\n`);
                     return 1;
                 }
                 progName = parsed.scriptPath;
@@ -311,11 +309,8 @@ export function makeCPythonRunnerFactory(deps) {
             };
             // A script or `-m` can bind a port and keep serving, and such a program
             // is not finished when it stops producing output — it is finished when it
-            // stops running. Pyodide gave those a dedicated socket process; that
-            // spawn is not ported yet, so for now they get a one-shot facet with a
-            // budget long enough not to cut a server off mid-request. Porting the
-            // resident process is the last piece, and until it lands a server holds
-            // its facet rather than being driven by inbound requests.
+            // stops running. It runs as a resident process (startResident), which
+            // inbound requests drive; any other run gets a one-shot facet.
             const resident = shouldRunAsResidentProcess(argv, parsed, pipInvocation.mode === 'pip');
             if (resident) {
                 // Its host reads the image by path; the one-shot facet below is never opened.
@@ -325,7 +320,14 @@ export function makeCPythonRunnerFactory(deps) {
                     return 1;
                 }
                 const command = [binName, ...argv].map((part) => (/^[A-Za-z0-9_./:=@+-]+$/.test(part) ? part : JSON.stringify(part))).join(' ');
-                const spawnResult = await deps.startResident({ wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid, signal: ctx.signal, write: runtimeOutput(ctx) });
+                const output = runtimeOutput(ctx);
+                let spawnResult;
+                try {
+                    spawnResult = await deps.startResident({ wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid, signal: ctx.signal, write: output.write });
+                }
+                finally {
+                    await output.end();
+                }
                 if (spawnResult.stdout)
                     ctx.stdout.write(spawnResult.stdout);
                 if (spawnResult.stderr)
@@ -370,12 +372,12 @@ export function makeCPythonRunnerFactory(deps) {
                     ctx.stderr.write(unsettledNoteOf(e));
                     return exitCode = exitCodeForAbortSignal(stdio.signal);
                 }
-                ctx.stderr.write(`${binName}: ${errorMessage(e)}\n`);
+                ctx.stderr.write(`${binName}: ${errorText(e)}\n`);
                 return 1;
             }
             finally {
                 facet?.dispose();
-                stdio.finish(exitCode);
+                await stdio.finish(exitCode);
             }
         };
     };

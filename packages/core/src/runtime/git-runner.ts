@@ -170,7 +170,7 @@ export function makeGitRunnerFactory(deps: {
       } finally {
         // The call's pool and its capability go; a warm facet's isolate stays for the next git.
         facet.dispose();
-        stdio.finish(outcome);
+        await stdio.finish(outcome);
       }
     };
   };

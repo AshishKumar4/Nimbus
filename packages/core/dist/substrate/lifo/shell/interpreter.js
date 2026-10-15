@@ -11,7 +11,7 @@ import { isPipeEnd, PipeChannel } from './pipe.js';
 import { arrayFor, assignArray, assignVariable, restoreVariable, saveVariable } from './variables.js';
 import { forkShellState } from './state.js';
 import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE } from './signals.js';
-import { isBrokenPipe, isRefusedWrite } from '../utils/bytes-io.js';
+import { isBrokenPipe, isRefusedWrite, textCapture } from '../utils/bytes-io.js';
 import { resolve } from '../utils/path.js';
 import { encode } from '../utils/encoding.js';
 import { globMatch } from '../utils/glob.js';
@@ -1005,15 +1005,14 @@ export class Interpreter {
     }
     async executeCapture(input, io = {}) {
         let captured = '';
-        const stdout = {
-            write: (text) => { captured += text; },
-        };
+        const capture = textCapture((text) => { captured += text; });
         const captureIo = this.createCommandIo(io);
-        captureIo.stdout = stdout;
+        captureIo.stdout = capture.stream;
         captureIo.positionals = this.forkPositionals(io);
         // $( ) runs in a child shell.
         const child = this.fork();
         const exitCode = await child.finishChild(async () => (await child.executeLineWithIo(input, captureIo)), captureIo);
+        capture.end();
         return { output: captured, exitCode };
     }
     async executeInline(input, io, options = {}) {

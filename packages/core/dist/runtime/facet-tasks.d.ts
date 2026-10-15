@@ -44,7 +44,6 @@ export declare const rubyFacetCall: (inArgs: RubyFacetCallArgs, facetEnv: {
 export declare const wasmFacetCall: (args: {
     mode: "direct" | "wasi";
     processPid?: number;
-    liveOutput?: boolean;
     exportName?: string;
     intArgs?: number[];
     wasiArgv?: string[];
@@ -86,11 +85,5 @@ export type WasmCallResult = {
     exitCode?: number;
     error?: string;
     fsStats?: ResidentFilesystemStats | null;
-    fsDiff?: {
-        filesWritten: Record<string, string>;
-        filesDeleted: string[];
-        dirsCreated: string[];
-        dirsDeleted: string[];
-    };
 };
 //# sourceMappingURL=facet-tasks.d.ts.map

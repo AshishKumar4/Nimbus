@@ -181,7 +181,6 @@ type WasmDirectExport = (...args: number[]) => number | bigint | undefined;
 export const wasmFacetCall = async function wasmFacetCall(args: {
     mode: 'direct' | 'wasi';
     processPid?: number;
-    liveOutput?: boolean;
     exportName?: string;
     intArgs?: number[];
     wasiArgv?: string[];
@@ -455,12 +454,6 @@ export type WasmCallResult = {
     exitCode?: number;
     error?: string;
     fsStats?: ResidentFilesystemStats | null;
-    fsDiff?: {
-        filesWritten: Record<string, string>;
-        filesDeleted: string[];
-        dirsCreated: string[];
-        dirsDeleted: string[];
-    };
 };
 type WasmInstantiateResult = WebAssembly.Instance | {
     instance: WebAssembly.Instance;

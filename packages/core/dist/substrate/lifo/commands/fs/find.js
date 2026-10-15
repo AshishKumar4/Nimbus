@@ -16,8 +16,7 @@ import { FindUsageError, quote } from './find/errors.js';
 import { parseFindCommand } from './find/expression.js';
 import { direntTypeLetter, fileTypeLetter, renderFormat } from './find/format.js';
 import { READ_AHEAD_CALLS, Walker } from './find/walk.js';
-const decoder = new TextDecoder();
-const encoder = new TextEncoder();
+import { dec as decoder, enc as encoder } from '../../../../_shared/bytes.js';
 /** What one -exec … + command line may carry, as findutils' bc_use_sensible_arg_max sets it. */
 const EXEC_ARGUMENT_BYTES = 128 * 1024;
 /** -quit, which ends the walk wherever the evaluation is. */

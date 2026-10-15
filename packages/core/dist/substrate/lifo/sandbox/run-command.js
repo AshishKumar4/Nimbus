@@ -1,4 +1,4 @@
-import { textSink } from '../../../_shared/bytes.js';
+import { textCapture } from '../utils/bytes-io.js';
 /**
  * Run one command line on `shell` and collect its result. Whatever shell it is
  * given is the one the command acts on; it queues nothing, so two calls on two
@@ -16,24 +16,38 @@ export async function runCommand(shell, cmd, options) {
     let stderr = '';
     const onStdout = options?.onStdout;
     const onStderr = options?.onStderr;
-    const result = await shell.execute(cmd, {
-        cwd: options?.cwd,
-        env: options?.env,
-        onStdout: onStdout && tee(onStdout, (text) => { stdout += text; }),
-        onStderr: onStderr && tee(onStderr, (text) => { stderr += text; }),
-        stdin: options?.stdin,
-        signal,
-    });
+    const stdoutTee = onStdout && tee(onStdout, (text) => { stdout += text; });
+    const stderrTee = onStderr && tee(onStderr, (text) => { stderr += text; });
+    let result;
+    try {
+        result = await shell.execute(cmd, {
+            cwd: options?.cwd,
+            env: options?.env,
+            onStdout: stdoutTee?.write,
+            onStderr: stderrTee?.write,
+            stdin: options?.stdin,
+            signal,
+        });
+    }
+    finally {
+        // The captures end with the run: bytes a character left unfinished are in the result.
+        stdoutTee?.end();
+        stderrTee?.end();
+    }
     return {
         exitCode: result.exitCode,
         stdout: onStdout ? stdout : result.stdout,
         stderr: onStderr ? stderr : result.stderr,
     };
 }
+/** `sink`'s bytes, and their text to `capture` as the shell captures text (textCapture), which `end` ends. */
 function tee(sink, capture) {
-    const decode = textSink(capture);
-    return (data) => {
-        decode(data);
-        sink(data);
+    const text = textCapture(capture);
+    return {
+        write: (data) => {
+            text.stream.writeBytes(data);
+            sink(data);
+        },
+        end: () => text.end(),
     };
 }

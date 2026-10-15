@@ -34,8 +34,9 @@
  *   - Function args are integers only (parseInt). Float / string /
  *     multi-arg-shapes need a wrapper module.
  *   - Only WebAssembly.Memory and integer return values are surfaced.
- *   - WASI imports are NOT provided. Modules expecting wasi_snapshot
- *     won't instantiate (fail at the in-facet instantiate step).
+ *   - A module that imports WASI runs as a WASI program instead (its
+ *     argv, environment, stdio and the session filesystem), not as a
+ *     direct export call.
  *
  * Dispatch constraints
  * ────────────────────
@@ -345,7 +346,6 @@ export function makeWasmRunner(deps) {
             const submitArgs = isWasi
                 ? {
                     processPid: pid,
-                    liveOutput: true,
                     mode: 'wasi',
                     wasiArgv,
                     wasiEnv,

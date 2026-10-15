@@ -64,4 +64,18 @@ export declare function streamRange(read: RangeReader, writer: SinkWriter, optio
     length?: number;
     signal?: AbortSignal;
 }): Promise<number>;
+/**
+ * An `onStdout`/`onStderr` pair of byte hooks into `outputs`' stdout and
+ * stderr, each through a SinkWriter of its own, and `end`, which ends both
+ * (a character their last bytes left unfinished is written), the second
+ * even when the first fails.
+ */
+export declare function outputHooks(outputs: {
+    readonly stdout: ByteSink;
+    readonly stderr: ByteSink;
+}): {
+    onStdout(bytes: Uint8Array): Promise<void>;
+    onStderr(bytes: Uint8Array): Promise<void>;
+    end(): Promise<void>;
+};
 //# sourceMappingURL=byte-stream.d.ts.map

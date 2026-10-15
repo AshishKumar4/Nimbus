@@ -66,8 +66,13 @@ export interface BashSlice {
  * "seeked an fd that was not a file" unrepresentable: reaching `pos` requires
  * having narrowed to a kind that has one.
  */
-export type BashFdEntry = {
-    kind: 'stdin' | 'stdout' | 'stderr';
+export type BashFdEntry = 
+/** The session's stdin, a terminal or not (a pipe's or a redirect's bytes), as the runner found it. */
+{
+    kind: 'stdin';
+    readonly terminal: boolean;
+} | {
+    kind: 'stdout' | 'stderr';
 } | AuthorityPreopen | AuthorityFd | ResidentFd | {
     kind: 'pipe';
     pipeId: number;
@@ -228,7 +233,6 @@ export interface BashProc {
     pendingFs?: {
         name: string;
         value?: number;
-        settled: boolean;
         promise: Promise<void>;
     };
     inst: BashInstance;
@@ -300,7 +304,6 @@ export interface BashSession {
     cwd: string;
     argv: string[];
     environ: string[];
-    stdinTty: boolean;
     stdin: BashStdin;
     processPid: number;
     sharedInput: boolean;
@@ -342,7 +345,6 @@ export interface BashSession {
     waiters: BashWaitEntry[];
     pidNext: number;
     pipeNext: number;
-    rootPid: number;
     rootExit: number | null;
     steps: number;
     output: ReturnType<typeof import('../wasi/stdio.js').wasiOutputRelay>;

@@ -1,18 +1,13 @@
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
+// UTF-8 and concatenation for lifo's commands and its archive code, over the
+// shared codecs and concatenator (_shared/bytes.ts). A public subpath of
+// core: its variadic concatBytes stays.
+import { concatBytes as concatParts, dec, enc } from '../../../_shared/bytes.js';
 export function encode(str) {
-    return encoder.encode(str);
+    return enc.encode(str);
 }
 export function decode(bytes) {
-    return decoder.decode(bytes);
+    return dec.decode(bytes);
 }
 export function concatBytes(...arrays) {
-    const totalLength = arrays.reduce((sum, a) => sum + a.length, 0);
-    const result = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const arr of arrays) {
-        result.set(arr, offset);
-        offset += arr.length;
-    }
-    return result;
+    return concatParts(arrays);
 }
