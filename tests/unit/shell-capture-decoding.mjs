@@ -6,7 +6,7 @@
 //     character in exec's stdout and in $( ) alike, where invalid bytes still
 //     map one by one (decodeLossless);
 //   - a streamed exec (onStdout) carries the same text in its result, its
-//     last unfinished character included.
+//     last unfinished bytes included, by the same lossless policy.
 //
 // Red before: the capture took text only, so each write was decoded alone
 // and a split é was two lone surrogates; a streamed exec's result never
@@ -14,6 +14,7 @@
 
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
+import { textCapture } from '../../packages/core/src/substrate/lifo/utils/bytes-io.ts';
 import { hostSqlite } from './lib/host-sqlite.mjs';
 
 const { sql, transactions } = await hostSqlite();
@@ -34,8 +35,18 @@ try {
   await ws.fs.writeFile('/home/user/unfinished.bin', Uint8Array.of(0x61, 0x62, 0xc3));
   const tail = await ws.exec('cat unfinished.bin', { cwd: '/home/user', onStdout: (bytes) => { streamed.push(...bytes); } });
   assert.deepEqual(streamed, [0x61, 0x62, 0xc3], 'the stream gets the bytes as they are');
-  assert.equal(tail.stdout, 'ab\ufffd', 'the streamed exec\'s result ends its decoder: the unfinished character is a replacement');
-  console.log('  ✓ a streamed exec\'s result ends with what its last unfinished character decodes to');
+  assert.equal(tail.stdout, 'ab\udcc3', 'the streamed exec\'s result ends its decoder, without loss, as the plain exec\'s does');
+  console.log('  ✓ a streamed exec\'s result ends with its last unfinished byte, as the plain exec\'s');
+
+  // A text write between bytes is text: an empty one is nothing, and splits no character.
+  let text = '';
+  const capture = textCapture((t) => { text += t; });
+  capture.stream.writeBytes(Uint8Array.of(0xc3));
+  capture.stream.write('');
+  capture.stream.writeBytes(Uint8Array.of(0xa9));
+  capture.end();
+  assert.equal(text, 'é', 'an empty text write leaves a character whole');
+  console.log('  ✓ an empty text write between the bytes of a character leaves it whole');
 } finally {
   await ws.close();
 }
