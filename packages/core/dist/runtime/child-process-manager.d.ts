@@ -223,6 +223,8 @@ export declare class ChildProcessManager {
      * Long-poll: child facet asks the supervisor for its next stdin chunk.
      * Returns immediately if data is already queued OR if stdin is closed.
      */
+    /** The next signal sent to `pid`, whose program takes its own (SessionProcessSupervisor.nextSignal). */
+    nextSignal(pid: number, waitMs: number): Promise<string | null>;
     cpReadStdin(childPid: number, waitMs: number, maxBytes?: number): Promise<{
         data: Uint8Array;
         ended: boolean;
@@ -329,6 +331,7 @@ export declare function createChildProcessSupervisor(manager: ChildProcessManage
     }>;
     cpCloseOutput: (child: number, fd: 1 | 2) => void;
     cpDrainOutput: (child: number) => Promise<DrainResult>;
+    cpNextSignal: (waitMs: number) => Promise<string | null>;
 };
 export {};
 //# sourceMappingURL=child-process-manager.d.ts.map

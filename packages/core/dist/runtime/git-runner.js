@@ -108,7 +108,7 @@ export function makeGitRunnerFactory(deps) {
             env[GIT_WASI_ENV] = '1';
             let stdio;
             try {
-                stdio = openRuntimeStdio(deps, ctx, ['git', ...argv].join(' '));
+                stdio = openRuntimeStdio(deps, ctx, ['git', ...argv].join(' '), { takesSignals: deps.takesSignals });
             }
             catch (error) {
                 ctx.stderr.write(`${binName}: ${errorMessage(error)}\n`);
@@ -129,6 +129,7 @@ export function makeGitRunnerFactory(deps) {
                 cred,
                 pid: stdio.pid,
                 restartsWaits: deps.restartsWaits,
+                takesSignals: deps.takesSignals,
             };
             let outcome = 1;
             try {
@@ -204,6 +205,7 @@ globalThis.__gitRun = async function __gitRun(args) {
     stderrBytes: output.stderrBytes,
     stdinRead: (maxBytes) => args.supervisor.cpReadStdin(args.pid, 8000, undefined, maxBytes),
     restartsWaits: args.restartsWaits === true,
+    takesSignals: args.takesSignals === true,
   });
   let instance;
   try {

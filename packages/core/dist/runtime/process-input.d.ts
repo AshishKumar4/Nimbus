@@ -76,6 +76,11 @@ export declare class ProcessInputStore {
     unread(pid: number, packets: readonly ProcessInputPacket[]): void;
     end(pid: number): void;
     close(pid: number): void;
-    read(pid: number, waitMs?: number, maxBytes?: number): Promise<ProcessInputPacket>;
+    /**
+     * `pid`'s next input, waiting up to `waitMs` (at most 5 s) for it: an empty
+     * packet when none came. A wait `withdraw` ends leaves at once, taking
+     * nothing: what comes next is the next read's.
+     */
+    read(pid: number, waitMs?: number, maxBytes?: number, withdraw?: AbortSignal): Promise<ProcessInputPacket>;
 }
 //# sourceMappingURL=process-input.d.ts.map

@@ -249,6 +249,9 @@ export declare const REPLAY_OPERATION_POLICY: {
     cpBlocked: {
         kind: "control";
     };
+    cpNextSignal: {
+        readonly kind: "observation";
+    };
     cpWait: {
         kind: "observation";
         answer: (value: unknown) => unknown;

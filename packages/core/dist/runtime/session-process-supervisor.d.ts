@@ -22,7 +22,7 @@
 import { ProcessTable, type ProcessEntry, type ProcessRestart } from './process-table.js';
 import { type ProcessInputPacket } from './process-input.js';
 import { ProcessLogStore, type LogChunk, type ByteLogChunk, type LogStream, type PersistAdapter, type ProcessExitInfo, type ProcessLogReadOptions, type SequencedLogChunk } from './process-logs.js';
-import type { ProcessSignalName } from './process-io-protocol.js';
+import { type ProcessSignalName } from './process-io-protocol.js';
 import type { OutputGate, ProcessOutput } from './output-gate.js';
 import { type SignalAbortReason } from '../substrate/lifo/shell/signals.js';
 import type { VfsCred } from './os-contracts.js';
@@ -67,6 +67,11 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
     private logs;
     /** Terminators for processes whose work is a promise this session owns. */
     private terminators;
+    /**
+     * The processes whose programs take their own signals (takeSignals): the
+     * signals sent to each that it has not taken, and its one wait for the next.
+     */
+    private readonly signalBoxes;
     /** The work this session runs on each pid's own descriptors (holdWork): how to stop each piece, and whether it was. */
     private readonly held;
     private observeWork;
@@ -357,7 +362,38 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
     endInput(pid: number): void;
     /** End and drop the input channel entirely. */
     closeInput(pid: number): void;
+    /**
+     * `pid`'s next input, waiting up to `waitMs` for it. For a program that
+     * takes its own signals (takeSignals), a signal sent to it while it waits
+     * answers instead, as a read is interrupted, and the read takes nothing.
+     */
     readInput(pid: number, waitMs?: number, maxBytes?: number): Promise<ProcessInputPacket>;
+    /**
+     * From now until `pid` ends, its program takes the signals it `catches`:
+     * one sent to it (a kill, the terminal's keys, a client's frame) is queued
+     * for it to take (nextSignal), and what it does is the program's, as a
+     * process's own handlers decide. Any other, SIGKILL among them, still ends
+     * it. Its runner says so when its image takes what its host delivers
+     * (GIT_RUNNER_CONTRACTS).
+     */
+    takeSignals(pid: number, catches: readonly ProcessSignalName[]): void;
+    /**
+     * The next signal sent to `pid`'s program (takeSignals), waiting up to
+     * `waitMs` for one: null if none came, the process ended, or a later wait
+     * took its place (one waits at a time).
+     */
+    nextSignal(pid: number, waitMs: number): Promise<ProcessSignalName | null>;
+    /** `pid`'s wait for a signal answered null, its place given up. */
+    private dropTaker;
+    /** `signal` queued for `pid`'s program if it takes its own (takeSignals): whether it does. */
+    private deliverSignal;
+    /**
+     * `reason`'s signal to `pid` and every process below it, as a terminal's
+     * key signals its foreground job's process group: each takes it as
+     * {@link kill} gives it, its program's own where it takes its signals, its
+     * end where not.
+     */
+    signalGroup(pid: number, reason: SignalAbortReason): void;
     /** See ProcessInputStore.unread: input taken back to the front of the queue. */
     unreadInput(pid: number, packets: readonly ProcessInputPacket[]): void;
     resize(pid: number, columns: number, rows: number): {

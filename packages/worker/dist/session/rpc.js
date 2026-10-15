@@ -1407,6 +1407,16 @@ export async function _rpcCpReadStdin(self, childPid, waitMs, acquire, pid, writ
         || packet.data.byteLength > 0;
     return withDeliveredAcquire(self, packet, delivers, acquire, pid);
 }
+/**
+ * The next signal sent to `pid` (the caller's own process, whose program
+ * takes its own: SessionProcessSupervisor.takeSignals), waiting up to
+ * `waitMs`: null if none came.
+ */
+export async function _rpcCpNextSignal(self, pid, waitMs) {
+    if (pid === undefined || isPriorGenerationPid(self, pid))
+        return null;
+    return self.processes.nextSignal(pid, Number(waitMs) || 0);
+}
 export async function _rpcCpReadOutput(self, childPid, fd, sinceSeq, waitMs, acquire, pid) {
     childOf(self, childPid, pid);
     const fpm = self._ensureChildProcessManager();

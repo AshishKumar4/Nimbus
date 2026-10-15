@@ -474,6 +474,12 @@ export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs:
     signal: string;
     ended: boolean;
 }>;
+/**
+ * The next signal sent to `pid` (the caller's own process, whose program
+ * takes its own: SessionProcessSupervisor.takeSignals), waiting up to
+ * `waitMs`: null if none came.
+ */
+export declare function _rpcCpNextSignal(self: RpcHost, pid: number | undefined, waitMs: number): Promise<string | null>;
 export declare function _rpcCpReadOutput(self: RpcHost, childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: unknown, pid?: number): Promise<any>;
 export declare function _rpcCpDrainOutput(self: RpcHost, childPid: number, pid?: number): Promise<any>;
 export declare function _rpcCpCloseOutput(self: RpcHost, childPid: number, fd: 1 | 2, pid?: number): Promise<void>;

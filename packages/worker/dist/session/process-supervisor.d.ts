@@ -168,6 +168,7 @@ declare const ProcessSupervisor_base: (abstract new (...args: any[]) => {
         news?: number[];
         acquired?: import("./rpc.js").VfsDeliveredAcquire;
     }>;
+    cpNextSignal(waitMs: number): Promise<string | null>;
     cpBlocked(report: {
         blocked: boolean;
         frontier: number;

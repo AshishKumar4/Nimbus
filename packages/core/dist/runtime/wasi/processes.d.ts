@@ -31,7 +31,7 @@
  * Every import answers 0 or a positive WASI errno; the C side
  * (git-wasi-compat.c) turns that into errno.
  */
-import type { Errno, FdEntry, SyscallResult, WasiSupervisorStub, WasiInputPacket } from './types.js';
+import { type Errno, type FdEntry, type SyscallResult, type WasiSupervisorStub, type WasiInputPacket } from './types.js';
 import type { Awaitable } from '../os-contracts.js';
 /**
  * The longest a guest waits on a child in one call. A wasm stack suspended
@@ -115,6 +115,13 @@ export interface ProcessHostOptions {
      */
     gaveUp: Errno;
     /**
+     * The image takes the signals sent to its process (NIMBUS_ESIGNAL): while
+     * it waits, the host waits for them too (cpNextSignal), and one that comes
+     * ends the wait at once, answered NIMBUS_ESIGNAL + its number, for the
+     * guest's libc to raise. Else a wait answers EINTR on a stdin signal only.
+     */
+    takesSignals: boolean;
+    /**
      * Every answer by promise goes through here: a threaded guest's run token
      * is handed back while it waits, so the peer that would end the wait runs.
      * A poll's readiness is not: the poll that awaits it hands the token back.
@@ -136,6 +143,12 @@ export interface ProcessHost {
     close(fd: number): SyscallResult | null;
     /** Whether `fd` is a pipe descriptor. */
     isPipe(fd: number): boolean;
+    /**
+     * What a wait that ended without its answer answers (a poll's, whose pipes
+     * did): the signal that interrupted it (NIMBUS_ESIGNAL + its number), taken,
+     * else EINTR, the wait having given up.
+     */
+    interrupted(): Errno;
     /** A new descriptor on what pipe or stream descriptor `fd` holds, as dup(2); null for any other kind (AuthorityFilesystemOptions.duplicate). */
     duplicate(fd: number): number | null;
     /**

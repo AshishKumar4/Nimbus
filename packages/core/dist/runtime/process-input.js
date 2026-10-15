@@ -247,7 +247,12 @@ export class ProcessInputStore {
             state.bytes = 0;
         }
     }
-    async read(pid, waitMs = 1000, maxBytes) {
+    /**
+     * `pid`'s next input, waiting up to `waitMs` (at most 5 s) for it: an empty
+     * packet when none came. A wait `withdraw` ends leaves at once, taking
+     * nothing: what comes next is the next read's.
+     */
+    async read(pid, waitMs = 1000, maxBytes, withdraw) {
         if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 0))
             throw new TypeError('stdin maxBytes must be a nonnegative integer');
         if (maxBytes === 0)
@@ -302,11 +307,22 @@ export class ProcessInputStore {
             throw state.failure;
         if (state.closed)
             return { data: '', ended: true };
+        if (withdraw?.aborted)
+            return { data: '', ended: false };
         return new Promise((resolve, reject) => {
+            const leave = () => {
+                const idx = state.waiters.indexOf(waiter);
+                if (idx < 0)
+                    return;
+                state.waiters.splice(idx, 1);
+                clearTimeout(waiter.timer);
+                resolve({ data: '', ended: false });
+            };
             const waiter = {
                 pid,
-                reject,
+                reject: (error) => { withdraw?.removeEventListener('abort', leave); reject(error); },
                 resolve: packet => {
+                    withdraw?.removeEventListener('abort', leave);
                     if (maxBytes === undefined || !packet.data.length) {
                         resolve(packet);
                         return;
@@ -318,6 +334,7 @@ export class ProcessInputStore {
                     resolve({ ...packet, data: bytes.subarray(0, limit), ...(bytes.length > limit ? { ended: false } : {}) });
                 },
                 timer: setTimeout(() => {
+                    withdraw?.removeEventListener('abort', leave);
                     const idx = state.waiters.indexOf(waiter);
                     if (idx >= 0)
                         state.waiters.splice(idx, 1);
@@ -325,6 +342,7 @@ export class ProcessInputStore {
                 }, Math.max(0, Math.min(waitMs, 5000))),
             };
             state.waiters.push(waiter);
+            withdraw?.addEventListener('abort', leave, { once: true });
         });
     }
 }

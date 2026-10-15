@@ -33,12 +33,17 @@
  */
 import { refusalErrno as filesystemErrno } from './filesystem.js';
 import { PIPE_CAPACITY, decideWrite } from '../bash/pipe-rules.js';
+import { NIMBUS_SIGNAL_ERRNOS } from './types.js';
 /** WASI errno values these imports answer with. */
 const E = { SUCCESS: 0, AGAIN: 6, BADF: 8, CHILD: 12, INTR: 27, INVAL: 28, IO: 29, NOSYS: 52, NOTSUP: 58, PIPE: 64, SRCH: 71 };
 const FDFLAGS_NONBLOCK = 4;
 /** Signal numbers as wasi-libc's emulated signals number them, and their names. */
-const SIGNALS = { 1: 'SIGHUP', 2: 'SIGINT', 3: 'SIGQUIT', 9: 'SIGKILL', 13: 'SIGPIPE', 15: 'SIGTERM' };
+const SIGNALS = {
+    1: 'SIGHUP', 2: 'SIGINT', 3: 'SIGQUIT', 9: 'SIGKILL', 10: 'SIGUSR1', 12: 'SIGUSR2', 13: 'SIGPIPE', 14: 'SIGALRM', 15: 'SIGTERM',
+};
 const SIGNAL_NUMBERS = Object.fromEntries(Object.entries(SIGNALS).map(([n, name]) => [name, Number(n)]));
+/** The errno a wait a signal interrupted answers an image that takes its signals with, by the signal's name. */
+const SIGNAL_ERRNOS = new Map(Object.entries(NIMBUS_SIGNAL_ERRNOS));
 /** How long one call to the session waits for a child's output or exit before asking again. */
 const LONG_POLL_MS = 5_000;
 const WNOHANG = 1;
@@ -77,24 +82,72 @@ export function processHost(opts) {
     /** The guest is gone: nothing follows its children any more. */
     let disposed = false;
     /**
+     * Signals (an image that takes them: opts.takesSignals). The one sent to
+     * the guest's process that it has not taken yet; the waits in progress,
+     * each ended by one; and whether the host is waiting for one, which it
+     * does while the guest waits.
+     */
+    let pendingSignal = null;
+    const interruptible = new Set();
+    let watching = false;
+    /** A signal arrived: every wait in progress ends, for the guest to take it. */
+    const signalled = (name) => {
+        const errno = name ? SIGNAL_ERRNOS.get(name) : undefined;
+        if (errno === undefined)
+            return;
+        pendingSignal = errno;
+        for (const interrupt of [...interruptible])
+            interrupt();
+    };
+    /** While the guest waits, the session's next signal for it (cpNextSignal). */
+    const watchSignals = () => {
+        if (watching || disposed || !opts.takesSignals)
+            return;
+        const sup = supervisor();
+        if (!sup?.cpNextSignal)
+            return;
+        watching = true;
+        void (async () => {
+            try {
+                while (interruptible.size > 0 && pendingSignal === null && !disposed)
+                    signalled(await sup.cpNextSignal?.(LONG_POLL_MS));
+            }
+            catch {
+                // The session is gone, and its signals with it.
+            }
+            finally {
+                watching = false;
+            }
+        })();
+    };
+    /** The answer of a wait that ended without one: the signal that ended it, taken, else `gaveUp`. */
+    const unanswered = (gaveUp) => {
+        const errno = pendingSignal;
+        pendingSignal = null;
+        return errno ?? gaveUp;
+    };
+    /**
      * A wait the guest gives up at PROCESS_PARK_MS. `attempt` answers, or gives
      * null while there is nothing to answer yet; `subscribe` asks for a wake
      * when that may have changed. Once the wait is answered, has given up or is
      * cancelled, `attempt` is never asked again, so a wait that did not answer
      * consumed nothing: the guest's retry finds it all still there.
      */
-    const parkedWait = (subscribe, attempt, accountGuest = true) => {
+    const parkedWait = (subscribe, attempt, accountGuest = true, interruptibleWait = true) => {
         let finish = () => { };
         const ready = new Promise((resolve) => {
             let over = false;
             if (accountGuest && parks++ === 0)
                 opts.news?.say(true);
             const timer = setTimeout(() => finish(null, false), PROCESS_PARK_MS);
+            // A signal ends it without an answer (unanswered takes the signal).
+            const interrupt = () => finish(null, true);
             finish = (answer, ran) => {
                 if (over)
                     return;
                 over = true;
                 clearTimeout(timer);
+                interruptible.delete(interrupt);
                 if (accountGuest && --parks === 0 && ran)
                     opts.news?.say(false);
                 resolve(answer);
@@ -108,6 +161,14 @@ export function processHost(opts) {
                 else
                     finish(answer, true);
             };
+            if (opts.takesSignals && interruptibleWait) {
+                if (pendingSignal !== null) {
+                    interrupt();
+                    return;
+                }
+                interruptible.add(interrupt);
+                watchSignals();
+            }
             subscribe(wake);
         });
         return { ready, cancel: () => finish(null, true) };
@@ -471,7 +532,8 @@ export function processHost(opts) {
                 return now;
             if (!opts.parks)
                 return refused('start');
-            return opts.park(parkedWait((wake) => child.waiters.push(wake), answer).ready.then((started) => started ?? E.INTR));
+            // Not one a signal ends: a child's start is at hand, and the spawn shim asks again at EINTR alone.
+            return opts.park(parkedWait((wake) => child.waiters.push(wake), answer, true, false).ready.then((started) => started ?? E.INTR));
         },
         wait(pid, options, statusPtr, waitedPtr) {
             const candidates = pid === -1 || pid === 0 ? [...children.values()] : [children.get(pid)].filter((c) => c !== undefined);
@@ -503,7 +565,7 @@ export function processHost(opts) {
             if (!opts.parks)
                 return refused('wait');
             return opts.park(parkedWait((wake) => { for (const child of candidates)
-                child.waiters.push(wake); }, reap).ready.then((reaped) => reaped ?? E.INTR));
+                child.waiters.push(wake); }, reap).ready.then((reaped) => reaped ?? unanswered(E.INTR)));
         },
         kill(pid, signal) {
             const sup = supervisor();
@@ -523,6 +585,9 @@ export function processHost(opts) {
     };
     const read = (fd, iovs, iovsLen, nread) => {
         if (opts.fds.get(fd)?.kind === 'stdin' && opts.input) {
+            // A signal that came while the guest ran is taken first.
+            if (pendingSignal !== null)
+                return unanswered(E.INTR);
             let room = 0;
             for (let i = 0; i < iovsLen; i++)
                 room += view().getUint32(iovs + i * 8 + 4, true);
@@ -540,8 +605,11 @@ export function processHost(opts) {
                     return E.SUCCESS;
                 }
                 // A signal interrupts the read; a read that only gave up waiting is asked again.
-                if (packet.signal)
-                    return E.INTR;
+                if (packet.signal) {
+                    if (opts.takesSignals)
+                        signalled(packet.signal);
+                    return unanswered(E.INTR);
+                }
                 if (!packet.ended)
                     return opts.gaveUp;
                 view().setUint32(nread, 0, true);
@@ -585,7 +653,7 @@ export function processHost(opts) {
             return now;
         if (((entry.fdflags ?? 0) & FDFLAGS_NONBLOCK) !== 0)
             return E.AGAIN;
-        return opts.park(parkedWait((wake) => pipe.waiters.push(wake), answer).ready.then((read) => read ?? opts.gaveUp));
+        return opts.park(parkedWait((wake) => pipe.waiters.push(wake), answer).ready.then((read) => read ?? unanswered(opts.gaveUp)));
     };
     // Pipes and the guest's own streams; a file's descriptor is the codec's, and not shared this way.
     const duplicate = (fd) => {
@@ -639,7 +707,7 @@ export function processHost(opts) {
             return now;
         if (((entry.fdflags ?? 0) & FDFLAGS_NONBLOCK) !== 0)
             return E.AGAIN;
-        return opts.park(parkedWait((wake) => pipe.waiters.push(wake), admit).ready.then((written) => written ?? opts.gaveUp));
+        return opts.park(parkedWait((wake) => pipe.waiters.push(wake), admit).ready.then((written) => written ?? unanswered(opts.gaveUp)));
     };
     const close = (fd) => {
         const entry = pipeEntry(fd);
@@ -666,5 +734,9 @@ export function processHost(opts) {
         // A write end always has room: what is written to a child goes to the session.
         return check() ?? parkedWait((wake) => pipe.waiters.push(wake), check);
     };
-    return { imports, read, write, close, isPipe: (fd) => pipeEntry(fd) !== null, duplicate, readiness, dispose: () => { disposed = true; } };
+    return {
+        imports, read, write, close, isPipe: (fd) => pipeEntry(fd) !== null, duplicate, readiness,
+        interrupted: () => unanswered(E.INTR),
+        dispose: () => { disposed = true; },
+    };
 }

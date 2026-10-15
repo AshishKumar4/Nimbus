@@ -324,6 +324,10 @@ export class ChildProcessManager {
      * Long-poll: child facet asks the supervisor for its next stdin chunk.
      * Returns immediately if data is already queued OR if stdin is closed.
      */
+    /** The next signal sent to `pid`, whose program takes its own (SessionProcessSupervisor.nextSignal). */
+    nextSignal(pid, waitMs) {
+        return this.deps.processes.nextSignal(pid, waitMs);
+    }
     async cpReadStdin(childPid, waitMs, maxBytes) {
         const packet = await this.deps.processes.readInput(childPid, waitMs, maxBytes);
         return { ...packet, data: typeof packet.data === 'string' ? textBytes(packet.data) : packet.data };
@@ -703,5 +707,6 @@ export function createChildProcessSupervisor(manager, pid) {
         cpReadStdin: (_child, waitMs, _acquire, maxBytes) => manager.cpReadStdin(pid, waitMs, maxBytes),
         cpCloseOutput: (child, fd) => manager.closeOutput(child, fd),
         cpDrainOutput: (child) => manager.drainOutput(child),
+        cpNextSignal: (waitMs) => manager.nextSignal(pid, waitMs),
     };
 }
