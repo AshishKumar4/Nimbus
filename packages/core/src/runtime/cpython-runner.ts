@@ -379,11 +379,8 @@ export function makeCPythonRunnerFactory(deps: {
 
       // A script or `-m` can bind a port and keep serving, and such a program
       // is not finished when it stops producing output — it is finished when it
-      // stops running. Pyodide gave those a dedicated socket process; that
-      // spawn is not ported yet, so for now they get a one-shot facet with a
-      // budget long enough not to cut a server off mid-request. Porting the
-      // resident process is the last piece, and until it lands a server holds
-      // its facet rather than being driven by inbound requests.
+      // stops running. It runs as a resident process (startResident), which
+      // inbound requests drive; any other run gets a one-shot facet.
       const resident = shouldRunAsResidentProcess(argv, parsed, pipInvocation.mode === 'pip');
 
       if (resident) {
