@@ -1,4 +1,4 @@
-import type { SessionProcessSupervisor } from '../../../runtime/session-process-supervisor.js';
+import { isKillRefusal, type SessionProcessSupervisor } from '../../../runtime/session-process-supervisor.js';
 import type { VfsCred } from '../../../runtime/os-contracts.js';
 import type { CommandIdentity } from './interpreter.js';
 import { exitCodeForSignal, signalAbortReason, signalDisposition } from './signals.js';
@@ -10,7 +10,7 @@ import type { HostSignalResult } from '../commands/system/kill.js';
  * counted and held there.
  */
 export type ShellProcesses = Pick<SessionProcessSupervisor,
-  'spawn' | 'exit' | 'kill' | 'maySignal' | 'whenEnded' | 'holdWork' | 'beginWork' | 'beginAwait' | 'cred' | 'setUmask'>;
+  'spawn' | 'exit' | 'kill' | 'killAs' | 'maySignal' | 'whenEnded' | 'holdWork' | 'beginWork' | 'beginAwait' | 'cred' | 'setUmask'>;
 
 /**
  * A background job: its `%N` number, its command line and its process in
@@ -130,16 +130,24 @@ export class JobTable {
    * its process, which stops its work; a continue or an ignored one does
    * nothing to a job that runs. A stop is `unsupported`: nothing can pause a
    * job's work (a command is not preempted), as nothing can pause a hosted
-   * process's. `not-permitted` when kill(2)'s rule refuses `caller`
-   * (SessionProcessSupervisor.maySignal).
+   * process's. `not-permitted` when kill(2)'s rule refuses `caller`: the
+   * kill's own check (SessionProcessSupervisor.killAs), or for a signal that
+   * ends nothing, the same rule asked alone (maySignal).
    */
   signal(job: Job, signal: string, caller: Readonly<VfsCred>): HostSignalResult {
     if (this.jobs.get(job.id) !== job || job.status === 'done') return 'delivered';
-    if (!this.processes.maySignal(caller, job.pid)) return 'not-permitted';
     const disposition = signalDisposition(signal);
-    if (disposition === 'stop') return 'unsupported';
-    if (disposition === 'terminate') this.processes.kill(job.pid, exitCodeForSignal(signal), signalAbortReason(signal));
-    return 'delivered';
+    if (disposition === 'terminate') {
+      try {
+        this.processes.killAs(caller, job.pid, exitCodeForSignal(signal), signalAbortReason(signal));
+      } catch (error) {
+        if (isKillRefusal(error)) return 'not-permitted';
+        throw error;
+      }
+      return 'delivered';
+    }
+    if (!this.processes.maySignal(caller, job.pid)) return 'not-permitted';
+    return disposition === 'stop' ? 'unsupported' : 'delivered';
   }
 
   fork(): JobTable {
