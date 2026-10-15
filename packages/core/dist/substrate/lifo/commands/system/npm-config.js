@@ -28,10 +28,26 @@ for (const [key, definition] of Object.entries(definitions)) {
     if (definition.deprecated)
         DEPRECATED[key] = definition.deprecated.trim().replace(/\n +/, '\n');
 }
+/**
+ * npm's defaults that its definitions read from npm's own process
+ * environment (definitions.js: color, editor, omit, shell, unicode), read
+ * from the command's: the Worker's own (a build's NODE_ENV=production) is no
+ * user's, and made every install omit devDependencies.
+ */
+function environmentDefaults(env) {
+    return {
+        color: !env.NO_COLOR || env.NO_COLOR === '0',
+        editor: env.EDITOR || env.VISUAL || 'vi',
+        omit: env.NODE_ENV === 'production' ? ['dev'] : [],
+        shell: env.SHELL || 'sh',
+        unicode: /UTF-?8$/i.test(env.LC_ALL || env.LC_CTYPE || env.LANG || ''),
+    };
+}
 /** Load npm's configuration for `argv` (the command and its arguments) run in `cwd` with `env`. */
 export async function loadNpmConfig(vfs, cwd, env, argv) {
     const home = env.HOME || '/home/user';
     const globalPrefix = env.PREFIX || '/usr/local';
+    const defaults = { ...DEFAULTS, ...environmentDefaults(env) };
     const warnings = [];
     const fieldOptions = { platform: 'linux', types: TYPES, home, env };
     // Highest first, as get reads them; `source` names one in a warning.
@@ -110,7 +126,7 @@ export async function loadNpmConfig(vfs, cwd, env, argv) {
     const prefix = String(get('prefix') ?? globalPrefix);
     const globalFile = String(get('globalconfig') || resolve(prefix, 'etc/npmrc'));
     layer('global', globalFile, await readRc(globalFile));
-    layer('default', 'default values', { ...DEFAULTS, prefix: globalPrefix });
+    layer('default', 'default values', { ...defaults, prefix: globalPrefix });
     // npm's validation of every layer but the command line's (already) and
     // the defaults, in its order: global, user, project, environment.
     for (const { where, source, data } of [...layers].reverse()) {
@@ -127,7 +143,7 @@ export async function loadNpmConfig(vfs, cwd, env, argv) {
     return {
         get,
         find: (key) => layers.find(({ data }) => key in data)?.where ?? 'default',
-        default: (key) => DEFAULTS[key],
+        default: (key) => defaults[key],
         localPrefix,
         positionals: remain,
         warnings,
