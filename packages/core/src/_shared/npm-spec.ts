@@ -7,6 +7,9 @@
 import type { Result as NpaResult } from 'npm-package-arg';
 import { npa } from './npm-libs.js';
 
+/** A spec as npm-package-arg reads it. */
+export type { NpaResult };
+
 /** What a spec asks the registry for: the name it installs under, the package and range it fetches, and whether it is an `npm:` alias. */
 export interface RegistryRequest {
   installName: string;
@@ -21,20 +24,21 @@ export interface RegistryRequest {
  * The package a command-line spec names and the range it asks for, as npa
  * splits `name[@range]` (`@scope/name@range`, `name@npm:other@range`); the
  * range is null when the spec gives none, and a spec that names no package
- * (a path, a git repository, a URL) is its own name.
+ * (a path, a git repository, a URL) is its own name. `parsed`: npa's reading
+ * of it, null for a spec npa refuses.
  */
-export function splitPackageSpec(spec: string): { name: string; range: string | null } {
+export function splitPackageSpec(spec: string): { name: string; range: string | null; parsed: NpaResult | null } {
   let parsed: NpaResult;
   try {
     parsed = npa(spec);
   } catch {
-    return { name: spec, range: null };
+    return { name: spec, range: null, parsed: null };
   }
   const name = parsed.name;
-  if (!name || !spec.startsWith(name)) return { name: spec, range: null };
+  if (!name || !spec.startsWith(name)) return { name: spec, range: null, parsed };
   return spec.length > name.length && spec[name.length] === '@'
-    ? { name, range: spec.slice(name.length + 1) }
-    : { name: spec, range: null };
+    ? { name, range: spec.slice(name.length + 1), parsed }
+    : { name: spec, range: null, parsed };
 }
 
 /**

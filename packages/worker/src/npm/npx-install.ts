@@ -33,8 +33,7 @@ import { isStagedArtifactTarget, npxPackageBin } from './bin-links.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProjectFs } from '../runtime/project-fs.js';
 import { bundleProfileForNpmBin, type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
-import { splitPackageSpec } from '@nimbus-sh/core/_shared/npm-spec.js';
-import { npa } from '@nimbus-sh/core/_shared/npm-libs.js';
+import { splitPackageSpec, type NpaResult } from '@nimbus-sh/core/_shared/npm-spec.js';
 import { satisfiesRange } from '@nimbus-sh/core/_shared/npm-semver.js';
 
 /** Where npx keeps what it installs: a directory for each request (npxCacheDir). */
@@ -67,6 +66,8 @@ function _vfsKey(p: string): string {
 interface ParsedNpx {
   pkgSpec: string;
   pkgName: string;
+  /** npa's reading of pkgSpec; null for one it refuses. */
+  spec: NpaResult | null;
   command: string | null;
   binArgs: string[];
   yes: boolean;
@@ -133,8 +134,8 @@ function parseNpxArgs(rawArgs: string[]): ParsedNpx | { error: string } {
   const first = invocation.command;
   const pkgSpec = invocation.packageOverride ?? first;
   const command = invocation.packageOverride ? first : null;
-  const { name: pkgName } = splitPackageSpec(pkgSpec);
-  return { pkgSpec, pkgName, command, binArgs: invocation.args, yes: invocation.yes };
+  const { name: pkgName, parsed: spec } = splitPackageSpec(pkgSpec);
+  return { pkgSpec, pkgName, spec, command, binArgs: invocation.args, yes: invocation.yes };
 }
 
 /**
@@ -171,15 +172,6 @@ export function npxCacheDir(specs: readonly string[]): Promise<string> {
   return dir;
 }
 
-/** `spec` as npm-package-arg reads it; null for one it cannot read. */
-function specOf(spec: string): ReturnType<typeof npa> | null {
-  try {
-    return npa(spec);
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Whether an installed `version` answers `spec`, as libnpmexec's
  * missingFromTree reads a tree: a spec by name alone takes whatever is
@@ -188,7 +180,7 @@ function specOf(spec: string): ReturnType<typeof npa> | null {
  * directory of that very request answers (`ownRequest`): npm would fetch its
  * manifest to compare, and that directory holds what it named.
  */
-function answers(spec: ReturnType<typeof npa> | null, version: string, ownRequest: boolean): boolean {
+function answers(spec: NpaResult | null, version: string, ownRequest: boolean): boolean {
   if (spec === null) return false;
   if (spec.raw === spec.name) return true;
   if (spec.registry && (spec.type === 'version' || spec.type === 'range')) return satisfiesRange(version, spec.rawSpec);
@@ -260,7 +252,7 @@ export async function resolveNpxBinary(
   });
 
   // 1. The project's own package, where it answers the request.
-  const spec = specOf(parsed.pkgSpec);
+  const spec = parsed.spec;
   const local = await binAt(vfs, `${cwd}/node_modules/${parsed.pkgName}`, parsed.command);
   if (local && answers(spec, local.version, false)) return found(local, 'project-nm');
 
