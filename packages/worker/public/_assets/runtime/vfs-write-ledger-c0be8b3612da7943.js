@@ -1299,6 +1299,10 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
   var GRANT_INOS = 4096;
   var GRANT_BYTES = 64 * 1024 * 1024;
   var RECALL_POLL_MS = 2e4;
+  function standingOf(grant, key) {
+    if (grant.ended || grant.closing || grant.shared) return void 0;
+    return within(key, grant.root) ? "held" : within(grant.root, key) ? "above" : void 0;
+  }
   function parentKey(key) {
     const at = key.lastIndexOf("/");
     return at < 0 ? "" : key.slice(0, at);
@@ -1921,15 +1925,15 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         let found;
         for (const grant of grants) {
           const certificate = grant.certificate;
-          if (grant.ended || grant.closing || grant.shared || certificate === void 0) continue;
-          if (certificate.epoch !== cursor.epoch || cursor.rev < certificate.revision) continue;
-          if (within(key, grant.root)) return "held";
-          if (within(grant.root, key)) found = "above";
+          if (certificate === void 0 || certificate.epoch !== cursor.epoch || cursor.rev < certificate.revision) continue;
+          const standing = standingOf(grant, key);
+          if (standing === "held") return standing;
+          found ??= standing;
         }
         return found;
       },
       guards(key) {
-        return escaped === null && grants.some((grant) => !grant.ended && !grant.closing && !grant.shared && (within(key, grant.root) || within(grant.root, key)));
+        return escaped === null && grants.some((grant) => standingOf(grant, key) !== void 0);
       },
       pending() {
         return queue.length > 0 || inFlight !== null;

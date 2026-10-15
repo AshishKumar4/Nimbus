@@ -131,6 +131,12 @@ const GRANT_INOS = 4096;
 const GRANT_BYTES = 64 * 1024 * 1024;
 /** How long one recall poll waits before asking again. */
 const RECALL_POLL_MS = 20_000;
+/** Where `key` stands to a grant held alone (not ended, closing or shared): 'held' at or beneath its root, 'above' an ancestor of it. */
+function standingOf(grant, key) {
+    if (grant.ended || grant.closing || grant.shared)
+        return undefined;
+    return within(key, grant.root) ? 'held' : within(grant.root, key) ? 'above' : undefined;
+}
 function parentKey(key) {
     const at = key.lastIndexOf('/');
     return at < 0 ? '' : key.slice(0, at);
@@ -940,19 +946,17 @@ export function processFsClient(options) {
             let found;
             for (const grant of grants) {
                 const certificate = grant.certificate;
-                if (grant.ended || grant.closing || grant.shared || certificate === undefined)
+                if (certificate === undefined || certificate.epoch !== cursor.epoch || cursor.rev < certificate.revision)
                     continue;
-                if (certificate.epoch !== cursor.epoch || cursor.rev < certificate.revision)
-                    continue;
-                if (within(key, grant.root))
-                    return 'held';
-                if (within(grant.root, key))
-                    found = 'above';
+                const standing = standingOf(grant, key);
+                if (standing === 'held')
+                    return standing;
+                found ??= standing;
             }
             return found;
         },
         guards(key) {
-            return escaped === null && grants.some((grant) => !grant.ended && !grant.closing && !grant.shared && (within(key, grant.root) || within(grant.root, key)));
+            return escaped === null && grants.some((grant) => standingOf(grant, key) !== undefined);
         },
         pending() {
             return queue.length > 0 || inFlight !== null;

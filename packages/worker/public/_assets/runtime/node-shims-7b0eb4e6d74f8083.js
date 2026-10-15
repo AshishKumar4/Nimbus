@@ -6151,22 +6151,24 @@ const __fsMod = (() => {
    */
   function _heldStat(p, follow) {
     if (_admissions > 0 || !_nsActive() || !_supervisor() || typeof __nimbusProcessFs !== "function") return undefined;
-    if (/(^|\/)\.\.(\/|$)/.test(String(p))) return undefined;
     const client = __nimbusProcessFs();
+    // The name as asked must be held before anything is walked: most are not, and they cost nothing here.
+    const k = _strip(_resolve(p));
+    if (client.vouch(k, _cursor) !== "held" || /(^|\/)\.\.(\/|$)/.test(String(p))) return undefined;
     const ns = __resident.namespace;
     // An entry whose device is one the namespace gave a mount is on that mount, which no grant covers.
     const mounted = (row) => Number(row.dev) >= __nimbusResidentModule.ANONYMOUS_DEV;
     let vouched = true;
     const visit = (name) => {
+      if (!vouched || _own.has(name) || client.vouch(name, _cursor) === undefined) return (vouched = false);
       const searched = ns.rowAt(name.slice(0, Math.max(0, name.lastIndexOf("/"))));
       const row = ns.rowAt(name);
-      vouched = vouched && !_own.has(name) && client.vouch(name, _cursor) !== undefined
-        && searched !== undefined && !mounted(searched) && _modeAllows(_nsRowMeta(searched), 1)
+      vouched = searched !== undefined && !mounted(searched) && _modeAllows(_nsRowMeta(searched), 1)
         && (row === undefined || (!mounted(row) && !(Number(row.kind) === 2 && /(^|\/)\.\.(\/|$)/.test(String(row.target ?? "")))));
       return vouched;
     };
     try {
-      const found = ns.lookup(_strip(_resolve(p)), follow, undefined, visit);
+      const found = ns.lookup(k, follow, undefined, visit);
       if (!vouched || found === "ELOOP" || found === "EACCES" || found.row === undefined || found.own !== undefined) return undefined;
       const at = found.path;
       if (client.vouch(at, _cursor) !== "held" || _own.has(at)) return undefined;
