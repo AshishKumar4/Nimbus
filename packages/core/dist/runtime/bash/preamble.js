@@ -4,27 +4,10 @@ import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { PIPE_CAPACITY, decideRead, decideWrite, heldExitSettles, holdsExit, pipeBudget, pipeLimitMessage, readerStops } from './pipe-rules.js';
 import { wasiOutputRelay } from '../wasi/stdio.js';
 import { outputControlReader } from '../wasi/output-control.js';
+import { clockNs, clockResolutionNs, realtimeNs } from '../wasi/clock.js';
 import { ARENA_SIZE, CaptureStore } from './capture-store.js';
 const PAGE = 65536, te = new TextEncoder(), td = new TextDecoder();
 const E = { ACCES: 2, BADF: 8, EXIST: 20, INVAL: 28, ISDIR: 31, LOOP: 32, NOENT: 44, NOSYS: 52, NOTDIR: 54, NOTEMPTY: 55, PERM: 63, SPIPE: 70, SRCH: 71 };
-// WASI clock ids. MONOTONIC and the two CPUTIME clocks are answered from a
-// monotonic source; an id outside this set is EINVAL, never a silent realtime
-// reading — a guest that asks for monotonic and receives wall time computes
-// negative durations the first time the wall clock steps backwards.
-const CLOCK_REALTIME = 0, CLOCK_MONOTONIC = 1, CLOCK_PROCESS_CPUTIME = 2, CLOCK_THREAD_CPUTIME = 3;
-function realtimeNs() { return BigInt(Date.now()) * 1000000n; }
-function monotonicNs() {
-    const ms = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-    return BigInt(Math.floor(ms * 1000)) * 1000n;
-}
-// null for an unknown id, so callers answer EINVAL rather than inventing a time.
-function clockNs(id) {
-    if (id === CLOCK_REALTIME)
-        return realtimeNs();
-    if (id === CLOCK_MONOTONIC || id === CLOCK_PROCESS_CPUTIME || id === CLOCK_THREAD_CPUTIME)
-        return monotonicNs();
-    return null;
-}
 class Exit {
     constructor(c) { this.code = c; }
 }
@@ -85,7 +68,6 @@ function newSession(args) {
     const session = {
         mod, coreutils, coreutilsRoot: norm(args.coreutilsRoot), fs: filesystem, cwd, cred: args.cred, parking: args.parking, pipeBudget: pipeBudget(args.memoryBudgetBytes), pending: new Set(),
         argv: args.argv, environ: args.environ,
-        stdinTty: !!args.stdinTty,
         stdin: { chunks: args.stdinData ? [te.encode(args.stdinData)] : [], queued: 0, closed: !!args.stdinClosed, waiters: [] },
         processPid: args.processPid || 0, sharedInput: args.sharedInput === true,
         procs: new Map(), idle: [], pipes: new Map(), runnable: [], deferred: [], wake: null, suspended: new Set(), exitStatus: new Map(), heldExits: new Map(), waiters: [],
@@ -151,6 +133,13 @@ function wakeWriters(pp) {
 // real 'preopen' entry: wasi-libc's path ops fd_fdstat_get the dirfd
 // to compute inherited rights, so it must answer (not EBADF), and
 // lowestFd must never re-issue it for a regular file.
+/**
+ * Whether a descriptor the host answers for is a FIFO: a pipe, and stdin
+ * that is not a terminal (a pipe's or a redirect's bytes). WASI has no FIFO
+ * filetype (unknown, as wasmtime says too); its stat mode does. The
+ * terminal's stdin and the output streams are character devices.
+ */
+function hostFifo(e) { return e.kind === 'pipe' || (e.kind === 'stdin' && !e.terminal); }
 function lowestFd(proc) { let fd = 0; while (proc.fds.has(fd) || fd === 3)
     fd++; return fd; }
 function bumpPipe(s, e, d) { const pp = s.pipes.get(e.pipeId); if (e.end === 'r')
@@ -383,9 +372,9 @@ function makeWasiFs(s, proc, DV, U8, io, memory, synchronous = false, resident) 
         fd_seek(fd) { return proc.fds.has(fd) ? E.SPIPE : E.BADF; },
         fd_tell(fd) { return proc.fds.has(fd) ? E.SPIPE : E.BADF; },
         fd_filestat_get(fd, out) { const e = proc.fds.get(fd); if (!e)
-            return E.BADF; U8().fill(0, out, out + 64); DV().setUint8(out + 16, e.kind === 'pipe' ? 0 : 2); DV().setBigUint64(out + 24, 1n, true); return 0; },
+            return E.BADF; U8().fill(0, out, out + 64); DV().setUint8(out + 16, hostFifo(e) ? 0 : 2); DV().setBigUint64(out + 24, 1n, true); return 0; },
         fd_fdstat_get(fd, out) { const e = proc.fds.get(fd); if (!e)
-            return E.BADF; U8().fill(0, out, out + 24); DV().setUint8(out, e.kind === 'pipe' ? 0 : 2); DV().setBigUint64(out + 8, 0x1fffffffn, true); DV().setBigUint64(out + 16, 0x1fffffffn, true); return 0; },
+            return E.BADF; U8().fill(0, out, out + 24); DV().setUint8(out, hostFifo(e) ? 0 : 2); DV().setBigUint64(out + 8, 0x1fffffffn, true); DV().setBigUint64(out + 16, 0x1fffffffn, true); return 0; },
         fd_fdstat_set_flags(fd, flags) { return !proc.fds.has(fd) ? E.BADF : flags === 0 ? 0 : E.NOSYS; },
         fd_read: (fd, p, n, out) => io.read(fd, readIovs(DV(), p, n), out),
         fd_write(fd, p, n, out) {
@@ -409,8 +398,8 @@ function makeWasiFs(s, proc, DV, U8, io, memory, synchronous = false, resident) 
         poll_oneoff: (p, q, n, out) => io.poll(p, q, n, out),
         clock_time_get(id, _precision, out) { const ns = clockNs(id); if (ns === null)
             return E.INVAL; DV().setBigUint64(out, ns, true); return 0; },
-        clock_res_get(id, out) { if (clockNs(id) === null)
-            return E.INVAL; DV().setBigUint64(out, id === CLOCK_REALTIME ? 1000000n : 1000n, true); return 0; },
+        clock_res_get(id, out) { const ns = clockResolutionNs(id); if (ns === null)
+            return E.INVAL; DV().setBigUint64(out, ns, true); return 0; },
         random_get(p, n) { for (let i = 0; i < n; i += 65536)
             crypto.getRandomValues(U8().subarray(p + i, p + Math.min(i + 65536, n))); return 0; },
         proc_exit(code) { throw new Exit(code); },
@@ -1449,10 +1438,8 @@ async function doExec(s, proc) {
             return E.BADF;
         if (entry.kind === 'resident')
             return metadata(out, entry.stat.mode ?? 0, entry.stat.uid, entry.stat.gid);
-        if (entry.kind === 'pipe')
-            return metadata(out, 0o010600, s.cred.uid, s.cred.gid);
-        if (entry.kind === 'stdin' || entry.kind === 'stdout' || entry.kind === 'stderr')
-            return metadata(out, 0o020620, s.cred.uid, s.cred.gid);
+        if (entry.kind === 'pipe' || entry.kind === 'stdin' || entry.kind === 'stdout' || entry.kind === 'stderr')
+            return metadata(out, hostFifo(entry) ? 0o010600 : 0o020620, s.cred.uid, s.cred.gid);
         const stat = entry.kind === 'authority' ? () => fs.fstat(entry.handle.id) : entry.kind === 'preopen' ? () => fs.stat(entry.vfsPath) : null;
         if (stat === null)
             return E.BADF;
@@ -1847,7 +1834,7 @@ globalThis.__bashBoot = async function __bashBoot(args) {
         S = newSession(args);
         initStdinQueued(S);
         const root = makeProc(S, S.pidNext++, 0, new Map([
-            [0, { kind: 'stdin' }], [1, { kind: 'stdout' }], [2, { kind: 'stderr' }],
+            [0, { kind: 'stdin', terminal: !!args.stdinTty }], [1, { kind: 'stdout' }], [2, { kind: 'stderr' }],
             [3, { kind: 'preopen', vfsPath: '/', wasiPath: '/' }],
         ]));
         S.rootPid = root.pid;

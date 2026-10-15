@@ -83,8 +83,9 @@ export interface CompositeFeed {
 export declare function comparePaths(a: string, b: string): number;
 /**
  * A namespace entry's stat in the runtime contract's shape: its identity
- * (dev, ino) is the namespace's, and a mounted backend's entries carry no
- * SQLite revision.
+ * (dev, ino) is the namespace's, and its revision its backend's. A backend
+ * that keeps none (/proc's files, made when read) gets a new one at each
+ * stat, so nothing holds a copy of it as current.
  */
 export declare function runtimeStatOf(stat: VfsStat): RuntimeVfsStat;
 export type { Principal } from './vfs.js';
