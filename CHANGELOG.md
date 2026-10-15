@@ -19,6 +19,15 @@ published independently in the `@nimbus-sh` npm scope.
   3.13.14-3. BusyBox is now built by the same reproducible recipe as bash.
   The catalog keeps 5.2.37-6 and 3.13.14-2 as its defaults until the next
   release publishes the new builds.
+- Fixed: `gem install` and `bundle install` finish a gem whose install was
+  interrupted, instead of treating it as installed once its `lib`
+  directory existed. A gem is installed once its specification is written,
+  as RubyGems decides, and that is now written last; Ruby's load path lists
+  only installed gems. `Gemfile.lock` lists the bundle's own gems and their
+  dependencies, at the versions it resolved, instead of every gem the
+  session ever installed. Gems installed by an earlier Nimbus are installed
+  again once.
+
 - Fixed: `npx` keeps each request's install apart, as npm does: in its own
   directory under `/tmp/.npx-cache`, named as npm names it, written only
   if its install succeeds. A request for a package that does not exist no

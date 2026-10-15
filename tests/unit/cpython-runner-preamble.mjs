@@ -3,21 +3,21 @@
 //
 // cpython-runner.ts ships the interpreter into a loader child as source: the
 // virtual socket kernel, then the WASI host, then CPYTHON_PREAMBLE_TAIL. What
-// the runner then calls is globalThis.__cpythonRun. This asserts that contract
-// against the real composed text and the real committed artifact, because the
-// three pieces only exist together inside a facet and nothing else typechecks
-// their seam.
-//
-// Two orderings inside the tail are load-bearing and are asserted here rather
-// than left to review:
-//   - __wasiInitFS runs BEFORE the supervisor is adopted, because initFS
-//     deliberately clears it. The other order leaves a guest with no
-//     filesystem at all: every open answers EBADF.
+// the runner then calls is globalThis.__cpythonRun, and a resident process
+// its socket worker's startProcess. Both are run here, composed as a facet
+// gets them, over the real committed interpreter, because the pieces only
+// exist together inside a facet and nothing else typechecks their seam:
+//   - every entry into the VM may park (a read the session answers later, a
+//     loopback reply), which traps unless the entry is WebAssembly.promising;
+//   - the supervisor is adopted after __wasiInitFS, which clears it, so a
+//     guest can write, and read a file the session made after it booted;
+//   - the socket kernel is there: a loopback request reaches the session;
+//   - the socket worker publishes python.wasm where the preamble finds it;
 //   - a fresh WebAssembly.Instance per call, so one `python -c` never sees the
 //     previous caller's __main__.
 
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -25,6 +25,20 @@ import { pathToFileURL } from 'node:url';
 import { buildCPythonPreamble } from '../../packages/core/src/runtime/cpython-runner.ts';
 import { buildCPythonSocketProcessWorker } from '../../packages/worker/src/runtime/cpython-resident.ts';
 import { makeSession } from './lib/wasi-authority.mjs';
+import { plugin } from 'bun';
+
+// The socket worker is a Durable Object class module, as a facet loads it,
+// and a .wasm it imports is a compiled module, as workerd gives it.
+plugin({
+  name: 'cloudflare-shims',
+  setup(build) {
+    build.module('cloudflare:workers', () => ({
+      loader: 'object',
+      exports: { DurableObject: class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } } },
+    }));
+    build.onLoad({ filter: /\.wasm$/ }, (args) => ({ loader: 'object', exports: { default: new WebAssembly.Module(readFileSync(args.path)) } }));
+  },
+});
 
 const RUNTIME_DIR = path.join(
   import.meta.dir ?? path.dirname(new URL(import.meta.url).pathname),
@@ -36,55 +50,7 @@ if (!existsSync(WASM) || !existsSync(STDLIB)) {
   process.exit(0);
 }
 
-// The tail and the WASI host are proven by the boot below (it installs
-// __cpythonRun and runs a program); the socket kernel is not, so it is pinned.
 const preamble = buildCPythonPreamble();
-assert.ok(preamble.includes('__nimbusVirtualSockets'), 'the socket kernel must be present');
-
-// ── The four invariants this runtime rediscovered by hitting them ──────────
-// Every one of these was already true of ruby-runner, and every one cost a
-// debugging cycle here. A header comment only helps a reader who knows to look;
-// these assertions fail for the next person instead. They read emitted text
-// because that is what a facet actually receives — the seam has no types.
-{
-  const socketWorker = buildCPythonSocketProcessWorker(preamble);
-
-  // 1. Every entry into the VM is wrapped, not just the calls known to park:
-  //    a Suspending import traps on an unpromised stack even returning an i32.
-  assert.ok(/__nimbusEnterVm\s*=\s*\(fn\)\s*=>[\s\S]{0,120}WebAssembly\.promising/.test(preamble),
-    'the VM entry helper must be WebAssembly.promising');
-  for (const entry of ['_initialize', 'nimbus_py_init', 'nimbus_py_run', 'nimbus_py_flush']) {
-    const bare = new RegExp(`(?<!__nimbusEnterVm\\()\\bexports\\.${entry}\\s*\\(`);
-    assert.ok(!bare.test(preamble), `${entry} must be called through __nimbusEnterVm`);
-  }
-
-  // 2. The supervisor is adopted AFTER __wasiInitFS, which clears it on purpose.
-  const initFsAt = preamble.indexOf('__wasiInitFS({');
-  const adoptAt = preamble.indexOf('__wasiAdoptSupervisor(globalThis.__nimbusPySupervisor');
-  assert.ok(initFsAt > 0 && adoptAt > initFsAt,
-    'the supervisor must be adopted after __wasiInitFS, which clears it');
-
-  // 3. The interpreter sees the whole session at '/': there is nothing to
-  //    seed, and a preamble that still carried a seed would be carrying a
-  //    filesystem nobody reads.
-  //    The credential rides along: it is what the interpreter's own copy of
-  //    the namespace is read as (wasi/resident-filesystem.ts), not a mount.
-  assert.ok(/__wasiInitFS\(\{\s*root:\s*'',\s*preopens:\s*\[\{\s*wasiPath:\s*'\/',\s*vfsPath:\s*''\s*\}\],\s*cred:\s*args\.cred,\s*pid:\s*args\.supervisorPid\s*\|\|\s*0\s*\}\)/.test(preamble),
-    'the boot must init the session root as the only preopen, and nothing else');
-  assert.ok(!/fsSnapshot|__wasiDrainPersist|__wasiRevalidateFS/.test(preamble),
-    'the boot must not carry a seed or a persist queue');
-
-  // 4. A spawned process needs the module published where the preamble looks.
-  assert.ok(socketWorker.includes("globalThis.__NIMBUS_WASM['python.wasm']"),
-    'the socket worker must publish python.wasm to __NIMBUS_WASM');
-
-  // Supervisor publish/adopt are asserted over EVERY facet entry by
-  // cpython-facet-entry-invariants.mjs, which discovers them rather than
-  // listing files — repeating them here would be a second list to rot.
-  // That the facet is opened per invocation under the invoker's pid is
-  // runtime-image-handoff.mjs's, driven through the runner.
-  console.log('  ok  the preamble-text invariants ruby already knew are asserted, not documented');
-}
 
 // The preamble is module-scope text in a facet; give it a module to be.
 const modPath = path.join(os.tmpdir(), `cpython-preamble-${process.pid}.mjs`);
@@ -111,9 +77,15 @@ const session = makeSession({
   },
 });
 const written = { stdout: [], stderr: [] };
+// A loopback request is answered later, as a peer would: the guest parks on it.
+const loopback = async (port, request) => {
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  return new Response(`pong ${port} ${request.method} ${new URL(request.url).pathname}`);
+};
 globalThis.__nimbusPySupervisor = { ...session.supervisor,
   stdout: bytes => written.stdout.push(bytes.slice()),
   stderr: bytes => written.stderr.push(bytes.slice()),
+  routeLoopback: loopback,
 };
 const run = async args => {
   written.stdout.length = 0; written.stderr.length = 0;
@@ -232,6 +204,44 @@ const unconnected = await run({
 assert.equal(unconnected.exitCode, 0, `${unconnected.error ?? ''} ${unconnected.stderr}`);
 assert.equal(unconnected.stdout, 'True\n64\n', 'recvfrom of an unconnected socket fails as recv does, and 64 names resolve after it');
 console.log('  ok  a failed recvfrom takes no name');
+
+// A file the session makes after the interpreter booted is there to read: the
+// guest reads the session, never a copy made when it started.
+session.user.writeFile('home/user/later.txt', 'made after boot');
+const later = await run({ ...base, pyArgv: ['-c'], userCode: "print(open('/home/user/later.txt').read())" });
+assert.equal(later.stdout, 'made after boot\n', `${later.error ?? ''} ${later.stderr}`);
+console.log('  ok  a file the session made after boot is read from the session');
+
+// A request to a loopback port goes through the socket kernel to the session,
+// and the guest parks until the answer comes.
+const fetched = await run({
+  ...base, pyArgv: ['-c'],
+  userCode: "import http.client\nc = http.client.HTTPConnection('127.0.0.1', 8123)\nc.request('GET', '/ping')\nr = c.getresponse()\nprint(r.status, r.read().decode())",
+});
+assert.equal(fetched.stdout, '200 pong 8123 GET /ping\n', `${fetched.error ?? ''} ${fetched.stderr}`);
+console.log('  ok  a loopback request reaches the session through the socket kernel, the guest parked meanwhile');
+
+// The resident process's worker, as the facet host loads it: python.wasm
+// beside it, published where the preamble looks, and startProcess runs a
+// program to its end.
+{
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'cpython-socket-worker-'));
+  try {
+    writeFileSync(path.join(dir, 'python.wasm'), readFileSync(WASM));
+    writeFileSync(path.join(dir, 'worker.mjs'), buildCPythonSocketProcessWorker(preamble));
+    delete globalThis.__NIMBUS_WASM;
+    const { NimbusProcess } = await import(pathToFileURL(path.join(dir, 'worker.mjs')).href);
+    written.stdout.length = 0; written.stderr.length = 0;
+    const started = await new NimbusProcess({ storage: {} }, { SUPERVISOR: globalThis.__nimbusPySupervisor })
+      .startProcess({ ...base, pyArgv: ['-c'], userCode: "print('from the resident worker')" });
+    assert.equal(started.state, 'exited', JSON.stringify(started));
+    assert.equal(started.result.exitCode, 0, `${started.result.error ?? ''} ${Buffer.concat(written.stderr)}`);
+    assert.equal(Buffer.concat(written.stdout).toString(), 'from the resident worker\n');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  console.log('  ok  the socket worker publishes python.wasm and runs a program to its end');
+}
 
 await session.dispose();
 console.log('cpython-runner-preamble: all cases passed');
