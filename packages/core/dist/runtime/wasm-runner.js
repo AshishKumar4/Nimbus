@@ -48,7 +48,7 @@
  *     CSP rejects that path, and the facet host exists to make it moot.
  */
 import { WASM_CALL_TASK } from './compiled-bodies.generated.js';
-import { stdinBytesOf } from '../shell/stdin-adapter.js';
+import { openInvocationStdio } from './runtime-stdio.js';
 import { gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { withHostView } from './process-files.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
@@ -283,24 +283,20 @@ export function makeWasmRunner(deps) {
             (opts.filename || '').replace(/^\/+/, '/') +
             ' ' +
             argv.join(' ');
-        const brokerPid = opts.stdinPid;
-        const owned = brokerPid === undefined;
-        const procEntry = owned ? deps.processes.spawn(cmdLabel.trim(), ['wasm-runner', ...argv], opts.cwd || '/home/user', { parentPid: opts.invokerPid, cred }) : deps.processes.get(brokerPid);
-        if (!procEntry || procEntry.state !== 'running')
-            throw new Error('WASI broker process is not running');
-        const pid = procEntry.pid;
-        const killed = new AbortController();
-        const runSignal = opts.signal ? AbortSignal.any([opts.signal, killed.signal]) : killed.signal;
-        deps.processes.setTerminator(pid, () => killed.abort());
-        const inputPump = !owned ? null : opts.stdin ? deps.processes.pumpInput(pid, stdinBytesOf(opts.stdin)) : null;
-        if (!deps.processes.hasInput(pid)) {
-            deps.processes.openInput(pid);
-            deps.processes.endInput(pid);
-        }
-        const releaseOutput = opts.output
-            ? deps.processes.subscribeOutputBytes(pid, chunk => opts.output(chunk.stream, chunk.data)) : null;
-        if (releaseOutput)
-            deps.processes.setForeground(pid, true);
+        // A broker's process (stdinPid) owns its input; the run's own pumps the caller's.
+        const stdio = openInvocationStdio(deps.processes, {
+            existingPid: opts.stdinPid,
+            command: cmdLabel.trim(),
+            argv: ['wasm-runner', ...argv],
+            cwd: opts.cwd || '/home/user',
+            parentPid: opts.invokerPid,
+            cred,
+            signal: opts.signal,
+            input: opts.stdinPid === undefined && opts.stdin ? opts.stdin : null,
+            output: opts.output ?? null,
+        });
+        const pid = stdio.pid;
+        const runSignal = stdio.signal;
         // Pass-through env vars (Nimbus shell sets HOME/USER/PATH/etc.). The
         // runtime-registry's RuntimeRunOpts carries env on the way in; we
         // forward to the WASI shim. Direct mode doesn't use env.
@@ -368,12 +364,7 @@ export function makeWasmRunner(deps) {
         }
         finally {
             facet?.dispose();
-            inputPump?.stop();
-            if (owned)
-                deps.processes.closeInput(pid);
-            releaseOutput?.();
-            if (releaseOutput)
-                deps.processes.setForeground(pid, false);
+            stdio.release();
         }
         let exitCode;
         let stdout;
