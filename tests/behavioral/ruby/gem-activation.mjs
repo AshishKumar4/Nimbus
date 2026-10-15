@@ -98,18 +98,18 @@ for (const [name, expected] of Object.entries(EXPECTED)) {
 }
 
 // A gem installed, as the installer writes one, while a ruby process runs (host Ruby 3.3.8: the same two lines).
-await t.run(heredocCommand('/home/user/late.rb', LATE), 20_000);
-await t.run('ruby /home/user/late.rb > /home/user/late.out 2>&1 &', 20_000);
+await t.run(heredocCommand('/home/user/refresh-case.rb', LATE), 20_000);
+await t.run('ruby /home/user/refresh-case.rb > /home/user/refresh-case.out 2>&1 &', 20_000);
 const ready = await t.run(`for i in $(seq 1 600); do test -f ${HOME}/ready && break; sleep 0.1; done; test -f ${HOME}/ready && echo READY`, 90_000);
 a.check('the running ruby started', /READY/.test(stripAnsi(ready.output)), stripAnsi(ready.output).slice(-300));
 await t.run(`mkdir -p ${HOME}/gems/late-1.0.0/lib`, 20_000);
 await t.run(heredocCommand(`${HOME}/gems/late-1.0.0/lib/late.rb`, 'module Late; V = "1.0.0"; end'), 20_000);
 await t.run(heredocCommand(`${HOME}/specifications/late-1.0.0.gemspec`, spec('late', '1.0.0', [])), 20_000);
 await t.run(`touch ${HOME}/go; wait`, 60_000);
-const late = stripAnsi((await t.run('cat /home/user/late.out', 20_000)).output);
+const late = stripAnsi((await t.run('cat /home/user/refresh-case.out', 20_000)).output);
 console.log(`  ${late.trim().split(/\r?\n/).slice(-3).join(' | ')}`);
 a.check('a gem installed while ruby runs is found after Gem.refresh, as host Ruby finds it',
-  /without refresh: LoadError/.test(late) && /after refresh: 1\.0\.0/.test(late), late.slice(-400));
+  /without refresh: LoadError/.test(late) && /after refresh: 1\.0\.0/.test(late), late.slice(0, 1200));
 
 await t.close();
 const sum = a.summary();
