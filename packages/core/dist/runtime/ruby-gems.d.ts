@@ -14,6 +14,12 @@ export interface InstalledRubyGemBin {
 }
 /** Where `gem install` puts gems for the user whose home is `home`, as `gem --user-install` does. */
 export declare function gemHomeFor(home: string): string;
+/**
+ * Every installed gem's lib directory, each version the specifications name
+ * (`gems/<name>-<version>/lib`, where that is a directory), sorted: what
+ * Ruby's load path is given (NIMBUS_GEM_LIBS). From the specifications'
+ * names, the one inventory: a gem whose install was interrupted has none.
+ */
 export declare function installedGemLibRoots(vfs: CredentialedVfs, gemHome: string): Promise<string[]>;
 export declare function installedGemBins(vfs: CredentialedVfs, gemHome: string): Promise<InstalledRubyGemBin[]>;
 export declare function installRubyGems(vfs: CredentialedVfs, requests: RubyGemRequest[], 

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "a405c8953daeac60bd7cd9d55fd0a4220816dede09e6f4180831906f5d89d7cc",
+  "fingerprint": "3ef4b0ce582e421f86ff1990f2fcc0ddc116fee080768da589afa587eb74c562",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -634,9 +634,9 @@
     "packages/core/dist/runtime/router-basename.d.ts": "2ddac310d985cb9f2aee88223d5e1cbf064870b5ea08ff2d84b2ff718ddb6883",
     "packages/core/dist/runtime/router-basename.d.ts.map": "01b2455cddd015fb5a0385c96bef3f449c7c0adc9de65fba48379846e5f621ff",
     "packages/core/dist/runtime/router-basename.js": "082fa144ed8e92a2e37e46769edb16e9a333b8fd1e966f78e36407fbeef4a6e2",
-    "packages/core/dist/runtime/ruby-gems.d.ts": "ffab339746e46e8ecdf4ffb2f84c08338e641c872ca7435599026f854b1bda46",
-    "packages/core/dist/runtime/ruby-gems.d.ts.map": "8d04408962244da3c4db7a9d47e0fb537425295b5a17b533acb3fabf4ecc0866",
-    "packages/core/dist/runtime/ruby-gems.js": "76fbf17c40d5acae96a49ab5a1bec2b0c92589f4a3f9c230f1f25ea90db4aeea",
+    "packages/core/dist/runtime/ruby-gems.d.ts": "2a147f85e0e06c78d7385454e135cda99519cef618283a1f7e7af7bd3a5553ff",
+    "packages/core/dist/runtime/ruby-gems.d.ts.map": "4e587939eedb624e334c571fb0b5f4ff35e2cd85dd38ad9424d0e126b70602b1",
+    "packages/core/dist/runtime/ruby-gems.js": "000949be2fba4ade851a7653c69cb2e145f159113ce832e5a0b876162c74eb5b",
     "packages/core/dist/runtime/ruby-green-threads.d.ts": "8eb2976a38a612ffbfca70ec1abbc4fc86f197ca79205e7306c59ba9cdbb8580",
     "packages/core/dist/runtime/ruby-green-threads.d.ts.map": "0e6d9ffaf2b349f901422993b9f014d0efccbc882db50c77ee956f195a78c6b7",
     "packages/core/dist/runtime/ruby-green-threads.js": "f81dd5af1a9149e7e5c1eb5774d5c134100ef98e1878e502ed9d59219265d45a",
@@ -1559,7 +1559,7 @@
     "packages/core/src/runtime/rolldown-build.ts": "021d428d41ff89ee8a21ecd2a3932342bbcee24aff107b88761b968a1ebfa46c",
     "packages/core/src/runtime/rolldown-compat.ts": "eb58e89a6c7963f40be69bcc7164785c8a3d479281c8d56294af12c1005f624a",
     "packages/core/src/runtime/router-basename.ts": "64cd3f6058823f0f0d3c98491b4fc83c080007d63b0c63e78be202c9f76a0989",
-    "packages/core/src/runtime/ruby-gems.ts": "118157bbcab9d2c770129404cf58cb8793db2ab3814018c805b25879f236c706",
+    "packages/core/src/runtime/ruby-gems.ts": "9f04811c48983c50f57cf971030e1d4dcde5e3ef383f6a3854b1b5ede3725747",
     "packages/core/src/runtime/ruby-green-threads.ts": "7701efca15303c30d1ecd7bb9151a952c79e77ed2c5db3dc0819bbe4775f5eb6",
     "packages/core/src/runtime/ruby-runner.ts": "79a9c63e14cf60d1237d6deb4c188c5ee78c4ddb223ea49a12384bff665e6d02",
     "packages/core/src/runtime/ruby-socket-shim.ts": "1aebdd31f52fdcb318258fca76bbc88f9b35b912aa924d8933bbb3ac6819cd1e",
