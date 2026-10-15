@@ -18,6 +18,13 @@ published independently in the `@nimbus-sh` npm scope.
   cannot (status 1). A symbolic link named on the command line is now
   followed, as GNU cp follows it, unless `-r`, `-a`, `-P` or `-d` copies
   the link itself.
+- Fixed: the shell's built-in `node` is the process the shell started.
+  `node --version`, `process.version` and `process.versions` now name one
+  release, core's (they disagreed: v20.0.0 and v22.14.0), and
+  `process.versions` no longer has a `lifo` key. `process.pid` is its pid
+  in the session, `getuid`, `getgid` and `getgroups` are its credential
+  (root under `sudo`), and `process.umask()` reads and sets its live mask.
+  `global` is the realm's `globalThis` in every module, as in Node.
 - Fixed: Python's `os.umask` governs the files it creates, `os.open` makes a
   file with the mode asked for (under the umask, as Linux does), and
   `os.getuid()`/`os.getgid()` are the session user's, not 0. Before, the

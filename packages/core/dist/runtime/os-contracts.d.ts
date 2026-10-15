@@ -293,6 +293,8 @@ export interface RuntimeFsBridge {
         /** Create missing parent directories (mkdir -p); otherwise a missing parent is ENOENT, as open(O_CREAT). */
         createParents?: boolean;
         expectedRevision?: number;
+        /** A process's live mask for this create, in place of its binding's initial mask (as open's). */
+        umask?: number;
     }): Awaitable<number>;
     /**
      * Whole-file write of `size` bytes that arrive over time from `source`:

@@ -72,8 +72,13 @@ export function isHostEvent(value) {
         default: return false;
     }
 }
+const identityId = (value) => Number.isSafeInteger(value) && typeof value === 'number' && value >= 0;
 export function isNodeRealmPayload(value) {
-    return record(value) && record(value.program) && typeof value.program.source === 'string'
+    if (!record(value) || !record(value.program) || typeof value.program.source !== 'string')
+        return false;
+    const identity = value.program.identity;
+    return record(identity) && identityId(identity.pid) && identityId(identity.uid) && identityId(identity.gid) && identityId(identity.umask)
+        && Array.isArray(identity.groups) && identity.groups.every(identityId)
         && (value.hosts === undefined || typeof value.hosts === 'string') && typeof value.egress === 'boolean';
 }
 export function isStat(value) {
@@ -203,6 +208,11 @@ async function performCall(call, services) {
                 throw refused('watch without an id');
             return services.watch(call.id, call.path === null ? null : pathArg(call.path));
         }
+        case 'umask': {
+            if (!Number.isSafeInteger(call.mask) || typeof call.mask !== 'number' || call.mask < 0 || call.mask > 0o777)
+                throw refused('mask that is not one');
+            return services.setUmask(call.mask);
+        }
         default: throw refused(`call ${JSON.stringify(String(call.op))}`);
     }
 }
@@ -222,7 +232,9 @@ export function serveRealmCall(call, services) {
 export async function runNodeInRealm(program, ctx, kernel) {
     if (ctx.signal.aborted)
         return exitCodeForAbortSignal(ctx.signal);
-    const filesystem = synchronousFilesystem(ctx.vfs);
+    // The program's own mask, a copy of the shell's as it started, as a child's is.
+    let mask = ctx.cred.umask;
+    const filesystem = synchronousFilesystem(ctx.vfs, () => mask);
     // Output in the order it was written, each write after the last; bytes
     // for an output that takes text are decoded across writes, as one stream.
     let written = Promise.resolve();
@@ -284,6 +296,7 @@ export async function runNodeInRealm(program, ctx, kernel) {
             if (ports.delete(port))
                 kernel?.portRegistry.delete(port);
         },
+        setUmask: (next) => { mask = next; },
         watch: (id, path) => {
             watches.get(id)?.close();
             watches.delete(id);

@@ -64,10 +64,12 @@ export function moduleWrapper(source: string, parentUrl: string): string {
 	return `(function(${WRAPPER_PARAMS}, ${loader}) {\n${body}\n})`;
 }
 
-/** What one module's wrapper receives as console and process. */
+/** What one module's wrapper receives as console, process and global. */
 export interface ModuleScope {
 	readonly console: unknown;
 	readonly process: unknown;
+	/** Every module's `global`: a program's realm's globalThis, as Node's is. */
+	readonly global: unknown;
 }
 
 /** The native loader installed for this CommonJS loader's module graph. */
@@ -230,7 +232,7 @@ export function createCjsLoader(context: NodeContext, scope: ModuleScope, option
 			scope.console, scope.process, Buffer,
 			globalThis.setTimeout, globalThis.setInterval,
 			globalThis.clearTimeout, globalThis.clearInterval,
-			{ process: scope.process, Buffer, console: scope.console },
+			scope.global,
 			importDynamic,
 		];
 	}

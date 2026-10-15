@@ -38,7 +38,7 @@ import { ProcessFiles } from '../runtime/process-files.js';
 import { ProcessView } from '../runtime/process-files.js';
 import { WorkspaceFs } from './workspace-fs.js';
 import { PID_GEN_STRIDE } from '../runtime/process-table.js';
-import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
+import { isKillRefusal, SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import { ChildProcessManager } from '../runtime/child-process-manager.js';
 import { resolveWorkspaceChild } from './child-process-runner.js';
 import { exitCodeForSignal, signalAbortReason, signalAbortReasonOf, signalDisposition, signalOfStatus } from '../substrate/lifo/shell/signals.js';
@@ -240,19 +240,27 @@ export class NimbusWorkspace {
         const processSignals = {
             isLive: (pid) => pid === shellProcessPid || processes.runsWork(pid),
             async signal(pid, signal, _stderr, caller) {
+                const disposition = signal === '0' ? null : signalDisposition(signal);
+                if (disposition === 'terminate' && pid !== shellProcessPid) {
+                    // The kill makes kill(2)'s check itself.
+                    try {
+                        return processes.killAs(caller, pid, exitCodeForSignal(signal), signalAbortReason(signal)) ? 'delivered' : 'no-such-process';
+                    }
+                    catch (error) {
+                        if (isKillRefusal(error))
+                            return 'not-permitted';
+                        throw error;
+                    }
+                }
+                // A signal that ends nothing asks the same rule alone.
                 if (!processes.maySignal(caller, pid))
                     return 'not-permitted';
-                if (signal === '0')
+                if (disposition === null)
                     return 'delivered';
                 if (pid === shellProcessPid)
                     return 'not-permitted';
-                const disposition = signalDisposition(signal);
                 // A default-ignored signal (CHLD, URG, WINCH) is delivered and does nothing, as on Linux.
-                if (disposition === 'ignore')
-                    return 'delivered';
-                if (disposition !== 'terminate')
-                    return 'unsupported';
-                return processes.kill(pid, exitCodeForSignal(signal), signalAbortReason(signal)) ? 'delivered' : 'no-such-process';
+                return disposition === 'ignore' ? 'delivered' : 'unsupported';
             },
         };
         shell.setHostProcessSignals(processSignals);

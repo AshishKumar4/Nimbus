@@ -142,7 +142,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
 
   stat(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): RuntimeVfsStat | null { this.guard(); return this.target.stat(path, options); }
   readFile(path: RuntimeFsPath, options?: { followSymlinks?: boolean; cached?: boolean }): Uint8Array | null { this.guard(); return this.reading(() => this.target.readFile(path, options)); }
-  writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: { createParents?: boolean; expectedRevision?: number }): number {
+  writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: { createParents?: boolean; expectedRevision?: number; umask?: number }): number {
     this.guard(); return this.target.writeFile(path, bytes, options);
   }
   readRange(path: RuntimeFsPath, offset: number, length: number, options?: RuntimeReadOptions): Uint8Array | null {
@@ -970,7 +970,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   private settleAt(name: string): Awaitable<void> {
     return settleHeldAt(this.scope, () => this.namespace.pin(name, { follow: true, sync: false }));
   }
-  writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: { createParents?: boolean; expectedRevision?: number }) {
+  writeFile(path: RuntimeFsPath, bytes: string | Uint8Array, options?: { createParents?: boolean; expectedRevision?: number; umask?: number }) {
     return this.either([path], () => this.bridge.writeFile(path, bytes, options), async () => {
       // createParents makes the directories above where the write lands, in
       // the same lookup as the write (a link's target's, not the link's).
