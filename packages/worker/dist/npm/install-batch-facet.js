@@ -21,7 +21,7 @@
 import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '@nimbus-sh/core/_shared/tarball-integrity.js';
 // The registry's retry policy and tarball integrity: in the facet, the
 // preamble's (loaders/npm-install-preamble.ts) by the same identifiers.
-import { retryingRegistryFetch } from './registry-retry.js';
+import { retryingRegistryFetch, settleRegistryAnswer } from './registry-retry.js';
 // ── Facet function ──────────────────────────────────────────────────────
 //
 // Runs inside an IsolatePool isolate as a build-time compiled expression;
@@ -49,8 +49,6 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
     // R2_RACE_TIMEOUT_MS - SPECULATIVE_FETCH_DELAY_MS would otherwise be dead
     // air before the download could start.
     const SPECULATIVE_FETCH_DELAY_MS = 75;
-    // How far a registry body is read ahead of its reader (readAhead).
-    const READ_AHEAD_BYTES = 8 * 1024 * 1024;
     // How long a package waits on its best-effort R2 cache write. A tarball is
     // at most MAX_R2_TARBALL_BYTES (30 MiB); a write still unanswered past this
     // is abandoned, and the next install that misses the cache writes it.
@@ -196,25 +194,12 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                 new Promise((rs) => setTimeout(() => rs(null), R2_RACE_TIMEOUT_MS)),
             ]).catch(() => null)
             : Promise.resolve(null);
-        // A registry answer is read as it arrives, READ_AHEAD_BYTES ahead of its
-        // reader. One left unread (a hedge's while the R2 leg is out, a body read
-        // only as fast as its files are written) holds a connection idle, and an
-        // invocation at the runtime's limit of six has its least recently used
-        // idle one closed: "Response closed due to connection limit". A tarball
-        // smaller than that is read to its end at once. An answer that is not a
-        // tarball keeps no body: its status is what the retry policy reads.
-        const readAhead = async (answer) => {
-            const response = await answer;
-            const init = { status: response.status, statusText: response.statusText, headers: response.headers };
-            if (!response.ok || response.body === null) {
-                await response.body?.cancel();
-                return new Response(null, init);
-            }
-            return new Response(response.body.pipeThrough(new TransformStream(undefined, new ByteLengthQueuingStrategy({ highWaterMark: READ_AHEAD_BYTES }))), init);
-        };
         let pendingNetwork = null;
         let hedgeTimer = null;
-        const hedgeAbort = new AbortController();
+        // The package's download, ended however the package ends (a cache hit
+        // after the hedge fired, a failure, an early return): a body its reader
+        // left is not held open (settleRegistryAnswer).
+        const networkAbort = new AbortController();
         const clearHedgeTimer = () => {
             if (hedgeTimer === null)
                 return;
@@ -225,7 +210,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             hedgeTimer = setTimeout(() => {
                 hedgeTimer = null;
                 speculativeFetches++;
-                pendingNetwork = readAhead(network.fetch(spec.tarballUrl, { signal: hedgeAbort.signal }));
+                pendingNetwork = network.fetch(spec.tarballUrl, { signal: networkAbort.signal }).then(settleRegistryAnswer);
                 // Rejections are re-awaited and rethrown in order by takeNetworkResponse;
                 // this sink only stops a failure that lands while the R2 leg is still
                 // outstanding from surfacing as an unhandled rejection.
@@ -236,7 +221,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             clearHedgeTimer();
             const pending = pendingNetwork;
             pendingNetwork = null;
-            return pending ? await pending : await readAhead(fetchVia(spec.tarballUrl));
+            return pending ? await pending : await fetchVia(spec.tarballUrl, { signal: networkAbort.signal });
         };
         const discardPendingNetwork = () => {
             clearHedgeTimer();
@@ -246,7 +231,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             // Abort rather than await-then-cancel the body: a `.then()` that cancels
             // only runs once the registry's response headers arrive, so it holds the
             // connection open for exactly the round-trip the cache hit avoided.
-            hedgeAbort.abort();
+            networkAbort.abort();
         };
         try {
             // A shared acquisition arrives with the digest its owner verified. This
@@ -542,6 +527,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
         finally {
             // No-op once the retry loop has taken it; closes every early return.
             discardPendingNetwork();
+            networkAbort.abort();
             const publishedBytes = capturedTgzBytes ?? r2HitBytes;
             publishTarballBytes(publishedBytes && verifiedDigest ? { bytes: publishedBytes, verified: verifiedDigest } : null);
             inFlight = Math.max(0, inFlight - 1);
