@@ -30,6 +30,15 @@ published independently in the `@nimbus-sh` npm scope.
   `stdio` (`{ stdout, stderr, env, input?, terminal? }`) in place of `stdout`
   and `stderr`; `substrate/lifo/node-compat/readline.js` is removed; and a
   `tty.WriteStream` needs its descriptor, as Node's does.
+- Fixed: `gem install` and `bundle install` finish a gem whose install was
+  interrupted, instead of treating it as installed once its `lib`
+  directory existed. A gem is installed once its specification is written,
+  as RubyGems decides, and that is now written last; Ruby's load path lists
+  only installed gems. `Gemfile.lock` lists the bundle's own gems and their
+  dependencies, at the versions it resolved, instead of every gem the
+  session ever installed. Gems installed by an earlier Nimbus are installed
+  again once.
+
 - Fixed: `npx` keeps each request's install apart, as npm does: in its own
   directory under `/tmp/.npx-cache`, named as npm names it, written only
   if its install succeeds. A request for a package that does not exist no
