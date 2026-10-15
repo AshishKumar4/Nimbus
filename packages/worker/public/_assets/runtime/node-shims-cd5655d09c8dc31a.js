@@ -6078,7 +6078,7 @@ const __fsMod = (() => {
    */
   function _heldStat(p, follow) {
     if (_admissions > 0 || !_nsActive() || !_supervisor() || typeof __nimbusProcessFs !== "function") return undefined;
-    if (/(^|/)..(/|$)/.test(String(p))) return undefined;
+    if (/(^|\/)\.\.(\/|$)/.test(String(p))) return undefined;
     const client = __nimbusProcessFs();
     const ns = __resident.namespace;
     let vouched = true;
@@ -6087,7 +6087,7 @@ const __fsMod = (() => {
       const row = ns.rowAt(name);
       vouched = vouched && !_own.has(name) && client.vouch(name, _cursor) !== undefined
         && searched !== undefined && Number(searched.dev) === 0 && _modeAllows(_nsRowMeta(searched), 1)
-        && (row === undefined || (Number(row.dev) === 0 && !(Number(row.kind) === 2 && /(^|/)..(/|$)/.test(String(row.target ?? "")))));
+        && (row === undefined || (Number(row.dev) === 0 && !(Number(row.kind) === 2 && /(^|\/)\.\.(\/|$)/.test(String(row.target ?? "")))));
       return vouched;
     };
     try {
