@@ -27,7 +27,8 @@ import { buildCPythonSocketProcessWorker } from '../../packages/worker/src/runti
 import { makeSession } from './lib/wasi-authority.mjs';
 import { plugin } from 'bun';
 
-// The socket worker is a Durable Object class module, as a facet loads it.
+// The socket worker is a Durable Object class module, as a facet loads it,
+// and a .wasm it imports is a compiled module, as workerd gives it.
 plugin({
   name: 'cloudflare-shims',
   setup(build) {
@@ -35,6 +36,7 @@ plugin({
       loader: 'object',
       exports: { DurableObject: class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } } },
     }));
+    build.onLoad({ filter: /\.wasm$/ }, (args) => ({ loader: 'object', exports: { default: new WebAssembly.Module(readFileSync(args.path)) } }));
   },
 });
 
