@@ -5,6 +5,19 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: the shell's built-in `node` hears of a write its output refused,
+  as Node does: piped to a reader that closed (`node … | head -1`) or
+  redirected to a full device, `process.stdout` emits the EPIPE or ENOSPC
+  error; unhandled, the program ends with its stack and status 1, and a
+  program that handles it goes on. `console.log`'s failures are ignored, as
+  Node ignores them. A status set in `process.exitCode` after the main
+  script ran is now the program's, and `process.exit(n)` no longer prints a
+  `[process.exit]` line.
+- Fixed: text the shell captures (exec's stdout and stderr, `$( )`) decodes
+  a multibyte character that a command's writes split, instead of two
+  stray bytes. A streamed exec's result, `bun run`, `npm run`, shell
+  scripts and the WASI runtimes now write the character their output's last
+  bytes left unfinished; it was lost.
 - Fixed: a lifo ES module command sends only its real bare imports to the
   CDN. A string or a comment that read like an import was rewritten too,
   so `ctx.stdout.write("from 'foo'")` printed a CDN URL, and `node:`

@@ -251,22 +251,27 @@ export function makeRubyRunnerFactory(deps: {
           );
           return 1;
         }
-        result = await deps.startResident({
-          wasmVfsPath: facetArgs.wasmVfsPath,
-          startArgs: toRubyCallArgs(facetArgs),
-          cwd,
-          command: formatRubyCommand(binName, argv),
-          argv: [binName, ...argv],
-          invokerPid: ctx.pid,
-          signal: ctx.signal,
-          write: runtimeOutput(ctx),
-        });
+        const output = runtimeOutput(ctx);
+        try {
+          result = await deps.startResident({
+            wasmVfsPath: facetArgs.wasmVfsPath,
+            startArgs: toRubyCallArgs(facetArgs),
+            cwd,
+            command: formatRubyCommand(binName, argv),
+            argv: [binName, ...argv],
+            invokerPid: ctx.pid,
+            signal: ctx.signal,
+            write: output.write,
+          });
+        } finally {
+          await output.end();
+        }
       } else {
         const stdio = openRuntimeStdio(deps, ctx, formatRubyCommand(binName, argv));
         try {
           result = await dispatchRubyFacet(
             deps.facets, stdio.syscalls, facetArgs, await vfs.readArrayBufferUncached(wasmVfs), stdio.pid, stdio.signal);
-        } finally { stdio.finish(result?.exitCode ?? 1); }
+        } finally { await stdio.finish(result?.exitCode ?? 1); }
       }
 
       if (result.stdout) ctx.stdout.write(result.stdout);

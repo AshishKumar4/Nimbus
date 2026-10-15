@@ -4,7 +4,7 @@ import { installSummary } from '@nimbus-sh/core/substrate/lifo/commands/system/n
 import { signalAbortReason, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import type { Command, CommandContext } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
 import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
-import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
+import { outputHooks } from '@nimbus-sh/core/_shared/byte-stream.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { BASH_RUNNER, CPYTHON_RUNNER_CONTRACTS, GIT_RUNNER, CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
@@ -544,12 +544,13 @@ const bunSpec: RuntimeSpec = {
         const extra = args.slice(targetIdx + 1);
         if (extra[0] === '--') extra.shift();
         const command = extra.length ? `${pkgScript} ${extra.join(' ')}` : pkgScript;
+        const hooks = outputHooks(ctx);
         try {
           const shellResult = await shell.execute(command, {
             cwd: ctx.cwd,
             env: ctx.env,
-            onStdout: textSink((d) => ctx.stdout.write(d)),
-            onStderr: textSink((d) => ctx.stderr.write(d)),
+            onStdout: hooks.onStdout,
+            onStderr: hooks.onStderr,
             // The script runs as the process that ran `bun run`, as an
             // `npm run` script does, not as the workspace shell.
             commandContext: { pid: ctx.pid, cred: ctx.cred, setUmask: ctx.setUmask },
@@ -558,6 +559,8 @@ const bunSpec: RuntimeSpec = {
         } catch (e: any) {
           ctx.stderr.write(`bun run: ${e?.message ?? String(e)}\n`);
           return 1;
+        } finally {
+          await hooks.end();
         }
       }
 
@@ -929,29 +932,34 @@ const shellExecute = async (cmd: string, cmdCtx: CommandContext): Promise<number
   const stdin = cmdCtx.stdin && cmdCtx.stdin !== cmdCtx.terminalStdin
     ? await cmdCtx.stdin.readAll()
     : undefined;
-  const result = await shell.execute(cmd, {
-    cwd: cmdCtx.cwd,
-    env: cmdCtx.env,
-    onStdout: textSink((d) => cmdCtx.stdout.write(d)),
-    onStderr: textSink((d) => cmdCtx.stderr.write(d)),
-    stdin,
-    terminalStdin: cmdCtx.terminalStdin,
-    // `npm run x` runs x on npm's own fds. Handing the nested execution a
-    // sink without saying where that sink leads would make every fd look
-    // redirected, and a runtime whose stdout is redirected stops streaming.
-    terminalFds: {
-      stdin: cmdCtx.isFdTerminal?.(0) ?? false,
-      stdout: cmdCtx.isFdTerminal?.(1) ?? false,
-      stderr: cmdCtx.isFdTerminal?.(2) ?? false,
-    },
-    commandContext: {
-      pid: cmdCtx.pid,
-      cred: cmdCtx.cred,
-      setUmask: cmdCtx.setUmask,
-    },
-    runAs: runAsProcess,
-  });
-  return result.exitCode;
+  const hooks = outputHooks(cmdCtx);
+  try {
+    const result = await shell.execute(cmd, {
+      cwd: cmdCtx.cwd,
+      env: cmdCtx.env,
+      onStdout: hooks.onStdout,
+      onStderr: hooks.onStderr,
+      stdin,
+      terminalStdin: cmdCtx.terminalStdin,
+      // `npm run x` runs x on npm's own fds. Handing the nested execution a
+      // sink without saying where that sink leads would make every fd look
+      // redirected, and a runtime whose stdout is redirected stops streaming.
+      terminalFds: {
+        stdin: cmdCtx.isFdTerminal?.(0) ?? false,
+        stdout: cmdCtx.isFdTerminal?.(1) ?? false,
+        stderr: cmdCtx.isFdTerminal?.(2) ?? false,
+      },
+      commandContext: {
+        pid: cmdCtx.pid,
+        cred: cmdCtx.cred,
+        setUmask: cmdCtx.setUmask,
+      },
+      runAs: runAsProcess,
+    });
+    return result.exitCode;
+  } finally {
+    await hooks.end();
+  }
 };
 const shellEntrypointExecutor = {
   execute: async (cmd, options) => {
@@ -1040,13 +1048,10 @@ const shellExecuteTracked = async (
 
   // Wrap the caller-supplied streams so every chunk is both displayed
   // AND captured in the ring buffer keyed by this PID.
-  const tee = (stream: 'stdout' | 'stderr', target: { write: (d: string) => void | Promise<void>; writeBytes?(d: Uint8Array): void | Promise<void> }) => {
-    const toTarget = textSink((text) => target.write(text));
-    return async (d: Uint8Array) => {
-      await self.processes.appendOutputBytes(pid, stream, d);
-      if (target.writeBytes) await target.writeBytes(d);
-      else toTarget(d);
-    };
+  const shown = outputHooks(cmdCtx);
+  const tee = (stream: 'stdout' | 'stderr') => async (d: Uint8Array) => {
+    await self.processes.appendOutputBytes(pid, stream, d);
+    await (stream === 'stdout' ? shown.onStdout(d) : shown.onStderr(d));
   };
 
   // The script runs as the wrapper, on a shell of its own (as npm runs a
@@ -1067,8 +1072,8 @@ const shellExecuteTracked = async (
     const result = await scriptShell.execute(cmd, {
       cwd: cmdCtx.cwd,
       env: cmdCtx.env,
-      onStdout: tee('stdout', cmdCtx.stdout),
-      onStderr: tee('stderr', cmdCtx.stderr),
+      onStdout: tee('stdout'),
+      onStderr: tee('stderr'),
       // The tee is a sink, not a redirection: the script's fds are still
       // whatever the caller's were, and a runtime asks that question before
       // deciding whether it may stream past the shell.
@@ -1108,6 +1113,7 @@ const shellExecuteTracked = async (
     try { cmdCtx.stderr.write(line); } catch {}
     exitCode = 1;
   } finally {
+    await shown.end();
     endAwait();
     try { await scriptShell.closeDescriptors(); } catch {}
     stopped();
