@@ -3371,8 +3371,6 @@
     "packages/worker/wasm/bash/probe-setjmp-asyncify.mjs": "a40043912f9c6eb65109d6011566ef7cca4d92559c657dee16daeb64e13b3609",
     "packages/worker/wasm/bash/probe-sjlj-asyncify.c": "48f42e6291746306653a9581acc2c477056cf573bf40ba4cf44a069352181c75",
     "packages/worker/wasm/bash/provenance.json": "210ac30dd584ee1d37f3a17ddc8842599c50dc7375655e9661ad28a29c5c5b79",
-    "packages/worker/wasm/bash/run-bash-fork.mjs": "adc395810be7a0fe7c16b69556c0b384de2af664734d9a9516fb18ae4af09c4e",
-    "packages/worker/wasm/bash/run-bash-local.mjs": "c545a9e45cb56ab484fb54e3fc49a23cad601208f7855895a5678ef5773d2507",
     "packages/worker/wasm/git/.gitignore": "1bf536437fd1d0698626668eacfebd8f7572bc5c3be00f38150eeebe86401b84",
     "packages/worker/wasm/git/PATCHES.md": "7a7711e988e2dd650ac1b22c7c76ee2070642f307ac4dfcd775785591c41ec72",
     "packages/worker/wasm/git/build-git.sh": "81901950da4c8d555cf1763e0deb6bb499f36ad34f6c191c54c8d3228226335d",
