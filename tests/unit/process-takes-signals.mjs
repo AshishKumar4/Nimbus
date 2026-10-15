@@ -30,6 +30,12 @@ import { CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.
 
 const CATCHES = ['SIGHUP', 'SIGINT', 'SIGQUIT', 'SIGTERM'];
 const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+/** How many bytes `pid`'s input holds, read to the last. */
+const drainAll = async (processes, pid) => {
+  let bytes = 0;
+  for (let packet = await processes.readInput(pid, 50); packet.data.length > 0; packet = await processes.readInput(pid, 50)) bytes += packet.data.length;
+  return bytes;
+};
 /** `promise`'s value, or 'still waiting' once `ms` pass. */
 const within = (ms, promise) => Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve('still waiting'), ms))]);
 
@@ -204,9 +210,7 @@ const within = (ms, promise) => Promise.race([promise, new Promise((resolve) => 
   await settle();
   processes.signal(git.pid, 'SIGINT');
   assert.deepEqual(await within(1000, held), { ok: false, signal: 'SIGINT' }, 'one waiting for room answers a signal');
-  const drained = await processes.readInput(helper.pid, 100, 512 * 1024);
-  assert.equal(drained.data.byteLength, 256 * 1024);
-  assert.equal(await within(200, processes.readInput(helper.pid, 50)).then((packet) => packet.data.length), 0, 'and wrote nothing');
+  assert.equal(await drainAll(processes, helper.pid), 256 * 1024, 'and wrote nothing');
 }
 
 // ── a signal that comes as its write is made is not lost ───────────────
@@ -222,11 +226,11 @@ for (let ticks = 0; ticks < 16; ticks++) {
   await processes.writeInputBytesWait(helper.pid, new Uint8Array(256 * 1024), git.pid);
   const held = processes.writeInputBytesWait(helper.pid, new Uint8Array([2]), git.pid);
   await settle();
-  const drain = processes.readInput(helper.pid, 100, 512 * 1024);
+  const drain = processes.readInput(helper.pid, 100);
   for (let i = 0; i < ticks; i++) await Promise.resolve();
   processes.signal(git.pid, 'SIGINT');
   const answer = await within(1000, held);
-  const written = (await drain).data.length + (await within(200, processes.readInput(helper.pid, 50))).data.length - 256 * 1024;
+  const written = (await drain).data.length + await drainAll(processes, helper.pid) - 256 * 1024;
   if (answer.ok === true) {
     assert.equal(written, 1, `${ticks}: the write was made`);
     assert.equal(await processes.nextSignal(git.pid, 50), 'SIGINT', `${ticks}: and the signal that came with it is the next wait's`);
