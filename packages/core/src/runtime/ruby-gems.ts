@@ -36,13 +36,12 @@ interface RubyGemsVersionEntry {
   ruby_version?: string;
 }
 
-interface InstalledGemRecord {
+/** An installed gem, as its specification in specifications/ records it: the gem home's one inventory. */
+interface InstalledGemSpec {
   name: string;
   version: string;
-  platform: string;
-  installedAt: number;
-  dependencies: Array<{ name: string; requirements: string }>;
-  executables?: string[];
+  /** Its runtime dependencies: each name with its requirements. */
+  dependencies: Array<{ name: string; requirements: string[] }>;
 }
 
 export interface InstalledRubyGemBin {
@@ -53,18 +52,6 @@ export interface InstalledRubyGemBin {
 /** Where `gem install` puts gems for the user whose home is `home`, as `gem --user-install` does. */
 export function gemHomeFor(home: string): string {
   return `${normalizeVfsPath(home)}/.gem`;
-}
-
-export async function installedGemLibRoots(vfs: CredentialedVfs, gemHome: string): Promise<string[]> {
-  const gemsRoot = `${gemHome}/gems`;
-  if (!(await vfs.exists(gemsRoot))) return [];
-  const out: string[] = [];
-  for (const entry of (await vfs.readdir(gemsRoot))) {
-    if ((await direntTypeIn(vfs, gemsRoot, entry)) !== 'directory') continue;
-    const lib = `${gemsRoot}/${entry.name}/lib`;
-    if ((await vfs.exists(lib)) && (await vfs.isDirectory(lib))) out.push('/' + lib);
-  }
-  return out.sort();
 }
 
 export async function installedGemBins(vfs: CredentialedVfs, gemHome: string): Promise<InstalledRubyGemBin[]> {
@@ -84,10 +71,20 @@ export async function installRubyGems(
   /** `network`: the workspace's; RubyGems is reached through its egress, when it has one. */
   opts: { gemHome: string; includeDependencies?: boolean; network: WorkspaceNetwork },
 ): Promise<RubyGemInstallReport> {
+  return (await installGemSet(vfs, requests, opts)).report;
+}
+
+/** installRubyGems, and each gem it settled on, by name: what it installed, or found installed. */
+async function installGemSet(
+  vfs: CredentialedVfs,
+  requests: RubyGemRequest[],
+  opts: { gemHome: string; includeDependencies?: boolean; network: WorkspaceNetwork },
+): Promise<{ report: RubyGemInstallReport; chosen: ReadonlyMap<string, InstalledGemSpec> }> {
   const gemHome = normalizeVfsPath(opts.gemHome);
   const includeDependencies = opts.includeDependencies !== false;
   const report: RubyGemInstallReport = { installed: [], alreadyInstalled: [] };
   const visiting = new Set<string>();
+  const chosen = new Map<string, InstalledGemSpec>();
 
   (await ensureDir(vfs, `${gemHome}/gems`));
   (await ensureDir(vfs, `${gemHome}/specifications`));
@@ -100,11 +97,12 @@ export async function installRubyGems(
       includeDependencies,
       report,
       visiting,
+      chosen,
       network: opts.network,
     });
   }
 
-  return report;
+  return { report, chosen };
 }
 
 export async function installRubyBundle(
@@ -121,14 +119,14 @@ export async function installRubyBundle(
   if (requests.length === 0) {
     throw new Error('Gemfile has no supported gem declarations');
   }
-  const report = await installRubyGems(vfs, requests, {
+  const { chosen, report } = await installGemSet(vfs, requests, {
     gemHome: opts.gemHome,
     includeDependencies: true,
     network: opts.network,
   });
   const lockfilePath = resolveVfsPath('Gemfile.lock', cwd);
-  const all = (await readInstalledGemRecords(vfs, normalizeVfsPath(opts.gemHome)));
-  const specs = all
+  const graph = await bundleGraph(vfs, normalizeVfsPath(opts.gemHome), requests, chosen);
+  const specs = graph
     .sort((a, b) => a.name.localeCompare(b.name) || compareVersions(a.version, b.version))
     .map((g) => `    ${g.name} (${g.version})`)
     .join('\n');
@@ -146,6 +144,36 @@ export async function installRubyBundle(
     '',
   ].join('\n')));
   return { requests, report, lockfilePath };
+}
+
+/**
+ * The gems a bundle locks, as Bundler's resolution names them: each Gemfile
+ * request and, transitively, each runtime dependency, at the version this
+ * install settled on (`chosen`); a dependency of a gem found installed, at
+ * the highest installed version satisfying it. Nothing else installed
+ * enters the lock.
+ */
+async function bundleGraph(
+  vfs: CredentialedVfs,
+  gemHome: string,
+  requests: readonly RubyGemRequest[],
+  chosen: ReadonlyMap<string, InstalledGemSpec>,
+): Promise<InstalledGemSpec[]> {
+  const files = await gemSpecFiles(vfs, gemHome);
+  const pick = async (name: string, requirements: readonly string[]): Promise<InstalledGemSpec | undefined> => chosen.get(name)
+    ?? (await installedGemSpecs(vfs, gemHome, name, files))
+      .filter((spec) => satisfiesRequirements(spec.version, [...requirements]))
+      .sort((a, b) => -compareVersions(a.version, b.version))[0];
+  const locked = new Map<string, InstalledGemSpec>();
+  const walk = async (name: string, requirements: readonly string[]): Promise<void> => {
+    if (locked.has(name)) return;
+    const spec = await pick(name, requirements);
+    if (spec === undefined) return;
+    locked.set(name, spec);
+    for (const dep of spec.dependencies) await walk(dep.name, dep.requirements);
+  };
+  for (const request of requests) await walk(normalizeGemName(request.name), request.requirements);
+  return [...locked.values()];
 }
 
 export function parseGemfile(text: string): RubyGemRequest[] {
@@ -370,6 +398,7 @@ async function installOneGem(
     includeDependencies: boolean;
     report: RubyGemInstallReport;
     visiting: Set<string>;
+    chosen: Map<string, InstalledGemSpec>;
     network: WorkspaceNetwork;
   },
 ): Promise<void> {
@@ -381,19 +410,18 @@ async function installOneGem(
   const metadata = await resolveGemMetadata(ctx.network, normalizedName, req.requirements);
   const installedKey = `${metadata.name}-${metadata.version}`;
   const gemRoot = `${ctx.gemHome}/gems/${installedKey}`;
-  if ((await vfs.exists(`${gemRoot}/lib`)) || (await vfs.exists(`${ctx.gemHome}/specifications/${installedKey}.gemspec`))) {
+  const specPath = `${ctx.gemHome}/specifications/${installedKey}.gemspec`;
+  const dependencies = (metadata.dependencies?.runtime || []).map((dep) => ({ name: dep.name, requirements: parseRubyGemRequirements(dep.requirements) }));
+  ctx.chosen.set(metadata.name, { name: metadata.name, version: metadata.version, dependencies });
+  // Installed is what its specification says is (RubyGems' own test): written last, after everything else.
+  if ((await gemSpecText(vfs, specPath)) !== null) {
     ctx.report.alreadyInstalled.push(installedKey);
     ctx.visiting.delete(visitKey);
     return;
   }
 
   if (ctx.includeDependencies) {
-    for (const dep of metadata.dependencies?.runtime || []) {
-      await installOneGem(vfs, {
-        name: dep.name,
-        requirements: parseRubyGemRequirements(dep.requirements),
-      }, ctx);
-    }
+    for (const dep of dependencies) await installOneGem(vfs, dep, ctx);
   }
 
   if (!metadata.gem_uri) {
@@ -419,20 +447,11 @@ async function installOneGem(
     (await vfs.writeFile(target, bytes));
   }
 
-  const specPath = `${ctx.gemHome}/specifications/${installedKey}.gemspec`;
-  (await vfs.writeFile(specPath, buildSyntheticGemspec(metadata, executables)));
   (await vfs.writeFile(`${ctx.gemHome}/cache/${installedKey}.gem`, gemBytes));
   for (const executable of executables) {
     (await writeGemExecutableWrapper(vfs, ctx.gemHome, installedKey, executable));
   }
-  (await writeInstalledGemRecord(vfs, ctx.gemHome, {
-    name: metadata.name,
-    version: metadata.version,
-    platform: metadata.platform || 'ruby',
-    installedAt: Date.now(),
-    dependencies: metadata.dependencies?.runtime || [],
-    executables,
-  }));
+  (await vfs.writeFile(specPath, buildSyntheticGemspec(metadata, executables, dependencies)));
   ctx.report.installed.push(installedKey);
   ctx.visiting.delete(visitKey);
 }
@@ -493,9 +512,14 @@ function findNativeExtensionPath(paths: string[]): string | null {
   return null;
 }
 
-function buildSyntheticGemspec(metadata: RubyGemsMetadata, executables: string[]): string {
+/** The first line of a specification this installer writes, its runtime dependencies recorded (readGemSpec). */
+const GEMSPEC_HEADER = '# Gem::Specification written by Nimbus RubyGems, its runtime dependencies recorded.';
+
+function buildSyntheticGemspec(metadata: RubyGemsMetadata, executables: string[], dependencies: InstalledGemSpec['dependencies']): string {
   return [
-    '# Synthetic gemspec written by Nimbus RubyGems.',
+    GEMSPEC_HEADER,
+    // RubyGems' stub line (StubSpecification): it lists a gem without evaluating its specification.
+    `# stub: ${metadata.name} ${metadata.version} ${metadata.platform || 'ruby'} lib`,
     `Gem::Specification.new do |s|`,
     `  s.name = ${JSON.stringify(metadata.name)}`,
     `  s.version = ${JSON.stringify(metadata.version)}`,
@@ -503,9 +527,63 @@ function buildSyntheticGemspec(metadata: RubyGemsMetadata, executables: string[]
     `  s.summary = ${JSON.stringify('Installed by Nimbus')}`,
     `  s.files = []`,
     `  s.executables = ${JSON.stringify(executables)}`,
+    ...dependencies.map((dep) => `  s.add_runtime_dependency ${JSON.stringify(dep.name)}, ${JSON.stringify(dep.requirements)}`),
     `end`,
     '',
   ].join('\n');
+}
+
+/**
+ * The installed gem a specification at `path` records: its name, version
+ * and runtime dependencies; null where there is none, or one this installer
+ * did not finish (one written before it recorded dependencies is installed
+ * again).
+ */
+async function readGemSpec(vfs: CredentialedVfs, path: string): Promise<InstalledGemSpec | null> {
+  const text = await gemSpecText(vfs, path);
+  if (text === null) return null;
+  const field = (name: string): string | null => {
+    const match = new RegExp(`^  s\\.${name} = ("(?:[^"\\\\]|\\\\.)*")$`, 'm').exec(text);
+    return match === null ? null : JSON.parse(match[1]!);
+  };
+  const name = field('name');
+  const version = field('version');
+  if (name === null || version === null) return null;
+  const dependencies: InstalledGemSpec['dependencies'] = [];
+  for (const match of text.matchAll(/^  s\.add_runtime_dependency ("(?:[^"\\]|\\.)*"), (\[.*\])$/gm)) {
+    dependencies.push({ name: JSON.parse(match[1]!), requirements: JSON.parse(match[2]!) });
+  }
+  return { name, version, dependencies };
+}
+
+/** A specification's text, where it is one this installer finished (readGemSpec); null otherwise. */
+async function gemSpecText(vfs: CredentialedVfs, path: string): Promise<string | null> {
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8').decode(await vfs.readFile(path));
+  } catch (error) {
+    if (isVfsError(error, 'ENOENT') || isVfsError(error, 'EISDIR')) return null;
+    throw error;
+  }
+  return text.startsWith(GEMSPEC_HEADER + '\n') ? text : null;
+}
+
+/** The specifications in `gemHome`: each file's path, read when asked for (installedGemSpecs). */
+async function gemSpecFiles(vfs: CredentialedVfs, gemHome: string): Promise<string[]> {
+  const root = `${gemHome}/specifications`;
+  if (!(await vfs.exists(root))) return [];
+  return (await vfs.readdir(root)).filter((entry) => entry.name.endsWith('.gemspec')).map((entry) => `${root}/${entry.name}`);
+}
+
+/** Every gem installed in `gemHome` (`named`: of that name only; `files`: its specifications, gemSpecFiles'). */
+async function installedGemSpecs(vfs: CredentialedVfs, gemHome: string, named?: string, files?: readonly string[]): Promise<InstalledGemSpec[]> {
+  const specs: InstalledGemSpec[] = [];
+  for (const path of files ?? await gemSpecFiles(vfs, gemHome)) {
+    if (named !== undefined && !path.slice(path.lastIndexOf('/') + 1).startsWith(`${named}-`)) continue;
+    const spec = await readGemSpec(vfs, path);
+    if (spec !== null && (named === undefined || spec.name === named)) specs.push(spec);
+  }
+  return specs;
 }
 
 function gemExecutableNames(files: Map<string, Uint8Array>): string[] {
@@ -542,25 +620,6 @@ async function writeGemExecutableWrapper(
     `load ${JSON.stringify(scriptPath)}`,
     '',
   ].join('\n'), { mode: 0o755 }));
-}
-
-async function writeInstalledGemRecord(vfs: CredentialedVfs, gemHome: string, record: InstalledGemRecord): Promise<void> {
-  const path = `${gemHome}/.nimbus-gems.json`;
-  const records = (await readInstalledGemRecords(vfs, gemHome))
-    .filter((r) => !(r.name === record.name && r.version === record.version));
-  records.push(record);
-  (await vfs.writeFile(path, JSON.stringify({ gems: records }, null, 2) + '\n'));
-}
-
-async function readInstalledGemRecords(vfs: CredentialedVfs, gemHome: string): Promise<InstalledGemRecord[]> {
-  const path = `${gemHome}/.nimbus-gems.json`;
-  if (!(await vfs.exists(path))) return [];
-  try {
-    const parsed = JSON.parse(new TextDecoder('utf-8').decode((await vfs.readFile(path))));
-    return Array.isArray(parsed?.gems) ? parsed.gems : [];
-  } catch {
-    return [];
-  }
 }
 
 export function parseRubyGemRequirements(input: string | undefined): string[] {

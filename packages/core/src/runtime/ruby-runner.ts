@@ -62,7 +62,6 @@ import {
   installRubyBundle,
   installRubyGems,
   installedGemBins,
-  installedGemLibRoots,
   parseRubyGemRequirements,
   type RubyGemRequest,
 } from './ruby-gems.js';
@@ -225,7 +224,6 @@ export function makeRubyRunnerFactory(deps: {
       if (!userEnv.LANG) userEnv.LANG = 'C.UTF-8';
       userEnv.GEM_HOME ||= '/' + gemHomeFor(home);
       userEnv.GEM_PATH ||= userEnv.GEM_HOME;
-      userEnv.NIMBUS_GEM_LIBS = (await installedGemLibRoots(vfs, gemHomeFor(home))).join(':');
       // Ruby looks for charset hints via these vars; set sensible
       // defaults so puts of non-ASCII strings doesn't trip on the
       // wasi default of "ASCII-8BIT".
@@ -1393,6 +1391,10 @@ async function __rubyRunOnce(args) {
     'ENV["GEM_HOME"] ||= File.join(ENV["HOME"], ".gem")',
     'ENV["GEM_PATH"] ||= ENV["GEM_HOME"]',
     'begin; Dir.mkdir(ENV["GEM_HOME"]) unless Dir.exist?(ENV["GEM_HOME"]); rescue Exception; end',
+    // RubyGems read its paths when the VM booted, before this env: it reads
+    // them again (Gem.clear_paths) whenever they differ from what it last
+    // read, and require activates gems from GEM_HOME as RubyGems does.
+    'begin; $__nimbus_gem_env = [ENV["GEM_HOME"], ENV["GEM_PATH"]].tap { |e| Gem.clear_paths unless $__nimbus_gem_env == e } if defined?(Gem); rescue Exception; end',
     // A cwd it cannot enter fails the run before the program starts (the
     // body below), as a shell's cd fails, rather than running it in '/'. A
     // step that continues a VM (a prompt's next line) names no cwd and keeps
@@ -1400,7 +1402,6 @@ async function __rubyRunOnce(args) {
     '$__nimbus_cwd_error = nil',
     ...(args.cwd === undefined ? [] : ['begin; Dir.chdir(' + cwdRb + '); rescue SystemCallError => e; $__nimbus_cwd_error = e; end']),
     'begin; $LOAD_PATH.unshift(Dir.pwd) unless $LOAD_PATH.include?(Dir.pwd); rescue Exception; end',
-    'begin; (ENV["NIMBUS_GEM_LIBS"] || "").split(":").reverse_each { |p| $LOAD_PATH.unshift(p) if p && p != "" && !$LOAD_PATH.include?(p) }; rescue Exception; end',
   ].join('; ');
 
   // The body runs in a fiber; every resume of it goes through the driver

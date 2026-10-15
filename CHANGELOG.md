@@ -5,6 +5,20 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `gem install` and `bundle install` finish a gem whose install was
+  interrupted, instead of treating it as installed once its `lib`
+  directory existed. A gem is installed once its specification is written,
+  as RubyGems decides, and that is now written last. `Gemfile.lock` lists
+  the bundle's own gems and their dependencies, at the versions it
+  resolved, instead of every gem the session ever installed. Gems
+  installed by an earlier Nimbus are installed again once.
+- Fixed: `require` activates installed gems as RubyGems does, as host Ruby
+  3.3 does. It loads the highest version a request allows, and a gem's
+  dependencies at the versions that gem requires. A conflict is refused
+  with `Gem::ConflictError`. Before, Nimbus put every installed gem's `lib`
+  first on `$LOAD_PATH`, so a bare `require` could load an older version
+  and no gem was ever activated.
+
 ## 2026-10-15: platform 0.11.0, core 0.22.0, fabric 0.17.0, worker 0.20.0, sdk 0.16.0, loom 0.3.1, react 0.3.3, cli 0.2.7, create-nimbus-app 0.2.4, runtime-cpython 3.13.14-2 (config 0.3.1 unchanged)
 
 The 2026-10-14 versions reached production but were never published to npm; these carry their changes too.
