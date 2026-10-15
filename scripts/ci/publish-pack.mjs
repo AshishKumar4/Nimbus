@@ -34,7 +34,7 @@ try {
   rows.push(published);
   if (published.exitCode !== 0) throw new Error('published version integrity check failed; no signing artifacts will be returned');
   const dir = join(work, 'runtime-cpython');
-  const runtimeBuild = await step('runtime-cpython-build', join(root, 'packages/worker'), 'node', ['scripts/bundle-runtime.mjs', 'cpython', '3.13.14-1', '--npm-package', dir]);
+  const runtimeBuild = await step('runtime-cpython-build', join(root, 'packages/worker'), 'node', ['scripts/bundle-runtime.mjs', 'cpython', '3.13.14-2', '--npm-package', dir]);
   rows.push(runtimeBuild);
   if (runtimeBuild.exitCode !== 0) throw new Error('CPython package build failed');
   const runtime = prepareTarball(dir, work);

@@ -192,5 +192,46 @@ const flushTrap = await run({
 assert.equal(session.user.readFileString('home/user/flushtrap.txt'), 'kept through a trapping flush', `${flushTrap.error ?? ''} ${flushTrap.stderr}`);
 console.log('  ok  a run whose flush traps leaves what it wrote in the session');
 
+// The interpreter's umask, mode and credential are the session's (nimbus-libc):
+// a file is made with the mode asked for under the live umask, and the
+// process is the user it runs as. Its umask was its own C variable, its open
+// mode was dropped (preview1 carries none), and getuid answered 0.
+const modes = await run({
+  ...credentialed, pyArgv: ['-c'],
+  userCode: "import os\nprint(os.getuid(), os.getgid())\nprint(oct(os.umask(0o077)))\n"
+    + "open('/home/user/umask-077.txt', 'w').close()\nos.umask(0o022)\n"
+    + "os.close(os.open('/home/user/open-0600.txt', os.O_WRONLY | os.O_CREAT, 0o600))\n"
+    + "os.close(os.open('/home/user/open-0755.txt', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o755))",
+});
+assert.equal(modes.exitCode, 0, `${modes.error ?? ''} ${modes.stderr}`);
+assert.equal(modes.stdout, `${session.cred.uid} ${session.cred.gid}\n0o22\n`, 'the session\'s uid and gid, and its umask');
+assert.equal(session.user.stat('home/user/umask-077.txt').mode & 0o7777, 0o600, 'a file made under umask 077 is 0600');
+assert.equal(session.user.stat('home/user/open-0600.txt').mode & 0o7777, 0o600, 'os.open makes a file with its mode');
+assert.equal(session.user.stat('home/user/open-0755.txt').mode & 0o7777, 0o755, 'an exclusive create keeps its execute bits');
+console.log('  ok  the umask, a created file\'s mode and the credential are the session\'s');
+
+// A name the interpreter's name table cannot hold is refused, never dialed as another.
+const names = await run({
+  ...base, pyArgv: ['-c'],
+  userCode: "import socket\naddrs = [socket.getaddrinfo(f'host-{i}.invalid', 80)[0][4][0] for i in range(64)]\n"
+    + "print(len(set(addrs)))\n"
+    + "try:\n  socket.getaddrinfo('host-64.invalid', 80)\nexcept socket.gaierror as e:\n  print('refused', e.errno == socket.EAI_MEMORY)\n"
+    + "print(socket.getaddrinfo('host-0.invalid', 80)[0][4][0] == addrs[0])",
+});
+assert.equal(names.exitCode, 0, `${names.error ?? ''} ${names.stderr}`);
+assert.equal(names.stdout, '64\nrefused True\nTrue\n', 'the 65th name is refused; a known name keeps its address');
+console.log('  ok  a full name table refuses a new name');
+
+// A recvfrom on a socket with no peer fails as recv fails, and takes no name: 64 names still fit.
+const unconnected = await run({
+  ...base, pyArgv: ['-c'],
+  userCode: "import socket\ns = socket.socket()\ndef error(call):\n  try:\n    call(10)\n  except OSError as e:\n    return e.errno\n"
+    + "print(error(s.recvfrom) == error(s.recv) != None)\n"
+    + "print(len({socket.getaddrinfo(f'host-{i}.invalid', 80)[0][4][0] for i in range(64)}))",
+});
+assert.equal(unconnected.exitCode, 0, `${unconnected.error ?? ''} ${unconnected.stderr}`);
+assert.equal(unconnected.stdout, 'True\n64\n', 'recvfrom of an unconnected socket fails as recv does, and 64 names resolve after it');
+console.log('  ok  a failed recvfrom takes no name');
+
 await session.dispose();
 console.log('cpython-runner-preamble: all cases passed');

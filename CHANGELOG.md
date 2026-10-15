@@ -12,6 +12,19 @@ published independently in the `@nimbus-sh` npm scope.
   in the session, `getuid`, `getgid` and `getgroups` are its credential
   (root under `sudo`), and `process.umask()` reads and sets its live mask.
   `global` is the realm's `globalThis` in every module, as in Node.
+- Fixed: Python's `os.umask` governs the files it creates, `os.open` makes a
+  file with the mode asked for (under the umask, as Linux does), and
+  `os.getuid()`/`os.getgid()` are the session user's, not 0. Before, the
+  umask was the interpreter's own variable, which nothing read, and every
+  file was made 0644. This needs the CPython runtime 3.13.14-2 and core
+  0.21.0 or later; 3.13.14-2 names a runner of its own, so a deployment
+  whose core predates it keeps 3.13.14-1. This core runs both builds: it
+  installs 3.13.14-2 when the catalog's default names it or when it is
+  asked for (`nimbus install cpython@3.13.14-2`), and a session that
+  installed 3.13.14-1 keeps it.
+- Fixed: a Python program that resolves more than 64 distinct hostnames gets
+  `socket.gaierror` (EAI_MEMORY) for the 65th, instead of an address that
+  stood for another name, which a connect would have dialed.
 - Fixed: a running `wrangler dev` stopped serving when its session's object
   was re-created (an idle session's is, within minutes; so is one after an
   instance reset): its Worker URL answered "no dev server running" until it

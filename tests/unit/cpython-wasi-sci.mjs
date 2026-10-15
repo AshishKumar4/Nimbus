@@ -36,6 +36,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { loadWasiPreamble, makeGuest, makeSession } from './lib/wasi-authority.mjs';
+import { WASI_RUNTIME_IMPORT_MODULES } from '../../packages/core/src/runtime/os-contracts.ts';
 
 const RUNTIME_DIR = path.join(
   import.meta.dir ?? path.dirname(new URL(import.meta.url).pathname),
@@ -68,16 +69,17 @@ const guest = makeGuest(P, session, {}, {
   parking: 'jspi', suspending: true,
   getMemory: () => instance.exports.memory,
 });
-const { wasi: wasiImport, stdout, stderr } = guest;
+const { wasi: wasiImport, fsImport, procImport, stdout, stderr } = guest;
 
 const module_ = new WebAssembly.Module(readFileSync(WASM));
+// The WASI runtime contract, as python.wasm's (cpython-wasi-reactor.mjs).
 assert.deepEqual(
-  [...new Set(WebAssembly.Module.imports(module_).map((i) => i.module))],
-  ['wasi_snapshot_preview1'],
-  'python-sci.wasm must import nothing but preview1',
+  [...new Set(WebAssembly.Module.imports(module_).map((i) => i.module))].sort(),
+  [...WASI_RUNTIME_IMPORT_MODULES].sort(),
+  'python-sci.wasm imports the WASI runtime contract',
 );
 
-instance = new WebAssembly.Instance(module_, { wasi_snapshot_preview1: wasiImport });
+instance = new WebAssembly.Instance(module_, { wasi_snapshot_preview1: wasiImport, nimbus_fs: fsImport, nimbus_proc: procImport });
 const { memory, malloc, free, nimbus_py_init, nimbus_py_run } = instance.exports;
 
 const encoder = new TextEncoder();
