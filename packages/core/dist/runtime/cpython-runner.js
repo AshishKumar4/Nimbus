@@ -306,6 +306,7 @@ export function makeCPythonRunnerFactory(deps) {
                 supervisorPid: ctx.pid,
                 // What the interpreter's own copy of the namespace is read as (wasi/resident-filesystem.ts).
                 cred,
+                restartsWaits: deps.restartsWaits,
             };
             // A script or `-m` can bind a port and keep serving, and such a program
             // is not finished when it stops producing output — it is finished when it

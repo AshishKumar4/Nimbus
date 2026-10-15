@@ -58,6 +58,12 @@ export interface PythonReplDeps {
     /** The invoking process's credential; absent only for the install-time warm-up. */
     cred?: Readonly<VfsCred>;
     /**
+     * The installed image asks again a wait its host gave up on: its runner
+     * key's contract (CPYTHON_RUNNER_CONTRACTS). Absent only for the
+     * install-time warm-up, which waits on nothing.
+     */
+    restartsWaits?: boolean;
+    /**
      * Where the prompt starts: the shell's working directory, entered once
      * per interpreter, and the command that started it, which a refusal to
      * enter names. Absent only for the install-time warm-up.
@@ -72,10 +78,11 @@ export interface PythonReplDeps {
  * interpreter's setup, and `enter`, the source that starts the prompt in the
  * shell's working directory, which the facet runs once per interpreter.
  */
-export declare function pythonReplStep(deps: Pick<PythonReplDeps, 'home' | 'start' | 'pid' | 'cred'>, pythonHome: string, userCode: string): {
+export declare function pythonReplStep(deps: Pick<PythonReplDeps, 'home' | 'start' | 'pid' | 'cred' | 'restartsWaits'>, pythonHome: string, userCode: string): {
     enter?: string | undefined;
     userCode: string;
     cred: Readonly<VfsCred> | undefined;
+    restartsWaits: boolean;
     supervisorPid: number;
     outputControls: ({
         key: string;

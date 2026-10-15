@@ -3,7 +3,7 @@ import { createKillCommand } from '@nimbus-sh/core/substrate/lifo/commands/syste
 import { installSummary } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
 import { signalAbortReason, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { outputHooks } from '@nimbus-sh/core/_shared/byte-stream.js';
-import { BASH_RUNNER_CONTRACTS, CPYTHON_RUNNER_CONTRACTS, GIT_RUNNER, CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER_CONTRACTS, CPYTHON_RUNNER_CONTRACTS, GIT_RUNNER_CONTRACTS, CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
@@ -136,25 +136,29 @@ export async function registerHostedCommands(self, workspace) {
     // the built-in answers alone again. The image cache is incarnation-local;
     // fsmonitor issued-token provenance is durable host metadata so a wake can
     // keep the VFS revision token.
-    let gitFactory = null;
-    workspace.runtimes.registerRunner(GIT_RUNNER, (manifest, installRoot, binName, binKind) => {
-        let handler = null;
-        const realGit = async (ctx) => {
-            gitFactory ??= (async () => {
-                const { makeGitRunnerFactory } = await import('@nimbus-sh/core/runtime/git-runner.js');
-                const { sqliteGitFsmonitorState } = await import('@nimbus-sh/core/runtime/git-fsmonitor.js');
-                const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
-                return makeGitRunnerFactory({
-                    facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes,
-                    fsmonitorState: sqliteGitFsmonitorState(self.ctx.storage.sql, workspace.filesystem.namespace),
-                });
-            })().catch((error) => { gitFactory = null; throw error; });
-            handler ??= gitFactory.then((factory) => factory(manifest, installRoot, binName, binKind))
-                .catch((error) => { handler = null; throw error; });
-            return (await handler)(ctx);
-        };
-        return binName === 'git' && binKind === undefined ? (ctx) => runGit(ctx, realGit) : realGit;
-    });
+    // Each runner key's build, on its own contract (GIT_RUNNER_CONTRACTS).
+    for (const [key, { restartsWaits }] of Object.entries(GIT_RUNNER_CONTRACTS)) {
+        let gitFactory = null;
+        workspace.runtimes.registerRunner(key, (manifest, installRoot, binName, binKind) => {
+            let handler = null;
+            const realGit = async (ctx) => {
+                gitFactory ??= (async () => {
+                    const { makeGitRunnerFactory } = await import('@nimbus-sh/core/runtime/git-runner.js');
+                    const { sqliteGitFsmonitorState } = await import('@nimbus-sh/core/runtime/git-fsmonitor.js');
+                    const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
+                    return makeGitRunnerFactory({
+                        facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes,
+                        fsmonitorState: sqliteGitFsmonitorState(self.ctx.storage.sql, workspace.filesystem.namespace),
+                        restartsWaits,
+                    });
+                })().catch((error) => { gitFactory = null; throw error; });
+                handler ??= gitFactory.then((factory) => factory(manifest, installRoot, binName, binKind))
+                    .catch((error) => { handler = null; throw error; });
+                return (await handler)(ctx);
+            };
+            return binName === 'git' && binKind === undefined ? (ctx) => runGit(ctx, realGit) : realGit;
+        });
+    }
     workspace.runtimes.registerRunner('clang-runner', (manifest, installRoot, binName, binKind) => async (ctx) => {
         const { makeClangRunnerFactory } = await import('@nimbus-sh/core/runtime/clang-runner.js');
         const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
@@ -170,7 +174,7 @@ export async function registerHostedCommands(self, workspace) {
     // no flags that would consume args) drops into an interactive
     // REPL. The wrap is purely additive — args-bearing invocations
     // pass through to the existing handler unchanged.
-    const cpython = (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx) {
+    const cpython = (restartsWaits) => (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx) {
         const argv = ctx.args || [];
         // No args at all → REPL session. Hand off to runPythonRepl
         // which builds its own IsolatePool (separate from the
@@ -192,6 +196,7 @@ export async function registerHostedCommands(self, workspace) {
                 // it the prompt cannot write to the session filesystem.
                 pid: ctx.pid,
                 cred: requireVfsCred(ctx.cred, 'Python REPL'),
+                restartsWaits,
                 start: { cwd: ctx.cwd || shell.getCwd(), binName },
             });
         }
@@ -206,10 +211,12 @@ export async function registerHostedCommands(self, workspace) {
             processes: self.processes,
             startResident: cpythonResidentStart(facetMgr),
             network: workspace.network,
+            restartsWaits,
         })(manifest, installRoot, binName, binKind)(ctx);
     };
-    for (const key of CPYTHON_RUNNER_CONTRACTS)
-        workspace.runtimes.registerRunner(key, cpython);
+    // Each runner key's build, on its own contract (CPYTHON_RUNNER_CONTRACTS).
+    for (const [key, { restartsWaits }] of Object.entries(CPYTHON_RUNNER_CONTRACTS))
+        workspace.runtimes.registerRunner(key, cpython(restartsWaits));
     // Ruby v1 — Ruby 3.3.4 via ruby.wasm 2.9.3-2.9.4. Same architecture
     // as python-runner: ruby+stdlib.wasm rides via LOADER modules-map,
     // bootstrap runs at child-facet module-init time, per-call
@@ -279,7 +286,7 @@ export async function registerHostedCommands(self, workspace) {
         const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
         return await makeBashRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes })(manifest, installRoot, binName, binKind)(ctx);
     };
-    for (const key of BASH_RUNNER_CONTRACTS)
+    for (const key of Object.keys(BASH_RUNNER_CONTRACTS))
         workspace.runtimes.registerRunner(key, bash);
     {
         // Cast registry to the minimal package-manager shape. CommandRegistry

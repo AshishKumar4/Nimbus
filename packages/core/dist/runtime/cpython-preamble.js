@@ -70,6 +70,8 @@ async function __nimbusPyBoot(args) {
     getMemory: () => instance.exports.memory,
     stdoutBytes: __nimbusPyOutput.stdoutBytes,
     stderrBytes: __nimbusPyOutput.stderrBytes,
+    // An image whose libc asks again a wait the host gave up on (cpython-runner@3).
+    restartsWaits: args.restartsWaits === true,
   });
   if (typeof __wasiPrepareFilesystem === 'function') {
     await __wasiPrepareFilesystem([(args.pythonHome || '/usr/local') + '/lib']);
