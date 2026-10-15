@@ -11,7 +11,8 @@
 //     callback, it refuses as Node does;
 //   - domain is the engine's in the program's realm: an error thrown in a
 //     domain's timer or tick is its 'error' (Node only: Bun's domain catches
-//     neither).
+//     neither); process.nextTick is the engine's, its queue before promise
+//     jobs.
 //
 // And without an oracle: the constant with no absolute filename, which Node
 // resolves against its process's directory, is refused (that import would
@@ -79,6 +80,9 @@ const cases = {
     "  for (const [label, step] of steps) { try { console.log(label, await step()); } catch (e) { console.log(label, 'failed', e.code); } }",
     '})();',
   ].join('\n'), 'node {prog} 2>/dev/null'],
+  // A tick is the engine's: it runs before promise jobs, as a domain's tick does.
+  'ticks.js': ["Promise.resolve().then(() => console.log('promise')); process.nextTick((a) => console.log('tick', a), 'arg'); queueMicrotask(() => console.log('microtask'));",
+    'node {prog}'],
   'domain.js': [[
     "const domain = require('domain');",
     'const d = domain.create();',

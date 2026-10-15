@@ -20,7 +20,7 @@ import { createRimraf } from './rimraf.js';
 import { createEsbuild } from './esbuild.js';
 import { createVm } from './vm.js';
 import { createHttp2Module } from '../../../_shared/http2-module.js';
-import { featureUnavailable } from '../../../_shared/node-error.js';
+import { unavailable } from './unavailable.js';
 
 export interface NodeContext {
   filesystem: () => NodeFilesystem;
@@ -83,10 +83,6 @@ class StubServer extends EventEmitter {
   ref() { return this; }
 }
 
-/** What would reach past the program (the host's files, loader or process), refused as an unavailable feature. */
-function unavailable(feature: string): never {
-  throw featureUnavailable(feature);
-}
 
 /** The engine's `module` with each of `names` refused (unavailable). */
 function withoutHostReach(module: object, name: string, names: readonly string[]): object {

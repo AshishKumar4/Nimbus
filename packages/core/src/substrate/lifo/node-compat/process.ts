@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import realm from 'node:process';
 import type { Readable, Writable } from 'node:stream';
 import { createProcessWarnings, type WarningConstructor, type WarningOptions } from '../../../_shared/node-warning.js';
 import { ttyOf, type ProgramStdio } from './tty-streams.js';
@@ -196,8 +197,9 @@ export function createProcess(opts: ProcessOptions) {
         bigint: (): bigint => BigInt(Math.floor(performance.now() * 1e6)),
       },
     ),
+    // The engine's: its queue runs before promise jobs, and a domain takes what a tick throws, as Node's.
     nextTick: (fn: (...args: unknown[]) => void, ...args: unknown[]) => {
-      queueMicrotask(() => fn(...args));
+      realm.nextTick(() => fn(...args));
     },
     memoryUsage: () => {
       const m = (performance as unknown as { memory?: { usedJSHeapSize: number; totalJSHeapSize: number; jsHeapSizeLimit: number } }).memory;

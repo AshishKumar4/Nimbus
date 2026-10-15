@@ -17,6 +17,9 @@ published independently in the `@nimbus-sh` npm scope.
   `--experimental-vm-modules`. `domain` is Node's in an inline `node` program,
   which runs in a realm of its own; a lifo command runs in the host's realm,
   where `domain` would set the host's process, and it is still refused there.
+  A program's `process.nextTick` is the engine's, so its callbacks run
+  before promise jobs, as in Node; they ran after them before. A domain
+  takes what a tick throws.
   Breaking (core): `NativeModuleLoader` (`substrate/lifo/node-compat/cjs-loader.js`)
   has `registerScript`.
 

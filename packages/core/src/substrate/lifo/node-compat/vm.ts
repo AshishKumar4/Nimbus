@@ -1,6 +1,6 @@
 import realm from 'node:process';
 import type { ContextOptions, ScriptOptions } from 'node:vm';
-import { featureUnavailable } from '../../../_shared/node-error.js';
+import { unavailable } from './unavailable.js';
 
 /** vm's module classes, which Node has only under --experimental-vm-modules. */
 const MODULE_CLASSES = new Set(['SourceTextModule', 'SyntheticModule', 'Module']);
@@ -23,9 +23,9 @@ export function createVm(scripts: ((filename: string) => void) | null): object {
   const loader = engine.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER;
   const serve = (options: string | ScriptOptions | undefined): void => {
     if (typeof options !== 'object' || options.importModuleDynamically !== loader) return;
-    if (scripts === null) throw featureUnavailable('vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER');
+    if (scripts === null) unavailable('vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER');
     const { filename } = options;
-    if (typeof filename !== 'string' || !filename.startsWith('/')) throw featureUnavailable('vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER without an absolute filename');
+    if (typeof filename !== 'string' || !filename.startsWith('/')) unavailable('vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER without an absolute filename');
     scripts(filename);
   };
   class Script extends engine.Script {
@@ -39,7 +39,7 @@ export function createVm(scripts: ((filename: string) => void) | null): object {
     Script,
     createScript: (code: string, options?: string | ScriptOptions) => new Script(code, options),
     createContext: (contextObject?: object, options?: ContextOptions) => {
-      if (options?.importModuleDynamically === loader) throw featureUnavailable("vm.createContext's importModuleDynamically: constants.USE_MAIN_CONTEXT_DEFAULT_LOADER");
+      if (options?.importModuleDynamically === loader) unavailable("vm.createContext's importModuleDynamically: constants.USE_MAIN_CONTEXT_DEFAULT_LOADER");
       return engine.createContext(contextObject, options);
     },
     runInThisContext: (code: string, options?: string | ScriptOptions) => { serve(options); return engine.runInThisContext(code, options); },
