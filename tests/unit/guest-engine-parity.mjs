@@ -236,7 +236,8 @@ const SCENARIOS = {
     await e.fs.unlink(`${OUT}/orphan.txt`);
     await e.write(`${OUT}/orphan.txt`, 'TAKEN');
     const taken = await e.peerStat(`${OUT}/orphan.txt`);
-    await e.fs.fchmod(opened.id, 0o4600);
+    await assert.rejects(e.fs.fchmod(opened.id, 0o4600), { code: 'EPERM' });
+    await e.fs.fchmod(opened.id, 0o600);
     await e.fs.fchown(opened.id, 1000, 1000);
     await e.fs.futimes(opened.id, 5_000, 7_000);
     const own = stat(await e.fs.fstat(opened.id));
@@ -250,7 +251,8 @@ const SCENARIOS = {
     await e.write(`${OUT}/before.txt`, 'B');
     const opened = await e.fs.open(`${OUT}/before.txt`, { write: true });
     await e.fs.rename(`${OUT}/before.txt`, `${OUT}/after.txt`);
-    await e.fs.fchmod(opened.id, 0o4640);
+    await assert.rejects(e.fs.fchmod(opened.id, 0o4640), { code: 'EPERM' });
+    await e.fs.fchmod(opened.id, 0o640);
     await e.fs.fchown(opened.id, 1000, 1000);
     await e.fs.futimes(opened.id, 5_000, 9_000);
     await e.fs.close(opened.id);
@@ -265,7 +267,7 @@ const SCENARIOS = {
     await e.fs.rename(`${APP}/through.txt`, `${APP}/moved.txt`);
     await e.write(`${APP}/through.txt`, 'TAKEN');
     const taken = await e.peerStat(`${APP}/through.txt`);
-    await e.fs.fchmod(opened.id, 0o4640);
+    await e.fs.fchmod(opened.id, 0o640);
     await e.fs.fchown(opened.id, 1000, 1000);
     await e.fs.futimes(opened.id, 5_000, 11_000);
     const own = stat(await e.fs.fstat(opened.id));

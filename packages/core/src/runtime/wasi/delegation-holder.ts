@@ -38,7 +38,7 @@
 import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '../os-contracts.js';
 import type { ResidentEntry } from './resident-filesystem.js';
 import { fsError } from '../beneath-walk.js';
-import { chmodRefusal, chownedMode, chownRefusal, utimesRefusal } from '../../vfs/posix-access.js';
+import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, utimesRefusal } from '../../vfs/posix-access.js';
 import { modeAllows } from '../../vfs/posix-access.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import { processFsClient, type ProcessFsClient, type ProcessFsGrant, type ProcessFsJournal, type ProcessFsOp, type ProcessFsSession } from '../../_shared/process-fs-client.js';
@@ -827,6 +827,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       // Only the owner (or root) changes a mode or times here; anything else is the session's to refuse.
       if (store.cred.uid !== 0 && store.cred.uid !== current.uid) return false;
       if ('uid' in attrs) return false;
+      // A grant a confined principal may not make: the session's to judge.
+      if ('mode' in attrs && confinedModeRefusal(current.mode, attrs.mode) !== null) return false;
       if ('mode' in attrs) throughAt([key]);
       const next: ResidentEntry = 'mode' in attrs
         ? { ...current, mode: (current.mode & ~0o7777) | (attrs.mode & 0o7777), ctime: now() }
@@ -846,7 +848,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const entry = file.detached;
       const uid = 'uid' in attrs && attrs.uid !== -1 ? attrs.uid : null;
       const gid = 'uid' in attrs && attrs.gid !== -1 ? attrs.gid : null;
-      const refused = 'mode' in attrs ? chmodRefusal(entry, store.cred)
+      // A grant a confined principal may not make is refused as the session refuses it.
+      const refused = 'mode' in attrs ? chmodRefusal(entry, store.cred) ?? confinedModeRefusal(entry.mode, attrs.mode)
         : 'uid' in attrs ? chownRefusal(entry, uid, gid, store.cred)
         : utimesRefusal(entry, explicit, store.cred);
       if (refused !== null) throw fsError(refused, 'mode' in attrs ? 'fchmod' : 'uid' in attrs ? 'fchown' : 'futimes', '/' + file.key);
