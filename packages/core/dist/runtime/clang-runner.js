@@ -36,6 +36,7 @@ import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 import { isRegularTarFile, streamTarRecords, tarBytes } from '../_shared/tarball-stream.js';
 import { statOrThrow } from '../vfs/vfs.js';
 import { openRuntimeStdio } from './runtime-stdio.js';
+import { errorText } from '../_shared/error-text.js';
 const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
 /** Build the runner factory. Closes over the facet host and the filesystem authority. */
 export function makeClangRunnerFactory(deps) {
@@ -120,7 +121,7 @@ export function makeClangRunnerFactory(deps) {
                     }
                 }
                 catch (error) {
-                    ctx.stderr.write(`${binName}: ${input}: ${errorMessage(error)}\n`);
+                    ctx.stderr.write(`${binName}: ${input}: ${errorText(error)}\n`);
                     return 1;
                 }
                 if (isSourceExt(input))
@@ -147,7 +148,7 @@ export function makeClangRunnerFactory(deps) {
             }
             catch (e) {
                 runtimePromise = null;
-                ctx.stderr.write(`${binName}: clang runtime warm-up failed: ${errorMessage(e)}\n`);
+                ctx.stderr.write(`${binName}: clang runtime warm-up failed: ${errorText(e)}\n`);
                 return 1;
             }
             // Opened per invocation, not cached: the supervisor capability is bound
@@ -174,7 +175,7 @@ export function makeClangRunnerFactory(deps) {
                     await vfs.mkdir(scratchVfs, { recursive: true });
                 }
                 catch (error) {
-                    ctx.stderr.write(`${binName}: /${scratchVfs}: ${errorMessage(error)}\n`);
+                    ctx.stderr.write(`${binName}: /${scratchVfs}: ${errorText(error)}\n`);
                     return 1;
                 }
             }
@@ -297,7 +298,7 @@ export function makeClangRunnerFactory(deps) {
                         await vfs.chmod(outputGuest.replace(/^\/+/, ''), 0o777 & ~umask);
                     }
                     catch (error) {
-                        ctx.stderr.write(`${binName}: ${parsed.outputPath}: ${errorMessage(error)}\n`);
+                        ctx.stderr.write(`${binName}: ${parsed.outputPath}: ${errorText(error)}\n`);
                         return 1;
                     }
                     return 0;
@@ -454,9 +455,6 @@ function parseUserArgv(argv) {
         outputPath, compileOnly, exitCode: 0,
     };
 }
-function errorMessage(error) {
-    return error instanceof Error ? error.message : String(error);
-}
 // ── Sysroot unpack (supervisor-side) ─────────────────────────────────
 /** Where the unpacked sysroot lives, relative to the install root. */
 const SYSROOT_DIR_REL = 'share/clang/sysroot';
@@ -584,7 +582,7 @@ async function dispatchClangFacet(target, args, signal) {
             exitCode: 1,
             stdout: '',
             stderr: '',
-            error: `clang-runner dispatch failed: ${errorMessage(e)}`,
+            error: `clang-runner dispatch failed: ${errorText(e)}`,
         };
     }
 }
