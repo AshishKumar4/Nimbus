@@ -148,7 +148,10 @@ function session() {
   const { pid } = s.processes.spawn('git commit', [], '/home/user', { cred: user });
   const fs = s.filesystem.bind({ pid, cred: user });
   const recovery = s.filesystem.recovery(pid, user);
-  const wave = async (through, ops) => through.writeStream(new Blob([await encodeWriteBatch({ inodes: [], chunks: [], ops })]).stream());
+  const wave = async (through, ops) => {
+    const bytes = await encodeWriteBatch({ inodes: [], chunks: [], ops });
+    return through.writeStream(new ReadableStream({ type: 'bytes', start(controller) { controller.enqueue(bytes); controller.close(); } }));
+  };
   const written = (offset, data) => ({ type: 'call', call: { call: 'write', path: 'home/user/m/f.txt', description: 'd1', offset, data: new TextEncoder().encode(data) } });
   const opened = await wave(fs, [{ type: 'call', call: { call: 'open', path: 'home/user/m/f.txt', mode: 0o644, create: true, description: 'd1' } }, written(0, 'A')]);
   assert.equal(opened.ok, true, JSON.stringify(opened.error));
