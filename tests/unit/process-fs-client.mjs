@@ -521,6 +521,29 @@ for (const phase of ['openWriter', 'stream']) {
   assert.equal(s.files.delegations.size, 0, 'settle left a grant held');
 }
 
+// ── A change above a held subtree's root recalls it first: an ancestor's
+//    chmod, and its rename, find what the holder decided already sent, and
+//    the holder holds nothing there after (held-local-reads T7's ground) ──
+for (const change of [
+  (kernel) => kernel.chmod('home/user/anc', 0o700),
+  (kernel) => kernel.rename('home/user/anc', 'home/user/anc2'),
+]) {
+  const s = session();
+  s.kernel.mkdir('home/user/anc/held', { recursive: true, mode: 0o755 });
+  for (const dir of ['home/user/anc', 'home/user/anc/held']) s.kernel.chown(dir, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  const c = client(s, { grantAfter: 1, grantIdleMs: 60_000, recallPollMs: 100 });
+  c.holder('home/user/anc/held/x');
+  const grant = await until(() => c.holder('home/user/anc/held/x'), 'the grant');
+  assert.equal(grant.root, 'home/user/anc/held');
+  c.submit({ type: 'call', call: { call: 'writeFile', path: 'home/user/anc/held/x', mode: 0o644, ino: c.number(grant), data: enc.encode('decided') } }, { acknowledged: true });
+  await withRecall(() => change(s.kernel));
+  assert.equal(c.stats().recalls, 1, 'the change above the root did not recall the grant');
+  assert.equal(c.holder('home/user/anc/held/y'), undefined, 'the holder still decides beneath a changed ancestor');
+  const landed = s.text('home/user/anc/held/x') ?? s.text('home/user/anc2/held/x');
+  assert.equal(landed, 'decided', 'the change applied before what the holder decided was sent');
+  await c.settle();
+}
+
 // ── An idle grant is given back; a refused subtree is not asked for again ──
 {
   const s = session();
