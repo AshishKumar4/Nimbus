@@ -146,8 +146,20 @@ export const CPYTHON_RUNNER = 'cpython-runner@2';
  * instantiation ignores the ones a module does not import.
  */
 export const CPYTHON_RUNNER_CONTRACTS = ['cpython-runner', CPYTHON_RUNNER];
-/** Git's first runtime build imports the shared Nimbus filesystem/process extensions. */
-export const GIT_RUNNER = 'git-runner';
+/**
+ * Git's runner keys, and what each build asks of its host. The first imports
+ * the shared Nimbus filesystem/process extensions; @2's libc also asks again
+ * a read or write the host gave up waiting on (wasm/nimbus-libc
+ * nimbus-restart.c), which a host answers NIMBUS_ERESTART only to it
+ * (runtime/wasi/types.ts): to the first, EINTR, which its stdio took for an
+ * end. One runner serves both.
+ */
+export const GIT_RUNNER_CONTRACTS = Object.freeze({
+    'git-runner': { restartsWaits: false },
+    'git-runner@2': { restartsWaits: true },
+});
+/** The key this tree's git build names. */
+export const GIT_RUNNER = 'git-runner@2';
 /**
  * Set in real git's environment (the git runner): a `git` it starts (a
  * hook's, a subcommand's) carries it, and is real git too, wherever a
@@ -164,8 +176,8 @@ export const GIT_WASI_ENV = 'NIMBUS_GIT_WASI';
  * bound by BASH_RUNNER). The git build's verify stage checks its image
  * against this list (packages/worker/wasm/git/build-git.sh). An image
  * importing an extension needs a host that provides it, so the runtime names
- * a runner key no older host registers: git's first build names
- * {@link GIT_RUNNER}.
+ * a runner key no older host registers: git's builds name the keys of
+ * {@link GIT_RUNNER_CONTRACTS}.
  */
 export const WASI_RUNTIME_IMPORT_MODULES = Object.freeze(['nimbus_fs', 'nimbus_proc', 'wasi_snapshot_preview1']);
 export const WASM32_WASI_NIMBUS_ABI = {

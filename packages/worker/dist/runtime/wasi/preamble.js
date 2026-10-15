@@ -1,3 +1,4 @@
+import { NIMBUS_ERESTART } from '@nimbus-sh/core/runtime/wasi/types.js';
 import { installAuthorityFilesystem, processGoneMessage, WASI_ACCEPTED_PATH_PREFIX, WASI_LISTEN_PATH_PREFIX, WASI_TCP_PATH_PREFIX, } from '@nimbus-sh/core/runtime/wasi/filesystem.js';
 import { answeringSupervisor, supervisorFilesystem } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
@@ -913,8 +914,9 @@ export function __wasiMakeImports(opts) {
     // Children and pipes (wasi/processes.ts): the nimbus_proc imports, and the
     // pipe descriptors they make, answered ahead of every other kind (below,
     // after the watchdog) and polled with the rest (poll_oneoff). A wait on a
-    // child or a pipe is bounded there (EINTR at PROCESS_PARK_MS), so the guest
-    // retries instead of being handed the watchdog's EAGAIN. Its imports are
+    // child or a pipe is bounded there (PROCESS_PARK_MS), so the guest asks
+    // again (NIMBUS_ERESTART to an image that restarts, else EINTR) instead of
+    // being handed the watchdog's EAGAIN. Its imports are
     // Suspending where the guest parks; elsewhere one that has to wait is
     // refused by name (processes.ts mustWait).
     const procParks = opts.parking !== 'none' && typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function';
@@ -940,6 +942,7 @@ export function __wasiMakeImports(opts) {
         cred: () => __wasiFS.cred ?? null,
         parks: procParks,
         park: __wasiThreadPark,
+        gaveUp: opts.restartsWaits === true ? NIMBUS_ERESTART : __WASI_EINTR,
     });
     const imports = {
         // ── args / env ──

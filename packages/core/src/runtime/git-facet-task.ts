@@ -9,6 +9,8 @@ export interface GitFacetArgs {
   cred: VfsCred;
   /** The session pid git runs as (its runtime process): its output and input, and the parent of the children it starts. */
   pid: number;
+  /** The image asks again a wait its host gave up on (GIT_RUNNER_CONTRACTS). */
+  restartsWaits: boolean;
 }
 
 /** What a git run ends with; its output went to the session as it was written (SupervisorRPC stdout/stderr). */

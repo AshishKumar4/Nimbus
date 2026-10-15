@@ -194,15 +194,19 @@ export const SPECS = {
   // Git 2.53.0 cross-built for wasm32-wasi by packages/worker/wasm/git/
   // build-git.sh. The runner (core runtime/git-runner.ts) runs it with the
   // session root as its filesystem and gitconfig as its system configuration.
-  'git/2.53.0': {
+  // -1: its libc asks again a read or write its host gave up waiting on
+  // (wasm/nimbus-libc/nimbus-restart.c), so a helper or credential helper
+  // that answers after 8 s is not taken for one that quit; it names
+  // git-runner@2 (GIT_RUNNER_CONTRACTS), whose host answers such a wait so.
+  'git/2.53.0-1': {
     license: 'GPL-2.0-only',
     wasi_namespace: 'wasi_snapshot_preview1',
     local_base: '../wasm/git',
     npm: {
       name: '@nimbus-sh/runtime-git',
       summary: 'Git 2.53.0, cross-compiled to wasm32-wasi',
-      // The first core that registers GIT_RUNNER (core 0.19.0 does not).
-      core: '>=0.20.0',
+      // The first core that registers git-runner@2 (core 0.22.0 does not).
+      core: '>=0.23.0',
     },
     files: [
       { src: 'git.wasm', vfs: 'share/git/git.wasm' },
