@@ -7,7 +7,11 @@
 //     its stack and status 1; handled, the program goes on;
 //   - a write the file refuses (/dev/full) is the same with its own errno
 //     ("ENOSPC: no space left on device, write");
-//   - console.log's writes never throw: a failure there is ignored.
+//   - console.log's writes never throw: a failure there is ignored;
+//   - a program hears it through an 'error' listener on the stream (on,
+//     once, prependListener, prependOnceListener), or as an error nothing
+//     caught ('uncaughtException', its monitor, a capture callback); with
+//     none, it ends of it, whenever the write fails.
 //
 // Each line runs in the workspace's shell (the built-in node) and in bash
 // with the host's node; their stdout, every pipeline status and what stderr
@@ -31,6 +35,15 @@ const CASES = [
   [`node -e 'process.stdout.on("error", (e) => { console.error("handled", e.code, e.syscall, e.errno, e.message); process.exitCode = 3 }); process.stdout.write("x\\n")' > /dev/full; echo "full=$?"`,
     'a handled ENOSPC is the program\'s to answer'],
   [`node -e 'console.log("x")' > /dev/full; echo "full=$?"`, 'console.log ignores its failed write'],
+  // Every way a program hears a failed write, each against host Node:
+  [`node -e 'process.stdout.once("error", (e) => { console.error("once", e.code); process.exitCode = 3 }); process.stdout.write("x\\n")' > /dev/full; echo "full=$?"`, 'a once listener hears it'],
+  [`node -e 'process.stdout.prependListener("error", (e) => { console.error("prepended", e.code); process.exitCode = 3 }); process.stdout.write("x\\n")' > /dev/full; echo "full=$?"`, 'a prepended listener hears it'],
+  [`node -e 'process.stdout.prependOnceListener("error", (e) => { console.error("prepended once", e.code); process.exitCode = 3 }); process.stdout.write("x\\n")' > /dev/full; echo "full=$?"`, 'a prepended once listener hears it'],
+  [`node -e 'process.stderr.on("error", (e) => { console.log("stderr", e.code); process.exitCode = 4 }); process.stderr.write("x\\n")' 2>/dev/full; echo "full=$?"`, 'stderr\'s listener hears a failed stderr write'],
+  [`node -e 'process.on("uncaughtException", (e) => { console.error("caught", e.code) }); process.stdout.write("x\\n")' > /dev/full; echo "full=$?"`, 'an uncaughtException listener takes the unhandled error'],
+  [`node -e 'process.on("uncaughtExceptionMonitor", (e, origin) => { console.error("monitor", e.code, origin) }); process.stdout.write("x\\n")' > /dev/full; echo "full=$?"`, 'a monitor sees it, and the program still ends of it'],
+  [`node -e 'process.setUncaughtExceptionCaptureCallback((e) => { console.error("captured", e.code) }); process.stdout.write("x\\n")' > /dev/full; echo "full=$?"`, 'a capture callback takes it'],
+  [`node -e 'setTimeout(() => process.stdout.write("late\\n"), 10)' > /dev/full; echo "full=$?"`, 'a late write with no listener ends the program with its stack and 1'],
 ];
 
 /** What stderr says, without the frames of a stack or Node's report around an uncaught error. */
