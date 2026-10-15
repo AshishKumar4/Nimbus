@@ -34,13 +34,12 @@ import type { Command, CommandContext } from '../substrate/lifo/commands/types.j
 import type { Facet, FacetHost } from './facet-host.js';
 import type { ClangFacetResult } from './facet-tasks.js';
 import { CRED_KERNEL, gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI, type NimbusFilesystemAuthority, type VfsCred } from './os-contracts.js';
-import type { ResidentFilesystemStats } from './wasi/resident-filesystem.js';
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { WASI_ABI_NAMESPACE, WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 import { isRegularTarFile, streamTarRecords, tarBytes, type TarHeader } from '../_shared/tarball-stream.js';
-import { exists, isFile, statOrThrow } from '../vfs/vfs.js';
+import { statOrThrow } from '../vfs/vfs.js';
 import { openRuntimeStdio } from './runtime-stdio.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 

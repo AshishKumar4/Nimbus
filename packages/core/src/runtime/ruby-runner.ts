@@ -53,7 +53,7 @@ import { z } from 'zod';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import type { FacetHost } from './facet-host.js';
 import { CRED_SESSION_USER, gateSyncLaunch, requireVfsCred, type NimbusFilesystemAuthority, type VfsCred } from './os-contracts.js';
-import { WASI_INSTANCE_PREAMBLE_SRC, type WasiFsSnapshot } from './wasi-instance.js';
+import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { RUBY_SOCKET_SHIM } from './ruby-socket-shim.js';
 import { RUBY_GREEN_THREADS } from './ruby-green-threads.js';
@@ -66,7 +66,6 @@ import {
   parseRubyGemRequirements,
   type RubyGemRequest,
 } from './ruby-gems.js';
-import { exists } from '../vfs/vfs.js';
 import { errorText } from '../_shared/error-text.js';
 import { openRuntimeStdio, runtimeOutput } from './runtime-stdio.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';

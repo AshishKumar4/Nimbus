@@ -27,7 +27,7 @@ import { BASH_STEP_TASK, BASH_REQUEST_TASK } from './compiled-bodies.generated.j
 import type { RuntimeManifest } from './runtime-manifest.js';
 import { withHostView, type ProcessView } from './process-files.js';
 import type { Facet, FacetHost } from './facet-host.js';
-import type { Command, CommandContext, CommandInputStream } from '../substrate/lifo/commands/types.js';
+import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import { z } from 'zod';
 import type { BashBootArgs, BashFeedArgs, BashSlice } from './bash/types.js';
 import { BASH_RUNNER_BODY_SRC } from './bash-runner.generated.js';
@@ -35,7 +35,6 @@ import type { NimbusFilesystemAuthority, RuntimeFsBridge, VfsCred } from './os-c
 import type { BashStepArgs } from './facet-tasks.js';
 import { BASH_RUNNER, CRED_KERNEL, gateSyncLaunch, requireVfsCred } from './os-contracts.js';
 import { resolveVfsPath } from '../vfs/path.js';
-import { exists } from '../vfs/vfs.js';
 import { openRuntimeStdio } from './runtime-stdio.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 

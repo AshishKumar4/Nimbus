@@ -62,8 +62,6 @@ import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from './wasm-memory
 import { wasmInterface } from './wasm-binary.js';
 import { errorText } from '../_shared/error-text.js';
 import { unsettledNoteOf } from '../_shared/process-fs-client.js';
-import type { ResidentFilesystemStats } from './wasi/resident-filesystem.js';
-import { exists } from '../vfs/vfs.js';
 export const WASM_RUNNER_VERSION = '0.3.0';
 
 export const WASM_RUNNER_HELP =
