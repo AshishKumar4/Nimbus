@@ -271,8 +271,14 @@ realm.on('unhandledRejection', fatal);
 realm.on('uncaughtException', fatal);
 // The loop ran empty with the main script still waiting: an ES module whose
 // top-level await never settled.
+// The program's status once its loop runs empty: its process.exitCode then (set after main ran).
+let finalCode = (): number => 0;
 realm.on('exit', () => {
-  if (exiting || mainDone) return;
+  if (exiting) return;
+  if (mainDone) {
+    post({ type: 'exit', code: finalCode() });
+    return;
+  }
   post({ type: 'output', fd: 2, data: `Warning: Detected unsettled top-level await at ${program.filename}\n` });
   post({ type: 'exit', code: 13 });
 });
@@ -293,5 +299,6 @@ const end = await runNodeProgram(program, {
 });
 if (end.ended) exitNow(end.code);
 post({ type: 'exit', code: end.code });
+finalCode = end.finalCode;
 mainDone = true;
 holdWhileBusy();
