@@ -11,8 +11,9 @@
 //   1. `git credential fill` waiting on a helper that sleeps a minute: git
 //      dies of SIGINT (130), and the helper with it;
 //   2. `git commit -a` waiting on an editor that sleeps a minute: git ignores
-//      SIGINT while its editor runs, the editor dies of it, and git reports
-//      the editor's failure and removes the index.lock it held (1);
+//      SIGINT while its editor runs, the editor dies of it, and git raises
+//      it again and dies of it too, its handler having removed the
+//      index.lock it held (130);
 //   3. real bash's `read` waiting on the terminal: bash dies of SIGINT (130).
 //
 // Red before: the program and its children ran on (git and its helper 24 s
@@ -100,7 +101,8 @@ async function interrupted(line, { setup = [] } = {}) {
   t.send('\x03');
   let backMs = null;
   try {
-    await t.waitFor((buf) => /\x1b\]133;D;\d+\x07/.test(buf), 30_000, 'the command\'s end');
+    // The raw buffer: the driver hands a predicate its text with the escapes taken out.
+    await t.waitFor(() => /\x1b\]133;D;\d+\x07/.test(t.buf), 30_000, 'the command\'s end');
     backMs = Date.now() - sent;
   } catch {}
   const status = Number(/\x1b\]133;D;(\d+)\x07/.exec(t.buf)?.[1] ?? NaN);
@@ -123,7 +125,7 @@ try {
     assert.deepEqual(nimbus.live.filter((command) => /git|sleep/.test(command)), [], 'git and its helper ended');
   });
 
-  await check('git commit ignores SIGINT while its editor runs, and cleans up after the editor dies of it', async () => {
+  await check('git commit ignores SIGINT while its editor runs, then dies of it, its lock removed', async () => {
     const dir = nativeRepo();
     try {
       const native = await nativeInterrupt(['git', 'commit', '-a'], { cwd: dir, env: { ...ident, GIT_EDITOR: EDITOR } });
@@ -131,14 +133,13 @@ try {
       const nimbus = await interrupted(`cd /home/user/repo && GIT_EDITOR='${EDITOR}' NIMBUS_GIT_WASI=1 git commit -a`, {
         setup: [
           'mkdir -p /home/user/repo && cd /home/user/repo && NIMBUS_GIT_WASI=1 git init -q -b main && echo one > f && NIMBUS_GIT_WASI=1 git add f'
-            + ` && ${Object.entries(ident).map(([k, v]) => `${k}=${v}`).join(' ')} NIMBUS_GIT_WASI=1 git commit -q -m one && echo two > f`,
+            + ' && NIMBUS_GIT_WASI=1 git config user.name a && NIMBUS_GIT_WASI=1 git config user.email a@a'
+            + ' && NIMBUS_GIT_WASI=1 git commit -q -m one && echo two > f',
         ],
       });
       console.log('nimbus commit:', JSON.stringify({ status: nimbus.status, backMs: nimbus.backMs, live: nimbus.live, text: nimbus.text.slice(-800) }));
       assert.equal(nimbus.status, native.status, `status (native ${native.status}): ${JSON.stringify(nimbus.text.slice(-600))}`);
       assert.ok(nimbus.backMs !== null && nimbus.backMs <= PROMPT_BACK_MS, `prompt back ${nimbus.backMs} ms after Ctrl-C`);
-      assert.match(native.stderr, /problem with the editor/);
-      assert.match(nimbus.text, /problem with the editor/, 'git reported the editor\'s failure');
       assert.equal(existsSync(join(dir, '.git', 'index.lock')), false, 'native git removed its index.lock');
       const lock = await nimbus.session.run('test -e /home/user/repo/.git/index.lock && echo locked || echo clean', 30_000);
       assert.match(lock.stdout, /clean/, 'git removed its index.lock');
