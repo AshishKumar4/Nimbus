@@ -9,6 +9,7 @@ import type { OutputSource } from '../../node-compat/standard-streams.js';
 import type { VfsEvent } from '../../../../vfs/events.js';
 import { type EgressGuestEvent, type EgressHostEvent } from '../../../../runtime/realm-egress.js';
 import type { NodeProgram } from './node-program.js';
+import type { RealmError } from '../../../../runtime/realm.js';
 import type { VirtualRequest } from '../../kernel/index.js';
 /** The filesystem methods a call names: NodeFilesystem's, but its watch (a call of its own). */
 export type FsMethod = Exclude<keyof NodeFilesystem, 'watch'>;
@@ -36,13 +37,27 @@ export type NodeCall = {
  | {
     readonly op: 'umask';
     readonly mask: number;
+}
+/** Whether standard descriptor `fd` is the terminal, a pipe, or neither. */
+ | {
+    readonly op: 'fdKind';
+    readonly fd: number;
+}
+/** The terminal's raw mode, on or off (tty.ReadStream.setRawMode). */
+ | {
+    readonly op: 'rawMode';
+    readonly on: boolean;
 };
+/** What a standard descriptor is, as libuv tells a stream it can make from it. */
+export type FdKind = 'terminal' | 'pipe' | 'other';
 /** A write to output `fd` that failed with `code`, on a pipe or a file, made through `source`. */
+/** A failed write: its descriptor, its error, and what made it (its source, and which of the program's writers of `fd`: 0 is process.stdout or process.stderr, and its console). */
 export interface OutputFailure {
     readonly fd: 1 | 2;
     readonly code: string;
     readonly pipe: boolean;
     readonly source: OutputSource;
+    readonly writer: number;
 }
 /** A response to a request that stayed on the box, as data, either way across. */
 export interface RealmResponse {
@@ -57,6 +72,7 @@ export type GuestEvent =
     readonly type: 'output';
     readonly fd: 1 | 2;
     readonly source: OutputSource;
+    readonly writer: number;
     readonly data: string | Uint8Array;
 }
 /** The program's loop ran empty, and it would hear of a failed write: tell it once writes up to number `upTo` are made (output-settled). */
@@ -82,10 +98,21 @@ export type GuestEvent =
     readonly code: number;
     readonly ended: boolean;
 }
-/** The guest took a failure of output `fd`'s stream (output-failed): whatever the program makes of it, it is the guest's. */
+/** The guest took a failure of output `fd`'s writer `writer` (output-failed), or the writer closed: whatever the program makes of its failures, they are the guest's. */
  | {
     readonly type: 'heard';
     readonly fd: 1 | 2;
+    readonly writer: number;
+}
+/** fd 0's next piece, wanted as read `id` (process.stdin). */
+ | {
+    readonly type: 'stdin-read';
+    readonly id: number;
+}
+/** Read `id` is withdrawn: what has not arrived stays on fd 0. */
+ | {
+    readonly type: 'stdin-cancel';
+    readonly id: number;
 } | EgressGuestEvent;
 /** What this side posts on `events`. */
 export type HostEvent = {
@@ -112,6 +139,20 @@ export type HostEvent = {
  | {
     readonly type: 'output-settled';
     readonly seq: number;
+}
+/** Read `id`'s answer, once: its piece of fd 0 (null at its end), its error, or that it was withdrawn before anything arrived. */
+ | {
+    readonly type: 'stdin';
+    readonly id: number;
+    readonly data: Uint8Array | null;
+} | {
+    readonly type: 'stdin';
+    readonly id: number;
+    readonly error: RealmError;
+} | {
+    readonly type: 'stdin';
+    readonly id: number;
+    readonly withdrawn: true;
 } | EgressHostEvent;
 /**
  * What the realm starts with: the program, the kernel's /etc/hosts its

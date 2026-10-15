@@ -21,7 +21,8 @@ import { createConsole } from '../node-compat/console.js';
 import { ProcessExitError } from '../node-compat/index.js';
 import { createCjsLoader } from '../node-compat/cjs-loader.js';
 import { createNativeEsmLoader } from '../node-compat/native-esm-loader.js';
-import { leaveStandardStreamsOpen } from '../node-compat/standard-streams.js';
+import { leaveStandardStreamsOpen, type StandardPiece } from '../node-compat/standard-streams.js';
+import { enc } from '../../../_shared/bytes.js';
 import { applySourceEdits, containsModuleSyntax } from '../../../runtime/javascript-ast.js';
 import { readModuleImportSites, unusedIdentifier } from '../../../runtime/dynamic-import-rewrite.js';
 import type { NodeContext } from '../node-compat/index.js';
@@ -200,6 +201,11 @@ async function executeCjsCommand(
 ): Promise<number> {
   // The command's own mask, a copy of the shell's as it started, as a child's is.
   let mask = ctx.cred.umask;
+  // fd 0 a piece at a time: a read still waiting when the command ends is withdrawn.
+  const ended = new AbortController();
+  // The terminal's mode before the command first changed it, which its end restores (uv_tty_reset_mode).
+  let entryRawMode: boolean | undefined;
+  const stdin = ctx.stdin;
   const nodeCtx: NodeContext = {
     filesystem: synchronousFilesystem(ctx.vfs, () => mask),
     identity: { pid: ctx.pid, uid: ctx.cred.uid, gid: ctx.cred.gid, groups: ctx.cred.groups, umask: mask, setUmask: (next) => { mask = next; } },
@@ -211,15 +217,42 @@ async function executeCjsCommand(
     filename: entryPath,
     dirname: dirname(entryPath),
     signal: ctx.signal,
+    stdio: {
+      stdout: ctx.stdout,
+      stderr: ctx.stderr,
+      env: ctx.env,
+      input: {
+        read: () => {
+          const withdraw = new AbortController();
+          const signal = AbortSignal.any([withdraw.signal, ended.signal]);
+          return { piece: commandStdinPiece(stdin, signal), cancel: () => withdraw.abort() };
+        },
+        // The command's own promise is what it waits on.
+        hold: () => {},
+      },
+      terminal: {
+        isatty: (fd) => ctx.isFdTerminal?.(fd) ?? false,
+        isPipe: (fd) => ctx.isFdPipe?.(fd) ?? false,
+        setRawMode: (on) => {
+          entryRawMode ??= ctx.getRawMode?.() ?? false;
+          ctx.setRawMode?.(on);
+        },
+      },
+    },
     reachStreams: leaveStandardStreamsOpen,
   };
-  const process = createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdout: ctx.stdout, stderr: ctx.stderr, identity: nodeCtx.identity });
+  const process = createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdio: nodeCtx.stdio, identity: nodeCtx.identity });
   const console = createConsole(ctx.stdout, ctx.stderr);
   // A command runs in the shell's realm, whose globalThis is the shell's: its
   // modules share a global of their own instead.
   const scope = { process, console, global: { process, Buffer, console } };
   const loader = createCjsLoader(nodeCtx, scope);
-  return commandsRunning().run(scope.process, () => runCjsCommand(entryPath, source, ctx, lifo, nodeCtx, loader));
+  try {
+    return await commandsRunning().run(scope.process, () => runCjsCommand(entryPath, source, ctx, lifo, nodeCtx, loader, scope.process));
+  } finally {
+    ended.abort();
+    if (entryRawMode !== undefined && ctx.getRawMode?.() !== entryRawMode) ctx.setRawMode?.(entryRawMode);
+  }
 }
 
 /**
@@ -231,6 +264,26 @@ async function executeCjsCommand(
  * host's own outside the commands.
  */
 let running: AsyncLocalStorage<CommandProcess> | undefined;
+/** A command's next piece of fd 0, never an empty one, until `signal` ends: then 'withdrawn', taking nothing. */
+async function commandStdinPiece(stdin: CommandContext['stdin'], signal: AbortSignal): Promise<StandardPiece> {
+  try {
+    for (;;) {
+      if (!stdin) return null;
+      signal.throwIfAborted();
+      let piece: Uint8Array | null;
+      if (stdin.readBytes) piece = await stdin.readBytes(65536, signal);
+      else {
+        const text = await stdin.read();
+        piece = text === null ? null : enc.encode(text);
+      }
+      if (piece === null || piece.length > 0) return piece;
+    }
+  } catch (error) {
+    if (signal.aborted) return 'withdrawn';
+    throw error;
+  }
+}
+
 type CommandProcess = ReturnType<typeof createProcess>;
 
 function commandsRunning(): AsyncLocalStorage<CommandProcess> {
@@ -254,26 +307,41 @@ async function runCjsCommand(
   lifo: LifoAPI,
   nodeCtx: NodeContext,
   loader: ReturnType<typeof createCjsLoader>,
+  process: CommandProcess,
 ): Promise<number> {
   let native: Awaited<ReturnType<typeof createNativeEsmLoader>> | undefined;
-  try {
-    native = await createNativeEsmLoader(nodeCtx, loader);
-    // Its own source, already read: an entry with no dependencies needs no synchronous read at all.
-    const exported = loader.load(entryPath, { source, esm: false });
-    const handler = typeof exported === 'function'
-      ? exported
-      : (exported as Record<string, unknown> | null)?.default;
-
-    if (typeof handler !== 'function') {
-      await ctx.stderr.write(`lifo: ${entryPath} does not export a command function\n`);
-      return 1;
-    }
-    const code = await (handler as (c: CommandContext, l: LifoAPI) => Promise<number>)(ctx, lifo);
-    return typeof code === 'number' ? code : 0;
-  } catch (e) {
+  const failed = async (e: unknown): Promise<number> => {
     if (e instanceof ProcessExitError) return e.exitCode;
     await ctx.stderr.write(e instanceof Error ? `${e.stack || e.message}\n` : `${String(e)}\n`);
     return 1;
+  };
+  try {
+    let code: number;
+    try {
+      native = await createNativeEsmLoader(nodeCtx, loader);
+      // Its own source, already read: an entry with no dependencies needs no synchronous read at all.
+      const exported = loader.load(entryPath, { source, esm: false });
+      const handler = typeof exported === 'function'
+        ? exported
+        : (exported as Record<string, unknown> | null)?.default;
+
+      if (typeof handler !== 'function') {
+        await ctx.stderr.write(`lifo: ${entryPath} does not export a command function\n`);
+        code = 1;
+      } else {
+        const returned = await (handler as (c: CommandContext, l: LifoAPI) => Promise<number>)(ctx, lifo);
+        code = typeof returned === 'number' ? returned : 0;
+      }
+    } catch (e) {
+      code = await failed(e);
+    }
+    // Its process hears 'exit' with the status it ends with, as a Node process does, while its
+    // modules can still be loaded (a listener may require one).
+    try {
+      return process.exitWith(code, true);
+    } catch (e) {
+      return failed(e);
+    }
   } finally {
     native?.dispose();
   }

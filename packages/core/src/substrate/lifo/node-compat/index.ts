@@ -13,10 +13,9 @@ import type { LoopbackRouter, VirtualRequestHandler } from '../kernel/index.js';
 import type { DNSResolver } from '../kernel/dns-resolver.js';
 import { createChildProcess } from './child_process.js';
 import * as zlibModule from './zlib.js';
-import { createTty } from './tty-streams.js';
+import { ttyOf, type ProgramStdio } from './tty-streams.js';
 import { createDns } from './dns.js';
 import { createModuleShim, PROVIDED_PACKAGES } from './module.js';
-import * as readlineModule from './readline.js';
 import { createRimraf } from './rimraf.js';
 import { createEsbuild } from './esbuild.js';
 import { createHttp2Module } from '../../../_shared/http2-module.js';
@@ -37,6 +36,8 @@ export interface NodeContext {
   executeCapture?: (input: string) => Promise<string>;
   /** fd 0 to its end, blocking until stdin ends (readFileSync(0)); absent, fd 0 reads as empty. */
   stdin?: () => Uint8Array;
+  /** Its standard descriptors, as its process and its tty module see them (one object per program). */
+  stdio: ProgramStdio;
   portRegistry?: Map<number, VirtualRequestHandler>;
   routeLoopback?: LoopbackRouter;
   /** The kernel's resolver, which dns.lookup answers from as curl and wget do. */
@@ -105,8 +106,7 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       argv: ctx.argv,
       env: ctx.env,
       cwd: ctx.cwd,
-      stdout: ctx.stdout,
-      stderr: ctx.stderr,
+      stdio: ctx.stdio,
       identity: ctx.identity,
     }),
     events: () => realm.getBuiltinModule('node:events'),
@@ -126,11 +126,12 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     crypto: () => realm.getBuiltinModule('node:crypto'),
     zlib: () => zlibModule,
     string_decoder: () => realm.getBuiltinModule('node:string_decoder'),
-    tty: () => (ctx.reachStreams?.(), createTty()),
+    tty: () => (ctx.reachStreams?.(), ttyOf(ctx.stdio).module),
     dns: dnsModule,
     'dns/promises': () => dnsModule().promises,
-    readline: () => readlineModule,
-    'readline/promises': () => readlineModule.promises,
+    // The engine's own (X-2): over process.stdin, as Node's reads its input.
+    readline: () => (ctx.reachStreams?.(), realm.getBuiltinModule('node:readline')),
+    'readline/promises': () => (ctx.reachStreams?.(), realm.getBuiltinModule('node:readline/promises')),
     constants: () => ({ ...createOs(ctx.env).constants, ...fsModule().constants }),
     // The engine's own, context-free (X-3). v8 is the engine's but for what
     // would reach the host's files or flags (a heap snapshot file, coverage,

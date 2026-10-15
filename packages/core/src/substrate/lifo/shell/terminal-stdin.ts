@@ -10,9 +10,15 @@ import { ByteQueue } from './byte-queue.js';
 export class TerminalStdin extends ByteQueue implements TerminalInputStream {
   constructor(private readonly beforeRead: () => void = () => {}) { super(); }
 
-  protected override pull(): Promise<Uint8Array | null> {
-    if (!this.buffered && !this.ended) this.beforeRead();
-    return super.pull();
+  protected override pull(signal?: AbortSignal): Promise<Uint8Array | null> {
+    // A read already withdrawn takes no type-ahead: it is the next reader's.
+    if (!this.buffered && !this.ended && !signal?.aborted) this.beforeRead();
+    return super.pull(signal);
+  }
+
+  /** Whether a read would be answered at once: something is queued, or the input ended. */
+  get ready(): boolean {
+    return this.buffered || this.ended;
   }
 
   private _rawMode = false;

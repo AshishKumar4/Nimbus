@@ -72,7 +72,7 @@ export class PipeChannel {
         read: async () => (await this.queue.read()),
         readAll: async () => (await this.queue.readAll()),
         readLine: async () => (await this.queue.readLine()),
-        readBytes: async (maxLength) => (await this.queue.readBytes(maxLength)),
+        readBytes: async (maxLength, signal) => (await this.queue.readBytes(maxLength, signal)),
     };
     close() {
         this.writerClosed = true;
