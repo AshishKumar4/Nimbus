@@ -538,7 +538,7 @@ var __nimbusProcessFsModule = (() => {
       case "open": {
         const flags = ["create", "exclusive", "nofollow", "read", "truncate"];
         let required = keys;
-        for (const flag of ["create", "description", "exclusive", "ino", "nofollow", "read", "truncate", "umask"])
+        for (const flag of ["create", "description", "exclusive", "fchmod", "ino", "nofollow", "read", "truncate", "umask"])
           required = required.replace(`,${flag}`, "");
         if (required !== "call,mode,path")
           break;
@@ -557,7 +557,8 @@ var __nimbusProcessFsModule = (() => {
           ...value.exclusive === true ? { exclusive: true } : {},
           ...value.nofollow === true ? { nofollow: true } : {},
           ...value.read === true ? { read: true } : {},
-          ...value.description === void 0 ? {} : { description: descriptionId(value.description, "open description") }
+          ...value.description === void 0 ? {} : { description: descriptionId(value.description, "open description") },
+          ...value.fchmod === void 0 ? {} : { fchmod: u32(value.fchmod, "open fchmod") }
         };
       }
       case "lutimes":
@@ -1913,6 +1914,9 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       },
       holds(key) {
         return grants.some((grant) => !grant.ended && within(key, grant.root));
+      },
+      guards(key) {
+        return escaped === null && grants.some((grant) => !grant.ended && !grant.closing && !grant.shared && (within(key, grant.root) || within(grant.root, key)));
       },
       pending() {
         return queue.length > 0 || inFlight !== null;

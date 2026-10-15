@@ -855,7 +855,7 @@ function parsePathCall(value, path) {
         case 'open': {
             const flags = ['create', 'exclusive', 'nofollow', 'read', 'truncate'];
             let required = keys;
-            for (const flag of ['create', 'description', 'exclusive', 'ino', 'nofollow', 'read', 'truncate', 'umask'])
+            for (const flag of ['create', 'description', 'exclusive', 'fchmod', 'ino', 'nofollow', 'read', 'truncate', 'umask'])
                 required = required.replace(`,${flag}`, '');
             if (required !== 'call,mode,path')
                 break;
@@ -873,6 +873,7 @@ function parsePathCall(value, path) {
                 ...(value.nofollow === true ? { nofollow: true } : {}),
                 ...(value.read === true ? { read: true } : {}),
                 ...(value.description === undefined ? {} : { description: descriptionId(value.description, 'open description') }),
+                ...(value.fchmod === undefined ? {} : { fchmod: u32(value.fchmod, 'open fchmod') }),
             };
         }
         case 'lutimes':

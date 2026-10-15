@@ -8946,7 +8946,9 @@ export class SqliteVFS {
      * there (a link included, followed or not), ENOENT without `create`,
      * ELOOP for a link when `nofollow`, EISDIR for a directory, EACCES without
      * write permission; a name made empty with `mode` less the call's umask, or
-     * an existing file emptied when `truncate`. Its answer is the file's stat.
+     * an existing file emptied when `truncate`; then, with `fchmod`, that file
+     * given the mode (chmod's rule, EPERM for another's), all of it refused
+     * together. Its answer is the file's stat.
      */
     openToWrite(call, caller, described) {
         const cred = withUmask(caller, call.umask);
@@ -8969,6 +8971,12 @@ export class SqliteVFS {
             this.checkAccess(call.path, (call.read === true ? 4 : 0) | 2, cred);
             if (call.truncate === true)
                 this.truncate(call.path, 0, cred);
+        }
+        if (call.fchmod !== undefined) {
+            const opened = this.checkAccess(call.path, 0, cred, { followLeaf: follow });
+            if (!opened.inode)
+                throw vfsKeyError('ENOENT', call.path);
+            this.chmodInode(opened.inode, call.fchmod, cred, opened.path);
         }
         const stat = this.stat(call.path, cred, true);
         if (call.description === undefined)

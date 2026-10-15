@@ -933,6 +933,9 @@ export function processFsClient(options) {
         holds(key) {
             return grants.some((grant) => !grant.ended && within(key, grant.root));
         },
+        guards(key) {
+            return escaped === null && grants.some((grant) => !grant.ended && !grant.closing && !grant.shared && (within(key, grant.root) || within(grant.root, key)));
+        },
         pending() {
             return queue.length > 0 || inFlight !== null;
         },
