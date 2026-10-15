@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { Readable } from 'node:stream';
 import { type LoopbackRouter, type VirtualRequestHandler } from '../kernel/index.js';
 interface RequestOptions {
     hostname?: string;
@@ -9,7 +10,8 @@ interface RequestOptions {
     headers?: Record<string, string>;
     timeout?: number;
 }
-declare class IncomingMessage extends EventEmitter {
+/** A request a server is given, or a response a client is: a Readable of its body, as Node's. */
+declare class IncomingMessage extends Readable {
     statusCode: number;
     statusMessage: string;
     headers: Record<string, string>;
@@ -20,7 +22,6 @@ declare class IncomingMessage extends EventEmitter {
     httpVersionMinor: number;
     complete: boolean;
     aborted: boolean;
-    readable: boolean;
     socket: {
         remoteAddress: string;
         remotePort: number;
@@ -32,10 +33,9 @@ declare class IncomingMessage extends EventEmitter {
         encrypted: boolean;
     };
     constructor(statusCode: number, statusMessage: string, headers: Record<string, string>);
-    setEncoding(_enc: string): this;
-    resume(): this;
-    pause(): this;
-    destroy(): this;
+    _read(): void;
+    /** Its body, then its end. */
+    deliver(body: string | null): void;
 }
 declare class ClientRequest extends EventEmitter {
     private options;
