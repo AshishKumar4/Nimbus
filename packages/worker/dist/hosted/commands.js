@@ -1,7 +1,7 @@
 import { Shell, createCurlCommand, createNpmCommand, NPM_VERSION, createTopCommand, createWatchCommand, createHelpCommand } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { createKillCommand } from '@nimbus-sh/core/substrate/lifo/commands/system/kill.js';
 import { installSummary } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
-import { signalAbortReason, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
+import { exitCodeForSignal, signalAbortReason, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 import { BASH_RUNNER, GIT_RUNNER, CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
@@ -29,8 +29,7 @@ import { listInstalledRuntimes } from '@nimbus-sh/core/runtime/installed-runtime
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi } from '@nimbus-sh/core/runtime/process-logs.js';
 import { DEFAULT_HOME, NODE_VERSION } from '@nimbus-sh/core/constants.js';
-import { afterDevServerRestore, devServerProcess, recordDevServer, spawnOf } from '../session/dev-servers.js';
-import { isJsonObject } from '../npm/package-lock.js';
+import { VITE_CONFIG_KEY } from '../session/keys.js';
 import { HeadlessTerminal } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { makeNimbusVerbHandler } from '@nimbus-sh/core/runtime/nimbus-command.js';
 export async function registerHostedCommands(self, workspace) {
@@ -78,7 +77,30 @@ export async function registerHostedCommands(self, workspace) {
             // stop, continue or handler delivery behind it.
             if (disposition !== 'terminate')
                 return 'unsupported';
-            // A dev server the session runs ends with its process (bindDevServer).
+            // runtime primitive support (P11): the vite shim PID (registered by
+            // P5's long-running spawn) also tears down the in-process
+            // viteDevServer — facetManager.kill only handles real Worker-Loader
+            // facets, and would leave the shim running with its port registered
+            // against a dead PID.
+            if (self._viteShimPid === pid) {
+                try {
+                    if (self.viteDevServer?.isRunning) {
+                        self.viteDevServer.stop();
+                        self.viteDevServer = null;
+                        await self.ctx.storage.delete(VITE_CONFIG_KEY);
+                    }
+                }
+                catch (error) {
+                    await stderr.write(`kill: while stopping vite shim: ${error instanceof Error ? error.message : String(error)}\n`);
+                }
+                const code = exitCodeForSignal(signal);
+                self.portRegistry.unregisterByPid(pid);
+                self.processes.kill(pid, code);
+                notifyTerminalEvent(terminal, { type: 'exit', pid, code, reason: `SIG${signal}`, command: 'vite' });
+                self._viteShimPid = null;
+                self._viteShimPort = null;
+                return 'delivered';
+            }
             return facetMgr.kill(pid, signal, signalAbortReason(signal)) ? 'delivered' : 'no-such-process';
         },
     };
@@ -609,16 +631,6 @@ export async function registerHostedCommands(self, workspace) {
     //   layer, not real wrangler)
     // - silently strip wrangler-specific flags (--ip, --port, etc.) that
     //   have no meaning inside a DO.
-    // The Worker dev server runs as a process of its own (devServerProcess), from
-    // before its start, and ends with it: `wrangler stop`, a `wrangler dev` that
-    // replaces it, a kill.
-    let wranglerPid = null;
-    const stopWranglerServer = () => {
-        if (wranglerPid === null)
-            return false;
-        self.processes.exit(wranglerPid, 0);
-        return true;
-    };
     const wranglerHandler = (invokedAs) => async (ctx) => {
         const rawArgs = ctx.args || [];
         // Filter wrangler-only flags early (works for both invocation paths;
@@ -640,11 +652,9 @@ export async function registerHostedCommands(self, workspace) {
             }
             return 0;
         }
-        // A start or stop comes after the restore of the servers the session ran before it restarted.
-        if (args[0] === 'stop' || args[0] === 'dev')
-            await afterDevServerRestore(self, self.processes, ctx);
         if (args[0] === 'stop') {
-            if (stopWranglerServer()) {
+            if (self.nimbusWrangler?.isRunning) {
+                self.nimbusWrangler.stop();
                 ctx.stdout.write('\x1b[33mWorker dev server stopped.\x1b[0m\n');
             }
             else {
@@ -693,7 +703,7 @@ export async function registerHostedCommands(self, workspace) {
         }
         // The dev server before this one stops, a start still under way included:
         // left to finish, it would serve, watch and rebuild beside this one.
-        stopWranglerServer();
+        self.nimbusWrangler?.stop();
         let starting = true;
         // Pre-flight: read the wrangler config ourselves and call out any
         // binding fields nimbus-wrangler can't provide. NimbusWrangler will
@@ -723,23 +733,7 @@ export async function registerHostedCommands(self, workspace) {
         for (const store of ['.nimbus/kv', '.nimbus/r2']) {
             await handKernelArtifact(workspace.filesystem, ctx.vfs, cred, `/${rootPath}/${store}`);
         }
-        // The server's process: what `ps` lists, a kill ends (a start under way
-        // included), and a new incarnation of the session runs again.
-        const running = { pid: null, server: null };
-        const started = devServerProcess(self.processes, invokedAs, ctx, () => {
-            running.server?.stop();
-            if (self.nimbusWrangler === running.server)
-                self.nimbusWrangler = null;
-            if (wranglerPid === running.pid)
-                wranglerPid = null;
-        });
-        if (started === null) {
-            ctx.stderr.write(`${invokedAs}: the process that ran it has ended\n`);
-            return 1;
-        }
-        const { entry, adopted } = started;
-        running.pid = wranglerPid = entry.pid;
-        self.nimbusWrangler = running.server = new NimbusWrangler({
+        self.nimbusWrangler = new NimbusWrangler({
             // The dev server's Worker goes out through the network of the command that started it.
             network: workspace.network.forProcess(ctx.pid),
             vfs: sqliteFs.as(cred),
@@ -758,7 +752,6 @@ export async function registerHostedCommands(self, workspace) {
                     ctx.stderr.write(msg);
                     return;
                 }
-                self.processes.appendOutput(entry.pid, 'stderr', msg);
                 if (terminal) {
                     try {
                         terminal.write(msg);
@@ -781,14 +774,7 @@ export async function registerHostedCommands(self, workspace) {
             ctx.stderr.write(server.wasStopped
                 ? '  \x1b[33mWorker dev server stopped before it started.\x1b[0m\n'
                 : '  \x1b[31mFailed to start Worker dev server.\x1b[0m\n');
-            // One handed to it ends with its caller's status.
-            if (!adopted)
-                self.processes.exit(entry.pid, 1);
             return 1;
-        }
-        await recordDevServer(self, entry.pid, { ...spawnOf(entry), env: ctx.env, root: vfsRoot });
-        if (!adopted) {
-            notifyTerminalEvent(terminal, { type: 'spawn', pid: entry.pid, command: entry.command, longRunning: true, attachedTty: false });
         }
         const cfg = server.stats;
         // runtime primitive support (P5): banner advertises the canonical
@@ -801,7 +787,7 @@ export async function registerHostedCommands(self, workspace) {
         ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Entry:    ' + cfg.main + '\n');
         ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Root:     ' + cfg.root + '\n');
         ctx.stdout.write('  \x1b[32m\u279C\x1b[0m  Reload:   on file change\n\n');
-        ctx.stdout.write('  \x1b[2mRun \x1b[0m' + invokedAs + ' stop\x1b[2m, or \x1b[0mkill ' + entry.pid + '\x1b[2m, to stop.\x1b[0m\n\n');
+        ctx.stdout.write('  \x1b[2mRun \x1b[0m' + invokedAs + ' stop\x1b[2m to stop.\x1b[0m\n\n');
         return 0;
     };
     registry.register('nimbus-wrangler', wranglerHandler('nimbus-wrangler'));
@@ -832,13 +818,11 @@ export async function registerHostedCommands(self, workspace) {
             await ctx.vfs.writeFile(pkgJsonPath, '{"name":"project","version":"1.0.0","dependencies":{}}\n');
         }
         ctx.stdout.write('\x1b[36mNimbus npm v2 (batched writes)\x1b[0m\n');
-        await self.ensureNpmInstaller((msg) => {
-            ctx.stdout.write('[npm] ' + msg + '\n');
+        const installer = await self.ensureNpmInstaller();
+        const result = await installer.install(cwd, {
+            packages, pid: ctx.pid, cred: requireVfsCred(ctx.cred, 'npm-fast'), registry: ctx.env?.NPM_REGISTRY, signal: ctx.signal,
+            onProgress: (msg) => ctx.stdout.write('[npm] ' + msg + '\n'),
         });
-        const installer = self.npmInstaller;
-        if (!installer)
-            throw new Error('npm installer is not initialized');
-        const result = await installer.install(cwd, { packages, pid: ctx.pid, cred: requireVfsCred(ctx.cred, 'npm-fast'), registry: ctx.env?.NPM_REGISTRY, signal: ctx.signal });
         const summary = installSummary({
             installed: result.installed.length, failed: result.failed, elapsedMs: result.elapsed,
             totalFiles: result.totalFiles, fromCacheHits: result.cachedHits,
@@ -1090,6 +1074,8 @@ export async function registerHostedCommands(self, workspace) {
     // which owns the NpmInstaller, prefix dirs and bin materialisation.
     const coreNpmCmd = createNpmCommand(registry, shellExecute, kernel, {
         installer: createNpmInstallPort(self, workspace.filesystem),
+        // Releases before 0.13.2 wrote package.json as root.
+        beforeWrite: (ctx, path) => handKernelArtifact(workspace.filesystem, ctx.vfs, ctx.cred, path),
     });
     registry.register('npm', async (ctx) => {
         const args = ctx.args || [];
@@ -1200,97 +1186,12 @@ export async function registerHostedCommands(self, workspace) {
                 return 1;
             }
         }
-        // npm ls — list installed packages
-        if (sub === 'ls' || sub === 'list') {
-            const pkgPath = `/${cwdKey}/package.json`;
-            const nmDir = `/${cwdKey}/node_modules`;
-            try {
-                const pkg = JSON.parse(await ctx.vfs.readFileString(pkgPath));
-                ctx.stdout.write(`${pkg.name || 'project'}@${pkg.version || '1.0.0'} ${ctx.cwd}\n`);
-                const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
-                const names = Object.keys(deps);
-                for (let i = 0; i < names.length; i++) {
-                    const isLast = i === names.length - 1;
-                    const prefix = isLast ? '└── ' : '├── ';
-                    const name = names[i];
-                    let version = deps[name];
-                    // Try to read actual installed version
-                    try {
-                        const installed = JSON.parse(await ctx.vfs.readFileString(nmDir + '/' + name + '/package.json'));
-                        version = installed.version;
-                    }
-                    catch { }
-                    ctx.stdout.write(`${prefix}${name}@${version}\n`);
-                }
-            }
-            catch {
-                ctx.stderr.write('npm ERR! no package.json found\n');
-                return 1;
-            }
-            return 0;
-        }
         // npm init, npm create, npm innit: core npm's (npm-init.ts), npm's own
         // package.json or the initializer it names, run by npx.
         if (sub === 'init' || sub === 'create' || sub === 'innit') {
             // Releases before 0.13.2 wrote package.json as root.
             await handKernelArtifact(workspace.filesystem, ctx.vfs, requireVfsCred(ctx.cred, 'npm'), `/${cwdKey}/package.json`);
             return coreNpmCmd(ctx);
-        }
-        // npm uninstall <pkg>
-        if (sub === 'uninstall' || sub === 'un' || sub === 'remove' || sub === 'rm') {
-            const packages = args.slice(1).filter(a => !a.startsWith('-'));
-            if (packages.length === 0) {
-                ctx.stderr.write('Usage: npm uninstall <pkg>\n');
-                return 1;
-            }
-            const nmDir = `/${cwdKey}/node_modules`;
-            let failed = false;
-            for (const pkg of packages) {
-                try {
-                    await ctx.vfs.remove(nmDir + '/' + pkg, { recursive: true, force: true });
-                    ctx.stdout.write('removed ' + pkg + '\n');
-                }
-                catch (error) {
-                    ctx.stderr.write(`npm ERR! could not remove ${pkg}: ${error instanceof Error ? error.message : String(error)}\n`);
-                    failed = true;
-                }
-            }
-            // Update package.json, when there is one to update: one it cannot read
-            // or write fails the command, a corrupt one is left as it is.
-            const pkgPath = `/${cwdKey}/package.json`;
-            try {
-                let pkgJson;
-                try {
-                    pkgJson = JSON.parse(await ctx.vfs.readFileString(pkgPath));
-                }
-                catch (error) {
-                    if (error instanceof SyntaxError ||
-                        (error !== null && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'))
-                        return failed ? 1 : 0;
-                    throw error;
-                }
-                for (const pkg of packages) {
-                    // Fails where deleting the field would: null has no fields, and a string's own index cannot be deleted.
-                    if (pkgJson === null)
-                        throw new TypeError('package.json is null');
-                    for (const field of ['dependencies', 'devDependencies']) {
-                        const dependencies = isJsonObject(pkgJson) ? pkgJson[field] : undefined;
-                        if (isJsonObject(dependencies))
-                            delete dependencies[pkg];
-                        else if (typeof dependencies === 'string' && Object.hasOwn(Object(dependencies), pkg)) {
-                            throw new TypeError(`package.json ${field} is a string`);
-                        }
-                    }
-                }
-                // Releases before 0.13.2 wrote package.json as root.
-                await handKernelArtifact(workspace.filesystem, ctx.vfs, requireVfsCred(ctx.cred, 'npm'), pkgPath);
-                await ctx.vfs.writeFile(pkgPath, JSON.stringify(pkgJson, null, 2) + '\n');
-            }
-            catch (error) {
-                ctx.stderr.write(`npm ERR! could not update package.json: ${error instanceof Error ? error.message : String(error)}\n`);
-                return 1;
-            }
-            return failed ? 1 : 0;
         }
         // Fall through to core npm for other subcommands
         return coreNpmCmd(ctx);
@@ -1321,9 +1222,8 @@ export async function registerHostedCommands(self, workspace) {
         }
         // Nimbus-native npx install + run path. Routes package installation
         // through NpmInstaller's full-packument resolver.
-        await self.ensureNpmInstaller((msg) => ctx.stdout.write('[npm] ' + msg + '\n'));
+        const installer = await self.ensureNpmInstaller();
         self.ensureSqliteFs();
-        const installer = self.npmInstaller;
         const resolveResult = await resolveNpxBinary(installer, projectFs(ctx.vfs), requireVfsCred(ctx.cred, 'npx'), ctx.cwd || '/home/user', npxArgs, (msg) => ctx.stdout.write(msg + '\n'), ctx.pid, ctx.env?.NPM_REGISTRY, ctx.signal);
         if (resolveResult.ok && resolveResult.binPath) {
             const nodeCmd = await registry.resolve('node');

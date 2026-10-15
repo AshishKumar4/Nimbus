@@ -34,7 +34,6 @@ import { stripAnsi, type LogChunk } from '@nimbus-sh/core/runtime/process-logs.j
 import { DEFAULT_HOME, NODE_VERSION } from '@nimbus-sh/core/constants.js';
 import { afterDevServerRestore, devServerProcess, recordDevServer, spawnOf } from '../session/dev-servers.js';
 import type { SessionInternal } from '../session/internal.js';
-import { isJsonObject } from '../npm/package-lock.js';
 
 import { HeadlessTerminal } from '@nimbus-sh/core/substrate/lifo/index.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
@@ -42,7 +41,7 @@ import { makeNimbusVerbHandler } from '@nimbus-sh/core/runtime/nimbus-command.js
 
 /** Internal runtime services; callers use composeHostedRuntime, not this recipe. */
 export type RuntimeCommandHost = Pick<SessionInternal,
-  '_emitShellExecDone' | '_setCpRegistry' | '_viteShimPid' | '_viteShimPort' | 'cirrusReal' | 'ensureFacetManager' | 'facetManager' | 'ensureNpmInstaller' | 'ensureSqliteFs' | 'esbuildService' | 'nimbusWrangler' | 'npmInstaller' | 'portRegistry' | 'processes' | 'restoreDevServers' | 'sessionBasePath' | 'terminal' | 'viteBasePath' | 'viteDevServer' | 'wranglerAliasBannerShown'
+  '_emitShellExecDone' | '_setCpRegistry' | '_viteShimPid' | '_viteShimPort' | 'cirrusReal' | 'ensureFacetManager' | 'facetManager' | 'ensureNpmInstaller' | 'ensureSqliteFs' | 'esbuildService' | 'nimbusWrangler' | 'portRegistry' | 'processes' | 'restoreDevServers' | 'sessionBasePath' | 'terminal' | 'viteBasePath' | 'viteDevServer' | 'wranglerAliasBannerShown'
 > & {
   readonly ctx: DurableObjectState;
   readonly env: RuntimeCatalogEnv;
@@ -902,12 +901,11 @@ registry.register('npm-fast', async (ctx: any) => {
 
   ctx.stdout.write('\x1b[36mNimbus npm v2 (batched writes)\x1b[0m\n');
 
-  await self.ensureNpmInstaller((msg: string) => {
-    ctx.stdout.write('[npm] ' + msg + '\n');
+  const installer = await self.ensureNpmInstaller();
+  const result = await installer.install(cwd, {
+    packages, pid: ctx.pid, cred: requireVfsCred(ctx.cred, 'npm-fast'), registry: ctx.env?.NPM_REGISTRY, signal: ctx.signal,
+    onProgress: (msg: string) => ctx.stdout.write('[npm] ' + msg + '\n'),
   });
-  const installer = self.npmInstaller;
-  if (!installer) throw new Error('npm installer is not initialized');
-  const result = await installer.install(cwd, { packages, pid: ctx.pid, cred: requireVfsCred(ctx.cred, 'npm-fast'), registry: ctx.env?.NPM_REGISTRY, signal: ctx.signal });
 
   const summary = installSummary({
     installed: result.installed.length, failed: result.failed, elapsedMs: result.elapsed,
@@ -1166,6 +1164,8 @@ installNpmBinFallbackResolver(registry, {
 // which owns the NpmInstaller, prefix dirs and bin materialisation.
 const coreNpmCmd = createNpmCommand(registry, shellExecute, kernel, {
   installer: createNpmInstallPort(self, workspace.filesystem),
+  // Releases before 0.13.2 wrote package.json as root.
+  beforeWrite: (ctx, path) => handKernelArtifact(workspace.filesystem, ctx.vfs, ctx.cred, path),
 });
 registry.register('npm', async (ctx: any) => {
   const args: string[] = ctx.args || [];
@@ -1282,31 +1282,6 @@ registry.register('npm', async (ctx: any) => {
     }
   }
 
-  // npm ls — list installed packages
-  if (sub === 'ls' || sub === 'list') {
-    const pkgPath = `/${cwdKey}/package.json`;
-    const nmDir = `/${cwdKey}/node_modules`;
-    try {
-      const pkg = JSON.parse(await ctx.vfs.readFileString(pkgPath));
-      ctx.stdout.write(`${pkg.name || 'project'}@${pkg.version || '1.0.0'} ${ctx.cwd}\n`);
-      const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
-      const names = Object.keys(deps);
-      for (let i = 0; i < names.length; i++) {
-        const isLast = i === names.length - 1;
-        const prefix = isLast ? '└── ' : '├── ';
-        const name = names[i];
-        let version = deps[name];
-        // Try to read actual installed version
-        try {
-          const installed = JSON.parse(await ctx.vfs.readFileString(nmDir + '/' + name + '/package.json'));
-          version = installed.version;
-        } catch {}
-        ctx.stdout.write(`${prefix}${name}@${version}\n`);
-      }
-    } catch { ctx.stderr.write('npm ERR! no package.json found\n'); return 1; }
-    return 0;
-  }
-
   // npm init, npm create, npm innit: core npm's (npm-init.ts), npm's own
   // package.json or the initializer it names, run by npx.
   if (sub === 'init' || sub === 'create' || sub === 'innit') {
@@ -1314,54 +1289,6 @@ registry.register('npm', async (ctx: any) => {
     await handKernelArtifact(workspace.filesystem, ctx.vfs, requireVfsCred(ctx.cred, 'npm'), `/${cwdKey}/package.json`);
     return coreNpmCmd(ctx);
   }
-
-  // npm uninstall <pkg>
-  if (sub === 'uninstall' || sub === 'un' || sub === 'remove' || sub === 'rm') {
-    const packages = args.slice(1).filter(a => !a.startsWith('-'));
-    if (packages.length === 0) { ctx.stderr.write('Usage: npm uninstall <pkg>\n'); return 1; }
-    const nmDir = `/${cwdKey}/node_modules`;
-    let failed = false;
-    for (const pkg of packages) {
-      try {
-        await ctx.vfs.remove(nmDir + '/' + pkg, { recursive: true, force: true });
-        ctx.stdout.write('removed ' + pkg + '\n');
-      } catch (error) {
-        ctx.stderr.write(`npm ERR! could not remove ${pkg}: ${error instanceof Error ? error.message : String(error)}\n`);
-        failed = true;
-      }
-    }
-    // Update package.json, when there is one to update: one it cannot read
-    // or write fails the command, a corrupt one is left as it is.
-    const pkgPath = `/${cwdKey}/package.json`;
-    try {
-      let pkgJson: unknown;
-      try { pkgJson = JSON.parse(await ctx.vfs.readFileString(pkgPath)); }
-      catch (error) {
-        if (error instanceof SyntaxError ||
-            (error !== null && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) return failed ? 1 : 0;
-        throw error;
-      }
-      for (const pkg of packages) {
-        // Fails where deleting the field would: null has no fields, and a string's own index cannot be deleted.
-        if (pkgJson === null) throw new TypeError('package.json is null');
-        for (const field of ['dependencies', 'devDependencies'] as const) {
-          const dependencies = isJsonObject(pkgJson) ? pkgJson[field] : undefined;
-          if (isJsonObject(dependencies)) delete dependencies[pkg];
-          else if (typeof dependencies === 'string' && Object.hasOwn(Object(dependencies), pkg)) {
-            throw new TypeError(`package.json ${field} is a string`);
-          }
-        }
-      }
-      // Releases before 0.13.2 wrote package.json as root.
-      await handKernelArtifact(workspace.filesystem, ctx.vfs, requireVfsCred(ctx.cred, 'npm'), pkgPath);
-      await ctx.vfs.writeFile(pkgPath, JSON.stringify(pkgJson, null, 2) + '\n');
-    } catch (error) {
-      ctx.stderr.write(`npm ERR! could not update package.json: ${error instanceof Error ? error.message : String(error)}\n`);
-      return 1;
-    }
-    return failed ? 1 : 0;
-  }
-
 
   // Fall through to core npm for other subcommands
   return coreNpmCmd(ctx);
@@ -1391,9 +1318,8 @@ registry.register('npx', async (ctx: any) => {
 
   // Nimbus-native npx install + run path. Routes package installation
   // through NpmInstaller's full-packument resolver.
-  await self.ensureNpmInstaller((msg: string) => ctx.stdout.write('[npm] ' + msg + '\n'));
+  const installer = await self.ensureNpmInstaller();
   self.ensureSqliteFs();
-  const installer = self.npmInstaller!;
   const resolveResult = await resolveNpxBinary(
     installer,
     projectFs(ctx.vfs),

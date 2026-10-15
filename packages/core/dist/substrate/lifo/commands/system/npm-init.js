@@ -23,6 +23,7 @@
 import { hostedGitInfo, npa, validateName } from '../../../../_shared/npm-libs.js';
 import semver from 'semver';
 import validateLicense from 'validate-npm-package-license';
+import { packageJsonText } from '../../../../_shared/npm-tree.js';
 import { normalizePackageJsonBin } from '../../../../runtime/npm-bin-map.js';
 import { join } from '../../utils/path.js';
 import { loadNpmConfig } from './npm-config.js';
@@ -211,8 +212,6 @@ export async function npmInitTemplate(vfs, dir, config, io) {
     // PackageJson.load(dir, { create: true }), in the file's indent and line ending.
     const existing = await read(path);
     let content = {};
-    let indent = '  ';
-    let newline = '\n';
     if (existing !== null) {
         let parsed;
         try {
@@ -223,9 +222,6 @@ export async function npmInitTemplate(vfs, dir, config, io) {
         }
         if (isObject(parsed))
             content = parsed;
-        const format = /^(?:\{\}|\[\])((?:\r?\n)+)?$/.exec(existing) ?? /^\s*[{[]((?:\r?\n)+)([\s\t]*)/.exec(existing) ?? [null, '', ''];
-        newline = format[1] ?? '\n';
-        indent = format[2] ?? '  ';
     }
     await normalize(content, ['_id', '_attributes', 'bundledDependencies', 'bundleDependencies', 'optionalDedupe', 'scripts', 'funding', 'bin'], { dir, list, read, exists });
     if (!semver.valid(content.version))
@@ -394,7 +390,7 @@ export async function npmInitTemplate(vfs, dir, config, io) {
     const shown = JSON.stringify(content, null, 2) + '\n';
     const message = `${path}:\n\n${shown}\n`;
     const save = async () => {
-        const text = (JSON.stringify(content, null, indent) + '\n').replace(/\n/g, newline);
+        const text = packageJsonText(content, existing);
         if (existing === null || text.trim() !== existing.trim())
             await vfs.writeFile(path, text);
     };

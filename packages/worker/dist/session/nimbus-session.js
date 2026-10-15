@@ -767,6 +767,9 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcReadFileBytes(path, pid, cred) { return _rpc._rpcReadFileBytes(this, path, pid, cred); }
     async _rpcInnerDoFetch(req) { return _rpc._rpcInnerDoFetch(this, req); }
     async _rpcInnerDoCall(req) { return _rpc._rpcInnerDoCall(this, req); }
+    async _rpcKvCall(target, call, cred) { return _rpc._rpcKvCall(this, target, call, cred); }
+    async _rpcR2Call(target, call, cred) { return _rpc._rpcR2Call(this, target, call, cred); }
+    async _rpcD1Query(target, queries) { return _rpc._rpcD1Query({ ctx: this.ctx }, target, queries); }
     async _rpcWriteFile(path, content, pid, cred) { return _rpc._rpcWriteFile(this, path, content, pid, cred); }
     async _rpcWriteProtectedRootFile(rootPath, path, content) {
         return _rpc._rpcWriteProtectedRootFile(this, rootPath, path, content);
@@ -1110,7 +1113,7 @@ export class NimbusSession extends CloudflareDurableObject {
      */
     _cpRegistry = null;
     _setCpRegistry(r) { this._cpRegistry = r; }
-    async ensureNpmInstaller(onProgress) { return this.#runtimeServices.ensureNpmInstaller(onProgress); }
+    async ensureNpmInstaller() { return this.#runtimeServices.ensureNpmInstaller(); }
     // ── Session initialization ────────────────────────────────────────────
     // ── Session initialization ────────────────────────────────────────────
     //
@@ -1281,4 +1284,4 @@ export class NimbusSession extends CloudflareDurableObject {
 // ── W10 Inner-Worker + assets binding shims live in the fabric.
 // ── Re-exported here under their public names so src/index.ts's wrangler
 // ── entry-graph reachability is preserved.
-export { NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, } from '@nimbus-sh/fabric/bindings.js';
+export { NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket, } from '@nimbus-sh/fabric/bindings.js';

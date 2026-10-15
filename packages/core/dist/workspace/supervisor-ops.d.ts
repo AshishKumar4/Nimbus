@@ -104,6 +104,9 @@ export declare const SUPERVISOR_OP_TABLE: {
     readonly fsPublished: null;
     readonly innerDoFetch: null;
     readonly innerDoCall: null;
+    readonly kvCall: null;
+    readonly r2Call: null;
+    readonly d1Query: null;
     readonly fanoutExecute: null;
     readonly processHostProbe: null;
     readonly hostProcess: null;

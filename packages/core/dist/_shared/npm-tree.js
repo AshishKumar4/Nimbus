@@ -13,6 +13,7 @@
 import { isExactVersion, isSemverRange, rangeSubset, rangesIntersect, satisfiesRange } from './npm-semver.js';
 import { parseRegistryRequest, splitPackageSpec } from './npm-spec.js';
 import { LruMap } from './lru-map.js';
+import { isJsonRecord } from '../runtime/jsonc.js';
 import { z } from 'zod/v4';
 // ── Placements ───────────────────────────────────────────────────────────────
 const NM = '/node_modules/';
@@ -133,7 +134,56 @@ export function readPackageJson(text) {
     }
     return packageJsonDocument(value);
 }
+/**
+ * package.json's text as npm's PackageJson saves it: in the indent and line
+ * ending of `existing`, the text it replaces (json-parse-even-better-errors:
+ * none for one written on one line), else two spaces and \n.
+ */
+export function packageJsonText(json, existing) {
+    const format = existing === null ? []
+        : /^(?:\{\}|\[\])((?:\r?\n)+)?$/.exec(existing) ?? /^\s*[{[]((?:\r?\n)+)([\s\t]*)/.exec(existing) ?? ['', '', ''];
+    return (JSON.stringify(json, null, format[2] ?? '  ') + '\n').replace(/\n/g, format[1] ?? '\n');
+}
 const DEPENDENCY_FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
+/**
+ * package.json (`json`, as parsed) declaring none of `names`, as npm's
+ * uninstall saves it: each name out of every dependency field and
+ * bundleDependencies, whether or not it is installed (add-rm-pkg-deps rm);
+ * then each dependency field as @npmcli/package-json writes it: sorted, a
+ * name in optionalDependencies not repeated in dependencies, and an empty
+ * one removed. peerDependenciesMeta, which npm does not save, is as it was.
+ */
+export function withoutDeclared(json, names) {
+    const result = { ...json };
+    const fields = new Map();
+    for (const field of DEPENDENCY_FIELDS) {
+        const declared = json[field];
+        if (!isJsonRecord(declared))
+            continue;
+        const kept = Object.keys(declared).filter((name) => !names.includes(name)).sort((a, b) => a.localeCompare(b, 'en'));
+        fields.set(field, Object.fromEntries(kept.map((name) => [name, declared[name]])));
+    }
+    const optional = fields.get('optionalDependencies');
+    const dependencies = fields.get('dependencies');
+    if (optional !== undefined && dependencies !== undefined)
+        for (const name of Object.keys(optional))
+            delete dependencies[name];
+    for (const [field, map] of fields) {
+        if (Object.keys(map).length === 0)
+            delete result[field];
+        else
+            result[field] = map;
+    }
+    const bundled = json.bundleDependencies;
+    if (Array.isArray(bundled)) {
+        const kept = bundled.filter((name) => !names.includes(name));
+        if (kept.length > 0)
+            result.bundleDependencies = kept;
+        else
+            delete result.bundleDependencies;
+    }
+    return result;
+}
 const SAVE_FIELD = {
     prod: 'dependencies', dev: 'devDependencies', optional: 'optionalDependencies', peer: 'peerDependencies', peerOptional: 'peerDependencies',
 };

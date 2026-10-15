@@ -31,6 +31,56 @@ published independently in the `@nimbus-sh` npm scope.
   when its process ends however it ends, and starting one ends a running
   real Vite. A `vite` server the session was running when it was upgraded
   to this release is not restored once; run `vite` again.
+- Fixed: a session's `npm uninstall` and `npm ls` do what npm 10 does.
+  `npm uninstall -g p` removes the global p and its commands, for good (no
+  later global install links them again); it removed the project's p and
+  its declaration instead. Both read their options as npm reads them
+  (`--global=false` is the project, `--location=global` the global
+  prefix, and `.npmrc` counts). `npm uninstall p` removes p's
+  bins with it, and every declaration of p, installed or not (each
+  dependency field and `bundleDependencies`); package.json keeps its own
+  indent, its dependency fields sorted and empty ones dropped, and
+  `--no-save` leaves it as it is. It reports `removed N packages` or `up to
+  date`. `npm ls` lists what the project declares as npm does: one that is
+  not installed is an `UNMET DEPENDENCY` (not its range, as though it
+  were), one its range does not take is `invalid`, and a package nothing
+  depends on is `extraneous`; a missing or invalid one fails the command
+  (`ELSPROBLEMS`). `npm ls -g` lists the global prefix, not the project.
+  An install and an uninstall into one tree at once run one after the
+  other. For embedders: `createNpmCommand` takes `beforeWrite`, called
+  before the command replaces the project's package.json, and an
+  `NpmInstallPort` may have `unlinkBins`, called with the packages an
+  uninstall removed, and `hold`, the hold its installs take on a tree.
+- Fixed: two npm installs at once in a session no longer remove each
+  other's staged packages. Each install built its own installer, so one
+  starting could sweep the staging directory of another installing into a
+  mounted project, which then reported packages installed that it never
+  put there. The session has one installer; each install's progress and
+  npm log are still its own.
+- Fixed: a Worker whose `wrangler.jsonc` declares `kv_namespaces`,
+  `d1_databases` or `r2_buckets` starts under `wrangler dev`, and
+  `env.KV`, `env.DB` and `env.BUCKET` answer as the local bindings real
+  `wrangler dev` gives a Worker do: KV get (each type, and bulk), put,
+  delete, list and getWithMetadata; D1 prepare, bind, first, all, run, raw,
+  batch, exec and withSession, with D1's errors and meta fields; R2 head,
+  get (ranges, conditions), put (metadata, checksums, conditions), delete,
+  list and each body method. The build failed with "Could not serialize
+  object of type "D1Emulator"" (or "KvEmulator"): a Worker Loader env
+  carries no class instance. Each binding reaches only the store it is
+  declared for, in its own project: a KV namespace's or R2 bucket's files
+  under the project's `.nimbus`, as the user who started the server, and a
+  D1 binding's own database. A KV or R2 body is streamed to its file as
+  it arrives, never held whole, and one past the platform's limit (25 MiB
+  for a KV value, 5 GiB less 5 MiB for an R2 upload) is refused with the
+  platform's error as it passes it, its stream cancelled, leaving the value
+  it would have replaced. An R2 object's etag is now its body's MD5, as on
+  Cloudflare, a key ending `.meta` is its own object, and KV and R2
+  listings page with Cloudflare's cursor. Unlike workerd, an R2 put of a
+  stream whose length is not known is accepted.
+  Embedders re-export the new `NimbusKVNamespace`, `NimbusD1Binding` and
+  `NimbusR2Bucket` classes from their Worker's main module, as they do the
+  other Nimbus classes (`export * from '@nimbus-sh/sdk/entrypoints'`
+  does); without one, its kind of binding is not made, with a warning.
 - Fixed: two Durable Objects of a `wrangler dev` Worker could run as one
   (one instance, one storage): an object's facet was named by its binding
   and its id joined with `-`, so binding `A-B`'s object `c` and binding
@@ -39,6 +89,21 @@ published independently in the `@nimbus-sh` npm scope.
   object's local storage under `wrangler dev` starts empty once, under its
   new name; so does a D1 database's, whose facet name is bounded the same
   way (a long project path named one over the limit).
+- Fixed: the agent's "Send again", after a message whose answer never came
+  back, stored the message a second time when the first had reached the
+  session. A message is now sent under an id the browser chooses (`id`, a
+  UUID, in the `POST /api/agent/messages` body), and the session takes
+  each id once: it keeps the ids of its last 512 sends, past the 80
+  messages it stores, until the conversation is cleared. Sent again, the
+  message is answered again only if it is the conversation's last and has
+  no complete answer; otherwise the reply is the conversation as it is. A
+  repeat while its answer is still being written is refused (409
+  `E_AGENT_TURN_RUNNING`), as is an id another message or an answer holds
+  (409 `E_AGENT_MESSAGE_ID_TAKEN`). A message whose text is not
+  well-formed (a lone UTF-16 surrogate) is refused (400
+  `E_AGENT_BAD_MESSAGE_TEXT`). An answer now names the message it answers
+  (`replyTo`), so with two turns answering at once, a retry or a message
+  sent again finds its own answer, and replaces only that one.
 - Fixed (security): a public application URL is forwarded only to the
   session its capability belongs to. Put under another session's id of the
   same tenant, the capability was forwarded to that session, which woke
