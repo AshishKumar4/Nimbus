@@ -17,23 +17,22 @@
  * (resolve-one-facet.ts:264 + RESOLVE_VERSION). Handles all semver-range
  * syntax including major-only and major.minor.
  *
- * Binary lookup and execution follow the same user-visible npx flow:
- *   1. Check cwd/node_modules/.bin/<cmd>
- *   2. Check /tmp/.npx-cache/node_modules/.bin/<cmd>
- *   3. Check global registry (built-ins like vite, esbuild — handled by
- *      caller; this module is only invoked when registry resolution failed)
- *   4. Install package via NpmInstaller into /tmp/.npx-cache
- *   5. Locate <pkg>/package.json#bin → resolve absolute path
- *   6. Invoke via Nimbus's `node` registry command (preserves PID
- *      tracking, log buffer, process table membership)
+ * Binary lookup and execution follow libnpmexec 10.9.8's flow:
+ *   1. Built-ins (vite, esbuild) are the caller's, before this module.
+ *   2. The package in cwd/node_modules, where it answers the request
+ *      (libnpmexec missingFromTree, answers).
+ *   3. The npx cache directory of this request (npxCacheDir: one per spec
+ *      set, as libnpmexec's), where it answers it.
+ *   4. Else install the package into that directory via NpmInstaller.
+ *   5. The bin libnpmexec chooses from the package's manifest (npxPackageBin),
+ *      invoked via Nimbus's `node` registry command.
  */
 import { isStagedArtifactTarget, npxPackageBin } from './bin-links.js';
 import { bundleProfileForNpmBin } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { splitPackageSpec } from '@nimbus-sh/core/_shared/npm-spec.js';
-/** Path where npx caches packages it installs. Matches the vendored substrate
- * cache layout so tooling that introspects npx state sees the expected path. */
-export const NPX_CACHE_DIR = '/tmp/.npx-cache';
-const NPX_CACHE_NM = `${NPX_CACHE_DIR}/node_modules`;
+import { satisfiesRange } from '@nimbus-sh/core/_shared/npm-semver.js';
+/** Where npx keeps what it installs: a directory for each request (npxCacheDir). */
+const NPX_CACHE_DIR = '/tmp/.npx-cache';
 /**
  * SqliteVFS uses absolute paths WITHOUT a leading slash (e.g. it stores
  * `tmp/.npx-cache/node_modules/foo/package.json`, not `/tmp/...`). The
@@ -96,76 +95,53 @@ function parseNpxArgs(rawArgs) {
     const first = invocation.command;
     const pkgSpec = invocation.packageOverride ?? first;
     const command = invocation.packageOverride ? first : null;
-    const { name: pkgName } = splitPackageSpec(pkgSpec);
-    return { pkgSpec, pkgName, command, binArgs: invocation.args, yes: invocation.yes };
+    const { name: pkgName, parsed: spec } = splitPackageSpec(pkgSpec);
+    return { pkgSpec, pkgName, spec, command, binArgs: invocation.args, yes: invocation.yes };
 }
 /**
- * Find the absolute path of a binary inside a package's directory.
- *
- * package.json#bin can be:
- *   - `string` → single bin named after the package itself
- *   - `Record<string, string>` → multiple bins
- *
- * Returns the resolved absolute path (rooted at packageDir) if a
- * matching bin name is found, else null.
+ * The bin npx runs from the package at `packageDir`, chosen and validated as
+ * npxPackageBin does, with the version of the package that has it; null for
+ * none, or a staged-artifact bin (a sentinel, not a file `node` can run).
  */
-/**
- * Locate the bin npx runs across the standard search paths: the package in
- * cwd/node_modules, then in the npx cache, its bin chosen and validated as
- * npxPackageBin does.
- *
- * Returns the bin's name and absolute path on hit, null on miss.
- */
-async function locateBinary(vfs, cwd, pkgName, command) {
-    for (const packageDir of [`${cwd}/node_modules/${pkgName}`, `${NPX_CACHE_NM}/${pkgName}`]) {
-        const bin = await npxPackageBin(vfs, packageDir, command);
-        // npx runs the bin with `node`, which takes a file: a staged-artifact
-        // bin (a sentinel, not a path) is not one npx can run.
-        if (bin && !isStagedArtifactTarget(bin.targetPath))
-            return { name: bin.name, path: '/' + bin.targetPath };
-    }
-    return null;
+async function binAt(vfs, packageDir, command) {
+    const bin = await npxPackageBin(vfs, packageDir, command);
+    return bin && !isStagedArtifactTarget(bin.targetPath) ? { name: bin.name, path: '/' + bin.targetPath, version: bin.packageVersion } : null;
 }
 /**
- * Ensure /tmp/.npx-cache/package.json exists with the requested spec
- * in its dependencies. NpmInstaller reads package.json from projectDir
- * to determine what to install; we synthesize one for the npx cache.
- *
- * Idempotent: if the file already exists and has the spec in deps,
- * leaves it alone. Returns the deps object after the write (useful
- * for the caller's log line).
+ * The directory npx installs `specs` into, as libnpmexec 10.9.8 names it: the
+ * first 16 hex digits of the SHA-512 of the specs as written, sorted, one a
+ * line. Each request set its own, so one that fails, or names another
+ * version, never touches what another installed.
  */
-async function ensureNpxCachePackageJson(vfs, pkgName, pkgRange) {
-    const pkgJsonPath = `${NPX_CACHE_DIR}/package.json`;
-    const pkgJsonKey = _vfsKey(pkgJsonPath);
-    let existing = { name: 'npx-cache', version: '0.0.0', dependencies: {} };
-    if (await vfs.exists(pkgJsonKey)) {
-        try {
-            existing = JSON.parse(await vfs.readFileString(pkgJsonKey));
-            if (!existing.dependencies)
-                existing.dependencies = {};
-        }
-        catch {
-            // Corrupted — overwrite with fresh content below.
-            existing = { name: 'npx-cache', version: '0.0.0', dependencies: {} };
-        }
-    }
-    else {
-        // mkdir keeps the cache path explicit here.
-        try {
-            await vfs.mkdir(_vfsKey(NPX_CACHE_DIR), { recursive: true });
-        }
-        catch { /* dir exists */ }
-    }
-    existing.dependencies[pkgName] = pkgRange;
-    await vfs.writeFile(pkgJsonKey, JSON.stringify(existing, null, 2) + '\n');
+export async function npxCacheDir(specs) {
+    const text = [...specs].sort((a, b) => a.localeCompare(b, 'en')).join('\n');
+    const digest = await crypto.subtle.digest('SHA-512', new TextEncoder().encode(text));
+    return `${NPX_CACHE_DIR}/${Array.from(new Uint8Array(digest, 0, 8), (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+}
+/**
+ * Whether an installed `version` answers `spec`, as libnpmexec's
+ * missingFromTree reads a tree: a spec by name alone, or a wildcard, takes
+ * whatever is installed (a prerelease too); a registry version or range,
+ * only a version that satisfies it. Any other spec (a tag, a git or tarball
+ * url, a path) only the npx directory of that very request answers
+ * (`ownRequest`): npm would fetch its manifest to compare, and that
+ * directory holds what it named.
+ */
+function answers(spec, version, ownRequest) {
+    if (spec === null)
+        return false;
+    if (spec.raw === spec.name)
+        return true;
+    if (spec.registry && (spec.type === 'version' || spec.type === 'range'))
+        return spec.rawSpec === '*' || satisfiesRange(version, spec.rawSpec);
+    return ownRequest;
 }
 /**
  * Resolve a binary for `npx <args>` by:
  *   1. Parsing args.
- *   2. Checking the package in cwd/node_modules, then the NPX cache, for its bin.
- *   3. If absent, installing the package via NpmInstaller into
- *      /tmp/.npx-cache, then re-checking.
+ *   2. Checking the package in cwd/node_modules, then this request's npx
+ *      directory, where it answers the request (answers).
+ *   3. Else installing the package into that directory via NpmInstaller.
  *
  * The caller is responsible for actually invoking the resulting binPath
  * via Nimbus's `node` command — keeping this module pure (no process
@@ -188,29 +164,30 @@ signal) {
     if ('error' in parsed) {
         return { ok: false, error: parsed.error };
     }
-    // 1. Check project + NPX cache for pre-installed bin.
-    const existing = await locateBinary(vfs, cwd, parsed.pkgName, parsed.command);
-    if (existing) {
-        return {
-            ok: true,
-            binPath: existing.path,
-            binArgs: parsed.binArgs,
-            bundleProfile: bundleProfileForNpmBin({ name: existing.name, packageName: parsed.pkgName }),
-            source: cwd && existing.path.startsWith(cwd) ? 'project-nm' : 'npx-cache',
-        };
-    }
-    // 2. Not found anywhere — install into NPX cache via NpmInstaller.
-    //    Use the package's `<pkgSpec>` directly; NpmInstaller parses the
-    //    `<name>@<version>` form same as `npm install <pkgSpec>`.
+    const found = (bin, source) => ({
+        ok: true,
+        binPath: bin.path,
+        binArgs: parsed.binArgs,
+        bundleProfile: bundleProfileForNpmBin({ name: bin.name, packageName: parsed.pkgName }),
+        source,
+    });
+    // 1. The project's own package, where it answers the request.
+    const spec = parsed.spec;
+    const local = await binAt(vfs, `${cwd}/node_modules/${parsed.pkgName}`, parsed.command);
+    if (local && answers(spec, local.version, false))
+        return found(local, 'project-nm');
+    // 2. This request's npx directory, where an earlier npx installed it.
+    const dir = await npxCacheDir([parsed.pkgSpec]);
+    const cached = `${dir}/node_modules/${parsed.pkgName}`;
+    const there = await binAt(vfs, cached, parsed.command);
+    if (there && answers(spec, there.version, true))
+        return found(there, 'npx-cache');
+    // 3. Install it there, made as libnpmexec makes it: what the install writes is that directory's alone.
     log(`  ${parsed.pkgSpec}...`);
-    const { name: instName, range: instVer } = splitPackageSpec(parsed.pkgSpec);
-    const installSpec = instVer ? `${instName}@${instVer}` : instName;
-    // Synthesize npx-cache package.json so NpmInstaller has a project
-    // root. The deps map is the source of truth for the install set.
-    await ensureNpxCachePackageJson(vfs, instName, instVer || 'latest');
     try {
-        const result = await installer.install(NPX_CACHE_DIR, {
-            packages: [installSpec],
+        await vfs.mkdir(_vfsKey(dir), { recursive: true });
+        const result = await installer.install(dir, {
+            packages: [parsed.pkgSpec],
             pid,
             cred,
             registry,
@@ -218,37 +195,19 @@ signal) {
             onProgress: (msg) => log(`[npm] ${msg}`),
         });
         if ((result.failed?.length || 0) > 0) {
-            // Partial install — some package failed to resolve. The fix is
-            // designed to handle major-only ranges; a residual failure here
-            // means a genuinely missing package or an unrelated transitive
-            // gap. Surface it as the error.
-            return {
-                ok: false,
-                error: `npx: install partially failed: ${result.failed.join(', ')}`,
-            };
+            return { ok: false, error: `npx: install partially failed: ${result.failed.join(', ')}` };
         }
     }
     catch (e) {
-        return {
-            ok: false,
-            error: `npx: install failed: ${e?.message ?? String(e)}`,
-        };
+        return { ok: false, error: `npx: install failed: ${e?.message ?? String(e)}` };
     }
-    // 3. Re-check NPX cache after install.
-    const installed = await locateBinary(vfs, cwd, parsed.pkgName, parsed.command);
-    if (installed) {
-        return {
-            ok: true,
-            binPath: installed.path,
-            binArgs: parsed.binArgs,
-            bundleProfile: bundleProfileForNpmBin({ name: installed.name, packageName: parsed.pkgName }),
-            source: 'fresh-install',
-        };
-    }
+    const bin = await binAt(vfs, cached, parsed.command);
+    if (bin)
+        return found(bin, 'fresh-install');
     return {
         ok: false,
         error: parsed.command === null
             ? `npx: could not determine executable to run from ${parsed.pkgSpec}`
-            : `npx: installed ${parsed.pkgSpec} but could not locate binary '${parsed.command}' in ${NPX_CACHE_NM}/${parsed.pkgName}`,
+            : `npx: installed ${parsed.pkgSpec} but could not locate binary '${parsed.command}' in ${cached}`,
     };
 }

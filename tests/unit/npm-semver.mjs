@@ -199,7 +199,10 @@ const embedded = await importResolvePreamble(['PARSE_SEMVER', 'COMPARE_SEMVER', 
   for (const spec of ['vite', 'vite@', 'vite@latest', '@s/x', '@s/x@^1', 'x@npm:y@1', '@s/x@npm:@t/y', 'u/r', './dir', 'X Y']) {
     const name = (() => { try { return npa(spec).name; } catch { return undefined; } })();
     const ranged = Boolean(name) && spec.startsWith(`${name}@`);
-    assert.deepEqual(splitPackageSpec(spec), ranged ? { name, range: spec.slice(name.length + 1) } : { name: spec, range: null }, `split ${spec}`);
+    const split = splitPackageSpec(spec);
+    assert.deepEqual({ name: split.name, range: split.range }, ranged ? { name, range: spec.slice(name.length + 1) } : { name: spec, range: null }, `split ${spec}`);
+    const reading = (() => { try { return npa(spec).raw; } catch { return null; } })();
+    assert.equal(split.parsed?.raw ?? null, reading, `npa's reading of ${spec}, kept`);
   }
   console.log('  npm\'s semver and npm-package-arg under the adapters, Nimbus\'s pick policy pinned');
 }
