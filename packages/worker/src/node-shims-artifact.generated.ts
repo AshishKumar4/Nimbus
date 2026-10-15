@@ -10,9 +10,9 @@
  */
 
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-fefd68fdcee4700d.js";
-export const NODE_SHIMS_BUILD_ID: string = "fefd68fdcee4700d";
-export const NODE_SHIMS_SHA256: string = "fefd68fdcee4700d0a610647f3bcfda71ac1d8a9df5498b07d6e136279f8b25e";
+export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-28ae773094a0e1b0.js";
+export const NODE_SHIMS_BUILD_ID: string = "28ae773094a0e1b0";
+export const NODE_SHIMS_SHA256: string = "28ae773094a0e1b01dadb4250f7d60a036f03d85c32bf82bbd519eaca3e03e20";
 
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
 export const VFS_WRITE_LEDGER_ENTRY: string = "/_assets/runtime/vfs-write-ledger-69502ec776952792.js";

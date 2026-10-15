@@ -1360,11 +1360,12 @@ const __fsMod = (() => {
     const k = _strip(absPath);
     const client = _supervisor() && typeof __nimbusProcessFs === "function" ? __nimbusProcessFs() : null;
     let guarded = client !== null;
+    // A name under one that is not a directory is not searched (link_path_walk's ENOTDIR comes first): the call answers it.
     const visit = (name) => {
       if (guarded && !client.guards(name)) guarded = false;
       const slash = name.lastIndexOf("/");
       const dir = _entry(slash < 0 ? "" : name.slice(0, slash), true);
-      return dir === undefined || _modeAllows(dir, 1);
+      return dir === undefined || dir.type !== "directory" || _modeAllows(dir, 1);
     };
     const found = __resident.namespace.lookup(k, follow, _ownEntries === 0 ? undefined : _nsWord, visit);
     if (found === "ELOOP" || found === "EACCES") throw _fsErr(found, syscall, p);
