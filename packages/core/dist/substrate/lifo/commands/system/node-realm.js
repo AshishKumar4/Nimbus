@@ -221,7 +221,11 @@ async function performCall(call, services) {
                 throw refused('mask that is not one');
             return services.setUmask(call.mask);
         }
-        case 'flush': return services.flush();
+        case 'flush': {
+            if (!Number.isSafeInteger(call.upTo) || typeof call.upTo !== 'number')
+                throw refused('flush without a write number');
+            return services.flush(call.upTo);
+        }
         default: throw refused(`call ${JSON.stringify(String(call.op))}`);
     }
 }
@@ -264,6 +268,7 @@ export async function runNodeInRealm(program, ctx, kernel) {
     let lastQueued = 0;
     let lastSettled = 0;
     let settleWanted = false;
+    const flushes = [];
     const settled = () => {
         if (!settleWanted || lastSettled !== lastQueued)
             return;
@@ -291,6 +296,10 @@ export async function runNodeInRealm(program, ctx, kernel) {
             }
             lastSettled = seq;
             settled();
+            for (const flush of flushes.filter((each) => each.upTo <= seq)) {
+                flushes.splice(flushes.indexOf(flush), 1);
+                flush.resolve();
+            }
         });
     };
     // The realm, once it has started: a request for one of the guest's servers waits for none before.
@@ -337,8 +346,9 @@ export async function runNodeInRealm(program, ctx, kernel) {
                 kernel?.portRegistry.delete(port);
         },
         setUmask: (next) => { mask = next; },
-        flush: async () => {
-            await written;
+        flush: async (upTo) => {
+            if (lastSettled < upTo)
+                await new Promise((resolve) => { flushes.push({ upTo, resolve }); });
             return [...failedOutputs.values()];
         },
         watch: (id, path) => {

@@ -63,12 +63,14 @@ export type NodeCall = {
     readonly mask: number;
 }
 /**
- * Answered once every output write made so far is made or failed: the
- * outputs that have failed (OutputFailure). The program's code has run, and
- * it hears of a failure before it ends.
+ * Answered once output writes up to number `upTo` are made or failed (the
+ * writes come on the event channel, which this call does not wait behind):
+ * the outputs that have failed (OutputFailure). The program's code has run,
+ * and it hears of a failure before it ends.
  */
  | {
     readonly op: 'flush';
+    readonly upTo: number;
 };
 /** An output whose write failed: with `code`, on a pipe or a file. */
 export interface OutputFailure {
@@ -177,8 +179,8 @@ export interface RealmServices {
     watch(id: number, path: string | null): void;
     /** umask(2): the mask the program creates with from now on. */
     setUmask(mask: number): void;
-    /** Once every output write so far is made or failed: the outputs that failed. */
-    flush(): Promise<readonly OutputFailure[]>;
+    /** Once output writes up to number `upTo` are made or failed: the outputs that failed. */
+    flush(upTo: number): Promise<readonly OutputFailure[]>;
 }
 /**
  * The answer to `call`, whatever the guest sent: the value of one of the calls
