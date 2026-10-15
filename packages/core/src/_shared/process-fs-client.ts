@@ -45,7 +45,7 @@
  */
 
 import { encodeWriteBatch, type W7Attrs, type W7Call } from '@nimbus-sh/platform/w7-frame.js';
-import type { ExclusiveMutationGrant, RecallKind } from '../runtime/os-contracts.js';
+import type { ExclusiveMutationGrant, GrantCertificate, RecallKind } from '../runtime/os-contracts.js';
 import { WAVE_BYTES, WAVE_PATHS, WAVE_PATH_BYTES, openWaveEpoch, sendWaveAttempts, waveAttemptsOf, type WaveFence, type WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import { classifyMessage } from '@nimbus-sh/platform/oom-classify.js';
@@ -105,6 +105,8 @@ export interface ProcessFsGrant {
   readonly owner: string;
   /** The umask the session applies to the process's creates. */
   readonly umask: number;
+  /** Where the session stood when it recorded the grant (vouch); a session before it gives none. */
+  readonly certificate?: GrantCertificate;
 }
 
 /** The session's stat of a file a data call published (its receipt, less the path). */
@@ -272,6 +274,17 @@ export interface ProcessFsClient {
    * stays placed there until the process has answered.
    */
   guards(key: string): boolean;
+  /**
+   * What vouches for `key` in a view whose applied cursor is `cursor`: a
+   * subtree the process holds alone (not shared, not closing, no raw socket)
+   * whose certificate the cursor has reached, in its epoch, so the view has
+   * every change before the grant and none came after it unrecalled. 'held':
+   * `key` is at or beneath its root, everything about it vouched for; 'above':
+   * an ancestor of its root, whose own change (its mode, its rename) recalls
+   * the grant, though a change beneath it elsewhere does not. Undefined:
+   * nothing does, and only the session can answer.
+   */
+  vouch(key: string, cursor: { readonly epoch: string | null; readonly rev: number }): 'held' | 'above' | undefined;
   /** Whether any op is logged and not yet answered. */
   pending(): boolean;
   /**
@@ -1144,6 +1157,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         root: granted.root,
         owner: granted.owner,
         umask: granted.umask ?? 0o022,
+        ...(granted.certificate === undefined ? {} : { certificate: granted.certificate }),
         nextIno: granted.inos?.first ?? 0,
         endIno: granted.inos?.end ?? 0,
         inos,
@@ -1217,6 +1231,18 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     },
     holds(key) {
       return grants.some((grant) => !grant.ended && within(key, grant.root));
+    },
+    vouch(key, cursor) {
+      if (escaped !== null) return undefined;
+      let found: 'held' | 'above' | undefined;
+      for (const grant of grants) {
+        const certificate = grant.certificate;
+        if (grant.ended || grant.closing || grant.shared || certificate === undefined) continue;
+        if (certificate.epoch !== cursor.epoch || cursor.rev < certificate.revision) continue;
+        if (within(key, grant.root)) return 'held';
+        if (within(grant.root, key)) found = 'above';
+      }
+      return found;
     },
     guards(key) {
       return escaped === null && grants.some((grant) => !grant.ended && !grant.closing && !grant.shared && (within(key, grant.root) || within(grant.root, key)));

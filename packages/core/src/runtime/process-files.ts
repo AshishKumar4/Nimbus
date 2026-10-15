@@ -353,6 +353,8 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     this.vfs.mount('/dev', new DevVFS());
     // A read lease vouches for what is the engine's, which a mount or an unmount moves.
     this.vfs.watchMounts(() => engine.breakReadLeases());
+    // So does a delegation's certificate (its holder answers from its view): given up before the table moves.
+    this.vfs.guardRouting((point) => engine.recallRouting(point));
     this.waves = new WaveIngest(namespaceWaveRouter(this.vfs, immutableCredential));
   }
 
