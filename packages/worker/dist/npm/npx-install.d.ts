@@ -20,7 +20,7 @@
  * Binary lookup and execution follow libnpmexec 10.9.8's flow:
  *   1. Built-ins (vite, esbuild) are the caller's, before this module.
  *   2. The package in cwd/node_modules, where it answers the request
- *      (libnpmexec missingFromTree, installedFor).
+ *      (libnpmexec missingFromTree, answers).
  *   3. The npx cache directory of this request (npxCacheDir: one per spec
  *      set, as libnpmexec's), where it answers it.
  *   4. Else install the package into that directory via NpmInstaller.
@@ -77,7 +77,7 @@ export interface NpxResolveResult {
  * Resolve a binary for `npx <args>` by:
  *   1. Parsing args.
  *   2. Checking the package in cwd/node_modules, then this request's npx
- *      directory, where it answers the request (installedFor).
+ *      directory, where it answers the request (answers).
  *   3. Else installing the package into that directory via NpmInstaller.
  *
  * The caller is responsible for actually invoking the resulting binPath
