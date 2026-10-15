@@ -31,7 +31,7 @@ import { normalizeVfsPath } from '../vfs/path.js';
 import { abandon, andThen, readDeclaredSource, readRangeOrWhole, readText } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import { CRED_KERNEL, isVfsCred, requireVfsCred, } from './os-contracts.js';
-import { fitsWholeRead, fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath, withinWholeRead } from './sqlite-runtime-fs-bridge.js';
+import { fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
 import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, scopeSignal, settleHeldAt } from './descriptors.js';
 import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted, reopenMounted } from '../vfs/mounted-description.js';
 import { registerDirectoryReadBridge, directoryReadHandleClosed } from './read-directory-batch.js';
@@ -901,13 +901,10 @@ class AwaitingProcessBridge {
         return this.either([path], () => this.bridge.readFile(path, options), () => this.absent(async () => {
             const follow = options?.followSymlinks !== false;
             const name = await this.path(path, follow);
-            if (options?.maxBytes !== undefined) {
-                const stat = await this.namespace.stat(name, { follow });
-                if (stat !== null && !fitsWholeRead(stat, options.maxBytes))
-                    throw syscallError('EFBIG', 'read', name);
-            }
-            // The stat and the read are two awaits: the bound holds on what the read answers.
-            return withinWholeRead((await this.viewed(name, follow)) ?? await this.namespace.readFile(name), options?.maxBytes, name);
+            // Only SQLite bounds a whole read (SqliteRuntimeFsBridge.readFile): a mount answers EFBIG, unread.
+            if (options?.maxBytes !== undefined)
+                throw syscallError('EFBIG', 'read', name);
+            return (await this.viewed(name, follow)) ?? this.namespace.readFile(name);
         }));
     }
     readRange(path, offset, length, options) {

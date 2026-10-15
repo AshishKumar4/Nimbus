@@ -145,10 +145,12 @@ export class SqliteRuntimeFsBridge {
                 return null;
             try {
                 if (options.maxBytes !== undefined) {
-                    const stat = located.mount ? located.mount.stat(located.path, { follow: true }) : this.vfs.stat(located.path);
-                    if (stat === null)
-                        return null;
-                    if (!fitsWholeRead(stat, options.maxBytes))
+                    // A bounded whole read is SQLite's alone, where the size check and
+                    // the read are one turn: a mount's stat and read are two calls, and
+                    // its read is of the whole file, whatever it has grown to.
+                    if (located.mount)
+                        throw fsError('EFBIG', 'read', path);
+                    if (!fitsWholeRead(this.vfs.stat(located.path), options.maxBytes))
                         throw fsError('EFBIG', 'read', path);
                 }
                 // cached === false reads straight from SQL, neither consulting nor
@@ -160,8 +162,7 @@ export class SqliteRuntimeFsBridge {
                         ? this.vfs.readFileUncached(located.path)
                         : this.vfs.readFile(located.path);
                 }
-                // A mount's stat and read are two calls: the bound holds on what the read answers.
-                return withinWholeRead(this.processView(located, options.followSymlinks !== false) ?? located.mount.readFile(located.path), options.maxBytes, path);
+                return this.processView(located, options.followSymlinks !== false) ?? located.mount.readFile(located.path);
             }
             catch (error) {
                 if (hasErrorCode(error, 'ENOENT'))
@@ -1089,10 +1090,4 @@ function hasErrorCode(error, code) {
 /** A whole read's `maxBytes` (RuntimeReadFileOptions): a regular file of at most `maxBytes` bytes is read whole; a directory answers as a read does. */
 export function fitsWholeRead(stat, maxBytes) {
     return stat.type === 'directory' || (stat.type === 'file' && !isCharacterDevice(stat.mode) && stat.size <= maxBytes);
-}
-/** `bytes`, a whole read's answer, refused (EFBIG) when it is larger than its `maxBytes`. */
-export function withinWholeRead(bytes, maxBytes, path) {
-    if (maxBytes !== undefined && bytes.length > maxBytes)
-        throw fsError('EFBIG', 'read', path);
-    return bytes;
 }

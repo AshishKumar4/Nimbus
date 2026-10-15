@@ -220,6 +220,4 @@ export declare function fitsWholeRead(stat: {
     readonly size: number;
     readonly mode?: number;
 }, maxBytes: number): boolean;
-/** `bytes`, a whole read's answer, refused (EFBIG) when it is larger than its `maxBytes`. */
-export declare function withinWholeRead(bytes: Uint8Array, maxBytes: number | undefined, path: RuntimeFsPath): Uint8Array;
 //# sourceMappingURL=sqlite-runtime-fs-bridge.d.ts.map
