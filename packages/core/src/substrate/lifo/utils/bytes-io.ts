@@ -8,7 +8,7 @@ import { isVfsError, syscallError } from '../../../vfs/vfs-error.js';
 import type { CommandInputStream } from '../commands/types.js';
 import { resolve } from './path.js';
 import { direntTypeOfStat } from '../../../vfs/dirent-type.js';
-import { fitsWholeRead } from '../../../vfs/vfs.js';
+import { fitsWholeRead } from '../../../runtime/sqlite-runtime-fs-bridge.js';
 
 export interface ByteInputContext {
   cwd: string;

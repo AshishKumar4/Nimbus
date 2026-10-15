@@ -4,7 +4,7 @@ import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors
 import type { WaveDescriptions, WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
-import { abandon, andThen, fitsWholeRead, isPromise, readDeclaredSource, readRangeOrWhole, syncValue, type Awaitable, type SyncVFS, type VfsRemoval } from '../vfs/vfs.js';
+import { abandon, andThen, isCharacterDevice, isPromise, readDeclaredSource, readRangeOrWhole, syncValue, type Awaitable, type SyncVFS, type VfsRemoval } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { fsError, MAX_LINK_HOPS, modeAllows, walkBeneath, type FsError } from './beneath-walk.js';
 
@@ -1078,4 +1078,9 @@ function called<T>(call: FsCall, run: () => T): T {
 
 function hasErrorCode(error: unknown, code: string): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
+}
+
+/** A whole read's `maxBytes` (RuntimeReadFileOptions): a regular file of at most `maxBytes` bytes is read whole; a directory answers as a read does. */
+export function fitsWholeRead(stat: { readonly type: string; readonly size: number; readonly mode?: number }, maxBytes: number): boolean {
+  return stat.type === 'directory' || (stat.type === 'file' && !isCharacterDevice(stat.mode) && stat.size <= maxBytes);
 }
