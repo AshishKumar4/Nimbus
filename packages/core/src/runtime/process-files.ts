@@ -576,17 +576,26 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   releaseProcess(pid: number): Promise<void> {
     this.retired.add(pid);
     this.listings.delete(pid);
-    // Its bindings end now, as its scope's close ends them (EBADF).
-    this.bound.get(pid)?.abort(fsError('EBADF', 'fd', 'filesystem scope closed'));
+    const bound = this.bound.get(pid);
     this.bound.delete(pid);
     const recovery = this.recoveries.get(pid);
+    // Its scope's close ends its bindings.
     if (recovery === undefined) return this.closeProcess(pid);
-    // Its log is draining: its descriptions and grants stay for the recovery, and the release settles when it ends.
-    if (recovery.release === null) {
-      let run!: () => Promise<void>;
-      const done = new Promise<void>((resolve, reject) => { run = () => this.closeProcess(pid).then(resolve, reject); });
-      recovery.release = { run, done };
-    }
+    if (recovery.release !== null) return recovery.release.done;
+    // Its log is draining: what it wrote to a mount is flushed now, as a
+    // release flushes it, by the bindings that opened it; then they end
+    // (EBADF, as a closed scope answers), and its other descriptions and its
+    // grants stay for the recovery. The release settles when that ends.
+    const scope = this.processes.get(pid);
+    const flushed = scope === undefined ? [] : closeDescriptions(scope, true);
+    bound?.abort(fsError('EBADF', 'fd', 'filesystem scope closed'));
+    let run!: () => Promise<void>;
+    const closed = new Promise<void>((resolve, reject) => { run = () => this.closeProcess(pid).then(resolve, reject); });
+    // Settled once both are, with the first failure.
+    const done = Promise.allSettled([Promise.resolve(flushed).then(reportLost), closed]).then((results) => {
+      for (const result of results) if (result.status === 'rejected') throw result.reason;
+    });
+    recovery.release = { run, done };
     return recovery.release.done;
   }
 
@@ -623,7 +632,6 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   killProcess(pid: number): { lost: number[] } {
     this.retired.add(pid);
     this.listings.delete(pid);
-    this.bound.get(pid)?.abort(fsError('EBADF', 'fd', 'filesystem scope closed'));
     this.bound.delete(pid);
     const scope = this.processes.get(pid);
     this.processes.delete(pid);

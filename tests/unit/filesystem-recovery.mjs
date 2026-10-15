@@ -17,6 +17,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
+import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const user = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
@@ -104,6 +105,37 @@ function session() {
   assert.equal(s.kernel.exists('home/user/repo/cancelled'), false, 'the commit published its inode');
   await recovery.dispose();
   console.log('  a commit in flight through an ordinary binding does not land beside the drain');
+}
+
+// ── What an ordinary binding wrote to a mount, buffered in its description,
+//    is flushed by the release, as a release flushes it, with its log
+//    draining as without ─────────────────────────────────────────────────
+{
+  const s = session();
+  const mounted = new MemoryVFS({ uid: 1000, gid: 1000 });
+  /** No writeRange, its credentialed views too: a description buffers what is written through it. */
+  const unranged = (vfs) => new Proxy(vfs, {
+    get(target, key) {
+      if (key === 'writeRange') return undefined;
+      const value = target[key];
+      if (key === 'sync') return value === undefined ? undefined : unranged(value);
+      if (typeof value !== 'function') return value;
+      if (key === 'as') return (...args) => unranged(value.apply(target, args));
+      return value.bind(target);
+    },
+    has: (target, key) => key !== 'writeRange' && key in target,
+  });
+  s.filesystem.vfs.mount('/home/user/b', unranged(mounted));
+  const { pid } = s.processes.spawn('git commit', [], '/home/user', { cred: user });
+  const fs = s.filesystem.bind({ pid, cred: user });
+  const opened = await fs.open('/home/user/b/l.txt', { write: true, create: true });
+  await fs.write(opened.id, 0, new TextEncoder().encode('flushed'));
+  const recovery = s.filesystem.recovery(pid, user);
+  s.processes.kill(pid, 137);
+  await recovery.dispose();
+  await s.processes.released(pid);
+  assert.equal(text(mounted.readFile('/l.txt')), 'flushed', 'the release lost what was written to a mount');
+  console.log('  what an ordinary binding wrote to a mount is flushed by the release');
 }
 
 // ── One recovery per process ─────────────────────────────────────────────
