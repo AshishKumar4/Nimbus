@@ -135,17 +135,34 @@ costs about 16 ms to start, and each synchronous filesystem call about
 
 ### What a program can reach
 
+Off Cloudflare, Nimbus is not a sandbox. On Cloudflare the session and its
+programs run in Workers isolates, and those are the boundary. On a Node or
+Bun host nothing but Nimbus's own code stands between a program and your
+machine.
+
 A `node` program and each wasm runtime (`python3`, `ruby`, `bash`, `clang`)
 run in a realm of their own: a worker thread, or under Bun a child process
-for the wasm runtimes. Their globals and built-ins are Nimbus's: `fs`,
-`child_process` and `process` act on the workspace, and nothing a program
-does to its globals reaches yours. Kill and abort end the realm.
+for the wasm runtimes. The realm keeps apart:
 
-A realm separates programs from your process, not from your machine. Under
-Bun, every realm has Bun's `Bun` namespace, which Bun makes permanent, and
-through it a program can reach your files, processes and network around the
-workspace. Under Node there is no such namespace. To run code you do not
-trust, run the host in an OS sandbox (a container or VM).
+- globals and built-ins: `fs`, `child_process` and `process` are Nimbus's
+  and act on the workspace, and nothing a program does to its globals
+  reaches yours;
+- your environment: a realm starts with an empty one;
+- its end: kill and abort end the realm, even in a loop that never yields,
+  and under Bun every process it started that stayed in its process group.
+
+It does not keep apart:
+
+- your machine: a realm runs as your OS user, in your process (a thread) or
+  a child of it. Under Bun every realm has Bun's `Bun` namespace, which Bun
+  makes permanent, and through it a program reaches your files, processes
+  and network around the workspace. Under Node there is no such namespace,
+  but a flaw in Nimbus's shims gives a program what your process has;
+- your resources: Nimbus sets no memory or CPU limit on a realm. A facet's
+  `timeoutMs`, where you give one, is the only bound.
+
+To run code you do not trust, run the host in an OS sandbox (a container or
+VM).
 
 ### When a program sees a change
 
