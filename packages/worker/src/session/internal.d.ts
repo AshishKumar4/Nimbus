@@ -176,7 +176,7 @@ export interface SessionInternal extends Pick<SessionRouterRpc,
   ensureFacetManager(): ComposedFacetManager;
   ensureBundlePool(): PrebundlePool;
   _ensureChildProcessManager(): ChildProcessManager;
-  ensureNpmInstaller(onProgress?: (msg: string) => void): Promise<NpmInstaller>;
+  ensureNpmInstaller(): Promise<NpmInstaller>;
   _setCpRegistry(r: CommandRegistry): void;
   hydrateSessionBasePath(request: Request): Promise<void>;
   ensureGlobalPrefixDirs(prefix: string, cred: Readonly<VfsCred>): void;

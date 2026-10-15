@@ -81,3 +81,12 @@ export function split(path: string): string[] {
   }
   return parts;
 }
+
+/** The path from absolute `from` to absolute `to`, as POSIX path.relative answers it. */
+export function relative(from: string, to: string): string {
+  const source = normalize(from).split('/').filter(Boolean);
+  const target = normalize(to).split('/').filter(Boolean);
+  let common = 0;
+  while (common < source.length && common < target.length && source[common] === target[common]) common++;
+  return [...source.slice(common).map(() => '..'), ...target.slice(common)].join('/');
+}
