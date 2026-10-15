@@ -1078,8 +1078,11 @@ function startDeferred(s: BashSession): void {
  * stdin that is not a terminal), chmod and chown, and the session's
  * accounts (account).
  */
-/** (uid_t)-1 and (gid_t)-1: chown's "keep this side". */
-const KEEP_ID = 0xffffffff;
+/** A chown side as the guest's uid_t or gid_t (an i32 here): its id, or null for (uid_t)-1, which keeps the file's. */
+function ownerSide(bits: number): number | null {
+  const id = bits >>> 0;
+  return id === 0xffffffff ? null : id;
+}
 
 function metadataImports(s: BashSession, proc: BashProc, DV: () => DataView, U8: () => Uint8Array, fs: RuntimeFsBridge | RuntimeSynchronousFs) {
   const readPath = (ptr: number, length: number) => td.decode(U8().subarray(ptr, ptr + length));
@@ -1128,18 +1131,11 @@ function metadataImports(s: BashSession, proc: BashProc, DV: () => DataView, U8:
     fchmod: (fd: number, mode: number) => result(() => fs.fchmod(descriptor(fd), mode), () => 0),
     // uid_t and gid_t are unsigned, and come as i32: an id above 0x7fffffff
     // arrives negative (>>> 0 is its value), and (uid_t)-1 keeps that side,
-    // as chown(2)'s -1 does (chgrp, chown :group), read off the file first.
-    chown: (fd: number, ptr: number, length: number, uidBits: number, gidBits: number, follow: number) => result(() => {
-      const uid = uidBits >>> 0, gid = gidBits >>> 0;
-      const path = ptr ? at(fd, readPath(ptr, length)) : null;
-      const handle = path === null ? descriptor(fd) : 0;
-      const change = (owner: number, group: number) => path !== null ? fs.chown(path, owner, group, { followSymlinks: !!follow }) : fs.fchown(handle, owner, group);
-      if (uid !== KEEP_ID && gid !== KEEP_ID) return change(uid, gid);
-      return after(path !== null ? fs.stat(path, { followSymlinks: !!follow }) : fs.fstat(handle), (st) => {
-        if (st === null) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
-        return change(uid === KEEP_ID ? st.uid : uid, gid === KEEP_ID ? st.gid : gid);
-      });
-    }, () => 0),
+    // as chown(2)'s -1 does, which the session keeps in the same change (null).
+    chown: (fd: number, ptr: number, length: number, uidBits: number, gidBits: number, follow: number) => {
+      const uid = ownerSide(uidBits), gid = ownerSide(gidBits);
+      return result(() => ptr ? fs.chown(at(fd, readPath(ptr, length)), uid, gid, { followSymlinks: !!follow }) : fs.fchown(descriptor(fd), uid, gid), () => 0);
+    },
     /**
      * One getpw* or getgr* lookup (nimbus-libc/nimbus-accounts.c), in one
      * round trip: a user (kind 0) or a group (1), by id (by 0), by name (1)

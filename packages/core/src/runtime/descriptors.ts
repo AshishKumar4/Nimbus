@@ -40,7 +40,7 @@ export interface MountedFileDescription {
   truncate(size: number, admit?: () => void): Awaitable<void>;
   readdir(): Awaitable<RuntimeVfsDirEntry[]>;
   chmod(mode: number, admit?: () => void): Awaitable<void>;
-  chown(uid: number, gid: number, admit?: () => void): Awaitable<void>;
+  chown(uid: number | null, gid: number | null, admit?: () => void): Awaitable<void>;
   utimes(atime: number, mtime: number, admit?: () => void): Awaitable<void>;
   /** Writes what it holds; throws what that, or an earlier settle of it, failed with. */
   flush(): Awaitable<void>;
@@ -394,7 +394,7 @@ export class Descriptors {
   }
 
   fchmod(id: number, mode: number): Awaitable<void> { return this.answering(id).node.chmod(mode); }
-  fchown(id: number, uid: number, gid: number): Awaitable<void> { return this.answering(id).node.chown(uid, gid); }
+  fchown(id: number, uid: number | null, gid: number | null): Awaitable<void> { return this.answering(id).node.chown(uid, gid); }
   futimes(id: number, atime: number, mtime: number): Awaitable<void> { return this.answering(id).node.utimes(atime, mtime); }
 }
 

@@ -1205,6 +1205,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * here where the holder decides them, else by the file's name at the
    * session, once what was decided is sent.
    */
+  /** An fchown side as the guest sent it: a uid or gid, or null (keep the file's). */
+  const ownerSide = (value: unknown): number | null => typeof value === 'number' ? value : null;
   const holderDescriptorCall = (name: 'fchmod' | 'fchown' | 'futimes' | 'dup', handleId: number, rest: unknown[]): unknown => {
     const key = holder!.keyOf(handleId);
     if (name === 'dup') return holder!.dup(handleId);
@@ -1214,7 +1216,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const bySession = (): unknown => holder!.flush().then(() => {
       const path = '/' + key;
       if (name === 'fchmod') return fs.chmod(path, Number(rest[0]));
-      if (name === 'fchown') return fs.chown(path, rest[0] as number, rest[1] as number);
+      if (name === 'fchown') return fs.chown(path, ownerSide(rest[0]), ownerSide(rest[1]));
       return fs.utimes(path, rest[0] as number | null, rest[1] as number | null);
     });
     if (attrs === null) return bySession();

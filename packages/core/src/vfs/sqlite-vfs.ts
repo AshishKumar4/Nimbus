@@ -370,7 +370,8 @@ export interface VfsOpenDescription {
   /** The directory's entries; a mounted backend's may name a device or say its type is unknown. */
   readdir(): { name: string; type: VfsDirentType }[];
   chmod(mode: number): void;
-  chown(uid: number, gid: number): void;
+  /** A null side keeps the file's. */
+  chown(uid: number | null, gid: number | null): void;
   utimes(atime: number, mtime: number): void;
   close(): void;
   /**
@@ -2752,10 +2753,10 @@ export class SqliteVFS {
         return opened.path === null ? [] : this.readdir(opened.path, CRED_KERNEL);
       },
       chmod: owned((mode: number): void => this.chmodInode(current(), mode, cred, opened.path)),
-      chown: owned((uid: number, gid: number): void => {
+      chown: owned((uid: number | null, gid: number | null): void => {
         if (cred.uid !== 0) throw vfsKeyError('EPERM', path);
         if (opened.path !== null) this.chown(opened.path, uid, gid, CRED_KERNEL, true);
-        else { current().uid = uid; current().gid = gid; current().ctime = this.now(); }
+        else { const inode = current(); inode.uid = uid ?? inode.uid; inode.gid = gid ?? inode.gid; inode.ctime = this.now(); }
       }),
       utimes: owned((atime: number, mtime: number): void => {
         if (cred.uid !== 0 && cred.uid !== current().uid && !rights.write) throw vfsKeyError('EPERM', path);

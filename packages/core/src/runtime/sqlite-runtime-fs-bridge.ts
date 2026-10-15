@@ -372,8 +372,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   chown(
     path: RuntimeFsPath,
-    uid: number,
-    gid: number,
+    uid: number | null,
+    gid: number | null,
     options: { followSymlinks?: boolean } = {},
   ): VfsMutationReceipt {
     return called({ syscall: 'chown', path }, () => {
@@ -1010,7 +1010,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   readdirHandle(handleId: number): RuntimeVfsDirEntry[] { return syncValue(this.descriptors.readdir(handleId)); }
   ftruncate(handleId: number, size: number): void { syncValue(this.descriptors.ftruncate(handleId, size)); }
   fchmod(handleId: number, mode: number): void { syncValue(this.descriptors.fchmod(handleId, mode)); }
-  fchown(handleId: number, uid: number, gid: number): void { syncValue(this.descriptors.fchown(handleId, uid, gid)); }
+  fchown(handleId: number, uid: number | null, gid: number | null): void { syncValue(this.descriptors.fchown(handleId, uid, gid)); }
   futimes(handleId: number, atime: number, mtime: number): void { syncValue(this.descriptors.futimes(handleId, atime, mtime)); }
 }
 

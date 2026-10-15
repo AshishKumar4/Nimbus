@@ -79,10 +79,14 @@ export interface BatchWritePayload {
   ops?: W7Op[];
 }
 
-/** One attribute change (setattr): the mode, the owner, or the times; what chmod, chown and utimes each make. */
+/**
+ * One attribute change (setattr): the mode, the owner, or the times; what
+ * chmod, chown and utimes each make. An owner side that is null keeps what
+ * the file has when the change lands (chown's -1).
+ */
 export type W7Attrs =
   | { mode: number }
-  | { uid: number; gid: number }
+  | { uid: number | null; gid: number | null }
   | { atime: number; mtime: number };
 
 /**
@@ -140,7 +144,7 @@ export type W7Call =
    */
   | { call: 'rm'; path: string; recursive?: true; force?: true }
   /** chown(2) of the link itself (lchown): the name's own entry, never what it names. */
-  | { call: 'lchown'; path: string; uid: number; gid: number }
+  | { call: 'lchown'; path: string; uid: number | null; gid: number | null }
   /** utimes of the link itself (lutimes). */
   | { call: 'lutimes'; path: string; atime: number; mtime: number }
   /**
@@ -1036,7 +1040,7 @@ function parseBatchBegin(bytes: Uint8Array, mode: W7Mode): BatchBeginMetadata {
 function parseAttrs(value: Record<string, unknown>, label: string): W7Attrs {
   const keys = Object.keys(value).sort().join(',');
   if (keys === 'mode') return { mode: u32(value.mode, `${label} mode`) };
-  if (keys === 'gid,uid') return { uid: u32(value.uid, `${label} uid`), gid: u32(value.gid, `${label} gid`) };
+  if (keys === 'gid,uid') return { uid: ownerId(value.uid, `${label} uid`), gid: ownerId(value.gid, `${label} gid`) };
   if (keys === 'atime,mtime') return { atime: safeInteger(value.atime, `${label} atime`), mtime: safeInteger(value.mtime, `${label} mtime`) };
   throw new Error(`w7-frame: ${label} changes the mode, the owner or the times, one of them: got ${keys || 'nothing'}`);
 }
@@ -1150,7 +1154,7 @@ function parsePathCall(value: Record<string, unknown>, path: (value: unknown, la
     }
     case 'lchown':
       if (keys !== 'call,gid,path,uid') break;
-      return { call: 'lchown', path: path(value.path, 'lchown path'), uid: u32(value.uid, 'lchown uid'), gid: u32(value.gid, 'lchown gid') };
+      return { call: 'lchown', path: path(value.path, 'lchown path'), uid: ownerId(value.uid, 'lchown uid'), gid: ownerId(value.gid, 'lchown gid') };
     case 'open': {
       const flags = ['create', 'exclusive', 'nofollow', 'read', 'truncate'] as const;
       let required = keys;
@@ -1433,6 +1437,11 @@ function safeInteger(value: unknown, label: string): number {
     throw new Error(`w7-frame: ${label} must be a non-negative safe integer`);
   }
   return value as number;
+}
+
+/** A chown side: a uid or gid, or null, which keeps the file's. */
+function ownerId(value: unknown, label: string): number | null {
+  return value === null ? null : u32(value, label);
 }
 
 function u32(value: unknown, label: string): number {
