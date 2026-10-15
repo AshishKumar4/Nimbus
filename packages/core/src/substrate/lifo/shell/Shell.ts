@@ -7,7 +7,6 @@ import { isVfsCred, type NimbusFilesystemAuthority, type VfsCred } from '../../.
 import type { TerminalInputStream } from '../commands/types.js';
 import { DEFAULT_HOME } from '../../../constants.js';
 import { BOLD, GREEN, BLUE, RESET } from '../utils/colors.js';
-import { textCapture } from '../utils/bytes-io.js';
 
 import { Interpreter, type BuiltinFn, type ProgramSpec, type TerminalFdState } from './interpreter.js';
 import { createShellState, restoreShellState, snapshotShellState, type ShellOptions, type ShellState } from './state.js';
@@ -372,21 +371,21 @@ export class Shell {
     let stdoutBuf = '';
     let stderrBuf = '';
 
-    // A stream the caller sinks gets the bytes; one it does not is captured as text.
     const onStdout = options?.onStdout;
     const onStderr = options?.onStderr;
-    const sunk = (sink: (bytes: Uint8Array) => void | Promise<void>): CommandOutputStream => ({
-      writeBytes: (bytes: Uint8Array) => sink(bytes),
-      write: async (text: string) => (await sink(enc.encode(text))),
-    });
-    const stdoutCapture = textCapture((text) => { stdoutBuf += text; });
-    const stderrCapture = textCapture((text) => { stderrBuf += text; });
-    const stdoutStream = onStdout ? sunk(onStdout) : stdoutCapture.stream;
-    const stderrStream = onStderr ? sunk(onStderr) : stderrCapture.stream;
-    const captured = (exitCode: number) => {
-      stdoutCapture.end();
-      stderrCapture.end();
-      return { stdout: stdoutBuf, stderr: stderrBuf, exitCode };
+    const stdoutStream: CommandOutputStream = {
+      ...(onStdout ? { writeBytes: (bytes: Uint8Array) => onStdout(bytes) } : {}),
+      write: async (text: string) => {
+        if (onStdout) return (await onStdout(enc.encode(text)));
+        stdoutBuf += text;
+      },
+    };
+    const stderrStream: CommandOutputStream = {
+      ...(onStderr ? { writeBytes: (bytes: Uint8Array) => onStderr(bytes) } : {}),
+      write: async (text: string) => {
+        if (onStderr) return (await onStderr(enc.encode(text)));
+        stderrBuf += text;
+      },
     };
 
     // Save current state
@@ -453,11 +452,11 @@ export class Shell {
           signal: workSignal,
         },
       );
-      return captured(exitCode);
+      return { stdout: stdoutBuf, stderr: stderrBuf, exitCode };
     } catch (e) {
       const msg = e instanceof Error ? (e.stack || e.message) : String(e);
       await stderrStream.write(msg + '\n');
-      return captured(1);
+      return { stdout: stdoutBuf, stderr: stderrBuf, exitCode: 1 };
     } finally {
       stopped();
       this._executeDepth--;
