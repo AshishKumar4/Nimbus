@@ -813,7 +813,7 @@ async function main() {
     'node-arguments',
     { shared: ['node-error'] },
   );
-  for (const name of ['parseFileMode', 'stringToFlags', 'validateInt32', 'validateUint32']) {
+  for (const name of ['parseFileMode', 'stringToFlags', 'validateInt32', 'validateUint32', 'nodeOwnerId']) {
     if (!new RegExp(`^function ${name}\\(`, 'm').test(nodeArguments)) {
       throw new Error(`[bundle-facet-workers/node-arguments] the bundle no longer declares function ${name}`);
     }

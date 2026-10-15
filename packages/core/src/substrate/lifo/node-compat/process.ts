@@ -106,11 +106,17 @@ export class LifoProcess extends EventEmitter {
     return exitCodeOf(this);
   }
 
+  /** Node's 'beforeExit', each time its loop runs empty but on process.exit() or a fatal error: with its process.exitCode. */
+  emitBeforeExit(): void {
+    this.emit('beforeExit', exitCodeOf(this));
+  }
+
   hearsWriteFailures(): boolean {
     return (this.#stdout?.listenerCount('error') ?? 0) > 0 || (this.#stderr?.listenerCount('error') ?? 0) > 0
       || this.#capture !== null || this.listenerCount('uncaughtException') > 0 || this.listenerCount('uncaughtExceptionMonitor') > 0
-      // Its 'exit' listeners see a status a failed write changed.
-      || this.listenerCount('exit') > 0
+      // Its 'exit' listeners see a status a failed write changed; its
+      // 'beforeExit' listeners run only if no failed write ended it first.
+      || this.listenerCount('exit') > 0 || this.listenerCount('beforeExit') > 0
       // A WriteStream it made that listens for its own writes' failures.
       || ttyOf(this.#stdio).writersHear();
   }

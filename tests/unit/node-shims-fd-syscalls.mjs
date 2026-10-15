@@ -684,7 +684,7 @@ assert.equal((await bridge.stat('/home/user/own.txt')).uid, 1000);
 assert.throws(() => fs.chownSync('/home/user/own.txt', -1, 0), (e) => e.code === 'EPERM');
 fs.chownSync('/home/user/own.txt', -1, 1000);
 assert.equal((await bridge.stat('/home/user/own.txt')).uid, 1000);
-assert.throws(() => fs.chownSync('/home/user/own.txt', -2, 1000), (e) => e.code === 'EINVAL');
+assert.throws(() => fs.chownSync('/home/user/own.txt', -2, 1000), (e) => e.code === 'ERR_OUT_OF_RANGE');
 
 // ── link stays ENOSYS: the VFS has no hard links ──
 assert.throws(() => fs.linkSync('/home/user/own.txt', '/home/user/own.lnk'), (e) => e.code === 'ENOSYS');
