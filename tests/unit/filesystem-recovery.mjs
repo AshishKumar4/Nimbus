@@ -211,10 +211,13 @@ function session() {
   unlinkAt.release();
   await writeAt.at;
   writeAt.release();
-  assert.equal(await unlinked, 'EBADF', 'an ordinary binding\'s unlink, paused past the release, reached the mount');
+  const synced = await outcome(Promise.resolve().then(() => fs.fsync(opened.id)));
+  assert.deepEqual(
+    { unlink: await unlinked, write: await written, fsync: synced },
+    { unlink: 'EBADF', write: 'EBADF', fsync: 'EBADF' },
+    'an ordinary binding\'s call, paused past the release (or after it), reached the mount',
+  );
   assert.equal(text(mounted.readFile('/doomed')), 'd');
-  assert.equal(await written, 'EBADF', 'an ordinary binding\'s descriptor write, paused past the release, reached the mount');
-  assert.equal(await outcome(Promise.resolve().then(() => fs.fsync(opened.id))), 'EBADF', 'an ordinary binding\'s fsync after the release');
   await recovery.fs.write(opened.id, 0, enc.encode('DRAINED'));
   assert.equal(text(mounted.readFile('/w')), 'DRAINED', 'the recovery lost the process\'s descriptor');
   await recovery.dispose();
