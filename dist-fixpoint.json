@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "1a9c30af1071cdfa1e0a07100bc970bacec3ccf77f878f6efc9387101de6b230",
+  "fingerprint": "7570a504dd0fd1c10a059d20d4179bacf37e51464209096adeedf440d645a33f",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2433,8 +2433,8 @@
     "packages/worker/dist/hosted/commands.d.ts.map": "45829bffcec868d9cf9fff5acb52feeef0edcd716e08be49c8b6bbc3108f21d8",
     "packages/worker/dist/hosted/commands.js": "0a3ff78dcff36d805ea041f0dd2766c77574f759b5e940c2ee132a804b857f8d",
     "packages/worker/dist/hosted/runtime.d.ts": "a810c19c8c2e6a00526fedab795f18ef3243be5d7f70a8e03fd3baa97b7dfc55",
-    "packages/worker/dist/hosted/runtime.d.ts.map": "3fe09369aa04241a2d0817948d85958144647fbb01dddb3203c83bf641ff057a",
-    "packages/worker/dist/hosted/runtime.js": "b5ec4b00efc96a1780e0668e184e6575394f2420aefc072915e17a4072ceb514",
+    "packages/worker/dist/hosted/runtime.d.ts.map": "00a02e0757b2e15b1f2f7d63eb45680b451dcc9243bd5485befcd3c5bb22149e",
+    "packages/worker/dist/hosted/runtime.js": "44835127f8a581c6231cc2ef6e0d61c18469ff6a17d4bdae5a215cc599940d60",
     "packages/worker/dist/hosted/services.d.ts": "d0cafade708792a47398050be4493da70d73c5ccdafc5e7d32841dc9b50441f2",
     "packages/worker/dist/hosted/services.d.ts.map": "f803ef398f7242c6b3ae60d9579c9750871112268f411e271f40fb6468fc7f3f",
     "packages/worker/dist/hosted/services.js": "47de0d3fb421d65ce59ccdbe362e7ae922070ae94dab90bf9714693a400bf3a5",
@@ -3155,7 +3155,7 @@
     "packages/worker/src/git/worktree/walk.ts": "b074012ed86e482f2b47900b8007a7a75474bfbf306de51e1b6b9ae42ec2b928",
     "packages/worker/src/git/worktree/wildmatch.ts": "ade00bc5f60c1530410a370f8d6f47c3dc0f2b94a24bcff4c25c646ac66ac367",
     "packages/worker/src/hosted/commands.ts": "a8059045a51662ae78572f74c2c184348ef9f23209fce8900174c8887fe83f78",
-    "packages/worker/src/hosted/runtime.ts": "241d610aeab242826b3af8ff0150228a91701a125337bb38c48c71f7225ea332",
+    "packages/worker/src/hosted/runtime.ts": "078a18ce854b483d281e411a0e5cff070052f4cd98932145152d08dc5bbe4f65",
     "packages/worker/src/hosted/services.ts": "0ce1be7d4be1992601f59c8b4fdeaeae619c215eac65dabb1e7d6ba2f8ea6eae",
     "packages/worker/src/hosted/session.ts": "f393fc55e80aaca365adbc0a1e3dfa44e9b9250647fd2754fbf14a340086f177",
     "packages/worker/src/index.ts": "a9291bb6585bf30a1104c04e59bf28afafbafe6817f1019afc9fb4efd71b2766",

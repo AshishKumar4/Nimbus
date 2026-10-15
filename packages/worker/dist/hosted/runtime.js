@@ -51,6 +51,8 @@ class RuntimeOwner {
     nimbusWrangler = null;
     webSocketRelay = null;
     readyPromise = null;
+    /** Usable once its commands are registered, before the login files run: what they may wait on waits on this, not on them. */
+    usablePromise = null;
     supervisor = null;
     flushScheduled = false;
     recoveryNotice = false;
@@ -118,26 +120,48 @@ class RuntimeOwner {
     }
     ensureRuntimeReady() {
         this.assertOpen();
-        this.readyPromise ??= (async () => {
-            // Files a pre-v2 Nimbus wrote are not read: say so, and start cold.
-            this.legacyNotice = takeLegacyResetNotice(this.sqliteFs, this.ctx);
-            const saved = loadShellState(this.ctx);
-            this.recoveryNotice = saved.hasPersistedState;
-            if (saved.cwd)
-                this.shell.setCwd(saved.cwd);
-            if (saved.env)
-                Object.assign(this.shell.getEnv(), saved.env);
-            await registerHostedCommands(this, this.options.workspace);
-            await this.ensureFacetManager().pumpLaunches();
-            await this.options.workspace.start();
-            // The dev servers the previous incarnation ran start again, once it is ready.
-            this.restoreDevServers().catch((error) => console.warn(`[runtime] restoring the dev servers failed: ${errorText(error)}`));
-        })();
+        if (this.readyPromise === null) {
+            const usable = (async () => {
+                // Files a pre-v2 Nimbus wrote are not read: say so, and start cold.
+                this.legacyNotice = takeLegacyResetNotice(this.sqliteFs, this.ctx);
+                const saved = loadShellState(this.ctx);
+                this.recoveryNotice = saved.hasPersistedState;
+                if (saved.cwd)
+                    this.shell.setCwd(saved.cwd);
+                if (saved.env)
+                    Object.assign(this.shell.getEnv(), saved.env);
+                await registerHostedCommands(this, this.options.workspace);
+                await this.ensureFacetManager().pumpLaunches();
+            })();
+            this.usablePromise = usable;
+            this.readyPromise = usable.then(async () => {
+                await this.options.workspace.start();
+                // The dev servers the previous incarnation ran start again, once it is ready.
+                this.restoreDevServers().catch((error) => console.warn(`[runtime] restoring the dev servers failed: ${errorText(error)}`));
+            });
+        }
         return this.readyPromise;
     }
+    /** Its commands registered: the login files' commands run from here on. */
+    ensureUsable() {
+        const ready = this.ensureRuntimeReady();
+        return this.usablePromise ?? ready;
+    }
     ensureSqliteFs() { return this.sqliteFs; }
+    /** What restoring the dev servers reads of this runtime: its readiness short of the login files, which may wait on the restore. */
+    devServerHost = null;
     /** The dev servers the previous incarnation ran, started again once (dev-servers.ts). */
-    restoreDevServers() { return restoreDevServers(this); }
+    restoreDevServers() {
+        const owner = this;
+        this.devServerHost ??= {
+            ctx: this.ctx,
+            get processes() { return owner.processes; },
+            get portRegistry() { return owner.portRegistry; },
+            get runtimeWorkspace() { return owner.runtimeWorkspace; },
+            ensureRuntimeReady: () => this.ensureUsable(),
+        };
+        return restoreDevServers(this.devServerHost);
+    }
     routeLoopback(port, request) {
         return routeRuntimeLoopback(this.portRegistry, port, request, (dark) => this.ensureFacetManager().manager.ensureDurableAppOnPort(dark));
     }
