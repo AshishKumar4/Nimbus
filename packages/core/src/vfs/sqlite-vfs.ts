@@ -112,6 +112,7 @@ import { inflateChunk } from './chunk-codec.js';
 import {
   CRED_KERNEL,
   sameCred,
+  type GrantCertificate,
   type VfsAcquireOptions,
   type VfsAcquireResult,
   type VfsCred,
@@ -186,6 +187,8 @@ export interface ExclusiveMutationLease {
   readonly inos?: InodeRange;
   /** A delegation's storage bytes, reserved for what its holder writes. */
   readonly bytes?: number;
+  /** A delegation whose reads recall it: the epoch and revision it was recorded at. */
+  readonly certificate?: GrantCertificate;
 }
 
 /** Inode numbers reserved for a delegation's holder: [first, end). */
@@ -4217,7 +4220,10 @@ export class SqliteVFS {
       root, delegation: options.delegation ?? null, inos, numbered: new Map(), reservation: bytes > 0 ? owner : null, shared: false, recalling: null, reason: null,
       ...(options.stoppable === true ? { stoppable: true } : {}),
     });
-    return { root, owner, ...(inos === null ? {} : { inos }), ...(bytes > 0 ? { bytes } : {}) };
+    return {
+      root, owner, ...(inos === null ? {} : { inos }), ...(bytes > 0 ? { bytes } : {}),
+      ...(options.delegation?.reads === true ? { certificate: { epoch: this._epoch, revision: this._revision } } : {}),
+    };
   }
 
   /**
@@ -4735,6 +4741,19 @@ export class SqliteVFS {
    * mutations are refused with; a namespace that lays other filesystems over
    * this one asks it before it mutates one of them (CompositeVFS.guardMutations).
    */
+  /**
+   * A change of what `path` routes to (a mount or an unmount there): each
+   * delegation whose root it overlaps either way gives the subtree up first
+   * (RecallRequired), as a change of its own names would make it: its
+   * holder's view of the subtree is no longer the session's.
+   */
+  recallRouting(path: string): void {
+    const key = normalizeVfsPath(path);
+    for (const [holder, lease] of this.exclusiveMutationLeases) {
+      if (lease.delegation !== null && this.mutationMeets(lease, key)) throw this.recallRequired(holder, lease, 'revoke', key);
+    }
+  }
+
   mutationRefusal(path: string, cred: VfsCred, owner?: string): MutationRefusal | null {
     return this.refusalAt(this.lexicalKey(path, cred).value, owner ?? this.activeMutationOwner);
   }
@@ -9271,7 +9290,8 @@ export class SqliteVFS {
    * A wave on this filesystem as `cred`'s caller (WaveIngest): the
    * delegations it holds and whether its view continues as it is answered,
    * taken in the caller's turn; `work` applies the wave through the scope.
-   * Answered once what it committed is published, or held (`held`).
+   * Answered once what it committed is published, with the revision then
+   * (`revision`), or held (`held`).
    */
   private wave(
     options: WriteStreamOptions,
@@ -9306,12 +9326,13 @@ export class SqliteVFS {
         if (!pipeline.continues) await published;
       }
       // Whatever else its writer holds: a resend's own records are the
-      // attempt's before it, which may still be held.
+      // attempt's before it, which may still be held. Answered with the
+      // clock once all of it is published.
       const held = holds === null ? null : this.publishedFor(holds);
-      if (held === null) return result;
+      if (held === null) return { ...result, revision: this._revision };
       if (pipeline.continues) return { ...result, held: true };
       await held;
-      return result;
+      return { ...result, revision: this._revision };
     }, options.mutationOwner);
   }
 

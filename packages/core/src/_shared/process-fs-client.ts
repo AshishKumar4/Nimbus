@@ -45,7 +45,7 @@
  */
 
 import { encodeWriteBatch, type W7Attrs, type W7Call } from '@nimbus-sh/platform/w7-frame.js';
-import type { ExclusiveMutationGrant, RecallKind } from '../runtime/os-contracts.js';
+import type { ExclusiveMutationGrant, GrantCertificate, RecallKind } from '../runtime/os-contracts.js';
 import { WAVE_BYTES, WAVE_PATHS, WAVE_PATH_BYTES, openWaveEpoch, sendWaveAttempts, waveAttemptsOf, type WaveFence, type WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import { classifyMessage } from '@nimbus-sh/platform/oom-classify.js';
@@ -105,6 +105,8 @@ export interface ProcessFsGrant {
   readonly owner: string;
   /** The umask the session applies to the process's creates. */
   readonly umask: number;
+  /** Where the session stood when it recorded the grant (vouch); a session before it gives none. */
+  readonly certificate?: GrantCertificate;
 }
 
 /** The session's stat of a file a data call published (its receipt, less the path). */
@@ -272,6 +274,19 @@ export interface ProcessFsClient {
    * stays placed there until the process has answered.
    */
   guards(key: string): boolean;
+  /**
+   * What vouches for `key` in a view whose applied cursor is `cursor`: a
+   * subtree the process holds alone (not shared, not closing, no raw socket)
+   * whose certificate the cursor has reached, in its epoch, so the view has
+   * every change before the grant and none came after it unrecalled; and
+   * every change of the process's own: none logged and unanswered, each
+   * published, and the session's revision as it answered it reached. 'held':
+   * `key` is at or beneath its root, everything about it vouched for; 'above':
+   * an ancestor of its root, whose own change (its mode, its rename) recalls
+   * the grant, though a change beneath it elsewhere does not. Undefined:
+   * nothing does, and only the session can answer.
+   */
+  vouch(key: string, cursor: { readonly epoch: string | null; readonly rev: number }): 'held' | 'above' | undefined;
   /** Whether any op is logged and not yet answered. */
   pending(): boolean;
   /**
@@ -439,6 +454,12 @@ interface Grant extends ProcessFsGrant {
   lastUsed: number;
 }
 
+/** Where `key` stands to a grant held alone (not ended, closing or shared): 'held' at or beneath its root, 'above' an ancestor of it. */
+function standingOf(grant: Grant, key: string): 'held' | 'above' | undefined {
+  if (grant.ended || grant.closing || grant.shared) return undefined;
+  return within(key, grant.root) ? 'held' : within(grant.root, key) ? 'above' : undefined;
+}
+
 function parentKey(key: string): string {
   const at = key.lastIndexOf('/');
   return at < 0 ? '' : key.slice(0, at);
@@ -603,6 +624,16 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   /** Waves the session answered ahead of their publication, and how many of them it has since said are published (`published`). */
   let heldWaves = 0;
   let publishedThrough = 0;
+  /**
+   * The session's revision as it last answered a wave with nothing of the
+   * process's held for publication (its `revision`): every change of the
+   * process's own it has answered is published at or before it, so a view
+   * short of it may lack one (vouch). Past every revision once a change's
+   * fate is unknown, or an answer does not say it. `ownHeld`: the last answer
+   * came ahead of a publication (`held`), at a revision none has said yet.
+   */
+  let ownThrough = 0;
+  let ownHeld = false;
   /**
    * The session told of a raw socket (rawSocket): every wave after it is
    * sent once it lands, and nothing is decided here from then on. Landed:
@@ -814,6 +845,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       return;
     }
     ack = Math.max(ack, cursor);
+    ownHeld = answer.held === true;
+    if (!ownHeld) ownThrough = Math.max(ownThrough, answer.revision ?? Infinity);
     const refused = writer === null
       ? (error?.errno !== undefined && SYSCALL_VERDICTS.has(error.errno as VfsErrorCode) ? { seq: cursor + 1, errno: error.errno, message: error.message } : null)
       : answer.sequence?.refused ?? null;
@@ -876,6 +909,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     journal.dropThrough(entries[entries.length - 1]!.jid);
     if (writer !== null) retiring.push(writer);
     epoch = null;
+    ownThrough = Infinity;
     for (const entry of queue) entry.seq = 0;
   };
 
@@ -889,6 +923,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     journal.dropThrough(ended[ended.length - 1]!.jid);
     if (writer !== null) retiring.push(writer);
     epoch = null;
+    ownThrough = Infinity;
   };
 
   const exhaustedInvocation = (entries: Entry[], refusal: Error): void => {
@@ -900,6 +935,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     }
     if (!journal.durable) journal.dropThrough(stopped[stopped.length - 1]!.jid);
     epoch = null;
+    ownThrough = Infinity;
   };
 
   const pump = (): void => {
@@ -1144,6 +1180,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         root: granted.root,
         owner: granted.owner,
         umask: granted.umask ?? 0o022,
+        ...(granted.certificate === undefined ? {} : { certificate: granted.certificate }),
         nextIno: granted.inos?.first ?? 0,
         endIno: granted.inos?.end ?? 0,
         inos,
@@ -1218,8 +1255,20 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     holds(key) {
       return grants.some((grant) => !grant.ended && within(key, grant.root));
     },
+    vouch(key, cursor) {
+      if (escaped !== null || client.pending() || ownHeld || cursor.rev < ownThrough) return undefined;
+      let found: 'held' | 'above' | undefined;
+      for (const grant of grants) {
+        const certificate = grant.certificate;
+        if (certificate === undefined || certificate.epoch !== cursor.epoch || cursor.rev < certificate.revision) continue;
+        const standing = standingOf(grant, key);
+        if (standing === 'held') return standing;
+        found ??= standing;
+      }
+      return found;
+    },
     guards(key) {
-      return escaped === null && grants.some((grant) => !grant.ended && !grant.closing && !grant.shared && (within(key, grant.root) || within(grant.root, key)));
+      return escaped === null && grants.some((grant) => standingOf(grant, key) !== undefined);
     },
     pending() {
       return queue.length > 0 || inFlight !== null;

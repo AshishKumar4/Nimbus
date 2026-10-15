@@ -503,6 +503,8 @@ interface Table {
   guard?: MutationGuard;
   /** Told of every mount and unmount (watchMounts). */
   moved?: () => void;
+  /** Asked before a mount or unmount changes what a path routes to (guardRouting). */
+  routing?: (point: string) => void;
 }
 
 /**
@@ -529,8 +531,8 @@ type Ops = VFS | SyncVFS;
 
 /** A directory this namespace makes (above a mount point, or a backend root with no stat). */
 const EPOCH_STAT: VfsStat = { type: 'directory', size: 0, mtimeMs: 0, mode: 0o40755, uid: 0, gid: 0 };
-/** Where the namespace's own device numbers for mounts start (see Mount.dev). */
-const ANONYMOUS_DEV = 0x10000;
+/** Where the namespace's own device numbers for mounts start (see Mount.dev): an entry's dev at or past it is on a mount. */
+export const ANONYMOUS_DEV = 0x10000;
 
 /** Whether `error` is a synchronous caller's refusal by an asynchronous mount (one that can await may retry on the async face). */
 export function isAsyncMountRefusal(error: unknown): boolean {
@@ -993,6 +995,7 @@ export class CompositeVFS implements VFS {
     const at = normalizePath(point);
     if (at === ROOT_POINT) throw syscallError('EBUSY', 'mount', point, { detail: 'the root is mounted at construction' });
     if (this.table.mounts.has(at)) throw syscallError('EBUSY', 'mount', point, { detail: 'something is already mounted there' });
+    this.table.routing?.(at);
     const mount: Mount = { point: at, under: `${at}/`, source, options, dev: ANONYMOUS_DEV + ++this.nextDev, inos: new Map() };
     this.table.mounts.set(at, mount);
     this.table.generation++;
@@ -1018,6 +1021,7 @@ export class CompositeVFS implements VFS {
     const at = normalizePath(point);
     const mount = this.table.mounts.get(at);
     if (at === ROOT_POINT || mount === undefined) throw syscallError('EINVAL', 'umount', point, { detail: 'nothing is mounted there' });
+    this.table.routing?.(at);
     this.table.mounts.delete(at);
     this.table.generation++;
     this.table.writes?.subscribed.get(mount)?.();
@@ -2271,6 +2275,16 @@ export class CompositeVFS implements VFS {
   /** `moved` is told of every mount and unmount after it is made, for every view of this table. */
   watchMounts(moved: () => void): void {
     this.table.moved = moved;
+  }
+
+  /**
+   * `routing` is asked before a mount or unmount at a point changes what
+   * anything at, beneath or above it routes to, before the table moves: it
+   * throws to stop the change (RecallRequired: a held subtree is given up
+   * first, and the change is made again, withRecall's).
+   */
+  guardRouting(routing: (point: string) => void): void {
+    this.table.routing = routing;
   }
 
   /**

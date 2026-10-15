@@ -1299,6 +1299,10 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
   var GRANT_INOS = 4096;
   var GRANT_BYTES = 64 * 1024 * 1024;
   var RECALL_POLL_MS = 2e4;
+  function standingOf(grant, key) {
+    if (grant.ended || grant.closing || grant.shared) return void 0;
+    return within(key, grant.root) ? "held" : within(grant.root, key) ? "above" : void 0;
+  }
   function parentKey(key) {
     const at = key.lastIndexOf("/");
     return at < 0 ? "" : key.slice(0, at);
@@ -1409,6 +1413,8 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     let answered = 0;
     let heldWaves = 0;
     let publishedThrough = 0;
+    let ownThrough = 0;
+    let ownHeld = false;
     let escaped = null;
     let escapeLanded = false;
     const marks = [];
@@ -1597,6 +1603,8 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         return;
       }
       ack = Math.max(ack, cursor);
+      ownHeld = answer.held === true;
+      if (!ownHeld) ownThrough = Math.max(ownThrough, answer.revision ?? Infinity);
       const refused = writer === null ? error?.errno !== void 0 && SYSCALL_VERDICTS.has(error.errno) ? { seq: cursor + 1, errno: error.errno, message: error.message } : null : answer.sequence?.refused ?? null;
       let receipt = 0;
       const back = [];
@@ -1645,6 +1653,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       journal.dropThrough(entries[entries.length - 1].jid);
       if (writer !== null) retiring.push(writer);
       epoch = null;
+      ownThrough = Infinity;
       for (const entry of queue) entry.seq = 0;
     };
     const endedProcess = (entries, refusal, writer) => {
@@ -1660,6 +1669,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       journal.dropThrough(ended[ended.length - 1].jid);
       if (writer !== null) retiring.push(writer);
       epoch = null;
+      ownThrough = Infinity;
     };
     const exhaustedInvocation = (entries, refusal) => {
       processGone ??= fsError("EIO", refusal.message, "");
@@ -1673,6 +1683,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       }
       if (!journal.durable) journal.dropThrough(stopped[stopped.length - 1].jid);
       epoch = null;
+      ownThrough = Infinity;
     };
     const pump = () => {
       scheduled = false;
@@ -1856,6 +1867,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           root: granted.root,
           owner: granted.owner,
           umask: granted.umask ?? 18,
+          ...granted.certificate === void 0 ? {} : { certificate: granted.certificate },
           nextIno: granted.inos?.first ?? 0,
           endIno: granted.inos?.end ?? 0,
           inos,
@@ -1915,8 +1927,20 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       holds(key) {
         return grants.some((grant) => !grant.ended && within(key, grant.root));
       },
+      vouch(key, cursor) {
+        if (escaped !== null || client.pending() || ownHeld || cursor.rev < ownThrough) return void 0;
+        let found;
+        for (const grant of grants) {
+          const certificate = grant.certificate;
+          if (certificate === void 0 || certificate.epoch !== cursor.epoch || cursor.rev < certificate.revision) continue;
+          const standing = standingOf(grant, key);
+          if (standing === "held") return standing;
+          found ??= standing;
+        }
+        return found;
+      },
       guards(key) {
-        return escaped === null && grants.some((grant) => !grant.ended && !grant.closing && !grant.shared && (within(key, grant.root) || within(grant.root, key)));
+        return escaped === null && grants.some((grant) => standingOf(grant, key) !== void 0);
       },
       pending() {
         return queue.length > 0 || inFlight !== null;

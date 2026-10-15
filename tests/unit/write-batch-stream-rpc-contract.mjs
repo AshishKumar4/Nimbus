@@ -18,8 +18,9 @@ const malformed = new ReadableStream({
 const harness = createSqliteVfsTestHarness();
 const processes = new SessionProcessSupervisor();
 const process = processes.spawn('git', ['clone'], '/home/user');
+const sqliteFs = new SqliteVFS(harness.sql, harness.ctx);
 const result = await _rpcWriteBatchStream(attachSupervisorOps({
-  sqliteFs: new SqliteVFS(harness.sql, harness.ctx),
+  sqliteFs,
   processes,
   ensureSqliteFs() {},
 }), malformed, undefined, process.pid);
@@ -33,6 +34,8 @@ assert.deepEqual(result, {
   chunks: 0,
   // The committed prefix's receipts: none, since nothing committed.
   receipts: [],
+  // The session's revision as it answered.
+  revision: sqliteFs.revision(),
   error: {
     code: 'ERR_WRITE_BATCH_STREAM',
     phase: 'decode',

@@ -326,6 +326,8 @@ interface Table {
     guard?: MutationGuard;
     /** Told of every mount and unmount (watchMounts). */
     moved?: () => void;
+    /** Asked before a mount or unmount changes what a path routes to (guardRouting). */
+    routing?: (point: string) => void;
 }
 /**
  * Why a mutation by `cred` at the namespace path `path` is refused (an
@@ -340,6 +342,8 @@ interface Views {
     refs: Map<string, WeakRef<CompositeVFS>>;
     gone: FinalizationRegistry<string>;
 }
+/** Where the namespace's own device numbers for mounts start (see Mount.dev): an entry's dev at or past it is on a mount. */
+export declare const ANONYMOUS_DEV = 65536;
 /** Whether `error` is a synchronous caller's refusal by an asynchronous mount (one that can await may retry on the async face). */
 export declare function isAsyncMountRefusal(error: unknown): boolean;
 /** `/a/b`, from any spelling; `..` stops at the root. */
@@ -742,6 +746,13 @@ export declare class CompositeVFS implements VFS {
     guardMutations(guard: MutationGuard): void;
     /** `moved` is told of every mount and unmount after it is made, for every view of this table. */
     watchMounts(moved: () => void): void;
+    /**
+     * `routing` is asked before a mount or unmount at a point changes what
+     * anything at, beneath or above it routes to, before the table moves: it
+     * throws to stop the change (RecallRequired: a held subtree is given up
+     * first, and the change is made again, withRecall's).
+     */
+    guardRouting(routing: (point: string) => void): void;
     /**
      * This view, for one holder: `check` is asked right before each mutation
      * reaches a backend, after every lookup and read the mutation waited on,
