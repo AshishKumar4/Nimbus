@@ -628,14 +628,16 @@ async function fetchPypiJson(network, name, version) {
         const url = version
             ? `${PYPI_API}/${encodeURIComponent(canonical)}/${encodeURIComponent(version)}/json`
             : `${PYPI_API}/${encodeURIComponent(canonical)}/json`;
-        const fetched = { expires: Infinity };
-        fetched.promise = network.fetch(url).then(async (resp) => {
-            if (!resp.ok)
-                throw new Error(`HTTP ${resp.status}`);
-            const data = PypiJsonSchema.parse(await resp.json());
-            fetched.expires = Date.now() + pypiAnswerAge(resp);
-            return data;
-        });
+        const fetched = {
+            expires: Infinity,
+            promise: network.fetch(url).then(async (resp) => {
+                if (!resp.ok)
+                    throw new Error(`HTTP ${resp.status}`);
+                const data = PypiJsonSchema.parse(await resp.json());
+                fetched.expires = Date.now() + pypiAnswerAge(resp);
+                return data;
+            }),
+        };
         entry = fetched;
         const now = Date.now();
         for (const [kept, answer] of pypiCache)
