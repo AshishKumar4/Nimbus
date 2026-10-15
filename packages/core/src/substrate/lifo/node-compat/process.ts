@@ -3,6 +3,8 @@ import type { Writable } from 'node:stream';
 import type { CommandOutputStream } from '../commands/types.js';
 import { createProcessWarnings, type WarningConstructor, type WarningOptions } from '../../../_shared/node-warning.js';
 import { standardStream } from './standard-streams.js';
+import { NODE_VERSION, NODE_VERSIONS } from '../../../constants.js';
+import { nodeError } from '../../../_shared/node-error.js';
 
 export class ProcessExitError extends Error {
   exitCode: number;
@@ -47,16 +49,61 @@ export class LifoProcess extends EventEmitter {
   }
 }
 
+/** Who a program's process is: its pid and credential in the session. */
+export interface ProcessIdentity {
+  readonly pid: number;
+  readonly uid: number;
+  readonly gid: number;
+  readonly groups: readonly number[];
+  /** Its mask as it started: the invoking process's. */
+  readonly umask: number;
+  /**
+   * umask(2): the mask the program creates with from now on. The program is
+   * a child of the shell, with its own copy of the mask: the shell's is not
+   * changed.
+   */
+  setUmask(mask: number): void;
+}
+
 export interface ProcessOptions {
   argv: string[];
   env: Record<string, string>;
   cwd: string;
   stdout: CommandOutputStream;
   stderr: CommandOutputStream;
+  identity: ProcessIdentity;
+}
+
+/**
+ * A mode argument as Node's parseFileMode reads it: an octal string of
+ * digits alone, or an unsigned 32-bit integer. Anything else is refused with
+ * Node's error, before anything changes.
+ */
+function parseFileMode(given: unknown, name: string): number {
+  let value = given;
+  if (typeof value === 'string') {
+    if (!/^[0-7]+$/.test(value)) {
+      throw nodeError(TypeError, 'ERR_INVALID_ARG_VALUE', `The argument '${name}' must be a 32-bit unsigned integer or an octal string. Received ${JSON.stringify(value)}`);
+    }
+    // Then checked as a number is (validateUint32): '40000000000' is 2 ** 32, out of range.
+    value = Number.parseInt(value, 8);
+  }
+  if (typeof value !== 'number') {
+    throw nodeError(TypeError, 'ERR_INVALID_ARG_TYPE', `The "${name}" argument must be of type number. Received ${value === null ? 'null' : `type ${typeof value}`}`);
+  }
+  if (!Number.isInteger(value)) {
+    throw nodeError(RangeError, 'ERR_OUT_OF_RANGE', `The value of "${name}" is out of range. It must be an integer. Received ${value}`);
+  }
+  if (value < 0 || value > 0xffff_ffff) {
+    throw nodeError(RangeError, 'ERR_OUT_OF_RANGE', `The value of "${name}" is out of range. It must be >= 0 && <= 4294967295. Received ${value}`);
+  }
+  return value;
 }
 
 export function createProcess(opts: ProcessOptions) {
   const startTime = Date.now();
+  const { identity } = opts;
+  let mask = identity.umask & 0o777;
   // Unset until the program sets them, as in a Node run without their options.
   const unflagged: WarningFlags = {};
   // Node's warnings, written on the program's stderr.
@@ -86,12 +133,10 @@ export function createProcess(opts: ProcessOptions) {
     },
     platform: 'linux' as string,
     arch: 'x64' as string,
-    version: 'v22.14.0',
-    versions: {
-      node: '22.14.0',
-      lifo: '0.1.0',
-    },
-    pid: 1,
+    // One release, core's (constants.ts), as `node --version` reports it.
+    version: NODE_VERSION,
+    versions: { ...NODE_VERSIONS },
+    pid: identity.pid,
     ppid: 0,
     title: 'node',
     execPath: '/usr/bin/node',
@@ -131,12 +176,21 @@ export function createProcess(opts: ProcessOptions) {
     emitWarning: (warning: string | Error, type?: string | WarningOptions | WarningConstructor, code?: string | WarningConstructor, ctor?: WarningConstructor): void => {
       warnings.emitWarning(warning, type, code, ctor);
     },
-    // POSIX identity stubs (needed by many npm packages)
-    getuid: () => 1000,
-    getgid: () => 1000,
-    geteuid: () => 1000,
-    getegid: () => 1000,
-    umask: (mask?: number) => mask ?? 0o22,
+    // The process's credential: root's under sudo.
+    getuid: () => identity.uid,
+    getgid: () => identity.gid,
+    geteuid: () => identity.uid,
+    getegid: () => identity.gid,
+    getgroups: () => [...identity.groups],
+    /** Its mask; a new one (a number or an octal string) is what it creates with from now on, and the one before is answered. */
+    umask: (next?: unknown): number => {
+      const previous = mask;
+      if (next === undefined) return previous;
+      // umask(2) keeps the permission bits of what it is given.
+      mask = parseFileMode(next, 'mask') & 0o777;
+      identity.setUmask(mask);
+      return previous;
+    },
     // process.binding() stub — low-level Node.js internal, used by execa/errname etc.
     binding: (name: string) => {
       if (name === 'uv') {

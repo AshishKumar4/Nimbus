@@ -1,4 +1,4 @@
-import type { SessionProcessSupervisor } from '../../../runtime/session-process-supervisor.js';
+import { type SessionProcessSupervisor } from '../../../runtime/session-process-supervisor.js';
 import type { VfsCred } from '../../../runtime/os-contracts.js';
 import type { CommandIdentity } from './interpreter.js';
 import type { HostSignalResult } from '../commands/system/kill.js';
@@ -7,7 +7,7 @@ import type { HostSignalResult } from '../commands/system/kill.js';
  * there, under the process that started them, and the work of its lines is
  * counted and held there.
  */
-export type ShellProcesses = Pick<SessionProcessSupervisor, 'spawn' | 'exit' | 'kill' | 'maySignal' | 'whenEnded' | 'holdWork' | 'beginWork' | 'beginAwait' | 'cred' | 'setUmask'>;
+export type ShellProcesses = Pick<SessionProcessSupervisor, 'spawn' | 'exit' | 'kill' | 'killAs' | 'maySignal' | 'whenEnded' | 'holdWork' | 'beginWork' | 'beginAwait' | 'cred' | 'setUmask'>;
 /**
  * A background job: its `%N` number, its command line and its process in
  * the session's table, which says when and how it ended.
@@ -70,8 +70,9 @@ export declare class JobTable {
      * its process, which stops its work; a continue or an ignored one does
      * nothing to a job that runs. A stop is `unsupported`: nothing can pause a
      * job's work (a command is not preempted), as nothing can pause a hosted
-     * process's. `not-permitted` when kill(2)'s rule refuses `caller`
-     * (SessionProcessSupervisor.maySignal).
+     * process's. `not-permitted` when kill(2)'s rule refuses `caller`: the
+     * kill's own check (SessionProcessSupervisor.killAs), or for a signal that
+     * ends nothing, the same rule asked alone (maySignal).
      */
     signal(job: Job, signal: string, caller: Readonly<VfsCred>): HostSignalResult;
     fork(): JobTable;

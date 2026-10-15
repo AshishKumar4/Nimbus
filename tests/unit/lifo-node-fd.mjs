@@ -20,7 +20,7 @@ const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
 const kernel = rawVfs.as(CRED_KERNEL);
 kernel.mkdir('t', { recursive: true });
 const bridge = processBridge(rawVfs, CRED_KERNEL);
-const fs = createFs(synchronousFilesystem({ process: bridge })(), '/t');
+const fs = createFs(synchronousFilesystem({ process: bridge }, () => CRED_KERNEL.umask)(), '/t');
 const text = (path) => new TextDecoder().decode(kernel.readFile(path));
 
 const failed = [];
@@ -100,7 +100,7 @@ await check('ftruncate grows the file with zeros and keeps the offset', () => {
 
 await check('fs and fs/promises share the process\'s descriptors', async () => {
   // Each is its own createFs, as the module map makes them.
-  const promises = createFs(synchronousFilesystem({ process: bridge })(), '/t').promises;
+  const promises = createFs(synchronousFilesystem({ process: bridge }, () => CRED_KERNEL.umask)(), '/t').promises;
   const handle = await promises.open('/t/shared', 'w+');
   await handle.write('shared');
   const buffer = Buffer.alloc(6);
@@ -145,7 +145,7 @@ await check('ftruncateSync of a negative length truncates to 0, as Node clamps i
 await check('a creat of a mode without write, by a user, writes what it made', () => {
   kernel.mkdir('u', { recursive: true });
   kernel.chown('u', 1000, 1000);
-  const user = createFs(synchronousFilesystem({ process: processBridge(rawVfs, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }) })(), '/u');
+  const user = createFs(synchronousFilesystem({ process: processBridge(rawVfs, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }) }, () => 0o022)(), '/u');
   const fd = user.openSync('/u/ro', 'wx', 0o444);
   user.writeSync(fd, 'made');
   user.closeSync(fd);

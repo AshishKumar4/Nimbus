@@ -68,6 +68,7 @@ export function createModuleMap(ctx) {
             cwd: ctx.cwd,
             stdout: ctx.stdout,
             stderr: ctx.stderr,
+            identity: ctx.identity,
         }),
         events: () => realm.getBuiltinModule('node:events'),
         // The engine's own, as its require gives them (X-3), loaded when first

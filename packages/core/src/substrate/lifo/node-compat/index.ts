@@ -6,7 +6,7 @@ import type { CommandOutputStream } from '../commands/types.js';
 import { createFs } from './fs.js';
 import { createPath, createUrl } from './cwd-relative.js';
 import { createOs } from './os.js';
-import { createProcess } from './process.js';
+import { createProcess, type ProcessIdentity } from './process.js';
 import { EventEmitter } from 'node:events';
 import { createHttp } from './http.js';
 import type { LoopbackRouter, VirtualRequestHandler } from '../kernel/index.js';
@@ -24,6 +24,8 @@ import { nodeError } from '../../../_shared/node-error.js';
 
 export interface NodeContext {
   filesystem: () => NodeFilesystem;
+  /** The program's process: its pid and credential, and its mask's setter. */
+  identity: ProcessIdentity;
   cwd: string;
   env: Record<string, string>;
   stdout: CommandOutputStream;
@@ -100,6 +102,7 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       cwd: ctx.cwd,
       stdout: ctx.stdout,
       stderr: ctx.stderr,
+      identity: ctx.identity,
     }),
     events: () => realm.getBuiltinModule('node:events'),
     // The engine's own, as its require gives them (X-3), loaded when first

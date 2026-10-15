@@ -2,16 +2,17 @@ import { syscallError } from '../../../vfs/vfs-error.js';
 /**
  * The in-process Node interpreter runs `require` synchronously, so it demands
  * the authority's synchronous capability. The demand is made on first use:
- * a program that never touches fs runs on a host without one.
+ * a program that never touches fs runs on a host without one. What it
+ * creates is made with `umask()`, the program's own mask (process.umask).
  */
-export function synchronousFilesystem(view) {
+export function synchronousFilesystem(view, umask) {
     let opened = null;
     return () => {
-        opened ??= bridgeFilesystem(view.process);
+        opened ??= bridgeFilesystem(view.process, umask);
         return opened;
     };
 }
-function bridgeFilesystem(bridge) {
+function bridgeFilesystem(bridge, umask) {
     const fs = bridge.synchronous;
     if (!fs)
         throw new Error('This Node interpreter requires a synchronous filesystem capability; asynchronous hosts use the resident Node runtime');
@@ -24,10 +25,10 @@ function bridgeFilesystem(bridge) {
     return {
         readFile: read,
         readFileString: path => new TextDecoder().decode(read(path)),
-        writeFile(path, data) { fs.writeFile(path, data); },
+        writeFile(path, data) { fs.writeFile(path, data, { umask: umask() }); },
         appendFile(path, data) {
             const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-            const handle = fs.open(path, { write: true, append: true, create: true });
+            const handle = fs.open(path, { write: true, append: true, create: true, umask: umask() });
             try {
                 let offset = 0;
                 while (offset < bytes.length) {
@@ -57,7 +58,7 @@ function bridgeFilesystem(bridge) {
             return stat;
         },
         realpath: path => fs.realpath(path),
-        mkdir: (path, options) => fs.mkdir(path, options),
+        mkdir: (path, options) => fs.mkdir(path, { ...options, umask: umask() }),
         readdir: path => fs.readdir(path),
         unlink: path => fs.unlink(path),
         rmdir: path => fs.rmdir(path),
@@ -65,7 +66,7 @@ function bridgeFilesystem(bridge) {
         rename: (from, to) => fs.rename(from, to),
         copyFile: (from, to) => fs.copyFile(from, to),
         chmod: (path, mode) => fs.chmod(path, mode),
-        open: (path, flags) => fs.open(path, flags).id,
+        open: (path, flags) => fs.open(path, { ...flags, umask: umask() }).id,
         read: (fd, position, length) => fs.read(fd, position, length),
         write: (fd, position, data) => fs.write(fd, position, data),
         fstat: (fd) => fs.fstat(fd),

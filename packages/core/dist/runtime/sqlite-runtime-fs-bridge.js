@@ -187,7 +187,7 @@ export class SqliteRuntimeFsBridge {
             this.assertExpectedRevision(p, options.expectedRevision);
             if (options.createParents === true)
                 this.ensureParent(p);
-            this.vfs.writeFile(p, bytes);
+            this.vfs.writeFile(p, bytes, { umask: options.umask });
             // Read back in the same synchronous turn as the mutation, so nothing can
             // interleave: this is exactly the revision this write produced. Asking
             // again after an await would report a peer's clock as our own.
