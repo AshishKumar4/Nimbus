@@ -38,6 +38,7 @@
 import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '../os-contracts.js';
 import type { ResidentEntry } from './resident-filesystem.js';
 import { fsError } from '../beneath-walk.js';
+import { chmodRefusal, chownedMode, chownRefusal, utimesRefusal } from '../../vfs/posix-access.js';
 import { modeAllows } from '../../vfs/posix-access.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import { processFsClient, type ProcessFsClient, type ProcessFsGrant, type ProcessFsJournal, type ProcessFsOp, type ProcessFsSession } from '../../_shared/process-fs-client.js';
@@ -206,6 +207,16 @@ export interface DelegationHolder {
   rename(from: string, to: string, path: string): boolean;
   /** Decide an attribute change of `key`: true when decided here. */
   setattr(key: string, attrs: W7Attrs): boolean;
+  /**
+   * Decide an attribute change of the file `handleId` opened (fchmod,
+   * fchown, futimes; `explicit` false: the times are now): true when decided
+   * here, for a file of the holder's that lost its name, or one it decides
+   * under its name; false when it is the session's, through the
+   * description it holds of the file (restat after).
+   */
+  fsetattr(handleId: number, attrs: W7Attrs, explicit: boolean): boolean;
+  /** The session's stat of the file a through description opened, after a change through it: what fstat answers from now on. */
+  restat(handleId: number, stat: Omit<ResidentEntry, 'target'>): void;
   /** Whether a mutation at `key` would be decided here (a held subtree holds it). */
   holds(key: string): boolean;
   /** Whether anything decided here is not sent yet. */
@@ -825,6 +836,29 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       if (local !== undefined && 'mode' in attrs) local.mode = attrs.mode & 0o7777;
       log({ type: 'setattr', path: key, attrs });
       return true;
+    },
+
+    fsetattr: (handleId, attrs, explicit) => {
+      const file = handleOf(handleId).file;
+      if (file.through !== undefined) return false;
+      if (file.detached === undefined) return !('uid' in attrs) && holder.setattr(file.key, attrs);
+      // Its name gone, the file is this process's alone: judged and changed here.
+      const entry = file.detached;
+      const uid = 'uid' in attrs && attrs.uid !== -1 ? attrs.uid : null;
+      const gid = 'uid' in attrs && attrs.gid !== -1 ? attrs.gid : null;
+      const refused = 'mode' in attrs ? chmodRefusal(entry, store.cred)
+        : 'uid' in attrs ? chownRefusal(entry, uid, gid, store.cred)
+        : utimesRefusal(entry, explicit, store.cred);
+      if (refused !== null) throw fsError(refused, 'mode' in attrs ? 'fchmod' : 'uid' in attrs ? 'fchown' : 'futimes', '/' + file.key);
+      file.detached = 'mode' in attrs ? { ...entry, mode: (entry.mode & ~0o7777) | (attrs.mode & 0o7777), ctime: now() }
+        : 'uid' in attrs ? { ...entry, uid: uid ?? entry.uid, gid: gid ?? entry.gid, mode: chownedMode(entry.mode, store.cred), ctime: now() }
+        : { ...entry, atime: attrs.atime, mtime: attrs.mtime, ctime: now() };
+      if ('mode' in attrs) file.mode = attrs.mode & 0o7777;
+      return true;
+    },
+    restat: (handleId, stat) => {
+      const through = handleOf(handleId).file.through;
+      if (through !== undefined) through.entry = { ...stat, target: null };
     },
 
     holds: (key) => client.held(key) !== undefined,

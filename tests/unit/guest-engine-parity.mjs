@@ -258,6 +258,25 @@ const SCENARIOS = {
     assert.deepEqual([moved.mode, moved.mtimeMs], [0o640, 9_000], 'the renamed file did not change as asked');
   },
 
+  async 'fchmod, fchown and futimes through the session\'s description change the file it opened, not the name\'s'(e) {
+    await e.write(`${APP}/through.txt`, 'T');
+    const opened = await e.fs.open(`${APP}/through.txt`, { write: true });
+    await e.fs.write(opened.id, 0, enc.encode('THROUGH'));
+    await e.fs.rename(`${APP}/through.txt`, `${APP}/moved.txt`);
+    await e.write(`${APP}/through.txt`, 'TAKEN');
+    const taken = await e.peerStat(`${APP}/through.txt`);
+    await e.fs.fchmod(opened.id, 0o4640);
+    await e.fs.fchown(opened.id, 1000, 1000);
+    await e.fs.futimes(opened.id, 5_000, 11_000);
+    const own = stat(await e.fs.fstat(opened.id));
+    assert.deepEqual([own.mode, own.mtimeMs], [0o640, 11_000], 'fstat did not say what the description\'s file became');
+    await e.fs.close(opened.id);
+    const moved = await e.peerStat(`${APP}/moved.txt`);
+    assert.deepEqual([moved.mode, moved.mtimeMs], [0o640, 11_000], 'the opened file did not change as asked');
+    const now = await e.peerStat(`${APP}/through.txt`);
+    assert.deepEqual([now.mode, now.mtimeMs], [taken.mode, taken.mtimeMs], 'the file that took the name changed');
+  },
+
   // ── The namespace unavailable ──────────────────────────────────────────
   async 'with the namespace unavailable, a chmod is the session\'s, not refused'(e) {
     await e.hold(OUT);
@@ -318,6 +337,8 @@ const GAPS = {
   'a description writes the file it opened after its name is renamed [node]': { lacks: PATH_FDS, shows: 'the write did not reach the renamed file' },
   'fstat of a description whose file lost its name says so [node]': { lacks: PATH_FDS, shows: 'ENOENT' },
   'fchmod, fchown and futimes change the file a description opened after its name is unlinked and taken [node]': { lacks: PATH_FDS, shows: 'the file that took the name changed' },
+  'fchmod, fchown and futimes change the file a description opened after its name is renamed [node]': { lacks: PATH_FDS, shows: 'ENOENT' },
+  'fchmod, fchown and futimes through the session\'s description change the file it opened, not the name\'s [node]': { lacks: PATH_FDS, shows: 'the opened file did not change as asked' },
 };
 
 await runScenarios(import.meta.path, ledgerScenarios(SCENARIOS), { gaps: GAPS });

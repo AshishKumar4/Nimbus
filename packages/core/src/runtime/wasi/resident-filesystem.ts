@@ -52,6 +52,7 @@ import { modeAllows } from '../../vfs/posix-access.js';
 import { openIdentified } from './filesystem.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES } from '../../constants.js';
 import { RESIDENT_PAGE_BYTES } from '@nimbus-sh/platform/limits.js';
+import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import { delegationHolder, type DelegationHolder } from './delegation-holder.js';
 import { readDirectoryPool, type ReadDirectoryPool } from './read-directory-pool.js';
 import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
@@ -1195,30 +1196,30 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const passed: unknown = Reflect.get(fs, name);
     if (typeof passed !== 'function') continue;
     Reflect.set(fs, name, (handleId: number, ...rest: unknown[]) => {
-      if (holder?.owns(handleId)) return holderDescriptorCall(name, handleId, rest);
-      return Reflect.apply(passed, fs, [handleId, ...rest]);
+      if (!holder?.owns(handleId)) return Reflect.apply(passed, fs, [handleId, ...rest]);
+      if (name === 'dup') return holder.dup(handleId);
+      return holderAttrs(name, passed as (handleId: number, ...rest: unknown[]) => unknown, handleId, rest);
     });
   }
 
   /**
-   * fchmod, futimes, fchown and dup of a descriptor of the holder's: decided
-   * here where the holder decides them, else by the file's name at the
-   * session, once what was decided is sent.
+   * fchmod, fchown and futimes of a descriptor of the holder's, on the file
+   * it opened, never on a name: decided here where the holder decides that
+   * file, else through the description the session holds of it (the file
+   * written through first), and its stat as the session then says.
    */
-  const holderDescriptorCall = (name: 'fchmod' | 'fchown' | 'futimes' | 'dup', handleId: number, rest: unknown[]): unknown => {
-    const key = holder!.keyOf(handleId);
-    if (name === 'dup') return holder!.dup(handleId);
-    const attrs = name === 'fchmod' ? { mode: Number(rest[0]) }
-      : name === 'futimes' && typeof rest[0] === 'number' && typeof rest[1] === 'number' ? { atime: rest[0], mtime: rest[1] }
-      : null;
-    const bySession = (): unknown => holder!.flush().then(() => {
-      const path = '/' + key;
-      if (name === 'fchmod') return fs.chmod(path, Number(rest[0]));
-      if (name === 'fchown') return fs.chown(path, rest[0] as number, rest[1] as number);
-      return fs.utimes(path, rest[0] as number | null, rest[1] as number | null);
+  const holderAttrs = (name: 'fchmod' | 'fchown' | 'futimes', passed: (handleId: number, ...rest: unknown[]) => unknown, handleId: number, rest: unknown[]): unknown => {
+    const explicit = name !== 'futimes' || (rest[0] !== null && rest[0] !== undefined);
+    const attrs: W7Attrs = name === 'fchmod' ? { mode: Number(rest[0]) }
+      : name === 'fchown' ? { uid: Number(rest[0]), gid: Number(rest[1]) }
+      : explicit ? { atime: Number(rest[0]), mtime: Number(rest[1]) } : { atime: Date.now(), mtime: Date.now() };
+    if (holder!.fsetattr(handleId, attrs, explicit)) return undefined;
+    holder!.changing([holder!.keyOf(handleId)]);
+    return holder!.flush().then(() => holder!.sessionOf(handleId)).then(async (session) => {
+      if (session === undefined) throw fsError('EBADF', name, '/' + holder!.keyOf(handleId));
+      await passed.call(fs, session, ...rest);
+      holder!.restat(handleId, await fs.fstat(session));
     });
-    if (attrs === null) return bySession();
-    return after(holder!.setattr(key, attrs), (done) => (done ? undefined : bySession()));
   };
 
   /**
