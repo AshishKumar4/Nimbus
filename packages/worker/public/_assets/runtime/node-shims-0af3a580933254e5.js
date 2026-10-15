@@ -6197,8 +6197,10 @@ const __fsMod = (() => {
     const destK = _strip(destAbs);
     if (_resolve(src) !== srcAbs || _resolve(dest) !== destAbs) return false;
     const client = __nimbusProcessFs();
+    // Counted toward taking the destination's subtree, as any change there is.
+    if (!_decidedHere(destAbs)) return false;
     const grant = client.held(srcK);
-    if (grant === undefined || client.held(destK) === undefined) return false;
+    if (grant === undefined) return false;
     const readable = (stat) => stat !== undefined && stat.isFile() && _modeAllows(stat, 4) && (stat.mode & 0o7000) === 0;
     if (!readable(_statLadder(srcAbs))) return false;
     if (!(__vfsWrites && Object.prototype.hasOwnProperty.call(__vfsWrites, srcK) && _wholeCell(srcK, __vfsWrites[srcK]))) {
