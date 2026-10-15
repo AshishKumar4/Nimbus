@@ -35,7 +35,7 @@
  * (the documented limit, answered by the session's recall timeout).
  */
 import { fsError } from '../beneath-walk.js';
-import { chmodRefusal, chownedMode, chownRefusal, utimesRefusal } from '../../vfs/posix-access.js';
+import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, utimesRefusal } from '../../vfs/posix-access.js';
 import { modeAllows } from '../../vfs/posix-access.js';
 import { processFsClient } from '../../_shared/process-fs-client.js';
 /** Descriptors this holder opens are numbered below every session descriptor. */
@@ -710,6 +710,9 @@ export function delegationHolder(options) {
                 return false;
             if ('uid' in attrs)
                 return false;
+            // A grant a confined principal may not make: the session's to judge.
+            if ('mode' in attrs && confinedModeRefusal(current.mode, attrs.mode) !== null)
+                return false;
             if ('mode' in attrs)
                 throughAt([key]);
             const next = 'mode' in attrs
@@ -732,7 +735,8 @@ export function delegationHolder(options) {
             const entry = file.detached;
             const uid = 'uid' in attrs && attrs.uid !== -1 ? attrs.uid : null;
             const gid = 'uid' in attrs && attrs.gid !== -1 ? attrs.gid : null;
-            const refused = 'mode' in attrs ? chmodRefusal(entry, store.cred)
+            // A grant a confined principal may not make is refused as the session refuses it.
+            const refused = 'mode' in attrs ? chmodRefusal(entry, store.cred) ?? confinedModeRefusal(entry.mode, attrs.mode)
                 : 'uid' in attrs ? chownRefusal(entry, uid, gid, store.cred)
                     : utimesRefusal(entry, explicit, store.cred);
             if (refused !== null)
