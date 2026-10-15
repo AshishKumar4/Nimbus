@@ -68,6 +68,8 @@ const recordKeys = () => [...rows.keys()].filter((key) => key.startsWith('dev-se
 /** An incarnation of the object: a new process table above the last one's pids, over the same workspace and rows. */
 let generation = 0;
 let current = null;
+/** Every incarnation's runtime: a reset runs none of their teardown, so the test does at its end. */
+const runtimes = [];
 async function incarnation({ restored = true } = {}) {
   if (current !== null) {
     // The reset: what the last one did not sync is gone, and nothing of it runs teardown.
@@ -90,6 +92,7 @@ async function incarnation({ restored = true } = {}) {
     workspace, ctx, env, ports, lifecycle: hostedLifecycle(ctx, () => runtime),
   });
   current = { ctx, processes, ports, workspace, runtime };
+  runtimes.push(runtime);
   // Its restore has run once no record a previous incarnation left is still there.
   if (restored) await settle(() => recordKeys().every((key) => Number(key.slice('dev-server:'.length)) > processes.pidBase), 'the restore');
   return current;
@@ -204,6 +207,6 @@ try {
   assert.equal(next.processes.get(next.ports.get(5173)?.pid)?.cwd, '/home/user/other', 'the login file\'s server serves, after the restore');
   user.unlink('home/user/.nimbusrc');
 } finally {
-  await current?.runtime.close();
+  for (const runtime of runtimes) await runtime.close().catch(() => {});
 }
 console.log('dev-server-restore: ok');
