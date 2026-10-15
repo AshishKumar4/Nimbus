@@ -9,8 +9,9 @@ published independently in the `@nimbus-sh` npm scope.
   and `/etc/group` at each lookup. `~user` is the user's home and `~root`
   root's, a name no account has stays as written, `ls -l` and `stat` name
   each file's real owner and group, and an account added while bash runs is
-  found. bash 5.2.37-7 answered every name with one fixed account, and
-  BusyBox named every owner `user`.
+  found. bash 5.2.37-6 answered every name with one fixed account, and
+  its BusyBox named every owner `user`, root's files in `/usr/bin` and
+  `/etc` too. A command that names owners now makes one lookup per name.
 - Fixed: a piped stdin is a FIFO to bash's `test -p` (on `/dev/stdin` and
   `/dev/fd/0`) and to BusyBox's `stat`, as on Linux.
 - Fixed: `python -c` flushes its `sys.stdout` once as it ends, as `python3
