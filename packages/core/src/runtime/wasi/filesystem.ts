@@ -434,7 +434,8 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   /** The bytes of the file `st` describes: `read`'s, unless the copy at its revision is kept. */
   const residentContent = (st: RuntimeVfsStat, read: () => Awaitable<Uint8Array>): Awaitable<Uint8Array> => {
     // An unlinked file's stat revision is the namespace's, which its own writes do not move: its copy is read each time.
-    if (options.retainResident === false || st.nlink === 0) return read();
+    // So is a file with no revision (0: a mount's backend that keeps none, /proc's files made when read).
+    if (options.retainResident === false || st.nlink === 0 || st.revision === 0) return read();
     const key = `${st.dev}:${st.ino}`;
     const cached = resident.get(key);
     if (cached && cached.revision === st.revision) return cached.bytes;
