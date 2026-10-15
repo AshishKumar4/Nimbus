@@ -9,8 +9,9 @@
 // refuses what it may not, including a module bundle another principal's
 // server left in the workspace's shared module cache, and a package it may
 // not enter (403, not a rejected handler); `vite build` reads and writes as
-// its caller too; a dev server persisted for a restore records who it ran
-// as; and real-vite finds and bundles the user's vite.config as the caller.
+// its caller too; a dev server's record, what a restore runs again, says
+// who it ran as; and real-vite finds and bundles the user's vite.config as
+// the caller.
 
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
@@ -91,6 +92,7 @@ const storage = {
   get: async (key) => stored.get(key),
   put: async (key, value) => { stored.set(key, structuredClone(value)); },
   delete: async (key) => stored.delete(key),
+  sync: async () => {},
   transaction: async (body) => body({
     get: async (key) => stored.get(key),
     put: async (key, value) => { stored.set(key, structuredClone(value)); },
@@ -119,7 +121,9 @@ const host = {
   viteBasePath: '/preview',
   viteDevServer: null,
   terminal: null,
-  portRegistry: { bindFacetStub() {}, register() {}, unregister() {}, has: () => false, getAll: () => [] },
+  // Nothing to restore: no incarnation ran before this one.
+  restoreDevServers: async () => [],
+  portRegistry: { bindFacetStub() {}, register() {}, unregister() {}, unregisterByPid() {}, has: () => false, getAll: () => [], getRouteablePortsByPid: () => [] },
 };
 const registry = new CommandRegistry();
 registry.register('vite', createViteCommand(host));
@@ -158,9 +162,10 @@ try {
     assert.match((await served('/main.js')).body, /textContent/, 'the project is served');
     const secret = await served('/secret.txt');
     assert.notEqual(secret.body, SECRET, `the dev server serves no file its principal may not read (status ${secret.status})`);
-    assert.deepEqual(stored.get('vite-config')?.identity?.cred, AGENT, 'and what a restore reads records who it ran as');
-    assert.equal(stored.get('vite-config')?.configDir, 'home/user/v', 'and the directory whose vite.config it reads again on an edit');
-    assert.equal(typeof stored.get('vite-config')?.viteEsbuild?.hasConfig, 'boolean', 'and what its vite.config sets for esbuild');
+    const record = stored.get(`dev-server:${host._viteShimPid}`);
+    assert.deepEqual(record?.cred, AGENT, 'and its record, what a restore runs again, says who it ran as');
+    assert.equal(record?.cwd, '/home/user/v', 'and where');
+    assert.equal(record?.command, 'vite --force', 'and what');
     host.viteDevServer.stop();
   }
 

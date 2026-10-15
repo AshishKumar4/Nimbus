@@ -12,7 +12,7 @@ import type { IsolatePoolEnv } from '@nimbus-sh/fabric/isolate-pool.js';
 export interface HostedRuntimeEnv extends RuntimeCatalogEnv, IsolatePoolEnv {
     ASSETS?: Fetcher;
 }
-export type RuntimeServiceHost = Pick<SessionInternal, '_cpRegistry' | '_reportExternalExit' | '_rpcStderr' | '_rpcStdout' | 'supervisorRewindBridge' | 'bundlePool' | 'ensureBundlePool' | 'ensureFacetManager' | 'ensureSqliteFs' | 'esbuildService' | 'facetManagerComposed' | 'getFilesystemAuthority' | 'childProcessManager' | 'npmInstaller' | 'portRegistry' | 'processes' | 'runtimeWorkspace' | 'shell' | 'sqliteFs' | 'terminal'> & {
+export type RuntimeServiceHost = Pick<SessionInternal, '_cpRegistry' | '_reportExternalExit' | '_rpcStderr' | '_rpcStdout' | 'supervisorRewindBridge' | 'bundlePool' | 'ensureBundlePool' | 'ensureFacetManager' | 'ensureSqliteFs' | 'esbuildService' | 'facetManagerComposed' | 'getFilesystemAuthority' | 'childProcessManager' | 'npmInstaller' | 'portRegistry' | 'processes' | 'restoreDevServers' | 'runtimeWorkspace' | 'shell' | 'sqliteFs' | 'terminal'> & {
     webSocketRelay: WebSocketRelay | null;
 };
 export interface RuntimeServiceContext {
@@ -40,7 +40,13 @@ export declare function ensureFacetManager(self: RuntimeServiceHost, runtimeCont
 export declare function _ensureWebSocketRelay(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): WebSocketRelay;
 export declare function createChildProcessHost(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): ChildProcessHost;
 export declare function _ensureChildProcessManager(self: RuntimeServiceHost): import("@nimbus-sh/core/runtime/child-process-manager.js").ChildProcessManager;
-export declare function ensureNpmInstaller(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, onProgress?: (msg: string) => void): Promise<NpmInstaller>;
+/**
+ * The session's one NpmInstaller: every install in the session goes through
+ * it, so what each is staging (its staging directories in /tmp, its copies
+ * beside a mounted package) is known to every other's sweep. Each install
+ * passes its own progress and npm log sinks.
+ */
+export declare function ensureNpmInstaller(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext): Promise<NpmInstaller>;
 export declare function ensureGlobalPrefixDirs(self: RuntimeServiceHost, runtimeContext: RuntimeServiceContext, prefix: string, cred: Readonly<VfsCred>): void;
 export declare function bindRuntimeServices(host: RuntimeServiceHost, context: RuntimeServiceContext): {
     childProcessHost: ChildProcessHost;
@@ -48,7 +54,7 @@ export declare function bindRuntimeServices(host: RuntimeServiceHost, context: R
     ensureFacetManager: () => ComposedFacetManager;
     _ensureWebSocketRelay: () => WebSocketRelay;
     _ensureChildProcessManager: () => import("@nimbus-sh/core/runtime/child-process-manager.js").ChildProcessManager;
-    ensureNpmInstaller: (onProgress?: ((msg: string) => void) | undefined) => Promise<NpmInstaller>;
+    ensureNpmInstaller: () => Promise<NpmInstaller>;
     ensureGlobalPrefixDirs: (prefix: string, cred: Readonly<VfsCred>) => void;
 };
 //# sourceMappingURL=services.d.ts.map

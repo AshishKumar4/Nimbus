@@ -28,6 +28,7 @@ import { PUBLIC_BEARER_HEADER, renderSessionStatusPage } from '../_shared/sessio
 import { isPreviewHostName } from '../_shared/preview-host.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from './keys.js';
+import { devServerRestoreFailedResponse, type DevServerRestoreFailure } from './helpers.js';
 
 /** The minimum a caller needs to own a port capability. */
 export interface PortCapabilityHost {
@@ -395,7 +396,7 @@ export interface SessionPortHost {
   cirrusReal?: { isRunning: boolean; port: number } | null;
   // Session-owned helpers the route delegates to — absent on the composed
   // host, where they would have nothing to restore or accept.
-  restorePersistedDevServer?: (onlyPort?: number) => Promise<void>;
+  restoreDevServers?: () => Promise<readonly DevServerRestoreFailure[]>;
   acceptCirrusHmrWs?: (request: Request) => Response;
 }
 
@@ -460,16 +461,19 @@ export async function routeToSessionPort(
   mountBase: string,
   capability?: string,
 ): Promise<Response> {
+  // The dev servers the previous incarnation ran come back first: a restored
+  // one takes back the link handed out for its port.
+  const restoreFailures = await self.restoreDevServers?.() ?? [];
   if (capability !== undefined) {
     const reservation = await readPortReservation(self.ctx, port);
+    // A link whose server did not come back is still the link handed out for its port.
     const authorized = reservation !== null
       ? reservation.capability === capability
-      : self.portRegistry.hasCapability(port, capability);
+      : self.portRegistry.hasCapability(port, capability) || (restoreFailures.length > 0 && await readPortCapability(self, port) === capability);
     if (!authorized || (request.headers.get(PUBLIC_BEARER_HEADER) !== null && reservation?.visibility !== 'public')) {
       return new Response('Not found', { status: 404 });
     }
   }
-  await self.restorePersistedDevServer?.(port);
   // The durable seam: a request on a port nothing is serving may be a
   // durable application a reset left dead — the alarm pump would re-drive
   // it eventually, but a URL in someone's hands cannot wait for eventually.
@@ -488,6 +492,9 @@ export async function routeToSessionPort(
         },
       });
     }
+  }
+  if (capability !== undefined && restoreFailures.length > 0 && !self.portRegistry.has(port)) {
+    return devServerRestoreFailedResponse(restoreFailures);
   }
   if (capability !== undefined) {
     // A rebuilt supervisor holds a capability nobody was handed; the durable
@@ -523,6 +530,7 @@ export async function routeToSessionPort(
     ? await self.portRegistry.routeRequest(port, request, innerPath)
     : await self.portRegistry.routeCapabilityRequest(port, capability, request, innerPath);
   if (proxied) return proxied;
+  if (restoreFailures.length > 0) return devServerRestoreFailedResponse(restoreFailures);
   const ended = self.portRegistry.ended(port);
   return new Response(`No process listening on port ${port}${ended === undefined ? '' : `: ${ended}`}`, { status: 502 });
 }

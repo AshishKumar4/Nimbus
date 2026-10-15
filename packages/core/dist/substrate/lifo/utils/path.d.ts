@@ -9,4 +9,6 @@ export declare function dirname(path: string): string;
 export declare function basename(path: string, ext?: string): string;
 export declare function extname(path: string): string;
 export declare function split(path: string): string[];
+/** The path from absolute `from` to absolute `to`, as POSIX path.relative answers it. */
+export declare function relative(from: string, to: string): string;
 //# sourceMappingURL=path.d.ts.map

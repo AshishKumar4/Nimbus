@@ -64,5 +64,11 @@ export declare function resolveNpmBin(vfs: VfsLike, cwd: string, name: string): 
  */
 export declare function resolveNpmBinPath(vfs: VfsLike & Pick<ProjectFs, 'stat'>, cwd: string, path: string): Promise<NpmBinResolution | null>;
 export declare function materializeNpmBinShims(vfs: WritableVfsLike, nodeModulesPath: string, binDir: string): Promise<number>;
+/**
+ * The bins `binDir`'s manifest credits to `packageNames`, packages that have
+ * left the tree, unlinked: each shim and its entry. A manifest that keeps
+ * them would link them again (a staged artifact's target needs no package).
+ */
+export declare function unlinkNpmBins(vfs: VfsLike & Pick<ProjectFs, 'writeFile' | 'unlink'>, binDir: string, packageNames: readonly string[]): Promise<void>;
 export {};
 //# sourceMappingURL=bin-links.d.ts.map

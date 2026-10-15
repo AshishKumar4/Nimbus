@@ -25,6 +25,7 @@ import type { Result as NpaResult } from 'npm-package-arg';
 import semver from 'semver';
 import validateLicense from 'validate-npm-package-license';
 
+import { packageJsonText } from '../../../../_shared/npm-tree.js';
 import { normalizePackageJsonBin } from '../../../../runtime/npm-bin-map.js';
 import type { CommandContext } from '../types.js';
 import type { ProcessView as VFS } from '../../../../runtime/process-files.js';
@@ -205,8 +206,6 @@ export async function npmInitTemplate(vfs: VFS, dir: string, config: NpmConfig, 
   // PackageJson.load(dir, { create: true }), in the file's indent and line ending.
   const existing = await read(path);
   let content: Json = {};
-  let indent = '  ';
-  let newline = '\n';
   if (existing !== null) {
     let parsed: unknown;
     try {
@@ -215,9 +214,6 @@ export async function npmInitTemplate(vfs: VFS, dir: string, config: NpmConfig, 
       throw new NpmError(`JSON.parse ${error instanceof Error ? error.message : String(error)} while parsing ${path}`, 'EJSONPARSE');
     }
     if (isObject(parsed)) content = parsed;
-    const format = /^(?:\{\}|\[\])((?:\r?\n)+)?$/.exec(existing) ?? /^\s*[{[]((?:\r?\n)+)([\s\t]*)/.exec(existing) ?? [null, '', ''];
-    newline = format[1] ?? '\n';
-    indent = format[2] ?? '  ';
   }
   await normalize(content, ['_id', '_attributes', 'bundledDependencies', 'bundleDependencies', 'optionalDedupe', 'scripts', 'funding', 'bin'], { dir, list, read, exists });
   if (!semver.valid(content.version)) delete content.version;
@@ -364,7 +360,7 @@ export async function npmInitTemplate(vfs: VFS, dir: string, config: NpmConfig, 
   const shown = JSON.stringify(content, null, 2) + '\n';
   const message = `${path}:\n\n${shown}\n`;
   const save = async (): Promise<void> => {
-    const text = (JSON.stringify(content, null, indent) + '\n').replace(/\n/g, newline);
+    const text = packageJsonText(content, existing);
     if (existing === null || text.trim() !== existing.trim()) await vfs.writeFile(path, text);
   };
   if (yes) {

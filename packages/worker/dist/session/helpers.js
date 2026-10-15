@@ -501,3 +501,20 @@ export function withLoudTimeout(work, timeoutMs, what) {
         work.then((value) => { clearTimeout(timer); resolve(value); }, (error) => { clearTimeout(timer); reject(error); });
     });
 }
+/** What a request that needed a dev server answers when one did not start again: what failed, why, and what to do. */
+export function devServerRestoreFailedResponse(failures) {
+    const lines = ['A dev server this session was running did not start again after the session restarted.', ''];
+    for (const failure of failures) {
+        lines.push(`  ${failure.command}    (in ${failure.cwd || '?'})`);
+        for (const line of failure.reason.split('\n'))
+            lines.push(`    ${line}`);
+        if (failure.pid !== null)
+            lines.push(`    Its output is in the log of process ${failure.pid}.`);
+        lines.push('');
+    }
+    lines.push('Run the command again in its directory to start the server.');
+    return new Response(`${lines.join('\n')}\n`, {
+        status: 503,
+        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' },
+    });
+}

@@ -72,9 +72,39 @@ export interface NpmInstallPort {
         fromCacheHits?: number;
         linkedBins?: number;
     }>;
+    /**
+     * The host's records of the bins of `packages`, which `npm uninstall`
+     * removed from `modulesDir`: retired, shims and all, so no later install
+     * links them again. `globalBinDir`: a global uninstall's, the prefix's bin
+     * directory, where the host put them on PATH. `pid` authorizes the writes.
+     */
+    unlinkBins?(spec: {
+        modulesDir: string;
+        globalBinDir?: string;
+        pid: number;
+        packages: readonly string[];
+    }): Promise<void>;
+    /**
+     * The hold the host's installs take on the tree at `modulesDir` (core
+     * npm-tree.ts holdTree), for a command that changes it otherwise (`npm
+     * uninstall`): one change to a tree at a time. Answers its release; one
+     * that `signal` stops while it waits never holds it. A host with none
+     * shares the shell's own installs' hold.
+     */
+    hold?(spec: {
+        modulesDir: string;
+        pid: number;
+        signal: AbortSignal;
+    }): Promise<() => void>;
 }
 export interface NpmCommandDeps {
     installer?: NpmInstallPort;
+    /**
+     * The host's, before the command replaces a file of the project
+     * (package.json): one an earlier release of the host wrote as root is
+     * handed to its directory's owner, so the command, as its process, can.
+     */
+    beforeWrite?: (ctx: CommandContext, path: string) => Promise<void>;
 }
 /**
  * The registry origin an install uses: the command's `NPM_REGISTRY`, else

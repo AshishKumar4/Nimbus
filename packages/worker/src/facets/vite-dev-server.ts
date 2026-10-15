@@ -134,7 +134,7 @@ export interface ViteDevServerOptions {
    * Absent: the options are the caller's own (/api/start-vite), never re-read.
    */
   configDir?: string;
-  /** Told each config the server reads again (null: no vite.config there now), so a restore after hibernation starts from it. */
+  /** Told each config the server reads again (null: no vite.config there now). */
   onConfigChange?: (config: ParsedViteConfig | null) => void;
   /**
    * What the project's vite.config sets for Vite's esbuild plugin
@@ -1675,12 +1675,8 @@ export class ViteDevServer {
     void this.readConfigAgain();
   }
 
-  /**
-   * reloadConfig, for a caller that knows the config may have changed
-   * unseen (a server restored after hibernation, when no edit was watched):
-   * settled once the config is read.
-   */
-  readConfigAgain(): Promise<void> {
+  /** reloadConfig, settled once the config is read. */
+  private readConfigAgain(): Promise<void> {
     const dir = this.configDir;
     if (dir === null) return Promise.resolve();
     return this.configReload = this.configReload.then(async () => {
@@ -1699,7 +1695,7 @@ export class ViteDevServer {
       this.forgetModules();
       this.log('info', `[vite-dev] ${read.path ?? `no vite.config in /${dir}`}: read again (aliases, define, esbuild, plugins, nimbusInjectBasename); `
         + 'root, base, port and outDir take a new `vite`');
-      try { this.onConfigChange?.(read.path ? config : null); } catch { /* persistence is the caller's */ }
+      try { this.onConfigChange?.(read.path ? config : null); } catch { /* the observer's failure is its own */ }
       this.onHmrMessage({ type: 'nimbus-hmr', event: 'full-reload' });
     }).catch((e: any) => {
       this.log('error', `[vite-dev] reading the vite.config again failed: ${e?.message || e}`);

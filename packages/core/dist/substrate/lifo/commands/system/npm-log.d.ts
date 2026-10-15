@@ -28,6 +28,8 @@ export declare function npmHttpFetchLine(url: string, elapsedMs: number): string
 export declare function npmHttpCacheLine(url: string, integrity?: string): string;
 /** `added N packages in Xs` — npm's install summary, unstyled. */
 export declare function npmAddedLine(packages: number, elapsedMs: number): string;
+/** `removed N packages in T`, or `up to date in T` — npm's summary of an uninstall, its time as the `ms` package prints it. */
+export declare function npmRemovedLine(packages: number, elapsedMs: number): string;
 /** What an install did, as its styled summary reports it. */
 export interface InstallReport {
     readonly installed: number;
