@@ -93,5 +93,28 @@ await restoring;
 assert.equal(runs, 4, 'and, the session destroyed, never the second');
 assert.deepEqual([...rows.keys()].filter((key) => Number(key.slice('dev-server:'.length)) > destroyedBase), [], 'nor records one of its own');
 assert.notEqual(bundle.restoreDevServers(destroyed.host), restoring, 'the session made again gets a restore of its own');
+
+// A restore asked for while a destroy runs waits for the session, and then, the session made again, runs nothing.
+const late = await incarnation(5);
+const lateRuns = runs;
+const serving = late.workspace.exec('serve');
+await new Promise((resolve) => setTimeout(resolve, 0));
+release();
+assert.equal((await serving).exitCode, 0);
+await late.workspace.close();
+const during = await incarnation(6);
+let destroyDone = () => {};
+const destroying = new Promise((resolve) => { destroyDone = resolve; });
+during.host.ensureRuntimeReady = () => destroying;
+const asked = bundle.restoreDevServers(during.host);
+await new Promise((resolve) => setTimeout(resolve, 10));
+for (const entry of during.host.processes.getAll()) if (entry.state === 'running') during.host.processes.kill(entry.pid);
+during.host.processes.setPidBase(7 * bundle.PID_GEN_STRIDE);
+rows.clear();
+destroyDone();
+assert.deepEqual(await asked, [], 'it ran nothing');
+assert.equal(runs, lateRuns + 1, 'only the start before the destroy ran the command');
+assert.deepEqual([...rows.keys()], [], 'and wrote nothing that outlived the wipe');
+await during.workspace.close();
 await destroyed.workspace.close();
 console.log('dev-server-restore-once: ok');

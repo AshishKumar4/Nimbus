@@ -17,7 +17,9 @@
 //   - a `vite` the user runs while the restore runs comes after it, and is
 //     what serves;
 //   - a server whose process ends (its job's line failing after it) stops,
-//     its port free and its record gone.
+//     its port free and its record gone;
+//   - a login file that starts a dev server does not wait forever on the
+//     restore, which does not wait on the login files.
 // Red before: nothing recorded a dev server's process, so a hosted runtime's
 // next incarnation ran nothing.
 
@@ -190,6 +192,17 @@ try {
   assert.equal(next.processes.get(job.pid).exitCode, 1, 'its line failed after the server started');
   assert.equal(next.ports.get(5174), undefined, 'the server stopped with its process: its port is free');
   await settle(() => recordKeys().length === 0, 'the record to be released');
+
+  // ── a login file that starts one, with one to restore ───────────────────
+  const recorded = await next.runtime.exec('vite --port 5173 --no-install-check', { cwd: '/home/user/app' });
+  assert.equal(recorded.exitCode, 0, recorded.stderr);
+  user.writeFile('home/user/.nimbusrc', 'cd /home/user/other && vite --port 5173 --no-install-check\n');
+  const composed = incarnation();
+  const late = new Promise((resolve) => setTimeout(() => resolve('late'), 30_000));
+  assert.notEqual(await Promise.race([composed, late]), 'late', 'the runtime is ready within 30 s');
+  next = await composed;
+  assert.equal(next.processes.get(next.ports.get(5173)?.pid)?.cwd, '/home/user/other', 'the login file\'s server serves, after the restore');
+  user.unlink('home/user/.nimbusrc');
 } finally {
   await current?.runtime.close();
 }
