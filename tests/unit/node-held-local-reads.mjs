@@ -162,31 +162,40 @@ await runScenarios(import.meta.path, {
     }
   },
 
-  async 'a rewrite the session answered: the stat is the session\'s, its times with it, not the view\'s guess at them (T6)'() {
-    const { authority, fs } = await boot({ slow: 40 });
-    await fs.promises.stat(`${OUT}/seeded.txt`);
-    await fs.promises.writeFile(`${OUT}/seeded.txt`, 'rewritten, and longer');
-    await globalThis.__nimbusProcessFs.flush();
-    const local = await fs.promises.stat(`${OUT}/seeded.txt`);
-    const session = await authority.peer.stat('home/user/app/out/seeded.txt');
-    assert.deepEqual(
-      [local.size, local.mtimeMs, local.ctimeMs],
-      [Number(session.size), Number(session.mtime), Number(session.ctime)],
-    );
+  async 'a rewrite written back without a barrier after it: the stat is the session\'s, its times too, not the view\'s guess at them (T6)'() {
+    for (const rewrite of [
+      (fs) => fs.writeFileSync(`${OUT}/seeded.txt`, 'rewritten, and longer'),
+      (fs) => fs.appendFileSync(`${OUT}/seeded.txt`, ', and then some'),
+    ]) {
+      const { authority, fs } = await boot({ slow: 40 });
+      await fs.promises.stat(`${OUT}/seeded.txt`);
+      rewrite(fs);
+      // A listing's barrier comes before it writes back what is under it.
+      await fs.promises.readdir(OUT);
+      const local = await fs.promises.stat(`${OUT}/seeded.txt`);
+      const session = await authority.peer.stat('home/user/app/out/seeded.txt');
+      assert.deepEqual(
+        [local.size, local.mtimeMs, local.ctimeMs],
+        [Number(session.size), Number(session.mtime), Number(session.ctime)],
+        String(rewrite),
+      );
+    }
   },
 
   async 'an entry the process made, moved or removed, answered: its directory\'s stat is the session\'s (T6)'() {
-    const { authority, fs } = await boot();
     for (const change of [
-      () => fs.promises.writeFile(`${OUT}/child.txt`, 'c'),
-      () => fs.promises.mkdir(`${OUT}/sub`),
-      () => fs.promises.rename(`${OUT}/child.txt`, `${OUT}/sub/child.txt`),
-      () => fs.promises.unlink(`${OUT}/sub/child.txt`),
-      () => fs.promises.rmdir(`${OUT}/sub`),
+      (fs) => fs.promises.writeFile(`${OUT}/child.txt`, 'c'),
+      (fs) => fs.promises.mkdir(`${OUT}/made`),
+      (fs) => fs.promises.rename(`${OUT}/seeded.txt`, `${OUT}/moved.txt`),
+      (fs) => fs.promises.unlink(`${OUT}/seeded.txt`),
+      (fs) => fs.promises.rmdir(`${OUT}/sub`),
     ]) {
+      const { authority, fs } = await boot();
+      await fs.promises.mkdir(`${OUT}/sub`).catch(() => {});
+      await globalThis.__nimbusProcessFs.flush();
       await fs.promises.stat(OUT);
       await sleep(5);
-      await change();
+      await change(fs);
       await globalThis.__nimbusProcessFs.flush();
       const local = await fs.promises.stat(OUT);
       const session = await authority.peer.stat('home/user/app/out');
