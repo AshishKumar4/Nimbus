@@ -5,8 +5,9 @@ import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf } from '../vfs/composite.js';
 import { abandon, andThen, isCharacterDevice, isPromise, readDeclaredSource, readRangeOrWhole, syncValue } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
-import { fsError, MAX_LINK_HOPS, modeAllows, walkBeneath } from './beneath-walk.js';
-export { fsError, modeAllows, walkBeneath } from './beneath-walk.js';
+import { fsError, MAX_LINK_HOPS, walkBeneath } from './beneath-walk.js';
+import { modeAllows } from '../vfs/posix-access.js';
+export { fsError, walkBeneath } from './beneath-walk.js';
 export class SqliteRuntimeFsBridge {
     rawVfs;
     scope;

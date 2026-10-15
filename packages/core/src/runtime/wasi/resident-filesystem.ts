@@ -47,7 +47,8 @@ import type {
   RuntimeVfsDirEntry,
   RuntimeVfsStat,
 } from '../os-contracts.js';
-import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
+import { fsError, walkBeneath } from '../beneath-walk.js';
+import { modeAllows } from '../../vfs/posix-access.js';
 import { openIdentified } from './filesystem.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES } from '../../constants.js';
 import { RESIDENT_PAGE_BYTES } from '@nimbus-sh/platform/limits.js';
