@@ -61,7 +61,7 @@ sign() {
 }
 
 IFS=$'\t' read -r -u 3 runtime_name runtime_version runtime_file runtime_sha runtime_shasum runtime_integrity 3< "$work/artifacts.tsv"
-[[ "$runtime_name" = '@nimbus-sh/runtime-cpython' && "$runtime_version" = '3.13.14-1' ]] || { echo 'STOP: phase 1 runtime identity is not the approved build' >&2; exit 1; }
+[[ "$runtime_name" = '@nimbus-sh/runtime-cpython' && "$runtime_version" = '3.13.14-2' ]] || { echo 'STOP: phase 1 runtime identity is not the approved build' >&2; exit 1; }
 sign "$runtime_name" "$runtime_version" "$runtime_file" "$runtime_sha" "$runtime_shasum" "$runtime_integrity"
 confirmed=false
 confirm_deadline=$(( $(date +%s) + 600 ))

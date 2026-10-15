@@ -1929,18 +1929,6 @@ export function __wasiMakeImports(opts) {
     // the codec answers its files and directories; a stream's (stdio, a pipe,
     // a socket) status is preview1's, with the mode its kind has.
     const fsImport = {
-        umask(mask, out) {
-            try {
-                writeU32LE(out, __wasiFS.umask);
-            }
-            catch (error) {
-                if (error instanceof RangeError)
-                    return __WASI_EFAULT;
-                throw error;
-            }
-            __wasiFS.umask = mask & 0o777;
-            return __WASI_ESUCCESS;
-        },
         fd_stat(fd, out) {
             const kind = fdTable.get(fd)?.kind;
             const format = kind === 'stdin' || kind === 'stdout' || kind === 'stderr' ? 0o020620
@@ -2077,6 +2065,21 @@ export function __wasiMakeImports(opts) {
         for (const name of Object.keys(fsTable))
             fsTable[name] = new WebAssembly.Suspending(fsTable[name]);
     }
+    // The umask is this instance's own and never waits, so it is no Suspending
+    // import: one costs a stack switch a call, and nimbus-libc's open(2) of a
+    // new file makes three.
+    fsImport.umask = (mask, out) => {
+        try {
+            writeU32LE(out, __wasiFS.umask);
+        }
+        catch (error) {
+            if (error instanceof RangeError)
+                return __WASI_EFAULT;
+            throw error;
+        }
+        __wasiFS.umask = mask & 0o777;
+        return __WASI_ESUCCESS;
+    };
     if (procParks) {
         for (const name of Object.keys(procImport)) {
             procImport[name] = new WebAssembly.Suspending(procImport[name]);

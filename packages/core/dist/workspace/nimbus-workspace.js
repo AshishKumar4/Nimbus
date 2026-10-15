@@ -33,7 +33,7 @@ import { runCommand } from '../substrate/lifo/sandbox/run-command.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
 import { SqliteVFS, STORE_TABLES } from '../vfs/sqlite-vfs.js';
 import { DEFAULT_HOME, DEFAULT_HOSTNAME, defaultPath, SEEDED_TOP_LEVEL_DIRS, DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION, } from '../constants.js';
-import { BASH_RUNNER, GIT_RUNNER, CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
+import { BASH_RUNNER, CPYTHON_RUNNER_CONTRACTS, GIT_RUNNER, CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
 import { ProcessView } from '../runtime/process-files.js';
 import { WorkspaceFs } from './workspace-fs.js';
@@ -717,15 +717,16 @@ function registerWasmRuntimes(deps) {
         const factory = once(make);
         return async (...args) => (await factory())(...args);
     };
+    // No `startResident`: a workspace owns no actor that could outlive the
+    // call, so a program that keeps serving is refused by name rather than run
+    // as a one-shot that dies with it. Same for ruby, where a script is the
+    // shape that may bind a port.
+    const cpython = lazy(async () => (await import('../runtime/cpython-runner.js'))
+        .makeCPythonRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, network: deps.network }));
     const runners = {
         [BASH_RUNNER]: lazy(async () => (await import('../runtime/bash-runner.js'))
             .makeBashRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes })),
-        // No `startResident`: a workspace owns no actor that could outlive the
-        // call, so a program that keeps serving is refused by name rather than
-        // run as a one-shot that dies with it. Same for ruby, where a script is
-        // the shape that may bind a port.
-        'cpython-runner': lazy(async () => (await import('../runtime/cpython-runner.js'))
-            .makeCPythonRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, network: deps.network })),
+        ...Object.fromEntries(CPYTHON_RUNNER_CONTRACTS.map((key) => [key, cpython])),
         'ruby-runner': lazy(async () => (await import('../runtime/ruby-runner.js'))
             .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, registry: deps.registry, getHome: deps.getHome, network: deps.network })),
         'clang-runner': lazy(async () => (await import('../runtime/clang-runner.js'))

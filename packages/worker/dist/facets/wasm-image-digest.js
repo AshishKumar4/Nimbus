@@ -1,14 +1,4 @@
-export function wasmImageDigest(bytes) {
-    return bytes.length + ':' + fnv1a(0x811c9dc5, bytes).toString(16);
-}
-function fnv1a(seed, bytes) {
-    let hash = seed;
-    for (let i = 0; i < bytes.length; i++) {
-        hash ^= bytes[i];
-        hash = Math.imul(hash, 0x01000193) >>> 0;
-    }
-    return hash;
-}
+import { WASM_IMAGE_HASH_SEED, wasmImageHash, wasmImageKey } from './wasm-image-key.js';
 /** Bytes one streamed digest step reads. */
 const DIGEST_SLICE_BYTES = 1024 * 1024;
 /**
@@ -21,13 +11,13 @@ export async function streamedWasmImageDigest(fs, path) {
     const st = await Promise.resolve(fs.stat(path)).catch(() => null);
     if (!st || st.type !== 'file' || typeof st.size !== 'number')
         return null;
-    let hash = 0x811c9dc5;
+    let hash = WASM_IMAGE_HASH_SEED;
     for (let offset = 0; offset < st.size; offset += DIGEST_SLICE_BYTES) {
         const slice = await Promise.resolve(fs.readRange(path, offset, Math.min(DIGEST_SLICE_BYTES, st.size - offset)))
             .catch(() => null);
         if (!slice)
             return null;
-        hash = fnv1a(hash, slice);
+        hash = wasmImageHash(hash, slice);
     }
-    return st.size + ':' + hash.toString(16);
+    return wasmImageKey(st.size, hash);
 }

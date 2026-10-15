@@ -15,8 +15,8 @@ import { launchFs } from './lib/launch-fs.mjs';
     'home/user/node_modules/pkg/inner/index.js': 'module.exports = 42;',
   });
   const fs = requireFsOverBridge(world.fs);
-  const read = fs.readFileString;
-  fs.readFileString = async path => {
+  const read = fs.readBytes;
+  fs.readBytes = async path => {
     if (path === inner) { await setImmediate(); await setImmediate(); }
     return read(path);
   };
@@ -91,8 +91,8 @@ assert.ok(largeWork <= 3 * smallWork, `recursive graph work is linear: ${smallWo
     entered: Promise.withResolvers(), release: Promise.withResolvers(),
   }]));
   const fs = requireFsOverBridge(world.fs);
-  const read = fs.readFileString;
-  fs.readFileString = async path => {
+  const read = fs.readBytes;
+  fs.readBytes = async path => {
     const gate = gates.get(path.slice(path.lastIndexOf('/') + 1));
     if (gate) { gate.entered.resolve(); await gate.release.promise; }
     return read(path);

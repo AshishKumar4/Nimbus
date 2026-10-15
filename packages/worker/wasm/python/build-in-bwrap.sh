@@ -36,7 +36,8 @@ bwrap --unshare-user --tmpfs / \
 	--ro-bind /usr /usr --ro-bind /etc /etc --ro-bind-try /run /run \
 	--ro-bind-try /bin /bin --ro-bind-try /sbin /sbin --ro-bind-try /lib /lib --ro-bind-try /lib64 /lib64 \
 	--proc /proc --dev /dev --tmpfs /tmp \
-	--bind "$HERE" /src/python --ro-bind "$WORK/wasi-sdk-25.0-x86_64-linux" /wasi-sdk \
+	--bind "$HERE" /src/python --ro-bind "$HERE/../nimbus-libc" /src/nimbus-libc \
+	--ro-bind "$WORK/wasi-sdk-25.0-x86_64-linux" /wasi-sdk \
 	--chdir /src/python --clearenv \
 	--setenv HOME /tmp/home --setenv TMPDIR /tmp --setenv PATH /usr/local/bin:/usr/bin:/bin \
 	--setenv WASI_SDK /wasi-sdk \

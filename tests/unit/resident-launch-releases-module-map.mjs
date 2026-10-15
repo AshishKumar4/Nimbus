@@ -53,7 +53,7 @@ const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
     truncated: false,
   };
   // The builder's order: serialize, drop the raw cells, then generate.
-  state.bundleSource = await buildFacetVfsBundleSource(state.bundle, false);
+  state.bundleSource = await buildFacetVfsBundleSource(state.bundle);
   releaseSerializedSources(state);
   assert.deepEqual(state.bundle, {}, 'the raw cells are gone the moment they are serialized');
 

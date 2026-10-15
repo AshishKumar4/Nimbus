@@ -75,7 +75,12 @@ async function __nimbusPyBoot(args) {
   if (typeof __wasiPrepareFilesystem === 'function') {
     await __wasiPrepareFilesystem([(args.pythonHome || '/usr/local') + '/lib']);
   }
-  instance = new WebAssembly.Instance(__nimbusPyModule(), { wasi_snapshot_preview1: made.wasiImport });
+  instance = new WebAssembly.Instance(__nimbusPyModule(), {
+    wasi_snapshot_preview1: made.wasiImport,
+    // nimbus-libc's: the live umask, a created file's mode, the session's credential.
+    nimbus_fs: made.fsImport,
+    nimbus_proc: made.procImport,
+  });
 
   const exports = instance.exports;
   if (typeof exports.nimbus_py_init !== 'function' || typeof exports.nimbus_py_run !== 'function') {

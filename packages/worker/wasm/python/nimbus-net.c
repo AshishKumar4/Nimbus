@@ -111,19 +111,23 @@ __attribute__((constructor)) static void nimbus_net_init(void)
 		sock_slots[i].fd = -1;
 }
 
-/* Registers `host` in the name table and returns the 240/8 address that stands
- * for it. Repeated lookups of the same name reuse their slot; once the table is
- * full the address is still returned so callers fail at connect with a real
- * errno rather than at resolution with a confusing one. */
-static uint32_t name_intern(const char *host)
+/* Registers `host` in the name table and sets `*ip` to the 240/8 address that
+ * stands for it: 0, or -1 once the table is full and `host` is not in it. A
+ * full table refuses a new name, as an exhausted resolver does: an address
+ * that stood for another name would dial that one. Repeated lookups of the
+ * same name reuse their slot. */
+static int name_intern(const char *host, uint32_t *ip)
 {
 	for (int i = 0; i < name_count; i++)
-		if (strcmp(name_slots[i], host) == 0)
-			return NIMBUS_SYNTH_PREFIX | (uint32_t)i;
+		if (strcmp(name_slots[i], host) == 0) {
+			*ip = NIMBUS_SYNTH_PREFIX | (uint32_t)i;
+			return 0;
+		}
 	if (name_count >= NIMBUS_NAME_SLOTS)
-		return NIMBUS_SYNTH_PREFIX | (uint32_t)(NIMBUS_NAME_SLOTS - 1);
+		return -1;
 	snprintf(name_slots[name_count], NIMBUS_HOST_MAX, "%s", host);
-	return NIMBUS_SYNTH_PREFIX | (uint32_t)name_count++;
+	*ip = NIMBUS_SYNTH_PREFIX | (uint32_t)name_count++;
+	return 0;
 }
 
 /* Writes the host that `addr` denotes into `out`: a table name for a synthetic
@@ -420,8 +424,10 @@ int getpeername(int fd, struct sockaddr *__restrict addr, socklen_t *__restrict 
 		return -1;
 	}
 	uint32_t ip;
-	if (parse_ipv4(s->peer_host, &ip) != 0)
-		ip = name_intern(s->peer_host);
+	if (parse_ipv4(s->peer_host, &ip) != 0 && name_intern(s->peer_host, &ip) != 0) {
+		errno = ENOBUFS;
+		return -1;
+	}
 	sockaddr_in_fill(addr, addrlen, ip, s->peer_port);
 	return 0;
 }
@@ -504,18 +510,22 @@ ssize_t sendto(int fd, const void *buf, size_t len, int flags, const struct sock
 ssize_t recvfrom(int fd, void *__restrict buf, size_t len, int flags,
                  struct sockaddr *__restrict addr, socklen_t *__restrict addrlen)
 {
-	ssize_t n = recv(fd, buf, len, flags);
-	if (n >= 0 && addr != NULL && addrlen != NULL) {
-		struct nimbus_sock *s = sock_find(fd);
-		uint32_t ip = INADDR_LOOPBACK;
-		uint16_t port = 0;
-		if (s != NULL) {
-			port = s->peer_port;
-			if (parse_ipv4(s->peer_host, &ip) != 0)
-				ip = name_intern(s->peer_host);
+	/* A connected socket's sender is known before anything is read, so a
+	 * name the table cannot hold fails the call with the data still unread.
+	 * One with no peer has no name to take: its recv answers why. */
+	uint32_t ip = INADDR_LOOPBACK;
+	uint16_t port = 0;
+	struct nimbus_sock *s = addr != NULL && addrlen != NULL ? sock_find(fd) : NULL;
+	if (s != NULL && s->state == NIMBUS_SOCK_CONNECTED) {
+		port = s->peer_port;
+		if (parse_ipv4(s->peer_host, &ip) != 0 && name_intern(s->peer_host, &ip) != 0) {
+			errno = ENOBUFS;
+			return -1;
 		}
-		sockaddr_in_fill(addr, addrlen, ip, port);
 	}
+	ssize_t n = recv(fd, buf, len, flags);
+	if (n >= 0 && addr != NULL && addrlen != NULL)
+		sockaddr_in_fill(addr, addrlen, ip, port);
 	return n;
 }
 
@@ -617,7 +627,8 @@ int getaddrinfo(const char *__restrict node, const char *__restrict service,
 	} else if (parse_ipv4(node, &ip) != 0) {
 		if (hints != NULL && (hints->ai_flags & AI_NUMERICHOST))
 			return EAI_NONAME;
-		ip = name_intern(node);
+		if (name_intern(node, &ip) != 0)
+			return EAI_MEMORY;
 	}
 
 	struct addrinfo *ai = calloc(1, sizeof(*ai));
@@ -680,8 +691,10 @@ struct hostent *gethostbyname(const char *name)
 		return NULL;
 	}
 	uint32_t ip;
-	if (parse_ipv4(name, &ip) != 0)
-		ip = name_intern(name);
+	if (parse_ipv4(name, &ip) != 0 && name_intern(name, &ip) != 0) {
+		nimbus_h_errno = NO_RECOVERY;
+		return NULL;
+	}
 	addr.s_addr = htonl(ip);
 	addr_list[0] = (char *)&addr;
 	addr_list[1] = NULL;

@@ -1,6 +1,9 @@
 #!/usr/bin/env bun
 // Run on CI: rebuild the pinned upstream source, then stage it with the same
-// checked-in recipe a normal worker build uses. Return tracked asset changes.
+// checked-in recipe a normal worker build uses. Return the staged assets'
+// changes against the checkout's HEAD as remote-build's build.mjs returns
+// dist's: { head, sourceCommit, assets, patch, blobs } (lib/output-patch.mjs),
+// which scripts/ci/remote-opencode.mjs checks and applies.
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync, copyFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -9,6 +12,7 @@ import { createRequire } from 'node:module';
 import { assertCurrentInputs, digestInputs } from '../../packages/worker/scripts/artifact-inputs.mjs';
 import { OPENCODE_SOURCE, opencodeInputs } from '../../packages/worker/scripts/opencode/inputs.mjs';
 import { sha256Hex } from '../../packages/worker/scripts/stage-asset.mjs';
+import { outputPatch } from './lib/output-patch.mjs';
 const workerRequire = createRequire(new URL('../../packages/worker/package.json', import.meta.url));
 const coreRequire = createRequire(new URL('../../packages/core/package.json', import.meta.url));
 const { parse } = workerRequire('acorn');
@@ -86,6 +90,6 @@ writeFileSync(join(dist, 'provenance.json'), JSON.stringify({
 run('node', ['packages/worker/scripts/bundle-opencode.mjs'], repo, env);
 const assets = readdirSync(assetRoot).map(name => ({ name, bytes: Bun.file(join(assetRoot, name)).size }));
 for (const asset of assets) if (asset.bytes > 25 * 1024 * 1024) throw new Error(`asset exceeds the Workers 25MiB limit: ${asset.name} (${asset.bytes})`);
-run('git', ['add', '--intent-to-add', '--', 'packages/worker/public/_assets/opencode', 'packages/worker/src/opencode-artifact.generated.ts']);
-const patch = run('git', ['diff', '--binary', '--', 'packages/worker/public/_assets/opencode', 'packages/worker/src/opencode-artifact.generated.ts'], repo, process.env, true);
-writeFileSync(out, JSON.stringify({ sourceCommit, assets, patch }));
+const head = run('git', ['rev-parse', 'HEAD'], repo, process.env, true);
+const { patch, blobs } = outputPatch(repo, ['packages/worker/public/_assets/opencode', 'packages/worker/src/opencode-artifact.generated.ts']);
+writeFileSync(out, JSON.stringify({ head, sourceCommit, assets, patch, blobs }));

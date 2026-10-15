@@ -1,4 +1,4 @@
-import { createNodePackageMapPolicy, DEFAULT_CJS_CONDITIONS, packageSelfReferenceSubpath, selectPackageMap, resolvePackageEntry, } from '../_shared/exports-resolver.js';
+import { createNodePackageMapPolicy, DEFAULT_CJS_CONDITIONS, packageJsonText, packageSelfReferenceSubpath, selectPackageMap, resolvePackageEntry, } from '../_shared/exports-resolver.js';
 import { TYPESCRIPT_INDEX_CANDIDATES, typescriptFallbackCandidates } from '../_shared/typescript-specifiers.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 export const METADATA_CANDIDATE_WORK = 256;
@@ -87,7 +87,7 @@ export function createRequireResolver(host, options = {}) {
         }
         let pkg;
         try {
-            pkg = JSON.parse(text);
+            pkg = JSON.parse(packageJsonText(text));
         }
         catch {
             throw error('ERR_INVALID_PACKAGE_CONFIG', 'Invalid package config ' + path + '.');
@@ -357,17 +357,36 @@ export function createRequireResolver(host, options = {}) {
         packageScopeSync: (dir) => runSync(nearestPackageScope(dir, { configs: new Map() })),
     };
 }
-const fileTextDecoder = new TextDecoder();
-/** A file's bytes as RequireFs.readFileString answers them. */
-function fileText(bytes) {
-    return fileTextDecoder.decode(bytes);
+// A file's text keeps a leading byte order mark, which TextDecoder's default
+// drops: Node's readFileSync returns it, and its parsers (a JSON require, the
+// package.json reader: packageJsonText) are what skip it, once.
+const cellDecoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+const textDecoder = new TextDecoder('utf-8', { ignoreBOM: true });
+/**
+ * A file's bytes as text, as Node's readFileSync(path, 'utf8') answers them:
+ * every byte decoded, a leading byte order mark kept. What
+ * RequireFs.readFileString answers, and what a resolver parses.
+ */
+export function fileText(bytes) {
+    return textDecoder.decode(bytes);
 }
 /**
- * The text RequireFs.readFileString answers for a file whose content is
- * `cell`, a cell a module map already holds: a text cell is that text; a
- * byte cell (a file that is not valid UTF-8, facets/manager.ts
- * _readBundleCell) is decoded as readFileString decodes it. A walk reuses
- * and compares a held cell through this, in the one representation it reads.
+ * A file's bytes as a module map's cell carries them: its text when the
+ * bytes are UTF-8, every byte kept, else the bytes.
+ */
+export function fileCell(bytes) {
+    try {
+        return cellDecoder.decode(bytes);
+    }
+    catch {
+        return bytes;
+    }
+}
+/**
+ * The text a module walk reads a cell as, or a file's bytes it stages: a
+ * text cell is that text; bytes are the file's text (fileText), which is the
+ * cell's text when the file is UTF-8 (fileCell). A walk stages, reuses and
+ * compares cells through this, in the one representation it reads.
  */
 export function heldCellText(cell) {
     return typeof cell === 'string' ? cell : fileText(cell);
