@@ -24,6 +24,15 @@ published independently in the `@nimbus-sh` npm scope.
   directory the program had just made was missing to `existsSync`,
   `statSync` and `readdirSync` until later, although it could be read.
   It is now there as soon as the copy resolves.
+- Fixed: `chmod`, `chown` and `utimes` in node (sync, callback, promise and
+  descriptor forms) judge as the session does, by the same rules: `utimes`
+  of another user's file is `EPERM`, a directory on the path the caller may
+  not search is `EACCES`, `lchown` and `lutimes` judge the link itself (a
+  link to another's file, or to nothing, is the caller's to change), and a
+  `chown` by anyone but root clears the setuid and setgid bits in what
+  `statSync` reports. Each was accepted, or refused, where the session
+  answered otherwise. While the process's view of the filesystem is being
+  rebuilt, their async forms ask the session instead of refusing `EAGAIN`.
 - Fixed: a running `wrangler dev` stopped serving when its session's object
   was re-created (an idle session's is, within minutes; so is one after an
   instance reset): its Worker URL answered "no dev server running" until it
