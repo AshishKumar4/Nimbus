@@ -122,7 +122,6 @@ function newSession(args: BashBootArgs): BashSession {
   const session: BashSession = {
     mod, coreutils, coreutilsRoot: norm(args.coreutilsRoot), fs: filesystem, cwd, cred: args.cred, parking: args.parking, pipeBudget: pipeBudget(args.memoryBudgetBytes), pending: new Set(),
     argv: args.argv, environ: args.environ,
-    stdinTty: !!args.stdinTty,
     stdin: { chunks: args.stdinData ? [te.encode(args.stdinData)] : [], queued: 0, closed: !!args.stdinClosed, waiters: [] },
     processPid: args.processPid || 0, sharedInput: args.sharedInput === true,
     procs: new Map(), idle: [], pipes: new Map(), runnable: [], deferred: [], wake: null, suspended: new Set(), exitStatus: new Map(), heldExits: new Map(), waiters: [],
@@ -176,6 +175,13 @@ function wakeWriters(pp: BashPipe): void {
 // real 'preopen' entry: wasi-libc's path ops fd_fdstat_get the dirfd
 // to compute inherited rights, so it must answer (not EBADF), and
 // lowestFd must never re-issue it for a regular file.
+/**
+ * Whether a descriptor the host answers for is a FIFO: a pipe, and stdin
+ * that is not a terminal (a pipe's or a redirect's bytes). WASI has no FIFO
+ * filetype (unknown, as wasmtime says too); its stat mode does. The
+ * terminal's stdin and the output streams are character devices.
+ */
+function hostFifo(e: BashFdEntry): boolean { return e.kind === 'pipe' || (e.kind === 'stdin' && !e.terminal); }
 function lowestFd(proc: BashProc): number { let fd = 0; while (proc.fds.has(fd) || fd === 3) fd++; return fd; }
 function bumpPipe(s: BashSession, e: { pipeId: number; end: 'r' | 'w' }, d: number): void { const pp = s.pipes.get(e.pipeId) as BashPipe; if (e.end === 'r') pp.readers += d; else pp.writers += d; }
 /**
@@ -355,8 +361,8 @@ function makeWasiFs(s: BashSession, proc: BashProc, DV: () => DataView, U8: () =
     },
     fd_seek(fd: number) { return proc.fds.has(fd) ? E.SPIPE : E.BADF; },
     fd_tell(fd: number) { return proc.fds.has(fd) ? E.SPIPE : E.BADF; },
-    fd_filestat_get(fd: number, out: number) { const e = proc.fds.get(fd); if (!e) return E.BADF; U8().fill(0, out, out + 64); DV().setUint8(out + 16, e.kind === 'pipe' ? 0 : 2); DV().setBigUint64(out + 24, 1n, true); return 0; },
-    fd_fdstat_get(fd: number, out: number) { const e = proc.fds.get(fd); if (!e) return E.BADF; U8().fill(0,out,out+24); DV().setUint8(out, e.kind === 'pipe' ? 0 : 2); DV().setBigUint64(out+8, 0x1fffffffn, true); DV().setBigUint64(out+16, 0x1fffffffn, true); return 0; },
+    fd_filestat_get(fd: number, out: number) { const e = proc.fds.get(fd); if (!e) return E.BADF; U8().fill(0, out, out + 64); DV().setUint8(out + 16, hostFifo(e) ? 0 : 2); DV().setBigUint64(out + 24, 1n, true); return 0; },
+    fd_fdstat_get(fd: number, out: number) { const e = proc.fds.get(fd); if (!e) return E.BADF; U8().fill(0,out,out+24); DV().setUint8(out, hostFifo(e) ? 0 : 2); DV().setBigUint64(out+8, 0x1fffffffn, true); DV().setBigUint64(out+16, 0x1fffffffn, true); return 0; },
     fd_fdstat_set_flags(fd: number, flags: number) { return !proc.fds.has(fd) ? E.BADF : flags === 0 ? 0 : E.NOSYS; },
     fd_read: (fd: number, p: number, n: number, out: number) => io.read(fd, readIovs(DV(),p,n),out),
     fd_write(fd: number, p: number, n: number, out: number) {
@@ -1209,8 +1215,7 @@ async function doExec(s: BashSession, proc: BashProc): Promise<void> {
     const entry = proc.fds.get(fd);
     if (entry === undefined) return E.BADF;
     if (entry.kind === 'resident') return metadata(out, entry.stat.mode ?? 0, entry.stat.uid, entry.stat.gid);
-    if (entry.kind === 'pipe') return metadata(out, 0o010600, s.cred.uid, s.cred.gid);
-    if (entry.kind === 'stdin' || entry.kind === 'stdout' || entry.kind === 'stderr') return metadata(out, 0o020620, s.cred.uid, s.cred.gid);
+    if (entry.kind === 'pipe' || entry.kind === 'stdin' || entry.kind === 'stdout' || entry.kind === 'stderr') return metadata(out, hostFifo(entry) ? 0o010600 : 0o020620, s.cred.uid, s.cred.gid);
     const stat = entry.kind === 'authority' ? () => fs.fstat(entry.handle.id) : entry.kind === 'preopen' ? () => fs.stat(entry.vfsPath) : null;
     if (stat === null) return E.BADF;
     return result(stat, st => st ? metadata(out, st.mode ?? 0, st.uid, st.gid) : E.NOENT);
@@ -1546,7 +1551,7 @@ globalThis.__bashBoot = async function __bashBoot(args: BashBootArgs): Promise<B
     S = newSession(args);
     initStdinQueued(S);
     const root = makeProc(S, S.pidNext++, 0, new Map([
-      [0, { kind: 'stdin' }], [1, { kind: 'stdout' }], [2, { kind: 'stderr' }],
+      [0, { kind: 'stdin', terminal: !!args.stdinTty }], [1, { kind: 'stdout' }], [2, { kind: 'stderr' }],
       [3, { kind: 'preopen', vfsPath: '/', wasiPath: '/' }],
     ]));
     S.rootPid = root.pid;
