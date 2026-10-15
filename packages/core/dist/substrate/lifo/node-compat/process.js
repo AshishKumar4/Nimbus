@@ -2,7 +2,13 @@ import { EventEmitter } from 'node:events';
 import { createProcessWarnings } from '../../../_shared/node-warning.js';
 import { standardStream } from './standard-streams.js';
 import { NODE_VERSION, NODE_VERSIONS } from '../../../constants.js';
+import { invalidArgType, nodeError } from '../../../_shared/node-error.js';
 import { parseFileMode } from '../../../_shared/node-arguments.js';
+/** The status a program's process ends with when it ends by itself: its process.exitCode, as Node reads it (0 unset). */
+export function exitCodeOf(proc) {
+    const code = Reflect.get(proc, 'exitCode');
+    return typeof code === 'number' && Number.isInteger(code) ? code : 0;
+}
 export class ProcessExitError extends Error {
     exitCode;
     constructor(code) {
@@ -21,10 +27,50 @@ export class LifoProcess extends EventEmitter {
     #errorOutput;
     #stdout;
     #stderr;
+    #capture = null;
     constructor(output, errorOutput) {
         super();
         this.#output = output;
         this.#errorOutput = errorOutput;
+    }
+    /** Node's: `fn` takes every error nothing caught, in place of 'uncaughtException'; null clears it. */
+    setUncaughtExceptionCaptureCallback(fn) {
+        if (fn === null) {
+            this.#capture = null;
+            return;
+        }
+        if (typeof fn !== 'function')
+            throw invalidArgType('fn', ['Function', 'null'], fn);
+        if (this.#capture !== null) {
+            throw nodeError(Error, 'ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET', '`process.setupUncaughtExceptionCapture()` was called while a capture callback was already active');
+        }
+        this.#capture = fn;
+    }
+    hasUncaughtExceptionCaptureCallback() {
+        return this.#capture !== null;
+    }
+    /**
+     * An error nothing caught, in Node's order: 'uncaughtExceptionMonitor', then
+     * the capture callback or 'uncaughtException'. False when nothing took it,
+     * and the program ends of it.
+     */
+    takeUncaught(error, origin) {
+        this.emit('uncaughtExceptionMonitor', error, origin);
+        if (this.#capture !== null) {
+            this.#capture(error);
+            return true;
+        }
+        return this.emit('uncaughtException', error, origin);
+    }
+    /**
+     * Whether a failed write would reach anything of the program's: an 'error'
+     * listener on its stdout or stderr (on, once and the prepends share one
+     * list), or one for an error nothing caught (takeUncaught's, the monitor's
+     * included).
+     */
+    hearsWriteFailures() {
+        return (this.#stdout?.listenerCount('error') ?? 0) > 0 || (this.#stderr?.listenerCount('error') ?? 0) > 0
+            || this.#capture !== null || this.listenerCount('uncaughtException') > 0 || this.listenerCount('uncaughtExceptionMonitor') > 0;
     }
     get stdout() {
         return this.#stdout ??= standardStream(this.#output, 1);
@@ -47,9 +93,8 @@ export function createProcess(opts) {
         env: { ...opts.env },
         cwd: () => opts.cwd,
         chdir: (_dir) => { throw new Error('process.chdir() is not supported in Lifo'); },
-        exit: (code = 0) => {
-            throw new ProcessExitError(code);
-        },
+        // Node's: no code is process.exitCode's.
+        exit: (code) => { throw new ProcessExitError(code ?? exitCodeOf(proc)); },
         stdin: {
             isTTY: false,
             fd: 0,
