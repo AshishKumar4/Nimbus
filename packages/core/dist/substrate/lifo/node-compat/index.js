@@ -52,12 +52,17 @@ function withoutHostReach(module, name, names) {
     return { ...module, ...refused };
 }
 export function createModuleMap(ctx) {
+    // One fs and one dns: fs/promises, dns/promises and constants are theirs, as Node's are.
+    let fs;
+    const fsModule = () => (fs ??= createFs(ctx.filesystem(), ctx.cwd, ctx.stdin, ctx.reachStreams));
+    let dns;
+    const dnsModule = () => (dns ??= createDns(ctx.dns));
     // One path module for every name it has (path, path/posix, path/win32).
     let path;
     const programPath = () => path ??= createPath(ctx.cwd);
     const map = {
-        fs: () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin, ctx.reachStreams),
-        'fs/promises': () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin, ctx.reachStreams).promises,
+        fs: fsModule,
+        'fs/promises': () => fsModule().promises,
         path: programPath,
         'path/posix': () => programPath().posix,
         'path/win32': () => programPath().win32,
@@ -88,15 +93,11 @@ export function createModuleMap(ctx) {
         zlib: () => zlibModule,
         string_decoder: () => realm.getBuiltinModule('node:string_decoder'),
         tty: () => (ctx.reachStreams?.(), createTty()),
-        dns: () => createDns(ctx.dns),
-        'dns/promises': () => createDns(ctx.dns).promises,
+        dns: dnsModule,
+        'dns/promises': () => dnsModule().promises,
         readline: () => readlineModule,
         'readline/promises': () => readlineModule.promises,
-        constants: () => {
-            const fs = createFs(ctx.filesystem(), ctx.cwd, ctx.stdin);
-            const os = createOs(ctx.env);
-            return { ...os.constants, ...fs.constants };
-        },
+        constants: () => ({ ...createOs(ctx.env).constants, ...fsModule().constants }),
         // The engine's own, context-free (X-3). v8 is the engine's but for what
         // would reach the host's files or flags (a heap snapshot file, coverage,
         // V8 flags), each refused. vm, domain, trace_events and wasi are refused
@@ -185,9 +186,12 @@ export function createModuleMap(ctx) {
     };
     // module shim needs access to the map itself for createRequire
     map.module = () => createModuleShim(map);
-    // npm package shims
-    map.rimraf = () => createRimraf(ctx.filesystem(), ctx.cwd);
-    map.esbuild = () => createEsbuild();
+    // npm packages it serves itself, which are not core (PROVIDED_PACKAGES).
+    const provided = {
+        rimraf: () => createRimraf(ctx.filesystem(), ctx.cwd),
+        esbuild: () => createEsbuild(),
+    };
+    Object.assign(map, provided);
     return map;
 }
 export { ProcessExitError } from './process.js';

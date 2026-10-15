@@ -268,7 +268,8 @@ export function createCjsLoader(context: NodeContext, scope: ModuleScope, option
 			throw err;
 		}
 		try {
-			fn(...wrapperArguments(filename, module));
+			// Node's: the wrapper runs with `this` the module's exports.
+			fn.call(module.exports, ...wrapperArguments(filename, module));
 		} catch (e) {
 			delete cache[filename];
 			if (e instanceof ProcessExitError) throw e;

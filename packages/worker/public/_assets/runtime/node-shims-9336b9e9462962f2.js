@@ -30,7 +30,7 @@ class __ProcessExit extends Error {
 // preambles below and the code they load make them by name, and the cell
 // runtime and generated code reach them as __nimbusNodeError and
 // __nimbusNodeSystemError.
-var { captureStack, determineSpecificType, hideStackFrames, invalidArgType, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, reshapeAsNodeError, useNodeErrorInspect } = (() => {
+var { captureStack, determineSpecificType, hideStackFrames, invalidArgType, invalidArgValue, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, outOfRange, reshapeAsNodeError, useNodeErrorInspect } = (() => {
 var nodeErrorClasses =   new Map();
 var classCodes =   new WeakMap();
 function nodeError(Base, code, message, props, above = nodeError) {
@@ -133,6 +133,30 @@ function determineSpecificType(value) {
 function invalidArgType(name, expected, actual) {
   return made(TypeError, "ERR_INVALID_ARG_TYPE", invalidArgTypeMessage(name, expected, actual), void 0, invalidArgType);
 }
+function invalidArgValue(name, value, reason = "is invalid") {
+  return made(TypeError, "ERR_INVALID_ARG_VALUE", invalidArgValueMessage(name, value, reason), void 0, invalidArgValue);
+}
+function invalidArgValueMessage(name, value, reason = "is invalid") {
+  let inspected = inspectValue(value, {});
+  if (inspected.length > 128) inspected = `${inspected.slice(0, 128)}...`;
+  return `The ${name.includes(".") ? "property" : "argument"} '${name}' ${reason}. Received ${inspected}`;
+}
+function outOfRange(name, range, input) {
+  return made(RangeError, "ERR_OUT_OF_RANGE", outOfRangeMessage(name, range, input), void 0, outOfRange);
+}
+function outOfRangeMessage(str, range, input, replaceDefaultBoolean = false) {
+  let received;
+  if (typeof input === "number" && Number.isInteger(input) && Math.abs(input) > 2 ** 32) {
+    received = addNumericalSeparator(String(input));
+  } else if (typeof input === "bigint") {
+    received = String(input);
+    if (input > 2n ** 32n || input < -(2n ** 32n)) received = addNumericalSeparator(received);
+    received += "n";
+  } else {
+    received = inspectValue(input, {});
+  }
+  return `${replaceDefaultBoolean ? str : `The value of "${str}" is out of range.`} It must be ${range}. Received ${received}`;
+}
 function invalidArgTypeMessage(name, expected, actual) {
   const types = [];
   const instances = [];
@@ -196,11 +220,7 @@ ${suffix}`;
   ERR_INVALID_ARG_TYPE: [invalidArgTypeMessage, TypeError],
   ERR_DNS_SET_SERVERS_FAILED: [(error, servers) => `c-ares failed to set servers: "${error}" [${inspectValue(servers, {})}]`, Error],
   ERR_INVALID_MIME_SYNTAX: [(production, str, invalidIndex) => `The MIME syntax for a ${production} in "${str}" is invalid${invalidIndex !== -1 ? ` at ${invalidIndex}` : ""}`, TypeError],
-  ERR_INVALID_ARG_VALUE: [(name, value, reason = "is invalid") => {
-    let inspected = inspectValue(value, {});
-    if (inspected.length > 128) inspected = `${inspected.slice(0, 128)}...`;
-    return `The ${name.includes(".") ? "property" : "argument"} '${name}' ${reason}. Received ${inspected}`;
-  }, TypeError, RangeError],
+  ERR_INVALID_ARG_VALUE: [invalidArgValueMessage, TypeError, RangeError],
   ERR_INVALID_RETURN_VALUE: [(input, name, value) => `Expected ${input} to be returned from the "${name}" function but got ${determineSpecificType(value)}.`, TypeError, RangeError],
   ERR_INVALID_THIS: ['Value of "this" must be of type %s', TypeError],
   ERR_INVALID_URI: ["URI malformed", URIError],
@@ -213,19 +233,7 @@ ${suffix}`;
   ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL: ["Unexpected argument '%s'. This command does not take positional arguments", TypeError],
   ERR_PARSE_ARGS_UNKNOWN_OPTION: [(option, allowPositionals) => `Unknown option '${option}'${allowPositionals ? `. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- ${JSON.stringify(option)}` : ""}`, TypeError],
   ERR_OPERATION_FAILED: ["Operation failed: %s", Error, TypeError],
-  ERR_OUT_OF_RANGE: [(str, range, input, replaceDefaultBoolean = false) => {
-    let received;
-    if (Number.isInteger(input) && Math.abs(input) > 2 ** 32) {
-      received = addNumericalSeparator(String(input));
-    } else if (typeof input === "bigint") {
-      received = String(input);
-      if (input > 2n ** 32n || input < -(2n ** 32n)) received = addNumericalSeparator(received);
-      received += "n";
-    } else {
-      received = inspectValue(input, {});
-    }
-    return `${replaceDefaultBoolean ? str : `The value of "${str}" is out of range.`} It must be ${range}. Received ${received}`;
-  }, RangeError],
+  ERR_OUT_OF_RANGE: [outOfRangeMessage, RangeError],
   ERR_SOCKET_BAD_PORT: [(name, port, allowZero = true) => `${name} should be ${allowZero ? ">=" : ">"} 0 and < 65536. Received ${determineSpecificType(port)}.`, RangeError],
   ERR_UNAVAILABLE_DURING_EXIT: ["Cannot call function in process exit handler", Error],
   ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET: ["`process.setupUncaughtExceptionCapture()` was called while a capture callback was already active", Error],
@@ -345,7 +353,73 @@ function captureStack(error, above) {
   const capture = Reflect.get(Error, "captureStackTrace");
   if (typeof capture === "function") Reflect.apply(capture, Error, [error, above]);
 }
-return { captureStack, determineSpecificType, hideStackFrames, invalidArgType, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, reshapeAsNodeError, useNodeErrorInspect };
+return { captureStack, determineSpecificType, hideStackFrames, invalidArgType, invalidArgValue, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, outOfRange, reshapeAsNodeError, useNodeErrorInspect };
+})();
+
+var { O_ACCMODE, O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR, O_SYNC, O_TRUNC, O_WRONLY, parseFileMode, stringToFlags, validateInt32, validateUint32 } = (() => {
+var O_RDONLY = 0;
+var O_WRONLY = 1;
+var O_RDWR = 2;
+var O_ACCMODE = 3;
+var O_CREAT = 64;
+var O_EXCL = 128;
+var O_TRUNC = 512;
+var O_APPEND = 1024;
+var O_DIRECTORY = 65536;
+var O_NOFOLLOW = 131072;
+var O_SYNC = 1052672;
+var FLAG_STRINGS = {
+  r: O_RDONLY,
+  rs: O_RDONLY | O_SYNC,
+  sr: O_RDONLY | O_SYNC,
+  "r+": O_RDWR,
+  "rs+": O_RDWR | O_SYNC,
+  "sr+": O_RDWR | O_SYNC,
+  w: O_TRUNC | O_CREAT | O_WRONLY,
+  wx: O_TRUNC | O_CREAT | O_WRONLY | O_EXCL,
+  xw: O_TRUNC | O_CREAT | O_WRONLY | O_EXCL,
+  "w+": O_TRUNC | O_CREAT | O_RDWR,
+  "wx+": O_TRUNC | O_CREAT | O_RDWR | O_EXCL,
+  "xw+": O_TRUNC | O_CREAT | O_RDWR | O_EXCL,
+  a: O_APPEND | O_CREAT | O_WRONLY,
+  ax: O_APPEND | O_CREAT | O_WRONLY | O_EXCL,
+  xa: O_APPEND | O_CREAT | O_WRONLY | O_EXCL,
+  as: O_APPEND | O_CREAT | O_WRONLY | O_SYNC,
+  sa: O_APPEND | O_CREAT | O_WRONLY | O_SYNC,
+  "a+": O_APPEND | O_CREAT | O_RDWR,
+  "ax+": O_APPEND | O_CREAT | O_RDWR | O_EXCL,
+  "xa+": O_APPEND | O_CREAT | O_RDWR | O_EXCL,
+  "as+": O_APPEND | O_CREAT | O_RDWR | O_SYNC,
+  "sa+": O_APPEND | O_CREAT | O_RDWR | O_SYNC
+};
+function validateInt32(value, name, min = -2147483648, max = 2147483647) {
+  if (typeof value !== "number") throw invalidArgType(name, "number", value);
+  if (!Number.isInteger(value)) throw outOfRange(name, "an integer", value);
+  if (value < min || value > max) throw outOfRange(name, `>= ${min} && <= ${max}`, value);
+  return value;
+}
+function validateUint32(value, name, positive = false) {
+  if (typeof value !== "number") throw invalidArgType(name, "number", value);
+  if (!Number.isInteger(value)) throw outOfRange(name, "an integer", value);
+  const min = positive ? 1 : 0;
+  if (value < min || value > 4294967295) throw outOfRange(name, `>= ${min} && <= 4294967295`, value);
+  return value;
+}
+function stringToFlags(flags, name = "flags") {
+  if (typeof flags === "number") return validateInt32(flags, name);
+  if (flags === void 0 || flags === null) return O_RDONLY;
+  if (typeof flags === "string" && Object.hasOwn(FLAG_STRINGS, flags)) return FLAG_STRINGS[flags];
+  throw invalidArgValue("flags", flags);
+}
+function parseFileMode(value, name, def) {
+  let mode = value ?? def;
+  if (typeof mode === "string") {
+    if (!/^[0-7]+$/.test(mode)) throw invalidArgValue(name, mode, "must be a 32-bit unsigned integer or an octal string");
+    mode = Number.parseInt(mode, 8);
+  }
+  return validateUint32(mode, name);
+}
+return { O_ACCMODE, O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR, O_SYNC, O_TRUNC, O_WRONLY, parseFileMode, stringToFlags, validateInt32, validateUint32 };
 })();
 
 var { createProcessWarnings } = (() => {
@@ -3804,9 +3878,9 @@ const __fsMod = (() => {
    * option), before the umask: 0666 unless it says. The authority applies them
    * only to a file the call makes; one already there keeps its own.
    */
-  function _createMode(opts, syscall, p) {
-    const mode = opts !== null && typeof opts === "object" ? opts.mode : undefined;
-    return mode === undefined ? 0o666 : _coerceMode(mode, syscall, p);
+  // A creation's mode, as Node's open takes it: none (undefined or null) is 0o666.
+  function _createMode(opts) {
+    return _coerceMode(opts !== null && typeof opts === "object" ? opts.mode : undefined, 0o666);
   }
 
   function _forgetSyncTree(k) {
@@ -4260,10 +4334,9 @@ const __fsMod = (() => {
     return at;
   }
 
-  function _coerceMode(value, syscall, p) {
-    const n = typeof value === "string" ? parseInt(value, 8) : Number(value);
-    if (!Number.isInteger(n) || n < 0) throw _fsErr("EINVAL", syscall, p);
-    return n & 0o7777;
+  // A mode argument as Node reads it (parseFileMode, node-arguments.ts), def when none is given (chmod has none): its permission bits.
+  function _coerceMode(value, def) {
+    return parseFileMode(value, "mode", def) & 0o7777;
   }
 
   function _coerceTimeMs(value, syscall, p) {
@@ -6384,7 +6457,7 @@ const __fsMod = (() => {
   }
 
   async function _writeFileAsync(p, data, opts) {
-    const mode = _createMode(opts, "open", p);
+    const mode = _createMode(opts);
     const absPath = _target(p, true, "open");
     const supervisor = _supervisor();
     // A target this view cannot judge (on a mount, where the launch did not
@@ -6612,7 +6685,7 @@ const __fsMod = (() => {
   function _chmodJudged(p, mode, live, syscall = "chmod", fixed) {
     const { target, sent, guarded, entry } = _attrTarget(p, true, syscall, "fs.promises.chmod", live, fixed);
     if (entry !== undefined && __nimbusResidentModule.chmodRefusal(entry, _posixCred()) !== null) throw _fsErr("EPERM", syscall, p);
-    const m = _coerceMode(mode, syscall, p);
+    const m = _coerceMode(mode);
     const judged = entry !== undefined && __nimbusResidentModule.confinedModeRefusal(entry.mode, m) === null;
     return { walked: { target, guarded }, judged, queue: () => _chmodQueued(target, sent, m, syscall, p) };
   }
@@ -6884,7 +6957,7 @@ const __fsMod = (() => {
   // (the hot path for source code / package.json / user JS).
   // Anything else is stringified (Node's behaviour for e.g. numbers).
   function writeFileSync(p, data, opts) {
-    const mode = _createMode(opts, "open", p);
+    const mode = _createMode(opts);
     const k = _parkWholeWrite(p, data, false, mode);
     _logParked("/" + k, { type: "call", call: { call: "writeFile", path: k, mode, data: __nimbusVfsCellBytes(__vfsWrites[k]) } }, { acknowledged: true });
   }
@@ -6926,7 +6999,7 @@ const __fsMod = (() => {
   // the program was told it succeeded). The cell is the file's whole content
   // only when it extends a parked cell of this process's that was whole.
   function _appendLocal(p, data, opts, acknowledged) {
-    const mode = _createMode(opts, "open", p);
+    const mode = _createMode(opts);
     const absPath = _target(p, true, "open");
     const absent = _ensureWritable(absPath, "open", p);
     const k = _strip(absPath);
@@ -7075,7 +7148,7 @@ const __fsMod = (() => {
     }
     // A directory the view already shows (the namespace's, or one this
     // process made, whose mkdir is ahead in the log) is not made again.
-    const mode = opts?.mode === undefined ? 0o777 : _coerceMode(opts.mode, "mkdir", p);
+    const mode = opts?.mode === undefined ? 0o777 : _coerceMode(opts.mode);
     const known = new Set();
     for (const [, dir] of created) {
       __vfsDirs[dir] = true;
@@ -7565,27 +7638,19 @@ const __fsMod = (() => {
     _accessAsync(p, mode).then(() => cb(null)).catch((e) => cb(e));
   }
 
-  // ── open-flag parsing for fs.promises.open ──
+  // ── open flags, as Node reads them (stringToFlags, node-arguments.ts) ──
   function _parseOpenFlags(flags) {
-    if (typeof flags === "number") {
-      const { O_WRONLY, O_RDWR, O_CREAT, O_EXCL, O_TRUNC, O_APPEND, O_DIRECTORY } = __fsConstants;
-      return {
-        read: (flags & O_WRONLY) === 0,
-        write: (flags & (O_WRONLY | O_RDWR)) !== 0,
-        append: (flags & O_APPEND) !== 0,
-        create: (flags & O_CREAT) !== 0,
-        truncate: (flags & O_TRUNC) !== 0,
-        exclusive: (flags & O_EXCL) !== 0,
-        directory: (flags & O_DIRECTORY) !== 0,
-      };
-    }
-    const s = String(flags === undefined || flags === null ? "r" : flags);
-    const plus = s.indexOf("+") !== -1;
-    const exclusive = s.indexOf("x") !== -1;
-    const base = s.charAt(0);
-    if (base === "w") return { read: plus, write: true, append: false, create: true, truncate: true, exclusive, directory: false };
-    if (base === "a") return { read: plus, write: true, append: true, create: true, truncate: false, exclusive, directory: false };
-    return { read: true, write: plus, append: false, create: false, truncate: false, exclusive, directory: false };
+    const bits = stringToFlags(flags);
+    const access = bits & O_ACCMODE;
+    return {
+      read: access !== O_WRONLY,
+      write: access !== O_RDONLY,
+      append: (bits & O_APPEND) !== 0,
+      create: (bits & O_CREAT) !== 0,
+      truncate: (bits & O_TRUNC) !== 0,
+      exclusive: (bits & O_EXCL) !== 0,
+      directory: (bits & O_DIRECTORY) !== 0,
+    };
   }
 
   // ── FileHandle — returned from fs.promises.open ──
@@ -7891,7 +7956,7 @@ const __fsMod = (() => {
 
   async function _openAsync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
-    const createMode = mode === undefined || mode === null ? 0o666 : _coerceMode(mode, "open", path);
+    const createMode = _coerceMode(mode, 0o666);
     const absPath = _target(path, true, "open");
     const supervisor = _supervisor();
     let liveMeta = null;
@@ -7926,7 +7991,7 @@ const __fsMod = (() => {
 
   function openSync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
-    const createMode = mode === undefined || mode === null ? 0o666 : _coerceMode(mode, "open", path);
+    const createMode = _coerceMode(mode, 0o666);
     const absPath = _target(path, true, "open");
     const st = statSync(path, { throwIfNoEntry: false });
     if (st && st.isDirectory()) throw _fsErr("EISDIR", "open", path);
@@ -14513,11 +14578,8 @@ const __processMod = Object.setPrototypeOf({
   umask: (mask) => {
     const previous = __processUmask;
     if (mask === undefined) return previous;
-    const next = typeof mask === "string" ? parseInt(mask, 8) : Number(mask);
-    if (!Number.isInteger(next) || next < 0 || next > 0o777) {
-      const error = nodeError(TypeError, "ERR_INVALID_ARG_VALUE", "The value of mask is out of range");
-      throw error;
-    }
+    // umask(2) keeps the permission bits of what parseFileMode (node-arguments.ts) takes.
+    const next = parseFileMode(mask, "mask") & 0o777;
     __processUmask = next;
     if (__supervisor && typeof __supervisor.setUmask === "function") {
       const task = __nimbusUseRpcResult(__supervisor.setUmask(next), () => undefined);

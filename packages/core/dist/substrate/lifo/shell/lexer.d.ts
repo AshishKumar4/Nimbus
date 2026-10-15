@@ -9,6 +9,11 @@ export type ContinuationState = 'single' | 'double' | 'backslash';
  * Comments are skipped exactly where lex() treats `#` as one.
  */
 export declare function continuationState(input: string): ContinuationState | null;
+/** Whether `line` ends a here-document opened with `delimiter` (`stripTabs`: by `<<-`, whose lines lose their leading tabs). */
+export declare function endsHeredoc(line: string, heredoc: {
+    readonly delimiter: string;
+    readonly stripTabs: boolean;
+}): boolean;
 /**
  * The full `${...}` span starting at `pos`. Quotes, nested braces and command
  * substitutions inside it belong to the expansion, not to the surrounding

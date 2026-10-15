@@ -75,6 +75,9 @@ type CtxVfs = ProcessView;
  * use sites stand in for.
  */
 type CtxStat = {
+  ino: number;
+  nlink: number;
+  dev: number;
   type: FileType;
   size: number;
   mode: number;
@@ -2495,12 +2498,9 @@ function mkTouch(vfs: UnixVfs): CmdFn {
  *
  * Every GNU directive is answered, using what this filesystem actually knows:
  *
- *   - inode (%i): paths are the identity here — there are no hard links, so a
- *     path maps to exactly one file. %i is a stable hash of the path, which
- *     gives (dev,ino) comparisons the right answer instead of the zero an
- *     inode-less filesystem would otherwise report for everything.
- *   - link count (%h) is always 1, device numbers are 0: one store, no
- *     hard links, no device nodes.
+ *   - inode (%i), link count (%h) and device (%d, %D in hex) are the file's
+ *     own, as stat(2) reports them: %i is the same however the file is named
+ *     and stays with it across a rename.
  *   - birth time (%w/%W) prints `-`/`0`, GNU's own convention for a
  *     filesystem that does not record it. Change time (%z/%Z) is the
  *     inode's ctime.
@@ -2516,6 +2516,9 @@ const STAT_IO_BLOCK_SIZE = 65536;
 const STAT_BLOCK_UNIT = 512;
 
 interface StatFacts {
+  ino: number;
+  nlink: number;
+  dev: number;
   size: number;
   type: string;
   mode: number;
@@ -2534,7 +2537,7 @@ interface StatFsFacts {
   freeInodes: number;
 }
 
-/** Stable 53-bit identity for a path — see the %i note above. */
+/** A stable 53-bit identity for a path: `stat -f`'s file system ID. */
 function statPathId(path: string): number {
   let high = 0xdeadbeef;
   let low = 0x41c6ce57;
@@ -2575,10 +2578,10 @@ function statDirective(
       if (isDir) return 'directory';
       if (isLink) return 'symbolic link';
       return isCharacterDevice(stat.mode) ? 'character special file' : 'regular file';
-    case 'h': return '1';
-    case 'i': return String(statPathId(path));
-    case 'd': return '0';
-    case 'D': return '0';
+    case 'h': return String(stat.nlink);
+    case 'i': return String(stat.ino);
+    case 'd': return String(stat.dev);
+    case 'D': return stat.dev.toString(16);
     case 't': return '0';
     case 'T': return '0';
     case 'm': return '/';
@@ -2786,6 +2789,9 @@ function mkStat(vfs: UnixVfs, sqliteVfs: SqliteVFS): CmdFn {
         group: (await unixGroupLabel(vfs, gid)),
       };
       const facts: StatFacts = {
+        ino: st.ino,
+        nlink: st.nlink,
+        dev: st.dev,
         size: st.size,
         type: st.type,
         mode: st.mode,

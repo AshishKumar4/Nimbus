@@ -24,6 +24,7 @@ import type { FailableOutput } from '../../node-compat/standard-streams.js';
 import { uncaughtReport, writeFailure } from '../../node-compat/output-failure.js';
 import type { LifoProcess } from '../../node-compat/process.js';
 import { ProcessExitError } from '../../node-compat/index.js';
+import { useNodeErrorInspect } from '../../../../_shared/node-error.js';
 import { runNodeProgram } from './node-program.js';
 import { routeFetchThroughHost, type RealmEgressGuest } from '../../../../runtime/realm-egress-guest.js';
 import { isEgressHostEvent } from '../../../../runtime/realm-egress.js';
@@ -31,6 +32,9 @@ import {
   isDirEntries, isHostEvent, isNodeRealmPayload, isOutputFailures, isStat,
   type GuestEvent, type NodeCall, type RealmResponse,
 } from './node-realm-protocol.js';
+
+// Node's errors show a value as util.inspect does ('a string' quoted), the program's realm's.
+useNodeErrorInspect((value, options) => realm.getBuiltinModule('node:util').inspect(value, options));
 
 const joined = await joinRealm();
 if (!isNodeRealmPayload(joined.payload)) throw new Error('node-guest: started without a program');
