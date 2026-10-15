@@ -15,8 +15,11 @@ export declare function openRuntimeStdio(deps: {
         vfs: import("./os-contracts.js").RuntimeFsBridge;
         processes: SessionProcessSupervisor;
     };
-    finish(exitCode: number): void;
+    finish(exitCode: number): Promise<void>;
 };
-/** A runtime's byte callback, including a text consumer's decoding edge. */
-export declare function runtimeOutput(ctx: Pick<CommandContext, 'stdout' | 'stderr'>): (stream: "stdout" | "stderr", bytes: Uint8Array) => void | Promise<void>;
+/** A runtime's byte callback into the command's outputs, and `end`, which ends their decoding once the runtime is done. */
+export declare function runtimeOutput(ctx: Pick<CommandContext, 'stdout' | 'stderr'>): {
+    write(stream: 'stdout' | 'stderr', bytes: Uint8Array): Promise<void>;
+    end(): Promise<void>;
+};
 //# sourceMappingURL=runtime-stdio.d.ts.map

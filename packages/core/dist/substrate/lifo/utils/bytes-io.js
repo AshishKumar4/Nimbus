@@ -3,12 +3,12 @@
  * bytes: a byte that is not valid UTF-8 passes through unchanged. Decoding
  * with TextDecoder would turn it into U+FFFD, three different bytes.
  */
+import { concatBytes as concatParts, enc, dec } from '../../../_shared/bytes.js';
 import { readToEnd } from '../../../runtime/process-files.js';
 import { isVfsError, syscallError } from '../../../vfs/vfs-error.js';
 import { resolve } from './path.js';
 import { direntTypeOfStat } from '../../../vfs/dirent-type.js';
 import { fitsWholeRead } from '../../../runtime/sqlite-runtime-fs-bridge.js';
-const enc = new TextEncoder();
 const CHUNK = 65536;
 /** An operand's bytes in bounded chunks; `-` or undefined is standard input. */
 export async function* inputChunks(ctx, operand, { readSize = CHUNK, fileReadSize = CHUNK, slice = false } = {}) {
@@ -73,17 +73,9 @@ export async function readAllInput(ctx, operand) {
         parts.push(chunk);
     return concatBytes(parts);
 }
+/** The parts as one: a single part is itself, uncopied; more are the shared concatenation (_shared/bytes.ts). */
 export function concatBytes(parts) {
-    if (parts.length === 1)
-        return parts[0];
-    const total = parts.reduce((n, part) => n + part.length, 0);
-    const out = new Uint8Array(total);
-    let at = 0;
-    for (const part of parts) {
-        out.set(part, at);
-        at += part.length;
-    }
-    return out;
+    return parts.length === 1 ? parts[0] : concatParts(parts);
 }
 /** Write bytes as they are, to a sink that takes bytes; a text-only sink gets their lossless decoding. */
 export async function writeBytes(out, bytes) {
@@ -95,16 +87,73 @@ export async function writeBytes(out, bytes) {
         await out.write(decodeLossless(bytes));
 }
 /**
+ * {@link decodeLossless} across writes: a sequence a write leaves unfinished
+ * is held for the next, so a character split between writes decodes whole;
+ * what is held at the end decodes byte by byte, as decodeLossless has it.
+ */
+export class LosslessDecoder {
+    held = NOTHING_HELD;
+    decode(bytes) {
+        const all = this.held.length === 0 ? bytes : concatBytes([this.held, bytes]);
+        const cut = unfinishedTail(all);
+        this.held = cut === all.length ? NOTHING_HELD : all.slice(cut);
+        return decodeLossless(cut === all.length ? all : all.subarray(0, cut));
+    }
+    end() {
+        const rest = this.held;
+        this.held = NOTHING_HELD;
+        return rest.length === 0 ? '' : decodeLossless(rest);
+    }
+}
+const NOTHING_HELD = new Uint8Array(0);
+/** Where a UTF-8 sequence that `bytes` ends inside begins: their length when none does. */
+function unfinishedTail(bytes) {
+    for (let back = 1; back <= 3 && back <= bytes.length; back++) {
+        const at = bytes.length - back;
+        const b = bytes[at];
+        if (b >= 0x80 && b < 0xc0)
+            continue;
+        const length = b >= 0xf0 && b <= 0xf4 ? 4 : b >= 0xe0 && b < 0xf0 ? 3 : b >= 0xc2 && b < 0xe0 ? 2 : 1;
+        return length > back ? at : bytes.length;
+    }
+    return bytes.length;
+}
+/**
+ * An output the shell captures as text (exec's stdout and stderr, `$( )`):
+ * the bytes of every command writing to it decoded as one stream, as its
+ * reader would read them, and `end`ed when the capture is read.
+ */
+export function textCapture(append) {
+    const decoder = new LosslessDecoder();
+    return {
+        stream: {
+            writeBytes: (bytes) => { append(decoder.decode(bytes)); },
+            // Text after bytes that left a character unfinished: those bytes decode alone first. No text is no write.
+            write: (text) => { if (text !== '')
+                append(decoder.end() + text); },
+        },
+        end: () => { append(decoder.end()); },
+    };
+}
+/**
  * Bytes as a string without loss: valid UTF-8 decodes to its characters,
  * and every byte of an invalid sequence to U+DC80 + byte (a lone surrogate,
  * which valid UTF-8 never produces). `encodeLossless` inverts it exactly.
  */
 export function decodeLossless(bytes) {
+    // Valid UTF-8, nearly all of it, decodes natively; only bytes that are not take the walk below.
+    try {
+        return validUtf8.decode(bytes);
+    }
+    catch (error) {
+        if (!(error instanceof TypeError))
+            throw error;
+    }
     let out = '';
     let run = 0;
     const flush = (end) => {
         if (end > run)
-            out += new TextDecoder().decode(bytes.subarray(run, end));
+            out += dec.decode(bytes.subarray(run, end));
     };
     for (let i = 0; i < bytes.length;) {
         const b = bytes[i];
@@ -125,6 +174,8 @@ export function decodeLossless(bytes) {
     flush(bytes.length);
     return out;
 }
+/** Valid UTF-8, decoded as the walk's runs are (a leading BOM dropped, as `new TextDecoder()` drops it). */
+const validUtf8 = new TextDecoder('utf-8', { fatal: true });
 /** The length of the valid UTF-8 sequence at `i`, or 0. */
 export function utf8SequenceLength(bytes, i) {
     const b = bytes[i];

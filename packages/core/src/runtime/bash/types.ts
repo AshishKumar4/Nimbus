@@ -77,7 +77,9 @@ export interface BashSlice {
  * having narrowed to a kind that has one.
  */
 export type BashFdEntry =
-  | { kind: 'stdin' | 'stdout' | 'stderr' }
+  /** The session's stdin, a terminal or not (a pipe's or a redirect's bytes), as the runner found it. */
+  | { kind: 'stdin'; readonly terminal: boolean }
+  | { kind: 'stdout' | 'stderr' }
   | AuthorityPreopen
   | AuthorityFd
   // A read-only open the codec answers from a copy of the file (WASI_RESIDENT_FILE_CAP_BYTES).
@@ -247,7 +249,7 @@ export interface BashProc {
    */
   preopenMoved: Map<number, number>;
   cwd: string;
-  pendingFs?: { name: string; value?: number; settled: boolean; promise: Promise<void> };
+  pendingFs?: { name: string; value?: number; promise: Promise<void> };
   inst: BashInstance;
   /** The owning session, so a resumed process can find its run queue. */
   __s: BashSession;
@@ -319,7 +321,6 @@ export interface BashSession {
   cwd: string;
   argv: string[];
   environ: string[];
-  stdinTty: boolean;
   stdin: BashStdin;
   processPid: number;
   sharedInput: boolean;
@@ -361,7 +362,6 @@ export interface BashSession {
   waiters: BashWaitEntry[];
   pidNext: number;
   pipeNext: number;
-  rootPid: number;
   rootExit: number | null;
   steps: number;
   output: ReturnType<typeof import('../wasi/stdio.js').wasiOutputRelay>;

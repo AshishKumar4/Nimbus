@@ -34,8 +34,9 @@
  *   - Function args are integers only (parseInt). Float / string /
  *     multi-arg-shapes need a wrapper module.
  *   - Only WebAssembly.Memory and integer return values are surfaced.
- *   - WASI imports are NOT provided. Modules expecting wasi_snapshot
- *     won't instantiate (fail at the in-facet instantiate step).
+ *   - A module that imports WASI runs as a WASI program instead (its
+ *     argv, environment, stdio and the session filesystem), not as a
+ *     direct export call.
  *
  * Dispatch constraints
  * ────────────────────
@@ -62,8 +63,6 @@ import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from './wasm-memory
 import { wasmInterface } from './wasm-binary.js';
 import { errorText } from '../_shared/error-text.js';
 import { unsettledNoteOf } from '../_shared/process-fs-client.js';
-import type { ResidentFilesystemStats } from './wasi/resident-filesystem.js';
-import { exists } from '../vfs/vfs.js';
 export const WASM_RUNNER_VERSION = '0.3.0';
 
 export const WASM_RUNNER_HELP =
@@ -387,7 +386,6 @@ export function makeWasmRunner(deps: {
       const submitArgs = isWasi
         ? {
             processPid: pid,
-            liveOutput: true,
             mode: 'wasi' as const,
             wasiArgv,
             wasiEnv,

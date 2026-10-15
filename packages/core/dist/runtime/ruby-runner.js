@@ -209,16 +209,22 @@ export function makeRubyRunnerFactory(deps) {
                         + 'process substrate to keep it on\n');
                     return 1;
                 }
-                result = await deps.startResident({
-                    wasmVfsPath: facetArgs.wasmVfsPath,
-                    startArgs: toRubyCallArgs(facetArgs),
-                    cwd,
-                    command: formatRubyCommand(binName, argv),
-                    argv: [binName, ...argv],
-                    invokerPid: ctx.pid,
-                    signal: ctx.signal,
-                    write: runtimeOutput(ctx),
-                });
+                const output = runtimeOutput(ctx);
+                try {
+                    result = await deps.startResident({
+                        wasmVfsPath: facetArgs.wasmVfsPath,
+                        startArgs: toRubyCallArgs(facetArgs),
+                        cwd,
+                        command: formatRubyCommand(binName, argv),
+                        argv: [binName, ...argv],
+                        invokerPid: ctx.pid,
+                        signal: ctx.signal,
+                        write: output.write,
+                    });
+                }
+                finally {
+                    await output.end();
+                }
             }
             else {
                 const stdio = openRuntimeStdio(deps, ctx, formatRubyCommand(binName, argv));
@@ -226,7 +232,7 @@ export function makeRubyRunnerFactory(deps) {
                     result = await dispatchRubyFacet(deps.facets, stdio.syscalls, facetArgs, await vfs.readArrayBufferUncached(wasmVfs), stdio.pid, stdio.signal);
                 }
                 finally {
-                    stdio.finish(result?.exitCode ?? 1);
+                    await stdio.finish(result?.exitCode ?? 1);
                 }
             }
             if (result.stdout)

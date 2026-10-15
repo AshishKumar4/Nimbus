@@ -503,11 +503,8 @@ export class ProcessLogStore {
             const rows = state.dirtyChunks;
             try {
                 adapter.persistChunks(pid, rows);
-                for (const r of rows) {
+                for (const r of rows)
                     chunkBytesFlushed += r.chunk.data.length;
-                    if (r.seq > state.flushedHighSeq)
-                        state.flushedHighSeq = r.seq;
-                }
                 chunksFlushedCount += rows.length;
             }
             catch { /* fail-soft — leave dirty for next flush */
@@ -584,7 +581,6 @@ export class ProcessLogStore {
                 dirtyChunks: [],
                 dirtyExit: false,
                 hydrated: false,
-                flushedHighSeq: -1,
             };
             this.pids.set(pid, s);
             // W9: lazy hydrate the freshly-created state from persistent
@@ -655,7 +651,6 @@ export class ProcessLogStore {
         state.chunks = newest;
         state.bytes = bytes;
         state.nextSeq = highestSeq + 1;
-        state.flushedHighSeq = highestSeq;
         if (loaded.chunks[loaded.chunks.length - 1]) {
             state.lastActivity = Math.max(state.lastActivity, loaded.chunks[loaded.chunks.length - 1].ts);
         }

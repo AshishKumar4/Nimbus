@@ -2,6 +2,7 @@ import { resolve } from '../../utils/path.js';
 import { MAX_REDIRECTS, dispatchWorkspaceRequest, hopInit, sendHop, walkRedirects, workspaceRequestPort } from './kernel-fetch.js';
 import { NIMBUS_AI_TOKEN_ENV, requestCarriesSessionAiToken } from '../../../../_shared/ai-egress.js';
 import { NIMBUS_AI_GATEWAY_PORT } from '../../../../constants.js';
+import { dec } from '../../../../_shared/bytes.js';
 const SHORT_VALUE_OPTIONS = new Set(['X', 'H', 'd', 'o', 'w', 'D']);
 /** curl's exit code for local write failures (-o/-D targets). */
 const CURL_WRITE_ERROR_EXIT = 23;
@@ -466,7 +467,7 @@ async function writeCurlOutput(ctx, options, body) {
                 await ctx.stdout.write('\n');
         }
         else if (body instanceof Uint8Array) {
-            await ctx.stdout.write(new TextDecoder().decode(body));
+            await ctx.stdout.write(dec.decode(body));
         }
         else {
             await streamCurlBodyToStdout(ctx, body);

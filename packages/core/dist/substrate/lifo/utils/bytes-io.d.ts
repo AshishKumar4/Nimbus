@@ -1,10 +1,5 @@
-/**
- * Byte input and output for the text commands. GNU's tools read and write
- * bytes: a byte that is not valid UTF-8 passes through unchanged. Decoding
- * with TextDecoder would turn it into U+FFFD, three different bytes.
- */
 import { type ProcessView } from '../../../runtime/process-files.js';
-import type { CommandInputStream } from '../commands/types.js';
+import type { CommandInputStream, CommandOutputStream } from '../commands/types.js';
 export interface ByteInputContext {
     cwd: string;
     vfs: ProcessView;
@@ -38,9 +33,31 @@ export interface InputChunkOptions {
 export declare function inputChunks(ctx: ByteInputContext, operand: string | undefined, { readSize, fileReadSize, slice }?: InputChunkOptions): AsyncGenerator<Uint8Array>;
 /** All of an operand's bytes. */
 export declare function readAllInput(ctx: ByteInputContext, operand: string | undefined): Promise<Uint8Array>;
+/** The parts as one: a single part is itself, uncopied; more are the shared concatenation (_shared/bytes.ts). */
 export declare function concatBytes(parts: readonly Uint8Array[]): Uint8Array;
 /** Write bytes as they are, to a sink that takes bytes; a text-only sink gets their lossless decoding. */
 export declare function writeBytes(out: ByteOutput, bytes: Uint8Array): Promise<void>;
+/**
+ * {@link decodeLossless} across writes: a sequence a write leaves unfinished
+ * is held for the next, so a character split between writes decodes whole;
+ * what is held at the end decodes byte by byte, as decodeLossless has it.
+ */
+export declare class LosslessDecoder {
+    private held;
+    decode(bytes: Uint8Array): string;
+    end(): string;
+}
+/**
+ * An output the shell captures as text (exec's stdout and stderr, `$( )`):
+ * the bytes of every command writing to it decoded as one stream, as its
+ * reader would read them, and `end`ed when the capture is read.
+ */
+export declare function textCapture(append: (text: string) => void): {
+    readonly stream: CommandOutputStream & {
+        writeBytes(bytes: Uint8Array): void;
+    };
+    end(): void;
+};
 /**
  * Bytes as a string without loss: valid UTF-8 decodes to its characters,
  * and every byte of an invalid sequence to U+DC80 + byte (a lone surrogate,

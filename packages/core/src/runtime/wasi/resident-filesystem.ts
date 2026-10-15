@@ -209,9 +209,6 @@ export interface ResidentFilesystemStats {
   client?: ProcessFsStats;
 }
 
-/** A held write goes to the session in pieces of this size: each fits one call. */
-const WRITE_PIECE_BYTES = 1024 * 1024;
-
 /** Listings one call may take before it gives the question to the authority. */
 const MAX_LISTINGS_PER_CALL = 64;
 
@@ -283,8 +280,6 @@ const MUTATIONS = new Set<keyof RuntimeFsBridge>([
   'futimes', 'writeBatch', 'writeStream',
 ]);
 
-/** Those that name their file by descriptor; every other one names a path, and may name a held file. */
-const DESCRIPTOR_MUTATIONS = new Set<keyof RuntimeFsBridge>(['write', 'close', 'ftruncate', 'fchmod', 'fchown', 'futimes']);
 const DESCRIPTOR_CALLS = new Set<string>(['read', 'write', 'close', 'fstat', 'dup', 'seek', 'setStatus', 'readdirHandle', 'ftruncate', 'fchmod', 'fchown', 'futimes', 'fsync']);
 
 function after<T, R>(value: T | Promise<T>, next: (value: T) => R | Promise<R>): R | Promise<R> {
@@ -824,9 +819,6 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     }
   }, () => authority.stat(path, options));
 
-  /** The session is to answer for this file (the authority has what this process logged first). */
-  const toSession = (_entry: ResidentEntry): Delegate => DELEGATE;
-
   fs.pinContent = (path, stat) => answer<PinnedContent | null>('pinContent', () => after(resolve(path, true, true), (key) => {
     if (key === DELEGATE || key === '' || key === null) return null;
     const entry = entryAt(key);
@@ -870,7 +862,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     // As the authority checks: permission before what kind of name it is.
     if (!modeAllows(entry, 4, store.cred)) throw fsError('EACCES', 'open', path);
     if (entry.type === 'directory') throw fsError('EISDIR', 'open', path);
-    if (entry.type !== 'file' || entry.size > WASI_RESIDENT_FILE_CAP_BYTES) return toSession(entry);
+    if (entry.type !== 'file' || entry.size > WASI_RESIDENT_FILE_CAP_BYTES) return DELEGATE;
     return after(contentOf(key, entry), (bytes) => (bytes === undefined ? DELEGATE : bytes));
   }), () => authority.readFile(path, options));
 

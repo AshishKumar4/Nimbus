@@ -4,30 +4,29 @@
  *
  * bash CANNOT run through the stock JSPI wasm-runner: the binary is
  * asyncify-instrumented (fork/setjmp/blocking-pipe unwinds) and needs
- * 15 `nimbus_proc` imports plus MULTIPLE instances per facet (fork).
- * This runner embeds the proven multi-instance fork/pipe/exec/setjmp
- * scheduler (packages/worker/wasm/bash/run-bash-fork.mjs — the local
- * acid-test driver, itself a port of the PROVEN-LIVE fork M1/M2/M3
- * mechanisms) as a facet preamble.
+ * the `nimbus_proc` imports plus MULTIPLE instances per facet (fork).
+ * Its multi-instance fork/pipe/exec/setjmp scheduler is bash/preamble.ts,
+ * the facet's preamble.
  *
  * Architecture (mirrors ruby-runner's facet dispatch):
  *  - bash.async.wasm + the coreutil exec targets ship through the facet
  *    host, which compiles them and exposes them on
  *    globalThis.__NIMBUS_WASM.
- *  - The preamble defines __bashBoot / __bashFeed. Boot instantiates
- *    bash, pumps the scheduler until the process tree exits or the
- *    root parks on a terminal stdin read; each feed delivers stdin
- *    bytes and pumps again. Facet state persists across submits on
- *    the warm isolate (same mechanism as __rubyInstance caching).
- *  - stdout/stderr accumulate per pump slice and stream back to the
- *    CommandContext; VFS writes come back as a WasiFsDiff on exit.
+ *  - The preamble's __bashStep boots bash (__bashBoot) or feeds it
+ *    (__bashFeed), pumping the scheduler until the process tree exits
+ *    or the root parks on a terminal stdin read. Facet state persists
+ *    across submits on the warm isolate (same mechanism as
+ *    __rubyInstance caching).
+ *  - stdin, stdout and stderr are the process's byte channels
+ *    (openRuntimeStdio), and every file syscall goes to the session's
+ *    filesystem authority as the invoking process.
  */
 import { exitCodeForAbortSignal } from '../substrate/lifo/shell/signals.js';
 import { BASH_STEP_TASK, BASH_REQUEST_TASK } from './compiled-bodies.generated.js';
 import type { RuntimeManifest } from './runtime-manifest.js';
 import { withHostView, type ProcessView } from './process-files.js';
 import type { Facet, FacetHost } from './facet-host.js';
-import type { Command, CommandContext, CommandInputStream } from '../substrate/lifo/commands/types.js';
+import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import { z } from 'zod';
 import type { BashBootArgs, BashFeedArgs, BashSlice } from './bash/types.js';
 import { BASH_RUNNER_BODY_SRC } from './bash-runner.generated.js';
@@ -35,9 +34,9 @@ import type { NimbusFilesystemAuthority, RuntimeFsBridge, VfsCred } from './os-c
 import type { BashStepArgs } from './facet-tasks.js';
 import { BASH_RUNNER, CRED_KERNEL, gateSyncLaunch, requireVfsCred } from './os-contracts.js';
 import { resolveVfsPath } from '../vfs/path.js';
-import { exists } from '../vfs/vfs.js';
 import { openRuntimeStdio } from './runtime-stdio.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
+import { errorText } from '../_shared/error-text.js';
 
 type BashRunnerFactory = (
   manifest: RuntimeManifest,
@@ -68,11 +67,6 @@ function normalizeSlice(raw: unknown): BashSlice | null {
     stats: parsed.data.stats,
     control: parsed.data.control,
   };
-}
-
-function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
 }
 
 export interface BashFacetSession {
@@ -367,11 +361,11 @@ export function makeBashRunnerFactory(deps: {
       } catch (e: unknown) {
         // Killed: the program ends as an interrupted one does.
         if (stdio.signal.aborted) return exitCode = exitCodeForAbortSignal(stdio.signal);
-        ctx.stderr.write(`${binName}: dispatch failed: ${errorMessage(e)}\n`);
+        ctx.stderr.write(`${binName}: dispatch failed: ${errorText(e)}\n`);
         return 1;
       } finally {
         await session?.close();
-        stdio.finish(exitCode);
+        await stdio.finish(exitCode);
       }
     };
   };

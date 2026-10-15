@@ -7,20 +7,6 @@
  * `registerUnixCommands` at the end is the list.
  */
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
-import type { Command } from '../substrate/lifo/commands/types.js';
-import { type ResolveContext } from '../substrate/lifo/commands/registry.js';
-/**
- * The registry these commands dispatch through: registration, and name
- * resolution for `which`, `type`, `command` and `xargs`.
- * `resolve` answers `unknown` because the registry holds whatever any module
- * registered — and the worker's npm-bin fallback replaces the method outright
- * — so what comes back is a command only once it has been checked.
- */
-type UnixCommandRegistry = {
-    register(name: string, handler: Command): void;
-    resolve(name: string, from?: ResolveContext): unknown;
-    has?(name: string): boolean;
-};
-export declare function registerUnixCommands(registry: UnixCommandRegistry, sqliteVfs: SqliteVFS): void;
-export {};
+import { type CommandRegistry } from '../substrate/lifo/commands/registry.js';
+export declare function registerUnixCommands(registry: CommandRegistry, sqliteVfs: SqliteVFS): void;
 //# sourceMappingURL=unix-commands.d.ts.map

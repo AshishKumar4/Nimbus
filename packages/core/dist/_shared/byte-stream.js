@@ -92,3 +92,25 @@ export async function streamRange(read, writer, options = {}) {
     }
     return copied;
 }
+/**
+ * An `onStdout`/`onStderr` pair of byte hooks into `outputs`' stdout and
+ * stderr, each through a SinkWriter of its own, and `end`, which ends both
+ * (a character their last bytes left unfinished is written), the second
+ * even when the first fails.
+ */
+export function outputHooks(outputs) {
+    const stdout = new SinkWriter(outputs.stdout);
+    const stderr = new SinkWriter(outputs.stderr);
+    return {
+        onStdout: (bytes) => stdout.write(bytes),
+        onStderr: (bytes) => stderr.write(bytes),
+        end: async () => {
+            try {
+                await stdout.end();
+            }
+            finally {
+                await stderr.end();
+            }
+        },
+    };
+}

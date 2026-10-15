@@ -162,7 +162,6 @@ async function dispatch(bytes, argv, output) {
           return {
             async submit(_fn, args) {
               submittedPid = args.processPid;
-              assert.equal(args.liveOutput, true);
               input = await processes.readInput(submittedPid, 0);
               // The facet publishes through its actual bound supervisor pid,
               // before it can finish. The native workerd case compiles and

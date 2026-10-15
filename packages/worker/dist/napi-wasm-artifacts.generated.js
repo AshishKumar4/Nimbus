@@ -9,8 +9,8 @@
  * evaluated; PACKAGE_ABI_POLICY.stagedArtifacts routes each owner package and
  * the packages it requires the binding by to its entry.
  */
-export const NAPI_WASM_LOADER = { "path": "/_assets/napi-wasm/loader/db055a3706469557/napi-wasm-loader.mjs", "sha256": "aa19196d1c109822735a1150d25d9136729b2f035b381f86cd538371f2dfd38e", "bytes": 212704 };
-export const NAPI_WASM_TRAMPOLINE = { "path": "/_assets/napi-wasm/loader/db055a3706469557/wasi-trampoline.wasm", "sha256": "0ad53da157e16656eee42877724d38aaa9876de20369f975f44b8a5e5d6f9cf6", "bytes": 1961 };
+export const NAPI_WASM_LOADER = { "path": "/_assets/napi-wasm/loader/89db69bc48f37776/napi-wasm-loader.mjs", "sha256": "c090a89b45ca90e6ddf9f16f9d1f38aaf54def79dc603fbedeff575090dcee4d", "bytes": 212748 };
+export const NAPI_WASM_TRAMPOLINE = { "path": "/_assets/napi-wasm/loader/89db69bc48f37776/wasi-trampoline.wasm", "sha256": "0ad53da157e16656eee42877724d38aaa9876de20369f975f44b8a5e5d6f9cf6", "bytes": 1961 };
 export const STAGED_BINDING_ARTIFACTS = [
     {
         "name": "rolldown",

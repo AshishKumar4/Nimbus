@@ -48,7 +48,6 @@ import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import type { ProcessView as CredentialedVfs } from './process-files.js';
-import { z } from 'zod/v4';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { CPYTHON_PREAMBLE_TAIL } from './cpython-preamble.js';
 import { PYTHON_SERVER_ADAPTER } from './python-server-adapter.js';
@@ -65,10 +64,10 @@ import { DEFAULT_HOME } from '../constants.js';
 import type { RuntimeManifest } from './runtime-manifest.js';
 import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.generated.js';
 import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
-import { exists } from '../vfs/vfs.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 import type { NimbusFilesystemAuthority } from './os-contracts.js';
 import { openRuntimeStdio, runtimeOutput } from './runtime-stdio.js';
+import { errorText } from '../_shared/error-text.js';
 
 const PYTHON_VERSION_FLAGS = new Set(['--version', '-V']);
 const PYTHON_HELP_FLAGS = new Set(['--help', '-h']);
@@ -189,10 +188,6 @@ async function buildPythonModulePipInvocation(
 ): Promise<PipInvocation> {
   if (argv[0] !== '-m' || argv[1] !== 'pip') return { mode: 'none', code: '', exitCode: 0 };
   return await buildPipInvocation(argv.slice(2), 'pip', cwd, vfs, runtimeContext);
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 export interface CPythonFacetResult {
@@ -329,7 +324,7 @@ export function makeCPythonRunnerFactory(deps: {
           }
           userCode = new TextDecoder('utf-8').decode((await vfs.readFile(absPath)));
         } catch (e: unknown) {
-          ctx.stderr.write(`${binName}: ${parsed.scriptPath}: ${errorMessage(e)}\n`);
+          ctx.stderr.write(`${binName}: ${parsed.scriptPath}: ${errorText(e)}\n`);
           return 1;
         }
         progName = parsed.scriptPath;
@@ -384,11 +379,8 @@ export function makeCPythonRunnerFactory(deps: {
 
       // A script or `-m` can bind a port and keep serving, and such a program
       // is not finished when it stops producing output — it is finished when it
-      // stops running. Pyodide gave those a dedicated socket process; that
-      // spawn is not ported yet, so for now they get a one-shot facet with a
-      // budget long enough not to cut a server off mid-request. Porting the
-      // resident process is the last piece, and until it lands a server holds
-      // its facet rather than being driven by inbound requests.
+      // stops running. It runs as a resident process (startResident), which
+      // inbound requests drive; any other run gets a one-shot facet.
       const resident = shouldRunAsResidentProcess(argv, parsed, pipInvocation.mode === 'pip');
 
       if (resident) {
@@ -402,8 +394,14 @@ export function makeCPythonRunnerFactory(deps: {
         }
         const command = [binName, ...argv].map((part) =>
           (/^[A-Za-z0-9_./:=@+-]+$/.test(part) ? part : JSON.stringify(part))).join(' ');
-        const spawnResult = await deps.startResident(
-          { wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid, signal: ctx.signal, write: runtimeOutput(ctx) });
+        const output = runtimeOutput(ctx);
+        let spawnResult: CPythonFacetResult;
+        try {
+          spawnResult = await deps.startResident(
+            { wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid, signal: ctx.signal, write: output.write });
+        } finally {
+          await output.end();
+        }
         if (spawnResult.stdout) ctx.stdout.write(spawnResult.stdout);
         if (spawnResult.stderr) ctx.stderr.write(spawnResult.stderr);
         return spawnResult.exitCode;
@@ -446,11 +444,11 @@ export function makeCPythonRunnerFactory(deps: {
           ctx.stderr.write(unsettledNoteOf(e));
           return exitCode = exitCodeForAbortSignal(stdio.signal);
         }
-        ctx.stderr.write(`${binName}: ${errorMessage(e)}\n`);
+        ctx.stderr.write(`${binName}: ${errorText(e)}\n`);
         return 1;
       } finally {
         facet?.dispose();
-        stdio.finish(exitCode);
+        await stdio.finish(exitCode);
       }
     };
   };
