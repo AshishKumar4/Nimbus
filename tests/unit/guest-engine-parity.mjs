@@ -264,6 +264,7 @@ const SCENARIOS = {
     await e.fs.write(opened.id, 0, enc.encode('THROUGH'));
     await e.fs.rename(`${APP}/through.txt`, `${APP}/moved.txt`);
     await e.write(`${APP}/through.txt`, 'TAKEN');
+    await e.fs.fsync();
     const taken = await e.peerStat(`${APP}/through.txt`);
     await e.fs.fchmod(opened.id, 0o640);
     await e.fs.fchown(opened.id, 1000, 1000);

@@ -95,29 +95,31 @@ const text = (d) => new TextDecoder().decode(d);
   const user = { uid: 1000, gid: 1000, groups: [1000, 1001], umask: 0o022 };
   const other = { uid: 2000, gid: 2000, groups: [2000], umask: 0o022 };
   const kfs = raw.as(CRED_KERNEL);
-  for (const name of ['/own', '/gone']) {
+  kfs.mkdir('/home/u', { recursive: true });
+  kfs.chown('/home/u', 1000, 1000);
+  for (const name of ['/home/u/own', '/home/u/gone']) {
     kfs.writeFile(name, 'x');
     kfs.chown(name, 1000, 1000);
     kfs.chmod(name, 0o6666);
   }
   const fs = authority.bind({ pid: 1, cred: user });
   const theirs = authority.bind({ pid: 2, cred: other });
-  const mine = fs.open('/own', { write: true });
-  const gone = fs.open('/gone', { write: true });
-  fs.unlink('/gone');
+  const mine = fs.open('/home/u/own', { write: true });
+  const gone = fs.open('/home/u/gone', { write: true });
+  fs.unlink('/home/u/gone');
   for (const id of [mine.id, gone.id]) {
     fs.fchown(id, 1000, 1001);
     const owned = fs.fstat(id);
     assert.deepEqual([owned.uid, owned.gid, owned.mode & 0o7777], [1000, 1001, 0o666], 'the owner\'s fchown to its own group, set-id cleared');
     assert.throws(() => fs.fchown(id, 2000, -1), { code: 'EPERM' });
   }
-  assert.equal(kfs.stat('/own').gid, 1001);
-  const writer = theirs.open('/own', { write: true });
+  assert.equal(kfs.stat('/home/u/own').gid, 1001);
+  const writer = theirs.open('/home/u/own', { write: true });
   assert.throws(() => theirs.futimes(writer.id, 1000, 2000), { code: 'EPERM' }, 'explicit times by a writer who is not the owner');
   theirs.futimes(writer.id, null, null);
-  assert.ok(kfs.stat('/own').mtime > 2000, 'now, by a writer');
+  assert.ok(kfs.stat('/home/u/own').mtime > 2000, 'now, by a writer');
   fs.futimes(mine.id, 1000, 2000);
-  assert.equal(kfs.stat('/own').mtime, 2000);
+  assert.equal(kfs.stat('/home/u/own').mtime, 2000);
   for (const id of [mine.id, gone.id]) fs.close(id);
   theirs.close(writer.id);
   h.db.close();
