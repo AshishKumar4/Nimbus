@@ -5,11 +5,13 @@ import assert from 'node:assert/strict';
 
 import {
   assertStagedBundleFitsRpcPayload,
+  buildFacetVfsBundleSource,
   buildPrefetchBundle,
-  encodedBundleSize,
   greedyAddMainEntries,
 } from '../../packages/worker/src/facets/manager.ts';
+import { commonJsCellModuleName } from '../../packages/core/src/_shared/commonjs-cell.ts';
 import {
+  BUNDLE_MAX_ENCODED_BYTES,
   CWD_SNAPSHOT_MAX_FILE_BYTES,
   VFS_BUNDLE_MAX_BYTES,
   VFS_BUNDLE_MAX_FILES,
@@ -56,7 +58,7 @@ const snapshot = await buildPrefetchBundle(
 assert.equal(
   snapshot.bundle[largeRequiredPath],
   largeRequiredSource,
-  'the encoded-size pass preserves a large required module',
+  "the snapshot's guard preserves a large required module",
 );
 
 // ── admission: a subpath use does not admit the package's main graph ──────
@@ -122,11 +124,19 @@ assert.equal(
   files[shebangCommandPath],
   'the shipped snapshot preserves a deep transitive leaf',
 );
-assert.equal(
-  snapshot.bundleSideModulesRequired,
-  true,
-  'an oversized required closure is marked for bounded Worker Loader side modules',
-);
+// The map made from it carries the large module whole, as its own module,
+// and no side module past the per-module ceiling.
+{
+  const source = await buildFacetVfsBundleSource({ ...snapshot.bundle });
+  assert.equal(
+    source.codeModules[commonJsCellModuleName(largeRequiredPath)].split(largeRequiredSource).length,
+    2,
+    'the map carries the large required module whole, once',
+  );
+  for (const [name, text] of Object.entries(source.modules)) {
+    assert.ok(new TextEncoder().encode(text).length <= BUNDLE_MAX_ENCODED_BYTES, `${name} stays within the per-module ceiling`);
+  }
+}
 
 {
   const cwd = 'home/user';
@@ -191,78 +201,6 @@ assert.equal(
 
   const fits = { 'home/user/index.js': 'module.exports = true;' };
   assert.doesNotThrow(() => assertStagedBundleFitsRpcPayload(JSON.stringify(fits), fits));
-}
-
-// The encoded-size guard is accounted incrementally so no second copy of the
-// payload exists; the number it reports has to stay exactly the number the
-// materializing form reported.
-{
-  const exact = (bundle) => new TextEncoder().encode(JSON.stringify({ bundle })).length;
-  const cases = [
-    [{}],
-    [{ 'a.js': 'x' }],
-    [{ 'a.js': 'x', 'b/c.js': 'yy' }],
-    [{ 'ü/né.js': 'héllo "quoted"\n\tand\\slashes', x: ' \u{1F600}' }],
-    [{ 'bin.dat': new Uint8Array([0, 1, 255]), 't.js': 'ok' }],
-    [{ 'd.txt': { error: 'EACCES' } }],
-    // Every escape class JSON.stringify distinguishes: two-character escapes,
-    // \u00XX controls, multi-byte code points, a surrogate pair, and a lone
-    // surrogate — the string length is computed, not measured, so each one
-    // has to be counted right.
-    [{ 'esc.js': '\b\t\n\f\r\v\0\x1f "q" \\ é € \u{1F600} \ud800 \udfff' }],
-  ];
-  for (const [bundle] of cases) {
-    assert.equal(
-      encodedBundleSize(bundle).bytes,
-      exact(bundle),
-      `incremental encoded size is exact for ${JSON.stringify(Object.keys(bundle))}`,
-    );
-  }
-
-  // Binary sizing must remain incremental too. JSON.stringify(Uint8Array)
-  // materializes a numeric-key object whose text is more than 12x the raw
-  // bytes for representative data, defeating the no-copy sizing invariant.
-  const binary = new Uint8Array(1024 * 1024);
-  binary.fill(255);
-  const indexDigits = Array.from(
-    { length: String(binary.length - 1).length },
-    (_, index) => {
-      const digits = index + 1;
-      const start = digits === 1 ? 0 : 10 ** (digits - 1);
-      const end = Math.min(binary.length, 10 ** digits);
-      return Math.max(0, end - start) * digits;
-    },
-  ).reduce((sum, digits) => sum + digits, 0);
-  const encodedBinaryBytes = 1 + indexDigits + (7 * binary.length);
-  const originalStringify = JSON.stringify;
-  JSON.stringify = (value, ...args) => {
-    if (value instanceof Uint8Array) {
-      throw new Error('binary sizing materialized Uint8Array JSON');
-    }
-    return originalStringify(value, ...args);
-  };
-  try {
-    assert.equal(
-      encodedBundleSize({ 'data.bin': binary }).bytes,
-      // `{"bundle":{` + `"data.bin":` + `}}`, around the cell's own bytes.
-      24 + encodedBinaryBytes,
-      'a large binary cell is sized exactly without materializing its numeric-key JSON',
-    );
-  } finally {
-    JSON.stringify = originalStringify;
-  }
-
-  const bundle = { a: 'aaa', b: 'bbbb', c: 'cc' };
-  const size = encodedBundleSize(bundle);
-  for (const key of ['b', 'a', 'c']) {
-    delete bundle[key];
-    size.remove(key);
-    assert.equal(
-      size.bytes,
-      exact(bundle),
-      `incremental encoded size stays exact after evicting ${key}`,
-    );
-  }
 }
 
 // The working-tree sweep guesses at what a program might read. One guessed

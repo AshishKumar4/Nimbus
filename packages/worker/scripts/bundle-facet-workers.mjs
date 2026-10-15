@@ -867,6 +867,17 @@ async function main() {
     throw new Error('[bundle-facet-workers/relative-wasm-paths] the bundle no longer declares function relativeWasmPaths');
   }
 
+  // 7. The wasm image content key, which the node shims' WebAssembly seam
+  //    looks a launch's images up by: the launch's own code, so the two
+  //    agree by construction.
+  const wasmImageKey = await bundleAsPreamble(
+    join(root, 'src', 'facets', 'wasm-image-key.ts'),
+    'wasm-image-key',
+  );
+  if (!/^function wasmImageDigest\(/m.test(wasmImageKey)) {
+    throw new Error('[bundle-facet-workers/wasm-image-key] the bundle no longer declares function wasmImageDigest');
+  }
+
   const waveWriter = await bundleWaveWriter();
   const rpcDisposal = await bundleAsPreamble(join(platformRoot, 'src', 'rpc-dispose.ts'), 'rpc-dispose');
 
@@ -886,6 +897,7 @@ async function main() {
     ' *   - @nimbus-sh/core src/_shared/esm-resolver.ts (Node\'s ESM resolver, for the node shims)',
     ' *   - @nimbus-sh/core src/_shared/http2-module.ts (node:http2, for the node shims)',
     ' *   - @nimbus-sh/core src/_shared/node-shim-resolution.ts (resolution, credential and upgrade rules, for the node shims)',
+    ' *   - src/facets/wasm-image-key.ts (the wasm image content key, for the node shims)',
     ' *',
     ' * Consumed by fabric/isolate-pool.ts callers via the `preamble`',
     ' * option. The preamble is injected at the top of every generated',
@@ -938,6 +950,9 @@ async function main() {
     '',
     '/** Declares `function relativeWasmPaths(source, filename)`; the node shims call it. */',
     `export const RELATIVE_WASM_PATHS_PREAMBLE: string = ${JSON.stringify(relativeWasm)};`,
+    '',
+    '/** Declares `function wasmImageDigest(bytes)`, the key a launch registers a wasm image under; the node shims call it. */',
+    `export const WASM_IMAGE_KEY_PREAMBLE: string = ${JSON.stringify(wasmImageKey)};`,
     '',
   ].join('\n');
 

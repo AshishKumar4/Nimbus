@@ -12,7 +12,7 @@ export interface DataPlanSource {
         entries: DataPlanEntry[];
         next: string | null;
     }>;
-    /** A file's text, or null when it cannot be read. */
+    /** A file's text, a byte order mark kept (require-resolution.ts fileText), or null when it cannot be read. */
     readText(path: string): Promise<string | null>;
     /**
      * Where the symlink at a path leads, as the namespace follows it (its
@@ -36,6 +36,8 @@ export interface DataPlanInput {
     refs: readonly StaticFsRefs[];
     /** Paths learned from earlier misses (absolute or keys). */
     learned?: Iterable<string>;
+    /** The program's own conditions (`node --conditions`), which its resolutions use beside Node's. */
+    conditions?: readonly string[];
     /** Called with the bytes of each listed page, to pace a long walk. */
     spend?: (units: number) => Promise<void>;
 }

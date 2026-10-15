@@ -114,7 +114,8 @@ for (const path of expectLeft) assert.ok(!held.has(path), `left out: ${path}`);
 assert.equal(plan.rules.static.files, 1, 'the subpath literal resolved through exports');
 assert.equal(plan.rules.home.files, 2);
 assert.equal(plan.paths.length, new Set(plan.paths).size, 'no path twice');
-assert.equal(source.linkLookups, 0, 'a plan with no synchronous reads resolves no links');
+assert.equal(source.linkLookups, 'home/user/app/node_modules/used/dist/runtime/client/entry.js'.split('/').length,
+  'a plan resolves links only along what its code resolves, as Node resolves it: each component of that path, once');
 
 // Without typescript in the closure, its role adds nothing.
 const noTs = await planFacetData(source, { cwd: '/home/user/app', home: '/home/user', closure: closure.slice(0, 1), refs: [] });

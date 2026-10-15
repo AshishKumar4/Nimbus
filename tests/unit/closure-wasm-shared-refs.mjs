@@ -7,7 +7,7 @@
 
 import assert from 'node:assert/strict';
 import { collectClosureWasmImages, FacetManager } from '../../packages/worker/src/facets/manager.ts';
-import { wasmImageDigest } from '../../packages/worker/src/facets/wasm-image-digest.ts';
+import { wasmImageDigest } from '../../packages/worker/src/facets/wasm-image-key.ts';
 import { launchFs } from './lib/launch-fs.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 

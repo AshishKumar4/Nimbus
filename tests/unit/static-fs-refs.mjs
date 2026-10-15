@@ -23,6 +23,23 @@ for (const [label, source] of [
   assert.ok(paths(refs(source, FILE).exact).includes('/p/node_modules/pkg/data/x.json'), label);
 }
 
+// A name given a path function directly is that function.
+for (const [label, source] of [
+  ['require member', `const fs = require('fs'); const resolve = require('path').resolve; fs.readFileSync(resolve(__dirname, '../data/x.json'));`],
+  ['binding member', `const fs = require('fs'); const path = require('path'); const join = path.join; fs.readFileSync(join(__dirname, '..', 'data', 'x.json'));`],
+  ['posix member', `const fs = require('fs'); const resolve = require('path').posix.resolve; fs.readFileSync(resolve(__dirname, '../data/x.json'));`],
+]) {
+  assert.deepEqual(syncPaths(refs(source, FILE).exact), ['/p/node_modules/pkg/data/x.json'], label);
+}
+
+// Absolute paths spelled as literals, wherever they are: what a URL string
+// or a comment holds is not one.
+assert.deepEqual(
+  refs(`const home = "http://example.com"; const p = '/home/user/data/x.txt'; // '/etc/commented'
+    module.exports = { t: \`/opt/t.txt\`, spaced: '/srv/a b', rel: 'srv/x', dyn: \`/opt/\${x}\` };`, FILE).literals,
+  ['/home/user/data/x.txt', '/opt/t.txt'],
+);
+
 // A sync read is one however its callee is spelled: a bracketed name, an
 // optional call, a parenthesized one.
 for (const [label, source] of [
@@ -63,14 +80,16 @@ assert.deepEqual(
   ['/p/node_modules/pkg/lib/cows'],
 );
 
-// Resolution requests: require.resolve, createRequire(...).resolve, and a
-// package subpath spelled as data (a bundler's include list).
-assert.deepEqual(
-  refs(`const r = createRequire(import.meta.url); r.resolve('other/data.json'); x = ['astro/runtime/client/entry.js'];`, ESM).resolves
-    .map((r) => r.spec),
-  ['other/data.json', 'astro/runtime/client/entry.js'],
-);
+// Resolution requests: require.resolve and createRequire(...).resolve, which
+// Node's require answers, apart from a package subpath spelled as data (a
+// bundler's include list), which any resolver might.
+{
+  const r = refs(`const r = createRequire(import.meta.url); r.resolve('other/data.json'); x = ['astro/runtime/client/entry.js'];`, ESM);
+  assert.deepEqual(r.resolves.map((x) => x.spec), ['other/data.json']);
+  assert.deepEqual(r.subpaths.map((x) => x.spec), ['other/data.json', 'astro/runtime/client/entry.js']);
+}
 assert.deepEqual(refs(`require.resolve('other/lib/x')`, FILE).resolves, [{ from: '/p/node_modules/pkg/lib', spec: 'other/lib/x' }]);
+assert.deepEqual(refs(`require.resolve('./own.json')`, FILE).resolves, [{ from: '/p/node_modules/pkg/lib', spec: './own.json' }]);
 
 // A relative path at a read site is relative to the working directory.
 assert.deepEqual(refs(`fs.readFileSync('config/app.json', 'utf8')`, FILE).cwdRelative, [{ path: 'config/app.json', sync: true }]);
@@ -129,13 +148,36 @@ assert.deepEqual(refs('this is not javascript {{{', FILE).exact, []);
     fs.openSync('/opt/data/ro.bin', 'r');
     fs.openSync('/opt/data/log.txt', 'a');
     fs.openSync('/opt/data/out.txt', 'w');
+    var fs_1 = require("fs"); exports.D = (0, fs_1.readFileSync)((0, path_1.resolve)(__dirname, ".digest"), "utf8");
+    const home = "http://example.com"; module.exports = { p: '/home/user/y.txt', t: \`/opt/t.txt\`, dyn: \`/opt/\${x}\` };
     x = ['astro/runtime/client/entry.js'];` + pad, FILE);
   assert.ok(paths(big.exact).includes('/p/node_modules/pkg/data/x.json'), JSON.stringify(big.exact));
   assert.ok(paths(big.exact).includes('/p/node_modules/pkg/runtime/entry.js'), JSON.stringify(big.exact));
   assert.deepEqual(big.listed, ['/etc/app/templates']);
-  assert.deepEqual(big.resolves.map((r) => r.spec), ['astro/runtime/client/entry.js']);
-  assert.deepEqual(syncPaths(big.exact).sort(), ['/opt/data/big.dat', '/opt/data/ro.bin', '/opt/data/text.dat']);
+  assert.deepEqual(big.subpaths.map((r) => r.spec), ['astro/runtime/client/entry.js']);
+  // A join of __dirname is a synchronous read as readFileSync's first argument, plainly or as SWC calls it.
+  assert.deepEqual(syncPaths(big.exact).sort(),
+    ['/opt/data/big.dat', '/opt/data/ro.bin', '/opt/data/text.dat', '/p/node_modules/pkg/data/x.json', '/p/node_modules/pkg/lib/.digest']);
+  assert.deepEqual(big.literals.sort(), ['/etc/app/templates', '/home/user/y.txt', '/opt/data/big.dat', '/opt/data/log.txt',
+    '/opt/data/out.txt', '/opt/data/ro.bin', '/opt/data/text.dat', '/opt/t.txt']);
   assert.ok(paths(big.exact).includes('/opt/data/log.txt') && paths(big.exact).includes('/opt/data/out.txt'));
+
+  // A backtick template with no substitution is the string it spells, as in
+  // the parsed path; one with a substitution names nothing.
+  const templated = refs(`const path = require('path');
+    fs.readFileSync(path.resolve(__dirname, \`tpl.css\`), 'utf8');
+    (0, fs_1.readFileSync)((0, path_1.join)(__dirname, \`.tpl-digest\`), \`utf8\`);
+    const u = new URL(\`../runtime/tpl.js\`, import.meta.url);
+    fs.readFileSync(\`/opt/data/tpl.dat\`);
+    fs.readFileSync(path.join(__dirname, \`dyn-\${x}.css\`));
+    x = [\`astro/runtime/client/tpl.js\`];` + pad, FILE);
+  assert.deepEqual(syncPaths(templated.exact).sort(),
+    ['/opt/data/tpl.dat', '/p/node_modules/pkg/lib/.tpl-digest', '/p/node_modules/pkg/lib/tpl.css']);
+  assert.ok(paths(templated.exact).includes('/p/node_modules/pkg/runtime/tpl.js'), JSON.stringify(templated.exact));
+  assert.ok(!paths(templated.exact).some((p) => p.includes('dyn-')), 'a template with a substitution names nothing');
+  assert.deepEqual(templated.subpaths.map((r) => r.spec), ['astro/runtime/client/tpl.js']);
+  assert.deepEqual(refs(`x = [\`astro/runtime/client/tpl.js\`];`, FILE).subpaths.map((r) => r.spec), ['astro/runtime/client/tpl.js'],
+    'and in the parsed path');
 }
 
 console.log('static-fs-refs: ok');
