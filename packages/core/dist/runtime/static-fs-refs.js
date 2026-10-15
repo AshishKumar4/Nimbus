@@ -466,20 +466,23 @@ export function scanStaticFsTokens(source, filename) {
             let value = token.value;
             // A template with no substitution closes right after its one text: it
             // is the string it spells, one token, as a quoted one is.
-            const quasi = at(0);
-            if (type === '`' && quasi?.type === 'template' && typeof quasi.value === 'string' && isPunct(at(1), '`')) {
-                recent.length -= 2;
-                type = 'string';
-                value = quasi.value;
+            if (type === '`') {
+                const quasi = recent[recent.length - 1];
+                if (quasi?.type === 'template' && typeof quasi.value === 'string' && recent[recent.length - 2]?.type === '`') {
+                    recent.length -= 2;
+                    type = 'string';
+                    value = quasi.value;
+                }
             }
             recent.push({ type, value });
             if (recent.length > 64)
                 recent.splice(0, recent.length - 32);
-            if (type === 'string' && typeof value === 'string' && BARE_SUBPATH.test(value)) {
-                refs.subpaths.push({ from: dir, spec: value });
+            if (type === 'string' && typeof value === 'string') {
+                if (BARE_SUBPATH.test(value))
+                    refs.subpaths.push({ from: dir, spec: value });
+                if (absoluteLiteral(value))
+                    refs.literals.push(normalize(value));
             }
-            if (type === 'string' && typeof value === 'string' && absoluteLiteral(value))
-                refs.literals.push(normalize(value));
             if (type !== ')')
                 continue;
             // new URL('lit', import.meta.url)

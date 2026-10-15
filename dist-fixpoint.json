@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "c795ceb0fca99eea0858500c97b552a1c0e3d2f105ccb59993ded41ce7917714",
+  "fingerprint": "dedabde16c6532c1e141c63b6e5b515167469b6b136e65db879fb2c14d883b5d",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -668,8 +668,8 @@
     "packages/core/dist/runtime/sqlite-runtime-fs-bridge.d.ts.map": "d94b37ea313343046d7470c10b06c9ca5f0b52b9adbb392d839a6eba9beddabd",
     "packages/core/dist/runtime/sqlite-runtime-fs-bridge.js": "b50457496aeb92a4d6b3f38d316d7570db916be64e0d14ed4087821e4d217ca9",
     "packages/core/dist/runtime/static-fs-refs.d.ts": "bd9511f19cb262e855f5822d16fc9ae444f999efe03ab6d81cc0a336008431aa",
-    "packages/core/dist/runtime/static-fs-refs.d.ts.map": "beef8231c56e32cc485a8572d1aa1b1d737f0689c259b1af6e6575a2fa29a99e",
-    "packages/core/dist/runtime/static-fs-refs.js": "fe1bfd6b1bd4e42a6d512c1aca695e4c99e8f73f400123207082d9d0d9a1123f",
+    "packages/core/dist/runtime/static-fs-refs.d.ts.map": "6d3a9d166a3e9df3389f24356366d763bb5c5b31286d1f36151e8097d60c66bd",
+    "packages/core/dist/runtime/static-fs-refs.js": "d5fee5f0d6e6e4f7b6538f749fdc2f3ed70a75e837735c9b95b53b6d6d13a112",
     "packages/core/dist/runtime/stdin-read.d.ts": "aad84104dcddba6a59c8f63f0198915c834c3862b1baa052c1f99cc1c973b5db",
     "packages/core/dist/runtime/stdin-read.d.ts.map": "e107f5e0dfe0f78fb3126ab64ac0b01c144d4d6806fb96a1b26e30049d9b20e9",
     "packages/core/dist/runtime/stdin-read.js": "1a45479570d59475e6eadb0e1c0ea40a7f393d19be269e0eb0438a0b662ffda7",
@@ -1549,7 +1549,7 @@
     "packages/core/src/runtime/session-process-supervisor.ts": "1cd5e7218cb56cb311ab8149733017d043b95ebdb4801a7c64bacbc764cefda5",
     "packages/core/src/runtime/session-protocol.ts": "319de11958eabde4afc23b9a8491b5072bdeb40a5ce1f0d8c425a619f24a1763",
     "packages/core/src/runtime/sqlite-runtime-fs-bridge.ts": "5fae2a27e5f50589657db5198b7069699eff4cdefc6f59c892f11b9e354a76f1",
-    "packages/core/src/runtime/static-fs-refs.ts": "06c75e666587518de0b3539f01ca66e21d12d25bf4a66a60eb90852563dd3c73",
+    "packages/core/src/runtime/static-fs-refs.ts": "ab4764874544c2a7b357839f080f54619a61f099172f9a515da05e491275f69a",
     "packages/core/src/runtime/stdin-read.ts": "f8c3dec82f62e77375f77bd4950e3891133a1b15b3d38ed0eea6a298117a939b",
     "packages/core/src/runtime/storage-ledger.ts": "7c51bc60a324d0a6a44735dc76458b23c0727a65e07eeef762fca9640fe655a5",
     "packages/core/src/runtime/supervisor-answering.generated.ts": "04518205385e26c634480772ea7f14d78ec3070a39a97272810f6c2714fc9141",
