@@ -3852,9 +3852,9 @@ const __fsMod = (() => {
    * option), before the umask: 0666 unless it says. The authority applies them
    * only to a file the call makes; one already there keeps its own.
    */
+  // A creation's mode, as Node's open takes it: none (undefined or null) is 0o666.
   function _createMode(opts) {
-    const mode = opts !== null && typeof opts === "object" ? opts.mode : undefined;
-    return mode === undefined ? 0o666 : _coerceMode(mode);
+    return _coerceMode(opts !== null && typeof opts === "object" ? opts.mode : undefined, 0o666);
   }
 
   function _forgetSyncTree(k) {
@@ -4306,9 +4306,9 @@ const __fsMod = (() => {
     return at;
   }
 
-  // A mode argument as Node reads it (parseFileMode, node-arguments.ts): its permission bits.
-  function _coerceMode(value) {
-    return parseFileMode(value, "mode") & 0o7777;
+  // A mode argument as Node reads it (parseFileMode, node-arguments.ts), def when none is given (chmod has none): its permission bits.
+  function _coerceMode(value, def) {
+    return parseFileMode(value, "mode", def) & 0o7777;
   }
 
   function _coerceTimeMs(value, syscall, p) {
@@ -7859,7 +7859,7 @@ const __fsMod = (() => {
 
   async function _openAsync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
-    const createMode = mode === undefined || mode === null ? 0o666 : _coerceMode(mode);
+    const createMode = _coerceMode(mode, 0o666);
     const absPath = _resolveFollow(path, "open");
     const supervisor = _supervisor();
     let liveMeta = null;
@@ -7894,7 +7894,7 @@ const __fsMod = (() => {
 
   function openSync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
-    const createMode = mode === undefined || mode === null ? 0o666 : _coerceMode(mode);
+    const createMode = _coerceMode(mode, 0o666);
     const absPath = _resolveFollow(path, "open");
     _ensureAncestorsTraversable(absPath, "open", path);
     const st = statSync(path, { throwIfNoEntry: false });

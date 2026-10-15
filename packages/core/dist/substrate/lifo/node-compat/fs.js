@@ -52,7 +52,8 @@ function resolvePath(cwd, p) {
 /** An open's flags, as Node takes them (a string or bits), for the process's open: the decisions are its. */
 function openFlagsOf(flags, mode) {
     const bits = stringToFlags(flags);
-    const parsedMode = mode === undefined ? undefined : parseFileMode(mode, 'mode');
+    // Node's open: none (undefined or null) is 0o666.
+    const parsedMode = parseFileMode(mode, 'mode', 0o666);
     const access = bits & O_ACCMODE;
     return {
         read: access !== O_WRONLY,
@@ -64,7 +65,7 @@ function openFlagsOf(flags, mode) {
         directory: (bits & O_DIRECTORY) !== 0,
         followSymlinks: (bits & O_NOFOLLOW) === 0,
         ...((bits & O_SYNC) === O_SYNC ? { sync: true } : {}),
-        ...(parsedMode === undefined ? {} : { mode: parsedMode }),
+        mode: parsedMode,
     };
 }
 /** A position as Node takes it: null or -1 is the descriptor's own offset. */
@@ -160,8 +161,10 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
     }
     function mkdirSync(path, options) {
         const abs = resolvePath(cwd, path);
-        const opts = typeof options === 'object' ? options : { mode: options };
-        vfs.mkdir(abs, { recursive: opts?.recursive, mode: parseFileMode(opts?.mode, 'mode', 0o777) });
+        // Node's: a mode in options is checked as given (null is refused), none is 0o777.
+        const opts = typeof options === 'object' && options !== null ? options : null;
+        const mode = opts === null ? parseFileMode(options, 'mode', 0o777) : opts.mode === undefined ? 0o777 : parseFileMode(opts.mode, 'options.mode');
+        vfs.mkdir(abs, { recursive: opts?.recursive, mode });
     }
     function readdirSync(path, options) {
         const abs = resolvePath(cwd, path);
@@ -196,23 +199,30 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
      */
     function rmSync(path, options) {
         const abs = resolvePath(cwd, path);
+        // With force, a name gone by the look or by the removal is no error, as in Node's rimraf.
+        const gone = (e) => options?.force === true && isVfsError(e) && e.code === 'ENOENT';
         let stat;
         try {
             stat = lstatSync(abs);
         }
         catch (e) {
-            if (options?.force && isVfsError(e) && e.code === 'ENOENT')
+            if (gone(e))
                 return;
             throw e;
         }
-        if (!stat.isDirectory()) {
-            vfs.unlink(abs);
-            return;
-        }
-        if (!options?.recursive) {
+        if (stat.isDirectory() && !options?.recursive) {
             throw nodeSystemError('ERR_FS_EISDIR', 'Path is a directory', { code: 'EISDIR', message: 'is a directory', path: String(path), syscall: 'rm', errno: 21 });
         }
-        vfs.rmdirRecursive(abs);
+        try {
+            if (stat.isDirectory())
+                vfs.rmdirRecursive(abs);
+            else
+                vfs.unlink(abs);
+        }
+        catch (e) {
+            if (!gone(e))
+                throw e;
+        }
     }
     function rmdirSync(path, options) {
         const abs = resolvePath(cwd, path);

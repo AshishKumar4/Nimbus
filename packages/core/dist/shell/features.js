@@ -123,8 +123,8 @@ export class HeredocHandler {
         };
         this.shell.executeLine = async (line, submission) => {
             if (this.active) {
-                // A `<<-` body's tabs are the lexer's to strip: the line as it was typed.
-                const rawLine = (this.heredocInfo?.delimiters.some((delimiter) => delimiter.stripTabs) && this.shell.lineBuffer)
+                // A `<<-` body's tabs are the lexer's to strip: its lines as they were typed.
+                const rawLine = (this.heredocInfo?.delimiters[this.current]?.stripTabs && this.shell.lineBuffer)
                     ? this.shell.lineBuffer
                     : line;
                 await this._accumulateLine(rawLine);

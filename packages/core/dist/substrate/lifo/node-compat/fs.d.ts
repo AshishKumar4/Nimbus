@@ -89,8 +89,8 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
     lstatSync: (path: string | URL) => NodeStat;
     mkdirSync: (path: string | URL, options?: {
         recursive?: boolean;
-        mode?: number | string;
-    } | number | string) => void;
+        mode?: number | string | null;
+    } | number | string | null) => void;
     readdirSync: (path: string | URL, options?: {
         encoding?: string;
         withFileTypes?: boolean;
