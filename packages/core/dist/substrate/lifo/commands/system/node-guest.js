@@ -24,6 +24,7 @@ import { runNodeProgram } from './node-program.js';
 import { routeFetchThroughHost } from '../../../../runtime/realm-egress-guest.js';
 import { isEgressHostEvent } from '../../../../runtime/realm-egress.js';
 import { isDirEntries, isHostEvent, isNodeRealmPayload, isStat, } from './node-realm-protocol.js';
+import { fromRealmError } from '../../../../runtime/realm.js';
 // Node's errors show a value as util.inspect does ('a string' quoted), the program's realm's.
 useNodeErrorInspect((value, options) => realm.getBuiltinModule('node:util').inspect(value, options));
 const joined = await joinRealm();
@@ -59,7 +60,7 @@ const fetched = new Map();
 let offTheBox = null;
 /** `events` holds the realm open while anything of the program's waits on it. */
 function holdWhileBusy() {
-    joined.hold(fetched.size > 0 || ports.size > 0 || persistentWatches > 0 || (offTheBox?.awaited ?? 0) > 0 || settling || stdinWaiting);
+    joined.hold(fetched.size > 0 || ports.size > 0 || persistentWatches > 0 || (offTheBox?.awaited ?? 0) > 0 || settling || stdinHolds > 0);
 }
 /** End the process now with `code`, as process.exit() and a fatal error do: a write that fails later is no one's. */
 function exitNow(code) {
@@ -186,27 +187,33 @@ function postOutput(fd, source, data) {
     postedOutput++;
 }
 const outputs = { 1: realmOutput(1), 2: realmOutput(2) };
-/** fd 0, a piece at a time, each asked of the host; a read the program waits on (not one it paused) holds the realm. */
-const stdinPieces = new Map();
+/** fd 0, a piece at a time, each read asked of the host and answered once; the readers waiting on it hold the realm. */
+const stdinAnswers = new Map();
 let stdinReads = 0;
-let stdinWaiting = false;
+let stdinHolds = 0;
 const input = {
-    read: () => new Promise((resolve) => {
+    read: () => {
         const id = ++stdinReads;
-        stdinPieces.set(id, resolve);
+        const piece = new Promise((resolve, reject) => { stdinAnswers.set(id, { resolve, reject }); });
         post({ type: 'stdin-read', id });
-    }),
-    waiting: (on) => {
-        stdinWaiting = on;
+        return { piece, cancel: () => { if (stdinAnswers.has(id))
+                post({ type: 'stdin-cancel', id }); } };
+    },
+    hold: (on) => {
+        stdinHolds += on ? 1 : -1;
         holdWhileBusy();
     },
 };
 /** What a standard descriptor is, asked of the host once. */
 const fdKinds = new Map();
 const fdKind = (fd) => {
-    if (!fdKinds.has(fd))
-        fdKinds.set(fd, call({ op: 'fdKind', fd }));
-    return fdKinds.get(fd);
+    let kind = fdKinds.get(fd);
+    if (kind === undefined) {
+        const answer = call({ op: 'fdKind', fd });
+        kind = answer === 'terminal' || answer === 'pipe' || answer === 'other' ? answer : malformed('fdKind');
+        fdKinds.set(fd, kind);
+    }
+    return kind;
 };
 const terminal = {
     isatty: (fd) => fdKind(fd) === 'terminal',
@@ -282,10 +289,15 @@ events.on('message', (event) => {
         case 'changed':
             watches.get(event.id)?.listener(event.event);
             return;
-        case 'stdin':
-            stdinPieces.get(event.id)?.(event.data);
-            stdinPieces.delete(event.id);
+        case 'stdin': {
+            const answer = stdinAnswers.get(event.id);
+            stdinAnswers.delete(event.id);
+            if ('error' in event)
+                answer?.reject(fromRealmError(event.error));
+            else
+                answer?.resolve('withdrawn' in event ? 'withdrawn' : event.data);
             return;
+        }
         case 'output-failed':
             // A stream's failure is heard here, whatever the program makes of it: the host reports it no more.
             if (event.source === 'stream')
@@ -352,7 +364,7 @@ realm.on('exit', () => {
         return;
     }
     postOutput(2, 'console', `Warning: Detected unsettled top-level await at ${program.filename}\n`);
-    post({ type: 'exit', code: 13, ended: false });
+    post({ type: 'exit', code: tellExit(13, true), ended: false });
 });
 if (egress) {
     offTheBox = routeFetchThroughHost(post, holdWhileBusy);

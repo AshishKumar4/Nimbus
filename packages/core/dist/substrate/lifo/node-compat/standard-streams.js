@@ -78,55 +78,58 @@ export function standardStream(output, fd) {
     return asStandardStream(new Writable(outputSink(output)), fd, output);
 }
 /**
- * `stream` reading fd 0 from `input` (none: fd 0 is at its end): a piece is
- * asked for when the stream wants one, as Node starts reading a descriptor.
- * Its wait holds the program until the stream is paused and, a tick later,
- * still not flowing, as Node stops reading a paused stdin then (so that the
- * process can end).
+ * `stream` reading fd 0 from `input` (none: fd 0 is at its end), as Node's
+ * stdin reads its descriptor: a piece is asked for when the stream wants
+ * one, and its wait holds the program. Paused and, a tick later, still not
+ * flowing, or destroyed, it stops reading (the read is withdrawn and holds
+ * no more), as Node's stdin does so that its process can end; reading again
+ * starts a new read.
  */
 export function joinStandardInput(stream, input) {
-    let reading = false;
-    let stopped = false;
-    const want = () => input?.waiting(reading && !stopped);
+    let pending = null;
+    const settle = (read) => {
+        if (pending !== read)
+            return;
+        pending = null;
+        input?.hold(false);
+    };
+    const stop = () => {
+        const read = pending;
+        if (read === null)
+            return;
+        settle(read);
+        read.cancel();
+        // As Node's onpause: the next _read starts a new read.
+        stream._readableState.reading = false;
+    };
     stream.on('pause', () => {
         realm.nextTick(() => {
-            if (stream.readableFlowing === true)
-                return;
-            stopped = true;
-            want();
+            if (stream.readableFlowing !== true)
+                stop();
         });
     });
-    stream.on('resume', () => {
-        stopped = false;
-        want();
-    });
+    stream.on('close', stop);
     stream._read = () => {
-        if (reading)
+        if (pending !== null)
             return;
         if (input === undefined) {
             stream.push(null);
             return;
         }
-        reading = true;
-        want();
-        const next = () => {
-            input.read().then((piece) => {
-                // An empty piece is no data and not the end: ask again.
-                if (piece !== null && piece.length === 0) {
-                    next();
-                    return;
-                }
-                reading = false;
-                want();
-                // As a Buffer over the same bytes, as Node's reads give.
-                stream.push(piece === null ? null : Buffer.from(piece.buffer, piece.byteOffset, piece.byteLength));
-            }, (error) => {
-                reading = false;
-                want();
-                stream.destroy(error);
-            });
-        };
-        next();
+        const read = input.read();
+        pending = read;
+        input.hold(true);
+        read.piece.then((piece) => {
+            settle(read);
+            // A piece that arrived after its read stopped was taken from fd 0: it is the stream's, as Node's buffered data is.
+            if (piece === 'withdrawn' || stream.destroyed)
+                return;
+            // As a Buffer over the same bytes, as Node's reads give.
+            stream.push(piece === null ? null : Buffer.from(piece.buffer, piece.byteOffset, piece.byteLength));
+        }, (error) => {
+            settle(read);
+            stream.destroy(error);
+        });
     };
     return stream;
 }

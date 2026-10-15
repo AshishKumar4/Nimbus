@@ -8,7 +8,9 @@ import { ByteQueue } from './byte-queue.js';
 export declare class TerminalStdin extends ByteQueue implements TerminalInputStream {
     private readonly beforeRead;
     constructor(beforeRead?: () => void);
-    protected pull(): Promise<Uint8Array | null>;
+    protected pull(signal?: AbortSignal): Promise<Uint8Array | null>;
+    /** Whether a read would be answered at once: something is queued, or the input ended. */
+    get ready(): boolean;
     private _rawMode;
     /** termios ISIG (TerminalInputStream.signalKeys). */
     signalKeys: boolean;

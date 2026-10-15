@@ -161,6 +161,10 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
             readonly readable: boolean;
             readonly readableEnded: boolean;
             readonly readableFlowing: boolean | null;
+            readonly destroyed: boolean;
+            readonly _readableState: {
+                reading: boolean;
+            };
             _read(size: number): void;
             push(chunk: Uint8Array | string | null, encoding?: string): boolean;
             pause(): /*elided*/ any;
@@ -208,6 +212,10 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
         readonly readable: boolean;
         readonly readableEnded: boolean;
         readonly readableFlowing: boolean | null;
+        readonly destroyed: boolean;
+        readonly _readableState: {
+            reading: boolean;
+        };
         _read(size: number): void;
         push(chunk: Uint8Array | string | null, encoding?: string): boolean;
         pause(): /*elided*/ any;

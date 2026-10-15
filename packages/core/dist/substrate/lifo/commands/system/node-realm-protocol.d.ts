@@ -9,6 +9,7 @@ import type { OutputSource } from '../../node-compat/standard-streams.js';
 import type { VfsEvent } from '../../../../vfs/events.js';
 import { type EgressGuestEvent, type EgressHostEvent } from '../../../../runtime/realm-egress.js';
 import type { NodeProgram } from './node-program.js';
+import type { RealmError } from '../../../../runtime/realm.js';
 import type { VirtualRequest } from '../../kernel/index.js';
 /** The filesystem methods a call names: NodeFilesystem's, but its watch (a call of its own). */
 export type FsMethod = Exclude<keyof NodeFilesystem, 'watch'>;
@@ -103,6 +104,11 @@ export type GuestEvent =
  | {
     readonly type: 'stdin-read';
     readonly id: number;
+}
+/** Read `id` is withdrawn: what has not arrived stays on fd 0. */
+ | {
+    readonly type: 'stdin-cancel';
+    readonly id: number;
 } | EgressGuestEvent;
 /** What this side posts on `events`. */
 export type HostEvent = {
@@ -130,11 +136,19 @@ export type HostEvent = {
     readonly type: 'output-settled';
     readonly seq: number;
 }
-/** Read `id`'s piece of fd 0; null at its end. */
+/** Read `id`'s answer, once: its piece of fd 0 (null at its end), its error, or that it was withdrawn before anything arrived. */
  | {
     readonly type: 'stdin';
     readonly id: number;
     readonly data: Uint8Array | null;
+} | {
+    readonly type: 'stdin';
+    readonly id: number;
+    readonly error: RealmError;
+} | {
+    readonly type: 'stdin';
+    readonly id: number;
+    readonly withdrawn: true;
 } | EgressHostEvent;
 /**
  * What the realm starts with: the program, the kernel's /etc/hosts its

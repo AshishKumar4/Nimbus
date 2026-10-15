@@ -26,7 +26,7 @@
  * hosted/commands.ts).
  */
 import { exitCodeForAbortSignal } from '../../shell/signals.js';
-import { realmOutcome, startRealm } from '../../../../runtime/realm.js';
+import { realmError, realmOutcome, startRealm } from '../../../../runtime/realm.js';
 import { synchronousFilesystem } from '../../node-compat/filesystem.js';
 import { SinkWriter } from '../../../../_shared/byte-stream.js';
 import { uncaughtReport, writeFailure } from '../../node-compat/output-failure.js';
@@ -265,6 +265,8 @@ export async function runNodeInRealm(program, ctx, kernel) {
     // taken in the order asked for. A piece it left waiting for when it ended
     // is withdrawn, so what is typed next is the shell's, not swallowed.
     const ended = new AbortController();
+    // The terminal's mode as the program left it: a program's end restores it, as a process's end restores its tty's.
+    let rawMode = false;
     let stdinAtEnd = false;
     let stdinReads = Promise.resolve();
     const fromStdin = (read) => {
@@ -272,15 +274,22 @@ export async function runNodeInRealm(program, ctx, kernel) {
         stdinReads = next.catch(() => { });
         return next;
     };
-    const stdinPiece = () => fromStdin(async () => {
+    /** fd 0's next piece, never an empty one, until `signal` ends: a read withdrawn takes nothing. */
+    const stdinPiece = (signal) => fromStdin(async () => {
         const stdin = ctx.stdin;
-        if (stdinAtEnd || !stdin)
-            return null;
-        const piece = stdin.readBytes ? await stdin.readBytes(65536, ended.signal) : textPiece(await stdin.read());
-        if (piece === null)
-            stdinAtEnd = true;
-        return piece;
+        for (;;) {
+            if (stdinAtEnd || !stdin)
+                return null;
+            signal.throwIfAborted();
+            const piece = stdin.readBytes ? await stdin.readBytes(65536, signal) : textPiece(await stdin.read());
+            if (piece === null)
+                stdinAtEnd = true;
+            if (piece === null || piece.length > 0)
+                return piece;
+        }
     });
+    /** The program's reads of fd 0 in flight, each withdrawn when it cancels or ends. */
+    const stdinInFlight = new Map();
     const services = {
         filesystem,
         stdin: () => fromStdin(async () => {
@@ -290,7 +299,10 @@ export async function runNodeInRealm(program, ctx, kernel) {
             return readToEnd(ctx.stdin);
         }),
         fdKind: (fd) => (ctx.isFdTerminal?.(fd) ? 'terminal' : ctx.isFdPipe?.(fd) ? 'pipe' : 'other'),
-        setRawMode: (on) => { ctx.setRawMode?.(on); },
+        setRawMode: (on) => {
+            rawMode = on;
+            ctx.setRawMode?.(on);
+        },
         listen: (port) => {
             if (!kernel)
                 throw new VfsError('EACCES', `listen: no ports on this host :${port}`);
@@ -357,12 +369,24 @@ export async function runNodeInRealm(program, ctx, kernel) {
                         post({ type: 'fetched', id: event.id, response });
                     });
                     return;
-                case 'stdin-read':
-                    // A read that failed ends fd 0 for the program; one withdrawn at its end answers nothing.
-                    void stdinPiece().then((data) => post({ type: 'stdin', id: event.id, data }), () => {
-                        if (!ended.signal.aborted)
-                            post({ type: 'stdin', id: event.id, data: null });
+                case 'stdin-read': {
+                    const withdraw = new AbortController();
+                    stdinInFlight.set(event.id, withdraw);
+                    const signal = AbortSignal.any([withdraw.signal, ended.signal]);
+                    void stdinPiece(signal).then((data) => {
+                        stdinInFlight.delete(event.id);
+                        post({ type: 'stdin', id: event.id, data });
+                    }, (error) => {
+                        stdinInFlight.delete(event.id);
+                        if (signal.aborted)
+                            post({ type: 'stdin', id: event.id, withdrawn: true });
+                        else
+                            post({ type: 'stdin', id: event.id, error: realmError(error) });
                     });
+                    return;
+                }
+                case 'stdin-cancel':
+                    stdinInFlight.get(event.id)?.abort();
                     return;
             }
         },
@@ -380,6 +404,8 @@ export async function runNodeInRealm(program, ctx, kernel) {
         abort();
     const end = await realm.ended;
     ended.abort();
+    if (rawMode)
+        ctx.setRawMode?.(false);
     ctx.signal.removeEventListener('abort', abort);
     for (const port of ports)
         kernel?.portRegistry.delete(port);

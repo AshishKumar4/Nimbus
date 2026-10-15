@@ -37,23 +37,28 @@ export declare function outputSink(output: CommandOutputStream | undefined): Wri
 export declare function asStandardStream<T extends Writable>(stream: T, fd: 1 | 2, output: FailableOutput): T;
 /** A program's process.stdout (fd 1) or process.stderr (fd 2) that is not the terminal: a Writable over its output, as Node's is a stream. */
 export declare function standardStream(output: FailableOutput, fd: 1 | 2): Writable;
+/** What a read of fd 0 gives: a piece, null at its end, or nothing, withdrawn before anything arrived. */
+export type StandardPiece = Uint8Array | null | 'withdrawn';
+/** A read of fd 0 in flight. */
+export interface StandardRead {
+    readonly piece: Promise<StandardPiece>;
+    /** Withdraw it: what has not arrived stays on fd 0 for the next read, and the read settles 'withdrawn'. */
+    cancel(): void;
+}
 /** fd 0, a piece at a time, as a program's process.stdin and tty.ReadStream(0) read it. */
 export interface StandardInput {
-    /** fd 0's next piece; null at its end. */
-    read(): Promise<Uint8Array | null>;
-    /**
-     * Whether the program waits on a read of it: what it waits on holds it
-     * open, as reading a pipe or the terminal holds a Node process, and a
-     * paused stdin does not.
-     */
-    waiting(on: boolean): void;
+    /** fd 0's next piece, never an empty one; a failed read rejects with the descriptor's error. */
+    read(): StandardRead;
+    /** One more reader waits on fd 0 (true), or one fewer (false): while any does, the program is held, as reading a pipe or the terminal holds a Node process. */
+    hold(on: boolean): void;
 }
 /**
- * `stream` reading fd 0 from `input` (none: fd 0 is at its end): a piece is
- * asked for when the stream wants one, as Node starts reading a descriptor.
- * Its wait holds the program until the stream is paused and, a tick later,
- * still not flowing, as Node stops reading a paused stdin then (so that the
- * process can end).
+ * `stream` reading fd 0 from `input` (none: fd 0 is at its end), as Node's
+ * stdin reads its descriptor: a piece is asked for when the stream wants
+ * one, and its wait holds the program. Paused and, a tick later, still not
+ * flowing, or destroyed, it stops reading (the read is withdrawn and holds
+ * no more), as Node's stdin does so that its process can end; reading again
+ * starts a new read.
  */
 export declare function joinStandardInput<T extends Readable>(stream: T, input: StandardInput | undefined): T;
 //# sourceMappingURL=standard-streams.d.ts.map
