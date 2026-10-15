@@ -21,7 +21,7 @@ export async function pythonInputs(root = HERE) {
   return digestInputs(root, [
     'Setup.local', 'config.site-nimbus-wasi', 'build-python.sh', 'build-in-bwrap.sh', 'inputs.mjs',
     'include', 'patches', ...sources,
-    '../nimbus-libc/nimbus-fs.c', '../nimbus-libc/nimbus-fs.h', '../nimbus-libc/verify-imports.mjs',
+    '../nimbus-libc/nimbus-fs.c', '../nimbus-libc/nimbus-fs.h', '../nimbus-libc/nimbus-netdb.h', '../nimbus-libc/verify-imports.mjs',
     '../../scripts/artifact-inputs.mjs', '../../scripts/stage-asset.mjs',
   ]);
 }

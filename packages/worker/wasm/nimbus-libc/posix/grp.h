@@ -1,6 +1,8 @@
-/* Minimal grp.h overlay for wasi-libc. Backed by wasi-shim.c. As-is. */
+/* grp.h for wasi-libc, which ships none: the session's groups, read from
+ * /etc/group at each call (nimbus-libc/nimbus-accounts.c). */
 #ifndef _GRP_H
 #define _GRP_H
+#include <stddef.h>
 #include <sys/types.h>
 struct group { char *gr_name; char *gr_passwd; gid_t gr_gid; char **gr_mem; };
 struct group *getgrgid(gid_t gid);

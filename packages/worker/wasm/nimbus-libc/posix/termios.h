@@ -1,8 +1,8 @@
-/* Minimal termios overlay for wasi-libc (which ships no termios.h). Lets bash's
- * tty code (shtty.c, rltty.c, jobs.c) compile against the termios path instead
- * of the absent BSD sgtty path. tcgetattr/tcsetattr route to the nimbus_proc
- * tty imports (the RuntimeTtyOptions seam); non-interactive `bash -c` / scripts
- * don't exercise them. Maintained by Claude, presented as-is. */
+/* termios for wasi-libc, which ships none: the declarations bash's tty code
+ * (shtty.c, rltty.c, jobs.c) and BusyBox's compile against, instead of the
+ * absent BSD sgtty path. tcgetattr/tcsetattr route to the nimbus_proc tty
+ * imports (the RuntimeTtyOptions seam). BusyBox's overlay adds its own
+ * (coreutils/overlay/termios.h). */
 #ifndef _TERMIOS_H
 #define _TERMIOS_H
 #include <sys/types.h>

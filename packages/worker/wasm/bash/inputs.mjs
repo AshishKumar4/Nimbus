@@ -4,13 +4,15 @@ import { fileURLToPath } from 'node:url';
 import { assertCurrentInputs, digestInputs } from '../../scripts/artifact-inputs.mjs';
 
 const HERE = fileURLToPath(new URL('./', import.meta.url));
-export const BASH_OUTPUTS = ['bash.async.wasm'];
+export const BASH_OUTPUTS = ['bash.async.wasm', 'coreutils/busybox.wasm', 'coreutils/busybox.applets'];
 export const BASH_REGENERATE = 'bun scripts/ci/remote-bash-build.mjs';
 
-/** What bash.async.wasm is built from, beside the pinned sources build-in-bwrap.sh fetches. */
+/** What bash.async.wasm and BusyBox are built from, beside the pinned sources build-in-bwrap.sh fetches. */
 export async function bashInputs(root = HERE) {
   return digestInputs(root, [
-    'build-bash.sh', 'build-in-bwrap.sh', 'inputs.mjs', 'cross.cache', 'nimbus-proc.c', 'nimbus-proc.h', 'include', 'patches',
+    'build-bash.sh', 'build-in-bwrap.sh', 'inputs.mjs', 'cross.cache', 'nimbus-proc.c', 'nimbus-proc.h', 'patches',
+    'coreutils/build-busybox.sh', 'coreutils/busybox-wasi.config', 'coreutils/wasi-shim.c', 'coreutils/overlay', 'coreutils/list-applets.mjs',
+    '../nimbus-libc/posix', '../nimbus-libc/nimbus-accounts.c', '../nimbus-libc/nimbus-netdb.h',
     '../../scripts/artifact-inputs.mjs',
   ]);
 }

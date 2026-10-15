@@ -1,7 +1,8 @@
-/* Minimal pwd.h overlay for wasi-libc. Backed by wasi-shim.c's static
- * single-user table (uid 0 -> "user"). Maintained by Claude, as-is. */
+/* pwd.h for wasi-libc, which ships none: the session's accounts, read from
+ * /etc/passwd at each call (nimbus-libc/nimbus-accounts.c). */
 #ifndef _PWD_H
 #define _PWD_H
+#include <stddef.h>
 #include <sys/types.h>
 struct passwd {
   char *pw_name; char *pw_passwd;

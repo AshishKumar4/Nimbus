@@ -65,35 +65,13 @@ int killpg(pid_t, int);
 char *ttyname(int);
 int ttyname_r(int, char *, size_t);
 
-/* ---- sys/wait.h (absent in wasi-libc) ---- */
-typedef int idtype_t;
-pid_t wait(int *);
-pid_t waitpid(pid_t, int *, int);
-pid_t wait3(int *, int, void *);
-pid_t wait4(pid_t, int *, int, void *);
-#define WNOHANG    1
-#define WUNTRACED  2
-#define WCONTINUED 8
-#define WEXITSTATUS(s)  (((s) >> 8) & 0xff)
-#define WTERMSIG(s)     ((s) & 0x7f)
-#define WSTOPSIG(s)     WEXITSTATUS(s)
-#define WIFEXITED(s)    (WTERMSIG(s) == 0)
-#define WIFSIGNALED(s)  (((signed char)(((s) & 0x7f) + 1) >> 1) > 0)
-#define WIFSTOPPED(s)   (((s) & 0xff) == 0x7f)
-#define WIFCONTINUED(s) ((s) == 0xffff)
-#define WCOREDUMP(s)    ((s) & 0x80)
-#define WCOREFLAG       0x80
+/* ---- sys/wait.h, pwd.h (absent in wasi-libc): nimbus-libc/posix ---- */
+#include <sys/wait.h>
+#include <pwd.h>
 
 /* ---- fcntl gap: wasi-libc has F_DUPFD_CLOEXEC but not plain F_DUPFD ---- */
 #ifndef F_DUPFD
 #define F_DUPFD 0
-#endif
-
-/* ---- signal-mask constants (wasi emulated-signal omits these) ---- */
-#ifndef SIG_BLOCK
-#define SIG_BLOCK   0
-#define SIG_UNBLOCK 1
-#define SIG_SETMASK 2
 #endif
 
 /* ---- sigaction layer (wasi-libc gates it all out; sigset_t + signal numbers
@@ -103,13 +81,6 @@ pid_t wait4(pid_t, int *, int, void *);
 #include <signal.h>
 #ifndef SA_NOCLDSTOP
 typedef struct { int si_signo, si_errno, si_code; pid_t si_pid; uid_t si_uid; int si_status; void *si_addr; } siginfo_t;
-#define SA_NOCLDSTOP 1
-#define SA_NOCLDWAIT 2
-#define SA_SIGINFO   4
-#define SA_ONSTACK   0x08000000
-#define SA_RESTART   0x10000000
-#define SA_NODEFER   0x40000000
-#define SA_RESETHAND 0x80000000
 #define SA_INTERRUPT 0x20000000
 struct sigaction {
   union { void (*sa_handler)(int); void (*sa_sigaction)(int, siginfo_t *, void *); } __sa_handler;
@@ -119,14 +90,7 @@ struct sigaction {
 };
 #define sa_handler   __sa_handler.sa_handler
 #define sa_sigaction __sa_handler.sa_sigaction
-int sigemptyset(sigset_t *);
-int sigfillset(sigset_t *);
-int sigaddset(sigset_t *, int);
-int sigdelset(sigset_t *, int);
-int sigismember(const sigset_t *, int);
-int sigprocmask(int, const sigset_t *, sigset_t *);
-int sigaction(int, const struct sigaction *, struct sigaction *);
-int sigsuspend(const sigset_t *);
+#include <nimbus-signal.h>
 int siginterrupt(int, int);
 #endif
 
@@ -152,13 +116,5 @@ int getrlimit(int, struct rlimit *);
 int setrlimit(int, const struct rlimit *);
 #endif
 
-
-/* ---- pwd.h (absent in wasi-libc) ---- */
-struct passwd { char *pw_name; char *pw_passwd; uid_t pw_uid; gid_t pw_gid; char *pw_gecos; char *pw_dir; char *pw_shell; };
-struct passwd *getpwnam(const char *);
-struct passwd *getpwuid(uid_t);
-struct passwd *getpwent(void);
-void setpwent(void);
-void endpwent(void);
 
 #endif /* NIMBUS_PROC_H */
