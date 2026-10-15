@@ -1,4 +1,4 @@
-import { lex } from '../substrate/lifo/shell/lexer.js';
+import { endsHeredoc, lex } from '../substrate/lifo/shell/lexer.js';
 import { TokenKind } from '../substrate/lifo/shell/types.js';
 /**
  * The here-documents `input` opens, when a body is still to come: null when
@@ -34,8 +34,9 @@ export class HeredocHandler {
     // ── Accumulation state ──
     active = false;
     heredocInfo = null;
-    /** The lines typed after the command, as typed: the lexer reads the bodies from them. */
+    /** The lines typed after the command, as typed; and the here-document they are the body of. */
     lines = [];
+    current = 0;
     /** Safety limit to prevent unbounded memory growth */
     static MAX_HEREDOC_LINES = 50000;
     constructor(shell, terminal) {
@@ -56,6 +57,7 @@ export class HeredocHandler {
         this.active = false;
         this.heredocInfo = null;
         this.lines = [];
+        this.current = 0;
         this.submission = undefined;
     }
     _patch() {
@@ -165,10 +167,11 @@ export class HeredocHandler {
         this.active = true;
         this.heredocInfo = info;
         this.lines = [];
+        this.current = 0;
         this.shell.printContinuationPrompt();
         await this._drainPasteQueue();
     }
-    /** The command and every line typed after it, each ended: what runs once the lexer finds every body ended. */
+    /** The command and every line typed after it, each ended: what runs once every body has ended. */
     _script() {
         return `${this.heredocInfo?.command ?? ''}\n${this.lines.map((line) => `${line}\n`).join('')}`;
     }
@@ -186,8 +189,13 @@ export class HeredocHandler {
             this._printPrompt();
             return true; // stop accumulation
         }
-        this.lines.push(line.replace(/[\r\n]+$/, ''));
-        return parseHeredoc(this._script()) === null;
+        const typed = line.replace(/[\r\n]+$/, '');
+        this.lines.push(typed);
+        // The lexer's own test of a terminator (endsHeredoc), the bodies in turn.
+        const open = this.heredocInfo.delimiters[this.current];
+        if (open !== undefined && endsHeredoc(typed, open))
+            this.current++;
+        return this.current === this.heredocInfo.delimiters.length;
     }
     /**
      * Called when executeLine fires during accumulation (user typed a line + Enter).
@@ -238,6 +246,7 @@ export class HeredocHandler {
         this.active = false;
         this.heredocInfo = null;
         this.lines = [];
+        this.current = 0;
         try {
             await this._executeOriginalLine(script, submission);
         }

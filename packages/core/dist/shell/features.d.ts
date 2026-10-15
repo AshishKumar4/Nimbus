@@ -43,8 +43,9 @@ export declare class HeredocHandler {
     private submission;
     private active;
     private heredocInfo;
-    /** The lines typed after the command, as typed: the lexer reads the bodies from them. */
+    /** The lines typed after the command, as typed; and the here-document they are the body of. */
     private lines;
+    private current;
     /** Safety limit to prevent unbounded memory growth */
     private static readonly MAX_HEREDOC_LINES;
     constructor(shell: ShellLike, terminal: TerminalLike);
@@ -60,7 +61,7 @@ export declare class HeredocHandler {
     private _handleOriginalInput;
     private _executeOriginalLine;
     private _startAccumulation;
-    /** The command and every line typed after it, each ended: what runs once the lexer finds every body ended. */
+    /** The command and every line typed after it, each ended: what runs once every body has ended. */
     private _script;
     /**
      * Take one line after the command (non-recursive). True when the command is

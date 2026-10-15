@@ -168,6 +168,10 @@ function tryOperator(input, pos) {
     }
     return null;
 }
+/** Whether `line` ends a here-document opened with `delimiter` (`stripTabs`: by `<<-`, whose lines lose their leading tabs). */
+export function endsHeredoc(line, heredoc) {
+    return (heredoc.stripTabs ? stripLeadingTabs(line) : line) === heredoc.delimiter;
+}
 function readHeredocBodies(input, pos, heredocs) {
     const tokens = [];
     let i = pos;
@@ -177,9 +181,8 @@ function readHeredocBodies(input, pos, heredocs) {
         let terminated = false;
         while (i < input.length) {
             const line = readLine(input, i);
-            const comparable = heredoc.stripTabs ? stripLeadingTabs(line.text) : line.text;
             i = line.end;
-            if (comparable === heredoc.delimiter) {
+            if (endsHeredoc(line.text, heredoc)) {
                 terminated = true;
                 break;
             }
