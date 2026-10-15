@@ -6,12 +6,24 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Added: `npm install` and `npm ci` check engines as npm does: the
-  project's and every required package's `engines` against this runtime's
-  Node and npm, with npm's `npm warn EBADENGINE` warning for each mismatch.
-  Under `--engine-strict`, or an `.npmrc`'s `engine-strict=true` (as
+  project's (unless it declares `devEngines`) and every required package's
+  `engines`, a lock's packages included, against this runtime's Node and
+  npm, with npm's `npm warn EBADENGINE` warning for each mismatch, in npm's
+  order. Under `--engine-strict`, or an `.npmrc`'s `engine-strict=true` (as
   `sv create` writes), the first mismatch fails the install with npm's
-  error, and nothing changes. Before, no engine was checked, and
-  `--engine-strict` was refused.
+  error, and nothing changes. An optional package whose engines exclude
+  this runtime is left out, as npm leaves it out. Before, no engine was
+  checked, and `--engine-strict` was refused.
+- Added: every `npm` command but a global one checks the project's
+  `devEngines` first, as npm does: npm's `EBADDEVENGINES` error ends it
+  (`onFail: "error"`, the default), npm's warning lets it run
+  (`onFail: "warn"`, or any under `--force`). `--force` now says npm's
+  "Recommended protections disabled" for every command, not only
+  `npm init`.
+- Fixed: `npm install --no-production` (and `--include=dev`, `--dev`,
+  `--also=dev`) installs devDependencies where `NODE_ENV=production` would
+  omit them, and `--optional=true` keeps optional dependencies
+  `--omit=optional` would leave out, as npm reads them.
 - Fixed: npm's defaults that npm takes from its own environment (`omit` from
   `NODE_ENV`, `editor`, `shell`, `unicode`, `color`) come from the session's
   environment, not the Worker's. The Worker's production build made
