@@ -1940,7 +1940,10 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           const grown = mergedBytes - tail.bytes;
           tail.op = merged;
           tail.bytes = mergedBytes;
-          tail.lingers &&= lingers;
+          if (tail.lingers && !lingers) {
+            tail.lingers = false;
+            schedule();
+          }
           heapBytes += grown;
           pendingBytes += grown;
           if (acknowledged) pendingSyncBytes += grown;

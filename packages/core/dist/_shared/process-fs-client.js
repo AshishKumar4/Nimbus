@@ -966,7 +966,11 @@ export function processFsClient(options) {
                 const grown = mergedBytes - tail.bytes;
                 tail.op = merged;
                 tail.bytes = mergedBytes;
-                tail.lingers &&= lingers;
+                // Someone waits on the fold now: what lingered goes.
+                if (tail.lingers && !lingers) {
+                    tail.lingers = false;
+                    schedule();
+                }
                 heapBytes += grown;
                 pendingBytes += grown;
                 if (acknowledged)

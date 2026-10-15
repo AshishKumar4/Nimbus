@@ -3884,7 +3884,7 @@ const __fsMod = (() => {
     const destK = _strip(destAbs);
     const srcK = _strip(srcAbs);
     const call = { call: "copyFile", path: _strip(_resolve(dest)), from: _strip(_resolve(src)) };
-    if (await _copiedHere(src, dest, call)) return;
+    if (await _copiedHere(src, dest)) return;
     // The source as the view holds it now, and how late its bytes are.
     const content = _bundleLookup(srcAbs, false);
     const whole = _wholeCell(srcK, content);
@@ -3953,14 +3953,14 @@ const __fsMod = (() => {
    * A copy decided here: both names in subtrees the process holds, neither
    * through a link, and the source's bytes known under the grant that holds
    * it — the program's own write the session has not answered, or what a
-   * read of it under that grant answered, as a cell the view admits — so the
-   * session copies those bytes when the copy lands. The destination takes
-   * them at once, as a write of them would, with the source's mode as
-   * copyfile leaves it, and the copy is answered once logged. What this view
-   * cannot judge exactly (a set-id bit, another's file there) is the
-   * session's to answer.
+   * read of it under that grant answered, as a cell the view admits. The
+   * destination takes them at once, as a write of them would, with the
+   * source's mode as copyfile leaves it; that write and chmod are what is
+   * logged, and the copy is answered once they are. What this view cannot
+   * judge exactly (a set-id bit, another's file there) is the session's to
+   * answer.
    */
-  async function _copiedHere(src, dest, call) {
+  async function _copiedHere(src, dest) {
     if (typeof __nimbusDecidedHere !== "function" || !_supervisor() || !_nsActive()) return false;
     const srcAbs = _resolveFollow(src, "copyfile");
     const destAbs = _resolveFollow(dest, "copyfile");
@@ -3996,17 +3996,21 @@ const __fsMod = (() => {
     }
     const cell = _ownedCell(content);
     const bytes = _byteLen(cell);
-    if (!_decidedHere(destAbs, bytes)) return false;
+    // copyfile leaves the destination the source's mode (libuv's fchmod):
+    // one a confined principal may not grant is the session's copy to judge.
+    const mode = from.mode & 0o7777;
+    const made = absent ? 0o666 & ~__processUmask : Number(_statLadder(destAbs).mode) & 0o7777;
+    if (__nimbusResidentModule.confinedModeRefusal(made, mode) !== null || !_decidedHere(destAbs, bytes)) return false;
     _parkWrite(destK, cell, 0o666, absent);
     _parkedPartial.delete(destK);
     const rec = _own.get(destK);
     if (rec !== undefined) { rec.times = null; _ownCompact(destK, rec); }
-    const mode = _setLocalAttr("mode", destK, from.mode & 0o7777, false);
-    _nsOwnMode(destK, mode.value);
-    const logged = _logParked(destAbs, { type: "call", call }, { acknowledged: true });
-    const settle = () => _settleLocalAttr(mode);
-    logged.claimed.then(settle, settle);
+    // Logged as what the destination became, a write of those bytes and a
+    // chmod: replayed from the process's journal after it ended, they land
+    // those bytes whatever has become of the source since.
+    const logged = _logParked(destAbs, { type: "call", call: { call: "writeFile", path: destK, mode: 0o666, data: __nimbusVfsCellBytes(cell) } }, { acknowledged: true });
     _detachStructuralMutation(__nimbusDecided(logged.claimed, bytes), "copyfile", dest);
+    _detachStructuralMutation(__nimbusDecided(__nimbusLogDecided(() => _chmodQueued(destAbs, mode, "copyfile", dest))), "copyfile", dest);
     return true;
   }
 
