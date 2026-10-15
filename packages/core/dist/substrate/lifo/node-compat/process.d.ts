@@ -27,11 +27,13 @@ export declare class LifoProcess extends EventEmitter {
      */
     takeUncaught(error: unknown, origin: 'uncaughtException' | 'unhandledRejection'): boolean;
     /**
-     * Whether a failed write would reach anything of the program's: an 'error'
-     * listener on its stdout or stderr (on, once and the prepends share one
-     * list), or one for an error nothing caught (takeUncaught's, the monitor's
-     * included).
+     * Node's 'exit', heard once as the process ends: with `code`, which an
+     * explicit end (process.exit(), a fatal error) also makes its
+     * process.exitCode, or, when its loop ran empty, its process.exitCode. Its
+     * listeners may set process.exitCode, which is then its status; a
+     * process.exit() among them ends it there.
      */
+    exitWith(code: number, explicit: boolean): number;
     hearsWriteFailures(): boolean;
     get stdin(): Readable;
     get stdout(): Writable;

@@ -160,6 +160,7 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
             pipe(destination: import("node:stream").Writable, options?: import("node:stream").PipeOptions): import("node:stream").Writable;
             readonly readable: boolean;
             readonly readableEnded: boolean;
+            readonly readableFlowing: boolean | null;
             _read(size: number): void;
             push(chunk: Uint8Array | string | null, encoding?: string): boolean;
             pause(): /*elided*/ any;
@@ -206,6 +207,7 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
         pipe(destination: import("node:stream").Writable, options?: import("node:stream").PipeOptions): import("node:stream").Writable;
         readonly readable: boolean;
         readonly readableEnded: boolean;
+        readonly readableFlowing: boolean | null;
         _read(size: number): void;
         push(chunk: Uint8Array | string | null, encoding?: string): boolean;
         pause(): /*elided*/ any;

@@ -50,9 +50,10 @@ export interface StandardInput {
 }
 /**
  * `stream` reading fd 0 from `input` (none: fd 0 is at its end): a piece is
- * asked for when the stream wants one, as Node starts reading a descriptor,
- * and the wait stops holding the program once it pauses the stream, as
- * Node's readStop does.
+ * asked for when the stream wants one, as Node starts reading a descriptor.
+ * Its wait holds the program until the stream is paused and, a tick later,
+ * still not flowing, as Node stops reading a paused stdin then (so that the
+ * process can end).
  */
 export declare function joinStandardInput<T extends Readable>(stream: T, input: StandardInput | undefined): T;
 //# sourceMappingURL=standard-streams.d.ts.map
