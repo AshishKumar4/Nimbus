@@ -385,7 +385,6 @@ export function makeWasmRunner(deps: {
       const submitArgs = isWasi
         ? {
             processPid: pid,
-            liveOutput: true,
             mode: 'wasi' as const,
             wasiArgv,
             wasiEnv,
