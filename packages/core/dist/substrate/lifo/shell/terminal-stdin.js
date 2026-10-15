@@ -11,10 +11,15 @@ export class TerminalStdin extends ByteQueue {
         super();
         this.beforeRead = beforeRead;
     }
-    pull() {
-        if (!this.buffered && !this.ended)
+    pull(signal) {
+        // A read already withdrawn takes no type-ahead: it is the next reader's.
+        if (!this.buffered && !this.ended && !signal?.aborted)
             this.beforeRead();
-        return super.pull();
+        return super.pull(signal);
+    }
+    /** Whether a read would be answered at once: something is queued, or the input ended. */
+    get ready() {
+        return this.buffered || this.ended;
     }
     _rawMode = false;
     /** termios ISIG (TerminalInputStream.signalKeys). */

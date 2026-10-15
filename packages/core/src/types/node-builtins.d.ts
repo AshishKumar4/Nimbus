@@ -7,6 +7,8 @@
 declare module 'node:buffer' {
   export class Buffer extends Uint8Array {
     static from(value: string | ArrayBuffer | ArrayLike<number> | Iterable<number>, encodingOrMapFn?: string | ((v: number, k: number) => number)): Buffer;
+    /** A Buffer over the same memory. */
+    static from(buffer: ArrayBufferLike, byteOffset: number, length: number): Buffer;
     static alloc(size: number): Buffer;
     static concat(list: readonly Uint8Array[], totalLength?: number): Buffer;
     static isEncoding(encoding: string): boolean;
@@ -59,7 +61,15 @@ declare module 'node:stream' {
     pipe(destination: Writable, options?: PipeOptions): Writable;
     readonly readable: boolean;
     readonly readableEnded: boolean;
+    /** null until something reads it, then whether it flows. */
+    readonly readableFlowing: boolean | null;
+    readonly destroyed: boolean;
+    /** Node's own state: its stdin clears `reading` when it stops reading (lib/internal/bootstrap/switches/is_main_thread.js). */
+    readonly _readableState: { reading: boolean };
+    _read(size: number): void;
     push(chunk: Uint8Array | string | null, encoding?: string): boolean;
+    pause(): this;
+    resume(): this;
     setEncoding(encoding: string): this;
     destroy(error?: Error): this;
   }
@@ -172,6 +182,15 @@ declare module 'node:util' {
   export function inspect(value: unknown, options?: InspectOptions): string;
   const util: { format: typeof format; inspect: typeof inspect };
   export default util;
+}
+
+// The cursor functions the tty module's WriteStream is made of, as Node's.
+declare module 'node:readline' {
+  import type { Writable } from 'node:stream';
+  export function clearLine(stream: Writable, dir: -1 | 0 | 1, callback?: () => void): boolean;
+  export function clearScreenDown(stream: Writable, callback?: () => void): boolean;
+  export function cursorTo(stream: Writable, x: number, y?: number, callback?: () => void): boolean;
+  export function moveCursor(stream: Writable, dx: number, dy: number, callback?: () => void): boolean;
 }
 
 declare module 'node:string_decoder' {

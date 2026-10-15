@@ -9,6 +9,7 @@ import type { OutputSource } from '../../node-compat/standard-streams.js';
 import type { VfsEvent } from '../../../../vfs/events.js';
 import { isEgressGuestEvent, isEgressHostEvent, type EgressGuestEvent, type EgressHostEvent } from '../../../../runtime/realm-egress.js';
 import type { NodeProgram } from './node-program.js';
+import type { RealmError } from '../../../../runtime/realm.js';
 import type { VirtualRequest } from '../../kernel/index.js';
 
 /** The filesystem methods a call names: NodeFilesystem's, but its watch (a call of its own). */
@@ -23,10 +24,18 @@ export type NodeCall =
   /** Watch `path` as watch `id` (NodeFilesystem.watch); a null path stops it. */
   | { readonly op: 'watch'; readonly id: number; readonly path: string | null }
   /** umask(2): the mask the program creates with from now on (its own copy: the shell's is not changed). */
-  | { readonly op: 'umask'; readonly mask: number };
+  | { readonly op: 'umask'; readonly mask: number }
+  /** Whether standard descriptor `fd` is the terminal, a pipe, or neither. */
+  | { readonly op: 'fdKind'; readonly fd: number }
+  /** The terminal's raw mode, on or off (tty.ReadStream.setRawMode). */
+  | { readonly op: 'rawMode'; readonly on: boolean };
+
+/** What a standard descriptor is, as libuv tells a stream it can make from it. */
+export type FdKind = 'terminal' | 'pipe' | 'other';
 
 /** A write to output `fd` that failed with `code`, on a pipe or a file, made through `source`. */
-export interface OutputFailure { readonly fd: 1 | 2; readonly code: string; readonly pipe: boolean; readonly source: OutputSource }
+/** A failed write: its descriptor, its error, and what made it (its source, and which of the program's writers of `fd`: 0 is process.stdout or process.stderr, and its console). */
+export interface OutputFailure { readonly fd: 1 | 2; readonly code: string; readonly pipe: boolean; readonly source: OutputSource; readonly writer: number }
 
 /** A response to a request that stayed on the box, as data, either way across. */
 export interface RealmResponse {
@@ -38,7 +47,7 @@ export interface RealmResponse {
 /** What the guest posts on `events`. */
 export type GuestEvent =
   /** An output write, through `source`: the host numbers them, both outputs together, in the order they come (a settle's numbers). */
-  | { readonly type: 'output'; readonly fd: 1 | 2; readonly source: OutputSource; readonly data: string | Uint8Array }
+  | { readonly type: 'output'; readonly fd: 1 | 2; readonly source: OutputSource; readonly writer: number; readonly data: string | Uint8Array }
   /** The program's loop ran empty, and it would hear of a failed write: tell it once writes up to number `upTo` are made (output-settled). */
   | { readonly type: 'settle'; readonly upTo: number }
 
@@ -46,8 +55,12 @@ export type GuestEvent =
   | { readonly type: 'served'; readonly id: number; readonly response: RealmResponse | null }
   /** Its status; `ended`, it ended itself (process.exit, a fatal error): a write that fails later is no one's. */
   | { readonly type: 'exit'; readonly code: number; readonly ended: boolean }
-  /** The guest took a failure of output `fd`'s stream (output-failed): whatever the program makes of it, it is the guest's. */
-  | { readonly type: 'heard'; readonly fd: 1 | 2 }
+  /** The guest took a failure of output `fd`'s writer `writer` (output-failed), or the writer closed: whatever the program makes of its failures, they are the guest's. */
+  | { readonly type: 'heard'; readonly fd: 1 | 2; readonly writer: number }
+  /** fd 0's next piece, wanted as read `id` (process.stdin). */
+  | { readonly type: 'stdin-read'; readonly id: number }
+  /** Read `id` is withdrawn: what has not arrived stays on fd 0. */
+  | { readonly type: 'stdin-cancel'; readonly id: number }
   | EgressGuestEvent;
 
 /** What this side posts on `events`. */
@@ -60,6 +73,10 @@ export type HostEvent =
   | ({ readonly type: 'output-failed' } & OutputFailure)
   /** Every output write up to number `seq` is made or failed (a failure told first): told once asked (settle). */
   | { readonly type: 'output-settled'; readonly seq: number }
+  /** Read `id`'s answer, once: its piece of fd 0 (null at its end), its error, or that it was withdrawn before anything arrived. */
+  | { readonly type: 'stdin'; readonly id: number; readonly data: Uint8Array | null }
+  | { readonly type: 'stdin'; readonly id: number; readonly error: RealmError }
+  | { readonly type: 'stdin'; readonly id: number; readonly withdrawn: true }
   | EgressHostEvent;
 
 /**
@@ -94,7 +111,7 @@ export function isGuestEvent(value: unknown): value is GuestEvent {
   if (isEgressGuestEvent(value)) return true;
   if (!record(value)) return false;
   switch (value.type) {
-    case 'output': return (value.fd === 1 || value.fd === 2) && isOutputSource(value.source) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
+    case 'output': return (value.fd === 1 || value.fd === 2) && isOutputSource(value.source) && Number.isSafeInteger(value.writer) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
     case 'settle': return Number.isSafeInteger(value.upTo);
     case 'fetch':
       return Number.isSafeInteger(value.id) && Number.isSafeInteger(value.port) && typeof value.url === 'string'
@@ -102,7 +119,9 @@ export function isGuestEvent(value: unknown): value is GuestEvent {
         && (value.body === null || typeof value.body === 'string' || value.body instanceof Uint8Array);
     case 'served': return Number.isSafeInteger(value.id) && isResponse(value.response);
     case 'exit': return Number.isSafeInteger(value.code) && typeof value.ended === 'boolean';
-    case 'heard': return value.fd === 1 || value.fd === 2;
+    case 'heard': return (value.fd === 1 || value.fd === 2) && Number.isSafeInteger(value.writer);
+    case 'stdin-read':
+    case 'stdin-cancel': return Number.isSafeInteger(value.id);
     default: return false;
   }
 }
@@ -121,8 +140,11 @@ export function isHostEvent(value: unknown): value is HostEvent {
         && (value.event.oldPath === undefined || typeof value.event.oldPath === 'string')
         && typeof value.event.timestamp === 'number';
     case 'output-failed':
-      return (value.fd === 1 || value.fd === 2) && typeof value.code === 'string' && typeof value.pipe === 'boolean' && isOutputSource(value.source);
+      return (value.fd === 1 || value.fd === 2) && typeof value.code === 'string' && typeof value.pipe === 'boolean' && isOutputSource(value.source) && Number.isSafeInteger(value.writer);
     case 'output-settled': return Number.isSafeInteger(value.seq);
+    case 'stdin':
+      return Number.isSafeInteger(value.id) && (value.data === null || value.data instanceof Uint8Array || value.withdrawn === true
+        || (record(value.error) && typeof value.error.name === 'string' && typeof value.error.message === 'string' && record(value.error.properties)));
     default: return false;
   }
 }

@@ -1,0 +1,247 @@
+#!/usr/bin/env bun
+// A program's standard input and terminal, as Node gives them (X-1, X-2): run
+// through the public workspace API, a program writes exactly what real `node`
+// writes running it, fed the same input through the same pipeline.
+//
+//   - process.stdin is a Readable over fd 0: 'data' as each piece arrives
+//     (before the input ends), async iteration, pipe into stdout, and
+//     readline over it, the engine's own, as Node's is;
+//   - a program that never reads, or pauses stdin, does not wait for it;
+//   - its process hears 'exit' as it ends, by itself, by process.exit() or
+//     of an error nothing caught, and its listeners decide its status;
+//   - readFileSync(0) and the stream read one fd 0;
+//   - one that stops reading (paused a tick, destroyed) holds it no more,
+//     and holds it again when it reads again; paused in its data handler,
+//     a pipe is read on (its buffer fills), a terminal is not;
+//   - tty.WriteStream(fd) writes to that descriptor, in order with
+//     process.stdout; isatty answers for each descriptor; a descriptor that is
+//     not one, or a file, is refused as Node refuses it; a write's failure is
+//     the writer's that made it, heard even once it ended, no one's once it
+//     was destroyed, and one writer that heard its own does not hear
+//     another's; an end waits for the writer's own writes alone.
+//
+// And in a terminal (no oracle: a terminal Node is not available here),
+// as Node documents: process.stdin and stdout are the tty module's streams,
+// isatty is true, the window is COLUMNS x LINES, a typed line is read as it
+// is typed, and setRawMode hands the terminal's keys to the program; a
+// program that ends raw, or with a read pending, leaves the terminal and
+// what is typed next to what follows it. And a lifo CommonJS command hears
+// 'exit', and its pending read is withdrawn at its end.
+//
+// Red before: process.stdin was a stub whose 'data' never fired, 'exit'
+// was never emitted on a program's process, tty's
+// streams were joined to no descriptor (a WriteStream's writes went nowhere),
+// isatty was always false, readline was lifo's own (a line split across two
+// pieces came out as two), and process.stdout.isTTY was false with 80
+// columns whatever it was.
+//
+// Under Bun against the source, then under node against the built package
+// (packages/core/dist: rebuild first).
+
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { hostSqlite } from './lib/host-sqlite.mjs';
+
+const underBun = typeof process.versions.bun === 'string';
+const { NimbusWorkspace } = await import(underBun
+  ? '../../packages/core/src/workspace/nimbus-workspace.ts'
+  : '../../packages/core/dist/workspace/nimbus-workspace.js');
+const { createLifoCommand } = await import(underBun
+  ? '../../packages/core/src/substrate/lifo/pkg/lifo-runtime.ts'
+  : '../../packages/core/dist/substrate/lifo/pkg/lifo-runtime.js');
+
+/** How long from the program's start it ended: Node runs on while it waits for its input, and not otherwise. */
+const timed = "const started = Date.now(); process.on('exit', () => console.log(Date.now() - started < 1500 ? 'did not wait' : 'waited'));";
+
+/** Each case: a program, and the shell line that runs it ({prog} is its name). */
+const cases = {
+  // The second piece is written once the first is read (data-seen), so each arrives alone however slow the start.
+  'data.js': ["let n = 0; process.stdin.on('data', (c) => { console.log('got', Buffer.isBuffer(c), JSON.stringify(String(c))); if (++n === 1) require('fs').writeFileSync('data-seen', ''); }); process.stdin.on('end', () => console.log('end'));",
+    'rm -f data-seen; { printf a; while [ ! -e data-seen ]; do sleep 0.05; done; printf b; } | node {prog}'],
+  'encoding.js': ["process.stdin.setEncoding('utf8'); let s = ''; process.stdin.on('data', (c) => { s += c; console.log(typeof c); }); process.stdin.on('end', () => console.log(JSON.stringify(s)));",
+    'node {prog} < utf8.txt'],
+  'iterate.js': ["(async () => { const parts = []; for await (const c of process.stdin) parts.push(String(c)); console.log(JSON.stringify(parts.join(''))); })();",
+    "{ printf 'one '; sleep 0.2; printf two; } | node {prog}"],
+  // pipe is taken from stdin before stdout is made: the pipe must still leave stdout open.
+  'pipe.js': ["process.stdin.pipe(process.stdout); process.stdin.on('end', () => setTimeout(() => process.stdout.write('after\\n'), 10));",
+    "printf 'piped\\n' | node {prog}"],
+  'readline.js': ["const rl = require('readline').createInterface({ input: process.stdin }); rl.on('line', (l) => console.log('line', JSON.stringify(l))); rl.on('close', () => console.log('close'));",
+    "{ printf 'one\\n\\ntwo\\nthr'; sleep 0.3; printf 'ee\\n'; } | node {prog}"],
+  'question.js': ["const rl = require('readline/promises').createInterface({ input: process.stdin, output: process.stdout }); rl.question('name? ').then((a) => { console.log('hi', a); rl.close(); });",
+    'echo bob | node {prog}'],
+  'never.js': [`${timed} console.log('never reads');`,
+    '{ sleep 3; echo late; } | node {prog}'],
+  'paused.js': [`${timed} process.stdin.on('data', () => {}); process.stdin.pause(); console.log('paused');`,
+    '{ sleep 3; echo late; } | node {prog}'],
+  'destroyed.js': [`${timed} process.stdin.resume(); setTimeout(() => process.stdin.destroy(), 20); console.log('destroys');`,
+    '{ sleep 3; echo late; } | node {prog}'],
+  // Node reads on into the paused stream's buffer; Bun's own stdin ends here
+  // (bun 1.4.3: it exits after the pause), and under Bun the engine's stream
+  // is Bun's: the case is Node's.
+  'pausedinhandler.js': [`${timed} process.stdin.once('data', (c) => { console.log('got', String(c).trim()); process.stdin.pause(); });`,
+    '{ sleep 0.3; echo first; sleep 2; echo late; } | node {prog}', 'node'],
+  'pausediterate.js': [`${timed} process.stdin.pause(); setTimeout(async () => { for await (const c of process.stdin) console.log('got', String(c).trim()); }, 50);`,
+    '{ sleep 2; echo late; } | node {prog}'],
+  'rawpipe.js': ["const r = new (require('tty').ReadStream)(0); r.on('error', (e) => console.log('error', e.code, e.syscall, e.message)); r.setRawMode(true); console.log('raw', r.isRaw); r.destroy();",
+    'printf x | node {prog}'],
+  'tla.mjs': ["process.on('exit', (code) => { console.log('exit', code); process.exitCode = 4; }); await new Promise(() => {});",
+    'node {prog} 2>/dev/null; echo status $?'],
+  // A write's failure is the stream's that wrote it: an unused WriteStream of the descriptor does not hear it,
+  // and one the program made that listens for it is heard before the program ends.
+  'epipe.js': ["new (require('tty').WriteStream)(1); process.stdout.on('error', (e) => require('fs').writeFileSync('epipe.txt', e.code)); setTimeout(() => process.stdout.write('x'.repeat(100000)), 300);",
+    'rm -f epipe.txt st.txt; { node {prog}; echo "status $?" > st.txt; } | true; cat epipe.txt st.txt'],
+  'ttyepipe.js': ["const w = new (require('tty').WriteStream)(1); w.on('error', () => { process.exitCode = 7; }); setTimeout(() => w.write('x'.repeat(100000)), 300);",
+    'rm -f st.txt; { node {prog}; echo "status $?" > st.txt; } | true; cat st.txt'],
+  // Ended, it is still the one to hear its last write fail: a reader that never reads, gone after the program's loop ran empty.
+  'ttyepipeend.js': ["const w = new (require('tty').WriteStream)(1); w.on('error', () => { process.exitCode = 7; }); setTimeout(() => w.end('x'.repeat(100000)), 300);",
+    'rm -f st.txt; { node {prog}; echo "status $?" > st.txt; } | sleep 1; cat st.txt'],
+  // One writer that heard its failure is not another's: the second, which does not listen, fails after the program's
+  // loop ran empty (stdout's reader drains only after a second), and ends it as an uncaught error does.
+  'ttyepipelate.js': ["const tty = require('tty'); const w = new tty.WriteStream(2); w.on('error', () => {}); w.on('close', () => { process.stdout.write('y'.repeat(200000)); new tty.WriteStream(2).write('x'.repeat(100000)); }); setTimeout(() => w.write('x'.repeat(100000)), 300);",
+    'rm -f st.txt; { { node {prog}; echo "status $?" > st.txt; } | { sleep 1; cat > /dev/null; }; } 2>&1 | true; cat st.txt'],
+  // A writer's end waits for its own writes, not another's: stdout's is held until the end's callback lets its reader drain.
+  'ttyendempty.js': ["process.stdout.write('y'.repeat(200000)); new (require('tty').WriteStream)(2).end(() => require('fs').writeFileSync('handshake', ''));",
+    'rm -f handshake; node {prog} 2>&1 | { while [ ! -e handshake ]; do sleep 0.05; done; cat > /dev/null; echo drained; }'],
+  // Destroyed, its write that fails later is no one's: Node's destroyed stream hears no failure.
+  'ttydestroy.js': ["const w = new (require('tty').WriteStream)(1); setTimeout(() => { w.write('x'.repeat(100000)); w.destroy(); }, 300);",
+    'rm -f st.txt; { node {prog}; echo "status $?" > st.txt; } | sleep 1; cat st.txt'],
+  'rawcooked.js': ["const r = new (require('tty').ReadStream)(0); r.on('error', (e) => console.log('error', e.code)); r.setRawMode(false); console.log('cooked ok', r.isRaw); r.setRawMode(true); console.log('raw', r.isRaw); r.setRawMode(false); console.log('cooked again', r.isRaw); r.destroy();",
+    'printf x | node {prog}'],
+  'whole.js': ["const all = require('fs').readFileSync(0, 'utf8'); console.log(JSON.stringify(all)); process.stdin.on('data', (c) => console.log('more', String(c))).on('end', () => console.log('end'));",
+    "printf 'all of it' | node {prog}"],
+  'empty.js': ["process.stdin.on('data', (c) => console.log('data', String(c))).on('end', () => console.log('end'));",
+    'node {prog} < /dev/null'],
+  'isatty.js': ["const tty = require('tty'); console.log(String(process.stdin.isTTY), String(process.stdout.isTTY), String(process.stderr.isTTY), tty.isatty(0), tty.isatty(1), tty.isatty(2), tty.isatty(7), tty.isatty(-1), String(process.stdout.columns), String(process.stdout.rows), process.stdout instanceof tty.WriteStream, process.stdin instanceof tty.ReadStream);",
+    'echo x | node {prog} | cat'],
+  'writestream.js': ["const tty = require('tty'); const one = new tty.WriteStream(1); one.write('via tty 1\\n'); process.stdout.write('via stdout\\n'); new tty.WriteStream(2).write('via tty 2\\n'); console.log(one.isTTY, typeof one.columns, one.fd); for (const fd of [9, -1]) { try { new tty.WriteStream(fd); console.log('made', fd); } catch (e) { console.log(fd, e.name, e.code, e.message); } }",
+    'node {prog} 2>&1 | cat'],
+  'exitcode.js': ["process.on('exit', (code) => console.log('exit', code, process.exitCode)); process.exitCode = 3;",
+    'node {prog}; echo status $?'],
+  'exitcall.js': ["process.on('exit', (code) => { console.log('exit', code, process.exitCode); process.exitCode = 5; }); setTimeout(() => console.log('never'), 50); process.exit(2);",
+    'node {prog}; echo status $?'],
+  'exitfatal.js': ["process.on('exit', (code) => console.log('exit', code)); setTimeout(() => { throw 1; }, 0);",
+    'node {prog} 2>/dev/null; echo status $?'],
+  'filefd.js': ["const tty = require('tty'); try { new tty.WriteStream(1); console.error('made'); } catch (e) { console.error(e.name, e.code, e.message); }",
+    'node {prog} > out.txt; cat out.txt'],
+};
+
+/** `promise`, or a failure naming `what` once `ms` pass: a program that waits forever fails its case, not the run. */
+const within = (ms, promise, what) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what}: still running after ${ms} ms`)), ms))]);
+
+const { sql, transactions } = await hostSqlite();
+let terminalOutput = '';
+const terminal = {
+  write(data) { terminalOutput += data; }, writeln(data) { terminalOutput += `${data}\n`; }, onData() {},
+  cols: 80, rows: 24, focus() {}, clear() {},
+};
+const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1, terminal });
+const host = mkdtempSync(join(tmpdir(), 'lifo-node-stdio-'));
+const failed = [];
+try {
+  // A file of bytes on both sides: a two-byte character, then a newline.
+  const utf8 = new Uint8Array([0x68, 0xc3, 0xa9, 0x0a]);
+  await ws.fs.writeFile('/home/user/utf8.txt', utf8);
+  writeFileSync(join(host, 'utf8.txt'), utf8);
+  for (const [name, [source, line, engine]] of Object.entries(cases)) {
+    if (engine === 'node' && underBun) continue;
+    const command = line.replaceAll('{prog}', name);
+    await ws.fs.writeFile(`/home/user/${name}`, source);
+    writeFileSync(join(host, name), source);
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'NODE_NO_WARNINGS' && key !== 'NODE_OPTIONS'));
+    const node = spawnSync('sh', ['-c', command], { cwd: host, env, encoding: 'utf8', timeout: 60_000 });
+    let lifo;
+    try {
+      lifo = await within(30_000, ws.exec(command, { cwd: '/home/user' }), name);
+    } catch (error) {
+      failed.push(`${name}: ${command}\n  node (exit ${node.status}): ${JSON.stringify(node.stdout + node.stderr)}\n  lifo: ${error.message}`);
+      continue;
+    }
+    if (lifo.exitCode !== node.status || lifo.stdout !== node.stdout || lifo.stderr !== node.stderr) {
+      failed.push(`${name}: ${command}\n  node (exit ${node.status}): ${JSON.stringify(node.stdout + node.stderr)}\n  lifo (exit ${lifo.exitCode}): ${JSON.stringify(lifo.stdout + lifo.stderr)}`);
+    }
+  }
+
+  // ── in a terminal ─────────────────────────────────────────────────────────
+  // A failure here is reported with the oracle's, not instead of them.
+  try {
+  const shell = ws.shell;
+  const settle = async (until, what) => {
+    for (let i = 0; i < 400 && !until(); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.ok(until(), `${what}: ${JSON.stringify(terminalOutput.slice(-400))}`);
+  };
+  await ws.fs.writeFile('/home/user/term.js', [
+    "const tty = require('tty');",
+    "console.log('tty', process.stdin.isTTY, process.stdout.isTTY, tty.isatty(0), tty.isatty(1), tty.isatty(2), process.stdout.columns, process.stdout.rows, process.stdout instanceof tty.WriteStream, process.stdin instanceof tty.ReadStream);",
+    "process.stdin.once('data', (c) => { console.log('typed', JSON.stringify(String(c))); process.stdin.setRawMode(true); console.log('raw', process.stdin.isRaw);",
+    "  process.stdin.once('data', (k) => { console.log('key', JSON.stringify(String(k))); process.stdin.setRawMode(false); process.stdin.pause(); }); });",
+  ].join('\n'));
+  terminalOutput = '';
+  const ran = shell.executeLine('COLUMNS=120 LINES=40 node term.js');
+  await settle(() => terminalOutput.includes('tty '), 'the program starts');
+  assert.match(terminalOutput, /tty true true true true true 120 40 true true/, 'in a terminal, the streams are the tty module\'s and the window is COLUMNS x LINES');
+  for (const ch of 'hello') shell.handleInput(ch);
+  shell.handleInput('\r');
+  await settle(() => terminalOutput.includes('typed '), 'a typed line is read as it is typed');
+  assert.match(terminalOutput, /typed "hello\\n"/);
+  await settle(() => terminalOutput.includes('raw true'), 'setRawMode(true)');
+  shell.handleInput('q');
+  await settle(() => terminalOutput.includes('key '), 'a key in raw mode reaches the program without Enter');
+  assert.match(terminalOutput, /key "q"/);
+  await within(10_000, ran, 'the program in the terminal');
+
+  // A program that ends in raw mode leaves the terminal as it found it, and
+  // one that ends with a read pending takes nothing typed after it: the next
+  // reader in the line gets the next line.
+  await ws.fs.writeFile('/home/user/rawexit.js', "process.stdin.setRawMode(true); console.log('raw on'); process.exit(0);");
+  await ws.fs.writeFile('/home/user/pending.js', "process.stdin.once('data', () => {}); setTimeout(() => { console.log('bye'); process.exit(0); }, 100);");
+  // One that changed the mode it inherited leaves the one it inherited.
+  await ws.fs.writeFile('/home/user/toggle.js', "process.stdin.setRawMode(true); process.stdin.setRawMode(false); console.log('toggled'); process.stdin.destroy();");
+  terminalOutput = '';
+  await within(10_000, shell.executeLine('stty raw; node toggle.js; stty; stty sane'), 'a program in an inherited raw terminal');
+  assert.equal(/toggled[^]*?\b(raw|cooked)\b/.exec(terminalOutput)?.[1], 'raw', `the mode it inherited: ${JSON.stringify(terminalOutput.slice(-300))}`);
+  for (const [program, marker] of [['rawexit.js', 'raw on'], ['pending.js', 'bye']]) {
+    terminalOutput = '';
+    const line = shell.executeLine(`node ${program}; head -n1`);
+    await settle(() => terminalOutput.includes(`${marker}\r\n`), `${program} runs`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    for (const ch of 'xyz') shell.handleInput(ch);
+    shell.handleInput('\r');
+    await within(10_000, line, `head -n1 after ${program}`);
+    assert.match(terminalOutput.slice(terminalOutput.indexOf(marker)), /xyz\r\n[^]*xyz/, `after ${program}, head reads the typed line`);
+  }
+  } catch (error) {
+    failed.push(`in a terminal: ${error.message}`);
+  }
+
+  // ── a lifo CommonJS command (no oracle: a Node process is not one) ────────
+  try {
+    await ws.fs.mkdir('/home/user/pkg', { recursive: true });
+    await ws.fs.writeFile('/home/user/pkg/late.mjs', "export const value = 'late';\n");
+    await ws.fs.writeFile('/home/user/pkg/reader.js', "module.exports = async () => { process.on('exit', (code) => console.log('exit', code, require('./late.mjs').value)); process.stdin.resume(); process.stdin.on('data', (c) => console.log('data', String(c).trim())); await new Promise((resolve) => setTimeout(resolve, 50)); return 3; };\n");
+    ws.registry.register('reader', createLifoCommand('/home/user/pkg/reader.js', ws.filesystem.view({ pid: 900, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } })));
+    const ran = await within(30_000, ws.exec('{ sleep 1; echo late; } | reader; echo status $?', { cwd: '/home/user' }), 'reader');
+    assert.equal(ran.stdout, 'exit 3 late\nstatus 3\n', 'its process hears exit with its status (a listener may still load a module), and its read pending at its end is withdrawn, not an error');
+    assert.equal(ran.stderr, '');
+  } catch (error) {
+    failed.push(`a lifo CommonJS command: ${error.message}`);
+  }
+} finally {
+  rmSync(host, { recursive: true, force: true });
+  await within(10_000, ws.close(), 'the workspace closes').catch((error) => failed.push(error.message));
+}
+
+if (underBun) {
+  // Under node whatever Bun answered, so a red run shows both.
+  const node = spawnSync('node', ['--no-warnings', fileURLToPath(import.meta.url)], { encoding: 'utf8', timeout: 180_000 });
+  assert.deepEqual(failed, [], `bun: lifo's node reads and writes its stdio as real node does:\n${failed.join('\n')}\n\nunder node (exit ${node.status}):\n${node.stdout}${node.stderr}`);
+  assert.equal(node.status, 0, `under node:\n${node.stdout}${node.stderr}`);
+  assert.match(node.stdout, /^ok - under node/m, node.stdout);
+  console.log('ok - lifo-node-stdio (stdin, tty and isatty as node has them; under Bun and Node)');
+} else {
+  assert.deepEqual(failed, [], `node: lifo's node reads and writes its stdio as real node does:\n${failed.join('\n')}`);
+  console.log('ok - under node');
+}

@@ -30,6 +30,7 @@ import type { CommandContext } from '../types.js';
 import type { Kernel } from '../../kernel/index.js';
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { NodeProgram } from './node-program.js';
+import { type FdKind } from './node-realm-protocol.js';
 /** The session services a run reaches: the kernel's ports and loopback, where the host has them. */
 export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback' | 'dns' | 'network'>>;
 /** What a run's calls are answered from. */
@@ -37,6 +38,10 @@ export interface RealmServices {
     filesystem(): NodeFilesystem;
     /** fd 0, read to its end, once; empty after. */
     stdin(): Promise<Uint8Array>;
+    /** What standard descriptor `fd` is. */
+    fdKind(fd: number): FdKind;
+    /** The terminal's raw mode, on or off. */
+    setRawMode(on: boolean): void;
     listen(port: number): void;
     unlisten(port: number): void;
     /** Watch `path` as watch `id`, or stop it (null). */
