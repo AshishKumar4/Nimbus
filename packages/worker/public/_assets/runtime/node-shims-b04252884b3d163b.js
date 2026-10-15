@@ -6081,13 +6081,16 @@ const __fsMod = (() => {
     if (/(^|\/)\.\.(\/|$)/.test(String(p))) return undefined;
     const client = __nimbusProcessFs();
     const ns = __resident.namespace;
+    // The root's device: a row of another is on a mount.
+    const device = ns.rowAt("")?.dev;
+    if (device === undefined) return undefined;
     let vouched = true;
     const visit = (name) => {
       const searched = ns.rowAt(name.slice(0, Math.max(0, name.lastIndexOf("/"))));
       const row = ns.rowAt(name);
       vouched = vouched && !_own.has(name) && client.vouch(name, _cursor) !== undefined
-        && searched !== undefined && Number(searched.dev) === 0 && _modeAllows(_nsRowMeta(searched), 1)
-        && (row === undefined || (Number(row.dev) === 0 && !(Number(row.kind) === 2 && /(^|\/)\.\.(\/|$)/.test(String(row.target ?? "")))));
+        && searched !== undefined && searched.dev === device && _modeAllows(_nsRowMeta(searched), 1)
+        && (row === undefined || (row.dev === device && !(Number(row.kind) === 2 && /(^|\/)\.\.(\/|$)/.test(String(row.target ?? "")))));
       return vouched;
     };
     try {
