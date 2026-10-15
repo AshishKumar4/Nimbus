@@ -4,9 +4,10 @@ export function parseUnixId(value) {
     const id = Number(value);
     return Number.isSafeInteger(id) ? id : null;
 }
-async function users(vfs) {
+/** The accounts /etc/passwd's `text` holds, in its order: the one parser of it, the shell's and the runtimes' (nimbus_proc.account). */
+export function unixUsers(text) {
     const result = [];
-    for (const line of (await vfs.readFileString('/etc/passwd')).split('\n')) {
+    for (const line of text.split('\n')) {
         if (!line || line.startsWith('#'))
             continue;
         const fields = line.split(':');
@@ -18,17 +19,20 @@ async function users(vfs) {
             continue;
         result.push({
             name: fields[0],
+            password: fields[1],
             uid,
             gid,
+            gecos: fields[4],
             home: fields[5],
             shell: fields[6],
         });
     }
     return result;
 }
-async function groups(vfs) {
+/** The groups /etc/group's `text` holds, in its order. */
+export function unixGroups(text) {
     const result = [];
-    for (const line of (await vfs.readFileString('/etc/group')).split('\n')) {
+    for (const line of text.split('\n')) {
         if (!line || line.startsWith('#'))
             continue;
         const fields = line.split(':');
@@ -39,11 +43,18 @@ async function groups(vfs) {
             continue;
         result.push({
             name: fields[0],
+            password: fields[1],
             gid,
             members: fields[3] ? fields[3].split(',').filter(Boolean) : [],
         });
     }
     return result;
+}
+async function users(vfs) {
+    return unixUsers(await vfs.readFileString('/etc/passwd'));
+}
+async function groups(vfs) {
+    return unixGroups(await vfs.readFileString('/etc/group'));
 }
 export async function findUnixUser(vfs, identity) {
     const entries = (await users(vfs));
