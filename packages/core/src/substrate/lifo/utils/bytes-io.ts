@@ -8,6 +8,7 @@ import { isVfsError, syscallError } from '../../../vfs/vfs-error.js';
 import type { CommandInputStream } from '../commands/types.js';
 import { resolve } from './path.js';
 import { direntTypeOfStat } from '../../../vfs/dirent-type.js';
+import { fitsWholeRead } from '../../../vfs/vfs.js';
 
 export interface ByteInputContext {
   cwd: string;
@@ -70,13 +71,17 @@ export async function* inputChunks(
   // name leads to; a larger one, or a device, through one description from
   // its first byte to a read that answers none (its end), closed however the
   // reader stops: either way the bytes are one file's, whatever the name
-  // names after.
-  try {
-    const bytes = await ctx.vfs.readFile(path, { maxBytes: fileReadSize });
-    if (bytes.length > 0) yield bytes;
-    return;
-  } catch (error) {
-    if (!isVfsError(error) || error.code !== 'EFBIG') throw error;
+  // names after. The stat only chooses which is tried first: a refusal that
+  // throws costs a deep stack's capture, as a stat does not.
+  const seen = await ctx.vfs.stat(path);
+  if (seen === null || fitsWholeRead(seen, fileReadSize)) {
+    try {
+      const bytes = await ctx.vfs.readFile(path, { maxBytes: fileReadSize });
+      if (bytes.length > 0) yield bytes;
+      return;
+    } catch (error) {
+      if (!isVfsError(error) || error.code !== 'EFBIG') throw error;
+    }
   }
   const file = await ctx.vfs.open(path, { read: true });
   try {

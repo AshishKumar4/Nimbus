@@ -33,7 +33,7 @@ import { ProcVFS, standardProc } from '../vfs/proc-vfs.js';
 import { sqliteFiles } from '../vfs/sqlite-files.js';
 import { isVfsError, syscallError, toVfsError, VfsError } from '../vfs/vfs-error.js';
 import { normalizeVfsPath } from '../vfs/path.js';
-import { abandon, andThen, readDeclaredSource, readRangeOrWhole, readText, type Awaitable } from '../vfs/vfs.js';
+import { abandon, andThen, fitsWholeRead, readDeclaredSource, readRangeOrWhole, readText, type Awaitable } from '../vfs/vfs.js';
 import type { VFS, VfsCopyOptions, VfsDirent, VfsRemoval, VfsRemovalFailure, VfsStat } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import {
@@ -67,7 +67,7 @@ import {
   type VfsMutationReceipt,
   type RuntimeMutationOwner,
 } from './os-contracts.js';
-import { fitsWholeRead, fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
+import { fsError, modeAllows, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
 import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, scopeSignal, settleHeldAt, type DescriptorScope } from './descriptors.js';
 import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted, reopenMounted } from '../vfs/mounted-description.js';
 import { registerDirectoryReadBridge, directoryReadHandleClosed } from './read-directory-batch.js';

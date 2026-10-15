@@ -456,6 +456,11 @@ export function isCharacterDevice(mode: number | undefined): boolean {
   return mode !== undefined && (mode & S_IFMT) === S_IFCHR;
 }
 
+/** A whole read's `maxBytes` (RuntimeReadFileOptions): a regular file of at most `maxBytes` bytes is read whole; a directory answers as a read does. */
+export function fitsWholeRead(stat: { readonly type: string; readonly size: number; readonly mode?: number }, maxBytes: number): boolean {
+  return stat.type === 'directory' || (stat.type === 'file' && !isCharacterDevice(stat.mode) && stat.size <= maxBytes);
+}
+
 /** The `ls -l` type character for a mode, falling back to the entry's type. */
 export function fileTypeChar(mode: number | undefined, type: VfsFileType): string {
   switch ((mode ?? 0) & S_IFMT) {
