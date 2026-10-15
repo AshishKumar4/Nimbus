@@ -44,6 +44,24 @@ export default async (ctx) => {
 };
 `), [0, 'from the cdn | from the cdn | b.txt\n', ''], 'bare imports, static and dynamic, go to the CDN; a builtin does not');
   console.log('  ✓ a bare import, static or dynamic, loads from the CDN; node:path is the builtin');
+
+  // The helper the rewrite adds is a name the module does not use, so a
+  // module's own binding of any name neither collides with it nor hides it.
+  assert.deepEqual(await command('declares', `const __lifoCdnImport = 'mine';
+export default async (ctx) => {
+  const later = await import('bar');
+  ctx.stdout.write(__lifoCdnImport + ' | ' + later.default + '\\n');
+  return 0;
+};
+`), [0, 'mine | from the cdn\n', ''], 'a module that declares the helper\'s name keeps its binding, and its import() still loads');
+  assert.deepEqual(await command('shadows', `const load = (__lifoCdnImport) => import('bar');
+export default async (ctx) => {
+  const later = await load('a local');
+  ctx.stdout.write(later.default + '\\n');
+  return 0;
+};
+`), [0, 'from the cdn\n', ''], 'an import() under a local of the helper\'s name still loads');
+  console.log('  ✓ the helper\'s name is one the module does not use: neither its declaration nor a local collides');
 } finally {
   await ws.close();
 }
