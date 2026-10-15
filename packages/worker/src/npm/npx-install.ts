@@ -288,6 +288,7 @@ export async function resolveNpxBinary(
       cred,
       registry,
       signal,
+      onProgress: (msg) => log(`[npm] ${msg}`),
     });
     if ((result.failed?.length || 0) > 0) {
       // Partial install — some package failed to resolve. The fix is

@@ -3,7 +3,8 @@
  * invocation, owns the pre-checks and the summary text, and hands the
  * install itself to this port. What the port owns is everything the
  * command must not know: the NpmInstaller, the global prefix's directory
- * shape, and the materialisation of bin shims into <prefix>/bin.
+ * shape, and the bin shims and their manifests, in the tree's .bin and in
+ * <prefix>/bin, which it links on install and unlinks on `npm uninstall`.
  *
  * `projectDir` is always the shell's cwd; `globalPrefix` (absolute VFS
  * path, e.g. `/usr/local`) is present only for `npm install -g` and says

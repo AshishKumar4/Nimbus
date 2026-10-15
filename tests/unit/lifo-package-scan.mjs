@@ -52,8 +52,9 @@ try {
   await ws.fs.mkdir(`${N}/.bin`, { recursive: true });
   await ws.fs.writeFile(`${N}/.package-lock.json`, '{}');
   ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel));
+  // With no package.json, every package is one nothing depends on: npm lists it extraneous, and succeeds.
   const ls = await sh('cd /home/user/proj && npm ls');
-  assert.deepEqual(ls.trim().split('\n').slice(1).map((l) => l.slice(4)).sort(), ['@sc/tool@2.0.0', 'lifo-pkg-demo@0.1.0', 'linked@3.0.0', 'plain@1.0.0']);
+  assert.deepEqual(ls.trim().split('\n').slice(1).map((l) => l.slice(4)), ['@sc/tool@2.0.0 extraneous', 'lifo-pkg-demo@0.1.0 extraneous', 'linked@3.0.0 extraneous -> ./../linked', 'plain@1.0.0 extraneous']);
 
   // A dev link registers every declared command; its boot restore, only those with an entry.
   await pkg('/home/user/dev', { name: 'devpkg', lifo: { commands: { here: 'h.js', absent: 'nope.js' } } }, { 'h.js': 'x' });

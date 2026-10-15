@@ -14,10 +14,10 @@
 import assert from 'node:assert/strict';
 
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
-import { BASE_PATH, HIBERNATED, PREVIEW_BASE, ROOT, VITE_PORT, hostRequest, makeWokenSession as wakeSession, pathRequest } from './lib/vite-route-rig.mjs';
+import { BASE_PATH, PREVIEW_BASE, ROOT, VITE_PORT, hostRequest, makeSession, pathRequest, startVite } from './lib/vite-route-rig.mjs';
 
 const routes =
-  await importWorkerBundle({ 'packages/worker/src/session/routes.ts': ['handleFetch', 'restorePersistedDevServer'] });
+  await importWorkerBundle({ 'packages/worker/src/session/routes.ts': ['handleFetch'] });
 const { handleFetch } = routes;
 
 const INDEX_HTML =
@@ -108,8 +108,9 @@ function makeParkedBundlePool() {
   return { provider: { acquire: async () => pool }, submits };
 }
 
-function makeWokenSession(storage = {}, { faults, extraFiles, reads, bundlePool = null } = {}) {
-  return wakeSession(storage, { vfs: () => makeVfs({ faults, extraFiles, reads }), routes, bundlePool });
+/** A session running the built-in dev server on VITE_PORT, serving ROOT. */
+function runningSession({ faults, extraFiles, reads, bundlePool = null } = {}) {
+  return startVite(makeSession({}, { vfs: () => makeVfs({ faults, extraFiles, reads }), routes, bundlePool }), routes);
 }
 
 // 1. The `<port>--<sid>` host serves at the root: NO <base href>, and nothing
@@ -117,7 +118,7 @@ function makeWokenSession(storage = {}, { faults, extraFiles, reads, bundlePool 
 //    defect — a baked base put `<base href="/s/<sid>/preview/">` here and 404'd
 //    every asset.
 {
-  const self = makeWokenSession(HIBERNATED);
+  const self = await runningSession();
   const response = await handleFetch(self, hostRequest(`/port/${VITE_PORT}/`));
   assert.equal(response.status, 200);
   const html = await response.text();
@@ -134,7 +135,7 @@ function makeWokenSession(storage = {}, { faults, extraFiles, reads, bundlePool 
 //    and every absolute path rewrite are present. Pinned so the shared path
 //    can't lose the path-route behaviour.
 {
-  const self = makeWokenSession(HIBERNATED);
+  const self = await runningSession();
   const response = await handleFetch(self, pathRequest('/preview/'));
   assert.equal(response.status, 200);
   const html = await response.text();
@@ -147,7 +148,7 @@ function makeWokenSession(storage = {}, { faults, extraFiles, reads, bundlePool 
 // 3. The `/s/<sid>/port/<n>/` path form mounts under `/s/<sid>/port/<n>` — the
 //    base is derived from the door, so this third form gets its own base too.
 {
-  const self = makeWokenSession(HIBERNATED);
+  const self = await runningSession();
   const response = await handleFetch(self, pathRequest(`/port/${VITE_PORT}/`));
   assert.equal(response.status, 200);
   const html = await response.text();
@@ -160,7 +161,7 @@ function makeWokenSession(storage = {}, { faults, extraFiles, reads, bundlePool 
 //    the SAME session serving the SAME file to two doors must not hand one
 //    door the other's cached, wrong-base transform.
 {
-  const self = makeWokenSession(HIBERNATED);
+  const self = await runningSession();
 
   const onHost = await handleFetch(self, hostRequest(`/port/${VITE_PORT}/src/dep.js`));
   assert.equal(onHost.status, 200);
@@ -183,7 +184,7 @@ function makeWokenSession(storage = {}, { faults, extraFiles, reads, bundlePool 
 //    second reader fail with a consumed body. Both consumers here must read
 //    the same complete bytes independently.
 {
-  const self = makeWokenSession(HIBERNATED);
+  const self = await runningSession();
   const path = `/port/${VITE_PORT}/@modules/canvas-confetti`;
   const [first, second, third] = await Promise.all([
     handleFetch(self, hostRequest(path)),
@@ -218,7 +219,7 @@ function makeWokenSession(storage = {}, { faults, extraFiles, reads, bundlePool 
 //    re-enters the cold path instead of inheriting a settled rejection.
 {
   const faults = new Map([['home/user/node_modules/boom-pkg', 1]]);
-  const self = makeWokenSession(HIBERNATED, { faults });
+  const self = await runningSession({ faults });
   const path = `/port/${VITE_PORT}/@modules/boom-pkg`;
   const attempts = [
     handleFetch(self, hostRequest(path)),
@@ -252,7 +253,7 @@ function makeWokenSession(storage = {}, { faults, extraFiles, reads, bundlePool 
     [`${ROOT}/node_modules/small-pkg/package.json`, JSON.stringify({ name: 'small-pkg', main: 'index.js' })],
     [`${ROOT}/node_modules/small-pkg/index.js`, 'module.exports = "small";\n'],
   ]);
-  const self = makeWokenSession(HIBERNATED, { extraFiles, reads, bundlePool: provider });
+  const self = await runningSession({ extraFiles, reads, bundlePool: provider });
   const smallEntry = `${ROOT}/node_modules/small-pkg/index.js`;
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
   const until = async (predicate, what) => {
@@ -300,7 +301,7 @@ function makeWokenSession(storage = {}, { faults, extraFiles, reads, bundlePool 
 {
   const page = '<!DOCTYPE html><html><body><h1>page</h1><script type="module" src="/src/main.js"></script></body></html>';
   const extraFiles = new Map([[`${ROOT}/index.html`, page], [`${ROOT}/about/index.html`, page]]);
-  const self = makeWokenSession(HIBERNATED, { extraFiles });
+  const self = await runningSession({ extraFiles });
   const root = await handleFetch(self, hostRequest(`/port/${VITE_PORT}/`));
   const about = await handleFetch(self, hostRequest(`/port/${VITE_PORT}/about/`));
   assert.equal(root.status, 200);

@@ -253,15 +253,10 @@ export class NpmInstaller {
   private bundlePool: BundlePoolProvider | null;
   private ctx: DurableObjectState | undefined;
   private env: any;
-  private onProgress: ((msg: string) => void) | undefined;
+  /** Where an install that names no progress sink of its own reports. */
+  private readonly onProgress: ((msg: string) => void) | undefined;
   /** The workspace's network: every resolve and install facet (here and in peers) goes out through it. */
   private readonly network: WorkspaceNetwork;
-  /**
-   * npm-protocol log sink for the install in flight. Set per invocation
-   * because `--loglevel` is a per-invocation flag; the no-op default is
-   * what every caller that didn't pass one gets.
-   */
-  private npmLog: NpmLogEmitter = () => {};
 
   constructor(
     filesystem: ProcessFiles,
@@ -314,15 +309,15 @@ export class NpmInstaller {
     // other. One that the command stops while it waits never starts.
     const held = holdTree(this.store, await canonicalTreePath(async (path) => view.realpath(path), '/' + nmDir), opts.signal);
     const release = typeof held === 'function' ? held : await held;
-    // Per-invocation progress wins over whatever the ctor bound — the
-    // installer is shared, the terminal it should speak to is not.
-    const previousProgress = this.onProgress;
-    if (opts?.onProgress !== undefined) this.onProgress = opts.onProgress;
-    // This invocation's terminal, while the command runs. Work that outlives
-    // it (the background pre-bundle) still logs through `log`, and once the
-    // command has returned and the prompt is back, that goes to the console
-    // instead: never into the next command's output, nor this one's prompt.
-    const progress = this.onProgress;
+    // The session's installs share this installer, and the terminal and npm
+    // log each speaks to are its own: they are passed down the install, never
+    // kept on the installer, where another install would take them over.
+    // Progress goes to this invocation's terminal while the command runs.
+    // Work that outlives it (the background pre-bundle) still logs through
+    // `log`, and once the command has returned and the prompt is back, that
+    // goes to the console instead: never into the next command's output, nor
+    // this one's prompt.
+    const progress = opts.onProgress ?? this.onProgress;
     let returned = false;
     const log = (msg: string) => {
       if (!returned) {
@@ -331,22 +326,21 @@ export class NpmInstaller {
       }
       try { console.log('[npm:late] ' + msg); } catch {}
     };
-    this.npmLog = opts?.npmLog ?? (() => {});
+    // `--loglevel` is the invocation's; one that names none logs nothing.
+    const npmLog: NpmLogEmitter = opts.npmLog ?? (() => {});
 
     // Reset phase to 'idle' on any exit path so /api/_diag/memory
     // never reports a stale phase after a crash unwound the install.
     // The DO reboot would zero this anyway; finally is defense against
     // a non-fatal mid-install throw.
     try {
-      const result = await this._installInner(projDir, nmDir, opts, log, start, view, engineDir);
+      const result = await this._installInner(projDir, nmDir, opts, log, npmLog, start, view, engineDir);
       // What the caller publishes from the installed tree (a global prefix's bins), under the same hold.
       if (opts.whileHeld) result.linkedBins = await opts.whileHeld(result);
       return result;
     } finally {
       returned = true;
       setInstallPhase('idle');
-      this.npmLog = () => {};
-      this.onProgress = previousProgress;
       release();
     }
   }
@@ -356,6 +350,7 @@ export class NpmInstaller {
     nmDir: string,
     opts: NpmInstallOptions,
     log: (msg: string) => void,
+    npmLog: NpmLogEmitter,
     start: number,
     view: ProcessView,
     engineDir: string | null,
@@ -372,7 +367,7 @@ export class NpmInstaller {
 
     // ── Phase 0: Lock-check ─────────────────────────────────────────
     setInstallPhase('idle');
-    this.npmLog('verbose', npmTitleLine(opts?.packages ?? []));
+    npmLog('verbose', npmTitleLine(opts?.packages ?? []));
     let phaseStart = Date.now();
     log('Checking lockfile...');
     const project = projectFs(view);
@@ -382,7 +377,7 @@ export class NpmInstaller {
     if (tmp !== null) this.sweepStaging(tmp);
     const principal = { pid: opts.pid, cred: opts.cred, view, tmp };
     const lockfile = this.cache.readLockfile(projDir);
-    const { roots, named, devOnly, advised } = await this.buildRoots(projDir, project, opts);
+    const { roots, named, devOnly, advised } = await this.buildRoots(projDir, project, opts, log);
     const omit = { dev: opts.production === true, optional: opts.omitOptional === true, peer: opts.omitPeer === true };
     const engine = {
       devOnly, advised, registry, omit,
@@ -405,8 +400,8 @@ export class NpmInstaller {
     let tree: PlannedTree;
     let usedLockfile = false;
     if (opts.fromLockfile) {
-      const locked = await this.treeFromPackageLock(network, projDir, project, log, registry, opts.legacyPeerDeps === true);
-      tree = await this.resolveTreeViaFanout(network, roots, locked.installed, log, { ...engine, locked: locked.suspect ? 'suspect' : 'trusted' });
+      const locked = await this.treeFromPackageLock(network, projDir, project, log, npmLog, registry, opts.legacyPeerDeps === true);
+      tree = await this.resolveTreeViaFanout(network, roots, locked.installed, log, npmLog, { ...engine, locked: locked.suspect ? 'suspect' : 'trusted' });
       if (tree.plan.lockMismatches.length > 0) {
         throw new Error(
           `\`npm ci\` can only install packages when your package.json and ${locked.lockName} are in sync. ` +
@@ -417,7 +412,7 @@ export class NpmInstaller {
       log(`Lockfile ${locked.lockName}: ${tree.plan.nodes.size} packages to place.`);
     } else {
       const installed = opts.global || lockfile === null ? [] : this.installedTree(projDir, lockfile);
-      tree = await this.resolveTreeViaFanout(network, roots, installed, log, engine);
+      tree = await this.resolveTreeViaFanout(network, roots, installed, log, npmLog, engine);
       // The lockfile answered every edge: nothing resolved, nothing failed.
       usedLockfile = lockfile !== null && !tree.plan.resolvedAny && tree.plan.failures.length === 0;
       log(usedLockfile ? `Lockfile valid (${lockfile?.size ?? 0} packages). Skipping resolution.` : `Resolved ${tree.plan.nodes.size} packages.`);
@@ -559,8 +554,8 @@ export class NpmInstaller {
     if (toFetch.length > 0) {
       log(`Fetching ${toFetch.length} packages... (path: batch-facet)`);
       const batchResult = engineDir !== null
-        ? await this.fetchViaBatchFacet(toFetch, `${engineDir}/node_modules`, { engine: this.store.as(opts.cred), view }, opts.pid)
-        : await this.fetchIntoMount(toFetch, nmDir, principal);
+        ? await this.fetchViaBatchFacet(toFetch, `${engineDir}/node_modules`, { engine: this.store.as(opts.cred), view }, opts.pid, log, npmLog)
+        : await this.fetchIntoMount(toFetch, nmDir, principal, log, npmLog);
       totalFiles += batchResult.filesWritten;
       published.push(...batchResult.installed);
       for (const { placement, pkg } of batchResult.installed) installedAt.set(placement, `${pkg.name}@${pkg.version}`);
@@ -671,7 +666,7 @@ export class NpmInstaller {
       // prints carries a colour prefix that no log parser matches. Carried
       // at `http` — the level from which this stream is machine-readable —
       // so a caller reading prose never sees the summary twice.
-      this.npmLog('http', npmAddedLine(installed.length, elapsed));
+      npmLog('http', npmAddedLine(installed.length, elapsed));
     }
     if (cachedHits > 0) {
       log(`  (${cachedHits} from cache)`);
@@ -743,6 +738,7 @@ export class NpmInstaller {
     roots: readonly TreeRoot[],
     installed: ReadonlyArray<InstalledPackage<ResolvedPackage>>,
     log: (msg: string) => void,
+    npmLog: NpmLogEmitter,
     opts: PlanOptions & {
       devOnly?: ReadonlySet<string>;
       advised?: Set<string>;
@@ -894,9 +890,9 @@ export class NpmInstaller {
             if (res.cacheStatEvents) fanoutCacheStatEvents.push(...res.cacheStatEvents);
             // One `npm http` line per packument, reporting the tier that actually served it.
             if (res.packumentSource === 'network') {
-              this.npmLog('http', npmHttpFetchLine(packumentUrl(taskName, registry), res.packumentElapsedMs));
+              npmLog('http', npmHttpFetchLine(packumentUrl(taskName, registry), res.packumentElapsedMs));
             } else {
-              this.npmLog('http', npmHttpCacheLine(packumentUrl(taskName, registry)));
+              npmLog('http', npmHttpCacheLine(packumentUrl(taskName, registry)));
             }
             totalPackumentBytes += res.packumentBytesDecoded;
             if (res.packumentSource === 'r2-cache') r2Wins++;
@@ -1039,9 +1035,10 @@ export class NpmInstaller {
      * namespace, which the batch's waves write through, for its receipts.
      */
     reader: { engine: CredentialedVfs; view: ProcessView },
-    pid?: number,
+    pid: number,
+    log: (msg: string) => void,
+    npmLog: NpmLogEmitter,
   ): Promise<FetchOutcome> {
-    const log = (msg: string) => this.onProgress?.(msg);
     const installed: PackagePlacement[] = [];
     const failed: FetchOutcome['failed'] = [];
     let filesWritten = 0;
@@ -1229,7 +1226,7 @@ export class NpmInstaller {
         // One `npm http` line per tarball, reporting the tier that served it.
         const spec = specByDir.get(dir);
         if (spec && r.tarballSource) {
-          this.npmLog('http', r.tarballSource === 'registry'
+          npmLog('http', r.tarballSource === 'registry'
             ? npmHttpFetchLine(spec.tarballUrl, r.tarballElapsedMs ?? 0)
             : npmHttpCacheLine(spec.tarballUrl, spec.integrity || undefined));
         }
@@ -1322,6 +1319,8 @@ export class NpmInstaller {
     toFetch: PackagePlacement[],
     nmDir: string,
     principal: { pid: number; cred: VfsCred; view: ProcessView; tmp: string | null },
+    log: (msg: string) => void,
+    npmLog: NpmLogEmitter,
   ): Promise<FetchOutcome> {
     const { view, tmp } = principal;
     if (tmp === null) {
@@ -1333,7 +1332,7 @@ export class NpmInstaller {
     await withRecall(() => staging.mkdir(stage, { recursive: true }));
     this.placing.add(stage);
     try {
-      const result = await this.fetchViaBatchFacet(toFetch, `${stage}/node_modules`, { engine: staging, view }, principal.pid);
+      const result = await this.fetchViaBatchFacet(toFetch, `${stage}/node_modules`, { engine: staging, view }, principal.pid, log, npmLog);
       const installed = [...result.installed];
       const failed = [...result.failed];
       // What failed is not put on the mount: its staged files (part of a
@@ -1357,7 +1356,7 @@ export class NpmInstaller {
         }
         return true;
       });
-      this.onProgress?.(`Copying ${tops.length} package${tops.length === 1 ? '' : 's'} into /${nmDir}...`);
+      log(`Copying ${tops.length} package${tops.length === 1 ? '' : 's'} into /${nmDir}...`);
       await view.mkdir(`/${nmDir}`, { recursive: true });
       const renames = await canRename(view, `/${nmDir}`);
       const swept = new Set<string>();
@@ -1382,7 +1381,7 @@ export class NpmInstaller {
             if (held >= 0) installed.splice(held, 1);
             if (!failed.some((f) => f.target === target)) failed.push({ target, reason });
           }
-          this.onProgress?.(`  [warn] ${placement}: could not be put in ${dst}: ${describeError(error)}`);
+          log(`  [warn] ${placement}: could not be put in ${dst}: ${describeError(error)}`);
         }
       }
       return { installed, failed, filesWritten: result.filesWritten };
@@ -1492,6 +1491,7 @@ export class NpmInstaller {
     projDir: string,
     fs: ProjectFs,
     opts: { packages?: string[]; production?: boolean; saveDev?: boolean; saveOptional?: boolean; global?: boolean; legacyPeerDeps?: boolean },
+    log: (msg: string) => void,
   ): Promise<{ roots: TreeRoot[]; named: NamedPackage[]; devOnly: Set<string>; advised: Set<string> }> {
     // Which names only a devDependency asked for — diagnostics only, so an
     // advisory can say whether anything this project RUNS actually needs
@@ -1512,13 +1512,13 @@ export class NpmInstaller {
     }
     // A devDependency `--omit=dev` leaves out is planned, and not announced.
     const omitted = new Set(opts.production ? roots.filter(({ type }) => type === 'dev').map(({ name }) => name) : []);
-    const swapped = this.applyW6Registry(Object.fromEntries(roots.map(({ name, range }) => [name, range])), { devOnly, advised, omitted });
+    const swapped = this.applyW6Registry(Object.fromEntries(roots.map(({ name, range }) => [name, range])), log, { devOnly, advised, omitted });
     return { roots: roots.map((root) => ({ ...root, range: swapped[root.name] ?? root.range })), named, devOnly, advised };
   }
 
   /**
    * W6: apply the PACKAGE_ABI_POLICY swap rewrites and reject deny list
-   * to a top-level spec map. Emits `[swap]` notices via onProgress.
+   * to a top-level spec map. Emits `[swap]` notices through `log`.
    *
    * A swap rewrites the spec's RANGE to an npm alias of the swap target
    * (`esbuild` → `npm:esbuild-wasm@<range>`), never its key: the key names
@@ -1539,14 +1539,15 @@ export class NpmInstaller {
    */
   private applyW6Registry(
     specs: Record<string, string>,
+    log: (msg: string) => void,
     options: { devOnly?: ReadonlySet<string>; advised?: Set<string>; omitted?: ReadonlySet<string> } = {},
   ): Record<string, string> {
     const { specs: swapped, swaps } = applySwaps(specs);
     for (const s of swaps) {
-      // onProgress is unguarded everywhere else in this file (rg the
-      // pattern); singling it out for try/catch here would be inconsistent
-      // and could mask real bugs in the progress hook.
-      this.onProgress?.(formatSwapNotice(s));
+      // `log` is unguarded everywhere else in this file; singling it out for
+      // try/catch here would be inconsistent and could mask real bugs in the
+      // progress hook.
+      log(formatSwapNotice(s));
       // W6.5: telemetry — fire-and-forget; sink swallows its own errors.
       emitRegistryEvent({ type: 'swap', from: s.from, to: s.to, ctx: 'top' });
     }
@@ -1556,7 +1557,7 @@ export class NpmInstaller {
       options.advised?.add(r.from);
       const hint = r.suggest ? ` … try: ${r.suggest}` : '';
       const marker = options.devOnly?.has(r.from) ? ' (declared in devDependencies)' : '';
-      this.onProgress?.(`[npm] note: ${r.from} has no Workers-compatible build${marker}: ${r.reason}${hint}`);
+      log(`[npm] note: ${r.from} has no Workers-compatible build${marker}: ${r.reason}${hint}`);
     }
     return swapped;
   }
@@ -1656,6 +1657,7 @@ export class NpmInstaller {
     projDir: string,
     fs: ProjectFs,
     log: (msg: string) => void,
+    npmLog: NpmLogEmitter,
     registry: string,
     legacyPeerDeps: boolean,
   ): Promise<{ installed: Array<InstalledPackage<ResolvedPackage>>; lockName: string; suspect: boolean }> {
@@ -1758,7 +1760,7 @@ export class NpmInstaller {
     // package there, anything it brings below it, unless the lock already
     // placed that path.
     for (const { placement, folderName, spec } of swapPlacements) {
-      const swapped = await this.resolveTreeViaFanout(network, [{ name: folderName, range: spec, type: 'prod' }], [], log, { registry });
+      const swapped = await this.resolveTreeViaFanout(network, [{ name: folderName, range: spec, type: 'prod' }], [], log, npmLog, { registry });
       const parent = placement.includes('/node_modules/') ? parentPlacement(placement) : null;
       const rebase = (path: string) => (parent === null ? path : `${parent}/node_modules/${path}`);
       const failed = new Map(swapped.plan.failures.map((failure) => [failure.id, failure]));
