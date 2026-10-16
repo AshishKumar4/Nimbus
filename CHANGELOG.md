@@ -5,6 +5,15 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a name that begins with U+FEFF (the UTF-8 BOM, bytes EF BB BF)
+  keeps it, as git, tar and Linux keep it. This covers file and directory
+  names in git's index, trees and checkouts, symlink targets, ZIP member
+  names, paths in the wasm bash and its programs, and the text `$( )`
+  captures. Before, each was decoded with a TextDecoder that drops a
+  leading BOM: a clone of a repository with a directory named by a BOM alone
+  failed with "invalid path", a file `\uFEFFf` was created as `f`, and
+  `readlink` lost the BOM from its link's target. A `.git/commondir` loses
+  only its line's end, as git reads it.
 - Fixed: `pip install` decides which dependencies apply by the markers of
   the CPython it installs for: CPython 3.13.14 on `wasm32-wasi`, as the
   interpreter itself answers them (`sys_platform` is `"wasi"`). Before, pip
