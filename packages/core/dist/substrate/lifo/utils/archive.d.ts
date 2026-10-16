@@ -15,8 +15,14 @@ export declare function createTar(entries: TarEntry[]): Uint8Array;
  * its bytes as a file. Paths are canonical and inside the archive's root; an
  * entry that escapes it is left out, and one that claims more bytes than
  * the archive holds is never read (its buffer would be the claim's size).
+ * An archive that ends inside a member is `truncated`: its entries are those
+ * before, and that member with its whole 512-byte blocks, as GNU tar
+ * extracts them before it fails.
  */
-export declare function parseTar(data: Uint8Array): Promise<TarEntry[]>;
+export declare function parseTar(data: Uint8Array): Promise<{
+    entries: TarEntry[];
+    truncated: boolean;
+}>;
 export interface ZipEntry {
     path: string;
     data: Uint8Array;

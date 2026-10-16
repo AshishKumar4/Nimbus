@@ -35,6 +35,6 @@ export interface TarballWriteResult {
  * Filesystem failures reject.
  */
 export declare function writeTarballStream(body: ReadableStream<Uint8Array>, targetDir: string, vfs: TarballWriteTarget): Promise<TarballWriteResult>;
-/** Extract every regular file. Gzipped input is decompressed first. */
+/** Extract every regular file. Gzipped input is decompressed first. An archive that is not whole throws. */
 export declare function extractTarball(tarball: ArrayBuffer): Promise<Map<string, Uint8Array>>;
 //# sourceMappingURL=tarball.d.ts.map
