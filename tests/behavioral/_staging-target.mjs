@@ -95,7 +95,7 @@ const {
   writeState,
 } = await import('./_deploy-target.mjs');
 const { assertDeployIsolated, describeTarget } = await import('../../scripts/deploy-isolation.mjs');
-const { uploadConfig } = await import('../../scripts/ci/lib/release.mjs');
+const { hostedStagingName, uploadConfig } = await import('../../scripts/ci/lib/release.mjs');
 const { holdLease } = await import('../../scripts/ci/lib/lease.mjs');
 
 const STATE_PATH = join(MACHINE_STATE_DIR, 'staging-target.json');
@@ -108,7 +108,7 @@ const STATE_PATH = join(MACHINE_STATE_DIR, 'staging-target.json');
 const TARGETS = {
   demo: {
     label: 'hosted-demo',
-    name: 'nimbus-staging',
+    name: hostedStagingName(ROOT),
     dir: join(ROOT, 'apps', 'hosted-demo'),
     configPath: 'apps/hosted-demo/wrangler.jsonc',
     envName: 'staging',

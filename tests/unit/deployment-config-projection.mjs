@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { nimbusAppConfigs } from '../../scripts/generate-wrangler-configs.mjs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DEPLOYMENT_SPEC, nimbusAppConfigs, writeNimbusAppConfigs } from '../../scripts/generate-wrangler-configs.mjs';
+import { hostedStagingName } from '../../scripts/ci/lib/release.mjs';
 import { buildNimbusWranglerConfig } from '../../packages/config/src/index.ts';
 import { checkAll, loadConfig } from '../../scripts/deploy-isolation.mjs';
 
@@ -25,4 +28,20 @@ for (const tier of [changed[0], ...Object.values(changed[0].env), changed[1], ch
   assert.equal(tier.vars.NIMBUS_RUNTIME_CATALOG_SHA256, 'a'.repeat(64));
 }
 assert.deepEqual(probe.limits, buildNimbusWranglerConfig({ name: 'fixture' }).limits, 'hosting limits come from the canonical builder');
+
+// The staging target and the release find hosted staging by the name the
+// policy gives it: renamed there and regenerated, it is the new name.
+assert.equal(hostedStagingName(new URL('../..', import.meta.url).pathname), 'nimbus-staging');
+{
+  const root = mkdtempSync(join(tmpdir(), 'deployment-rename-'));
+  try {
+    for (const dir of ['apps', 'apps/hosted-demo', 'apps/probe']) mkdirSync(join(root, dir), { recursive: true });
+    const renamed = { ...spec, hostedDemo: { ...spec.hostedDemo, staging: { ...spec.hostedDemo.staging, name: 'nimbus-staging-renamed' } } };
+    writeFileSync(join(root, DEPLOYMENT_SPEC), JSON.stringify(renamed));
+    writeNimbusAppConfigs({ root });
+    assert.equal(hostedStagingName(root), 'nimbus-staging-renamed');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
 console.log('deployment-config-projection: ok');
