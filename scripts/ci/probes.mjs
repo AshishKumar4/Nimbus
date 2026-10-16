@@ -19,7 +19,7 @@
 // Probes run CI-strict (--no-retry).
 //
 // <file> is JSON: { base, part, rows }. rows: one per probe, { name (its path
-// under tests/behavioral), exitCode, seconds, output }, then
+// under tests/behavioral), exitCode, seconds, output, assertions, sessions }, then
 // { name: 'session-ledger' }, red when a minted session never got its DELETE.
 // Exit: 0, every row green; 1, otherwise; 2, not graded (no token, the
 // target unreachable, or the runner produced no verdict).
@@ -128,6 +128,7 @@ try {
   rows.push(...verdict.probes.map((probe) => ({
     name: `tests/behavioral/${probe.probe}`, exitCode: probe.code ?? 1, seconds: probe.elapsed, output: scrub(probe.output ?? ''),
     assertions: probe.assertions ? JSON.parse(scrub(JSON.stringify(probe.assertions))) : null,
+    sessions: probe.sessions,
   })));
   const { minted, deleted, leaks } = verdict.sessions;
   rows.push({

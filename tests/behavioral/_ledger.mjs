@@ -95,3 +95,28 @@ export function sessionOutcomes(text) {
     ttlReaped: undeleted.filter(([, s]) => s.reap === 'ttl'),
   };
 }
+
+/**
+ * Each probe's sessions, from the ledger: the sid, its mint time and target,
+ * and when one of its sockets ended with no close frame (1006). remote-probes
+ * attributes a reset by these.
+ *
+ * @param {string} text  The ledger file's contents.
+ * @returns {Map<string, Array<{ sid: string, at: string, base: string | null, abnormalCloses: string[] }>>}
+ */
+export function probeSessions(text) {
+  const byProbe = new Map();
+  const bySid = new Map();
+  for (const line of text.split('\n')) {
+    let e;
+    try { e = JSON.parse(line); } catch { continue; }
+    if (e.event === 'mint') {
+      const session = { sid: e.sid, at: e.at, base: e.base ?? null, abnormalCloses: [] };
+      bySid.set(e.sid, session);
+      byProbe.set(e.probe, [...(byProbe.get(e.probe) ?? []), session]);
+    } else if (e.event === 'abnormal-close') {
+      bySid.get(e.sid)?.abnormalCloses.push(e.at);
+    }
+  }
+  return byProbe;
+}

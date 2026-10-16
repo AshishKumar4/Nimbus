@@ -46,13 +46,15 @@
 // of the candidate), runs those probes in a task of their own beside the
 // parts, and deletes the throwaways when the run ends.
 //
-// A red row whose output shows a 1006 close or E_NIMBUS_DO_OVERLOADED is
-// attributed from the platform's own record (lib/reset-attribution.mjs:
-// Workers Logs and traces, read here with the observability token). A row
-// whose sessions show only the platform storage reset is rerun once, alone,
-// against the same target; the rerun grades it, and the verdict keeps both.
-// Every other class stays red, with its attribution printed. A throwaway
-// target redeployed under the run makes the run not graded.
+// A red row whose session socket closed 1006 (the run's session ledger) or
+// that shows E_NIMBUS_DO_OVERLOADED is attributed from the platform's own
+// record (lib/reset-attribution.mjs: Workers Logs and traces, read here with
+// the observability token). A row whose only failures are those closes, on
+// sessions that show the platform storage reset and nothing else, is rerun
+// once, alone, against the same target; the rerun's task grades it, and the
+// verdict keeps both. Every other class stays red, with its attribution
+// printed. A throwaway (target or paired arm) redeployed under a job makes
+// the run not graded. Each job gets tokens minted for it.
 //
 // It prints one line per task and every red row with its output tail, and
 // keeps the whole verdict under ~/.local/state/nimbus/remote-probes/.
@@ -65,8 +67,8 @@ import { PROBE_TARGET_SKIPS } from '../../tests/behavioral/_probe-target-skips.m
 import { namesProbe, selectionNames, selects } from '../../tests/behavioral/_selection.mjs';
 import { mapOnArmada } from './lib/armada.mjs';
 import { assertInstalled } from './lib/installed.mjs';
-import { defaultBaseline, standUpPaired } from './lib/paired-previews.mjs';
-import { OBSERVABILITY_TOKEN_FILE, attributeRow, describeAttribution, showsResetSymptom, telemetry } from './lib/reset-attribution.mjs';
+import { defaultBaseline, pairedPreviews } from './lib/paired-previews.mjs';
+import { OBSERVABILITY_TOKEN_FILE, attributeRow, describeAttribution, regradable, showsResetSymptom, telemetry } from './lib/reset-attribution.mjs';
 import { NIMBUS_STATE } from './lib/state-dir.mjs';
 import { writeScreenshots } from './lib/probe-screenshots.mjs';
 
@@ -124,24 +126,47 @@ try {
 // no probe-target skips.
 const skip = flags.skip ?? (hosted ? '' : PROBE_TARGET_SKIPS.join(','));
 const throwaway = flags.deploy ?? target[2];
-// A hosted demo has no paired targets; its checks are named, and none is paired.
-const paired = hosted ? [] : PAIRED_PROBES.filter((probe) => selects({ only: flags.only, skip }, `${probe}.mjs`));
+const repeats = (flags.repeat ?? '').split(',').filter(Boolean);
+// The paired probes the suite selects, and those it repeats, need the arms;
+// a hosted demo's checks are named, and none is paired.
+const pairedInSuite = hosted ? [] : PAIRED_PROBES.filter((probe) => selects({ only: flags.only, skip }, `${probe}.mjs`));
+const paired = hosted ? [] : PAIRED_PROBES.filter((probe) => pairedInSuite.includes(probe)
+  || repeats.some((name) => namesProbe(selectionNames(name), `${probe}.mjs`)));
 // An --only that names nothing but paired probes needs no parts.
-const suite = !flags.only || selectionNames(flags.only).some((name) => !paired.some((probe) => namesProbe([name], `${probe}.mjs`)));
+const suite = !flags.only || selectionNames(flags.only).some((name) => !PAIRED_PROBES.some((probe) => namesProbe([name], `${probe}.mjs`)));
 
-let baseline = null;
-let pairedRun = null;
+// While no armada job runs, a signal ends the run through 'exit', whose
+// listener deletes the paired throwaways. During a job, armada's own
+// listener cancels it and exits, and that 'exit' deletes them too.
+const exitOnSignal = () => process.exit(130);
+const signals = (on) => {
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    if (on) process.on(signal, exitOnSignal);
+    else process.off(signal, exitOnSignal);
+  }
+};
+const onArmada = async (job) => {
+  signals(false);
+  try { return await job(); } finally { signals(true); }
+};
+
+let arms = null;
 let status = 0;
 try {
   // Minting and deploying run the target scripts, which parse wrangler configs.
   if (!hosted) assertInstalled(repo, 'remote-probes');
   if (flags.deploy && git(repo, ['rev-parse', 'HEAD']) !== sha) throw new Error(`--deploy deploys this worktree's HEAD, and ${sha.slice(0, 12)} is not it`);
-  if (paired.length > 0) baseline = flags.baseline ? git(repo, ['rev-parse', '--verify', `${flags.baseline}^{commit}`]) : defaultBaseline(repo, sha);
-  // Every release this run uploads, built at once: the candidate's for --deploy
-  // or the paired arm b, the baseline's for arms a1 and a2.
+  const baseline = paired.length === 0 ? null
+    : flags.baseline ? git(repo, ['rev-parse', '--verify', `${flags.baseline}^{commit}`]) : defaultBaseline(repo, sha);
+  // Every release this run uploads, built at once and settled together: the
+  // candidate's for --deploy or the paired arm b, the baseline's for a1 and a2.
   const commits = [...new Set([...(flags.deploy || baseline ? [sha] : []), ...(baseline ? [baseline] : [])])];
   const { fetchRelease } = await import('./lib/release.mjs');
-  const releases = Object.fromEntries(await Promise.all(commits.map(async (commit) => [commit, (await fetchRelease({ repo, sha: commit, targets: ['apps/probe'] })).dir])));
+  const built = await Promise.allSettled(commits.map((commit) => fetchRelease({ repo, sha: commit, targets: ['apps/probe'] })));
+  const unbuilt = built.find((outcome) => outcome.status === 'rejected');
+  if (unbuilt) throw unbuilt.reason;
+  const releases = Object.fromEntries(commits.map((commit, i) => [commit, built[i].value.dir]));
+  signals(true);
   if (flags.deploy) {
     // Its exports (a token among them) are not wanted: probes get their own, below.
     const up = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'up', '--name', flags.deploy, '--bundle', releases[sha]], { cwd: repo, stdio: ['ignore', 'ignore', 'inherit'] });
@@ -149,85 +174,103 @@ try {
   }
   if (baseline) {
     console.error(`remote-probes: ${paired.join(', ')} graded against ${baseline.slice(0, 12)}${baseline === sha ? ' (the candidate itself)' : ''}`);
-    pairedRun = await standUpPaired({ repo, baseline, candidate: sha, releases, ttlMs: TOKEN_TTL_MS });
+    arms = pairedPreviews({ repo });
+    process.on('exit', () => {
+      for (const line of arms.teardown()) console.error(`remote-probes: LEFT BEHIND ${line}`);
+    });
+    await arms.standUp({ baseline, candidate: sha, releases });
   }
+  status = await probeRun();
 } catch (error) {
   console.error(`remote-probes: NOT GRADED — ${error.message}`);
   status = 2;
 }
-if (status === 0) status = await probeRun();
-const left = pairedRun ? await pairedRun.teardown() : [];
-for (const line of left) console.error(`remote-probes: LEFT BEHIND ${line}`);
 process.exit(status);
 
-/** The live deployment of the throwaway this run probes, by its id; null for staging and hosted targets. */
-function deployment() {
-  if (throwaway === undefined) return null;
-  const read = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'version', '--name', throwaway], { cwd: repo, encoding: 'utf8' });
-  if (read.status !== 0) throw new Error(`could not read ${throwaway}'s live deployment:\n${read.stderr}`);
-  return read.stdout.trim();
+/**
+ * The deployments this run grades: the throwaway target's and each paired
+ * arm's, by id. Staging's are release.mjs's to bracket; a hosted demo has none.
+ */
+async function deployments() {
+  const ids = {};
+  if (throwaway !== undefined) {
+    const read = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'version', '--name', throwaway], { cwd: repo, encoding: 'utf8' });
+    if (read.status !== 0) throw new Error(`could not read ${throwaway}'s live deployment:\n${read.stderr}`);
+    ids[throwaway] = read.stdout.trim();
+  }
+  if (arms) Object.assign(ids, await arms.versions());
+  return ids;
+}
+
+/**
+ * Credentials for one armada job: the target's token and each arm's, minted
+ * now, and the latest the job's tasks may start and still end within their
+ * limit before a token expires (a task that starts later is not graded).
+ */
+async function credentials() {
+  const startBy = Date.now() + TOKEN_TTL_MS - TASK_TIMEOUT_S * 1000;
+  if (hosted) return { base: hosted, token: null, arms: null, startBy };
+  const minter = throwaway === undefined
+    ? ['tests/behavioral/_staging-target.mjs', 'token']
+    : ['tests/behavioral/_throwaway-target.mjs', 'token', '--name', throwaway];
+  const minted = spawnSync('bun', [...minter, '--json', '--ttl-ms', String(TOKEN_TTL_MS)], { cwd: repo, encoding: 'utf8' });
+  if (minted.status !== 0) throw new Error(`could not mint a token for ${throwaway ?? 'staging'}:\n${minted.stderr}`);
+  const { base, token } = JSON.parse(minted.stdout);
+  return { base, token, arms: arms ? await arms.credentials(TOKEN_TTL_MS) : null, startBy };
 }
 
 /** The suite against the target, and its verdict kept; resolves to the run's exit status. */
 async function probeRun() {
-  const minter = throwaway === undefined
-    ? ['tests/behavioral/_staging-target.mjs', 'token']
-    : ['tests/behavioral/_throwaway-target.mjs', 'token', '--name', throwaway];
-  // The latest a task may start and still end within its limit before the token
-  // expires; one that starts later (a slow queue, a long preparation) is not graded.
-  const startBy = Date.now() + TOKEN_TTL_MS - TASK_TIMEOUT_S * 1000;
-  const minted = hosted ? null : spawnSync('bun', [...minter, '--json', '--ttl-ms', String(TOKEN_TTL_MS)], { cwd: repo, encoding: 'utf8' });
-  if (minted && minted.status !== 0) {
-    console.error(`remote-probes: NOT GRADED — could not mint a token for ${throwaway ?? 'staging'}:\n${minted.stderr}`);
-    return 2;
-  }
-  const { base, token } = minted ? JSON.parse(minted.stdout) : { base: hosted, token: null };
-  const arms = pairedRun?.targets ?? null;
-  const secrets = [token, ...Object.values(arms ?? {}).map((arm) => arm.token)].filter(Boolean);
+  const secrets = [];
   const scrub = (text) => secrets.reduce((scrubbed, secret) => scrubbed.replaceAll(secret, '[NIMBUS_PROBE_TOKEN]'), text);
+  /** Map `list` on armada with credentials of its own; every token it carries is scrubbed from what this prints and keeps. */
+  const mapItems = async (list, label) => {
+    const { base, token, arms: armTargets, startBy } = await credentials();
+    secrets.push(...[token, ...Object.values(armTargets ?? {}).map((arm) => arm.token)].filter(Boolean));
+    const env = { ...(token ? { NIMBUS_PROBE_TOKEN: token } : {}), ...(armTargets ? { [PAIRED_ENV]: JSON.stringify(armTargets) } : {}) };
+    const before = await deployments();
+    console.error(`remote-probes: ${list.length} tasks against ${base}, probes of ${sha.slice(0, 12)}`);
+    const mapped = await onArmada(() => mapOnArmada({
+      repo, sha, files: ['scripts/ci/probes.mjs', 'scripts/ci/lib/probe-screenshots.mjs', 'tests/behavioral/run-all.mjs', 'tests/behavioral/_selection.mjs'], setup: 'scripts/ci/recipe/chromium.sh',
+      items: list, env, label, timeout: TASK_TIMEOUT_S,
+      command: ['bun', 'scripts/ci/probes.mjs', '--out', '{out}', '--base', base, '--only', '{only}', '--skip', '{skip}', '--part', '{part}', '--jobs', '{jobs}',
+        ...(token ? ['--start-by', String(startBy)] : ['--anonymous']), ...(flags.screenshots ? ['--screenshots', '1'] : [])],
+    }));
+    const after = await deployments();
+    const moved = Object.keys(before).filter((name) => after[name] !== before[name]);
+    return { base, mapped, moved: moved.map((name) => `${name} served ${before[name]} before the job and ${after[name]} after`) };
+  };
+
   // The paired probes run in a task of their own, one at a time; the parts skip them.
-  const partSkip = [skip, ...paired].filter(Boolean).join(',');
+  const partSkip = [skip, ...PAIRED_PROBES].filter(Boolean).join(',');
   const items = [
     ...(suite ? Array.from({ length: parts }, (_, i) => ({ task: `part ${i + 1}/${parts}`, part: `${i + 1}/${parts}`, only: flags.only ?? '', skip: partSkip, jobs })) : []),
-    ...(paired.length > 0 ? [{ task: 'paired perf', part: '1/1', only: paired.join(','), skip, jobs: 1 }] : []),
-    ...(flags.repeat ?? '').split(',').filter(Boolean).flatMap((probe) => Array.from({ length: times }, (_, i) => ({
-      task: `${probe} #${i + 1}`, part: '1/1', only: probe, skip, jobs: 1,
-    }))),
+    ...(pairedInSuite.length > 0 ? [{ task: 'paired perf', part: '1/1', only: pairedInSuite.join(','), skip, jobs: 1 }] : []),
+    ...repeats.flatMap((probe) => Array.from({ length: times }, (_, i) => ({ task: `${probe} #${i + 1}`, part: '1/1', only: probe, skip, jobs: 1 }))),
   ];
-  console.error(`remote-probes: ${items.length} tasks against ${base}, probes of ${sha.slice(0, 12)}`);
-  const env = { ...(token ? { NIMBUS_PROBE_TOKEN: token } : {}), ...(arms ? { [PAIRED_ENV]: JSON.stringify(arms) } : {}) };
-  const mapItems = (list, label) => mapOnArmada({
-    repo, sha, files: ['scripts/ci/probes.mjs', 'scripts/ci/lib/probe-screenshots.mjs', 'tests/behavioral/run-all.mjs', 'tests/behavioral/_selection.mjs'], setup: 'scripts/ci/recipe/chromium.sh',
-    items: list, env, label, timeout: TASK_TIMEOUT_S,
-    command: ['bun', 'scripts/ci/probes.mjs', '--out', '{out}', '--base', base, '--only', '{only}', '--skip', '{skip}', '--part', '{part}', '--jobs', '{jobs}',
-      ...(token ? ['--start-by', String(startBy)] : ['--anonymous']), ...(flags.screenshots ? ['--screenshots', '1'] : [])],
-  });
-
-  let before;
-  let mapped;
+  let run;
   try {
-    before = deployment();
-    mapped = await mapItems(items, `remote-probes ${sha.slice(0, 12)} ${throwaway ?? hosted ?? 'staging'}`);
+    run = await mapItems(items, `remote-probes ${sha.slice(0, 12)} ${throwaway ?? hosted ?? 'staging'}`);
   } catch (error) {
     console.error(`remote-probes: NOT GRADED — ${scrub(error.message)}`);
     return 2;
   }
-
-  let status = 0;
+  const { base, mapped } = run;
+  const problems = [...run.moved];
   const tasks = readTasks(items, mapped, scrub);
 
   // Red rows a reset or an overload left, attributed from the platform's record.
   const reader = telemetry({ account: process.env.CLOUDFLARE_ACCOUNT_ID });
-  const symptomatic = tasks.flatMap((task) => (task.rows ?? []).filter((row) => row.exitCode !== 0 && showsResetSymptom(row.output)).map((row) => ({ task, row })));
+  const symptomatic = tasks.flatMap((task) => (task.rows ?? []).filter((row) => row.exitCode !== 0 && row.sessions && showsResetSymptom(row)).map((row) => ({ task, row })));
   if (symptomatic.length > 0 && !reader) console.log(`remote-probes: ${symptomatic.length} red rows show a reset or an overload; without CLOUDFLARE_ACCOUNT_ID and the observability token (${OBSERVABILITY_TOKEN_FILE}) none is attributed`);
   if (symptomatic.length > 0 && reader) {
     for (let attempt = 1; ; attempt++) {
       for (const entry of symptomatic) {
         if (entry.row.attribution?.sessions.every((session) => session.object !== null)) continue;
         try {
-          entry.row.attribution = await attributeRow(reader, { output: entry.row.output, base, until: Date.now() });
+          entry.row.attribution = await attributeRow(reader, entry.row, { base, until: Date.now() });
         } catch (error) {
-          entry.row.attribution = { sessions: [], regrade: false, error: error.message };
+          entry.row.attribution = { sessions: [], error: error.message };
         }
       }
       const unnamed = symptomatic.some(({ row }) => row.attribution.sessions.some((session) => session.object === null));
@@ -239,24 +282,29 @@ async function probeRun() {
     }
   }
 
-  // A row only the platform storage reset turned red is rerun once, alone; its rerun grades it.
-  const regrade = symptomatic.filter(({ row }) => row.attribution?.regrade);
+  // A row only the platform storage reset turned red is rerun once, alone.
+  // The rerun's task grades it, and only once that task has rows.
+  const regrade = symptomatic.filter(({ row }) => row.attribution && !row.attribution.error && regradable(row, row.attribution));
   if (regrade.length > 0) {
-    const reruns = regrade.map(({ task, row }, i) => {
-      const probe = row.name.replace(/^tests\/behavioral\//, '').replace(/\.mjs$/, '');
-      row.regraded = { task: `regrade ${probe} #${i + 1}`, evidence: describeAttribution(row.attribution) };
-      return { task: row.regraded.task, part: '1/1', only: probe, skip: '', jobs: 1, of: task.task };
-    });
+    const reruns = regrade.map(({ row }, i) => ({ task: `regrade ${row.name.replace(/^tests\/behavioral\//, '').replace(/\.mjs$/, '')} #${i + 1}`, part: '1/1',
+      only: row.name.replace(/^tests\/behavioral\//, ''), skip: '', jobs: 1 }));
     try {
-      const again = await mapItems(reruns.map(({ of, ...item }) => item), `remote-probes ${sha.slice(0, 12)} regrade`);
-      tasks.push(...readTasks(reruns, again, scrub));
+      const again = await mapItems(reruns, `remote-probes ${sha.slice(0, 12)} regrade`);
+      problems.push(...again.moved);
+      const rerun = readTasks(reruns, again.mapped, scrub);
+      tasks.push(...rerun);
+      regrade.forEach(({ row }, i) => {
+        if (!rerun[i]?.rows?.some((other) => other.name === row.name)) return;
+        row.regraded = { task: reruns[i].task, evidence: describeAttribution(row.attribution) };
+        console.log(`REGRADED ${row.name}: only the platform storage reset turned it red; ${reruns[i].task} grades it`);
+      });
     } catch (error) {
-      console.error(`remote-probes: NOT GRADED — the regrade could not run: ${scrub(error.message)}`);
-      status = 2;
+      problems.push(`the regrade could not run: ${scrub(error.message)}`);
     }
-    for (const { row } of regrade) console.log(`REGRADED ${row.name}: its sessions show only the platform storage reset; ${row.regraded.task} grades it`);
   }
 
+  let status = problems.length > 0 ? 2 : 0;
+  for (const problem of problems) console.log(`remote-probes: NOT GRADED — ${problem}`);
   for (const task of tasks) {
     if (!task.rows || task.screenshotError) {
       status = 2;
@@ -267,23 +315,12 @@ async function probeRun() {
     else if (red.length > 0 && status === 0) status = 1;
   }
 
-  try {
-    const after = deployment();
-    if (after !== before) {
-      console.log(`remote-probes: NOT GRADED — ${throwaway} was redeployed under the run: ${before} before, ${after} after`);
-      status = 2;
-    }
-  } catch (error) {
-    console.error(`remote-probes: NOT GRADED — ${error.message}`);
-    status = 2;
-  }
-
   const state = join(NIMBUS_STATE, 'remote-probes');
   try {
     mkdirSync(state, { recursive: true });
     const report = join(state, `${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}-${sha.slice(0, 12)}-${mapped.jobId}.json`);
     writeFileSync(report, `${scrub(JSON.stringify({ commit: sha, target: throwaway ? `throwaway:${throwaway}` : hosted ? `hosted:${hosted}` : 'staging', base, job: mapped.jobId,
-      ...(baseline ? { baseline } : {}), tasks }, null, 2))}\n`);
+      ...(paired.length > 0 ? { paired } : {}), problems, tasks }, null, 2))}\n`);
     console.log(`remote-probes: ${status === 0 ? 'every row green' : status === 1 ? 'red rows above' : 'not every task was graded'}; verdict ${report} (job ${mapped.jobId})`);
     return status;
   } catch (error) {

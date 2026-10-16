@@ -8,8 +8,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { retryAfterMs, sessionOutcomes } from '../behavioral/_ledger.mjs';
-import { mintedSessions } from '../../scripts/ci/lib/reset-attribution.mjs';
+import { probeSessions, retryAfterMs, sessionOutcomes } from '../behavioral/_ledger.mjs';
 
 const DRIVER = join(dirname(fileURLToPath(import.meta.url)), '..', 'behavioral', '_driver.mjs');
 const SCRATCH = mkdtempSync(join(tmpdir(), 'probe-session-cleanup-'));
@@ -233,14 +232,17 @@ console.log('  [6] only the destroy result confirms a deletion');
 }
 
 // [9] A paired probe mints on targets of its own (_paired.mjs): each session
-// is asked for, authenticated and deleted on the target it was minted on, and
-// a failure names that target, which remote-probes reads to attribute a reset.
+// is asked for, authenticated and deleted on the target it was minted on. The
+// ledger keeps each session's target and every socket of it that closed with
+// no close frame (1006), which remote-probes reads to attribute a reset.
 {
   const otherDeletes = [];
   const other = Bun.serve({
     port: 0,
-    fetch(req) {
+    fetch(req, server) {
       const { pathname } = new URL(req.url);
+      // The session resets under its terminal: the socket ends with no close frame.
+      if (pathname === '/s/arm-1/ws' && server.upgrade(req)) return undefined;
       if (req.method === 'POST' && pathname === '/new') {
         if (req.headers.get('authorization') !== 'Bearer arm-token') return new Response('unauthorized', { status: 401 });
         return new Response(null, { status: 302, headers: { Location: '/s/arm-1/' } });
@@ -251,14 +253,20 @@ console.log('  [6] only the destroy result confirms a deletion');
       }
       return new Response('not found', { status: 404 });
     },
+    websocket: { open(ws) { ws.terminate(); }, message() {} },
   });
   const otherBase = `http://127.0.0.1:${other.port}`;
   const failed = await probe('two-targets', `
     import { createProbeTarget } from ${JSON.stringify(join(dirname(DRIVER), '_session-transport.mjs'))};
+    import { Terminal } from ${JSON.stringify(DRIVER)};
     const arm = createProbeTarget({ base: ${JSON.stringify(otherBase)}, token: 'arm-token' });
     const a = await mintSession(arm);
     if (requestHeaders({}, a).Authorization !== 'Bearer arm-token') throw Error('the arm session lost its target credential');
     if (wsHeaders(a).headers.Authorization !== 'Bearer arm-token') throw Error('the arm session lost its socket credential');
+    const t = new Terminal(a);
+    await t.connect();
+    const dropped = await t.waitFor(() => false, 10_000, 'the reset').then(() => null, (error) => error.message);
+    if (!/close code 1006/.test(dropped)) throw Error('the arm terminal did not drop: ' + dropped);
     const b = await mintSession();
     if (requestHeaders({}, b).Authorization !== 'Bearer probe-token') throw Error('the suite session took the arm credential');
     throw new Error('probe failed');
@@ -268,9 +276,11 @@ console.log('  [6] only the destroy result confirms a deletion');
   assert.match(failed.stderr, /probe failed/);
   assert.deepEqual(otherDeletes, ['Bearer arm-token'], 'the exit hook deletes the arm session on its own target');
   assert.deepEqual(failed.deletes, ['fixture-1 Bearer probe-token']);
-  assert.deepEqual(mintedSessions(failed.stderr, `http://127.0.0.1:${target.port}`).map(({ sid, base }) => [sid, base]),
-    [['arm-1', otherBase], ['fixture-1', `http://127.0.0.1:${target.port}`]]);
-  console.log('  [9] sessions minted on another target are authenticated, deleted and named on it');
+  assert.match(failed.stderr, new RegExp(`^  arm-1  minted \\S+  on ${otherBase}$`, 'm'), 'a failure names the arm session with its target');
+  const [sessions] = [...probeSessions(failed.text).values()];
+  assert.deepEqual(sessions.map(({ sid, base, abnormalCloses }) => [sid, base, abnormalCloses.length]),
+    [['arm-1', otherBase, 1], ['fixture-1', `http://127.0.0.1:${target.port}`, 0]]);
+  console.log('  [9] sessions minted on another target are authenticated, deleted, named and ledgered on it, with their dropped sockets');
 }
 
 target.stop(true);

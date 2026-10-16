@@ -39,65 +39,76 @@ export function defaultBaseline(repo, sha) {
 }
 
 /**
- * Stand up the arms: `releases` maps the baseline and candidate commits to
- * their release dirs (one dir when they are the same commit). Resolves to
- * { targets: { a1|a2|b: { base, token } }, teardown }, where `teardown()`
- * deletes every Preview and worktree made here and resolves to the ones it
- * could not, each with the command that finishes it. On a failure part way,
- * what was made is torn down before it rejects.
+ * The arms of one run in `repo`. Everything `standUp` makes is recorded as
+ * it is made, so `teardown` (synchronous, for an 'exit' listener as well as
+ * the run's end) deletes it whatever ended the run.
  */
-export async function standUpPaired({ repo, baseline, candidate, releases, ttlMs, log = (line) => console.error(line) }) {
+export function pairedPreviews({ repo, log = (line) => console.error(line) }) {
   const runId = randomBytes(3).toString('hex');
-  const made = { worktrees: [], previews: [] };
-  const checkouts = new Map();
-  const teardown = async () => {
-    const left = [];
-    for (const { name, checkout } of made.previews) {
-      await run(checkout, 'bun', ['tests/behavioral/_throwaway-target.mjs', 'down', '--name', name])
-        .catch((error) => left.push(`Preview ${name}: ${error.message.split('\n')[0]}; finish with: (cd ${checkout} && bun tests/behavioral/_throwaway-target.mjs down --name ${name})`));
-    }
-    for (const dir of made.worktrees) {
-      if (left.some((line) => line.includes(dir))) continue;
-      try { git(repo, ['worktree', 'remove', '--force', dir]); } catch (error) { left.push(`worktree ${dir}: ${error.message}`); }
-    }
-    return left;
-  };
+  const worktrees = [];
+  const previews = [];
+  const arms = {};
+  let left = null;
   /** A clean checkout at `commit`: this one when it is there, else a detached worktree with dependencies installed. */
-  const checkoutAt = async (commit) => {
-    if (git(repo, ['rev-parse', 'HEAD']) === commit) return repo;
+  const checkouts = new Map();
+  const checkoutAt = (commit) => {
+    if (git(repo, ['rev-parse', 'HEAD']) === commit) return Promise.resolve(repo);
     if (!checkouts.has(commit)) {
-      checkouts.set(commit, (async () => {
-        const dir = join(NIMBUS_STATE, 'paired', `${runId}-${commit.slice(0, 12)}`);
-        mkdirSync(join(NIMBUS_STATE, 'paired'), { recursive: true });
-        git(repo, ['worktree', 'add', '--detach', dir, commit]);
-        made.worktrees.push(dir);
-        await run(dir, 'bun', INSTALL.split(' ').slice(1));
-        return dir;
-      })());
+      const dir = join(NIMBUS_STATE, 'paired', `${runId}-${commit.slice(0, 12)}`);
+      mkdirSync(join(NIMBUS_STATE, 'paired'), { recursive: true });
+      git(repo, ['worktree', 'add', '--detach', dir, commit]);
+      worktrees.push(dir);
+      checkouts.set(commit, run(dir, 'bun', INSTALL.split(' ').slice(1)).then(() => dir));
     }
     return checkouts.get(commit);
   };
-  const arm = { a1: baseline, a2: baseline, b: candidate };
-  try {
-    // One upload at a time per checkout (they share its .wrangler state); the two checkouts at once.
-    const groups = new Map();
-    for (const name of ARMS) {
-      const checkout = await checkoutAt(arm[name]);
-      groups.set(checkout, [...(groups.get(checkout) ?? []), name]);
-    }
-    const targets = {};
-    await Promise.all([...groups].map(async ([checkout, names]) => {
-      for (const name of names) {
-        const throwaway = `pp-${runId}-${name}`;
-        made.previews.push({ name: throwaway, checkout });
-        log(`paired: ${name} is ${arm[name].slice(0, 12)} on throwaway ${throwaway}`);
-        await run(checkout, 'bun', ['tests/behavioral/_throwaway-target.mjs', 'up', '--name', throwaway, '--bundle', releases[arm[name]]]);
-        targets[name] = JSON.parse(await run(checkout, 'bun', ['tests/behavioral/_throwaway-target.mjs', 'token', '--name', throwaway, '--json', '--ttl-ms', String(ttlMs)]));
+  const throwaway = (args, arm) => ['tests/behavioral/_throwaway-target.mjs', ...args, '--name', arms[arm].name];
+  return {
+    /**
+     * Upload `releases[baseline]` as a1 and a2 and `releases[candidate]` as b.
+     * One upload at a time per checkout (they share its .wrangler state), the
+     * two checkouts at once; every upload settles before a failure is thrown.
+     */
+    async standUp({ baseline, candidate, releases }) {
+      const commit = { a1: baseline, a2: baseline, b: candidate };
+      const groups = new Map();
+      for (const arm of ARMS) {
+        const checkout = await checkoutAt(commit[arm]);
+        arms[arm] = { name: `pp-${runId}-${arm}`, checkout };
+        groups.set(checkout, [...(groups.get(checkout) ?? []), arm]);
       }
-    }));
-    return { targets, teardown };
-  } catch (error) {
-    const left = await teardown();
-    throw new Error(`${error.message}${left.length ? `\nleft behind:\n${left.join('\n')}` : ''}`);
-  }
+      const settled = await Promise.allSettled([...groups.values()].map(async (group) => {
+        for (const arm of group) {
+          previews.push(arms[arm]);
+          log(`paired: ${arm} is ${commit[arm].slice(0, 12)} on throwaway ${arms[arm].name}`);
+          await run(arms[arm].checkout, 'bun', [...throwaway(['up', '--bundle', releases[commit[arm]]], arm)]);
+        }
+      }));
+      const failed = settled.find((outcome) => outcome.status === 'rejected');
+      if (failed) throw failed.reason;
+    },
+    /** Each arm's { base, token }, a token minted now to live `ttlMs`. */
+    async credentials(ttlMs) {
+      return Object.fromEntries(await Promise.all(ARMS.map(async (arm) => [arm,
+        JSON.parse(await run(arms[arm].checkout, 'bun', [...throwaway(['token', '--json', '--ttl-ms', String(ttlMs)], arm)]))])));
+    },
+    /** The deployment each arm serves now, by its id. */
+    async versions() {
+      return Object.fromEntries(await Promise.all(ARMS.map(async (arm) => [arm, (await run(arms[arm].checkout, 'bun', throwaway(['version'], arm))).trim()])));
+    },
+    /** Delete every Preview and worktree made here, once; returns what could not be, each with the command that finishes it. */
+    teardown() {
+      if (left) return left;
+      left = [];
+      for (const { name, checkout } of previews) {
+        const down = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'down', '--name', name], { cwd: checkout, encoding: 'utf8' });
+        if (down.status !== 0) left.push(`Preview ${name}: finish with (cd ${checkout} && bun tests/behavioral/_throwaway-target.mjs down --name ${name})`);
+      }
+      for (const dir of worktrees) {
+        if (left.some((line) => line.includes(dir))) continue;
+        try { git(repo, ['worktree', 'remove', '--force', dir]); } catch (error) { left.push(`worktree ${dir}: ${error.message}`); }
+      }
+      return left;
+    },
+  };
 }

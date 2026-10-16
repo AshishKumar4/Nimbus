@@ -27,7 +27,8 @@
 //                  every N-th probe, from the K-th), so N runs together
 //                  cover it once (scripts/ci/probes.mjs).
 //   --json PATH    Also write the verdict as JSON at PATH: each probe's
-//                  exit code, seconds and output tail, and the sessions.
+//                  exit code, seconds, output tail and sessions (from the
+//                  ledger, with their abnormal closes), and the sessions.
 //
 // Optional env:
 //   NIMBUS_PROBE_ONLY   — comma-separated probe names (e.g.
@@ -102,7 +103,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, relative, resolve as resolvePath } from 'node:path';
 
 import { RUN_ID, cleanupRunProfiles, reapRunBrowsers } from './_probe-browser.mjs';
-import { sessionOutcomes } from './_ledger.mjs';
+import { probeSessions, sessionOutcomes } from './_ledger.mjs';
 import { namesProbe, selectionNames, selects } from './_selection.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -509,10 +510,11 @@ if (leaks.length > 0) {
 }
 if (KEEP_LEDGER) console.log(`session ledger: ${LEDGER_PATH}`);
 if (JSON_REPORT) {
+  const sessionsByProbe = probeSessions(ledgerText);
   writeFileSync(JSON_REPORT, `${JSON.stringify({
     base: process.env.BASE,
     part: PART ? `${PART.k}/${PART.n}` : null,
-    probes: results,
+    probes: results.map((result) => ({ ...result, sessions: sessionsByProbe.get(result.probe) ?? [] })),
     sessions: { minted: deleted + leaks.length + ttlReaped.length, deleted, leaks: leaks.map(([sid, s]) => ({ sid, probe: s.probe, last: s.last })) },
   })}\n`);
 }

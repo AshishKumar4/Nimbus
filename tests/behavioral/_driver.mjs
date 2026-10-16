@@ -142,6 +142,15 @@ function ledger(event, sid, status, extra = {}) {
 }
 
 /**
+ * A socket of `sid` that ended with no close frame (1006): the session reset,
+ * or the connection dropped. remote-probes looks such a session up in the
+ * platform's record (scripts/ci/lib/reset-attribution.mjs).
+ */
+function noteAbnormalClose(sid, code) {
+  if (code === 1006) ledger('abnormal-close', sid, code);
+}
+
+/**
  * `reap: 'ttl'` marks a session the probe cannot delete: an anonymous demo
  * session, whose DELETE answers 401 by design and which the demo's TTL reaps.
  * run-all reports it as TTL-reaped rather than leaked (see _ledger.mjs).
@@ -162,7 +171,7 @@ function noteMinted(session) {
   // twice, the two could fall in different milliseconds.
   const at = new Date().toISOString();
   minted.push({ sid, at });
-  ledger('mint', sid, status, { at, ...(reap ? { reap } : {}) });
+  ledger('mint', sid, status, { at, base: session.base, ...(reap ? { reap } : {}) });
 }
 
 /**
@@ -310,6 +319,7 @@ export class Terminal {
       this.closed = true;
       this.closeCode = code;
       this.closeDetail = describeSocketClose(code, reason);
+      noteAbnormalClose(this.sid, code);
     });
     this.ws.on('message', (data) => {
       try {
@@ -452,6 +462,7 @@ export async function connectProcessTerminal(sid, pid, options = {}) {
   ws.on('close', (code, reason) => {
     closed = true;
     closeDetail = describeSocketClose(code, reason);
+    noteAbnormalClose(sid, code);
   });
   ws.on('message', (data) => {
     let msg;

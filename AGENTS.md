@@ -390,13 +390,15 @@ again.
   throwaways (two of the baseline, one of the candidate), runs those probes
   in a task of their own and deletes the throwaways at the end. Run by
   hand without them, a paired probe exits 2.
-- A red row that shows a 1006 close or `E_NIMBUS_DO_OVERLOADED` is
-  attributed from Workers Logs and traces by the exact error on the
-  session's object (`scripts/ci/lib/reset-attribution.mjs`, with the
-  observability token in `~/.config/nimbus/cf-observability-token`). Only a
-  row whose sessions show "Internal error in Durable Object storage caused
-  object to be reset" alone is rerun, once; the rerun grades it. An isolate
-  memory reset is Nimbus's own memory and stays red.
+- A red row whose session socket closed 1006 (the session ledger records
+  it) or that shows `E_NIMBUS_DO_OVERLOADED` is attributed from Workers Logs
+  and traces by the exact error on each session's object
+  (`scripts/ci/lib/reset-attribution.mjs`, with the observability token in
+  `~/.config/nimbus/cf-observability-token`). It is rerun once, and the
+  rerun grades it, only when every failed check is a 1006 close and each
+  dropped session shows "Internal error in Durable Object storage caused
+  object to be reset" and nothing else. An isolate memory reset is Nimbus's
+  own memory and stays red.
 - `--deploy` builds the bundle in a container (the dist gate, then
   `wrangler deploy --dry-run`) and uploads it from this machine with your
   wrangler login. The upload is not a build. No Cloudflare credential goes

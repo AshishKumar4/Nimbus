@@ -31,15 +31,9 @@ export const RESET_CLASSES = [
   { kind: 'overloaded', error: 'Durable Object is overloaded', platform: false },
 ];
 
-/** Whether a red row's output shows the symptom a reset or an overload leaves. */
-export const showsResetSymptom = (output) => /close code 1006\b|E_NIMBUS_DO_OVERLOADED/.test(output);
-
-/** The sessions a failing probe names (_driver.mjs nameMintedOnFailure): sid, mint time, and its target when not the run's. */
-export function mintedSessions(output, base) {
-  return [...output.matchAll(/^ {2}(\S+) {2}minted (\S+)(?: {2}on (\S+))?/gm)]
-    .map(([, sid, at, on]) => ({ sid, at: Date.parse(at), base: on ?? base }))
-    .filter((session) => Number.isFinite(session.at));
-}
+/** Whether a red row shows the symptom a reset or an overload leaves: a socket of its closed 1006, or a 503 naming the overload. */
+export const showsResetSymptom = (row) => (row.sessions ?? []).some((session) => session.abnormalCloses.length > 0)
+  || row.output.includes('E_NIMBUS_DO_OVERLOADED');
 
 /** Workers Logs filters for the objects of `base`'s Worker: a Preview by its slug, a Worker by its name. */
 function scopeOf(base) {
@@ -81,27 +75,37 @@ export function telemetry({ account, tokenFile = OBSERVABILITY_TOKEN_FILE, reque
 const errorsOf = (event) => [event.source?.message, event.$metadata?.error].filter((text) => typeof text === 'string');
 
 /**
- * Attribute one session: its object (by its sid, within its Worker), then
- * every reset class whose exact error that object logged, or its failed
- * invocations' traces recorded, between its mint and `until`. Resolves to
- * { sid, object, classes: [{ kind, platform, at, error }] }, object null
- * when no log names the session yet.
+ * Attribute one session (a row's `sessions` entry, from the run's ledger):
+ * its object (by its sid, within its Worker), then every reset class whose
+ * exact error that object logged, or its failed invocations' traces
+ * recorded, between its mint and `until`. Resolves to { sid, object,
+ * classes: [{ kind, platform, at, error }], complete }: object null when no
+ * log names the session yet, complete false when a query came back full, so
+ * a class may lie past what it returned.
  */
 export async function attributeSession(reader, { sid, at, base }, until) {
+  const from = Date.parse(at) - 5_000;
   const scope = scopeOf(base);
-  const named = await reader.query(at - 5_000, until, [[scope.key, scope.value], ['$workers.executionModel', 'durableObject']], { needle: sid, limit: 50 });
+  let complete = true;
+  const read = async (filters, options = {}) => {
+    const limit = options.limit ?? 2000;
+    const events = await reader.query(from, until, filters, { ...options, limit });
+    if (events.length >= limit) complete = false;
+    return events;
+  };
+  const named = await reader.query(from, until, [[scope.key, scope.value], ['$workers.executionModel', 'durableObject']], { needle: sid, limit: 50 });
   const object = named.find((event) => event.$workers?.durableObjectId)?.$workers.durableObjectId ?? null;
-  if (!object) return { sid, object: null, classes: [] };
+  if (!object) return { sid, object: null, classes: [], complete: false };
   // Only warnings and errors: a busy object's info lines would crowd them out
   // of a query's 2000. The router's lines name the session too, and carry
   // what it was refused.
   const notInfo = ['$metadata.level', 'info', 'neq'];
   const events = [
-    ...await reader.query(at - 5_000, until, [[scope.key, scope.value], ['$workers.executionModel', 'stateless'], notInfo], { needle: sid }),
-    ...await reader.query(at - 5_000, until, [['$workers.durableObjectId', object], notInfo]),
+    ...await read([[scope.key, scope.value], ['$workers.executionModel', 'stateless'], notInfo], { needle: sid }),
+    ...await read([['$workers.durableObjectId', object], notInfo]),
   ];
   const traces = [...new Set(events.filter((event) => event.$workers?.outcome === 'exception').map((event) => event.$metadata?.traceId).filter(Boolean))];
-  for (const trace of traces) events.push(...await reader.query(at - 5_000, until, [['$metadata.traceId', trace]], { limit: 500 }));
+  for (const trace of traces) events.push(...await read([['$metadata.traceId', trace]]));
   const classes = [];
   for (const event of events.sort((x, y) => x.timestamp - y.timestamp)) {
     for (const text of errorsOf(event)) {
@@ -111,24 +115,40 @@ export async function attributeSession(reader, { sid, at, base }, until) {
       }
     }
   }
-  return { sid, object, classes };
+  return { sid, object, classes, complete };
 }
 
 /**
- * Attribute a red row: each session it names. `regrade` is true only when a
- * session shows the platform storage reset and none shows any other class:
- * then the row says nothing about the commit, and one rerun grades it.
+ * A red row's attribution: every session its probe minted (the row's
+ * `sessions`, from the run's ledger), each on its own target, `base` when
+ * the ledger names none.
  */
-export async function attributeRow(reader, { output, base, until }) {
+export async function attributeRow(reader, row, { base, until }) {
   const sessions = [];
-  for (const session of mintedSessions(output, base)) sessions.push(await attributeSession(reader, session, until));
-  const classes = sessions.flatMap((session) => session.classes);
-  return { sessions, regrade: classes.some((entry) => entry.platform) && classes.every((entry) => entry.platform) };
+  for (const session of row.sessions ?? []) sessions.push(await attributeSession(reader, { ...session, base: session.base ?? base }, until));
+  return { sessions };
+}
+
+/**
+ * Whether only the platform turned `row` red, so one rerun may grade it.
+ * Every failed check the probe recorded is a socket that closed 1006 (a
+ * check of its own that failed otherwise keeps the row red); every session
+ * whose socket closed so shows the platform storage reset, its record read
+ * whole; and no session the probe minted shows any other class.
+ */
+export function regradable(row, { sessions }) {
+  const dropped = (row.sessions ?? []).filter((session) => session.abnormalCloses.length > 0);
+  const failed = (row.assertions ?? []).flatMap((result) => result.checks).filter((check) => !check.ok);
+  const attributed = new Map(sessions.map((session) => [session.sid, session]));
+  return dropped.length > 0
+    && failed.every((check) => /close code 1006\b/.test(check.detail))
+    && dropped.every(({ sid }) => attributed.get(sid)?.complete && attributed.get(sid).classes.some((entry) => entry.platform))
+    && sessions.every((session) => session.classes.every((entry) => entry.platform));
 }
 
 /** One line per session for a row's report. */
 export function describeAttribution({ sessions }) {
   return sessions.map((session) => `${session.sid}: ${session.object === null ? 'no log names this session yet'
-    : session.classes.length === 0 ? `object ${session.object.slice(0, 12)}…: no reset or overload error logged`
-      : `object ${session.object.slice(0, 12)}…: ${session.classes.map((entry) => `${entry.kind} at ${entry.at} ("${entry.error.slice(0, 120)}")`).join('; ')}`}`);
+    : `object ${session.object.slice(0, 12)}…: ${session.classes.length === 0 ? 'no reset or overload error logged'
+      : session.classes.map((entry) => `${entry.kind} at ${entry.at} ("${entry.error.slice(0, 120)}")`).join('; ')}${session.complete ? '' : ' (a query came back full: the record may hold more)'}`}`);
 }

@@ -16,14 +16,18 @@ published independently in the `@nimbus-sh` npm scope.
   arms' own spread. The fixed bounds failed 25, 4 and 21 of about 560 full
   runs of unchanged main code, and passed a 1.5x slower cold start when its
   one sample landed under 800 ms.
-- Changed: `remote-probes` attributes every red row that shows a 1006 close
-  or `E_NIMBUS_DO_OVERLOADED` from the platform's own record (Workers Logs
-  and trace exceptions, read on the workstation), by the exact error on the
-  session's object. A row whose sessions show only "Internal error in
-  Durable Object storage caused object to be reset" is rerun once, and the
-  rerun grades it; the verdict keeps both. Isolate memory resets, overloads
-  and the rest stay red, with their attribution printed. A throwaway target
-  redeployed during the run makes the run not graded.
+- Changed: `remote-probes` attributes every red row whose session socket
+  closed 1006 (the run's session ledger records each such close) or that
+  shows `E_NIMBUS_DO_OVERLOADED`, from the platform's own record (Workers
+  Logs and trace exceptions, read on the workstation), by the exact error on
+  each session's object. A row is rerun once, and the rerun grades it, only
+  when every check it failed is a 1006 close, each session that dropped
+  shows "Internal error in Durable Object storage caused object to be
+  reset" in a record read whole, and no session shows another class. The
+  verdict keeps both rows. Isolate memory resets, overloads and the rest
+  stay red, with their attribution printed. A target or paired throwaway
+  redeployed during a job makes the run not graded, and the release matrix
+  counts a probe that exits 2 as not graded, as `remote-probes` does.
 - Fixed: a portable workspace's `node` reads its command line as the
   hosted `node` does (Node's own parser, NODE_OPTIONS first), and finds its
   script the same way. `node .` runs the package's `main`, and `node start`
