@@ -63,6 +63,16 @@ export const STALL_MS = 45_000;
 /** What upload-pack.ts throws for a request to the git server that failed in transit. */
 export const UPLOAD_PACK_ERROR_PREFIX = 'git upload-pack: ';
 
+/**
+ * The agent capability a request asks with: only of a server that
+ * advertised its own, as fetch-pack.c and send-pack.c send it
+ * (gitprotocol-capabilities "agent"); a server that did not may refuse it.
+ */
+export function agentCapability(advertised: ReadonlySet<string>): string[] {
+  for (const capability of advertised) if (capability.startsWith('agent=')) return ['agent=git/nimbus'];
+  return [];
+}
+
 /** Whether a failure's message names a lost transport to the git server (a hang is known by its timeout). */
 export function isLostTransport(message: string): boolean {
   return message.startsWith(UPLOAD_PACK_ERROR_PREFIX);

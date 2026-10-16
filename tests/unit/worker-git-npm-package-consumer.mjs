@@ -172,6 +172,11 @@ function patched(fs: Parameters<typeof git.add>[0]['fs']) {
  void git.statusMatrix({fs, dir:'/repo', deferRefresh:true});
  // @ts-expect-error
  void git.commit({fs, dir:'/repo', message:'message', rawMessage:true});
+ // The patch's seams are typed by the clients the package ships: one that answers nothing is refused.
+ // @ts-expect-error
+ void git.push({fs, dir:'/repo', receivePack: {discover: async () => undefined, sendPack: async () => undefined}});
+ // @ts-expect-error
+ void git.fetch({fs, dir:'/repo', uploadPack: {discover: async () => undefined, requestPack: async () => undefined}});
 }
 void patched;
 export function request(options: Parameters<typeof gitHttp.request>[0]) {
