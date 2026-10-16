@@ -35,7 +35,7 @@
 import puppeteer from 'puppeteer-core';
 import { existsSync } from 'node:fs';
 import { allocateProfileDir, releaseProfileDir } from './_probe-browser.mjs';
-import { mintSession, attachPathFor, probeTarget, readUntil, requestHeaders, Terminal, stripAnsi, BASE } from './_driver.mjs';
+import { mintSession, attachPathFor, probeTarget, readUntil, requestHeaders, Terminal, sleep, stripAnsi, BASE } from './_driver.mjs';
 import { startDevCommand } from './_dev-start.mjs';
 
 export { BASE, mintSession, sleep, stripAnsi };
