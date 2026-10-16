@@ -424,22 +424,6 @@ export function getBinEntries(pkg: PackageJson): Record<string, string> {
 	return Object.fromEntries(npmBinMap(pkg.name ?? '', pkg.bin));
 }
 
-export function registerBinCommand(registry: CommandRegistry, binName: string, scriptPath: string, kernel?: Kernel): void {
-	registry.registerLazy(binName, () =>
-		import('./node.js').then((mod) => ({
-			default: (async (ctx: CommandContext) => {
-				// Use kernel's portRegistry if available, otherwise fall back to default
-				const nodeCommand = kernel ? mod.createNodeCommand(kernel) : mod.default;
-				return (await nodeCommand({
-					...ctx,
-					args: [scriptPath, ...ctx.args],
-				}));
-			}) as Command,
-		})),
-	);
-}
-
-
 // ─── Install: the shell's host of the one engine ───
 
 /** What the shell's install needs besides its roots. */
@@ -664,15 +648,15 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall, pro
 			return await fail(current, describeError(error));
 		}
 		await journal.commit(stderr);
-		// npm's bin links: a global install's roots' into the prefix's bin, as
-		// commands; a project's top-level packages' into its node_modules/.bin,
-		// which its scripts find on PATH (npmScriptEnv).
+		// npm's bin links, found through PATH: a global install's roots' into
+		// the prefix's bin, a project's top-level packages' into its
+		// node_modules/.bin, which its scripts have first on PATH (npmScriptEnv).
 		for (const node of publish) {
 			const packageDir = join(targetBase, node.at);
 			if (install.globalBinDir) {
-				if (node.edge.from === '') await linkBins(node.pkg.info, packageDir, install.globalBinDir, install, true);
+				if (node.edge.from === '') await linkBins(node.pkg.info, packageDir, install.globalBinDir, install);
 			} else if (depthOf(node.at) === 1) {
-				await linkBins(node.pkg.info, packageDir, join(targetBase, '.bin'), install, false);
+				await linkBins(node.pkg.info, packageDir, join(targetBase, '.bin'), install);
 			}
 		}
 		return { installed: publish.map((node) => `${node.pkg.name}@${node.pkg.version}`), failed: [], plannedVersion, engines };
@@ -683,15 +667,13 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall, pro
 
 /**
  * Link the bins of the package at `packageDir` into `binDir`, each an
- * executable shim (npmBinShim); `command` registers each as a command of
- * the workspace too, as a global install's are. A native launcher
- * (.exe/.node) runs nowhere here, and is not linked.
+ * executable shim (npmBinShim). A native launcher (.exe/.node) runs nowhere
+ * here, and is not linked.
  */
-async function linkBins(info: RegistryVersionInfo, packageDir: string, binDir: string, install: TreeInstall, command: boolean): Promise<void> {
+async function linkBins(info: RegistryVersionInfo, packageDir: string, binDir: string, install: TreeInstall): Promise<void> {
 	for (const [binName, binPath] of Object.entries(getBinEntries(info))) {
 		if (isNativeBinPath(binPath)) continue;
 		const scriptPath = resolve(packageDir, binPath);
-		if (command) registerBinCommand(install.registry, binName, scriptPath, install.kernel);
 		await install.vfs.mkdir(binDir, { recursive: true });
 		const shim = join(binDir, binName);
 		await install.vfs.writeFile(shim, npmBinShim(binDir, scriptPath));
@@ -746,10 +728,8 @@ async function npmInstall(
 		}
 	}
 
-	// The prefix a global install resolves under — `--prefix` wins, then
-	// the env's npm_config_prefix, then /usr/local. Both sides derive
-	// `<prefix>/lib/node_modules` and `<prefix>/bin` from it.
-	const globalPrefix = resolveNpmPrefixVfs(ctx.cwd, ctx.env, invocation.prefix);
+	// Both sides derive `<prefix>/lib/node_modules` and `<prefix>/bin` from it.
+	const globalPrefix = await npmGlobalPrefix(ctx);
 	const globalBinDir = `${globalPrefix}/bin`;
 
 	const npmRegistry = registryOf(ctx, invocation);
@@ -862,11 +842,19 @@ async function holdShellTree(vfs: VFS, kernel: Kernel | undefined, modulesDir: s
 	return typeof held === 'function' ? held : await held;
 }
 
-/** npm's prefix resolution: --prefix wins, then npm_config_prefix, then
- *  /usr/local; a relative value resolves against cwd. Absolute result. */
-function resolveNpmPrefixVfs(cwd: string, env: Record<string, string>, explicit: string | null): string {
-	const raw = explicit ?? env['npm_config_prefix'] ?? '/usr/local';
-	return resolve(cwd, raw);
+/**
+ * The prefix npm installs globally under, as `config` (read in `cwd`)
+ * resolves it: --prefix, npm_config_prefix, an .npmrc, else PREFIX or
+ * /usr/local; absolute. Its lib/node_modules holds the packages, its bin
+ * their bins.
+ */
+export function npmGlobalPrefixOf(config: NpmConfig, cwd: string): string {
+	return resolve(cwd, String(config.get('prefix')));
+}
+
+/** npmGlobalPrefixOf this command's configuration. */
+export async function npmGlobalPrefix(ctx: CommandContext): Promise<string> {
+	return npmGlobalPrefixOf(await npmConfigOf(ctx), ctx.cwd);
 }
 
 /**
@@ -881,7 +869,7 @@ async function npmInvocation(ctx: CommandContext): Promise<{ names: readonly str
 	const global = config.get('global') === true || config.get('location') === 'global';
 	return {
 		names: config.positionals.slice(1),
-		prefix: global ? resolve(ctx.cwd, String(config.get('prefix'))) : null,
+		prefix: global ? await npmGlobalPrefix(ctx) : null,
 		save: config.get('save') !== false,
 	};
 }
@@ -1435,7 +1423,7 @@ export async function npmInstallGlobal(
 	deps?: NpmCommandDeps,
 ): Promise<number> {
 	const startTime = Date.now();
-	const prefix = resolveNpmPrefixVfs(ctx.cwd, ctx.env, null);
+	const prefix = await npmGlobalPrefix(ctx);
 	const installer = deps?.installer ?? shellInstallPort(ctx, registry, kernel);
 	const { installed, failed } = await installer.install({
 		projectDir: ctx.cwd, packages: [packageName], global: true, globalPrefix: prefix, pid: ctx.pid, signal: ctx.signal, registry: getRegistry(ctx.env),

@@ -22,6 +22,22 @@ published independently in the `@nimbus-sh` npm scope.
   the first project's tool. Core npm's local install now links bins into
   `node_modules/.bin`, as npm does. Every bin shim names its target as a
   JSON string, so a path with a quote in it still works.
+- Fixed: `lifo install`, `lifo remove` and `lifo list` find lifo packages
+  where npm installs them globally: `<prefix>/lib/node_modules`, with the
+  prefix from npm's configuration (`--prefix`, `npm_config_prefix`, an
+  `.npmrc`, else `PREFIX` or `/usr/local`). Before, lifo read
+  `/usr/lib/node_modules`, where npm installs nothing. `npm install -g`
+  takes its prefix from the same configuration, `PREFIX` included.
+- Breaking (core): a workspace no longer restores global packages as
+  commands when it boots. `npm install -g` links a package's bins into
+  `<prefix>/bin`, which is on the default `PATH`, and the shell finds them
+  there, as it does with npm. A prefix set in `.npmrc` behaves as with npm:
+  its `bin` must be on `PATH`. `rehydrateGlobalPackages` is replaced by
+  `rehydrateLifoPackages(view, registry, { cwd, env })`. It restores only
+  lifo commands, under npm's configured prefix, and only a host that
+  registers `createLifoPkgCommand` needs to call it at boot. No Nimbus host
+  or app registers lifo, and Kinu does not. `registerBinCommand` is gone:
+  global bins are no longer registered as commands.
 - Changed (core): `createNpmCommand` runs a script only through the
   host's `ShellExecuteFn`. Without one, `npm run` says the shell is
   unavailable, for every script. `ShellExecuteFn` takes an optional third
