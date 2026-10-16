@@ -13,6 +13,7 @@ import { SessionResults, SessionSuccessSchema, SessionFailureSchema, } from '@ni
 import { z } from 'zod/v4';
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
 import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
+import { normalizeRemoteBasePath } from '@nimbus-sh/core/runtime/remote-http-contract.js';
 import { isNimbusIdComponent } from '@nimbus-sh/core/_shared/id-component.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { codeRuntimeRequirement, runtimePolicyError, } from '@nimbus-sh/config/sandbox';
@@ -110,7 +111,7 @@ export class Nimbus {
         return new Nimbus({
             kind: 'remote',
             endpoint: trimTrailingSlashes(options.endpoint),
-            basePath: normalizeBasePath(options.basePath ?? '/api/nimbus/v1'),
+            basePath: normalizeRemoteBasePath(options.basePath),
             token: options.token,
             headers: options.headers,
             fetch: fetchImpl,
@@ -789,19 +790,6 @@ function sleep(ms, signal) {
 }
 function isNimbusTarget(value) {
     return !!value && typeof value === 'object' && 'kind' in value;
-}
-function normalizeBasePath(path) {
-    const trimmed = trimSlashes(String(path || '/api/nimbus/v1'));
-    return `/${trimmed}`;
-}
-function trimSlashes(value) {
-    let start = 0;
-    let end = value.length;
-    while (start < end && value[start] === '/')
-        start++;
-    while (end > start && value[end - 1] === '/')
-        end--;
-    return value.slice(start, end);
 }
 function trimTrailingSlashes(value) {
     let end = value.length;
