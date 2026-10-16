@@ -149,8 +149,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
           revision: this.vfs.revision(p),
         };
       } catch (error) {
-        // lstat answers a name below a non-directory as not there.
-        if (hasErrorCode(error, 'ENOENT') || (!followSymlinks && hasErrorCode(error, 'ENOTDIR'))) return null;
+        // A name below a regular file is ENOTDIR to lstat as to stat (Linux's lstat(2)).
+        if (hasErrorCode(error, 'ENOENT')) return null;
         throw error;
       }
     });
@@ -521,7 +521,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       const located = this.locateMutation(path, false, 'unlink', options.mutationOwner);
       if (located.mount) { located.mount.unlink(located.path); return; }
       const p = located.path;
-      if (!this.vfs.exists(p)) throw fsError('ENOENT', 'unlink', path);
+      // unlink(2): a name not there is ENOENT, one below a regular file ENOTDIR.
+      if (this.vfs.statIfPresent(p, false, 'ENOTDIR') === null) throw fsError('ENOENT', 'unlink', path);
       this.owned(options.mutationOwner).unlink(p);
     });
   }
@@ -531,9 +532,10 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       const located = this.locateMutation(path, false, 'rmdir', options.mutationOwner);
       if (located.mount) { mountOp(located.mount.rmdir, 'rmdir', path)(located.path); return; }
       const p = located.path;
-      // rmdir(2): a missing path is ENOENT, anything but a directory (a file, a link) ENOTDIR.
-      if (!this.vfs.exists(p)) throw fsError('ENOENT', 'rmdir', path);
-      if (!this.vfs.isDirectory(p)) throw fsError('ENOTDIR', 'rmdir', path);
+      // rmdir(2): a missing path is ENOENT; anything but a directory (a file, a link), or a name below a regular file, ENOTDIR.
+      const there = this.vfs.statIfPresent(p, false, 'ENOTDIR');
+      if (there === null) throw fsError('ENOENT', 'rmdir', path);
+      if (there.type !== 'directory') throw fsError('ENOTDIR', 'rmdir', path);
       this.owned(options.mutationOwner).rmdir(p);
     });
   }
@@ -556,7 +558,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       }
       const oldPath = source.path;
       const newPath = target.path;
-      if (!this.vfs.exists(oldPath)) throw callError('ENOENT', call);
+      // rename(2): a source not there is ENOENT, one below a regular file ENOTDIR.
+      if (this.vfs.statIfPresent(oldPath, false, 'ENOTDIR') === null) throw callError('ENOENT', call);
       this.assertParentDirectory(newPath, call);
       this.owned(options.mutationOwner).rename(oldPath, newPath);
     });
@@ -965,8 +968,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   private assertParentDirectory(path: string, call: FsCall): void {
     const parent = parentVfsPath(path);
     if (!parent) return;
-    if (!this.vfs.exists(parent)) throw callError('ENOENT', call);
-    if (!this.vfs.isDirectory(parent)) throw callError('ENOTDIR', call);
+    const st = this.vfs.statIfPresent(parent, true, 'ENOTDIR');
+    if (st === null) throw callError('ENOENT', call);
+    if (st.type !== 'directory') throw callError('ENOTDIR', call);
   }
 
   /**
