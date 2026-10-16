@@ -1,3 +1,4 @@
+// @tier slow — drives a local workerd
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { mock } from 'bun:test';

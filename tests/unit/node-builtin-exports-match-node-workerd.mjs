@@ -1,3 +1,4 @@
+// @tier slow — drives a local workerd
 // @serial
 // The builtin modules a session's `node` program can require, against host
 // Node 22.22.3's: module.builtinModules itself, and for every module Node

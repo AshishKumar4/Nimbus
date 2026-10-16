@@ -1,3 +1,4 @@
+// @tier slow — drives a local workerd
 // @serial
 // The errors the runtime gives a code have Node's own shape (core
 // _shared/node-error.ts, lib/internal/errors.js v22.22.3), in a session as in

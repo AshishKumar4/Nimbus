@@ -1,3 +1,4 @@
+// @tier slow — drives a local workerd
 // @serial
 // `node -p` and node's preloads in a session, as Node runs them (host Node
 // the oracle, on the same files and command lines):

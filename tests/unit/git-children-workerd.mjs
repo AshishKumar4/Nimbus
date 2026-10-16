@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — drives a local workerd with installed bash and git
 /**
  * git-children-workerd — git starts children as session processes.
  *

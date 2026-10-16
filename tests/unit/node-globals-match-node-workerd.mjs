@@ -1,3 +1,4 @@
+// @tier slow — drives a local workerd
 // @serial
 // The global object a session's `node` program sees, against host Node
 // 22.22.3's (also under --experimental-eventsource, which adds a global), and

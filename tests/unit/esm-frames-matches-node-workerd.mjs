@@ -1,3 +1,4 @@
+// @tier slow — drives a local workerd
 // @serial
 // Stack frames and the fatal report's arrow, for ES modules small and large
 // (each staged for the registry: core runtime/native-esm.ts) and for
