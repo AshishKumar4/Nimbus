@@ -140,6 +140,23 @@ export function starConflicts(host, url) {
     return names.filter((name) => resolveExport(host, late, target, name, new Set()) === AMBIGUOUS);
 }
 /**
+ * The names of the namespace of the late module at `url`, as its link read
+ * them: its own and its `export *`s', but those two of them reach different
+ * bindings of; null where its link did not read them (one not linked, or
+ * whose names its source does not tell). Known before its body runs, so a
+ * namespace taken in a cycle has them all.
+ */
+export function namespaceNames(host, url) {
+    const late = { modules: lateModules, rows: [] };
+    if (!lateModules.has(url))
+        return null;
+    const target = { url };
+    const names = exportedNames(host, late, target, new Set());
+    if (names === null)
+        return null;
+    return names.filter((name) => resolveExport(host, late, target, name, new Set()) !== AMBIGUOUS);
+}
+/**
  * Plans the late module at `url` (a file's at `key`; a data: URL's is its
  * URL): its static imports' modules, their names, and the staged rows it
  * reaches, into `late` and `order`.

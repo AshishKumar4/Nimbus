@@ -19946,32 +19946,24 @@ function __nimbusEsmRunEntry(key) {
 }
 if (typeof __nimbusEsmHost !== "undefined" && __nimbusEsmHost !== null) __nimbusEsmHost.enter = __nimbusEsmEnter;
 
-// The data: modules, by URL: each its exports (a JavaScript module's), its
-// namespace once made, its evaluation while its top-level await is pending,
-// and what it threw. A module's record is kept before its body runs, so a
-// cycle back to it finds it, and one that threw throws that again, as
-// Node's module records do; import() and a static import share it.
+// The data: modules, by URL, each as Node's module record: `linked` (its cell
+// compiled, its namespace made, nothing run), `evaluating` (from when its
+// evaluation begins, its staged dependencies first, so a cycle back to it
+// finds it and does not run it again), `evaluated`; its evaluation while
+// its top-level await is pending, and what it threw, which it throws
+// again. import() and a static import share it, and its one namespace.
 const __nimbusDataModules = new Map();
 const __nimbusDataAwaits = (url) => nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "A static import of " + url + " cannot wait for its top-level await. Use import() instead.");
-// The record of the data: module at `url`, evaluated the first time it is
-// asked for. `statically`: an interpreted module's static import, which
-// cannot wait for a top-level await, so one whose body awaits is refused
-// before it runs, and one an import() left pending is refused (its failure
-// still the import()'s to give).
-function __nimbusDataModule(url, statically) {
-  const known = __nimbusDataModules.get(url);
-  if (known !== undefined) {
-    if (known.error !== null) throw known.error.value;
-    if (statically && known.evaluation !== undefined) {
-      known.evaluation.then(undefined, () => {});
-      throw __nimbusDataAwaits(url);
-    }
-    return known;
-  }
+// The record of the data: module at `url`, linked: a JSON module's, evaluated
+// already; a JavaScript module's cell compiled, its namespace's names its
+// late link's (all of them, its `export *`s' too, before its body runs).
+// `statically`: one whose body awaits at its top level is refused, unlinked,
+// as an interpreted module's static import cannot wait for it.
+function __nimbusDataLink(url, statically) {
   const data = __nimbusDataModuleOf(url);
   if (data.format === "json") {
     const value = JSON.parse(data.source);
-    const record = { exports: null, namespace: __esmNamespaceOf(["default"], () => value), evaluation: undefined, error: null };
+    const record = { state: "evaluated", exports: null, namespace: __esmNamespaceOf(["default"], () => value), loading: undefined, evaluation: undefined, error: null };
     __nimbusDataModules.set(url, record);
     return record;
   }
@@ -19981,34 +19973,41 @@ function __nimbusDataModule(url, statically) {
     url,
     resolve: (id) => globalThis.__nimbusImportMetaResolve(id, url),
   } });
-  const record = { exports: mod.exports, namespace: null, evaluation: undefined, error: null };
+  const record = { state: "linked", cell: null, mod, exports: mod.exports, namespace: null, loading: undefined, evaluation: undefined, error: null };
   // A data URL produced at runtime is a module body, just like a written
   // file. It is staged by the same runtime-code service, retaining its URL
   // as the import base (relative imports from data URLs remain invalid),
   // and an ES module whatever its syntax, as its MIME type says.
-  let cell;
   try {
-    cell = __nimbusRuntimeModule(url, data.source, "module");
+    record.cell = __nimbusRuntimeModule(url, data.source, "module");
   } catch (e) {
     record.error = { value: e };
     __nimbusDataModules.set(url, record);
     throw e;
   }
-  if (statically && __nimbusModuleAwaits(cell)) throw __nimbusDataAwaits(url);
+  if (statically && __nimbusModuleAwaits(record.cell)) throw __nimbusDataAwaits(url);
+  const names = __nimbusRegistryRequire("./nimbus/esm-late.js").namespaceNames(__nimbusLateLinkHost, url);
+  if (names !== null) record.namespace = __esmNamespaceOf(names, (n) => record.exports[n]);
   __nimbusDataModules.set(url, record);
-  // Its static imports (ESM_LOAD_HELPER: the specifier, the marker, the type
-  // attribute), and the names its `export *`s leave out (its late link's).
+  return record;
+}
+// Runs a linked data: module's body: its static imports (ESM_LOAD_HELPER: the
+// specifier, the marker, the type attribute), and the names its
+// `export *`s leave out (its late link's), then its own.
+function __nimbusDataRun(record, url) {
+  record.state = "evaluating";
   const requireData = (id, marker, type = null) => marker === "nimbus:star-conflicts"
     ? __nimbusRegistryRequire("./nimbus/esm-late.js").starConflicts(__nimbusLateLinkHost, url)
     : __nimbusStaticImport(String(id), url, undefined, type);
   let result;
   try {
-    result = cell(mod.exports, requireData, mod, undefined, undefined);
+    result = record.cell(record.mod.exports, requireData, record.mod, undefined, undefined);
   } catch (e) {
     record.error = { value: e };
     __nimbusExplainCommonJSGlobalLike(e, url, false);
     throw e;
   }
+  record.state = "evaluated";
   if (result && typeof result.then === "function") {
     record.evaluation = result.then(() => { record.evaluation = undefined; }, (e) => {
       record.error = { value: e };
@@ -20016,15 +20015,55 @@ function __nimbusDataModule(url, statically) {
       throw e;
     });
   }
-  return record;
 }
-// A data: module's namespace, made once its body has run: a JSON module's
-// default, a JavaScript module's names (its `export *`s' too), each read live.
+// A data: module's namespace: the one its link made, or, where its link did
+// not read its names, one of the names its body exported.
 const __nimbusDataNamespace = (record) => record.namespace ??= __esmNamespaceOf(Object.keys(record.exports), (n) => record.exports[n]);
-// What import() of a data: module gives once it is loaded: its namespace, when its evaluation completes.
-function __esmLoadData(url) {
-  const record = __nimbusDataModule(url, false);
-  return record.evaluation !== undefined ? record.evaluation.then(() => __nimbusDataNamespace(record)) : __nimbusDataNamespace(record);
+// An interpreted module's static import of a data: module: its namespace,
+// the module run first unless its evaluation has begun (a cycle back to it).
+function __nimbusDataStatic(url) {
+  let record = __nimbusDataModules.get(url);
+  if (record === undefined) record = __nimbusDataLink(url, true);
+  if (record.error !== null) throw record.error.value;
+  if (record.state === "linked") __nimbusDataRun(record, url);
+  if (record.evaluation !== undefined) {
+    // Its failure is the import()'s that began it to give; this import cannot wait for it.
+    record.evaluation.then(undefined, () => {});
+    throw __nimbusDataAwaits(url);
+  }
+  return record.exports !== null && record.namespace === null && record.state === "evaluating" ? record.exports : __nimbusDataNamespace(record);
+}
+// import() of a data: module: a JavaScript module's late graph linked first
+// (a name it imports that its module does not export rejects before any
+// body runs), then its staged dependencies evaluated, its own evaluation
+// begun before them (`loading`, which another import() waits for); its
+// namespace once its body (and top-level await) completes.
+async function __esmLoadData(url) {
+  let record = __nimbusDataModules.get(url);
+  if (record === undefined) {
+    const order = __nimbusDataModuleOf(url).format === "module" ? __nimbusLateLink(url, url) : [];
+    const linked = record = __nimbusDataLink(url, false);
+    if (linked.state === "linked") {
+      linked.state = "evaluating";
+      linked.loading = (async () => {
+        try {
+          for (const id of order) {
+            if (__nimbusEsmRecord(id).state !== __ESM_DONE && !__nimbusEsmTainted(id)) await __nimbusEsmImport(id);
+          }
+        } catch (e) {
+          linked.error = { value: e };
+          throw e;
+        }
+        linked.state = "linked";
+        __nimbusDataRun(linked, url);
+      })();
+    }
+  }
+  if (record.loading !== undefined) await record.loading;
+  if (record.error !== null) throw record.error.value;
+  if (record.state === "linked") __nimbusDataRun(record, url);
+  if (record.evaluation !== undefined) await record.evaluation;
+  return __nimbusDataNamespace(record);
 }
 
 // What import() of a resolution gives: a staged module's (or facade's)
@@ -20039,14 +20078,7 @@ function __esmLoad(resolution) {
     if (id !== -1) return __nimbusEsmImport(id);
     return __nimbusTranslatedNamespace(resolution, builtins[resolution.builtin]);
   } else if (resolution.format === "data") {
-    // A JavaScript module's late graph is linked first, as a file's is: a
-    // name it imports that its module does not export rejects before any body runs.
-    const url = resolution.url;
-    if (!__nimbusDataModules.has(url) && __nimbusDataModuleOf(url).format === "module") return __nimbusEsmLinkStaged(url, url).then(() => __esmLoadData(url));
-    const record = __nimbusDataModule(url, false);
-    // A module with top-level await: the import resolves once its evaluation completes, and rejects with what it throws.
-    if (record.evaluation !== undefined) return record.evaluation.then(() => __nimbusDataNamespace(record));
-    ns = __nimbusDataNamespace(record);
+    return __esmLoadData(resolution.url);
   } else {
     const key = resolution.path.replace(/^\/+/, "");
     // A query or a fragment is a module instance of its own: the interpreter's.
@@ -20071,8 +20103,8 @@ function __esmLoad(resolution) {
 // `key`'s late graph imports, once the whole graph links (core
 // esm-late-link.ts), so the interpreter finds them evaluated. A graph that
 // does not link runs none of its bodies: its import() rejects.
-async function __nimbusEsmLinkStaged(key, url = __nimbusEsmUrl("/" + key)) {
-  const order = __nimbusLateLink(key, url);
+async function __nimbusEsmLinkStaged(key) {
+  const order = __nimbusLateLink(key, __nimbusEsmUrl("/" + key));
   // What one throws ends the evaluation of what imports it, as Node's
   // does: no later import of it evaluates, and the import() rejects.
   for (const id of order) {
@@ -20590,11 +20622,8 @@ function __requireFrom(id, fromDir, parent, required = true, type = null) {
 function __nimbusStaticImport(id, parentUrl, parent, type) {
   const resolution = __nimbusResolveImport(id, parentUrl, type ?? null);
   if (resolution.format === "builtin") return __nimbusTranslatedNamespace(resolution, builtins[resolution.builtin]);
-  // A data: module's: a JavaScript module's exports, live, as an interpreted file's are; a JSON module's namespace.
-  if (resolution.format === "data") {
-    const record = __nimbusDataModule(resolution.url, true);
-    return record.exports ?? record.namespace;
-  }
+  // A data: module's namespace, the one import() gives (__nimbusDataStatic).
+  if (resolution.format === "data") return __nimbusDataStatic(resolution.url);
   if (!resolution.path) throw nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "A static import of " + resolution.url + " has no file to load synchronously");
   const key = resolution.path.replace(/^\/+/, "");
   const esModule = resolution.format === "module" || (resolution.format === "detect" && __nimbusEsmId("module", key) !== -1);
