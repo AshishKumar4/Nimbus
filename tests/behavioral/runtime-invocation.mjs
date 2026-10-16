@@ -15,7 +15,7 @@
 //   5. Same battery for `bun` (post-Change-B). Pre-Change-B: probe records
 //      PARTIAL (node passes, bun fails or shows "command not found").
 
-import { mintSession, Terminal, makeAsserter, sleep, fetchPort, heredocCommand } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter, sleep, heredocCommand } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('runtime-invocation');
@@ -82,23 +82,6 @@ try {
   // (which will fail fast and report).
 }
 a.check('node server.cjs produced started-marker (LISTENING or [started (long-running)])', serverStarted);
-
-// 3a. /s/<sid>/port/<n>/ proxy for this non-watch invocation is not
-//    part of the supported contract. Explicit long-running Node servers
-//    use `node --watch` and are asserted by
-//    preview/node-watch-port-proxy.mjs. Keep this observation non-gating
-//    so the probe still records old/content-sniff behavior when present.
-{
-  const r = await fetchPort(sid, SERVER_PORT, '');
-  const ok = r.status === 200 && /hello-from-http-server/.test(r.body);
-  if (ok) {
-    a.check('GET /s/<sid>/port/<port>/ proxies to user server (returns 200 with body)', true);
-  } else {
-    // Don't fail; this command did not opt into the long-running path.
-    console.log(`  (info) port-proxy /s/<sid>/port/<n>/ returned status=${r.status} body[:120]=${r.body.slice(0, 120)}`);
-    console.log(`  (info) explicit long-running port proxy is covered by preview/node-watch-port-proxy.mjs.`);
-  }
-}
 
 // 3b. In-shell curl routes loopback requests through the session port registry.
 //     "[started (long-running)]" is printed before the server binds, so the
