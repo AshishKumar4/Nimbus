@@ -90,7 +90,7 @@ interface FacetRequest {
   full?: boolean;
   cacheTreeBytes?: number;
   tags?: readonly CloneTag[];
-  graph?: { name: string; bytes: number }[] | null;
+  commitGraph?: boolean;
   checkoutFailed?: boolean;
   /** For graph-filters: the step to run. */
   graphFilters: GraphFiltersStep;
@@ -443,7 +443,7 @@ export const networkWorker = {
           full: opts.full === true,
           cacheTreeBytes: opts.cacheTreeBytes,
           tags: opts.tags,
-          graph: opts.graph,
+          commitGraph: opts.commitGraph === true,
           checkoutFailed: opts.checkoutFailed === true,
         });
         // The marker goes last: until it does, a failure leaves the clone abortable.
