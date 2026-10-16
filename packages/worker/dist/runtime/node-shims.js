@@ -13299,11 +13299,32 @@ function __nimbusDataStatic(url) {
   }
   return record.exports !== null && record.namespace === null && record.state === "evaluating" ? record.exports : __nimbusDataNamespace(record);
 }
+// Whether staged row \`id\`'s graph reaches a module staging handed on: the
+// interpreter adopts it where it is imported, not the registry ahead of it.
+function __nimbusEsmHandsOn(id) {
+  const seen = new Set();
+  const stack = [id];
+  while (stack.length > 0) {
+    const at = stack.pop();
+    if (seen.has(at)) continue;
+    seen.add(at);
+    if (at < 0) {
+      if (__nimbusEsm.missing[-2 - at]?.code === "ERR_NIMBUS_NOT_STAGED") return true;
+      continue;
+    }
+    if (__nimbusEsmRecords[at]?.state === __ESM_DONE) continue;
+    const row = __nimbusEsm.table[at];
+    if (row[0] === "module") for (const target of row[2]) stack.push(target);
+  }
+  return false;
+}
 // import() of a data: module: a JavaScript module's late graph linked first
 // (a name it imports that its module does not export rejects before any
-// body runs), then its staged dependencies evaluated, its own evaluation
-// begun before them (\`loading\`, which another import() waits for); its
-// namespace once its body (and top-level await) completes.
+// body runs), then the staged modules it reaches the registry evaluates
+// (one whose graph reaches back to a handed-on module is the module's own
+// link's to load, after its functions and exports exist, as Node's order
+// is), its own evaluation begun before them (\`loading\`, which another
+// import() waits for); its namespace once its body (and top-level await) completes.
 async function __esmLoadData(url) {
   let record = __nimbusDataModules.get(url);
   if (record === undefined) {
@@ -13314,7 +13335,7 @@ async function __esmLoadData(url) {
       linked.loading = (async () => {
         try {
           for (const id of order) {
-            if (__nimbusEsmRecord(id).state !== __ESM_DONE && !__nimbusEsmTainted(id)) await __nimbusEsmImport(id);
+            if (__nimbusEsmRecord(id).state !== __ESM_DONE && !__nimbusEsmTainted(id) && !__nimbusEsmHandsOn(id)) await __nimbusEsmImport(id);
           }
         } catch (e) {
           linked.error = { value: e };
