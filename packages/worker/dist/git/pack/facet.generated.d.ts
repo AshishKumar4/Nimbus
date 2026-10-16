@@ -7,7 +7,7 @@
  * An IIFE binding `__nimbusGitPack` in the module that splices it, the git
  * network facet, after GIT_PACK_NODE_IMPORTS.
  *
- * Size: 302.13 KiB
+ * Size: 302.03 KiB
  */
 export declare const GIT_PACK_NODE_IMPORTS: string;
 export declare const GIT_PACK_SRC: string;
