@@ -34,35 +34,49 @@ import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
 const FILES = {
   'node_modules/dpkg/package.json': JSON.stringify({ name: 'dpkg', version: '1.0.0', type: 'module', exports: './index.js' }),
   'node_modules/dpkg/index.js': "import five from 'data:text/javascript,export default 5';\nexport default five + 1;\n",
-  'main.mjs': `import fortyOne from 'data:text/javascript,export default 41';
+  'staged.mjs': `import fortyOne from 'data:text/javascript,export default 41';
 import json from 'data:application/json,{"a":1}' with { type: 'json' };
 import six from 'dpkg';
-import { writeFileSync, mkdirSync } from 'node:fs';
+export default [fortyOne, json, six];
+`,
+  'main.mjs': `import { writeFileSync, mkdirSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-const out = { staged: [fortyOne, json, six] };
+const out = {};
+// Each case on its own: one that fails is its error, and the rest still run.
+const outcome = async (thunk) => {
+  try { return await thunk(); } catch (e) { return ['threw', e?.constructor?.name ?? typeof e, String(e?.message ?? e).split('\\n')[0]]; }
+};
 const keys = (ns) => [Object.keys(ns), ns.__esModule];
 
+// Staged modules' static imports of data: modules.
+out.staged = await outcome(async () => (await import('./staged.mjs')).default);
+
 // The data: module's goal is its MIME type's: a module.
-await import('data:text/javascript,globalThis.seen=(function(){return this})()===undefined');
-out.dataStrict = globalThis.seen;
+out.dataStrict = await outcome(async () => {
+  await import('data:text/javascript,globalThis.seen=(function(){return this})()===undefined');
+  return globalThis.seen;
+});
 
 // An ES module's own __esModule, written now (interpreted), and in a data: module.
 writeFileSync('own.mjs', 'export const __esModule = false; export const b = 2;\\n');
-out.ownEsModule = keys(await import('./own.mjs'));
-out.dataEsModule = keys(await import('data:text/javascript,export const __esModule = 7; export default 1'));
+out.ownEsModule = await outcome(async () => keys(await import('./own.mjs')));
+out.dataEsModule = await outcome(async () => keys(await import('data:text/javascript,export const __esModule = 7; export default 1')));
 
 // A typeless .js that redeclares a wrapper parameter: an ES module.
 writeFileSync('det.js', 'const require = 1; globalThis.detStrict = (function(){return this})()===undefined; globalThis.detRequire = require;\\n');
-await import('./det.js');
-out.detected = [globalThis.detStrict, globalThis.detRequire];
+out.detected = await outcome(async () => {
+  await import('./det.js');
+  return [globalThis.detStrict, globalThis.detRequire];
+});
 
 // A directory named a#b.
 mkdirSync('a#b', { recursive: true });
 writeFileSync('a#b/dep.mjs', "export default 'beside';\\n");
 writeFileSync('a#b/main.cjs', "module.exports = import('./dep.mjs').then((m) => m.default);\\n");
 writeFileSync('a#b/meta.mjs', 'export default import.meta.url;\\n');
-out.hashDirectory = await (await import(pathToFileURL(process.cwd() + '/a#b/main.cjs').href)).default;
-out.hashMeta = (await import(pathToFileURL(process.cwd() + '/a#b/meta.mjs').href)).default.replace(pathToFileURL(process.cwd() + '/').href, '<cwd>/');
+out.hashDirectory = await outcome(async () => (await import(pathToFileURL(process.cwd() + '/a#b/main.cjs').href)).default);
+out.hashMeta = await outcome(async () => (await import(pathToFileURL(process.cwd() + '/a#b/meta.mjs').href)).default
+  .replace(pathToFileURL(process.cwd() + '/').href, '<cwd>/'));
 console.log('PARITY ' + JSON.stringify(out));
 `,
 };
