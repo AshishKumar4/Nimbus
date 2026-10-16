@@ -358,6 +358,7 @@ const GAPS = {
   'fstat of a description whose file lost its name says so [node]': { lacks: PATH_FDS, shows: 'ENOENT' },
   'fchmod, fchown and futimes change the file a description opened after its name is unlinked and taken [node]': { lacks: PATH_FDS, shows: 'the file that took the name changed' },
   'fchmod, fchown and futimes change the file a description opened after its name is renamed [node]': { lacks: PATH_FDS, shows: 'ENOENT' },
+  'fchmod of a file whose name is gone is judged as the session judges a description: a confined principal grants nothing [node]': { lacks: PATH_FDS, shows: 'ENOENT' },
   'fchmod, fchown and futimes through the session\'s description change the file it opened, not the name\'s [node]': { lacks: PATH_FDS, shows: 'the opened file did not change as asked' },
 };
 
