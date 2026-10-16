@@ -84,6 +84,12 @@ const PROGRAM = `async (fs, root) => {
     await h.close();
     return fs.promises.readFile(P('keep.txt'), 'utf8');
   });
+  results.noFollowAfterAsyncWrite = await outcome(async () => {
+    await fs.promises.writeFile(P('learned.txt'), 'learned');
+    const sizes = [fs.lstatSync(P('learned.txt')).size, fs.statSync(P('learned.txt')).size];
+    fs.closeSync(fs.openSync(P('learned.txt'), C.O_WRONLY | C.O_TRUNC | C.O_NOFOLLOW));
+    return [...sizes, fs.lstatSync(P('learned.txt')).size];
+  });
   results.noFollowFile = await outcome(async () => { const h = await fs.promises.open(P('seed/a.txt'), C.O_RDONLY | C.O_NOFOLLOW); const { buffer, bytesRead } = await h.read(Buffer.alloc(16), 0, 16, 0); await h.close(); return buffer.subarray(0, bytesRead).toString(); });
   results.followLink = await outcome(async () => { const h = await fs.promises.open(P('seed/link-to-a'), 'r'); const { buffer, bytesRead } = await h.read(Buffer.alloc(16), 0, 16, 0); await h.close(); return buffer.subarray(0, bytesRead).toString(); });
   results.targetUntouched = await fs.promises.readFile(P('seed/a.txt'), 'utf8');

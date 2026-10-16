@@ -5415,16 +5415,15 @@ const __fsMod = (() => {
   }
 
   /**
-   * open(2)'s refusals in open(2)'s order, from \`there\` (what the name is,
-   * not followed: { link, directory, size } or undefined) and \`target\` (what
-   * a followed link reaches): O_EXCL of a name there (EEXIST), O_NOFOLLOW of
-   * a final link (ELOOP, or ENOTDIR under O_DIRECTORY), then what is opened.
-   * Answers whether something is opened.
+   * open(2)'s refusals in open(2)'s order, from \`name\` (the name itself,
+   * not followed, where it was looked at: { link, directory, size }) and
+   * \`opened\` (what the open reaches): O_EXCL of a name there (EEXIST),
+   * O_NOFOLLOW of a final link (ELOOP, or ENOTDIR under O_DIRECTORY), then
+   * what is opened. Answers whether something is opened.
    */
-  function _openRefusal(path, fl, there, target) {
-    if (fl.create && fl.exclusive && there !== undefined) throw _fsErr("EEXIST", "open", path);
-    if (!fl.followSymlinks && there?.link) throw _fsErr(fl.directory ? "ENOTDIR" : "ELOOP", "open", path);
-    const opened = there?.link ? target : there;
+  function _openRefusal(path, fl, name, opened) {
+    if (fl.create && fl.exclusive && (name !== undefined || opened !== undefined)) throw _fsErr("EEXIST", "open", path);
+    if (!fl.followSymlinks && name?.link) throw _fsErr(fl.directory ? "ENOTDIR" : "ELOOP", "open", path);
     if (opened?.directory) throw _fsErr("EISDIR", "open", path);
     if (opened !== undefined && fl.directory) throw _fsErr("ENOTDIR", "open", path);
     if (opened === undefined && !fl.create) throw _fsErr("ENOENT", "open", path);
@@ -5780,7 +5779,7 @@ const __fsMod = (() => {
     } else {
       there = _openedAs(fl.followSymlinks ? statSync(path, { throwIfNoEntry: false }) : lstatSync(path, { throwIfNoEntry: false }));
     }
-    const exists = _openRefusal(path, fl, there, undefined);
+    const exists = _openRefusal(path, fl, fl.followSymlinks ? undefined : there, there);
     let size = exists ? there.size : 0;
     // The authority answered, so what it said is what the sync view keeps:
     // its stat when something is there, and when nothing is, the file this
@@ -5823,13 +5822,14 @@ const __fsMod = (() => {
     const fl = _parseOpenFlags(flags);
     const createMode = _coerceMode(mode, 0o666);
     const absPath = _target(path, fl.followSymlinks, "open");
-    const own = lstatSync(path, { throwIfNoEntry: false });
-    const st = own?.isSymbolicLink() && fl.followSymlinks ? statSync(path, { throwIfNoEntry: false }) : own;
-    const exists = _openRefusal(path, fl, _openedAs(own), _openedAs(st));
+    // The name itself where O_NOFOLLOW or O_EXCL asks about it (O_EXCL: a dangling link is there).
+    const name = !fl.followSymlinks || (fl.create && fl.exclusive) ? _openedAs(lstatSync(path, { throwIfNoEntry: false })) : undefined;
+    const st = fl.followSymlinks ? statSync(path, { throwIfNoEntry: false }) : undefined;
+    const exists = _openRefusal(path, fl, name, fl.followSymlinks ? _openedAs(st) : name);
     if (fl.read && exists) _ensureReadable(absPath, "open", path);
     if (fl.write || fl.truncate || !exists) _ensureWritable(absPath, "open", path);
     if (!exists) _noteCreation(_strip(absPath), createMode);
-    let size = exists ? st.size : 0;
+    let size = exists ? (st ?? lstatSync(path)).size : 0;
     // O_TRUNC means "make it empty", so zeroing is the requested semantic,
     // and creating a genuinely absent file is too. O_APPEND must NEVER
     // pre-create: "exists" is only as good as the sync view, so a file

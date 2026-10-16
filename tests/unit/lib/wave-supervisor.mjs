@@ -38,8 +38,8 @@ async function replay(supervisor, stream) {
   };
   const abs = (key) => '/' + key;
   // The receipt is the session's stat of the file, as it answers one: the mock's own.
-  const receipt = async (path, revision) => {
-    const stat = typeof supervisor.lstat === 'function' ? await supervisor.lstat(abs(path)) : null;
+  const receipt = async (path, revision, look = typeof supervisor.lstat === 'function' ? supervisor.lstat : null) => {
+    const stat = look === null ? null : await look.call(supervisor, abs(path));
     if (!stat) return;
     progress.receipts.push({
       path, ino: Number(stat.ino) || 0, mode: Number(stat.mode) || 0, size: Number(stat.size) || 0,
@@ -100,16 +100,23 @@ async function replay(supervisor, stream) {
           // A node process's write open, judged as the session judges one
           // (sqlite-vfs openToWrite) over the mock's own calls; its receipt is the opened file's stat.
           else if (call.call === 'open' && call.description === undefined) {
-            const name = await present(typeof supervisor.lstat === 'function' ? supervisor.lstat : supervisor.stat, call.path);
-            if (name && call.create === true && call.exclusive === true) throw refusal('EEXIST', call.path);
-            if (call.nofollow === true && name?.type === 'symlink') throw refusal('ELOOP', call.path);
-            const there = call.nofollow === true ? name : await present(supervisor.stat, call.path);
-            if (!there && call.create !== true) throw refusal('ENOENT', call.path);
-            if (there?.type === 'directory') throw refusal('EISDIR', call.path);
+            const stat = typeof supervisor.stat === 'function' ? supervisor.stat : null;
+            const lstat = typeof supervisor.lstat === 'function' ? supervisor.lstat : stat;
             let revision;
-            if (!there) revision = await supervisor.writeFile(abs(call.path), new Uint8Array(0));
-            else if (call.truncate === true) noted(await supervisor.fsTruncate(abs(call.path), 0));
-            await receipt(call.path, revision);
+            if (lstat === null) {
+              // A mock that answers no stat: the file the open makes or empties is a whole write of nothing.
+              if (call.create === true || call.truncate === true) revision = await supervisor.writeFile(abs(call.path), new Uint8Array(0));
+            } else {
+              const name = await present(lstat, call.path);
+              if (name && call.create === true && call.exclusive === true) throw refusal('EEXIST', call.path);
+              if (call.nofollow === true && name?.type === 'symlink') throw refusal('ELOOP', call.path);
+              const there = call.nofollow === true || stat === null ? name : await present(stat, call.path);
+              if (!there && call.create !== true) throw refusal('ENOENT', call.path);
+              if (there?.type === 'directory') throw refusal('EISDIR', call.path);
+              if (!there) revision = await supervisor.writeFile(abs(call.path), new Uint8Array(0));
+              else if (call.truncate === true) noted(await supervisor.fsTruncate(abs(call.path), 0));
+            }
+            await receipt(call.path, revision, lstat);
           }
           // A write description's open or close (a WASI process's): no test that drives this supervisor makes one.
           else if (call.call === 'open' || call.call === 'close') throw new Error(`wave-supervisor: ${call.call} calls of a description are not modeled`);
