@@ -137,7 +137,8 @@ export class SqliteFiles {
         }
         // A name that is not there is an answer: no error is made for it.
         try {
-            const stat = this.view.statIfPresent(path, options?.follow !== false);
+            // stat(2)'s answers: a name not there is null, one below a regular file ENOTDIR.
+            const stat = this.view.statIfPresent(path, options?.follow !== false, 'ENOTDIR');
             return stat === null ? null : statOf(stat, this.view.epoch);
         }
         catch (error) {
@@ -165,7 +166,7 @@ export class SqliteFiles {
     openFile(path, rights) {
         const { view } = this;
         const node = this.run('open', path, () => {
-            const there = view.statIfPresent(path, true);
+            const there = view.statIfPresent(path, true, 'ENOTDIR');
             const described = there === null ? null : this.engine.describeInode(there.ino, path.replace(/^\/+/, ''), view.cred, rights, view.principal, view.holds);
             if (described === null)
                 throw syscallError('ENOENT', 'open', path);

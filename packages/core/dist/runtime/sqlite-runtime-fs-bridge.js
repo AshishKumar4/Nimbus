@@ -136,8 +136,8 @@ export class SqliteRuntimeFsBridge {
                 };
             }
             catch (error) {
-                // lstat answers a name below a non-directory as not there.
-                if (hasErrorCode(error, 'ENOENT') || (!followSymlinks && hasErrorCode(error, 'ENOTDIR')))
+                // A name below a regular file is ENOTDIR to lstat as to stat (Linux's lstat(2)).
+                if (hasErrorCode(error, 'ENOENT'))
                     return null;
                 throw error;
             }

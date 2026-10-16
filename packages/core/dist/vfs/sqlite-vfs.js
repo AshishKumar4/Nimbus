@@ -2314,7 +2314,7 @@ export class SqliteVFS {
             readFileString: (path) => this.readFileString(path, bound),
             stat: (path) => this.stat(path, bound, true),
             lstat: (path) => this.stat(path, bound, false),
-            statIfPresent: (path, followLeaf = true) => this.statIfPresent(path, bound, followLeaf),
+            statIfPresent: (path, followLeaf = true, belowFile = 'absent') => this.statIfPresent(path, bound, followLeaf, this.inodes, belowFile),
             landedAt: (path) => this.landedAt(path, bound),
             utimes: (path, atimeMs, mtimeMs, options) => this.utimes(path, atimeMs, mtimeMs, bound, options?.followSymlinks !== false),
             chmod: (path, mode) => this.chmod(path, mode, bound),
@@ -4725,15 +4725,19 @@ export class SqliteVFS {
             throw vfsKeyError('ENOENT', path);
         return this.statOf(inode);
     }
-    /** stat, with a name that is not there (or a directory on its way that is not) answered null: an answer, not an error. */
-    statIfPresent(path, cred, followLeaf, tree = this.inodes) {
+    /**
+     * stat, with a name that is not there answered null: an answer, not an
+     * error. A file on its way (ENOTDIR) is not there either, unless
+     * `belowFile` is 'ENOTDIR' (stat(2)'s answer).
+     */
+    statIfPresent(path, cred, followLeaf, tree = this.inodes, belowFile = 'absent') {
         try {
             const inode = this.checkAccess(path, 0, cred, { followLeaf, allowMissingLeaf: true, tree }).inode;
             return inode === undefined ? null : this.statOf(inode);
         }
         catch (error) {
             const code = errnoCodeOf(error);
-            if (code === 'ENOENT' || code === 'ENOTDIR')
+            if (code === 'ENOENT' || (code === 'ENOTDIR' && belowFile === 'absent'))
                 return null;
             throw error;
         }
@@ -6380,9 +6384,9 @@ export class SqliteVFS {
             readFileString: (path) => dec.decode(this.readWhole(file(path))),
             stat: (path) => this.statOf(resolve(path, 0).inode),
             lstat: (path) => this.statOf(resolve(path, 0, false).inode),
-            statIfPresent: (path, followLeaf = true) => {
+            statIfPresent: (path, followLeaf = true, belowFile = 'absent') => {
                 pinned();
-                return this.statIfPresent(path, bound, followLeaf, tree);
+                return this.statIfPresent(path, bound, followLeaf, tree, belowFile);
             },
             landedAt: (path) => probe(path) !== undefined,
             utimes: readOnly,
