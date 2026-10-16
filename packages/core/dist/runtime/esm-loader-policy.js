@@ -12,14 +12,16 @@
  * GetImportAttributesFromArgument, Node 22): the specifier converted to a
  * string first; then `options`, an object or a function, its `with` read
  * once, an object or a function, and each of that's own enumerable string
- * keys read once, a string. Throws V8's TypeError for the first that is not.
- * The arguments are whatever the program passed, so they are typed as such.
+ * keys read once, all of them before any is refused for not being a string.
+ * Throws V8's TypeError for the first rule broken. The attributes are a
+ * null-prototype record, so a `__proto__` attribute is one. The arguments
+ * are whatever the program passed, so they are typed as such.
  */
 export function importCallArguments(specifier, options) {
     if (typeof specifier === 'symbol')
         throw new TypeError('Cannot convert a Symbol value to a string');
     const text = String(specifier);
-    const attributes = {};
+    const attributes = Object.create(null);
     if (options === undefined)
         return { specifier: text, attributes };
     if (options === null || (typeof options !== 'object' && typeof options !== 'function')) {
@@ -31,12 +33,16 @@ export function importCallArguments(specifier, options) {
     if (given === null || (typeof given !== 'object' && typeof given !== 'function')) {
         throw new TypeError("The 'assert' option must be an object");
     }
+    let strings = true;
     for (const key of Object.keys(given)) {
         const value = Reflect.get(given, key);
-        if (typeof value !== 'string')
-            throw new TypeError('Import assertion value must be a string');
-        attributes[key] = value;
+        if (typeof value === 'string')
+            attributes[key] = value;
+        else
+            strings = false;
     }
+    if (!strings)
+        throw new TypeError('Import assertion value must be a string');
     return { specifier: text, attributes };
 }
 /** The fetch standard's percent-decode: each %XX its byte, everything else its UTF-8 bytes. */
@@ -79,7 +85,8 @@ export function dataModule(url) {
     const input = parsed.href.slice('data:'.length);
     const comma = input.indexOf(',');
     let body = percentDecode(input.slice(comma + 1));
-    if (/; *base64$/i.test(input.slice(0, comma).trim())) {
+    // The MIME type trimmed of ASCII whitespace alone, as the fetch standard trims it.
+    if (/; *base64$/i.test(input.slice(0, comma).replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, ''))) {
         let isomorphic = '';
         for (const byte of body)
             isomorphic += String.fromCharCode(byte);
