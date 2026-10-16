@@ -69,7 +69,7 @@ try {
   assert.equal(evaluated.stdout, '2\nhello from a file\n');
   const missing = await shell.execute('node /remote/nope.js');
   assert.equal(missing.exitCode, 1);
-  assert.match(missing.stderr, /^node: \/remote\/nope\.js: No such file or directory/);
+  assert.equal(missing.stderr, "node: cannot find module '/remote/nope.js'\n");
   const needsSync = await shell.execute('node /remote/touches-fs.js');
   assert.equal(needsSync.exitCode, 1);
   assert.match(needsSync.stderr, /synchronous filesystem capability/);

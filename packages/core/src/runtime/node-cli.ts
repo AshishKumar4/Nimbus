@@ -59,6 +59,10 @@ export interface NodeCommandLine extends NodeLaunch {
   programIndex: number;
   /** `--input-type`: what `-e` code and stdin are (`module`, `commonjs`), the command line's over NODE_OPTIONS'. */
   inputType?: string;
+  /** `-c`/`--check`: the script's syntax is checked, and it does not run. */
+  check: boolean;
+  /** `--experimental-default-type`: the format of a file with no other, the command line's over NODE_OPTIONS'. */
+  defaultType?: string;
   version: boolean;
   help: boolean;
 }
@@ -122,6 +126,8 @@ interface ReadOptions {
   stripTypes?: boolean;
   transformTypes?: boolean;
   enableSourceMaps?: boolean;
+  check?: boolean;
+  defaultType?: string;
   version: boolean;
   help: boolean;
   /** Where they end in `tokens` (past a `--`). */
@@ -205,6 +211,8 @@ function readOptions(tokens: readonly string[], env: boolean): ReadOptions | Nod
         break;
       case '--enable-source-maps': read.enableSourceMaps = !negation; break;
       case '--print': read.print = !negation; break;
+      case '--check': read.check = !negation; break;
+      case '--experimental-default-type': read.defaultType = value; break;
       case '--version': read.version = !negation; break;
       case '--help': read.help = !negation; break;
     }
@@ -247,6 +255,8 @@ export function parseNodeCommandLine(args: readonly string[], nodeOptions = ''):
     stripTypes: fromArgs.stripTypes ?? fromEnv.stripTypes ?? true,
     transformTypes: fromArgs.transformTypes ?? fromEnv.transformTypes ?? false,
     enableSourceMaps: fromArgs.enableSourceMaps ?? fromEnv.enableSourceMaps ?? false,
+    check: fromArgs.check ?? false,
+    ...(fromArgs.defaultType ?? fromEnv.defaultType) !== undefined ? { defaultType: fromArgs.defaultType ?? fromEnv.defaultType } : {},
     version: fromArgs.version,
     help: fromArgs.help,
   };

@@ -16,6 +16,8 @@ export interface NodeProgram {
     readonly env: Record<string, string>;
     /** The main script's package type, from its package.json (a `.js` entry), decided before it runs. */
     readonly mainType: PackageType;
+    /** Its resolution conditions beside Node's own (`--conditions`, NODE_OPTIONS' first), for require and import alike. */
+    readonly conditions: readonly string[];
     /** Its process's pid and credential, as the invocation has them. */
     readonly identity: Omit<ProcessIdentity, 'setUmask'>;
 }

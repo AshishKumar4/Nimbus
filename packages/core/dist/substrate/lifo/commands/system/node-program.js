@@ -47,7 +47,7 @@ export async function runNodeProgram(program, host) {
     // One process and console, every module's, as in Node.
     const main = { process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdio: nodeCtx.stdio, identity }), console: createConsole(ctx.stdout, ctx.stderr), global: globalThis };
     host.started(main.process);
-    const loader = createCjsLoader(nodeCtx, main);
+    const loader = createCjsLoader(nodeCtx, main, { conditions: program.conditions });
     // Execute main script
     const module = { exports: {} };
     const cleanMainSource = stripShebang(source);
@@ -56,7 +56,7 @@ export async function runNodeProgram(program, host) {
     // Hooks supply VFS sources, but all ESM bindings and evaluation are native.
     let native;
     try {
-        native = await createNativeEsmLoader(nodeCtx, loader, isEsm ? { filename, source: cleanMainSource } : undefined);
+        native = await createNativeEsmLoader(nodeCtx, loader, isEsm ? { filename, source: cleanMainSource } : undefined, program.conditions);
     }
     catch (error) {
         await ctx.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);

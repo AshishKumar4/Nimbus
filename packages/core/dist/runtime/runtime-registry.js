@@ -48,6 +48,7 @@ import { packageScopeType } from './require-resolution.js';
 import { isDirectory } from '../vfs/vfs.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES } from './server-launch.js';
 import { parseNodeCommandLine, typeScriptStripOptions } from './node-cli.js';
+import { resolveRuntimeScriptPath } from './script-path.js';
 import { nodeEvalProgram, nodeStdinPrintProgram } from './node-eval.js';
 /**
  * The nearest directory at or above `dir` that holds a package.json, or null.
@@ -60,16 +61,7 @@ async function nearestPackageDir(fs, dir) {
     }
     return null;
 }
-/** Extensions probed when a target names no exact file, in Node's order. */
-const SCRIPT_RESOLUTION_CANDIDATES = ['.js', '.ts', '.tsx', '.mjs', '.jsx', '/index.js', '/index.ts'];
-/**
- * Resolve a runtime target — `./cli.ts`, `sub/x`, `.`, or a bare name — to a
- * canonical VFS key, or null when nothing runnable sits there.
- *
- * A directory never resolves to itself: it falls through to the index
- * candidates, so `bun ./tools` finds `tools/index.js` the way real bun does
- * rather than trying to read the directory as source.
- */
+export { resolveRuntimeScriptPath } from './script-path.js';
 /**
  * Another runtime's command line, as the registry has always read it:
  * flags up to the program (a bare `-` is the program, read from stdin), the
@@ -101,33 +93,10 @@ function genericCommandLine(name, args) {
         import: [],
         ...(evalCode !== undefined ? { eval: evalCode } : {}),
         print: false,
+        check: false,
         version: flags.includes('-v') || flags.includes('--version'),
         help: flags.includes('--help') || flags.includes('-h'),
     };
-}
-export async function resolveRuntimeScriptPath(fs, cwd, target, opts) {
-    const base = normalizeVfsPath(cwd || '/home/user');
-    let resolved;
-    if (target === '.' || target === './') {
-        // `node .` / `bun .` — the package's declared entry point.
-        let main = 'index.js';
-        try {
-            const pkg = JSON.parse(await fs.readFileString(`${base}/package.json`));
-            main = (opts?.preferModuleField ? pkg.module : undefined) || pkg.main || 'index.js';
-        }
-        catch { /* no readable package.json — index.js */ }
-        resolved = resolveVfsPath(main, base);
-    }
-    else {
-        resolved = resolveVfsPath(target, base);
-    }
-    if (await fs.isFile(resolved))
-        return resolved;
-    for (const candidate of SCRIPT_RESOLUTION_CANDIDATES) {
-        if (await fs.isFile(resolved + candidate))
-            return resolved + candidate;
-    }
-    return null;
 }
 /**
  * Build a shell-handler function for a runtime. The returned function
@@ -245,7 +214,7 @@ export function buildRuntimeHandler(spec, ctx0) {
         }
         const flagSpan = line.programIndex;
         // What a node run takes of its command line (RuntimeRunOpts.node).
-        const { programIndex: _programIndex, version: _version, help: _help, print, inputType, ...launch } = line;
+        const { programIndex: _programIndex, version: _version, help: _help, print, inputType, check: _check, defaultType: _defaultType, ...launch } = line;
         // A node program's argv is its own: Node's options are execArgv. Another runtime's carries its flags.
         const leadingFlags = spec.nodeCommandLine ? [] : args.slice(0, flagSpan);
         /**

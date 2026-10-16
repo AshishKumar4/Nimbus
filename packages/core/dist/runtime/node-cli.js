@@ -172,6 +172,12 @@ function readOptions(tokens, env) {
             case '--print':
                 read.print = !negation;
                 break;
+            case '--check':
+                read.check = !negation;
+                break;
+            case '--experimental-default-type':
+                read.defaultType = value;
+                break;
             case '--version':
                 read.version = !negation;
                 break;
@@ -221,6 +227,8 @@ export function parseNodeCommandLine(args, nodeOptions = '') {
         stripTypes: fromArgs.stripTypes ?? fromEnv.stripTypes ?? true,
         transformTypes: fromArgs.transformTypes ?? fromEnv.transformTypes ?? false,
         enableSourceMaps: fromArgs.enableSourceMaps ?? fromEnv.enableSourceMaps ?? false,
+        check: fromArgs.check ?? false,
+        ...(fromArgs.defaultType ?? fromEnv.defaultType) !== undefined ? { defaultType: fromArgs.defaultType ?? fromEnv.defaultType } : {},
         version: fromArgs.version,
         help: fromArgs.help,
     };

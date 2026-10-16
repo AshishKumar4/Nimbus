@@ -36,6 +36,7 @@ const outputs = [
         "export { sourceColumn } from './packages/core/src/runtime/native-esm-runtime.ts';",
       ].join('\n')],
       ['ESM_REQUIRED_SOURCE', './native-esm-runtime.js', ['requiredEsModule']],
+      ['ESM_LOADER_POLICY_SOURCE', './esm-loader-policy.js', ['importCallArguments', 'dataModule']],
       ['HTTP_REDIRECT_POLICY_SOURCE', './http-redirect-policy.js', ['isRedirectStatus', 'applyRedirectPolicy']],
     ],
   },

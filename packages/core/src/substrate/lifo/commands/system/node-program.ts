@@ -30,6 +30,8 @@ export interface NodeProgram {
 	readonly env: Record<string, string>;
 	/** The main script's package type, from its package.json (a `.js` entry), decided before it runs. */
 	readonly mainType: PackageType;
+	/** Its resolution conditions beside Node's own (`--conditions`, NODE_OPTIONS' first), for require and import alike. */
+	readonly conditions: readonly string[];
 	/** Its process's pid and credential, as the invocation has them. */
 	readonly identity: Omit<ProcessIdentity, 'setUmask'>;
 }
@@ -105,7 +107,7 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 		// One process and console, every module's, as in Node.
 		const main = { process: createProcess({ argv: nodeCtx.argv, env: nodeCtx.env, cwd: nodeCtx.cwd, stdio: nodeCtx.stdio, identity }), console: createConsole(ctx.stdout, ctx.stderr), global: globalThis };
 		host.started(main.process);
-		const loader = createCjsLoader(nodeCtx, main);
+		const loader = createCjsLoader(nodeCtx, main, { conditions: program.conditions });
 
 		// Execute main script
 		const module = { exports: {} as Record<string, unknown> };
@@ -115,7 +117,7 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 		// Hooks supply VFS sources, but all ESM bindings and evaluation are native.
 		let native: Awaited<ReturnType<typeof createNativeEsmLoader>>;
 		try {
-			native = await createNativeEsmLoader(nodeCtx, loader, isEsm ? { filename, source: cleanMainSource } : undefined);
+			native = await createNativeEsmLoader(nodeCtx, loader, isEsm ? { filename, source: cleanMainSource } : undefined, program.conditions);
 		} catch (error) {
 			await ctx.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
 			return { code: 1, ended: true, finalCode: () => 1 };

@@ -11,5 +11,6 @@ export declare const TRANSFORM_FACET_RUNTIME_SOURCE: string;
 export declare const OPENTUI_BACKEND_CLASS_SOURCE: string;
 export declare const COMMONJS_CELL_HELPERS_SOURCE: string;
 export declare const ESM_REQUIRED_SOURCE: string;
+export declare const ESM_LOADER_POLICY_SOURCE: string;
 export declare const HTTP_REDIRECT_POLICY_SOURCE: string;
 //# sourceMappingURL=compiled-bodies.generated.d.ts.map
