@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (fabric): an `IsolatePool` wasm module whose name holds a quote or
+  a backslash, such as `it's.wasm`, loads. Before, the pool's generated
+  worker imported it from an unescaped string, and the dispatch failed to
+  parse. Two module names that make the same identifier are still
+  refused; the refusal now names both.
 - Fixed: a portable workspace's `node` reads its command line as the
   hosted `node` does (Node's own parser, NODE_OPTIONS first), and finds its
   script the same way. `node .` runs the package's `main`, and `node start`
