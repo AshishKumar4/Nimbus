@@ -568,7 +568,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       }
       const oldPath = source.path;
       const newPath = target.path;
-      if (!this.vfs.exists(oldPath)) throw callError('ENOENT', call);
+      // rename(2): a source not there is ENOENT, one below a regular file ENOTDIR.
+      if (this.vfs.statIfPresent(oldPath, false, 'ENOTDIR') === null) throw callError('ENOENT', call);
       this.assertParentDirectory(newPath, call);
       this.owned(options.mutationOwner).rename(oldPath, newPath);
     });
@@ -977,8 +978,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   private assertParentDirectory(path: string, call: FsCall): void {
     const parent = parentVfsPath(path);
     if (!parent) return;
-    if (!this.vfs.exists(parent)) throw callError('ENOENT', call);
-    if (!this.vfs.isDirectory(parent)) throw callError('ENOTDIR', call);
+    const st = this.vfs.statIfPresent(parent, true, 'ENOTDIR');
+    if (st === null) throw callError('ENOENT', call);
+    if (st.type !== 'directory') throw callError('ENOTDIR', call);
   }
 
   /**
