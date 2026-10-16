@@ -1,5 +1,6 @@
 import { resolve } from '../../utils/path.js';
-import { MAX_REDIRECTS, dispatchWorkspaceRequest, hopInit, sendHop, walkRedirects, workspaceRequestPort } from './kernel-fetch.js';
+import { dispatchWorkspaceRequest, hopInit, sendHop, walkRedirects, workspaceRequestPort } from './kernel-fetch.js';
+import { MAX_REDIRECTS } from '../../../../runtime/http-redirect-policy.js';
 import { NIMBUS_AI_TOKEN_ENV, requestCarriesSessionAiToken } from '../../../../_shared/ai-egress.js';
 import { NIMBUS_AI_GATEWAY_PORT } from '../../../../constants.js';
 import { dec } from '../../../../_shared/bytes.js';

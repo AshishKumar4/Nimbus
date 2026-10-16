@@ -6,7 +6,7 @@ import {
   type VirtualRequestHandler,
   type VirtualResponse,
 } from '../kernel/index.js';
-import { awaitServedEnd, routeToLoopback, serveFromPort, servedBody, statusText } from '../kernel/local-serve.js';
+import { awaitServedEnd, routeToLoopback, serveFromPort, servedBody, servedReason, statusText } from '../kernel/local-serve.js';
 
 
 interface RequestOptions {
@@ -163,7 +163,7 @@ class ClientRequest extends EventEmitter {
             return;
           }
           // The server's answer, as this request's: its status and reason, its headers, then its body and end.
-          const msg = new IncomingMessage(served.statusCode, statusText(served.statusCode), served.headers);
+          const msg = new IncomingMessage(served.statusCode, servedReason(served), served.headers);
           this.emit('response', msg);
           msg.deliver(servedBody(served));
           return;
@@ -227,21 +227,22 @@ class ClientRequest extends EventEmitter {
 
 class ServerResponse extends EventEmitter {
   statusCode = 200;
-  statusMessage = 'OK';
+  /** Its reason phrase: unset until writeHead (or end(), its headers implicit) gives one, as Node's. */
+  statusMessage: string | undefined = undefined;
   headersSent = false;
   finished = false;
   writableEnded = false;
   writableFinished = false;
   private _headers: Record<string, string | string[]> = {};
   private _body = '';
-  private _vRes: { statusCode: number; headers: Record<string, string>; body: string };
+  private _vRes: VirtualResponse;
   // Minimal socket stub that middleware may reference
   socket: { destroy: () => void; writable: boolean; readable: boolean; remoteAddress: string } | null;
   // Promise that resolves when end() is called (for async middleware)
   _donePromise: Promise<void>;
   private _doneResolve!: () => void;
 
-  constructor(vRes: { statusCode: number; headers: Record<string, string>; body: string }) {
+  constructor(vRes: VirtualResponse) {
     super();
     this._vRes = vRes;
     this._donePromise = new Promise<void>((resolve) => {
@@ -272,6 +273,7 @@ class ServerResponse extends EventEmitter {
       this.statusMessage = reasonOrHeaders;
       h = headers;
     } else {
+      this.statusMessage ||= statusText(statusCode);
       h = reasonOrHeaders;
     }
     if (h) {
@@ -353,7 +355,9 @@ class ServerResponse extends EventEmitter {
       flatHeaders[k] = Array.isArray(v) ? v.join(', ') : v;
     }
     // Flush to virtual response
+    this.statusMessage ||= statusText(this.statusCode);
     this._vRes.statusCode = this.statusCode;
+    this._vRes.statusMessage = this.statusMessage;
     this._vRes.headers = flatHeaders;
     this._vRes.body = this._body;
     this.headersSent = true;
@@ -416,11 +420,9 @@ class Server extends EventEmitter {
     };
     this.portRegistry.set(port, handler);
 
-    // Emit 'listening' event asynchronously (like Node does) and call callback
-    queueMicrotask(() => {
-      this.emit('listening');
-      if (callback) callback();
-    });
+    // 'listening' is emitted asynchronously, as Node emits it; a callback is one of its listeners, the server its this.
+    if (callback) this.once('listening', callback);
+    queueMicrotask(() => this.emit('listening'));
 
     return this;
   }

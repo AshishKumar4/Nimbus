@@ -8,6 +8,8 @@ export interface VirtualRequest {
 }
 export interface VirtualResponse {
     statusCode: number;
+    /** The reason phrase its handler sent, if it named one (Node's http: writeHead's reason, statusMessage). */
+    statusMessage?: string;
     headers: Record<string, string>;
     body: string;
     /**

@@ -58,7 +58,7 @@ function recordingEgress() {
   adoptCtxExports({ SupervisorRPC(options) { boundProps.push(options.props); return { [Symbol.dispose]() {} }; } });
   const entrypoint = {
     async fetch() {
-      return Response.json({ success: true, filesWritten: 0, bytesWritten: 0, supervisorRpc: {}, metadataOverlay: {} });
+      return Response.json({ success: true, filesWritten: 0, bytesWritten: 0, supervisorRpc: {} });
     },
     [Symbol.dispose]() {},
   };

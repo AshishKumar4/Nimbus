@@ -79,6 +79,8 @@ export interface OutputFailure {
 /** A response to a request that stayed on the box, as data, either way across. */
 export interface RealmResponse {
     readonly status: number;
+    /** Its reason phrase, when its server named one. */
+    readonly statusText?: string;
     readonly headers: Record<string, string>;
     readonly body: string | Uint8Array;
 }
