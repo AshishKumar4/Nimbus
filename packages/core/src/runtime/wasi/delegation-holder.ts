@@ -845,7 +845,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         names.note(parentKey(key), nameOf(key), 'file');
         // Its mode was decided under this umask: the session applies the same
         // one, and the number a grant reserved (a provisional one is the session's to give).
-        file = { key, bytes: new Uint8Array(0), length: 0, mode: asked, ...(grant === PROVISIONAL ? { provisional: true } : { made: ino }), umask };
+        file = { key, bytes: new Uint8Array(0), length: 0, mode: asked, made: grant === PROVISIONAL ? undefined : ino, umask };
+        if (grant === PROVISIONAL) file.provisional = true;
         files.set(ino, file);
         // Made here: the name exists from now on, in the log's order. Logged
         // with its bytes, before the next decision (drain), as one call.

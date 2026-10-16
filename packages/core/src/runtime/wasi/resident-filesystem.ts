@@ -307,6 +307,7 @@ const DESCRIPTOR_CALLS = new Set<string>(['read', 'write', 'close', 'fstat', 'du
  * would begin waiting on the session, before anything it would have done.
  */
 const NOT_NOW: unique symbol = Symbol('not now');
+const notNow = (): never => { throw NOT_NOW; };
 
 /** A bridge's calls with no synchronous form (RuntimeSynchronousFs). */
 const NO_SYNCHRONOUS_FORM = new Set<string>(['synchronous', 'subscribe', 'writeStream', 'writeBatch', 'writeFileFrom', 'acquire', 'copyTree', 'gateLaunch', 'awaitRecall']);
@@ -669,7 +670,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       const walked = walkOnce(root, name, follow, crossed);
       if (walked === null || walked === DELEGATE || typeof walked === 'string') return walked;
       // A name this view does not know is the session's to say.
-      if (now) throw NOT_NOW;
+      if (now) notNow();
       if (asked >= MAX_LISTINGS_PER_CALL) return DELEGATE;
       const parent = parentKey(walked.missing);
       if (miss(parent) >= 2 && parent !== '' && store.children(parent) === undefined) {
@@ -731,7 +732,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       (bytes === null || bytes === undefined || bytes.byteLength !== entry.size ? undefined : bytes);
     const held = store.content(key, entry.revision);
     if (held !== undefined && held.byteLength === entry.size) return held;
-    if (now) throw NOT_NOW;
+    if (now) notNow();
     const fill = (): Promise<Uint8Array | undefined> => {
       counts.fills++;
       counts.filledBytes += entry.size;
@@ -963,7 +964,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const listingOf = (key: string): RuntimeVfsDirEntry[] | Delegate | Promise<RuntimeVfsDirEntry[] | Delegate> => {
     const known = store.children(key);
     if (known !== undefined) return known;
-    if (now) throw NOT_NOW;
+    if (now) notNow();
     counts.treeListings++;
     return store.listTree(key)
       .then((whole) => (whole ? true : store.list(key)))
