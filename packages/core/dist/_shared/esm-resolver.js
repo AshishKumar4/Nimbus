@@ -21,7 +21,7 @@
  * self-contained function: nothing inside may refer to this module.
  */
 import { invalidArgType, nodeError } from './node-error.js';
-import { createNodePackageMapPolicy, DEFAULT_ESM_CONDITIONS, packageJsonText, selectPackageMap } from './exports-resolver.js';
+import { createNodePackageMapPolicy, DEFAULT_ESM_CONDITIONS, nativeResolutionError, packageJsonText, selectPackageMap } from './exports-resolver.js';
 /** Node's ERR_UNKNOWN_FILE_EXTENSION message for the file at `path`. */
 export function unknownFileExtensionMessage(path) {
     const base = path.slice(path.lastIndexOf('/') + 1);
@@ -83,8 +83,8 @@ export function createEsmResolver(host, options = {}) {
             parsed = JSON.parse(packageJsonText(text));
         }
         catch {
-            // Node's message names the file and the import, not the parse error.
-            throw nodeError(Error, 'ERR_INVALID_PACKAGE_CONFIG', `Invalid package config ${pjsonPath}` +
+            // Node's message names the file and the import, not the parse error; its C++ throws it.
+            throw nativeResolutionError('ERR_INVALID_PACKAGE_CONFIG', `Invalid package config ${pjsonPath}` +
                 (base ? ` while importing ${JSON.stringify(specifier)} from ${base}` : '') + '.');
         }
         const config = { exists: true, pjsonPath, type: 'none' };
@@ -163,7 +163,7 @@ export function createEsmResolver(host, options = {}) {
         // an empty package name's `node_modules//` is `node_modules/`).
         const dir = fileUrl(filePath(new URL('.', pjsonUrl)).replace(/\/+/g, '/'));
         const missing = filePath(new URL(config.main ?? 'index.js', dir));
-        throw nodeError(Error, 'ERR_MODULE_NOT_FOUND', `Cannot find package '${missing}' imported from ${base}`);
+        throw nativeResolutionError('ERR_MODULE_NOT_FOUND', `Cannot find package '${missing}' imported from ${base}`);
     }
     function* packageResolve(specifier, baseUrl) {
         if (host.isBuiltin(specifier))

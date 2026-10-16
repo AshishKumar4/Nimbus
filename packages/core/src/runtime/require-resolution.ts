@@ -6,7 +6,8 @@
  */
 import type { Awaitable, RuntimeFsBridge, RuntimeVfsStat } from './os-contracts.js';
 import {
-  createNodePackageMapPolicy, DEFAULT_CJS_CONDITIONS, packageJsonText, packageSelfReferenceSubpath, selectPackageMap,
+  createNodePackageMapPolicy, DEFAULT_CJS_CONDITIONS, nativeResolutionError, packageJsonText, packageSelfReferenceSubpath, resolutionError,
+  selectPackageMap,
   resolvePackageEntry, type PackageMapPolicy, type PackageMapSteps, type ResolvablePackageJson, type SelfReferencingPackageJson,
 } from '../_shared/exports-resolver.js';
 import { TYPESCRIPT_INDEX_CANDIDATES, typescriptFallbackCandidates } from '../_shared/typescript-specifiers.js';
@@ -105,8 +106,10 @@ const fileUrl = (path: string): URL => {
   url.pathname = path;
   return url;
 };
-const error = (code: string, message: string, Type: ErrorConstructor | TypeErrorConstructor = Error): Error =>
-  Object.assign(new Type(message), { code });
+const error = resolutionError;
+/** A module require() did not find: a plain Error, its code MODULE_NOT_FOUND, as Node's CJS loader makes it. */
+const moduleNotFound = (message: string, props: Record<string, string>): Error =>
+  Object.assign(new Error(message), { code: 'MODULE_NOT_FOUND' }, props);
 
 /** Node's node_modules lookup paths, with no node_modules/node_modules. */
 export function requireNodeModulePaths(fromDir: string): string[] {
@@ -162,7 +165,7 @@ export function createRequireResolver(host: RequireResolverHost, options: Requir
     if (text === null) { state.configs.set(path, null); return null; }
     let pkg: unknown;
     try { pkg = JSON.parse(packageJsonText(text)); }
-    catch { throw error('ERR_INVALID_PACKAGE_CONFIG', 'Invalid package config ' + path + '.'); }
+    catch { throw nativeResolutionError('ERR_INVALID_PACKAGE_CONFIG', 'Invalid package config ' + path + '.'); }
     const config: PackageConfig = pkg !== null && typeof pkg === 'object' ? pkg as PackageConfig : {};
     state.configs.set(path, config);
     return config;
@@ -207,9 +210,9 @@ export function createRequireResolver(host: RequireResolverHost, options: Requir
         const source = (yield* typeScriptFallback(main)) ?? (yield* typeScriptFallback(path));
         if (source) return source;
       }
-      throw Object.assign(error('MODULE_NOT_FOUND',
-        "Cannot find module '" + main + "'. Please verify that the package.json has a valid \"main\" entry"),
-      { path: pkgPath, requestPath: path });
+      throw moduleNotFound(
+        "Cannot find module '" + main + "'. Please verify that the package.json has a valid \"main\" entry",
+        { path: pkgPath, requestPath: path });
     }
     return yield* loadIndex(path);
   }
@@ -269,7 +272,8 @@ export function createRequireResolver(host: RequireResolverHost, options: Requir
       if (split.subpath !== '.') return new URL(split.subpath, fileUrl(pjsonPath));
       const found = yield* loadAsDirectory(dir, state);
       if (found) return fileUrl(found);
-      throw error('ERR_MODULE_NOT_FOUND', "Cannot find package '" + dir + "/index.js' imported from " + fromDir);
+      // legacyMainResolve's.
+      throw nativeResolutionError('ERR_MODULE_NOT_FOUND', "Cannot find package '" + dir + "/index.js' imported from " + fromDir);
     }
     throw error('ERR_MODULE_NOT_FOUND', "Cannot find package '" + split.name + "' imported from " + fromDir);
   }
@@ -288,7 +292,7 @@ export function createRequireResolver(host: RequireResolverHost, options: Requir
     }
     const path = decodeURIComponent(target.pathname);
     if ((yield* ask.kind(path)) !== 'file') {
-      throw Object.assign(error('MODULE_NOT_FOUND', "Cannot find module '" + path + "'"), { path: pjsonPath });
+      throw moduleNotFound("Cannot find module '" + path + "'", { path: pjsonPath });
     }
     return absolute(path);
   }

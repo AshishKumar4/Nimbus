@@ -50,6 +50,18 @@ published independently in the `@nimbus-sh` npm scope.
   exceeded" before Python saw it. The prompt, TypeScript source maps, the esbuild-compatible
   build's base64 and data-URL loaders, CSS data URLs, and stop/replay tapes
   now share one base64 codec (`_shared/crypto.js`).
+- Fixed: a hosted or portable `node` program's package resolution errors
+  are Node's own errors, from `require()` and `import()` alike:
+  `ERR_PACKAGE_PATH_NOT_EXPORTED`, `ERR_PACKAGE_IMPORT_NOT_DEFINED`,
+  `ERR_INVALID_PACKAGE_TARGET`, `ERR_INVALID_PACKAGE_CONFIG` and
+  `ERR_INVALID_MODULE_SPECIFIER`. `String(error)` and its stack read
+  `Error [ERR_PACKAGE_PATH_NOT_EXPORTED]: …`; before, they read `Error: …`,
+  with the code only on `error.code`. The two Node 22 throws from C++ (a
+  package.json that is not JSON, `ERR_INVALID_PACKAGE_CONFIG`, and a
+  package main that names no file, `ERR_MODULE_NOT_FOUND`) are plain
+  `Error`s with their code, as in Node; `import()` used to give them the
+  `[CODE]` head. A module `require()` does not find is still a plain
+  `Error` with `code` `MODULE_NOT_FOUND`, as in Node.
 - Breaking (fabric, worker, sdk): the legacy inner Durable Object transport
   is gone. `NimbusDOStub` is no longer exported from
   `@nimbus-sh/fabric/bindings.js`, `@nimbus-sh/worker` or

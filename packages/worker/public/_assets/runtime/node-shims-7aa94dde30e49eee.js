@@ -18118,7 +18118,7 @@ function __fileExists(path) {
 }
 // Resolution is the compiled core generator, over the guest's resident fs.
 // Metadata/refusal handling stays here; selection and probing never do.
-var { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, packageJsonText, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates } = (() => {
+var { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, nativeResolutionError, packageJsonText, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates } = (() => {
 var DEFAULT_ESM_CONDITIONS = ["import", "node", "node-addons", "module-sync"];
 var DEFAULT_CJS_CONDITIONS = ["require", "node", "node-addons", "module-sync"];
 var DEFAULT_BUILD_CONDITIONS = ["import", "module", "browser", "default"];
@@ -18232,11 +18232,17 @@ function resolveExports(exportsField, subpath = ".", conditions = DEFAULT_BUILD_
   if (!next.done) throw new Error("The build/browser package-map policy must be synchronous");
   return next.value ?? null;
 }
+function resolutionError(code, message, Type = Error) {
+  return nodeError(Type, code, message, void 0, resolutionError);
+}
+function nativeResolutionError(code, message) {
+  return Object.assign(new Error(message), { code });
+}
 function createNodePackageMapPolicy(packageJsonUrl, base, internal, resolveBare) {
   const path = (url) => decodeURIComponent(url.pathname);
   const pjsonPath = path(packageJsonUrl);
   const root = new URL(".", packageJsonUrl);
-  const error2 = (code, message, Type = Error) => Object.assign(new Type(message), { code });
+  const error2 = resolutionError;
   function invalidTarget(value, match) {
     const text = typeof value === "object" && value !== null ? JSON.stringify(value) : String(value);
     const related = !internal && text.length > 0 && !text.startsWith("./");
@@ -18382,7 +18388,8 @@ var fileUrl = (path) => {
   url.pathname = path;
   return url;
 };
-var error = (code, message, Type = Error) => Object.assign(new Type(message), { code });
+var error = resolutionError;
+var moduleNotFound = (message, props) => Object.assign(new Error(message), { code: "MODULE_NOT_FOUND" }, props);
 function requireNodeModulePaths(fromDir) {
   const paths = [];
   for (let dir = absolute(fromDir); ; dir = parentDir(dir)) {
@@ -18438,7 +18445,7 @@ function createRequireResolver(host, options = {}) {
     try {
       pkg = JSON.parse(packageJsonText(text));
     } catch {
-      throw error("ERR_INVALID_PACKAGE_CONFIG", "Invalid package config " + path + ".");
+      throw nativeResolutionError("ERR_INVALID_PACKAGE_CONFIG", "Invalid package config " + path + ".");
     }
     const config = pkg !== null && typeof pkg === "object" ? pkg : {};
     state.configs.set(path, config);
@@ -18484,11 +18491,8 @@ function createRequireResolver(host, options = {}) {
         const source = (yield* typeScriptFallback(main)) ?? (yield* typeScriptFallback(path));
         if (source) return source;
       }
-      throw Object.assign(
-        error(
-          "MODULE_NOT_FOUND",
-          "Cannot find module '" + main + `'. Please verify that the package.json has a valid "main" entry`
-        ),
+      throw moduleNotFound(
+        "Cannot find module '" + main + `'. Please verify that the package.json has a valid "main" entry`,
         { path: pkgPath, requestPath: path }
       );
     }
@@ -18549,7 +18553,7 @@ function createRequireResolver(host, options = {}) {
       if (split.subpath !== ".") return new URL(split.subpath, fileUrl(pjsonPath));
       const found = yield* loadAsDirectory(dir, state);
       if (found) return fileUrl(found);
-      throw error("ERR_MODULE_NOT_FOUND", "Cannot find package '" + dir + "/index.js' imported from " + fromDir);
+      throw nativeResolutionError("ERR_MODULE_NOT_FOUND", "Cannot find package '" + dir + "/index.js' imported from " + fromDir);
     }
     throw error("ERR_MODULE_NOT_FOUND", "Cannot find package '" + split.name + "' imported from " + fromDir);
   }
@@ -18568,7 +18572,7 @@ function createRequireResolver(host, options = {}) {
     }
     const path = decodeURIComponent(target.pathname);
     if ((yield* ask.kind(path)) !== "file") {
-      throw Object.assign(error("MODULE_NOT_FOUND", "Cannot find module '" + path + "'"), { path: pjsonPath });
+      throw moduleNotFound("Cannot find module '" + path + "'", { path: pjsonPath });
     }
     return absolute(path);
   }
@@ -18688,7 +18692,7 @@ function presentedCredential(value) {
 function isWebSocketUpgradeRequest(headers) {
   return headers.get("upgrade")?.toLowerCase() === "websocket";
 }
-return { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, packageJsonText, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates };
+return { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, nativeResolutionError, packageJsonText, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates };
 })();
 
 const __requireResolver = createRequireResolver({
@@ -19023,8 +19027,7 @@ function createEsmResolver(host, options = {}) {
     try {
       parsed = JSON.parse(packageJsonText(text));
     } catch {
-      throw nodeError(
-        Error,
+      throw nativeResolutionError(
         "ERR_INVALID_PACKAGE_CONFIG",
         `Invalid package config ${pjsonPath}` + (base ? ` while importing ${JSON.stringify(specifier)} from ${base}` : "") + "."
       );
@@ -19092,7 +19095,7 @@ function createEsmResolver(host, options = {}) {
     }
     const dir = fileUrl(filePath(new URL(".", pjsonUrl)).replace(/\/+/g, "/"));
     const missing = filePath(new URL(config.main ?? "index.js", dir));
-    throw nodeError(Error, "ERR_MODULE_NOT_FOUND", `Cannot find package '${missing}' imported from ${base}`);
+    throw nativeResolutionError("ERR_MODULE_NOT_FOUND", `Cannot find package '${missing}' imported from ${base}`);
   }
   function* packageResolve(specifier, baseUrl) {
     if (host.isBuiltin(specifier)) return new URL("node:" + specifier);

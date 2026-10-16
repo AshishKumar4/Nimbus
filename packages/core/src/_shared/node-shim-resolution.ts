@@ -16,6 +16,8 @@ export {
   resolvePackageEntry,
   selectPackageMap,
   createNodePackageMapPolicy,
+  // The ESM resolver's preamble calls it by name too.
+  nativeResolutionError,
 } from './exports-resolver.js';
 export { createRequireResolver, requireNodeModulePaths, NIMBUS_TYPESCRIPT_REQUIRE_POLICY } from '../runtime/require-resolution.js';
 export { TYPESCRIPT_INDEX_CANDIDATES, stripsTypeScript, typescriptFallbackCandidates } from './typescript-specifiers.js';
