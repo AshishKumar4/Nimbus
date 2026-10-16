@@ -273,7 +273,7 @@ const REGISTRY = {
   const note = pinned.events.find((e) => e.type === 'advisory' && e.from === 'rolldown');
   assert.ok(note && note.reason.includes(staged.versions.join(', ')) && note.suggest === `rolldown@${newest}`,
     `with the note that it will not load, naming the staged versions: ${JSON.stringify(note)}`);
-  const cachedNewer = { name: 'rolldown', registryName: 'rolldown', version: newer, tarballUrl: `https://registry.invalid/rolldown/-/rolldown-${newer}.tgz`, integrity: 'sha512-x', depsJson: '{}', exportsJson: 'null', main: '', moduleField: '', binJson: '{}', fetchedAt: 0 };
+  const cachedNewer = { name: 'rolldown', registryName: 'rolldown', version: newer, tarballUrl: `https://registry.invalid/rolldown/-/rolldown-${newer}.tgz`, integrity: 'sha512-x', depsJson: '{}', main: '', binJson: '{}' };
   const fromCache = registry(ROLLDOWN);
   const skipped = await resolveOnePackumentInFacet(spec({ name: 'rolldown', range: `^${major}.${minor}.0`, cachedEntries: [cachedNewer] }), fromCache.env);
   assert.deepEqual(fromCache.asked, ['rolldown'], 'a cache holding only a newer rolldown is not taken for the staged one');

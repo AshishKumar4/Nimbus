@@ -20,7 +20,6 @@ export interface LockfileEntry {
     registryName: string;
     resolvedVer: string;
     integrity: string;
-    depsJson: string;
     hoistedPath: string;
 }
 export interface EsmBundleEntry {
@@ -66,7 +65,7 @@ export declare class NpmCache {
      *  L1 observability: bumps cache-stats L1.packument hit/miss. Bytes
      *  on hit = approximate size of the deserialized RegistryCacheEntry,
      *  computed as sum of major-string lengths (depsJson + peerDepsJson +
-     *  exportsJson + binJson + a few tens of bytes overhead). This is a
+     *  binJson + a few tens of bytes overhead). This is a
      *  good proxy for "how much L1 data did we save fetching" — not the
      *  exact SQLite blob byte count (which would require a separate
      *  SELECT). */

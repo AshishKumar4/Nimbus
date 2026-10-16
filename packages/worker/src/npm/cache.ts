@@ -48,7 +48,6 @@ export interface LockfileEntry {
   registryName: string;
   resolvedVer: string;
   integrity: string;
-  depsJson: string;
   hoistedPath: string;
 }
 
@@ -195,7 +194,7 @@ export class NpmCache {
   // ── Registry cache ────────────────────────────────────────────────────
 
   private static readonly REGISTRY_COLUMNS =
-    'name, version, tarball_url, integrity, deps_json, peer_deps_json, exports_json, main, module_field, bin_json, platform_json, optional_deps_json, peer_meta_json, registry_name, bundle_json, engines_json, fetched_at';
+    'name, version, tarball_url, integrity, deps_json, peer_deps_json, main, bin_json, platform_json, optional_deps_json, peer_meta_json, registry_name, bundle_json, engines_json';
 
   private rowToRegistryEntry(r: Record<string, unknown>): RegistryCacheEntry {
     return {
@@ -205,9 +204,7 @@ export class NpmCache {
       integrity: String(r.integrity),
       depsJson: String(r.deps_json),
       peerDepsJson: String(r.peer_deps_json ?? '{}'),
-      exportsJson: String(r.exports_json),
       main: String(r.main),
-      moduleField: String(r.module_field),
       binJson: String(r.bin_json),
       platformJson: String(r.platform_json ?? '{}'),
       optionalDepsJson: String(r.optional_deps_json ?? '{}'),
@@ -215,7 +212,6 @@ export class NpmCache {
       registryName: String(r.registry_name ?? ''),
       bundleJson: String(r.bundle_json ?? ''),
       enginesJson: String(r.engines_json ?? ''),
-      fetchedAt: Number(r.fetched_at),
     };
   }
 
@@ -224,7 +220,7 @@ export class NpmCache {
    *  L1 observability: bumps cache-stats L1.packument hit/miss. Bytes
    *  on hit = approximate size of the deserialized RegistryCacheEntry,
    *  computed as sum of major-string lengths (depsJson + peerDepsJson +
-   *  exportsJson + binJson + a few tens of bytes overhead). This is a
+   *  binJson + a few tens of bytes overhead). This is a
    *  good proxy for "how much L1 data did we save fetching" — not the
    *  exact SQLite blob byte count (which would require a separate
    *  SELECT). */
@@ -243,12 +239,11 @@ export class NpmCache {
     // Approximate hit-bytes: sum of variable-length string fields.
     // The fixed-cost fields (name, version, integrity, etc.) add ~150
     // bytes on average; the variable fields can be tens of KB for
-    // packages with large exports maps. Skip the constant overhead so
+    // packages with large dependency maps. Skip the constant overhead so
     // bytes correlates with the dominant cost.
     const bytes =
       entry.depsJson.length +
       entry.peerDepsJson!.length +
-      entry.exportsJson.length +
       entry.binJson.length;
     _l1RecordHit('L1', 'packument', bytes);
     return entry;
@@ -275,7 +270,7 @@ export class NpmCache {
     }
     for (const entry of out.values()) {
       if (entry === null) _l1RecordMiss('L1', 'packument');
-      else _l1RecordHit('L1', 'packument', entry.depsJson.length + entry.peerDepsJson!.length + entry.exportsJson.length + entry.binJson.length);
+      else _l1RecordHit('L1', 'packument', entry.depsJson.length + entry.peerDepsJson!.length + entry.binJson.length);
     }
     return out;
   }
@@ -303,13 +298,11 @@ export class NpmCache {
         this.sql.exec(
           `INSERT OR REPLACE INTO pkg_registry_records
            (registry, network, ${NpmCache.REGISTRY_COLUMNS})
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           source.registry, source.network, entry.name, entry.version, entry.tarballUrl, entry.integrity,
-          entry.depsJson, entry.peerDepsJson || '{}',
-          entry.exportsJson, entry.main, entry.moduleField,
+          entry.depsJson, entry.peerDepsJson || '{}', entry.main,
           entry.binJson, entry.platformJson || '{}', entry.optionalDepsJson || '{}',
           entry.peerMetaJson || '{}', entry.registryName ?? '', entry.bundleJson ?? '', entry.enginesJson ?? '',
-          entry.fetchedAt,
         );
         written++;
       } catch (e: any) {
@@ -326,7 +319,7 @@ export class NpmCache {
   readLockfile(projectPath: string): Map<string, LockfileEntry> | null {
     this.ensureSchema();
     const rows = [...this.sql.exec(
-      `SELECT name, resolved_ver, integrity, deps_json, hoisted_path, registry_name
+      `SELECT name, resolved_ver, integrity, hoisted_path, registry_name
        FROM pkg_lockfile WHERE project_path = ?`,
       projectPath,
     )];
@@ -339,7 +332,6 @@ export class NpmCache {
         registryName: String(r.registry_name ?? ''),
         resolvedVer: String(r.resolved_ver),
         integrity: String(r.integrity),
-        depsJson: String(r.deps_json),
         hoistedPath: String(r.hoisted_path),
       });
     }
@@ -400,7 +392,7 @@ export class NpmCache {
     };
 
     const same = (a: LockfileEntry, b: LockfileEntry) => a.resolvedVer === b.resolvedVer && a.integrity === b.integrity
-      && a.depsJson === b.depsJson && a.hoistedPath === b.hoistedPath && a.registryName === b.registryName;
+      && a.hoistedPath === b.hoistedPath && a.registryName === b.registryName;
     doTx(() => {
       if (previous === null) {
         this.sql.exec(`DELETE FROM pkg_lockfile WHERE project_path = ?`, projectPath);
@@ -411,24 +403,24 @@ export class NpmCache {
         }
       }
 
-      // Batch insert: DO SQLite ~100 var limit. 7 cols → max 14 rows (14×7=98).
+      // Batch insert: DO SQLite ~100 var limit. 6 cols → max 16 rows (16×6=96).
       const entryList = [...entries].filter(([placement, entry]) => {
         const before = previous?.get(placement);
         return before === undefined || !same(before, entry);
       });
-      const BATCH = 14;
+      const BATCH = 16;
       for (let i = 0; i < entryList.length; i += BATCH) {
         const batch = entryList.slice(i, i + BATCH);
-        const placeholders = batch.map(() => '(?,?,?,?,?,?,?)').join(',');
+        const placeholders = batch.map(() => '(?,?,?,?,?,?)').join(',');
         const values: any[] = [];
         for (const [placement, e] of batch) {
           values.push(
             projectPath, placement, e.resolvedVer,
-            e.integrity, e.depsJson, e.hoistedPath, e.registryName,
+            e.integrity, e.hoistedPath, e.registryName,
           );
         }
         this.sql.exec(
-          `INSERT OR REPLACE INTO pkg_lockfile (project_path, name, resolved_ver, integrity, deps_json, hoisted_path, registry_name) VALUES ${placeholders}`,
+          `INSERT OR REPLACE INTO pkg_lockfile (project_path, name, resolved_ver, integrity, hoisted_path, registry_name) VALUES ${placeholders}`,
           ...values,
         );
       }

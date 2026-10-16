@@ -202,7 +202,7 @@ write(`${PROJECT}/node_modules/alpha/index.js`, 'module.exports = 1;\n');
 // What `npm install` records of what it put there.
 const installed = (names) => npm.writeLockfile(`/${PROJECT}`, new Map(names.map((name) => [
   `node_modules/${name}`,
-  { name, registryName: name, resolvedVer: '1.0.0', integrity: `sha512-${name}`, depsJson: '{}', hoistedPath: `/${PROJECT}/node_modules/${name}` },
+  { name, registryName: name, resolvedVer: '1.0.0', integrity: `sha512-${name}`, hoistedPath: `/${PROJECT}/node_modules/${name}` },
 ])));
 installed(['alpha', '@scope/beta', 'alpha/node_modules/gamma']);
 // Reads the manifests the way a resolver does: names the program computes.

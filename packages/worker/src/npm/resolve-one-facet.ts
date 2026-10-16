@@ -52,7 +52,7 @@
 
 import type { ResolvedPackage } from './resolver.js';
 import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
-import type { FacetRegistryEvent } from './resolve-facet.js';
+import type { RegistryEvent } from '../facets/wasm-swap-registry.js';
 import type { PackumentReadOptions } from './r2-cache.js';
 import type { NpmCacheMode } from '@nimbus-sh/core/_shared/npm-cache-mode.js';
 import { isEngines, registryRecord, resolvedFromRecord, type RegistryCacheEntry } from './registry-record.js';
@@ -120,6 +120,11 @@ export interface ResolveOneSpec {
   cache?: NpmCacheMode;
 }
 
+/** A registry event as a resolver facet reports it: a top-level request is the supervisor's, never a facet's. */
+type TransitiveRegistryEvent = RegistryEvent extends infer Event
+  ? Event extends { ctx: 'top' | 'transitive' } ? Omit<Event, 'ctx'> & { ctx: 'transitive' } : Event
+  : never;
+
 export interface ResolveOneResult {
   /** Resolved package; with a `w6-reject` error, the package refused; null with an `unresolved` one. */
   pkg: ResolvedPackage | null;
@@ -131,8 +136,8 @@ export interface ResolveOneResult {
   cacheWrites: RegistryCacheEntry[];
   /** [npm] log lines, forwarded by the supervisor. */
   messages: string[];
-  /** Registry telemetry events to emitRegistryEvent. */
-  events: FacetRegistryEvent[];
+  /** Registry telemetry events to emitRegistryEvent: every one a facet says is of a transitive dependency. */
+  events: TransitiveRegistryEvent[];
   /**
    * Diagnostic: how many bytes the task fetched/decoded. Folded into
    * the supervisor's facetCounters.
@@ -221,7 +226,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   },
 ): Promise<ResolveOneResult> {
   const messages: string[] = [];
-  const events: FacetRegistryEvent[] = [];
+  const events: TransitiveRegistryEvent[] = [];
   const cacheWrites: RegistryCacheEntry[] = [];
   const request = PARSE_REGISTRY_REQUEST(spec.name, spec.range);
   // cache-obs-2: per-resolve cache events. Filled by the L2/L3 path
@@ -606,9 +611,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
       cpu: Array.isArray(v.cpu) ? v.cpu : undefined,
       libc: Array.isArray(v.libc) ? v.libc : undefined,
       ...(isEngines(v.engines) ? { engines: v.engines } : {}),
-      exports: v.exports ?? null,
       main: v.main || '',
-      module: v.module || '',
       bin,
     };
     // Staged-artifact rewrite: native-launcher packages install as their
@@ -626,7 +629,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
 
   // 5. Stage the cache write: the registry package's, under its name, the
   //    one key a record has (an alias's lockfile entry names it too).
-  cacheWrites.push(registryRecord({ ...pkg, name: request.registryName }, Date.now()));
+  cacheWrites.push(registryRecord({ ...pkg, name: request.registryName }));
 
   return native ?? out(pkg, bytes, packumentSource);
 };

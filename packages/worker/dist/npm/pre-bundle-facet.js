@@ -164,11 +164,3 @@ export function buildSliceForSpecifierWithCap(vfs, specifier, nmDir, capBytes) {
     }
     return { slice, totalBytes };
 }
-/**
- * Choose the externals list for a specifier, exported so the supervisor
- * can compute the same value when building the spec without re-pulling
- * the helper from esbuild-service.ts on the call site.
- */
-export function externalsForSpecifier(specifier) {
-    return getSharedRuntimeExternals(specifier);
-}

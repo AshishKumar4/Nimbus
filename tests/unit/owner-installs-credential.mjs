@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // What a user installed is read, and written, as that user, never as the
-// kernel. A global npm package's commands are discovered as the session
-// user when the workspace composes, so a package.json linked to a file only
+// kernel. The workspace reads no global package as it composes (npm's bins
+// are found on PATH, as the caller), so a package.json linked to a file only
 // root may read registers nothing; `npm install -g` writes its bin shims as
 // the process that ran it. Red before: both acted as CRED_KERNEL, so the
 // shims were root's, and a linked package.json was read past its permissions.
@@ -17,7 +17,7 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const USER = CRED_SESSION_USER.uid;
 
-// ── global npm commands are discovered as the session user ────────────────
+// ── the boot reads no global package ──────────────────────────────────────
 {
   const harness = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -36,12 +36,12 @@ const USER = CRED_SESSION_USER.uid;
   user.writeFile('usr/lib/node_modules/fine/package.json', JSON.stringify({ name: 'fine', bin: { 'fine-name': 'cli.js' } }));
   const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, vfs });
   try {
-    assert.equal(ws.registry.has('fine-name'), true, "a global package's command is restored");
+    assert.equal(ws.registry.has('fine-name'), false, 'the boot registers no global package\'s command: npm links bins onto PATH');
     assert.equal(ws.registry.has('leaked-name'), false, 'a package.json its user cannot read registers nothing');
   } finally {
     await ws.close();
   }
-  console.log('  global npm commands are discovered as the session user');
+  console.log('  the boot reads no global package');
 }
 
 // ── npm install -g writes its bin shims as the process that ran it ────────

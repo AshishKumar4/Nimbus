@@ -54,7 +54,7 @@ write('app/node_modules/big-icons/index.js', index.join('\n') + '\n');
 const resolved = {
   pkg: {
     name: 'big-icons', version: '1.0.0', tarballUrl: 'https://registry.invalid/big-icons-1.0.0.tgz', integrity: 'sha512-fixture',
-    dependencies: {}, exports: null, main: 'index.js', module: 'index.js', bin: {},
+    dependencies: {}, main: 'index.js', bin: {},
   },
   cacheWrites: [], messages: [], events: [],
   packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
