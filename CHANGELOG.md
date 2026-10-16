@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a session's destroy (`DELETE /s/<id>/`, `box.destroy()`) is
+  repeated once on a fresh connection when the platform fails it with a
+  reset of the session's storage ("Internal error in Durable Object
+  storage caused object to be reset") or its undescribed "internal error".
+  Before, either answered the destroy with a 500 and left the session in
+  place. The destroy is idempotent, so the repeat answers with its result;
+  any other failure is answered as before.
 - Added: `npm install` and `npm ci` read packuments in npm's cache modes.
   `--prefer-online` checks a cached packument with the registry however
   fresh it is (a `304` keeps it). `--prefer-offline` uses any cached copy,
