@@ -32,7 +32,7 @@ export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { type Principal, type VfsDirentType, type VfsRemoval, type VfsWriteEvent } from './vfs.js';
 import { type WaveScope, type WriteBatchStreamResult, type WriteStreamOptions } from '../runtime/wave-contracts.js';
 import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
-import { type GrantCertificate, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
+import { type FsTime, type GrantCertificate, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
 /** The tables the store keeps (dropped whole by a reset of an older store; listed by an embedder's destroy). */
 export declare const STORE_TABLES: readonly ["vfs_state", "vfs_inodes", "vfs_chunks", "vfs_contents", "vfs_content_chunks", "vfs_inode_history", "vfs_tombstones", "vfs_cold_trash", "vfs_gc_queue", "vfs_snapshots", "vfs_jobs", "vfs_wave_cursors", "vfs_wave_descriptions"];
 /** The root directory has no row; this is what it is. */
@@ -49,6 +49,8 @@ export interface ExclusiveMutationLease {
     readonly bytes?: number;
     /** A delegation whose reads recall it: the epoch and revision it was recorded at. */
     readonly certificate?: GrantCertificate;
+    /** Its holder's principal is confined (confinePrincipal), as `as(cred)` grants it. */
+    readonly confined?: boolean;
 }
 /** Inode numbers reserved for a delegation's holder: [first, end). */
 export interface InodeRange {
@@ -124,7 +126,8 @@ export interface VfsOpenDescription {
     chmod(mode: number): void;
     /** A null side keeps the file's. */
     chown(uid: number | null, gid: number | null): void;
-    utimes(atime: number, mtime: number): void;
+    /** futimens(2): as utimes, on this description's file. */
+    utimes(atime: FsTime, mtime: FsTime): void;
     close(): void;
     /**
      * Where an O_APPEND write lands: the end of the file as written so far,
@@ -225,12 +228,8 @@ export interface CredentialedVfs {
     statIfPresent(path: string, followLeaf?: boolean): VfsStat | null;
     /** Whether something is at `path` (a link not followed) as published: no append stored, no holder recalled (VFS.landedAt). */
     landedAt(path: string): boolean;
-    /**
-     * utimensat(2): null is UTIME_NOW, undefined UTIME_OMIT (that time kept).
-     * Only now/omit needs no more than write permission or ownership; an
-     * explicit time needs ownership. `followSymlinks: false` sets a link's own.
-     */
-    utimes(path: string, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: {
+    /** utimensat(2), each time an FsTime, resolved and judged as it commits. `followSymlinks: false` sets a link's own. */
+    utimes(path: string, atime: FsTime, mtime: FsTime, options?: {
         followSymlinks?: boolean;
     }): void;
     chmod(path: string, mode: number): void;
@@ -1589,6 +1588,14 @@ export declare class SqliteVFS {
      */
     private publishMetadata;
     private utimes;
+    /**
+     * utimes' judgement of `inode` (utimesRefusal: explicit times by the owner
+     * or root, 'now' and 'omit' by anyone who may write it), and its change,
+     * each time resolved as it commits (timeAt). A linked file is admitted and
+     * changed as its row, as chownInode does; an open one unlinked (null) in
+     * its inode alone.
+     */
+    private utimesInode;
     /**
      * Set the permission bits durably. Follows symlinks (POSIX chmod).
      *
