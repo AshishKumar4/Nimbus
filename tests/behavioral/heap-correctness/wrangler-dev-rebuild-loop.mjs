@@ -56,11 +56,12 @@ const findings = {
   base: BASE,
   breakdownKeys: ks,
   loadedCodesBytes: loadedBytes,
-  // The Map's size proper. Some fix variants may surface this at the
-  // top level of the diag response.
+  // The shim's heap (fabric loader-heap.ts): its caches, each with its byte bound.
   loadedCodesEntries: m.loadedCodes?.entries ?? null,
-  loadedCodesMaxEntries: m.loadedCodes?.maxEntries ?? null,
-  loadedCodesEvictions: m.loadedCodes?.evictions ?? null,
+  loadedCodesEntryBytes: m.loadedCodes?.entryCacheBytes ?? null,
+  loadedCodesEntryMaxBytes: m.loadedCodes?.entryCacheMaxBytes ?? null,
+  loadedCodesModuleBytes: m.loadedCodes?.moduleCacheBytes ?? null,
+  loadedCodesModuleMaxBytes: m.loadedCodes?.moduleCacheMaxBytes ?? null,
 };
 
 console.log(JSON.stringify(findings, null, 2));
@@ -72,10 +73,13 @@ const verdict = (() => {
   if (loadedBytes == null && findings.loadedCodesEntries == null) {
     return { state: 'failing', reason: 'no loadedCodes counter in /api/_diag/memory — leak invisible' };
   }
-  if (findings.loadedCodesMaxEntries == null) {
-    return { state: 'failing', reason: 'no max-entries cap exposed — eviction policy undocumented' };
+  if (findings.loadedCodesEntryMaxBytes == null || findings.loadedCodesModuleMaxBytes == null) {
+    return { state: 'failing', reason: 'no byte bound exposed — eviction policy undocumented' };
   }
-  return { state: 'passing', reason: `loadedCodes counter present (bytes=${loadedBytes}, entries=${findings.loadedCodesEntries}); max=${findings.loadedCodesMaxEntries}` };
+  if (findings.loadedCodesEntryBytes > findings.loadedCodesEntryMaxBytes || findings.loadedCodesModuleBytes > findings.loadedCodesModuleMaxBytes) {
+    return { state: 'failing', reason: 'a cache holds more than its bound' };
+  }
+  return { state: 'passing', reason: `loadedCodes counter present (entries=${findings.loadedCodesEntries}, ${findings.loadedCodesEntryBytes}/${findings.loadedCodesEntryMaxBytes} entry bytes, ${findings.loadedCodesModuleBytes}/${findings.loadedCodesModuleMaxBytes} module bytes)` };
 })();
 console.log(`[H7] ${verdict.state} — ${verdict.reason}`);
 process.exit(verdict.state === 'passing' ? 0 : 1);

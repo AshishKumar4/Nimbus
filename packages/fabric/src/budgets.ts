@@ -1014,6 +1014,23 @@ export function withDynamicWorkerCapNamed<E>(ctx: object, error: E): E | Error {
   );
 }
 
+// ── The Worker Loader shim's heap (loader-heap.ts) ─────────────────────────
+//
+// The shim runs in the host Worker's isolate, which also serves every
+// session's routing inside the same 128 MiB. Its buckets are a ceiling, each
+// on its own: 4 + 8 + 64 + 8 = 84 MiB.
+
+/** Loaded Workers' env and metadata, charged in full. */
+export const LOADER_ENTRY_CACHE_BYTES = 4 * 1024 * 1024;
+/** Loaded Workers' module contents, a cache that may evict them. */
+export const LOADER_MODULE_CACHE_BYTES = 8 * 1024 * 1024;
+/** What admissions and native misses hold live beyond the caches: one per-Worker maximum fits. */
+export const LOADER_CODE_CREDIT_BYTES = 64 * 1024 * 1024;
+/** The keys and arguments of `LOADER.get` calls in flight, granted now or refused. */
+export const LOADER_KEY_ALLOWANCE_BYTES = 8 * 1024 * 1024;
+/** The longest `LOADER.get` id, namespace or network id, in UTF-16 units: escaped, a key stays under the entry bound. */
+export const LOADER_GET_ID_MAX_CHARS = 262_144;
+
 // ── Dynamic-worker module-map ceiling ───────────────────────────────────────
 
 /**
