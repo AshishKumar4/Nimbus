@@ -130,7 +130,7 @@ export function idempotent(operation, stub, call, policy = {}) {
             if (settled)
                 return;
             const classification = classifyDoCall(error);
-            const repeats = policy.repeats === undefined ? isRetryableDoCall(classification) : policy.repeats(error);
+            const repeats = policy.repeats === undefined ? isRetryableDoCall(classification) : policy.repeats.includes(classification);
             if (!repeats && classification !== 'overloaded') {
                 // The call ran and its answer is this error — ENOENT is a read's answer as much as bytes are.
                 settle('callee_error', number, () => reject(error));

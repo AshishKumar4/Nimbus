@@ -15,15 +15,15 @@ import { doUnavailableError } from './do-errors.js';
 import { idempotent } from '@nimbus-sh/fabric/do-calls.js';
 import { codeRuntimeRequirement, runtimePolicyError } from '@nimbus-sh/config/sandbox';
 /**
- * The platform failures a session's destroy is repeated after, once, on a
- * fresh stub: the object reset under the call (its storage's internal
- * error), and the platform's undescribed failure of it. A destroy is
- * idempotent (rpcDestroy: one at a time, and a destroyed session destroys
- * to the same answer), so its repeat changes nothing the first may have
- * done. Both answered DELETEs 500 on 2026-10-16, main and branches alike.
- * Any other failure of it, and every other route, answers as before.
+ * The failure classes (classifyDoCall) a session's destroy is repeated
+ * after, once, on a fresh stub: the object reset under the call, and the
+ * platform's failure of it without a cause. A destroy is idempotent
+ * (rpcDestroy: one at a time, and a destroyed session destroys to the same
+ * answer), so its repeat changes nothing the first may have done. Both
+ * answered DELETEs 500 on 2026-10-16, main and branches alike. Any other
+ * class (a code update, an overloaded object: 503) answers as before.
  */
-const DESTROY_REPEATS_AFTER = /internal error in durable object storage caused object to be reset|^internal error; reference = /i;
+const DESTROY_REPEATS = ['storage_reset', 'platform_internal'];
 export async function handleNimbusRemoteApi(request, env, sdk, outbox) {
     const remote = normalizeRemoteConfig(sdk?.remote);
     if (!remote.enabled)
@@ -336,7 +336,7 @@ async function dispatchRemoteRpc(ctx) {
             const options = objectArg(args[0]);
             return idempotent('destroy', session, (stub) => stub._rpcDestroy(options), {
                 maxAttempts: 2,
-                repeats: (error) => error instanceof Error && DESTROY_REPEATS_AFTER.test(error.message),
+                repeats: DESTROY_REPEATS,
             }).then((result) => {
                 // Proven destroy, reported as internal metadata for the caller's
                 // response policy — no JSON re-parse needed to rediscover it.
