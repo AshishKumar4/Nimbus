@@ -93,10 +93,10 @@ await check('a bin of project a is not a command of project b', async () => {
   await writeText(ws.fs, '/home/user/a/node_modules/.bin/toola', '#!/bin/sh\necho tool-a ran\n');
   await ws.exec('chmod 755 /home/user/a/node_modules/.bin/toola /home/user/a/node_modules/tool-a/cli.sh');
   const inA = await ws.exec('npm run tool', { cwd: '/home/user/a' });
-  assert.match(inA.stdout, /tool-a ran/, `project a runs its own bin:\n${inA.stdout}${inA.stderr}`);
   const inB = await ws.exec('npm run tool', { cwd: '/home/user/b' });
-  assert.equal(inB.exitCode, 127, `project b has no toola:\n${inB.stdout}${inB.stderr}`);
+  assert.equal(inB.exitCode, 127, `project b has no toola, after project a ran it:\n${inB.stdout}${inB.stderr}`);
   assert.doesNotMatch(inB.stdout, /tool-a ran/);
+  assert.match(inA.stdout, /tool-a ran/, `project a runs its own bin, from node_modules/.bin:\n${inA.stdout}${inA.stderr}`);
 });
 
 harness.db.close();
