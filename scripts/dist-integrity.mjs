@@ -216,8 +216,8 @@ export const STAGED_ASSETS_DIR = join('packages', 'worker', 'public');
 // root scripts the packages' builds run or import (the shared body
 // compiler), the lockfile pinning the toolchain's dependencies, and the
 // root configs the packages extend. tests/unit/dist-integrity.mjs [27]
-// walks what the build runs and imports, and fails on any file outside
-// these. A package's src also covers the generated sources the bundlers
+// walks what the builds run and read (scripts/lib/build-reads.mjs), and
+// fails on any file outside these. A package's src also covers the generated sources the bundlers
 // write back (shim artifact, runtime catalog): when a bundler
 // regenerates one, the fingerprint moves and the next run rebuilds cold.
 // (Kept as line comments: a block comment cannot spell a glob like
@@ -256,6 +256,7 @@ export const INPUT_ROOTS = [
   'scripts/lib/compiled-bodies.mjs',
   'scripts/ci/lib/output-patch.mjs',
   'packages/worker/wasm/bash/inputs.mjs',
+  'packages/worker/runtime-contracts',
   'scripts/generate-wrangler-configs.mjs',
   'apps/nimbus-deployments.json',
 ];
@@ -895,6 +896,15 @@ if (import.meta.main) {
       `${assets.verified.length} staged assets match what dist points at` +
       (cached ? ' (verified from fixpoint record, no rebuild)' : ''),
     );
+    // The worker carries the runtime specs and the CLI's `nimbus runtime sync`
+    // publishes from them, staging a runtime Nimbus builds from its npm package
+    // at the spec's version: neither ships while one of those is not on npm,
+    // which core's own prepublishOnly checks the same way.
+    const name = process.argv.includes('--publish') ? JSON.parse(readFileSync('package.json', 'utf8')).name : null;
+    if (name === '@nimbus-sh/worker' || name === '@nimbus-sh/cli') {
+      const runtimes = spawnSync('node', [join(REPO_ROOT, 'packages/core/scripts/check-runtime-packages.mjs')], { stdio: 'inherit' });
+      if (runtimes.status !== 0) process.exit(1);
+    }
   } catch (error) {
     console.error(`\n${error.message}\n`);
     // 2: the build did not run or did not finish (nothing to commit);

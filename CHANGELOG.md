@@ -12,10 +12,15 @@ published independently in the `@nimbus-sh` npm scope.
   The published CLI can publish the runtimes Nimbus builds itself (cpython,
   bash, git), although the published `@nimbus-sh/worker` has no wasm build
   tree. Each is staged from its npm runtime package at the version the
-  release names. The tarball must match the registry's sha512 integrity,
-  each file must match the package manifest's sha256, and the manifest the
-  publisher composes must be the package's, byte for byte, or nothing is
-  published. Before, the publisher stopped at the missing build tree.
+  release names. The tarball must match the registry's sha512 integrity, and
+  it is read in memory, never unpacked: an entry that is a link or a device
+  is refused, so nothing outside the package is ever read. Each file must
+  match the package manifest's sha256, and the manifest the publisher
+  composes must be the package's, byte for byte, or nothing is published.
+  Before, the publisher stopped at the missing build tree. Publishing
+  `@nimbus-sh/worker` or `@nimbus-sh/cli` now requires each of those runtime
+  packages to be on npm at its spec's version, as publishing core already
+  did (`check-runtime-packages.mjs`, run by `dist-integrity.mjs --publish`).
 
 - Fixed (build): the dist fixpoint's input fingerprint covers what the
   packages' builds run and import outside their own trees. That is the
@@ -25,7 +30,9 @@ published independently in the `@nimbus-sh` npm scope.
   change to one of them was accepted by the warm path unbuilt: moving
   compiled-bodies' target from esnext to es2018 left the record verified.
   `tests/unit/dist-integrity.mjs` [27] walks the build's imports and refuses
-  any file outside the inputs.
+  any file outside the inputs. It parses each script with TypeScript, so a
+  comment, a template literal or a `new URL(…, import.meta.url)` read cannot
+  hide a file (`scripts/lib/build-reads.mjs`).
 
 - Fixed (lifo `node`, X-9): `vm` is Node's. Contexts, scripts,
   `compileFunction`, `runInThisContext` and `runInNewContext` work in an

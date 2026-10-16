@@ -9,9 +9,10 @@
 //     Nimbus builds (bash here, as cpython) is staged from its npm runtime
 //     package. The bucket's manifest is then byte for byte the package's.
 //     Before, the publisher stopped at the missing build tree.
-//   - A tarball that is not the one its integrity names, or one whose blob is
-//     not the one its manifest names, is refused, and nothing reaches the
-//     bucket.
+//   - A tarball that is not the one its integrity names, one whose blob is not
+//     the one its manifest names, and one holding a link (its manifest a link
+//     to a file outside, a blob a link to /dev/zero) are each refused, at
+//     once, and nothing reaches the bucket.
 //
 // The publisher runs for real, from a temp tree laid out as the published
 // package (scripts and runtime-contracts, no wasm), against a stub wrangler
@@ -30,6 +31,7 @@ import { CPYTHON_RUNNER } from '../../packages/core/src/runtime/os-contracts.ts'
 const WORKER = new URL('../../packages/worker/', import.meta.url).pathname;
 const CORE = new URL('../../packages/core', import.meta.url).pathname;
 const BASH = 'bash@5.2.37-7';
+const CPYTHON = 'cpython@3.13.14-3';
 
 const root = mkdtempSync(join(tmpdir(), 'nimbus-cli-sync-published-'));
 const cwd = process.cwd();
@@ -41,8 +43,7 @@ try {
     cpSync(join(WORKER, 'scripts'), join(dir, 'packages/worker/scripts'), { recursive: true });
     cpSync(join(WORKER, 'runtime-contracts'), join(dir, 'packages/worker/runtime-contracts'), { recursive: true });
     if (withBuildTree) {
-      cpSync(join(WORKER, 'wasm/bash'), join(dir, 'packages/worker/wasm/bash'), { recursive: true });
-      cpSync(join(WORKER, 'wasm/nimbus-libc'), join(dir, 'packages/worker/wasm/nimbus-libc'), { recursive: true });
+      for (const tree of ['bash', 'python', 'nimbus-libc']) cpSync(join(WORKER, 'wasm', tree), join(dir, 'packages/worker/wasm', tree), { recursive: true });
     }
     mkdirSync(join(dir, 'node_modules/@nimbus-sh'), { recursive: true });
     symlinkSync(CORE, join(dir, 'node_modules/@nimbus-sh/core'));
@@ -66,27 +67,40 @@ try {
       `the default sync publishes one Python, cpython's: ${published.join(', ')}`);
   }
 
-  // ── The package the repository's publisher makes, served by a stub registry ──
+  // ── The packages the repository's publisher makes, served by a stub registry ──
   const made = join(root, 'made');
   const repoPublisher = workerTree(made, true);
-  const pkgDir = join(made, 'package');
-  const built = spawnSync('node', [repoPublisher, 'bash', '5.2.37-7', '--npm-package', pkgDir], { cwd: made, encoding: 'utf8', env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: '' } });
-  assert.equal(built.status, 0, `the repository's publisher makes the package:\n${built.stdout}\n${built.stderr}`);
+  /** The package directory (named `package`, as npm wraps one) the repository's publisher makes for `runtime`. */
+  const make = (runtime) => {
+    const dir = join(made, runtime.replace('@', '-'), 'package');
+    const built = spawnSync('node', [repoPublisher, ...runtime.split('@'), '--npm-package', dir], { cwd: made, encoding: 'utf8', env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: '' } });
+    assert.equal(built.status, 0, `the repository's publisher makes ${runtime}:\n${built.stdout}\n${built.stderr}`);
+    return dir;
+  };
+  /** `dir` (a directory named `package`) as an npm tarball: ustar, as npm writes one. */
   const pack = (dir, out) => {
-    const r = spawnSync('tar', ['-czf', out, '-C', dirname(dir), 'package']);
+    const r = spawnSync('tar', ['--format=ustar', '-czf', out, '-C', dirname(dir), 'package']);
     assert.equal(r.status, 0, String(r.stderr));
     return readFileSync(out);
   };
-  const genuine = pack(pkgDir, join(root, 'genuine.tgz'));
-  const served = { tarball: genuine, integrity: `sha512-${createHash('sha512').update(genuine).digest('base64')}` };
+  const integrityOf = (bytes) => `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
+  const served = new Map();
+  const serve = (runtime, tarball, integrity = integrityOf(tarball)) => {
+    const [name, version] = runtime.split('@');
+    served.set(`/@nimbus-sh%2fruntime-${name}/${version}`, { name: `@nimbus-sh/runtime-${name}`, version, tarball, integrity });
+  };
+  const bashDir = make(BASH);
+  const cpythonDir = make(CPYTHON);
+  serve(BASH, pack(bashDir, join(root, 'bash.tgz')));
+  serve(CPYTHON, pack(cpythonDir, join(root, 'cpython.tgz')));
   registry = Bun.serve({
     port: 0,
     fetch(request) {
       const url = new URL(request.url);
-      if (url.pathname === '/@nimbus-sh%2fruntime-bash/5.2.37-7') {
-        return Response.json({ name: '@nimbus-sh/runtime-bash', version: '5.2.37-7', dist: { tarball: `${url.origin}/runtime-bash.tgz`, integrity: served.integrity } });
-      }
-      if (url.pathname === '/runtime-bash.tgz') return new Response(served.tarball);
+      const record = served.get(url.pathname);
+      if (record) return Response.json({ name: record.name, version: record.version, dist: { tarball: `${url.origin}${url.pathname}.tgz`, integrity: record.integrity } });
+      const tarball = served.get(url.pathname.replace(/\.tgz$/, ''));
+      if (tarball && url.pathname.endsWith('.tgz')) return new Response(tarball.tarball);
       return new Response('not found', { status: 404 });
     },
   });
@@ -121,30 +135,61 @@ process.exit(1);
   const object = (key) => readFileSync(join(bucketDir, encodeURIComponent(key)));
   const emptyBucket = () => { rmSync(bucketDir, { recursive: true }); mkdirSync(bucketDir); };
 
-  // Published from the package: the bucket's manifest is the package's, and every blob it names is there.
-  assert.equal(await syncRuntimes(['--bucket', 'experiment', BASH], { scriptPath: publisher }), 0, 'the published CLI publishes a runtime it has no build of');
-  const manifest = readFileSync(join(pkgDir, 'manifest.json'));
-  assert.deepEqual(object('manifests/bash-5.2.37-7.json'), manifest, 'the bucket holds the package\'s manifest, byte for byte');
-  for (const file of JSON.parse(manifest.toString('utf8')).files) {
-    assert.equal(createHash('sha256').update(object(file.content)).digest('hex'), file.sha256, `${file.content} is in the bucket as named`);
-  }
+  /** The sync of `runtime` into an empty bucket, bounded: a refusal must come, not a read that never ends. */
+  const sync = async (runtime) => {
+    emptyBucket();
+    return Promise.race([
+      syncRuntimes(['--bucket', 'experiment', runtime], { scriptPath: publisher }),
+      new Promise((resolve) => setTimeout(() => resolve('still running after 60 s'), 60_000)),
+    ]);
+  };
+  /** The bucket holds `dir`'s manifest for `runtime`, byte for byte, and every blob it names. */
+  const holds = (runtime, dir) => {
+    const manifest = readFileSync(join(dir, 'manifest.json'));
+    assert.deepEqual(object(`manifests/${runtime.replace('@', '-')}.json`), manifest, `the bucket holds ${runtime}'s package manifest, byte for byte`);
+    for (const file of JSON.parse(manifest.toString('utf8')).files) {
+      assert.equal(createHash('sha256').update(object(file.content)).digest('hex'), file.sha256, `${file.content} is in the bucket as named`);
+    }
+  };
 
-  // A tarball that is not the one its integrity names: refused, nothing published.
-  emptyBucket();
-  served.integrity = `sha512-${createHash('sha512').update('other bytes').digest('base64')}`;
-  assert.notEqual(await syncRuntimes(['--bucket', 'experiment', BASH], { scriptPath: publisher }), 0, 'a tarball its integrity does not name is refused');
-  assert.deepEqual(readdirSync(bucketDir), [], 'and nothing reached the bucket');
+  // Published from the packages: the default Python, and bash with its BusyBox applets.
+  assert.equal(await sync(CPYTHON), 0, 'the published CLI publishes cpython, which it has no build of');
+  holds(CPYTHON, cpythonDir);
+  assert.equal(await sync(BASH), 0, 'and bash');
+  holds(BASH, bashDir);
 
-  // A blob that is not the one the manifest names, in a tarball its integrity does name: refused, nothing published.
-  emptyBucket();
-  const tampered = join(root, 'tampered', 'package');
-  cpSync(pkgDir, tampered, { recursive: true });
-  const wasm = JSON.parse(manifest.toString('utf8')).files.find((f) => f.path.endsWith('bash.async.wasm'));
-  writeFileSync(join(tampered, wasm.content), Buffer.concat([readFileSync(join(tampered, wasm.content)), Buffer.from([0])]));
-  served.tarball = pack(tampered, join(root, 'tampered.tgz'));
-  served.integrity = `sha512-${createHash('sha512').update(served.tarball).digest('base64')}`;
-  assert.notEqual(await syncRuntimes(['--bucket', 'experiment', BASH], { scriptPath: publisher }), 0, 'a blob its manifest does not name is refused');
-  assert.deepEqual(readdirSync(bucketDir), [], 'and nothing reached the bucket');
+  /** A copy of the bash package, changed by `change(dir)`, served as bash. */
+  const variant = (label, change) => {
+    const dir = join(root, label, 'package');
+    cpSync(bashDir, dir, { recursive: true });
+    change(dir);
+    serve(BASH, pack(dir, join(root, `${label}.tgz`)));
+  };
+  const wasm = JSON.parse(readFileSync(join(bashDir, 'manifest.json'), 'utf8')).files.find((f) => f.path.endsWith('bash.async.wasm'));
+  const refusedLeavingNothing = async (why) => {
+    const code = await sync(BASH);
+    assert.equal(typeof code === 'number' && code !== 0, true, `${why} is refused (got ${code})`);
+    assert.deepEqual(readdirSync(bucketDir), [], `${why}: nothing reached the bucket`);
+  };
+
+  // A tarball that is not the one its integrity names.
+  serve(BASH, readFileSync(join(root, 'bash.tgz')), integrityOf('other bytes'));
+  await refusedLeavingNothing('a tarball its integrity does not name');
+
+  // A blob that is not the one the manifest names, in a tarball its integrity does name.
+  variant('tampered', (dir) => writeFileSync(join(dir, wasm.content), Buffer.concat([readFileSync(join(dir, wasm.content)), Buffer.from([0])])));
+  await refusedLeavingNothing('a blob its manifest does not name');
+
+  // The manifest as a link to a file outside the package, which holds the manifest itself.
+  const sentinel = join(root, 'outside-manifest.json');
+  writeFileSync(sentinel, readFileSync(join(bashDir, 'manifest.json')));
+  // Relative, as ustar holds a link's target in 100 bytes: two levels up from the package is `root`.
+  variant('linked-manifest', (dir) => { rmSync(join(dir, 'manifest.json')); symlinkSync('../../outside-manifest.json', join(dir, 'manifest.json')); });
+  await refusedLeavingNothing('a manifest that is a link');
+
+  // A blob as a link to a device that never ends.
+  variant('linked-blob', (dir) => { rmSync(join(dir, wasm.content)); symlinkSync('/dev/zero', join(dir, wasm.content)); });
+  await refusedLeavingNothing('a blob that is a link to /dev/zero');
 } finally {
   process.chdir(cwd);
   registry?.stop(true);
