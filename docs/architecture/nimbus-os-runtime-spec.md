@@ -964,6 +964,16 @@ what a death can cost.
   its file and the access its open decided, stored with the open's number
   (`vfs_wave_descriptions`). That holds even if the open was answered and
   dropped from the log long before, and even if the session restarted.
+  A WASI process's holder answers a change it decides in a subtree it holds
+  (delegation-holder.ts) before logging it: it logs the change at the latest
+  `LINGER_MS` (10 ms) after the first unlogged one, at the process's next
+  yield. Before the facet is aborted, the release asks the resident to
+  settle (the host adapter's `settle`): it logs what it holds unlogged into
+  its store, as write(2) outlives a killed writer. The release waits for
+  that at most `RESIDENT_SETTLE_DEADLINE_MS` (100 ms), and not at all for a
+  resident already lost or one that refuses. A resident that does not
+  answer in time is running without yielding, and loses what it decided
+  since it last yielded.
   Only after the drain is the store deleted and the exit status reported. A log that a reset
   left behind is drained at the next start, before anything runs. A log that
   cannot be read is reported by name and kept. It is never dropped silently.

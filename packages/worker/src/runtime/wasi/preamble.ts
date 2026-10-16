@@ -2205,6 +2205,9 @@ async function __wasiSettled<R extends WasiRunResult>(result: R): Promise<R> {
 // not typecheck in the supervisor bundle the body is authored in.
 globalThis.__wasiAdoptSupervisor = __wasiAdoptSupervisor;
 globalThis.__wasiSettled = __wasiSettled;
+// A resident's settle, before its facet goes (the host adapter's): what its
+// process decided and has not logged, logged into its facet's store.
+globalThis.__nimbusSettle = () => { __wasiResident?.fs.logHeld(); };
 globalThis.__wasiSupervisorOutput = __wasiSupervisorOutput;
 globalThis.__wasiOutputControl = outputControlReader;
 // ── END: wasi-instance preamble ─────────────────────────────────────────

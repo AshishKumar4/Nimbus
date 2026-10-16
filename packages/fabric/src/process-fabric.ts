@@ -91,6 +91,15 @@ import type { ServiceStub, WorkerCode } from './vendor/types.js';
 export const RESIDENT_PROCESS_CLASS = 'NimbusProcess';
 
 /**
+ * How long a release waits for its resident to settle (log into its own
+ * store what its process was told it wrote and has not logged) before it
+ * aborts the facet anyway. The call goes to an isolate in this object and
+ * logs into local SQLite, about a millisecond; one that has not answered in
+ * this is running without yielding, and only delays the kill.
+ */
+export const RESIDENT_SETTLE_DEADLINE_MS = 100;
+
+/**
  * Runner contract for `startProcess()`. A property of the generated runner,
  * not of placement:
  *

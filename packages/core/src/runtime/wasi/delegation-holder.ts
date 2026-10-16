@@ -218,6 +218,12 @@ export interface DelegationHolder {
    * through it, and its close.
    */
   copyFile(from: string, to: string, path: string, bytes: Uint8Array | undefined, keepMode: boolean): boolean;
+  /**
+   * Log every decided file's unlogged bytes now, into the process's own log
+   * and with no session round trip: what its facet keeps of it when the
+   * session ends it (a resident's settle, before its facet goes).
+   */
+  logHeld(): void;
   /** Decide a mkdir at `key`: true when decided here (and done), false when the session is to. */
   mkdir(key: string, path: string, mode: number, umask?: number): boolean;
   /** Decide an unlink of `key` (a file or link): true when decided here. */
@@ -603,6 +609,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       client.submit({ type: 'call', call: { call: 'close', path: to, description } }, { acknowledged: true });
       return true;
     },
+
+    logHeld: () => { drain(); },
 
     content: (entry) => {
       if (entry.dev !== store.device) return undefined;

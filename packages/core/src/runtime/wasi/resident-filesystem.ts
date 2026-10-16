@@ -149,6 +149,8 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
   cancelPendingDirectories(): void;
   /** Whether writes are held that the session does not have yet. */
   holding(): boolean;
+  /** What the process decided and has not logged, logged now into its own log, with no round trip (DelegationHolder.logHeld). */
+  logHeld(): void;
   /**
    * Send every held write to the session, before something leaves the
    * process (a socket send): what it wrote is there before anyone hears from
@@ -775,6 +777,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   fs.inbound = () => { owed = true; directoryPool?.invalidate(); };
   fs.cancelPendingDirectories = () => { owed = true; directoryPool?.cancelPending(); };
   fs.holding = () => holder?.pending() ?? false;
+  fs.logHeld = () => holder?.logHeld();
   // What leaves the process is preceded by everything it logged.
   fs.flush = async () => { await holder?.flush(); };
   fs.settle = async () => {
