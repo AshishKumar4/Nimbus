@@ -157,8 +157,8 @@ const blob = (bytes, fill) => { const data = new Uint8Array(bytes); data.fill(fi
   const pair = [{}, {}, {}, {}];
   await assert.rejects(loader.load(worker({ 'w.js': '', 'many.json': { json: new Array(200_000).fill(pair) } })),
     /re-creating this Worker from the store would hold .* per-Worker bound/, 'one shared array written 200,000 times parses into a million objects: refused by its restored price');
-  // One Error with a 6 MiB stack shared by three {json} modules: each stores as `{}`, and none could stay in the 8 MiB cache.
-  const shared = new Error('shared'); shared.stack = 'z'.repeat(3 * MiB);
+  // One Error with a 12 MiB stack (6 Mi units) shared by three {json} modules: each stores as `{}`, and none could stay in the 8 MiB cache.
+  const shared = new Error('shared'); shared.stack = 'z'.repeat(6 * MiB);
   const error = structuredClone(shared);
   assert.ok(await loader.load(worker({ 'w.js': '', 'a.json': { json: { error } }, 'b.json': { json: { error } }, 'c.json': { json: { error } } })),
     'a large shared source the cache cannot keep does not count against its re-creation');
