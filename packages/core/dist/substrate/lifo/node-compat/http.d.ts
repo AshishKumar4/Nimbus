@@ -62,7 +62,7 @@ declare class ClientRequest extends EventEmitter {
 }
 declare class ServerResponse extends EventEmitter {
     statusCode: number;
-    /** Its reason phrase: unset until writeHead names one or end() gives its status's, as Node's. */
+    /** Its reason phrase: unset until writeHead (or end(), its headers implicit) gives one, as Node's. */
     statusMessage: string | undefined;
     headersSent: boolean;
     finished: boolean;

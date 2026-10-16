@@ -190,7 +190,7 @@ class ClientRequest extends EventEmitter {
 // --- ServerResponse class ---
 class ServerResponse extends EventEmitter {
     statusCode = 200;
-    /** Its reason phrase: unset until writeHead names one or end() gives its status's, as Node's. */
+    /** Its reason phrase: unset until writeHead (or end(), its headers implicit) gives one, as Node's. */
     statusMessage = undefined;
     headersSent = false;
     finished = false;
@@ -235,6 +235,7 @@ class ServerResponse extends EventEmitter {
             h = headers;
         }
         else {
+            this.statusMessage ||= statusText(statusCode);
             h = reasonOrHeaders;
         }
         if (h) {
