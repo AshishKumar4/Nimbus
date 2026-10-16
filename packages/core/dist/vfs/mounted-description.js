@@ -210,7 +210,15 @@ class MountedDescription {
     }
     chmod(mode, admit) { return this.file.chmod(mode, this.admitted('fchmod', admit)); }
     chown(uid, gid, admit) { return this.file.chown(uid, gid, this.admitted('fchown', admit)); }
-    utimes(atime, mtime, admit) { return this.file.utimes(atime, mtime, this.admitted('futimes', admit)); }
+    /** As utimes: a time null is now, undefined kept (its stat's), as a mount's utimes by name takes them. */
+    utimes(atime, mtime, admit) {
+        const now = Date.now();
+        const at = (value, kept) => (value === undefined ? kept : value ?? now);
+        const set = (a, m) => this.file.utimes(a, m, this.admitted('futimes', admit));
+        if (atime !== undefined && mtime !== undefined)
+            return set(atime ?? now, mtime ?? now);
+        return andThen(this.file.stat(this.admitted('futimes', admit)), (stat) => set(at(atime, stat.atimeMs ?? stat.mtimeMs), at(mtime, stat.mtimeMs)));
+    }
     /** A flush that fails loses what it held (lastClose says so): taken before it reads. */
     flush(admit) {
         const failed = this.failed;

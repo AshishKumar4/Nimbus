@@ -169,6 +169,11 @@ function nullableNumberArg(envelope: SupervisorOpEnvelope, index: number): numbe
   return envelope.args?.[index] === null ? null : numberArg(envelope, index);
 }
 
+/** A time as utimes takes it: ms, null (now), or undefined (kept). */
+function timeArg(envelope: SupervisorOpEnvelope, index: number): number | null | undefined {
+  return envelope.args?.[index] === undefined ? undefined : nullableNumberArg(envelope, index);
+}
+
 function bytesArg(envelope: SupervisorOpEnvelope, index: number): Uint8Array {
   const value = envelope.args?.[index];
   if (value instanceof Uint8Array) return value;
@@ -420,7 +425,7 @@ const NATIVE_OPS = {
   fsFtruncate: (e, t) => fsFor(e, t).ftruncate(numberArg(e, 0), numberArg(e, 1)),
   fsFchmod: (e, t) => fsFor(e, t).fchmod(numberArg(e, 0), numberArg(e, 1)),
   fsFchown: (e, t) => fsFor(e, t).fchown(numberArg(e, 0), nullableNumberArg(e, 1), nullableNumberArg(e, 2)),
-  fsFutimes: (e, t) => fsFor(e, t).futimes(numberArg(e, 0), numberArg(e, 1), numberArg(e, 2)),
+  fsFutimes: (e, t) => fsFor(e, t).futimes(numberArg(e, 0), timeArg(e, 1), timeArg(e, 2)),
   fsSync: (e, t) => fsFor(e, t).fsync(e.args?.[0] === undefined ? undefined : numberArg(e, 0)),
   fsRealpath: (e, t) => fsFor(e, t).realpath(FsPath.parse(e.args?.[0])),
   // Its report leaves for the hop with each failure's error as data (sendRemoval).

@@ -49,6 +49,8 @@ export interface ExclusiveMutationLease {
     readonly bytes?: number;
     /** A delegation whose reads recall it: the epoch and revision it was recorded at. */
     readonly certificate?: GrantCertificate;
+    /** Its holder's principal is confined (confinePrincipal), as `as(cred)` grants it. */
+    readonly confined?: boolean;
 }
 /** Inode numbers reserved for a delegation's holder: [first, end). */
 export interface InodeRange {
@@ -124,7 +126,8 @@ export interface VfsOpenDescription {
     chmod(mode: number): void;
     /** A null side keeps the file's. */
     chown(uid: number | null, gid: number | null): void;
-    utimes(atime: number, mtime: number): void;
+    /** As utimes: null now, undefined kept. */
+    utimes(atime: number | null | undefined, mtime: number | null | undefined): void;
     close(): void;
     /**
      * Where an O_APPEND write lands: the end of the file as written so far,

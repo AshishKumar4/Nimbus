@@ -222,7 +222,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   ftruncate(handleId: number, size: number): void { this.guard(); return this.target.ftruncate(handleId, size); }
   fchmod(handleId: number, mode: number): void { this.guard(); return this.target.fchmod(handleId, mode); }
   fchown(handleId: number, uid: number | null, gid: number | null): void { this.guard(); return this.target.fchown(handleId, uid, gid); }
-  futimes(handleId: number, atimeMs: number, mtimeMs: number): void { this.guard(); return this.target.futimes(handleId, atimeMs, mtimeMs); }
+  futimes(handleId: number, atimeMs: number | null | undefined, mtimeMs: number | null | undefined): void { this.guard(); return this.target.futimes(handleId, atimeMs, mtimeMs); }
   writeBatch(payload: BatchWritePayload, options?: { signal?: AbortSignal }): Promise<{ inodes: number; chunks: number }> {
     this.guard();
     // As writeStream: closing the scope cancels the commit.
@@ -1260,7 +1260,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     return this.on(handleId, () => this.bridge.fchown(handleId, uid, gid), () => this.descriptors.fchown(handleId, uid, gid));
   }
 
-  futimes(handleId: number, atimeMs: number, mtimeMs: number) {
+  futimes(handleId: number, atimeMs: number | null | undefined, mtimeMs: number | null | undefined) {
     return this.on(handleId, () => this.bridge.futimes(handleId, atimeMs, mtimeMs), () => this.descriptors.futimes(handleId, atimeMs, mtimeMs));
   }
 }

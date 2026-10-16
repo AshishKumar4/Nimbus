@@ -244,7 +244,14 @@ class MountedDescription implements MountedFileDescription {
 
   chmod(mode: number, admit?: () => void): Awaitable<void> { return this.file.chmod(mode, this.admitted('fchmod', admit)); }
   chown(uid: number | null, gid: number | null, admit?: () => void): Awaitable<void> { return this.file.chown(uid, gid, this.admitted('fchown', admit)); }
-  utimes(atime: number, mtime: number, admit?: () => void): Awaitable<void> { return this.file.utimes(atime, mtime, this.admitted('futimes', admit)); }
+  /** As utimes: a time null is now, undefined kept (its stat's), as a mount's utimes by name takes them. */
+  utimes(atime: number | null | undefined, mtime: number | null | undefined, admit?: () => void): Awaitable<void> {
+    const now = Date.now();
+    const at = (value: number | null | undefined, kept: number): number => (value === undefined ? kept : value ?? now);
+    const set = (a: number, m: number) => this.file.utimes(a, m, this.admitted('futimes', admit));
+    if (atime !== undefined && mtime !== undefined) return set(atime ?? now, mtime ?? now);
+    return andThen(this.file.stat(this.admitted('futimes', admit)), (stat) => set(at(atime, stat.atimeMs ?? stat.mtimeMs), at(mtime, stat.mtimeMs)));
+  }
 
   /** A flush that fails loses what it held (lastClose says so): taken before it reads. */
   flush(admit?: () => void): Awaitable<void> {

@@ -1870,6 +1870,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           root: granted.root,
           owner: granted.owner,
           umask: granted.umask ?? 18,
+          confined: granted.confined === true,
           ...granted.certificate === void 0 ? {} : { certificate: granted.certificate },
           nextIno: granted.inos?.first ?? 0,
           endIno: granted.inos?.end ?? 0,

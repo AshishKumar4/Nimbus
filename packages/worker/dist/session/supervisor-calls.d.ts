@@ -212,7 +212,7 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
     fsFtruncate(handleId: number, size: number): Promise<Awaited<ReturnType<RuntimeFsBridge["ftruncate"]>>>;
     fsFchmod(handleId: number, mode: number): Promise<Awaited<ReturnType<RuntimeFsBridge["fchmod"]>>>;
     fsFchown(handleId: number, uid: number | null, gid: number | null): Promise<Awaited<ReturnType<RuntimeFsBridge["fchown"]>>>;
-    fsFutimes(handleId: number, atimeMs: number, mtimeMs: number): Promise<Awaited<ReturnType<RuntimeFsBridge["futimes"]>>>;
+    fsFutimes(handleId: number, atimeMs: number | null | undefined, mtimeMs: number | null | undefined): Promise<Awaited<ReturnType<RuntimeFsBridge["futimes"]>>>;
     fsSync(handleId?: number | undefined): Promise<Awaited<ReturnType<RuntimeFsBridge["fsync"]>>>;
     fsRealpath(path: RuntimeFsPath): Promise<Awaited<ReturnType<RuntimeFsBridge["realpath"]>>>;
     fsLinkLeadsTo(path: string, link: string): Promise<Awaited<ReturnType<RuntimeFsBridge["linkLeadsTo"]>>>;

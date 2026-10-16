@@ -31,8 +31,9 @@ import { WASI_RESIDENT_STORE_BYTES } from '../../packages/platform/src/limits.ts
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
-const E = { SUCCESS: 0, ACCES: 2, NOENT: 44 };
-const RIGHT_READ = 2n, RIGHT_SEEK = 4n, RIGHT_WRITE = 64n;
+const E = { SUCCESS: 0, ACCES: 2, NOENT: 44, PERM: 63 };
+const ATIM = 1, ATIM_NOW = 2, MTIM = 4, MTIM_NOW = 8;
+const RIGHT_READ = 2n, RIGHT_SEEK = 4n, RIGHT_WRITE = 64n, RIGHT_SET_TIMES = 1n << 23n;
 const O_TRUNC = 8, FDFLAG_APPEND = 1;
 
 /**
@@ -134,6 +135,8 @@ async function processWith(files, { holding = false, session: direct = false } =
       assert.equal(await imports.fd_write(fd, 128, 1, 136), E.SUCCESS);
     },
     close: async (fd) => assert.equal(await imports.fd_close(fd), E.SUCCESS),
+    /** fd_filestat_set_times' errno: `flags` its ATIM/MTIM bits, the times in ns. */
+    setTimes: (fd, atimNs, mtimNs, flags) => imports.fd_filestat_set_times(fd, atimNs, mtimNs, flags),
     async rename(from, to) {
       const a = enc.encode(from), b = enc.encode(to);
       new Uint8Array(memory.buffer).set(a, 4096); new Uint8Array(memory.buffer).set(b, 6144);
@@ -320,6 +323,28 @@ await check('a pinned copy whose name this process replaced is reopened as itsel
   const named = await p.open('home/user/r.txt');
   assert.equal(await p.read(named, 64), 'after', 'the name\'s file is untouched');
 });
+
+// ── futimes through the codec keeps each time's intent: now (a writer may),
+// explicit (the owner), or omitted (kept) ───────────────────────────────
+// Red before: the codec turned now into Date.now() before the judgment, and
+// a writer who is not the owner was refused (EPERM) what utimes allows.
+for (const holding of [false, true]) {
+  await check(`futimes by a writer who is not the owner: now is theirs, explicit times are not, an omitted one is kept${holding ? ' (held)' : ''}`, async () => {
+    const p = await processWith({ 'shared.txt': 's' }, { holding });
+    await p.kernel.chown('/home/user/shared.txt', 0, 0);
+    await p.kernel.chmod('/home/user/shared.txt', 0o666);
+    await p.kernel.utimes('/home/user/shared.txt', 1_000, 2_000);
+    const fd = await p.open('home/user/shared.txt', { rights: RIGHT_READ | RIGHT_WRITE | RIGHT_SEEK | RIGHT_SET_TIMES });
+    assert.equal(await p.setTimes(fd, 5_000_000_000n, 6_000_000_000n, ATIM | MTIM), E.PERM, 'explicit times by a writer who is not the owner');
+    const before = Date.now();
+    assert.equal(await p.setTimes(fd, 0n, 0n, ATIM_NOW | MTIM_NOW), E.SUCCESS, 'both now, by a writer');
+    const now = await p.kernel.stat('/home/user/shared.txt');
+    assert.ok(now.mtime >= before - 1_000 && now.atime >= before - 1_000, `the times are now: ${now.atime} ${now.mtime}`);
+    assert.equal(await p.setTimes(fd, 0n, 0n, MTIM_NOW), E.SUCCESS, 'mtime now, atime kept');
+    assert.equal((await p.kernel.stat('/home/user/shared.txt')).atime, now.atime, 'an omitted atime is kept');
+    await p.close(fd);
+  });
+}
 
 assert.deepEqual(failures, []);
 console.log('wasi-dev-fd-codec: ok');

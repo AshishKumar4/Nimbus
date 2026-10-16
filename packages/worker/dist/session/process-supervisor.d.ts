@@ -58,7 +58,7 @@ declare const ProcessSupervisor_base: (abstract new (...args: any[]) => {
     fsFtruncate(handleId: number, size: number): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["ftruncate"]>>>;
     fsFchmod(handleId: number, mode: number): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["fchmod"]>>>;
     fsFchown(handleId: number, uid: number | null, gid: number | null): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["fchown"]>>>;
-    fsFutimes(handleId: number, atimeMs: number, mtimeMs: number): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["futimes"]>>>;
+    fsFutimes(handleId: number, atimeMs: number | null | undefined, mtimeMs: number | null | undefined): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["futimes"]>>>;
     fsSync(handleId?: number | undefined): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["fsync"]>>>;
     fsRealpath(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["realpath"]>>>;
     fsLinkLeadsTo(path: string, link: string): Promise<Awaited<ReturnType<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["linkLeadsTo"]>>>;

@@ -245,6 +245,21 @@ const SCENARIOS = {
     const now = await e.peerStat(`${OUT}/orphan.txt`);
     assert.deepEqual([now.mode, now.mtimeMs], [taken.mode, taken.mtimeMs], 'the file that took the name changed');
   },
+  async 'fchmod of a file whose name is gone is judged as the session judges a description: a confined principal grants nothing'(e) {
+    // Confined (as a private /tmp principal is): it may narrow its own
+    // triad, never grant group or other bits or a set-id bit.
+    e.authority.rawVfs.confinePrincipal(1000, 'tmp/1000');
+    await e.hold(OUT);
+    // Made by this open (decided where the process holds the subtree), its name gone.
+    const opened = await e.fs.open(`${OUT}/orphan.txt`, { write: true, create: true, truncate: true, mode: 0o644 });
+    await e.fs.write(opened.id, null, enc.encode('O'));
+    await e.fs.unlink(`${OUT}/orphan.txt`);
+    await e.fs.fchmod(opened.id, 0o600);
+    await assert.rejects(e.fs.fchmod(opened.id, 0o640), { code: 'EPERM' }, 'a group bit granted');
+    await assert.rejects(e.fs.fchmod(opened.id, 0o4600), { code: 'EPERM' }, 'a set-id bit granted');
+    assert.equal(stat(await e.fs.fstat(opened.id)).mode, 0o600);
+    await e.fs.close(opened.id);
+  },
   async 'fchmod, fchown and futimes change the file a description opened after its name is renamed'(e) {
     await e.hold(OUT);
     await e.write(`${OUT}/before.txt`, 'B');
@@ -340,6 +355,7 @@ const GAPS = {
   'fstat of a description whose file lost its name says so [node]': { lacks: PATH_FDS, shows: 'ENOENT' },
   'fchmod, fchown and futimes change the file a description opened after its name is unlinked and taken [node]': { lacks: PATH_FDS, shows: 'the file that took the name changed' },
   'fchmod, fchown and futimes change the file a description opened after its name is renamed [node]': { lacks: PATH_FDS, shows: 'ENOENT' },
+  'fchmod of a file whose name is gone is judged as the session judges a description: a confined principal grants nothing [node]': { lacks: PATH_FDS, shows: 'ENOENT' },
   'fchmod, fchown and futimes through the session\'s description change the file it opened, not the name\'s [node]': { lacks: PATH_FDS, shows: 'the opened file did not change as asked' },
 };
 

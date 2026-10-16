@@ -2345,7 +2345,7 @@ export class SqliteVFS {
             acquireExclusiveMutation: (path, options) => {
                 const lease = this.acquireExclusiveMutationAt(this.lexicalKey(path, bound).value, options);
                 // Never null: the key came from a name this caller has. A delegation's reservations travel with it.
-                return { ...lease, root: this.logicalPath(lease.root, bound) ?? lease.root };
+                return { ...lease, root: this.logicalPath(lease.root, bound) ?? lease.root, ...(this.isConfined(bound) ? { confined: true } : {}) };
             },
             subscribe: (path, listener) => this.subscribe(path, bound, listener),
             // Live: a view outlives rotateIncarnation.
