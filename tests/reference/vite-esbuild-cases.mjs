@@ -229,7 +229,9 @@ const tsconfig = (value) => JSON.stringify(value, null, 2) + '\n';
  * names a case where the built-in server keeps its own JSX defaults (no
  * vite.config and no tsconfig JSX setting, decided 2026-10-05) or reads
  * vite.config statically and cannot; the differential expects it to differ
- * from Vite there, and says how.
+ * from Vite there, and says how. `nimbus` is what the server makes instead:
+ * the imports each module's output runs with, and, where vite.config is
+ * read differently, the esbuild options it reads.
  */
 export const CASES = {
   // ── create-vite's templates ──
@@ -444,11 +446,13 @@ export const CASES = {
     files: { 'tsconfig.json': tsconfig({ compilerOptions: { strict: true } }), 'src/app.tsx': JSX_REACT_CLASSIC },
     modules: ['src/app.tsx'],
     fallback: 'with no vite.config and no tsconfig JSX setting the built-in server keeps its own JSX default, the automatic React runtime, where Vite with no plugin compiles React.createElement',
+    nimbus: { imports: ['react/jsx-dev-runtime: Fragment jsxDEV', 'react: default'] },
   },
   'no vite.config, a module importing preact': {
     files: { 'src/view.tsx': JSX_PREACT_CLASSIC },
     modules: ['src/view.tsx'],
     fallback: 'with no vite.config and no tsconfig JSX setting the built-in server compiles a module importing preact with h and Fragment; Vite compiles React.createElement',
+    nimbus: { imports: ['preact: Fragment h'] },
   },
   'a computed esbuild value': {
     files: {
@@ -457,6 +461,10 @@ export const CASES = {
     },
     modules: ['src/app.tsx'],
     fallback: 'vite.config is read statically: a computed esbuild option is warned about once and left out, where Vite evaluates it',
+    nimbus: {
+      imports: ['react/jsx-dev-runtime: Fragment jsxDEV'],
+      esbuild: { charset: 'utf8', jsx: 'automatic', jsxDev: true, legalComments: 'none' },
+    },
   },
 };
 
