@@ -204,7 +204,9 @@ export type W7Call =
     mtime: number;
 }
 /**
- * open(2) of a file to write it (and to read it when `read`), as the
+ * open(2) of a file to write it (and to read it when `read`; with `write`
+ * false, to read it alone: O_RDONLY with O_CREAT or O_TRUNC, O_TRUNC
+ * asking write all the same), as the
  * session's own open decides it: a name made (`create`, `mode` less
  * `umask`) or refused (EEXIST when `exclusive`, ENOENT without `create`,
  * EISDIR, EACCES for any access asked that the file's mode refuses),
@@ -226,6 +228,7 @@ export type W7Call =
     ino?: number;
     umask?: number;
     read?: true;
+    write?: false;
     create?: true;
     truncate?: true;
     exclusive?: true;

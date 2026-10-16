@@ -83,7 +83,7 @@ export function namespaceWaveRouter(namespace, credential) {
         async open(call, cred, guard, owner) {
             // Pinned under the wave's lease alone: its description's later writes are not this wave's to admit.
             const ns = view(cred, undefined, owner);
-            const flags = openFlags({ read: call.read === true, write: true, create: call.create === true, exclusive: call.exclusive === true, truncate: call.truncate === true, followSymlinks: call.nofollow !== true });
+            const flags = openFlags({ read: call.read === true, write: call.write !== false, create: call.create === true, exclusive: call.exclusive === true, truncate: call.truncate === true, followSymlinks: call.nofollow !== true });
             const file = await ns.pin(call.path, { follow: openFollows(flags), sync: false });
             await pinOf(ns, parentOf(call.path))();
             const opened = await openOnMount(file, {

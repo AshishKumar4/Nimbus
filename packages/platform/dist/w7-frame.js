@@ -855,7 +855,7 @@ function parsePathCall(value, path) {
         case 'open': {
             const flags = ['create', 'exclusive', 'nofollow', 'read', 'truncate'];
             let required = keys;
-            for (const flag of ['create', 'description', 'exclusive', 'fchmod', 'ino', 'nofollow', 'read', 'truncate', 'umask'])
+            for (const flag of ['create', 'description', 'exclusive', 'fchmod', 'ino', 'nofollow', 'read', 'truncate', 'umask', 'write'])
                 required = required.replace(`,${flag}`, '');
             if (required !== 'call,mode,path')
                 break;
@@ -863,6 +863,8 @@ function parsePathCall(value, path) {
                 if (value[flag] !== undefined && value[flag] !== true)
                     throw new Error(`w7-frame: open ${flag} is true or absent`);
             }
+            if (value.write !== undefined && value.write !== false)
+                throw new Error('w7-frame: open write is false or absent');
             return {
                 call: 'open', path: path(value.path, 'open path'), mode: u32(value.mode, 'open mode'),
                 ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'open ino') }),
@@ -872,6 +874,7 @@ function parsePathCall(value, path) {
                 ...(value.exclusive === true ? { exclusive: true } : {}),
                 ...(value.nofollow === true ? { nofollow: true } : {}),
                 ...(value.read === true ? { read: true } : {}),
+                ...(value.write === false ? { write: false } : {}),
                 ...(value.description === undefined ? {} : { description: descriptionId(value.description, 'open description') }),
                 ...(value.fchmod === undefined ? {} : { fchmod: u32(value.fchmod, 'open fchmod') }),
             };

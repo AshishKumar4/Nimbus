@@ -538,7 +538,7 @@ var __nimbusProcessFsModule = (() => {
       case "open": {
         const flags = ["create", "exclusive", "nofollow", "read", "truncate"];
         let required = keys;
-        for (const flag of ["create", "description", "exclusive", "fchmod", "ino", "nofollow", "read", "truncate", "umask"])
+        for (const flag of ["create", "description", "exclusive", "fchmod", "ino", "nofollow", "read", "truncate", "umask", "write"])
           required = required.replace(`,${flag}`, "");
         if (required !== "call,mode,path")
           break;
@@ -546,6 +546,8 @@ var __nimbusProcessFsModule = (() => {
           if (value[flag] !== void 0 && value[flag] !== true)
             throw new Error(`w7-frame: open ${flag} is true or absent`);
         }
+        if (value.write !== void 0 && value.write !== false)
+          throw new Error("w7-frame: open write is false or absent");
         return {
           call: "open",
           path: path(value.path, "open path"),
@@ -557,6 +559,7 @@ var __nimbusProcessFsModule = (() => {
           ...value.exclusive === true ? { exclusive: true } : {},
           ...value.nofollow === true ? { nofollow: true } : {},
           ...value.read === true ? { read: true } : {},
+          ...value.write === false ? { write: false } : {},
           ...value.description === void 0 ? {} : { description: descriptionId(value.description, "open description") },
           ...value.fchmod === void 0 ? {} : { fchmod: u32(value.fchmod, "open fchmod") }
         };
@@ -2400,7 +2403,9 @@ function __nimbusSubmitVfs(op, acknowledged = false) {
  * the parked cell at `path`, in the client's log now, in the order the
  * program made it, and claim the cell with its answer: once the session has
  * it, the cell retires (stamped with the revision it made, or evicted when
- * it was not the file's whole content: `partial`); refused, it is dropped.
+ * it was not the file's whole content: `partial`, or `partial(answer)`
+ * when only the answer says, as an open's receipt does for a file a create
+ * may have found); refused, it is dropped.
  * Answers the session's answer; `acknowledged`: the program was already
  * told it succeeded, so a refusal is reported, never thrown.
  */
@@ -2409,7 +2414,7 @@ function __nimbusLogVfsWrite(path, op, options = {}) {
   const answer = __nimbusSubmitVfs(op, acknowledged);
   const claimed = __nimbusClaimVfsWrite(path, () => answer.then((answered) => {
     if (answered.failed) return __nimbusVfsRefusedResult;
-    if (options.partial) return __nimbusVfsAppendRangeResult;
+    if (typeof options.partial === "function" ? options.partial(answered) : options.partial) return __nimbusVfsAppendRangeResult;
     return answered.receipt?.revision ?? answered.mutation?.after;
   }), false, acknowledged);
   // The claim settles with the answer; a refusal is the answer's to report.
