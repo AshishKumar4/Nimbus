@@ -71,12 +71,13 @@ export async function handleNimbusRemoteApi(request, env, sdk, outbox) {
         ?? {};
     const root = body.root ?? profile.root ?? DEFAULT_HOME;
     const doName = `${remoteAuth.tenantSegment}:${match.sandboxId}`;
-    const id = env.NIMBUS_SESSION.idFromName(doName);
-    const stub = env.NIMBUS_SESSION.get(id);
+    const sessions = env.NIMBUS_SESSION;
+    const id = sessions.idFromName(doName);
+    const stub = sessions.get(id);
     const ctx = {
         env,
         stub,
-        freshStub: () => env.NIMBUS_SESSION.get(id),
+        freshStub: () => sessions.get(id),
         body,
         profileName,
         profile,
