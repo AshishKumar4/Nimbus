@@ -101,13 +101,13 @@ export interface DoCallRetryPolicy {
    */
   span?: SpanRecorder;
   /**
-   * Which failures this call repeats, where the platform's transient classes
-   * (isRetryableDoCall) are not the set for it: one whose callee converges
-   * may repeat a failure the platform does not call transient, and must not
+   * The failure classes (classifyDoCall) this call repeats, in place of the
+   * platform's transient ones (isRetryableDoCall): a callee that converges
+   * may repeat a class the platform does not call transient, and must not
    * repeat one it answers another way. `overloaded` is never repeated,
-   * whatever this says. The platform's set when absent.
+   * whatever this lists.
    */
-  repeats?(error: unknown): boolean;
+  repeats?: readonly DoCallClass[];
 }
 
 /**
@@ -231,7 +231,7 @@ export function idempotent<S, T>(
     const failed = async <E>(number: number, error: E): Promise<void> => {
       if (settled) return;
       const classification = classifyDoCall(error);
-      const repeats = policy.repeats === undefined ? isRetryableDoCall(classification) : policy.repeats(error);
+      const repeats = policy.repeats === undefined ? isRetryableDoCall(classification) : policy.repeats.includes(classification);
       if (!repeats && classification !== 'overloaded') {
         // The call ran and its answer is this error — ENOENT is a read's answer as much as bytes are.
         settle('callee_error', number, () => reject(error));

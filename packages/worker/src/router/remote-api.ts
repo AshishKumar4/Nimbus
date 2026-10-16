@@ -24,6 +24,7 @@ import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream } from '@
 import { parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { doUnavailableError } from './do-errors.js';
 import { idempotent } from '@nimbus-sh/fabric/do-calls.js';
+import type { DoCallClass } from '@nimbus-sh/platform/oom-classify.js';
 import { codeRuntimeRequirement, runtimePolicyError, type NimbusConfig, type NimbusSandboxProfile, type NimbusRuntimeAction } from '@nimbus-sh/config/sandbox';
 export type { NimbusConfig, NimbusSandboxProfile, NimbusRuntimePolicy, NimbusRuntimeName } from '@nimbus-sh/config/sandbox';
 
@@ -59,20 +60,20 @@ interface NimbusRemoteEnv extends Partial<NimbusAuthEnv> {
 }
 
 /**
- * The platform failures a session's destroy is repeated after, once, on a
- * fresh stub: the object reset under the call (its storage's internal
- * error), and the platform's undescribed failure of it. A destroy is
- * idempotent (rpcDestroy: one at a time, and a destroyed session destroys
- * to the same answer), so its repeat changes nothing the first may have
- * done. Both answered DELETEs 500 on 2026-10-16, main and branches alike.
- * Any other failure of it, and every other route, answers as before.
+ * The failure classes (classifyDoCall) a session's destroy is repeated
+ * after, once, on a fresh stub: the object reset under the call, and the
+ * platform's failure of it without a cause. A destroy is idempotent
+ * (rpcDestroy: one at a time, and a destroyed session destroys to the same
+ * answer), so its repeat changes nothing the first may have done. Both
+ * answered DELETEs 500 on 2026-10-16, main and branches alike. Any other
+ * class (a code update, an overloaded object: 503) answers as before.
  */
-const DESTROY_REPEATS_AFTER = /internal error in durable object storage caused object to be reset|^internal error; reference = /i;
+const DESTROY_REPEATS: readonly DoCallClass[] = ['storage_reset', 'platform_internal'];
 
 interface RemoteContext {
   env: NimbusRemoteEnv;
   stub: SessionRouterRpc;
-  /** A fresh stub to the same session, for a call repeated after the first one's failed (DESTROY_REPEATS_AFTER). */
+  /** A fresh stub to the same session, for a call repeated after the first one's failed (DESTROY_REPEATS). */
   freshStub(): SessionRouterRpc;
   body: SessionRequest;
   profileName: string;
@@ -428,7 +429,7 @@ async function dispatchRemoteRpc(ctx: RemoteContext): Promise<unknown> {
       const options = objectArg(args[0]);
       return idempotent('destroy', session, (stub) => stub._rpcDestroy(options), {
         maxAttempts: 2,
-        repeats: (error) => error instanceof Error && DESTROY_REPEATS_AFTER.test(error.message),
+        repeats: DESTROY_REPEATS,
       }).then((result) => {
         // Proven destroy, reported as internal metadata for the caller's
         // response policy — no JSON re-parse needed to rediscover it.
