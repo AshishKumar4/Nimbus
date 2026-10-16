@@ -72,7 +72,11 @@ try {
     ran.exitCode === 0 && ran.stdout === '7\n',
     JSON.stringify(ran));
 } finally {
-  await box.destroy({ reason: 'live-sdk-exec-output-complete' }).catch(() => {});
+  // The probe made this sandbox, so its cleanup is the probe's, and a
+  // failed one is a failed probe (an error above still propagates).
+  const destroyed = await box.destroy({ reason: 'live-sdk-exec-output-complete' })
+    .then((result) => result, (error) => ({ ok: false, error: String(error?.message ?? error) }));
+  a.check('the sandbox is destroyed', destroyed.ok === true && typeof destroyed.destroyedAt === 'number', JSON.stringify(destroyed));
 }
 
 const s = a.summary();

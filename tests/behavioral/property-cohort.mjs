@@ -1,16 +1,19 @@
 #!/usr/bin/env bun
 // behavioral/property-cohort — install the top-N npm cohort one-by-one
 // in a fresh session each; the property under test is "no install
-// crashes the supervisor; the next install in a new session succeeds."
-// This is a generative property test (not a per-package strict-pass
-// matrix; that's the X.5 cohort — a layer-1 concern).
+// crashes the session": each session, after its install, still runs a
+// command, whatever the install's own status. A package's install may
+// fail (an npm error is a status), but a terminal that closes or stops
+// answering is a crash, and every crash fails the probe. This is a
+// generative property test (not a per-package strict-pass matrix; that's
+// the X.5 cohort — a layer-1 concern).
 //
 // Black-box surfaces only. NO _diag, NO heap inspection.
 //
 // Reduced to 6 packages by default to keep wall-clock under 12 min;
 // override with NIMBUS_COHORT=full to run the top-30.
 
-import { mintSession, Terminal, makeAsserter, sleep } from './_driver.mjs';
+import { hasOutputLine, mintSession, Terminal, makeAsserter, sleep } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('property-cohort');
@@ -36,8 +39,7 @@ const FULL = [
 const COHORT = process.env.NIMBUS_COHORT === 'full' ? FULL : FAST;
 console.log(`COHORT size: ${COHORT.length}`);
 
-let succeeded = 0;
-let failed = 0;
+/** Each package's outcome: 'installed' (status 0), 'install-failed' (another status, the session alive after), or 'crashed'. */
 const results = [];
 
 for (const pkg of COHORT) {
@@ -45,7 +47,7 @@ for (const pkg of COHORT) {
   const t = new Terminal(sid);
   await t.connect();
   await sleep(1_500);
-  let ok = false;
+  let outcome = 'crashed';
   let elapsed = 0;
   let detail = '';
   try {
@@ -53,27 +55,33 @@ for (const pkg of COHORT) {
     await t.run('echo \'{"name":"c","version":"0.0.0"}\' > package.json', 10_000);
     const r = await t.run(`npm install ${pkg.pkg}`, 240_000);
     elapsed = r.elapsed;
-    if (/added \d+ packages|installed \d+ packages|Done!\s+\d+ packages/i.test(r.output)) {
-      ok = true;
-      succeeded++;
+    // The same session answers after the install, with output its command echo cannot supply.
+    const after = await t.run('echo "cohort-alive-$((6 * 7))"', 30_000);
+    if (!hasOutputLine(after.output, 'cohort-alive-42')) {
+      detail = `the session did not answer after the install: ${JSON.stringify(after.output.slice(-200))}`;
+    } else if (r.exitCode === 0) {
+      outcome = 'installed';
     } else {
-      failed++;
-      detail = r.output.slice(-200);
+      outcome = 'install-failed';
+      detail = `npm install exited ${r.exitCode}: ${r.output.slice(-200)}`;
     }
   } catch (e) {
-    failed++;
-    detail = String(e?.message ?? e).slice(0, 200);
+    detail = String(e?.message ?? e).slice(0, 400);
   } finally {
     await t.close();
   }
-  results.push({ pkg: pkg.pkg, ok, elapsed, detail });
-  console.log(`  ${ok ? '✓' : '✗'} ${pkg.pkg.padEnd(15)} ${(elapsed/1000).toFixed(1).padStart(6)}s ${ok ? '' : detail.slice(0,80)}`);
+  results.push({ pkg: pkg.pkg, outcome, elapsed, detail });
+  console.log(`  ${outcome === 'installed' ? '✓' : '✗'} ${pkg.pkg.padEnd(15)} ${(elapsed/1000).toFixed(1).padStart(6)}s ${outcome} ${detail.slice(0, 120)}`);
 }
 
-a.check(`≥80% of cohort installed (got ${succeeded}/${COHORT.length})`,
-  succeeded / COHORT.length >= 0.8, `succeeded=${succeeded} failed=${failed}`);
-a.check(`100% of cohort completed without crashing the session (succeeded+failed = ${succeeded}+${failed} = ${COHORT.length})`,
-  succeeded + failed === COHORT.length);
+const installed = results.filter((r) => r.outcome === 'installed');
+const crashed = results.filter((r) => r.outcome === 'crashed');
+a.check(`no install crashed its session (${crashed.length} of ${results.length} did)`,
+  crashed.length === 0,
+  crashed.map((r) => `${r.pkg}: ${r.detail}`).join('\n'));
+a.check(`≥80% of cohort installed (got ${installed.length}/${results.length})`,
+  installed.length / results.length >= 0.8,
+  JSON.stringify(results.map(({ pkg, outcome }) => ({ pkg, outcome }))));
 
 const s = a.summary();
 process.exit(s.fail === 0 ? 0 : 1);
