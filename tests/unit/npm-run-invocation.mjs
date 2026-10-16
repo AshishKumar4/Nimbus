@@ -86,28 +86,42 @@ await check('npm test runs pretest, test and posttest in order; a failure stops 
 });
 
 // ── a project's bins are its own, linked by its install ──
-// A registry of one package, tool-a: 1.0.0 has the bin toola, 2.0.0 renames
-// it toolb. npm install links its bins into the project's node_modules/.bin.
+// A registry: tool-a 1.0.0 has the bin toola, 2.0.0 renames it toolb;
+// dotted's bin .toola becomes .toolb; strbin 1.0.0's bin is a string (so it
+// is named strbin), 2.0.0 has none; shared-a and shared-b both declare
+// shared, and shared-a 2.0.0 drops it.
 const TARBALLS = new Map();
-const VERSIONS = {};
-for (const [version, bin] of [['1.0.0', 'toola'], ['2.0.0', 'toolb']]) {
-  const bytes = packageTarball({
-    'package/package.json': JSON.stringify({ name: 'tool-a', version, bin: { [bin]: 'cli.js' } }),
-    'package/cli.js': `console.log('tool-a ${version} ran');\n`,
-  });
-  const tarball = `https://registry.npmjs.org/tool-a/-/tool-a-${version}.tgz`;
+const PACKUMENTS = {};
+const publish = async (name, version, bin) => {
+  const manifest = { name, version, ...(bin === undefined ? {} : { bin }) };
+  const bytes = packageTarball({ 'package/package.json': JSON.stringify(manifest), 'package/cli.js': `console.log('${name} ${version} ran');\n` });
+  const tarball = `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`;
   TARBALLS.set(tarball, bytes);
-  VERSIONS[version] = { name: 'tool-a', version, bin: { [bin]: 'cli.js' }, dist: { tarball, integrity: await sriOf(bytes) } };
-}
+  PACKUMENTS[name] ??= { name, 'dist-tags': {}, versions: {} };
+  PACKUMENTS[name].versions[version] = { ...manifest, dist: { tarball, integrity: await sriOf(bytes) } };
+  PACKUMENTS[name]['dist-tags'].latest = version;
+};
+await publish('tool-a', '1.0.0', { toola: 'cli.js' });
+await publish('tool-a', '2.0.0', { toolb: 'cli.js' });
+await publish('dotted', '1.0.0', { '.toola': 'cli.js' });
+await publish('dotted', '2.0.0', { '.toolb': 'cli.js' });
+await publish('strbin', '1.0.0', 'cli.js');
+await publish('strbin', '2.0.0');
+await publish('shared-a', '1.0.0', { shared: 'cli.js' });
+await publish('shared-a', '2.0.0');
+await publish('shared-b', '1.0.0', { shared: 'cli.js' });
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async (url) => {
   const text = String(url);
   if (TARBALLS.has(text)) return new Response(TARBALLS.get(text));
   const [name, which] = text.slice('https://registry.npmjs.org/'.length).split('/').map(decodeURIComponent);
-  if (name !== 'tool-a') return new Response('not found', { status: 404 });
-  if (which === undefined) return Response.json({ name, 'dist-tags': { latest: '2.0.0' }, versions: VERSIONS });
-  return VERSIONS[which] ? Response.json(VERSIONS[which]) : new Response('not found', { status: 404 });
+  const doc = PACKUMENTS[name];
+  if (!doc) return new Response('not found', { status: 404 });
+  if (which === undefined) return Response.json(doc);
+  const version = doc.versions[which] ? which : doc['dist-tags'][which];
+  return version ? Response.json(doc.versions[version]) : new Response('not found', { status: 404 });
 };
+const linked = async (path) => (await ws.exec(`test -x ${path}`)).exitCode === 0;
 try {
   await check('a bin of project a is not a command of project b', async () => {
     await project('/home/user/a', { tool: 'toola' });
@@ -128,9 +142,28 @@ try {
     assert.equal((await ws.exec('npm install tool-a@2.0.0', { cwd: '/home/user/a' })).exitCode, 0);
     assert.equal((await ws.exec('test -e /home/user/a/node_modules/.bin/toola')).exitCode, 1, 'a bin the new version does not declare is unlinked');
     assert.equal((await ws.exec('test -x /home/user/a/node_modules/.bin/toolb')).exitCode, 0, 'and its own is linked');
+    assert.equal((await ws.exec('npm install dotted@1.0.0', { cwd: '/home/user/a' })).exitCode, 0);
+    assert.ok(await linked('/home/user/a/node_modules/.bin/.toola'), 'a bin whose name starts with a dot is linked');
+    assert.equal((await ws.exec('npm install dotted@2.0.0', { cwd: '/home/user/a' })).exitCode, 0);
+    assert.ok(!await linked('/home/user/a/node_modules/.bin/.toola'), 'and unlinked when the new version renames it');
+    assert.ok(await linked('/home/user/a/node_modules/.bin/.toolb'));
     await writeText(ws.fs, '/home/user/a/package.json', JSON.stringify({ name: 'a', version: '1.0.0' }));
-    assert.equal((await ws.exec('npm install', { cwd: '/home/user/a' })).exitCode, 0, 'an install that prunes tool-a');
-    assert.equal((await ws.exec('test -e /home/user/a/node_modules/.bin/toolb')).exitCode, 1, 'a pruned package\'s bin is unlinked');
+    assert.equal((await ws.exec('npm install', { cwd: '/home/user/a' })).exitCode, 0, 'an install that prunes tool-a and dotted');
+    assert.ok(!await linked('/home/user/a/node_modules/.bin/toolb'), 'a pruned package\'s bin is unlinked');
+    assert.ok(!await linked('/home/user/a/node_modules/.bin/.toolb'), 'a dotted one too');
+  });
+
+  await check('a global upgrade unlinks the bins it drops, and only its own', async () => {
+    assert.equal((await ws.exec('npm install -g alias@npm:strbin@1.0.0', { cwd: '/home/user' })).exitCode, 0);
+    assert.ok(await linked('/usr/local/bin/strbin'), 'an alias\'s string bin is named for the package it installs');
+    assert.equal((await ws.exec('npm install -g alias@npm:strbin@2.0.0', { cwd: '/home/user' })).exitCode, 0);
+    assert.ok(!await linked('/usr/local/bin/strbin'), 'and is unlinked when its new version has none');
+    for (const spec of ['shared-a@1.0.0', 'shared-b@1.0.0', 'shared-a@2.0.0']) {
+      const install = await ws.exec(`npm install -g ${spec}`, { cwd: '/home/user' });
+      assert.equal(install.exitCode, 0, install.stderr);
+    }
+    const shared = await ws.exec('shared', { cwd: '/home/user' });
+    assert.match(shared.stdout, /shared-b 1\.0\.0 ran/, `shared-a's upgrade leaves shared-b's link of shared:\n${shared.stdout}${shared.stderr}`);
   });
 
   await check('a global install\'s bin is a command after a boot, found on PATH', async () => {

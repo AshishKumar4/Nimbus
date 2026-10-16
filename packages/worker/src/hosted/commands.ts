@@ -1093,7 +1093,7 @@ const shellExecuteTracked = async (
       // emitting an immediate exit would print a false `[shell exited]` and
       // flip the process to terminated in /api/processes. Mirror the npm-bin
       // resolver's `handedOffToLongRunningFacet` contract.
-      const handedOffToLongRunningFacet = opts.longRunning === true && exitCode === 0;
+      const handedOffToLongRunningFacet = opts.longRunning === true && exitCode === 0 && self.processes.runsWork(pid);
       if (!handedOffToLongRunningFacet) {
         try { self.processes.exit(pid, exitCode); } catch {}
         try {
@@ -1114,7 +1114,7 @@ const shellExecuteTracked = async (
       }
     }
   }
-  return opts.longRunning === true && exitCode === 0 ? 'resident' : exitCode;
+  return opts.longRunning === true && exitCode === 0 && self.processes.runsWork(pid) ? 'resident' : exitCode;
 };
 const runtimeCommandHint = createRuntimeCommandHintResolver(self.env as any);
 installNpmBinFallbackResolver(registry, {
