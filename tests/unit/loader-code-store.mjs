@@ -338,6 +338,85 @@ const blob = (bytes, fill) => { const data = new Uint8Array(bytes); data.fill(fi
   assert.equal(s.registry.stats().putting, 0);
 }
 
+// ── A removal that fails part way gives back exactly what it unlinked, and finishes later at zero ──
+{
+  const s = session(vfs());
+  const kernel = s.engine.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 });
+  const owner = s.registry.mint('wrangler-1', 'LOADER');
+  for (let i = 0; i < 3; i++) {
+    const data = new Uint8Array(1000 + i).fill(i);
+    await s.registry.serve({ kind: 'put', owner, digest: sha(data), size: data.byteLength }, new ReadableStream({ start(c) { c.enqueue(data); c.close(); } }));
+  }
+  assert.equal(s.registry.stats().storeBytes, 3003);
+  const [dir] = kernel.readdir(LOADER_CODE_ROOT);
+  // An entry the store cannot remove: the kernel's, closed to it.
+  kernel.mkdir(`${LOADER_CODE_ROOT}/${dir.name}/zz`, { mode: 0o755 });
+  kernel.writeFile(`${LOADER_CODE_ROOT}/${dir.name}/zz/held`, 'x');
+  kernel.chmod(`${LOADER_CODE_ROOT}/${dir.name}/zz`, 0o500);
+  s.registry.release(owner);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(s.registry.stats().removing, 1, 'the directory stays, queued');
+  assert.equal(s.registry.stats().storeBytes, 0, 'what was unlinked was given back');
+  kernel.chmod(`${LOADER_CODE_ROOT}/${dir.name}/zz`, 0o777);
+  const next = s.registry.mint('wrangler-2', 'LOADER');
+  s.registry.release(next);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(s.registry.stats().removing, 0, 'retried, it is gone');
+  assert.equal(s.registry.stats().storeBytes, 0, 'and nothing is counted twice or left counted');
+  assert.deepEqual(kernel.readdir(LOADER_CODE_ROOT), []);
+}
+
+// ── A digest names one size: a put declaring another is refused before it charges anything ──
+{
+  const s = session(vfs());
+  const a = s.registry.mint('wrangler-1', 'LOADER');
+  const data = new Uint8Array([1, 2, 3]);
+  const digest = sha(data);
+  await s.registry.serve({ kind: 'put', owner: a, digest, size: 3 }, new ReadableStream({ start(c) { c.enqueue(data); c.close(); } }));
+  const b = s.registry.mint('wrangler-2', 'LOADER');
+  let cancelled = false;
+  await assert.rejects(s.registry.serve({ kind: 'put', owner: b, digest, size: 4 }, new ReadableStream({ start() {}, cancel() { cancelled = true; } })),
+    /names 3 bytes, not 4/, 'a held digest of another size refuses the put');
+  assert.equal(cancelled, true);
+  // One in flight of the right size refuses one of another size beside it.
+  const other = new Uint8Array([9, 9]);
+  const otherDigest = sha(other);
+  let push;
+  const putting = s.registry.serve({ kind: 'put', owner: b, digest: otherDigest, size: 2 }, new ReadableStream({ start(controller) { push = controller; } }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const c = s.registry.mint('wrangler-3', 'LOADER');
+  await assert.rejects(s.registry.serve({ kind: 'put', owner: c, digest: otherDigest, size: 5 }, new ReadableStream({ start() {} })), /names 2 bytes, not 5/);
+  // A removed meanwhile, B's producer failing: the count comes back to zero, never below.
+  s.registry.release(a);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  push.error(new Error('the producer failed'));
+  await putting.catch(() => {});
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(s.registry.stats().storeBytes, 0);
+}
+
+// ── A large reuse source with snapshot history rows is retired in pages, its content given back ──
+{
+  const s = session(vfs());
+  const kernel = s.engine.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 });
+  const big = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [big]);
+  let bytes = 0;
+  for (let i = 0; i < 600; i++) {
+    const data = new TextEncoder().encode(`module ${i}`);
+    bytes += data.byteLength;
+    await s.registry.serve({ kind: 'put', owner: big, digest: sha(data), size: data.byteLength }, new ReadableStream({ start(c) { c.enqueue(data); c.close(); } }));
+  }
+  assert.equal(s.registry.stats().storeBytes, bytes);
+  s.engine.snapshot('before-retire');
+  // Its build replaced twice: a reuse source, then retired.
+  for (let build = 0; build < 2; build++) s.registry.commit('wrangler-1', [s.registry.mint('wrangler-1', 'LOADER')]);
+  for (let waited = 0; s.registry.stats().removing > 0 && waited < 100; waited++) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(s.registry.stats().removing, 0, 'the 600-file directory is removed');
+  assert.equal(s.registry.stats().storeBytes, 0, 'and its content given back');
+  assert.deepEqual(kernel.readdir(LOADER_CODE_ROOT), []);
+}
+
 // ── A removal that fails stays counted, and is tried again at the next ──
 {
   const s = session(vfs());

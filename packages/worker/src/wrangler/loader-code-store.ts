@@ -37,6 +37,15 @@ const DIGEST = /^[0-9a-f]{64}$/;
 
 type OwnerState = 'staged' | 'committed' | 'source' | 'closed';
 
+interface PutsInFlight {
+  count: number;
+  readonly size: number;
+  chargedBytes: number;
+}
+
+/** How many files a removal unlinks between turns. */
+const REMOVE_PAGE = 256;
+
 interface Owner {
   readonly token: string;
   /** A random name, not its token: the token never touches the disk. Made at its first file. */
@@ -93,8 +102,8 @@ export class LoaderCodeRegistry {
    * puts in flight are kept here, transiently.
    */
   private storeBytes = 0;
-  /** Puts in flight, by digest: how many, and whether the content's charge is theirs (no directory held it). */
-  private readonly putting = new Map<string, { count: number; charged: boolean; readonly size: number }>();
+  /** Puts in flight, by digest: how many, their one size, and the content's charge they carry (0: a directory carries it). */
+  private readonly putting = new Map<string, PutsInFlight>();
   private removals: Promise<void> = Promise.resolve();
 
   constructor(private readonly engine: SqliteVFS) {
@@ -229,6 +238,9 @@ export class LoaderCodeRegistry {
       const fs = this.ownerFs(owner);
       await owner.creating.get(digest)?.catch(() => {});
       if (this.size(fs, `${owner.dir}/${digest}`) !== null) return false;
+      // A digest names one content, so one size: one held, or being put, of another size refuses this put.
+      const known = this.heldSize(digest) ?? this.putting.get(digest)?.size;
+      if (known !== undefined && known !== size) throw new LoaderStoreRefusal(`digest ${digest} names ${known} bytes, not ${size}`, 'EINVAL');
       await this.create(owner, digest, size, true, () => fs.writeFileFrom(`${owner.dir}/${digest}`, size, verified(stream, digest), { mode: 0o600 }).then(() => {}));
       return true;
     } finally {
@@ -259,7 +271,7 @@ export class LoaderCodeRegistry {
     const joined = owner.creating.get(digest);
     if (joined !== undefined) return joined;
     const pending = isPut ? this.putting.get(digest) : undefined;
-    const charge = isPut && pending?.charged !== true && !this.holds(digest, null) ? size : 0;
+    const charge = isPut && (pending?.chargedBytes ?? 0) === 0 && this.heldSize(digest) === null ? size : 0;
     if (owner.files + 1 > OWNER_FILES || owner.bytes + size > OWNER_BYTES || this.storeBytes + charge > STORE_BYTES) {
       return Promise.reject(new LoaderStoreRefusal(
         `this owner would hold ${owner.files + 1} files and ${owner.bytes + size} bytes (at most ${OWNER_FILES} and ${OWNER_BYTES}), and the session's loader store ${this.storeBytes + charge} bytes (at most ${STORE_BYTES})`,
@@ -268,18 +280,18 @@ export class LoaderCodeRegistry {
     owner.files++;
     owner.bytes += size;
     this.storeBytes += charge;
-    let put: { count: number; charged: boolean; readonly size: number } | undefined;
+    let put: PutsInFlight | undefined;
     if (isPut) {
-      put = pending ?? { count: 0, charged: false, size };
+      put = pending ?? { count: 0, size, chargedBytes: 0 };
       put.count++;
-      put.charged ||= charge > 0;
+      put.chargedBytes += charge;
       this.putting.set(digest, put);
     }
     const settle = (): void => {
       if (put === undefined || --put.count > 0) return;
       this.putting.delete(digest);
-      // The last put of it settled: its charge stays while a directory holds it.
-      if (put.charged && !this.holds(digest, null)) this.storeBytes -= put.size;
+      // The last put of it settled: a directory holding it carries its charge now; nothing holding it, it is given back.
+      if (this.heldSize(digest) === null) this.storeBytes -= put.chargedBytes;
     };
     const creation = Promise.resolve().then(make).then(settle, (error: unknown) => {
       owner.files--;
@@ -293,11 +305,24 @@ export class LoaderCodeRegistry {
     return creation;
   }
 
-  /** Whether a directory of this incarnation but `except` (a live owner's, a source's, or one queued for removal) has the file of `digest`. */
-  private holds(digest: string, except: string | null): boolean {
+  /** The size of `digest`'s file in a directory of this incarnation that counts (a live owner's, a source's, or one queued for removal), or null. */
+  private heldSize(digest: string): number | null {
     const fs = this.storeFs();
     const dirs = [...[...this.owners.values()].filter((owner) => owner.made).map((owner) => owner.dir), ...[...this.removing].filter(([, owner]) => owner !== null).map(([dir]) => dir)];
-    return dirs.some((dir) => dir !== except && this.size(fs, `${dir}/${digest}`) !== null);
+    for (const dir of dirs) {
+      const size = this.size(fs, `${dir}/${digest}`);
+      if (size !== null) return size;
+    }
+    return null;
+  }
+
+  /** `digest`'s file, `size` bytes, was just removed from a directory that counts: its charge goes with it unless something else carries it. */
+  private released(digest: string, size: number): void {
+    if (this.heldSize(digest) !== null) return;
+    const put = this.putting.get(digest);
+    if (put === undefined) this.storeBytes -= size;
+    // A put of it in flight with no charge of its own carries this one now; one with its own, this file never had one.
+    else if (put.chargedBytes === 0) put.chargedBytes = size;
   }
 
   /** `operation`, which reads or writes `owner`'s directory: its removal waits for it. */
@@ -320,13 +345,9 @@ export class LoaderCodeRegistry {
 
   /**
    * Remove `dir` once `owner`'s operations (all of them, however many come
-   * after this) have drained, with the VFS's paged recursive removal. Its
-   * files are listed first, and in the same synchronous step that removes it
-   * each digest no other directory holds is counted no more, or, when a put
-   * of it is in flight, its charge passes to that put. One that could not be
-   * removed stays queued, still counted, and every queued directory is tried
-   * again at each removal. A dead incarnation's directories were never
-   * counted: their removal gives nothing back.
+   * after this) have drained. A directory that is not gone stays queued and
+   * is tried again at each removal; whatever of it was unlinked was given
+   * back as it went.
    */
   private queueRemoval(dir: string, owner: Owner | null): void {
     this.removing.set(dir, owner);
@@ -334,42 +355,57 @@ export class LoaderCodeRegistry {
       if (owner !== null) while (owner.inFlight.size > 0) await Promise.allSettled([...owner.inFlight]);
       for (const [pending, held] of [...this.removing]) {
         if (held !== null && held.inFlight.size > 0) continue;
-        const files = held === null ? [] : this.files(pending);
-        if (!this.removeDir(pending) || !this.removing.delete(pending)) continue;
-        for (const [digest, size] of files) {
-          const put = this.putting.get(digest);
-          if (put !== undefined) put.charged = true;
-          else if (!this.holds(digest, pending)) this.storeBytes -= size;
-        }
+        if (await this.removeDir(pending, held !== null)) this.removing.delete(pending);
       }
     }).catch(() => {});
   }
 
-  /** `dir`'s files: their digest and size (a flat directory, at most OWNER_FILES). */
-  private files(dir: string): Array<[string, number]> {
+  /**
+   * Remove `dir`, a flat directory of at most OWNER_FILES files, whether it
+   * is gone. Its names are listed once (the VFS's one listing), and each
+   * file is stat'ed, unlinked and, when `counted`, given back the moment it
+   * is gone, in pages of REMOVE_PAGE with a turn between; so a removal that
+   * fails part way has given back exactly what it unlinked. The directory
+   * goes last. An entry that is not a file (none is made here) goes by the
+   * VFS's recursive removal.
+   */
+  private async removeDir(dir: string, counted: boolean): Promise<boolean> {
     const fs = this.storeFs();
+    let names: string[];
     try {
-      return fs.readdir(dir).flatMap(({ name }) => {
-        const size = this.size(fs, `${dir}/${name}`);
-        return size === null ? [] : [[name, size] as [string, number]];
-      });
+      names = fs.readdir(dir).map(({ name }) => name);
     } catch (error) {
-      if (typeof error === 'object' && error !== null && Reflect.get(error, 'code') === 'ENOENT') return [];
-      throw error;
+      if (isMissing(error)) return true;
+      console.warn(`[nimbus/loader-code-store] could not list ${dir}: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
     }
-  }
-
-  /** Whether `dir` is gone. */
-  private removeDir(dir: string): boolean {
+    let left = 0;
+    for (let at = 0; at < names.length; at++) {
+      if (at > 0 && at % REMOVE_PAGE === 0) await new Promise((resolve) => setTimeout(resolve, 0));
+      const path = `${dir}/${names[at]}`;
+      try {
+        const stat = statOrNull(fs, path);
+        if (stat === null) continue;
+        if (stat.type === 'directory') {
+          const removal = fs.removeRecursive(path);
+          if (removal.failures.length > 0 || removal.kept.length > 0) left++;
+          continue;
+        }
+        fs.unlink(path);
+        if (counted && stat.type === 'file') this.released(names[at], stat.size);
+      } catch (error) {
+        if (!isMissing(error)) left++;
+      }
+    }
+    if (left > 0) {
+      console.warn(`[nimbus/loader-code-store] ${dir}: ${left} entries could not be removed; tried again later`);
+      return false;
+    }
     try {
-      const removal = this.storeFs().removeRecursive(dir);
-      if (removal.failures.length === 0 && removal.kept.length === 0) return true;
-      console.warn(`[nimbus/loader-code-store] ${dir}: ${removal.failures.length + removal.kept.length} entries could not be removed; tried again later`);
-      return false;
+      fs.rmdir(dir);
+      return true;
     } catch (error) {
-      if (typeof error === 'object' && error !== null && Reflect.get(error, 'code') === 'ENOENT') return true;
-      console.warn(`[nimbus/loader-code-store] could not remove ${dir}: ${error instanceof Error ? error.message : String(error)}`);
-      return false;
+      return isMissing(error);
     }
   }
 
@@ -408,11 +444,15 @@ export class LoaderCodeRegistry {
   }
 }
 
+function isMissing(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && Reflect.get(error, 'code') === 'ENOENT';
+}
+
 function statOrNull(fs: CredentialedVfs, path: string): ReturnType<CredentialedVfs['lstat']> | null {
   try {
     return fs.lstat(path);
   } catch (error) {
-    if (typeof error === 'object' && error !== null && Reflect.get(error, 'code') === 'ENOENT') return null;
+    if (isMissing(error)) return null;
     throw error;
   }
 }
