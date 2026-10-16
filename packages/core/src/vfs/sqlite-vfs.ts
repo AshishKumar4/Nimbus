@@ -189,6 +189,8 @@ export interface ExclusiveMutationLease {
   readonly bytes?: number;
   /** A delegation whose reads recall it: the epoch and revision it was recorded at. */
   readonly certificate?: GrantCertificate;
+  /** Its holder's principal is confined (confinePrincipal), as `as(cred)` grants it. */
+  readonly confined?: boolean;
 }
 
 /** Inode numbers reserved for a delegation's holder: [first, end). */
@@ -2760,7 +2762,7 @@ export class SqliteVFS {
         this.assertMutationsAllowed([opened.path]);
         this.publishMetadata(inode, owner);
       }),
-      utimes: owned((atime: number, mtime: number): void => this.utimesInode(current(), atime, mtime, cred, opened.path)),
+      utimes: owned((atime: number | null | undefined, mtime: number | null | undefined): void => this.utimesInode(current(), atime, mtime, cred, opened.path)),
       close: asOpener((): void => {
         try {
           // The last of what it appended is written as it closes, and a failure is close's.
@@ -3291,7 +3293,7 @@ export class SqliteVFS {
       acquireExclusiveMutation: (path, options) => {
         const lease = this.acquireExclusiveMutationAt(this.lexicalKey(path, bound).value, options);
         // Never null: the key came from a name this caller has. A delegation's reservations travel with it.
-        return { ...lease, root: this.logicalPath(lease.root, bound) ?? lease.root };
+        return { ...lease, root: this.logicalPath(lease.root, bound) ?? lease.root, ...(this.isConfined(bound) ? { confined: true } : {}) };
       },
       subscribe: (path, listener) => this.subscribe(path, bound, listener),
       // Live: a view outlives rotateIncarnation.

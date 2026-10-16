@@ -852,13 +852,15 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
       });
     });
   });
-  const times = (st: RuntimeVfsStat, a: bigint, m: bigint, flags: number): [number, number] => {
+  // Each time as utimes takes it, its intent kept for the judgment: now
+  // (null: a writer may), explicit ms (the owner), or kept (undefined).
+  const times = (a: bigint, m: bigint, flags: number): [number | null | undefined, number | null | undefined] => {
     if ((flags & 3) === 3 || (flags & 12) === 12 || flags & ~15) fail('EINVAL');
-    return [flags & 2 ? Date.now() : flags & 1 ? Number(a / 1000000n) : st.atime,
-      flags & 8 ? Date.now() : flags & 4 ? Number(m / 1000000n) : st.mtime];
+    return [flags & 2 ? null : flags & 1 ? Number(a / 1000000n) : undefined,
+      flags & 8 ? null : flags & 4 ? Number(m / 1000000n) : undefined];
   };
-  imports.fd_filestat_set_times = guard(imports.fd_filestat_set_times, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, a: bigint, m: bigint, flags: number) => { right(fd, 23); return after(stat(fs, fd), st =>
-    after(fs.futimes(handle(fd).handle.id, ...times(st, a, m, flags)), () => 0)); }, owns);
+  imports.fd_filestat_set_times = guard(imports.fd_filestat_set_times, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, a: bigint, m: bigint, flags: number) => { right(fd, 23);
+    return after(fs.futimes(handle(fd).handle.id, ...times(a, m, flags)), () => 0); }, owns);
   const ext = options.extension;
   if (ext) {
     ext.fd_stat = guard(ext.fd_stat, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, out: number) => { pathRight(fd, 21); return after(stat(fs, fd), st => writeNimbusStat(out, st)); }, owns);
@@ -890,6 +892,6 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   }
   imports.path_filestat_set_times = guard(imports.path_filestat_set_times, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, lookup: number, p: number, n: number, a: bigint, m: bigint, flags: number) => { pathRight(fd, 20); 
     const target = at(fd, path(p, n)), followSymlinks = !!(lookup & 1);
-    return after(fs.stat(target, { followSymlinks }), st => after(fs.utimes(target, ...times(st ?? fail('ENOENT'), a, m, flags), { followSymlinks }), () => 0));
+    return after(fs.stat(target, { followSymlinks }), st => { if (st === null) fail('ENOENT'); return after(fs.utimes(target, ...times(a, m, flags), { followSymlinks }), () => 0); });
   });
 }

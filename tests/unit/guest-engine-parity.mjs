@@ -245,6 +245,20 @@ const SCENARIOS = {
     const now = await e.peerStat(`${OUT}/orphan.txt`);
     assert.deepEqual([now.mode, now.mtimeMs], [taken.mode, taken.mtimeMs], 'the file that took the name changed');
   },
+  async 'fchmod of a file whose name is gone is judged as the session judges a description: a confined principal grants nothing'(e) {
+    // Confined (as a private /tmp principal is): it may narrow its own
+    // triad, never grant group or other bits or a set-id bit.
+    e.authority.rawVfs.confinePrincipal(1000, 'tmp/1000');
+    await e.hold(OUT);
+    await e.write(`${OUT}/orphan.txt`, 'O');
+    const opened = await e.fs.open(`${OUT}/orphan.txt`, { write: true });
+    await e.fs.unlink(`${OUT}/orphan.txt`);
+    await e.fs.fchmod(opened.id, 0o600);
+    await assert.rejects(e.fs.fchmod(opened.id, 0o640), { code: 'EPERM' }, 'a group bit granted');
+    await assert.rejects(e.fs.fchmod(opened.id, 0o4600), { code: 'EPERM' }, 'a set-id bit granted');
+    assert.equal(stat(await e.fs.fstat(opened.id)).mode, 0o600);
+    await e.fs.close(opened.id);
+  },
   async 'fchmod, fchown and futimes change the file a description opened after its name is renamed'(e) {
     await e.hold(OUT);
     await e.write(`${OUT}/before.txt`, 'B');

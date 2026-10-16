@@ -53,6 +53,7 @@ import { openIdentified } from './filesystem.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES } from '../../constants.js';
 import { RESIDENT_PAGE_BYTES } from '@nimbus-sh/platform/limits.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
+import type { HolderAttrChange } from './delegation-holder.js';
 import { delegationHolder, type DelegationHolder } from './delegation-holder.js';
 import { readDirectoryPool, type ReadDirectoryPool } from './read-directory-pool.js';
 import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
@@ -1211,11 +1212,11 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * written through first), and its stat as the session then says.
    */
   const holderAttrs = (name: 'fchmod' | 'fchown' | 'futimes', passed: (handleId: number, ...rest: unknown[]) => unknown, handleId: number, rest: unknown[]): unknown => {
-    const explicit = name !== 'futimes' || (rest[0] !== null && rest[0] !== undefined);
-    const attrs: W7Attrs = name === 'fchmod' ? { mode: Number(rest[0]) }
+    const time = (value: unknown): number | null | undefined => (typeof value === 'number' ? value : value === null ? null : undefined);
+    const change: HolderAttrChange = name === 'fchmod' ? { mode: Number(rest[0]) }
       : name === 'fchown' ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) }
-      : explicit ? { atime: Number(rest[0]), mtime: Number(rest[1]) } : { atime: Date.now(), mtime: Date.now() };
-    if (holder!.fsetattr(handleId, attrs, explicit)) return undefined;
+      : { atime: time(rest[0]), mtime: time(rest[1]) };
+    if (holder!.fsetattr(handleId, change)) return undefined;
     holder!.changing([holder!.keyOf(handleId)]);
     return holder!.flush().then(() => holder!.sessionOf(handleId)).then(async (session) => {
       if (session === undefined) throw fsError('EBADF', name, '/' + holder!.keyOf(handleId));

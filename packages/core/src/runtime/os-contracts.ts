@@ -507,7 +507,8 @@ export interface RuntimeFsBridge {
   fchmod(handleId: number, mode: number): Awaitable<void>;
   /** chown's, of an open file: a null side keeps the file's. */
   fchown(handleId: number, uid: number | null, gid: number | null): Awaitable<void>;
-  futimes(handleId: number, atimeMs: number, mtimeMs: number): Awaitable<void>;
+  /** As utimes: a time null is now, undefined kept; explicit ones need the owner, now a writer. */
+  futimes(handleId: number, atimeMs: number | null | undefined, mtimeMs: number | null | undefined): Awaitable<void>;
   /** `signal`: cancels it before its commit (a released process publishes nothing). */
   writeBatch(payload: import('@nimbus-sh/platform/w7-frame.js').BatchWritePayload, options?: { signal?: AbortSignal }): Awaitable<{ inodes: number; chunks: number }>;
   /**
@@ -565,6 +566,8 @@ export interface ExclusiveMutationGrant {
   readonly bytes?: number;
   /** The umask the session applies to what the holder creates (its process's): the holder decides creates with it. */
   readonly umask?: number;
+  /** The session confines the holder's principal (confinePrincipal): a mode it may not grant, the holder refuses as the session would. */
+  readonly confined?: boolean;
   /** A delegation that recalls on reads: where the session stood when it recorded it (GrantCertificate). */
   readonly certificate?: GrantCertificate;
 }
