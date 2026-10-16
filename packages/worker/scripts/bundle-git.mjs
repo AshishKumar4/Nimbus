@@ -46,11 +46,17 @@ const ENTRY_FILE = join(root, '.git-bundle-entry.js');
 // Upstream declarations are copied mechanically; only the tracked patch's
 // public signature changes live here. No consumer dependency on the build input.
 const GIT_TYPES = `import type * as Upstream from './git-upstream.generated.js';
-type Fetch = Parameters<typeof Upstream.fetch>[0];
-export declare const git: Omit<typeof Upstream, 'fetch'> & {
+// The transport's own HTTP options are not taken: Nimbus's clients (git/pack/upload-pack.ts, receive-pack.ts) speak it.
+type Transported<T> = Omit<T, 'http' | 'onAuthSuccess' | 'onAuthFailure' | 'corsProxy' | 'headers'>;
+type Fetch = Transported<Parameters<typeof Upstream.fetch>[0]>;
+type Push = Transported<Parameters<typeof Upstream.push>[0]>;
+export declare const git: Omit<typeof Upstream, 'fetch' | 'push'> & {
   fetch(options: Fetch & {
     uploadPack: { discover(...args: never[]): Promise<unknown>; requestPack(...args: never[]): Promise<unknown> };
   }): ReturnType<typeof Upstream.fetch>;
+  push(options: Push & {
+    receivePack: { discover(...args: never[]): Promise<unknown>; sendPack(...args: never[]): Promise<unknown> };
+  }): ReturnType<typeof Upstream.push>;
   getConfigNames(options: Pick<Parameters<typeof Upstream.getConfig>[0], 'fs' | 'dir' | 'gitdir'> & {
     section: string; subsection?: string | null;
   }): Promise<string[]>;

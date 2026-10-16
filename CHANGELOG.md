@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: the built-in `git push` over HTTP speaks receive-pack through
+  Nimbus's own client (`git/pack/receive-pack.ts`), the one `git fetch`,
+  `git clone` and the git remote helpers already use. It streams its pack
+  as git does past `http.postBuffer`; before, cf-git collected the whole
+  request and sent it with a Content-Length. Push no longer reads the
+  isomorphic-git-only `http.corsProxy` setting, which fetch already
+  ignored and git never had.
 - Fixed: `pip install` decides which dependencies apply by the markers of
   the CPython it installs for: CPython 3.13.14 on `wasm32-wasi`, as the
   interpreter itself answers them (`sys_platform` is `"wasi"`). Before, pip
