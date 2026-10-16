@@ -1953,6 +1953,11 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       pending() {
         return queue.length > 0 || inFlight !== null;
       },
+      fitsSync(bytes, path) {
+        if (!sealed && pendingSyncBytes + bytes > syncCap) {
+          throw fsError("ENOMEM", `ENOMEM: ${pendingSyncBytes} bytes of synchronous writes are waiting for the session, and this one (${bytes}) would pass the ${syncCap}-byte cap; let the program yield (an await) for them to be sent`, path);
+        }
+      },
       submit(given, submitOptions) {
         const acknowledged = submitOptions?.acknowledged === true;
         if (processGone !== null && !(sealed && (acknowledged || submitOptions?.decided === true))) throw processGone;
@@ -1965,9 +1970,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         }
         const parts = pieces(op);
         const bytes = parts.reduce((sum, part) => sum + (part.type === "call" && "data" in part.call ? part.call.data.byteLength : 0), 0);
-        if (acknowledged && !sealed && pendingSyncBytes + bytes > syncCap) {
-          throw fsError("ENOMEM", `ENOMEM: ${pendingSyncBytes} bytes of synchronous writes are waiting for the session, and this one (${bytes}) would pass the ${syncCap}-byte cap; let the program yield (an await) for them to be sent`, pathsOf(op)[0] ?? "");
-        }
+        if (acknowledged) client.fitsSync(bytes, pathsOf(op)[0] ?? "");
         const tail = queue[queue.length - 1];
         const merged = parts.length === 1 && tail !== void 0 && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged ? folded(tail.op, parts[0]) : null;
         if (merged !== null && tail !== void 0) {

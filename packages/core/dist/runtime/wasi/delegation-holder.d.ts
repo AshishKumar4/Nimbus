@@ -50,6 +50,9 @@ export interface HolderStore {
     entry(key: string): ResidentEntry | null | undefined;
     /** As ResidentNamespace.children. */
     children(key: string): RuntimeVfsDirEntry[] | undefined;
+    /** As ResidentNamespace.reserve and release: what a provisional decision's bytes take of the process's budget (no grant reserved them). */
+    reserve?(bytes: number): boolean;
+    release?(bytes: number): void;
 }
 export interface HolderOptions {
     /** The session the process's filesystem client sends to and takes its grants from. */
@@ -149,6 +152,14 @@ export interface DelegationHolder {
      * session is to decide it.
      */
     open(key: string, path: string, flags: RuntimeOpenFlags): RuntimeFileHandle | undefined;
+    /**
+     * A whole file written by name (an open of `flags`, a write and a close),
+     * decided here as `open` decides: its revision, or undefined when the
+     * session must write it. What it takes is judged before anything is
+     * decided, so a refusal (ENOSPC, a provisional decision's ENOMEM) leaves
+     * the name as it was.
+     */
+    writeFile(key: string, path: string, bytes: Uint8Array, flags: RuntimeOpenFlags): number | undefined;
     read(handleId: number, offset: number | null, length: number): Uint8Array;
     write(handleId: number, offset: number | null, bytes: Uint8Array): number;
     seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number;

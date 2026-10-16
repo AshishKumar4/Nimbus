@@ -222,6 +222,12 @@ export interface ProcessFsClient {
         acknowledged?: boolean;
         decided?: boolean;
     }): Promise<ProcessFsAnswer>;
+    /**
+     * Whether `bytes` more of synchronous (acknowledged) writes fit under the
+     * cap the client holds unanswered: throws submit's ENOMEM where they would
+     * not, for a caller that has changed nothing yet.
+     */
+    fitsSync(bytes: number, path: string): void;
     /** Send what lingers now: someone waits on one of the process's own changes. */
     hurry(): void;
     /**

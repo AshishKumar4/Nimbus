@@ -994,6 +994,11 @@ export function processFsClient(options) {
         pending() {
             return queue.length > 0 || inFlight !== null;
         },
+        fitsSync(bytes, path) {
+            if (!sealed && pendingSyncBytes + bytes > syncCap) {
+                throw fsError('ENOMEM', `ENOMEM: ${pendingSyncBytes} bytes of synchronous writes are waiting for the session, and this one (${bytes}) would pass the ${syncCap}-byte cap; let the program yield (an await) for them to be sent`, path);
+            }
+        },
         submit(given, submitOptions) {
             const acknowledged = submitOptions?.acknowledged === true;
             if (processGone !== null && !(sealed && (acknowledged || submitOptions?.decided === true)))
@@ -1010,9 +1015,8 @@ export function processFsClient(options) {
             }
             const parts = pieces(op);
             const bytes = parts.reduce((sum, part) => sum + (part.type === 'call' && 'data' in part.call ? part.call.data.byteLength : 0), 0);
-            if (acknowledged && !sealed && pendingSyncBytes + bytes > syncCap) {
-                throw fsError('ENOMEM', `ENOMEM: ${pendingSyncBytes} bytes of synchronous writes are waiting for the session, and this one (${bytes}) would pass the ${syncCap}-byte cap; let the program yield (an await) for them to be sent`, pathsOf(op)[0] ?? '');
-            }
+            if (acknowledged)
+                client.fitsSync(bytes, pathsOf(op)[0] ?? '');
             // The same file's next bytes, right after its last unsent change: folded into it.
             const tail = queue[queue.length - 1];
             // (The queue holds only unsent changes; one sent and back for a re-send is numbered.)
