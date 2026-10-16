@@ -97,6 +97,18 @@ const big = new Uint8Array(3 * 1024 * 1024 + 7).fill(7);
   const uncreated = fakeApi((call) => (call === 'fsOpen' ? fsError('EACCES', 'o') : undefined));
   await assert.rejects(writeEntry(uncreated, '/r/c.bin', 'c.bin', 0o644, big), (error) => error instanceof GitEntryWriteFailure
     && error.lines === 'error: unable to create file c.bin: Permission denied\n');
+  // strerror's words for every code the session's filesystem answers (core vfs-error.ts VFS_STRERROR), its code
+  // as an error carries it or as the message that crossed an RPC begins with it. Red before: a private table of
+  // fifteen gave EINVAL's and ENOTEMPTY's raw messages.
+  for (const [failure, words] of [
+    [fsError('EINVAL', 'o'), 'Invalid argument'],
+    [new Error('ENOTEMPTY: o'), 'Directory not empty'],
+    [fsError('EBADF', 'o'), 'Bad file descriptor'],
+  ]) {
+    const refused = fakeApi((call) => (call === 'fsOpen' ? failure : undefined));
+    await assert.rejects(writeEntry(refused, '/r/d.bin', 'd.bin', 0o644, big), (error) => error instanceof GitEntryWriteFailure
+      && error.lines === `error: unable to create file d.bin: ${words}\n`);
+  }
   console.log('  ok  writeEntry: a write or a create that fails is git\'s error for that file');
 }
 
