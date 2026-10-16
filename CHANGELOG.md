@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a name below a regular file is `Not a directory` (ENOTDIR), as on
+  Linux, to `lstat`, `unlink` and `rmdir`, and to a mounted file system's
+  `stat` and `open`. It was `No such file or directory`. `rm`, `mkdir -p`,
+  `cp`, `mv`, Node's `lstatSync` and git now see the right error, and
+  `existsSync` stays false. `ls` exits 2 for an operand it cannot reach, as
+  GNU's does.
 - Fixed: the shell's `node` emits `beforeExit`, as Node does. It fires
   with `process.exitCode` each time the loop runs empty, and again only
   when a listener scheduled a timer or an immediate. A write or a microtask
