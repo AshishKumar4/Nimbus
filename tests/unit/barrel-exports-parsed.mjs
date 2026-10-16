@@ -57,7 +57,7 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
-// A barrel the parser cannot read is no barrel to synthesize from: the caller prebundles the package whole.
+// A barrel the parser cannot read is no barrel to synthesize from: the caller refuses the import (synth-null).
 const broken = { ...files, 'app/node_modules/kit/index.js': "export { Foo } from './new.js'\nexport {{ broken" };
 assert.equal(buildSyntheticEntry(new FakeVfs(broken), 'app/node_modules', 'kit', new Set(['Foo'])), null, 'an unparsable barrel gives no entry');
 
