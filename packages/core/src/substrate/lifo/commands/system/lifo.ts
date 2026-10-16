@@ -71,7 +71,7 @@ async function lifoInstall(
   await ctx.stdout.write(`Installing ${npmName} globally...\n`);
 
   // Install directly (no shell.execute round-trip)
-  const exitCode = await npmInstallGlobal(npmName, ctx, registry, kernel, deps);
+  const exitCode = await npmInstallGlobal(npmName, ctx, kernel, deps);
   if (exitCode !== 0) return exitCode;
 
   // After npm install, check for lifo manifest and re-register with lifo runtime

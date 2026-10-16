@@ -78,8 +78,9 @@ processes.setPidBase(bundle.PID_GEN_STRIDE);
   const earlier = await bundle.NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, vfs, processes: new bundle.SessionProcessSupervisor(), generation: 1 });
   const kernel = vfs.as(bundle.CRED_KERNEL);
   const installed = (dir, json, bin, target) => {
-    kernel.mkdir(`usr/local/lib/node_modules/${dir}`, { recursive: true, mode: 0o755 });
+    kernel.mkdir(`usr/local/lib/node_modules/${dir}/${target.split('/').slice(0, -1).join('/')}`, { recursive: true, mode: 0o755 });
     kernel.writeFile(`usr/local/lib/node_modules/${dir}/package.json`, JSON.stringify(json));
+    kernel.writeFile(`usr/local/lib/node_modules/${dir}/${target}`, `console.log(${JSON.stringify(`${bin} ran`)});\n`);
     kernel.mkdir('usr/local/bin', { recursive: true, mode: 0o755 });
     kernel.writeFile(`usr/local/bin/${bin}`, npmBinShim('/usr/local/bin', `/usr/local/lib/node_modules/${dir}/${target}`));
     kernel.chmod(`usr/local/bin/${bin}`, 0o755);
@@ -102,5 +103,9 @@ const found = async (name) => (await workspace.exec(`command -v ${name}`)).stdou
 assert.equal(await found('fakebin'), '/usr/local/bin/fakebin', 'the global bin is a command, found on PATH');
 assert.equal(await found('tool'), '/usr/local/bin/tool', 'and a scoped package\'s bin');
 assert.equal(await found('stray'), '', 'a bin no install linked is no command');
+for (const bin of ['fakebin', 'tool']) {
+  const ran = await workspace.exec(bin);
+  assert.equal(ran.exitCode, 0, `${bin} runs: ${ran.stdout}${ran.stderr}`);
+}
 assert.equal(workspace.registry.has('fakebin'), false, 'nothing registered it');
 console.log('hosted-global-bins-rehydrate: ok');

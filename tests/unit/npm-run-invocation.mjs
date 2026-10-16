@@ -9,11 +9,12 @@
 // Red before: a script with no shell operator was split on whitespace
 // (`mkdir "a b"` made `"a` and `b"`), the words after `--` were dropped,
 // pre and post scripts did not run, and npm run registered the project's
-// bins as workspace-wide commands, so project B ran project A's tool.
+// bins as workspace-wide commands, so project B ran project A's tool, and
+// core's install linked no bins of a project's packages.
 
 import assert from 'node:assert/strict';
 import { createNpmCommand } from '../../packages/core/src/substrate/lifo/commands/system/npm.ts';
-import { npmBinShim } from '../../packages/core/src/runtime/npm-bin-map.ts';
+import { packageTarball, sriOf } from './lib/tarball-fixture.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { writeText } from '../../packages/core/src/vfs/vfs.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -84,22 +85,56 @@ await check('npm test runs pretest, test and posttest in order; a failure stops 
   assert.deepEqual(calls, [], 'and the test does not run');
 });
 
-// ── a project's bins are its own ──
-await check('a bin of project a is not a command of project b', async () => {
-  await project('/home/user/a', { tool: 'toola' });
-  await project('/home/user/b', { tool: 'toola' });
-  await ws.exec('mkdir -p /home/user/a/node_modules/tool-a /home/user/a/node_modules/.bin');
-  // As an install links it: the package's bin, and its shim in node_modules/.bin.
-  await writeText(ws.fs, '/home/user/a/node_modules/tool-a/package.json', JSON.stringify({ name: 'tool-a', version: '1.0.0', bin: { toola: 'cli.js' } }));
-  await writeText(ws.fs, '/home/user/a/node_modules/tool-a/cli.js', "console.log('tool-a ran');\n");
-  await writeText(ws.fs, '/home/user/a/node_modules/.bin/toola', npmBinShim('/home/user/a/node_modules/.bin', '/home/user/a/node_modules/tool-a/cli.js'));
-  await ws.exec('chmod 755 /home/user/a/node_modules/.bin/toola');
-  const inA = await ws.exec('npm run tool', { cwd: '/home/user/a' });
-  const inB = await ws.exec('npm run tool', { cwd: '/home/user/b' });
-  assert.equal(inB.exitCode, 127, `project b has no toola, after project a ran it:\n${inB.stdout}${inB.stderr}`);
-  assert.doesNotMatch(inB.stdout, /tool-a ran/);
-  assert.match(inA.stdout, /tool-a ran/, `project a runs its own bin, from node_modules/.bin:\n${inA.stdout}${inA.stderr}`);
-});
+// ── a project's bins are its own, linked by its install ──
+// A registry of one package, tool-a: 1.0.0 has the bin toola, 2.0.0 renames
+// it toolb. npm install links its bins into the project's node_modules/.bin.
+const TARBALLS = new Map();
+const VERSIONS = {};
+for (const [version, bin] of [['1.0.0', 'toola'], ['2.0.0', 'toolb']]) {
+  const bytes = packageTarball({
+    'package/package.json': JSON.stringify({ name: 'tool-a', version, bin: { [bin]: 'cli.js' } }),
+    'package/cli.js': `console.log('tool-a ${version} ran');\n`,
+  });
+  const tarball = `https://registry.npmjs.org/tool-a/-/tool-a-${version}.tgz`;
+  TARBALLS.set(tarball, bytes);
+  VERSIONS[version] = { name: 'tool-a', version, bin: { [bin]: 'cli.js' }, dist: { tarball, integrity: await sriOf(bytes) } };
+}
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async (url) => {
+  const text = String(url);
+  if (TARBALLS.has(text)) return new Response(TARBALLS.get(text));
+  const [name, which] = text.slice('https://registry.npmjs.org/'.length).split('/').map(decodeURIComponent);
+  if (name !== 'tool-a') return new Response('not found', { status: 404 });
+  if (which === undefined) return Response.json({ name, 'dist-tags': { latest: '2.0.0' }, versions: VERSIONS });
+  return VERSIONS[which] ? Response.json(VERSIONS[which]) : new Response('not found', { status: 404 });
+};
+try {
+  await check('a bin of project a is not a command of project b', async () => {
+    await project('/home/user/a', { tool: 'toola' });
+    await project('/home/user/b', { tool: 'toola' });
+    const install = await ws.exec('npm install tool-a@1.0.0', { cwd: '/home/user/a' });
+    assert.equal(install.exitCode, 0, install.stderr);
+    const inA = await ws.exec('npm run tool', { cwd: '/home/user/a' });
+    const inB = await ws.exec('npm run tool', { cwd: '/home/user/b' });
+    assert.equal(inB.exitCode, 127, `project b has no toola, after project a ran it:\n${inB.stdout}${inB.stderr}`);
+    assert.doesNotMatch(inB.stdout, /tool-a .* ran/);
+    assert.match(inA.stdout, /tool-a 1\.0\.0 ran/, `project a runs the bin its install linked:\n${inA.stdout}${inA.stderr}`);
+  });
+
+  await check('a project\'s .bin follows its packages: relinked, renamed and pruned', async () => {
+    await ws.exec('rm -rf /home/user/a/node_modules/.bin');
+    assert.equal((await ws.exec('npm install', { cwd: '/home/user/a' })).exitCode, 0, 'an install that changes no package');
+    assert.match((await ws.exec('toola', { cwd: '/home/user/a', env: { PATH: '/home/user/a/node_modules/.bin:/usr/bin:/bin' } })).stdout, /tool-a 1\.0\.0 ran/, 'links what is installed');
+    assert.equal((await ws.exec('npm install tool-a@2.0.0', { cwd: '/home/user/a' })).exitCode, 0);
+    assert.equal((await ws.exec('test -e /home/user/a/node_modules/.bin/toola')).exitCode, 1, 'a bin the new version does not declare is unlinked');
+    assert.equal((await ws.exec('test -x /home/user/a/node_modules/.bin/toolb')).exitCode, 0, 'and its own is linked');
+    await writeText(ws.fs, '/home/user/a/package.json', JSON.stringify({ name: 'a', version: '1.0.0' }));
+    assert.equal((await ws.exec('npm install', { cwd: '/home/user/a' })).exitCode, 0, 'an install that prunes tool-a');
+    assert.equal((await ws.exec('test -e /home/user/a/node_modules/.bin/toolb')).exitCode, 1, 'a pruned package\'s bin is unlinked');
+  });
+} finally {
+  globalThis.fetch = originalFetch;
+}
 
 harness.db.close();
 assert.deepEqual(failures, [], 'every case holds');
