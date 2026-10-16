@@ -44,6 +44,7 @@ declare module 'node:process' {
   import type * as NodeStringDecoder from 'node:string_decoder';
   import type * as NodeReadline from 'node:readline';
   import type * as NodeUtil from 'node:util';
+  import type * as NodeVm from 'node:vm';
   interface RealmProcess {
     on(event: 'unhandledRejection' | 'uncaughtException', listener: (reason: unknown) => void): RealmProcess;
     on(event: 'beforeExit' | 'exit', listener: (code: number) => void): RealmProcess;
@@ -80,7 +81,8 @@ declare module 'node:process' {
     getBuiltinModule(id: 'node:readline'): typeof NodeReadline;
     getBuiltinModule(id: 'node:readline/promises'): object;
     getBuiltinModule(id: 'node:assert' | 'node:assert/strict' | 'node:diagnostics_channel' | 'node:domain' | 'node:perf_hooks' | 'node:punycode'
-      | 'node:querystring' | 'node:sys' | 'node:timers' | 'node:timers/promises' | 'node:util/types' | 'node:v8' | 'node:vm'): object;
+      | 'node:querystring' | 'node:sys' | 'node:timers' | 'node:timers/promises' | 'node:util/types' | 'node:v8'): object;
+    getBuiltinModule(id: 'node:vm'): typeof NodeVm;
     getBuiltinModule(id: 'node:util'): typeof NodeUtil;
   }
   const process: RealmProcess;
@@ -128,6 +130,34 @@ declare module 'node:child_process' {
       stdio: readonly ['ignore', 'inherit', 'inherit', 'pipe', 'pipe', 'pipe', 'pipe'];
     },
   ): ChildProcess;
+}
+
+// The engine's vm, as node-compat/vm.ts serves it: what it wraps, and its options' import callback.
+declare module 'node:vm' {
+  /** How a dynamic import in compiled code is answered: the engine's main-context loader (constants), or a function. */
+  export type ImportModuleDynamically = symbol | ((specifier: string, referrer: object, attributes: Record<string, string>) => object | Promise<object>);
+  export interface ScriptOptions {
+    filename?: string;
+    importModuleDynamically?: ImportModuleDynamically;
+  }
+  export interface ContextOptions {
+    importModuleDynamically?: ImportModuleDynamically;
+  }
+  export class Script {
+    constructor(code: string, options?: string | ScriptOptions);
+    runInThisContext(options?: object): object;
+    runInContext(contextifiedObject: object, options?: object): object;
+    runInNewContext(contextObject?: object, options?: object): object;
+    createCachedData(): Uint8Array;
+    readonly cachedDataRejected: boolean | undefined;
+    readonly sourceMapURL: string | undefined;
+  }
+  export const constants: { readonly USE_MAIN_CONTEXT_DEFAULT_LOADER: symbol };
+  export function createContext(contextObject?: object, options?: ContextOptions): object;
+  export function runInThisContext(code: string, options?: string | ScriptOptions): object;
+  export function runInContext(code: string, contextifiedObject: object, options?: string | ScriptOptions): object;
+  export function runInNewContext(code: string, contextObject?: object, options?: string | ScriptOptions): object;
+  export function compileFunction(code: string, params?: readonly string[], options?: ScriptOptions): Function;
 }
 
 declare module 'node:v8' {
