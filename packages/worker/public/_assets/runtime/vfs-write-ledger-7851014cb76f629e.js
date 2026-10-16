@@ -1451,6 +1451,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     const rangeOf =   new Map();
     let claiming = null;
     let paused = false;
+    let sealed = false;
     let sending = null;
     let idleTimer = null;
     let lingerTimer = null;
@@ -1653,7 +1654,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         counters.lost++;
         fail(entry, "EIO", message);
       }
-      journal.dropThrough(entries[entries.length - 1].jid);
+      if (!sealed) journal.dropThrough(entries[entries.length - 1].jid);
       if (writer !== null) retiring.push(writer);
       epoch = null;
       ownThrough = Infinity;
@@ -1669,7 +1670,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         }
         fail(entry, "ESRCH", processGone.message);
       }
-      journal.dropThrough(ended[ended.length - 1].jid);
+      if (!journal.durable) journal.dropThrough(ended[ended.length - 1].jid);
       if (writer !== null) retiring.push(writer);
       epoch = null;
       ownThrough = Infinity;
@@ -1690,7 +1691,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     };
     const pump = () => {
       scheduled = false;
-      if (inFlight !== null || paused) return;
+      if (inFlight !== null || paused || sealed) return;
       if (queue.length === 0) return;
       if (marks.length === 0 && queue.every((entry) => entry.lingers)) {
         lingerTimer ??= timers.setTimeout(() => {
@@ -1712,7 +1713,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       });
     };
     const schedule = () => {
-      if (scheduled || inFlight !== null || paused) return;
+      if (scheduled || inFlight !== null || paused || sealed) return;
       scheduled = true;
       queueMicrotask(pump);
     };
@@ -1950,8 +1951,8 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         return queue.length > 0 || inFlight !== null;
       },
       submit(given, submitOptions) {
-        if (processGone !== null) throw processGone;
         const acknowledged = submitOptions?.acknowledged === true;
+        if (processGone !== null && !(sealed && (acknowledged || submitOptions?.decided === true))) throw processGone;
         const op = withUmaskOf(given, options.umask);
         const named = pathsOf(op);
         const lingers = (acknowledged || submitOptions?.decided === true) && named.every((path) => heldGrant(path) !== void 0);
@@ -1961,7 +1962,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         }
         const parts = pieces(op);
         const bytes = parts.reduce((sum, part) => sum + (part.type === "call" && "data" in part.call ? part.call.data.byteLength : 0), 0);
-        if (acknowledged && pendingSyncBytes + bytes > syncCap) {
+        if (acknowledged && !sealed && pendingSyncBytes + bytes > syncCap) {
           throw fsError("ENOMEM", `ENOMEM: ${pendingSyncBytes} bytes of synchronous writes are waiting for the session, and this one (${bytes}) would pass the ${syncCap}-byte cap; let the program yield (an await) for them to be sent`, pathsOf(op)[0] ?? "");
         }
         const tail = queue[queue.length - 1];
@@ -2027,6 +2028,13 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       hurry() {
         for (const entry of queue) entry.lingers = false;
         schedule();
+      },
+      seal() {
+        sealed = true;
+        if (lingerTimer !== null) {
+          timers.clearTimeout(lingerTimer);
+          lingerTimer = null;
+        }
       },
       flush() {
         options.drain?.();

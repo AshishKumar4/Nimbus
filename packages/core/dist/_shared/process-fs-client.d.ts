@@ -224,6 +224,15 @@ export interface ProcessFsClient {
     }): Promise<ProcessFsAnswer>;
     /** Send what lingers now: someone waits on one of the process's own changes. */
     hurry(): void;
+    /**
+     * The session is ending the process (its host settles it before the
+     * abort): its journal is the session's drain's from now on. Nothing more
+     * is sent; an op submitted after that the process was told it wrote
+     * (acknowledged, decided: its last bytes) is appended to it, the session's
+     * refusal of the process (ESRCH) notwithstanding; and a wave already sent
+     * forgets, whatever its outcome, only what the session applied.
+     */
+    seal(): void;
     /** Resolves once every op logged so far is answered (not those logged after: a writing process is never idle). */
     flush(): Promise<void>;
     /**

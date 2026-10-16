@@ -180,7 +180,8 @@ export interface DelegationHolder {
     /**
      * Log every decided file's unlogged bytes now, into the process's own log
      * and with no session round trip: what its facet keeps of it when the
-     * session ends it (a resident's settle, before its facet goes).
+     * session ends it (a resident's settle, before its facet goes). The log is
+     * the session's drain's from then on (ProcessFsClient.seal).
      */
     logHeld(): void;
     /** Decide a mkdir at `key`: true when decided here (and done), false when the session is to. */
