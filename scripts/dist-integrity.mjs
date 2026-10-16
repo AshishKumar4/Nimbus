@@ -212,9 +212,12 @@ export const STAGED_ASSETS_DIR = join('packages', 'worker', 'public');
 //
 // INPUT_ROOTS below names every input the fixpoint build can read: each
 // built package's sources and scripts, the manifests and tsconfigs that
-// configure compilation, the orchestrator itself, the lockfile pinning
-// the toolchain's dependencies, and the root configs the packages
-// extend. A package's src also covers the generated sources the bundlers
+// configure compilation, the orchestrator itself and its helpers, the
+// root scripts the packages' builds run or import (the shared body
+// compiler), the lockfile pinning the toolchain's dependencies, and the
+// root configs the packages extend. tests/unit/dist-integrity.mjs [27]
+// walks what the build runs and imports, and fails on any file outside
+// these. A package's src also covers the generated sources the bundlers
 // write back (shim artifact, runtime catalog): when a bundler
 // regenerates one, the fingerprint moves and the next run rebuilds cold.
 // (Kept as line comments: a block comment cannot spell a glob like
@@ -243,7 +246,16 @@ export const INPUT_ROOTS = [
   'package.json',
   'bun.lock',
   'scripts/dist-integrity.mjs',
+  'scripts/lib/checkout-lock.mjs',
+  'scripts/lib/export-declarators.mjs',
+  'scripts/lib/flock.mjs',
+  'scripts/lib/fs-walk.mjs',
+  'scripts/lib/output-transaction.mjs',
   'scripts/clean-dist.mjs',
+  'scripts/compile-facet-bodies.mjs',
+  'scripts/lib/compiled-bodies.mjs',
+  'scripts/ci/lib/output-patch.mjs',
+  'packages/worker/wasm/bash/inputs.mjs',
   'scripts/generate-wrangler-configs.mjs',
   'apps/nimbus-deployments.json',
 ];

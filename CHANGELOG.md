@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (build): the dist fixpoint's input fingerprint covers what the
+  packages' builds run and import outside their own trees. That is the
+  shared body compiler (`scripts/compile-facet-bodies.mjs`,
+  `scripts/lib/compiled-bodies.mjs`), the orchestrator's helpers,
+  `rebuild-opencode`'s output patcher, and the bash input check. Before, a
+  change to one of them was accepted by the warm path unbuilt: moving
+  compiled-bodies' target from esnext to es2018 left the record verified.
+  `tests/unit/dist-integrity.mjs` [27] walks the build's imports and refuses
+  any file outside the inputs.
+
 - Fixed (lifo `node`, X-9): `vm` is Node's. Contexts, scripts,
   `compileFunction`, `runInThisContext` and `runInNewContext` work in an
   inline `node` program and a lifo command alike; before, the module was

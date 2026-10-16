@@ -21,12 +21,14 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
   BuildFailure,
   BUILD_FIXPOINT,
+  BUILT_PACKAGES,
+  INPUT_ROOTS,
   assertDistMatchesSource,
   checkStagedAssets,
   fingerprintBuildInputs,
@@ -914,6 +916,60 @@ process.exit(1);
   rmSync(lock);
   assert.equal(lockRefusal(root, 500), null, 'and this process can take the lock again');
   console.log('  ok  [26] a lock whose holder cannot be described is released, and the gate refuses as a failed build');
+}
+
+// ── [27] RED: every file the build runs or imports outside the inputs is an input ─
+// A package's build reaches past its own src and scripts: its package.json
+// runs ../../scripts/compile-facet-bodies.mjs, its scripts import
+// ../../../scripts/lib/compiled-bodies.mjs, and the orchestrator imports its
+// own helpers. A file the build reads that the fingerprint does not cover is a
+// change the warm path accepts unbuilt (compiled-bodies' target moved from
+// esnext to es2018, and the record still verified). Walked from what the build
+// runs: each package's scripts and package.json, and the root scripts that are
+// inputs, through every relative import and every root script a command names
+// (a built package's dist is an output, digested as one).
+{
+  const covered = (rel) => INPUT_ROOTS.some((input) => rel === input || rel.startsWith(`${input}/`));
+  const repo = fileURLToPath(new URL('../../', import.meta.url));
+  const scriptFile = /\.(?:mjs|cjs|js|ts)$/;
+  const queue = [];
+  const seen = new Set();
+  // A built package's dist is an output the build itself writes first (generate-wrangler-configs reads config's).
+  const output = (rel) => BUILT_PACKAGES.some((pkg) => rel.startsWith(`packages/${pkg}/dist/`));
+  const visit = (abs) => {
+    const rel = relative(repo, abs);
+    if (rel.startsWith('..') || output(rel) || seen.has(rel) || !existsSync(abs) || !statSync(abs).isFile()) return;
+    seen.add(rel);
+    queue.push(rel);
+  };
+  const walkDir = (abs) => {
+    if (!existsSync(abs)) return;
+    for (const entry of readdirSync(abs, { withFileTypes: true })) {
+      if (entry.name === 'node_modules') continue;
+      const child = join(abs, entry.name);
+      if (entry.isDirectory()) walkDir(child);
+      else if (scriptFile.test(entry.name)) visit(child);
+    }
+  };
+  for (const pkg of BUILT_PACKAGES) {
+    walkDir(join(repo, 'packages', pkg, 'scripts'));
+    const manifest = JSON.parse(readFileSync(join(repo, 'packages', pkg, 'package.json'), 'utf8'));
+    for (const command of Object.values(manifest.scripts ?? {})) {
+      for (const [path] of String(command).matchAll(/(?:\.\.\/)+scripts\/[\w./-]+\.(?:mjs|cjs|js|ts)/g)) visit(join(repo, 'packages', pkg, path));
+    }
+  }
+  for (const input of INPUT_ROOTS) if (input.startsWith('scripts/') && scriptFile.test(input)) visit(join(repo, input));
+  const missing = [];
+  while (queue.length > 0) {
+    const rel = queue.shift();
+    if (!covered(rel)) missing.push(rel);
+    const text = readFileSync(join(repo, rel), 'utf8');
+    for (const [, specifier] of text.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)['"](\.{1,2}\/[^'"]+)['"]/g)) {
+      visit(join(repo, dirname(rel), specifier));
+    }
+  }
+  assert.deepEqual(missing.sort(), [], `files the build runs or imports that the input fingerprint does not cover:\n  ${missing.join('\n  ')}`);
+  console.log(`  ok  [27] every file the build runs or imports (${seen.size}) is under INPUT_ROOTS`);
 }
 
 console.log('dist-integrity: all cases passed');
