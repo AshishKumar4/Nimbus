@@ -12578,7 +12578,7 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
     const record = __nimbusEsmRecord(esmId);
     record.module = mod;
     const exports = mod.exports;
-    record.namespace = __esmNamespaceOf(Object.keys(exports).filter((name) => name !== "__esModule"), (name) => exports[name]);
+    record.namespace = __esmNamespaceOf(Object.keys(exports), (name) => exports[name]);
     if (required) return __nimbusEsmRequired(record);
   }
   return mod.exports;
@@ -13108,7 +13108,7 @@ async function __nimbusEsmInterpret(id, linked) {
     const record = __nimbusEsmRecords[id];
     if (record !== undefined && record.namespace !== null) return record.namespace;
     if (exports !== null && typeof exports === "object" && Object.getPrototypeOf(exports) === null && exports[Symbol.toStringTag] === "Module" && !("__esModule" in exports)) return exports;
-    const names = exports && typeof exports === "object" ? Object.keys(exports).filter((name) => name !== "__esModule") : [];
+    const names = exports && typeof exports === "object" ? Object.keys(exports) : [];
     return __esmNamespaceOf(names, (name) => exports[name]);
   })();
   __esmNamespaces.set(url, pending);
@@ -13248,8 +13248,9 @@ function __esmLoad(resolution) {
     } else if (data.format === "module") {
       // A data URL produced at runtime is a module body, just like a written
       // file. It is staged by the same runtime-code service, retaining its URL
-      // as the import base (relative imports from data URLs remain invalid).
-      const cell = __nimbusRuntimeModule(resolution.url, data.source);
+      // as the import base (relative imports from data URLs remain invalid),
+      // and an ES module whatever its syntax, as its MIME type says.
+      const cell = __nimbusRuntimeModule(resolution.url, data.source, "module");
       const mod = { exports: {} };
       Object.defineProperty(mod, "__nimbusImportMeta", { value: {
         url: resolution.url,
@@ -13265,7 +13266,7 @@ function __esmLoad(resolution) {
         __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
         throw e;
       }
-      const namespace = () => __esmNamespaceOf(Object.keys(mod.exports).filter((n) => n !== "__esModule"), (n) => mod.exports[n]);
+      const namespace = () => __esmNamespaceOf(Object.keys(mod.exports), (n) => mod.exports[n]);
       if (result && typeof result.then === "function") {
         const pending = result.then(namespace, (error) => {
           __esmNamespaces.delete(resolution.url);
@@ -13356,7 +13357,7 @@ function __esmLoadInterpreted(resolution, key, evaluationKey, esm) {
     }
     // An interpreted ES module's exports: its own names, live; another's, its translator's.
     const namespace = () => __nimbusLoadedEsModule(key, evaluationKey, resolution.format)
-      ? __esmNamespaceOf(Object.keys(exports).filter((name) => name !== "__esModule"), (name) => exports[name])
+      ? __esmNamespaceOf(Object.keys(exports), (name) => exports[name])
       : __nimbusTranslatedNamespace(resolution, exports);
     // A module with top-level await: the import resolves once its evaluation
     // completes, and rejects with what it throws.
@@ -13805,6 +13806,12 @@ function __requireFrom(id, fromDir, parent, required = true, type = null) {
 function __nimbusStaticImport(id, parentUrl, parent, type) {
   const resolution = __nimbusResolveImport(id, parentUrl, type ?? null);
   if (resolution.format === "builtin") return __nimbusTranslatedNamespace(resolution, builtins[resolution.builtin]);
+  if (resolution.format === "data") {
+    // Made as import() makes it, once per URL; one that awaits at its top level cannot be linked synchronously.
+    const namespace = __esmLoad(resolution);
+    if (typeof namespace?.then === "function") throw nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "A static import of " + resolution.url + " awaits at its top level");
+    return namespace;
+  }
   if (!resolution.path) throw nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "A static import of " + resolution.url + " has no file to load synchronously");
   const key = resolution.path.replace(/^\\/+/, "");
   const esModule = resolution.format === "module" || (resolution.format === "detect" && __nimbusEsmId("module", key) !== -1);

@@ -1,0 +1,120 @@
+// @serial
+// @tier slow — drives a local workerd
+// A hosted node program's ES modules, staged and interpreted, load as Node
+// 22's do (audit RTM-4, SHI-M1, SHI-M2, SHI-5, SHI-6). Host Node running the
+// same files is the oracle:
+//   - a staged entry, and a staged package it imports, each statically
+//     import a data: module (text/javascript, and JSON with its type);
+//   - a data: JavaScript module is a module whatever its syntax: strict,
+//     its `this` undefined;
+//   - an ES module's own `__esModule` export is a name of its namespace, in a
+//     module the program writes and in a data: module;
+//   - a typeless .js the program writes, whose top level redeclares a
+//     CommonJS wrapper parameter (`const require = 1`), is an ES module;
+//   - a module under a directory named `a#b` imports beside itself, and its
+//     import.meta.url escapes the `#`.
+//
+// Red before: the staged imports of data: modules failed to link; the data:
+// module ran as sloppy CommonJS; `export const __esModule` threw a
+// TypeError, and namespaces left the name out; the typeless .js ran as
+// sloppy CommonJS; and `a#b/main.cjs` imported from the directory above it.
+//
+// Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
+// generated artifacts before testing a runner change.
+
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+
+import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
+
+// Written before the program runs: staged.
+const FILES = {
+  'node_modules/dpkg/package.json': JSON.stringify({ name: 'dpkg', version: '1.0.0', type: 'module', exports: './index.js' }),
+  'node_modules/dpkg/index.js': "import five from 'data:text/javascript,export default 5';\nexport default five + 1;\n",
+  'main.mjs': `import fortyOne from 'data:text/javascript,export default 41';
+import json from 'data:application/json,{"a":1}' with { type: 'json' };
+import six from 'dpkg';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const out = { staged: [fortyOne, json, six] };
+const keys = (ns) => [Object.keys(ns), ns.__esModule];
+
+// The data: module's goal is its MIME type's: a module.
+await import('data:text/javascript,globalThis.seen=(function(){return this})()===undefined');
+out.dataStrict = globalThis.seen;
+
+// An ES module's own __esModule, written now (interpreted), and in a data: module.
+writeFileSync('own.mjs', 'export const __esModule = false; export const b = 2;\\n');
+out.ownEsModule = keys(await import('./own.mjs'));
+out.dataEsModule = keys(await import('data:text/javascript,export const __esModule = 7; export default 1'));
+
+// A typeless .js that redeclares a wrapper parameter: an ES module.
+writeFileSync('det.js', 'const require = 1; globalThis.detStrict = (function(){return this})()===undefined; globalThis.detRequire = require;\\n');
+await import('./det.js');
+out.detected = [globalThis.detStrict, globalThis.detRequire];
+
+// A directory named a#b.
+mkdirSync('a#b', { recursive: true });
+writeFileSync('a#b/dep.mjs', "export default 'beside';\\n");
+writeFileSync('a#b/main.cjs', "module.exports = import('./dep.mjs').then((m) => m.default);\\n");
+writeFileSync('a#b/meta.mjs', 'export default import.meta.url;\\n');
+out.hashDirectory = await (await import(pathToFileURL(process.cwd() + '/a#b/main.cjs').href)).default;
+out.hashMeta = (await import(pathToFileURL(process.cwd() + '/a#b/meta.mjs').href)).default.replace(pathToFileURL(process.cwd() + '/').href, '<cwd>/');
+console.log('PARITY ' + JSON.stringify(out));
+`,
+};
+
+const report = (stdout) => {
+  const line = stdout.split('\n').find((text) => text.startsWith('PARITY '));
+  if (line === undefined) throw new Error(`no report in:\n${stdout}`);
+  return JSON.parse(line.slice('PARITY '.length));
+};
+
+// ── The oracle: host Node runs the same files ─────────────────────────────
+const host = mkdtempSync(join(tmpdir(), 'interpreted-esm-'));
+let expected;
+try {
+  for (const [name, text] of Object.entries(FILES)) {
+    mkdirSync(dirname(join(host, name)), { recursive: true });
+    writeFileSync(join(host, name), text);
+  }
+  const ran = spawnSync('node', ['main.mjs'], { cwd: host, encoding: 'utf8' });
+  assert.equal(ran.status, 0, ran.stderr);
+  expected = report(ran.stdout);
+} finally {
+  rmSync(host, { recursive: true, force: true });
+}
+// What the oracle says, stated, so the comparison is not vacuous.
+assert.deepEqual(expected, {
+  staged: [41, { a: 1 }, 6],
+  dataStrict: true,
+  ownEsModule: [['__esModule', 'b'], false],
+  dataEsModule: [['__esModule', 'default'], 7],
+  detected: [true, 1],
+  hashDirectory: 'beside',
+  hashMeta: '<cwd>/a%23b/meta.mjs',
+});
+
+// ── The session ────────────────────────────────────────────────────────────
+const probe = await startLocalProbe({ runtimes: [] });
+try {
+  const session = await localTerminal(probe, { install: [] });
+  try {
+    const payload = Buffer.from(JSON.stringify(FILES)).toString('base64');
+    const setup = await session.run(
+      `cd /home/user && node -e "const f=JSON.parse(Buffer.from('${payload}','base64').toString());for(const [n,t] of Object.entries(f)){require('fs').mkdirSync(require('path').dirname(n),{recursive:true});require('fs').writeFileSync(n,t)}console.log('SETUP')"`,
+    );
+    assert.equal(setup.status, 0, setup.stdout);
+    const ran = await session.run('cd /home/user && node main.mjs', 120_000);
+    assert.equal(ran.status, 0, ran.stdout);
+    assert.deepEqual(report(ran.stdout), expected, 'staged and interpreted ES modules load as host Node loads them');
+  } finally {
+    await session.close();
+  }
+} finally {
+  await probe.stop();
+}
+console.log('ok - interpreted-esm-parity-workerd (data: imports staged and interpreted, __esModule exports, wrapper-name detection and a#b URLs, as Node 22 has them)');

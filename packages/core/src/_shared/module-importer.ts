@@ -1,11 +1,13 @@
 /**
  * module-importer.ts — the URL import() in a module resolves against: what
  * a cell's import() is lowered with (runtime/bundle-cell-transform.ts) and
- * what the module's own Function carries (commonjs-cell.ts, THE WRAPPER).
+ * what the module's own Function carries (commonjs-cell.ts, THE WRAPPER);
+ * the interpreter gives a module it compiles the same (importer-url.ts).
  * The shared build-time compiler carries it into the guest.
  */
+import { importerUrl } from './importer-url.js';
 
 /** The importer URL of the module at `path`: a VFS path, with or without its leading slash, or a data: URL. */
 export function moduleImporterUrl(path: string): string {
-  return path.startsWith('data:') ? 'data:text/javascript,' : 'file:///' + path.replace(/^\/+/, '');
+  return importerUrl(path, (text, index) => text.charCodeAt(index));
 }

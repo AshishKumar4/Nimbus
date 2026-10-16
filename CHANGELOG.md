@@ -5,6 +5,25 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a hosted ES module, staged or interpreted, can statically import
+  a `data:` module (`import x from 'data:text/javascript,…'`). Before, a
+  staged entry or package with such an import failed to link, and an
+  interpreted one refused it.
+- Fixed: a hosted `data:` JavaScript module is always an ES module, as its
+  MIME type says: strict, with `this` undefined at its top level. Before,
+  one without `import` or `export` ran as sloppy CommonJS.
+- Fixed: a hosted ES module may export its own `__esModule`. Before, a
+  module the program wrote with `export const __esModule = false` threw a
+  TypeError, and namespaces left the name out. Now the name is in its
+  namespace, as in Node.
+- Fixed: a hosted typeless `.js` file the program writes, whose top level
+  redeclares a CommonJS wrapper name (`const require = 1`), is an ES
+  module, as Node detects it. Before, it ran as sloppy CommonJS. An
+  explicitly CommonJS file that does this is now the SyntaxError V8 gives.
+- Fixed: a hosted module under a directory whose name has `#`, `?`, `%` or
+  another character a file URL escapes imports beside itself, and its
+  `import.meta.url` escapes the name as Node's `pathToFileURL` does. Before,
+  `a#b/main.cjs` imported from the directory above it.
 - Fixed: a portable `node` program's `import()` takes its arguments as
   Node 22's does. A second argument that is not an object (`1`, `null`), a
   `with` that is not an object, or an attribute value that is not a string

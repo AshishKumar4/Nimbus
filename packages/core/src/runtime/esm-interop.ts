@@ -7,7 +7,8 @@
  * itself (native-esm.ts). The linking:
  *
  *   - the export getters are installed first, on the CommonJS exports object
- *     (ESM_EXPORTS_HELPER: `__esModule`, a `Module` tag, live enumerable
+ *     (ESM_EXPORTS_HELPER: `__esModule`, not enumerable and replaced by a
+ *     module's own export of that name, a `Module` tag, live enumerable
  *     getters in exported-name order), so a module in a cycle with this one
  *     finds them;
  *   - every requested module is then loaded in source order (ESM_LOAD_HELPER:
@@ -35,7 +36,7 @@ import { bindingIdentifiers } from './binding-pattern.js';
 
 /** The CommonJS exports object marked as an ES module's; answers the function that installs an export's getter. */
 export const ESM_EXPORTS_HELPER = '(() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; '
-  + 'return (exports) => { O.defineProperty(exports, "__esModule", { value: true }); O.defineProperty(exports, tag, { value: "Module" }); '
+  + 'return (exports) => { O.defineProperty(exports, "__esModule", { value: true, configurable: true }); O.defineProperty(exports, tag, { value: "Module" }); '
   + 'return (name, get) => O.defineProperty(exports, name, { enumerable: true, get }); }; })()';
 
 /**
