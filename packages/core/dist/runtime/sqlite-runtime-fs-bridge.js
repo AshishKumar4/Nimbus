@@ -533,7 +533,8 @@ export class SqliteRuntimeFsBridge {
                 return;
             }
             const p = located.path;
-            if (!this.vfs.exists(p))
+            // unlink(2): a name not there is ENOENT, one below a regular file ENOTDIR.
+            if (this.vfs.statIfPresent(p, false, 'ENOTDIR') === null)
                 throw fsError('ENOENT', 'unlink', path);
             this.owned(options.mutationOwner).unlink(p);
         });
@@ -546,10 +547,11 @@ export class SqliteRuntimeFsBridge {
                 return;
             }
             const p = located.path;
-            // rmdir(2): a missing path is ENOENT, anything but a directory (a file, a link) ENOTDIR.
-            if (!this.vfs.exists(p))
+            // rmdir(2): a missing path is ENOENT; anything but a directory (a file, a link), or a name below a regular file, ENOTDIR.
+            const there = this.vfs.statIfPresent(p, false, 'ENOTDIR');
+            if (there === null)
                 throw fsError('ENOENT', 'rmdir', path);
-            if (!this.vfs.isDirectory(p))
+            if (there.type !== 'directory')
                 throw fsError('ENOTDIR', 'rmdir', path);
             this.owned(options.mutationOwner).rmdir(p);
         });
