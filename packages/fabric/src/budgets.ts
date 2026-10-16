@@ -1014,6 +1014,32 @@ export function withDynamicWorkerCapNamed<E>(ctx: object, error: E): E | Error {
   );
 }
 
+// ── The Worker Loader shim's heap (loader-heap.ts) ─────────────────────────
+//
+// The shim runs in the host Worker's isolate, which also routes every
+// session inside the same 128 MiB. Its buckets are a ceiling, each on its
+// own: 4 + 8 + 32 + 8 = 52 MiB. Derivation (FAB-2 decision 3, Main,
+// 2026-10-16): production's host Worker (`nimbus`) over 2026-10-09T05:00Z ..
+// 2026-10-16T05:00Z peaked at 42.6 MiB at p99 of its per-minute maxima and at
+// 69.3 MiB once (2026-10-15T04:09Z): GraphQL workersInvocationsAdaptive,
+// filter { scriptName: "nimbus" }, max { memoryUsageBytes } by
+// datetimeMinute. 52 MiB on top leaves 94.6 MiB at p99 and 121.3 MiB at that
+// max. So a Worker loaded through the shim may hold at most 32 MiB live with
+// its working space (LOADER_WORKER_BYTES), half what native workerd allows.
+
+/** Loaded Workers' env and metadata, charged in full. */
+export const LOADER_ENTRY_CACHE_BYTES = 4 * 1024 * 1024;
+/** Loaded Workers' module contents, a cache that may evict them. */
+export const LOADER_MODULE_CACHE_BYTES = 8 * 1024 * 1024;
+/** What admissions and native misses hold live beyond the caches: one Worker at the shim's bound fits. */
+export const LOADER_CODE_CREDIT_BYTES = 32 * 1024 * 1024;
+/** The most one Worker loaded through the shim may hold live, its working space included: the Nimbus shim's limit, not workerd's. */
+export const LOADER_WORKER_BYTES = LOADER_CODE_CREDIT_BYTES;
+/** The keys and arguments of `LOADER.get` calls in flight, granted now or refused. */
+export const LOADER_KEY_ALLOWANCE_BYTES = 8 * 1024 * 1024;
+/** The longest `LOADER.get` id, namespace or network id, in UTF-16 units: escaped, a key stays under the entry bound. */
+export const LOADER_GET_ID_MAX_CHARS = 262_144;
+
 // ── Dynamic-worker module-map ceiling ───────────────────────────────────────
 
 /**

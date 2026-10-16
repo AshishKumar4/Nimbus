@@ -35,6 +35,7 @@ import { CirrusReal } from '../facets/cirrus-real.js';
 import type { HmrEvent } from '../facets/real-vite-hmr.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
+import type { LoaderStoreRequest } from '../wrangler/loader-code-store.js';
 import type { NpmInstaller } from '../npm/installer.js';
 import type { PackumentReadOptions } from '../npm/r2-cache.js';
 import type { DocumentPolicy } from '@nimbus-sh/core/runtime/document-policy.js';
@@ -496,6 +497,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     _rpcCpKill(childPid: number, signal: string, pid?: number): Promise<boolean>;
     _rpcCpWait(childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean): Promise<any>;
     _rpcCpBlocked(pid: number, report: unknown): Promise<void>;
+    _rpcLoaderCodeStore(request: LoaderStoreRequest, stream: ReadableStream<Uint8Array> | undefined, pid?: number): Promise<unknown>;
     _rpcCpNextSignal(pid: number, waitMs: number): Promise<string | null>;
     _rpcReady(options?: SessionReadyOptions): Promise<{
         ok: true;

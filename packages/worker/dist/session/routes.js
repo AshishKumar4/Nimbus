@@ -46,7 +46,7 @@ import { documentPolicyOf } from '@nimbus-sh/core/runtime/document-policy.js';
 import { bindDevServer, recordDevServer, spawnOf } from './dev-servers.js';
 import { stopViteServers, viteShimTeardown } from './vite-command.js';
 import { withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
-import { getLoadedCodesStats } from '@nimbus-sh/fabric/bindings.js';
+import { loaderHeapStats } from '@nimbus-sh/fabric/loader-heap.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { dynamicWorkerHeadroom, loaderLedgerStats } from '@nimbus-sh/fabric/budgets.js';
@@ -581,13 +581,11 @@ async function routeFetch(self, request) {
                 phases: sqlStats.phases,
                 transactions: sqlStats.transactions,
             },
-            // H7 (memory accounting cleanup): _NIMBUS_LOADED_CODES Map state.
-            // Pre-fix this Map grew unbounded — wrangler dev's rebuild
-            // loop accumulated one entry per save until the supervisor
-            // hit the workerd 128 MiB hard cap. Post-fix: hard-cap LRU
-            // (32 entries) with FIFO eviction. The counters here let
-            // ops dashboards visualise the bound + the eviction rate.
-            loadedCodes: getLoadedCodesStats(),
+            // The Worker Loader shim's heap in THIS isolate (fabric
+            // loader-heap.ts): its caches and credit pools, each with its
+            // bound. The shim runs in the host Worker's isolate, which logs
+            // its own counters with every admission and miss.
+            loadedCodes: loaderHeapStats(),
             // Per-DO Dynamic Worker accounting: distinct workers in flight now,
             // fan-out claims, remaining headroom against the platform limit,
             // and the peak.

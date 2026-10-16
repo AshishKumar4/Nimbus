@@ -39,6 +39,7 @@ import { ReadAheadBudget, STDIN_SYNC_READ_BYTES, type ReadAheadAccount } from '@
 import { execIdField, parseExecId, type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { exitCodeForSignal, type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
+import { ensureKernelStoreRoot, KERNEL_STORE_ROOT } from './kernel-store-root.js';
 import { parseProcessSignalName } from '@nimbus-sh/core/runtime/process-io-protocol.js';
 import { createNodeFacetRuntime, fetchNodeFacetSources, nodeFacetSource, type NodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { moduleSource, type ModuleSource, type ImmutableModuleSource } from '@nimbus-sh/platform/module-source.js';
@@ -903,7 +904,7 @@ const MANIFEST_COPIES_MAX_BYTES = 4 * 1024 * 1024;
  * real directory, which no one else may write, no directory on the way to a
  * store is one a user could replace with a link (_kernelStoreFor).
  */
-const KERNEL_STORE_ROOT = '/.nimbus';
+
 
 /** Where inlined wasm images are staged, one kernel-owned file per content key. */
 const INLINE_WASM_DIR = `${KERNEL_STORE_ROOT}/inline-wasm`;
@@ -5933,14 +5934,10 @@ export class FacetManager {
    */
   private _kernelStoreFor(pid: number): RuntimeSynchronousFs {
     const fs = this._kernelFor(pid);
-    let root = fs.stat(KERNEL_STORE_ROOT, { followSymlinks: false });
-    if (root === null) {
-      fs.mkdir(KERNEL_STORE_ROOT, { mode: 0o755 });
-      root = fs.stat(KERNEL_STORE_ROOT, { followSymlinks: false });
-    }
-    if (root?.type !== 'directory' || root.uid !== 0 || (root.mode & 0o022) !== 0) {
-      throw new Error(`Nimbus: ${KERNEL_STORE_ROOT} is not the kernel's own directory (a ${root?.type ?? 'missing entry'} owned by uid ${root?.uid}, mode ${((root?.mode ?? 0) & 0o7777).toString(8)}); its stores are not written through it`);
-    }
+    ensureKernelStoreRoot({
+      stat: (path) => fs.stat(path, { followSymlinks: false }),
+      mkdir: (path, mode) => fs.mkdir(path, { mode }),
+    });
     return fs;
   }
 
