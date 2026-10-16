@@ -28,14 +28,26 @@ export type NodeCall =
   /** Whether standard descriptor `fd` is the terminal, a pipe, or neither. */
   | { readonly op: 'fdKind'; readonly fd: number }
   /** The terminal's raw mode, on or off (tty.ReadStream.setRawMode). */
-  | { readonly op: 'rawMode'; readonly on: boolean };
+  | { readonly op: 'rawMode'; readonly on: boolean }
+  /**
+   * Answered once output writes up to number `upTo` are made, with those
+   * after number `after` that failed (since `round`'s settle-mark): the
+   * writes a program's 'beforeExit' listeners made in that round, made before
+   * its loop is asked again, as Node's writes to a pipe or a file are.
+   */
+  | { readonly op: 'settle'; readonly round: number; readonly after: number; readonly upTo: number };
 
 /** What a standard descriptor is, as libuv tells a stream it can make from it. */
 export type FdKind = 'terminal' | 'pipe' | 'other';
 
-/** A write to output `fd` that failed with `code`, on a pipe or a file, made through `source`. */
-/** A failed write: its descriptor, its error, and what made it (its source, and which of the program's writers of `fd`: 0 is process.stdout or process.stderr, and its console). */
-export interface OutputFailure { readonly fd: 1 | 2; readonly code: string; readonly pipe: boolean; readonly source: OutputSource; readonly writer: number }
+/**
+ * A failed write: its number (`seq`, as the host numbers writes), its
+ * descriptor, its error, and what made it (its source, and which of the
+ * program's writers of `fd`: 0 is process.stdout or process.stderr, and its
+ * console).
+ */
+export interface OutputFailure { readonly seq: number; readonly fd: 1 | 2; readonly code: string; readonly pipe: boolean; readonly source: OutputSource; readonly writer: number }
+
 
 /** A response to a request that stayed on the box, as data, either way across. */
 export interface RealmResponse {
@@ -50,6 +62,14 @@ export type GuestEvent =
   | { readonly type: 'output'; readonly fd: 1 | 2; readonly source: OutputSource; readonly writer: number; readonly data: string | Uint8Array }
   /** The program's loop ran empty, and it would hear of a failed write: tell it once writes up to number `upTo` are made (output-settled). */
   | { readonly type: 'settle'; readonly upTo: number }
+  /**
+   * The program's 'beforeExit' is about to be emitted (its round number
+   * `round`, counting from 1) with writes up to number `after` posted: the
+   * failures of those after it are the answer of the round's settle call,
+   * and no output-failed of theirs is posted. Rounds are told apart by
+   * number: two can start at the same write number.
+   */
+  | { readonly type: 'settle-mark'; readonly round: number; readonly after: number }
 
   | { readonly type: 'fetch'; readonly id: number; readonly port: number; readonly url: string; readonly method: string; readonly headers: Record<string, string>; readonly body: string | Uint8Array | null }
   | { readonly type: 'served'; readonly id: number; readonly response: RealmResponse | null }
@@ -113,6 +133,7 @@ export function isGuestEvent(value: unknown): value is GuestEvent {
   switch (value.type) {
     case 'output': return (value.fd === 1 || value.fd === 2) && isOutputSource(value.source) && Number.isSafeInteger(value.writer) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
     case 'settle': return Number.isSafeInteger(value.upTo);
+    case 'settle-mark': return Number.isSafeInteger(value.round) && Number.isSafeInteger(value.after);
     case 'fetch':
       return Number.isSafeInteger(value.id) && Number.isSafeInteger(value.port) && typeof value.url === 'string'
         && typeof value.method === 'string' && stringRecord(value.headers)
@@ -124,6 +145,11 @@ export function isGuestEvent(value: unknown): value is GuestEvent {
     case 'stdin-cancel': return Number.isSafeInteger(value.id);
     default: return false;
   }
+}
+
+export function isOutputFailures(value: unknown): value is readonly OutputFailure[] {
+  return Array.isArray(value) && value.every((failure) => record(failure) && Number.isSafeInteger(failure.seq) && (failure.fd === 1 || failure.fd === 2)
+    && typeof failure.code === 'string' && typeof failure.pipe === 'boolean' && isOutputSource(failure.source) && Number.isSafeInteger(failure.writer));
 }
 
 export function isHostEvent(value: unknown): value is HostEvent {
@@ -140,7 +166,7 @@ export function isHostEvent(value: unknown): value is HostEvent {
         && (value.event.oldPath === undefined || typeof value.event.oldPath === 'string')
         && typeof value.event.timestamp === 'number';
     case 'output-failed':
-      return (value.fd === 1 || value.fd === 2) && typeof value.code === 'string' && typeof value.pipe === 'boolean' && isOutputSource(value.source) && Number.isSafeInteger(value.writer);
+      return Number.isSafeInteger(value.seq) && (value.fd === 1 || value.fd === 2) && typeof value.code === 'string' && typeof value.pipe === 'boolean' && isOutputSource(value.source) && Number.isSafeInteger(value.writer);
     case 'output-settled': return Number.isSafeInteger(value.seq);
     case 'stdin':
       return Number.isSafeInteger(value.id) && (value.data === null || value.data instanceof Uint8Array || value.withdrawn === true

@@ -237,6 +237,7 @@ export async function registerHostedCommands(self, workspace) {
                 installRoot,
                 // The caller's filesystem and credential, from its working directory.
                 pid: ctx.pid,
+                cred: requireVfsCred(ctx.cred, 'Ruby REPL'),
                 home: ctx.env?.HOME || shell.getEnv().HOME || DEFAULT_HOME,
                 cwd: ctx.cwd || shell.getCwd(),
                 binName,

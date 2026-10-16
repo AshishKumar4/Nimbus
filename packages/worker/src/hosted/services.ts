@@ -2,7 +2,6 @@ import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network
 import { composeFacetManager, type ComposedFacetManager, type FacetManagerHostHooks } from "../facets/compose.js";
 import { normalizeChildCommand, shellChildRunner, textBytes, type ChildProcessHost } from "@nimbus-sh/core/runtime/child-process-manager.js";
 import { runChildCommand, runChildShell } from '@nimbus-sh/core/workspace/child-process-runner.js';
-import { isRuntimeInstallHint } from "../shell/npm-bin-entrypoints.js";
 import {
   bindProcessTable,
   isDynamicWorkerDeadlock,
@@ -11,7 +10,7 @@ import {
 } from "@nimbus-sh/fabric/budgets.js";
 import { CRED_KERNEL, CRED_SESSION_USER, type NimbusFilesystemAuthority, type VfsCred } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { ProcessFiles, ProcessView, X_OK } from "@nimbus-sh/core/runtime/process-files.js";
-import { resolutionOf } from '@nimbus-sh/core/shell/exec-dispatch.js';
+import { isRuntimeInstallHint, resolveChildCommand } from '@nimbus-sh/core/shell/exec-dispatch.js';
 
 import { resolveContext } from "@nimbus-sh/core/substrate/lifo/commands/registry.js";
 import { errorText } from "@nimbus-sh/core/_shared/error-text.js";
@@ -163,11 +162,9 @@ export function createChildProcessHost(self: RuntimeServiceHost, runtimeContext:
       if (name.includes('/')) await view.access(name.startsWith('/') ? name : `${origin.cwd}/${name}`, X_OK);
       const from = resolveContext(origin.cwd, origin.env, view);
       const registered = await registry.resolve(name, { ...from, search: false });
-      const direct = registered && !isRuntimeInstallHint(registered);
-      const program = direct ? registered : await registry.resolve(name, from);
-      if (!program || isRuntimeInstallHint(program)) return null;
-      const resolution = resolutionOf(program);
-      if (resolution?.kind === 'program') await view.access(resolution.path, X_OK);
+      const direct = registered !== undefined && !isRuntimeInstallHint(registered);
+      const program = direct ? registered : await resolveChildCommand(registry, name, from, view);
+      if (!program) return null;
       const facet = !direct || _classifyCommand(name)?.kind === 'facet-direct';
       return {
         async run(child) {

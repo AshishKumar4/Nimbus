@@ -30,6 +30,8 @@ export interface NodeFilesystem {
   rename(from: string, to: string): void;
   copyFile(from: string, to: string): void;
   chmod(path: string, mode: number): void;
+  /** chown(2), or lchown(2) when not `follow`: a null side keeps the file's, in the same change. */
+  chown(path: string, uid: number | null, gid: number | null, follow: boolean): void;
   /** open(2): the process's descriptor (its DescriptorScope's), whatever filesystem the file is on. */
   open(path: string, flags: RuntimeOpenFlags): number;
   /** read(2), at `position`, or at the descriptor's offset (null), which then moves. */
@@ -37,6 +39,8 @@ export interface NodeFilesystem {
   /** write(2), at `position`, or at the descriptor's offset (null), which then moves; an O_APPEND descriptor's at the end. */
   write(fd: number, position: number | null, data: Uint8Array): number;
   fstat(fd: number): RuntimeVfsStat;
+  /** fchown(2): a null side keeps the file's. */
+  fchown(fd: number, uid: number | null, gid: number | null): void;
   ftruncate(fd: number, size: number): void;
   fsync(fd: number): void;
   close(fd: number): void;
@@ -108,10 +112,12 @@ function bridgeFilesystem(bridge: RuntimeFsBridge, umask: () => number): NodeFil
     rename: (from, to) => fs.rename(from, to),
     copyFile: (from, to) => fs.copyFile(from, to),
     chmod: (path, mode) => fs.chmod(path, mode),
+    chown: (path, uid, gid, follow) => { fs.chown(path, uid, gid, { followSymlinks: follow }); },
     open: (path, flags) => fs.open(path, { ...flags, umask: umask() }).id,
     read: (fd, position, length) => fs.read(fd, position, length),
     write: (fd, position, data) => fs.write(fd, position, data),
     fstat: (fd) => fs.fstat(fd),
+    fchown: (fd, uid, gid) => fs.fchown(fd, uid, gid),
     ftruncate: (fd, size) => fs.ftruncate(fd, size),
     fsync: (fd) => fs.fsync(fd),
     close: (fd) => fs.close(fd),
