@@ -583,7 +583,6 @@ function defaultEnv(home) {
         TMPDIR: '/tmp',
         XDG_CONFIG_HOME: `${home}/.config`,
         XDG_DATA_HOME: `${home}/.local/share`,
-        npm_config_prefix: '/usr/local',
         PORT: '3000',
         HOST: '0.0.0.0',
     };
