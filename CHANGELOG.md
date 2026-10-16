@@ -208,6 +208,15 @@ published independently in the `@nimbus-sh` npm scope.
   file but did not own it was refused (`EPERM`). A time left as it is
   (`UTIME_OMIT`) is the one the file has when the change lands; before, a
   change to it made in between could be undone.
+- Fixed: a napi binding's WASI opens (rolldown, the Astro compiler,
+  satteri) no longer follow a final symlink when the binding asks not to.
+  Such an open is refused with `ELOOP`, or `ENOTDIR` for a directory, as
+  `open(2)` with `O_NOFOLLOW` refuses it. Before, the loader dropped the
+  flag and opened the link's target. `fd_fdstat_set_flags` that changes
+  `APPEND` is now refused with `ENOTSUP`, because the host's descriptor
+  cannot change it. Before, it answered success and the descriptor kept its
+  old mode.
+
 - Fixed: in Node programs, `fs.open` honours `O_NOFOLLOW`: a final symbolic
   link is `ELOOP`, or `ENOTDIR` with `O_DIRECTORY`, as on Linux, and
   `EEXIST` under `O_CREAT|O_EXCL`. A write open is one call the session
