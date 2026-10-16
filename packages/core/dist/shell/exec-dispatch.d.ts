@@ -107,6 +107,15 @@ export declare function runtimeInstallHint(command: Command): Command;
 /** Whether `command` is a runtime's install hint (runtimeInstallHint). */
 export declare function isRuntimeInstallHint(command: object): boolean;
 /**
+ * The command a child launcher (child_process.spawn, a program's cpSpawn)
+ * runs for `name`, as a search from `from` finds it, for every launcher:
+ * null for none, and for a runtime's install hint, which is no program
+ * (the launcher answers ENOENT, as Node's spawn of a missing command does).
+ * A program a search of PATH found must be one the caller may execute
+ * (`view`'s access: EACCES otherwise).
+ */
+export declare function resolveChildCommand(registry: CommandRegistry, name: string, from: ResolveContext, view: ProcessView): Promise<Command | null>;
+/**
  * What execve(2) refuses `command`, what `name` resolved to from `cwd`, as
  * `view` sees it: EACCES for a directory, the error its X_OK check meets for
  * a path name's file or the one a PATH search found; null when it may run
