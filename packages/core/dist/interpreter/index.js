@@ -25,14 +25,16 @@
 import { parse } from 'acorn';
 import { expressionFunctionBody, parseRuntimeFunction, runtimeFunctionSource, scriptExpression, } from '../_shared/runtime-function-source.js';
 import { Compiler, programBindings } from './compile.js';
-import { moduleCell } from './modules.js';
+import { moduleCell, moduleLink, moduleLinkRequests } from './modules.js';
 import { InterpreterRuntime, ROOT_ENV, frameTemplate, isObject } from './runtime.js';
 import { analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
 import { ownFunctionExpression, ownProgram } from './tree.js';
 import { own } from './parser-realm.js';
-import { Error, LAUNCH_PRIMORDIALS, SafeMap, SafeWeakSet, SyntaxError, charCodeAt, isWhitespaceCode, reflectGet, reflectGetOwnPropertyDescriptor, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
+import { Error, LAUNCH_PRIMORDIALS, SafeMap, SafeWeakSet, SyntaxError, append, charCodeAt, contains, isWhitespaceCode, newSafeList, reflectGet, reflectGetOwnPropertyDescriptor, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 import { programRequests } from './module-requests.js';
+import { bindingIdentifiers } from '../runtime/binding-pattern.js';
+import { importerUrl } from '../_shared/importer-url.js';
 import { stampStack, stackFrames } from './stack.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
@@ -88,13 +90,6 @@ function parseQuick(text, options) {
     }
     return parse(text, options);
 }
-/** The number of '/' characters `path` starts with. */
-function leadingSlashes(path) {
-    let i = 0;
-    while (i < path.length && charCodeAt(path, i) === 0x2f)
-        i++;
-    return i;
-}
 /**
  * The modules a file's text asks for, as this parser reads it
  * (module-requests.ts programRequests: imports, import() and require() of a
@@ -134,6 +129,28 @@ export function moduleRequests(path, text, javaScript = false, goal) {
     }
     return { requests: programRequests(program) };
 }
+/**
+ * The wrapper parameter a top-level lexical declaration of `program`
+ * redeclares, or null: V8 compiles CommonJS in Node's wrapper, and refuses
+ * one ("Identifier 'require' has already been declared").
+ */
+function redeclaredWrapperParameter(program) {
+    for (let i = 0; i < program.body.length; i++) {
+        const statement = program.body[i];
+        const names = newSafeList();
+        if (statement.type === 'ClassDeclaration' && statement.id !== null)
+            append(names, statement.id);
+        else if (statement.type === 'VariableDeclaration' && statement.kind !== 'var') {
+            for (let d = 0; d < statement.declarations.length; d++)
+                bindingIdentifiers(statement.declarations[d].id, names);
+        }
+        for (let n = 0; n < names.length; n++) {
+            if (contains(WRAPPER_PARAMS, names[n].name))
+                return names[n].name;
+        }
+    }
+    return null;
+}
 /** Whether a module's top level has import or export declarations. */
 function hasModuleSyntax(program) {
     return someItem(program.body, (s) => s.type === 'ImportDeclaration' || s.type === 'ExportNamedDeclaration'
@@ -157,7 +174,7 @@ function formatProgram(text, format) {
     if (format === 'module')
         return { module: true, program: parseQuick(text, MODULE_OPTIONS) };
     if (format === 'commonjs')
-        return { module: false, program: parseQuick(text, COMMONJS_OPTIONS) };
+        return { module: false, program: commonJsProgram(text) };
     let module = null;
     try {
         module = parseQuick(text, MODULE_OPTIONS);
@@ -168,13 +185,22 @@ function formatProgram(text, format) {
     if (module !== null && hasModuleSyntax(module))
         return { module: true, program: module };
     try {
-        return { module: false, program: parseQuick(text, COMMONJS_OPTIONS) };
+        return { module: false, program: commonJsProgram(text) };
     }
     catch (error) {
+        // What V8 refuses only as CommonJS (Node's throwsOnlyInCommonJSErrorMessages) is a module where it is one.
         if (module === null)
             throw error;
         return { module: true, program: module };
     }
+}
+/** `text` as V8 compiles CommonJS: a script whose top level may return, in a wrapper whose parameters it may not redeclare. */
+function commonJsProgram(text) {
+    const program = parseQuick(text, COMMONJS_OPTIONS);
+    const redeclared = redeclaredWrapperParameter(program);
+    if (redeclared !== null)
+        throw new SyntaxError(`Identifier '${redeclared}' has already been declared`);
+    return program;
 }
 /** The interpreter's own built-ins, for the checks it shares with commonjs-cell.ts. */
 const REALM = {
@@ -241,7 +267,7 @@ export function createInterpreter(hostOps, host) {
         compileModule(path, text, origin, javaScript = false, format) {
             if (!javaScript && UNPARSED_EXTENSIONS[extensionOf(path)])
                 throw new UnsupportedSyntax(`${extensionOf(path)} source`);
-            const parentUrl = stringSlice(path, 0, 5) === 'data:' ? 'data:text/javascript,' : `file:///${stringSlice(path, leadingSlashes(path))}`;
+            const parentUrl = importerUrl(path, charCodeAt);
             const stackFile = charCodeAt(path, 0) === 47 || stringSlice(path, 0, 5) === 'data:' || stringSlice(path, 0, 5) === 'file:' ? path : '/' + path;
             const moduleHost = unitHost(host, origin, parentUrl);
             const parsed = moduleProgram(text, format);
@@ -271,6 +297,12 @@ export function createInterpreter(hostOps, host) {
         },
         moduleAwaits(cell) {
             return typeof cell === 'function' && awaiting.has(cell);
+        },
+        moduleLink(cell) {
+            return moduleLink(cell);
+        },
+        moduleLinkRequests(cell) {
+            return moduleLinkRequests(cell);
         },
         compileExpression(code, origin) {
             const at = scriptExpression(code, REALM);
