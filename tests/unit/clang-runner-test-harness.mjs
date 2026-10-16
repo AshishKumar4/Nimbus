@@ -14,6 +14,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { ustarArchive, ustarPath } from './lib/ustar.mjs';
 
 export const USER = Object.freeze({
   uid: 1000,
@@ -45,40 +46,7 @@ export const SYSROOT_FILES = Object.freeze({
 
 /** A POSIX ustar archive of `files` (path → text), rootless like the shipped one. */
 export function buildUstar(files) {
-  const encoder = new TextEncoder();
-  const blocks = [];
-  for (const [path, text] of Object.entries(files)) {
-    const data = encoder.encode(text);
-    const header = new Uint8Array(512);
-    const put = (offset, value) => header.set(encoder.encode(value), offset);
-    // A path past ustar's 100-byte name goes in the 155-byte prefix too.
-    const split = path.length > 100 ? path.lastIndexOf('/', path.length - 1) : -1;
-    if (split > 0) {
-      put(345, path.slice(0, split));
-      put(0, path.slice(split + 1));
-    } else {
-      put(0, path);
-    }
-    put(100, '0000644\0');
-    put(108, '0000000\0');
-    put(116, '0000000\0');
-    put(124, data.length.toString(8).padStart(11, '0') + '\0');
-    put(136, '00000000000\0');
-    header[156] = 0x30;
-    put(257, 'ustar\0');
-    put(263, '00');
-    put(148, '        ');
-    let checksum = 0;
-    for (const byte of header) checksum += byte;
-    put(148, checksum.toString(8).padStart(6, '0') + '\0 ');
-    blocks.push(header, data, new Uint8Array((512 - (data.length % 512)) % 512));
-  }
-  blocks.push(new Uint8Array(1024));
-  const total = blocks.reduce((sum, block) => sum + block.length, 0);
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const block of blocks) { out.set(block, offset); offset += block.length; }
-  return out;
+  return ustarArchive(Object.entries(files).map(([path, text]) => ({ ...ustarPath(path), data: new TextEncoder().encode(text) })));
 }
 
 /**

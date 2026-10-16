@@ -4,32 +4,7 @@
 
 import { gzipSync } from 'node:zlib';
 import { decodeWriteBatchStream } from '../../../packages/platform/src/w7-frame.ts';
-
-function octal(value, width) {
-  return value.toString(8).padStart(width - 1, '0') + '\0';
-}
-
-function tarFile(name, text) {
-  const data = new TextEncoder().encode(text);
-  const header = new Uint8Array(512);
-  const write = (offset, value, width) => {
-    header.set(new TextEncoder().encode(value).subarray(0, width), offset);
-  };
-  write(0, name, 100);
-  write(100, octal(0o644, 8), 8);
-  write(108, octal(0, 8), 8);
-  write(116, octal(0, 8), 8);
-  write(124, octal(data.length, 12), 12);
-  write(136, octal(0, 12), 12);
-  header.fill(0x20, 148, 156);
-  header[156] = 0x30;
-  write(257, 'ustar\0', 6);
-  write(263, '00', 2);
-  write(148, octal(header.reduce((sum, byte) => sum + byte, 0), 8), 8);
-  const padded = new Uint8Array(Math.ceil(data.length / 512) * 512);
-  padded.set(data);
-  return [header, padded];
-}
+import { ustarArchive } from './ustar.mjs';
 
 /**
  * A gzipped tarball of `files`: path inside the archive (e.g.
@@ -38,17 +13,7 @@ function tarFile(name, text) {
  */
 export function packageTarball(files) {
   const entries = Array.isArray(files) ? files : Object.entries(files);
-  const parts = [
-    ...entries.flatMap(([name, text]) => tarFile(name, text)),
-    new Uint8Array(1024),
-  ];
-  const tar = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
-  let offset = 0;
-  for (const part of parts) {
-    tar.set(part, offset);
-    offset += part.length;
-  }
-  return new Uint8Array(gzipSync(tar));
+  return new Uint8Array(gzipSync(ustarArchive(entries.map(([name, text]) => ({ name, data: new TextEncoder().encode(text) })))));
 }
 
 /** The registry `dist.integrity` of `bytes`. */
