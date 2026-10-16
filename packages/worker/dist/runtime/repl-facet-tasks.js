@@ -70,6 +70,7 @@ export function rubyReplStepFacetFn(args, facetEnv) {
             binName: args.binName,
             cwd: started ? undefined : args.cwd,
             supervisorPid: args.supervisorPid,
+            cred: args.cred,
             outputControls: [{ key: 'incomplete', prefix: '__NIMBUS_INCOMPLETE__' }],
         });
         return {
