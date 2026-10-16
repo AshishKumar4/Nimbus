@@ -250,8 +250,9 @@ const SCENARIOS = {
     // triad, never grant group or other bits or a set-id bit.
     e.authority.rawVfs.confinePrincipal(1000, 'tmp/1000');
     await e.hold(OUT);
-    await e.write(`${OUT}/orphan.txt`, 'O');
-    const opened = await e.fs.open(`${OUT}/orphan.txt`, { write: true });
+    // Made by this open (decided where the process holds the subtree), its name gone.
+    const opened = await e.fs.open(`${OUT}/orphan.txt`, { write: true, create: true, truncate: true, mode: 0o644 });
+    await e.fs.write(opened.id, null, enc.encode('O'));
     await e.fs.unlink(`${OUT}/orphan.txt`);
     await e.fs.fchmod(opened.id, 0o600);
     await assert.rejects(e.fs.fchmod(opened.id, 0o640), { code: 'EPERM' }, 'a group bit granted');
