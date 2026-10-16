@@ -38,12 +38,16 @@ export declare class LoaderCodeRegistry {
     private readonly sources;
     /** Directories queued for removal (an owner's, or a dead incarnation's), until they are gone. */
     private readonly removing;
-    /** Content this incarnation's directories hold, by digest: its size, and how many directories hold it. */
-    private readonly content;
-    /** The bytes of that content, each counted once however many directories share it. */
+    /**
+     * The bytes of content this incarnation's directories hold, each digest
+     * counted once however many directories share it. The VFS is the only
+     * inventory: a digest is held while any of this incarnation's directories
+     * (an owner's, a source's, one queued for removal) has its file, and only
+     * puts in flight are kept here, transiently.
+     */
     private storeBytes;
-    /** New content being put, reserved against the cap until its put settles. */
-    private reserved;
+    /** Puts in flight, by digest: how many, and whether the content's charge is theirs (no directory held it). */
+    private readonly putting;
     private removals;
     constructor(engine: SqliteVFS);
     /** What the store holds now, for the session's diagnostics. */
@@ -52,7 +56,7 @@ export declare class LoaderCodeRegistry {
         sources: number;
         removing: number;
         storeBytes: number;
-        reservedBytes: number;
+        putting: number;
     };
     /** A new owner, staged, for `binding` of the build of wrangler `wranglerId`: its token. */
     mint(wranglerId: string, binding: string): string;
@@ -80,24 +84,33 @@ export declare class LoaderCodeRegistry {
      * One new file of `owner`, admitted against the caps before `make`
      * creates it: a creation of the same digest under way is joined (its
      * stream then unread, cancelled by the caller), and a failed one gives its
-     * reservation back. The session's cap counts content once: a put of a
-     * digest no directory holds reserves its size until it settles, and a file
-     * published is counted while any directory holds its digest. A copy from
-     * `from` is in flight on the donor too, so its removal waits for the copy.
+     * reservation back. The session's cap counts content once: a put charges
+     * its digest when no directory holds it and no put in flight has charged
+     * it, and keeps that charge until it settles (a directory holding it then
+     * keeps it counted; one that failed with nothing holding it gives it back).
+     * An adoption shares its donor's charge. A copy from `from` is in flight
+     * on the donor too, so its removal waits for the copy.
      */
     private create;
+    /** Whether a directory of this incarnation but `except` (a live owner's, a source's, or one queued for removal) has the file of `digest`. */
+    private holds;
     /** `operation`, which reads or writes `owner`'s directory: its removal waits for it. */
     private track;
     /** `token` closed, its reuse-source record dropped, its directory queued for removal once nothing reads or writes it. */
     private retire;
     /**
      * Remove `dir` once `owner`'s operations (all of them, however many come
-     * after this) have drained, with the VFS's paged recursive removal; once it
-     * is gone, each digest it held no other directory holds is counted no more.
-     * One that could not be removed stays queued, still counted, and every
-     * queued directory is tried again at each removal.
+     * after this) have drained, with the VFS's paged recursive removal. Its
+     * files are listed first, and in the same synchronous step that removes it
+     * each digest no other directory holds is counted no more, or, when a put
+     * of it is in flight, its charge passes to that put. One that could not be
+     * removed stays queued, still counted, and every queued directory is tried
+     * again at each removal. A dead incarnation's directories were never
+     * counted: their removal gives nothing back.
      */
     private queueRemoval;
+    /** `dir`'s files: their digest and size (a flat directory, at most OWNER_FILES). */
+    private files;
     /** Whether `dir` is gone. */
     private removeDir;
     /** The store's credentialed view: /.nimbus the kernel's (as every kernel store checks it), loader-code the store's own, checked at every use. */
