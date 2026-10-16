@@ -1147,8 +1147,16 @@ var __nimbusProcessFsModule = (() => {
     const { data: _data, ...call } = op.call;
     return { json: JSON.stringify({ type: "call", call }), data };
   }
+  function currentCall(call) {
+    if (call.call === "open" && call.access === void 0) {
+      const { read, ...open } = call;
+      return { ...open, access: read === true ? "readwrite" : "write" };
+    }
+    return call;
+  }
   function opOf(json, data) {
-    const op = JSON.parse(json);
+    const journaled = JSON.parse(json);
+    const op = journaled.type === "call" ? { type: "call", call: currentCall(journaled.call) } : journaled;
     if (data === null || data === void 0) return op;
     const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
     return { type: "call", call: { ...op.call, data: bytes } };
