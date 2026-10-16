@@ -1471,12 +1471,12 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         if (marks[at].mark <= answered) marks.splice(at, 1)[0].resolve();
       }
     };
-    const fail = (entry, errno, message) => {
+    const fail = (entry, errno, message, refused = false) => {
       settled(entry);
       const path = entry.paths[0] ?? "";
       if (entry.acknowledged) {
         failures.push({ op: entry.name, path, errno, message });
-        entry.resolve({ failed: { errno, message } });
+        entry.resolve({ failed: { errno, message, ...refused ? { refused: true } : {} } });
       } else {
         entry.reject(fsError(errno, message, path));
       }
@@ -1552,7 +1552,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           endedProcess(entries, error2, epoch?.writer ?? null);
           return;
         }
-        for (const entry of entries) fail(entry, "EIO", `the session gave this process no writer: ${error2 instanceof Error ? error2.message : String(error2)}`);
+        for (const entry of entries) fail(entry, "EIO", `the session gave this process no writer: ${error2 instanceof Error ? error2.message : String(error2)}`, true);
         forget(entries[entries.length - 1].jid, false);
         return;
       }
@@ -1569,7 +1569,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       } catch (error2) {
         const code = error2?.code;
         const errno = typeof code === "string" && /^E[A-Z0-9]+$/.test(code) ? code : "EIO";
-        for (const entry of entries) fail(entry, errno, `this write could not be sent: ${error2 instanceof Error ? error2.message : String(error2)}`);
+        for (const entry of entries) fail(entry, errno, `this write could not be sent: ${error2 instanceof Error ? error2.message : String(error2)}`, true);
         forget(entries[entries.length - 1].jid, false);
         epoch = null;
         for (const entry of queue) entry.seq = 0;
@@ -1624,7 +1624,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       for (const [index, entry] of entries.entries()) {
         if (refused !== null && entry.seq === refused.seq) {
           counters.refused++;
-          fail(entry, refused.errno, refused.message);
+          fail(entry, refused.errno, refused.message, true);
           if (writer === null) ack = Math.max(ack, entry.seq);
           continue;
         }

@@ -36,6 +36,7 @@
  */
 import type { FsTime, RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '../os-contracts.js';
 import type { ResidentEntry } from './resident-filesystem.js';
+import { type Provisional } from './provisional.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import { type ProcessFsClient, type ProcessFsJournal, type ProcessFsSession } from '../../_shared/process-fs-client.js';
 /** What the holder reads of the process's resident store (its own decisions aside). */
@@ -52,7 +53,7 @@ export interface HolderStore {
     children(key: string): RuntimeVfsDirEntry[] | undefined;
     /** As ResidentNamespace.content: the store's bytes of `key` at `revision`, where it holds them. */
     content?(key: string, revision: number): Uint8Array | undefined;
-    /** As ResidentNamespace.reserve and release: what a provisional decision's bytes take of the process's budget (no grant reserved them). */
+    /** As ResidentNamespace.reserve and release: what a provisional decision keeps takes of the process's budget (no grant reserved it). */
     reserve?(bytes: number): boolean;
     release?(bytes: number): void;
 }
@@ -74,10 +75,10 @@ export interface HolderOptions {
     readonly journal?: ProcessFsJournal;
     /**
      * Whether the caller deciding now cannot wait (ResidentFilesystem.synchronous):
-     * a change no held subtree decides is then decided here provisionally,
-     * answered from this view, logged, and the session's to refuse.
+     * what no held subtree decides is then its provisional decisions' (provisional.ts),
+     * and a change is counted toward taking a subtree only once one makes it.
      */
-    readonly provisional?: () => boolean;
+    readonly cannotWait?: () => boolean;
     /** The process's live umask, for what it makes provisionally (a held subtree's grant carries the session's). */
     readonly umask?: () => number;
 }
@@ -96,6 +97,8 @@ export type HolderAttrChange = {
 export interface DelegationHolder {
     /** The process's filesystem client: what the holder decided is logged into it. */
     readonly client: ProcessFsClient;
+    /** What a caller that cannot wait decides where no held subtree does: its descriptors are the holder's too (owns). */
+    readonly provisional: Provisional;
     /** What the process decided is at `key`: an entry, null (removed), or undefined (nothing decided). */
     entry(key: string): ResidentEntry | null | undefined;
     /** The names in `key`, as `base` lists them with what the process decided there. */
@@ -154,33 +157,20 @@ export interface DelegationHolder {
      * session is to decide it.
      */
     open(key: string, path: string, flags: RuntimeOpenFlags): RuntimeFileHandle | undefined;
-    /**
-     * A file opened by its number (`entry`, what `key` names), its access
-     * judged, nothing read and nothing changed: its descriptor reads and
-     * writes the file's own bytes, this process's where it has a cell for it,
-     * else the store's, as every descriptor of it and every call by name do.
-     */
-    openInode(key: string, path: string, flags: RuntimeOpenFlags, entry: ResidentEntry): RuntimeFileHandle;
-    /** The name and number of the file an inode descriptor reads by the store's bytes: what to fetch for it. Undefined for any other. */
-    inodeOf(handleId: number): {
-        key: string;
-        entry: ResidentEntry;
-    } | undefined;
+    /** As open, with room for `initial` bytes drawn before anything is decided (undefined where there is none). */
+    openFor(key: string, path: string, flags: RuntimeOpenFlags, initial: number): RuntimeFileHandle | undefined;
     /**
      * A whole file written by name (an open of `flags`, a write and a close),
      * decided here as `open` decides: its revision, or undefined when the
-     * session must write it. What it takes is judged before anything is
-     * decided, so a refusal (ENOSPC, a provisional decision's ENOMEM) leaves
-     * the name as it was.
+     * session must write it. Its bytes' room is drawn before anything is
+     * decided, so no name is made for bytes that do not fit.
      */
     writeFile(key: string, path: string, bytes: Uint8Array, flags: RuntimeOpenFlags): number | undefined;
-    /** Undefined where its bytes are the store's and it does not hold them (an inode descriptor's: inodeOf). */
+    /** Undefined where its bytes are the store's and it does not hold them (a provisional descriptor's: Provisional.inodeOf). */
     read(handleId: number, offset: number | null, length: number): Uint8Array | undefined;
-    /** Undefined where the bytes it keeps are the store's and it does not hold them (an inode descriptor's: inodeOf). */
-    write(handleId: number, offset: number | null, bytes: Uint8Array): number | undefined;
+    write(handleId: number, offset: number | null, bytes: Uint8Array): number;
     seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number;
-    /** False where the bytes it keeps are the store's and it does not hold them (an inode descriptor's: inodeOf). */
-    ftruncate(handleId: number, size: number): boolean;
+    ftruncate(handleId: number, size: number): void;
     fstat(handleId: number): ResidentEntry;
     close(handleId: number): void;
     /** The name a descriptor of the holder's writes, now. */
@@ -224,10 +214,6 @@ export interface DelegationHolder {
     mkdir(key: string, path: string, mode: number, umask?: number): boolean;
     /** Decide an unlink of `key` (a file or link): true when decided here. */
     unlink(key: string, path: string): boolean;
-    /** rmdir by name, for a caller that cannot wait (HolderOptions.provisional): false when the session must say. */
-    rmdir(key: string, path: string): boolean;
-    /** symlink by name, for a caller that cannot wait (HolderOptions.provisional): false when the session must say. */
-    symlink(key: string, path: string, target: string): boolean;
     /** Decide a rename of `from` to `to` (both resolved): true when decided here. */
     rename(from: string, to: string, path: string): boolean;
     /** Decide an attribute change of `key`: true when decided here. */

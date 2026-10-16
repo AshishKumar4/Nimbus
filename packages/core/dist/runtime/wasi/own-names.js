@@ -1,12 +1,10 @@
 /**
- * What a process changed by name that its view may not have yet (VFS-9 B
- * stage 3): the entries it decided (null: removed), and the names it made
- * and removed in each directory, laid over the view's. Per name, its logged
- * ops unanswered and how many barriers had begun when the last was
- * answered: outside a subtree the process holds, a name retires once a
- * barrier begun after that lands (retire), the view having the session's
- * version of it then. A refused op's name retires at once: the session never
- * applied it, and the view's row is the session's.
+ * What a process decided by name in the subtrees it holds (VFS-9 B stage 3):
+ * the entries it decided (null: removed), and the names it made and removed
+ * in each directory, laid over the view's. They stand while it holds the
+ * subtree; once it is given back, everything decided there sent, they retire
+ * at the next barrier that lands (released, retire), the view having the
+ * session's version of them then.
  */
 function parentKey(key) {
     const at = key.lastIndexOf('/');
@@ -17,10 +15,6 @@ function nameOf(key) {
 }
 function within(key, root) {
     return key === root || key.startsWith(`${root}/`);
-}
-/** The names an op changes. */
-function keysOf(op) {
-    return op.type === 'rename' ? [op.from, op.to] : op.type === 'call' ? [op.call.path] : [op.path];
 }
 export function ownNames(options) {
     const decided = new Map();
@@ -125,30 +119,6 @@ export function ownNames(options) {
                 own.set(moved(key), value);
                 if (settling.delete(key))
                     settling.add(moved(key));
-            }
-        },
-        logged: (op) => {
-            const keys = keysOf(op);
-            for (const key of keys) {
-                const record = own.get(key);
-                if (record === undefined)
-                    own.set(key, { pending: 1, settled: barriers });
-                else
-                    record.pending++;
-            }
-            return keys;
-        },
-        answered: (keys, refused) => {
-            for (const key of keys) {
-                const record = own.get(key);
-                if (record === undefined)
-                    continue;
-                record.pending--;
-                record.settled = barriers;
-                if (refused)
-                    forget(key);
-                else if (record.pending === 0 && !options.held(key))
-                    settling.add(key);
             }
         },
         released: (root) => {

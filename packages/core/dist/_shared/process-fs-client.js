@@ -322,12 +322,13 @@ export function processFsClient(options) {
                 marks.splice(at, 1)[0].resolve();
         }
     };
-    const fail = (entry, errno, message) => {
+    /** `entry` failed: `refused` where the session never applied it (its verdict, or it was never sent); else its fate is unknown. */
+    const fail = (entry, errno, message, refused = false) => {
         settled(entry);
         const path = entry.paths[0] ?? '';
         if (entry.acknowledged) {
             failures.push({ op: entry.name, path, errno, message });
-            entry.resolve({ failed: { errno, message } });
+            entry.resolve({ failed: { errno, message, ...(refused ? { refused: true } : {}) } });
         }
         else {
             entry.reject(fsError(errno, message, path));
@@ -438,7 +439,7 @@ export function processFsClient(options) {
                 return;
             }
             for (const entry of entries)
-                fail(entry, 'EIO', `the session gave this process no writer: ${error instanceof Error ? error.message : String(error)}`);
+                fail(entry, 'EIO', `the session gave this process no writer: ${error instanceof Error ? error.message : String(error)}`, true);
             forget(entries[entries.length - 1].jid, false);
             return;
         }
@@ -462,7 +463,7 @@ export function processFsClient(options) {
             const code = error?.code;
             const errno = typeof code === 'string' && /^E[A-Z0-9]+$/.test(code) ? code : 'EIO';
             for (const entry of entries)
-                fail(entry, errno, `this write could not be sent: ${error instanceof Error ? error.message : String(error)}`);
+                fail(entry, errno, `this write could not be sent: ${error instanceof Error ? error.message : String(error)}`, true);
             forget(entries[entries.length - 1].jid, false);
             // An epoch numbers ops by their place in the log: dropped, these leave
             // a gap the session would refuse what follows for. What follows is
@@ -528,7 +529,7 @@ export function processFsClient(options) {
         for (const [index, entry] of entries.entries()) {
             if (refused !== null && entry.seq === refused.seq) {
                 counters.refused++;
-                fail(entry, refused.errno, refused.message);
+                fail(entry, refused.errno, refused.message, true);
                 if (writer === null)
                     ack = Math.max(ack, entry.seq);
                 continue;

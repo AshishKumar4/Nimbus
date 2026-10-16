@@ -127,10 +127,15 @@ export interface ProcessFsAnswer {
         before: number;
         after: number;
     };
-    /** An acknowledged op the session refused or never answered (it is reported, never thrown). */
+    /**
+     * An acknowledged op the session refused or never answered (it is
+     * reported, never thrown): `refused` where it never applied it (its
+     * verdict, or it was never sent); else its fate is unknown.
+     */
     failed?: {
         errno: string;
         message: string;
+        refused?: true;
     };
 }
 /** An op the program was told succeeded that the session refused, or whose fate it could not answer. */
