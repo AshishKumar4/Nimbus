@@ -3,8 +3,6 @@ import { parsePipRequirementsFile, parsePipRequirementsLine, RequirementsSyntaxE
 import { z } from 'zod/v4';
 import { errorText } from '../_shared/error-text.js';
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath } from '../vfs/path.js';
-import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
-import { isRuntimePythonPackageArtifactMetadata, } from './runtime-manifest.js';
 /** Where `pip install` puts packages for the user whose home is `home`. */
 export function pythonSitePackages(home) {
     return `${normalizeVfsPath(home)}/.nimbus-python/site-packages`;
@@ -120,25 +118,12 @@ const PypiJsonSchema = z.object({
     releases: z.record(z.string(), z.array(PypiFileSchema)).optional(),
     urls: z.array(PypiFileSchema).optional(),
 });
-const PyodideLockPackageSchema = z.object({
-    depends: z.array(z.string()).default([]),
-    file_name: z.string().min(1),
-    imports: z.array(z.string()).default([]),
-    install_dir: z.string().optional(),
-    name: z.string().min(1),
-    package_type: z.string().optional(),
-    sha256: z.string().regex(/^[a-f0-9]{64}$/),
-    version: z.string().min(1),
-});
-const PyodideLockfileSchema = z.object({
-    info: z.object({
-        abi_version: z.string().min(1),
-        arch: z.string().min(1),
-        platform: z.string().min(1),
-        python: z.string().min(1),
-    }),
-    packages: z.record(z.string(), PyodideLockPackageSchema),
-});
+/** PEP 508's environment markers, every name but `extra`. */
+const PYTHON_MARKER_NAMES = [
+    'implementation_name', 'implementation_version', 'os_name', 'platform_machine', 'platform_release',
+    'platform_system', 'platform_version', 'python_full_version', 'platform_python_implementation',
+    'python_version', 'sys_platform',
+];
 /**
  * PyPI's answers, by network and request, kept as pip's HTTP cache
  * (cachecontrol) keeps them: each for its response's max-age, 900 s for
@@ -160,7 +145,7 @@ export async function buildPipInvocation(argv, binName, cwd, vfs, runtimeContext
     if (wantsVersion) {
         return {
             mode: 'pip',
-            code: 'print("pip 24.3.1 (Nimbus package bridge for CPython 3.13, wasm32-wasi)")',
+            code: `print(${JSON.stringify(`pip 24.3.1 (Nimbus package bridge for CPython ${runtimeContext.markers.python_version}, wasm32-wasi)`)})`,
             exitCode: 0,
         };
     }
@@ -170,7 +155,6 @@ export async function buildPipInvocation(argv, binName, cwd, vfs, runtimeContext
             code: [
                 `print(${JSON.stringify(`Usage: ${binName} install <package> [package...]`)})`,
                 'print("Nimbus pip installs PyPI pure wheels, curated pure source artifacts, and local pure wheels.")',
-                'print("Compiled Pyodide wheels require startup-loaded Nimbus package artifacts.")',
                 'print("Native Linux wheels and request-time extension modules are rejected before install.")',
             ].join('\n'),
             exitCode: 0,
@@ -193,7 +177,6 @@ export async function buildPipInvocation(argv, binName, cwd, vfs, runtimeContext
         mode: 'pip',
         code: buildPipInstallCode(plan, pythonSitePackages(runtimeContext.home)),
         exitCode: 0,
-        pyodidePackages: plan.pyodidePackages,
     };
 }
 async function buildPipInstallPlan(argv, cwd, vfs, runtimeContext) {
@@ -201,13 +184,14 @@ async function buildPipInstallPlan(argv, cwd, vfs, runtimeContext) {
     const constraints = new Map();
     const localWheels = [];
     const displayPackages = [];
+    const { markers } = runtimeContext;
     let includeDependencies = true;
     const addRequirement = async (requirement, baseDir, source) => {
         if (requirement.type === 'RequirementsFile') {
-            return (await addRequirementsFile(requirement.path, baseDir, vfs, roots, constraints, displayPackages, 0));
+            return (await addRequirementsFile(requirement.path, baseDir, vfs, markers, roots, constraints, displayPackages, 0));
         }
         if (requirement.type === 'ConstraintsFile') {
-            return (await addConstraintsFile(requirement.path, baseDir, vfs, constraints, 0));
+            return (await addConstraintsFile(requirement.path, baseDir, vfs, markers, constraints, 0));
         }
         if (requirement.type === 'ProjectURL') {
             const local = (await localWheelArtifact(requirement.url, baseDir, vfs));
@@ -223,7 +207,7 @@ async function buildPipInstallPlan(argv, cwd, vfs, runtimeContext) {
             }
             return `${source}: URL requirements need a local pure wheel path`;
         }
-        if (!markerApplies(requirement.environmentMarkerTree, requirement.extras || []))
+        if (!markerApplies(requirement.environmentMarkerTree, requirement.extras || [], markers))
             return null;
         roots.push(projectRequirementToPackageRequirement(requirement));
         displayPackages.push(formatDisplayRequirement(requirement));
@@ -235,14 +219,14 @@ async function buildPipInstallPlan(argv, cwd, vfs, runtimeContext) {
             const reqPath = argv[i + 1];
             if (!reqPath)
                 return failedPlan(`${arg}: missing requirements file`, 2);
-            const err = (await addRequirementsFile(reqPath, cwd, vfs, roots, constraints, displayPackages, 0));
+            const err = (await addRequirementsFile(reqPath, cwd, vfs, markers, roots, constraints, displayPackages, 0));
             if (err)
                 return failedPlan(err, 1);
             i++;
             continue;
         }
         if (arg.startsWith('--requirement=')) {
-            const err = (await addRequirementsFile(arg.slice('--requirement='.length), cwd, vfs, roots, constraints, displayPackages, 0));
+            const err = (await addRequirementsFile(arg.slice('--requirement='.length), cwd, vfs, markers, roots, constraints, displayPackages, 0));
             if (err)
                 return failedPlan(err, 1);
             continue;
@@ -251,14 +235,14 @@ async function buildPipInstallPlan(argv, cwd, vfs, runtimeContext) {
             const constraintPath = argv[i + 1];
             if (!constraintPath)
                 return failedPlan(`${arg}: missing constraints file`, 2);
-            const err = (await addConstraintsFile(constraintPath, cwd, vfs, constraints, 0));
+            const err = (await addConstraintsFile(constraintPath, cwd, vfs, markers, constraints, 0));
             if (err)
                 return failedPlan(err, 1);
             i++;
             continue;
         }
         if (arg.startsWith('--constraint=')) {
-            const err = (await addConstraintsFile(arg.slice('--constraint='.length), cwd, vfs, constraints, 0));
+            const err = (await addConstraintsFile(arg.slice('--constraint='.length), cwd, vfs, markers, constraints, 0));
             if (err)
                 return failedPlan(err, 1);
             continue;
@@ -307,34 +291,25 @@ async function buildPipInstallPlan(argv, cwd, vfs, runtimeContext) {
         return failedPlan(resolved.error, 1);
     const remoteWheels = [];
     const sourcePackages = [];
-    const pyodidePackages = [];
     const variantPackages = [];
     for (const pkg of resolved.packages.values()) {
-        if (pkg.artifact.kind === 'remote-wheel') {
+        if (pkg.artifact.kind === 'remote-wheel')
             remoteWheels.push(pkg.artifact);
-        }
-        else if (pkg.artifact.kind === 'source') {
+        else if (pkg.artifact.kind === 'source')
             sourcePackages.push(pkg.artifact);
-        }
-        else if (pkg.artifact.kind === 'variant') {
+        else
             variantPackages.push(pkg.artifact);
-        }
-        else {
-            pyodidePackages.push(pkg.artifact.artifact);
-        }
     }
     const installLabels = [
         ...remoteWheels.map((wheel) => wheel.canonicalName),
         ...sourcePackages.map((source) => source.canonicalName),
         ...variantPackages.map((variant) => variant.canonicalName),
-        ...pyodidePackages.map((artifact) => artifact.packageName),
         ...localWheels.map((wheel) => wheel.displayName),
     ];
     return {
         remoteWheels,
         sourcePackages,
         variantPackages,
-        pyodidePackages,
         localWheels,
         displayPackages: installLabels.length > 0 ? installLabels : displayPackages,
         exitCode: 0,
@@ -342,39 +317,48 @@ async function buildPipInstallPlan(argv, cwd, vfs, runtimeContext) {
 }
 function failedPlan(error, exitCode) {
     return {
-        remoteWheels: [], sourcePackages: [], variantPackages: [], pyodidePackages: [],
+        remoteWheels: [], sourcePackages: [], variantPackages: [],
         localWheels: [], displayPackages: [], error, exitCode,
     };
 }
-async function addRequirementsFile(reqPath, baseDir, vfs, requirements, constraints, displayPackages, depth) {
+/**
+ * The lines of the requirements or constraints file `reqPath` (from
+ * `baseDir`), at include `depth`, and the directory its own includes
+ * resolve from; or why it cannot be read.
+ */
+async function readRequirementsFile(kind, reqPath, baseDir, vfs, depth) {
     if (depth > 8)
-        return 'requirements nesting exceeded 8 files';
+        return { error: `${kind} nesting exceeded 8 files` };
     const abs = resolveVfsPath(reqPath, baseDir);
     const probe = (await probeVfsPath(vfs, abs));
     if ('error' in probe)
-        return `cannot read requirements file ${reqPath}: ${probe.error}`;
+        return { error: `cannot read ${kind} file ${reqPath}: ${probe.error}` };
     if (!probe.exists)
-        return `requirements file not found: ${reqPath}`;
+        return { error: `${kind} file not found: ${reqPath}` };
     const text = (await readVfsText(vfs, abs));
     if ('error' in text)
-        return `cannot read requirements file ${reqPath}: ${text.error}`;
-    let parsed;
+        return { error: `cannot read ${kind} file ${reqPath}: ${text.error}` };
     try {
-        parsed = parsePipRequirementsFile(text.text);
+        return { lines: parsePipRequirementsFile(text.text), dir: parentVfsPath(abs) };
     }
     catch (e) {
-        return e instanceof RequirementsSyntaxError ? e.message : `invalid requirements file: ${reqPath}`;
+        return { error: e instanceof RequirementsSyntaxError ? e.message : `invalid ${kind} file: ${reqPath}` };
     }
-    const nextBaseDir = parentVfsPath(abs);
-    for (const requirement of parsed) {
+}
+/** A requirements file's roots and display labels; its -c includes are constraints. */
+async function addRequirementsFile(reqPath, baseDir, vfs, markers, requirements, constraints, displayPackages, depth) {
+    const file = await readRequirementsFile('requirements', reqPath, baseDir, vfs, depth);
+    if ('error' in file)
+        return file.error;
+    for (const requirement of file.lines) {
         if (requirement.type === 'RequirementsFile') {
-            const err = (await addRequirementsFile(requirement.path, nextBaseDir, vfs, requirements, constraints, displayPackages, depth + 1));
+            const err = (await addRequirementsFile(requirement.path, file.dir, vfs, markers, requirements, constraints, displayPackages, depth + 1));
             if (err)
                 return err;
             continue;
         }
         if (requirement.type === 'ConstraintsFile') {
-            const err = (await addConstraintsFile(requirement.path, nextBaseDir, vfs, constraints, depth + 1));
+            const err = (await addConstraintsFile(requirement.path, file.dir, vfs, markers, constraints, depth + 1));
             if (err)
                 return err;
             continue;
@@ -382,43 +366,28 @@ async function addRequirementsFile(reqPath, baseDir, vfs, requirements, constrai
         if (requirement.type === 'ProjectURL') {
             return `${reqPath}: URL requirements need a Nimbus wheel artifact or local pure wheel path`;
         }
-        if (!markerApplies(requirement.environmentMarkerTree, requirement.extras || []))
+        if (!markerApplies(requirement.environmentMarkerTree, requirement.extras || [], markers))
             continue;
         requirements.push(projectRequirementToPackageRequirement(requirement));
         displayPackages.push(formatDisplayRequirement(requirement));
     }
     return null;
 }
-async function addConstraintsFile(reqPath, baseDir, vfs, constraints, depth) {
-    if (depth > 8)
-        return 'constraints nesting exceeded 8 files';
-    const abs = resolveVfsPath(reqPath, baseDir);
-    const probe = (await probeVfsPath(vfs, abs));
-    if ('error' in probe)
-        return `cannot read constraints file ${reqPath}: ${probe.error}`;
-    if (!probe.exists)
-        return `constraints file not found: ${reqPath}`;
-    const text = (await readVfsText(vfs, abs));
-    if ('error' in text)
-        return `cannot read constraints file ${reqPath}: ${text.error}`;
-    let parsed;
-    try {
-        parsed = parsePipRequirementsFile(text.text);
-    }
-    catch (e) {
-        return e instanceof RequirementsSyntaxError ? e.message : `invalid constraints file: ${reqPath}`;
-    }
-    const nextBaseDir = parentVfsPath(abs);
-    for (const requirement of parsed) {
+/** A constraints file's version specifiers by package; everything it includes is constraints too. */
+async function addConstraintsFile(reqPath, baseDir, vfs, markers, constraints, depth) {
+    const file = await readRequirementsFile('constraints', reqPath, baseDir, vfs, depth);
+    if ('error' in file)
+        return file.error;
+    for (const requirement of file.lines) {
         if (requirement.type === 'RequirementsFile' || requirement.type === 'ConstraintsFile') {
-            const err = (await addConstraintsFile(requirement.path, nextBaseDir, vfs, constraints, depth + 1));
+            const err = (await addConstraintsFile(requirement.path, file.dir, vfs, markers, constraints, depth + 1));
             if (err)
                 return err;
             continue;
         }
         if (requirement.type === 'ProjectURL')
             return `${reqPath}: URL constraints are not supported`;
-        if (!markerApplies(requirement.environmentMarkerTree, requirement.extras || []))
+        if (!markerApplies(requirement.environmentMarkerTree, requirement.extras || [], markers))
             continue;
         const name = canonicalPackageName(requirement.name);
         constraints.set(name, [...(constraints.get(name) || []), ...versionSpecifiers(requirement.versionSpec || [])]);
@@ -460,6 +429,8 @@ async function resolveRequirements(roots, constraints, includeDependencies, runt
     for (const root of roots)
         add(root);
     const resolved = new Map();
+    /** Each package's dependencies, as last read: at its version, with its extras. A request that changes neither adds none. */
+    const expanded = new Map();
     while (queue.length > 0) {
         const name = queue.shift();
         const req = requirements.get(name);
@@ -469,21 +440,17 @@ async function resolveRequirements(roots, constraints, includeDependencies, runt
         }, runtimeContext);
         if ('error' in resolvedPkg)
             return resolvedPkg;
-        const previous = resolved.get(name);
         resolved.set(name, resolvedPkg.package);
-        if (previous && previous.version === resolvedPkg.package.version)
+        const expansion = JSON.stringify([resolvedPkg.package.version, [...req.extras].sort()]);
+        if (expanded.get(name) === expansion)
             continue;
+        expanded.set(name, expansion);
         if (!includeDependencies)
             continue;
-        const dependencyLines = resolvedPkg.package.artifact.kind === 'pyodide-package'
-            ? resolvedPkg.package.artifact.artifact.dependencies
-            : null;
-        const metadata = dependencyLines
-            ? null
-            : await fetchPypiJson(runtimeContext.network, name, resolvedPkg.package.version);
-        if (metadata && 'error' in metadata)
+        const metadata = await fetchPypiJson(runtimeContext.network, name, resolvedPkg.package.version);
+        if ('error' in metadata)
             return metadata;
-        for (const depLine of dependencyLines ?? metadata?.data.info.requires_dist ?? []) {
+        for (const depLine of metadata.data.info.requires_dist ?? []) {
             let dep;
             try {
                 dep = parsePipRequirementsLine(depLine);
@@ -496,7 +463,7 @@ async function resolveRequirements(roots, constraints, includeDependencies, runt
             if (dep.type !== 'ProjectName') {
                 return { error: `${name} dependency '${depLine}' needs a Nimbus package artifact` };
             }
-            if (!markerApplies(dep.environmentMarkerTree, req.extras))
+            if (!markerApplies(dep.environmentMarkerTree, req.extras, runtimeContext.markers))
                 continue;
             add(projectRequirementToPackageRequirement(dep));
         }
@@ -504,30 +471,6 @@ async function resolveRequirements(roots, constraints, includeDependencies, runt
     return { packages: resolved };
 }
 async function resolveOneRequirement(req, runtimeContext) {
-    const pyodidePackage = findPyodideCompiledPackage(req, runtimeContext);
-    if (pyodidePackage && 'error' in pyodidePackage)
-        return pyodidePackage;
-    if (pyodidePackage) {
-        const runtimeArtifact = findRuntimePythonPackageArtifact(pyodidePackage, runtimeContext.runtimeArtifacts || []);
-        if (runtimeArtifact) {
-            return {
-                package: {
-                    name: req.name,
-                    version: runtimeArtifact.version,
-                    artifact: {
-                        kind: 'pyodide-package',
-                        packageName: runtimeArtifact.packageName,
-                        version: runtimeArtifact.version,
-                        artifact: runtimeArtifact,
-                    },
-                },
-            };
-        }
-        const sourcePolicy = PIP_SOURCE_PACKAGES[req.name];
-        if (!sourcePolicy)
-            return { error: pyodideCompiledPackageDiagnostic(pyodidePackage) };
-        return resolveSourcePolicy(req, sourcePolicy);
-    }
     const variantPolicy = PIP_VARIANT_PACKAGES[canonicalPackageName(req.name)];
     if (variantPolicy) {
         const range = specifierRange(req.specs);
@@ -671,26 +614,26 @@ function formatDisplayRequirement(requirement) {
     const extras = requirement.extras?.length ? `[${requirement.extras.join(',')}]` : '';
     return `${canonicalPackageName(requirement.name)}${extras}${specifierRange(versionSpecifiers(requirement.versionSpec || []))}`;
 }
-function markerApplies(marker, extras) {
+function markerApplies(marker, extras, markers) {
     if (!marker)
         return true;
     const candidates = extras.length > 0 ? extras : [''];
-    return candidates.some((extra) => evaluateMarker(marker, extra));
+    return candidates.some((extra) => evaluateMarker(marker, extra, markers));
 }
-function evaluateMarker(marker, extra) {
+function evaluateMarker(marker, extra, markers) {
     if (isMarkerNode(marker)) {
-        const left = evaluateMarker(marker.left, extra);
-        const right = evaluateMarker(marker.right, extra);
+        const left = evaluateMarker(marker.left, extra, markers);
+        const right = evaluateMarker(marker.right, extra, markers);
         return marker.operator === 'and' ? left && right : left || right;
     }
-    return evaluateMarkerLeaf(marker, extra);
+    return evaluateMarkerLeaf(marker, extra, markers);
 }
 function isMarkerNode(marker) {
     return marker.operator === 'and' || marker.operator === 'or';
 }
-function evaluateMarkerLeaf(marker, extra) {
-    const left = markerValue(marker.left, extra);
-    const right = markerValue(marker.right, extra);
+function evaluateMarkerLeaf(marker, extra, markers) {
+    const left = markerValue(marker.left, extra, markers);
+    const right = markerValue(marker.right, extra, markers);
     if (marker.operator === 'in')
         return right.includes(left);
     if (marker.operator === 'not in')
@@ -715,32 +658,11 @@ function isVersionMarkerValue(value) {
         || value === 'python_full_version'
         || value === 'implementation_version';
 }
-function markerValue(value, extra) {
-    if (value === 'python_version')
-        return '3.13';
-    if (value === 'python_full_version')
-        return '3.13.2';
-    if (value === 'os_name')
-        return 'posix';
-    if (value === 'sys_platform')
-        return 'emscripten';
-    if (value === 'platform_release')
-        return 'nimbus';
-    if (value === 'platform_system')
-        return 'Emscripten';
-    if (value === 'platform_version')
-        return 'nimbus';
-    if (value === 'platform_machine')
-        return 'wasm32';
-    if (value === 'platform_python_implementation')
-        return 'CPython';
-    if (value === 'implementation_name')
-        return 'cpython';
-    if (value === 'implementation_version')
-        return '3.13.2';
+function markerValue(value, extra, markers) {
     if (value === 'extra')
         return extra;
-    return unquotePythonString(value);
+    const name = PYTHON_MARKER_NAMES.find((marker) => marker === value);
+    return name === undefined ? unquotePythonString(value) : markers[name];
 }
 function unquotePythonString(value) {
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
@@ -799,64 +721,14 @@ function validateWheelFileName(fileName) {
         return `native Linux wheel '${fileName}' cannot run in Nimbus; install a pure wheel or a Nimbus ABI artifact`;
     }
     if (isPyodideExtensionWheel(fileName)) {
-        return `Pyodide/Emscripten extension wheel '${fileName}' needs a startup-loaded Nimbus Python package artifact; request-time extension modules cannot run in Workers`;
+        return `Pyodide/Emscripten extension wheel '${fileName}' cannot run in Nimbus' CPython (wasm32-wasi); install a pure wheel`;
     }
     return `wheel '${fileName}' targets an unsupported ABI; Nimbus pip supports pure Python wheels and Nimbus ABI artifacts`;
 }
-function findPyodideCompiledPackage(req, runtimeContext) {
-    const lockfile = parsePyodideLockfile(runtimeContext.pyodideLockfileText);
-    if (lockfile && 'error' in lockfile)
-        return lockfile;
-    if (!lockfile)
-        return null;
-    const canonical = canonicalPackageName(req.name);
-    const entry = Object.values(lockfile.data.packages).find((pkg) => canonicalPackageName(pkg.name) === canonical);
-    if (!entry || isPurePythonWheel(entry.file_name))
-        return null;
-    const range = specifierRange(req.specs);
-    if (range && !pep440Satisfies(entry.version, range))
-        return null;
-    if (!isPyodideExtensionWheel(entry.file_name))
-        return null;
-    return {
-        ...entry,
-        canonicalName: canonical,
-        abi: PYODIDE_PACKAGE_ABI,
-    };
-}
-function parsePyodideLockfile(lockfileText) {
-    if (!lockfileText)
-        return null;
-    try {
-        return { data: PyodideLockfileSchema.parse(JSON.parse(lockfileText)) };
-    }
-    catch (e) {
-        return {
-            error: `installed Pyodide lockfile is invalid: ${e instanceof Error ? e.message : String(e)}`,
-        };
-    }
-}
-function findRuntimePythonPackageArtifact(pkg, artifacts) {
-    return artifacts.find((artifact) => {
-        if (!isRuntimePythonPackageArtifactMetadata(artifact))
-            return false;
-        return canonicalPackageName(artifact.packageName) === pkg.canonicalName
-            && artifact.version === pkg.version
-            && artifact.wheelFileName === pkg.file_name
-            && artifact.wheelSha256 === pkg.sha256
-            && artifact.loadMode === 'startup-module';
-    }) ?? null;
-}
-function pyodideCompiledPackageDiagnostic(pkg) {
-    return `${pkg.canonicalName}==${pkg.version} is available as a Pyodide/Emscripten wheel (${pkg.file_name}), ` +
-        `but Nimbus needs a startup-loaded Python package artifact for compiled modules. ` +
-        `Request-time WebAssembly extension loading is not supported in Workers.`;
-}
 function pyodideExtensionWheelDiagnostic(name, version, filenames) {
     const wheel = filenames.find(isPyodideExtensionWheel) || 'Pyodide/Emscripten wheel';
-    return `${canonicalPackageName(name)}==${version} ships a Pyodide/Emscripten extension wheel (${wheel}); ` +
-        `Nimbus needs a startup-loaded Python package artifact for compiled modules. ` +
-        `Request-time WebAssembly extension loading is not supported in Workers.`;
+    return `${canonicalPackageName(name)}==${version} ships a Pyodide/Emscripten extension wheel (${wheel}), ` +
+        `which cannot run in Nimbus' CPython (wasm32-wasi), and no pure wheel.`;
 }
 function isPurePythonWheel(fileName) {
     const tags = wheelTags(fileName);
@@ -893,7 +765,6 @@ function buildPipInstallCode(plan, sitePackages) {
     return [
         'import hashlib',
         'import io',
-        'import json',
         'import os',
         'import shutil',
         'import sys',
@@ -905,10 +776,8 @@ function buildPipInstallCode(plan, sitePackages) {
         `local_wheels = ${JSON.stringify(plan.localWheels)}`,
         `source_packages = ${JSON.stringify(plan.sourcePackages)}`,
         `variant_packages = ${JSON.stringify(plan.variantPackages)}`,
-        `pyodide_packages = ${JSON.stringify(plan.pyodidePackages)}`,
         `display_packages = ${JSON.stringify(plan.displayPackages)}`,
         `target_site_packages = ${JSON.stringify(`/${sitePackages}`)}`,
-        `pyodide_manifest_path = ${JSON.stringify(`/${sitePackages}/.nimbus-pyodide-packages.json`)}`,
         'unsupported_extension_suffixes = (".so", ".pyd", ".dll", ".dylib")',
         'os.makedirs(target_site_packages, exist_ok=True)',
         'if target_site_packages not in sys.path:',
@@ -924,48 +793,20 @@ function buildPipInstallCode(plan, sitePackages) {
         '        f.write("Wheel-Version: 1.0\\nGenerator: Nimbus pip\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n")',
         '    with open(os.path.join(dist_info, "RECORD"), "w", encoding="utf-8") as f:',
         '        f.write("")',
-        'def _nimbus_load_pyodide_manifest():',
-        '    try:',
-        '        with open(pyodide_manifest_path, "r", encoding="utf-8") as f:',
-        '            data = json.load(f)',
-        '        if data.get("version") == 1 and isinstance(data.get("packages"), list):',
-        '            return data',
-        '    except Exception:',
-        '        pass',
-        '    return {"version": 1, "packages": []}',
-        'def _nimbus_write_pyodide_manifest(data):',
-        '    os.makedirs(os.path.dirname(pyodide_manifest_path), exist_ok=True)',
-        '    tmp = pyodide_manifest_path + ".tmp"',
-        '    with open(tmp, "w", encoding="utf-8") as f:',
-        '        json.dump(data, f, sort_keys=True)',
-        '    os.replace(tmp, pyodide_manifest_path)',
-        'def _nimbus_record_pyodide_packages(policies):',
-        '    if not policies:',
-        '        return',
-        '    manifest = _nimbus_load_pyodide_manifest()',
-        '    packages = {p.get("id"): p for p in manifest.get("packages", []) if isinstance(p, dict) and p.get("id")}',
-        '    for policy in policies:',
-        '        packages[policy["id"]] = policy',
-        '    manifest["packages"] = sorted(packages.values(), key=lambda p: p["id"])',
-        '    _nimbus_write_pyodide_manifest(manifest)',
-        'def _nimbus_allowed_extensions(policy):',
-        '    return {module["path"] for module in policy.get("extensionModules", [])}',
-        'def _nimbus_assert_supported_member(rel, allowed_extensions=None):',
-        '    allowed_extensions = allowed_extensions or set()',
+        'def _nimbus_assert_supported_member(rel):',
         '    leaf = rel.rsplit("/", 1)[-1]',
-        '    if leaf.endswith(unsupported_extension_suffixes) and rel not in allowed_extensions:',
+        '    if leaf.endswith(unsupported_extension_suffixes):',
         '        raise RuntimeError("unsupported extension artifact in wheel: " + rel)',
         'def _nimbus_safe_target(rel):',
         '    target = os.path.normpath(os.path.join(target_site_packages, rel))',
         '    if not target.startswith(target_site_packages + os.sep):',
         '        raise RuntimeError("unsafe wheel path: " + rel)',
         '    return target',
-        'def _nimbus_install_wheel_bytes(data, allowed_extensions=None):',
-        '    allowed_extensions = allowed_extensions or set()',
+        'def _nimbus_install_wheel_bytes(data):',
         '    with zipfile.ZipFile(io.BytesIO(data)) as wheel:',
         '        infos = [member for member in wheel.infolist() if not member.is_dir()]',
         '        for member in infos:',
-        '            _nimbus_assert_supported_member(member.filename, allowed_extensions)',
+        '            _nimbus_assert_supported_member(member.filename)',
         '        for member in infos:',
         '            target = _nimbus_safe_target(member.filename)',
         '            os.makedirs(os.path.dirname(target), exist_ok=True)',
@@ -995,16 +836,6 @@ function buildPipInstallCode(plan, sitePackages) {
         '    if digest != policy["sha256"]:',
         '        raise RuntimeError(policy["canonicalName"] + " wheel hash mismatch")',
         '    _nimbus_install_wheel_bytes(data)',
-        'def _nimbus_install_pyodide_package(policy):',
-        '    metadata_path = os.path.join(_nimbus_dist_info_dir(policy["packageName"], policy["version"]), "METADATA")',
-        '    if os.path.exists(metadata_path):',
-        '        return',
-        '    url = "https://cdn.jsdelivr.net/pyodide/v" + policy["pyodideVersion"] + "/full/" + policy["wheelFileName"]',
-        '    data = _nimbus_fetch_bytes(url, policy["packageName"] + " Pyodide wheel")',
-        '    digest = hashlib.sha256(data).hexdigest()',
-        '    if digest != policy["wheelSha256"]:',
-        '        raise RuntimeError(policy["packageName"] + " Pyodide wheel hash mismatch")',
-        '    _nimbus_install_wheel_bytes(data, _nimbus_allowed_extensions(policy))',
         'def _nimbus_install_local_wheel(policy):',
         '    with open(policy["path"], "rb") as f:',
         '        _nimbus_install_wheel_bytes(f.read())',
@@ -1057,11 +888,8 @@ function buildPipInstallCode(plan, sitePackages) {
         '    _nimbus_install_variant_package(variant_package)',
         'for wheel in remote_wheels:',
         '    _nimbus_install_remote_wheel(wheel)',
-        'for policy in pyodide_packages:',
-        '    _nimbus_install_pyodide_package(policy)',
         'for wheel in local_wheels:',
         '    _nimbus_install_local_wheel(wheel)',
-        '_nimbus_record_pyodide_packages(pyodide_packages)',
         'print("Successfully installed " + " ".join(display_packages))',
     ].join('\n');
 }

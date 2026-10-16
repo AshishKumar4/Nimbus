@@ -360,14 +360,6 @@ function buildRubyToolInvocation(binKind, binName, argv) {
                 exitCode: 0,
             };
         }
-        if (argv[0] === 'install') {
-            return {
-                mode: 'none',
-                code: '',
-                error: 'gem install command was not handled by Nimbus RubyGems',
-                exitCode: 1,
-            };
-        }
         return {
             mode: 'none',
             code: '',
@@ -398,14 +390,6 @@ function buildRubyToolInvocation(binKind, binName, argv) {
                 'end',
             ].join('\n'),
             exitCode: 0,
-        };
-    }
-    if (argv[0] === 'install') {
-        return {
-            mode: 'none',
-            code: '',
-            error: 'bundle install command was not handled by Nimbus RubyGems',
-            exitCode: 1,
         };
     }
     return {

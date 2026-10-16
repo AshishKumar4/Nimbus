@@ -70,6 +70,31 @@ const CPYTHON_SCI_PACKAGES_REL = 'lib/sci-packages.zip';
 const CPYTHON_STDLIB_REL = 'lib/python313.zip';
 const CPYTHON_CACERT_REL = 'etc/ssl/cert.pem';
 /**
+ * The environment markers of the CPython build `manifest` installs, as the
+ * interpreter answers them (cpython-wasi-reactor.mjs runs it to check): its
+ * version is the manifest's without the build number (3.13.14-3 is
+ * CPython 3.13.14), its platform the wasm32-wasi build's.
+ */
+export function cpythonMarkers(manifest) {
+    const version = /^(\d+)\.(\d+)\.(\d+)(?:-\d+)?$/.exec(manifest.version);
+    if (version === null)
+        throw new Error(`cpython: manifest version ${manifest.version} is not a CPython version`);
+    const [, major, minor, micro] = version;
+    return {
+        implementation_name: 'cpython',
+        implementation_version: `${major}.${minor}.${micro}`,
+        os_name: 'posix',
+        platform_machine: 'wasm32',
+        platform_release: '0.0.0',
+        platform_system: 'wasi',
+        platform_version: '0.0.0',
+        python_full_version: `${major}.${minor}.${micro}`,
+        platform_python_implementation: 'CPython',
+        python_version: `${major}.${minor}`,
+        sys_platform: 'wasi',
+    };
+}
+/**
  * The one canonical facet preamble. Composed in exactly one place: a
  * hand-rolled second copy is how ruby-repl once drifted into booting a VM whose
  * language prelude was missing.
@@ -171,6 +196,7 @@ export function makeCPythonRunnerFactory(deps) {
         const sciWasmVfs = findFile(CPYTHON_SCI_WASM_REL);
         const sciPackagesVfs = findFile(CPYTHON_SCI_PACKAGES_REL);
         const stdlibVfs = findFile(CPYTHON_STDLIB_REL);
+        const markers = cpythonMarkers(manifest);
         return async function cpythonBinHandler(ctx) {
             const cred = requireVfsCred(ctx.cred, binName);
             const vfs = ctx.vfs;
@@ -186,10 +212,7 @@ export function makeCPythonRunnerFactory(deps) {
                 home,
                 // pip's process's network (WorkspaceNetwork.forProcess).
                 network: deps.network.forProcess(ctx.pid),
-                // No Pyodide lockfile: there is no curated wheel index behind this
-                // interpreter, so pip resolves against PyPI like anywhere else.
-                pyodideLockfileText: null,
-                runtimeArtifacts: manifest.runtime_artifacts || [],
+                markers,
             };
             const isPipBin = _binKind === 'pip' || binName === 'pip' || binName === 'pip3';
             const pipInvocation = isPipBin
@@ -200,12 +223,12 @@ export function makeCPythonRunnerFactory(deps) {
                 return pipInvocation.exitCode;
             }
             if (pipInvocation.mode !== 'pip' && hasLeadingCliFlag(argv, PYTHON_VERSION_FLAGS)) {
-                ctx.stdout.write('Python 3.13.14 (CPython, wasm32-wasi, Nimbus runtime)\n');
+                ctx.stdout.write(`Python ${markers.python_full_version} (CPython, wasm32-wasi, Nimbus runtime)\n`);
                 return 0;
             }
             if (pipInvocation.mode !== 'pip' && hasLeadingCliFlag(argv, PYTHON_HELP_FLAGS)) {
                 ctx.stdout.write(`usage: ${binName} [option] ... [-c cmd | -m mod | file | -] [arg] ...\n`);
-                ctx.stdout.write('Nimbus CPython 3.13 runtime (wasm32-wasi).\n');
+                ctx.stdout.write(`Nimbus CPython ${markers.python_version} runtime (wasm32-wasi).\n`);
                 ctx.stdout.write('Supported: -c <code>, -m <module>, <file.py>, stdin via -, and the session filesystem directly.\n');
                 ctx.stdout.write('zlib, lzma, bz2, hashlib, ssl, sqlite3 and sockets are built in; pure-Python wheels install with pip.\n');
                 return 0;
