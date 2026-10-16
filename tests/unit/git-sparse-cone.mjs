@@ -60,6 +60,7 @@ try {
     { file: '/*\n!/*/\n/A/\n!/A/*/\n/A/B/\n/D/\n', label: 'other case, core.ignoreCase', ignoreCase: true },
     { file: '/*\n!/*/\n/A/\n', label: 'other case, case-sensitive' },
     { file: '# a comment\n/*\n!/*/\n\n/c/  \n', label: 'comments, blank lines and trailing spaces' },
+    { file: '\ufeff/*\n!/*/\n/c/', label: 'a BOM, and a last line without its newline' },
   ];
   for (const { file, label, ignoreCase = false } of handWritten) {
     writeFileSync(join(repo, '.git/info/sparse-checkout'), file);
