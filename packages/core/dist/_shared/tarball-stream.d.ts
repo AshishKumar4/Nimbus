@@ -76,6 +76,21 @@ export type TarSkipReason = 'too-large' | 'non-regular' | 'no-name';
  * best-effort.
  */
 export type TarSkipCallback = (name: string, size: number, reason: TarSkipReason) => void;
+/**
+ * A tar stream that ended inside a member, its data or its padding: GNU tar's
+ * "Unexpected EOF in archive", node-tar's TAR_BAD_ARCHIVE "Truncated input".
+ * `header` is that member's; `data` its whole 512-byte blocks that arrived
+ * (what GNU tar extracts of it), when it was read, else null. A stream that
+ * ends between members, a short header included, is no error: both tars end
+ * the archive there.
+ */
+export declare class TarTruncatedError extends Error {
+    readonly header: TarHeader;
+    readonly received: number;
+    readonly data: Uint8Array | null;
+    readonly name = "TarTruncatedError";
+    constructor(header: TarHeader, received: number, data: Uint8Array | null);
+}
 /** An archive held whole in memory, as the stream streamTarRecords reads. */
 export declare function tarBytes(bytes: Uint8Array): AsyncGenerator<Uint8Array, void, undefined>;
 /** Whether `header` is a regular file's: type '0', or NUL as old tars wrote it. */
@@ -83,7 +98,9 @@ export declare function isRegularTarFile(header: TarHeader): boolean;
 /**
  * Every entry of a tar stream, in order, each as its data completes: its
  * header, and its data when `read(header)` asks for it, else null (the data
- * is passed over unread). An extraction's policy is its `read`.
+ * is passed over unread). An extraction's policy is its `read`. A stream
+ * that ends inside a member throws TarTruncatedError after the entries
+ * before it.
  *
  * Consumes an async iterable of Uint8Array chunks (the decompressed tar
  * byte stream). Memory invariant: holds at most one pending entry's bytes

@@ -21,7 +21,7 @@
  * W7-frame symbols:   encodeWriteBatchStream, decodeWriteBatchStream,
  *   W7_MAGIC, W7_MAX_RECORD_BYTES.
  *
- * Tar size: 5.20 KiB
+ * Tar size: 5.81 KiB
  * W7 size:  50.52 KiB
  */
 export declare const TAR_STREAM_PREAMBLE: string;

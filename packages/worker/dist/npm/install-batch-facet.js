@@ -426,6 +426,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                         capturedTgzBytes = flat;
                         verifiedDigest = sri;
                     })();
+                    // Observed now: a package that fails before it awaits this (its tar, a write, an abort) leaves no unhandled rejection.
+                    integrityPromise.catch(() => { });
                 }
             }
             else {

@@ -17,6 +17,8 @@
  * whether its first binder adopts an owner or must already match it.
  */
 
+import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
+
 export const DERIVED_OWNER_PREFIX = 'auto:';
 
 /**
@@ -32,10 +34,7 @@ export function launchArgv(opts: { execArgv?: readonly string[]; argv?: readonly
 
 /** `auto:` + the first 24 hex of sha256(cwd ++ NUL ++ argv.join(NUL)). */
 export async function deriveResidentOwner(cwd: string, argv: readonly string[]): Promise<string> {
-  const material = new TextEncoder().encode(`${cwd}\0${argv.join('\0')}`);
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', material));
-  let hex = '';
-  for (const byte of digest) hex += byte.toString(16).padStart(2, '0');
+  const hex = await sha256Hex(`${cwd}\0${argv.join('\0')}`);
   return `${DERIVED_OWNER_PREFIX}${hex.slice(0, 24)}`;
 }
 
