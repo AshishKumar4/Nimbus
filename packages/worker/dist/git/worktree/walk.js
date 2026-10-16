@@ -18,6 +18,7 @@ import { createHash } from 'node:crypto';
 import { strerror } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { oidToHex } from '../pack/format.js';
 import { EMPTY_BLOB, S_IFGITLINK, S_IFLNK, S_IFMT, S_IFREG, decodePath, objectId } from './dircache.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 export function newCounters() {
     return { readdirs: 0, lstats: 0, filesRead: 0, bytesRead: 0, objectsRead: 0 };
 }
@@ -314,7 +315,7 @@ export async function scanWorktree(tree, dc, options) {
                 if (name !== '.git')
                     listing.set(name, type);
         const tracked = new Map();
-        const skip = dir ? encoder.encode(dir).length + 1 : 0;
+        const skip = dir ? utf8Length(dir) + 1 : 0;
         for (let i = lo; i < hi;) {
             const rest = dc.pathBytes(i).subarray(skip);
             const slash = rest.indexOf(0x2f);

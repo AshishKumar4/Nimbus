@@ -22,6 +22,7 @@
  */
 import { verifyNimbusToken } from './token.js';
 import { NimbusAuthError, NimbusTokenMalformedError, NimbusTokenClaimsError, NimbusScopeError, NimbusSessionPinError, isNimbusIdComponent, } from './types.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 /**
  * Cookie name used for in-iframe token persistence.
  *
@@ -290,7 +291,6 @@ export function enforceSessionCookieCapacity(cookieHeader, proposedCookie, expir
     let headerBytes = 0;
     const proposedPair = proposedCookie.split(';', 1)[0];
     const proposedName = proposedPair.slice(0, proposedPair.indexOf('='));
-    const byteLength = (value) => new TextEncoder().encode(value).length;
     for (const c of cookie.split(';')) {
         const pair = c.trim();
         const at = pair.indexOf('=');
@@ -305,16 +305,16 @@ export function enforceSessionCookieCapacity(cookieHeader, proposedCookie, expir
         // conservatively. Chrome counts name + value, excluding attributes.
         if (name === proposedName || (expireLegacy && name === NIMBUS_TOKEN_COOKIE))
             continue;
-        partitionBytes += byteLength(name) + byteLength(pair.slice(at + 1));
-        headerBytes += byteLength(pair) + 2;
+        partitionBytes += utf8Length(name) + utf8Length(pair.slice(at + 1));
+        headerBytes += utf8Length(pair) + 2;
     }
-    partitionBytes += byteLength(proposedPair) - 1;
-    headerBytes += byteLength(proposedPair);
+    partitionBytes += utf8Length(proposedPair) - 1;
+    headerBytes += utf8Length(proposedPair);
     if (names >= NIMBUS_TOKEN_COOKIE_LIMIT || partitionBytes > NIMBUS_TOKEN_PARTITION_BYTES_LIMIT
         || headerBytes > NIMBUS_TOKEN_COOKIE_HEADER_LIMIT) {
         throw new NimbusTokenMalformedError('too many session attach credentials for one browser jar');
     }
-    if (byteLength(proposedCookie) > NIMBUS_TOKEN_SET_COOKIE_LIMIT) {
+    if (utf8Length(proposedCookie) > NIMBUS_TOKEN_SET_COOKIE_LIMIT) {
         throw new NimbusTokenMalformedError('a session attach credential does not fit one Set-Cookie');
     }
 }

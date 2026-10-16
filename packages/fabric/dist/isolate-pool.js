@@ -63,7 +63,7 @@ export function assembleLoaderWorkerModuleSource(options) {
         lines.push('');
         lines.push('// ── Pool-injected WebAssembly modules ─────────────────────');
         for (const entry of wasmEntries) {
-            lines.push(`import __NIMBUS_WASM_${entry.id} from './${entry.name}';`);
+            lines.push(`import __NIMBUS_WASM_${entry.id} from ${JSON.stringify(`./${entry.name}`)};`);
         }
         lines.push('globalThis.__NIMBUS_WASM = globalThis.__NIMBUS_WASM || {};');
         for (const entry of wasmEntries) {
@@ -85,8 +85,23 @@ export function assembleLoaderWorkerModuleSource(options) {
     const requestCallExpr = options.hasBindings
         ? '__fn__(request, this.env)'
         : '__fn__(request)';
-    lines.push('export default class extends WorkerEntrypoint {', '  execute(...args) {', `    const result = ${callExpr};`, '    if (result instanceof Promise) return result;', '    return result;', '  }', '', '  // Request/Response transport: the ONE dispatch path whose abort is', '  // real. workerd cancels the inner execution context when the request', '  // signal aborts while the fn is suspended on I/O; RPC execute() above', '  // has no equivalent (measured: Symbol.dispose on a pending RPC does', '  // not cancel). The fn is request-shaped — it encodes and decodes its', '  // own payload; nothing generic is serialized here.', '  async fetch(request) {', '    try {', `      const result = await ${requestCallExpr};`, '      if (result instanceof Response) return result;', '      return Response.json(result ?? null);', '    } catch (err) {', '      // Fail loud inside the response so an abort of the transport is', '      // not conflated with a guest exception: the caller sees 500 only', '      // for a real fn failure, and aborts arrive as fetch rejections.', '      const message = err instanceof Error && err.message ? err.message : String(err);', '      return Response.json({ __nimbusFacetError: message }, { status: 500 });', '    }', '  }', '}');
+    lines.push('export default class extends WorkerEntrypoint {', '  execute(...args) {', `    return ${callExpr};`, '  }', '', '  // Request/Response transport: the ONE dispatch path whose abort is', '  // real. workerd cancels the inner execution context when the request', '  // signal aborts while the fn is suspended on I/O; RPC execute() above', '  // has no equivalent (measured: Symbol.dispose on a pending RPC does', '  // not cancel). The fn is request-shaped — it encodes and decodes its', '  // own payload; nothing generic is serialized here.', '  async fetch(request) {', '    try {', `      const result = await ${requestCallExpr};`, '      if (result instanceof Response) return result;', '      return Response.json(result ?? null);', '    } catch (err) {', '      // Fail loud inside the response so an abort of the transport is', '      // not conflated with a guest exception: the caller sees 500 only', '      // for a real fn failure, and aborts arrive as fetch rejections.', '      const message = err instanceof Error && err.message ? err.message : String(err);', '      return Response.json({ __nimbusFacetError: message }, { status: 500 });', '    }', '  }', '}');
     return lines.join('\n');
+}
+/**
+ * `name`'s entry, its identifier being the name with every character an
+ * identifier cannot hold replaced. Two names whose identifiers agree would
+ * bind one import twice, so a name is refused when `bound` already holds
+ * its identifier (keyed to who took it), and recorded there otherwise.
+ */
+function wasmEntry(name, wasm, bound, scope) {
+    const id = name.replace(/[^A-Za-z0-9_]/g, '_').replace(/^[^A-Za-z_]/, '_');
+    const holder = bound.get(id);
+    if (holder !== undefined) {
+        throw new BindingError(`IsolatePool: ${scope} key '${name}' and ${holder} both bind the identifier ${id}. Pick distinct module names.`);
+    }
+    bound.set(id, `${scope} key '${name}'`);
+    return { name, id, wasm };
 }
 /**
  * The images' part of a loader cache key: '0' for none, so a pool without
@@ -157,6 +172,8 @@ export class IsolatePool {
      * across pool dispatches (cache-key stability).
      */
     wasmModules;
+    /** The identifiers wasmModules bind, each to the key that took it: a per-call module takes none of them. */
+    wasmIds = new Map();
     /** Every constructor-time wasm module, as the loader cache key names it
      *  (wasmIdentity), so a change invalidates warm slots: a compiled module
      *  by the identity its host described, bytes by their SHA-256. Bytes are
@@ -216,14 +233,9 @@ export class IsolatePool {
         this.scope = opts.scope ?? '';
         // The network of the process the pool's facets act for (WorkspaceNetwork.forProcess), the one its binding carries.
         this.network = requireNetwork(opts.network, 'IsolatePool').forProcess(opts.processSupervisor?.pid ?? opts.supervisorPid ?? 0);
-        // Materialise the wasm-modules table. Sanitise each name into a
-        // valid JS identifier for the static import binding; key collisions
-        // (e.g. 'esbuild.wasm' and 'esbuild_wasm' both sanitise to
-        // 'esbuild_wasm') are rejected loudly because the generated worker
-        // would otherwise have duplicate imports. Order is preserved.
+        // The wasm-modules table, in the order given.
         const wasmEntries = [];
         const keyParts = [];
-        const seenIds = new Set();
         if (opts.wasmModules) {
             for (const [name, wasm] of Object.entries(opts.wasmModules)) {
                 let keyPart;
@@ -246,13 +258,7 @@ export class IsolatePool {
                     throw new BindingError(`IsolatePool: wasmModules['${name}'] must be an ArrayBuffer or a WebAssembly.Module ` +
                         `(got ${got || typeof wasm}).`);
                 }
-                const id = name.replace(/[^A-Za-z0-9_]/g, '_').replace(/^[^A-Za-z_]/, '_');
-                if (seenIds.has(id)) {
-                    throw new BindingError(`IsolatePool: wasmModules key '${name}' collides with another after ` +
-                        `identifier-sanitisation (id='${id}'). Pick distinct module names.`);
-                }
-                seenIds.add(id);
-                wasmEntries.push({ name, id, wasm });
+                wasmEntries.push(wasmEntry(name, wasm, this.wasmIds, 'pool wasmModules'));
                 keyParts.push(keyPart);
             }
         }
@@ -319,10 +325,8 @@ export class IsolatePool {
         };
     }
     /**
-     * Materialise per-call wasm bytes into the {name,id,bytes} shape
-     * the import-build path expects. Mirrors the constructor's logic
-     * (identifier sanitisation + collision check) but ALSO rejects
-     * collisions with constructor-time entries.
+     * The call's own wasm modules, as entries after the pool's: bytes only,
+     * and none may bind an identifier the pool's modules bind.
      *
      * Returns [] when there are no per-call entries — that's the hot
      * path (every existing pool dispatch).
@@ -331,26 +335,14 @@ export class IsolatePool {
         if (!perCall)
             return [];
         const out = [];
-        const ctorIds = new Set(this.wasmModules.map((w) => w.id));
-        const seen = new Set();
+        const bound = new Map(this.wasmIds);
         for (const [name, bytes] of Object.entries(perCall)) {
             if (!(bytes instanceof ArrayBuffer)) {
                 const got = bytes?.constructor?.name;
                 throw new BindingError(`IsolatePool: per-call wasmModules['${name}'] must be ` +
                     `ArrayBuffer (got ${got || typeof bytes}).`);
             }
-            const id = name.replace(/[^A-Za-z0-9_]/g, '_').replace(/^[^A-Za-z_]/, '_');
-            if (ctorIds.has(id)) {
-                throw new BindingError(`IsolatePool: per-call wasmModules key '${name}' (sanitised ` +
-                    `id='${id}') collides with a constructor-time wasm module. ` +
-                    `Per-call modules cannot shadow pool-defaults. Pick a distinct name.`);
-            }
-            if (seen.has(id)) {
-                throw new BindingError(`IsolatePool: per-call wasmModules key '${name}' (sanitised ` +
-                    `id='${id}') collides with another per-call key. Pick distinct names.`);
-            }
-            seen.add(id);
-            out.push({ name, id, wasm: bytes });
+            out.push(wasmEntry(name, bytes, bound, 'per-call wasmModules'));
         }
         return out;
     }

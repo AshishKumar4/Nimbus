@@ -14,6 +14,7 @@ import { comparePaths, compareBytes, decodePath, S_IFMT, type DirCache } from '.
 import { PairList, type Pair } from './pairs.js';
 import { S_IFDIR, readTree, type Leaf, type ObjectStore } from './tree.js';
 import { scanWorktree, type ScanOptions, type Worktree } from './walk.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 
 const encoder = new TextEncoder();
 
@@ -63,7 +64,7 @@ export async function walkTreeAndIndex(
     const subtrees = cacheTree !== null && node >= 0 ? cacheTree.subtrees(node) : null;
     const built: BuiltSubtree[] | null = build ? [] : null;
     let same = treeOid !== null;
-    const skip = dir ? encoder.encode(dir).length + 1 : 0;
+    const skip = dir ? utf8Length(dir) + 1 : 0;
     let t = 0;
     let i = lo;
     while (t < entries.length || i < hi) {

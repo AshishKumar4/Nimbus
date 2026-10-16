@@ -55,7 +55,12 @@ var __nimbusResidentModule = (() => {
   var LEDGER_ROW_BYTES = 256;
 
   // ../platform/dist/utf8.js
+  var LONG_UNITS = 256;
+  var encoder = new TextEncoder();
+  var scratch;
   function utf8Length(text) {
+    if (text.length >= LONG_UNITS)
+      return longUtf8Length(text);
     let bytes = text.length;
     for (let index = 0; index < text.length; index++) {
       const unit = text.charCodeAt(index);
@@ -74,6 +79,16 @@ var __nimbusResidentModule = (() => {
       } else {
         bytes += 2;
       }
+    }
+    return bytes;
+  }
+  function longUtf8Length(text) {
+    scratch ??= new Uint8Array(256 * 1024);
+    let bytes = 0;
+    for (let read = 0; read < text.length; ) {
+      const done = encoder.encodeInto(read === 0 ? text : text.slice(read), scratch);
+      read += done.read;
+      bytes += done.written;
     }
     return bytes;
   }
@@ -1989,7 +2004,7 @@ var __nimbusResidentModule = (() => {
        */
       namespaceView(supervisor, device, cred) {
         namespace.setCred(cred);
-        const encoder = new TextEncoder();
+        const encoder2 = new TextEncoder();
         const typeOf = (kind) => kind === NS_DIR ? "directory" : kind === NS_LINK ? "symlink" : "file";
         const view = {
           device: Number(device),
@@ -2028,7 +2043,7 @@ var __nimbusResidentModule = (() => {
             }
             const cell = cells.get(k);
             if (cell === void 0 || typeof cell === "object" && "error" in cell) return void 0;
-            return typeof cell === "string" ? encoder.encode(cell) : cell;
+            return typeof cell === "string" ? encoder2.encode(cell) : cell;
           },
           async fill(k, entry) {
             const cursor = coherence.cursor();

@@ -22,6 +22,7 @@ import { strerror } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { oidToHex } from '../pack/format.js';
 import { EMPTY_BLOB, S_IFGITLINK, S_IFLNK, S_IFMT, S_IFREG, decodePath, objectId, type DirCache, type EntryStat } from './dircache.js';
 import type { Excludes } from './excludes.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 
 /** What a worktree lstat says (the VFS's stat, times in ms). */
 export interface WorktreeStat extends EntryStat {
@@ -397,7 +398,7 @@ export async function scanWorktree(tree: Worktree, dc: DirCache, options: ScanOp
     if (entries === null) listing = null;
     else for (const { name, type } of entries) if (name !== '.git') listing.set(name, type);
     const tracked = new Map<string, number>();
-    const skip = dir ? encoder.encode(dir).length + 1 : 0;
+    const skip = dir ? utf8Length(dir) + 1 : 0;
     for (let i = lo; i < hi;) {
       const rest = dc.pathBytes(i).subarray(skip);
       const slash = rest.indexOf(0x2f);

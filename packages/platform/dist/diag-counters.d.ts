@@ -27,6 +27,7 @@
  *
  */
 import type { InstallPhase } from './install-phase.js';
+import type { ResizableCreditLease } from './weighted-credit-pool.js';
 export interface DiagCounters {
     /** Top-level install phase. */
     installPhase: InstallPhase;
@@ -55,13 +56,22 @@ export interface DiagCounters {
      * `buildPrefetchBundle` accumulates raw VFS file contents into an in-heap
      * bundle object, and used to do so with nothing observing it: the estimator
      * read 9.4 MiB while those bytes were resetting the DO. Each build now takes
-     * an `acquireSupervisorAllocation` lease for the budget it may use and bumps
-     * this alongside it, so the reservation is ATTRIBUTED to the bundle path
-     * rather than landing in `unattributedReservationBytes`.
+     * an `acquireSupervisorAllocation` lease for the budget it may use, counted
+     * here while it is held (attributeAllocation), so the reservation is
+     * ATTRIBUTED to the bundle path rather than landing in
+     * `unattributedReservationBytes`.
      *
      * Surfaced as `breakdown.prefetchBundleBytes`. Back to zero between builds.
      */
     prefetchBundleBytes: number;
+    /**
+     * Bytes the slices of pre-bundles in flight hold: each build's lease
+     * (browser-prebundle.ts), counted while it is held (attributeAllocation),
+     * after it shrinks to the slice it walked.
+     *
+     * Surfaced as `breakdown.preBundleSliceBytes`. Back to zero between builds.
+     */
+    preBundleSliceBytes: number;
     /**
      * Bytes retained by the FacetManager's prefetch-bundle LRU right now.
      *
@@ -172,15 +182,14 @@ export declare function rpcPayloadStart(bytes: number): void;
  * hit is a bug worth investigating.
  */
 export declare function rpcPayloadEnd(bytes: number): void;
+/** The counters that name the live allocation leases of one owner. */
+export type AllocationOwner = 'prefetchBundleBytes' | 'preBundleSliceBytes';
 /**
- * Track an in-flight prefetch-bundle build. Call with the byte reservation the
- * build took from the supervisor allocation budget, and pair with
- * `prefetchBundleEnd` in the matching `finally` so it returns to zero whether
- * the build succeeded or threw.
+ * `lease`, its bytes counted under `owner` for as long as it holds them: a
+ * shrink takes what it gives back off at once, and the release the rest.
+ * The count is the lease's own, so it is right however its holder ends.
  */
-export declare function prefetchBundleStart(bytes: number): void;
-/** Release an in-flight prefetch-bundle reservation. Floors at 0. */
-export declare function prefetchBundleEnd(bytes: number): void;
+export declare function attributeAllocation(owner: AllocationOwner, lease: ResizableCreditLease): ResizableCreditLease;
 /**
  * Publish the prefetch-bundle LRU's live retained total. A gauge: the cache
  * owns the number and reports it whenever it admits or evicts an entry.
