@@ -158,6 +158,21 @@ export type TarSkipCallback = (
   reason: TarSkipReason,
 ) => void;
 
+/**
+ * A tar stream that ended inside a member, its data or its padding: GNU tar's
+ * "Unexpected EOF in archive", node-tar's TAR_BAD_ARCHIVE "Truncated input".
+ * `header` is that member's; `data` its whole 512-byte blocks that arrived
+ * (what GNU tar extracts of it), when it was read, else null. A stream that
+ * ends between members, a short header included, is no error: both tars end
+ * the archive there.
+ */
+export class TarTruncatedError extends Error {
+  override readonly name = 'TarTruncatedError';
+  constructor(readonly header: TarHeader, readonly received: number, readonly data: Uint8Array | null) {
+    super(`Unexpected EOF in archive: ${header.name} ends after ${received} of its ${header.size} bytes`);
+  }
+}
+
 /** An archive held whole in memory, as the stream streamTarRecords reads. */
 export async function* tarBytes(bytes: Uint8Array): AsyncGenerator<Uint8Array, void, undefined> {
   yield bytes;
@@ -171,7 +186,9 @@ export function isRegularTarFile(header: TarHeader): boolean {
 /**
  * Every entry of a tar stream, in order, each as its data completes: its
  * header, and its data when `read(header)` asks for it, else null (the data
- * is passed over unread). An extraction's policy is its `read`.
+ * is passed over unread). An extraction's policy is its `read`. A stream
+ * that ends inside a member throws TarTruncatedError after the entries
+ * before it.
  *
  * Consumes an async iterable of Uint8Array chunks (the decompressed tar
  * byte stream). Memory invariant: holds at most one pending entry's bytes
@@ -186,7 +203,9 @@ export async function* streamTarRecords(
   type State =
     | { kind: 'header' }
     | { kind: 'data'; header: TarHeader; remaining: number; data: Uint8Array | null; offset: number; pad: number };
-  let state: State = { kind: 'header' };
+  // A function, so the state's type after the loop is all of State.
+  const between = (): State => ({ kind: 'header' });
+  let state = between();
 
   function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
     if (a.length === 0) return b;
@@ -250,6 +269,10 @@ export async function* streamTarRecords(
     } else {
       carry = buf.slice(cursor);
     }
+  }
+  if (state.kind === 'data') {
+    const whole = state.offset - (state.offset % 512);
+    throw new TarTruncatedError(state.header, state.offset, state.data === null ? null : state.data.slice(0, whole));
   }
 }
 

@@ -2,7 +2,7 @@ import { crc32 } from '@nimbus-sh/platform/crc32.js';
 import { resolve } from './path.js';
 import { encode, decode, concatBytes } from './encoding.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
-import { streamTarRecords, tarBytes } from '../../../_shared/tarball-stream.js';
+import { streamTarRecords, tarBytes, TarTruncatedError } from '../../../_shared/tarball-stream.js';
 // ─── Gzip (CompressionStream/DecompressionStream) ───
 /** `data` through one gzip transform stream, read to its end. */
 async function pumpGzip(data, stream) {
@@ -88,22 +88,36 @@ export function createTar(entries) {
  * its bytes as a file. Paths are canonical and inside the archive's root; an
  * entry that escapes it is left out, and one that claims more bytes than
  * the archive holds is never read (its buffer would be the claim's size).
+ * An archive that ends inside a member is `truncated`: its entries are those
+ * before, and that member with its whole 512-byte blocks, as GNU tar
+ * extracts them before it fails.
  */
 export async function parseTar(data) {
     const entries = [];
+    const entry = (header, bytes) => ({
+        path: header.name,
+        data: bytes,
+        type: header.directory ? 'directory' : 'file',
+        mode: header.mode || (header.directory ? 0o755 : 0o644),
+        mtime: header.mtime * 1000,
+    });
     const read = (header) => header.name !== '' && header.size <= data.length;
-    for await (const { header, data: bytes } of streamTarRecords(tarBytes(data), read)) {
-        if (bytes === null)
-            continue;
-        entries.push({
-            path: header.name,
-            data: bytes,
-            type: header.directory ? 'directory' : 'file',
-            mode: header.mode || (header.directory ? 0o755 : 0o644),
-            mtime: header.mtime * 1000,
-        });
+    try {
+        for await (const { header, data: bytes } of streamTarRecords(tarBytes(data), read)) {
+            if (bytes !== null)
+                entries.push(entry(header, bytes));
+        }
     }
-    return entries;
+    catch (error) {
+        if (!(error instanceof TarTruncatedError))
+            throw error;
+        // One left unread claims more than the archive holds, so the bytes it received are the archive's last.
+        const { header, received } = error;
+        if (header.name !== '')
+            entries.push(entry(header, error.data ?? data.slice(data.length - received, data.length - (received % 512))));
+        return { entries, truncated: true };
+    }
+    return { entries, truncated: false };
 }
 function writeU16LE(buf, offset, value) {
     buf[offset] = value & 0xff;
