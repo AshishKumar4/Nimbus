@@ -11,8 +11,9 @@ export const PROGRAM = `import { createRequire } from 'node:module';
 import { writeFileSync } from 'node:fs';
 const require = createRequire(import.meta.url);
 const out = {};
+// A message names side.mjs by its URL, which is where the program runs: '<side>' in each.
 const outcome = async (thunk) => {
-  try { return ['ok', await thunk()]; } catch (e) { return [e?.constructor?.name ?? typeof e, String(e?.message ?? e), e?.code ?? null]; }
+  try { return ['ok', await thunk()]; } catch (e) { return [e?.constructor?.name ?? typeof e, String(e?.message ?? e).replaceAll(side, '<side>'), e?.code ?? null]; }
 };
 writeFileSync('side.mjs', 'globalThis.sideRan = (globalThis.sideRan ?? 0) + 1; export default 1;');
 const side = new URL('./side.mjs', import.meta.url).href;
@@ -26,6 +27,8 @@ out.args = {
   withNull: await outcome(() => loaded(import(side, { with: null }))),
   withOne: await outcome(() => loaded(import(side, { with: 1 }))),
   valueOne: await outcome(() => loaded(import(side, { with: { type: 1 } }))),
+  laterGetter: await outcome(() => loaded(import(side, { with: { type: 1, get extra() { throw new Error('later getter'); } } }))),
+  protoAttribute: await outcome(() => loaded(import(side, { with: JSON.parse('{"__proto__":"x"}') }))),
 };
 out.args.sideRanBefore = globalThis.sideRan ?? 0;
 const callable = () => {};
@@ -51,6 +54,8 @@ out.data = {
   javascriptBase64: await data('data:text/javascript;base64,ZXhwb3J0IGRlZmF1bHQgIuKckyI='),
   jsonSuffix: await data('data:application/jsonx,1'),
   plain: await data('data:text/plain,1'),
+  // A no-break space is no ASCII whitespace: the body is not base64, but the source.
+  nbspBase64: await data('data:text/javascript;base64\u00a0,export default 8'),
 };
 
 // node:module is Node's Module class, the same one by every route.

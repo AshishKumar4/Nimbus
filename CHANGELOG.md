@@ -30,6 +30,14 @@ published independently in the `@nimbus-sh` npm scope.
   is refused with V8's TypeError before anything resolves. Before, these
   were taken as no options and the module loaded and ran. A Symbol
   specifier is refused, where before it loaded `Symbol(s)`.
+- Fixed: a portable `node` program's `import()` refuses a second argument
+  that is not an object (`1`, `null`), or a `with` that is not an object,
+  with V8's TypeError before anything resolves. Before, these counted as no
+  options, and the module loaded and ran. An attribute value that is not a
+  string is now V8's TypeError, read after every other value, instead of
+  `ERR_INVALID_ARG_TYPE`. A hosted program's `import()` of a Symbol is now
+  refused as Node refuses it; before, it looked for a package named
+  `Symbol(s)`.
 - Fixed: a portable `node` program reads a `data:` URL module as Node 22
   does. Base64 JSON and JavaScript are read as UTF-8, so `"✓"` arrives
   intact instead of as `"â\u009c\u0093"`. `application/javascript` is a

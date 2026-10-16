@@ -12,8 +12,10 @@
  * GetImportAttributesFromArgument, Node 22): the specifier converted to a
  * string first; then `options`, an object or a function, its `with` read
  * once, an object or a function, and each of that's own enumerable string
- * keys read once, a string. Throws V8's TypeError for the first that is not.
- * The arguments are whatever the program passed, so they are typed as such.
+ * keys read once, all of them before any is refused for not being a string.
+ * Throws V8's TypeError for the first rule broken. The attributes are a
+ * null-prototype record, so a `__proto__` attribute is one. The arguments
+ * are whatever the program passed, so they are typed as such.
  */
 export declare function importCallArguments(specifier: unknown, options: unknown): {
     specifier: string;
