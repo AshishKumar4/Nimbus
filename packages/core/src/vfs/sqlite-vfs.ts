@@ -9930,17 +9930,20 @@ export class SqliteVFS {
   private openToWrite(call: Extract<W7PathCall, { call: 'open' }>, caller: VfsCred, described: DescribedBy): VfsStat {
     const cred = withUmask(caller, call.umask);
     const follow = call.nofollow !== true;
-    const name = this.checkAccess(call.path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode;
+    const named = this.checkAccess(call.path, 0, cred, { followLeaf: false, allowMissingLeaf: true });
+    const name = named.inode;
     if (name !== undefined && call.create === true && call.exclusive === true) throw vfsError('EEXIST', call.path);
     if (!follow && name?.kind === 'symlink') throw vfsError('ELOOP', call.path);
-    const there = follow ? this.checkAccess(call.path, 0, cred, { allowMissingLeaf: true }).inode : name;
+    // A name that is no link is what a followed open reaches: one walk answers both.
+    const reached = follow && name?.kind === 'symlink' ? this.checkAccess(call.path, 0, cred, { allowMissingLeaf: true }) : named;
+    const there = reached.inode;
     if (there === undefined && call.create !== true) throw vfsError('ENOENT', call.path);
     if (there?.kind === 'directory') throw vfsError('EISDIR', call.path);
     if (there === undefined) {
       this.writeFile(call.path, new Uint8Array(0), { mode: call.mode, ...(call.ino === undefined ? {} : { ino: call.ino }) }, cred);
     } else {
       // Every access asked, decided now: an O_RDWR of a write-only file is EACCES here, not at its first read.
-      this.checkAccess(call.path, (call.read === true ? 4 : 0) | 2, cred);
+      if (!this.accessInode(there, (call.read === true ? 4 : 0) | 2, cred)) throw vfsKeyError('EACCES', reached.path);
       if (call.truncate === true) this.truncate(call.path, 0, cred);
     }
     if (call.fchmod !== undefined) {
