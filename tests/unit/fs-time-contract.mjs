@@ -53,11 +53,15 @@ function session(mount) {
   return { kernel, mountKernel, filesystem, op, pid, fs: filesystem.bind({ pid, cred: user }) };
 }
 
-const outcome = (call) => Promise.resolve().then(call).then(() => 'ok', (error) => error.code);
+const outcome = (call) => Promise.resolve().then(call).then(() => 'ok', (error) => error.code ?? String(error?.message ?? error));
+const failures = [];
+const check = async (what, run) => {
+  try { await run(); console.log(`  ✓ ${what}`); } catch (error) { failures.push(`${what}: ${error.message}`); console.log(`  ✗ ${what}: ${error.message.split('\n')[0]}`); }
+};
 
 // ── By name and by descriptor, through the supervisor's dispatch, as a
 //    writer who is not the owner ────────────────────────────────────────────
-for (const [where, mount] of [['the session', null], ['a SQLite mount', (files) => files]]) {
+for (const [where, mount] of [['the session', null], ['a SQLite mount', (files) => files]]) await check(`${where}: explicit times by the owner, now and omit by a writer, by name and by descriptor`, async () => {
   const s = session(mount);
   const [kernel, path, at] = mount === null ? [s.kernel, '/home/user/s', 'home/user/s'] : [s.mountKernel, '/home/user/m/f', 'f'];
   const times = () => { const st = kernel.stat(at); return [st.atime, st.mtime]; };
@@ -81,12 +85,11 @@ for (const [where, mount] of [['the session', null], ['a SQLite mount', (files) 
   assert.equal(await byFd('omit', 'now'), 'ok', `${where}: mtime now, atime omitted, by descriptor`);
   assert.equal(times()[0], 1_000, `${where}: an omitted atime is kept by descriptor`);
   await s.op({ op: 'fsClose', args: [opened.id], pid: s.pid });
-  console.log(`  ${where}: explicit times by the owner, now and omit by a writer, by name and by descriptor`);
-}
+});
 
 // ── On an awaiting mount, an omitted time is the one there as the change
 //    commits: a change to it between the call and its commit stands ────────
-{
+await check('an awaiting mount keeps an omitted time as it is at commit', async () => {
   let gate = null;
   const s = session((files) => asyncOnly(files, {
     async beforeCall(method) {
@@ -122,7 +125,7 @@ for (const [where, mount] of [['the session', null], ['a SQLite mount', (files) 
     assert.deepEqual([st.atime, st.mtime], [3_000, 9_000], `${how}: the omitted atime is the one there at commit, the change in between kept`);
   }
   await s.fs.close(opened.id);
-  console.log('  an awaiting mount keeps an omitted time as it is at commit');
-}
+});
 
+assert.deepEqual(failures, []);
 console.log('fs-time-contract: ok');
