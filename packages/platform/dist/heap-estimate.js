@@ -57,7 +57,7 @@
  * The actual count of evictions Nimbus has observed lives in the C'.2
  * recovery_event ring, separate from this module.
  */
-import { PRE_BUNDLE_CONCURRENCY, PRE_BUNDLE_SLICE_CAP_BYTES, SUPERVISOR_HEAP_CEILING_BYTES, } from './limits.js';
+import { SUPERVISOR_HEAP_CEILING_BYTES } from './limits.js';
 import { readSupervisorAllocationBudget, } from './heavy-alloc-coord.js';
 /**
  * Five labelled workerd eviction reasons. Surfaced as a constant
@@ -111,32 +111,6 @@ export const HEAP_BLIND_SPOTS = [];
  */
 const SUPERVISOR_BASELINE_BYTES = 9 * 1024 * 1024;
 /**
- * Estimate pre-bundle slice bytes resident in the supervisor heap.
- *
- * Pre A'.2: the supervisor builds the slice in heap (up to
- * SLICE_CAP_BYTES = 28 MiB per concurrent slot) before passing to the
- * pre-bundle facet. With PRE_BUNDLE_CONCURRENCY = 1 the cap is 28 MiB.
- *
- * Diag counters track pre-bundle attempts/completions but not
- * in-flight slice bytes specifically. Until A'.2 streams the slice,
- * we treat the slice as PRESENT in supervisor heap iff the pre-bundle
- * phase is active AND a slot is in flight (no completion yet for the
- * current attempted count).
- *
- * After A'.2 lands the slice flows via ReadableStream-over-RPC and
- * supervisor never holds the bytes — this contribution drops to 0.
- */
-export function estimatePreBundleSliceBytes(c) {
-    // Conservative: if the most recent batch attempted >0 specs and the
-    // batch hasn't fully completed, assume one slice's worth of bytes
-    // are in flight.
-    const f = c.preBundleFacet;
-    const inFlight = f.attempted - f.bundlesCompleted - f.errors - f.skipped;
-    if (inFlight <= 0)
-        return 0;
-    return Math.min(inFlight, PRE_BUNDLE_CONCURRENCY) * PRE_BUNDLE_SLICE_CAP_BYTES;
-}
-/**
  * Build a heap estimate from runtime counters + VFS inputs.
  *
  * Deterministic and I/O-free. Called from the /api/_diag/memory request
@@ -144,19 +118,18 @@ export function estimatePreBundleSliceBytes(c) {
  */
 export function estimateSupervisorHeap(c, vfs) {
     const allocationBudget = readSupervisorAllocationBudget();
-    const preBundleSliceBytes = estimatePreBundleSliceBytes(c);
-    // The prefetch build holds a lease, so its bytes are already inside
-    // allocationBudget.current — naming it here moves it out of the
-    // unattributed remainder rather than adding to the total twice.
+    // The prefetch build and the pre-bundle hold leases, so their bytes are
+    // already inside allocationBudget.current — naming them here moves them out
+    // of the unattributed remainder rather than adding to the total twice.
     const transientAttributedBytes = vfs.inFlightWriteBytes +
-        preBundleSliceBytes +
+        c.preBundleSliceBytes +
         c.inFlightRpcPayloadBytes +
         c.prefetchBundleBytes;
     const breakdown = {
         supervisorBaselineBytes: SUPERVISOR_BASELINE_BYTES,
         vfsLruBytes: vfs.cacheHotBytes,
         vfsInFlightBytes: vfs.inFlightWriteBytes,
-        preBundleSliceBytes,
+        preBundleSliceBytes: c.preBundleSliceBytes,
         streamingBuffersBytes: c.inFlightRpcPayloadBytes,
         prefetchBundleBytes: c.prefetchBundleBytes,
         prefetchCacheBytes: c.prefetchCacheBytes,

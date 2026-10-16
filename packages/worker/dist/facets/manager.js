@@ -104,7 +104,7 @@ import { CRED_KERNEL, isNativeBinPath, launchNamedPaths, requireVfsCred } from '
 import { acquireSupervisorAllocation, acquireSupervisorCopyAllocation, readSupervisorAllocationBudget, tryAcquireSupervisorAllocation, tryAcquireSupervisorCopyAllocation, } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { streamedWasmImageDigest } from './wasm-image-digest.js';
 import { wasmImageDigest } from './wasm-image-key.js';
-import { prefetchBundleStart, prefetchBundleEnd, setPrefetchCacheBytes, } from '@nimbus-sh/platform/diag-counters.js';
+import { attributeAllocation, setPrefetchCacheBytes } from '@nimbus-sh/platform/diag-counters.js';
 const launchAdapters = new WeakMap();
 /** The exact type of `entry` in `dir` on a launch's fs, lstat'ing it where its listing could not type it. */
 function launchEntryType(vfs, dir, entry) {
@@ -3654,7 +3654,7 @@ async function admitPrefetch(wait, bytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGE
             lease.release();
             throw waiting.signal.reason;
         }
-        return admissionOf(lease, bytes, true);
+        return admissionOf(lease, true);
     }
     finally {
         waiting?.dispose();
@@ -3667,29 +3667,24 @@ async function admitPrefetch(wait, bytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGE
  */
 function tryAdmitPrefetch(bytes, copy = false) {
     const lease = copy ? tryAcquireSupervisorCopyAllocation(bytes) : tryAcquireSupervisorAllocation(bytes);
-    return lease === null ? null : admissionOf(lease, bytes, false);
+    return lease === null ? null : admissionOf(lease, false);
 }
-function admissionOf(admitted, bytes, queued) {
+function admissionOf(admitted, queued) {
     // Attributed so it lands under `prefetchBundleBytes`, not the unattributed remainder.
-    let held = bytes;
-    prefetchBundleStart(held);
+    const lease = attributeAllocation('prefetchBundleBytes', admitted);
+    let released = false;
     return {
         queued,
-        held: () => held,
+        held: () => (released ? 0 : lease.bytes),
         fit(closureBytes) {
             const need = prefetchNeed(closureBytes);
-            if (held === 0 || need >= held)
+            if (released || need >= lease.bytes)
                 return;
-            admitted.shrinkTo(need);
-            prefetchBundleEnd(held - need);
-            held = need;
+            lease.shrinkTo(need);
         },
         release() {
-            if (held === 0)
-                return;
-            prefetchBundleEnd(held);
-            held = 0;
-            admitted.release();
+            released = true;
+            lease.release();
         },
     };
 }

@@ -22,6 +22,7 @@ const _counters = {
     installPhase: 'idle',
     inFlightRpcPayloadBytes: 0,
     prefetchBundleBytes: 0,
+    preBundleSliceBytes: 0,
     prefetchCacheBytes: 0,
     supervisorAnsweredBytes: 0,
     installFacet: {
@@ -99,25 +100,30 @@ export function rpcPayloadEnd(bytes) {
     }
 }
 /**
- * Track an in-flight prefetch-bundle build. Call with the byte reservation the
- * build took from the supervisor allocation budget, and pair with
- * `prefetchBundleEnd` in the matching `finally` so it returns to zero whether
- * the build succeeded or threw.
+ * `lease`, its bytes counted under `owner` for as long as it holds them: a
+ * shrink takes what it gives back off at once, and the release the rest.
+ * The count is the lease's own, so it is right however its holder ends.
  */
-export function prefetchBundleStart(bytes) {
-    const n = Number(bytes);
-    if (!Number.isFinite(n) || n <= 0)
-        return;
-    _counters.prefetchBundleBytes += n;
-}
-/** Release an in-flight prefetch-bundle reservation. Floors at 0. */
-export function prefetchBundleEnd(bytes) {
-    const n = Number(bytes);
-    if (!Number.isFinite(n) || n <= 0)
-        return;
-    _counters.prefetchBundleBytes -= n;
-    if (_counters.prefetchBundleBytes < 0)
-        _counters.prefetchBundleBytes = 0;
+export function attributeAllocation(owner, lease) {
+    _counters[owner] += lease.bytes;
+    let released = false;
+    return {
+        get bytes() {
+            return lease.bytes;
+        },
+        shrinkTo(bytes) {
+            const before = lease.bytes;
+            lease.shrinkTo(bytes);
+            _counters[owner] -= before - lease.bytes;
+        },
+        release() {
+            if (released)
+                return;
+            released = true;
+            _counters[owner] -= lease.bytes;
+            lease.release();
+        },
+    };
 }
 /**
  * Publish the prefetch-bundle LRU's live retained total. A gauge: the cache
