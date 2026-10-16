@@ -370,8 +370,8 @@ export class NpmInstaller {
         if (toFetch.length > 0) {
             log(`Fetching ${toFetch.length} packages... (path: batch-facet)`);
             const batchResult = engineDir !== null
-                ? await this.fetchViaBatchFacet(toFetch, `${engineDir}/node_modules`, { engine: this.store.as(opts.cred), view }, opts.pid, log, npmLog)
-                : await this.fetchIntoMount(toFetch, nmDir, principal, log, npmLog);
+                ? await this.fetchViaBatchFacet(toFetch, `${engineDir}/node_modules`, { engine: this.store.as(opts.cred), view }, opts.pid, cache, log, npmLog)
+                : await this.fetchIntoMount(toFetch, nmDir, principal, cache, log, npmLog);
             totalFiles += batchResult.filesWritten;
             published.push(...batchResult.installed);
             for (const { placement, pkg } of batchResult.installed)
@@ -837,7 +837,9 @@ export class NpmInstaller {
      * published under `nmDir`: the engine, where its packages are; and its
      * namespace, which the batch's waves write through, for its receipts.
      */
-    reader, pid, log, npmLog) {
+    reader, pid, 
+    /** npm's cache mode for the tarballs read (InstallBatchSpec.cache). */
+    cache, log, npmLog) {
         const installed = [];
         const failed = [];
         let filesWritten = 0;
@@ -969,7 +971,7 @@ export class NpmInstaller {
             // runs. Tests can predict placement via Fanout's
             // `peerSiblingId(key, peerCount)` helper.
             key: `shard-${shardIdx}`,
-            args: { packages: shardSpecs, concurrency: 3 },
+            args: { packages: shardSpecs, concurrency: 3, ...(cache === 'default' ? {} : { cache }) },
         }));
         try {
             // Every shard settles on its own: one that fails costs its packages,
@@ -1112,7 +1114,7 @@ export class NpmInstaller {
      * that cannot be put there fails alone. What an install cut short left in
      * /tmp or beside a package is swept by the next one.
      */
-    async fetchIntoMount(toFetch, nmDir, principal, log, npmLog) {
+    async fetchIntoMount(toFetch, nmDir, principal, cache, log, npmLog) {
         const { view, tmp } = principal;
         if (tmp === null) {
             throw new Error(`installing into /${nmDir} stages the packages in /tmp, which is not on the workspace filesystem`);
@@ -1123,7 +1125,7 @@ export class NpmInstaller {
         await withRecall(() => staging.mkdir(stage, { recursive: true }));
         this.placing.add(stage);
         try {
-            const result = await this.fetchViaBatchFacet(toFetch, `${stage}/node_modules`, { engine: staging, view }, principal.pid, log, npmLog);
+            const result = await this.fetchViaBatchFacet(toFetch, `${stage}/node_modules`, { engine: staging, view }, principal.pid, cache, log, npmLog);
             const installed = [...result.installed];
             const failed = [...result.failed];
             // What failed is not put on the mount: its staged files (part of a
