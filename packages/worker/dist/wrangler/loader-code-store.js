@@ -23,6 +23,13 @@ import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ensureKernelStoreRoot, KERNEL_STORE_ROOT } from '../facets/kernel-store-root.js';
 export const LOADER_CODE_ROOT = `${KERNEL_STORE_ROOT}/loader-code`;
 export const CRED_LOADER_STORE = Object.freeze({ uid: 998, gid: 998, groups: Object.freeze([998]), umask: 0o077 });
+/**
+ * The store's caps: per owner (one binding of one build), and per session
+ * incarnation. Each owner's files count as its own, a copy it adopted from
+ * another owner included: the incarnation's cap is a logical one, which may
+ * refuse before the bytes it counts are all stored (loader-code-store-design-r7,
+ * amendment 1).
+ */
 const OWNER_FILES = 16_384;
 const OWNER_BYTES = 256 * 1024 * 1024;
 const STORE_BYTES = 1024 * 1024 * 1024;
@@ -236,9 +243,15 @@ export class LoaderCodeRegistry {
         const joined = owner.creating.get(digest);
         if (joined !== undefined)
             return joined;
-        if (owner.files + 1 > OWNER_FILES || owner.bytes + size > OWNER_BYTES || this.storeBytes + size > STORE_BYTES) {
-            return Promise.reject(new LoaderStoreRefusal(`this owner would hold ${owner.files + 1} files and ${owner.bytes + size} bytes (at most ${OWNER_FILES} and ${OWNER_BYTES}), and the session's loader store ${this.storeBytes + size} bytes (at most ${STORE_BYTES})`, 'ENOSPC'));
-        }
+        const over = owner.files + 1 > OWNER_FILES
+            ? `this worker_loaders binding's build would hold ${owner.files + 1} files, over its cap of ${OWNER_FILES}`
+            : owner.bytes + size > OWNER_BYTES
+                ? `this worker_loaders binding's build would hold ${owner.bytes + size} bytes, over its cap of ${OWNER_BYTES} (256 MiB)`
+                : this.storeBytes + size > STORE_BYTES
+                    ? `the session's loader store would hold ${this.storeBytes + size} bytes, over its cap of ${STORE_BYTES} (1 GiB per session incarnation, each binding's files counted as its own, a copy shared with another binding's included)`
+                    : null;
+        if (over !== null)
+            return Promise.reject(new LoaderStoreRefusal(over, 'ENOSPC'));
         owner.files++;
         owner.bytes += size;
         this.storeBytes += size;
