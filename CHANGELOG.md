@@ -11,6 +11,36 @@ published independently in the `@nimbus-sh` npm scope.
   `cp`, `mv`, Node's `lstatSync` and git now see the right error, and
   `existsSync` stays false. `ls` exits 2 for an operand it cannot reach, as
   GNU's does.
+- Fixed (CLI): `nimbus runtime sync` with no runtime named, and so `nimbus
+  setup cloudflare`, now publishes `cpython@3.13.14-3` as the bucket's Python.
+  It used to publish `python@0.29.4`, Pyodide, whose `python-runner` no host
+  registers anymore, so a fresh bucket's `python` could not be installed.
+  The published CLI can publish the runtimes Nimbus builds itself (cpython,
+  bash, git), although the published `@nimbus-sh/worker` has no wasm build
+  tree. Each is staged from its npm runtime package at the version the
+  release names. The tarball must match the registry's sha512 integrity, and
+  it is read in memory, never unpacked: an entry that is a link or a device
+  is refused, so nothing outside the package is ever read, and so is a
+  package of more than 4,096 entries or 1 GiB of tar. Each file must
+  match the package manifest's sha256, and the manifest the publisher
+  composes must be the package's, byte for byte, or nothing is published.
+  Before, the publisher stopped at the missing build tree. Publishing
+  `@nimbus-sh/worker` or `@nimbus-sh/cli` now requires each of those runtime
+  packages to be on npm at its spec's version, as publishing core already
+  did (`check-runtime-packages.mjs`, run by `dist-integrity.mjs --publish`).
+
+- Fixed (build): the dist fixpoint's input fingerprint covers what the
+  packages' builds run and import outside their own trees. That is the
+  shared body compiler (`scripts/compile-facet-bodies.mjs`,
+  `scripts/lib/compiled-bodies.mjs`), the orchestrator's helpers,
+  `rebuild-opencode`'s output patcher, and the bash input check. Before, a
+  change to one of them was accepted by the warm path unbuilt: moving
+  compiled-bodies' target from esnext to es2018 left the record verified.
+  `tests/unit/dist-integrity.mjs` [27] walks the build's imports and refuses
+  any file outside the inputs. It parses each script with TypeScript, so a
+  comment, a template literal or a `new URL(…, import.meta.url)` read cannot
+  hide a file (`scripts/lib/build-reads.mjs`).
+
 - Fixed: the shell's `node` emits `beforeExit`, as Node does. It fires
   with `process.exitCode` each time the loop runs empty, and again only
   when a listener scheduled a timer or an immediate. A write or a microtask
