@@ -128,10 +128,9 @@ const FILES = {
   // Module files written while the program runs (so interpreted), each with
   // top-level await: import() resolves once the module has finished, and
   // rejects with what its evaluation throws; require() refuses the module,
-  // as Node's does (ERR_REQUIRE_ASYNC_MODULE), before it runs. An export the
-  // module has not reached is in its TDZ until it does, and so is what an
-  // interpreted module that imports it statically reads (`transitive`;
-  // Node: 42).
+  // as Node's does (ERR_REQUIRE_ASYNC_MODULE), before it runs. An
+  // interpreted module that imports it statically waits for it, as Node's
+  // does (`transitive`: 42).
   'tla.js': [
     'const fs = require("fs");',
     'const dir = "/home/user/w/.tmp-tla";',
@@ -445,7 +444,7 @@ try {
     // One EventEmitter, workerd's: Node's function-constructor inheritance,
     // express's prototype mixin, native http servers and the static helpers.
     const tla = await terminal.run(`cd ${W} && node tla.js`);
-    assert.match(tla.stdout, /TLA late=42 bad!tla failed transitive=ReferenceError req=ERR_REQUIRE_ASYNC_MODULE/, tla.stdout);
+    assert.match(tla.stdout, /TLA late=42 bad!tla failed transitive=42 req=ERR_REQUIRE_ASYNC_MODULE/, tla.stdout);
 
     const events = await terminal.run(`cd ${W} && node events.js`);
     assert.equal(events.status, 0, events.stdout);

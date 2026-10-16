@@ -281,6 +281,8 @@ export async function stageEsModules(
       const exported = (FACET_PROVIDED_PACKAGES.includes(builtin) ? PROVIDED_PACKAGE_EXPORTS[builtin] : NODE_BUILTIN_EXPORTS[builtin]) ?? [];
       return member('builtin', builtin, exported, (id, name) => builtinFacadeModule(name, id, exported));
     }
+    // A data: URL's module is the runtime's to make (node-shims' data loader), as an import of it at runtime is.
+    if (resolution.format === 'data') throw notStaged(resolution.url, resolution.url);
     if (resolution.path === undefined) throw new Error(`Nimbus: ${resolution.url} has no file to stage`);
     // A query's or fragment's module is an instance of its own (Node keys
     // modules by URL), which a row by path cannot be: the importer's graph

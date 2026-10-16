@@ -12,6 +12,35 @@ published independently in the `@nimbus-sh` npm scope.
   request and sent it with a Content-Length. Push no longer reads the
   isomorphic-git-only `http.corsProxy` setting, which fetch already
   ignored and git never had.
+- Fixed: a hosted ES module, staged or interpreted, can statically import
+  a `data:` module (`import x from 'data:text/javascript,…'`). Its imported
+  names are checked before any module body runs. It runs once, in a cycle
+  or after it throws, and its `export *` conflicts are left out of its
+  namespace, as in Node. Before, a staged entry or package with such an
+  import failed to link, and an interpreted one refused it.
+- Fixed: a hosted program's ES modules that the interpreter evaluates
+  (files written after launch, `?query` and `#fragment` instances, `data:`
+  modules, staged modules it takes over) are linked and evaluated as
+  ECMA-262 specifies (`runtime/esm-graph.js`). A static import of a module
+  with top-level await now waits for it, as in Node; before, the importer
+  ran first. In a cycle, modules run in Node's order, whatever their kind;
+  before, the order depended on which module of the cycle was interpreted
+  or staged.
+- Fixed: a hosted `data:` JavaScript module is always an ES module, as its
+  MIME type says: strict, with `this` undefined at its top level. Before,
+  one without `import` or `export` ran as sloppy CommonJS.
+- Fixed: a hosted ES module may export its own `__esModule`. Before, a
+  module the program wrote with `export const __esModule = false` threw a
+  TypeError, and namespaces left the name out. Now the name is in its
+  namespace, as in Node.
+- Fixed: a hosted typeless `.js` file the program writes, whose top level
+  redeclares a CommonJS wrapper name (`const require = 1`), is an ES
+  module, as Node detects it. Before, it ran as sloppy CommonJS. An
+  explicitly CommonJS file that does this is now the SyntaxError V8 gives.
+- Fixed: a hosted module under a directory whose name has `#`, `?`, `%` or
+  another character a file URL escapes imports beside itself, and its
+  `import.meta.url` escapes the name as Node's `pathToFileURL` does. Before,
+  `a#b/main.cjs` imported from the directory above it.
 - Fixed: `pip install` decides which dependencies apply by the markers of
   the CPython it installs for: CPython 3.13.14 on `wasm32-wasi`, as the
   interpreter itself answers them (`sys_platform` is `"wasi"`). Before, pip

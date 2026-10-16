@@ -85,4 +85,12 @@ export declare function linkLateGraph(host: LateLinkHost, key: string, url: stri
 export declare function linkAdopted(host: LateLinkHost, id: number, key: string, url: string): void;
 /** The names the `export *`s of the interpreted module at `url` reach two different bindings of, which its namespace omits. */
 export declare function starConflicts(host: LateLinkHost, url: string): string[];
+/**
+ * The names of the namespace of the late module at `url`, as its link read
+ * them: its own and its `export *`s', but those two of them reach different
+ * bindings of; null where its link did not read them (one not linked, or
+ * whose names its source does not tell). Known before its body runs, so a
+ * namespace taken in a cycle has them all.
+ */
+export declare function namespaceNames(host: LateLinkHost, url: string): string[] | null;
 //# sourceMappingURL=esm-late-link.d.ts.map
