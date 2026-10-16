@@ -48,8 +48,8 @@ export interface RealmServices {
     watch(id: number, path: string | null): void;
     /** umask(2): the mask the program creates with from now on. */
     setUmask(mask: number): void;
-    /** Once writes up to number `upTo` are made: those after number `after` that failed (the guest's settle-mark). */
-    settle(after: number, upTo: number): Promise<readonly OutputFailure[]>;
+    /** Once writes up to number `upTo` are made: those after number `after` that failed (`round`'s settle-mark). */
+    settle(round: number, after: number, upTo: number): Promise<readonly OutputFailure[]>;
 }
 /**
  * The answer to `call`, whatever the guest sent: the value of one of the calls

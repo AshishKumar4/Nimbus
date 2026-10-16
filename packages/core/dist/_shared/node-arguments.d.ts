@@ -21,7 +21,11 @@ export declare const O_SYNC = 1052672;
 export declare function validateInt32(value: unknown, name: string, min?: number, max?: number): number;
 /** validateUint32: an integer from 0 (from 1 when `positive`) to 2 ** 32 - 1. */
 export declare function validateUint32(value: unknown, name: string, positive?: boolean): number;
-/** A uid or gid as Node's chown reads it (an integer from -1 to 2 ** 32 - 1): -1, which keeps the file's, is null. */
+/**
+ * A uid or gid as Node's chown reads it (an integer from -1 to 2 ** 32 - 1):
+ * -1, and 2 ** 32 - 1, which Node's binding converts to the same uid_t, keep
+ * the file's (null).
+ */
 export declare function nodeOwnerId(value: unknown, name: string): number | null;
 /** stringToFlags: an open's flags, a flag string from Node's table or an int32 of bits; none is 'r'. */
 export declare function stringToFlags(flags: unknown, name?: string): number;

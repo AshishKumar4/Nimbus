@@ -177,9 +177,10 @@ async function performCall(call, services) {
             return services.setUmask(call.mask);
         }
         case 'settle': {
-            if (!Number.isSafeInteger(call.after) || !Number.isSafeInteger(call.upTo) || typeof call.after !== 'number' || typeof call.upTo !== 'number')
-                throw refused('settle without write numbers');
-            return services.settle(call.after, call.upTo);
+            if (typeof call.round !== 'number' || typeof call.after !== 'number' || typeof call.upTo !== 'number'
+                || !Number.isSafeInteger(call.round) || !Number.isSafeInteger(call.after) || !Number.isSafeInteger(call.upTo))
+                throw refused('settle without its round and write numbers');
+            return services.settle(call.round, call.after, call.upTo);
         }
         case 'fdKind': {
             if (call.fd !== 0 && call.fd !== 1 && call.fd !== 2)
@@ -239,7 +240,7 @@ export async function runNodeInRealm(program, ctx, kernel) {
     // (settle), which may come before their events: the failures after the
     // guest's mark are kept for it, and it waits for the writes it names.
     let marked = null;
-    let answeredAfter = -1;
+    let answeredRound = 0;
     const settleCalls = [];
     const settled = () => {
         for (const call of settleCalls.filter((waiting) => waiting.upTo <= lastSettled)) {
@@ -386,11 +387,11 @@ export async function runNodeInRealm(program, ctx, kernel) {
                 kernel?.portRegistry.delete(port);
         },
         setUmask: (next) => { mask = next; },
-        settle: async (after, upTo) => {
+        settle: async (round, after, upTo) => {
             if (lastSettled < upTo)
                 await new Promise((resolve) => { settleCalls.push({ upTo, resolve }); });
-            answeredAfter = after;
-            const failures = marked !== null && marked.after === after ? marked.failures.filter((failure) => failure.seq <= upTo) : [];
+            answeredRound = round;
+            const failures = marked !== null && marked.round === round ? marked.failures.filter((failure) => failure.seq > after && failure.seq <= upTo) : [];
             marked = null;
             return failures;
         },
@@ -432,9 +433,9 @@ export async function runNodeInRealm(program, ctx, kernel) {
                     settled();
                     return;
                 case 'settle-mark':
-                    // A mark its call has answered already (the call came first, its writes none) keeps nothing.
-                    if (event.after > answeredAfter)
-                        marked = { after: event.after, failures: [] };
+                    // A mark whose round its call has answered already (the call came first, its writes none) keeps nothing.
+                    if (event.round > answeredRound)
+                        marked = { round: event.round, after: event.after, failures: [] };
                     return;
                 case 'exit':
                     code = event.code;

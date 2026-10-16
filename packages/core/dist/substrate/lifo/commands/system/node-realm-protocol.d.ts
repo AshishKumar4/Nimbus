@@ -50,12 +50,13 @@ export type NodeCall = {
 }
 /**
  * Answered once output writes up to number `upTo` are made, with those
- * after number `after` that failed (since the guest's settle-mark at
- * `after`): the writes a program's 'beforeExit' listeners made, made before
+ * after number `after` that failed (since `round`'s settle-mark): the
+ * writes a program's 'beforeExit' listeners made in that round, made before
  * its loop is asked again, as Node's writes to a pipe or a file are.
  */
  | {
     readonly op: 'settle';
+    readonly round: number;
     readonly after: number;
     readonly upTo: number;
 };
@@ -97,12 +98,15 @@ export type GuestEvent =
     readonly upTo: number;
 }
 /**
- * The program's 'beforeExit' is about to be emitted with writes up to
- * number `after` posted: the failures of those after it are the answer of
- * the settle call that follows, and no output-failed of theirs is posted.
+ * The program's 'beforeExit' is about to be emitted (its round number
+ * `round`, counting from 1) with writes up to number `after` posted: the
+ * failures of those after it are the answer of the round's settle call,
+ * and no output-failed of theirs is posted. Rounds are told apart by
+ * number: two can start at the same write number.
  */
  | {
     readonly type: 'settle-mark';
+    readonly round: number;
     readonly after: number;
 } | {
     readonly type: 'fetch';

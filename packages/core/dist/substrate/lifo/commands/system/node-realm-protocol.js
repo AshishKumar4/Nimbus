@@ -14,7 +14,7 @@ export function isGuestEvent(value) {
     switch (value.type) {
         case 'output': return (value.fd === 1 || value.fd === 2) && isOutputSource(value.source) && Number.isSafeInteger(value.writer) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
         case 'settle': return Number.isSafeInteger(value.upTo);
-        case 'settle-mark': return Number.isSafeInteger(value.after);
+        case 'settle-mark': return Number.isSafeInteger(value.round) && Number.isSafeInteger(value.after);
         case 'fetch':
             return Number.isSafeInteger(value.id) && Number.isSafeInteger(value.port) && typeof value.url === 'string'
                 && typeof value.method === 'string' && stringRecord(value.headers)

@@ -50,10 +50,14 @@ export function validateUint32(value, name, positive = false) {
         throw outOfRange(name, `>= ${min} && <= 4294967295`, value);
     return value;
 }
-/** A uid or gid as Node's chown reads it (an integer from -1 to 2 ** 32 - 1): -1, which keeps the file's, is null. */
+/**
+ * A uid or gid as Node's chown reads it (an integer from -1 to 2 ** 32 - 1):
+ * -1, and 2 ** 32 - 1, which Node's binding converts to the same uid_t, keep
+ * the file's (null).
+ */
 export function nodeOwnerId(value, name) {
     const id = validateInt32(value, name, -1, 4294967295);
-    return id === -1 ? null : id;
+    return id === -1 || id === 4294967295 ? null : id;
 }
 /** stringToFlags: an open's flags, a flag string from Node's table or an int32 of bits; none is 'r'. */
 export function stringToFlags(flags, name = 'flags') {

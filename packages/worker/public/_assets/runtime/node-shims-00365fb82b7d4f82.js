@@ -407,7 +407,7 @@ function validateUint32(value, name, positive = false) {
 }
 function nodeOwnerId(value, name) {
   const id = validateInt32(value, name, -1, 4294967295);
-  return id === -1 ? null : id;
+  return id === -1 || id === 4294967295 ? null : id;
 }
 function stringToFlags(flags, name = "flags") {
   if (typeof flags === "number") return validateInt32(flags, name);
