@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "7e98512295773e3fdbe225f1382f6a831bfa098da2934839f732100a4b19e7bb",
+  "fingerprint": "623c0a32709ac47677c7a44f6727e915c5c932770b66d936e405cdeda9131c2a",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1620,7 +1620,7 @@
     "packages/core/src/shell/shell-invocation.ts": "2b029e833cb8dc991383c5711130f04300f72a6e09be8535ef6756c50974bf1e",
     "packages/core/src/shell/stdin-adapter.ts": "1bf670be18492b9d640efdea2ad3ae4a4ccb4c9c430d23d6e19ba0b2e19bba3e",
     "packages/core/src/shell/unix-accounts.ts": "ecd60253dca196b040826e78e02f0f33d786e88656d5d5c0034ded2320a04f23",
-    "packages/core/src/shell/unix-commands.ts": "e50839ef35528f61e9c426becf3b12d2bfd3e5fec2f2fbb1995f5b9a0dee7f1f",
+    "packages/core/src/shell/unix-commands.ts": "4a54bd10cae7de3d131bf4b4106657380cb0cf8a379521887f974539dbc4fffc",
     "packages/core/src/substrate/lifo/UPSTREAM.md": "c1765ad486e361898ef47867dc15219425a28551efd83bd3531b1363200702bf",
     "packages/core/src/substrate/lifo/commands/archive/gunzip.ts": "3d40974f02e7592fe9b1046df682de03dd6aad790c52adc0b53a095ac05774c7",
     "packages/core/src/substrate/lifo/commands/archive/gzip.ts": "1cf7200dcd03941485ac9b4aa43e0679746565d5511a7e5acac0ed64901b89df",
