@@ -6,6 +6,7 @@ import { residentFilesystem, } from '@nimbus-sh/core/runtime/wasi/resident-files
 import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { sqlJournal } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { processHost } from '@nimbus-sh/core/runtime/wasi/processes.js';
 import { wasiOutputRelay } from '@nimbus-sh/core/runtime/wasi/stdio.js';
 import { outputControlReader } from '@nimbus-sh/core/runtime/wasi/output-control.js';
@@ -963,7 +964,7 @@ export function __wasiMakeImports(opts) {
         args_sizes_get(argcPtr, sizePtr) {
             let total = 0;
             for (let i = 0; i < argv.length; i++)
-                total += utf8enc.encode(argv[i]).length + 1;
+                total += utf8Length(argv[i]) + 1;
             writeU32LE(argcPtr, argv.length);
             writeU32LE(sizePtr, total);
             return __WASI_ESUCCESS;
@@ -983,7 +984,7 @@ export function __wasiMakeImports(opts) {
         environ_sizes_get(envcPtr, sizePtr) {
             let total = 0;
             for (let i = 0; i < envArr.length; i++)
-                total += utf8enc.encode(envArr[i]).length + 1;
+                total += utf8Length(envArr[i]) + 1;
             writeU32LE(envcPtr, envArr.length);
             writeU32LE(sizePtr, total);
             return __WASI_ESUCCESS;
@@ -1178,8 +1179,7 @@ export function __wasiMakeImports(opts) {
             const dv = view();
             dv.setUint8(prestatPtr, __WASI_PREOPENTYPE_DIR);
             // pr_name_len at offset 4 (after 3 bytes pad)
-            const nameBytes = utf8enc.encode(entry.wasiPath);
-            dv.setUint32(prestatPtr + 4, nameBytes.length, true);
+            dv.setUint32(prestatPtr + 4, utf8Length(entry.wasiPath), true);
             return __WASI_ESUCCESS;
         },
         fd_prestat_dir_name(fd, pathPtr, pathLen) {

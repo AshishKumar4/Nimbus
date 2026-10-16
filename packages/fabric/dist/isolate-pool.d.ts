@@ -315,6 +315,8 @@ export declare class IsolatePool {
      * across pool dispatches (cache-key stability).
      */
     private readonly wasmModules;
+    /** The identifiers wasmModules bind, each to the key that took it: a per-call module takes none of them. */
+    private readonly wasmIds;
     /** Every constructor-time wasm module, as the loader cache key names it
      *  (wasmIdentity), so a change invalidates warm slots: a compiled module
      *  by the identity its host described, bytes by their SHA-256. Bytes are

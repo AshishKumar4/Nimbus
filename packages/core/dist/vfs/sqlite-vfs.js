@@ -6816,7 +6816,7 @@ export class SqliteVFS {
         const limit = Math.max(1, Math.min(EXPORT_PAGE_ROWS, Math.trunc(options.limit ?? EXPORT_PAGE_ROWS)));
         const range = subtreeRange(root);
         const rows = [];
-        const envelopeBytes = enc.encode(JSON.stringify({ schema: VFS_EXPORT_SCHEMA, source, root, nextIno, after, rows, next: null })).byteLength;
+        const envelopeBytes = utf8Length(JSON.stringify({ schema: VFS_EXPORT_SCHEMA, source, root, nextIno, after, rows, next: null }));
         let rowBytes = 0;
         let pieces = 0;
         let next = null;
@@ -6826,7 +6826,7 @@ export class SqliteVFS {
             if (rows.length === limit)
                 return false;
             const relative = inode.path === root ? '' : (root === '' ? inode.path : inode.path.slice(root.length + 1));
-            const cursorBytes = enc.encode(JSON.stringify(exportCursor(relative, Math.max(10, inode.size)))).byteLength;
+            const cursorBytes = utf8Length(JSON.stringify(exportCursor(relative, Math.max(10, inode.size))));
             const allowance = EXPORT_FRAME_BYTES - envelopeBytes - rowBytes - (rows.length > 0 ? 1 : 0) - (cursorBytes - 4);
             const fragment = this.exportRow(inode, relative, offset, EXPORT_PAGE_PIECES - pieces, allowance);
             if (fragment === null) {
@@ -6883,7 +6883,7 @@ export class SqliteVFS {
             atime: inode.atime, mtime: inode.mtime, contentKey: inode.isDir ? null : this.contentKeyOf(inode),
             manifest: inode.contentId !== null, pieceOffset: offset, pieces: [],
         };
-        let bytes = enc.encode(JSON.stringify(row)).byteLength;
+        let bytes = utf8Length(JSON.stringify(row));
         if (bytes > byteLimit)
             return null;
         let position = offset;
@@ -7062,7 +7062,7 @@ export class SqliteVFS {
         if (page.schema !== VFS_EXPORT_SCHEMA)
             throw vfsError('EINVAL', `export schema ${page.schema}, expected ${VFS_EXPORT_SCHEMA}`);
         if (page.rows.length > EXPORT_PAGE_ROWS || page.rows.reduce((n, row) => n + row.pieces.length, 0) > EXPORT_PAGE_PIECES
-            || enc.encode(JSON.stringify(page)).byteLength > EXPORT_FRAME_BYTES)
+            || utf8Length(JSON.stringify(page)) > EXPORT_FRAME_BYTES)
             throw vfsError('E2BIG', 'import metadata frame exceeds its budget');
         const target = normalizeVfsPath(dst);
         this.assertMutationsAllowed([target]);

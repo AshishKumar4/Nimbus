@@ -50,6 +50,7 @@ import {
   type ParsedSheet,
 } from './css-syntax.js';
 import type { EsbuildRemotePlugin } from './esbuild-service.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 
 export interface CssModule {
   /** The module's namespace and path, as the plugin resolved it. */
@@ -104,8 +105,6 @@ const isCssLoader = (loader: string | undefined) => loader === 'css' || loader =
 function fileOf(module: { namespace: string; path: string }): string {
   return module.namespace === 'file' || module.namespace === '' ? module.path : `${module.namespace}:${module.path}`;
 }
-
-const utf8Length = (text: string) => new TextEncoder().encode(text).length;
 
 /** A bundled stylesheet, and what esbuild would have warned about its sheets. */
 export interface BundledCss {

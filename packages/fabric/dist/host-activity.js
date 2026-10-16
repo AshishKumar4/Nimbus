@@ -1,3 +1,4 @@
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 export const HOST_WATCH_HEADER = 'x-nimbus-host-watch';
 export const HOST_INCARNATION_HEADER = 'x-nimbus-host-incarnation';
 /** A data request's per-open capability; with the pinned incarnation, it admits the request at the leaf. */
@@ -352,7 +353,7 @@ const RESIDENT_SIGNAL_FLAGS = [['enable_request_signal', 'disable_request_signal
  * is `mainModule`: part of what the map's ceiling holds beside its own text.
  */
 export function hostAdapterBytes(mainModule) {
-    return new TextEncoder().encode(hostAdapter(mainModule, crypto.randomUUID())).byteLength;
+    return utf8Length(hostAdapter(mainModule, crypto.randomUUID()));
 }
 function hostAdapter(mainModule, capability) {
     const [watch, request, incarnation, key, failed] = [HOST_WATCH_HEADER, HOST_REQUEST_HEADER, HOST_INCARNATION_HEADER, capability, HOST_FAILED_HEADER].map((value) => JSON.stringify(value));

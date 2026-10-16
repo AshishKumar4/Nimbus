@@ -43,6 +43,8 @@
  * missing columns).
  */
 
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+
 /** Module-level cap on the env-row JSON length. The whole env is one
  *  row in nimbus_session_kv; if the user's env explodes (eg every
  *  npm-install side-effects 100 vars), we want to surface that as a
@@ -301,8 +303,8 @@ export function countSessionStateKeys(ctx: any): number {
 // the WebSocketTerminal flush layer (5 ms timer) so a chatty shell
 // produces O(N_frames) rows, not O(N_writes).
 //
-// The byte length of each frame is computed by the caller (cheap
-// TextEncoder().encode().length) and stored in the `bytes` column.
+// The byte length of each frame is computed by the caller (utf8Length)
+// and stored in the `bytes` column.
 // Computing per-row length on the read side would also work
 // (length(CAST(data AS BLOB))) but storing it makes the eviction
 // query trivial.
@@ -340,12 +342,12 @@ export function appendScrollback(ctx: any, data: string, atMs: number): void {
   // user cares about the END of that output (where the prompt is)
   // not the beginning.
   let payload = data;
-  let bytes = _scrollbackEnc.encode(payload).length;
+  let bytes = utf8Length(payload);
   if (bytes > SCROLLBACK_MAX_FRAME_BYTES) {
     const buf = _scrollbackEnc.encode(payload);
     const start = buf.length - SCROLLBACK_MAX_FRAME_BYTES;
     payload = new TextDecoder().decode(buf.subarray(start));
-    bytes = _scrollbackEnc.encode(payload).length;
+    bytes = utf8Length(payload);
   }
 
   let insertedSeq: number | null = null;

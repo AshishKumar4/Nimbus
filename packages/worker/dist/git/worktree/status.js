@@ -13,6 +13,7 @@ import { comparePaths, compareBytes, decodePath, S_IFMT } from './dircache.js';
 import { PairList } from './pairs.js';
 import { S_IFDIR, readTree } from './tree.js';
 import { scanWorktree } from './walk.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 const encoder = new TextEncoder();
 /** Whether `path` is one of `specs` or below one; no specs is everything. */
 export function inSpecs(specs, path) {
@@ -51,7 +52,7 @@ export async function walkTreeAndIndex(store, tree, dc, specs, visit, { cacheTre
         const subtrees = cacheTree !== null && node >= 0 ? cacheTree.subtrees(node) : null;
         const built = build ? [] : null;
         let same = treeOid !== null;
-        const skip = dir ? encoder.encode(dir).length + 1 : 0;
+        const skip = dir ? utf8Length(dir) + 1 : 0;
         let t = 0;
         let i = lo;
         while (t < entries.length || i < hi) {
