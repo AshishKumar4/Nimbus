@@ -17,7 +17,7 @@
  *                               node:http or a Worker fetch handler.
  *   Bun.file(path)           — VFS-backed BunFile {text, json, bytes,
  *                               arrayBuffer, stream, exists, size, type}
- *                               (bun-file-api.ts, shared with opencode).
+ *                               (bun-file.ts, shared with opencode).
  *   Bun.write(dst, data)     — VFS write of the bytes of a string (UTF-8),
  *                               view, ArrayBuffer, Blob, Response or BunFile;
  *                               answers the byte count.
@@ -41,7 +41,7 @@
  */
 
 import type { FacetManager } from '../facets/manager.js';
-import { BUN_FILE_API } from './bun-file-api.js';
+import { BUN_FILE_API_SOURCE } from '../loaders/compiled-bodies.generated.js';
 import { runFresh, type RunFreshResult, type RunFreshOpts } from './node-runner.js';
 
 /** Bun version string surfaced via `bun --version` and `Bun.version`. */
@@ -66,7 +66,7 @@ export const BUN_SHIM_PREAMBLE = `
   const cp = (() => { try { return require('child_process'); } catch { return null; } })();
   const BUN_VERSION = ${JSON.stringify(BUN_VERSION)};
 
-  const { file: bunFile, write: bunWrite } = (${BUN_FILE_API})(fs);
+  const { file: bunFile, write: bunWrite } = ${BUN_FILE_API_SOURCE}.bunFileApi(fs);
 
   function bunSpawn(cmd, opts) {
     if (!cp) throw new Error('Bun.spawn: child_process unavailable');

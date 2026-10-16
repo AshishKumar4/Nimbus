@@ -36,7 +36,6 @@
  * DB at ~/.local/share/opencode/*.db.
  */
 
-import { BUN_FILE_API } from './bun-file-api.js';
 import { generateSqliteFacetPreamble } from './sqlite-shim.js';
 import { VFS_CURSOR_SEED_SOURCE } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
@@ -45,6 +44,7 @@ import { NODE_SHIMS_IMPORTS } from './node-shims-imports.js';
 import { PENDING_IO_SOURCE } from './pending-io.js';
 import { moduleSource, type ModuleSource, type ImmutableModuleSource } from '@nimbus-sh/platform/module-source.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES } from '../vfs/facet-resident-limits.js';
+import { BUN_FILE_API_SOURCE } from '../loaders/compiled-bodies.generated.js';
 import {
   OPENTUI_BACKEND_FACET_SRC,
   OPENTUI_BACKEND_GLOBAL,
@@ -236,7 +236,7 @@ const BUN_GLOBAL_POLYFILL: string = `
 if (typeof globalThis.Bun === "undefined") {
   const __ocFs = globalThis.${BUILTINS_GLOBAL}.fs;
   const __ocCrypto = globalThis.${BUILTINS_GLOBAL}.crypto;
-  const __ocBunFile = (${BUN_FILE_API})(__ocFs);
+  const __ocBunFile = ${BUN_FILE_API_SOURCE}.bunFileApi(__ocFs);
   globalThis.Bun = {
     stdin: { text: () => new Promise((resolve) => {
       let data = "";
