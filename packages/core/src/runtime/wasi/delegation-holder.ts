@@ -737,9 +737,9 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
 
   const holder: DelegationHolder = {
     client,
-    entry: (key) => names.entry(key),
+    entry: names.entry,
 
-    children: (key, base) => names.children(key, base),
+    children: names.children,
 
     copyFile: (from, to, path, stored, keepMode) => {
       const source = entryOf(from);
