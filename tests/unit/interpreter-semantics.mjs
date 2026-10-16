@@ -460,6 +460,21 @@ async function runCases(interpreterFile, opsFile) {
     await tla(m.exports, require, m, '', '');
     check('top-level await', m.exports.v, 42);
   }
+  {
+    // A module cell's link and its execution apart (moduleLink): the link binds its imports, makes its functions and
+    // publishes its exports, running none of its body; the execution runs it.
+    const cell = interp.compileModule('/w/l.mjs', 'import v from "./v.js"; globalThis.__linkRan = (globalThis.__linkRan ?? 0) + 1; export function f() { return v; } export const later = 1;');
+    const mod = { exports: {} };
+    const execute = interp.moduleLink(cell)(mod.exports, () => ({ default: 'V' }), mod, '/w/l.mjs', '/w');
+    check('a linked module has its functions and imports, and has not run', [mod.exports.f(), 'later' in mod.exports, globalThis.__linkRan], ['V', true, undefined]);
+    execute();
+    check('its execution runs its body, once', [mod.exports.later, globalThis.__linkRan], [1, 1]);
+    const awaits = interp.compileModule('/w/la.mjs', 'export const w = await Promise.resolve(3);');
+    const am = { exports: {} };
+    await interp.moduleLink(awaits)(am.exports, require, am, '', '')();
+    check('a linked module with top-level await executes to its completion', am.exports.w, 3);
+    check('a CommonJS cell has no link', interp.moduleLink(interp.compileModule('/w/c2.js', 'exports.a = 1')), null);
+  }
 
   console.log(`${count} cases passed`);
 }

@@ -28,7 +28,7 @@ import {
   scriptExpression,
 } from '../_shared/runtime-function-source.js';
 import { Compiler, programBindings, type UnitContext, type UnitHost } from './compile.js';
-import { type ModuleCell, type ModuleHelpers, moduleCell } from './modules.js';
+import { type ModuleCell, type ModuleHelpers, type ModuleLink, moduleCell, moduleLink } from './modules.js';
 import type { HostOps, NativeFunction } from './host-ops.js';
 import { InterpreterRuntime, ROOT_ENV, frameTemplate, isObject } from './runtime.js';
 import { type FunctionScope, analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
@@ -108,6 +108,13 @@ export interface Interpreter {
    * runs (node-shims' require(esm)). False for any other cell.
    */
   moduleAwaits(cell: unknown): boolean;
+  /**
+   * The link of `cell`, an ES module's cell: its InitializeEnvironment, which
+   * answers its ExecuteModule (modules.ts ModuleLink), for a host that
+   * evaluates a module graph as ECMA-262 does (runtime/esm-graph.ts); null
+   * for a CommonJS cell.
+   */
+  moduleLink(cell: ModuleCell): ModuleLink | null;
   /**
    * A function returning the value of the script `code` when it is one
    * expression (scriptExpression): vm.runInThisContext's code, as node-shims
@@ -382,6 +389,10 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
 
     moduleAwaits(cell) {
       return typeof cell === 'function' && awaiting.has(cell as ModuleCell);
+    },
+
+    moduleLink(cell) {
+      return moduleLink(cell);
     },
 
     compileExpression(code, origin) {
