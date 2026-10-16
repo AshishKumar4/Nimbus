@@ -13621,7 +13621,11 @@ function __nimbusRequireRecord(record, parent) {
     throw __nimbusRequireAsync(parent, state.filename);
   }
   if (record.status !== "evaluated") throw __nimbusRequireAsync(parent, state.filename);
-  if (record.evaluationError !== null) throw record.evaluationError.value;
+  if (record.evaluationError !== null) {
+    // A ReferenceError for a CommonJS name is explained by the module required, as Node's ModuleJobSync explains it.
+    __nimbusExplainCommonJSGlobalLike(record.evaluationError.value, state.moduleUrl, false);
+    throw record.evaluationError.value;
+  }
   __nimbusUpdateChildren(parent, state.mod, true);
   __NodeModule._cache[state.cacheKey] ??= state.mod;
   return state.adopted ? __nimbusEsmRequired(__nimbusEsmRecord(state.esmId)) : state.mod.exports;
