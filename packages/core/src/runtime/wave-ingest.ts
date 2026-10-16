@@ -910,9 +910,12 @@ export class WaveIngest {
               // A call observes everything the stream wrote before it.
               phase = 'publish';
               const call = record.call;
-              // A mkdir commits with the calls beside it; any other may change
-              // where later names resolve, and commits now.
-              queueCall(call.path, record, { alone: call.call !== 'mkdir', receipt: call.call === 'open' || call.call === 'copyFile' });
+              // A mkdir, and an open that keeps no description (it makes or
+              // empties one file, as a data call does), commit with the calls
+              // beside it; any other may change where later names resolve, or
+              // keeps state beside the engine's, and commits now.
+              const alone = call.call !== 'mkdir' && !(call.call === 'open' && call.description === undefined);
+              queueCall(call.path, record, { alone, receipt: call.call === 'open' || call.call === 'copyFile' });
               break;
             }
             case 'batch-end':
