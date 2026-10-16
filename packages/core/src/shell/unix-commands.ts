@@ -2557,6 +2557,8 @@ function mkStat(sqliteVfs: SqliteVFS): Command {
     let formatAddsNewline = true;
     let fileSystemMode = false;
     let terse = false;
+    // GNU's stat reports a link itself, and what it names with -L.
+    let dereference = false;
     const files: string[] = [];
     const args = ctx.args;
     for (let i = 0; i < args.length; i++) {
@@ -2577,7 +2579,7 @@ function mkStat(sqliteVfs: SqliteVFS): Command {
       } else if (arg === '-t' || arg === '--terse') {
         terse = true;
       } else if (arg === '-L' || arg === '--dereference') {
-        // Symlinks are already followed; accept the flag rather than drop it.
+        dereference = true;
       } else if (arg.startsWith('--cached=')) {
         const mode = arg.slice('--cached='.length);
         if (mode !== 'always' && mode !== 'default' && mode !== 'never') {
@@ -2623,8 +2625,19 @@ function mkStat(sqliteVfs: SqliteVFS): Command {
         freeInodes: 0,
       };
       const activeFormat = format ?? (terse ? STATFS_TERSE_FORMAT : null);
+      let unread = false;
       for (const f of files) {
-        const displayPath = f.startsWith('/') ? f : resolvePath(ctx.cwd, f);
+        // Each operand's own, as GNU's: one it cannot read is said, and the rest are read.
+        try {
+          await statOrThrow(vfs, f.startsWith('/') ? f : ctx.cwd + '/' + f);
+        } catch (error) {
+          (await ctx.stderr.write(`stat: cannot read file system information for '${f}': ${strerror(error)}
+`));
+          unread = true;
+          continue;
+        }
+        // %n and the File line name the operand as it was given.
+        const displayPath = f;
         if (activeFormat !== null) {
           const expanded = expandStatFormat(
             activeFormat,
@@ -2647,18 +2660,26 @@ function mkStat(sqliteVfs: SqliteVFS): Command {
         ));
         (await ctx.stdout.write(`Inodes: Total: ${facts.totalInodes}  Free: ${facts.freeInodes}\n`));
       }
-      return 0;
+      return unread ? 1 : 0;
     }
 
     const activeFormat = format ?? (terse ? STAT_TERSE_FORMAT : null);
-    // Through the process's view, so mounted paths (/dev) resolve.
+    // Through the process's view, so mounted paths (/dev) resolve. Each
+    // operand's own, as GNU's: one it cannot stat is said with its error,
+    // the rest are statted, and the status is 1.
+    let unread = false;
     for (const f of files) {
-      const st = await statOrThrow(vfs, f.startsWith('/') ? f : ctx.cwd + '/' + f).catch(() => null);
-      if (st === null) {
-        (await ctx.stderr.write(`stat: cannot statx '${f}': No such file or directory\n`));
-        return 1;
+      let st: Awaited<ReturnType<typeof lstatOrThrow>>;
+      try {
+        const at = f.startsWith('/') ? f : ctx.cwd + '/' + f;
+        st = dereference ? await statOrThrow(vfs, at) : await lstatOrThrow(vfs, at);
+      } catch (error) {
+        (await ctx.stderr.write(`stat: cannot statx '${f}': ${strerror(error)}\n`));
+        unread = true;
+        continue;
       }
-      const displayPath = f.startsWith('/') ? f : `/${ctx.cwd}/${f}`.replace(/^\/+/, '/');
+      // %n and the File line name the operand as it was given.
+      const displayPath = f;
       const uid = st.uid ?? ctx.cred.uid;
       const gid = st.gid ?? ctx.cred.gid;
       const labels = {
@@ -2696,7 +2717,7 @@ function mkStat(sqliteVfs: SqliteVFS): Command {
       (await ctx.stdout.write(`Access: (0${st.mode.toString(8)})  Uid: (${uid}/${labels.user})   Gid: (${gid}/${labels.group})\n`));
       (await ctx.stdout.write(`Modify: ${new Date(st.mtimeMs).toISOString()}\n`));
     }
-    return 0;
+    return unread ? 1 : 0;
   };
 }
 
