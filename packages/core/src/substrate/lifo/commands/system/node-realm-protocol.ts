@@ -52,6 +52,8 @@ export interface OutputFailure { readonly seq: number; readonly fd: 1 | 2; reado
 /** A response to a request that stayed on the box, as data, either way across. */
 export interface RealmResponse {
   readonly status: number;
+  /** Its reason phrase, when its server named one. */
+  readonly statusText?: string;
   readonly headers: Record<string, string>;
   readonly body: string | Uint8Array;
 }
@@ -125,6 +127,7 @@ const isOutputSource = (value: unknown): value is OutputSource => value === 'str
 
 const isResponse = (value: unknown): value is RealmResponse | null =>
   value === null || (record(value) && typeof value.status === 'number' && stringRecord(value.headers)
+    && (value.statusText === undefined || typeof value.statusText === 'string')
     && (typeof value.body === 'string' || value.body instanceof Uint8Array));
 
 export function isGuestEvent(value: unknown): value is GuestEvent {

@@ -334,7 +334,7 @@ async function routeLoopback(port: number, request: Request): Promise<Response |
   post({ type: 'fetch', id, port, url: request.url, method: request.method, headers, body });
   const response = await answer;
   if (!response) return null;
-  return new Response(isNullBodyStatus(response.status) ? null : response.body, { status: response.status, headers: response.headers });
+  return new Response(isNullBodyStatus(response.status) ? null : response.body, { status: response.status, statusText: response.statusText, headers: response.headers });
 }
 
 /** A request the host forwards to one of the program's servers. */
@@ -348,7 +348,7 @@ async function serve(id: number, port: number, request: VirtualRequest): Promise
   try {
     handler(request, response);
     if (response._donePromise) await response._donePromise;
-    post({ type: 'served', id, response: { status: response.statusCode, headers: response.headers, body: response.body } });
+    post({ type: 'served', id, response: { status: response.statusCode, statusText: response.statusMessage, headers: response.headers, body: response.body } });
   } catch {
     post({ type: 'served', id, response: null });
   }

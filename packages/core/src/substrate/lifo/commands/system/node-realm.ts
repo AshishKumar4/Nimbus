@@ -300,7 +300,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
     const id = ++served;
     const done = new Promise<void>((resolve) => {
       pending.set(id, (reply) => {
-        if (reply) Object.assign(response, { statusCode: reply.status, headers: reply.headers, body: reply.body });
+        if (reply) Object.assign(response, { statusCode: reply.status, statusMessage: reply.statusText, headers: reply.headers, body: reply.body });
         else Object.assign(response, { statusCode: 502, headers: { 'content-type': 'text/plain' }, body: 'Bad Gateway: the server has ended\n' });
         resolve();
       });
@@ -528,7 +528,7 @@ async function fetchForGuest(kernel: NodeRealmKernel | undefined, event: Extract
     if (result.kind !== 'response') return null;
     const headers: Record<string, string> = {};
     result.response.headers.forEach((value, key) => { headers[key] = value; });
-    return { status: result.response.status, headers, body: await result.response.text() };
+    return { status: result.response.status, statusText: result.response.statusText, headers, body: await result.response.text() };
   } catch {
     return null;
   }

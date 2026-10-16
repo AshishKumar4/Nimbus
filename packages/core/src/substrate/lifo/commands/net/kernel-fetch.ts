@@ -14,7 +14,7 @@ import {
   awaitServedEnd,
   routeToLoopback,
   serveFromPort,
-  statusText,
+  servedReason,
   type WorkspaceRequestResult,
 } from '../../kernel/local-serve.js';
 import { ISOLATE_NETWORK } from '../../../../_shared/workspace-network.js';
@@ -65,7 +65,7 @@ export async function dispatchWorkspaceRequest(
       kind: 'response',
       response: new Response(isNullBodyStatus(status) ? null : served.body, {
         status,
-        statusText: statusText(status),
+        statusText: servedReason(served),
         headers: served.headers,
       }),
     };
