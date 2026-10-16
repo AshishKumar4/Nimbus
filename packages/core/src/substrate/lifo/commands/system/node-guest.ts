@@ -243,9 +243,9 @@ function askSettle(): void {
  * host answers once they are made, with those that failed (told only so, no
  * event of them coming), each then told to what wrote it.
  */
-function settleNow(after: number): void {
+function settleNow(round: number, after: number): void {
   const upTo = postedOutput;
-  const failures = call({ op: 'settle', after, upTo });
+  const failures = call({ op: 'settle', round, after, upTo });
   if (!isOutputFailures(failures)) malformed('settle');
   for (const failure of failures) taken(failure);
   if (upTo > settledOutput) settledOutput = upTo;
@@ -255,6 +255,9 @@ function settleNow(after: number): void {
     else settleWaits.push(wait);
   }
 }
+/** The program's 'beforeExit' rounds so far: each settles its own writes (settleNow). */
+let beforeExitRounds = 0;
+
 /** A failed write, told to what wrote it: a stream's is heard here, whatever the program makes of it, and the host reports it no more. */
 function taken(failure: OutputFailure): void {
   if (failure.source === 'stream') post({ type: 'heard', fd: failure.fd, writer: failure.writer });
@@ -431,12 +434,13 @@ realm.on('beforeExit', () => {
   }
   // No listener: nothing is told, and nothing is settled for it.
   if (programProcess.listenerCount('beforeExit') === 0) return;
+  const round = ++beforeExitRounds;
   const after = postedOutput;
-  post({ type: 'settle-mark', after });
+  post({ type: 'settle-mark', round, after });
   try {
     programProcess.emitBeforeExit();
   } finally {
-    settleNow(after);
+    settleNow(round, after);
   }
 });
 // The loop ran empty with the main script still waiting: an ES module whose

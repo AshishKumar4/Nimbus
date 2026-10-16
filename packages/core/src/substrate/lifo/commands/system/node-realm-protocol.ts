@@ -31,11 +31,11 @@ export type NodeCall =
   | { readonly op: 'rawMode'; readonly on: boolean }
   /**
    * Answered once output writes up to number `upTo` are made, with those
-   * after number `after` that failed (since the guest's settle-mark at
-   * `after`): the writes a program's 'beforeExit' listeners made, made before
+   * after number `after` that failed (since `round`'s settle-mark): the
+   * writes a program's 'beforeExit' listeners made in that round, made before
    * its loop is asked again, as Node's writes to a pipe or a file are.
    */
-  | { readonly op: 'settle'; readonly after: number; readonly upTo: number };
+  | { readonly op: 'settle'; readonly round: number; readonly after: number; readonly upTo: number };
 
 /** What a standard descriptor is, as libuv tells a stream it can make from it. */
 export type FdKind = 'terminal' | 'pipe' | 'other';
@@ -63,11 +63,13 @@ export type GuestEvent =
   /** The program's loop ran empty, and it would hear of a failed write: tell it once writes up to number `upTo` are made (output-settled). */
   | { readonly type: 'settle'; readonly upTo: number }
   /**
-   * The program's 'beforeExit' is about to be emitted with writes up to
-   * number `after` posted: the failures of those after it are the answer of
-   * the settle call that follows, and no output-failed of theirs is posted.
+   * The program's 'beforeExit' is about to be emitted (its round number
+   * `round`, counting from 1) with writes up to number `after` posted: the
+   * failures of those after it are the answer of the round's settle call,
+   * and no output-failed of theirs is posted. Rounds are told apart by
+   * number: two can start at the same write number.
    */
-  | { readonly type: 'settle-mark'; readonly after: number }
+  | { readonly type: 'settle-mark'; readonly round: number; readonly after: number }
 
   | { readonly type: 'fetch'; readonly id: number; readonly port: number; readonly url: string; readonly method: string; readonly headers: Record<string, string>; readonly body: string | Uint8Array | null }
   | { readonly type: 'served'; readonly id: number; readonly response: RealmResponse | null }
@@ -131,7 +133,7 @@ export function isGuestEvent(value: unknown): value is GuestEvent {
   switch (value.type) {
     case 'output': return (value.fd === 1 || value.fd === 2) && isOutputSource(value.source) && Number.isSafeInteger(value.writer) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
     case 'settle': return Number.isSafeInteger(value.upTo);
-    case 'settle-mark': return Number.isSafeInteger(value.after);
+    case 'settle-mark': return Number.isSafeInteger(value.round) && Number.isSafeInteger(value.after);
     case 'fetch':
       return Number.isSafeInteger(value.id) && Number.isSafeInteger(value.port) && typeof value.url === 'string'
         && typeof value.method === 'string' && stringRecord(value.headers)
