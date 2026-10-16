@@ -14,7 +14,8 @@ import { compareBytes } from '../worktree/dircache.js';
 import { patternLines } from '../worktree/pattern-lines.js';
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
+// A line's own BOM is its bytes: only the file's first is skipped (patternLines).
+const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
 
 /** Which paths a sparse worktree holds. */
 export interface SparseMatcher {

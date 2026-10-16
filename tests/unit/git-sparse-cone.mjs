@@ -74,7 +74,7 @@ try {
   }
   console.log(`  ok  ${handWritten.length} sparse-checkout files written by hand: host git's in/out paths`);
 
-  for (const file of ['/*\n!/*/\n*.txt\n', '/*\n!/*/\n!/a/*/\n', '/*\n!/*/\n/a/**/\n', '/*\n!/*/\n/a\n', '/*\n!/*/\n/a*/\n', '/*\n!/*/\n/a/\n!/a/*/\n/a/\n']) {
+  for (const file of ['/*\n!/*/\n*.txt\n', '/*\n!/*/\n\ufeff/c/\n', '/*\n!/*/\n!/a/*/\n', '/*\n!/*/\n/a/**/\n', '/*\n!/*/\n/a\n', '/*\n!/*/\n/a*/\n', '/*\n!/*/\n/a/\n!/a/*/\n/a/\n']) {
     assert.equal(parseConeSparseCheckout(file), null, `not cone patterns: ${JSON.stringify(file)}`);
   }
   console.log('  ok  what is not a cone pattern is not read as one');
