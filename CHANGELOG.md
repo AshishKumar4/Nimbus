@@ -10,7 +10,9 @@ published independently in the `@nimbus-sh` npm scope.
   `stat` and `open`. It was `No such file or directory`. `rm`, `mkdir -p`,
   `cp`, `mv`, Node's `lstatSync` and git now see the right error, and
   `existsSync` stays false. `ls` exits 2 for an operand it cannot reach, as
-  GNU's does.
+  GNU's does. `rename` from, or into, a name below a regular file is
+  ENOTDIR too. `mv f/x a d` with `f` a file reports `cannot stat 'f/x'` and
+  still moves `a`, as GNU's does; it ended the whole command.
 - Fixed (CLI): `nimbus runtime sync` with no runtime named, and so `nimbus
   setup cloudflare`, now publishes `cpython@3.13.14-3` as the bucket's Python.
   It used to publish `python@0.29.4`, Pyodide, whose `python-runner` no host
