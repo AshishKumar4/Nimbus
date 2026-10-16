@@ -9,15 +9,24 @@
 // Red before: the kernel rebuilt a 205 with the empty body its server ended,
 // and the realm's loopback route did the same with the empty text it was
 // handed: the Response constructor refused both, so curl failed to connect
-// and http.get with ECONNREFUSED.
+// and http.get with ECONNREFUSED. Bun's Response takes a body for any
+// status, so only Node's (and workerd's) shows it: run by bun, the test
+// checks the source under Bun, then runs itself under node against the
+// built package (packages/core/dist: rebuild first), whose realm is a Node
+// worker thread.
 
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
-import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { fileURLToPath } from 'node:url';
+import { hostSqlite } from './lib/host-sqlite.mjs';
+
+const underBun = typeof process.versions.bun === 'string';
+const { NimbusWorkspace } = await import(underBun
+  ? '../../packages/core/src/workspace/nimbus-workspace.ts'
+  : '../../packages/core/dist/workspace/nimbus-workspace.js');
 
 const STATUSES = [200, 204, 205, 304];
 const SERVER = `const server = require('http').createServer((q, s) => { s.writeHead(Number(q.url.slice(1))); s.end(); });
@@ -66,8 +75,8 @@ assert.deepEqual(expected.client, [[200, 200, ''], [204, 204, ''], [205, 205, ''
 assert.deepEqual(expected.curl.map(({ code, out }) => [code, out]), [[0, '200\n'], [0, '204\n'], [0, '205\n'], [0, '304\n']]);
 
 // ── The session: its node serves, another node program and curl ask ──────
-const harness = createSqliteVfsTestHarness();
-const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, generation: 1 });
+const { sql, transactions } = await hostSqlite();
+const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1 });
 const run = async (command, options = {}) => {
   const result = await ws.exec(command, { cwd: '/home/user', ...options });
   return { code: result.exitCode, out: result.stdout, err: result.stderr };
@@ -94,4 +103,12 @@ try {
   await served;
   await ws.close();
 }
-console.log('ok - virtual-http-null-body (204, 205 and 304 from a session server reach curl and another program\'s http.get as Node\'s reach them)');
+
+if (underBun) {
+  const node = spawnSync('node', ['--no-warnings', fileURLToPath(import.meta.url)], { encoding: 'utf8', timeout: 120_000 });
+  assert.equal(node.status, 0, `under node:\n${node.stdout}${node.stderr}`);
+  assert.match(node.stdout, /^ok - under node/m, node.stdout);
+  console.log('ok - virtual-http-null-body (204, 205 and 304 from a session server reach curl and another program\'s http.get as Node\'s reach them; under Bun and Node)');
+} else {
+  console.log('ok - under node');
+}
