@@ -27,7 +27,10 @@ published independently in the `@nimbus-sh` npm scope.
   prefix from npm's configuration (`--prefix`, `npm_config_prefix`, an
   `.npmrc`, else `PREFIX` or `/usr/local`). Before, lifo read
   `/usr/lib/node_modules`, where npm installs nothing. `npm install -g`
-  takes its prefix from the same configuration, `PREFIX` included.
+  takes its prefix from the same configuration, `PREFIX` included. A
+  workspace's default environment no longer sets `npm_config_prefix`, so a
+  `prefix` in `~/.npmrc` takes effect. Without one, the prefix is still
+  `/usr/local`, npm's default.
 - Breaking (core): a workspace no longer restores global packages as
   commands when it boots. `npm install -g` links a package's bins into
   `<prefix>/bin`, which is on the default `PATH`, and the shell finds them
