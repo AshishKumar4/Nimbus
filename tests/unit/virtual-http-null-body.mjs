@@ -20,8 +20,8 @@ import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-worksp
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const STATUSES = [200, 204, 205, 304];
-const SERVER = `require('http').createServer((q, s) => { s.writeHead(Number(q.url.slice(1))); s.end(); })
-  .listen(Number(process.argv[2]), '127.0.0.1', function () { console.log('listening ' + this.address().port); });`;
+const SERVER = `const server = require('http').createServer((q, s) => { s.writeHead(Number(q.url.slice(1))); s.end(); });
+server.listen(Number(process.argv[2]), '127.0.0.1', () => console.log('listening ' + server.address().port));`;
 const CLIENT = `const get = (status) => new Promise((resolve) => {
   require('http').get(process.argv[2] + '/' + status, (m) => {
     let body = '';
