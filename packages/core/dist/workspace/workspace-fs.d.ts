@@ -17,6 +17,7 @@
 import { type MoveOptions } from '../vfs/move.js';
 import type { VFS, VfsCopyOptions, VfsDirent, VfsRemoval } from '../vfs/vfs.js';
 import type { ProcessStat, ProcessView } from '../runtime/process-files.js';
+import type { FsTime } from '../runtime/os-contracts.js';
 export declare class WorkspaceFs implements VFS {
     private readonly view;
     /** Where a relative path starts: this view's own, which no `cd` in a shell moves. */
@@ -87,8 +88,8 @@ export declare class WorkspaceFs implements VFS {
     chmod(path: string, mode: number): Promise<void>;
     /** chown(2): a null side keeps what the file has (chown -1). */
     chown(path: string, uid: number | null, gid: number | null): Promise<void>;
-    /** utimensat(2): null is now, undefined leaves that time; `follow: false` sets a link's own times. */
-    utimes(path: string, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: {
+    /** utimensat(2), each time an FsTime; `follow: false` sets a link's own times. */
+    utimes(path: string, atime: FsTime, mtime: FsTime, options?: {
         follow?: boolean;
     }): Promise<void>;
     /** cp: a file (a link named as the source followed), or with `recursive` a tree, onto a name that is not there. */

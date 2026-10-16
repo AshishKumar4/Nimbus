@@ -1,4 +1,5 @@
 import { syscallError } from './vfs-error.js';
+import { timeAt } from './posix-access.js';
 const encoder = new TextEncoder();
 const EMPTY = new Uint8Array(0);
 function fail(code, call) {
@@ -266,12 +267,13 @@ export class MemoryVFS {
         entry.mode = mode & 0o7777;
         this.touch(entry);
     }
-    utimes(path, _atimeMs, mtimeMs) {
+    /** Its entries keep an mtime alone: the atime is taken and dropped. */
+    utimes(path, _atime, mtime) {
         const call = { syscall: 'utime', path };
         const entry = this.find(path, call);
         if (entry === null)
             throw fail('ENOENT', call);
-        entry.mtimeMs = mtimeMs;
+        entry.mtimeMs = timeAt(mtime, entry.mtimeMs, Date.now());
         entry.revision = ++this.clock;
     }
     describe() {

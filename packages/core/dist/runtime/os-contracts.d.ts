@@ -1,6 +1,16 @@
 import type { VfsEvent } from '../vfs/events.js';
 import type { VfsRemoval } from '../vfs/vfs.js';
 /**
+ * A time utimes and futimes set, as utimensat(2) takes it: ms since the
+ * epoch (explicit: only the owner may set it), 'now' (UTIME_NOW: the
+ * clock of the filesystem that commits the change, as it commits it) or
+ * 'omit' (UTIME_OMIT: left as it is then). 'now' and 'omit' need only write
+ * permission. Carried as it is to the filesystem that commits the change,
+ * which alone resolves it (posix-access.ts, timeAt) and judges it
+ * (utimesRefusal, explicitTimes).
+ */
+export type FsTime = number | 'now' | 'omit';
+/**
  * A value SQLite can return in a row.
  *
  * `ArrayBufferView` is in the union because the host decides the blob
@@ -341,8 +351,8 @@ export interface RuntimeFsBridge {
     truncate(path: RuntimeFsPath, size: number, options?: {
         followSymlinks?: boolean;
     } & RuntimeMutationOwner): Awaitable<VfsMutationReceipt>;
-    /** utimensat(2): null is now, undefined leaves that time; `followSymlinks: false` sets a link's own times. */
-    utimes(path: RuntimeFsPath, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: {
+    /** utimensat(2), each time an FsTime; `followSymlinks: false` sets a link's own times. */
+    utimes(path: RuntimeFsPath, atime: FsTime, mtime: FsTime, options?: {
         followSymlinks?: boolean;
     }): Awaitable<VfsMutationReceipt>;
     /** Set permission bits (POSIX chmod — follows symlinks). */
@@ -461,8 +471,8 @@ export interface RuntimeFsBridge {
     fchmod(handleId: number, mode: number): Awaitable<void>;
     /** chown's, of an open file: a null side keeps the file's. */
     fchown(handleId: number, uid: number | null, gid: number | null): Awaitable<void>;
-    /** As utimes: a time null is now, undefined kept; explicit ones need the owner, now a writer. */
-    futimes(handleId: number, atimeMs: number | null | undefined, mtimeMs: number | null | undefined): Awaitable<void>;
+    /** futimens(2): as utimes, on the file the descriptor opened. */
+    futimes(handleId: number, atime: FsTime, mtime: FsTime): Awaitable<void>;
     /** `signal`: cancels it before its commit (a released process publishes nothing). */
     writeBatch(payload: import('@nimbus-sh/platform/w7-frame.js').BatchWritePayload, options?: {
         signal?: AbortSignal;

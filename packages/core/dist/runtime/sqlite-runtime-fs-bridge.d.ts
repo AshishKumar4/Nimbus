@@ -5,7 +5,7 @@ import { WaveIngest } from './wave-ingest.js';
 import { type CompositeVFS } from '../vfs/composite.js';
 import { type Awaitable, type VfsRemoval } from '../vfs/vfs.js';
 export { fsError, walkBeneath, type BeneathLookup } from './beneath-walk.js';
-import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeFsPath, RuntimeReadFileOptions, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeReopenTarget, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest } from './os-contracts.js';
+import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeFsPath, RuntimeReadFileOptions, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeReopenTarget, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest, FsTime } from './os-contracts.js';
 export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private readonly rawVfs;
     private readonly scope;
@@ -77,7 +77,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     truncate(path: RuntimeFsPath, size: number, options?: {
         followSymlinks?: boolean;
     } & RuntimeMutationOwner): VfsMutationReceipt;
-    utimes(path: RuntimeFsPath, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: {
+    utimes(path: RuntimeFsPath, atime: FsTime, mtime: FsTime, options?: {
         followSymlinks?: boolean;
     }): VfsMutationReceipt;
     chmod(path: RuntimeFsPath, mode: number): VfsMutationReceipt;
@@ -222,7 +222,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     ftruncate(handleId: number, size: number): void;
     fchmod(handleId: number, mode: number): void;
     fchown(handleId: number, uid: number | null, gid: number | null): void;
-    futimes(handleId: number, atime: number | null | undefined, mtime: number | null | undefined): void;
+    futimes(handleId: number, atime: FsTime, mtime: FsTime): void;
 }
 /** A whole read's `maxBytes` (RuntimeReadFileOptions): a regular file of at most `maxBytes` bytes is read whole; a directory answers as a read does. */
 export declare function fitsWholeRead(stat: {

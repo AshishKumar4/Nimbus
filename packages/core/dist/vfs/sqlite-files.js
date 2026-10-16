@@ -235,8 +235,8 @@ export class SqliteFiles {
     chown(path, uid, gid) {
         this.run('chown', path, () => this.view.chown(path, uid, gid));
     }
-    utimes(path, atimeMs, mtimeMs) {
-        this.run('utime', path, () => this.view.utimes(path, atimeMs, mtimeMs));
+    utimes(path, atime, mtime) {
+        this.run('utime', path, () => this.view.utimes(path, atime, mtime));
     }
     /** Copy inside the database: rows, not bytes. */
     copy(from, to, options) {

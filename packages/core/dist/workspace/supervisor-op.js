@@ -42,9 +42,10 @@ function numberArg(envelope, index) {
 function nullableNumberArg(envelope, index) {
     return envelope.args?.[index] === null ? null : numberArg(envelope, index);
 }
-/** A time as utimes takes it: ms, null (now), or undefined (kept). */
+/** A time as utimes and futimes take it (FsTime): finite ms, 'now' or 'omit'. */
 function timeArg(envelope, index) {
-    return envelope.args?.[index] === undefined ? undefined : nullableNumberArg(envelope, index);
+    const value = envelope.args?.[index];
+    return value === 'now' || value === 'omit' ? value : numberArg(envelope, index);
 }
 function bytesArg(envelope, index) {
     const value = envelope.args?.[index];
@@ -319,7 +320,7 @@ const NATIVE_OPS = {
     access: (e, t) => fsFor(e, t).access(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
     chown: (e, t) => fsFor(e, t).chown(FsPath.parse(e.args?.[0]), nullableNumberArg(e, 1), nullableNumberArg(e, 2), z.object({ followSymlinks: z.boolean().optional() }).optional().parse(e.args?.[3])),
     chmod: (e, t) => fsFor(e, t).chmod(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
-    utimes: (e, t) => fsFor(e, t).utimes(FsPath.parse(e.args?.[0]), numberArg(e, 1), numberArg(e, 2)),
+    utimes: (e, t) => fsFor(e, t).utimes(FsPath.parse(e.args?.[0]), timeArg(e, 1), timeArg(e, 2), z.object({ followSymlinks: z.boolean().optional() }).optional().parse(e.args?.[3])),
     fsTruncate: (e, t) => fsFor(e, t).truncate(FsPath.parse(e.args?.[0]), numberArg(e, 1), leaseOf(e)),
     fsWriteRange: (e, t) => fsFor(e, t).writeRange(FsPath.parse(e.args?.[0]), RangeOffset.parse(e.args?.[1]), writeRangeBytesArg(e, 2), leaseOf(e)),
     // The decode-drain clock starts when the envelope arrives, not when the

@@ -304,20 +304,18 @@ export class SqliteRuntimeFsBridge {
             return this.receipted(p, () => this.owned(options.mutationOwner).truncate(p, size));
         });
     }
-    utimes(path, atimeMs, mtimeMs, options = {}) {
+    utimes(path, atime, mtime, options = {}) {
         return called({ syscall: 'utimes', path }, () => {
             const follow = options.followSymlinks !== false;
             const located = this.locateMutation(path, follow, 'utimes');
             if (located.mount) {
-                const now = Date.now();
-                const kept = atimeMs === undefined || mtimeMs === undefined ? located.mount.stat(located.path, { follow }) : null;
-                mountOp(located.mount.utimes, 'utimes', path)(located.path, atimeMs === undefined ? kept?.atimeMs ?? now : atimeMs ?? now, mtimeMs === undefined ? kept?.mtimeMs ?? now : mtimeMs ?? now);
+                mountOp(located.mount.utimes, 'utimes', path)(located.path, atime, mtime);
                 return this.mountReceipt();
             }
             const p = located.path;
             if (!(follow ? this.vfs.exists(p) : this.vfs.isSymlink(p) || this.vfs.exists(p)))
                 throw fsError('ENOENT', 'utimes', path);
-            return this.receipted(p, () => this.vfs.utimes(p, atimeMs, mtimeMs, { followSymlinks: follow }));
+            return this.receipted(p, () => this.vfs.utimes(p, atime, mtime, { followSymlinks: follow }));
         });
     }
     chmod(path, mode) {
