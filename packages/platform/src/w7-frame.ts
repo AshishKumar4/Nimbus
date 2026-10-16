@@ -695,7 +695,7 @@ async function* decodeRecords(
           if (v3) throw new Error(`w7-frame: unknown record tag ${envelope.tag}`);
           summary.pathCount++;
           summary.opCount++;
-          const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'from', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask', 'read', 'create', 'truncate', 'exclusive', 'nofollow', 'description', 'fchmod']);
+          const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'from', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask', 'read', 'write', 'create', 'truncate', 'exclusive', 'nofollow', 'description', 'fchmod']);
           yield { type: 'call', call: parsePathCall(value, (path, label) => ownedPaths.claim(canonicalPath(path, label))) };
           break;
         }
