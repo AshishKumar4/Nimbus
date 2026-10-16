@@ -89,7 +89,7 @@ await check('npm test runs pretest, test and posttest in order; a failure stops 
 // A registry: tool-a 1.0.0 has the bin toola, 2.0.0 renames it toolb;
 // dotted's bin .toola becomes .toolb; strbin 1.0.0's bin is a string (so it
 // is named strbin), 2.0.0 has none; shared-a and shared-b both declare
-// shared, and shared-a 2.0.0 drops it.
+// shared, and both 2.0.0s drop it.
 const TARBALLS = new Map();
 const PACKUMENTS = {};
 const publish = async (name, version, bin) => {
@@ -110,6 +110,7 @@ await publish('strbin', '2.0.0');
 await publish('shared-a', '1.0.0', { shared: 'cli.js' });
 await publish('shared-a', '2.0.0');
 await publish('shared-b', '1.0.0', { shared: 'cli.js' });
+await publish('shared-b', '2.0.0');
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async (url) => {
   const text = String(url);
@@ -164,6 +165,11 @@ try {
     }
     const shared = await ws.exec('shared', { cwd: '/home/user' });
     assert.match(shared.stdout, /shared-b 1\.0\.0 ran/, `shared-a's upgrade leaves shared-b's link of shared:\n${shared.stdout}${shared.stderr}`);
+    for (const spec of ['shared-a@1.0.0', 'shared-b@2.0.0 shared-a@2.0.0']) {
+      const install = await ws.exec(`npm install -g ${spec}`, { cwd: '/home/user' });
+      assert.equal(install.exitCode, 0, install.stderr);
+    }
+    assert.ok(!await linked('/usr/local/bin/shared'), 'two roots that both drop shared, upgraded together, leave no link of it');
   });
 
   await check('a global install\'s bin is a command after a boot, found on PATH', async () => {

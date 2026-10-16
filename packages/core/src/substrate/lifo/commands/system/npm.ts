@@ -677,19 +677,19 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall, pro
 
 /**
  * The shims linking the bins of the packages at `placements` (under
- * `targetBase`, as their package.json files are now) into `binDir`, by bin
- * name (npmBinShim). A native launcher (.exe/.node) runs nowhere here, and
- * is not linked.
+ * `targetBase`, as their package.json files are now) into `binDir`, as
+ * [bin name, shim] (npmBinShim), every package's: two may link one name. A
+ * native launcher (.exe/.node) runs nowhere here, and is not linked.
  */
-async function linkedBins(vfs: VFS, targetBase: string, placements: readonly string[], binDir: string): Promise<Map<string, string>> {
-	const shims = new Map<string, string>();
+async function linkedBins(vfs: VFS, targetBase: string, placements: readonly string[], binDir: string): Promise<Array<[string, string]>> {
+	const shims: Array<[string, string]> = [];
 	for (const at of placements) {
 		const packageDir = join(targetBase, at);
 		const manifest = await packageJsonIn(vfs, packageDir);
 		if (manifest === null) continue;
 		const name = typeof manifest.json.name === 'string' ? manifest.json.name : placementName(at);
 		for (const [bin, target] of npmBinMap(name, manifest.json.bin)) {
-			if (!isNativeBinPath(target)) shims.set(bin, npmBinShim(binDir, resolve(packageDir, target)));
+			if (!isNativeBinPath(target)) shims.push([bin, npmBinShim(binDir, resolve(packageDir, target))]);
 		}
 	}
 	return shims;
@@ -697,12 +697,13 @@ async function linkedBins(vfs: VFS, targetBase: string, placements: readonly str
 
 /**
  * `binDir` from the shims `before` (what the packages an install replaces
- * linked) to the shims `after`: each of `after` written, executable, unless
- * it is there already, and each of `before` that `after` does not name
- * removed while it is still the one they linked (another package's link of
- * that name stays).
+ * linked) to the shims `after` (the last package's of a name wins, as
+ * npm's): each of `after` written, executable, unless it is there already,
+ * and a name `after` lacks removed while it is still one of the shims
+ * `before` linked under it (another package's link of that name stays).
  */
-async function relinkBins(vfs: VFS, binDir: string, before: ReadonlyMap<string, string>, after: ReadonlyMap<string, string>): Promise<void> {
+async function relinkBins(vfs: VFS, binDir: string, before: ReadonlyArray<[string, string]>, links: ReadonlyArray<[string, string]>): Promise<void> {
+	const after = new Map(links);
 	const current = async (shim: string): Promise<string | null> => (await vfs.exists(shim) ? await vfs.readFileString(shim) : null);
 	for (const [name, text] of before) {
 		const shim = join(binDir, name);
