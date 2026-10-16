@@ -1,5 +1,5 @@
 import { maxSatisfying, satisfies as pep440Satisfies, valid as validPep440Version, validRange as validPep440Range, } from '@renovatebot/pep440';
-import { parsePipRequirementsFile, parsePipRequirementsLine, RequirementsSyntaxError, } from 'pip-requirements-js';
+import { EnvironmentMarkerVariable, parsePipRequirementsFile, parsePipRequirementsLine, RequirementsSyntaxError, } from 'pip-requirements-js';
 import { z } from 'zod/v4';
 import { errorText } from '../_shared/error-text.js';
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath } from '../vfs/path.js';
@@ -118,12 +118,6 @@ const PypiJsonSchema = z.object({
     releases: z.record(z.string(), z.array(PypiFileSchema)).optional(),
     urls: z.array(PypiFileSchema).optional(),
 });
-/** PEP 508's environment markers, every name but `extra`. */
-const PYTHON_MARKER_NAMES = [
-    'implementation_name', 'implementation_version', 'os_name', 'platform_machine', 'platform_release',
-    'platform_system', 'platform_version', 'python_full_version', 'platform_python_implementation',
-    'python_version', 'sys_platform',
-];
 /**
  * PyPI's answers, by network and request, kept as pip's HTTP cache
  * (cachecontrol) keeps them: each for its response's max-age, 900 s for
@@ -186,47 +180,21 @@ async function buildPipInstallPlan(argv, cwd, vfs, runtimeContext) {
     const displayPackages = [];
     const { markers } = runtimeContext;
     let includeDependencies = true;
-    const addRequirement = async (requirement, baseDir, source) => {
-        if (requirement.type === 'RequirementsFile') {
-            return (await addRequirementsFile(requirement.path, baseDir, vfs, markers, roots, constraints, displayPackages, 0));
-        }
-        if (requirement.type === 'ConstraintsFile') {
-            return (await addConstraintsFile(requirement.path, baseDir, vfs, markers, constraints, 0));
-        }
-        if (requirement.type === 'ProjectURL') {
-            const local = (await localWheelArtifact(requirement.url, baseDir, vfs));
-            if ('error' in local)
-                return local.error;
-            if (local.artifact) {
-                localWheels.push({
-                    ...local.artifact,
-                    displayName: canonicalPackageName(requirement.name),
-                });
-                displayPackages.push(canonicalPackageName(requirement.name));
-                return null;
-            }
-            return `${source}: URL requirements need a local pure wheel path`;
-        }
-        if (!markerApplies(requirement.environmentMarkerTree, requirement.extras || [], markers))
-            return null;
-        roots.push(projectRequirementToPackageRequirement(requirement));
-        displayPackages.push(formatDisplayRequirement(requirement));
-        return null;
-    };
+    const collected = { vfs, markers, roots, constraints, localWheels, displayPackages };
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
         if (arg === '-r' || arg === '--requirement') {
             const reqPath = argv[i + 1];
             if (!reqPath)
                 return failedPlan(`${arg}: missing requirements file`, 2);
-            const err = (await addRequirementsFile(reqPath, cwd, vfs, markers, roots, constraints, displayPackages, 0));
+            const err = (await addRequirementsFile('requirements', reqPath, cwd, 0, collected));
             if (err)
                 return failedPlan(err, 1);
             i++;
             continue;
         }
         if (arg.startsWith('--requirement=')) {
-            const err = (await addRequirementsFile(arg.slice('--requirement='.length), cwd, vfs, markers, roots, constraints, displayPackages, 0));
+            const err = (await addRequirementsFile('requirements', arg.slice('--requirement='.length), cwd, 0, collected));
             if (err)
                 return failedPlan(err, 1);
             continue;
@@ -235,14 +203,14 @@ async function buildPipInstallPlan(argv, cwd, vfs, runtimeContext) {
             const constraintPath = argv[i + 1];
             if (!constraintPath)
                 return failedPlan(`${arg}: missing constraints file`, 2);
-            const err = (await addConstraintsFile(constraintPath, cwd, vfs, markers, constraints, 0));
+            const err = (await addRequirementsFile('constraints', constraintPath, cwd, 0, collected));
             if (err)
                 return failedPlan(err, 1);
             i++;
             continue;
         }
         if (arg.startsWith('--constraint=')) {
-            const err = (await addConstraintsFile(arg.slice('--constraint='.length), cwd, vfs, markers, constraints, 0));
+            const err = (await addRequirementsFile('constraints', arg.slice('--constraint='.length), cwd, 0, collected));
             if (err)
                 return failedPlan(err, 1);
             continue;
@@ -279,7 +247,7 @@ async function buildPipInstallPlan(argv, cwd, vfs, runtimeContext) {
         }
         if (!parsed)
             continue;
-        const err = (await addRequirement(parsed, cwd, arg));
+        const err = (await addRequirement('requirements', parsed, cwd, { word: arg }, 0, collected));
         if (err)
             return failedPlan(err, 1);
     }
@@ -345,52 +313,53 @@ async function readRequirementsFile(kind, reqPath, baseDir, vfs, depth) {
         return { error: e instanceof RequirementsSyntaxError ? e.message : `invalid ${kind} file: ${reqPath}` };
     }
 }
-/** A requirements file's roots and display labels; its -c includes are constraints. */
-async function addRequirementsFile(reqPath, baseDir, vfs, markers, requirements, constraints, displayPackages, depth) {
-    const file = await readRequirementsFile('requirements', reqPath, baseDir, vfs, depth);
-    if ('error' in file)
-        return file.error;
-    for (const requirement of file.lines) {
-        if (requirement.type === 'RequirementsFile') {
-            const err = (await addRequirementsFile(requirement.path, file.dir, vfs, markers, requirements, constraints, displayPackages, depth + 1));
-            if (err)
-                return err;
-            continue;
+/**
+ * One requirement of the install, read as `kind`: a -r file is read as the
+ * kind it is named in, a -c file as constraints; a constraint adds its
+ * versions to its package's constraints, a requirement a root and its
+ * label. A URL is a local pure wheel on the command line, and refused in a
+ * file.
+ */
+async function addRequirement(kind, requirement, baseDir, origin, depth, collected) {
+    if (requirement.type === 'RequirementsFile' || requirement.type === 'ConstraintsFile') {
+        return await addRequirementsFile(requirement.type === 'ConstraintsFile' ? 'constraints' : kind, requirement.path, baseDir, depth, collected);
+    }
+    if (requirement.type === 'ProjectURL') {
+        if ('file' in origin) {
+            return kind === 'constraints'
+                ? `${origin.file}: URL constraints are not supported`
+                : `${origin.file}: URL requirements need a Nimbus wheel artifact or local pure wheel path`;
         }
-        if (requirement.type === 'ConstraintsFile') {
-            const err = (await addConstraintsFile(requirement.path, file.dir, vfs, markers, constraints, depth + 1));
-            if (err)
-                return err;
-            continue;
-        }
-        if (requirement.type === 'ProjectURL') {
-            return `${reqPath}: URL requirements need a Nimbus wheel artifact or local pure wheel path`;
-        }
-        if (!markerApplies(requirement.environmentMarkerTree, requirement.extras || [], markers))
-            continue;
-        requirements.push(projectRequirementToPackageRequirement(requirement));
-        displayPackages.push(formatDisplayRequirement(requirement));
+        const local = (await localWheelArtifact(requirement.url, baseDir, collected.vfs));
+        if ('error' in local)
+            return local.error;
+        if (!local.artifact)
+            return `${origin.word}: URL requirements need a local pure wheel path`;
+        collected.localWheels.push({ ...local.artifact, displayName: canonicalPackageName(requirement.name) });
+        collected.displayPackages.push(canonicalPackageName(requirement.name));
+        return null;
+    }
+    if (!markerApplies(requirement.environmentMarkerTree, requirement.extras || [], collected.markers))
+        return null;
+    if (kind === 'constraints') {
+        const name = canonicalPackageName(requirement.name);
+        collected.constraints.set(name, [...(collected.constraints.get(name) || []), ...versionSpecifiers(requirement.versionSpec || [])]);
+    }
+    else {
+        collected.roots.push(projectRequirementToPackageRequirement(requirement));
+        collected.displayPackages.push(formatDisplayRequirement(requirement));
     }
     return null;
 }
-/** A constraints file's version specifiers by package; everything it includes is constraints too. */
-async function addConstraintsFile(reqPath, baseDir, vfs, markers, constraints, depth) {
-    const file = await readRequirementsFile('constraints', reqPath, baseDir, vfs, depth);
+/** Each requirement of the requirements or constraints file `reqPath`, read as `kind` (addRequirement). */
+async function addRequirementsFile(kind, reqPath, baseDir, depth, collected) {
+    const file = await readRequirementsFile(kind, reqPath, baseDir, collected.vfs, depth);
     if ('error' in file)
         return file.error;
     for (const requirement of file.lines) {
-        if (requirement.type === 'RequirementsFile' || requirement.type === 'ConstraintsFile') {
-            const err = (await addConstraintsFile(requirement.path, file.dir, vfs, markers, constraints, depth + 1));
-            if (err)
-                return err;
-            continue;
-        }
-        if (requirement.type === 'ProjectURL')
-            return `${reqPath}: URL constraints are not supported`;
-        if (!markerApplies(requirement.environmentMarkerTree, requirement.extras || [], markers))
-            continue;
-        const name = canonicalPackageName(requirement.name);
-        constraints.set(name, [...(constraints.get(name) || []), ...versionSpecifiers(requirement.versionSpec || [])]);
+        const err = await addRequirement(kind, requirement, file.dir, { file: reqPath }, depth + 1, collected);
+        if (err)
+            return err;
     }
     return null;
 }
@@ -659,16 +628,14 @@ function isVersionMarkerValue(value) {
         || value === 'implementation_version';
 }
 function markerValue(value, extra, markers) {
-    if (value === 'extra')
+    if (value === EnvironmentMarkerVariable.Extra)
         return extra;
-    const name = PYTHON_MARKER_NAMES.find((marker) => marker === value);
-    return name === undefined ? unquotePythonString(value) : markers[name];
-}
-function unquotePythonString(value) {
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    if (isPythonString(value))
         return value.slice(1, -1);
-    }
-    return value;
+    return markers[value];
+}
+function isPythonString(value) {
+    return (value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"));
 }
 async function localWheelArtifact(rawSpec, baseDir, vfs) {
     const pathSpec = localWheelPathSpec(rawSpec);

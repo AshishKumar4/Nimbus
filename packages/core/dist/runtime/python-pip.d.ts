@@ -1,4 +1,5 @@
 import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
+import { EnvironmentMarkerVariable } from 'pip-requirements-js';
 /** Where `pip install` puts packages for the user whose home is `home`. */
 export declare function pythonSitePackages(home: string): string;
 interface PythonPipVfs {
@@ -15,13 +16,12 @@ interface PythonPipVfs {
  * per-program classifier cannot be.
  */
 export declare function sessionUsesSciVariant(vfs: PythonPipVfs, home: string): Promise<boolean>;
-/** PEP 508's environment markers, every name but `extra`. */
-declare const PYTHON_MARKER_NAMES: readonly ["implementation_name", "implementation_version", "os_name", "platform_machine", "platform_release", "platform_system", "platform_version", "python_full_version", "platform_python_implementation", "python_version", "sys_platform"];
 /**
- * The PEP 508 environment markers of the interpreter pip installs for: what
- * packaging.markers.default_environment() answers in it.
+ * The PEP 508 environment markers of the interpreter pip installs for, each
+ * variable but `extra`: what packaging.markers.default_environment()
+ * answers in it.
  */
-export type PythonMarkerEnvironment = Readonly<Record<typeof PYTHON_MARKER_NAMES[number], string>>;
+export type PythonMarkerEnvironment = Readonly<Record<Exclude<EnvironmentMarkerVariable, EnvironmentMarkerVariable.Extra>, string>>;
 export interface PythonPipRuntimeContext {
     /** The installing user's home: packages go to its {@link pythonSitePackages}. */
     home: string;
