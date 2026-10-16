@@ -133,7 +133,7 @@ export interface WaveWriterOptions<Meta = undefined> {
     root: string | null;
     /** An existing worktree: only directories strictly below it are published. */
     worktreeRoot?: string | null;
-    /** Record paths are relative to it (joined with '/'); omitted, they are VFS paths. */
+    /** Record paths are relative to it (joined with '/'; '' is the base itself); omitted, they are VFS paths. */
     base?: string;
     /** Wall-clock time (ms) after which no new wave starts. */
     deadline?: number | null;

@@ -47,11 +47,11 @@ export interface HistoryStepResult {
     /** Lists written (STAGE_DIR files): root trees for commits, blobs for trees. */
     lists: StagedFile[];
     /**
-     * commits: the commits' records for the commit-graph (GRAPH_RECORDS_DIR
-     * files; commit-graph.ts commitRecord); null when one did not parse, which
-     * no graph is written for, as git writes none.
+     * commits: one of the commits' records for the commit-graph
+     * (GRAPH_RECORDS_DIR files; commit-graph.ts commitRecord) did not parse,
+     * which no graph is written for, as git writes none.
      */
-    graphLists?: StagedFile[] | null;
+    graphRefused?: boolean;
     /** Ids of the clone's tag interest this step's pack held (clone.ts TagWatch). */
     tagsFound?: string[];
 }

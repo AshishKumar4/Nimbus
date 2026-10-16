@@ -52,7 +52,6 @@ const entrypoint = {
           filesWritten: 0,
           bytesWritten: 0,
           supervisorRpc: {},
-          metadataOverlay: { entries: 0, accountedBytes: 0 },
           diagnostic: {
             phase: body.phase,
             invocationId: body.invocationId,
@@ -68,7 +67,6 @@ const entrypoint = {
         filesWritten: 4,
         bytesWritten: 18,
         supervisorRpc: { writeBatchStream: 1 },
-        metadataOverlay: { entries: 4, accountedBytes: 512 },
       });
     }
 
@@ -81,7 +79,6 @@ const entrypoint = {
         filesWritten: 1,
         bytesWritten: 2,
         supervisorRpc: { writeBatchStream: 1 },
-        metadataOverlay: { entries: 0, accountedBytes: 0 },
       });
     }
     assert.equal(body.phase, 'clone-batch');
@@ -92,7 +89,6 @@ const entrypoint = {
         filesWritten: 1,
         bytesWritten: 3,
         supervisorRpc: { writeBatchStream: 1 },
-        metadataOverlay: { entries: 5, accountedBytes: 640 },
       });
     }
     return Response.json({
@@ -101,7 +97,6 @@ const entrypoint = {
       filesWritten: 2,
       bytesWritten: 6,
       supervisorRpc: { writeBatchStream: 1 },
-      metadataOverlay: { entries: 0, accountedBytes: 0 },
     });
   },
 };

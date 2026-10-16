@@ -12,8 +12,9 @@
  *     path is atomic; a later publish-group failure may leave a committed prefix.
  *   - Clone prepare durably flushes Git metadata, then a second entrypoint
  *     invocation validates HEAD and flushes the worktree/index.
- *   - Fresh clones carry a metadata-only closed-world overlay across the
- *     invocation boundary; regular-file bytes still fall through after flush.
+ *   - Each clone phase writes through its own writer (pack/clone.ts); a
+ *     read the buffer cannot answer goes to the supervisor once its writes
+ *     are published.
  *
  * Why this fixes the hang:
  *   - CPU-heavy packfile delta resolution runs in facet (own CPU budget)
@@ -37,7 +38,7 @@ import type { RemoteFailure } from './pack/remote-failure.js';
 import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { GIT_PACK_NODE_IMPORTS, GIT_PACK_SRC } from './pack/facet.generated.js';
-import { createSupervisorRpcCounters, type MetadataOverlayStats, type SupervisorRpcCounters } from './pack/facet-supervisor.js';
+import { createSupervisorRpcCounters, type SupervisorRpcCounters } from './pack/facet-supervisor.js';
 import { tagsHeld, type CloneBatchResult, type ClonePrepared, type CloneStreamed, type CloneTag } from './pack/clone.js';
 import type { PathProtection } from './worktree/verify-path.js';
 import { COMMITS_PER_CHUNK, treeSlices, type HistoryKind, type HistoryStepResult, type StagedFile } from './pack/history.js';
@@ -83,9 +84,6 @@ export interface GitNetworkOpts {
   depth?: number;
   /** Username + password/token */
   auth?: { username: string; password: string };
-  /** Author and committer (for pull merges), as the supervisor's git resolved them. */
-  author?: { name: string; email: string; timestamp?: number; timezoneOffset?: number };
-  committer?: { name: string; email: string; timestamp?: number; timezoneOffset?: number };
   /** Total operation budget (ms). Clone default 30 min; other ops default 5 min. */
   timeout?: number;
   /** Clone-only: caller holds an exclusive mutation lease for dir. */
@@ -195,7 +193,6 @@ export interface GitNetworkResult {
   filesWritten: number;
   bytesWritten: number;
   supervisorRpc: SupervisorRpcCounters;
-  metadataOverlay: MetadataOverlayStats;
   phases?: GitNetworkPhaseDiagnostic[];
   errorPhase?: GitCloneInvocationPhase | 'operation';
   errorCode?: GitNetworkErrorCode;
@@ -230,12 +227,9 @@ interface FacetInvocationResult {
   filesWritten?: unknown;
   bytesWritten?: unknown;
   supervisorRpc?: unknown;
-  metadataOverlay?: unknown;
   diagnostic?: unknown;
   prepared?: unknown;
   mutated?: unknown;
-  refused?: unknown;
-  errorCode?: unknown;
   fetched?: unknown;
   gitFailure?: unknown;
   graphFilters?: unknown;
@@ -254,13 +248,6 @@ const CLONE_PHASE_TIMEOUT_MS = 240_000;
 const DEFAULT_CLONE_BUDGET_MS = 30 * 60_000;
 const DEFAULT_OPERATION_TIMEOUT_MS = 300_000;
 
-const EMPTY_METADATA_OVERLAY_STATS: MetadataOverlayStats = {
-  entries: 0,
-  accountedBytes: 0,
-  maxEntries: 0,
-  maxAccountedBytes: 0,
-};
-
 function nonNegativeCounter(value: unknown): number {
   const number = Number(value);
   return Number.isSafeInteger(number) && number >= 0 ? number : 0;
@@ -274,10 +261,6 @@ function positiveSafeInteger(value: unknown, fallback: number, label: string): n
   return Number(value);
 }
 
-function parseGitNetworkErrorCode(value: unknown): GitNetworkErrorCode | undefined {
-  return value === 'GitCloneBudgetExceeded' ? value : undefined;
-}
-
 function parseSupervisorRpcCounters(value: unknown): SupervisorRpcCounters {
   const reported = value && typeof value === 'object'
     ? value as Partial<Record<keyof SupervisorRpcCounters, unknown>>
@@ -285,18 +268,6 @@ function parseSupervisorRpcCounters(value: unknown): SupervisorRpcCounters {
   const counters = createSupervisorRpcCounters();
   for (const key of Object.keys(counters) as (keyof SupervisorRpcCounters)[]) counters[key] = nonNegativeCounter(reported[key]);
   return counters;
-}
-
-function parseMetadataOverlayStats(value: unknown): MetadataOverlayStats {
-  const stats = value && typeof value === 'object'
-    ? value as Partial<Record<keyof MetadataOverlayStats, unknown>>
-    : {};
-  return {
-    entries: nonNegativeCounter(stats.entries),
-    accountedBytes: nonNegativeCounter(stats.accountedBytes),
-    maxEntries: nonNegativeCounter(stats.maxEntries),
-    maxAccountedBytes: nonNegativeCounter(stats.maxAccountedBytes),
-  };
 }
 
 function addSupervisorRpcCounters(
@@ -407,7 +378,6 @@ class GitClonePhaseError extends Error {
   readonly phase: GitCloneInvocationPhase;
   readonly diagnostic: GitNetworkPhaseDiagnostic;
   readonly mutated: boolean | undefined;
-  readonly errorCode: GitNetworkErrorCode | undefined;
   /** A write git would have failed: git's lines (GitNetworkResult.gitFailure). */
   readonly gitFailure: string | undefined;
   readonly remoteFailure: RemoteFailure | undefined;
@@ -416,7 +386,6 @@ class GitClonePhaseError extends Error {
     phase: GitCloneInvocationPhase,
     message: string,
     diagnostic: GitNetworkPhaseDiagnostic,
-    errorCode?: GitNetworkErrorCode,
     gitFailure?: string,
     remoteFailure?: RemoteFailure,
   ) {
@@ -425,7 +394,6 @@ class GitClonePhaseError extends Error {
     this.phase = phase;
     this.diagnostic = diagnostic;
     this.mutated = diagnostic.mutated;
-    this.errorCode = errorCode;
     this.gitFailure = gitFailure;
     this.remoteFailure = remoteFailure;
   }
@@ -459,7 +427,6 @@ class GitCloneBudgetExceededError extends GitClonePhaseError {
       `git clone budget exhausted after ${budget.batchesCompleted} batches / ` +
         `${budget.filesWritten} files (elapsed=${budget.elapsedMs}ms limit=${budget.limitMs}ms)`,
       diagnostic,
-      'GitCloneBudgetExceeded',
     );
     this.name = 'GitCloneBudgetExceededError';
     this.budget = budget;
@@ -794,7 +761,6 @@ async function invokeClonePhase(
       phase,
       typeof invocation.result.error === 'string' ? invocation.result.error : phase + ' failed',
       invocation.diagnostic,
-      undefined,
       typeof invocation.result.gitFailure === 'string' ? invocation.result.gitFailure : undefined,
       parseRemoteFailure(invocation.result.remoteFailure),
     );
@@ -845,9 +811,9 @@ const CLONE_HISTORY_CONCURRENCY = 1;
 
 /**
  * A clone's history (git/pack/history.ts): commits, then trees, then blobs;
- * all of it, or (`facetOpts.depth`) a shallow clone's commits. Returns the
- * commits' records for the commit-graph, or null when one did not parse (no
- * graph).
+ * all of it, or (`facetOpts.depth`) a shallow clone's commits. Answers
+ * whether its commits' records make a commit-graph: false when one did not
+ * parse, as git then writes none.
  */
 async function runCloneHistory(
   facetOpts: Omit<GitNetworkOpts, 'mutationOwner'>,
@@ -855,7 +821,7 @@ async function runCloneHistory(
   fast: ClonePrepared,
   run: CloneBatchRun,
   tagsFound: Set<string>,
-): Promise<StagedFile[] | null> {
+): Promise<boolean> {
   const base = { ...facetOpts, ...identity, capabilities: fast.capabilities };
   let pieces = 0;
   let packBytes = 0;
@@ -868,12 +834,11 @@ async function runCloneHistory(
   /** A piece, and its continuations while its decoding runs past a budget. */
   // The commits piece meets every commit and annotated tag of the history: it watches for the tags'.
   const tagInterest = [...new Set(fast.tags.flatMap((tag) => [tag.oid, tag.peeled]))];
-  let graph: StagedFile[] | null = [];
+  let graphed = true;
   const piece = async (kind: HistoryKind, name: string, request: Record<string, unknown>): Promise<StagedFile[]> => {
     const watch = kind === 'commits' && tagInterest.length > 0 ? { tagInterest } : {};
     const recorded = (step: HistoryStepResult) => {
-      if (step.graphLists === null || graph === null) graph = null;
-      else graph.push(...step.graphLists ?? []);
+      if (step.graphRefused === true) graphed = false;
     };
     let { step, elapsed } = await invoke({ step: 'piece', kind, piece: name, ...request, ...watch });
     const lists = [...step.lists];
@@ -913,7 +878,7 @@ async function runCloneHistory(
     await writeCloneProgressLine(run.progress,
       `\n[git] clone-history complete (${pieces} requests, ${(packBytes / 1048576).toFixed(1)}MB)\n`, run.signal);
   }
-  return graph;
+  return graphed;
 }
 
 /**
@@ -948,7 +913,7 @@ async function runCloneSnapshot(
   return planned;
 }
 
-/** The index from the shares; a full clone's shallow file goes, and its commit-graph is written; then the marker. */
+/** The index from the shares; a full clone's shallow file goes, and its graph records stay for the graph-filters pass, or go; then the marker. */
 async function runCloneFinish(
   facetOpts: Omit<GitNetworkOpts, 'mutationOwner'>,
   identity: { jobId: string; optionsHash: string },
@@ -956,13 +921,13 @@ async function runCloneFinish(
   full: boolean,
   cacheTreeBytes: number,
   tags: readonly CloneTag[],
-  /** A full clone's commit records (runCloneHistory), for its commit-graph. */
-  graph: StagedFile[] | null,
+  /** A full clone's commit records (runCloneHistory) make its commit-graph; else they go. */
+  commitGraph: boolean,
   run: CloneBatchRun,
   /** A file could not be written: no index, and the marker stays for the clone's cleanup. */
   checkoutFailed = false,
 ): Promise<void> {
-  const finish = await invokeClonePhase('clone-finish', { ...facetOpts, ...identity, shares, full, cacheTreeBytes, tags, graph, checkoutFailed }, run);
+  const finish = await invokeClonePhase('clone-finish', { ...facetOpts, ...identity, shares, full, cacheTreeBytes, tags, commitGraph, checkoutFailed }, run);
   if (run.progress) await writeClonePhaseProgress(run.progress, finish.diagnostic, run.signal);
 }
 
@@ -1089,7 +1054,6 @@ export async function execGitNetwork(
         filesWritten: 0,
         bytesWritten: 0,
         supervisorRpc: createSupervisorRpcCounters(),
-        metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
       };
     }
 
@@ -1113,7 +1077,6 @@ export async function execGitNetwork(
         filesWritten: 0,
         bytesWritten: 0,
         supervisorRpc: createSupervisorRpcCounters(),
-        metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
       };
     }
 
@@ -1157,7 +1120,6 @@ export async function execGitNetwork(
         const optionsHash = await hashCloneOptions(opts);
         const phases: GitNetworkPhaseDiagnostic[] = [];
         const supervisorRpc = createSupervisorRpcCounters();
-        let metadataOverlay = { ...EMPTY_METADATA_OVERLAY_STATS };
         let filesWritten = 0;
         let bytesWritten = 0;
         const budgetContext: GitCloneBudgetContext = {
@@ -1184,10 +1146,6 @@ export async function execGitNetwork(
           filesWritten += nonNegativeCounter(result.filesWritten);
           bytesWritten += nonNegativeCounter(result.bytesWritten);
           addSupervisorRpcCounters(supervisorRpc, result.supervisorRpc);
-          const overlay = parseMetadataOverlayStats(result.metadataOverlay);
-          if (overlay.entries > 0 || overlay.accountedBytes > 0) {
-            metadataOverlay = overlay;
-          }
         };
 
         try {
@@ -1213,7 +1171,6 @@ export async function execGitNetwork(
                 ? prepare.result.error
                 : 'clone-prepare returned an invalid result',
               prepare.diagnostic,
-              undefined,
               typeof prepare.result.gitFailure === 'string' ? prepare.result.gitFailure : undefined,
               parseRemoteFailure(prepare.result.remoteFailure),
             );
@@ -1251,14 +1208,14 @@ export async function execGitNetwork(
           if (fast === undefined) throw new GitClonePhaseError('clone-prepare', 'clone-prepare returned no plan', prepare.diagnostic);
           const shares = await runCloneBatches(facetOpts, identity, fast, run, prepared.stream !== undefined);
           const full = facetOpts.depth === undefined;
-          let graph: StagedFile[] | null = null;
+          let commitGraph = false;
           // Commits past the worktree's have blobs it did not fetch: a full
           // clone's history, and a --depth N clone's (N > 1) unless partial.
           const older = full || (facetOpts.depth! > 1 && facetOpts.filter === undefined);
           if (older && prepared.fast !== undefined && fast.commit !== null) {
-            const records = await runCloneHistory(facetOpts, identity, fast, run, tagsFound);
+            const graphed = await runCloneHistory(facetOpts, identity, fast, run, tagsFound);
             // The commit-graph is a full clone's: git writes none in a shallow repository.
-            if (full) graph = records;
+            commitGraph = full && graphed;
           }
           // A clone that is not partial has every object once its batches (and history) are in.
           if (prepared.fast !== undefined && facetOpts.filter === undefined) {
@@ -1272,7 +1229,7 @@ export async function execGitNetwork(
             ...fast.checkoutErrors ?? [],
             ...[...run.checkoutErrors.entries()].sort(([a], [b]) => a - b).flatMap(([, errors]) => errors),
           ];
-          await runCloneFinish(facetOpts, identity, shares, full, fast.cacheTreeBytes, tags, graph, run, checkoutErrors.length > 0);
+          await runCloneFinish(facetOpts, identity, shares, full, fast.cacheTreeBytes, tags, commitGraph, run, checkoutErrors.length > 0);
           if (checkoutErrors.length > 0) {
             facets.fence?.();
             return {
@@ -1285,7 +1242,6 @@ export async function execGitNetwork(
               filesWritten,
               bytesWritten,
               supervisorRpc,
-              metadataOverlay,
               phases,
             };
           }
@@ -1295,7 +1251,6 @@ export async function execGitNetwork(
             filesWritten,
             bytesWritten,
             supervisorRpc,
-            metadataOverlay,
             phases,
           };
         } catch (error) {
@@ -1312,7 +1267,6 @@ export async function execGitNetwork(
               filesWritten,
               bytesWritten,
               supervisorRpc,
-              metadataOverlay,
               phases,
             };
           }
@@ -1345,9 +1299,7 @@ export async function execGitNetwork(
             success: false,
             error: phaseError.message,
             errorPhase: phaseError.phase,
-            errorCode: phaseError instanceof GitCloneBudgetExceededError
-              ? phaseError.code
-              : phaseError.errorCode,
+            errorCode: phaseError instanceof GitCloneBudgetExceededError ? phaseError.code : undefined,
             gitFailure: phaseError.gitFailure,
             remoteFailure: phaseError.remoteFailure,
             budget: phaseError instanceof GitCloneBudgetExceededError
@@ -1358,7 +1310,6 @@ export async function execGitNetwork(
             filesWritten,
             bytesWritten,
             supervisorRpc,
-            metadataOverlay,
             phases,
           };
         }
@@ -1399,7 +1350,6 @@ export async function execGitNetwork(
           filesWritten: 0,
           bytesWritten: 0,
           supervisorRpc: createSupervisorRpcCounters(),
-          metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
           graphFilters,
         };
       }
@@ -1469,7 +1419,6 @@ export async function execGitNetwork(
           filesWritten: 0,
           bytesWritten: 0,
           supervisorRpc: createSupervisorRpcCounters(),
-          metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
         };
       }
       const endedAt = Date.now();
@@ -1492,7 +1441,6 @@ export async function execGitNetwork(
         filesWritten: nonNegativeCounter(result.filesWritten),
         bytesWritten: nonNegativeCounter(result.bytesWritten),
         supervisorRpc: parseSupervisorRpcCounters(result.supervisorRpc),
-        metadataOverlay: parseMetadataOverlayStats(result.metadataOverlay),
         phases: [diagnostic],
         fetchedObjects: result.fetched && typeof result.fetched === 'object' && 'fetched' in result.fetched
           ? nonNegativeCounter(result.fetched.fetched)
@@ -1528,7 +1476,6 @@ export async function execGitNetwork(
       filesWritten: 0,
       bytesWritten: 0,
       supervisorRpc: createSupervisorRpcCounters(),
-      metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
     };
   }
 }

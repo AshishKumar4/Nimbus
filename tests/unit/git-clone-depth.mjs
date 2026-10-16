@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -46,6 +46,8 @@ try {
       const ours = session.materialize('home/user/' + name, join(work, 'ours-' + name));
       assert.deepEqual(session.sessionObjects('home/user/' + name).objects, hostObjects(host), `depth ${depth}: the objects host git holds`);
       assert.equal(readFileSync(join(ours, '.git/shallow'), 'utf8'), readFileSync(join(host, '.git/shallow'), 'utf8'), `depth ${depth}: the shallow file`);
+      // Its history's commit records make no commit-graph (git writes none in a shallow repository): they go.
+      assert.equal(existsSync(join(ours, '.git/objects/info/commit-graphs/tmp_records')), false, `depth ${depth}: no commit-graph records left`);
       const fsck = spawnSync('git', ['fsck', '--full', '--no-dangling'], { cwd: ours, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
       assert.equal(fsck.status, 0, `depth ${depth}: git fsck --full: ${fsck.stdout}${fsck.stderr}`);
       assert.equal(hostGit(ours, ['log', '--format=%H %T']), hostGit(host, ['log', '--format=%H %T']), `depth ${depth}: the history`);

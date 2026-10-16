@@ -1,4 +1,7 @@
 import { parseNpmLogLevel } from './npm-log.js';
+import { npmCacheMode } from '../../../../_shared/npm-cache-mode.js';
+/** npm's options its cache mode is read from: `--offline`, `--prefer-offline`, `--prefer-online`, and the deprecated aliases of the latter two. */
+const CACHE_MODE_KEYS = ['offline', 'prefer-offline', 'prefer-online', 'cache-min', 'cache-max'];
 export function npmInstallInvocation(config) {
     const set = (key) => config.find(key) !== 'default';
     const flag = (key) => config.get(key) === true;
@@ -58,6 +61,7 @@ export function npmInstallInvocation(config) {
         savePrefix: flag('save-exact') ? '' : text('save-prefix') ?? '',
         engineStrict: flag('engine-strict'),
         registry: set('registry') ? text('registry') : null,
+        cache: npmCacheMode(config.flattened(CACHE_MODE_KEYS)),
         unsupported,
     };
 }

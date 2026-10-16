@@ -10,7 +10,12 @@
  * clone --sparse` starts with no directories: the top's files only.
  */
 
+import { compareBytes } from '../worktree/dircache.js';
+import { patternLines } from '../worktree/pattern-lines.js';
+
 const encoder = new TextEncoder();
+// A line's own BOM is its bytes: only the file's first is skipped (patternLines).
+const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
 
 /** Which paths a sparse worktree holds. */
 export interface SparseMatcher {
@@ -56,10 +61,7 @@ function parentsOf(dirs: readonly string[]): Set<string> {
 
 /** Strings in byte order (UTF-8), as git sorts the cone it writes. */
 function byBytes(a: string, b: string): number {
-  const x = encoder.encode(a);
-  const y = encoder.encode(b);
-  for (let i = 0; i < Math.min(x.length, y.length); i++) if (x[i] !== y[i]) return x[i] - y[i];
-  return x.length - y.length;
+  return compareBytes(encoder.encode(a), encoder.encode(b));
 }
 
 /**
@@ -125,22 +127,6 @@ export function coneMatcher(cone: Cone, ignoreCase = false): SparseMatcher {
 /** is_glob_special: the characters a cone pattern escapes. */
 const GLOB_SPECIAL = new Set(['*', '?', '[', '\\']);
 
-/** trim_trailing_spaces: trailing spaces go, but one escaped by a backslash. */
-function trimTrailingSpaces(line: string): string {
-  let lastSpace = -1;
-  for (let i = 0; i < line.length; i++) {
-    if (line[i] === ' ') {
-      if (lastSpace < 0) lastSpace = i;
-    } else if (line[i] === '\\') {
-      if (++i === line.length) return line;
-      lastSpace = -1;
-    } else {
-      lastSpace = -1;
-    }
-  }
-  return lastSpace < 0 ? line : line.slice(0, lastSpace);
-}
-
 /** dup_and_filter_pattern: each backslash dropped once, the character after it kept. */
 function unescapePattern(pattern: string): string {
   return pattern.replace(/\\(.?)/g, '$1');
@@ -157,13 +143,9 @@ export function parseConeSparseCheckout(text: string): Cone | null {
   let full = false;
   const recursive = new Set<string>();
   const parents = new Set<string>();
-  // add_patterns_from_buffer: a UTF-8 BOM skipped, lines to each newline (CR LF as LF), empty ones and comments skipped.
-  const lines = text.replace(/^\uFEFF/, '').split('\n');
-  if (!text.endsWith('\n')) lines.push('');
-  for (const raw of lines.slice(0, -1)) {
-    if (raw === '' || raw.startsWith('#')) continue;
+  for (const line of patternLines(encoder.encode(text))) {
     // parse_path_pattern: a leading "!" negates, a trailing "/" says directory.
-    let pattern = trimTrailingSpaces(raw.endsWith('\r') ? raw.slice(0, -1) : raw);
+    let pattern = decoder.decode(line);
     const negative = pattern.startsWith('!');
     if (negative) pattern = pattern.slice(1);
     const mustBeDir = pattern.endsWith('/');

@@ -10,17 +10,12 @@ import { withinDeadline } from './mount-writer.js';
 /** A file larger than this comes back by ranges: an RPC value's structured-clone ceiling. */
 export const WHOLE_FILE_RPC_SAFE_BYTES = MAX_RPC_SAFE_PAYLOAD_BYTES;
 export const READ_RANGE_BYTES = 4 * 1024 * 1024;
-export const METADATA_MAX_ENTRIES = 100_000;
-export const METADATA_MAX_ACCOUNTED_BYTES = 32 * 1024 * 1024;
 export function createSupervisorRpcCounters() {
     return {
         stat: 0, lstat: 0, readdir: 0, readFile: 0,
         fsReadRange: 0, fsWriteRange: 0, rename: 0, lock: 0, writeBatchStream: 0, readlink: 0, symlink: 0,
         stdout: 0, fileApi: 0,
     };
-}
-export function emptyMetadataOverlayStats() {
-    return { entries: 0, accountedBytes: 0, maxEntries: METADATA_MAX_ENTRIES, maxAccountedBytes: METADATA_MAX_ACCOUNTED_BYTES };
 }
 /** `call`'s result, counted under `name`, its RPC resource disposed. */
 export function counted(stats, name, call) {

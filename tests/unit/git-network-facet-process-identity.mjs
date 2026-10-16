@@ -23,7 +23,6 @@ const entrypoint = {
       filesWritten: 0,
       bytesWritten: 0,
       supervisorRpc: {},
-      metadataOverlay: {},
     });
   },
   [Symbol.dispose]() {},
