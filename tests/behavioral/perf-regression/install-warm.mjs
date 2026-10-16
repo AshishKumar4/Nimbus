@@ -46,7 +46,7 @@ const a = makeAsserter('perf-regression/install-warm');
 const arms = requirePairedTargets('perf-regression/install-warm');
 console.log(`perf-regression/install-warm — baseline ${arms.a1.base}, ${arms.a2.base}; candidate ${arms.b.base}`);
 
-const ROUNDS = 10;
+const ROUNDS = 16;
 const WARM_RUNS = 5;
 
 /** Sum the installer's `phases:` line. Values print as `123ms` or `1.2s`. */

@@ -36,7 +36,7 @@ const a = makeAsserter('perf-regression/first-paint');
 const arms = requirePairedTargets('perf-regression/first-paint');
 console.log(`perf-regression/first-paint — baseline ${arms.a1.base}, ${arms.a2.base}; candidate ${arms.b.base}`);
 
-const ROUNDS = 8;
+const ROUNDS = 16;
 // Small enough that the round-trip, not this sleep, sets the resolution.
 const POLL_INTERVAL_MS = 20;
 const POLL_BUDGET_MS = 90_000;
