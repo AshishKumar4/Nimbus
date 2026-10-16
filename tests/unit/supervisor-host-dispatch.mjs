@@ -189,7 +189,6 @@ const INPUTS = {
   cpWait: [childPid, waitMs, { epoch, cursor }, false],
   cpBlocked: [{ blocked: true, frontier: 3, seq: 4 }],
   cpNextSignal: [waitMs],
-  innerDoFetch: [{ bindingName: 'NimbusDO', id: 'inner-id', method: 'GET', url: 'https://inner.test/', headers: [] }],
   innerDoCall: [{ bindingName: 'NimbusDO', id: 'inner-id', path: ['hello'], args: [1, 'two'] }],
   kvCall: [{ root: 'home/user/app', store: 'KV' }, { method: 'get', key: 'k' }],
   r2Call: [{ root: 'home/user/app', store: 'BUCKET' }, { method: 'head', key: 'k' }],
@@ -537,7 +536,7 @@ for (const [op, route] of cases) {
 }
 
 // An op the table does not name is not served — on any host.
-for (const op of ['constructor', 'toString', '_rpcInnerDoFetch', 'missing']) {
+for (const op of ['constructor', 'toString', '_rpcInnerDoCall', 'missing']) {
   await assert.rejects(ops.dispatch({ op }), /not served/);
 }
 supervisor.ctx.props.pid = 0;

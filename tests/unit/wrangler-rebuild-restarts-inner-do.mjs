@@ -6,7 +6,7 @@
 
 import assert from 'node:assert/strict';
 import { NimbusWrangler } from '../../packages/worker/src/wrangler/nimbus-wrangler.ts';
-import { _rpcInnerDoFetch } from '../../packages/worker/src/session/rpc.ts';
+import { _rpcInnerDoCall } from '../../packages/worker/src/session/rpc.ts';
 
 // ctx.facets: get() reuses a running facet without calling start, and abort
 // ends it but keeps its storage.
@@ -91,10 +91,10 @@ const wrangler = new NimbusWrangler({
   onLog: () => {},
   onHmrMessage: (message) => { if (message.event === 'full-reload') rebuilt(); },
 });
-const request = {
-  bindingName: 'COUNTER', id: 'room-1', method: 'GET', url: 'https://inner.test/', headers: [], body: null,
-};
-const answer = async () => new TextDecoder().decode((await _rpcInnerDoFetch({ ctx }, request)).body);
+/** What object room-1's fetch answers, called as a stub's caller calls it. */
+const answer = async () => (await _rpcInnerDoCall({ ctx }, {
+  bindingName: 'COUNTER', id: 'room-1', path: ['fetch'], args: [new Request('https://inner.test/')],
+})).text();
 
 assert.equal(await wrangler.start(), true, 'the project builds');
 assert.equal(await answer(), 'v1 served=1 seen=1');

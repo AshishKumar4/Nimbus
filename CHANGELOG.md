@@ -31,6 +31,25 @@ published independently in the `@nimbus-sh` npm scope.
   and an exact version built only for another platform is refused. Before,
   the first `=` requirement installed that version whatever else the
   request said.
+- Breaking (fabric, worker, sdk): the legacy inner Durable Object transport
+  is gone. `NimbusDOStub` is no longer exported from
+  `@nimbus-sh/fabric/bindings.js`, `@nimbus-sh/worker` or
+  `@nimbus-sh/sdk/entrypoints`, and `InnerDoFetchAnswer` from
+  `@nimbus-sh/fabric/bindings.js`. `NimbusDurableObjectNamespace` keeps
+  `callOn` and `getOn` and loses `get`, `idFromName`, `newUniqueId` and
+  `idFromString`. The supervisor op `innerDoFetch` and
+  `NimbusSession._rpcInnerDoFetch` are gone. A `wrangler dev` Worker's
+  Durable Objects are unchanged: they already went through `callOn` and
+  `getOn`, fetch included. An embedder whose Worker entry re-exports with
+  `export * from '@nimbus-sh/sdk/entrypoints'` needs no change; one that
+  names `NimbusDOStub` in its imports or exports must drop the name.
+- Fixed: a session's destroy (`DELETE /s/<id>/`, `box.destroy()`) is
+  repeated once on a fresh connection when the platform fails it with a
+  reset of the session's storage ("Internal error in Durable Object
+  storage caused object to be reset") or its undescribed "internal error".
+  Before, either answered the destroy with a 500 and left the session in
+  place. The destroy is idempotent, so the repeat answers with its result;
+  any other failure is answered as before.
 - Fixed: a portable workspace's `node` reads its command line as the
   hosted `node` does (Node's own parser, NODE_OPTIONS first), and finds its
   script the same way. `node .` runs the package's `main`, and `node start`

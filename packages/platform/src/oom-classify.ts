@@ -273,6 +273,10 @@ export type DoCallClass =
   | 'storage_reset'
   /** The runtime flagged the error `retryable` itself. */
   | 'retryable_flag'
+  /** The platform failed the call without saying why ("internal error;
+   *  reference = …", isUnexplainedPlatformError): whether it ran is unknown.
+   *  Not a transient class: only a callee that converges repeats it. */
+  | 'platform_internal'
   /** The object shed the call under queue pressure. NEVER retried: retrying
    *  an overloaded object is what overloaded it. */
   | 'overloaded'
@@ -317,6 +321,7 @@ export function classifyDoCall(input: unknown): DoCallClass {
   const seen = new Set<Error>();
   const messages: string[] = [];
   let flagged = false;
+  let unexplained = false;
   let link: Error | null = input;
   while (link !== null && !seen.has(link)) {
     seen.add(link);
@@ -324,6 +329,7 @@ export function classifyDoCall(input: unknown): DoCallClass {
       || isDoOverloaded(link.message);
     if (overloaded) return 'overloaded';
     if ('retryable' in link && link.retryable === true) flagged = true;
+    if (isUnexplainedPlatformError(link)) unexplained = true;
     messages.push(link.message ?? '');
     const cause: unknown = link.cause;
     link = cause instanceof Error ? cause : null;
@@ -333,6 +339,8 @@ export function classifyDoCall(input: unknown): DoCallClass {
     if (pattern.test(chain)) return transient;
   }
   if (flagged) return 'retryable_flag';
+  // Only where nothing in the chain explains it: a wrapper's own words are not the platform's.
+  if (unexplained) return 'platform_internal';
   return 'permanent';
 }
 
