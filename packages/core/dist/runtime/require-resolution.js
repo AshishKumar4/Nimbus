@@ -1,4 +1,4 @@
-import { createNodePackageMapPolicy, DEFAULT_CJS_CONDITIONS, packageJsonText, packageSelfReferenceSubpath, resolutionError, selectPackageMap, resolvePackageEntry, } from '../_shared/exports-resolver.js';
+import { createNodePackageMapPolicy, DEFAULT_CJS_CONDITIONS, nativeResolutionError, packageJsonText, packageSelfReferenceSubpath, resolutionError, selectPackageMap, resolvePackageEntry, } from '../_shared/exports-resolver.js';
 import { TYPESCRIPT_INDEX_CANDIDATES, typescriptFallbackCandidates } from '../_shared/typescript-specifiers.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 export const METADATA_CANDIDATE_WORK = 256;
@@ -92,7 +92,7 @@ export function createRequireResolver(host, options = {}) {
             pkg = JSON.parse(packageJsonText(text));
         }
         catch {
-            throw error('ERR_INVALID_PACKAGE_CONFIG', 'Invalid package config ' + path + '.');
+            throw nativeResolutionError('ERR_INVALID_PACKAGE_CONFIG', 'Invalid package config ' + path + '.');
         }
         const config = pkg !== null && typeof pkg === 'object' ? pkg : {};
         state.configs.set(path, config);
@@ -211,7 +211,8 @@ export function createRequireResolver(host, options = {}) {
             const found = yield* loadAsDirectory(dir, state);
             if (found)
                 return fileUrl(found);
-            throw error('ERR_MODULE_NOT_FOUND', "Cannot find package '" + dir + "/index.js' imported from " + fromDir);
+            // legacyMainResolve's.
+            throw nativeResolutionError('ERR_MODULE_NOT_FOUND', "Cannot find package '" + dir + "/index.js' imported from " + fromDir);
         }
         throw error('ERR_MODULE_NOT_FOUND', "Cannot find package '" + split.name + "' imported from " + fromDir);
     }

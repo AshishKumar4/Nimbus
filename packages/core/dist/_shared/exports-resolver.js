@@ -234,13 +234,22 @@ export function resolveExports(exportsField, subpath = '.', conditions = DEFAULT
     return next.value ?? null;
 }
 /**
- * A package resolution error Node gives an `ERR_*` code: its internal
- * NodeError, `Name [CODE]: message` in its toString() and its stack (lib/
- * internal/errors.js). A module not found by require() is not one: Node's CJS
- * loader makes that a plain Error, its `code` MODULE_NOT_FOUND.
+ * A package resolution error Node's JavaScript gives an `ERR_*` code: its
+ * internal NodeError, `Name [CODE]: message` in its toString() and its stack
+ * (lib/internal/errors.js). A module not found by require() is not one:
+ * Node's CJS loader makes that a plain Error, its `code` MODULE_NOT_FOUND.
  */
 export function resolutionError(code, message, Type = Error) {
     return nodeError(Type, code, message, undefined, resolutionError);
+}
+/**
+ * A package resolution error Node 22 throws from C++ (node_errors.h
+ * THROW_ERR_*): a package.json it cannot parse (node_modules.cc), a package
+ * main legacyMainResolve does not find (node_file.cc). A plain Error with its
+ * code, `Error: message` in its toString() and its stack, as V8 makes it.
+ */
+export function nativeResolutionError(code, message) {
+    return Object.assign(new Error(message), { code });
 }
 /**
  * Node's leaf validation and error construction, shared by CJS and ESM.

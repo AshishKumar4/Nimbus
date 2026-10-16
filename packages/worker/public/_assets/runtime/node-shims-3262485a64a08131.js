@@ -18232,6 +18232,9 @@ function resolveExports(exportsField, subpath = ".", conditions = DEFAULT_BUILD_
 function resolutionError(code, message, Type = Error) {
   return nodeError(Type, code, message, void 0, resolutionError);
 }
+function nativeResolutionError(code, message) {
+  return Object.assign(new Error(message), { code });
+}
 function createNodePackageMapPolicy(packageJsonUrl, base, internal, resolveBare) {
   const path = (url) => decodeURIComponent(url.pathname);
   const pjsonPath = path(packageJsonUrl);
@@ -18439,7 +18442,7 @@ function createRequireResolver(host, options = {}) {
     try {
       pkg = JSON.parse(packageJsonText(text));
     } catch {
-      throw error("ERR_INVALID_PACKAGE_CONFIG", "Invalid package config " + path + ".");
+      throw nativeResolutionError("ERR_INVALID_PACKAGE_CONFIG", "Invalid package config " + path + ".");
     }
     const config = pkg !== null && typeof pkg === "object" ? pkg : {};
     state.configs.set(path, config);
@@ -18547,7 +18550,7 @@ function createRequireResolver(host, options = {}) {
       if (split.subpath !== ".") return new URL(split.subpath, fileUrl(pjsonPath));
       const found = yield* loadAsDirectory(dir, state);
       if (found) return fileUrl(found);
-      throw error("ERR_MODULE_NOT_FOUND", "Cannot find package '" + dir + "/index.js' imported from " + fromDir);
+      throw nativeResolutionError("ERR_MODULE_NOT_FOUND", "Cannot find package '" + dir + "/index.js' imported from " + fromDir);
     }
     throw error("ERR_MODULE_NOT_FOUND", "Cannot find package '" + split.name + "' imported from " + fromDir);
   }
@@ -19021,8 +19024,7 @@ function createEsmResolver(host, options = {}) {
     try {
       parsed = JSON.parse(packageJsonText(text));
     } catch {
-      throw nodeError(
-        Error,
+      throw nativeResolutionError(
         "ERR_INVALID_PACKAGE_CONFIG",
         `Invalid package config ${pjsonPath}` + (base ? ` while importing ${JSON.stringify(specifier)} from ${base}` : "") + "."
       );
@@ -19090,7 +19092,7 @@ function createEsmResolver(host, options = {}) {
     }
     const dir = fileUrl(filePath(new URL(".", pjsonUrl)).replace(/\/+/g, "/"));
     const missing = filePath(new URL(config.main ?? "index.js", dir));
-    throw nodeError(Error, "ERR_MODULE_NOT_FOUND", `Cannot find package '${missing}' imported from ${base}`);
+    throw nativeResolutionError("ERR_MODULE_NOT_FOUND", `Cannot find package '${missing}' imported from ${base}`);
   }
   function* packageResolve(specifier, baseUrl) {
     if (host.isBuiltin(specifier)) return new URL("node:" + specifier);
