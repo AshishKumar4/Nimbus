@@ -241,12 +241,16 @@ async function token() {
   process.stdout.write(flags.json ? `${JSON.stringify({ base: state.base, token: jwt })}\n` : jwt);
 }
 
-/** The deployment the Preview serves now: remote-probes reads it before and after a run, and grades only a run it did not change under. */
+/**
+ * The deployment the Preview serves now: remote-probes reads it before and
+ * after a job, and grades only a job it did not change under. It needs no
+ * record here, so it reads a throwaway another checkout stood up.
+ */
 async function version() {
-  const state = requireState(resolveName());
+  const name = resolveName();
   const account = requireAccountPin();
-  const latest = await latestDeployment({ account, token: apiToken({ cwd: PROBE_APP, account }), preview: state.preview });
-  if (!latest?.id) throw new Error(`${state.name} serves no deployment`);
+  const latest = await latestDeployment({ account, token: apiToken({ cwd: PROBE_APP, account }), preview: readState(statePath(name))?.preview ?? previewName(name) });
+  if (!latest?.id) throw new Error(`${name} serves no deployment`);
   process.stdout.write(`${latest.id}\n`);
 }
 

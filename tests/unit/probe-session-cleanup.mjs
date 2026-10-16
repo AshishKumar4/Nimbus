@@ -278,6 +278,8 @@ console.log('  [6] only the destroy result confirms a deletion');
   assert.deepEqual(otherDeletes, ['Bearer arm-token'], 'the exit hook deletes the arm session on its own target');
   assert.deepEqual(failed.deletes, ['fixture-1 Bearer probe-token']);
   assert.match(failed.stderr, new RegExp(`^  arm-1  minted \\S+  on ${otherBase}$`, 'm'), 'a failure names the arm session with its target');
+  assert.equal(failed.outcomes.deleted, 2, 'a dropped socket is no cleanup event: both sessions deleted, none leaked');
+  assert.deepEqual(failed.outcomes.leaks, []);
   const [sessions] = [...probeSessions(failed.text).values()];
   assert.deepEqual(sessions.map(({ sid, base, abnormalCloses }) => [sid, base, abnormalCloses.length]),
     [['arm-1', otherBase, 1], ['fixture-1', `http://127.0.0.1:${target.port}`, 0]]);

@@ -16,7 +16,7 @@
 //   - First-request handler took on heavy synchronous work.
 
 import { mintSession, makeAsserter, deleteSession, requestHeaders } from '../_driver.mjs';
-import { assertPaired, measurePaired, requirePairedTargets } from '../_paired.mjs';
+import { assertCandidateRounds, assertPaired, measurePaired, requirePairedTargets } from '../_paired.mjs';
 
 const a = makeAsserter('perf-regression/cold-start');
 const arms = requirePairedTargets('perf-regression/cold-start');
@@ -41,8 +41,7 @@ const result = await measurePaired(arms, ROUNDS, async (target) => {
   }
 });
 
-a.check('every candidate session serves its first /api/_diag/cache with 200', result.candidateFailures.length === 0,
-  result.candidateFailures.map((failure) => `round ${failure.round}: ${failure.error}`).join('; '));
+assertCandidateRounds(a, 'its session serves its first /api/_diag/cache with 200', result);
 const graded = assertPaired(a, 'cold start', result);
 
 const sum = a.summary();

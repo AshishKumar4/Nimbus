@@ -52,12 +52,17 @@ const dir = mkdtempSync(join(tmpdir(), 'reset-attribution-'));
 try {
   const tokenFile = join(dir, 'token');
   writeFileSync(tokenFile, 'observability-token\n');
-  const DROP = 'Terminal closed while waiting for submitted shell batch after 575ms (close code 1006 (abnormal — no close frame)): Connection ended';
-  /** A red row as probes.mjs writes it: its sessions from the ledger (`dropped` closed 1006), its checks. */
-  const row = ({ sids, dropped = sids, failed = [DROP], output = '' }) => ({
+  /** The driver's close error for `sid`, as a probe puts it in a check. */
+  const drop = (sid) => `Terminal closed while waiting for submitted shell batch after 575ms (session ${sid}; close code 1006 (abnormal — no close frame)): Connection ended`;
+  /**
+   * A red row as probes.mjs writes it: its sessions from the ledger
+   * (`dropped` closed 1006), and its completed checks, failed with `failed`
+   * (by default, each dropped session's close).
+   */
+  const row = ({ sids, dropped = sids, failed = dropped.map(drop), complete = true, output = '' }) => ({
     name: 'tests/behavioral/clang/hello.mjs', exitCode: 1, output,
     sessions: sids.map((sid) => ({ sid, at: new Date(minted).toISOString(), base: BASE, abnormalCloses: dropped.includes(sid) ? [new Date(at(20)).toISOString()] : [] })),
-    assertions: [{ id: 1, label: 'clang/hello', complete: true, checks: [{ name: 'setup', ok: true, detail: '' }, ...failed.map((detail, i) => ({ name: `step ${i}`, ok: false, detail }))] }],
+    assertions: [{ id: 1, label: 'clang/hello', complete, checks: [{ name: 'setup', ok: true, detail: '' }, ...failed.map((detail, i) => ({ name: `step ${i}`, ok: false, detail }))] }],
   });
   const attribute = async (events, red) => {
     const { request, queries } = api(events);
@@ -106,7 +111,11 @@ try {
     const storageOnly = await attribute(events, row({ sids: ['calm-owl-0002'] }));
     assert.equal(storageOnly.regrade, true);
     // A check that failed on its own keeps the row red, whatever reset beside it.
-    assert.equal((await attribute(events, row({ sids: ['calm-owl-0002'], failed: [DROP, 'expected 3, got 4'] }))).regrade, false);
+    assert.equal((await attribute(events, row({ sids: ['calm-owl-0002'], failed: [drop('calm-owl-0002'), 'expected 3, got 4'] }))).regrade, false);
+    // A probe that died before its summary says nothing about what killed it.
+    assert.equal((await attribute(events, row({ sids: ['calm-owl-0002'], complete: false }))).regrade, false);
+    // A close the check names must be a session whose socket the ledger saw drop.
+    assert.equal((await attribute(events, row({ sids: ['calm-owl-0002'], failed: [drop('other-0009')] }))).regrade, false);
     // The storage reset must be on the session whose socket dropped: one on
     // another session (a baseline arm, say) does not excuse a drop no log explains.
     const elsewhere = [...events, event({ object: 'obj-5', sid: 'lone-elk-0005', seconds: 3, message: 'GET /ws' })];

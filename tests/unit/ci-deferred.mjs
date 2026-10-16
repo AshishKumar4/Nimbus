@@ -134,6 +134,10 @@ assert.match(regraded(1).red.join('\n'), /regrade clang\/hello #1/);
 const orphan = gradeMatrix([{ tasks: [{ task: 'part 1', outcome: { kind: 'exited' }, rows: [reset, ledger] }] }], []);
 assert.equal(orphan.exitCode, 1);
 assert.match(orphan.red.join('\n'), /part 1/);
+// A run that recorded a problem beyond its rows (a deployment that changed under a job) is not graded.
+const moved = gradeMatrix([{ ...verdict([row('legacy-probe', 0), ledger]), problems: ['arm b served v2 before the job and v2 after, not v1'] }], []);
+assert.equal(moved.exitCode, 2);
+assert.match(moved.problems.join('\n'), /arm b served v2/);
 // A paired perf probe that measured too few baseline rounds exits 2: not graded, not red.
 const unmeasured = gradeMatrix([verdict([row('perf-regression/cold-start', 2), ledger])], []);
 assert.equal(unmeasured.exitCode, 2);

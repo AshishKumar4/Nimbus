@@ -135,10 +135,16 @@ const paired = hosted ? [] : PAIRED_PROBES.filter((probe) => pairedInSuite.inclu
 // An --only that names nothing but paired probes needs no parts.
 const suite = !flags.only || selectionNames(flags.only).some((name) => !PAIRED_PROBES.some((probe) => namesProbe([name], `${probe}.mjs`)));
 
-// While no armada job runs, a signal ends the run through 'exit', whose
-// listener deletes the paired throwaways. During a job, armada's own
-// listener cancels it and exits, and that 'exit' deletes them too.
-const exitOnSignal = () => process.exit(130);
+// While no armada job runs, a signal ends the run: every upload or install
+// still running is ended and waited for, then 'exit', whose listener deletes
+// the paired throwaways. During a job, armada's own listener cancels it and
+// exits, and that 'exit' deletes them too. A second signal exits at once.
+let halting = false;
+const exitOnSignal = () => {
+  if (halting || !arms) process.exit(130);
+  halting = true;
+  arms.halt().finally(() => process.exit(130));
+};
 const signals = (on) => {
   for (const signal of ['SIGINT', 'SIGTERM']) {
     if (on) process.on(signal, exitOnSignal);
@@ -151,6 +157,8 @@ const onArmada = async (job) => {
 };
 
 let arms = null;
+/** The deployment each throwaway this run grades must serve throughout: its upload's, or the target's when this run did not upload it. */
+const expected = {};
 let status = 0;
 try {
   // Minting and deploying run the target scripts, which parse wrangler configs.
@@ -174,6 +182,7 @@ try {
     const up = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'up', '--name', flags.deploy, '--bundle', releases[sha]], { cwd: repo, stdio: ['ignore', 'ignore', 'inherit'] });
     if (up.status !== 0) throw new Error(`the upload of the release to ${flags.deploy} failed (exit ${up.status}); the release is in ${releases[sha]}`);
   }
+  Object.assign(expected, await deployments());
   if (baseline) {
     console.error(`remote-probes: ${paired.join(', ')} graded against ${baseline.slice(0, 12)}${baseline === sha ? ' (the candidate itself)' : ''}`);
     arms = pairedPreviews({ repo });
@@ -181,6 +190,7 @@ try {
       for (const line of arms.teardown()) console.error(`remote-probes: LEFT BEHIND ${line}`);
     });
     await arms.standUp({ baseline, candidate: sha, releases });
+    for (const [arm, id] of Object.entries(arms.receipts())) expected[`arm ${arm}`] = id;
   }
   status = await probeRun();
 } catch (error) {
@@ -190,17 +200,18 @@ try {
 process.exit(status);
 
 /**
- * The deployments this run grades: the throwaway target's and each paired
- * arm's, by id. Staging's are release.mjs's to bracket; a hosted demo has none.
+ * The deployments this run grades, by id: the throwaway target's and each
+ * paired arm's once stood up. Staging's are release.mjs's to bracket; a
+ * hosted demo has none.
  */
 async function deployments() {
   const ids = {};
   if (throwaway !== undefined) {
     const read = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'version', '--name', throwaway], { cwd: repo, encoding: 'utf8' });
     if (read.status !== 0) throw new Error(`could not read ${throwaway}'s live deployment:\n${read.stderr}`);
-    ids[throwaway] = read.stdout.trim();
+    ids[`target ${throwaway}`] = read.stdout.trim();
   }
-  if (arms) Object.assign(ids, await arms.versions());
+  if (arms) for (const [arm, id] of Object.entries(await arms.versions())) ids[`arm ${arm}`] = id;
   return ids;
 }
 
@@ -239,8 +250,8 @@ async function probeRun() {
         ...(token ? ['--start-by', String(startBy)] : ['--anonymous']), ...(flags.screenshots ? ['--screenshots', '1'] : [])],
     }));
     const after = await deployments();
-    const moved = Object.keys(before).filter((name) => after[name] !== before[name]);
-    return { base, mapped, moved: moved.map((name) => `${name} served ${before[name]} before the job and ${after[name]} after`) };
+    const moved = Object.keys(expected).filter((name) => before[name] !== expected[name] || after[name] !== expected[name]);
+    return { base, mapped, moved: moved.map((name) => `${name} served ${before[name]} before the job and ${after[name]} after, not ${expected[name]}`) };
   };
 
   // The paired probes run in a task of their own, one at a time; the parts skip them.

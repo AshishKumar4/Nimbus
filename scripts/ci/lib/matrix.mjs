@@ -68,7 +68,7 @@ function beyondDeferral(row, entry) {
 }
 
 /**
- * @param {Array<{ tasks: Array<{ task: string, outcome?: { kind: string }, rows: Array<{ name: string, exitCode: number, seconds: number, output: string, assertions?: any[] | null, regraded?: { task: string, evidence: string[] } }> | null }> } | null>} verdicts
+ * @param {Array<{ problems?: string[], tasks: Array<{ task: string, outcome?: { kind: string }, rows: Array<{ name: string, exitCode: number, seconds: number, output: string, assertions?: any[] | null, regraded?: { task: string, evidence: string[] } }> | null }> } | null>} verdicts
  *   the matrix's remote-probes verdicts (null for one that wrote none)
  * @param {import('../../../tests/behavioral/_deferred.mjs').ReleaseException[]} deferred
  * @returns {{ exitCode: 0 | 1 | 2, red: string[], applied: Array<object>, problems: string[] }}
@@ -89,6 +89,11 @@ export function gradeMatrix(verdicts, deferred) {
       notGraded = true;
       problems.push('a remote-probes run wrote no verdict');
       continue;
+    }
+    // What made the run not graded beyond its rows: a deployment that changed under a job, a regrade that could not run.
+    for (const problem of verdict.problems ?? []) {
+      notGraded = true;
+      problems.push(problem);
     }
     for (const task of verdict.tasks) {
       if (!task.rows) {

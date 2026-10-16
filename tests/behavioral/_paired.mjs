@@ -122,6 +122,17 @@ export function gradePaired(rounds) {
 }
 
 /**
+ * Check on the asserter `a` that every candidate round did `what`: one
+ * failed check per round that did not, with its own error, so each failure
+ * stands alone (remote-probes regrades a row only when every failure is a
+ * reset it can attribute).
+ */
+export function assertCandidateRounds(a, what, result) {
+  if (result.candidateFailures.length === 0) a.check(`every candidate round: ${what}`, true);
+  for (const failure of result.candidateFailures) a.check(`candidate round ${failure.round}: ${what}`, false, failure.error);
+}
+
+/**
  * Check `metric` of `result` (measurePaired's) on the asserter `a`. Returns
  * false when too few rounds measured to grade it; the probe then exits 2
  * unless something else failed.

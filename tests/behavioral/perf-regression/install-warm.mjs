@@ -40,7 +40,7 @@
 // main commits (10-09..10-16) on unchanged code.
 
 import { mintSession, Terminal, makeAsserter, deleteSession, requestHeaders } from '../_driver.mjs';
-import { assertPaired, measurePaired, median, requirePairedTargets } from '../_paired.mjs';
+import { assertCandidateRounds, assertPaired, measurePaired, median, requirePairedTargets } from '../_paired.mjs';
 
 const a = makeAsserter('perf-regression/install-warm');
 const arms = requirePairedTargets('perf-regression/install-warm');
@@ -124,8 +124,7 @@ const result = await measurePaired(arms, ROUNDS, async (target, arm) => {
   }
 });
 
-a.check('every candidate warm install is served from the shared cache with a phase breakdown', result.candidateFailures.length === 0,
-  result.candidateFailures.map((failure) => `round ${failure.round}: ${failure.error}`).join('; '));
+assertCandidateRounds(a, 'its warm installs are served from the shared cache with a phase breakdown', result);
 const graded = [assertPaired(a, 'server-side install', result), assertPaired(a, 'install wall clock', result)].every(Boolean);
 
 const sum = a.summary();

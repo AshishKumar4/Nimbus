@@ -388,7 +388,7 @@ export class Terminal {
               ? sessionRecord(this.sid, this.openedAt, this.wsBase.replace(/^ws/, 'http'), this.wsOptions?.headers ?? requestHeaders())
               : null;
             Promise.resolve(record).then((record) => reject(new Error(`Terminal closed while waiting for ${label} after ${elapsed}ms `
-              + `(${this.closeDetail ?? 'no close frame'}); tail: ${JSON.stringify(stripAnsi(this.buf).slice(-600))}${record ? `\n${record}` : ''}`)));
+              + `(session ${this.sid}; ${this.closeDetail ?? 'no close frame'}); tail: ${JSON.stringify(stripAnsi(this.buf).slice(-600))}${record ? `\n${record}` : ''}`)));
           }
         } catch (error) { cleanup(); reject(error); }
       };
@@ -489,7 +489,7 @@ export async function connectProcessTerminal(sid, pid, options = {}) {
         if (closed) {
           throw new Error(
             `process terminal WebSocket closed while waiting for ${label} `
-            + `(${closeDetail ?? 'no close frame'}); `
+            + `(session ${sid}; ${closeDetail ?? 'no close frame'}); `
             + `tail=${JSON.stringify(stripAnsi(text).slice(-400))}`,
           );
         }

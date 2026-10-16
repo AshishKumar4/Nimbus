@@ -19,10 +19,15 @@ const git = (cwd, args) => {
   return done.stdout.trim();
 };
 
+/** The children `run` started that have not ended, each in a process group of its own, so `halt` can end what they started too. */
+const running = new Set();
+
 /** Run `args` in `cwd`; resolves to its stdout, rejects naming the command and its stderr's tail. */
 function run(cwd, command, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    running.add(child);
+    child.on('close', () => running.delete(child));
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8').on('data', (text) => { stdout += text; });
@@ -63,6 +68,9 @@ export function pairedPreviews({ repo, log = (line) => console.error(line) }) {
     return checkouts.get(commit);
   };
   const throwaway = (args, arm) => ['tests/behavioral/_throwaway-target.mjs', ...args, '--name', arms[arm].name];
+  /** The deployment `arm` serves now, read by this checkout's script (an older baseline's has no `version`). */
+  const version = async (arm) => (await run(repo, 'bun', throwaway(['version'], arm))).trim();
+  const receipts = {};
   return {
     /**
      * Upload `releases[baseline]` as a1 and a2 and `releases[candidate]` as b.
@@ -82,6 +90,7 @@ export function pairedPreviews({ repo, log = (line) => console.error(line) }) {
           previews.push(arms[arm]);
           log(`paired: ${arm} is ${commit[arm].slice(0, 12)} on throwaway ${arms[arm].name}`);
           await run(arms[arm].checkout, 'bun', [...throwaway(['up', '--bundle', releases[commit[arm]]], arm)]);
+          receipts[arm] = await version(arm);
         }
       }));
       for (const outcome of settled) if (outcome.status === 'rejected') throw outcome.reason;
@@ -91,9 +100,21 @@ export function pairedPreviews({ repo, log = (line) => console.error(line) }) {
       return Object.fromEntries(await Promise.all(ARMS.map(async (arm) => [arm,
         JSON.parse(await run(arms[arm].checkout, 'bun', [...throwaway(['token', '--json', '--ttl-ms', String(ttlMs)], arm)]))])));
     },
+    /** The deployment each arm served once its upload was ready: what every job must find. */
+    receipts() {
+      return { ...receipts };
+    },
     /** The deployment each arm serves now, by its id. */
     async versions() {
-      return Object.fromEntries(await Promise.all(ARMS.map(async (arm) => [arm, (await run(arms[arm].checkout, 'bun', throwaway(['version'], arm))).trim()])));
+      return Object.fromEntries(await Promise.all(ARMS.map(async (arm) => [arm, await version(arm)])));
+    },
+    /** End every child still running (an upload, an install) and its own children, and wait for them, at most 30 s. */
+    async halt() {
+      const ended = [...running].map((child) => new Promise((resolve) => {
+        child.once('close', resolve);
+        try { process.kill(-child.pid, 'SIGTERM'); } catch { resolve(); }
+      }));
+      await Promise.race([Promise.all(ended), new Promise((resolve) => setTimeout(resolve, 30_000))]);
     },
     /** Delete every Preview and worktree made here, once; returns what could not be, each with the command that finishes it. */
     teardown() {

@@ -77,6 +77,8 @@ export function sessionOutcomes(text) {
   for (const line of text.split('\n')) {
     let e;
     try { e = JSON.parse(line); } catch { continue; }
+    // An abnormal close is a diagnosis (probeSessions), not a cleanup event.
+    if (!['mint', 'delete', 'exit-delete'].includes(e.event)) continue;
     const s = sessions.get(e.sid) ?? { probe: e.probe, deletedBy: null, last: 'none', reap: null };
     if (e.event === 'mint') {
       if (e.reap) s.reap = e.reap;

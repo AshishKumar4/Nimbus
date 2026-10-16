@@ -30,7 +30,7 @@
 // The last two are functional, not timing, so they are asserted directly.
 
 import { mintSession, Terminal, makeAsserter, deleteSession, stripAnsi, requestHeaders } from '../_driver.mjs';
-import { assertPaired, measurePaired, requirePairedTargets } from '../_paired.mjs';
+import { assertCandidateRounds, assertPaired, measurePaired, requirePairedTargets } from '../_paired.mjs';
 
 const a = makeAsserter('perf-regression/first-paint');
 const arms = requirePairedTargets('perf-regression/first-paint');
@@ -87,8 +87,7 @@ const result = await measurePaired(arms, ROUNDS, async (target) => {
   }
 });
 
-a.check('every candidate session serves its dev server on /preview/ and announces its port', result.candidateFailures.length === 0,
-  result.candidateFailures.map((failure) => `round ${failure.round}: ${failure.error}`).join('; '));
+assertCandidateRounds(a, 'its session serves its dev server on /preview/ and announces its port', result);
 const graded = assertPaired(a, 'first paint', result);
 
 const sum = a.summary();

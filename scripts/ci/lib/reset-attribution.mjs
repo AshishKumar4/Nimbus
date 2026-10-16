@@ -131,19 +131,22 @@ export async function attributeRow(reader, row, { base, until }) {
 
 /**
  * Whether only the platform turned `row` red, so one rerun may grade it.
- * Every failed check the probe recorded is a socket that closed 1006 (a
- * check of its own that failed otherwise keeps the row red); every session
- * whose socket closed so shows the platform storage reset, its record read
- * whole; and no session the probe minted shows any other class.
+ * The probe reached its summary (a probe that died says nothing about what
+ * killed it); every check it failed is a socket that closed 1006, naming a
+ * session whose socket the ledger saw drop (the driver's close error names
+ * its session); every such session shows the platform storage reset; and
+ * every session's record was read whole and shows no other class.
  */
 export function regradable(row, { sessions }) {
-  const dropped = (row.sessions ?? []).filter((session) => session.abnormalCloses.length > 0);
-  const failed = (row.assertions ?? []).flatMap((result) => result.checks).filter((check) => !check.ok);
+  const results = row.assertions ?? [];
+  if (results.length === 0 || results.some((result) => !result.complete)) return false;
+  const dropped = (row.sessions ?? []).filter((session) => session.abnormalCloses.length > 0).map((session) => session.sid);
+  const failed = results.flatMap((result) => result.checks).filter((check) => !check.ok);
   const attributed = new Map(sessions.map((session) => [session.sid, session]));
-  return dropped.length > 0
-    && failed.every((check) => /close code 1006\b/.test(check.detail))
-    && dropped.every(({ sid }) => attributed.get(sid)?.complete && attributed.get(sid).classes.some((entry) => entry.platform))
-    && sessions.every((session) => session.classes.every((entry) => entry.platform));
+  return failed.length > 0
+    && failed.every((check) => /close code 1006\b/.test(check.detail) && dropped.some((sid) => check.detail.includes(`session ${sid};`)))
+    && dropped.every((sid) => attributed.get(sid)?.classes.some((entry) => entry.platform))
+    && sessions.every((session) => session.complete && session.classes.every((entry) => entry.platform));
 }
 
 /** One line per session for a row's report. */
