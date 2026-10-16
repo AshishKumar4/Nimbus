@@ -60,12 +60,6 @@ function parseWaveDiagnostic(value) {
 const CLONE_PHASE_TIMEOUT_MS = 240_000;
 const DEFAULT_CLONE_BUDGET_MS = 30 * 60_000;
 const DEFAULT_OPERATION_TIMEOUT_MS = 300_000;
-const EMPTY_METADATA_OVERLAY_STATS = {
-    entries: 0,
-    accountedBytes: 0,
-    maxEntries: 0,
-    maxAccountedBytes: 0,
-};
 function nonNegativeCounter(value) {
     const number = Number(value);
     return Number.isSafeInteger(number) && number >= 0 ? number : 0;
@@ -86,17 +80,6 @@ function parseSupervisorRpcCounters(value) {
     for (const key of Object.keys(counters))
         counters[key] = nonNegativeCounter(reported[key]);
     return counters;
-}
-function parseMetadataOverlayStats(value) {
-    const stats = value && typeof value === 'object'
-        ? value
-        : {};
-    return {
-        entries: nonNegativeCounter(stats.entries),
-        accountedBytes: nonNegativeCounter(stats.accountedBytes),
-        maxEntries: nonNegativeCounter(stats.maxEntries),
-        maxAccountedBytes: nonNegativeCounter(stats.maxAccountedBytes),
-    };
 }
 function addSupervisorRpcCounters(total, value) {
     const counters = parseSupervisorRpcCounters(value);
@@ -715,7 +698,6 @@ export async function execGitNetwork(ctx, env, opts, /**
                 filesWritten: 0,
                 bytesWritten: 0,
                 supervisorRpc: createSupervisorRpcCounters(),
-                metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
             };
         }
         const { mutationOwner, rotateMutationOwner, onCloneCheckoutPhase, signal, remotePushPack, ...facetOpts } = opts;
@@ -737,7 +719,6 @@ export async function execGitNetwork(ctx, env, opts, /**
                 filesWritten: 0,
                 bytesWritten: 0,
                 supervisorRpc: createSupervisorRpcCounters(),
-                metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
             };
         }
         let worker;
@@ -780,7 +761,6 @@ export async function execGitNetwork(ctx, env, opts, /**
                 const optionsHash = await hashCloneOptions(opts);
                 const phases = [];
                 const supervisorRpc = createSupervisorRpcCounters();
-                let metadataOverlay = { ...EMPTY_METADATA_OVERLAY_STATS };
                 let filesWritten = 0;
                 let bytesWritten = 0;
                 const budgetContext = {
@@ -806,10 +786,6 @@ export async function execGitNetwork(ctx, env, opts, /**
                     filesWritten += nonNegativeCounter(result.filesWritten);
                     bytesWritten += nonNegativeCounter(result.bytesWritten);
                     addSupervisorRpcCounters(supervisorRpc, result.supervisorRpc);
-                    const overlay = parseMetadataOverlayStats(result.metadataOverlay);
-                    if (overlay.entries > 0 || overlay.accountedBytes > 0) {
-                        metadataOverlay = overlay;
-                    }
                 };
                 try {
                     const prepareInvocationId = crypto.randomUUID();
@@ -891,7 +867,6 @@ export async function execGitNetwork(ctx, env, opts, /**
                             filesWritten,
                             bytesWritten,
                             supervisorRpc,
-                            metadataOverlay,
                             phases,
                         };
                     }
@@ -901,7 +876,6 @@ export async function execGitNetwork(ctx, env, opts, /**
                         filesWritten,
                         bytesWritten,
                         supervisorRpc,
-                        metadataOverlay,
                         phases,
                     };
                 }
@@ -919,7 +893,6 @@ export async function execGitNetwork(ctx, env, opts, /**
                             filesWritten,
                             bytesWritten,
                             supervisorRpc,
-                            metadataOverlay,
                             phases,
                         };
                     }
@@ -959,7 +932,6 @@ export async function execGitNetwork(ctx, env, opts, /**
                         filesWritten,
                         bytesWritten,
                         supervisorRpc,
-                        metadataOverlay,
                         phases,
                     };
                 }
@@ -1004,7 +976,6 @@ export async function execGitNetwork(ctx, env, opts, /**
                     filesWritten: 0,
                     bytesWritten: 0,
                     supervisorRpc: createSupervisorRpcCounters(),
-                    metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
                     graphFilters,
                 };
             }
@@ -1075,7 +1046,6 @@ export async function execGitNetwork(ctx, env, opts, /**
                     filesWritten: 0,
                     bytesWritten: 0,
                     supervisorRpc: createSupervisorRpcCounters(),
-                    metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
                 };
             }
             const endedAt = Date.now();
@@ -1098,7 +1068,6 @@ export async function execGitNetwork(ctx, env, opts, /**
                 filesWritten: nonNegativeCounter(result.filesWritten),
                 bytesWritten: nonNegativeCounter(result.bytesWritten),
                 supervisorRpc: parseSupervisorRpcCounters(result.supervisorRpc),
-                metadataOverlay: parseMetadataOverlayStats(result.metadataOverlay),
                 phases: [diagnostic],
                 fetchedObjects: result.fetched && typeof result.fetched === 'object' && 'fetched' in result.fetched
                     ? nonNegativeCounter(result.fetched.fetched)
@@ -1136,7 +1105,6 @@ export async function execGitNetwork(ctx, env, opts, /**
             filesWritten: 0,
             bytesWritten: 0,
             supervisorRpc: createSupervisorRpcCounters(),
-            metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
         };
     }
 }

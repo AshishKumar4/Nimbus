@@ -2,8 +2,7 @@
  * git/pack/buffered-fs.ts — the git network facet's filesystem: cf-git's
  * writes buffered as records for the wave writer (@nimbus-sh/platform
  * wave-writer.ts), which publishes them in W7 waves, one in flight while the
- * next buffers; its reads answered from the buffer, from the closed-world
- * metadata overlay a clone reads back, or from the supervisor.
+ * next buffers; its reads answered from the buffer, or from the supervisor.
  *
  * With a worktreeRoot (fetch, pull, push in an existing repository) the
  * writer writes that worktree the way git's checkout does (entry.c
@@ -16,17 +15,12 @@
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
-import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { fsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { ROUTED_FILE_MAX } from '@nimbus-sh/core/runtime/wave-contracts.js';
-import { facetFileApi, METADATA_MAX_ACCOUNTED_BYTES, METADATA_MAX_ENTRIES, READ_RANGE_BYTES, supervisorStat, WHOLE_FILE_RPC_SAFE_BYTES, } from './facet-supervisor.js';
+import { facetFileApi, READ_RANGE_BYTES, supervisorStat, WHOLE_FILE_RPC_SAFE_BYTES, } from './facet-supervisor.js';
 import { replaceFile } from './mount-writer.js';
-const METADATA_ENTRY_OVERHEAD_BYTES = 256;
-function parentOf(path) {
-    return path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
-}
-/** An overlay entry as an inode: a link followed reads as the file it names. */
-function overlayStat(entry, follow) {
+/** A record as an inode: a link followed reads as the file it names. */
+function recordStat(entry, follow) {
     return {
         type: entry.kind === 'symlink' && !follow ? 'symlink' : entry.kind === 'dir' ? 'dir' : 'file',
         size: entry.size,
@@ -42,34 +36,18 @@ function directoryNow() {
     const now = Date.now();
     return { type: 'dir', size: 0, mode: 0o755, mtimeMs: now, ctimeMs: now, atimeMs: now, uid: 1000, gid: 1000, dev: 0, ino: 0, nlink: 1 };
 }
-/** A supervisor stat as an overlay entry. */
-export function overlayEntryOf(st) {
-    const converted = supervisorStat(st);
-    return {
-        kind: converted.type === 'dir' ? 'dir' : converted.type === 'symlink' ? 'symlink' : 'file',
-        size: converted.size,
-        mode: converted.mode,
-        mtimeMs: converted.mtimeMs,
-        ctimeMs: converted.ctimeMs,
-        atimeMs: converted.atimeMs,
-    };
-}
-export function createBufferedFs(supervisor, stats, authoritativeRoot, authoritativeRootMetadata, phaseDeadline = null, worktreeRoot = null, onMount = false) {
+export function createBufferedFs(supervisor, stats, phaseDeadline = null, worktreeRoot = null, onMount = false) {
     // On a mount, a file past a wave's limit is written in place (pack/mount-writer.ts).
     const fileApi = onMount ? facetFileApi(supervisor, stats, phaseDeadline) : null;
-    const metadata = new Map();
-    const children = new Map();
-    let metadataAccountedBytes = 0;
-    let overlayFailure = null;
     let mutationQueue = Promise.resolve();
     function stampEntry(entry, mtimeMs) {
         entry.atimeMs = mtimeMs;
         entry.mtimeMs = mtimeMs;
         entry.ctimeMs = mtimeMs;
     }
-    // Each record carries its overlay metadata (fetch and pull have no other
-    // record of a buffered file); a cut stamps the wave's mtime on it, so the
-    // overlay's stat agrees with what the wave publishes.
+    // Each record carries its metadata (fetch and pull have no other record of
+    // a buffered file); a cut stamps the wave's mtime on it, so its stat agrees
+    // with what the wave publishes.
     const writer = createWaveWriter({
         supervisor: {
             writeBatchStream(stream, fence) {
@@ -80,24 +58,13 @@ export function createBufferedFs(supervisor, stats, authoritativeRoot, authorita
                 return typeof supervisor.openWaveWriter === 'function' ? supervisor.openWaveWriter() : Promise.resolve(null);
             },
         },
-        root: authoritativeRoot,
+        root: null,
         worktreeRoot,
         deadline: phaseDeadline,
-        directoryMode(path) {
-            const entry = metadata.get(path);
-            return entry && entry.kind === 'dir' ? entry.mode : undefined;
-        },
         onCut(cut) {
-            for (const dir of cut.directories) {
-                const entry = metadata.get(dir);
-                if (entry && entry.kind === 'dir')
-                    stampEntry(entry, cut.mtimeMs);
-            }
-            for (const file of cut.files) {
-                const entry = file.meta || metadata.get(file.path);
-                if (entry && (entry.kind === 'file' || entry.kind === 'symlink'))
-                    stampEntry(entry, cut.mtimeMs);
-            }
+            for (const file of cut.files)
+                if (file.meta)
+                    stampEntry(file.meta, cut.mtimeMs);
         },
         onWave(report) {
             stats.filesWritten += report.files;
@@ -108,13 +75,9 @@ export function createBufferedFs(supervisor, stats, authoritativeRoot, authorita
         },
     });
     function assertFlushHealthy() {
-        if (overlayFailure)
-            throw overlayFailure;
         writer.assertHealthy();
     }
     async function flushWave() {
-        if (overlayFailure)
-            throw overlayFailure;
         await writer.flush();
     }
     // No read reports a link, or resolves through one, before the link is
@@ -123,138 +86,13 @@ export function createBufferedFs(supervisor, stats, authoritativeRoot, authorita
         if (writer.hasUnpublishedSymlinks)
             await flushWave();
     }
-    // A read the overlay cannot answer goes to the supervisor, which must
+    // A read the buffer cannot answer goes to the supervisor, which must
     // already hold every write the adapter has made.
     async function awaitSupervisorReadable() {
         await awaitPublishedSymlinks();
         await writer.settled();
         assertFlushHealthy();
     }
-    function isAuthoritativePath(path) {
-        return authoritativeRoot !== null && (path === authoritativeRoot || path.startsWith(authoritativeRoot + '/'));
-    }
-    function metadataCost(path, entry) {
-        const targetBytes = entry.kind === 'symlink' ? enc.encode(entry.target).byteLength : 0;
-        return METADATA_ENTRY_OVERHEAD_BYTES + enc.encode(path).byteLength + targetBytes;
-    }
-    function addChild(path) {
-        const parent = parentOf(path);
-        let names = children.get(parent);
-        if (!names)
-            children.set(parent, names = new Set());
-        const name = path.slice(parent ? parent.length + 1 : 0);
-        if (name)
-            names.add(name);
-    }
-    function removeChild(path) {
-        const parent = parentOf(path);
-        const names = children.get(parent);
-        if (!names)
-            return;
-        names.delete(path.slice(parent ? parent.length + 1 : 0));
-        if (names.size === 0)
-            children.delete(parent);
-    }
-    function setMetadata(path, entry) {
-        if (!isAuthoritativePath(path))
-            return;
-        const previous = metadata.get(path);
-        const previousCost = previous ? metadataCost(path, previous) : 0;
-        const nextEntries = metadata.size + (previous ? 0 : 1);
-        const nextBytes = metadataAccountedBytes - previousCost + metadataCost(path, entry);
-        if (nextEntries > METADATA_MAX_ENTRIES || nextBytes > METADATA_MAX_ACCOUNTED_BYTES) {
-            const error = new Error(`git clone metadata overlay exceeded its bound (${nextEntries} entries, ${nextBytes} accounted bytes)`);
-            overlayFailure = error;
-            throw error;
-        }
-        metadata.set(path, entry);
-        metadataAccountedBytes = nextBytes;
-        if (!previous)
-            addChild(path);
-        if (entry.kind === 'dir' && !children.has(path))
-            children.set(path, new Set());
-    }
-    function removeMetadata(path, recursive) {
-        if (!isAuthoritativePath(path))
-            return;
-        const paths = [path];
-        if (recursive) {
-            for (let index = 0; index < paths.length; index++) {
-                const parent = paths[index];
-                for (const name of children.get(parent) || [])
-                    paths.push(parent + '/' + name);
-            }
-        }
-        paths.sort((left, right) => right.length - left.length);
-        for (const candidate of paths) {
-            const previous = metadata.get(candidate);
-            if (!previous)
-                continue;
-            metadataAccountedBytes -= metadataCost(candidate, previous);
-            metadata.delete(candidate);
-            children.delete(candidate);
-            removeChild(candidate);
-        }
-    }
-    function ensureMetadataParents(path, timestamp) {
-        if (!isAuthoritativePath(path))
-            return;
-        let parent = parentOf(path);
-        while (isAuthoritativePath(parent)) {
-            if (!metadata.has(parent)) {
-                setMetadata(parent, { kind: 'dir', size: 0, mode: 0o755, mtimeMs: timestamp, ctimeMs: timestamp, atimeMs: timestamp });
-            }
-            if (parent === authoritativeRoot)
-                break;
-            parent = parentOf(parent);
-        }
-    }
-    function recordDirectory(path) {
-        if (!isAuthoritativePath(path))
-            return;
-        const existing = metadata.get(path);
-        if (existing && existing.kind === 'dir')
-            return;
-        const now = Date.now();
-        ensureMetadataParents(path, now);
-        setMetadata(path, { kind: 'dir', size: 0, mode: 0o755, mtimeMs: now, ctimeMs: now, atimeMs: now });
-    }
-    /** `path` through the overlay's links (the final one when `followFinal`), and the entry it lands on. */
-    function resolveMetadataPath(path, syscall, followFinal = true) {
-        const seen = new Set();
-        let current = normalizeVfsPath(path);
-        for (let depth = 0; depth < 40; depth++) {
-            const parts = current.split('/').filter(Boolean);
-            let prefix = '';
-            let followed = false;
-            for (let index = 0; index < parts.length; index++) {
-                prefix = prefix ? prefix + '/' + parts[index] : parts[index];
-                const entry = metadata.get(prefix);
-                if (!entry)
-                    continue;
-                const isFinal = index === parts.length - 1;
-                if (entry.kind === 'symlink' && (followFinal || !isFinal)) {
-                    if (seen.has(prefix))
-                        throw fsError('ELOOP', syscall, path);
-                    seen.add(prefix);
-                    const target = entry.target.startsWith('/')
-                        ? normalizeVfsPath(entry.target)
-                        : normalizeVfsPath(parentOf(prefix) + '/' + entry.target);
-                    const remainder = parts.slice(index + 1).join('/');
-                    current = remainder ? normalizeVfsPath(target + '/' + remainder) : target;
-                    followed = true;
-                    break;
-                }
-                if (!isFinal && entry.kind !== 'dir')
-                    throw fsError('ENOTDIR', syscall, path);
-            }
-            if (!followed)
-                return { path: current, entry: metadata.get(current) };
-        }
-        throw fsError('ELOOP', syscall, path);
-    }
-    if (authoritativeRoot !== null && authoritativeRootMetadata)
-        setMetadata(authoritativeRoot, authoritativeRootMetadata);
     // Mutations apply in call order: each waits for the one before it, and the
     // writer admits its record (cutting a wave first when it would not fit).
     function bufferMutation(mutate) {
@@ -271,7 +109,7 @@ export function createBufferedFs(supervisor, stats, authoritativeRoot, authorita
         if (!buffered)
             return null;
         const now = Date.now();
-        return overlayStat(buffered.meta || { kind: buffered.kind, size: buffered.size, mode: 0o644, mtimeMs: now, ctimeMs: now, atimeMs: now }, follow);
+        return recordStat(buffered.meta || { kind: buffered.kind, size: buffered.size, mode: 0o644, mtimeMs: now, ctimeMs: now, atimeMs: now }, follow);
     }
     async function readSupervisorFile(durablePath, filepath, knownSize) {
         await awaitSupervisorReadable();
@@ -315,25 +153,19 @@ export function createBufferedFs(supervisor, stats, authoritativeRoot, authorita
         async stat(p, follow) {
             assertFlushHealthy();
             await awaitPublishedSymlinks();
-            const resolved = resolveMetadataPath(p, follow ? 'stat' : 'lstat', follow);
-            if (resolved.entry)
-                return overlayStat(resolved.entry, follow);
-            if (isAuthoritativePath(resolved.path))
-                return null;
-            // A path the writer holds: through the overlay's links for lstat, as given for stat.
-            const at = follow ? p : resolved.path;
-            const buffered = bufferedStat(at, follow);
+            // A path the writer holds.
+            const buffered = bufferedStat(p, follow);
             if (buffered)
                 return buffered;
-            if (writer.isBufferedDirectory(at))
+            if (writer.isBufferedDirectory(p))
                 return directoryNow();
-            if (writer.isBufferedDelete(at))
+            if (writer.isBufferedDelete(p))
                 return null;
-            if (!at)
+            if (!p)
                 return directoryNow();
             await awaitSupervisorReadable();
             stats.supervisorRpc[follow ? 'stat' : 'lstat']++;
-            const st = await useRpcResource(follow ? supervisor.stat(resolved.path) : supervisor.lstat(resolved.path), (result) => result);
+            const st = await useRpcResource(follow ? supervisor.stat(p) : supervisor.lstat(p), (result) => result);
             return st ? supervisorStat(st) : null;
         },
         async readFile(p) {
@@ -345,17 +177,7 @@ export function createBufferedFs(supervisor, stats, authoritativeRoot, authorita
                 return buffered;
             if (writer.isBufferedDelete(p))
                 return null;
-            const resolved = resolveMetadataPath(p, 'open');
-            if (resolved.path !== p) {
-                const target = writer.buffered(resolved.path);
-                if (target !== undefined)
-                    return target;
-            }
-            if (resolved.entry && resolved.entry.kind === 'dir')
-                return null;
-            if (!resolved.entry && isAuthoritativePath(resolved.path))
-                return null;
-            return readSupervisorFile(resolved.path, p, resolved.entry && resolved.entry.kind === 'file' ? resolved.entry.size : null);
+            return readSupervisorFile(p, p, null);
         },
         async writeFile(p, data, requested) {
             assertFlushHealthy();
@@ -375,16 +197,14 @@ export function createBufferedFs(supervisor, stats, authoritativeRoot, authorita
             }
             return bufferMutation(async () => {
                 const now = Date.now();
-                ensureMetadataParents(p, now);
                 // The session makes the file with the bits asked for (0666 when none, as
                 // a program's create) under its own creation policy: the process's
                 // umask, a default ACL, a setgid parent. This facet's own record of it
-                // is git's view, as every overlay stat here is: executable or not.
+                // is git's view, as every buffered stat here is: executable or not.
                 const mode = requested ?? 0o666;
                 const fileMetadata = {
                     kind: 'file', size: buf.length, mode: (mode & 0o111) !== 0 ? 0o755 : 0o644, mtimeMs: now, ctimeMs: now, atimeMs: now,
                 };
-                setMetadata(p, fileMetadata);
                 if (fileApi !== null && buf.length > ROUTED_FILE_MAX) {
                     // What the waves hold before it lands first; then the file, as a program writes it.
                     await writer.flush();
@@ -408,29 +228,16 @@ export function createBufferedFs(supervisor, stats, authoritativeRoot, authorita
                 throw fsError('ENOENT', 'unlink', filepath);
             if (st.type === 'dir')
                 throw fsError('EISDIR', 'unlink', filepath);
-            return bufferMutation(async () => {
-                removeMetadata(p, false);
-                await writer.remove(p);
-            });
+            return bufferMutation(() => writer.remove(p));
         },
         async readdir(p, filepath) {
             assertFlushHealthy();
-            await awaitPublishedSymlinks();
-            const resolved = resolveMetadataPath(p, 'scandir');
-            const local = resolved.entry;
-            if (local || isAuthoritativePath(resolved.path)) {
-                if (!local)
-                    throw fsError('ENOENT', 'scandir', filepath);
-                if (local.kind !== 'dir')
-                    throw fsError('ENOTDIR', 'scandir', filepath);
-                return [...(children.get(resolved.path) || [])];
-            }
             await awaitSupervisorReadable();
             stats.supervisorRpc.readdir++;
-            const entries = await useRpcResource(supervisor.readdir(resolved.path), (result) => result);
+            const entries = await useRpcResource(supervisor.readdir(p), (result) => result);
             const names = new Set(Array.isArray(entries) ? entries.map((entry) => typeof entry === 'string' ? entry : entry.name) : []);
             // What the writer holds below it, and less what it deletes there.
-            const prefix = resolved.path ? resolved.path + '/' : '';
+            const prefix = p ? p + '/' : '';
             const buffered = writer.bufferedPaths();
             for (const paths of [buffered.files, buffered.directories]) {
                 for (const bp of paths) {
@@ -454,10 +261,7 @@ export function createBufferedFs(supervisor, stats, authoritativeRoot, authorita
             assertFlushHealthy();
             if (!p)
                 return;
-            return bufferMutation(async () => {
-                recordDirectory(p);
-                await writer.directory(p);
-            });
+            return bufferMutation(() => writer.directory(p));
         },
         async rmdir(p, filepath, recursive) {
             assertFlushHealthy();
@@ -470,37 +274,23 @@ export function createBufferedFs(supervisor, stats, authoritativeRoot, authorita
                 if ((await backend.readdir(p, filepath)).length > 0)
                     throw fsError('ENOTEMPTY', 'rmdir', filepath);
             }
-            return bufferMutation(async () => {
-                removeMetadata(p, true);
-                await writer.remove(p, true);
-            });
+            return bufferMutation(() => writer.remove(p, true));
         },
         async symlink(target, p) {
             assertFlushHealthy();
             return bufferMutation(async () => {
                 const now = Date.now();
-                ensureMetadataParents(p, now);
                 const linkMetadata = {
                     kind: 'symlink', target, size: enc.encode(target).byteLength, mode: 0o777, mtimeMs: now, ctimeMs: now, atimeMs: now,
                 };
-                setMetadata(p, linkMetadata);
                 await writer.symlink(p, target, linkMetadata);
             });
         },
         async readlink(p, filepath) {
             assertFlushHealthy();
-            await awaitPublishedSymlinks();
-            const resolved = resolveMetadataPath(p, 'readlink', false);
-            const local = resolved.entry;
-            if (local && local.kind === 'symlink')
-                return local.target;
-            if (local)
-                throw fsError('EINVAL', 'readlink', filepath);
-            if (isAuthoritativePath(resolved.path))
-                throw fsError('ENOENT', 'readlink', filepath);
             await awaitSupervisorReadable();
             stats.supervisorRpc.readlink++;
-            return useRpcResource(supervisor.readlink(resolved.path), (result) => {
+            return useRpcResource(supervisor.readlink(p), (result) => {
                 if (result === null || result === undefined)
                     throw fsError('ENOENT', 'readlink', filepath);
                 return String(result);
@@ -510,9 +300,6 @@ export function createBufferedFs(supervisor, stats, authoritativeRoot, authorita
     return {
         backend,
         flushWave,
-        overlayStats: () => ({ entries: metadata.size, accountedBytes: metadataAccountedBytes, maxEntries: METADATA_MAX_ENTRIES, maxAccountedBytes: METADATA_MAX_ACCOUNTED_BYTES }),
-        pinFile: (path, data, alreadyDurable = false) => writer.setPin(normalizeVfsPath(path), data, alreadyDurable),
-        unpinFile: (path) => writer.clearPin(normalizeVfsPath(path)),
         waveStats: () => writer.stats(),
     };
 }

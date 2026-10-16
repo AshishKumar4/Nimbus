@@ -27,7 +27,7 @@
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { RemoteFailure } from './pack/remote-failure.js';
 import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
-import { type MetadataOverlayStats, type SupervisorRpcCounters } from './pack/facet-supervisor.js';
+import { type SupervisorRpcCounters } from './pack/facet-supervisor.js';
 import type { PathProtection } from './worktree/verify-path.js';
 import type { FetchPackRequest, FetchPackStep, PushPackRequest, fetchPackResume, listRefs, pushPack } from './pack/remote.js';
 export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects' | 'graph-filters' | 'remote-list' | 'remote-fetch' | 'remote-push';
@@ -172,7 +172,6 @@ export interface GitNetworkResult {
     filesWritten: number;
     bytesWritten: number;
     supervisorRpc: SupervisorRpcCounters;
-    metadataOverlay: MetadataOverlayStats;
     phases?: GitNetworkPhaseDiagnostic[];
     errorPhase?: GitCloneInvocationPhase | 'operation';
     errorCode?: GitNetworkErrorCode;
