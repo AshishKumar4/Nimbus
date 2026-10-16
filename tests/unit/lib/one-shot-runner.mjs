@@ -12,7 +12,7 @@ import { FacetManager } from '../../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../../packages/core/src/runtime/port-registry.ts';
 import { adoptCtxExports, supervisorEntrypoint } from '../../../packages/fabric/src/composition.ts';
-import { createFacetCtx, createFacetWorld } from '../facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { writeModuleSet } from './module-map-bundle.mjs';
 import { processFiles } from './process-bridge.mjs';
 import { stagedAssets } from './staged-assets.mjs';

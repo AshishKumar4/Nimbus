@@ -40,7 +40,7 @@ import { processBridge } from './lib/process-bridge.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld } from './lib/facet-host-harness.mjs';
 import { launchFs } from './lib/launch-fs.mjs';
 import {
   CWD_SNAPSHOT_MAX_FILE_BYTES,

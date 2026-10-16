@@ -21,7 +21,7 @@ import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { parseRegistryRequest } from '../../packages/core/src/_shared/npm-spec.ts';
-import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const PROJ = 'app';

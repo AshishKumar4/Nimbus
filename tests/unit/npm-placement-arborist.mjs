@@ -56,7 +56,7 @@ import { createNpmCommand } from '../../packages/core/src/substrate/lifo/command
 import { npmInstallInvocation } from '../../packages/core/src/substrate/lifo/commands/system/npm-install-args.ts';
 import { loadNpmConfig } from '../../packages/core/src/substrate/lifo/commands/system/npm-config.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
-import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 import { registryRecord } from '../../packages/worker/src/npm/registry-record.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 

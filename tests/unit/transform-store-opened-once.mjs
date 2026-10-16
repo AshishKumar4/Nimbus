@@ -17,7 +17,7 @@ import { runtimeCodeKey } from '../../packages/core/src/_shared/commonjs-cell.ts
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { TurnBudget } from '../../packages/fabric/src/turn-budget.ts';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld } from './lib/facet-host-harness.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { CRED } from './lib/resident-body.mjs';
 import { processFiles } from './lib/process-bridge.mjs';

@@ -19,7 +19,7 @@ import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/
 import { seedBaseFilesystem } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { STAGED_BINDINGS } from '../../packages/worker/src/runtime/staged-bindings.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { createFacetWorld, createFacetCtx, captureProcessBoots } from './facet-host-harness.mjs';
+import { createFacetWorld, createFacetCtx, captureProcessBoots } from './lib/facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 

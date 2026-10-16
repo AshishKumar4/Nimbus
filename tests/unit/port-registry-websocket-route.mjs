@@ -20,7 +20,7 @@ import {
   HOSTED_WEBSOCKET_KEY_HEADER,
   isHostedWebSocket,
 } from '../../packages/fabric/src/peer-host.ts';
-import { createFacetWorld, createProcessHost } from './facet-host-harness.mjs';
+import { createFacetWorld, createProcessHost } from './lib/facet-host-harness.mjs';
 
 const UPGRADE = { upgrade: 'websocket', connection: 'Upgrade' };
 

@@ -11,7 +11,7 @@
 import assert from 'node:assert/strict';
 
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld } from './lib/facet-host-harness.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 const bundle = await importWorkerBundle({

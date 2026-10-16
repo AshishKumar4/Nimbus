@@ -16,7 +16,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { pickPackumentVersion } from '../../packages/core/src/_shared/npm-semver.ts';
 import { parseRegistryRequest } from '../../packages/core/src/_shared/npm-spec.ts';
 import { registryRecord } from '../../packages/worker/src/npm/registry-record.ts';
-import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const REGISTRY = {

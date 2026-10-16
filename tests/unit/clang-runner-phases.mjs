@@ -11,7 +11,7 @@
 // link of objects alone opened clang.
 
 import assert from 'node:assert/strict';
-import { commandContext, makeInvocationVfs } from './clang-runner-test-harness.mjs';
+import { commandContext, makeInvocationVfs } from './lib/clang-runner-test-harness.mjs';
 
 const CLANG = 'clang-runner-clang';
 const LINKER = 'clang-runner-wasm-ld';
