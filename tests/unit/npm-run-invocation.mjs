@@ -13,6 +13,7 @@
 
 import assert from 'node:assert/strict';
 import { createNpmCommand } from '../../packages/core/src/substrate/lifo/commands/system/npm.ts';
+import { npmBinShim } from '../../packages/core/src/runtime/npm-bin-map.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { writeText } from '../../packages/core/src/vfs/vfs.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -88,10 +89,11 @@ await check('a bin of project a is not a command of project b', async () => {
   await project('/home/user/a', { tool: 'toola' });
   await project('/home/user/b', { tool: 'toola' });
   await ws.exec('mkdir -p /home/user/a/node_modules/tool-a /home/user/a/node_modules/.bin');
-  await writeText(ws.fs, '/home/user/a/node_modules/tool-a/package.json', JSON.stringify({ name: 'tool-a', version: '1.0.0', bin: { toola: 'cli.sh' } }));
-  await writeText(ws.fs, '/home/user/a/node_modules/tool-a/cli.sh', '#!/bin/sh\necho tool-a ran\n');
-  await writeText(ws.fs, '/home/user/a/node_modules/.bin/toola', '#!/bin/sh\necho tool-a ran\n');
-  await ws.exec('chmod 755 /home/user/a/node_modules/.bin/toola /home/user/a/node_modules/tool-a/cli.sh');
+  // As an install links it: the package's bin, and its shim in node_modules/.bin.
+  await writeText(ws.fs, '/home/user/a/node_modules/tool-a/package.json', JSON.stringify({ name: 'tool-a', version: '1.0.0', bin: { toola: 'cli.js' } }));
+  await writeText(ws.fs, '/home/user/a/node_modules/tool-a/cli.js', "console.log('tool-a ran');\n");
+  await writeText(ws.fs, '/home/user/a/node_modules/.bin/toola', npmBinShim('/home/user/a/node_modules/.bin', '/home/user/a/node_modules/tool-a/cli.js'));
+  await ws.exec('chmod 755 /home/user/a/node_modules/.bin/toola');
   const inA = await ws.exec('npm run tool', { cwd: '/home/user/a' });
   const inB = await ws.exec('npm run tool', { cwd: '/home/user/b' });
   assert.equal(inB.exitCode, 127, `project b has no toola, after project a ran it:\n${inB.stdout}${inB.stderr}`);
