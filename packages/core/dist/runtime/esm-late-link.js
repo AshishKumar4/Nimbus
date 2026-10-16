@@ -52,7 +52,7 @@ function moduleFacts(host, row) {
             if (targets[at] >= 0)
                 return { row: targets[at] };
             const missing = host.missing(-2 - targets[at]);
-            return missing !== null && 'handedOn' in missing ? { url: missing.handedOn } : null;
+            return missing !== null && 'handedOn' in missing ? handedOnTarget(missing.handedOn) : null;
         };
         const exports = [];
         for (let i = 0; i < bindings.exports.length; i++)
@@ -226,16 +226,24 @@ function plan(host, key, url, seen, order, checked, late) {
             order.push(id);
     }
 }
+/**
+ * What a module staging handed on (or a data: import) loads: a query's or a
+ * fragment's instance, a late module by its URL; a data: module by its MIME
+ * type, JavaScript a late module of its own, JSON its default alone.
+ */
+function handedOnTarget(url) {
+    if (!url.startsWith('data:'))
+        return { url };
+    const { format } = dataModule(url);
+    return format === 'module' ? { url } : format === 'json' ? { url, names: ['default'], commonjs: false } : null;
+}
 function lateTarget(host, resolution) {
     if (resolution.format === 'builtin' && resolution.builtin !== undefined) {
         const id = host.row('builtin', resolution.builtin);
         return id !== -1 ? { row: id } : { url: resolution.url, names: host.builtinNames(resolution.builtin), commonjs: false };
     }
-    // A data: module, by its MIME type: JavaScript a late module of its own; JSON its default alone.
-    if (resolution.format === 'data') {
-        const { format } = dataModule(resolution.url);
-        return format === 'module' ? { url: resolution.url } : format === 'json' ? { url: resolution.url, names: ['default'], commonjs: false } : null;
-    }
+    if (resolution.format === 'data')
+        return handedOnTarget(resolution.url);
     if (resolution.path === undefined)
         return null;
     const key = resolution.path.replace(/^\/+/, '');
