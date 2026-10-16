@@ -306,6 +306,7 @@ supervisor.env = {
 
 // The ops a process is not allowed to perform at all: the refusal from the
 // real filesystem IS their behaviour, so they assert on the error.
+/** A native op this process may not make, and how the filesystem refuses it: none, now that fchown is judged as chown is. */
 const NATIVE_REFUSED = {};
 
 // The five partial mutations answer with the path's revision on either
@@ -415,7 +416,7 @@ const nativeAssert = {
   },
   fsFtruncate: () => assert.equal(kernelVfs.stat('home/user/owned/handle').size, size, 'fsFtruncate sized the open file'),
   fsFchmod: () => assert.equal(kernelVfs.stat('home/user/owned/handle').mode & 0o777, mode, 'fsFchmod applied'),
-  // The owner's own owner and group, as chown(2) allows it by a descriptor as by a name.
+  // The owner's fchown to its own ids, as its chown is (chownRefusal), on the file the descriptor opened.
   fsFchown: () => {
     const stat = kernelVfs.stat('home/user/owned/handle');
     assert.deepEqual([stat.uid, stat.gid], [uid, gid], 'fsFchown applied');

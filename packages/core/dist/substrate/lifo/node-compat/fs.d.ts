@@ -106,7 +106,9 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
     renameSync: (oldPath: string | URL, newPath: string | URL) => void;
     copyFileSync: (src: string | URL, dest: string | URL) => void;
     chmodSync: (path: string | URL, mode: number | string) => void;
-    chownSync: (_path: string | URL, _uid: number, _gid: number) => void;
+    chownSync: (path: string | URL, uid: number, gid: number) => void;
+    lchownSync: (path: string | URL, uid: number, gid: number) => void;
+    fchownSync: (fd: number, uid: number, gid: number) => void;
     accessSync: (path: string | URL, _mode?: number) => void;
     realpathSync: ((path: string | URL) => string) & {
         native: (path: string | URL) => string;
@@ -152,6 +154,9 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
     write: (fd: number, data: Uint8Array | string, ...rest: (number | string | null | undefined | WriteCallback)[]) => void;
     fsync: (fd: number, cb: Callback<void>) => void;
     fstat: (fd: number, cb: Callback<NodeStat>) => void;
+    chown: (path: string | URL, uid: number, gid: number, cb: Callback<void>) => void;
+    lchown: (path: string | URL, uid: number, gid: number, cb: Callback<void>) => void;
+    fchown: (fd: number, uid: number, gid: number, cb: Callback<void>) => void;
     realpath: ((path: string | URL, optOrCb: unknown, cb?: Callback<string>) => void) & {
         native: (path: string | URL, optOrCb: unknown, cb?: Callback<string>) => void;
     };
@@ -281,7 +286,8 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
         realpath: (path: string | URL) => Promise<string>;
         truncate: (path: string | URL, len?: number) => Promise<void>;
         chmod: (path: string | URL, mode: number | string) => Promise<void>;
-        chown: (_path: string | URL, _uid: number, _gid: number) => Promise<void>;
+        chown: (path: string | URL, uid: number, gid: number) => Promise<void>;
+        lchown: (path: string | URL, uid: number, gid: number) => Promise<void>;
         open: (path: string | URL, flags?: string | number, mode?: number) => Promise<{
             fd: number;
             close: () => Promise<void>;
@@ -293,6 +299,7 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
                 bytesWritten: number;
             }>;
             stat: () => Promise<NodeStat>;
+            chown: (uid: number, gid: number) => Promise<void>;
             truncate: (len?: number) => Promise<void>;
         }>;
         rm: (path: string | URL, options?: {

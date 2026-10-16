@@ -9,17 +9,37 @@ published independently in the `@nimbus-sh` npm scope.
   descriptor change the file it opened. Before, they changed whatever file
   had the name by then: after an unlink and a new file at that name, they
   changed the new one.
-- Fixed: `fchown` on a descriptor follows `chown`'s rules: the owner may set
-  the group to one of its own groups, which clears the set-id bits. Before,
-  only root could. `futimes` with explicit times needs the owner, as
-  `utimes` does. Before, any process that opened the file to write could set
-  them.
+- Fixed: `futimes` with explicit times needs the owner, as `utimes` does.
+  Before, any process that opened the file to write could set them.
 - Fixed: setting a file's times to now (`touch`, or `UTIME_NOW` from a WASI
   program) needs only write permission, by name or by descriptor, on a
   mount as on the session's files. Before, a process that could write a
   file but did not own it was refused (`EPERM`). A time left as it is
   (`UTIME_OMIT`) is the one the file has when the change lands; before, a
   change to it made in between could be undone.
+- Fixed: the shell's `node` emits `beforeExit`, as Node does. It fires
+  with `process.exitCode` each time the loop runs empty, and again only
+  when a listener scheduled a timer or an immediate. A write or a microtask
+  in a listener does not run the loop again, and `process.exit()` and a
+  fatal error skip it.
+- Fixed: the shell's `node` changes owners. `chown`, `lchown` and `fchown`
+  (sync, callback, promise and `FileHandle` forms) were no-ops or missing.
+  `-1` keeps that side, another's owner is `EPERM`, and a bad id is
+  `ERR_OUT_OF_RANGE` or `ERR_INVALID_ARG_TYPE`, thrown at once as in Node.
+  The hosted runtime's `chown` now reads ids the same way; it gave `EINVAL`.
+- Fixed: `fchown` on an open file was refused to everyone but root. The
+  owner may now change its group, as on Linux.
+- Fixed: `stat` reports each operand it cannot stat with its own error,
+  such as `Permission denied` or `Too many levels of symbolic links`, then
+  goes on to the rest and exits 1, as GNU's does. It used to stop at the
+  first one and call every failure `No such file or directory`. `%n` and
+  the `File` line name the operand as given. A link is reported as itself,
+  and what it points to only with `-L`.
+- Fixed: `grep --exclude-from=FILE` excludes the globs listed in FILE. It
+  was refused as an invalid option.
+- Fixed: the `ruby` prompt runs as the caller, as `ruby -e` does, so its
+  file calls use the resident filesystem instead of a supervisor round trip
+  each. A file one line opens stays open on the next, as in irb.
 - Fixed (lifo `node`, X-9): `vm` is Node's. Contexts, scripts,
   `compileFunction`, `runInThisContext` and `runInNewContext` work in an
   inline `node` program and a lifo command alike; before, the module was

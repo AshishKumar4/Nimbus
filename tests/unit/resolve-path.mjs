@@ -29,12 +29,16 @@ import { syscallError } from '../../packages/core/src/vfs/vfs-error.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
-/** A workspace as the session builds one: shell entrypoints, then the npm bin fallback. */
-async function workspace(env) {
+/**
+ * A workspace as the session builds one: shell entrypoints, then the npm bin
+ * fallback (`install`: the sources' by default; a bundled session's own, so
+ * the resolver and the session that reads its resolutions are one graph).
+ */
+async function workspace(env, install = installNpmBinFallbackResolver) {
   const harness = createSqliteVfsTestHarness();
   const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, ...(env ? { env } : {}) });
   registerShellEntrypointCommands(ws.registry, { execute: (command, options) => ws.shell.execute(command, options) });
-  installNpmBinFallbackResolver(ws.registry, {
+  install(ws.registry, {
     filesystem: ws.filesystem,
     getCwd: () => ws.shell.getCwd(),
     getFacetManager() { throw new Error('unexpected staged artifact'); },
@@ -255,13 +259,26 @@ assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
   assert.deepEqual(await run(main, '/private/bin/hello-cli; echo s=$?'), ['s=126\n', '/private/bin/hello-cli: Permission denied\n', 0]);
 }
 
+// A child launcher never runs a runtime's install hint: core's spawn (cpSpawn,
+// a WASI or facet program's) answers ENOENT, as Node's does for a command
+// that is not there, and as the worker's does.
+await assert.rejects(main.children.spawn({ parentPid: main.shellProcessPid, command: 'hintedtool', args: [],
+  cwd: '/tmp', env: { HOME: '/home/main', PATH: mainPath }, stdio: ['ignore', 'pipe', 'pipe'] }),
+  (error) => error.code === 'ENOENT', 'spawn of an install hint is ENOENT');
+
 // ── child_process.spawn in a Worker program searches the child's PATH ─────
 {
-  const { NimbusSession, SessionFilesystem, bindRuntimeServices } = await importWorkerBundle({
+  const { NimbusSession, SessionFilesystem, bindRuntimeServices, installNpmBinFallbackResolver: bundledResolver } = await importWorkerBundle({
     'packages/worker/src/session/nimbus-session.ts': ['NimbusSession'],
     'packages/worker/src/session/session-filesystem.ts': ['SessionFilesystem'],
     'packages/worker/src/hosted/services.ts': ['bindRuntimeServices'],
+    'packages/worker/src/shell/npm-bin-entrypoints.ts': ['installNpmBinFallbackResolver'],
   });
+  // The session's workspace, its npm bin fallback the bundle's own: the
+  // resolutions it marks (an install hint) are the ones the session reads,
+  // as in a deployed worker, where both are one bundle.
+  const hosted = await workspace({ HOME: '/home/main' }, bundledResolver);
+  await installClis(hosted, '/home/main');
 
   const session = Object.create(NimbusSession.prototype);
   session.ctx = { facets: {} };
@@ -274,16 +291,16 @@ assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
   });
   Object.defineProperty(session, 'childProcessHost', { value: childProcessHost });
   Object.assign(session, delegated);
-  session.runtimeWorkspace = main;
+  session.runtimeWorkspace = hosted;
   // A workspace made before its session's services takes their adapters as a hosted runtime's does.
-  main.children.bindHost(childProcessHost);
-  session.processes = main.processes;
-  session.filesystem = new SessionFilesystem(main.vfs, session);
+  hosted.children.bindHost(childProcessHost);
+  session.processes = hosted.processes;
+  session.filesystem = new SessionFilesystem(hosted.vfs, session);
   session.facetManagerComposed = { manager: { setVfs() {} }, apps: {}, pumpLaunches: async () => {} };
   session.childProcessManager = null;
   session.esbuildService = null;
-  session._setCpRegistry(main.registry);
-  const parent = main.processes.spawn('node', ['app.js'], '/tmp');
+  session._setCpRegistry(hosted.registry);
+  const parent = hosted.processes.spawn('node', ['app.js'], '/tmp');
 
   const spawn = async (command, args, env) => {
     const { childPid } = await session._rpcCpSpawn({ command, args, env, cwd: '/tmp', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid });
@@ -302,7 +319,7 @@ assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
   // stdin through NIMBUS_CP_CHILD_PID, and output it publishes as that pid (an interpreter that
   // reads and reports what a Worker runtime reads, as the node runtime does).
   {
-    main.registry.register('livenode', async (ctx) => {
+    hosted.registry.register('livenode', async (ctx) => {
       const pid = Number(ctx.env.NIMBUS_CP_CHILD_PID);
       let input = '';
       if (pid > 0) {
@@ -315,7 +332,7 @@ assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
       await ctx.stdout.write(`pid=${pid} caller=${ctx.__nimbusBinSpawn?.callerPid} in=${input}\n`);
       return 0;
     });
-    const kernel = main.vfs.as(CRED_KERNEL);
+    const kernel = hosted.vfs.as(CRED_KERNEL);
     kernel.writeFile('custom/bin/livetool', '#!/usr/bin/env livenode\n');
     kernel.chmod('custom/bin/livetool', 0o755);
     // A runtime the workspace could install is not a registered command either: a file of
@@ -336,14 +353,14 @@ assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
   // A registered command whose module fails to load ends the child as a failed dispatch
   // does: the error on its stderr, exit 1, recorded so the process table can reap it.
   {
-    main.registry.registerLazy('broken-loader', async () => { throw new Error('loader failed'); });
+    hosted.registry.registerLazy('broken-loader', async () => { throw new Error('loader failed'); });
     await assert.rejects(session._rpcCpSpawn({command:'broken-loader',args:[],env,cwd:'/tmp',stdio:['pipe','pipe','pipe'],parentPid:parent.pid}),/loader failed/,'resolution errors reach the caller');
-    assert.equal(main.processes.getAll().filter(p=>p.ppid===parent.pid&&p.state==='running').length,0,'no running child is left behind');
+    assert.equal(hosted.processes.getAll().filter(p=>p.ppid===parent.pid&&p.state==='running').length,0,'no running child is left behind');
   }
   await assert.rejects(spawn('hintedtool', [], env),error=>error.code==='ENOENT','an install hint is not an executable child');
   // A facet-direct name (yorkie) found in the cwd's node_modules/.bin, through the facet dispatch path.
   {
-    const kernel = main.vfs.as(CRED_KERNEL);
+    const kernel = hosted.vfs.as(CRED_KERNEL);
     kernel.mkdir('tmp/project/node_modules/.bin', { recursive: true });
     kernel.writeFile('tmp/project/node_modules/.bin/yorkie', '#!/bin/sh\necho YORKIE\n');
     kernel.chmod('tmp/project/node_modules/.bin/yorkie', 0o755);
@@ -353,7 +370,9 @@ assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
     const output = await session._rpcCpDrainOutput(childPid);
     assert.deepEqual([new TextDecoder().decode(output.stdout), new TextDecoder().decode(output.stderr), waited.exitCode], ['YORKIE\n', '', 0]);
   }
+  await hosted.close();
 }
+
 await main.close();
 
 // ── A principal whose /tmp is its own finds, inspects and runs its own file ──
