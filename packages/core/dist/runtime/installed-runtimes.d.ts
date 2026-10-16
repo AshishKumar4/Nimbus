@@ -134,9 +134,13 @@ bound?: (root: string, manifest: RuntimeManifest, handlers: ReadonlyMap<string, 
 /**
  * Registers the commands of the runtime `manifest` describes, installed at
  * `root`: each entrypoint's handler, made by its runner's factory; one whose
- * runner is not registered yet is left out. Its handlers, by name.
+ * runner is not registered yet is left out. Its handlers, by name (a name
+ * registered twice, the last), and each name as it was registered.
  */
-export declare function bindRuntimeCommands(registry: MinShellRegistry, runnerFor: RunnerLookup, root: string, manifest: RuntimeManifest): Promise<Map<string, Command>>;
+export declare function bindRuntimeCommands(registry: MinShellRegistry, runnerFor: RunnerLookup, root: string, manifest: RuntimeManifest): Promise<{
+    handlers: Map<string, Command>;
+    registered: string[];
+}>;
 /** The installed runtime at `root`, as `runtime list` shows it. */
 export declare function runtimeSummary(root: string, manifest: RuntimeManifest): RuntimeSummary;
 export declare function listInstalledRuntimes(vfs: SqliteVFS): Promise<RuntimeSummary[]>;

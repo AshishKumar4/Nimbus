@@ -196,8 +196,8 @@ bound) {
     for (const { root, manifest } of await listInstalledManifestsView(vfs)) {
         if (!await runtimePayloadIntact(vfs, root, manifest))
             continue;
-        const handlers = await bindRuntimeCommands(registry, runnerFor, root, manifest);
-        bins.push(...handlers.keys());
+        const { handlers, registered } = await bindRuntimeCommands(registry, runnerFor, root, manifest);
+        bins.push(...registered);
         await bound?.(root, manifest, handlers);
     }
     return { count: bins.length, bins };
@@ -205,10 +205,12 @@ bound) {
 /**
  * Registers the commands of the runtime `manifest` describes, installed at
  * `root`: each entrypoint's handler, made by its runner's factory; one whose
- * runner is not registered yet is left out. Its handlers, by name.
+ * runner is not registered yet is left out. Its handlers, by name (a name
+ * registered twice, the last), and each name as it was registered.
  */
 export async function bindRuntimeCommands(registry, runnerFor, root, manifest) {
     const handlers = new Map();
+    const registered = [];
     for (const ep of runtimeEntrypoints(manifest)) {
         const factory = runnerFor(ep.runner);
         if (!factory)
@@ -216,8 +218,9 @@ export async function bindRuntimeCommands(registry, runnerFor, root, manifest) {
         const handler = await factory(manifest, root, ep.binName, ep.kind);
         registry.register(ep.binName, handler);
         handlers.set(ep.binName, handler);
+        registered.push(ep.binName);
     }
-    return handlers;
+    return { handlers, registered };
 }
 /** The installed runtime at `root`, as `runtime list` shows it. */
 export function runtimeSummary(root, manifest) {
