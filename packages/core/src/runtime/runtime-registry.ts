@@ -203,6 +203,7 @@ function genericCommandLine(name: string, args: readonly string[]): NodeCommandL
     import: [],
     ...(evalCode !== undefined ? { eval: evalCode } : {}),
     print: false,
+    check: false,
     version: flags.includes('-v') || flags.includes('--version'),
     help: flags.includes('--help') || flags.includes('-h'),
   };
@@ -437,7 +438,7 @@ export function buildRuntimeHandler(
     }
     const flagSpan = line.programIndex;
     // What a node run takes of its command line (RuntimeRunOpts.node).
-    const { programIndex: _programIndex, version: _version, help: _help, print, inputType, ...launch } = line;
+    const { programIndex: _programIndex, version: _version, help: _help, print, inputType, check: _check, defaultType: _defaultType, ...launch } = line;
     // A node program's argv is its own: Node's options are execArgv. Another runtime's carries its flags.
     const leadingFlags = spec.nodeCommandLine ? [] : args.slice(0, flagSpan);
 

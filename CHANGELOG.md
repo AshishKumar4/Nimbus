@@ -13,8 +13,8 @@ published independently in the `@nimbus-sh` npm scope.
   apply to both `require` and `import`. Before, only a first-position `-v`,
   `--help` or `-e` was read, `node .` read the directory, and conditions
   were ignored. What it does not run (`--require`, `--import`, `--print`,
-  `--input-type`, a program from stdin) is refused with exit 9 instead of
-  being ignored. A script it cannot find is "node: cannot find module
+  `--check`, `--input-type`, `--experimental-default-type`, a program from
+  stdin) is refused with exit 9 before anything runs. A script it cannot find is "node: cannot find module
   '<script>'", as on the hosted `node`.
 - Fixed: a hosted launch's dependency walk and ES module staging decide
   what is a Node builtin the way Node's `module.isBuiltin` does

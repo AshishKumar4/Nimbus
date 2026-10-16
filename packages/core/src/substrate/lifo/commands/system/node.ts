@@ -32,13 +32,16 @@ function scriptReadDiagnostic(error: unknown): string | null {
 
 /**
  * What this node does not run of a command line Node takes: its preloads,
- * `-p`, `--input-type`, a program read from stdin, and the options that change
- * how a program loads, refused before any of it runs rather than ignored.
+ * `-p`, `-c`, `--input-type`, a program read from stdin, and the options that
+ * change whether or how a program loads, refused before any of it runs
+ * rather than ignored.
  */
 function unsupported(line: NodeCommandLine, program: string | undefined): string | null {
 	if (line.require.length > 0) return '--require';
 	if (line.import.length > 0) return '--import';
 	if (line.print) return '--print';
+	if (line.check) return '--check';
+	if (line.defaultType !== undefined) return '--experimental-default-type';
 	if (line.inputType !== undefined) return '--input-type';
 	if (line.experimentalEventSource === true) return '--experimental-eventsource';
 	if (line.transformTypes === true) return '--experimental-transform-types';

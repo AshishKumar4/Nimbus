@@ -7,8 +7,9 @@
 //   - an option before the script (`--trace-warnings start.js`) is an option;
 //   - `--conditions`, `-C` and NODE_OPTIONS='--conditions=…' pick a package's
 //     conditional export, for require and import alike.
-// And what this node does not run (`-p`, `-r`) is refused before any of it
-// runs, exit 9, rather than ignored.
+// And what this node does not run (`-p`, `-r`, `-c`,
+// `--experimental-default-type`) is refused before any of it runs, exit 9,
+// rather than ignored.
 //
 // Red before: the command read only a first-position -v, --help or -e;
 // `node .` read the directory, `--trace-warnings` was taken for the script,
@@ -85,7 +86,10 @@ try {
     const ran = await ws.exec(command, { cwd: '/home/user/app', signal: AbortSignal.timeout(60_000) });
     assert.deepEqual([ran.exitCode, ran.stdout], expected[i], `${command}: ${ran.stderr}`);
   }
-  for (const [args, option] of [[['-p', '1'], '--print'], [['-r', './start.js', 'start.js'], '--require']]) {
+  for (const [args, option] of [
+    [['-p', '1'], '--print'], [['-r', './start.js', 'start.js'], '--require'], [['-c', 'start.js'], '--check'],
+    [['--experimental-default-type=module', '-e', '1'], '--experimental-default-type'],
+  ]) {
     const ran = await ws.exec(`node ${args.map(quote).join(' ')}`, { cwd: '/home/user/app' });
     assert.deepEqual([ran.exitCode, ran.stdout], [9, ''], `node ${args.join(' ')} is refused`);
     assert.match(ran.stderr, new RegExp(`^node: ${option} is not supported by this node`), ran.stderr);
