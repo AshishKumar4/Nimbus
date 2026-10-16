@@ -26,7 +26,14 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 const user = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 
-function session({ grantInos, journal, gate, refuse } = {}) {
+/**
+ * A process over a real session. `view`: its store is a view as a resident's
+ * is, what it read of a name kept as read until a barrier reads it again
+ * (`view.barrier` runs after); else the store reads the session at every
+ * call. `acquired`: what the session's grant waits for. `grantBytes`: the
+ * storage a grant reserves.
+ */
+function session({ grantInos, journal, gate, refuse, view, acquired, grantBytes } = {}) {
   const harness = createSqliteVfsTestHarness();
   const engine = new SqliteVFS(harness.sql, harness.ctx);
   const kernel = engine.as(CRED_KERNEL);
@@ -42,30 +49,46 @@ function session({ grantInos, journal, gate, refuse } = {}) {
   const filesystem = new ProcessFiles(engine);
   const bridge = filesystem.bind({ pid: 7, cred: user });
   // The process's store, coherent with the session at every call: reads as the process does.
-  const entryOf = (stat) => ({
+  const entryOf = (stat, target = null) => ({
     type: stat.type, dev: stat.dev, ino: stat.ino, nlink: stat.nlink, size: stat.size, atime: stat.atime, mtime: stat.mtime,
-    ctime: stat.ctime, mode: stat.mode, uid: stat.uid, gid: stat.gid, revision: stat.revision ?? 0, target: null,
+    ctime: stat.ctime, mode: stat.mode, uid: stat.uid, gid: stat.gid, revision: stat.revision ?? 0, target,
   });
   const device = bridge.stat('/').dev;
+  const entryNow = (key) => {
+    try {
+      const stat = bridge.stat('/' + key, { followSymlinks: false });
+      return stat === null ? null : entryOf(stat, view && stat.type === 'symlink' ? bridge.readlink('/' + key) : null);
+    } catch { return null; }
+  };
+  const contentNow = (key) => { try { return bridge.readFile('/' + key) ?? undefined; } catch { return undefined; } };
+  const cursorNow = () => ({ epoch: engine.epoch, rev: engine.revision() });
+  const seen = new Map();
+  let cursor = cursorNow();
+  const viewed = (key) => {
+    if (!seen.has(key)) seen.set(key, { entry: entryNow(key), content: contentNow(key) });
+    return seen.get(key);
+  };
   const store = {
     device,
     cred: user,
     ready: () => true,
-    entry: (key) => {
-      try {
-        const stat = bridge.stat('/' + key, { followSymlinks: false });
-        return stat === null ? null : entryOf(stat);
-      } catch { return null; }
-    },
+    entry: (key) => (view ? viewed(key).entry : entryNow(key)),
     children: (key) => {
       try { return bridge.readdir('/' + key); } catch { return undefined; }
     },
     list: async () => true,
     lookup: async () => true,
     listTree: async () => false,
-    content: (key) => { try { return bridge.readFile('/' + key) ?? undefined; } catch { return undefined; } },
+    content: (key) => (view ? viewed(key).content : contentNow(key)),
     fill: async (key) => bridge.readFile('/' + key),
-    barrier: async () => true,
+    cursor: () => (view ? cursor : cursorNow()),
+    barrier: async () => {
+      if (!view) return true;
+      for (const key of seen.keys()) seen.set(key, { entry: entryNow(key), content: contentNow(key) });
+      cursor = cursorNow();
+      await view.barrier?.();
+      return true;
+    },
     reserve: () => true,
     release: () => {},
   };
@@ -85,7 +108,10 @@ function session({ grantInos, journal, gate, refuse } = {}) {
       return result;
     },
     grants: {
-      acquire: async (path, delegate) => bridge.acquireExclusiveMutation(path, { delegate }),
+      acquire: async (path, delegate) => {
+        await acquired;
+        return bridge.acquireExclusiveMutation(path, { delegate: grantBytes === undefined ? delegate : { ...delegate, bytes: grantBytes } });
+      },
       release: async (owner) => { bridge.releaseExclusiveMutation(owner); },
       awaitRecall: (owner, waitMs) => bridge.awaitRecall(owner, waitMs),
       recalled: async (owner, kind) => { bridge.recalled(owner, kind); },
@@ -238,6 +264,99 @@ async function until(ready, what) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error(`never: ${what}`);
+}
+
+// ── A copy decides with the view's bytes only where the view vouches for them ──
+// The source cached, a peer rewrites it after the view's last barrier and
+// before the grant is recorded: the session copies what it has, the rewrite.
+// Red before: the holder copied the view's bytes, the source before it.
+{
+  const grant = Promise.withResolvers();
+  let afterBarrier = null;
+  const s = session({ view: { barrier: () => afterBarrier?.() }, acquired: grant.promise });
+  s.kernel.writeFile('home/user/proj/d3/src.txt', enc.encode('OLD'));
+  s.kernel.chown('home/user/proj/d3/src.txt', 1000, 1000);
+  assert.equal(dec.decode(await s.fs.readFile('/home/user/proj/d3/src.txt')), 'OLD');
+  // The session's: the subtree is asked for, and its grant waits.
+  await s.fs.copyFile('/home/user/proj/d3/src.txt', '/home/user/proj/d3/first.txt');
+  afterBarrier = async () => {
+    afterBarrier = null;
+    s.kernel.writeFile('home/user/proj/d3/src.txt', enc.encode('NEW'));
+    grant.resolve();
+    await until(() => s.filesystem.delegations.size === 1, 'the grant');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  };
+  await s.fs.copyFile('/home/user/proj/d3/src.txt', '/home/user/proj/d3/second.txt');
+  await s.fs.settle();
+  assert.equal(dec.decode(s.kernel.readFile('home/user/proj/d3/first.txt')), 'OLD');
+  assert.equal(dec.decode(s.kernel.readFile('home/user/proj/d3/second.txt')), 'NEW', 'the copy took the view\'s bytes from before the grant');
+}
+
+// ── A decision reads only rows its view has as the session does, or its own ──
+// A peer makes the destination, not writable to the process, after the
+// view's last barrier and before the grant; the process then makes its own
+// source under that grant. The copy is the session's, which refuses it.
+// Red before: the holder judged the destination by the view's stale
+// absence and answered the copy, which the session then refused.
+{
+  const grant = Promise.withResolvers();
+  let afterBarrier = null;
+  const s = session({ view: { barrier: () => afterBarrier?.() }, acquired: grant.promise });
+  // Asked for once: the process's view has it absent.
+  assert.equal(await s.fs.stat('/home/user/proj/d7/dst.txt'), null);
+  // The session's: the subtree is asked for, and its grant waits.
+  await create(s.fs, '/home/user/proj/d7/warm.txt', 'w');
+  afterBarrier = async () => {
+    afterBarrier = null;
+    s.kernel.writeFile('home/user/proj/d7/dst.txt', enc.encode('THEIRS'), { mode: 0o444 });
+    grant.resolve();
+    await until(() => s.filesystem.delegations.size === 1, 'the grant');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  };
+  await create(s.fs, '/home/user/proj/d7/src.txt', 'MINE');
+  await assert.rejects(async () => s.fs.copyFile('/home/user/proj/d7/src.txt', '/home/user/proj/d7/dst.txt'), { code: 'EACCES' });
+  await s.fs.settle().catch(() => {});
+  assert.equal(dec.decode(s.kernel.readFile('home/user/proj/d7/dst.txt')), 'THEIRS');
+}
+
+// ── A copy is decided only where every name its walks cross is guarded ──
+// The destination a link outside the held subtree names, into it: a peer
+// retargets the link (no grant recalled), and the copy lands where the
+// caller's name leads now. Red before: the holder wrote the old target.
+{
+  const s = session({ view: {} });
+  s.kernel.writeFile('home/user/proj/d5/moved.txt', enc.encode('THEIRS'));
+  s.kernel.chown('home/user/proj/d5/moved.txt', 1000, 1000);
+  s.kernel.symlink('/home/user/proj/d4/target.txt', 'home/user/other/link');
+  await create(s.fs, '/home/user/proj/d4/src.txt', 'MINE');
+  await until(() => s.filesystem.delegations.size === 1, 'the grant');
+  await create(s.fs, '/home/user/proj/d4/src.txt', 'MINE');
+  await s.fs.flush();
+  assert.equal(await s.fs.readlink('/home/user/other/link'), '/home/user/proj/d4/target.txt');
+  s.kernel.unlink('home/user/other/link');
+  s.kernel.symlink('/home/user/proj/d5/moved.txt', 'home/user/other/link');
+  await s.fs.copyFile('/home/user/proj/d4/src.txt', '/home/user/other/link');
+  await s.fs.settle();
+  assert.equal(dec.decode(s.kernel.readFile('home/user/proj/d5/moved.txt')), 'MINE', 'the copy did not land where the link leads');
+  assert.equal(s.kernel.exists('home/user/proj/d4/target.txt'), false, 'the copy wrote the link\'s old target');
+}
+
+// ── A decided copy's bytes are drawn from what its grant reserved ──
+// The grant holds the source and one copy: the second copy is the session's.
+// Red before: every copy was held here, past the grant's reservation.
+{
+  const s = session({ grantBytes: 13_000 });
+  const big = 'b'.repeat(6000);
+  await create(s.fs, '/home/user/proj/d6/warm.txt', 'w');
+  await until(() => s.filesystem.delegations.size === 1, 'the grant');
+  await create(s.fs, '/home/user/proj/d6/big.bin', big);
+  const before = s.fs.stats().delegated.copyFile ?? 0;
+  await s.fs.copyFile('/home/user/proj/d6/big.bin', '/home/user/proj/d6/c1.bin');
+  assert.equal((s.fs.stats().delegated.copyFile ?? 0) - before, 0, 'a copy the grant has room for went to the session');
+  await s.fs.copyFile('/home/user/proj/d6/big.bin', '/home/user/proj/d6/c2.bin');
+  assert.equal((s.fs.stats().delegated.copyFile ?? 0) - before, 1, 'a copy past the grant\'s reservation was held here');
+  await s.fs.settle();
+  for (const name of ['c1.bin', 'c2.bin']) assert.equal(dec.decode(s.kernel.readFile(`home/user/proj/d6/${name}`)), big);
 }
 
 // ── A resident's process logs what it sends in its own store until the session answers ──

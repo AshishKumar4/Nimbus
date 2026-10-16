@@ -135,7 +135,11 @@ async function holderBridge(supervisor) {
   if (fs === null || typeof fs.holding !== 'function') throw new Error('the WASI body gave no resident filesystem (no JSPI here?)');
   await P.__wasiPrepareFilesystem([]);
   // A codec awaits each call: one that refuses at once is a rejection, as Node's is.
-  return new Proxy(fs, { get: (target, name) => (typeof target[name] === 'function' ? async (...args) => target[name](...args) : target[name]) });
+  // A copy is copyfile(3)'s, as Node's fs.copyFile makes it (libuv): its mode kept.
+  return new Proxy(fs, {
+    get: (target, name) => (name === 'copyFile' ? async (from, to) => target.copyFile(from, to, { keepMode: true })
+      : typeof target[name] === 'function' ? async (...args) => target[name](...args) : target[name]),
+  });
 }
 
 /** Whether `work` settles while the session answers no wave (a timer of the host's, which no barrier holds). */
@@ -154,14 +158,21 @@ export async function bootEngine(kind, { seed } = {}) {
   seed?.(authority);
   let stalled = null;
   let waves = 0;
+  /** Waves sent and not yet answered. */
+  let unanswered = 0;
   let listingFails = false;
   const grants = new Map();
   let forward;
   const handle = facetSupervisor(authority, {
     writeBatchStream: async (...args) => {
       waves++;
-      if (stalled !== null) await stalled.promise;
-      return forward('writeBatchStream', args);
+      unanswered++;
+      try {
+        if (stalled !== null) await stalled.promise;
+        return await forward('writeBatchStream', args);
+      } finally {
+        unanswered--;
+      }
     },
     fsAcquireExclusiveMutation: async (...args) => {
       const granted = await forward('fsAcquireExclusiveMutation', args);
@@ -225,9 +236,11 @@ export async function bootEngine(kind, { seed } = {}) {
      * The process ends as the session ends a resident (FacetManager): by a
      * kill, or by its own exit. Its facet is released and the session drains
      * its write log as it does for any resident; the guest is not asked to
-     * flush first.
+     * flush first. `refused`: the waves it has on their way reach the
+     * session (stalled until then) once it has ended the process, and are
+     * answered before the facet settles.
      */
-    async end(how = 'kill', { twice = false } = {}) {
+    async end(how = 'kill', { twice = false, refused = false } = {}) {
       const name = `guest-engine-${kind}`;
       const ctx = createFacetCtx(createFacetWorld(() => ({})), name);
       Reflect.set(ctx.storage, 'sql', Reflect.get(authority.rawVfs, 'sql'));
@@ -239,10 +252,21 @@ export async function bootEngine(kind, { seed } = {}) {
           return {
             started: Promise.resolve({ ok: true }),
             lost: new Promise(() => {}),
-            // `twice`: the session drains the log twice at once (one joins the other).
-            release: () => (twice
-              ? Promise.all([params.journal.drain(journalSource(engine.journal())), params.journal.drain(journalSource(engine.journal()))])
-              : params.journal.drain(journalSource(engine.journal()))),
+            // As the facet host releases a resident: it settles first (the
+            // host adapter's settle, its runtime's __nimbusSettle), then its
+            // log is drained. `twice`: the session drains it twice at once
+            // (one joins the other).
+            release: async () => {
+              if (refused) {
+                await engine.release();
+                await until(() => unanswered === 0, 'its waves answered');
+                await sleep(0);
+              }
+              // A settle that fails leaves its log as it is (the host's).
+              try { globalThis.__nimbusSettle?.(); } catch { /* as it is */ }
+              const drain = () => params.journal.drain(journalSource(engine.journal()));
+              await (twice ? Promise.all([drain(), drain()]) : drain());
+            },
             describe: () => name,
           };
         },

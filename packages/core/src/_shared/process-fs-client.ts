@@ -211,6 +211,15 @@ export interface ProcessFsClient {
   submit(op: ProcessFsOp, options?: { acknowledged?: boolean; decided?: boolean }): Promise<ProcessFsAnswer>;
   /** Send what lingers now: someone waits on one of the process's own changes. */
   hurry(): void;
+  /**
+   * The session is ending the process (its host settles it before the
+   * abort): its journal is the session's drain's from now on. Nothing more
+   * is sent; an op submitted after that the process was told it wrote
+   * (acknowledged, decided: its last bytes) is appended to it, the session's
+   * refusal of the process (ESRCH) notwithstanding; and a wave already sent
+   * forgets, whatever its outcome, only what the session applied.
+   */
+  seal(): void;
   /** Resolves once every op logged so far is answered (not those logged after: a writing process is never idle). */
   flush(): Promise<void>;
   /**
@@ -279,16 +288,22 @@ export interface ProcessFsClient {
    */
   guards(key: string): boolean;
   /**
-   * What vouches for `key` in a view whose applied cursor is `cursor`: a
+   * What certifies `key` in a view whose applied cursor is `cursor`: a
    * subtree the process holds alone (not shared, not closing, no raw socket)
    * whose certificate the cursor has reached, in its epoch, so the view has
-   * every change before the grant and none came after it unrecalled; and
-   * every change of the process's own: none logged and unanswered, each
-   * published, and the session's revision as it answered it reached. 'held':
-   * `key` is at or beneath its root, everything about it vouched for; 'above':
-   * an ancestor of its root, whose own change (its mode, its rename) recalls
+   * every change of another's to `key` before the grant and none came after
+   * it unrecalled. 'held': `key` is at or beneath its root; 'above': an
+   * ancestor of its root, whose own change (its mode, its rename) recalls
    * the grant, though a change beneath it elsewhere does not. Undefined:
-   * nothing does, and only the session can answer.
+   * nothing does. The process's own changes are its to overlay (vouch).
+   */
+  certifies(key: string, cursor: { readonly epoch: string | null; readonly rev: number }): 'held' | 'above' | undefined;
+  /**
+   * What vouches for `key` in a view whose applied cursor is `cursor`: what
+   * certifies it, and every change of the process's own in the view: none
+   * logged and unanswered, each published, and the session's revision as it
+   * answered it reached. Undefined: nothing does, and only the session can
+   * answer.
    */
   vouch(key: string, cursor: { readonly epoch: string | null; readonly rev: number }): 'held' | 'above' | undefined;
   /** Whether any op is logged and not yet answered. */
@@ -652,6 +667,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   /** A grant being taken (no other is asked for meanwhile), and whether waves wait for it (while it is asked for). */
   let claiming: Promise<void> | null = null;
   let paused = false;
+  /** The session's drain owns the journal (seal): nothing more is sent. */
+  let sealed = false;
   /** The wave in flight, settled once its answer is applied. */
   let sending: Promise<void> | null = null;
   let idleTimer: unknown = null;
@@ -680,6 +697,17 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     } else {
       entry.reject(fsError(errno, message, path));
     }
+  };
+
+  /**
+   * Drop the journal through `through`: what the session `applied` (or
+   * refused, its verdict), always; anything else only while the journal is
+   * the process's. It is the session's drain's once the process is sealed
+   * (seal), or once the session ended it over a durable journal: the drain
+   * sends what it holds, so nothing it did not take is forgotten here.
+   */
+  const forget = (through: number, applied: boolean): void => {
+    if (applied || !(sealed || (processGone !== null && journal.durable))) journal.dropThrough(through);
   };
 
   /** An entry's change: the heap's copy, or the journal's. */
@@ -771,7 +799,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         return;
       }
       for (const entry of entries) fail(entry, 'EIO', `the session gave this process no writer: ${error instanceof Error ? error.message : String(error)}`);
-      journal.dropThrough(entries[entries.length - 1]!.jid);
+      forget(entries[entries.length - 1]!.jid, false);
       return;
     }
     let ops: ProcessFsOp[];
@@ -789,7 +817,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       const code = (error as { code?: unknown } | null)?.code;
       const errno = typeof code === 'string' && /^E[A-Z0-9]+$/.test(code) ? code : 'EIO';
       for (const entry of entries) fail(entry, errno, `this write could not be sent: ${error instanceof Error ? error.message : String(error)}`);
-      journal.dropThrough(entries[entries.length - 1]!.jid);
+      forget(entries[entries.length - 1]!.jid, false);
       // An epoch numbers ops by their place in the log: dropped, these leave
       // a gap the session would refuse what follows for. What follows is
       // numbered under a new epoch (nothing of this wave left, and what the
@@ -875,7 +903,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     }
     // What was answered is forgotten: a prefix of the log (waves are cut in order).
     const answeredThrough = back.length === 0 ? entries[entries.length - 1]!.jid : back[0]!.jid - 1;
-    if (answeredThrough >= entries[0]!.jid) journal.dropThrough(answeredThrough);
+    if (answeredThrough >= entries[0]!.jid) forget(answeredThrough, true);
     if (back.length === 0) return;
     if (answer.ok || refused !== null) {
       // After a refusal, nothing more in the wave was applied: they go again, first, as numbered.
@@ -899,13 +927,19 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       counters.lost++;
       fail(entry, 'EIO', message);
     }
-    journal.dropThrough(entries[entries.length - 1]!.jid);
+    forget(entries[entries.length - 1]!.jid, false);
     if (writer !== null) retiring.push(writer);
     epoch = null;
     ownThrough = Infinity;
     for (const entry of queue) entry.seq = 0;
   };
 
+  /**
+   * The session ended the process: what it logged is refused, and its
+   * waiters told so. A durable journal keeps it for the session's drain
+   * (forget: what the process was told it wrote outlives it, as write(2)'s
+   * does); any other forgets it.
+   */
   const endedProcess = (entries: Entry[], refusal: Error & { code: string }, writer: string | null): void => {
     processGone ??= refusal;
     const ended = [...entries, ...queue.splice(0)];
@@ -913,7 +947,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; }
       fail(entry, 'ESRCH', processGone.message);
     }
-    journal.dropThrough(ended[ended.length - 1]!.jid);
+    forget(ended[ended.length - 1]!.jid, false);
     if (writer !== null) retiring.push(writer);
     epoch = null;
     ownThrough = Infinity;
@@ -926,14 +960,14 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; }
       fail(entry, 'EIO', refusal.message);
     }
-    if (!journal.durable) journal.dropThrough(stopped[stopped.length - 1]!.jid);
+    forget(stopped[stopped.length - 1]!.jid, false);
     epoch = null;
     ownThrough = Infinity;
   };
 
   const pump = (): void => {
     scheduled = false;
-    if (inFlight !== null || paused) return;
+    if (inFlight !== null || paused || sealed) return;
     if (queue.length === 0) return;
     if (marks.length === 0 && queue.every((entry) => entry.lingers)) {
       lingerTimer ??= timers.setTimeout(() => {
@@ -956,7 +990,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   };
 
   const schedule = (): void => {
-    if (scheduled || inFlight !== null || paused) return;
+    if (scheduled || inFlight !== null || paused || sealed) return;
     scheduled = true;
     queueMicrotask(pump);
   };
@@ -1250,7 +1284,11 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       return grants.some((grant) => !grant.ended && within(key, grant.root));
     },
     vouch(key, cursor) {
-      if (escaped !== null || client.pending() || ownHeld || cursor.rev < ownThrough) return undefined;
+      if (client.pending() || ownHeld || cursor.rev < ownThrough) return undefined;
+      return client.certifies(key, cursor);
+    },
+    certifies(key, cursor) {
+      if (escaped !== null) return undefined;
       let found: 'held' | 'above' | undefined;
       for (const grant of grants) {
         const certificate = grant.certificate;
@@ -1268,8 +1306,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       return queue.length > 0 || inFlight !== null;
     },
     submit(given, submitOptions) {
-      if (processGone !== null) throw processGone;
       const acknowledged = submitOptions?.acknowledged === true;
+      if (processGone !== null && !(sealed && (acknowledged || submitOptions?.decided === true))) throw processGone;
       const op = withUmaskOf(given, options.umask);
       const named = pathsOf(op);
       const lingers = (acknowledged || submitOptions?.decided === true) && named.every((path) => heldGrant(path) !== undefined);
@@ -1280,7 +1318,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       }
       const parts = pieces(op);
       const bytes = parts.reduce((sum, part) => sum + (part.type === 'call' && 'data' in part.call ? part.call.data.byteLength : 0), 0);
-      if (acknowledged && pendingSyncBytes + bytes > syncCap) {
+      if (acknowledged && !sealed && pendingSyncBytes + bytes > syncCap) {
         throw fsError('ENOMEM', `ENOMEM: ${pendingSyncBytes} bytes of synchronous writes are waiting for the session, and this one (${bytes}) would pass the ${syncCap}-byte cap; let the program yield (an await) for them to be sent`, pathsOf(op)[0] ?? '');
       }
       // The same file's next bytes, right after its last unsent change: folded into it.
@@ -1347,6 +1385,13 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     hurry() {
       for (const entry of queue) entry.lingers = false;
       schedule();
+    },
+    seal() {
+      sealed = true;
+      if (lingerTimer !== null) {
+        timers.clearTimeout(lingerTimer);
+        lingerTimer = null;
+      }
     },
     flush() {
       options.drain?.();

@@ -26,7 +26,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
 import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
-import { DECIDED_BACKLOG_OPS, failuresError, processFsClient } from '../../packages/core/src/_shared/process-fs-client.ts';
+import { DECIDED_BACKLOG_OPS, drainProcessFsJournal, failuresError, journalSource, processFsClient, sqlJournal } from '../../packages/core/src/_shared/process-fs-client.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { withRecall } from '../../packages/core/src/vfs/recall.ts';
 
@@ -1051,6 +1051,37 @@ for (const continues of [true, false]) {
   await c.submit({ type: 'call', call: { call: 'writeFile', path: 'slow/race', mode: 0o644, data: enc.encode('new') } });
   await new Promise((resolve) => setTimeout(resolve, 1_200));
   assert.equal(dec.decode(slow.readFile('/race')), 'new', 'the given-up wave\'s mounted write landed over the next epoch\'s');
+}
+
+// ── Sealed, the journal is the drain's: a send that fails before any wave
+//    left (its writer refused) forgets nothing ──────────────────────────────
+// The settle seals while the writer for the process's accepted changes is
+// still being opened; the open then fails EIO. The release's drain lands them.
+// Red before: that failure dropped them from the journal.
+{
+  const s = session();
+  const journal = sqlJournal(createSqliteVfsTestHarness().sql);
+  const opened = s.port.openWriter;
+  const opening = Promise.withResolvers();
+  let asked = false;
+  s.port.openWriter = async () => {
+    asked = true;
+    await opening.promise;
+    throw Object.assign(new Error('EIO: the writer could not be opened'), { code: 'EIO' });
+  };
+  const c = processFsClient({ session: s.port, retry: RETRY, journal });
+  c.submit(writeFile('home/user/kept-a', 'A'), { acknowledged: true });
+  c.submit(writeFile('home/user/kept-b', 'B'), { acknowledged: true });
+  await until(() => asked, 'the writer asked for');
+  c.seal();
+  opening.resolve();
+  await until(() => !c.pending(), 'the send ended');
+  assert.equal(journal.entries().length, 2, 'a sealed journal lost what the session never took');
+  s.port.openWriter = opened;
+  const drained = await drainProcessFsJournal({ journal: journalSource(journal), session: s.port, retry: RETRY });
+  assert.equal(drained.failures.length, 0, JSON.stringify(drained.failures));
+  assert.equal(s.text('home/user/kept-a'), 'A');
+  assert.equal(s.text('home/user/kept-b'), 'B');
 }
 
 console.log('process-fs-client: ok');

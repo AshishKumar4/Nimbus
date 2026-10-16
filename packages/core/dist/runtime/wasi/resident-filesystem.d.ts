@@ -135,6 +135,8 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
     cancelPendingDirectories(): void;
     /** Whether writes are held that the session does not have yet. */
     holding(): boolean;
+    /** What the process decided and has not logged, logged now into its own log, with no round trip (DelegationHolder.logHeld). */
+    logHeld(): void;
     /**
      * Send every held write to the session, before something leaves the
      * process (a socket send): what it wrote is there before anyone hears from

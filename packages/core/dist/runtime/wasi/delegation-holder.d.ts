@@ -165,6 +165,25 @@ export interface DelegationHolder {
         exclusive?: boolean;
         truncate?: boolean;
     }): RuntimeFileHandle | undefined;
+    /**
+     * Decide a copy of the file at `from` to `to` (both resolved): true when
+     * decided here, its bytes `bytes` where they are not the holder's own
+     * (what the store read of it under the grant). Its mode as the session's
+     * copy leaves it: cp(1)'s (a new file the source's permission bits less
+     * the umask, one there its own), or with `keepMode` copyfile's
+     * (copyfileMode). Logged as the copy is made, through one description:
+     * the destination opened (O_CREAT|O_TRUNC; with `keepMode` its fchmod,
+     * part of the open, as libuv's copyfile makes it), the bytes written
+     * through it, and its close.
+     */
+    copyFile(from: string, to: string, path: string, bytes: Uint8Array | undefined, keepMode: boolean): boolean;
+    /**
+     * Log every decided file's unlogged bytes now, into the process's own log
+     * and with no session round trip: what its facet keeps of it when the
+     * session ends it (a resident's settle, before its facet goes). The log is
+     * the session's drain's from then on (ProcessFsClient.seal).
+     */
+    logHeld(): void;
     /** Decide a mkdir at `key`: true when decided here (and done), false when the session is to. */
     mkdir(key: string, path: string, mode: number, umask?: number): boolean;
     /** Decide an unlink of `key` (a file or link): true when decided here. */

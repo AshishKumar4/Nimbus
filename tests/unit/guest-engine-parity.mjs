@@ -343,15 +343,22 @@ const SCENARIOS = {
     await e.end('kill');
     assert.equal(await e.peerText(`${OUT}/last.txt`), 'LAST');
   },
+  async 'what the process was told it wrote lands when its waves are refused as the session kills it'(e) {
+    await e.hold(OUT);
+    e.stall();
+    const before = e.waves();
+    await e.write(`${OUT}/sent.txt`, 'SENT');
+    await until(() => e.waves() > before, 'its wave on its way');
+    await e.write(`${OUT}/held.txt`, 'HELD');
+    await e.end('kill', { refused: true });
+    assert.equal(await e.peerText(`${OUT}/sent.txt`), 'SENT', 'a change on its way when the process ended was lost');
+    assert.equal(await e.peerText(`${OUT}/held.txt`), 'HELD', 'a change not yet sent when the process ended was lost');
+  },
 };
 
 /** What each engine lacks today: each must fail, showing what it lacks. */
 const PATH_FDS = 'descriptors on the open file, not on its name';
 const GAPS = {
-  'a copy of the process\'s own unanswered write is answered at once, with its bytes and its mode [holder]': { lacks: 'decided copies', shows: 'not decided in the held subtree' },
-  'a decided copy is logged as what the destination became, in copyfile\'s order [holder]': { lacks: 'a decided copy logged as an open with its fchmod, a write and a close', shows: 'the copy is not logged as an open of its destination' },
-  'the session hears an answered change within the linger, unasked [holder]': { lacks: 'lingering answered changes', shows: 'timed out waiting for the session heard the write' },
-  'what the process was told it wrote lands when the session kills it at once [holder]': { lacks: 'a cooperative end: its unlogged bytes logged before its facet goes', shows: 'ENOENT' },
   'a copy of a held file the process did not write is answered once it has read it [node]': { lacks: 'decided copies of a file it read', shows: 'not decided in the held subtree' },
   'a name under a file is ENOTDIR, a looping link ELOOP [node]': { lacks: 'ENOTDIR for a name under a file it made, decided in a held subtree', shows: 'Missing expected rejection' },
   'an open description reads the file it opened after its name is unlinked [node]': { lacks: PATH_FDS, shows: 'the description read the name\'s new file' },
