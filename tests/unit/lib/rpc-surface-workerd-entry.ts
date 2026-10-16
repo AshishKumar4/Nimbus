@@ -131,7 +131,7 @@ async function held(kind: string, id: DurableObjectId, env: Env, exports: Export
     // A wrangler-dev guest's assets binding, minted for a run-as server (nimbus-wrangler.ts).
     case 'NimbusAssetsRPC':
       return exports.NimbusAssetsRPC({ props: { vfsRoot: 'home/run-as/site', assetsDir: 'public', doId: id.toString(), cred: RUN_AS } });
-    // A wrangler-dev guest's Durable Object namespace binding, and a stub it hands back.
+    // A wrangler-dev guest's Durable Object namespace binding.
     case 'NimbusDurableObjectNamespace':
       return exports.NimbusDurableObjectNamespace({ props: { bindingName: 'COUNTER', supervisorDoId: id.toString() } });
     // A wrangler-dev guest's KV, D1 and R2 bindings, each minted for one store (nimbus-wrangler.ts).
