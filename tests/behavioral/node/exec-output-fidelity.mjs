@@ -133,7 +133,11 @@ if (process.env.NIMBUS_PROBE_TOKEN) {
       code.stdout.trim() === '42',
       `exit ${code.exitCode}, stdout: ${JSON.stringify(code.stdout)}`);
   } finally {
-    await box.destroy({ reason: 'exec-output-fidelity-cleanup' }).catch(() => {});
+    // The probe made this sandbox, so its cleanup is the probe's, and a
+    // failed one is a failed probe (an error above still propagates).
+    const destroyed = await box.destroy({ reason: 'exec-output-fidelity-cleanup' })
+      .then((result) => result, (error) => ({ ok: false, error: String(error?.message ?? error) }));
+    a.check('the sandbox is destroyed', destroyed.ok === true && typeof destroyed.destroyedAt === 'number', JSON.stringify(destroyed));
   }
 } else {
   console.log('  (skipped programmatic checks — NIMBUS_PROBE_TOKEN not set)');
