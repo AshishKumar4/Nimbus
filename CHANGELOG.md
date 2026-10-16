@@ -19,11 +19,12 @@ published independently in the `@nimbus-sh` npm scope.
   - A Location is checked before the 20-redirect cap, as Node's fetch
     checks it. A `fetch` whose 21st response redirects to a URL that is not
     HTTP(S) fails "URL scheme must be a HTTP(S) scheme", as in Node, rather
-    than "redirect count exceeded". With `curl -L`, a 21st redirect whose
-    Location does not parse is the answer rather than "Maximum (20)
-    redirects followed".
-  - A followed redirect's body is cancelled without waiting for the
-    cancel, as undici does.
+    than "redirect count exceeded". With `curl -L` or `wget`, a 21st
+    redirect whose Location does not parse is the answer rather than "too
+    many redirects".
+  - The body of a redirect that is followed, or that redirect mode
+    `'error'` refuses, is cancelled without waiting for the cancel, as
+    undici does. A cancel that fails no longer fails the `fetch`.
 - Breaking (core): `MAX_REDIRECTS` moved from
   `substrate/lifo/commands/net/kernel-fetch.js` to
   `runtime/http-redirect-policy.js`. `HopRequest` is gone; use
