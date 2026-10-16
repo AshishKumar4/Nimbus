@@ -211,12 +211,11 @@ export interface ProcessFsClient {
   hurry(): void;
   /**
    * The session is ending the process (its host settles it before the
-   * abort): its journal is the session's drain's from now on, as it is once
-   * the session refused the process as ended (ESRCH) over a durable one.
-   * Nothing more is sent; an op submitted after that the process was told
-   * it wrote (acknowledged, decided) is appended to it, the process's end
-   * notwithstanding; and a wave already sent forgets, whatever its outcome,
-   * only what the session applied.
+   * abort): its journal is the session's drain's from now on. Nothing more
+   * is sent; an op submitted after that the process was told it wrote
+   * (acknowledged, decided: its last bytes) is appended to it, the session's
+   * refusal of the process (ESRCH) notwithstanding; and a wave already sent
+   * forgets, whatever its outcome, only what the session applied.
    */
   seal(): void;
   /** Resolves once every op logged so far is answered (not those logged after: a writing process is never idle). */
@@ -929,9 +928,9 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
 
   /**
    * The session ended the process: what it logged is refused, and its
-   * waiters told so. A durable journal keeps it, sealed for the session's
-   * drain (what the process was told it wrote outlives it, as write(2)'s
-   * does); any other forgets it.
+   * waiters told so. A durable journal keeps it for the session's drain
+   * (what the process was told it wrote outlives it, as write(2)'s does);
+   * any other forgets it.
    */
   const endedProcess = (entries: Entry[], refusal: Error & { code: string }, writer: string | null): void => {
     processGone ??= refusal;
@@ -940,8 +939,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; }
       fail(entry, 'ESRCH', processGone.message);
     }
-    if (journal.durable) sealed = true;
-    else journal.dropThrough(ended[ended.length - 1]!.jid);
+    if (!journal.durable) journal.dropThrough(ended[ended.length - 1]!.jid);
     if (writer !== null) retiring.push(writer);
     epoch = null;
     ownThrough = Infinity;

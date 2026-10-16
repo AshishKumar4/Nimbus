@@ -379,21 +379,29 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   const drain = (): void => {
     if (dirty.size > 0) changes++;
     for (const file of [...dirty]) {
-      dirty.delete(file);
       const from = Math.min(file.changedFrom ?? 0, file.logged ?? 0);
-      delete file.changedFrom;
       // A copy: the file's buffer keeps changing as the process writes. A
       // file made here makes its name with this write, with its number.
       const ino = file.made;
-      delete file.made;
       // Its mode refuses its creating open what it writes: made by that open, and written through it.
-      if (ino !== undefined && refusedByMode(file)) { goThrough(file, ino, ino); continue; }
+      if (ino !== undefined && refusedByMode(file)) {
+        dirty.delete(file);
+        delete file.changedFrom;
+        delete file.made;
+        goThrough(file, ino, ino);
+        continue;
+      }
       if (ino === undefined && from > 0) {
         if (file.length < file.logged!) client.submit({ type: 'call', call: { call: 'ftruncate', path: file.key, size: file.length } }, { acknowledged: true });
         if (file.length > from) client.submit({ type: 'call', call: { call: 'write', path: file.key, offset: from, data: file.bytes.slice(from, file.length) } }, { acknowledged: true });
       } else {
         client.submit({ type: 'call', call: { call: 'writeFile', path: file.key, mode: file.mode, ...(ino === undefined ? {} : { ino }), ...(file.umask === undefined ? {} : { umask: file.umask }), data: file.bytes.slice(0, file.length) } }, { acknowledged: true });
       }
+      // Unlogged until the log took it: one that refused it (the session
+      // ended the process) leaves it for the settle's (logHeld).
+      dirty.delete(file);
+      delete file.changedFrom;
+      delete file.made;
       file.logged = file.length;
     }
   };
@@ -494,9 +502,9 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     dirty.add(file);
     lingerTimer ??= setTimeout(() => {
       lingerTimer = null;
-      // No caller to answer here: the session ending the process over a log
-      // nothing drains refuses it, which the next flush reports.
-      try { drain(); } catch { /* reported by the next flush */ }
+      // No caller to answer here: a log that refuses (the session ended the
+      // process) keeps the bytes unlogged, for the settle, and the next flush reports it.
+      try { drain(); } catch { /* the next flush reports it */ }
     }, LINGER_MS);
   };
 
