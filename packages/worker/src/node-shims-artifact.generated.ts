@@ -10,19 +10,19 @@
  */
 
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-b59a41c56676b7f1.js";
-export const NODE_SHIMS_BUILD_ID: string = "b59a41c56676b7f1";
-export const NODE_SHIMS_SHA256: string = "b59a41c56676b7f1b635460874e7976cb2878ab77ee596713480e817a5fdee50";
+export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-28e889811b4f46a2.js";
+export const NODE_SHIMS_BUILD_ID: string = "28e889811b4f46a2";
+export const NODE_SHIMS_SHA256: string = "28e889811b4f46a2abbc2c5d703cc5c6344d2dacef8f8831e4f085770ba5c289";
 
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
-export const VFS_WRITE_LEDGER_ENTRY: string = "/_assets/runtime/vfs-write-ledger-a9d239be1fa6e8f3.js";
-export const VFS_WRITE_LEDGER_BUILD_ID: string = "a9d239be1fa6e8f3";
-export const VFS_WRITE_LEDGER_SHA256: string = "a9d239be1fa6e8f369a88fe776403877ca638d6de5a1917f6585dee8a841c1d3";
+export const VFS_WRITE_LEDGER_ENTRY: string = "/_assets/runtime/vfs-write-ledger-477a2afe192e7219.js";
+export const VFS_WRITE_LEDGER_BUILD_ID: string = "477a2afe192e7219";
+export const VFS_WRITE_LEDGER_SHA256: string = "477a2afe192e7219458bfdd688d29860a5a79659db0a97c36e0862e2a3c2f9e7";
 
 /** src/vfs/resident/index.ts, bundled by scripts/resident-store-bundle.mjs */
-export const RESIDENT_STORE_ENTRY: string = "/_assets/runtime/resident-store-2c8492a45215839b.js";
-export const RESIDENT_STORE_BUILD_ID: string = "2c8492a45215839b";
-export const RESIDENT_STORE_SHA256: string = "2c8492a45215839b7fe9800fc64e833a64b0855a3964522e7f043e8ac38b36d7";
+export const RESIDENT_STORE_ENTRY: string = "/_assets/runtime/resident-store-cf54bb201321d4a7.js";
+export const RESIDENT_STORE_BUILD_ID: string = "cf54bb201321d4a7";
+export const RESIDENT_STORE_SHA256: string = "cf54bb201321d4a770d5549a17c8d0ceec71eb498cac68d6d486e84f75a73e70";
 
 /** @nimbus-sh/core src/interpreter/primordials.ts, bundled by scripts/interpreter-bundle.mjs */
 export const JS_INTERPRETER_PRIMORDIALS_ENTRY: string = "/_assets/runtime/js-interpreter-primordials-e620a61b7e9800fa.js";

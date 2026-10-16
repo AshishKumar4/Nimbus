@@ -13948,6 +13948,48 @@ function spaceAfterUrl(handlers) {
   return handlers;
 }
 
+// ../platform/dist/utf8.js
+var LONG_UNITS = 256;
+var NON_ASCII = /[^\x00-\x7f]/;
+var encoder = new TextEncoder();
+var scratch;
+function utf8Length(text) {
+  if (text.length >= LONG_UNITS)
+    return longUtf8Length(text);
+  let bytes = text.length;
+  for (let index = 0; index < text.length; index++) {
+    const unit = text.charCodeAt(index);
+    if (unit < 128)
+      continue;
+    if (unit < 2048) {
+      bytes += 1;
+    } else if (unit >= 55296 && unit <= 56319 && index + 1 < text.length) {
+      const next = text.charCodeAt(index + 1);
+      if (next >= 56320 && next <= 57343) {
+        bytes += 2;
+        index++;
+      } else {
+        bytes += 2;
+      }
+    } else {
+      bytes += 2;
+    }
+  }
+  return bytes;
+}
+function longUtf8Length(text) {
+  if (!NON_ASCII.test(text))
+    return text.length;
+  scratch ??= new Uint8Array(256 * 1024);
+  let bytes = 0;
+  for (let read = 0; read < text.length; ) {
+    const done = encoder.encodeInto(read === 0 ? text : text.slice(read), scratch);
+    read += done.read;
+    bytes += done.written;
+  }
+  return bytes;
+}
+
 // ../core/src/runtime/css-bundle.ts
 var CssError = class extends Error {
   constructor(diagnostic) {
@@ -13962,7 +14004,6 @@ var isCssLoader = (loader) => loader === "css" || loader === "global-css" || loa
 function fileOf(module) {
   return module.namespace === "file" || module.namespace === "" ? module.path : `${module.namespace}:${module.path}`;
 }
-var utf8Length = (text) => new TextEncoder().encode(text).length;
 async function bundleCss(modules, plugin, assets, { minify: minify2 }) {
   const diagnostic = (module, at, length, text, pluginName = "") => {
     const before = module.source.slice(0, at);
@@ -15418,7 +15459,7 @@ async function locateUnresolved(api, options, records, loaded) {
     const module = loaded.get(importer);
     if (!module) continue;
     const fileOnly = { file: fileOf2(module), namespace: "", line: 0, column: 0, length: 0, lineText: "", suggestion: "" };
-    const bytes = utf8Length2(module.source);
+    const bytes = utf8Length(module.source);
     if (!module.lang || bytes > PLACEMENT_IMPORTER_BYTES || spent + bytes > PLACEMENT_BUILD_BYTES) {
       for (const r3 of mine) placed.set(r3, fileOnly);
       continue;
@@ -15482,12 +15523,11 @@ async function locateUnresolved(api, options, records, loaded) {
       const before = module.source.slice(0, span.start);
       const line = before.split(/\r\n|\r|\n/).length;
       const lineStart = Math.max(before.lastIndexOf("\n"), before.lastIndexOf("\r")) + 1;
-      placed.set(r3, locate2(fileOf2(module), module.source, line, utf8Length2(before.slice(lineStart)), utf8Length2(module.source.slice(span.start, span.end))));
+      placed.set(r3, locate2(fileOf2(module), module.source, line, utf8Length(before.slice(lineStart)), utf8Length(module.source.slice(span.start, span.end))));
     }
   }
   return records.map((r3) => message(r3.text, placed.get(r3) ?? null, r3.pluginName));
 }
-var utf8Length2 = (text) => new TextEncoder().encode(text).length;
 var BuildError = class extends Error {
   constructor(messages) {
     super(messages.map((m2) => m2.text).join("\n"));
@@ -15724,7 +15764,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
       if (!answer || answer.contents === void 0) raise(`No loader produced ${fileOf2({ namespace, path: path3 })}`);
       const loader = answer.loader ?? "js";
       const contents = answer.contents;
-      inputBytes.set(id2, typeof contents === "string" ? new TextEncoder().encode(contents).length : contents.length);
+      inputBytes.set(id2, typeof contents === "string" ? utf8Length(contents) : contents.length);
       const text = typeof contents === "string" ? contents : loader === "binary" || loader === "base64" || loader === "dataurl" || loader === "file" ? "" : new TextDecoder().decode(contents);
       const lastSlash = path3.lastIndexOf("/");
       loaded.set(id2, {
@@ -15803,13 +15843,13 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
     }
     const outdir = options.outfile ? options.outfile.slice(0, options.outfile.lastIndexOf("/")) || "/" : options.outdir ?? "/dist";
     const at = (fileName) => `${outdir.replace(/\/+$/, "")}/${fileName}`;
-    const encoder = new TextEncoder();
+    const encoder2 = new TextEncoder();
     const outputFiles = [];
     const outputs = {};
     const relative = (path3) => path3.replace(/^\/+/, "");
     for (const out of output) {
       if (out.type === "chunk") {
-        const contents = encoder.encode(out.code);
+        const contents = encoder2.encode(out.code);
         const path3 = at(out.fileName);
         outputFiles.push({ path: path3, contents });
         const entry = out.isEntry && out.facadeModuleId ? decode4(out.facadeModuleId) : null;
@@ -15825,7 +15865,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
           try {
             const sheet = await bundleCss(cssOfChunk, plugin, sheetAssets, { minify: options.minify === true });
             warnings.push(...sheet.warnings);
-            bundled = encoder.encode(sheet.css);
+            bundled = encoder2.encode(sheet.css);
           } catch (error2) {
             if (error2 instanceof CssError) throw new BuildError([error2.diagnostic]);
             throw error2;
@@ -15845,7 +15885,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
           ...cssBundle ? { cssBundle } : {}
         };
       } else {
-        const contents = typeof out.source === "string" ? encoder.encode(out.source) : out.source;
+        const contents = typeof out.source === "string" ? encoder2.encode(out.source) : out.source;
         const path3 = at(out.fileName);
         outputFiles.push({ path: path3, contents });
         outputs[relative(path3)] = { imports: [], exports: [], inputs: {}, bytes: contents.length };

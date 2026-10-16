@@ -37,6 +37,7 @@
  * is larger than esbuild's, never different in meaning.
  */
 import { componentsEqual, parseSheet, printComponents, quoteString, sheetRules, sheetUrls, } from './css-syntax.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 export class CssError extends Error {
     diagnostic;
     constructor(diagnostic) {
@@ -51,7 +52,6 @@ const isCssLoader = (loader) => loader === 'css' || loader === 'global-css' || l
 function fileOf(module) {
     return module.namespace === 'file' || module.namespace === '' ? module.path : `${module.namespace}:${module.path}`;
 }
-const utf8Length = (text) => new TextEncoder().encode(text).length;
 export async function bundleCss(modules, plugin, assets, { minify }) {
     const diagnostic = (module, at, length, text, pluginName = '') => {
         const before = module.source.slice(0, at);

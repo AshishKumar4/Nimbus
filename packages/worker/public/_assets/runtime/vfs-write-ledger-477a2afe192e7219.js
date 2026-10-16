@@ -107,7 +107,13 @@ var __nimbusProcessFsModule = (() => {
   var SUPERVISOR_READ_RESERVE_BYTES = 1024 * 1024;
   var MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES = 8 * 1024 * 1024;
 
+  var LONG_UNITS = 256;
+  var NON_ASCII = /[^\x00-\x7f]/;
+  var encoder = new TextEncoder();
+  var scratch;
   function utf8Length(text) {
+    if (text.length >= LONG_UNITS)
+      return longUtf8Length(text);
     let bytes = text.length;
     for (let index = 0; index < text.length; index++) {
       const unit = text.charCodeAt(index);
@@ -126,6 +132,18 @@ var __nimbusProcessFsModule = (() => {
       } else {
         bytes += 2;
       }
+    }
+    return bytes;
+  }
+  function longUtf8Length(text) {
+    if (!NON_ASCII.test(text))
+      return text.length;
+    scratch ??= new Uint8Array(256 * 1024);
+    let bytes = 0;
+    for (let read = 0; read < text.length; ) {
+      const done = encoder.encodeInto(read === 0 ? text : text.slice(read), scratch);
+      read += done.read;
+      bytes += done.written;
     }
     return bytes;
   }
@@ -897,7 +915,7 @@ var __nimbusProcessFsModule = (() => {
   var WAVE_PATH_BYTES = W7_MAX_OWNED_PATH_BYTES - 4 * 1024;
   var WAVE_BYTES = 4 * 1024 * 1024;
   var SEND_SLICE_BYTES = 1024 * 1024;
-  var encoder = new TextEncoder();
+  var encoder2 = new TextEncoder();
   var GLOBAL_TIMERS = {
     setTimeout: (callback, ms) => setTimeout(callback, ms),
     clearTimeout: (timer) => clearTimeout(timer)
