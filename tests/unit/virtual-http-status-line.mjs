@@ -2,7 +2,8 @@
 // A session server's reason phrase reaches its clients as Node's server
 // sends it (ticket-lifo-status-text): its status's phrase from Node's whole
 // table ('unknown' for one Node does not name), or the one its handler
-// named (writeHead's reason, statusMessage). The shell's curl -I prints it,
+// named (writeHead's reason, statusMessage), set as writeHead runs. The
+// shell's curl -I prints it,
 // and another node program's http.get reads it as statusMessage, through
 // its host. And a listen callback is called as Node calls it, the server
 // its `this`. The oracle is the same server and client programs run by host
@@ -28,16 +29,21 @@ const { NimbusWorkspace } = await import(underBun
   ? '../../packages/core/src/workspace/nimbus-workspace.ts'
   : '../../packages/core/dist/workspace/nimbus-workspace.js');
 
-const PATHS = ['status/200', 'status/201', 'status/205', 'status/206', 'status/299', 'status/418', 'status/429', 'status/451', 'status/599', 'reason/x', 'message/x'];
+const PATHS = ['status/200', 'status/201', 'status/205', 'status/206', 'status/299', 'status/418', 'status/429', 'status/451', 'status/599', 'reason/x', 'message/x', 'peek/x'];
 const SERVER = `const server = require('http').createServer((q, s) => {
   const [, kind, arg] = q.url.split('/');
   if (kind === 'reason') { s.writeHead(200, 'Fine By Me'); s.end(); return; }
   if (kind === 'message') { s.statusCode = 202; s.statusMessage = 'Custom'; s.end(); return; }
+  if (kind === 'peek') { s.writeHead(404); s.end(String(s.statusMessage)); return; }
   s.writeHead(Number(arg)); s.end();
 });
 server.listen(Number(process.argv[2]), '127.0.0.1', function () { console.log('listening ' + this.address().port + ' ' + (this === server)); });`;
 const CLIENT = `const get = (path) => new Promise((resolve) => {
-  require('http').get(process.argv[2] + '/' + path, (m) => { m.resume(); m.on('end', () => resolve([path, m.statusCode, m.statusMessage])); })
+  require('http').get(process.argv[2] + '/' + path, (m) => {
+    let body = '';
+    m.on('data', (c) => { body += c; });
+    m.on('end', () => resolve([path, m.statusCode, m.statusMessage, body]));
+  })
     .on('error', (e) => resolve([path, e.code ?? e.message]));
 });
 (async () => { const out = []; for (const path of ${JSON.stringify(PATHS)}) out.push(await get(path)); console.log(JSON.stringify(out)); })();`;
@@ -73,7 +79,7 @@ try {
 // What the oracle says, stated, so the comparison below is not vacuous.
 assert.equal(expected.bound, 'true');
 assert.deepEqual(expected.curl.slice(2, 5), ['HTTP/1.1 205 Reset Content', 'HTTP/1.1 206 Partial Content', 'HTTP/1.1 299 unknown']);
-assert.deepEqual(expected.client.slice(-2), [['reason/x', 200, 'Fine By Me'], ['message/x', 202, 'Custom']]);
+assert.deepEqual(expected.client.slice(-3), [['reason/x', 200, 'Fine By Me', ''], ['message/x', 202, 'Custom', ''], ['peek/x', 404, 'Not Found', 'Not Found']]);
 
 // ── The session: its node serves, another node program and curl -I ask ───
 const { sql, transactions } = await hostSqlite();
