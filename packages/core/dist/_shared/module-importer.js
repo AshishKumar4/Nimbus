@@ -6,7 +6,11 @@
  * The shared build-time compiler carries it into the guest.
  */
 import { importerUrl } from './importer-url.js';
+// Taken when the module loads: the guest's copy runs after a program may have replaced String.prototype's.
+const stringCharCodeAt = String.prototype.charCodeAt;
+const reflectApply = Reflect.apply;
+const charCodeAt = (text, index) => reflectApply(stringCharCodeAt, text, [index]);
 /** The importer URL of the module at `path`: a VFS path, with or without its leading slash, or a data: URL. */
 export function moduleImporterUrl(path) {
-    return importerUrl(path, (text, index) => text.charCodeAt(index));
+    return importerUrl(path, charCodeAt);
 }
