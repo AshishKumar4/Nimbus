@@ -37,6 +37,22 @@ async function replay(supervisor, stream) {
     }
   };
   const abs = (key) => '/' + key;
+  // The receipt is the session's stat of the file, as it answers one: the mock's own.
+  const receipt = async (path, revision) => {
+    const stat = typeof supervisor.lstat === 'function' ? await supervisor.lstat(abs(path)) : null;
+    if (!stat) return;
+    progress.receipts.push({
+      path, ino: Number(stat.ino) || 0, mode: Number(stat.mode) || 0, size: Number(stat.size) || 0,
+      mtimeMs: Number(stat.mtime ?? stat.mtimeMs) || 0, ctimeMs: Number(stat.ctime ?? stat.ctimeMs) || 0,
+      uid: Number(stat.uid) || 0, gid: Number(stat.gid) || 0, dev: Number(stat.dev) || 0,
+      ...(typeof revision === 'number' ? { revision } : {}),
+    });
+  };
+  const refusal = (code, key) => Object.assign(new Error(`${code}: open '${abs(key)}'`), { code });
+  // A mock's stat of a name not there: null, or its ENOENT.
+  const present = async (stat, key) => {
+    try { return (await stat.call(supervisor, abs(key))) ?? null; } catch (error) { if (error?.code === 'ENOENT') return null; throw error; }
+  };
   let file = null;
   try {
     for await (const record of decoded.records) {
@@ -61,16 +77,7 @@ async function replay(supervisor, stream) {
             if (prior) noted(await supervisor.fsWriteRange(abs(inode.path), Number(prior.size) || 0, data));
             else revision = await supervisor.writeFile(abs(inode.path), data);
           } else revision = await supervisor.writeFile(abs(inode.path), data);
-          // The receipt is the session's stat of the file, as it answers one: the mock's own.
-          const stat = typeof supervisor.lstat === 'function' ? await supervisor.lstat(abs(inode.path)) : null;
-          if (stat) {
-            progress.receipts.push({
-              path: inode.path, ino: Number(stat.ino) || 0, mode: Number(stat.mode) || 0, size: Number(stat.size) || 0,
-              mtimeMs: Number(stat.mtime ?? stat.mtimeMs) || 0, ctimeMs: Number(stat.ctime ?? stat.ctimeMs) || 0,
-              uid: Number(stat.uid) || 0, gid: Number(stat.gid) || 0, dev: Number(stat.dev) || 0,
-              ...(typeof revision === 'number' ? { revision } : {}),
-            });
-          }
+          await receipt(inode.path, revision);
           break;
         }
         case 'call': {
@@ -90,8 +97,22 @@ async function replay(supervisor, stream) {
           }
           else if (call.call === 'lchown') noted(await supervisor.chown(abs(call.path), call.uid, call.gid, { followSymlinks: false }));
           else if (call.call === 'lutimes') noted(await supervisor.utimes(abs(call.path), call.atime, call.mtime));
-          // A write description's open (a WASI process's): no test that drives this supervisor makes one.
-          else if (call.call === 'open' || call.call === 'close') throw new Error(`wave-supervisor: ${call.call} calls are not modeled`);
+          // A node process's write open, judged as the session judges one
+          // (sqlite-vfs openToWrite) over the mock's own calls; its receipt is the opened file's stat.
+          else if (call.call === 'open' && call.description === undefined) {
+            const name = await present(typeof supervisor.lstat === 'function' ? supervisor.lstat : supervisor.stat, call.path);
+            if (name && call.create === true && call.exclusive === true) throw refusal('EEXIST', call.path);
+            if (call.nofollow === true && name?.type === 'symlink') throw refusal('ELOOP', call.path);
+            const there = call.nofollow === true ? name : await present(supervisor.stat, call.path);
+            if (!there && call.create !== true) throw refusal('ENOENT', call.path);
+            if (there?.type === 'directory') throw refusal('EISDIR', call.path);
+            let revision;
+            if (!there) revision = await supervisor.writeFile(abs(call.path), new Uint8Array(0));
+            else if (call.truncate === true) noted(await supervisor.fsTruncate(abs(call.path), 0));
+            await receipt(call.path, revision);
+          }
+          // A write description's open or close (a WASI process's): no test that drives this supervisor makes one.
+          else if (call.call === 'open' || call.call === 'close') throw new Error(`wave-supervisor: ${call.call} calls of a description are not modeled`);
           // A copy is the session's: its own copy where the mock has one, else its read of the source and write of the copy.
           else if (call.call === 'copyFile') {
             if (typeof supervisor.fsCopyFile === 'function') await supervisor.fsCopyFile(abs(call.from), abs(call.path));
