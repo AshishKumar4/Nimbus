@@ -43,9 +43,17 @@
 import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import type { FacetHost } from './facet-host.js';
+import { type PythonMarkerEnvironment } from './python-pip.js';
 import type { RuntimeManifest } from './runtime-manifest.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 import type { NimbusFilesystemAuthority } from './os-contracts.js';
+/**
+ * The environment markers of the CPython build `manifest` installs, as the
+ * interpreter answers them (cpython-wasi-reactor.mjs runs it to check): its
+ * version is the manifest's without the build number (3.13.14-3 is
+ * CPython 3.13.14), its platform the wasm32-wasi build's.
+ */
+export declare function cpythonMarkers(manifest: RuntimeManifest): PythonMarkerEnvironment;
 /**
  * The one canonical facet preamble. Composed in exactly one place: a
  * hand-rolled second copy is how ruby-repl once drifted into booting a VM whose

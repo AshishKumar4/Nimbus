@@ -5,6 +5,32 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `pip install` decides which dependencies apply by the markers of
+  the CPython it installs for: CPython 3.13.14 on `wasm32-wasi`, as the
+  interpreter itself answers them (`sys_platform` is `"wasi"`). Before, pip
+  used a table left from the Pyodide runtime, CPython 3.13.2 on
+  Emscripten: a dependency guarded by `python_full_version >= "3.13.3"` was
+  dropped, and one guarded by `sys_platform == "emscripten"` installed.
+  `python --version`, `pip --version` and the Python prompt's banner read
+  the version from the installed runtime too.
+- Fixed: `pip install` installs an extra's dependencies when the extra is
+  asked for after its package was resolved without it. Before, `b`
+  requiring `a[x]` after `a` was resolved left out what `a[x]` adds.
+- Breaking (core): `@nimbus-sh/core/runtime/python-pip.js`'s
+  `PythonPipRuntimeContext` takes `markers`, the interpreter's PEP 508
+  environment (`cpythonMarkers(manifest)` from
+  `@nimbus-sh/core/runtime/cpython-runner.js` for the installed CPython),
+  and no longer takes `pyodideLockfileText` or `runtimeArtifacts`.
+  `PipInvocation.pyodidePackages` is gone, with pip's Pyodide installer,
+  which no runtime reached since the CPython runtime replaced Pyodide.
+  Runtime manifests keep their Python package metadata.
+- Fixed: `gem install` and `bundle install` hold an exact version
+  requirement to the request's other requirements and to the pure-Ruby
+  platform, as they hold any other. `gem "p", "= 1.0.0", "< 1.0.0"` now
+  fails with "no ruby platform version of p satisfies = 1.0.0, < 1.0.0",
+  and an exact version built only for another platform is refused. Before,
+  the first `=` requirement installed that version whatever else the
+  request said.
 - Breaking (fabric, worker, sdk): the legacy inner Durable Object transport
   is gone. `NimbusDOStub` is no longer exported from
   `@nimbus-sh/fabric/bindings.js`, `@nimbus-sh/worker` or
