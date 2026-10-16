@@ -14,7 +14,7 @@ import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { stagedAssets } from './lib/staged-assets.mjs';
 
 adoptCtxExports({ SupervisorRPC: () => ({ async stdout() {}, [Symbol.dispose]() {} }) });
-const ACCOUNTED = { filesWritten: 0, bytesWritten: 0, supervisorRpc: {}, metadataOverlay: { entries: 0, accountedBytes: 0 } };
+const ACCOUNTED = { filesWritten: 0, bytesWritten: 0, supervisorRpc: {} };
 
 /** A clone whose commits piece answers its steps refusing as `refusals` says (one per step, the last final); clone-finish's commitGraph. */
 async function finishedWith(refusals, depth) {
