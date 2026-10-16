@@ -2753,14 +2753,12 @@ export class SqliteVFS {
         return opened.path === null ? [] : this.readdir(opened.path, CRED_KERNEL);
       },
       chmod: owned((mode: number): void => this.chmodInode(current(), mode, cred, opened.path)),
-      chown: owned((uid: number | null, gid: number | null): void => {
-        const inode = current();
-        const owner = this.ownerChange(inode, uid, gid, cred, opened.path);
-        if (opened.path === null) { Object.assign(inode, owner); inode.ctime = this.now(); return; }
-        this.assertMutationsAllowed([opened.path]);
-        this.publishMetadata(inode, owner);
-      }),
-      utimes: owned((atime: FsTime, mtime: FsTime): void => this.utimesInode(current(), atime, mtime, cred, opened.path)),
+      // fchown(2): judged as chown is, for the descriptor's credential, on the file it opened, linked or not.
+      chown: owned((uid: number | null, gid: number | null): void => this.chownInode(current(), uid, gid, cred,
+        opened.path === null ? null : { path: opened.path, lexical: this.lexicalKey(opened.path, CRED_KERNEL) })),
+      // futimens(2): judged as utimes is, on the file it opened, linked or not.
+      utimes: owned((atime: FsTime, mtime: FsTime): void => this.utimesInode(current(), atime, mtime, cred,
+        opened.path === null ? null : { path: opened.path, lexical: this.lexicalKey(opened.path, CRED_KERNEL) })),
       close: asOpener((): void => {
         try {
           // The last of what it appended is written as it closes, and a failure is close's.
@@ -5771,22 +5769,27 @@ export class SqliteVFS {
     const resolved = this.checkAccess(path, 0, cred, { followLeaf });
     const inode = resolved.inode;
     if (!inode) throw vfsKeyError('ENOENT', path);
-    this.admit(this.lexicalKey(path, cred), this.physicalKey(inode.path));
-    this.utimesInode(inode, atime, mtime, cred, resolved.path);
+    this.utimesInode(inode, atime, mtime, cred, { path: resolved.path, lexical: this.lexicalKey(path, cred) });
   }
 
   /**
-   * utimes(2) on `inode`, by name or by a description of it (`path` null:
-   * one whose name is gone), judged alike (utimesRefusal): explicit times by
-   * the owner or root, now by anyone who may write it.
+   * utimes' judgement of `inode` (utimesRefusal: explicit times by the owner
+   * or root, 'now' and 'omit' by anyone who may write it), and its change,
+   * each time resolved as it commits (timeAt). A linked file is admitted and
+   * changed as its row, as chownInode does; an open one unlinked (null) in
+   * its inode alone.
    */
-  private utimesInode(inode: INode, atime: FsTime, mtime: FsTime, cred: VfsCred, path: string | null): void {
+  private utimesInode(inode: INode, atime: FsTime, mtime: FsTime, cred: VfsCred, linked: { readonly path: string; readonly lexical: LexicalVfsKey } | null): void {
     const refused = utimesRefusal({ mode: inode.mode, uid: inode.uid, gid: inode.gid, type: inode.kind }, explicitTimes(atime, mtime), cred);
-    if (refused !== null) throw vfsKeyError(refused, path ?? 'detached inode');
+    if (refused !== null) throw vfsKeyError(refused, linked?.path ?? 'detached inode');
     const now = this.now();
     const times = { atime: timeAt(atime, inode.atime, now), mtime: timeAt(mtime, inode.mtime, now) };
-    if (path === null) { Object.assign(inode, times); inode.ctime = this.now(); return; }
-    this.assertMutationsAllowed([path]);
+    if (linked === null) {
+      Object.assign(inode, times);
+      inode.ctime = now;
+      return;
+    }
+    this.admit(linked.lexical, this.physicalKey(inode.path));
     this.publishMetadata(inode, times);
   }
 
@@ -5865,21 +5868,28 @@ export class SqliteVFS {
     const resolved = this.checkAccess(path, 0, cred, { followLeaf });
     const inode = resolved.inode;
     if (!inode) throw vfsKeyError('ENOENT', path);
-    const owner = this.ownerChange(inode, uid, gid, cred, resolved.path);
-    this.admit(this.lexicalKey(path, cred), this.physicalKey(inode.path));
-    this.publishMetadata(inode, owner);
+    this.chownInode(inode, uid, gid, cred, { path: resolved.path, lexical: this.lexicalKey(path, cred) });
   }
 
   /**
-   * chown's judgement of giving `inode` owner `uid` and group `gid` (null:
-   * as it is), by name or by a description of it, and what it leaves: EINVAL,
-   * EPERM (chownRefusal), the set-id bits cleared as chownedMode clears them.
+   * chown's judgement of `inode`, and its change: EPERM unless chownRefusal
+   * allows it, a null side kept, and the set-id bits a non-root change
+   * clears. A linked file (its path, and the lexical key it was named by) is
+   * admitted and changed as its row; an open one unlinked (null) in its
+   * inode alone.
    */
-  private ownerChange(inode: INode, uid: number | null, gid: number | null, cred: VfsCred, path: string | null): { uid: number; gid: number; mode: number } {
+  private chownInode(inode: INode, uid: number | null, gid: number | null, cred: VfsCred, linked: { readonly path: string; readonly lexical: LexicalVfsKey } | null): void {
     if (uid !== null && (!Number.isSafeInteger(uid) || uid < 0)) throw vfsError('EINVAL', `invalid uid ${uid}`);
     if (gid !== null && (!Number.isSafeInteger(gid) || gid < 0)) throw vfsError('EINVAL', `invalid gid ${gid}`);
-    if (chownRefusal(inode, uid, gid, cred) !== null) throw vfsKeyError('EPERM', path ?? 'detached inode');
-    return { uid: uid ?? inode.uid, gid: gid ?? inode.gid, mode: chownedMode(inode.mode, cred) };
+    if (chownRefusal(inode, uid, gid, cred) !== null) throw vfsKeyError('EPERM', linked?.path ?? 'detached inode');
+    const changed = { uid: uid ?? inode.uid, gid: gid ?? inode.gid, mode: chownedMode(inode.mode, cred) };
+    if (linked === null) {
+      Object.assign(inode, changed);
+      inode.ctime = this.now();
+      return;
+    }
+    this.admit(linked.lexical, this.physicalKey(inode.path));
+    this.publishMetadata(inode, changed);
   }
 
   /**

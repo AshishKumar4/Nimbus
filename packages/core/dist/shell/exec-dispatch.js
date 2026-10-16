@@ -146,9 +146,39 @@ export async function searchPath(name, from, runs) {
     return notExecutable === null ? null : { kind: 'not-executable', path: notExecutable };
 }
 const resolutions = new WeakMap();
-/** How `command` was resolved, when this resolver gave it; undefined for a registered command. */
+/** How `command` was resolved, when a resolver gave it; undefined for a registered command. */
 export function resolutionOf(command) {
     return resolutions.get(command);
+}
+/**
+ * `command` as the stub a known runtime that is not installed resolves to:
+ * run, it says how to install the runtime; to `type`, `which` and a child's
+ * launcher it is no command.
+ */
+export function runtimeInstallHint(command) {
+    resolutions.set(command, { kind: 'install-hint' });
+    return command;
+}
+/** Whether `command` is a runtime's install hint (runtimeInstallHint). */
+export function isRuntimeInstallHint(command) {
+    return resolutions.get(command)?.kind === 'install-hint';
+}
+/**
+ * The command a child launcher (child_process.spawn, a program's cpSpawn)
+ * runs for `name`, as a search from `from` finds it, for every launcher:
+ * null for none, and for a runtime's install hint, which is no program
+ * (the launcher answers ENOENT, as Node's spawn of a missing command does).
+ * A program a search of PATH found must be one the caller may execute
+ * (`view`'s access: EACCES otherwise).
+ */
+export async function resolveChildCommand(registry, name, from, view) {
+    const command = await registry.resolve(name, from);
+    if (!command || isRuntimeInstallHint(command))
+        return null;
+    const resolution = resolutionOf(command);
+    if (resolution?.kind === 'program')
+        await view.access(resolution.path, X_OK);
+    return command;
 }
 /**
  * What execve(2) refuses `command`, what `name` resolved to from `cwd`, as

@@ -14,6 +14,7 @@ export function isGuestEvent(value) {
     switch (value.type) {
         case 'output': return (value.fd === 1 || value.fd === 2) && isOutputSource(value.source) && Number.isSafeInteger(value.writer) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
         case 'settle': return Number.isSafeInteger(value.upTo);
+        case 'settle-mark': return Number.isSafeInteger(value.round) && Number.isSafeInteger(value.after);
         case 'fetch':
             return Number.isSafeInteger(value.id) && Number.isSafeInteger(value.port) && typeof value.url === 'string'
                 && typeof value.method === 'string' && stringRecord(value.headers)
@@ -25,6 +26,10 @@ export function isGuestEvent(value) {
         case 'stdin-cancel': return Number.isSafeInteger(value.id);
         default: return false;
     }
+}
+export function isOutputFailures(value) {
+    return Array.isArray(value) && value.every((failure) => record(failure) && Number.isSafeInteger(failure.seq) && (failure.fd === 1 || failure.fd === 2)
+        && typeof failure.code === 'string' && typeof failure.pipe === 'boolean' && isOutputSource(failure.source) && Number.isSafeInteger(failure.writer));
 }
 export function isHostEvent(value) {
     if (isEgressHostEvent(value))
@@ -42,7 +47,7 @@ export function isHostEvent(value) {
                 && (value.event.oldPath === undefined || typeof value.event.oldPath === 'string')
                 && typeof value.event.timestamp === 'number';
         case 'output-failed':
-            return (value.fd === 1 || value.fd === 2) && typeof value.code === 'string' && typeof value.pipe === 'boolean' && isOutputSource(value.source) && Number.isSafeInteger(value.writer);
+            return Number.isSafeInteger(value.seq) && (value.fd === 1 || value.fd === 2) && typeof value.code === 'string' && typeof value.pipe === 'boolean' && isOutputSource(value.source) && Number.isSafeInteger(value.writer);
         case 'output-settled': return Number.isSafeInteger(value.seq);
         case 'stdin':
             return Number.isSafeInteger(value.id) && (value.data === null || value.data instanceof Uint8Array || value.withdrawn === true

@@ -12,7 +12,7 @@ import { errorText } from '../_shared/error-text.js';
 import { shellEscape } from '../_shared/shell-quote.js';
 import { NIMBUS_VERSION } from '../constants.js';
 import { resolveContext } from '../substrate/lifo/commands/registry.js';
-import { resolutionOf, searchPath } from './exec-dispatch.js';
+import { isRuntimeInstallHint, resolutionOf, searchPath } from './exec-dispatch.js';
 import { BASH_BUILTINS } from '../substrate/lifo/shell/bash-builtins.js';
 import { evaluateTest } from '../substrate/lifo/shell/test-builtin.js';
 import { TerminalStdin } from '../substrate/lifo/shell/terminal-stdin.js';
@@ -86,14 +86,6 @@ async function unixGroupLabel(vfs, gid) {
     catch {
         return String(gid);
     }
-}
-/**
- * Whether `handler` is the stub a runtime that is known but not installed
- * resolves to (the worker's shell/npm-bin-entrypoints.ts marks it), which
- * `which` and `type` must not report as a builtin.
- */
-function isRuntimeInstallHintHandler(handler) {
-    return handler !== null && '__nimbusRuntimeInstallHint' in handler && handler.__nimbusRuntimeInstallHint === true;
 }
 // ── Helpers ─────────────────────────────────────────────────────────────
 /**
@@ -209,7 +201,7 @@ const _CANONICAL_BIN_PATHS = {
 async function _registryResolved(registry, name, from, options = {}) {
     try {
         const resolved = (await registry.resolve(name, from)) ?? null;
-        if (resolved && (options.includeInstallHints || !isRuntimeInstallHintHandler(resolved))) {
+        if (resolved && (options.includeInstallHints || !isRuntimeInstallHint(resolved))) {
             return resolved;
         }
     }
@@ -264,7 +256,7 @@ async function _whichLookup(registry, name, from) {
     if (name.includes('/'))
         return { path: null, builtin: false };
     const registered = await _registryResolved(registry, name, { ...from, search: false }, { includeInstallHints: true });
-    const builtin = registered !== null && !isRuntimeInstallHintHandler(registered);
+    const builtin = registered !== null && !isRuntimeInstallHint(registered);
     if (registered !== null)
         return { path: await _knownCommandPath(registry, name, from), builtin };
     return { path: await _pathExecutable(name, from), builtin };
@@ -292,7 +284,7 @@ async function _describeCommand(registry, name, from, shellBuiltin) {
         return { kind: 'file', path: resolution.path };
     if (name.includes('/'))
         return { kind: 'file', path: name };
-    const hint = isRuntimeInstallHintHandler(resolved);
+    const hint = isRuntimeInstallHint(resolved);
     if (!hint && BASH_BUILTINS.has(name))
         return { kind: 'builtin' };
     const path = await _knownCommandPath(registry, name, from);
@@ -2916,6 +2908,8 @@ function mkStat(sqliteVfs) {
         let formatAddsNewline = true;
         let fileSystemMode = false;
         let terse = false;
+        // GNU's stat reports a link itself, and what it names with -L.
+        let dereference = false;
         const files = [];
         const args = ctx.args;
         for (let i = 0; i < args.length; i++) {
@@ -2940,7 +2934,7 @@ function mkStat(sqliteVfs) {
                 terse = true;
             }
             else if (arg === '-L' || arg === '--dereference') {
-                // Symlinks are already followed; accept the flag rather than drop it.
+                dereference = true;
             }
             else if (arg.startsWith('--cached=')) {
                 const mode = arg.slice('--cached='.length);
@@ -2989,8 +2983,20 @@ function mkStat(sqliteVfs) {
                 freeInodes: 0,
             };
             const activeFormat = format ?? (terse ? STATFS_TERSE_FORMAT : null);
+            let unread = false;
             for (const f of files) {
-                const displayPath = f.startsWith('/') ? f : resolvePath(ctx.cwd, f);
+                // Each operand's own, as GNU's: one it cannot read is said, and the rest are read.
+                try {
+                    await statOrThrow(vfs, f.startsWith('/') ? f : ctx.cwd + '/' + f);
+                }
+                catch (error) {
+                    (await ctx.stderr.write(`stat: cannot read file system information for '${f}': ${strerror(error)}
+`));
+                    unread = true;
+                    continue;
+                }
+                // %n and the File line name the operand as it was given.
+                const displayPath = f;
                 if (activeFormat !== null) {
                     const expanded = expandStatFormat(activeFormat, (directive) => statFsDirective(directive, facts, displayPath));
                     if ('error' in expanded) {
@@ -3006,17 +3012,26 @@ function mkStat(sqliteVfs) {
                 (await ctx.stdout.write(`Blocks: Total: ${facts.totalBlocks}  Free: ${facts.freeBlocks}  Available: ${facts.freeBlocks}\n`));
                 (await ctx.stdout.write(`Inodes: Total: ${facts.totalInodes}  Free: ${facts.freeInodes}\n`));
             }
-            return 0;
+            return unread ? 1 : 0;
         }
         const activeFormat = format ?? (terse ? STAT_TERSE_FORMAT : null);
-        // Through the process's view, so mounted paths (/dev) resolve.
+        // Through the process's view, so mounted paths (/dev) resolve. Each
+        // operand's own, as GNU's: one it cannot stat is said with its error,
+        // the rest are statted, and the status is 1.
+        let unread = false;
         for (const f of files) {
-            const st = await statOrThrow(vfs, f.startsWith('/') ? f : ctx.cwd + '/' + f).catch(() => null);
-            if (st === null) {
-                (await ctx.stderr.write(`stat: cannot statx '${f}': No such file or directory\n`));
-                return 1;
+            let st;
+            try {
+                const at = f.startsWith('/') ? f : ctx.cwd + '/' + f;
+                st = dereference ? await statOrThrow(vfs, at) : await lstatOrThrow(vfs, at);
             }
-            const displayPath = f.startsWith('/') ? f : `/${ctx.cwd}/${f}`.replace(/^\/+/, '/');
+            catch (error) {
+                (await ctx.stderr.write(`stat: cannot statx '${f}': ${strerror(error)}\n`));
+                unread = true;
+                continue;
+            }
+            // %n and the File line name the operand as it was given.
+            const displayPath = f;
             const uid = st.uid ?? ctx.cred.uid;
             const gid = st.gid ?? ctx.cred.gid;
             const labels = {
@@ -3051,7 +3066,7 @@ function mkStat(sqliteVfs) {
             (await ctx.stdout.write(`Access: (0${st.mode.toString(8)})  Uid: (${uid}/${labels.user})   Gid: (${gid}/${labels.group})\n`));
             (await ctx.stdout.write(`Modify: ${new Date(st.mtimeMs).toISOString()}\n`));
         }
-        return 0;
+        return unread ? 1 : 0;
     };
 }
 const BASE64_SPEC = {

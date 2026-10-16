@@ -447,7 +447,7 @@ await runScenarios(import.meta.path, {
       const stat = await authority.peer.stat(path);
       assert.deepEqual({ uid: stat.uid, gid: stat.gid }, { uid: 1000, gid: 1000 }, path);
     }
-    assert.throws(() => fs.chownSync(`${OUT}/warm2`, -2, 1000), { code: 'EINVAL' }, 'below -1 is no id');
+    assert.throws(() => fs.chownSync(`${OUT}/warm2`, -2, 1000), { code: 'ERR_OUT_OF_RANGE' }, 'below -1 is no id, as Node says');
   },
 
   async 'chown through a link to a file outside the held subtree waits for the session'() {

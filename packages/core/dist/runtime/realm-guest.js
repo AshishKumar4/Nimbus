@@ -140,9 +140,18 @@ async function joinThreadRealm(parent) {
     const { calls, events } = start;
     const flag = new Int32Array(start.wake);
     const router = new AnswerRouter();
-    // Answers to asynchronous calls arrive while the event loop runs; held only while one waits.
-    calls.on('message', (message) => router.deliver(message));
-    calls.unref();
+    // Answers to asynchronous calls arrive while the event loop runs; held only
+    // while one waits. `calls` is listened to from the first such call only:
+    // Bun runs a port's listener for each message, even one
+    // receiveMessageOnPort took first, and that is work its loop runs again
+    // for, so a guest that only waits for its answers (the lifo node) has none.
+    let listening = false;
+    const listen = () => {
+        if (listening)
+            return;
+        listening = true;
+        calls.on('message', (message) => router.deliver(message));
+    };
     return joinedRealm({
         payload: start.payload,
         send: (call) => calls.postMessage(call),
@@ -160,8 +169,10 @@ async function joinThreadRealm(parent) {
             }
         },
         awaiting(on) {
-            if (on)
+            if (on) {
+                listen();
                 calls.ref();
+            }
             else
                 calls.unref();
         },

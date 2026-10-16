@@ -694,6 +694,13 @@ globalThis.__nimbusRubyDrainOutput = async function() {
 // built, and the scope is the only thing that knows.
 const __nimbusRubyParking = typeof WebAssembly.promising === 'function' ? 'jspi' : 'none';
 
+// The process this facet's filesystem is mounted for: its pid and who it
+// runs as. A mount is a process to the WASI host (__wasiInitFS: its
+// descriptors, its resident store and its write epoch its own), so the
+// prompt's lines, one process, run on the mount its first line made, as the
+// Python prompt's do; a warm facet's next process mounts afresh.
+let __nimbusRubyMounted = null;
+
 function __nimbusInstallRubyFs(cred, pid) {
   // The VM sees the whole session tree at '/'; /tmp and /home are preopened
   // as well because ruby.wasm's stdlib resolves them by preopen name. With
@@ -1142,7 +1149,13 @@ async function __rubyRunOnce(args) {
   }
 
   try {
-    __nimbusInstallRubyFs(args.cred, args.supervisorPid || 0);
+    const pid = args.supervisorPid || 0;
+    const process = pid + ':' + JSON.stringify(args.cred ?? null);
+    // A run with no pid is no process to keep: it mounts.
+    if (pid === 0 || __nimbusRubyMounted !== process) {
+      __nimbusInstallRubyFs(args.cred, pid);
+      __nimbusRubyMounted = process;
+    }
     // AFTER the mount, never before. __wasiInitFS deliberately drops the
     // supervisor so a pooled isolate cannot serve the previous tenant's
     // filesystem, which means adopting first — as both ruby entry points do,
