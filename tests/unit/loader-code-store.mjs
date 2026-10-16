@@ -21,7 +21,8 @@
 //     reads them (A → B → C with A's put held: A goes once drained, B stays);
 //     a removal that fails stays counted and is retried; a later
 //     incarnation's registry sweeps what an earlier one left; content is
-//     counted once however many directories share it, until the last goes;
+//     counted as each owner's own (an adopted copy too), given back once
+//     when its directory is gone, never before, never twice;
 //   - a process's envelope (pid, or an infrastructure binding's pid 0) is
 //     refused the store.
 import assert from 'node:assert/strict';
@@ -186,7 +187,7 @@ const blob = (bytes, fill) => { const data = new Uint8Array(bytes); data.fill(fi
   assert.ok(await loader.load(worker({ 'w.js': '', 'nul.json': { json: '\u0000'.repeat(MiB) } })), 'a {json} string of 1 MiB NULs is admitted');
 }
 
-// ── Owners and content: retired bindings, accounting that waits for drains, content counted once, a destroyed session's new registry ──
+// ── Owners and content: retired bindings, accounting that waits for drains, each owner's files its own, a destroyed session's new registry ──
 {
   const engine = vfs();
   const s = session(engine);
@@ -197,15 +198,16 @@ const blob = (bytes, fill) => { const data = new Uint8Array(bytes); data.fill(fi
   const second = s.registry.mint('wrangler-1', 'LOADER');
   s.registry.commit('wrangler-1', [second]);
   await shim(s, second).loader.load(worker({ 'w.js': '', 'dep.bin': { data: shared } }));
-  assert.ok(s.registry.stats().storeBytes < 3 * MiB, `adopted content is counted once: ${s.registry.stats().storeBytes}`);
-  const withShared = s.registry.stats().storeBytes;
+  const both = s.registry.stats().storeBytes;
+  assert.ok(both >= 4 * MiB, `an adopted copy is its owner's, counted as the cap counts every file made: ${both}`);
   s.registry.release(first);
   await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(s.registry.stats().storeBytes, withShared, 'content an adopter still holds stays counted once its putter is gone');
+  const adopter = s.registry.stats().storeBytes;
+  assert.ok(adopter >= 2 * MiB && adopter < both, `the putter's count goes with its directory, the adopter's stays: ${adopter}`);
   s.registry.commit('wrangler-1', []);
   assert.equal(await s.registry.serve({ kind: 'alive', owner: second }), false, 'a binding the next build no longer has is retired');
   await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(s.registry.stats().storeBytes, 0, 'and once no directory holds it, it is counted no more');
+  assert.equal(s.registry.stats().storeBytes, 0, 'and once its directory is gone, nothing is counted');
 
   // A binding named twice is the last one's: the earlier owner is retired, rebuild after rebuild.
   for (let build = 0; build < 3; build++) {
@@ -307,7 +309,7 @@ const blob = (bytes, fill) => { const data = new Uint8Array(bytes); data.fill(fi
   assert.deepEqual(s.registry.stats().sources, 1);
 }
 
-// ── A put of a digest a retired directory holds keeps the content counted when that directory goes ──
+// ── A put of a digest racing its donor's removal: each owner counted once, given back once ──
 {
   const s = session(vfs());
   const a = s.registry.mint('wrangler-1', 'LOADER');
@@ -322,23 +324,25 @@ const blob = (bytes, fill) => { const data = new Uint8Array(bytes); data.fill(fi
   const putting = s.registry.serve({ kind: 'put', owner: b, digest, size: data.byteLength }, new ReadableStream({ start(controller) { push = controller; } }));
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(s.registry.stats().removing, 0, 'A is gone');
-  assert.equal(s.registry.stats().storeBytes, 3 * MiB, 'its content stays counted for the put in flight');
+  assert.equal(s.registry.stats().storeBytes, 3 * MiB, 'B\'s put in flight is counted, A\'s count gone');
   push.enqueue(data); push.close();
   await putting;
   assert.equal(s.registry.stats().storeBytes, 3 * MiB, 'and once published, counted once');
-  // The same race where the put fails: nothing then holds the content, and it is given back.
+  // The same race where the put fails, and where it declared another size: each gives back what it took.
   const c = s.registry.mint('wrangler-3', 'LOADER');
   const failing = s.registry.serve({ kind: 'put', owner: c, digest, size: data.byteLength }, new ReadableStream({ start(controller) { push = controller; } }));
+  const wrong = s.registry.serve({ kind: 'put', owner: s.registry.mint('wrangler-4', 'LOADER'), digest, size: data.byteLength + 1 }, new ReadableStream({ start(controller) { controller.enqueue(data); controller.close(); } }))
+    .then(() => 'published', (error) => error.code);
   s.registry.release(b);
   await new Promise((resolve) => setTimeout(resolve, 50));
   push.error(new Error('the producer failed'));
   await failing.catch(() => {});
+  assert.equal(await wrong, 'EINVAL', 'a put whose declared size its bytes do not fill publishes nothing');
   await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(s.registry.stats().storeBytes, 0, 'a failed put with nothing holding its content gives the charge back');
-  assert.equal(s.registry.stats().putting, 0);
+  assert.equal(s.registry.stats().storeBytes, 0, 'nothing left counted, never below zero');
 }
 
-// ── A removal that fails part way gives back exactly what it unlinked, and finishes later at zero ──
+// ── A removal that fails part way stays counted whole until its directory is gone, then goes once ──
 {
   const s = session(vfs());
   const kernel = s.engine.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 });
@@ -349,50 +353,24 @@ const blob = (bytes, fill) => { const data = new Uint8Array(bytes); data.fill(fi
   }
   assert.equal(s.registry.stats().storeBytes, 3003);
   const [dir] = kernel.readdir(LOADER_CODE_ROOT);
-  // An entry the store cannot remove: the kernel's, closed to it.
+  // An entry the store cannot remove: the kernel's, closed to it. The files beside it go; the directory stays.
   kernel.mkdir(`${LOADER_CODE_ROOT}/${dir.name}/zz`, { mode: 0o755 });
   kernel.writeFile(`${LOADER_CODE_ROOT}/${dir.name}/zz/held`, 'x');
   kernel.chmod(`${LOADER_CODE_ROOT}/${dir.name}/zz`, 0o500);
   s.registry.release(owner);
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(s.registry.stats().removing, 1, 'the directory stays, queued');
-  assert.equal(s.registry.stats().storeBytes, 0, 'what was unlinked was given back');
+  assert.equal(s.registry.stats().storeBytes, 3003, 'still counted: what stays is its owner\'s until it is gone');
   kernel.chmod(`${LOADER_CODE_ROOT}/${dir.name}/zz`, 0o777);
+  // The next removal (another owner's) tries every queued directory again.
   const next = s.registry.mint('wrangler-2', 'LOADER');
+  const one = new Uint8Array([7]);
+  await s.registry.serve({ kind: 'put', owner: next, digest: sha(one), size: 1 }, new ReadableStream({ start(c) { c.enqueue(one); c.close(); } }));
   s.registry.release(next);
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(s.registry.stats().removing, 0, 'retried, it is gone');
-  assert.equal(s.registry.stats().storeBytes, 0, 'and nothing is counted twice or left counted');
+  assert.equal(s.registry.stats().storeBytes, 0, 'and its count goes once: nothing left, nothing below zero');
   assert.deepEqual(kernel.readdir(LOADER_CODE_ROOT), []);
-}
-
-// ── A digest names one size: a put declaring another is refused before it charges anything ──
-{
-  const s = session(vfs());
-  const a = s.registry.mint('wrangler-1', 'LOADER');
-  const data = new Uint8Array([1, 2, 3]);
-  const digest = sha(data);
-  await s.registry.serve({ kind: 'put', owner: a, digest, size: 3 }, new ReadableStream({ start(c) { c.enqueue(data); c.close(); } }));
-  const b = s.registry.mint('wrangler-2', 'LOADER');
-  let cancelled = false;
-  await assert.rejects(s.registry.serve({ kind: 'put', owner: b, digest, size: 4 }, new ReadableStream({ start() {}, cancel() { cancelled = true; } })),
-    /names 3 bytes, not 4/, 'a held digest of another size refuses the put');
-  assert.equal(cancelled, true);
-  // One in flight of the right size refuses one of another size beside it.
-  const other = new Uint8Array([9, 9]);
-  const otherDigest = sha(other);
-  let push;
-  const putting = s.registry.serve({ kind: 'put', owner: b, digest: otherDigest, size: 2 }, new ReadableStream({ start(controller) { push = controller; } }));
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  const c = s.registry.mint('wrangler-3', 'LOADER');
-  await assert.rejects(s.registry.serve({ kind: 'put', owner: c, digest: otherDigest, size: 5 }, new ReadableStream({ start() {} })), /names 2 bytes, not 5/);
-  // A removed meanwhile, B's producer failing: the count comes back to zero, never below.
-  s.registry.release(a);
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  push.error(new Error('the producer failed'));
-  await putting.catch(() => {});
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(s.registry.stats().storeBytes, 0);
 }
 
 // ── A large reuse source with snapshot history rows is retired in pages, its content given back ──

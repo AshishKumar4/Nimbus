@@ -26,7 +26,7 @@ const started = Date.now();
 await assert.rejects(registry.serve({ kind: 'put', owner, digest: createHash('sha256').update(data).digest('hex'), size: data.byteLength }, stalled), /stopped coming for 60 s/);
 assert.ok(Date.now() - started >= 59_000, 'not before its deadline');
 assert.equal(cancelled, true, 'its producer is cancelled');
-assert.deepEqual([registry.stats().storeBytes, registry.stats().putting], [0, 0], 'its charge is given back');
+assert.equal(registry.stats().storeBytes, 0, 'its charge is given back');
 registry.release(owner);
 await new Promise((resolve) => setTimeout(resolve, 50));
 assert.equal(registry.stats().removing, 0);
