@@ -28,7 +28,7 @@ const PID = 7;
 const resolved = (name, version) => ({
   pkg: {
     name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
-    dependencies: {}, exports: null, main: 'index.js', module: '', bin: { [name]: 'cli.js' },
+    dependencies: {}, main: 'index.js', bin: { [name]: 'cli.js' },
   },
   cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
 });

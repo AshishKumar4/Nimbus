@@ -55,7 +55,7 @@ const env = makeFanoutEnv({
   resultFor: (name) => ({
     pkg: {
       name, version: '1.0.0', tarballUrl: `https://registry.invalid/${name}-1.0.0.tgz`, integrity: 'sha512-fixture',
-      dependencies: {}, exports: null, main: 'index.js', module: '', bin: packages[name].resolvedBin,
+      dependencies: {}, main: 'index.js', bin: packages[name].resolvedBin,
     },
     cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
   }),

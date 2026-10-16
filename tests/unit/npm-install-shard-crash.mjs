@@ -37,7 +37,7 @@ function project() {
   const env = makeFanoutEnv({
     root, NM,
     resultFor: (name) => {
-      const pkg = { name, version: '1.0.0', tarballUrl: `https://registry.invalid/${name}-1.0.0.tgz`, integrity: `sha512-${name}`, dependencies: {}, exports: null, main: 'index.js', module: '', bin: {} };
+      const pkg = { name, version: '1.0.0', tarballUrl: `https://registry.invalid/${name}-1.0.0.tgz`, integrity: `sha512-${name}`, dependencies: {}, main: 'index.js', bin: {} };
       return { pkg, cacheWrites: [registryRecord(pkg, Date.now())], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
     },
     crashFor: (p) => (p.name === crash.at ? crash.when : null),
@@ -107,7 +107,7 @@ for (const [clock, touched, replacement] of [['running', false, 'slot@npm:real-b
     root, NM,
     resultFor: (name, spec) => {
       const { registryName } = parseRegistryRequest(name, spec.range);
-      const pkg = { name, registryName, version: '1.0.0', tarballUrl: `https://registry.invalid/${registryName}-1.0.0.tgz`, integrity: registryName === 'real-a' ? realA : `sha512-${registryName}`, dependencies: REGISTRY[registryName], exports: null, main: 'index.js', module: '', bin: {} };
+      const pkg = { name, registryName, version: '1.0.0', tarballUrl: `https://registry.invalid/${registryName}-1.0.0.tgz`, integrity: registryName === 'real-a' ? realA : `sha512-${registryName}`, dependencies: REGISTRY[registryName], main: 'index.js', bin: {} };
       return { pkg, cacheWrites: [registryRecord({ ...pkg, name: registryName }, Date.now())], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
     },
     manifestFor: (p) => ({ name: p.tarballUrl.match(/registry\.invalid\/(.+)-1\.0\.0\.tgz/)[1], version: p.version }),
@@ -155,7 +155,7 @@ for (const [when, touched] of [['after', false], ['after', true], ['before', tru
   const env = makeFanoutEnv({
     root, NM,
     resultFor: (name) => {
-      const pkg = { name, registryName: name, version: '1.0.0', tarballUrl: `https://registry.invalid/${name}-1.0.0.tgz`, integrity, dependencies: {}, exports: null, main: 'index.js', module: '', bin: {} };
+      const pkg = { name, registryName: name, version: '1.0.0', tarballUrl: `https://registry.invalid/${name}-1.0.0.tgz`, integrity, dependencies: {}, main: 'index.js', bin: {} };
       return { pkg, cacheWrites: [registryRecord(pkg, Date.now())], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
     },
     manifestFor: (p) => ({ name: p.name, version: p.version, integrity: p.integrity }),
@@ -200,7 +200,7 @@ for (const [when, touched] of [['after', false], ['after', true], ['before', tru
   const env = makeFanoutEnv({
     root, NM,
     resultFor: (name) => {
-      const pkg = { name, registryName: name, version: '1.0.0', tarballUrl: `https://registry.invalid/${name}-1.0.0.tgz`, integrity, dependencies: {}, exports: null, main: 'index.js', module: '', bin: {} };
+      const pkg = { name, registryName: name, version: '1.0.0', tarballUrl: `https://registry.invalid/${name}-1.0.0.tgz`, integrity, dependencies: {}, main: 'index.js', bin: {} };
       return { pkg, cacheWrites: [registryRecord(pkg, Date.now())], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
     },
     manifestFor: (p) => ({ name: p.name, version: p.version, integrity: p.integrity }),

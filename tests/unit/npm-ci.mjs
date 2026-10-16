@@ -102,7 +102,7 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
 // installs with its flags found again and what nothing reaches left out.
 {
   const leaf = (name, version) => ({
-    pkg: { name, version, tarballUrl: tgz(name, version), integrity: `sha512-${name}${version}`, dependencies: {}, exports: null, main: '', module: '', bin: {} },
+    pkg: { name, version, tarballUrl: tgz(name, version), integrity: `sha512-${name}${version}`, dependencies: {}, main: '', bin: {} },
     cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
   });
 
@@ -155,7 +155,7 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
     specs.push({ name, range: spec.range });
     const pkg = {
       name, version: '0.21.5', tarballUrl: tgz('esbuild-wasm', '0.21.5'), integrity: 'sha512-w',
-      dependencies: {}, exports: null, main: 'index.js', module: '', bin: {},
+      dependencies: {}, main: 'index.js', bin: {},
     };
     return {
       pkg,
@@ -188,7 +188,7 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
     const version = spec.range.replace(/^npm:[^@]+@/, '');
     const pkg = {
       name, version, tarballUrl: tgz('esbuild-wasm', version), integrity: `sha512-w${version}`,
-      dependencies: {}, exports: null, main: 'index.js', module: '', bin: {},
+      dependencies: {}, main: 'index.js', bin: {},
     };
     return {
       pkg,
@@ -298,7 +298,7 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
 {
   const stop = new AbortController();
   const { installer, root, log } = makeInstaller({ name: 'stop', version: '1.0.0', dependencies: { s: '1.0.0' } }, LOCK, (name) => ({
-    pkg: { name, version: '1.0.0', tarballUrl: tgz(name, '1.0.0'), integrity: 'sha512-s', dependencies: {}, exports: null, main: '', module: '', bin: {} },
+    pkg: { name, version: '1.0.0', tarballUrl: tgz(name, '1.0.0'), integrity: 'sha512-s', dependencies: {}, main: '', bin: {} },
     cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
   }));
   const onProgress = (msg) => { log.push(msg); if (msg.startsWith('To fetch:')) stop.abort(new DOMException('stopped', 'AbortError')); };
@@ -319,7 +319,7 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
   };
   const { installer, root } = makeInstaller(pkgJson, lock, null, (p) => (p.name === 'r' ? 'integrity mismatch' : null));
   // What an earlier install recorded, in the tree npm ci clears.
-  installer.npmCache.writeLockfile(PROJ, new Map([['old', { name: 'old', registryName: 'old', resolvedVer: '1.0.0', integrity: 'sha512-old', depsJson: '{}', hoistedPath: `${NM}/old` }]]), { storage: null });
+  installer.npmCache.writeLockfile(PROJ, new Map([['old', { name: 'old', registryName: 'old', resolvedVer: '1.0.0', integrity: 'sha512-old', hoistedPath: `${NM}/old` }]]), { storage: null });
   const result = await installer.install(PROJ, { pid: 1, fromLockfile: true });
   assert.ok(result.failed.length > 0);
   assert.deepEqual([...installer.npmCache.readLockfile(PROJ).keys()], ['q'], 'the inventory is what this npm ci left on disk');
@@ -447,7 +447,7 @@ for (const [label, entries, line] of [
     },
   };
   const { installer, root } = makeInstaller(pkgJson, lock, (name) => ({
-    pkg: { name, version: '1.2.0', tarballUrl: tgz(name, '1.2.0'), integrity: `sha512-${name}`, dependencies: {}, exports: null, main: '', module: '', bin: {} },
+    pkg: { name, version: '1.2.0', tarballUrl: tgz(name, '1.2.0'), integrity: `sha512-${name}`, dependencies: {}, main: '', bin: {} },
     cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
   }));
   await assert.rejects(installer.install(PROJ, { pid: 1, fromLockfile: true }), line, label);

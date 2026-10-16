@@ -28,7 +28,7 @@ const env = makeFanoutEnv({
   root, NM,
   resultFor: (name) => {
     asked.push(name);
-    const pkg = { name, registryName: name, version: '1.0.0', tarballUrl: `https://registry.invalid/${name}-1.0.0.tgz`, integrity: `sha512-${name}`, dependencies: name === 'b' ? { c: '1.0.0' } : {}, exports: null, main: 'index.js', module: '', bin: {} };
+    const pkg = { name, registryName: name, version: '1.0.0', tarballUrl: `https://registry.invalid/${name}-1.0.0.tgz`, integrity: `sha512-${name}`, dependencies: name === 'b' ? { c: '1.0.0' } : {}, main: 'index.js', bin: {} };
     return { pkg, cacheWrites: [registryRecord(pkg, Date.now())], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
   },
 });

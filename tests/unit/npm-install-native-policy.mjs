@@ -43,7 +43,7 @@ function resolvedResult(name, version, overrides = {}) {
   return {
     pkg: {
       name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
-      dependencies: {}, exports: null, main: 'index.js', module: '', bin: {}, ...overrides,
+      dependencies: {}, main: 'index.js', bin: {}, ...overrides,
     },
     cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
   };
@@ -529,8 +529,8 @@ function makeInstaller(pkgJson, resultFor) {
   const appDeps = { 'native-gate': '^1.0.0', 'sc-1': '1.0.0', 'sc-2': '1.0.0', 'sc-3': '1.0.0', 'sc-4': '1.0.0' };
   const cw = (name, version, deps = {}) => ({
     name, registryName: name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
-    depsJson: JSON.stringify(deps), peerDepsJson: '{}', exportsJson: 'null', main: 'index.js', moduleField: '',
-    binJson: '{}', platformJson: '{}', optionalDepsJson: '{}', fetchedAt: Date.now(),
+    depsJson: JSON.stringify(deps), peerDepsJson: '{}', main: 'index.js',
+    binJson: '{}', platformJson: '{}', optionalDepsJson: '{}',
   });
   const { installer, log } = makeInstaller(
     { name: 'needs-gate', dependencies: { ...ok, 'some-app-dep': '^1.0.0' } },
@@ -564,8 +564,8 @@ function makeInstaller(pkgJson, resultFor) {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
   const cw = (name, version) => ({
     name, registryName: name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
-    depsJson: '{}', peerDepsJson: '{}', exportsJson: 'null', main: 'index.js', moduleField: '',
-    binJson: '{}', platformJson: '{}', optionalDepsJson: '{}', fetchedAt: Date.now(),
+    depsJson: '{}', peerDepsJson: '{}', main: 'index.js',
+    binJson: '{}', platformJson: '{}', optionalDepsJson: '{}',
   });
   const { installer, log } = makeInstaller(
     { name: 'complete', dependencies: ok },
@@ -648,8 +648,8 @@ function makeInstaller(pkgJson, resultFor) {
   // A record is the registry package's: the alias's is react's, under react.
   const cw = (name, version) => ({
     name, registryName: name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
-    depsJson: '{}', peerDepsJson: '{}', exportsJson: 'null', main: 'index.js', moduleField: '',
-    binJson: '{}', platformJson: '{}', optionalDepsJson: '{}', fetchedAt: Date.now(),
+    depsJson: '{}', peerDepsJson: '{}', main: 'index.js',
+    binJson: '{}', platformJson: '{}', optionalDepsJson: '{}',
   });
   const { installer, log } = makeInstaller(
     { name: 'alias-app', dependencies: { ...ok, vliw: 'npm:react@^19.0.0' } },
@@ -679,8 +679,8 @@ function makeInstaller(pkgJson, resultFor) {
 {
   const cw = (name, version) => ({
     name, registryName: name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
-    depsJson: '{}', peerDepsJson: '{}', exportsJson: 'null', main: 'index.js', moduleField: '',
-    binJson: '{}', platformJson: '{}', optionalDepsJson: '{}', fetchedAt: Date.now(),
+    depsJson: '{}', peerDepsJson: '{}', main: 'index.js',
+    binJson: '{}', platformJson: '{}', optionalDepsJson: '{}',
   });
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
 
@@ -740,12 +740,12 @@ function makeInstaller(pkgJson, resultFor) {
     const entries = new Map();
     for (const name of ['ok-a', 'ok-b', 'ok-c', 'ok-d']) {
       installer.npmCache.putRegistryEntries({ registry: 'https://registry.npmjs.org', network: '' }, [cw(name, '1.0.0')]);
-      entries.set(name, { name, registryName: name, resolvedVer: '1.0.0', integrity: 'sha512-fixture', depsJson: '{}', hoistedPath: `${NM}/${name}` });
+      entries.set(name, { name, registryName: name, resolvedVer: '1.0.0', integrity: 'sha512-fixture', hoistedPath: `${NM}/${name}` });
     }
     installer.npmCache.putRegistryEntries({ registry: 'https://registry.npmjs.org', network: '' }, [cw('gitpkg', '0.0.0-abc123')]);
     entries.set('gitpkg', {
       name: 'gitpkg', registryName: 'gitpkg', resolvedVer: '0.0.0-abc123', integrity: 'sha512-fixture',
-      depsJson: '{}', hoistedPath: `${NM}/gitpkg`,
+      hoistedPath: `${NM}/gitpkg`,
     });
     installer.npmCache.writeLockfile(PROJ, entries, { storage: harness.ctx.storage });
     const result = await installer.install(PROJ);
