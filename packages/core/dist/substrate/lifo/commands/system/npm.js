@@ -392,23 +392,20 @@ async function installTree(roots, install, project) {
         // What is on disk the tree does not hold goes (npm prunes it).
         const removals = onDisk.filter((at) => !inTree(at));
         const publish = planned.filter((node) => inTree(node.at)).sort((x, y) => depthOf(x.at) - depthOf(y.at));
-        // A project's .bin is the bins of its top-level packages as they are now.
+        // A project's .bin is the bins of its top-level packages as they are now;
+        // a global install links its roots'. What the packages it replaces or
+        // removes linked is read first, to unlink what they no longer do.
+        const { globalBinDir } = install;
+        const binDir = globalBinDir ?? join(targetBase, '.bin');
         const topLevel = [...plan.nodes.keys()].filter((at) => inTree(at) && depthOf(at) === 1);
+        const linking = globalBinDir
+            ? publish.filter((node) => node.edge.from === '').map((node) => node.at)
+            : topLevel;
+        const replaced = globalBinDir ? linking : [...new Set([...onDisk.filter((at) => depthOf(at) === 1), ...topLevel])];
+        const before = await linkedBins(vfs, targetBase, replaced, binDir);
         if (publish.length === 0 && removals.length === 0) {
-            if (!install.globalBinDir)
-                await linkProjectBins(vfs, targetBase, topLevel);
+            await relinkBins(vfs, binDir, before, await linkedBins(vfs, targetBase, linking, binDir));
             return { installed: [], failed: [], plannedVersion, engines };
-        }
-        // The bins a global root being replaced linked: the ones its new version does not declare go.
-        const replacedBins = new Map();
-        if (install.globalBinDir) {
-            for (const node of publish) {
-                if (node.edge.from !== '')
-                    continue;
-                const before = await packageJsonIn(vfs, join(targetBase, node.at));
-                if (before !== null)
-                    replacedBins.set(node.at, [...npmBinMap(placementName(node.at), before.json.bin).keys()]);
-            }
         }
         const journal = InstallJournal.begin(vfs, targetBase, run);
         const retiredAt = new Map();
@@ -459,20 +456,7 @@ async function installTree(roots, install, project) {
         // npm's bin links, found through PATH: a global install's roots' into
         // the prefix's bin, a project's top-level packages' into its
         // node_modules/.bin, which its scripts have first on PATH (npmScriptEnv).
-        const { globalBinDir } = install;
-        if (globalBinDir) {
-            for (const node of publish) {
-                if (node.edge.from !== '')
-                    continue;
-                const linked = await linkBins(node.pkg.info, join(targetBase, node.at), globalBinDir, vfs);
-                for (const name of replacedBins.get(node.at) ?? [])
-                    if (!linked.includes(name))
-                        await vfs.remove(join(globalBinDir, name), { force: true });
-            }
-        }
-        else {
-            await linkProjectBins(vfs, targetBase, topLevel);
-        }
+        await relinkBins(vfs, binDir, before, await linkedBins(vfs, targetBase, linking, binDir));
         return { installed: publish.map((node) => `${node.pkg.name}@${node.pkg.version}`), failed: [], plannedVersion, engines };
     }
     finally {
@@ -483,45 +467,12 @@ async function installTree(roots, install, project) {
     }
 }
 /**
- * The shims linking `bin` (a package.json's bin) of the package at
- * `packageDir` into `binDir`, by name (npmBinShim). A native launcher
- * (.exe/.node) runs nowhere here, and is not linked.
+ * The shims linking the bins of the packages at `placements` (under
+ * `targetBase`, as their package.json files are now) into `binDir`, by bin
+ * name (npmBinShim). A native launcher (.exe/.node) runs nowhere here, and
+ * is not linked.
  */
-function binShims(packageName, bin, packageDir, binDir) {
-    const shims = new Map();
-    for (const [name, target] of npmBinMap(packageName, bin)) {
-        if (!isNativeBinPath(target))
-            shims.set(name, npmBinShim(binDir, resolve(packageDir, target)));
-    }
-    return shims;
-}
-/** Write each of `shims` into `binDir`, executable, unless it is there already. */
-async function writeShims(vfs, binDir, shims) {
-    if (shims.size > 0)
-        await vfs.mkdir(binDir, { recursive: true });
-    for (const [name, text] of shims) {
-        const shim = join(binDir, name);
-        if (await vfs.exists(shim) && await vfs.readFileString(shim) === text)
-            continue;
-        await vfs.writeFile(shim, text);
-        await vfs.chmod(shim, 0o755);
-    }
-}
-/** Link the bins of a global root into the prefix's bin; answers their names. */
-async function linkBins(info, packageDir, binDir, vfs) {
-    const shims = binShims(info.name, info.bin, packageDir, binDir);
-    await writeShims(vfs, binDir, shims);
-    return [...shims.keys()];
-}
-/**
- * A project's node_modules/.bin as npm's bin links leave it: a shim for each
- * bin of each top-level package (`placements`) as it is on disk, and no
- * other (a dot file is not a bin). After every install, so what was
- * installed before, pruned since, or now declares other bins is linked as
- * it is.
- */
-async function linkProjectBins(vfs, targetBase, placements) {
-    const binDir = join(targetBase, '.bin');
+async function linkedBins(vfs, targetBase, placements, binDir) {
     const shims = new Map();
     for (const at of placements) {
         const packageDir = join(targetBase, at);
@@ -529,16 +480,36 @@ async function linkProjectBins(vfs, targetBase, placements) {
         if (manifest === null)
             continue;
         const name = typeof manifest.json.name === 'string' ? manifest.json.name : placementName(at);
-        for (const [bin, text] of binShims(name, manifest.json.bin, packageDir, binDir))
-            shims.set(bin, text);
-    }
-    if (await vfs.exists(binDir)) {
-        for (const entry of await vfs.readdir(binDir)) {
-            if (!entry.name.startsWith('.') && !shims.has(entry.name))
-                await vfs.remove(join(binDir, entry.name), { force: true });
+        for (const [bin, target] of npmBinMap(name, manifest.json.bin)) {
+            if (!isNativeBinPath(target))
+                shims.set(bin, npmBinShim(binDir, resolve(packageDir, target)));
         }
     }
-    await writeShims(vfs, binDir, shims);
+    return shims;
+}
+/**
+ * `binDir` from the shims `before` (what the packages an install replaces
+ * linked) to the shims `after`: each of `after` written, executable, unless
+ * it is there already, and each of `before` that `after` does not name
+ * removed while it is still the one they linked (another package's link of
+ * that name stays).
+ */
+async function relinkBins(vfs, binDir, before, after) {
+    const current = async (shim) => (await vfs.exists(shim) ? await vfs.readFileString(shim) : null);
+    for (const [name, text] of before) {
+        const shim = join(binDir, name);
+        if (!after.has(name) && await current(shim) === text)
+            await vfs.remove(shim, { force: true });
+    }
+    if (after.size > 0)
+        await vfs.mkdir(binDir, { recursive: true });
+    for (const [name, text] of after) {
+        const shim = join(binDir, name);
+        if (await current(shim) === text)
+            continue;
+        await vfs.writeFile(shim, text);
+        await vfs.chmod(shim, 0o755);
+    }
 }
 // ─── Subcommands ───
 async function printHelp(ctx) {
