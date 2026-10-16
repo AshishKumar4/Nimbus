@@ -88,11 +88,23 @@ export async function* treeLeaves(
   }
 }
 
+/** A tree path's bytes as treeLeaves names it: each name decoded on its own, as readTree decodes it. */
+function decodeTreePath(raw: Uint8Array): string {
+  let path = '';
+  let start = 0;
+  for (let end = raw.indexOf(0x2f); end !== -1; end = raw.indexOf(0x2f, start)) {
+    path += decodePath(raw.subarray(start, end)) + '/';
+    start = end + 1;
+  }
+  return path + decodePath(raw.subarray(start));
+}
+
 /**
  * diff-tree -r of two trees (null for none), as pack/tree-object.ts
  * diffTreeLeaves walks it: `visit` gets every leaf path whose entry
  * differs, with each side's leaf or null. A subtree both sides hold with the
- * same id is never read.
+ * same id is never read. Names that are not UTF-8 can decode alike: their
+ * one path comes once for each.
  */
 export async function diffTrees(
   store: ObjectStore,
@@ -109,7 +121,7 @@ export async function diffTrees(
   };
   const leaf = (path: string, entry: RawTreeEntry | null): Leaf | null => (entry === null ? null : { path, mode: entry.mode, oid: oidToHex(entry.oid) });
   await diffTreeLeaves(read, from === null ? null : oidFromHex(from), to === null ? null : oidFromHex(to), async (raw, before, after) => {
-    const path = decodePath(raw);
+    const path = decodeTreePath(raw);
     await visit(path, leaf(path, before), leaf(path, after));
     return true;
   });
