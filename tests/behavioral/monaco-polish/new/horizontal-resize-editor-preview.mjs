@@ -4,8 +4,8 @@
 // center column and the preview trade width while it is held, and the
 // center keeps between 20% and 80% of the pair however far it is dragged.
 
-import { BASE, mintSession, deleteSession, makeAsserter } from '../../_driver.mjs';
-import { grabHandle, launchBrowser, openPage, readUntil } from '../../_runtime-behavioral-template.mjs';
+import { BASE, mintSession, deleteSession, makeAsserter, readUntil } from '../../_driver.mjs';
+import { grabHandle, launchBrowser, openPage } from '../../_runtime-behavioral-template.mjs';
 
 const a = makeAsserter('monaco-polish/new/horizontal-resize-editor-preview');
 const sid = await mintSession();

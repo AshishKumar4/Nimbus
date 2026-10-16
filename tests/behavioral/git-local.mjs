@@ -13,7 +13,7 @@
 //
 // Black-box surfaces only. NO _diag.
 
-import { deleteSession, makeAsserter, mintSession, sleep, Terminal } from './_driver.mjs';
+import { deleteSession, makeAsserter, mintSession, Terminal } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('git-local');
@@ -25,7 +25,7 @@ const t = new Terminal(sid);
 
 try {
   await t.connect();
-  await sleep(2_000);
+  await t.waitForPrompt(60_000);
 
   await t.run('mkdir -p /home/user/local-git && cd /home/user/local-git', 30_000);
   const init = await t.run('git init', 60_000);

@@ -34,7 +34,7 @@
 // What a user needs: `react-router dev` serves the app through the port
 // route on its first run, as the other framework probes require.
 
-import { Terminal, mintSession, sleep, stripAnsi, makeAsserter, deleteSession, BASE } from '../_driver.mjs';
+import { Terminal, mintSession, stripAnsi, makeAsserter, deleteSession, BASE } from '../_driver.mjs';
 import { launchFrameworkDev } from '../_framework-dev.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -46,7 +46,6 @@ console.log(`[remix-real] sid=${sid} BASE=${BASE}`);
 const t = new Terminal(sid);
 try {
   await t.connect();
-  await sleep(2_000);
   await t.waitForPrompt(60_000);
 
   await t.run('mkdir -p /home/user/remix-probe && cd /home/user/remix-probe', 10_000);
@@ -83,7 +82,7 @@ try {
 
   // readable-stream's constructor stealing: Node runs `Duplex.call(this)`
   // on an existing instance, and so must Nimbus.
-  await t.waitForPrompt(60_000).catch(() => {});
+  await t.waitForPrompt(60_000);
   const repro = [
     'const s=require("stream");',
     'function Child(){ s.Duplex.call(this); }',

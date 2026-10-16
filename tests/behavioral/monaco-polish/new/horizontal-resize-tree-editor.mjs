@@ -5,8 +5,8 @@
 // 160-600 px however far it is dragged. Persistence is
 // resize-persists-localStorage's.
 
-import { BASE, mintSession, deleteSession, makeAsserter } from '../../_driver.mjs';
-import { grabHandle, launchBrowser, openPage, readUntil } from '../../_runtime-behavioral-template.mjs';
+import { BASE, mintSession, deleteSession, makeAsserter, readUntil } from '../../_driver.mjs';
+import { grabHandle, launchBrowser, openPage } from '../../_runtime-behavioral-template.mjs';
 
 const a = makeAsserter('monaco-polish/new/horizontal-resize-tree-editor');
 const sid = await mintSession();

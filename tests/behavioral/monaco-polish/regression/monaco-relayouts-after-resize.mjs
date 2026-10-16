@@ -5,8 +5,8 @@
 // the center column narrows (editor↔preview handle) and when the editor
 // pane shortens (editor↔terminal handle), and the file stays readable.
 
-import { BASE, mintSession, deleteSession, makeAsserter, requestHeaders } from '../../_driver.mjs';
-import { grabHandle, launchBrowser, openPage, readUntil } from '../../_runtime-behavioral-template.mjs';
+import { BASE, mintSession, deleteSession, makeAsserter, requestHeaders, readUntil } from '../../_driver.mjs';
+import { grabHandle, launchBrowser, openPage } from '../../_runtime-behavioral-template.mjs';
 import { Nimbus } from '../../../../packages/sdk/src/index.ts';
 
 const a = makeAsserter('monaco-polish/regression/monaco-relayouts-after-resize');

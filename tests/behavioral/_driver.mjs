@@ -27,6 +27,20 @@ export const probeTarget = createProbeTarget({ base: BASE, token: AUTH_TOKEN, co
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Read `read()` every 100 ms until `done(value)` holds or `timeoutMs` has
+ * passed; resolves to the last value read, which the caller checks. The
+ * bounded wait a probe uses in place of a fixed sleep.
+ */
+export async function readUntil(read, done, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = await read();
+    if (done(value) || Date.now() >= deadline) return value;
+    await sleep(100);
+  }
+}
+
 export function stripAnsi(s) {
   return s.replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, '')
     .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b[\(\)][AB012]/g, '');

@@ -5,8 +5,8 @@
 // (editor↔preview handle) takes columns away, and raising the
 // editor↔terminal handle adds rows. The terminal still runs a command after.
 
-import { BASE, mintSession, deleteSession, makeAsserter } from '../../_driver.mjs';
-import { grabHandle, launchBrowser, openPage, readUntil, waitForSessionTerminalText } from '../../_runtime-behavioral-template.mjs';
+import { BASE, mintSession, deleteSession, makeAsserter, readUntil } from '../../_driver.mjs';
+import { grabHandle, launchBrowser, openPage, waitForSessionTerminalText } from '../../_runtime-behavioral-template.mjs';
 
 const a = makeAsserter('monaco-polish/regression/terminal-still-fits-after-resize');
 const sid = await mintSession();

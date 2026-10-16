@@ -128,7 +128,7 @@ const marked = (marker, then, bound) => [
     'setTimeout(()=>{},8000);',
   ].join('');
   await t.run(`node -e '${program}' &`, 20_000);
-  await sleep(2000);
+  // read() polls for the file for about 5 s, inside the writer's 8 s life.
   const seen = await read(path);
   a.check(
     'another process reads a synchronous write while the writing process is still running',

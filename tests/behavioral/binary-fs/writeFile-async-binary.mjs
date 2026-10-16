@@ -7,14 +7,13 @@
 // Also exercises fs.promises.writeFile (the modern API) which uses
 // a separate code path in the shim.
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, BASE } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[binary-fs writeFile-async] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 await t.run('mkdir -p /home/user/bf-async', 10_000);

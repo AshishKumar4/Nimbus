@@ -26,7 +26,7 @@
 // NO fixtures, NO truncated deps. Always clones real Markflow from
 // github.com.
 
-import { mintSession, Terminal, makeAsserter, sleep, stripAnsi } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -61,7 +61,7 @@ async function attempt(idx) {
     t = new Terminal(sid);
     phase = 'connect';
     await t.connect();
-    await sleep(1500);
+    await t.waitForPrompt(60_000);
 
     // Step 1: clone Markflow.
     phase = 'clone';

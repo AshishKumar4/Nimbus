@@ -25,7 +25,7 @@
 // session id. Step 6 catches "we silently fall through to the wrong
 // module's exports".
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, BASE } from '../_driver.mjs';
 import { ADD_WASM_B64, SUBTRACT_WASM_B64, runFor, writeWasm } from './_fixtures.mjs';
 
 const sid = await mintSession();
@@ -33,7 +33,6 @@ console.log(`[wasm-runner-r2] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 await t.run('mkdir -p /home/user/wr-r2', 10_000);
