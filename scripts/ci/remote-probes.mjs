@@ -163,9 +163,11 @@ try {
   const commits = [...new Set([...(flags.deploy || baseline ? [sha] : []), ...(baseline ? [baseline] : [])])];
   const { fetchRelease } = await import('./lib/release.mjs');
   const built = await Promise.allSettled(commits.map((commit) => fetchRelease({ repo, sha: commit, targets: ['apps/probe'] })));
-  const unbuilt = built.find((outcome) => outcome.status === 'rejected');
-  if (unbuilt) throw unbuilt.reason;
-  const releases = Object.fromEntries(commits.map((commit, i) => [commit, built[i].value.dir]));
+  const releases = {};
+  for (const [i, outcome] of built.entries()) {
+    if (outcome.status === 'rejected') throw outcome.reason;
+    releases[commits[i]] = outcome.value.dir;
+  }
   signals(true);
   if (flags.deploy) {
     // Its exports (a token among them) are not wanted: probes get their own, below.

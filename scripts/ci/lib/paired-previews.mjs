@@ -84,8 +84,7 @@ export function pairedPreviews({ repo, log = (line) => console.error(line) }) {
           await run(arms[arm].checkout, 'bun', [...throwaway(['up', '--bundle', releases[commit[arm]]], arm)]);
         }
       }));
-      const failed = settled.find((outcome) => outcome.status === 'rejected');
-      if (failed) throw failed.reason;
+      for (const outcome of settled) if (outcome.status === 'rejected') throw outcome.reason;
     },
     /** Each arm's { base, token }, a token minted now to live `ttlMs`. */
     async credentials(ttlMs) {
