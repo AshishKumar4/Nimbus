@@ -68,7 +68,7 @@ import {
   type CreditLease,
 } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { createHash } from 'node:crypto';
-import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, posixAccess, utimesRefusal, type PosixNodeType } from './posix-access.js';
+import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, explicitTimes, posixAccess, timeAt, utimesRefusal, type PosixNodeType } from './posix-access.js';
 import { RecallRequired, recallOf, withRecall } from './recall.js';
 import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../_shared/read-lease-cover.js';
 export { RecallRequired, recallOf, withRecall } from './recall.js';
@@ -112,6 +112,7 @@ import { inflateChunk } from './chunk-codec.js';
 import {
   CRED_KERNEL,
   sameCred,
+  type FsTime,
   type GrantCertificate,
   type VfsAcquireOptions,
   type VfsAcquireResult,
@@ -374,8 +375,8 @@ export interface VfsOpenDescription {
   chmod(mode: number): void;
   /** A null side keeps the file's. */
   chown(uid: number | null, gid: number | null): void;
-  /** As utimes: null now, undefined kept. */
-  utimes(atime: number | null | undefined, mtime: number | null | undefined): void;
+  /** futimens(2): as utimes, on this description's file. */
+  utimes(atime: FsTime, mtime: FsTime): void;
   close(): void;
   /**
    * Where an O_APPEND write lands: the end of the file as written so far,
@@ -469,12 +470,8 @@ export interface CredentialedVfs {
   statIfPresent(path: string, followLeaf?: boolean): VfsStat | null;
   /** Whether something is at `path` (a link not followed) as published: no append stored, no holder recalled (VFS.landedAt). */
   landedAt(path: string): boolean;
-  /**
-   * utimensat(2): null is UTIME_NOW, undefined UTIME_OMIT (that time kept).
-   * Only now/omit needs no more than write permission or ownership; an
-   * explicit time needs ownership. `followSymlinks: false` sets a link's own.
-   */
-  utimes(path: string, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: { followSymlinks?: boolean }): void;
+  /** utimensat(2), each time an FsTime, resolved and judged as it commits. `followSymlinks: false` sets a link's own. */
+  utimes(path: string, atime: FsTime, mtime: FsTime, options?: { followSymlinks?: boolean }): void;
   chmod(path: string, mode: number): void;
   /**
    * A directory's default ACL base entries (`setfacl -d -m u::,g::,o::`), as
@@ -2763,7 +2760,7 @@ export class SqliteVFS {
         this.assertMutationsAllowed([opened.path]);
         this.publishMetadata(inode, owner);
       }),
-      utimes: owned((atime: number | null | undefined, mtime: number | null | undefined): void => this.utimesInode(current(), atime, mtime, cred, opened.path)),
+      utimes: owned((atime: FsTime, mtime: FsTime): void => this.utimesInode(current(), atime, mtime, cred, opened.path)),
       close: asOpener((): void => {
         try {
           // The last of what it appended is written as it closes, and a failure is close's.
@@ -5770,18 +5767,12 @@ export class SqliteVFS {
     this._writeBatchOnce({ plan: builder.build(), deletedInodes: [] }, { source: 'range-mutation', limitMode: 'bounded' });
   }
 
-  private utimes(
-    path: string,
-    atimeMs: number | null | undefined,
-    mtimeMs: number | null | undefined,
-    cred: VfsCred,
-    followLeaf = true,
-  ): void {
+  private utimes(path: string, atime: FsTime, mtime: FsTime, cred: VfsCred, followLeaf = true): void {
     const resolved = this.checkAccess(path, 0, cred, { followLeaf });
     const inode = resolved.inode;
     if (!inode) throw vfsKeyError('ENOENT', path);
     this.admit(this.lexicalKey(path, cred), this.physicalKey(inode.path));
-    this.utimesInode(inode, atimeMs, mtimeMs, cred, resolved.path);
+    this.utimesInode(inode, atime, mtime, cred, resolved.path);
   }
 
   /**
@@ -5789,14 +5780,11 @@ export class SqliteVFS {
    * one whose name is gone), judged alike (utimesRefusal): explicit times by
    * the owner or root, now by anyone who may write it.
    */
-  private utimesInode(inode: INode, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, cred: VfsCred, path: string | null): void {
-    // Nothing explicit: only now (null) and omit (undefined).
-    const useNow = typeof atimeMs !== 'number' && typeof mtimeMs !== 'number';
-    const refused = utimesRefusal({ mode: inode.mode, uid: inode.uid, gid: inode.gid, type: inode.kind }, !useNow, cred);
+  private utimesInode(inode: INode, atime: FsTime, mtime: FsTime, cred: VfsCred, path: string | null): void {
+    const refused = utimesRefusal({ mode: inode.mode, uid: inode.uid, gid: inode.gid, type: inode.kind }, explicitTimes(atime, mtime), cred);
     if (refused !== null) throw vfsKeyError(refused, path ?? 'detached inode');
-    const at = (value: number | null | undefined, kept: number): number => (
-      value === undefined ? kept : value !== null && Number.isFinite(value) ? Math.trunc(value) : this.now());
-    const times = { atime: at(atimeMs, inode.atime), mtime: at(mtimeMs, inode.mtime) };
+    const now = this.now();
+    const times = { atime: timeAt(atime, inode.atime, now), mtime: timeAt(mtime, inode.mtime, now) };
     if (path === null) { Object.assign(inode, times); inode.ctime = this.now(); return; }
     this.assertMutationsAllowed([path]);
     this.publishMetadata(inode, times);

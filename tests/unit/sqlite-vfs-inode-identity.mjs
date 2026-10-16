@@ -116,7 +116,7 @@ const text = (d) => new TextDecoder().decode(d);
   assert.equal(kfs.stat('/home/u/own').gid, 1001);
   const writer = theirs.open('/home/u/own', { write: true });
   assert.throws(() => theirs.futimes(writer.id, 1000, 2000), { code: 'EPERM' }, 'explicit times by a writer who is not the owner');
-  theirs.futimes(writer.id, null, null);
+  theirs.futimes(writer.id, 'now', 'now');
   assert.ok(kfs.stat('/home/u/own').mtime > 2000, 'now, by a writer');
   fs.futimes(mine.id, 1000, 2000);
   assert.equal(kfs.stat('/home/u/own').mtime, 2000);

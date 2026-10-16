@@ -35,10 +35,10 @@
  * (the documented limit, answered by the session's recall timeout).
  */
 
-import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '../os-contracts.js';
+import type { FsTime, RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '../os-contracts.js';
 import type { ResidentEntry } from './resident-filesystem.js';
 import { fsError } from '../beneath-walk.js';
-import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, modeAllows, utimesRefusal } from '../../vfs/posix-access.js';
+import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, explicitTimes, modeAllows, timeAt, utimesRefusal } from '../../vfs/posix-access.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import { processFsClient, type ProcessFsClient, type ProcessFsGrant, type ProcessFsJournal, type ProcessFsOp, type ProcessFsSession } from '../../_shared/process-fs-client.js';
 
@@ -74,8 +74,8 @@ export interface HolderOptions {
 }
 
 /** A file made or rewritten here: its bytes until they are sent. */
-/** An attribute change by a descriptor: a mode, an owner (null or -1 kept), or times as utimes takes them (null now, undefined kept). */
-export type HolderAttrChange = { mode: number } | { uid: number | null; gid: number | null } | { atime: number | null | undefined; mtime: number | null | undefined };
+/** An attribute change by a descriptor: a mode, an owner (null or -1 kept), or times (FsTime). */
+export type HolderAttrChange = { mode: number } | { uid: number | null; gid: number | null } | { atime: FsTime; mtime: FsTime };
 
 interface LocalFile {
   key: string;
@@ -211,10 +211,10 @@ export interface DelegationHolder {
   setattr(key: string, attrs: W7Attrs): boolean;
   /**
    * Decide an attribute change of the file `handleId` opened (fchmod,
-   * fchown, futimes, each time as utimes takes it: null now, undefined
-   * kept): true when decided here, for a file of the holder's that lost its
-   * name, or one it decides under its name; false when it is the session's,
-   * through the description it holds of the file (restat after).
+   * fchown, futimes): true when decided here, for a file of the holder's
+   * that lost its name, or one it decides under its name, its times
+   * resolved here as it is decided; false when it is the session's, through
+   * the description it holds of the file (restat after).
    */
   fsetattr(handleId: number, change: HolderAttrChange): boolean;
   /** The session's stat of the file a through description opened, after a change through it: what fstat answers from now on. */
@@ -861,10 +861,9 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       if (file.through !== undefined) return false;
       const entry = file.detached ?? decided.get(file.key) ?? store.entry(file.key);
       if (entry === undefined || entry === null) return false;
-      // Times as utimes leaves them: now, explicit, or kept.
-      const attrs: W7Attrs = 'atime' in change
-        ? { atime: change.atime === undefined ? entry.atime : change.atime ?? now(), mtime: change.mtime === undefined ? entry.mtime : change.mtime ?? now() }
-        : change;
+      // Its times as it is decided (timeAt): now, explicit, or as they are.
+      const at = now();
+      const attrs: W7Attrs = 'atime' in change ? { atime: timeAt(change.atime, entry.atime, at), mtime: timeAt(change.mtime, entry.mtime, at) } : change;
       if (file.detached === undefined) return holder.setattr(file.key, attrs);
       // Its name gone, the file is this process's alone: judged and changed
       // here, as the session judges a description, its confinement of the
@@ -872,7 +871,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const confined = client.held(file.key)?.confined ?? true;
       const refused = 'mode' in attrs ? chmodRefusal(entry, store.cred) ?? (confined ? confinedModeRefusal(entry.mode, attrs.mode) : null)
         : 'uid' in attrs ? chownRefusal(entry, kept(attrs.uid), kept(attrs.gid), store.cred)
-        : utimesRefusal(entry, 'atime' in change && (typeof change.atime === 'number' || typeof change.mtime === 'number'), store.cred);
+        : utimesRefusal(entry, 'atime' in change && explicitTimes(change.atime, change.mtime), store.cred);
       if (refused !== null) throw fsError(refused, 'mode' in attrs ? 'fchmod' : 'uid' in attrs ? 'fchown' : 'futimes', '/' + file.key);
       file.detached = changedBy(entry, attrs);
       file.mode = file.detached.mode & 0o7777;

@@ -382,8 +382,8 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       return this[CALL](this[FS_READ]('lstat', [path]));
     }
 
-    async utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number): Promise<VfsMutationReceipt> {
-      return this[CALL](this[FS_MUTATION]('utimes', [path, atimeMs, mtimeMs]));
+    async utimes(...args: Parameters<RuntimeFsBridge['utimes']>): Promise<VfsMutationReceipt> {
+      return this[CALL](this[FS_MUTATION]('utimes', args));
     }
 
     async chmod(path: RuntimeFsPath, mode: number): Promise<VfsMutationReceipt> {
