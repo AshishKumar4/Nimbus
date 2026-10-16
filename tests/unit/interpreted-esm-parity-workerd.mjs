@@ -12,7 +12,9 @@
 //   - a typeless .js the program writes, whose top level redeclares a
 //     CommonJS wrapper parameter (`const require = 1`), is an ES module;
 //   - a module under a directory named `a#b` imports beside itself, and its
-//     import.meta.url escapes the `#`.
+//     import.meta.url escapes the `#`;
+//   - a staged typeless .js imported with a query, then by its own URL: two
+//     instances, each evaluated once.
 //
 // Red before: the staged imports of data: modules failed to link; the data:
 // module ran as sloppy CommonJS; `export const __esModule` threw a
@@ -61,6 +63,8 @@ import { a } from 'data:application/json,{"a":1}' with { type: 'json' };
   'staged-json.mjs': `globalThis.stagedJsonRan = true;
 import { a } from 'data:application/json,{"a":1}' with { type: 'json' };
 `,
+  // Staged (the entry names it): a typeless .js, an ES module by its syntax, counting its evaluations.
+  'sqa.js': 'globalThis.sqaRuns = (globalThis.sqaRuns ?? 0) + 1;\nexport const v = globalThis.sqaRuns;\n',
   'staged.mjs': `import fortyOne from 'data:text/javascript,export default 41';
 import json from 'data:application/json,{"a":1}' with { type: 'json' };
 import six from 'dpkg';
@@ -68,7 +72,7 @@ export default [fortyOne, json, six];
 `,
   'main.mjs': `import { writeFileSync, mkdirSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-if (globalThis.never) { await import('./back2.mjs'); await import('./bad-json-child.mjs'); await import('./tla-b.mjs'); await import('./back3.mjs'); await import('./bridge.mjs'); }
+if (globalThis.never) { await import('./back2.mjs'); await import('./bad-json-child.mjs'); await import('./tla-b.mjs'); await import('./back3.mjs'); await import('./bridge.mjs'); await import('./sqa.js'); }
 const out = {};
 // Each case on its own: one that fails is its error, and the rest still run.
 const outcome = async (thunk) => {
@@ -138,6 +142,8 @@ out.queryThenBase = await outcome(async () => {
   writeFileSync('qa.js', 'export const v = 2;\\n');
   return [first, (await import('./qa.js')).v];
 });
+// The same, the file staged: the query's instance, then the file's own, each evaluated once.
+out.stagedQueryThenBase = await outcome(async () => [(await import('./sqa.js?x')).v, (await import('./sqa.js')).v, globalThis.sqaRuns]);
 
 writeFileSync('late-parent.mjs', "import './bad-json-child.mjs';\\n");
 const lateParent = await outcome(async () => { await import('./late-parent.mjs'); return 'loaded'; });
@@ -208,6 +214,7 @@ assert.deepEqual(expected, {
   queryCycle: ['data:back3', 'hi3'],
   relink: ['ERR_REQUIRE_CYCLE_MODULE', 'ERR_REQUIRE_CYCLE_MODULE'],
   queryThenBase: [1, 2],
+  stagedQueryThenBase: [1, 2, 2],
   nestedMissingJson: ['SyntaxError', false],
   cycleStar: ['x'],
   starConflict: ['y'],
