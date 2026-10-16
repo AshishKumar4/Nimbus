@@ -14,7 +14,7 @@ import { file, installMockPypi, pipInstall, project, restoreFetch, scratch, whee
 const wheel = (name) => ({ '1.0.0': [file(name, '1.0.0', `${name}-1.0.0-py3-none-any.whl`)] });
 const place = scratch();
 try {
-  installMockPypi(wheelhouse(place.root, [
+  installMockPypi(wheelhouse(place, [
     project('a', wheel('a'), { '1.0.0': ['c; extra == "x"', 'd; extra == "y"', 'b'] }),
     project('b', wheel('b'), { '1.0.0': ['a[x]'] }),
     project('e', wheel('e'), { '1.0.0': ['a[y]'] }),

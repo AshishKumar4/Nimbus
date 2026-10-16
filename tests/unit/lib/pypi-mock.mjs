@@ -5,12 +5,11 @@
 // CPython runner does, with the host's python3.
 
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { ISOLATE_NETWORK } from '../../../packages/core/src/_shared/workspace-network.ts';
 import { buildPipInvocation, pythonSitePackages } from '../../../packages/core/src/runtime/python-pip.ts';
 
@@ -109,27 +108,39 @@ export function installMockPypi(projects) {
   } });
 }
 
-/** A scratch directory on the host, with a home and a project in it, removed by `done`. */
+/**
+ * A scratch directory on the host, with a home and a project in it, and an
+ * HTTP server for its files (the installer fetches over HTTP); `done`
+ * stops the one and removes the other.
+ */
 export function scratch() {
   const root = mkdtempSync(join(tmpdir(), 'nimbus-pip-'));
   const home = join(root, 'home');
   const projectDir = join(root, 'project');
   mkdirSync(projectDir, { recursive: true });
-  return { root, home, project: projectDir, done: () => rmSync(root, { recursive: true, force: true }) };
+  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: (request) => new Response(Bun.file(join(root, decodeURIComponent(new URL(request.url).pathname)))) });
+  return {
+    root, home, project: projectDir, url: (path) => `http://127.0.0.1:${server.port}/${encodeURIComponent(path)}`,
+    done: () => {
+      server.stop(true);
+      rmSync(root, { recursive: true, force: true });
+    },
+  };
 }
 
 /**
- * `projects` as PyPI serves them from `dir`: each pure wheel (py3-none-any)
- * a real one, its module and its dist-info, named by file URL and digest.
- * Other files are left as they are, for the planner to refuse.
+ * `projects` as PyPI serves them from `place` (scratch): each pure wheel
+ * (py3-none-any) a real one, its module and its dist-info, by URL and
+ * digest. Other files are left as they are, for the planner to refuse.
  */
-export function wheelhouse(dir, projects) {
+export function wheelhouse(place, projects) {
+  const dir = place.root;
   const pure = (entry) => entry.filename.endsWith('-py3-none-any.whl');
   writeWheels(projects.flatMap((pkg) => Object.entries(pkg.versions).flatMap(([version, files]) =>
     files.filter(pure).map((entry) => ({ path: join(dir, entry.filename), name: pkg.name, version })))));
   const served = (entry) => {
     const path = join(dir, entry.filename);
-    return { ...entry, url: pathToFileURL(path).href, digests: { sha256: createHash('sha256').update(readFileSync(path)).digest('hex') } };
+    return { ...entry, url: place.url(entry.filename), digests: { sha256: createHash('sha256').update(readFileSync(path)).digest('hex') } };
   };
   return projects.map((pkg) => ({
     ...pkg,
@@ -168,8 +179,15 @@ const hostVfs = {
 export async function pipInstall(argv, place, { network = ISOLATE_NETWORK, markers: environment = markers } = {}) {
   const invocation = await buildPipInvocation(['install', ...argv], 'pip', place.project, hostVfs, { home: place.home, network, markers: environment });
   if (invocation.mode !== 'pip') return { error: invocation.error ?? `pip planned no install (${invocation.mode})` };
-  const run = spawnSync('python3', ['-c', invocation.code], { encoding: 'utf8' });
-  if (run.status !== 0) return { error: `${run.stdout}${run.stderr}` };
+  // Not spawnSync: the wheels are served from this process.
+  const run = await new Promise((resolve) => {
+    const child = spawn('python3', ['-c', invocation.code], { env: { ...process.env, no_proxy: '*', NO_PROXY: '*' } });
+    let output = '';
+    child.stdout.on('data', (chunk) => { output += chunk; });
+    child.stderr.on('data', (chunk) => { output += chunk; });
+    child.on('close', (status) => resolve({ status, output }));
+  });
+  if (run.status !== 0) return { error: run.output };
   const site = `/${pythonSitePackages(place.home)}`;
   const installed = readdirSync(site).filter((entry) => entry.endsWith('.dist-info')).map((entry) => {
     const metadata = readFileSync(join(site, entry, 'METADATA'), 'utf8');

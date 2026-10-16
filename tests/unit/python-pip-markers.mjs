@@ -15,7 +15,7 @@ const leaf = (name) => project(name, { '1.0.0': [file(name, '1.0.0', `${name.rep
 const wasi = scratch();
 const older = scratch();
 try {
-  installMockPypi(wheelhouse(wasi.root, [
+  installMockPypi(wheelhouse(wasi, [
     project('app', { '1.0.0': [file('app', '1.0.0', 'app-1.0.0-py3-none-any.whl')] }, {
       '1.0.0': [
         'wasi-only; sys_platform == "wasi"',

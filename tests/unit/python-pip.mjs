@@ -25,7 +25,7 @@ const place = () => {
 try {
   {
     const at = place();
-    installMockPypi(wheelhouse(at.root, [
+    installMockPypi(wheelhouse(at, [
       project('requests', {
         '2.31.0': [file('requests', '2.31.0', 'requests-2.31.0-py3-none-any.whl')],
       }, {
@@ -60,7 +60,7 @@ try {
 
   {
     const at = place();
-    installMockPypi(wheelhouse(at.root, [
+    installMockPypi(wheelhouse(at, [
       project('packaging', {
         '24.2': [file('packaging', '24.2', 'packaging-24.2-py3-none-any.whl')],
         '25.0': [file('packaging', '25.0', 'packaging-25.0-py3-none-any.whl')],
@@ -75,7 +75,7 @@ try {
   // file's -c is constraints, and its -r requirements.
   {
     const at = place();
-    installMockPypi(wheelhouse(at.root, [
+    installMockPypi(wheelhouse(at, [
       project('packaging', {
         '24.2': [file('packaging', '24.2', 'packaging-24.2-py3-none-any.whl')],
         '25.0': [file('packaging', '25.0', 'packaging-25.0-py3-none-any.whl')],
@@ -218,7 +218,7 @@ try {
   {
     let fetches = 0;
     const wheels = place();
-    const [fresh, plain] = wheelhouse(wheels.root, [
+    const [fresh, plain] = wheelhouse(wheels, [
       project('fresh', {
         '1.0.0': [file('fresh', '1.0.0', 'fresh-1.0.0-py3-none-any.whl')],
         '2.0.0': [file('fresh', '2.0.0', 'fresh-2.0.0-py3-none-any.whl')],
