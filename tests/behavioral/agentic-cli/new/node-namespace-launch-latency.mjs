@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Small-program launch timing and sequential namespace checks.
-import { mintSession, Terminal, makeAsserter, deleteSession, termBody } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, deleteSession, termBody, outputLines } from '../../_driver.mjs';
 
 if (!process.env.BASE) process.exit(2);
 const label = 'agentic-cli/new/node-namespace-launch-latency';
@@ -23,7 +23,7 @@ try {
     const out = termBody(r.output);
     let iteration = 0;
     const failed = [];
-    for (const line of out.split('\n')) {
+    for (const line of outputLines(out)) {
       const marker = /NODE_NS_ITER=(\d+)/.exec(line); if (marker) iteration = Number(marker[1]);
       if (/the process was not started/.test(line)) failed.push({ iteration, error: line });
     }

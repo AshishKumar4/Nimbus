@@ -22,7 +22,7 @@
 //   2. Both rows visible in `ps`
 //   3. Both produce identical stdout output
 
-import { mintSession, Terminal, stripAnsi, BASE, writeFileViaShell } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, BASE, writeFileViaShell, outputLines } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[G4] sid=${sid} BASE=${BASE}`);
@@ -76,7 +76,7 @@ const pid2 = highestPid(ps2);
 const npxPidDelta = pid2 - pid1;
 
 // ── Both visible in ps after the second invocation? ──
-const ps2Rows = ps2.split(/\r?\n/).filter(l => /parity/i.test(l));
+const ps2Rows = outputLines(ps2).filter(l => /parity/i.test(l));
 const psHasDirect = ps2Rows.some(l => /--direct/.test(l));
 const psHasNpx    = ps2Rows.some(l => /--npx/.test(l));
 

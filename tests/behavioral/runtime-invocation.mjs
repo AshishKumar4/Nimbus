@@ -15,7 +15,7 @@
 //   5. Same battery for `bun` (post-Change-B). Pre-Change-B: probe records
 //      PARTIAL (node passes, bun fails or shows "command not found").
 
-import { mintSession, Terminal, makeAsserter, sleep, heredocCommand } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter, sleep, heredocCommand, outputLines } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('runtime-invocation');
@@ -42,7 +42,7 @@ t.reset();
 {
   const tag = 'NODE_OUT_' + Math.random().toString(36).slice(2, 8);
   const r = await t.run(`node -e 'console.log("${tag}")'`, 30_000);
-  const lines = r.output.split('\n').map((l) => l.replace(/\r/g, ''));
+  const lines = outputLines(r.output);
   const seenInOutput = lines.some((l) => l.includes(tag) && !l.startsWith('user@') && !l.includes('node -e'));
   a.check('node -e prints output (on a non-echo line)', seenInOutput,
     `output: ${r.output.slice(-300)}`);
@@ -115,14 +115,14 @@ a.check('node server.cjs produced started-marker (LISTENING or [started (long-ru
 {
   const r = await t.run('bun --version', 15_000);
   // bun's stdout is just "1.x.y". Look on a line that doesn't include the prompt.
-  const lines = r.output.split('\n').map((l) => l.replace(/\r/g, ''));
+  const lines = outputLines(r.output);
   const hasVersion = lines.some((l) => /^\d+\.\d+\.\d+/.test(l) && !l.startsWith('user@'));
   a.check('bun --version returns a semver', hasVersion, r.output.slice(-200));
 }
 {
   const tag = 'BUN_OUT_' + Math.random().toString(36).slice(2, 8);
   const r = await t.run(`bun -e 'console.log("${tag}")'`, 15_000);
-  const lines = r.output.split('\n').map((l) => l.replace(/\r/g, ''));
+  const lines = outputLines(r.output);
   const seenInOutput = lines.some((l) => l.includes(tag) && !l.startsWith('user@') && !l.includes('bun -e'));
   a.check('bun -e prints output (on a non-echo line)', seenInOutput, r.output.slice(-200));
 }

@@ -28,7 +28,7 @@
 // Category: R (runtime-behavioral) — documents the intentional race.
 //           Test passes when output DOES land within a bounded window.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, sleep, hasOutputLine } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell-polish/bg-cmd-race-matches-bash');
@@ -66,7 +66,7 @@ await t.waitForPrompt(60_000);
   await t.run('echo flush-marker', 5_000);
   const r = await t.run('echo wait-marker-9156 & wait', 10_000);
   const out = stripAnsi(r.output);
-  const has = out.split(/\r?\n/).some((l) => l.trim() === 'wait-marker-9156');
+  const has = hasOutputLine(r.output, 'wait-marker-9156');
   a.check('cmd & wait emits stdout deterministically before next prompt', has,
     has ? '' : JSON.stringify(out.slice(-400)));
 }
@@ -75,7 +75,7 @@ await t.waitForPrompt(60_000);
 {
   const r = await t.run('wait; echo "wait-done=$?"', 10_000);
   const out = stripAnsi(r.output);
-  const has = out.split(/\r?\n/).some((l) => l.trim() === 'wait-done=0');
+  const has = hasOutputLine(r.output, 'wait-done=0');
   a.check('bare `wait` (no jobs) exits 0', has,
     has ? '' : JSON.stringify(out.slice(-400)));
 }

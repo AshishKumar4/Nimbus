@@ -25,7 +25,7 @@
 //
 // Black-box surfaces only: shell over WS.
 
-import { mintSession, Terminal, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, BASE, outputLines } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[#7] sid=${sid} BASE=${BASE}`);
@@ -38,7 +38,7 @@ async function envValue(key) {
   const r = await t.run(`node -e "console.log(JSON.stringify(process.env.${key}||null))"`, 30_000);
   // The shell echoes the command; the line right after is the JSON value.
   // Strip ANSI and look for the JSON literal.
-  const lines = stripAnsi(r.output).split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const lines = outputLines(r.output).filter(Boolean);
   // Drop lines that contain the command echo or the prompt.
   for (const l of lines) {
     if (l.includes('node -e')) continue;

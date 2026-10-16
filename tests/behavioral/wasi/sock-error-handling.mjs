@@ -18,7 +18,8 @@
 // runtime-policy-rejected with a different error path. ".invalid" is
 // the cleanest "user-side bad input" check.
 
-import { openWasiProbe, tailLines, trimmedLines } from './_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/sock-error-handling', { dir: '/home/user/sb', fixture: 'sock-error-handling', as: 'se.wasm' });
 const { t } = probe;
@@ -26,7 +27,7 @@ try {
   // DNS resolution + connect timeout typically <30s; 60s budget.
   const r = await t.run('wasm-runner se.wasm', 60_000);
   const tail = tailLines(r.output, 8);
-  const lines = trimmedLines(tail);
+  const lines = outputLines(tail);
   const ok = lines.some(s => s === '1');
 
   probe.report([['connect to .invalid TLD propagates errno (nonzero)', ok]], { tail, ok });

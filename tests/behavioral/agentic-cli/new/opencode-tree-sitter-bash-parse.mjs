@@ -18,13 +18,7 @@
 // Model-auth-gated (NOT proven here): a full bash-tool round trip where a
 // real model issues the tool call that reaches ShellTool.execute.
 
-import {
-  deleteSession,
-  makeAsserter,
-  mintSession,
-  stripAnsi,
-  Terminal,
-} from '../../_driver.mjs';
+import { deleteSession, makeAsserter, mintSession, stripAnsi, Terminal, outputLines } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('agentic-cli/new/opencode-tree-sitter-bash-parse');
@@ -52,10 +46,7 @@ try {
     !/Disallowed operation|CompileError|not pre-registered|missing the Nimbus|Aborted\(/.test(diagOut),
     JSON.stringify(diagOut.slice(-900)));
 
-  const jsonLine = diagOut
-    .replace(/\r/g, '\n')
-    .split('\n')
-    .map((line) => line.trim())
+  const jsonLine = outputLines(diagOut)
     .find((line) => line.startsWith('{') && line.includes('"rootType"'));
   let result = null;
   try { result = jsonLine ? JSON.parse(jsonLine) : null; } catch { /* asserted below */ }
