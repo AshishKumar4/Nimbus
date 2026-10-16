@@ -138,7 +138,8 @@ out.queryThenBase = await outcome(async () => {
   writeFileSync('qa.js', 'export const v = 2;\\n');
   return [first, (await import('./qa.js')).v];
 });
-// A module with top-level await, written now, imported while Reflect.apply is not the built-in.
+// A module with top-level await, written now, imported while Reflect.apply is not the built-in: the loader and its
+// graph (made before the program) call their own.
 writeFileSync('tla-late.mjs', 'export default await Promise.resolve(5);\\n');
 out.replacedApply = await outcome(async () => {
   const apply = Reflect.apply;

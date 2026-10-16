@@ -107,7 +107,7 @@ const evaluated = (log) => log.filter((entry) => !entry.startsWith('init:') && !
   assert.deepEqual(evaluated(log), ['C', 'B'], 'A waits for B');
   assert.equal(records.A.status, 'evaluating-async');
   assert.equal(records.A.pendingAsyncDependencies, 1);
-  assert.deepEqual(records.B.asyncParentModules, [records.A]);
+  assert.deepEqual(Array.from(records.B.asyncParentModules), [records.A]);
   await promise;
   assert.deepEqual(evaluated(log), ['C', 'B', 'B$', 'A'], 'AsyncModuleExecutionFulfilled runs A');
   assert.deepEqual([records.A.status, records.B.asyncEvaluationOrder], ['evaluated', 'done']);
