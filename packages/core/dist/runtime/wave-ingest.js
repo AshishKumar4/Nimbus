@@ -9,7 +9,7 @@
  * with its namespace as the router; a filesystem without one ingests with none.
  */
 import { acquireSupervisorAllocation, tryAcquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
-import { decodeWriteBatchStream, encodeWriteBatchStream } from '@nimbus-sh/platform/w7-frame.js';
+import { decodeWriteBatchStream, encodeWriteBatchStream, openAccessRights } from '@nimbus-sh/platform/w7-frame.js';
 import { concatBytes } from '../_shared/bytes.js';
 import { SYSCALL_VERDICTS, errnoCodeOf, vfsError } from '../vfs/vfs-error.js';
 import { parentKey } from '../vfs/path.js';
@@ -1101,7 +1101,7 @@ export class WaveIngest {
                     // Its answer is the file's stat; with `description`, the binding keeps the file it found, and its descriptor is in the answer.
                     const opened = await backend(router.open({ ...call, path: placed }, as, at.guard, owner));
                     const handle = call.description === undefined || descriptions === undefined ? undefined
-                        : await backend(Promise.resolve(descriptions.describe(call.description, opened.file, opened.stat.ino, { read: call.read === true, write: true })));
+                        : await backend(Promise.resolve(descriptions.describe(call.description, opened.file, opened.stat.ino, openAccessRights(call.access))));
                     // The id is this mount's description's now: what the session kept of an earlier one under it is not adopted again.
                     if (call.description !== undefined)
                         scope.forgetDescription(call.description);
