@@ -3,6 +3,7 @@ import type { CommandRegistry } from '../registry.js';
 import type { ProcessView as VFS } from '../../../../runtime/process-files.js';
 import type { Kernel } from '../../kernel/index.js';
 import { type NpmCacheMode } from '../../../../_shared/npm-cache-mode.js';
+import type { NpmConfig } from './npm-config.js';
 import { type NpmLogEmitter } from './npm-log.js';
 import { type EngineMismatch } from '../../../../_shared/npm-arborist/engines.js';
 /** The registry an install reads from when its env names none. */
@@ -152,7 +153,15 @@ export declare function npmRegistryOrigin(configured: string | undefined): strin
  */
 export declare function packagesIn(vfs: VFS, modulesDir: string): AsyncGenerator<string>;
 export declare function getBinEntries(pkg: PackageJson): Record<string, string>;
-export declare function registerBinCommand(registry: CommandRegistry, binName: string, scriptPath: string, kernel?: Kernel): void;
+/**
+ * The prefix npm installs globally under, as `config` (read in `cwd`)
+ * resolves it: --prefix, npm_config_prefix, an .npmrc, else PREFIX or
+ * /usr/local; absolute. Its lib/node_modules holds the packages, its bin
+ * their bins.
+ */
+export declare function npmGlobalPrefixOf(config: NpmConfig, cwd: string): string;
+/** npmGlobalPrefixOf this command's configuration. */
+export declare function npmGlobalPrefix(ctx: CommandContext): Promise<string>;
 export declare function createNpmCommand(registry: CommandRegistry, shellExecute?: ShellExecuteFn, kernel?: Kernel, deps?: NpmCommandDeps): Command;
 /**
  * Install one package globally, through the install port (the host's, else
