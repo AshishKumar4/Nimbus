@@ -50,6 +50,12 @@ export declare const TRANSIENT_HTTP_STATUSES: ReadonlySet<number>;
 export declare const STALL_MS = 45000;
 /** What upload-pack.ts throws for a request to the git server that failed in transit. */
 export declare const UPLOAD_PACK_ERROR_PREFIX = "git upload-pack: ";
+/**
+ * The agent capability a request asks with: only of a server that
+ * advertised its own, as fetch-pack.c and send-pack.c send it
+ * (gitprotocol-capabilities "agent"); a server that did not may refuse it.
+ */
+export declare function agentCapability(advertised: ReadonlySet<string>): string[];
 /** Whether a failure's message names a lost transport to the git server (a hang is known by its timeout). */
 export declare function isLostTransport(message: string): boolean;
 /** The wait before try `attempt + 2` (0-based `attempt` of the one that failed). */
