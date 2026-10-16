@@ -280,6 +280,30 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
   assert.equal(s.calls.epochs, 1);
 }
 
+// ── A wave's path bytes are counted without encoding a path: no TextEncoder for each (audit SHI-11; red before: one
+//    for every path of every wave) ──
+{
+  const RealEncoder = globalThis.TextEncoder;
+  let made = 0;
+  const encodersFor = async (files) => {
+    const s = session();
+    const c = client(s);
+    made = 0;
+    for (let i = 0; i < files; i++) c.submit(writeFile(`home/user/n${files}-${i}`, 'x'), { acknowledged: true });
+    await c.settle();
+    assert.equal(s.text(`home/user/n${files}-${files - 1}`), 'x');
+    return made;
+  };
+  globalThis.TextEncoder = class extends RealEncoder { constructor(...args) { super(...args); made++; } };
+  try {
+    const few = await encodersFor(50);
+    const many = await encodersFor(500);
+    assert.ok(many - few < 10, `450 more paths made ${many - few} more text encoders (${few} for 50, ${many} for 500)`);
+  } finally {
+    globalThis.TextEncoder = RealEncoder;
+  }
+}
+
 // ── A lone op is a wave of one; the ops of one turn share a wave ─────────
 {
   const s = session();
