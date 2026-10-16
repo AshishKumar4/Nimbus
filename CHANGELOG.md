@@ -5,6 +5,18 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: the shell's `node` emits `beforeExit`, as Node does. It fires
+  with `process.exitCode` each time the loop runs empty, and again only
+  when a listener scheduled a timer or an immediate. A write or a microtask
+  in a listener does not run the loop again, and `process.exit()` and a
+  fatal error skip it.
+- Fixed: the shell's `node` changes owners. `chown`, `lchown` and `fchown`
+  (sync, callback, promise and `FileHandle` forms) were no-ops or missing.
+  `-1` keeps that side, another's owner is `EPERM`, and a bad id is
+  `ERR_OUT_OF_RANGE` or `ERR_INVALID_ARG_TYPE`, thrown at once as in Node.
+  The hosted runtime's `chown` now reads ids the same way; it gave `EINVAL`.
+- Fixed: `fchown` on an open file was refused to everyone but root. The
+  owner may now change its group, as on Linux.
 - Fixed: `bash` and its BusyBox commands read accounts from `/etc/passwd`
   and `/etc/group` at each lookup. `~user` is the user's home and `~root`
   root's, a name no account has stays as written, `ls -l` and `stat` name
