@@ -1,6 +1,6 @@
 import { type StopRecord } from './stop-replay-contracts.js';
+/** A tape's bytes from their base64: none for an absent or empty entry. */
 export declare function decodeBase64(text: string | undefined): Uint8Array;
-export declare function encodeBase64(bytes: Uint8Array): string;
 /**
  * The stop record `error` carries for run `run` of a launch whose nonce is
  * `nonce`, or null when it carries none: any other error, a record of another

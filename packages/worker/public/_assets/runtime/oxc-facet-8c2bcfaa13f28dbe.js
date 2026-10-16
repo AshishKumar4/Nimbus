@@ -10143,6 +10143,22 @@ error: the Oxc transform crashed (${reason})`);
     return containsModuleSyntax(stripped()) ? "module" : "commonjs";
   }
 
+  var enc = new TextEncoder();
+  var dec = new TextDecoder();
+
+  var HKDF_SALT = enc.encode("nimbus-sh sealed-json v2");
+  function base64(bytes) {
+    let binary = "";
+    const chunk = 32768;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+  }
+  function base64Utf8(value) {
+    return base64(enc.encode(value));
+  }
+
   var amaro = null;
   async function stripTypeScript(code, filename, { mode, sourceMap }, packageType) {
     const { transformSync } = await (amaro ??= Promise.resolve().then(() => __toESM(require_dist(), 1)));
@@ -10168,12 +10184,6 @@ error: the Oxc transform crashed (${reason})`);
     return { code: `${output.code}
 
 //# sourceMappingURL=data:application/json;base64,${base64Utf8(output.map)}`, format };
-  }
-  function base64Utf8(text) {
-    const bytes = new TextEncoder().encode(text);
-    let binary = "";
-    for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
-    return btoa(binary);
   }
 
   var runtime = { rewriteDynamicImports, readEsModule, rewriteProvidedCommonJsModules, stripTypeScript };

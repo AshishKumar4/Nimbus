@@ -35,7 +35,7 @@ import { NODE_SHIMS_IMPORTS } from '../runtime/node-shims-imports.js';
 import { VFS_CURSOR_SEED_SOURCE, serializeFacetVfsCursor, } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
 import { normalizeVfsPath, stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
-import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
+import { base64, sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 import { direntTypeOf } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { relayRpcBody, responseScope } from '@nimbus-sh/core/runtime/port-registry.js';
 import { clearPortCapability, listPortReservations, readPortReservation, readPortReservationByOwner, releasePortReservation, restoreReservedPortCapability, } from '../session/port-capability.js';
@@ -76,7 +76,7 @@ import { disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
 import { STOP_REPLAY_SOURCE } from '../runtime/stop-replay.js';
 import { PENDING_IO_SOURCE } from '../runtime/pending-io.js';
-import { encodeBase64, OwnedPieces, ReplayOutputGate, StdinTaken, stopRecordOf } from '../runtime/stop-replay-host.js';
+import { OwnedPieces, ReplayOutputGate, StdinTaken, stopRecordOf } from '../runtime/stop-replay-host.js';
 import { answerDigest } from '../runtime/stop-replay-journal.js';
 import { REPLAY_PREFIX_MAX_BYTES, REPLAY_JOURNAL_MAX_ENTRIES, REPLAY_READ_RECEIPT_MAX_BYTES, STOP_LIMIT } from '../runtime/stop-replay-contracts.js';
 import { ReplaySessions } from '../runtime/replay-session.js';
@@ -6468,7 +6468,7 @@ export class FacetManager {
                 run: stop.run + 1,
                 tape: stop.tape,
                 listen: true,
-                prefix: { stdout: encodeBase64(stopped.prefix.stdout), stderr: encodeBase64(stopped.prefix.stderr) },
+                prefix: { stdout: base64(stopped.prefix.stdout), stderr: base64(stopped.prefix.stderr) },
             },
             ...(before.bytes > 0 ? { stdinAtLeast: before.bytes } : {}),
             // A \`< file\` is read again from where the run read it: the same
@@ -6574,7 +6574,7 @@ export class FacetManager {
             run: stop.run + 1,
             tape: stop.tape,
             stopAt: stop.stopAt,
-            prefix: stopped.prefix ? { stdout: encodeBase64(stopped.prefix.stdout), stderr: encodeBase64(stopped.prefix.stderr) } : null,
+            prefix: stopped.prefix ? { stdout: base64(stopped.prefix.stdout), stderr: base64(stopped.prefix.stderr) } : null,
             observations: this.replay.get(pid)?.journal.observations,
         };
         // A \`< file\` the stopped run read synchronously but the launch had not
