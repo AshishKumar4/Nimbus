@@ -77,7 +77,7 @@ const RUN_AS = { uid: 1001, gid: 1001, groups: [1001], umask: 0o022 };
   // Wider than the coordinator's Dynamic Worker budget, so it shards.
   const width = DO_DYNAMIC_WORKER_LIMIT + 1;
   const results = await pool.submitMany(Array.from({ length: width }, (_, i) => ({ key: `t-${i}`, args: i })), facetTaskSource('(x) => x'));
-  assert.deepEqual(results.map((result) => result.value), Array.from({ length: width }, (_, i) => i), 'every task answered through the composed namespace');
+  assert.deepEqual(results, Array.from({ length: width }, (_, i) => i), 'every task answered through the composed namespace');
   assert.ok(seen.length > 0 && seen.reduce((n, s) => n + s.count, 0) === width, `the peer shards ran on WORKSPACES hosts: ${JSON.stringify(seen)}`);
   console.log('  ok  Fanout: shards dispatched to WORKSPACES peers');
 }
