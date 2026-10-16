@@ -4390,7 +4390,7 @@ const __fsMod = (() => {
     set(value) { Object.defineProperty(this, name, { value, writable: true }); },
   }]));
   function BigIntStats(dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks, atimeNs, mtimeNs, ctimeNs, birthtimeNs) {
-    Reflect.apply(StatsBase, this, [dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks]);
+    __nimbusReflectApply(StatsBase, this, [dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks]);
     this.atimeMs = atimeNs / 1000000n;
     this.mtimeMs = mtimeNs / 1000000n;
     this.ctimeMs = ctimeNs / 1000000n;
@@ -4407,7 +4407,7 @@ const __fsMod = (() => {
     return (this.mode & BigInt(_S_IFMT)) === BigInt(property);
   };
   function Stats(dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks, atimeMs, mtimeMs, ctimeMs, birthtimeMs) {
-    Reflect.apply(StatsBase, this, [dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks]);
+    __nimbusReflectApply(StatsBase, this, [dev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks]);
     this.atimeMs = atimeMs;
     this.mtimeMs = mtimeMs;
     this.ctimeMs = ctimeMs;
