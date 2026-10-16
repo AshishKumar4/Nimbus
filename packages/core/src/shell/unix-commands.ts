@@ -17,7 +17,7 @@ import { NIMBUS_VERSION } from '../constants.js';
 import type { VfsFileType as FileType } from '../vfs/vfs.js';
 import type { ChildExit, Command, CommandContext, CommandInputStream } from '../substrate/lifo/commands/types.js';
 import { resolveContext, type CommandRegistry, type ResolveContext } from '../substrate/lifo/commands/registry.js';
-import { resolutionOf, searchPath, type PathSearchResult } from './exec-dispatch.js';
+import { isRuntimeInstallHint, resolutionOf, searchPath, type PathSearchResult } from './exec-dispatch.js';
 import { BASH_BUILTINS } from '../substrate/lifo/shell/bash-builtins.js';
 import { evaluateTest } from '../substrate/lifo/shell/test-builtin.js';
 import { TerminalStdin } from '../substrate/lifo/shell/terminal-stdin.js';
@@ -99,14 +99,6 @@ async function unixGroupLabel(vfs: ProcessView, gid: number): Promise<string> {
   }
 }
 
-/**
- * Whether `handler` is the stub a runtime that is known but not installed
- * resolves to (the worker's shell/npm-bin-entrypoints.ts marks it), which
- * `which` and `type` must not report as a builtin.
- */
-function isRuntimeInstallHintHandler(handler: Command | null): boolean {
-  return handler !== null && '__nimbusRuntimeInstallHint' in handler && handler.__nimbusRuntimeInstallHint === true;
-}
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -232,7 +224,7 @@ async function _registryResolved(
 ): Promise<Command | null> {
   try {
     const resolved = (await registry.resolve(name, from)) ?? null;
-    if (resolved && (options.includeInstallHints || !isRuntimeInstallHintHandler(resolved))) {
+    if (resolved && (options.includeInstallHints || !isRuntimeInstallHint(resolved))) {
       return resolved;
     }
   } catch {
@@ -288,7 +280,7 @@ async function _whichLookup(
 ): Promise<{ path: string | null; builtin: boolean }> {
   if (name.includes('/')) return { path: null, builtin: false };
   const registered = await _registryResolved(registry, name, { ...from, search: false }, { includeInstallHints: true });
-  const builtin = registered !== null && !isRuntimeInstallHintHandler(registered);
+  const builtin = registered !== null && !isRuntimeInstallHint(registered);
   if (registered !== null) return { path: await _knownCommandPath(registry, name, from), builtin };
   return { path: await _pathExecutable(name, from), builtin };
 }
@@ -317,7 +309,7 @@ async function _describeCommand(
   if (resolution?.kind === 'failed') return null;
   if (resolution?.kind === 'program') return { kind: 'file', path: resolution.path };
   if (name.includes('/')) return { kind: 'file', path: name };
-  const hint = isRuntimeInstallHintHandler(resolved);
+  const hint = isRuntimeInstallHint(resolved);
   if (!hint && BASH_BUILTINS.has(name)) return { kind: 'builtin' };
   const path = await _knownCommandPath(registry, name, from);
   if (path !== null) return { kind: 'file', path };

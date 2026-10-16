@@ -15,6 +15,7 @@ import type { BinLaunch } from '@nimbus-sh/core/runtime/runtime-registry.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { resolveContext, type ResolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { runtimeInstallHint } from '@nimbus-sh/core/shell/exec-dispatch.js';
 import { z } from 'zod/v4';
 import { classifyOpenCodeInvocation, buildOpenCodeTransportPlan, type OpenCodeTransportPlan } from '../runtime/opencode-invocation.js';
 
@@ -36,12 +37,6 @@ type CommandContext = {
 
 type FallbackCommandHandler = (ctx: CommandContext) => Promise<number> | number;
 type NodeCommandHandler = (ctx: CommandContext) => Promise<number> | number;
-type HintableCommandHandler = FallbackCommandHandler & { __nimbusRuntimeInstallHint?: boolean };
-
-/** Whether `command` is the stub a known runtime that is not installed resolves to: no registered command. */
-export function isRuntimeInstallHint(command: object): boolean {
-  return '__nimbusRuntimeInstallHint' in command && command.__nimbusRuntimeInstallHint === true;
-}
 
 type RegistryLike = {
   resolve(name: string, from?: ResolveContext): Promise<unknown> | unknown;
@@ -113,13 +108,12 @@ export function installNpmBinFallbackResolver(
       let hint: RuntimeCommandHint = null;
       try { hint = await deps.runtimeCommandHint(name); } catch { hint = null; }
       if (!hint) return undefined;
-      const hintHandler: HintableCommandHandler = async (ctx: CommandContext): Promise<number> => {
+      const installSpec = hint.installSpec;
+      return runtimeInstallHint(async (ctx) => {
         ctx.stderr.write(`${name}: command not found\n`);
-        ctx.stderr.write(`hint: install it with: nimbus install ${hint!.installSpec}\n`);
+        ctx.stderr.write(`hint: install it with: nimbus install ${installSpec}\n`);
         return 127;
-      };
-      hintHandler.__nimbusRuntimeInstallHint = true;
-      return hintHandler;
+      });
     }
 
     return binHandler(name, async (vfs) => await resolveNpmBin(vfs, cwd, name), false);
