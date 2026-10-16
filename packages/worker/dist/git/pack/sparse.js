@@ -12,7 +12,8 @@
 import { compareBytes } from '../worktree/dircache.js';
 import { patternLines } from '../worktree/pattern-lines.js';
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
+// A line's own BOM is its bytes: only the file's first is skipped (patternLines).
+const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
 /** Every path: the cone `sparse-checkout disable` applies, and a file holding "/*" alone. */
 export const FULL_CONE = { full: true, recursive: [], parents: [] };
 /** A cone's directories: repo-relative, without leading or trailing slashes. */
