@@ -58,21 +58,22 @@ await t.waitForPrompt(60_000);
 // 4. The Languages lucide-react import is reachable (basic
 //    static-check: the source file uses the new symbol).
 {
-  const r = await t.run("grep -E 'Languages' /home/user/example-app/src/pages/Home.tsx", 10_000);
+  // grep's status, not its output: the command's echo holds the pattern too.
+  const r = await t.run("grep -qE 'Languages' /home/user/example-app/src/pages/Home.tsx", 10_000);
   const out = stripAnsi(r.output);
-  const ok = /Languages/.test(out);
+  const ok = r.exitCode === 0;
   a.check('Home.tsx references Languages icon (from lucide-react)', ok,
-    ok ? '' : JSON.stringify(out.slice(-300)));
+    ok ? '' : `grep exited ${r.exitCode}: ${JSON.stringify(out.slice(-300))}`);
 }
 
 // 5. README.md still has the Quickstart section (additive change
 //    didn't break existing structure).
 {
-  const r = await t.run('grep -E "^## Quickstart" /home/user/example-app/README.md', 10_000);
+  const r = await t.run('grep -qE "^## Quickstart" /home/user/example-app/README.md', 10_000);
   const out = stripAnsi(r.output);
-  const ok = /## Quickstart/.test(out);
+  const ok = r.exitCode === 0;
   a.check('seeded README still has Quickstart section', ok,
-    ok ? '' : JSON.stringify(out.slice(-300)));
+    ok ? '' : `grep exited ${r.exitCode}: ${JSON.stringify(out.slice(-300))}`);
 }
 
 await t.close();
