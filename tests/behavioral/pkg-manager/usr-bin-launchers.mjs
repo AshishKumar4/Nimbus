@@ -46,7 +46,8 @@ a.check('python installs into /usr/lib/nimbus', root !== undefined, tail(install
   a.check('which python3 is its launcher', /^\/usr\/bin\/python3$/m.test(out), tail(out));
 }
 {
-  const out = await run('readlink /usr/bin/python3; stat -c %a /usr/bin/python3');
+  // stat -L: the marker the link names; without it, GNU's stat reports the link itself (777).
+  const out = await run('readlink /usr/bin/python3; stat -L -c %a /usr/bin/python3');
   a.check('the launcher is a link into the tree, to a marker that is not executable',
     root !== undefined && out.includes(`/${root}/bin/python3`) && /^644$/m.test(out), tail(out));
 }

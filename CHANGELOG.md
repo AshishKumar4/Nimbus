@@ -17,6 +17,14 @@ published independently in the `@nimbus-sh` npm scope.
   The hosted runtime's `chown` now reads ids the same way; it gave `EINVAL`.
 - Fixed: `fchown` on an open file was refused to everyone but root. The
   owner may now change its group, as on Linux.
+- Fixed: `stat` reports each operand it cannot stat with its own error,
+  such as `Permission denied` or `Too many levels of symbolic links`, then
+  goes on to the rest and exits 1, as GNU's does. It used to stop at the
+  first one and call every failure `No such file or directory`. `%n` and
+  the `File` line name the operand as given. A link is reported as itself,
+  and what it points to only with `-L`.
+- Fixed: `grep --exclude-from=FILE` excludes the globs listed in FILE. It
+  was refused as an invalid option.
 - Fixed (lifo `node`, X-9): `vm` is Node's. Contexts, scripts,
   `compileFunction`, `runInThisContext` and `runInNewContext` work in an
   inline `node` program and a lifo command alike; before, the module was
