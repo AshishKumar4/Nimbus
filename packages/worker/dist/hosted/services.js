@@ -1,11 +1,10 @@
 import { composeFacetManager } from "../facets/compose.js";
 import { normalizeChildCommand, shellChildRunner, textBytes } from "@nimbus-sh/core/runtime/child-process-manager.js";
 import { runChildCommand, runChildShell } from '@nimbus-sh/core/workspace/child-process-runner.js';
-import { isRuntimeInstallHint } from "../shell/npm-bin-entrypoints.js";
 import { bindProcessTable, isDynamicWorkerDeadlock, issueProcessNews, withLaunchAdmission, } from "@nimbus-sh/fabric/budgets.js";
 import { CRED_SESSION_USER } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { ProcessFiles, ProcessView, X_OK } from "@nimbus-sh/core/runtime/process-files.js";
-import { resolutionOf } from '@nimbus-sh/core/shell/exec-dispatch.js';
+import { isRuntimeInstallHint, resolutionOf } from '@nimbus-sh/core/shell/exec-dispatch.js';
 import { resolveContext } from "@nimbus-sh/core/substrate/lifo/commands/registry.js";
 import { errorText } from "@nimbus-sh/core/_shared/error-text.js";
 import { PrebundlePool } from "../facets/prebundle-pool.js";

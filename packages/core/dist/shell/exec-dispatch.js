@@ -146,9 +146,22 @@ export async function searchPath(name, from, runs) {
     return notExecutable === null ? null : { kind: 'not-executable', path: notExecutable };
 }
 const resolutions = new WeakMap();
-/** How `command` was resolved, when this resolver gave it; undefined for a registered command. */
+/** How `command` was resolved, when a resolver gave it; undefined for a registered command. */
 export function resolutionOf(command) {
     return resolutions.get(command);
+}
+/**
+ * `command` as the stub a known runtime that is not installed resolves to:
+ * run, it says how to install the runtime; to `type`, `which` and a child's
+ * launcher it is no command.
+ */
+export function runtimeInstallHint(command) {
+    resolutions.set(command, { kind: 'install-hint' });
+    return command;
+}
+/** Whether `command` is a runtime's install hint (runtimeInstallHint). */
+export function isRuntimeInstallHint(command) {
+    return resolutions.get(command)?.kind === 'install-hint';
 }
 /**
  * What execve(2) refuses `command`, what `name` resolved to from `cwd`, as

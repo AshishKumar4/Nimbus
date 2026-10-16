@@ -22,6 +22,7 @@
  * executable until touched. No migration.
  */
 import { type CommandRegistry, type ResolveContext } from '../substrate/lifo/commands/registry.js';
+import type { Command } from '../substrate/lifo/commands/types.js';
 import { type ProcessView } from '../runtime/process-files.js';
 import { type VfsErrorCode } from '../vfs/vfs-error.js';
 export interface ShebangLine {
@@ -79,10 +80,11 @@ export type PathSearchResult = {
  */
 export declare function searchPath(name: string, from: ResolveContext, runs?: (path: string) => boolean): Promise<PathSearchResult>;
 /**
- * What a command this resolver gave stands for, as `type`, `command -v` and
+ * What a command a resolver gave stands for, as `type`, `command -v` and
  * `which` report it: the file a search of PATH found (executable or not, as
- * bash reports either), or a resolution that failed on what the namespace
- * could not answer, which they report as not found.
+ * bash reports either); a resolution that failed on what the namespace
+ * could not answer, or the stub a known runtime that is not installed
+ * resolves to (runtimeInstallHint), which they report as not found.
  */
 export type Resolution = {
     readonly kind: 'program';
@@ -91,9 +93,19 @@ export type Resolution = {
     readonly kind: 'directory';
 } | {
     readonly kind: 'failed';
+} | {
+    readonly kind: 'install-hint';
 };
-/** How `command` was resolved, when this resolver gave it; undefined for a registered command. */
+/** How `command` was resolved, when a resolver gave it; undefined for a registered command. */
 export declare function resolutionOf(command: object): Resolution | undefined;
+/**
+ * `command` as the stub a known runtime that is not installed resolves to:
+ * run, it says how to install the runtime; to `type`, `which` and a child's
+ * launcher it is no command.
+ */
+export declare function runtimeInstallHint(command: Command): Command;
+/** Whether `command` is a runtime's install hint (runtimeInstallHint). */
+export declare function isRuntimeInstallHint(command: object): boolean;
 /**
  * What execve(2) refuses `command`, what `name` resolved to from `cwd`, as
  * `view` sees it: EACCES for a directory, the error its X_OK check meets for
