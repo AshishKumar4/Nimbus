@@ -13216,8 +13216,9 @@ function __nimbusGraphRecord(resolution, parent) {
   if (known !== undefined) return known;
   // A typeless .js's syntax decides (detect): CommonJS, it is one module by
   // its file, whatever the URL; an ES module, a query's or fragment's
-  // instance is one of its own.
-  if (resolution.format === "detect" && variant && !__nimbusGraphRecords.has("/" + key)) {
+  // instance is one of its own. A staged one is an ES module already, its
+  // row left to the import of its own URL.
+  if (resolution.format === "detect" && variant && !__nimbusGraphRecords.has("/" + key) && __nimbusEsmId("module", key) === -1) {
     if (__nimbusCommonJsPending.has("/" + key)) return __nimbusTranslatedRecord(resolution, key, key, parent);
     const plain = __nimbusPrepareModule(key, key, false, parent, false);
     if (plain.state === undefined || __nimbusModuleLink(plain.state.cell) === null) return __nimbusTranslatedRecord(resolution, key, key, parent, plain);
