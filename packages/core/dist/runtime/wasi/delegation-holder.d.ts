@@ -67,6 +67,14 @@ export interface HolderOptions {
     readonly grantInos?: number;
     /** Where the client logs what it sends until the session answers: the process's own store, where it has one (process-fs-journal.ts). */
     readonly journal?: ProcessFsJournal;
+    /**
+     * Whether the caller deciding now cannot wait (ResidentFilesystem.synchronous):
+     * a change no held subtree decides is then decided here provisionally,
+     * answered from this view, logged, and the session's to refuse.
+     */
+    readonly provisional?: () => boolean;
+    /** The process's live umask, for what it makes provisionally (a held subtree's grant carries the session's). */
+    readonly umask?: () => number;
 }
 /** A file made or rewritten here: its bytes until they are sent. */
 /** An attribute change by a descriptor: a mode, an owner (null or -1 kept), or times (FsTime). */
@@ -188,6 +196,10 @@ export interface DelegationHolder {
     mkdir(key: string, path: string, mode: number, umask?: number): boolean;
     /** Decide an unlink of `key` (a file or link): true when decided here. */
     unlink(key: string, path: string): boolean;
+    /** rmdir by name, for a caller that cannot wait (HolderOptions.provisional): false when the session must say. */
+    rmdir(key: string, path: string): boolean;
+    /** symlink by name, for a caller that cannot wait (HolderOptions.provisional): false when the session must say. */
+    symlink(key: string, path: string, target: string): boolean;
     /** Decide a rename of `from` to `to` (both resolved): true when decided here. */
     rename(from: string, to: string, path: string): boolean;
     /** Decide an attribute change of `key`: true when decided here. */
@@ -210,6 +222,15 @@ export interface DelegationHolder {
     undecided(key: string): void;
     /** Whether a mutation at `key` would be decided here (a held subtree holds it). */
     holds(key: string): boolean;
+    /** A barrier begins: its number, which `retire` takes once it lands. */
+    barrierBegun(): number;
+    /**
+     * Barrier `begun` landed: what this process changed by name and the
+     * session answered before it began is the view's now. Its own record of
+     * each such name retires, outside a held subtree (a held one keeps its
+     * decisions while it holds it).
+     */
+    retire(begun: number): void;
     /** Whether anything decided here is not sent yet. */
     pending(): boolean;
     /** Send everything decided, in order. A refusal is thrown (the run fails, naming it). */

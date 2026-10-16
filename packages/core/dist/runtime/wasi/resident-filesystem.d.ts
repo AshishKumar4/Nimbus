@@ -218,6 +218,8 @@ export interface ResidentDelegation {
     /** Inode numbers a first grant reserves (the client's GRANT_INOS). */
     readonly grantInos?: number;
     readonly isHomeRoot?: (key: string) => boolean;
+    /** The process's live umask, for what a caller that cannot wait makes outside a held subtree (HolderOptions.umask). */
+    readonly umask?: () => number;
     /** The process's own store's write log (HolderOptions.journal). */
     readonly journal?: ProcessFsJournal;
     readonly readDirectories?: ReadDirectorySupervisor['fsReadDirectories'];

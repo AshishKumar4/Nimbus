@@ -40,6 +40,10 @@ import { copiedPermissions, copyfileMode } from '../../vfs/vfs.js';
 import { LINGER_MS, processFsClient } from '../../_shared/process-fs-client.js';
 /** Descriptors this holder opens are numbered below every session descriptor. */
 const FIRST_LOCAL_HANDLE = -1;
+/** A decision no grant makes (HolderOptions.provisional). */
+const PROVISIONAL = Symbol('provisional');
+/** Where a provisional decision's numbers start: past any the session gives. */
+const PROVISIONAL_INOS = 2 ** 50;
 /** A new open description's id: unguessable, so no other process's call names it. */
 const descriptionId = () => crypto.randomUUID().replaceAll('-', '');
 function parentKey(key) {
@@ -70,6 +74,66 @@ export function delegationHolder(options) {
     let changes = 0;
     let throughLogged = 0;
     let sentAt = 0;
+    /**
+     * What this process changed by name that the view may not have yet, per
+     * key: its ops unanswered (pending), and how many barriers had begun when
+     * the last was answered (settled). Outside a held subtree a key retires
+     * once a barrier begun after that lands (retire); a refused op's at once,
+     * the session never having applied it.
+     */
+    const own = new Map();
+    let barriersBegun = 0;
+    /** The names an op changes. */
+    const keysOf = (op) => (op.type === 'rename' ? [op.from, op.to] : op.type === 'call' ? [op.call.path] : [op.path]);
+    /** Log `op`, the process told it succeeded: its names are this process's own until the view has them. */
+    const acknowledged = (op) => {
+        const keys = keysOf(op);
+        for (const key of keys) {
+            const record = own.get(key);
+            if (record === undefined)
+                own.set(key, { pending: 1, settled: barriersBegun });
+            else
+                record.pending++;
+        }
+        const answered = client.submit(op, { acknowledged: true });
+        const settle = (refused) => {
+            for (const key of keys) {
+                const record = own.get(key);
+                if (record === undefined)
+                    continue;
+                record.pending--;
+                record.settled = barriersBegun;
+                if (refused)
+                    forget(key);
+            }
+        };
+        void answered.then((answer) => settle(answer.failed !== undefined), () => settle(true));
+        return answered;
+    };
+    /** `key`'s own record goes: the view's row answers for it from now on, but for bytes still written or open. */
+    const forget = (key) => {
+        own.delete(key);
+        decided.delete(key);
+        added.get(parentKey(key))?.delete(nameOf(key));
+        removed.get(parentKey(key))?.delete(nameOf(key));
+        if (added.get(key)?.size === 0)
+            added.delete(key);
+        for (const [ino, file] of files) {
+            if (file.key === key && file.through === undefined && file.detached === undefined && !dirty.has(file) && !isOpen(file))
+                files.delete(ino);
+        }
+    };
+    /**
+     * What decides a change at `key`: the grant of a subtree the process
+     * holds there (counted toward taking one either way); else, for a caller
+     * that cannot wait, PROVISIONAL: answered from this view and logged, the
+     * session's to refuse.
+     */
+    const deciding = (key) => client.holder(key) ?? (options.provisional?.() === true ? PROVISIONAL : undefined);
+    const umaskOf = (decider) => (decider === PROVISIONAL ? options.umask?.() ?? 0o022 : decider.umask);
+    /** What a provisional decision makes is numbered here until the view has it, past any number the session gives. */
+    let nextLocalIno = PROVISIONAL_INOS;
+    const numberFor = (decider) => (decider === PROVISIONAL ? nextLocalIno++ : client.number(decider));
     /**
      * `file` stops being decided here (its grant is shared, recalled or gone,
      * or the process is about to change a name or an access above it): what
@@ -102,10 +166,10 @@ export function delegationHolder(options) {
             // The first makes the file when it is not made yet: the creating open, and the bytes written through it.
             const creating = made !== undefined && at === 0;
             const making = creating ? { create: true, exclusive: true, ino: made, ...(file.umask === undefined ? {} : { umask: file.umask }) } : {};
-            const answer = client.submit({ type: 'call', call: { call: 'open', path: file.key, mode: file.mode, ...making, ...(handle.readable ? { read: true } : {}), description } }, { acknowledged: true });
+            const answer = acknowledged({ type: 'call', call: { call: 'open', path: file.key, mode: file.mode, ...making, ...(handle.readable ? { read: true } : {}), description } });
             handle.session = answer.then((answered) => answered.receipt?.handle, () => undefined);
             if (creating && bytes.byteLength > 0) {
-                client.submit({ type: 'call', call: { call: 'write', path: file.key, ino, description, offset: 0, data: bytes.slice() } }, { acknowledged: true });
+                acknowledged({ type: 'call', call: { call: 'write', path: file.key, ino, description, offset: 0, data: bytes.slice() } });
             }
         });
     };
@@ -172,12 +236,12 @@ export function delegationHolder(options) {
             }
             if (ino === undefined && from > 0) {
                 if (file.length < file.logged)
-                    client.submit({ type: 'call', call: { call: 'ftruncate', path: file.key, size: file.length } }, { acknowledged: true });
+                    acknowledged({ type: 'call', call: { call: 'ftruncate', path: file.key, size: file.length } });
                 if (file.length > from)
-                    client.submit({ type: 'call', call: { call: 'write', path: file.key, offset: from, data: file.bytes.slice(from, file.length) } }, { acknowledged: true });
+                    acknowledged({ type: 'call', call: { call: 'write', path: file.key, offset: from, data: file.bytes.slice(from, file.length) } });
             }
             else {
-                client.submit({ type: 'call', call: { call: 'writeFile', path: file.key, mode: file.mode, ...(ino === undefined ? {} : { ino }), ...(file.umask === undefined ? {} : { umask: file.umask }), data: file.bytes.slice(0, file.length) } }, { acknowledged: true });
+                acknowledged({ type: 'call', call: { call: 'writeFile', path: file.key, mode: file.mode, ...(ino === undefined ? {} : { ino }), ...(file.umask === undefined ? {} : { umask: file.umask }), data: file.bytes.slice(0, file.length) } });
             }
             // Unlogged until the log took it: one that refused it (the session
             // ended the process) leaves it for the settle's (logHeld).
@@ -190,25 +254,21 @@ export function delegationHolder(options) {
     /** Armed while a file's bytes are unlogged: logs them at the latest LINGER_MS after the first, as the client sends what lingers. */
     let lingerTimer = null;
     /**
-     * Forget what was decided under `root`: sent, so the store (after its
-     * barrier) answers. Its files' open descriptions write through from now
-     * on: a peer may write the file, and a whole-file write of what this
-     * process held would overwrite what the peer wrote.
+     * The subtree at `root` is no longer held: what was decided there is sent,
+     * and retires as anything of the process's own does, once a barrier
+     * begun after its answer lands (retire). Its files' open descriptions
+     * write through from now on: a peer may write the file, and a whole-file
+     * write of what this process held would overwrite what the peer wrote.
      */
     const dropDecisions = (root) => {
         drain();
         for (const [ino, file] of files)
             if (within(file.key, root))
                 goThrough(file, ino);
+        // What it logged stays this process's own until the view has it (retire); what it never logged goes now.
         for (const key of [...decided.keys()])
-            if (within(key, root))
-                decided.delete(key);
-        for (const key of [...added.keys()])
-            if (within(key, root))
-                added.delete(key);
-        for (const key of [...removed.keys()])
-            if (within(key, root))
-                removed.delete(key);
+            if (within(key, root) && !own.has(key))
+                forget(key);
         options.sent?.();
     };
     const client = processFsClient({
@@ -234,7 +294,7 @@ export function delegationHolder(options) {
     const log = (op) => {
         drain();
         changes++;
-        client.submit(op, { acknowledged: true });
+        acknowledged(op);
     };
     /** What was logged up to `covered` reached the session: the store owes a barrier once something did. */
     const sentSome = (covered) => {
@@ -243,6 +303,8 @@ export function delegationHolder(options) {
         sentAt = covered;
         options.sent?.();
     };
+    /** Whether directory `key` was made here, and the store knows nothing of it: its names are the ones made in it. */
+    const madeHere = (key) => decided.get(key)?.type === 'directory' && !store.entry(key);
     const entryOf = (key) => {
         const own = decided.get(key);
         return own !== undefined ? own : store.entry(key);
@@ -348,7 +410,14 @@ export function delegationHolder(options) {
             : { ...entry, atime: attrs.atime, mtime: attrs.mtime, ctime: now() });
     const holder = {
         client,
-        entry: (key) => decided.get(key),
+        entry: (key) => {
+            const own = decided.get(key);
+            if (own !== undefined)
+                return own;
+            // A directory made here has no names but the ones made in it.
+            const dir = parentKey(key);
+            return key !== '' && madeHere(dir) && !added.get(dir)?.has(nameOf(key)) ? null : undefined;
+        },
         children: (key, base) => {
             const made = added.get(key);
             const gone = removed.get(key);
@@ -356,8 +425,7 @@ export function delegationHolder(options) {
                 return base;
             // A directory made here has no names but the ones made in it; one the
             // store has not listed is listed first (undefined asks for that).
-            const madeHere = store.entry(key) === null || (store.entry(key) === undefined && decided.get(key)?.type === 'directory');
-            if (base === undefined && !madeHere)
+            if (base === undefined && !madeHere(key))
                 return undefined;
             const out = new Map();
             for (const child of base ?? [])
@@ -378,8 +446,8 @@ export function delegationHolder(options) {
             if (target === undefined || (target !== null && target.type !== 'file'))
                 return false;
             // Counted toward taking the destination's subtree, as any change there is.
-            const grant = client.holder(to);
-            if (grant === undefined || client.held(from) === undefined)
+            const grant = deciding(to);
+            if (grant === undefined || (grant !== PROVISIONAL && client.held(from) === undefined))
                 return false;
             const bytes = holder.content(source) ?? stored;
             if (bytes === undefined)
@@ -388,7 +456,7 @@ export function delegationHolder(options) {
             // Another's file there, or one this process holds open, is the session's to copy over.
             if (target !== null && ((store.cred.uid !== 0 && target.uid !== store.cred.uid) || (known !== undefined && isOpen(known))))
                 return false;
-            const umask = grant.umask;
+            const umask = umaskOf(grant);
             const asked = copiedPermissions(source.mode, false);
             // What the open leaves (cp(1)'s mode), and with keepMode its fchmod to the source's: one a confined principal may not grant is the session's.
             const opened = target === null ? asked & ~umask : target.mode & 0o7777;
@@ -401,12 +469,15 @@ export function delegationHolder(options) {
                 const parent = writableParent(to, path, 'copyfile');
                 if (parent === undefined)
                     return false;
-                made = client.number(grant);
-                if (made === undefined)
+                const ino = numberFor(grant);
+                if (ino === undefined)
                     return false;
+                // A grant's number is the session's too; a provisional one is the session's to give.
+                if (grant !== PROVISIONAL)
+                    made = ino;
                 const { uid, gid } = ownership(parent);
                 const stamp = now();
-                entry = { type: 'file', dev: store.device, ino: made, nlink: 1, size: bytes.byteLength, atime: stamp, mtime: stamp, ctime: stamp, mode: 0o100000 | mode, uid, gid, revision: 0, target: null };
+                entry = { type: 'file', dev: store.device, ino, nlink: 1, size: bytes.byteLength, atime: stamp, mtime: stamp, ctime: stamp, mode: 0o100000 | mode, uid, gid, revision: 0, target: null };
             }
             else {
                 if (!modeAllows(target, 2, store.cred))
@@ -431,9 +502,9 @@ export function delegationHolder(options) {
             files.set(entry.ino, file);
             const description = descriptionId();
             changes++;
-            client.submit({ type: 'call', call: { call: 'open', path: to, mode: asked, ...(made === undefined ? {} : { ino: made, umask }), create: true, truncate: true, ...(keepMode ? { fchmod: mode } : {}), description } }, { acknowledged: true });
-            client.submit({ type: 'call', call: { call: 'write', path: to, ...(made === undefined ? {} : { ino: made }), description, offset: 0, data: bytes.slice() } }, { acknowledged: true });
-            client.submit({ type: 'call', call: { call: 'close', path: to, description } }, { acknowledged: true });
+            acknowledged({ type: 'call', call: { call: 'open', path: to, mode: asked, ...(made !== undefined ? { ino: made, umask } : grant === PROVISIONAL && target === null ? { umask } : {}), create: true, truncate: true, ...(keepMode ? { fchmod: mode } : {}), description } });
+            acknowledged({ type: 'call', call: { call: 'write', path: to, ...(made === undefined ? {} : { ino: made }), description, offset: 0, data: bytes.slice() } });
+            acknowledged({ type: 'call', call: { call: 'close', path: to, description } });
             return true;
         },
         logHeld: () => {
@@ -459,7 +530,7 @@ export function delegationHolder(options) {
             const current = entryOf(key);
             if (current === undefined || (current !== null && current.type !== 'file'))
                 return undefined;
-            const grant = client.holder(key);
+            const grant = deciding(key);
             if (grant === undefined)
                 return undefined;
             if (current !== null && flags.exclusive && flags.create)
@@ -471,21 +542,22 @@ export function delegationHolder(options) {
                 const parent = writableParent(key, path, 'open');
                 if (parent === undefined)
                     return undefined;
-                const ino = client.number(grant);
+                const ino = numberFor(grant);
                 if (ino === undefined)
                     return undefined;
                 const { uid, gid } = ownership(parent);
                 const stamp = now();
                 const asked = (flags.mode ?? 0o666) & 0o777;
-                const umask = flags.umask ?? grant.umask;
+                const umask = flags.umask ?? umaskOf(grant);
                 const entry = {
                     type: 'file', dev: store.device, ino, nlink: 1, size: 0, atime: stamp, mtime: stamp, ctime: stamp,
                     mode: 0o100000 | (asked & ~umask), uid, gid, revision: 0, target: null,
                 };
                 decided.set(key, entry);
                 note(parentKey(key), nameOf(key), 'file');
-                // Its mode was decided under this umask: the session applies the same one.
-                file = { key, bytes: new Uint8Array(0), length: 0, mode: asked, made: ino, umask };
+                // Its mode was decided under this umask: the session applies the same
+                // one, and the number a grant reserved (a provisional one is the session's to give).
+                file = { key, bytes: new Uint8Array(0), length: 0, mode: asked, ...(grant === PROVISIONAL ? {} : { made: ino }), umask };
                 files.set(ino, file);
                 // Made here: the name exists from now on, in the log's order. Logged
                 // with its bytes, before the next decision (drain), as one call.
@@ -604,13 +676,13 @@ export function delegationHolder(options) {
                 const { ino } = file.through;
                 const by = handle.description === undefined ? {} : { description: handle.description };
                 if (handle.append) {
-                    client.submit({ type: 'call', call: { call: 'append', path: file.key, ino, ...by, data: bytes.slice() } }, { acknowledged: true });
+                    acknowledged({ type: 'call', call: { call: 'append', path: file.key, ino, ...by, data: bytes.slice() } });
                     file.length += bytes.byteLength;
                     handle.position = file.length;
                 }
                 else {
                     const at = offset ?? handle.position;
-                    client.submit({ type: 'call', call: { call: 'write', path: file.key, ino, ...by, offset: at, data: bytes.slice() } }, { acknowledged: true });
+                    acknowledged({ type: 'call', call: { call: 'write', path: file.key, ino, ...by, offset: at, data: bytes.slice() } });
                     file.length = Math.max(file.length, at + bytes.byteLength);
                     if (offset === null)
                         handle.position = at + bytes.byteLength;
@@ -647,7 +719,7 @@ export function delegationHolder(options) {
             const handle = handleOf(handleId);
             const file = handle.file;
             if (file.through !== undefined) {
-                client.submit({ type: 'call', call: { call: 'ftruncate', path: file.key, ino: file.through.ino, ...(handle.description === undefined ? {} : { description: handle.description }), size } }, { acknowledged: true });
+                acknowledged({ type: 'call', call: { call: 'ftruncate', path: file.key, ino: file.through.ino, ...(handle.description === undefined ? {} : { description: handle.description }), size } });
                 file.length = size;
                 throughLogged = ++changes;
                 return;
@@ -685,7 +757,7 @@ export function delegationHolder(options) {
             for (const other of handles.values())
                 if (other === handle)
                     return;
-            client.submit({ type: 'call', call: { call: 'close', path: handle.file.key, description: handle.description } }, { acknowledged: true });
+            acknowledged({ type: 'call', call: { call: 'close', path: handle.file.key, description: handle.description } });
             throughLogged = ++changes;
         },
         keyOf: (handleId) => handleOf(handleId).file.key,
@@ -721,7 +793,7 @@ export function delegationHolder(options) {
             const current = entryOf(key);
             if (current === undefined)
                 return false;
-            const grant = client.holder(key);
+            const grant = deciding(key);
             if (grant === undefined)
                 return false;
             if (current !== null)
@@ -729,12 +801,12 @@ export function delegationHolder(options) {
             const parent = writableParent(key, path, 'mkdir');
             if (parent === undefined)
                 return false;
-            const ino = client.number(grant);
+            const ino = numberFor(grant);
             if (ino === undefined)
                 return false;
             const { uid, gid, setgid } = ownership(parent);
             const stamp = now();
-            const umask = mask ?? grant.umask;
+            const umask = mask ?? umaskOf(grant);
             const perm = (mode & 0o777 & ~umask) | (setgid ? 0o2000 : 0);
             decided.set(key, {
                 type: 'directory', dev: store.device, ino, nlink: 2, size: 0, atime: stamp, mtime: stamp, ctime: stamp,
@@ -742,14 +814,16 @@ export function delegationHolder(options) {
             });
             note(parentKey(key), nameOf(key), 'directory');
             added.set(key, added.get(key) ?? new Map());
-            log({ type: 'call', call: { call: 'mkdir', path: key, mode: mode & 0o777, ino, umask } });
+            log({ type: 'call', call: { call: 'mkdir', path: key, mode: mode & 0o777, ...(grant === PROVISIONAL ? {} : { ino }), umask } });
             return true;
         },
         unlink: (key, path) => {
             const current = entryOf(key);
+            if (current === null && options.provisional?.() === true)
+                throw fsError('ENOENT', 'unlink', path);
             if (current === undefined || current === null || current.type === 'directory')
                 return false;
-            if (client.holder(key) === undefined)
+            if (deciding(key) === undefined)
                 return false;
             if (writableParent(key, path, 'unlink') === undefined)
                 return false;
@@ -768,17 +842,67 @@ export function delegationHolder(options) {
             log({ type: 'call', call: { call: 'unlink', path: key } });
             return true;
         },
+        rmdir: (key, path) => {
+            if (options.provisional?.() !== true)
+                return false;
+            const current = entryOf(key);
+            if (current === undefined)
+                return false;
+            if (current === null)
+                throw fsError('ENOENT', 'rmdir', path);
+            if (current.type !== 'directory')
+                throw fsError('ENOTDIR', 'rmdir', path);
+            const names = holder.children(key, store.children(key));
+            if (names === undefined)
+                return false;
+            if (names.length > 0)
+                throw fsError('ENOTEMPTY', 'rmdir', path);
+            if (deciding(key) === undefined || writableParent(key, path, 'rmdir') === undefined)
+                return false;
+            decided.set(key, null);
+            note(parentKey(key), nameOf(key), null);
+            added.delete(key);
+            removed.delete(key);
+            log({ type: 'call', call: { call: 'rmdir', path: key } });
+            return true;
+        },
+        symlink: (key, path, target) => {
+            if (options.provisional?.() !== true)
+                return false;
+            const current = entryOf(key);
+            if (current === undefined)
+                return false;
+            if (current !== null)
+                throw fsError('EEXIST', 'symlink', path);
+            if (deciding(key) === undefined)
+                return false;
+            const parent = writableParent(key, path, 'symlink');
+            if (parent === undefined)
+                return false;
+            const { uid, gid } = ownership(parent);
+            const stamp = now();
+            // Numbered here until the view has the session's (a symlink's op carries no number).
+            decided.set(key, {
+                type: 'symlink', dev: store.device, ino: nextLocalIno++, nlink: 1, size: new TextEncoder().encode(target).byteLength,
+                atime: stamp, mtime: stamp, ctime: stamp, mode: 0o120777, uid, gid, revision: 0, target,
+            });
+            note(parentKey(key), nameOf(key), 'symlink');
+            log({ type: 'call', call: { call: 'symlink', path: key, target } });
+            return true;
+        },
         rename: (from, to, path) => {
             const source = entryOf(from);
             const target = entryOf(to);
+            if (source === null && options.provisional?.() === true)
+                throw fsError('ENOENT', 'rename', path);
             if (source === undefined || source === null || target === undefined)
                 return false;
             if (source.type === 'directory' && (target !== null || within(to, from)))
                 return false;
             if (target !== null && (target.type === 'directory' || source.type === 'directory'))
                 return false;
-            const grant = client.holder(from);
-            if (grant === undefined || client.held(to) !== grant)
+            const grant = deciding(from);
+            if (grant === undefined || (client.held(to) ?? (grant === PROVISIONAL ? PROVISIONAL : undefined)) !== grant)
                 return false;
             if (from === to)
                 return true;
@@ -800,6 +924,12 @@ export function delegationHolder(options) {
                         map.set(to + key.slice(from.length), value);
                     }
             }
+            // And the names beneath it are its own under their new names (the rename's are its own).
+            for (const [key, value] of [...own])
+                if (key !== from && within(key, from)) {
+                    own.delete(key);
+                    own.set(to + key.slice(from.length), value);
+                }
             decided.set(from, null);
             decided.set(to, { ...source, ctime: now() });
             note(parentKey(from), nameOf(from), null);
@@ -820,9 +950,11 @@ export function delegationHolder(options) {
         },
         setattr: (key, attrs) => {
             const current = entryOf(key);
+            if (current === null && options.provisional?.() === true)
+                throw fsError('ENOENT', 'mode' in attrs ? 'chmod' : 'uid' in attrs ? 'chown' : 'utime', '/' + key);
             if (current === undefined || current === null)
                 return false;
-            if (client.holder(key) === undefined)
+            if (deciding(key) === undefined)
                 return false;
             // Only the owner (or root) changes a mode, an owner or times here, as
             // chmod, chown and utimes allow it; anything else is the session's to judge.
@@ -875,6 +1007,13 @@ export function delegationHolder(options) {
                 through.entry = { ...stat, target: null };
         },
         holds: (key) => client.held(key) !== undefined,
+        barrierBegun: () => ++barriersBegun,
+        retire: (begun) => {
+            for (const [key, record] of [...own]) {
+                if (record.pending === 0 && record.settled < begun && client.held(key) === undefined)
+                    forget(key);
+            }
+        },
         pending: () => dirty.size > 0 || client.pending(),
         flush: async () => {
             drain();
