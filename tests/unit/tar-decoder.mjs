@@ -13,11 +13,16 @@
 //   - only a POSIX ustar header has a name prefix (GNU's keeps times there),
 //     a leading U+FEFF is part of a name, and an entry that claims more bytes
 //     than the archive holds is never buffered;
+//   - an archive that ends inside a member (its data or its padding) is
+//     truncated, after the entries before it, as GNU tar ("Unexpected EOF in
+//     archive") and node-tar (TAR_BAD_ARCHIVE) find it: the shell gets that
+//     member's whole blocks, as GNU tar extracts them; one that ends between
+//     members, a short header included, is whole, as both find it;
 //   - the decoder's private names stay its own beside W7's, as the npm
 //     facet concatenates their preambles.
 import assert from 'node:assert/strict';
 import {
-  MAX_FILE_BYTES, parseTarHeader, streamTarEntries, streamTarRecords, tarBytes,
+  MAX_FILE_BYTES, parseTarHeader, streamTarEntries, streamTarRecords, tarBytes, TarTruncatedError,
 } from '../../packages/core/src/_shared/tarball-stream.ts';
 import { createTar, parseTar } from '../../packages/core/src/substrate/lifo/utils/archive.ts';
 import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
@@ -126,7 +131,8 @@ const deep = `${'d'.repeat(70)}/${'e'.repeat(70)}`; // 141 bytes: over a name's 
     { name: 'top/link', type: '2' },
     { name: 'ñ.txt', data: enc.encode('ñ') },
   ]);
-  const entries = await parseTar(tar);
+  const { entries, truncated } = await parseTar(tar);
+  assert.equal(truncated, false);
   assert.deepEqual(entries.map(({ path, type, mode, mtime, data }) => [path, type, mode.toString(8), mtime, new TextDecoder().decode(data)]), [
     ['top', 'directory', '750', 1_600_000_000_000, ''],
     [`top/${'p'.repeat(120)}/x.sh`, 'file', '755', 1_600_000_001_000, '#!/bin/sh\n'],
@@ -140,12 +146,13 @@ const deep = `${'d'.repeat(70)}/${'e'.repeat(70)}`; // 141 bytes: over a name's 
     { path: 'd', data: new Uint8Array(0), type: 'directory', mode: 0o755, mtime: 1_500_000_000_000 },
     { path: 'd/f.txt', data: enc.encode('leaf'), type: 'file', mode: 0o600, mtime: 1_500_000_001_000 },
   ];
-  assert.deepEqual(await parseTar(createTar(written)), written);
-  // A header that claims more than the archive holds (8 GiB in 512 bytes): never buffered.
-  assert.deepEqual(await parseTar(header({ name: 'huge', size: 0o77777777777 })), []);
+  assert.deepEqual(await parseTar(createTar(written)), { entries: written, truncated: false });
+  // A header that claims more than the archive holds (8 GiB in 512 bytes): never buffered, and the archive is truncated.
+  const huge = await parseTar(header({ name: 'huge', size: 0o77777777777 }));
+  assert.deepEqual([huge.truncated, huge.entries.map(({ path, data }) => [path, data.length])], [true, [['huge', 0]]]);
   const escaping = new Uint8Array(1024);
   escaping.set(header({ name: '../../outside', size: 0o77777777777 }), 0);
-  assert.deepEqual(await parseTar(escaping), [], 'an entry it leaves out is never buffered');
+  assert.deepEqual(await parseTar(escaping), { entries: [], truncated: true }, 'an entry it leaves out is never buffered');
   console.log('  [3] shell: directories and files with mode and mtime, long and UTF-8 paths, inside the archive root');
 }
 
@@ -156,6 +163,44 @@ const deep = `${'d'.repeat(70)}/${'e'.repeat(70)}`; // 141 bytes: over a name's 
   for await (const { header: h, data } of streamTarRecords(tarBytes(tar), (h) => h.name === 'b')) records.push([h.name, data && new TextDecoder().decode(data)]);
   assert.deepEqual(records, [['a', null], ['b', 'bb']]);
   console.log('  [4] streamTarRecords: every entry, its bytes only when asked for');
+}
+
+// ── an archive that ends inside a member is truncated; one that ends between members is not ──
+{
+  const big = new Uint8Array(3000).map((_, i) => i % 251);
+  const full = archive([{ name: 'a.txt', data: enc.encode('first\n') }, { name: 'b.bin', data: big }, { name: 'c.txt', data: enc.encode('third\n') }]);
+  /** What streamTarRecords yields of the first `length` bytes, every entry read, and how it ends. */
+  const walk = async (length, chunk = length) => {
+    const yielded = [];
+    const source = async function* () { for (let at = 0; at < length; at += chunk) yield full.subarray(at, Math.min(length, at + chunk)); };
+    try {
+      for await (const { header: h } of streamTarRecords(source(), () => true)) yielded.push(h.name);
+      return { yielded, ended: 'whole' };
+    } catch (error) {
+      assert.ok(error instanceof TarTruncatedError, String(error));
+      return { yielded, ended: [error.header.name, error.received, error.data.length] };
+    }
+  };
+  // Inside b.bin's data, in one chunk and in odd-sized chunks: GNU tar 1.35 and node-tar 7.5 call both truncated.
+  assert.deepEqual(await walk(1600), { yielded: ['a.txt'], ended: ['b.bin', 64, 0] });
+  assert.deepEqual(await walk(1600, 77), { yielded: ['a.txt'], ended: ['b.bin', 64, 0] });
+  assert.deepEqual(await walk(2636), { yielded: ['a.txt'], ended: ['b.bin', 1100, 1024] }, 'its whole blocks are what GNU tar extracts of it');
+  // Inside a.txt's padding: its data is all there, and it is still truncated, as both tars find.
+  assert.deepEqual(await walk(518), { yielded: [], ended: ['a.txt', 6, 0] });
+  // Between members: at a header boundary, and inside the next header. Both tars list a.txt and succeed.
+  assert.deepEqual(await walk(1024), { yielded: ['a.txt'], ended: 'whole' });
+  assert.deepEqual(await walk(1100), { yielded: ['a.txt'], ended: 'whole' });
+  // npm's walk ends the same way: the entries before, then the error.
+  const npm = [];
+  const failure = await (async () => {
+    try { for await (const { name } of streamTarEntries(tarBytes(full.subarray(0, 1600)))) npm.push(name); return null; } catch (error) { return error; }
+  })();
+  assert.deepEqual([npm, failure instanceof TarTruncatedError], [['a.txt'], true]);
+  // The shell's: what came before, and the truncated member's whole blocks.
+  const shell = await parseTar(full.subarray(0, 2636));
+  assert.deepEqual([shell.truncated, shell.entries.map(({ path, data }) => [path, data.length])], [true, [['a.txt', 6], ['b.bin', 1024]]]);
+  assert.deepEqual(shell.entries[1].data, big.subarray(0, 1024));
+  console.log('  [5] truncation: inside a member\'s data or padding is an error after the entries before it; between members is not');
 }
 
 // ── the generated preamble beside W7's, as the npm facet concatenates them ──
@@ -170,7 +215,7 @@ const deep = `${'d'.repeat(70)}/${'e'.repeat(70)}`; // 141 bytes: over a name's 
   const names = [];
   for await (const { name } of facet.streamTarEntries(facet.tarBytes(tar))) names.push(name);
   assert.deepEqual(names, ['package/a.js']);
-  console.log('  [5] the decoder\'s preamble keeps its names its own beside W7\'s');
+  console.log('  [6] the decoder\'s preamble keeps its names its own beside W7\'s');
 }
 
 console.log('tar-decoder OK');

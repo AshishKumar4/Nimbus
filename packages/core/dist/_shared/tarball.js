@@ -54,7 +54,7 @@ export async function writeTarballStream(body, targetDir, vfs) {
     await vfs.writeFile(`${targetDir}/${PACKAGE_MANIFEST}`, manifest);
     return { files: files + 1, bytes: bytes + manifest.length };
 }
-/** Extract every regular file. Gzipped input is decompressed first. */
+/** Extract every regular file. Gzipped input is decompressed first. An archive that is not whole throws. */
 export async function extractTarball(tarball) {
     const files = new Map();
     const raw = new Uint8Array(tarball);
@@ -68,13 +68,10 @@ export async function extractTarball(tarball) {
     else {
         source = tarBytes(raw);
     }
-    try {
-        for await (const entry of streamTarEntries(source)) {
-            files.set(entry.name, entry.data);
-        }
-    }
-    catch {
-        return files;
+    // An archive that is not whole (a gzip member that fails, a tar that ends inside a member) is refused, as
+    // RubyGems refuses a .gem whose data.tar.gz is either, rather than returning what came before the failure.
+    for await (const entry of streamTarEntries(source)) {
+        files.set(entry.name, entry.data);
     }
     return files;
 }
