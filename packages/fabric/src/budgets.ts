@@ -31,6 +31,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { afterTurn } from '@nimbus-sh/core/_shared/after-turn.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { hostWasmIdentity } from './host-wasm.js';
 import { withResolvers } from './turn-budget.js';
 
@@ -1068,13 +1069,12 @@ export const DYNAMIC_WORKER_CODE_LIMIT_BYTES = 67_108_864;
 export function assertModuleMapWithinCodeLimit(modules: Record<string, unknown>): void {
   let estimate = 0;
   for (const content of Object.values(modules)) {
-    estimate += memberBytes(content, null);
+    estimate += memberBytes(content, false);
   }
   if (estimate <= DYNAMIC_WORKER_CODE_LIMIT_BYTES) return;
 
-  const encoder = new TextEncoder();
   const sized = Object.entries(modules)
-    .map(([name, content]) => ({ name, bytes: memberBytes(content, encoder) }))
+    .map(([name, content]) => ({ name, bytes: memberBytes(content, true) }))
     .sort((a, b) => b.bytes - a.bytes);
   const total = sized.reduce((sum, member) => sum + member.bytes, 0);
   const top = sized.slice(0, 5)
@@ -1090,14 +1090,13 @@ export function assertModuleMapWithinCodeLimit(modules: Record<string, unknown>)
 /**
  * Bytes one module-map member carries, across the loader's content kinds
  * (plain string, `{ js | cjs | py | text }`, `{ wasm | data }`, a bare
- * WebAssembly.Module). With an encoder, text is measured exactly; without
- * one, by code-unit length. A compiled module counts the wire size its host
+ * WebAssembly.Module). `exact` measures text in UTF-8 bytes; otherwise
+ * by code-unit length. A compiled module counts the wire size its host
  * described (host-wasm.ts); one nobody described counts nothing here and is
  * left to the platform's own refusal, as the text undercount is.
  */
-function memberBytes(content: unknown, encoder: TextEncoder | null): number {
-  const textBytes = (text: string): number =>
-    encoder ? encoder.encode(text).byteLength : text.length;
+function memberBytes(content: unknown, exact: boolean): number {
+  const textBytes = (text: string): number => (exact ? utf8Length(text) : text.length);
   if (typeof content === 'string') return textBytes(content);
   if (content instanceof WebAssembly.Module) return hostWasmIdentity(content)?.bytes ?? 0;
   if (content !== null && typeof content === 'object') {

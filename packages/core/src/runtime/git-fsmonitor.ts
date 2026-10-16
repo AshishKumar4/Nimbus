@@ -4,6 +4,7 @@
 import { LruMap } from '../_shared/lru-map.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import type { Awaitable, RuntimeFsBridge, SqlDatabase, VfsCred } from './os-contracts.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 
 const REPOSITORIES = 128;
 const TOKENS_PER_REPOSITORY = 32;
@@ -75,7 +76,7 @@ function serialize(history: TokenHistory): string {
 function boundedMounts(mounts: readonly string[] | null): Mounts {
   if (mounts === null) return null;
   const unique = [...new Set(mounts)].sort();
-  return unique.reduce((bytes, path) => bytes + encoder.encode(path).byteLength + 1, 0) > MAX_MOUNT_BYTES ? null : unique;
+  return unique.reduce((bytes, path) => bytes + utf8Length(path) + 1, 0) > MAX_MOUNT_BYTES ? null : unique;
 }
 const mergeMounts = (before: Mounts, after: Mounts): Mounts => before === null || after === null ? null : boundedMounts([...before, ...after]);
 
@@ -142,7 +143,7 @@ export function makeGitFsmonitor(state?: GitFsmonitorState): {
       for (const point of dirtyMounts) {
         if (point === root || root.startsWith(point + '/') || point === '') return reply(['/']);
         const name = point.slice(prefix.length) + '/';
-        size += encoder.encode(name).byteLength + 1;
+        size += utf8Length(name) + 1;
         paths.add(name);
       }
       // Even this fast path is after acquisition: restore/epoch changes
@@ -163,7 +164,7 @@ export function makeGitFsmonitor(state?: GitFsmonitorState): {
         if (entry.stat?.type === 'directory' && !entry.structural && !entry.subtree) continue;
         const name = entry.structural || entry.subtree || entry.stat?.type === 'directory' ? `${relative}/` : relative;
         if (paths.has(name)) continue;
-        size += encoder.encode(name).byteLength + 1;
+        size += utf8Length(name) + 1;
         if (size > MAX_REPLY_BYTES) return reply(['/']);
         paths.add(name);
       }

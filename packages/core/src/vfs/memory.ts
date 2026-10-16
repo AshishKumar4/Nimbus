@@ -10,6 +10,7 @@ import type { SyncVFS, VFS, VfsDirent, VfsFileType, VfsStat } from './vfs.js';
 import { syscallError, type VfsError, type VfsErrorCode } from './vfs-error.js';
 import { timeAt } from './posix-access.js';
 import type { FsTime } from '../runtime/os-contracts.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 
 type Entry = {
   /** Its number, its own for its life (a rename keeps it). */
@@ -21,7 +22,6 @@ type Entry = {
   revision: number;
 } & ({ type: 'directory'; children: Map<string, Entry> } | { type: Exclude<VfsFileType, 'directory'>; children: null });
 
-const encoder = new TextEncoder();
 const EMPTY = new Uint8Array(0);
 
 /** One call as Node names it, for its errors: the syscall and the paths its caller gave. */
@@ -106,7 +106,7 @@ export class MemoryVFS implements VFS {
     return {
       ino: entry.ino,
       type: entry.type,
-      size: entry.type === 'symlink' ? encoder.encode(entry.target).length : entry.data.length,
+      size: entry.type === 'symlink' ? utf8Length(entry.target) : entry.data.length,
       mtimeMs: entry.mtimeMs,
       revision: entry.revision,
       mode: entry.mode,
