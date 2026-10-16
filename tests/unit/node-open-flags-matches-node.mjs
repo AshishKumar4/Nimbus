@@ -3,8 +3,11 @@
 // the node on PATH (the oracle) running the same program over the same tree:
 //
 //   - O_NOFOLLOW: an open of a final symbolic link is ELOOP, in openSync,
-//     callback open and promises.open, with O_CREAT and O_DIRECTORY too; a
-//     regular file opens as ever, and so does the link without the flag;
+//     callback open and promises.open, with O_CREAT, O_TRUNC and O_DIRECTORY
+//     too, but EEXIST under O_CREAT|O_EXCL; a regular file opens as ever,
+//     and so does the link without the flag;
+//   - a write open's other answers: EEXIST, ENOENT, EISDIR, the mode a create
+//     gives under the umask, O_TRUNC emptying and its absence keeping;
 //   - O_SYNC (and the 'rs+' alias): accepted, each write made;
 //   - FileHandle.write: (string, position, encoding) writes the string in its
 //     encoding at the position; (buffer, offset, length, position) and
@@ -14,6 +17,8 @@
 // Red before: the shim decoded O_NOFOLLOW and O_SYNC and dropped them, so a
 // no-follow open followed the link; FileHandle.write UTF-8-encoded every
 // string ('ff' in hex wrote 66 66) and took an options object for the offset.
+// Then O_NOFOLLOW was judged before O_EXCL, so a link under O_CREAT|O_EXCL
+// was ELOOP.
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -52,6 +57,33 @@ const PROGRAM = `async (fs, root) => {
   results.promisesNoFollowLink = await outcome(async () => { const h = await fs.promises.open(P('seed/link-to-a'), C.O_RDONLY | C.O_NOFOLLOW); await h.close(); });
   results.callbackNoFollowLink = await outcome(() => new Promise((resolve, reject) =>
     fs.open(P('seed/link-to-a'), C.O_RDONLY | C.O_NOFOLLOW, (e, fd) => { if (e) reject(e); else { fs.closeSync(fd); resolve(); } })));
+  // O_EXCL judges the name before O_NOFOLLOW: a link there is EEXIST.
+  results.syncExclNoFollowLink = await outcome(() => { fs.openSync(P('seed/link-to-a'), C.O_WRONLY | C.O_CREAT | C.O_EXCL | C.O_NOFOLLOW); });
+  results.promisesExclNoFollowLink = await outcome(async () => { const h = await fs.promises.open(P('seed/link-to-a'), C.O_WRONLY | C.O_CREAT | C.O_EXCL | C.O_NOFOLLOW); await h.close(); });
+  results.callbackExclNoFollowLink = await outcome(() => new Promise((resolve, reject) =>
+    fs.open(P('seed/link-to-a'), C.O_WRONLY | C.O_CREAT | C.O_EXCL | C.O_NOFOLLOW, (e, fd) => { if (e) reject(e); else { fs.closeSync(fd); resolve(); } })));
+  results.promisesNoFollowTruncLink = await outcome(async () => { const h = await fs.promises.open(P('seed/link-to-a'), C.O_WRONLY | C.O_TRUNC | C.O_NOFOLLOW); await h.close(); });
+  results.promisesNoFollowRdwrLink = await outcome(async () => { const h = await fs.promises.open(P('seed/link-to-a'), C.O_RDWR | C.O_NOFOLLOW); await h.close(); });
+  // What a write open judges besides: an existing name under O_EXCL, a missing one, a directory; the mode a create gives.
+  results.promisesWxExisting = await outcome(async () => { const h = await fs.promises.open(P('seed/a.txt'), 'wx'); await h.close(); });
+  results.promisesRplusMissing = await outcome(async () => { const h = await fs.promises.open(P('seed/none.txt'), 'r+'); await h.close(); });
+  results.promisesWDirectory = await outcome(async () => { const h = await fs.promises.open(P('seed/sub'), 'w'); await h.close(); });
+  results.promisesCreateMode = await outcome(async () => { const h = await fs.promises.open(P('made-async.txt'), 'wx', 0o660); await h.close(); return (await fs.promises.stat(P('made-async.txt'))).mode & 0o777; });
+  results.syncCreateMode = await outcome(async () => { fs.closeSync(fs.openSync(P('made-sync.txt'), 'w', 0o660)); return (await fs.promises.stat(P('made-sync.txt'))).mode & 0o777; });
+  results.promisesTruncates = await outcome(async () => {
+    await fs.promises.writeFile(P('trunc.txt'), 'long content');
+    const h = await fs.promises.open(P('trunc.txt'), 'w');
+    await h.write('ab');
+    await h.close();
+    return fs.promises.readFile(P('trunc.txt'), 'utf8');
+  });
+  results.promisesKeepsWithoutTrunc = await outcome(async () => {
+    await fs.promises.writeFile(P('keep.txt'), 'long content');
+    const h = await fs.promises.open(P('keep.txt'), C.O_WRONLY | C.O_CREAT);
+    await h.write('AB', 0);
+    await h.close();
+    return fs.promises.readFile(P('keep.txt'), 'utf8');
+  });
   results.noFollowFile = await outcome(async () => { const h = await fs.promises.open(P('seed/a.txt'), C.O_RDONLY | C.O_NOFOLLOW); const { buffer, bytesRead } = await h.read(Buffer.alloc(16), 0, 16, 0); await h.close(); return buffer.subarray(0, bytesRead).toString(); });
   results.followLink = await outcome(async () => { const h = await fs.promises.open(P('seed/link-to-a'), 'r'); const { buffer, bytesRead } = await h.read(Buffer.alloc(16), 0, 16, 0); await h.close(); return buffer.subarray(0, bytesRead).toString(); });
   results.targetUntouched = await fs.promises.readFile(P('seed/a.txt'), 'utf8');
