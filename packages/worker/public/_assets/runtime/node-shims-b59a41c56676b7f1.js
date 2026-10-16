@@ -16696,7 +16696,7 @@ builtins.tty = {
 // would otherwise conclude e.g. undici ships with node.
 const __nimbusFacetProvidedPackages = new Set(["undici"]);
 // Node's builtins that exist only with the scheme (lib/internal/bootstrap/realm.js schemelessBlockList).
-const __NODE_SCHEME_ONLY_BUILTINS = new Set(["sea", "sqlite", "test", "test/reporters"]);
+const __NODE_SCHEME_ONLY_BUILTINS = new Set(["sea","sqlite","test","test/reporters"]);
 // The Node builtin `specifier` names, by its id, or null: what require,
 // import, module.isBuiltin, module.builtinModules and
 // process.getBuiltinModule read. The packages the process provides are in
