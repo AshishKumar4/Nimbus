@@ -118,6 +118,6 @@ export const DEFERRED = validateDeferrals([
       + "~87 MiB of wasm (rolldown 55 MiB) plus ~44 MiB of JS heap even in Node, past a facet's sustained memory",
     approved: 'user, 2026-10-12',
     owner: 'Main',
-    tracking: 'verify/consolidation/ticket-remix-relaunch-retrace.md (P1, SlimyBeaver)',
+    tracking: 'verify/handoffs/ticket-remix-relaunch-retrace.md (P1, SlimyBeaver)',
   },
 ]);
