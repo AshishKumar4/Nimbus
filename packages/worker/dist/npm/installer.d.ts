@@ -30,6 +30,7 @@ import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js'
 import { NpmCache } from './cache.js';
 import { type EngineMismatch } from '@nimbus-sh/core/_shared/npm-arborist/engines.js';
 import { type NpmLogEmitter } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
+import type { NpmCacheMode } from '@nimbus-sh/core/_shared/npm-cache-mode.js';
 import type { BundlePoolProvider } from '../facets/prebundle-pool.js';
 import type { InstallPhase } from '@nimbus-sh/platform/install-phase.js';
 export interface InstallProgress {
@@ -63,6 +64,8 @@ export interface NpmInstallOptions {
     onProgress?: (msg: string) => void;
     /** The command's NPM_REGISTRY; default registry.npmjs.org. */
     registry?: string;
+    /** How packuments are read: npm's cache mode (`--offline`, `--prefer-offline`, `--prefer-online`); 'default' when not given. */
+    cache?: NpmCacheMode;
     /** `--save-dev` / `--save-optional`: where what is named is saved. */
     saveDev?: boolean;
     saveOptional?: boolean;

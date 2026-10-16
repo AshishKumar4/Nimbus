@@ -53,6 +53,7 @@ import type { ResolvedPackage } from './resolver.js';
 import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
 import type { FacetRegistryEvent } from './resolve-facet.js';
 import type { PackumentReadOptions } from './r2-cache.js';
+import type { NpmCacheMode } from '@nimbus-sh/core/_shared/npm-cache-mode.js';
 import { type RegistryCacheEntry } from './registry-record.js';
 /**
  * Argument shape: ONE package's resolution work.
@@ -78,6 +79,13 @@ export interface ResolveOneSpec {
     retries: number;
     /** Registry origin the packument is read from (the install's `NPM_REGISTRY`). */
     registry: string;
+    /**
+     * npm's cache mode for the packument (npm-cache-mode.ts); 'default' when
+     * absent. Under 'no-cache' the packument is asked again, so a record does
+     * not answer in its place; under 'force-cache' and 'only-if-cached' the
+     * cached copy answers what it can, and is not asked again where it cannot.
+     */
+    cache?: NpmCacheMode;
 }
 export interface ResolveOneResult {
     /** Resolved package; with a `w6-reject` error, the package refused; null with an `unresolved` one. */

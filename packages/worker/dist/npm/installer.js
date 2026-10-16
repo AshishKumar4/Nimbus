@@ -193,8 +193,9 @@ export class NpmInstaller {
         const lockfile = this.cache.readLockfile(projDir);
         const { roots, named, devOnly, advised, manifest } = await this.buildRoots(projDir, project, opts, log);
         const omit = { dev: opts.production === true, optional: opts.omitOptional === true, peer: opts.omitPeer === true };
+        const cache = opts.cache ?? 'default';
         const engine = {
-            devOnly, advised, registry, omit,
+            devOnly, advised, registry, cache, omit,
             global: opts.global === true, force: opts.force === true, strictPeerDeps: opts.strictPeerDeps === true,
             legacyPeerDeps: opts.legacyPeerDeps === true, preferDedupe: opts.preferDedupe === true,
         };
@@ -213,7 +214,7 @@ export class NpmInstaller {
         let tree;
         let usedLockfile = false;
         if (opts.fromLockfile) {
-            const locked = await this.treeFromPackageLock(network, projDir, project, log, npmLog, registry, opts.legacyPeerDeps === true);
+            const locked = await this.treeFromPackageLock(network, projDir, project, log, npmLog, registry, cache, opts.legacyPeerDeps === true);
             tree = await this.resolveTreeViaFanout(network, roots, locked.installed, log, npmLog, { ...engine, locked: locked.suspect ? 'suspect' : 'trusted' });
             if (tree.plan.lockMismatches.length > 0) {
                 throw new Error(`\`npm ci\` can only install packages when your package.json and ${locked.lockName} are in sync. ` +
@@ -542,6 +543,7 @@ export class NpmInstaller {
     network, roots, installed, log, npmLog, opts = {}) {
         const t0 = Date.now();
         const registry = npmRegistryOrigin(opts.registry);
+        const cache = opts.cache ?? 'default';
         const devOnly = opts.devOnly ?? new Set();
         // Policy advisories already announced — one `note:` line per name
         // per install, shared with applyW6Registry which runs first.
@@ -648,6 +650,7 @@ export class NpmInstaller {
                         fetchTimeoutMs: 15_000,
                         retries: 3,
                         registry,
+                        cache,
                     };
                     return { key: `${name}@${range}`, args: taskSpec };
                 });
@@ -1452,7 +1455,7 @@ export class NpmInstaller {
      * required, and a swapped package resolves its swap target at the locked
      * version.
      */
-    async treeFromPackageLock(network, projDir, fs, log, npmLog, registry, legacyPeerDeps) {
+    async treeFromPackageLock(network, projDir, fs, log, npmLog, registry, cache, legacyPeerDeps) {
         let lockName;
         for (const name of ['npm-shrinkwrap.json', 'package-lock.json']) {
             if (await fs.exists(`${projDir}/${name}`)) {
@@ -1563,7 +1566,7 @@ export class NpmInstaller {
         // package there, anything it brings below it, unless the lock already
         // placed that path.
         for (const { placement, folderName, spec } of swapPlacements) {
-            const swapped = await this.resolveTreeViaFanout(network, [{ name: folderName, range: spec, type: 'prod' }], [], log, npmLog, { registry });
+            const swapped = await this.resolveTreeViaFanout(network, [{ name: folderName, range: spec, type: 'prod' }], [], log, npmLog, { registry, cache });
             const parent = placement.includes('/node_modules/') ? parentPlacement(placement) : null;
             const rebase = (path) => (parent === null ? path : `${parent}/node_modules/${path}`);
             const failed = new Map(swapped.plan.failures.map((failure) => [failure.id, failure]));

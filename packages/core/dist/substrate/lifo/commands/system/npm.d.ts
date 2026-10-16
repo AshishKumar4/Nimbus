@@ -2,6 +2,7 @@ import type { Command, CommandContext } from '../types.js';
 import { type CommandRegistry } from '../registry.js';
 import type { ProcessView as VFS } from '../../../../runtime/process-files.js';
 import type { Kernel } from '../../kernel/index.js';
+import { type NpmCacheMode } from '../../../../_shared/npm-cache-mode.js';
 import { type NpmLogEmitter } from './npm-log.js';
 import { type EngineMismatch } from '../../../../_shared/npm-arborist/engines.js';
 /** The registry an install reads from when its env names none. */
@@ -62,6 +63,8 @@ export interface NpmInstallPort {
         signal?: AbortSignal;
         /** Registry origin from the command's env (`NPM_REGISTRY`), else the default. */
         registry: string;
+        /** How packuments are read (npm's cache mode: `--offline`, `--prefer-offline`, `--prefer-online`); 'default' when not given. */
+        cache?: NpmCacheMode;
         production?: boolean;
         /** `npm ci`: build npm's tree over package-lock.json, fail unless it is the lock's, then remove node_modules and install it. */
         fromLockfile?: boolean;

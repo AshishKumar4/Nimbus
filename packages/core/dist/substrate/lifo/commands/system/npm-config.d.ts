@@ -6,6 +6,13 @@ export interface NpmConfig {
     find(key: string): string;
     /** npm's default for `key`. */
     default(key: string): unknown;
+    /**
+     * npm's flat options from the definitions of `keys` (@npmcli/config's
+     * flat): each layer's settings of them flattened over the lower layers',
+     * lowest first, each layer's in its own order. Exact for a definition whose
+     * flatten reads only its own key.
+     */
+    flattened(keys: readonly string[]): Record<string, unknown>;
     /** The directory whose `.npmrc` is the project's. */
     readonly localPrefix: string;
     /** The command line's positional arguments, the command first. */

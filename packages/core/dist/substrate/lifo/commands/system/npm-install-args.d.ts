@@ -5,6 +5,7 @@
  */
 import type { NpmConfig } from './npm-config.js';
 import { type NpmLogLevel } from './npm-log.js';
+import { type NpmCacheMode } from '../../../../_shared/npm-cache-mode.js';
 export interface NpmInstallInvocation {
     packages: string[];
     global: boolean;
@@ -49,6 +50,8 @@ export interface NpmInstallInvocation {
     engineStrict: boolean;
     /** The registry npm's configuration names (`--registry`, npm_config_registry, an .npmrc); null where only npm's default does. */
     registry: string | null;
+    /** How the install's packuments are read: npm's cache mode (npm-cache-mode.ts) from its configuration. */
+    cache: NpmCacheMode;
     /** Options npm has that this npm does not implement, as npm ERR! lines: the install refuses them rather than ignore them. */
     unsupported: string[];
 }
