@@ -52,7 +52,7 @@ import {
 import { recordFailure } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
-import { concatBytes, dec, enc } from '../_shared/bytes.js';
+import { concatBytes, dec, enc, nameDec } from '../_shared/bytes.js';
 import {
   w7ChunkCount,
   w7Chunks,
@@ -3532,7 +3532,7 @@ export class SqliteVFS {
       }
       if (inode.kind === 'symlink' && (!final || followLeaf)) {
         if (final) leafLink = true;
-        return () => { hops++; return dec.decode(this.readWhole(inode)); };
+        return () => { hops++; return nameDec.decode(this.readWhole(inode)); };
       }
       if (!final) {
         if (inode.kind !== 'directory') throw vfsKeyError('ENOTDIR', prefix);
@@ -4961,7 +4961,7 @@ export class SqliteVFS {
   private readlink(path: string, cred: VfsCred): string {
     const resolved = this.checkAccess(path, 0, cred, { followLeaf: false });
     if (resolved.inode?.kind !== 'symlink') throw vfsError('EINVAL', path, 'not a symlink');
-    return dec.decode(this.readWhole(resolved.inode));
+    return nameDec.decode(this.readWhole(resolved.inode));
   }
 
   /** Where `path` leads, in the caller's names, or null for a loop. */
@@ -5997,7 +5997,7 @@ export class SqliteVFS {
           // The row's own target. Re-resolving the listed name would follow the
           // directories above it, and a row they no longer lead to (one left
           // under a link) made the whole enumeration throw ENOENT.
-          ...(inode.kind === 'symlink' ? { linkTarget: dec.decode(this.readWhole(inode)) } : {}),
+          ...(inode.kind === 'symlink' ? { linkTarget: nameDec.decode(this.readWhole(inode)) } : {}),
           ...(inode.kind === 'file' ? { contentKey: this.listedContentKey(inode, row) } : {}),
         };
         if (!fits(entry)) return pageEnding();
@@ -6043,7 +6043,7 @@ export class SqliteVFS {
       const reported: VfsInvalidatedPath = {
         ...entry,
         stat: { ...this.statOf(inode), revision: this.pathRevision(key, inode) },
-        ...(inode.kind === 'symlink' ? { linkTarget: dec.decode(this.readWhole(inode)) } : {}),
+        ...(inode.kind === 'symlink' ? { linkTarget: nameDec.decode(this.readWhole(inode)) } : {}),
         // Content identity, as list() reports it: a holder of equal bytes keeps them.
         ...(inode.kind === 'file' ? { contentKey: this.contentKeyOf(inode) } : {}),
       };
@@ -7306,7 +7306,7 @@ export class SqliteVFS {
     const readlink = (path: string): string => {
       const inode = resolve(path, 0, false).inode!;
       if (inode.kind !== 'symlink') throw vfsError('EINVAL', path, 'not a symlink');
-      return dec.decode(this.readWhole(inode));
+      return nameDec.decode(this.readWhole(inode));
     };
     return {
       cred: bound,
@@ -7389,7 +7389,7 @@ export class SqliteVFS {
               size: inode.size,
               rev: g,
               stat: { ...this.statOf(inode), revision: g },
-              ...(inode.kind === 'symlink' ? { linkTarget: dec.decode(this.readContent(inode, 0, inode.size, true)) } : {}),
+              ...(inode.kind === 'symlink' ? { linkTarget: nameDec.decode(this.readContent(inode, 0, inode.size, true)) } : {}),
             });
           }
           if (page.length <= pageLimit) return { epoch: this._epoch, rev: g, entries, next: null };

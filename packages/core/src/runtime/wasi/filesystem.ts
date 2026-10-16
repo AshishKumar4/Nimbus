@@ -142,7 +142,8 @@ export const WASI_ACCEPTED_PATH_PREFIX = '/dev/nimbus/socket/';
 const S_IFMT = 0o170000, S_IFREG = 0o100000;
 const socketPathPrefixes: readonly string[] = [WASI_TCP_PATH_PREFIX, WASI_LISTEN_PATH_PREFIX, WASI_ACCEPTED_PATH_PREFIX];
 type Fs = RuntimeFsBridge | RuntimeSynchronousFs;
-const encoder = new TextEncoder(), decoder = new TextDecoder('utf-8', { fatal: true });
+// A path is a name: its leading U+FEFF is kept (_shared/bytes.ts nameDec), and bytes that are not UTF-8 refused.
+const encoder = new TextEncoder(), decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 /** Every code a VFS backend throws (vfs-error.ts), as its preview1 errno. */
 const VFS_ERRNO: Readonly<Record<VfsErrorCode, Errno>> = {
   E2BIG: 1, EACCES: 2, EAGAIN: 6, EBADF: 8, EBUSY: 10, EEXIST: 20, EFBIG: 22, EINVAL: 28, EIO: 29, EISDIR: 31,

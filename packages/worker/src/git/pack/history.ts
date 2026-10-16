@@ -28,7 +28,7 @@ import { GRAPH_RECORDS_DIR, commitRecord } from './commit-graph.js';
 import { decodeBatch, MODE_GITLINK, MODE_TREE } from './plan.js';
 import { TreeEntries } from './tree-object.js';
 import { OID_BYTES, oidBytes, oidToHex, PackFormatError } from './format.js';
-import { concatBytes } from '@nimbus-sh/core/_shared/bytes.js';
+import { concatBytes, nameDec } from '@nimbus-sh/core/_shared/bytes.js';
 import {
   STAGE_DIR,
   commitTree,
@@ -85,7 +85,6 @@ export interface HistoryStepResult {
   tagsFound?: string[];
 }
 
-const decoder = new TextDecoder();
 
 function transport(context: CloneContext): UploadPackOptions {
   return { url: context.url, auth: context.auth, fetch: context.fetch, onProgress: context.onProgress };
@@ -363,7 +362,7 @@ export async function historyPlan(
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     for (let at = 0; at < bytes.byteLength;) {
       const length = view.getUint16(at + OID_BYTES);
-      table.add(bytes, at, decoder.decode(bytes.subarray(at + OID_BYTES + 2, at + OID_BYTES + 2 + length)));
+      table.add(bytes, at, nameDec.decode(bytes.subarray(at + OID_BYTES + 2, at + OID_BYTES + 2 + length)));
       at += OID_BYTES + 2 + length;
     }
   }
