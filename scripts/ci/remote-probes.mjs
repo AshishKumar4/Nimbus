@@ -233,7 +233,7 @@ async function probeRun() {
     const before = await deployments();
     console.error(`remote-probes: ${list.length} tasks against ${base}, probes of ${sha.slice(0, 12)}`);
     const mapped = await onArmada(() => mapOnArmada({
-      repo, sha, files: ['scripts/ci/probes.mjs', 'scripts/ci/lib/probe-screenshots.mjs', 'tests/behavioral/run-all.mjs', 'tests/behavioral/_selection.mjs'], setup: 'scripts/ci/recipe/chromium.sh',
+      repo, sha, files: ['scripts/ci/probes.mjs', 'scripts/ci/lib/probe-screenshots.mjs', 'tests/behavioral/run-all.mjs', 'tests/behavioral/_selection.mjs', 'tests/behavioral/_ledger.mjs'], setup: 'scripts/ci/recipe/chromium.sh',
       items: list, env, label, timeout: TASK_TIMEOUT_S,
       command: ['bun', 'scripts/ci/probes.mjs', '--out', '{out}', '--base', base, '--only', '{only}', '--skip', '{skip}', '--part', '{part}', '--jobs', '{jobs}',
         ...(token ? ['--start-by', String(startBy)] : ['--anonymous']), ...(flags.screenshots ? ['--screenshots', '1'] : [])],
