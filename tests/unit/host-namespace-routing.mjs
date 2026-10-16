@@ -44,7 +44,7 @@ function workspaces(answer = () => null) {
     idFromString: (id) => ({ toString: () => id, name: id }),
     get: (id) => ({
       async supervisorOp(envelope) {
-        // As Workers RPC delivers it: undefined members are not sent.
+        // The ledger leaves out members that are undefined (an optional argument not given).
         asked.push(JSON.parse(JSON.stringify({ host: id.name, ...envelope })));
         return answer(envelope);
       },
