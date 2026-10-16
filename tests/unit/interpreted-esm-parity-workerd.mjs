@@ -38,7 +38,11 @@ const filesAt = (root) => {
   const cyclic = 'data:text/javascript,' + encodeURIComponent('import b from ' + JSON.stringify(root + 'back2.mjs') + '; export function hello() { return "hi"; } export default "data:" + b;');
   // A data: module importing a staged module (tla-b.mjs) that awaits at its top level and imports another data: module.
   const awaiting = 'data:text/javascript,' + encodeURIComponent('import b from ' + JSON.stringify(root + 'tla-b.mjs') + '; export default b;');
+  // The same cycle through a query's instance of a staged bridge, which re-exports the data: module's function.
+  const bridged = 'data:text/javascript,' + encodeURIComponent('import b from ' + JSON.stringify(root + 'back3.mjs') + '; export function hello() { return "hi3"; } export default "data:" + b;');
   return {
+  'back3.mjs': "import { hello } from './bridge.mjs?instance';\nglobalThis.back3Said = hello();\nexport default 'back3';\n",
+  'bridge.mjs': 'export { hello } from ' + JSON.stringify(bridged) + ';\n',
   'tla-b.mjs': "import 'data:text/javascript,export const leaf = 1';\nexport default await Promise.resolve(7);\n",
   'back2.mjs': 'import { hello } from ' + JSON.stringify(cyclic) + ';\nglobalThis.backSaid = hello();\nexport default "back";\n',
   // Staged (the entry names it, in an import() it never makes); its JSON name is missing.
@@ -57,7 +61,7 @@ export default [fortyOne, json, six];
 `,
   'main.mjs': `import { writeFileSync, mkdirSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-if (globalThis.never) { await import('./back2.mjs'); await import('./bad-json-child.mjs'); await import('./tla-b.mjs'); }
+if (globalThis.never) { await import('./back2.mjs'); await import('./bad-json-child.mjs'); await import('./tla-b.mjs'); await import('./back3.mjs'); await import('./bridge.mjs'); }
 const out = {};
 // Each case on its own: one that fails is its error, and the rest still run.
 const outcome = async (thunk) => {
@@ -117,6 +121,7 @@ writeFileSync('id-user.mjs', 'import * as ns from ' + JSON.stringify(identity) +
 out.identity = await outcome(async () => (await import('./id-user.mjs')).default === await import(identity));
 out.stagedCycle = await outcome(async () => [(await import(${JSON.stringify(cyclic)})).default, globalThis.backSaid]);
 out.stagedAwait = await outcome(async () => (await import(${JSON.stringify(awaiting)})).default);
+out.queryCycle = await outcome(async () => [(await import(${JSON.stringify(bridged)})).default, globalThis.back3Said]);
 writeFileSync('late-parent.mjs', "import './bad-json-child.mjs';\\n");
 const lateParent = await outcome(async () => { await import('./late-parent.mjs'); return 'loaded'; });
 out.nestedMissingJson = [Array.isArray(lateParent) ? lateParent[1] : lateParent, globalThis.badChildRan ?? false];
@@ -183,6 +188,7 @@ assert.deepEqual(expected, {
   identity: true,
   stagedCycle: ['data:back', 'hi'],
   stagedAwait: 7,
+  queryCycle: ['data:back3', 'hi3'],
   nestedMissingJson: ['SyntaxError', false],
   cycleStar: ['x'],
   starConflict: ['y'],

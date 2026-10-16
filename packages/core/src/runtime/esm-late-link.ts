@@ -100,6 +100,8 @@ interface LateEdge {
 /** A late module, by what its static imports read (known: its bindings were read). */
 interface LateNode extends ModuleFacts {
   readonly known: boolean;
+  /** What each of its static imports loads, those that read no names too: the graph's edges. */
+  readonly edges: (LateTarget | null)[];
   readonly locals: [exported: string, local: string][];
   readonly stars: (LateTarget | null)[];
   readonly imports: LateEdge[];
@@ -251,6 +253,38 @@ export function namespaceNames(host: LateLinkHost, url: string): string[] | null
 }
 
 /**
+ * Whether staged row `row`'s graph, not yet evaluated, reaches back to the
+ * late module at `url`, through rows, the modules staging handed on and the
+ * late modules its link planned: a cycle with it, which that module's own
+ * link loads, after its functions and exports exist.
+ */
+export function reachesBack(host: LateLinkHost, row: number, url: string): boolean {
+  const seen = new Set<string>();
+  const stack: (LateTarget | null)[] = [{ row }];
+  while (stack.length > 0) {
+    const target = stack.pop();
+    if (target === undefined || target === null || target.names !== undefined) continue;
+    if (target.row !== undefined) {
+      if (seen.has(`r${target.row}`) || host.rowKind(target.row) !== 'module' || host.rowSettled(target.row)) continue;
+      seen.add(`r${target.row}`);
+      for (const at of host.rowTargets(target.row)) {
+        if (at >= 0) stack.push({ row: at });
+        else {
+          const missing = host.missing(-2 - at);
+          if (missing !== null && 'handedOn' in missing) stack.push(handedOnTarget(missing.handedOn));
+        }
+      }
+      continue;
+    }
+    if (target.url === url) return true;
+    if (seen.has(`u${target.url}`)) continue;
+    seen.add(`u${target.url}`);
+    stack.push(...(lateModules.get(target.url)?.edges ?? []));
+  }
+  return false;
+}
+
+/**
  * Plans the late module at `url` (a file's at `key`; a data: URL's is its
  * URL): its static imports' modules, their names, and the staged rows it
  * reaches, into `late` and `order`.
@@ -281,7 +315,7 @@ function plan(host: LateLinkHost, key: string, url: string, seen: Set<string>, o
     for (let i = 0; i < bindings.exports.length; i++) exports.push(bindings.exports[i]);
     for (let i = 0; i < bindings.locals.length; i++) locals.push([bindings.locals[i][0], bindings.locals[i][1]]);
   }
-  const node: LateNode = { known, exports, locals, stars: [], imports: [], reexports: [] };
+  const node: LateNode = { known, exports, locals, edges: [], stars: [], imports: [], reexports: [] };
   late.modules.set(url, node);
   lateModules.set(url, node);
   let at = -1;
@@ -290,8 +324,9 @@ function plan(host: LateLinkHost, key: string, url: string, seen: Set<string>, o
     at++;
     // Checked against its attributes as the interpreter's static import checks it.
     const resolution = host.resolve(request.specifier, url, known ? bindings.types[at] : undefined);
+    const loads = lateTarget(host, resolution);
+    node.edges.push(loads);
     if (known) {
-      const loads = lateTarget(host, resolution);
       for (let i = 0; i < bindings.stars.length; i++) if (bindings.stars[i] === at) node.stars.push(loads);
       const names: string[] = [];
       const reads = bindings.imports[at];
