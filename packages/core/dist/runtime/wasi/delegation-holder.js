@@ -957,10 +957,10 @@ export function delegationHolder(options) {
                 throw fsError('ENOENT', 'rmdir', path);
             if (current.type !== 'directory')
                 throw fsError('ENOTDIR', 'rmdir', path);
-            const names = holder.children(key, store.children(key));
-            if (names === undefined)
+            const listed = holder.children(key, store.children(key));
+            if (listed === undefined)
                 return false;
-            if (names.length > 0)
+            if (listed.length > 0)
                 throw fsError('ENOTEMPTY', 'rmdir', path);
             if (deciding(key) === undefined || writableParent(key, path, 'rmdir') === undefined)
                 return false;
