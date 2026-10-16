@@ -13,7 +13,6 @@
  * CommonJS lexer), so a launch whose imports never need it never compiles it.
  */
 import type { ModuleRequests } from '../interpreter/index.js';
-export { CyclicModuleRecord, OtherModuleRecord, evaluate, link } from './esm-graph.js';
 /** What the loader resolves a static import to. */
 export interface LateResolution {
     readonly url: string;

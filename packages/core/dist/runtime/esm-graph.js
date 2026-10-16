@@ -29,7 +29,7 @@ export class CyclicModuleRecord {
     /** [[TopLevelCapability]]: ~empty~ (null), or the capability Evaluate() made for its cycle root. */
     topLevelCapability = null;
     /** [[AsyncParentModules]]. */
-    asyncParentModules = [];
+    asyncParentModules = newList();
     /** [[PendingAsyncDependencies]]. */
     pendingAsyncDependencies = 0;
     constructor(host) {
@@ -43,12 +43,35 @@ export class OtherModuleRecord {
         this.host = host;
     }
 }
-// What this module calls of the built-ins, as they were when it loaded: it
-// runs after a program may have replaced them (a global, a prototype's
-// method, the array iterator), so it calls nothing else of them.
+// What this module calls of the built-ins, as they were when it loaded (a
+// host loads it before any program runs): it runs after a program may have
+// replaced them (a global, a prototype's method, the array iterator), so it
+// calls nothing else of them.
 const PromiseConstructor = Promise;
 const promiseThen = Promise.prototype.then;
 const reflectApply = Reflect.apply;
+const objectSetPrototypeOf = Object.setPrototypeOf;
+/**
+ * A List, as the spec's are: an array of no prototype, so an accessor a
+ * program puts on Array.prototype (an index's) never sees what it holds.
+ */
+function newList() {
+    const list = [];
+    objectSetPrototypeOf(list, null);
+    return list;
+}
+/**
+ * The promises the graph itself thens (ExecuteAsyncModule's): a then of one
+ * consults its constructor's species (SpeciesConstructor), and these answer
+ * with this class, which no program reaches, so neither
+ * Promise[Symbol.species] nor Promise.prototype.constructor is consulted, as
+ * PerformPromiseThen consults neither.
+ */
+class GraphPromise extends PromiseConstructor {
+    static get [Symbol.species]() {
+        return GraphPromise;
+    }
+}
 /** Appends `item` to `list`, by index. */
 function append(list, item) {
     list[list.length] = item;
@@ -68,11 +91,14 @@ function contains(list, item) {
             return true;
     return false;
 }
-/** NewPromiseCapability(%Promise%). */
-function newPromiseCapability() {
+/**
+ * NewPromiseCapability(%Promise%): of `C`, GraphPromise for a promise the
+ * graph thens, %Promise% for Evaluate()'s, which its host awaits.
+ */
+function newPromiseCapability(C) {
     let resolve = () => { };
     let reject = () => { };
-    const promise = new PromiseConstructor((onResolve, onReject) => {
+    const promise = new C((onResolve, onReject) => {
         resolve = () => onResolve();
         reject = onReject;
     });
@@ -88,7 +114,7 @@ function incrementModuleAsyncEvaluationCount() {
 export function link(module) {
     // 1. Assert: module.[[Status]] is one of ~unlinked~, ~linked~, ~evaluating-async~, or ~evaluated~.
     // 2. Let stack be a new empty List.
-    const stack = [];
+    const stack = newList();
     // 3. Let result be Completion(InnerModuleLinking(module, stack, 0)).
     try {
         innerModuleLinking(module, stack, 0);
@@ -175,9 +201,9 @@ export function evaluate(start) {
     if (module.topLevelCapability !== null)
         return module.topLevelCapability.promise;
     // 5. Let stack be a new empty List.
-    const stack = [];
+    const stack = newList();
     // 6. Let promiseCapability be ! NewPromiseCapability(%Promise%). 7. Set module.[[TopLevelCapability]] to promiseCapability.
-    const promiseCapability = newPromiseCapability();
+    const promiseCapability = newPromiseCapability(PromiseConstructor);
     module.topLevelCapability = promiseCapability;
     // 8. Let result be Completion(InnerModuleEvaluation(module, stack, 0)).
     try {
@@ -300,7 +326,7 @@ function innerModuleEvaluation(module, stack, index) {
 function executeAsyncModule(module) {
     // 1. Assert: module.[[Status]] is either ~evaluating~ or ~evaluating-async~. 2. Assert: module.[[HasTLA]] is true.
     // 3. Let promiseCapability be ! NewPromiseCapability(%Promise%).
-    const promiseCapability = newPromiseCapability();
+    const promiseCapability = newPromiseCapability(GraphPromise);
     // 4-8. Perform PerformPromiseThen(promiseCapability.[[Promise]], onFulfilled, onRejected), whose closures
     //      perform AsyncModuleExecutionFulfilled(module) and AsyncModuleExecutionRejected(module, error).
     reflectApply(promiseThen, promiseCapability.promise, [() => asyncModuleExecutionFulfilled(module), (error) => asyncModuleExecutionRejected(module, error)]);
@@ -338,7 +364,7 @@ function asyncModuleExecutionFulfilled(module) {
     // 7. If module.[[TopLevelCapability]] is not ~empty~, then perform ! Call(module.[[TopLevelCapability]].[[Resolve]], undefined, « undefined »).
     module.topLevelCapability?.resolve();
     // 8. Let execList be a new empty List. 9. Perform GatherAvailableAncestors(module, execList).
-    const execList = [];
+    const execList = newList();
     gatherAvailableAncestors(module, execList);
     // 11. Let sortedExecList be execList sorted by [[AsyncEvaluationOrder]] in ascending order.
     const sortedExecList = sortedByAsyncEvaluationOrder(execList);
@@ -377,7 +403,7 @@ function order(module) {
 }
 /** A copy of `list` sorted by [[AsyncEvaluationOrder]], ascending (an insertion sort: the lists are short). */
 function sortedByAsyncEvaluationOrder(list) {
-    const sorted = [];
+    const sorted = newList();
     for (let i = 0; i < list.length; i++) {
         let at = sorted.length;
         while (at > 0 && order(sorted[at - 1]) > order(list[i])) {

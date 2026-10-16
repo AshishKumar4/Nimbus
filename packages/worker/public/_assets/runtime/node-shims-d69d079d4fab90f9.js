@@ -19666,6 +19666,11 @@ return {"requiredEsModule":f};})().requiredEsModule;
 const { importCallArguments: __nimbusImportCallArguments, dataModule: __nimbusDataModuleOf } = (()=>{function u(i,t){if(typeof i=="symbol")throw new TypeError("Cannot convert a Symbol value to a string");let r=String(i),o=Object.create(null);if(t===void 0)return{specifier:r,attributes:o};if(t===null||typeof t!="object"&&typeof t!="function")throw new TypeError("The second argument to import() must be an object");let n=Reflect.get(t,"with");if(n===void 0)return{specifier:r,attributes:o};if(n===null||typeof n!="object"&&typeof n!="function")throw new TypeError("The 'assert' option must be an object");let e=!0;for(let s of Object.keys(n)){let a=Reflect.get(n,s);typeof a=="string"?o[s]=a:e=!1}if(!e)throw new TypeError("Import assertion value must be a string");return{specifier:r,attributes:o}}function f(i){let t=new TextEncoder().encode(i),r=new Uint8Array(t.length),o=0,n=e=>e>=48&&e<=57||e>=65&&e<=70||e>=97&&e<=102;for(let e=0;e<t.length;e++){let s=t[e];s===37&&e+2<t.length&&n(t[e+1])&&n(t[e+2])?(r[o++]=parseInt(String.fromCharCode(t[e+1],t[e+2]),16),e+=2):r[o++]=s}return r.subarray(0,o)}function d(i){let t=new URL(i),r=/^([^/]+\/[^;,]+)(?:[^,]*?)(;base64)?,/.exec(t.pathname),o=r===null?null:/^\s*(text|application)\/javascript\s*(;\s*charset=utf-?8\s*)?$/i.test(r[1])?"module":r[1]==="application/json"?"json":null;if(o===null)return{format:o,mime:r?.[1]??null};t.hash="";let n=t.href.slice(5),e=n.indexOf(","),s=f(n.slice(e+1));if(/; *base64$/i.test(n.slice(0,e).replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g,""))){let a="";for(let c of s)a+=String.fromCharCode(c);let l;try{l=atob(a)}catch{throw Object.assign(new TypeError("Invalid URL"),{code:"ERR_INVALID_URL",input:i})}s=Uint8Array.from(l,c=>c.charCodeAt(0))}return{format:o,source:new TextDecoder().decode(s)}}
 
 return {"dataModule":d,"importCallArguments":u};})();
+// ECMA-262's module graph algorithm (core runtime/esm-graph.ts), made before any program runs: it calls only the
+// built-ins it took then.
+const __nimbusGraph = (()=>{var s=class{constructor(t){this.host=t}host;status="unlinked";evaluationError=null;dfsAncestorIndex=0;cycleRoot=null;asyncEvaluationOrder="unset";topLevelCapability=null;asyncParentModules=l();pendingAsyncDependencies=0},c=class{constructor(t){this.host=t}host},v=Promise,A=Promise.prototype.then,E=Reflect.apply,T=Object.setPrototypeOf;function l(){let e=[];return T(e,null),e}var d=class e extends v{static get[Symbol.species](){return e}};function u(e,t){e[e.length]=t}function p(e){if(e.length===0)return;let t=e[e.length-1];return e.length--,t}function k(e,t){for(let n=0;n<e.length;n++)if(e[n]===t)return!0;return!1}function M(e){let t=()=>{},n=()=>{};return{promise:new e((a,i)=>{t=()=>a(),n=i}),resolve:t,reject:n}}var P=0;function x(){return P++}function w(e){let t=l();try{h(e,t,0)}catch(n){for(let o=0;o<t.length;o++)t[o].status="unlinked";throw n}}function h(e,t,n){if(e instanceof c)return e.host.link(),n;if(e.status!=="unlinked")return n;e.status="linking";let o=n;e.dfsAncestorIndex=n,n++,u(t,e);let a=e.host.requestedModules();for(let i=0;i<a.length;i++){let r=a[i];n=h(r,t,n),r instanceof s&&r.status==="linking"&&(e.dfsAncestorIndex=R(e.dfsAncestorIndex,r.dfsAncestorIndex))}if(e.host.initializeEnvironment(),e.dfsAncestorIndex===o){let i=!1;for(;!i;){let r=p(t);if(r===void 0)break;r.status="linked",r===e&&(i=!0)}}return n}function I(e){let t=e;if((t.status==="evaluating-async"||t.status==="evaluated")&&t.cycleRoot!==null&&(t=t.cycleRoot),t.topLevelCapability!==null)return t.topLevelCapability.promise;let n=l(),o=M(v);t.topLevelCapability=o;try{C(t,n,0)}catch(a){for(let i=0;i<n.length;i++)n[i].status="evaluated",n[i].evaluationError={value:a};return o.reject(a),o.promise}return t.status==="evaluated"&&o.resolve(),o.promise}function C(e,t,n){if(e instanceof c)return e.host.evaluateSync(),n;if(e.status==="evaluating-async"||e.status==="evaluated"){if(e.evaluationError===null)return n;throw e.evaluationError.value}if(e.status==="evaluating")return n;e.status="evaluating";let o=n;e.dfsAncestorIndex=n,e.pendingAsyncDependencies=0,n++,u(t,e);let a=e.host.requestedModules();for(let i=0;i<a.length;i++){let r=a[i];if(n=C(r,t,n),r instanceof s){if(r.status==="evaluating")e.dfsAncestorIndex=R(e.dfsAncestorIndex,r.dfsAncestorIndex);else if(r=r.cycleRoot??r,r.evaluationError!==null)throw r.evaluationError.value;typeof r.asyncEvaluationOrder=="number"&&(e.pendingAsyncDependencies++,u(r.asyncParentModules,e))}}if(e.host.hasTLA||e.pendingAsyncDependencies>0?(e.asyncEvaluationOrder=x(),e.pendingAsyncDependencies===0&&b(e)):e.host.executeModule(),e.dfsAncestorIndex===o){let i=!1;for(;!i;){let r=p(t);if(r===void 0)break;r.status=r.asyncEvaluationOrder==="unset"?"evaluated":"evaluating-async",r===e&&(i=!0),r.cycleRoot=e}}return n}function b(e){let t=M(d);E(A,t.promise,[()=>L(e),n=>y(e,n)]),e.host.executeModule(t)}function g(e,t){for(let n=0;n<e.asyncParentModules.length;n++){let o=e.asyncParentModules[n];!k(t,o)&&(o.cycleRoot??o).evaluationError===null&&(o.pendingAsyncDependencies--,o.pendingAsyncDependencies===0&&(u(t,o),o.host.hasTLA||g(o,t)))}}function L(e){if(e.status==="evaluated")return;e.asyncEvaluationOrder="done",e.status="evaluated",e.topLevelCapability?.resolve();let t=l();g(e,t);let n=O(t);for(let o=0;o<n.length;o++){let a=n[o];if(a.status!=="evaluated"){if(a.host.hasTLA){b(a);continue}try{a.host.executeModule()}catch(i){y(a,i);continue}a.asyncEvaluationOrder="done",a.status="evaluated",a.topLevelCapability?.resolve()}}}function f(e){return typeof e.asyncEvaluationOrder=="number"?e.asyncEvaluationOrder:Number.MAX_SAFE_INTEGER}function O(e){let t=l();for(let n=0;n<e.length;n++){let o=t.length;for(;o>0&&f(t[o-1])>f(e[n]);)t[o]=t[o-1],o--;t[o]=e[n]}return t}function R(e,t){return e<t?e:t}function y(e,t){if(e.status!=="evaluated"){e.evaluationError={value:t},e.status="evaluated",e.asyncEvaluationOrder="done",e.topLevelCapability?.reject(t);for(let n=0;n<e.asyncParentModules.length;n++)y(e.asyncParentModules[n],t)}}
+
+return {"CyclicModuleRecord":s,"OtherModuleRecord":c,"evaluate":I,"link":w};})();
 // The package.json files Node's loader has warned are typeless (MODULE_TYPELESS_PACKAGE_JSON).
 const __nimbusTypelessWarned = new Set();
 // Node's warning of an imported .js that is an ES module by its syntax alone
@@ -19775,7 +19780,7 @@ async function __nimbusEsmInterpret(id, linked) {
   let record = __nimbusGraphRecords.get("/" + key);
   if (record === undefined) {
     try {
-      if (!linked) __nimbusGraphOf().linkAdopted(__nimbusLateLinkHost, id, key, url);
+      if (!linked) __nimbusLateOf().linkAdopted(__nimbusLateLinkHost, id, key, url);
       record = __nimbusAdoptedRecord(id, key);
     } catch (e) {
       __nimbusExplainCommonJSGlobalLike(e, url, false);
@@ -19910,8 +19915,9 @@ if (typeof __nimbusEsmHost !== "undefined" && __nimbusEsmHost !== null) __nimbus
 // module's translation by its URL, a builtin by "node:" and its name, a
 // staged module the registry evaluates by "row:" and its id.
 const __nimbusGraphRecords = new Map();
-let __nimbusGraphModule = null;
-const __nimbusGraphOf = () => __nimbusGraphModule ??= __nimbusRegistryRequire("./nimbus/esm-late.js");
+// The late link (core runtime/esm-late-link.ts), loaded the first time a late graph is linked.
+let __nimbusLateModule = null;
+const __nimbusLateOf = () => __nimbusLateModule ??= __nimbusRegistryRequire("./nimbus/esm-late.js");
 // Whether a require() is linking its graph: one that cannot wait, so a staged
 // module the registry has not evaluated is the interpreter's.
 let __nimbusGraphSync = false;
@@ -19949,7 +19955,9 @@ function __nimbusGraphRecord(resolution, parent) {
     if (__nimbusCommonJsPending.has("/" + key)) return __nimbusTranslatedRecord(resolution, key, key, parent);
     const plain = __nimbusPrepareModule(key, key, false, parent, false);
     if (plain.state === undefined || __nimbusModuleLink(plain.state.cell) === null) return __nimbusTranslatedRecord(resolution, key, key, parent, plain);
-    __nimbusInterpretedRecord(plain.state);
+    // An ES module: only the query's or fragment's instance was asked for, and the file's own URL is a module of
+    // its own, made from the file as it is when it is imported.
+    plain.state.unload();
   }
   // An ES module by its format, or by its syntax (detect): compiled now, run by its graph.
   const prepared = __nimbusPrepareModule(key, instance, false, parent, resolution.format === "module");
@@ -19959,7 +19967,7 @@ function __nimbusGraphRecord(resolution, parent) {
 // A module evaluated already (a builtin; a staged module the registry
 // evaluated; a package the facet provides): its namespace, as it is.
 function __nimbusEvaluatedRecord(namespace) {
-  const record = new (__nimbusGraphOf().OtherModuleRecord)({ link() {}, evaluateSync() {} });
+  const record = new __nimbusGraph.OtherModuleRecord({ link() {}, evaluateSync() {} });
   record.namespace = () => namespace;
   return record;
 }
@@ -19973,7 +19981,7 @@ function __nimbusTranslatedRecord(resolution, key, instance, parent, prepared = 
   if (prepared?.state !== undefined) __nimbusCommonJsPending.set(prepared.state.cacheKey, prepared.state);
   const translation = __nimbusTranslation(resolution);
   let outcome = null;
-  const record = new (__nimbusGraphOf().OtherModuleRecord)({
+  const record = new __nimbusGraph.OtherModuleRecord({
     link() {},
     evaluateSync() {
       if (outcome !== null) {
@@ -20043,14 +20051,13 @@ function __nimbusDecideStaged(placeholder, first) {
 // that order: evaluated before the graph's evaluation, they run just where
 // Node's would, though the registry evaluates asynchronously.
 function __nimbusPlanGraph(root, sync) {
-  const late = __nimbusGraphOf();
   const visited = new Set();
   const first = [];
   let ran = false;
   const visit = (record) => {
     if (visited.has(record)) return;
     visited.add(record);
-    if (!(record instanceof late.CyclicModuleRecord)) {
+    if (!(record instanceof __nimbusGraph.CyclicModuleRecord)) {
       if (record.begin !== undefined) first.push(record);
       if (record.runs?.() === true) ran = true;
       return;
@@ -20124,7 +20131,7 @@ function __nimbusInterpretedRecord(state) {
     delete __NodeModule._cache[cacheKey];
     __nimbusEsmInstances.set(cacheKey, mod);
   }
-  const late = __nimbusGraphOf();
+  const late = __nimbusLateOf();
   const importer = state.data ? undefined : mod;
   const parentUrl = state.data ? moduleUrl : builtins.url.pathToFileURL(state.filename).href;
   const requests = __nimbusModuleRequestsOf(cell);
@@ -20133,6 +20140,9 @@ function __nimbusInterpretedRecord(state) {
   let requested = null;
   let execute = null;
   let namespace = null;
+  // Whether an InitializeEnvironment of it ran: a Link that failed (here, or in a module after it) left it
+  // ~unlinked~, and the next makes its environment again, as the spec's makes a new one each time.
+  let environment = false;
   const at = (source, type) => source + "\0" + (type ?? "");
   // What its link requires: each static import's module's namespace
   // (ESM_LOAD_HELPER: the specifier, the marker, the type attribute), and the
@@ -20140,7 +20150,7 @@ function __nimbusInterpretedRecord(state) {
   const linkRequire = (id, marker, type = null) => marker === "nimbus:star-conflicts"
     ? late.starConflicts(__nimbusLateLinkHost, moduleUrl)
     : requested[targets.get(at(id, type))].namespace();
-  const record = new late.CyclicModuleRecord({
+  const record = new __nimbusGraph.CyclicModuleRecord({
     hasTLA: __nimbusModuleAwaits(cell),
     requestedModules() {
       if (requested === null) {
@@ -20157,6 +20167,12 @@ function __nimbusInterpretedRecord(state) {
       return requested;
     },
     initializeEnvironment() {
+      // Its export getters are not configurable: a second link publishes them on a fresh exports object.
+      if (environment) {
+        mod.exports = {};
+        execute = null;
+      }
+      environment = true;
       const before = globalThis.__currentModulePath;
       if (!state.data) globalThis.__currentModulePath = state.resolvedPath;
       try {
@@ -20255,7 +20271,7 @@ function __nimbusGraphAwaits(record, seen) {
   if (seen.has(record)) return false;
   seen.add(record);
   if (record.awaits === true) return true;
-  if (!(record instanceof __nimbusGraphOf().CyclicModuleRecord)) return false;
+  if (!(record instanceof __nimbusGraph.CyclicModuleRecord)) return false;
   for (const target of record.host.requestedModules()) if (__nimbusGraphAwaits(target, seen)) return true;
   return false;
 }
@@ -20263,21 +20279,20 @@ function __nimbusGraphAwaits(record, seen) {
 // namespace once its evaluation completes. What escapes it is explained as
 // Node's loader explains it, by the module imported.
 async function __nimbusImportRecord(record, url) {
-  const late = __nimbusGraphOf();
   try {
-    if (!(record instanceof late.CyclicModuleRecord)) {
+    if (!(record instanceof __nimbusGraph.CyclicModuleRecord)) {
       record.host.link();
       record.host.evaluateSync();
       return record.namespace();
     }
     for (const leaf of __nimbusPlanGraph(record, false)) await leaf.begin();
-    late.link(record);
+    __nimbusGraph.link(record);
   } catch (e) {
     __nimbusExplainCommonJSGlobalLike(e, url, false);
     throw e;
   }
   try {
-    await late.evaluate(record);
+    await __nimbusGraph.evaluate(record);
   } catch (e) {
     __nimbusExplainCommonJSGlobalLike(e, url, record.host.hasTLA);
     throw e;
@@ -20314,7 +20329,6 @@ async function __nimbusImportGraph(resolution) {
 // module's in Node's shape of a required namespace (__nimbusEsmRequired);
 // another's, its exports.
 function __nimbusRequireRecord(record, parent) {
-  const late = __nimbusGraphOf();
   const state = record.state;
   if (record.status === "linking" || record.status === "evaluating") {
     if (state.adopted) __nimbusEsmRequire(state.esmId, true, parent);
@@ -20328,11 +20342,11 @@ function __nimbusRequireRecord(record, parent) {
       if (record.status === "unlinked" && !state.adopted && !state.data) __nimbusLateLink(state.resolvedPath.replace(/^\/+/, ""), state.moduleUrl);
       __nimbusPlanGraph(record, true);
       if (__nimbusGraphAwaits(record, new Set())) throw __nimbusRequireAsync(parent, state.filename);
-      late.link(record);
+      __nimbusGraph.link(record);
     } finally {
       __nimbusGraphSync = previous;
     }
-    __nimbusReflectApply(__nimbusEsmThen, late.evaluate(record), [undefined, () => {}]);
+    __nimbusReflectApply(__nimbusEsmThen, __nimbusGraph.evaluate(record), [undefined, () => {}]);
   } else if (__nimbusGraphAwaits(record, new Set())) {
     throw __nimbusRequireAsync(parent, state.filename);
   }
