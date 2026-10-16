@@ -19931,6 +19931,14 @@ function __nimbusGraphRecord(resolution, parent) {
   if (resolution.format === "json") return __nimbusTranslatedRecord(resolution, key, instance, parent);
   const known = __nimbusGraphRecords.get(instance === key ? "/" + key : instance);
   if (known !== undefined) return known;
+  // A typeless .js's syntax decides (detect): CommonJS, it is one module by
+  // its file, whatever the URL; an ES module, a query's or fragment's
+  // instance is one of its own.
+  if (resolution.format === "detect" && variant && !__nimbusGraphRecords.has("/" + key)) {
+    const plain = __nimbusPrepareModule(key, key, false, parent, false);
+    if (plain.state === undefined || __nimbusModuleLink(plain.state.cell) === null) return __nimbusTranslatedRecord(resolution, key, key, parent, plain);
+    __nimbusInterpretedRecord(plain.state);
+  }
   // An ES module by its format, or by its syntax (detect): compiled now, run by its graph.
   const prepared = __nimbusPrepareModule(key, instance, false, parent, resolution.format === "module");
   if (prepared.state === undefined || __nimbusModuleLink(prepared.state.cell) === null) return __nimbusTranslatedRecord(resolution, key, key, parent, prepared);
@@ -19971,27 +19979,81 @@ function __nimbusTranslatedRecord(resolution, key, instance, parent, prepared = 
     },
   });
   record.namespace = () => translation.namespace;
+  // A CommonJS module not yet run runs code where its graph evaluates it (JSON does not).
+  record.runs = () => outcome === null && resolution.format !== "json";
   return __nimbusGraphSet(resolution.url, record);
 }
 // A staged ES module's record: the registry's evaluation of it, where the
-// registry evaluates it with Node's semantics and its graph can wait for it
-// (a leaf of the graph: what it imports is all the registry's); else the
-// interpreter's, from its text before it was staged (adopted).
+// registry evaluates it with Node's semantics (its graph untainted, reaching
+// nothing staging handed on, awaiting nowhere at its top level) and its
+// import's plan reaches it before any module of the graph runs
+// (__nimbusPlanGraph); else the interpreter's, from its text before it was
+// staged (adopted). Undecided until that plan: a placeholder.
 function __nimbusStagedRecord(id, key, parent) {
   const row = __nimbusEsmRecord(id);
   const known = __nimbusGraphRecords.get("/" + key) ?? __nimbusGraphRecords.get("row:" + id);
-  if (known !== undefined) return known;
+  if (known !== undefined) return known.decided ?? known;
   if (row.state === __ESM_DONE && row.namespace !== null) {
     const evaluated = __nimbusEvaluatedRecord(row.namespace);
     // A require() refuses it where its graph awaits at its top level, evaluated or not.
     evaluated.awaits = __nimbusEsmGraphAwaits(id);
     return __nimbusGraphSet("row:" + id, evaluated);
   }
-  if (!__nimbusGraphSync && !__nimbusEsmTainted(id) && !__nimbusEsmHandsOn(id)) {
-    const names = __nimbusGraphOf().rowNamespaceNames(__nimbusLateLinkHost, id);
-    if (names !== null) return __nimbusGraphSet("row:" + id, __nimbusRegistryRecord(id, names));
+  if (!__nimbusGraphSync && !__nimbusEsmTainted(id) && !__nimbusEsmHandsOn(id) && !__nimbusEsmGraphAwaits(id)) {
+    return __nimbusGraphSet("row:" + id, { staged: true, id, key, parent, decided: null });
   }
   return __nimbusAdoptedRecord(id, key, parent);
+}
+// A staged module's placeholder decided: the registry's, evaluated before
+// its graph's evaluation (`first`: nothing of the graph runs before it),
+// its namespace the registry's; else the interpreter's.
+function __nimbusDecideStaged(placeholder, first) {
+  if (placeholder.decided !== null) return placeholder.decided;
+  if (first) {
+    const record = __nimbusEvaluatedRecord(null);
+    let namespace = null;
+    record.namespace = () => namespace;
+    // The registry's evaluation of it, begun once: what every graph that reaches it waits for.
+    let ready = null;
+    record.begin = () => ready ??= __nimbusReflectApply(__nimbusEsmThen, __nimbusEsmImport(placeholder.id), [(value) => { namespace = value; }]);
+    placeholder.decided = record;
+  } else {
+    placeholder.decided = __nimbusAdoptedRecord(placeholder.id, placeholder.key, placeholder.parent);
+  }
+  __nimbusGraphRecords.set("row:" + placeholder.id, placeholder.decided);
+  return placeholder.decided;
+}
+// Plans the evaluation of `root`'s graph before it is linked, in the order
+// Evaluate() runs it (InnerModuleEvaluation's: each module after the
+// modules it imports, in their order), deciding each staged module it
+// reaches: the registry's where nothing of the graph runs before it in that
+// order, else the interpreter's (`sync`, a require()'s graph, which cannot
+// wait: the interpreter's always). The registry's modules it decided, in
+// that order: evaluated before the graph's evaluation, they run just where
+// Node's would, though the registry evaluates asynchronously.
+function __nimbusPlanGraph(root, sync) {
+  const late = __nimbusGraphOf();
+  const visited = new Set();
+  const first = [];
+  let ran = false;
+  const visit = (record) => {
+    if (visited.has(record)) return;
+    visited.add(record);
+    if (!(record instanceof late.CyclicModuleRecord)) {
+      if (record.begin !== undefined) first.push(record);
+      if (record.runs?.() === true) ran = true;
+      return;
+    }
+    if (record.status === "evaluated" || record.status === "evaluating-async") return;
+    const requested = record.host.requestedModules();
+    for (let i = 0; i < requested.length; i++) {
+      if (requested[i].staged === true) requested[i] = __nimbusDecideStaged(requested[i], !sync && !ran);
+      visit(requested[i]);
+    }
+    ran = true;
+  };
+  visit(root);
+  return first;
 }
 // The interpreter's record of staged module `id` (an adoption).
 function __nimbusAdoptedRecord(id, key, parent = undefined) {
@@ -20017,28 +20079,6 @@ function __nimbusEsmHandsOn(id) {
     if (row[0] === "module") for (const target of row[2]) stack.push(target);
   }
   return false;
-}
-// A staged ES module the registry evaluates: a leaf of the graph, which its
-// importers wait for (it completes when the registry's import() of it does);
-// its namespace's names staging's, their values the registry's.
-function __nimbusRegistryRecord(id, names) {
-  let evaluated = null;
-  const record = new (__nimbusGraphOf().CyclicModuleRecord)({
-    hasTLA: true,
-    requestedModules: () => [],
-    initializeEnvironment() {},
-    executeModule(capability) {
-      __nimbusReflectApply(__nimbusEsmThen, __nimbusEsmImport(id), [(namespace) => {
-        evaluated = namespace;
-        capability.resolve();
-      }, capability.reject]);
-    },
-  });
-  // A require() refuses it where its graph awaits at its top level, as staging read it.
-  record.awaits = __nimbusEsmGraphAwaits(id);
-  const namespace = __esmNamespaceOf(names, (name) => evaluated === null ? undefined : evaluated[name]);
-  record.namespace = () => namespace;
-  return record;
 }
 // A data: module's record: JSON its default; JavaScript an ES module,
 // whatever its syntax (its MIME type's goal), its importer its own URL.
@@ -20077,6 +20117,7 @@ function __nimbusInterpretedRecord(state) {
   const importer = state.data ? undefined : mod;
   const parentUrl = state.data ? moduleUrl : builtins.url.pathToFileURL(state.filename).href;
   const requests = __nimbusModuleRequestsOf(cell);
+  // Each request's index in `requested`, by its specifier and type (the plan may replace a staged module's placeholder there).
   const targets = new Map();
   let requested = null;
   let execute = null;
@@ -20087,7 +20128,7 @@ function __nimbusInterpretedRecord(state) {
   // names its `export *`s leave out (ESM_CONFLICTS_HELPER: its late link's).
   const linkRequire = (id, marker, type = null) => marker === "nimbus:star-conflicts"
     ? late.starConflicts(__nimbusLateLinkHost, moduleUrl)
-    : targets.get(at(id, type)).namespace();
+    : requested[targets.get(at(id, type))].namespace();
   const record = new late.CyclicModuleRecord({
     hasTLA: __nimbusModuleAwaits(cell),
     requestedModules() {
@@ -20097,9 +20138,8 @@ function __nimbusInterpretedRecord(state) {
         // The interpreter's own list: no iterator, read by index.
         for (let i = 0; i < requests.length; i++) {
           const { source, type } = requests[i];
-          const target = __nimbusStaticRecord(source, type, parentUrl, importer, state.data);
-          targets.set(at(source, type), target);
-          resolved.push(target);
+          targets.set(at(source, type), resolved.length);
+          resolved.push(__nimbusStaticRecord(source, type, parentUrl, importer, state.data));
         }
         requested = resolved;
       }
@@ -20188,7 +20228,11 @@ function __nimbusStaticRecord(id, type, parentUrl, importer, data) {
     const key = resolution.path.replace(/^\/+/, "");
     const loading = resolution.format === "detect" && __nimbusEsmId("module", key) !== -1 ? undefined : __NodeModule._cache["/" + key];
     if (loading !== undefined && __nimbusExecutingCommonJs.has(loading)) {
-      throw nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot import CommonJS Module " + id + " in a cycle." + (importer?.filename ? " (from " + importer.filename + ")" : ""));
+      const refusal = nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot import CommonJS Module " + id + " in a cycle." + (importer?.filename ? " (from " + importer.filename + ")" : ""));
+      // Node's loader refuses it from its own frames alone: none of the program's.
+      const frames = refusal.stack.indexOf("\n    at ");
+      if (frames !== -1) refusal.stack = refusal.stack.slice(0, frames);
+      throw refusal;
     }
   }
   return __nimbusGraphRecord(resolution, importer);
@@ -20213,6 +20257,7 @@ async function __nimbusImportRecord(record, url) {
       record.host.evaluateSync();
       return record.namespace();
     }
+    for (const leaf of __nimbusPlanGraph(record, false)) await leaf.begin();
     late.link(record);
   } catch (e) {
     __nimbusExplainCommonJSGlobalLike(e, url, false);
@@ -20268,6 +20313,7 @@ function __nimbusRequireRecord(record, parent) {
     try {
       // Its late graph's names, as its import() checks them: a runtime module's.
       if (record.status === "unlinked" && !state.adopted && !state.data) __nimbusLateLink(state.resolvedPath.replace(/^\/+/, ""), state.moduleUrl);
+      __nimbusPlanGraph(record, true);
       if (__nimbusGraphAwaits(record, new Set())) throw __nimbusRequireAsync(parent, state.filename);
       late.link(record);
     } finally {

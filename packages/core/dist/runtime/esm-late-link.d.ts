@@ -94,6 +94,4 @@ export declare function starConflicts(host: LateLinkHost, url: string): string[]
  * namespace taken in a cycle has them all.
  */
 export declare function namespaceNames(host: LateLinkHost, url: string): string[] | null;
-/** The names of the namespace of staged row `row`, as staging's facts read them (namespaceNames' rule); null where they do not tell. */
-export declare function rowNamespaceNames(host: LateLinkHost, row: number): string[] | null;
 //# sourceMappingURL=esm-late-link.d.ts.map

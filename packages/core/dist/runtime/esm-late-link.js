@@ -149,14 +149,10 @@ export function starConflicts(host, url) {
  * namespace taken in a cycle has them all.
  */
 export function namespaceNames(host, url) {
-    return lateModules.has(url) ? targetNamespaceNames(host, { url }) : null;
-}
-/** The names of the namespace of staged row `row`, as staging's facts read them (namespaceNames' rule); null where they do not tell. */
-export function rowNamespaceNames(host, row) {
-    return targetNamespaceNames(host, { row });
-}
-function targetNamespaceNames(host, target) {
     const late = { modules: lateModules, rows: [] };
+    if (!lateModules.has(url))
+        return null;
+    const target = { url };
     const names = exportedNames(host, late, target, new Set());
     if (names === null)
         return null;
