@@ -5769,9 +5769,9 @@ const __fsMod = (() => {
     const createMode = _coerceMode(mode, 0o666);
     const absPath = _target(path, fl.followSymlinks, "open");
     const supervisor = _supervisor();
-    if (supervisor && fl.write && !fl.directory) return _openWriteLive(path, absPath, fl, createMode, supervisor);
-    // Any other open looks once, at the session where there is one: the name
-    // itself under O_NOFOLLOW, else what it reaches.
+    if (supervisor && fl.write && !fl.directory && (fl.create || fl.truncate)) return _openWriteLive(path, absPath, fl, createMode, supervisor);
+    // Any other open changes nothing and looks once, at the session where
+    // there is one: the name itself under O_NOFOLLOW, else what it reaches.
     let there;
     if (supervisor && typeof supervisor.stat === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor, fl.followSymlinks);
@@ -5797,11 +5797,12 @@ const __fsMod = (() => {
   }
 
   /**
-   * A write open at the session (_openCall), answered before it returns. A
-   * file this view knows is not there is parked empty as the sync open's is
-   * (_parkOpen), and the answer kept as a write's (_writeFileAsync); one it
-   * holds that O_TRUNC empties is trimmed when the open lands, as a
-   * truncate's (_truncateAsync); an open that changes nothing keeps nothing.
+   * A write open that creates or truncates, at the session (_openCall),
+   * answered before it returns. A file this view knows is not there is
+   * parked empty as the sync open's is (_parkOpen), and the answer kept as a
+   * write's (_writeFileAsync); one it holds that O_TRUNC empties is trimmed
+   * when the open lands, as a truncate's (_truncateAsync); a create that
+   * finds a file keeps nothing.
    */
   async function _openWriteLive(path, absPath, fl, mode, supervisor) {
     await _flushLocalPathToSupervisor(absPath, supervisor, fl.followSymlinks);
