@@ -1,26 +1,17 @@
 #!/usr/bin/env bun
-// file-tree/panel/regression/ctrl-p-still-works — editor Ctrl+P
-// palette + protocol round-trip preserved.
+// file-tree/panel/regression/ctrl-p-still-works — the recursive fs-list
+// round-trip the Ctrl+P palette lists files with. The palette itself is
+// driven in a real Chrome by editor/monaco/new/ctrl-p-opens-file and
+// monaco-polish/regression/existing-monaco-probes-preserved.
 
 import WebSocket from 'ws';
-import { mintSession, BASE, WS_BASE, makeAsserter, sleep, wsHeaders, requestHeaders } from '../../../_driver.mjs';
+import { mintSession, WS_BASE, makeAsserter, sleep, wsHeaders } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree/panel/regression/ctrl-p-still-works');
 console.log(`file-tree/panel/regression/ctrl-p-still-works — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders({}, sid) });
-const html = await r.text();
-
-a.check('Ctrl+P global keydown handler still present',
-  /isCtrlP\s*=\s*\(e\.ctrlKey\s*\|\|\s*e\.metaKey\)\s*&&\s*e\.key\s*===\s*['"]p['"]/.test(html),
-  `wiring missing`);
-a.check('palette overlay DOM still present',
-  /id=["']paletteOverlay["']/.test(html) && /id=["']paletteInput["']/.test(html),
-  `palette DOM incomplete`);
-
-// Protocol — fs-list round-trip (what openPalette uses).
 const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders(sid));
 const messages = [];
 ws.on('message', (data) => { try { messages.push(JSON.parse(data.toString('utf8'))); } catch {} });

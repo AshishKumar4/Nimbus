@@ -4,7 +4,7 @@
 //
 // Black-box surfaces only.
 
-import { mintSession, Terminal, makeAsserter } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter, writeFileViaShell } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('session-recovery');
@@ -60,8 +60,7 @@ await t2.waitForPrompt(60_000);
 //    --watch / --inspect. This is the architectural promise.
 {
   const longJs = `const http=require('http'); const s=http.createServer((q,r)=>r.end('x')); s.listen(0); setTimeout(()=>{s.close();process.exit(0);}, 25_000);`;
-  const b64 = Buffer.from(longJs, 'utf8').toString('base64');
-  await t2.run(`node -e "require('fs').writeFileSync('/tmp/srv.js', Buffer.from('${b64}','base64').toString('utf8'))"`, 15_000);
+    await writeFileViaShell((command) => t2.run(command, 15_000), '/tmp/srv.js', longJs);
   // --watch makes runFresh route to facetMgr.spawn (long-running).
   await t2.run('node --watch /tmp/srv.js', 15_000);
   await t2.close();

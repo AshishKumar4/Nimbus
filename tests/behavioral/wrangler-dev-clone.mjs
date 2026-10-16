@@ -20,7 +20,7 @@
 //
 // Black-box only. NO _diag.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, fetchPort, requestHeaders } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, fetchPort, requestHeaders, writeFileViaShell } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('wrangler-dev-clone');
@@ -42,13 +42,10 @@ await t.waitForPrompt(60_000);
     compatibility_date: '2026-04-01',
   });
   const indexTs = `export default { async fetch(req) { return new Response('hello-from-wrangler-dev-clone-probe', { headers: { 'content-type': 'text/plain' } }); } }`;
-  const writeProbeJs = (path, content) => {
-    const b64 = Buffer.from(content, 'utf8').toString('base64');
-    return `node -e "require('fs').writeFileSync('${path}', Buffer.from('${b64}','base64').toString('utf8'))"`;
-  };
-  await t.run(writeProbeJs('/home/user/hello-worker/wrangler.jsonc', wranglerJsonc), 10_000);
+  const write = (path, content) => writeFileViaShell((command) => t.run(command, 10_000), path, content);
+  await write('/home/user/hello-worker/wrangler.jsonc', wranglerJsonc);
   await t.run('mkdir -p /home/user/hello-worker/src', 5_000);
-  await t.run(writeProbeJs('/home/user/hello-worker/src/index.ts', indexTs), 10_000);
+  await write('/home/user/hello-worker/src/index.ts', indexTs);
   // package.json is optional for wrangler dev; skip to keep this fast.
   const okWrangler = (await t.run('cat /home/user/hello-worker/wrangler.jsonc', 5_000)).output.includes('hello-worker');
   const okIndex = (await t.run('cat /home/user/hello-worker/src/index.ts', 5_000)).output.includes('hello-from-wrangler-dev-clone-probe');

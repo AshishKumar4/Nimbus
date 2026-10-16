@@ -12,7 +12,7 @@
 // Then read each back as bytes (hex) AND as utf8 string where
 // appropriate; assert round-trip preservation.
 
-import { mintSession, Terminal, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, BASE, writeFileViaShell } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[binary-fs mixed] sid=${sid} BASE=${BASE}`);
@@ -38,11 +38,7 @@ console.log('c-hex:',      fs.readFileSync('c.bin').toString('hex'));
 console.log('d-utf8:',     JSON.stringify(fs.readFileSync('d.txt', 'utf8')));
 console.log('d-hex:',      fs.readFileSync('d.txt').toString('hex'));
 `;
-const b64 = Buffer.from(script, 'utf8').toString('base64');
-await t.run(
-  `node -e "require('fs').writeFileSync('mix.js', Buffer.from('${b64}','base64').toString('utf8'))"`,
-  15_000,
-);
+await writeFileViaShell((command) => t.run(command, 15_000), 'mix.js', script);
 const r = await t.run('node mix.js', 30_000);
 const out = stripAnsi(r.output);
 

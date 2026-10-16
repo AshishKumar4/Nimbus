@@ -22,7 +22,7 @@
 //   2. Both rows visible in `ps`
 //   3. Both produce identical stdout output
 
-import { mintSession, Terminal, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, BASE, writeFileViaShell } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[G4] sid=${sid} BASE=${BASE}`);
@@ -41,11 +41,7 @@ const cliCode =
   '"use strict";\n' +
   'console.log("PARITY-MARKER:" + JSON.stringify(process.argv.slice(2)));\n' +
   'process.exit(0);\n';
-const cliCodeB64 = Buffer.from(cliCode, 'utf8').toString('base64');
-await t.run(
-  `node -e "require('fs').writeFileSync('node_modules/.bin/parity', Buffer.from('${cliCodeB64}','base64').toString('utf8'))"`,
-  10_000,
-);
+await writeFileViaShell((command) => t.run(command, 10_000), 'node_modules/.bin/parity', cliCode);
 
 function highestPid(psOutput) {
   const rows = psOutput.split(/\r?\n/).filter(l => /^\s+\d+\s+/.test(l));

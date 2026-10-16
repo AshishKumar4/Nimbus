@@ -1,42 +1,17 @@
 // monaco-polish/new/vertical-resize-editor-terminal — V1 handle
-// (editor TOP ↔ terminal BOTTOM, inside the editor-stack column).
-// Visible only in editor mode.
-//
-// The flex mutation is asserted as OBSERVABLE behavior: a real Chrome
-// drags the handle and we measure that the editor pane shrinks and the
-// terminal pane grows by the same amount, with both panes' inline flex
-// basis updated. Source-regex on the handler shape is brittle (the
-// implementation assigns editorPanel to a `topSurface` local before
-// setting .style.flex), so the behavioral charter's live check is the
-// source of truth here.
+// (editor TOP ↔ terminal BOTTOM, inside the editor-stack column), in a
+// real Chrome: it shows with a row-resize cursor, and dragging it shrinks
+// the editor pane and grows the terminal pane by the same amount, with
+// both panes' inline flex basis updated.
 
-import { mintSession, BASE, makeAsserter, requestHeaders, deleteSession } from '../../_driver.mjs';
-import { launchBrowser, openPage } from '../../_runtime-behavioral-template.mjs';
+import { mintSession, BASE, makeAsserter, deleteSession, readUntil } from '../../_driver.mjs';
+import { grabHandle, launchBrowser, openPage } from '../../_runtime-behavioral-template.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('monaco-polish/new/vertical-resize-editor-terminal');
 console.log(`monaco-polish/new/vertical-resize-editor-terminal — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders({}, sid) });
-const html = await r.text();
-
-// DOM + CSS structure (cheap static sanity; the live drag below proves
-// the actual resize).
-a.check('#editorTerminalResizeHandle in DOM',
-  /id=["']editorTerminalResizeHandle["']/.test(html),
-  `vresize handle missing`);
-a.check('.vresize-handle CSS sets row-resize cursor',
-  /\.vresize-handle\s*\{[^}]*cursor:\s*row-resize/.test(html),
-  `cursor rule missing`);
-a.check('.vresize-handle hidden by default',
-  /\.vresize-handle\s*\{[^}]*display:\s*none/.test(html),
-  `default-hide rule missing`);
-a.check('.main.editor shows .vresize-handle',
-  /\.main\.editor\s+\.vresize-handle\s*\{[^}]*display:\s*block/.test(html),
-  `editor-mode show rule missing`);
-
-// Live: the editor↔terminal vertical resize actually works.
 const browser = await launchBrowser();
 try {
   const { page, pageErrors } = await openPage(browser, sid);
@@ -54,7 +29,7 @@ try {
       editorFlex: ed ? ed.style.flex : null,
       termFlex: term ? term.style.flex : null,
       handleVisible: getComputedStyle(handle).display === 'block' && hr.height > 0,
-      hx: hr.x, hy: hr.y, hw: hr.width, hh: hr.height,
+      cursor: getComputedStyle(handle).cursor,
     };
   });
 
@@ -62,22 +37,17 @@ try {
   a.check('V1 handle visible in editor mode (display:block, has height)',
     before.handleVisible === true,
     JSON.stringify(before));
+  a.check('V1 handle offers a row-resize cursor', before.cursor === 'row-resize', before.cursor);
   a.check('editor + terminal panes have non-zero height before drag',
     (before.editorH || 0) > 50 && (before.termH || 0) > 50,
     `editorH=${before.editorH} termH=${before.termH}`);
 
   // Drag the handle up by 150px: editor TOP shrinks, terminal BOTTOM grows.
-  const startX = before.hx + before.hw / 2;
-  const startY = before.hy + before.hh / 2;
-  await page.mouse.move(startX, startY);
-  await page.mouse.down();
-  await page.mouse.move(startX, startY - 60, { steps: 6 });
-  await page.mouse.move(startX, startY - 150, { steps: 12 });
-  await page.mouse.up();
-  await new Promise((res) => setTimeout(res, 300));
-
-  const after = await measure();
   const dragPx = 150;
+  const handle = await grabHandle(page, '#editorTerminalResizeHandle');
+  await handle.move(0, -dragPx);
+  await handle.release();
+  const after = await readUntil(measure, (now) => before.editorH - now.editorH > dragPx * 0.5);
   const editorDelta = before.editorH - after.editorH;
   const termDelta = after.termH - before.termH;
 
