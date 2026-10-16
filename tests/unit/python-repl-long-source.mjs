@@ -87,6 +87,7 @@ try {
 const payload = /base64\.b64decode\("([A-Za-z0-9+/=]*)"\)\.decode\("utf-8"\)/.exec(driver);
 assert.ok(payload, 'the driver no longer carries its source as base64');
 const python = spawnSync('python3', ['-c', 'import base64, sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()).decode("utf-8").encode("utf-8"))'], { input: payload[1], maxBuffer: 1 << 24 });
-const decoded = python.status === 0 ? python.stdout.toString('utf8') : Buffer.from(payload[1], 'base64').toString('utf8');
-assert.equal(decoded, LINE, 'the interpreter would not see the line typed');
-console.log(`ok - python-repl-long-source (a ${Buffer.byteLength(LINE)}-byte line reaches the interpreter whole${python.status === 0 ? ', decoded by host python3' : ''})`);
+assert.equal(python.error, undefined, `host python3 did not start: ${python.error}`);
+assert.equal(python.status, 0, `host python3 could not decode the payload: ${python.stderr}`);
+assert.equal(python.stdout.toString('utf8'), LINE, 'the interpreter would not see the line typed');
+console.log(`ok - python-repl-long-source (a ${Buffer.byteLength(LINE)}-byte line reaches the interpreter whole, decoded by host python3)`);
