@@ -12,7 +12,6 @@ import { loadInterpreter } from '../../unit/lib/interpreter-load.mjs';
 import { readReport, recordPart } from './report.mjs';
 import { same } from './same.mjs';
 
-const require = createRequire(import.meta.url);
 const interp = loadInterpreter(process.env.NIMBUS_INTERPRETER, process.env.NIMBUS_INTERPRETER_OPS, (parent, specifier) => import(String(specifier)));
 const reportFile = process.argv[2];
 const report = readReport(reportFile);
@@ -36,7 +35,7 @@ for (const { url, text } of report.modules ?? []) {
     const interpreted = Object.keys(module.exports).filter((k) => k !== '__esModule').sort();
     const difference = names.join(',') !== interpreted.join(',')
       ? `export names [${names}] vs [${interpreted}]`
-      : names.map((k) => same(native[k], module.exports[k], k, 3, new Set())).find(Boolean) ?? null;
+      : names.map((k) => same(native[k], module.exports[k], k, 3)).find(Boolean) ?? null;
     moduleResults.push({ url, difference });
   } catch (e) {
     moduleResults.push({ url, difference: `threw: ${e && e.stack}` });
