@@ -27,6 +27,7 @@ import {
   pythonSitePackages,
   sessionUsesSciVariant,
 } from '../../packages/core/src/runtime/python-pip.ts';
+import { markers } from './lib/pypi-mock.mjs';
 
 /** A VFS that knows only which paths exist, which is all the selector reads. */
 function vfsWith(paths) {
@@ -49,7 +50,7 @@ console.log('  ok  a session without compiled packages stays on the base interpr
 // ── Installing numpy is what selects it, and pip is what records that ───────
 // The dist-info path is not written out here: it is taken from the install
 // pip actually generates, so the two halves cannot drift apart.
-const install = await buildPipInvocation(['install', 'numpy'], 'pip', '/home/user', vfsWith([]), { home: '/home/user', network: ISOLATE_NETWORK });
+const install = await buildPipInvocation(['install', 'numpy'], 'pip', '/home/user', vfsWith([]), { home: '/home/user', network: ISOLATE_NETWORK, markers });
 assert.equal(install.error, undefined, `pip install numpy failed to plan: ${install.error}`);
 assert.equal(install.mode, 'pip');
 
@@ -82,8 +83,7 @@ console.log('  ok  the record pip writes is the record the selector reads');
   const site = mkdtempSync(join(tmpdir(), 'variant-site-'));
   try {
     const code = install.code
-      .replace(/^target_site_packages = .*$/m, `target_site_packages = ${JSON.stringify(site)}`)
-      .replace(/^pyodide_manifest_path = .*$/m, `pyodide_manifest_path = ${JSON.stringify(join(site, '.nimbus-pyodide-packages.json'))}`);
+      .replace(/^target_site_packages = .*$/m, `target_site_packages = ${JSON.stringify(site)}`);
     const run = () => {
       const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
       assert.equal(result.status, 0, `generated install failed: ${result.stderr}`);
@@ -108,7 +108,7 @@ console.log('  ok  the generated installer writes the variant record once');
 // Its Python half installs from source and its _speedups is compiled into the
 // variant, so the two are only compatible at one version. build-python.sh pins
 // the same one; a bump on either side without the other is what this catches.
-const ms = await buildPipInvocation(['install', 'markupsafe'], 'pip', '/home/user', vfsWith([]), { home: '/home/user', network: ISOLATE_NETWORK });
+const ms = await buildPipInvocation(['install', 'markupsafe'], 'pip', '/home/user', vfsWith([]), { home: '/home/user', network: ISOLATE_NETWORK, markers });
 assert.equal(ms.error, undefined, `pip install markupsafe failed to plan: ${ms.error}`);
 const msVersion = ms.code.match(/markupsafe-([0-9.]+)\/src\/markupsafe/)?.[1];
 assert.equal(msVersion, '3.0.3', 'markupsafe must be pinned to the release _speedups.c is built from');
@@ -120,7 +120,7 @@ assert.equal(
 console.log('  ok  markupsafe pins to the built _speedups and selects the variant');
 
 // ── A version the interpreter does not carry is refused, not silently swapped ─
-const wrong = await buildPipInvocation(['install', 'numpy==1.26.4'], 'pip', '/home/user', vfsWith([]), { home: '/home/user', network: ISOLATE_NETWORK });
+const wrong = await buildPipInvocation(['install', 'numpy==1.26.4'], 'pip', '/home/user', vfsWith([]), { home: '/home/user', network: ISOLATE_NETWORK, markers });
 assert.match(wrong.error ?? '', /2\.4\.3/,
   'asking for a numpy the variant does not have must say which one it has');
 assert.notEqual(wrong.exitCode, 0, 'an unsatisfiable pin must fail rather than install something else');

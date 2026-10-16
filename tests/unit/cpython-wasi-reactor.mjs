@@ -42,6 +42,7 @@ import { pathToFileURL } from 'node:url';
 
 import { loadWasiPreamble, makeGuest, makeSession } from './lib/wasi-authority.mjs';
 import { WASI_RUNTIME_IMPORT_MODULES } from '../../packages/core/src/runtime/os-contracts.ts';
+import { cpythonMarkers } from '../../packages/core/src/runtime/cpython-runner.ts';
 
 const RUNTIME_DIR = path.join(import.meta.dir ?? path.dirname(new URL(import.meta.url).pathname),
   '../../packages/worker/wasm/python');
@@ -143,6 +144,34 @@ print(sys.version.split()[0], ssl.OPENSSL_VERSION.split()[1], sqlite3.sqlite_ver
 assert.match(takeStdout(), /^3\.13\.\d+ 3\.\d+\.\d+ 3\.\d+\.\d+/,
   'zlib, ssl and sqlite must all be real');
 console.log('  ok  zlib, lzma, bz2, hashlib, ssl and sqlite3 work through the WASI filesystem');
+
+// ── pip's environment markers are the interpreter's own ───────────────────
+// pip plans an install against cpythonMarkers(manifest) before any guest
+// runs; this is what packaging.markers.default_environment() answers here.
+assert.equal(await run(`
+import json, os, platform, sys
+v = sys.implementation.version
+iver = f"{v.major}.{v.minor}.{v.micro}" + ("" if v.releaselevel == "final" else v.releaselevel[0] + str(v.serial))
+print(json.dumps({
+    "implementation_name": sys.implementation.name,
+    "implementation_version": iver,
+    "os_name": os.name,
+    "platform_machine": platform.machine(),
+    "platform_release": platform.release(),
+    "platform_system": platform.system(),
+    "platform_version": platform.version(),
+    "python_full_version": platform.python_version(),
+    "platform_python_implementation": platform.python_implementation(),
+    "python_version": ".".join(platform.python_version_tuple()[:2]),
+    "sys_platform": sys.platform,
+}))
+`), 0, `marker probe failed: ${stderr.join('')}`);
+{
+  const guest = JSON.parse(takeStdout());
+  assert.deepEqual(cpythonMarkers({ version: `${guest.python_full_version}-3` }), guest,
+    'the markers pip plans with are the ones this interpreter answers');
+}
+console.log('  ok  pip\'s environment markers are the ones the interpreter answers');
 
 // ── Filesystem writes land in the Nimbus VFS, not a private one ─────────────
 // This is the whole point of the migration: Pyodide keeps its own MEMFS, so its
