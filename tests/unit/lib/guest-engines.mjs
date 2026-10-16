@@ -158,14 +158,21 @@ export async function bootEngine(kind, { seed } = {}) {
   seed?.(authority);
   let stalled = null;
   let waves = 0;
+  /** Waves sent and not yet answered. */
+  let unanswered = 0;
   let listingFails = false;
   const grants = new Map();
   let forward;
   const handle = facetSupervisor(authority, {
     writeBatchStream: async (...args) => {
       waves++;
-      if (stalled !== null) await stalled.promise;
-      return forward('writeBatchStream', args);
+      unanswered++;
+      try {
+        if (stalled !== null) await stalled.promise;
+        return await forward('writeBatchStream', args);
+      } finally {
+        unanswered--;
+      }
     },
     fsAcquireExclusiveMutation: async (...args) => {
       const granted = await forward('fsAcquireExclusiveMutation', args);
@@ -229,9 +236,11 @@ export async function bootEngine(kind, { seed } = {}) {
      * The process ends as the session ends a resident (FacetManager): by a
      * kill, or by its own exit. Its facet is released and the session drains
      * its write log as it does for any resident; the guest is not asked to
-     * flush first.
+     * flush first. `refused`: the waves it has on their way reach the
+     * session (stalled until then) once it has ended the process, and are
+     * answered before the facet settles.
      */
-    async end(how = 'kill', { twice = false } = {}) {
+    async end(how = 'kill', { twice = false, refused = false } = {}) {
       const name = `guest-engine-${kind}`;
       const ctx = createFacetCtx(createFacetWorld(() => ({})), name);
       Reflect.set(ctx.storage, 'sql', Reflect.get(authority.rawVfs, 'sql'));
@@ -248,7 +257,13 @@ export async function bootEngine(kind, { seed } = {}) {
             // log is drained. `twice`: the session drains it twice at once
             // (one joins the other).
             release: async () => {
-              globalThis.__nimbusSettle?.();
+              if (refused) {
+                await engine.release();
+                await until(() => unanswered === 0, 'its waves answered');
+                await sleep(0);
+              }
+              // A settle that fails leaves its log as it is (the host's).
+              try { globalThis.__nimbusSettle?.(); } catch { /* as it is */ }
               const drain = () => params.journal.drain(journalSource(engine.journal()));
               await (twice ? Promise.all([drain(), drain()]) : drain());
             },

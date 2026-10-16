@@ -343,6 +343,17 @@ const SCENARIOS = {
     await e.end('kill');
     assert.equal(await e.peerText(`${OUT}/last.txt`), 'LAST');
   },
+  async 'what the process was told it wrote lands when its waves are refused as the session kills it'(e) {
+    await e.hold(OUT);
+    e.stall();
+    const before = e.waves();
+    await e.write(`${OUT}/sent.txt`, 'SENT');
+    await until(() => e.waves() > before, 'its wave on its way');
+    await e.write(`${OUT}/held.txt`, 'HELD');
+    await e.end('kill', { refused: true });
+    assert.equal(await e.peerText(`${OUT}/sent.txt`), 'SENT', 'a change on its way when the process ended was lost');
+    assert.equal(await e.peerText(`${OUT}/held.txt`), 'HELD', 'a change not yet sent when the process ended was lost');
+  },
 };
 
 /** What each engine lacks today: each must fail, showing what it lacks. */

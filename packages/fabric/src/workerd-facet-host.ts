@@ -566,6 +566,8 @@ function spawnResident(
         await params.journal.drain(onceSettled(ended, facetJournal(ctx, env, name)));
       } catch (error) {
         console.error(`[nimbus] the write log of pid ${params.pid} (facet '${name}') was not drained: ${error instanceof Error ? error.message : String(error)}`);
+        // Its store kept for that drain; the release still ends with the facet.
+        await ended;
         return;
       }
     }

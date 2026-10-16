@@ -141,9 +141,9 @@ function deferred() {
 // unlogged (a WASI holder's last decided bytes) in its isolate's heap.
 {
   const RESIDENT_SETTLE_DEADLINE_MS = fabric.RESIDENT_SETTLE_DEADLINE_MS ?? 100;
-  const run = async (kind, behaviour) => {
+  const run = async (kind, behaviour, drain = async () => {}) => {
     const ctx = makeCtx(`settle-${kind}`, behaviour);
-    const facet = open(ctx, 40, { opened() {}, drain: async () => {} });
+    const facet = open(ctx, 40, { opened() {}, drain });
     // Held, so its host watches it (and learns of its loss).
     const lease = facet.acquireActivity();
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -173,6 +173,18 @@ function deferred() {
   const lost = await run('lost', { watch: ended });
   assert.ok(!lost.after.includes(`settle ${lost.name}`), 'a lost resident was asked to settle');
   assert.ok(lost.ms < RESIDENT_SETTLE_DEADLINE_MS / 2, `a lost resident's release waited: ${lost.ms} ms`);
+
+  // Its drain fails at once while it is still settling: the release ends with its facet all the same.
+  // Red before: the release ended at the failure, the facet aborted only at the deadline, after.
+  const realError = console.error;
+  console.error = () => {};
+  let failing;
+  try {
+    failing = await run('drain-fails', { settle: () => new Promise(() => {}) }, async () => { throw new Error('facet unreachable'); });
+  } finally {
+    console.error = realError;
+  }
+  assert.ok(failing.after.includes(`abort ${failing.name}`), `the release ended before its facet: ${failing.after.join(', ')}`);
 }
 
 // ── A drain that fails keeps the store, and says so, named ────
