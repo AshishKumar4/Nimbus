@@ -12,7 +12,18 @@ import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { doUnavailableError } from './do-errors.js';
+import { idempotent } from '@nimbus-sh/fabric/do-calls.js';
 import { codeRuntimeRequirement, runtimePolicyError } from '@nimbus-sh/config/sandbox';
+/**
+ * The platform failures a session's destroy is repeated after, once, on a
+ * fresh stub: the object reset under the call (its storage's internal
+ * error), and the platform's undescribed failure of it. A destroy is
+ * idempotent (rpcDestroy: one at a time, and a destroyed session destroys
+ * to the same answer), so its repeat changes nothing the first may have
+ * done. Both answered DELETEs 500 on 2026-10-16, main and branches alike.
+ * Any other failure of it, and every other route, answers as before.
+ */
+const DESTROY_REPEATS_AFTER = /internal error in durable object storage caused object to be reset|^internal error; reference = /i;
 export async function handleNimbusRemoteApi(request, env, sdk, outbox) {
     const remote = normalizeRemoteConfig(sdk?.remote);
     if (!remote.enabled)
@@ -65,6 +76,7 @@ export async function handleNimbusRemoteApi(request, env, sdk, outbox) {
     const ctx = {
         env,
         stub,
+        freshStub: () => env.NIMBUS_SESSION.get(id),
         body,
         profileName,
         profile,
@@ -315,9 +327,16 @@ async function dispatchRemoteRpc(ctx) {
         }
         case 'unexposePort':
             return ctx.stub._rpcUnexposePort(numberArg(args[0], 'port'));
-        case 'destroy':
+        case 'destroy': {
             requireAnyScope(ctx, ['session:destroy', 'session:admin']);
-            return ctx.stub._rpcDestroy(objectArg(args[0])).then((result) => {
+            // The request's stub first; a repeat on a fresh one.
+            let handed = false;
+            const session = () => (handed ? ctx.freshStub() : (handed = true, ctx.stub));
+            const options = objectArg(args[0]);
+            return idempotent('destroy', session, (stub) => stub._rpcDestroy(options), {
+                maxAttempts: 2,
+                repeats: (error) => error instanceof Error && DESTROY_REPEATS_AFTER.test(error.message),
+            }).then((result) => {
                 // Proven destroy, reported as internal metadata for the caller's
                 // response policy — no JSON re-parse needed to rediscover it.
                 const outcome = result;
@@ -327,6 +346,7 @@ async function dispatchRemoteRpc(ctx) {
                 }
                 return result;
             });
+        }
         default:
             throw apiError(`Unknown Nimbus sandbox operation: ${String(op)}`, 'E_REMOTE_OP', 400);
     }
