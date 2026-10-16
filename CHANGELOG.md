@@ -5,6 +5,29 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `npm run`, `npm test` and `npm start` run a script as npm does.
+  The words after the script name (after `--`) are passed to it, each
+  quoted for the shell. `pre<script>` runs before the script and
+  `post<script>` after it, unless `--ignore-scripts` is given. The first
+  script that fails stops the rest. A script runs with npm's lifecycle
+  environment (`npm_lifecycle_event`, `npm_lifecycle_script`,
+  `npm_package_name`, `npm_package_version`, `npm_package_json`), and
+  `node_modules/.bin` of the project and each directory above it come
+  first on its `PATH`. Before, `npm run x -- a b` dropped `a b`, and pre
+  and post scripts did not run. Without a host shell, core npm split a
+  simple script on spaces, so `mkdir "a b"` made `"a` and `b"`.
+- Fixed: a project's bins are commands of its own scripts only. Before,
+  core npm's `npm run` registered every bin in the project's node_modules
+  as a command of the whole workspace, so a script in another project ran
+  the first project's tool. Core npm's local install now links bins into
+  `node_modules/.bin`, as npm does. Every bin shim names its target as a
+  JSON string, so a path with a quote in it still works.
+- Changed (core): `createNpmCommand` runs a script only through the
+  host's `ShellExecuteFn`. Without one, `npm run` says the shell is
+  unavailable, for every script. `ShellExecuteFn` takes an optional third
+  argument, the script being run. The new `NpmCommandDeps.beforeRun` hook
+  lets a host stop a run before it starts. The hosted terminal's
+  `node_modules` check and its Next.js refusal now run through that hook.
 - Fixed: a session's destroy (`DELETE /s/<id>/`, `box.destroy()`) is
   repeated once on a fresh connection when the platform fails it with a
   reset of the session's storage ("Internal error in Durable Object
