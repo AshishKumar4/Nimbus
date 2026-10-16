@@ -25,10 +25,11 @@ import type { Command } from '../substrate/lifo/commands/types.js';
 import type { ProcessView as CredentialedVfs } from './process-files.js';
 import { errorText } from '../_shared/error-text.js';
 import {
+  bindRuntimeCommands,
   listInstalledManifestsView,
   rehydrateInstalledRuntimesView,
-  runtimeAbiForManifest,
   runtimeEntrypoints,
+  runtimeSummary,
   type MinShellRegistry,
   type RunnerFactory,
   type RuntimeSummary,
@@ -265,7 +266,6 @@ export class RuntimeManager {
   ): Promise<InstalledBins> {
     const manifest = runtimePackage.manifest;
     const name = manifest.name;
-    const entrypoints = runtimeEntrypoints(manifest);
     const totalBytes = manifest.files.reduce((a, f) => a + f.size, 0);
     options?.onProgress?.(
       `[${name}] manifest: ${manifest.files.length} files, ${(totalBytes / 1024 / 1024).toFixed(1)} MiB`,
@@ -279,14 +279,7 @@ export class RuntimeManager {
     });
 
     const bins = await this.publish(async () => {
-      const handlers = new Map<string, Command>();
-      for (const ep of entrypoints) {
-        const factory = this.runnerFactories.get(ep.runner);
-        if (!factory) continue;
-        const handler = await factory(manifest, seeded.root, ep.binName, ep.kind);
-        this.registry.register(ep.binName, handler);
-        handlers.set(ep.binName, handler);
-      }
+      const handlers = await bindRuntimeCommands(this.registry, (key) => this.runnerFactories.get(key), seeded.root, manifest);
       await this.linkCommands(seeded.root, manifest, handlers);
       return [...handlers.keys()];
     });
@@ -397,15 +390,7 @@ export class RuntimeManager {
   }
 
   async list(): Promise<RuntimeSummary[]> {
-    return (await listInstalledManifestsView(this.vfs)).map(({ root, manifest }) => ({
-      name: manifest.name,
-      version: manifest.version,
-      root,
-      abi: runtimeAbiForManifest(manifest),
-      bins: runtimeEntrypoints(manifest).map((e) => e.binName),
-      sizeBytes: manifest.files.reduce((a, f) => a + f.size, 0),
-      license: manifest.license,
-    }));
+    return (await listInstalledManifestsView(this.vfs)).map(({ root, manifest }) => runtimeSummary(root, manifest));
   }
 
   available(): Promise<RuntimeAvailability[]> {
