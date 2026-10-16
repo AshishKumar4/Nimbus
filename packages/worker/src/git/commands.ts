@@ -57,6 +57,7 @@ import { parseSparseCheckoutArgs, sparseCheckout } from './sparse-checkout.js';
 import { invalidPathError, verifyPath } from './worktree/verify-path.js';
 import { DirCache, IndexFormatError, IndexReadError, NewEntries, comparePaths, type IndexEdit, type NewEntry } from './worktree/dircache.js';
 import { isValidRefName } from './worktree/refname.js';
+import { wildmatch } from './worktree/wildmatch.js';
 import { PairList, type PairSide } from './worktree/pairs.js';
 import { WorktreeRepo, type ObjectEngine, type ObjectWriter } from './worktree/repo.js';
 import type { SparseMatcher } from './pack/sparse.js';
@@ -326,10 +327,12 @@ const INFINITE_DEPTH = 0x7fffffff;
  */
 export function parseFetchDepth(args: readonly string[]): { depth: number; relative: boolean } | undefined {
   let found: { depth: number; relative: boolean } | undefined;
+  let seen = false;
   for (let i = 0; i < args.length; i++) {
     const [flag, inline] = args[i].split('=', 2);
     if (!FETCH_DEPTH_FLAGS.includes(flag)) continue;
-    if (found !== undefined) throw new Error('--depth, --deepen and --unshallow are mutually exclusive');
+    if (seen) throw new Error('--depth, --deepen and --unshallow are mutually exclusive');
+    seen = true;
     found = fetchDepth(flag, flag === '--unshallow' ? undefined : inline ?? args[++i]);
   }
   return found;
@@ -504,7 +507,7 @@ export function parseCloneArgs(args: string[]): ParsedCloneArgs {
   return {
     url: positionals[0],
     dest: positionals[1],
-    depth: depthFlag ? parseInt(depthFlag) || 1 : (noShallow ? undefined : 1),
+    depth: depthFlag !== undefined ? cloneDepth(depthFlag) : (noShallow ? undefined : 1),
     noShallow,
     isBg,
     branch,
@@ -654,8 +657,40 @@ function parseRemoteArgs(args: readonly string[]) {
   unsupportedOption('remote', operation);
 }
 
-function fetchDepth(flag: string, value: string | undefined): { depth: number; relative: boolean } {
+/** A C long's value as glibc's strtol saturates it, then an int's: its low 32 bits. */
+function cInt(value: bigint): number {
+  const LONG_MAX = (1n << 63n) - 1n;
+  return Number(BigInt.asIntN(32, value > LONG_MAX ? LONG_MAX : value < -LONG_MAX - 1n ? -LONG_MAX - 1n : value));
+}
+
+/**
+ * An explicit `--depth` as git reads it into an int: positive by atoi
+ * (builtin/clone.c, fetch.c), then whole by strtol in base 0 (transport.c),
+ * whose value it is: '010' is 8, 4294967297 is 1, and a hexadecimal one is
+ * not positive by atoi. One that comes to 0 or less asks for no shallow
+ * boundary (fetch-pack sends no deepen): undefined.
+ */
+function parseDepth(value: string): number | undefined {
+  const leading = /^[ \t\n\v\f\r]*([+-]?\d+)/.exec(value)?.[1];
+  if (leading === undefined || cInt(BigInt(leading)) < 1) throw new Error(`depth ${value} is not a positive number`);
+  const whole = /^[ \t\n\v\f\r]*([+-]?)(?:(0[0-7]*)|([1-9]\d*))$/.exec(value);
+  if (whole === null) throw new Error(`transport: invalid depth option '${value}'`);
+  const magnitude = whole[2] !== undefined ? BigInt(`0o${whole[2]}`) : BigInt(whole[3]);
+  const depth = cInt(whole[1] === '-' ? -magnitude : magnitude);
+  return depth >= 1 ? depth : undefined;
+}
+
+function cloneDepth(value: string): number | undefined {
+  try { return parseDepth(value); }
+  catch (error) { throw new GitGlobalsError(`fatal: ${error instanceof Error ? error.message : String(error)}\n`, 128); }
+}
+
+function fetchDepth(flag: string, value: string | undefined): { depth: number; relative: boolean } | undefined {
   if (flag === '--unshallow') return { depth: INFINITE_DEPTH, relative: false };
+  if (flag === '--depth') {
+    const depth = parseDepth(value ?? '');
+    return depth === undefined ? undefined : { depth, relative: false };
+  }
   const depth = Number(value);
   if (!Number.isSafeInteger(depth) || depth < 1) throw new Error(`${flag} ${value ?? ''} is not a positive number`.trimEnd());
   return { depth, relative: flag === '--deepen' };
@@ -665,6 +700,8 @@ function parseTransportArgs(command: 'fetch' | 'pull' | 'push', args: readonly s
   let quiet = false;
   let dashdash = false;
   let deepen: { depth: number; relative: boolean } | undefined;
+  // One of --depth, --deepen, --unshallow was given (a depth of 0 or less among them asks for no deepen).
+  let deepenGiven = false;
   const operands: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -674,7 +711,8 @@ function parseTransportArgs(command: 'fetch' | 'pull' | 'push', args: readonly s
     const eq = arg.indexOf('=');
     const flag = eq < 0 ? arg : arg.slice(0, eq);
     if (command === 'fetch' && FETCH_DEPTH_FLAGS.includes(flag)) {
-      if (deepen !== undefined) throw new GitGlobalsError('fatal: --depth, --deepen and --unshallow are mutually exclusive\n', 128);
+      if (deepenGiven) throw new GitGlobalsError('fatal: --depth, --deepen and --unshallow are mutually exclusive\n', 128);
+      deepenGiven = true;
       if (flag === '--unshallow' && eq >= 0) unsupportedOption(command, arg);
       const value = flag === '--unshallow' ? undefined : eq < 0 ? requiredValue(args, ++i, flag) : arg.slice(eq + 1);
       try { deepen = fetchDepth(flag, value); }
@@ -1937,15 +1975,6 @@ function cleanupMessage(text: string, stripComments = true): string {
   return out.length ? `${out.join('\n')}\n` : '';
 }
 
-/** A tag pattern (fnmatch: `*`, `?`, `[...]`) as a whole-name regular expression. */
-function tagPattern(pattern: string): RegExp {
-  let source = '';
-  for (const ch of pattern) {
-    source += ch === '*' ? '.*' : ch === '?' ? '.' : ch === '[' || ch === ']' ? ch : ch.replace(/[.*+?^${}()|\\/]/g, '\\$&');
-  }
-  return new RegExp(`^${source}$`);
-}
-
 /**
  * `git tag`: list (-l, patterns, -n<num> with each tag's message or its
  * commit's subject), create (lightweight, or annotated with -a, -m or -F,
@@ -2038,9 +2067,10 @@ async function tagCommand(ctx: Ctx, git: CfGit, fs: GitFs, vfs: ProjectFs, parse
 
   const creating = !list && lines === null && operands.length > 0;
   if (!creating) {
-    const patterns = operands.map(tagPattern);
+    // Each a wildmatch over the whole name, any of them, as ref-filter's match_pattern takes them.
+    const patterns = operands.map((pattern) => enc.encode(pattern));
     const names = (await git.listTags({ fs, dir }))
-      .filter((name) => patterns.length === 0 || patterns.some((pattern) => pattern.test(name)))
+      .filter((name) => patterns.length === 0 || patterns.some((pattern) => wildmatch(pattern, enc.encode(name))))
       .sort(comparePaths);
     let out = '';
     for (const name of names) {

@@ -18,6 +18,17 @@ published independently in the `@nimbus-sh` npm scope.
   remote API's base path and how a configured one is read. The SDK's
   `Nimbus.connect` and the worker's remote API both use them now, in place
   of a copy each. Base paths behave as before.
+- Fixed (git): `git tag -l <pattern>` matches as git does, with the same
+  wildmatch git uses for refs. A negated class (`rel-[!x]`), a POSIX class
+  (`[[:digit:]]`) and an escape (`\x`) now work. Before, a regular
+  expression stood in, and it read `rel-[!x]` as "rel-! or rel-x".
+- Fixed (git): `git clone --depth` and `git fetch --depth` read their
+  value as git does, into an int. `0`, a negative number, `abc` or
+  `2147483648` fails with "fatal: depth <n> is not a positive number".
+  `2junk` or `08` fails with "fatal: transport: invalid depth option
+  '<n>'". Each failure exits 128. `010` is octal, so depth 8. Before, a
+  clone took `0` and `abc` as depth 1 and `2junk` as depth 2, and cloned
+  anyway. A clone with no `--depth` is still depth 1.
 - Fixed (shell): when a here-document's command fails, the interactive
   shell reports it the way the shell and runtimes report any caught value
   (`_shared/error-text.js`). A thrown object's `message` is shown, and an
