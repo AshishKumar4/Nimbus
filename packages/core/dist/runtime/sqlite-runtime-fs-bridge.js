@@ -719,7 +719,7 @@ export class SqliteRuntimeFsBridge {
             }
             return this.keepWaveDescription(id, describeMounted({
                 scope: this.scope, refuse: (code, syscall) => fsError(code, syscall, file.name), sync: true, bufferedWriteBytes: this.bufferedWriteBytes,
-            }, held, ino), rights);
+            }, held, ino, rights), rights);
         }),
         node: (id) => {
             const node = this.waveDescription(id);
