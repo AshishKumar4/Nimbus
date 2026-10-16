@@ -684,6 +684,9 @@ assert.equal((await bridge.stat('/home/user/own.txt')).uid, 1000);
 assert.throws(() => fs.chownSync('/home/user/own.txt', -1, 0), (e) => e.code === 'EPERM');
 fs.chownSync('/home/user/own.txt', -1, 1000);
 assert.equal((await bridge.stat('/home/user/own.txt')).uid, 1000);
+// 0xffffffff is (uid_t)-1 once Node's binding converts it: it keeps that side too.
+fs.chownSync('/home/user/own.txt', 0xffffffff, 0xffffffff);
+assert.equal((await bridge.stat('/home/user/own.txt')).uid, 1000);
 assert.throws(() => fs.chownSync('/home/user/own.txt', -2, 1000), (e) => e.code === 'ERR_OUT_OF_RANGE');
 
 // ── link stays ENOSYS: the VFS has no hard links ──
