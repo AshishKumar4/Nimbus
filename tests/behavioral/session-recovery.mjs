@@ -4,7 +4,7 @@
 //
 // Black-box surfaces only.
 
-import { mintSession, Terminal, makeAsserter, sleep } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('session-recovery');
@@ -16,7 +16,7 @@ console.log(`SID: ${sid}`);
 // Connection 1 — set state.
 const t1 = new Terminal(sid);
 await t1.connect();
-await sleep(2_000);
+await t1.waitForPrompt(60_000);
 await t1.run('mkdir -p /home/user/example-app && cd /home/user/example-app', 10_000);
 await t1.run('echo "marker-content-12345" > recovery-marker.txt', 10_000);
 const cwdMarker1 = (await t1.run('pwd', 10_000)).output;
@@ -26,16 +26,14 @@ await t1.close();
 // Connection 2 — same sid.
 const t2 = new Terminal(sid);
 await t2.connect();
-await sleep(4_500); // let scrollback replay land
 
-// 3. scrollback replay surfaces the previous "scrollback-line-A" output.
-//    Check the initial buffer FIRST before running any commands (which
-//    would reset the buffer).
+// 3. scrollback replay surfaces the previous "scrollback-line-A" output,
+//    read before any command runs (a run resets the buffer).
 {
-  const haveScrollback = /scrollback-line-A/.test(t2.buf);
-  a.check('scrollback replay surfaces prior-session output', haveScrollback,
-    `t2.buf tail: ${t2.buf.slice(-300)}`);
+  const replayed = await t2.waitFor((b) => /scrollback-line-A/.test(b), 15_000, 'scrollback replay').then(() => '', (error) => error.message);
+  a.check('scrollback replay surfaces prior-session output', replayed === '', replayed);
 }
+await t2.waitForPrompt(60_000);
 
 // 1. file persisted.
 {
@@ -66,16 +64,17 @@ await sleep(4_500); // let scrollback replay land
   await t2.run(`node -e "require('fs').writeFileSync('/tmp/srv.js', Buffer.from('${b64}','base64').toString('utf8'))"`, 15_000);
   // --watch makes runFresh route to facetMgr.spawn (long-running).
   await t2.run('node --watch /tmp/srv.js', 15_000);
-  await sleep(1_500);
   await t2.close();
 
-  // Reconnect with t3; ps should list the running node process.
+  // Reconnect with t3; ps lists the running node process within 15 s.
   const t3 = new Terminal(sid);
   await t3.connect();
-  await sleep(2_000);
-  const r = await t3.run('ps', 10_000);
-  a.check('long-running node process visible after WS reconnect',
-    /node\b/.test(r.output) && /running/.test(r.output), r.output.slice(-300));
+  await t3.waitForPrompt(60_000);
+  const listed = (output) => /node\b/.test(output) && /running/.test(output);
+  const deadline = Date.now() + 15_000;
+  let r = await t3.run('ps', 10_000);
+  while (!listed(r.output) && Date.now() < deadline) r = await t3.run('ps', 10_000);
+  a.check('long-running node process visible after WS reconnect', listed(r.output), r.output.slice(-300));
   await t3.close();
 }
 const s = a.summary();

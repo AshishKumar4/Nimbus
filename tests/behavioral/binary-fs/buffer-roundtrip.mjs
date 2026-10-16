@@ -8,7 +8,7 @@
 // the small fixed-byte probes might miss (e.g. valid 2/3/4-byte
 // UTF-8 sequences that survive but aren't bit-equal).
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, BASE } from '../_driver.mjs';
 import { createHash } from 'node:crypto';
 
 const sid = await mintSession();
@@ -16,7 +16,6 @@ console.log(`[binary-fs buffer-roundtrip] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 await t.run('mkdir -p /home/user/bf-rt', 10_000);

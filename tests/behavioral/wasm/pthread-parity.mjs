@@ -41,7 +41,7 @@
 // expected line is the one the same C source prints under a real POSIX pthread
 // implementation, so this compares Nimbus against pthreads, not against itself.
 
-import { mintSession, Terminal, sleep, stripAnsi, deleteSession, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, deleteSession, BASE } from '../_driver.mjs';
 import { PTHREAD_PARITY_WASM_B64, PTHREAD_PARITY_EXPECTED } from './_pthread-fixture.mjs';
 
 const sid = await mintSession();
@@ -52,7 +52,6 @@ let out = '';
 let rejected = '';
 try {
   await t.connect();
-  await sleep(2_000);
   await t.waitForPrompt(60_000);
   await t.run('mkdir -p /home/user/pth && cd /home/user/pth', 15_000);
 

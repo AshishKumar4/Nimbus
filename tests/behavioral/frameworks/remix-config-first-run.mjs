@@ -28,7 +28,7 @@
 // process, which does not run resident yet, and whose output does not reach
 // the terminal yet).
 
-import { Terminal, mintSession, sleep, stripAnsi, makeAsserter, deleteSession, heredocCommand, BASE } from '../_driver.mjs';
+import { Terminal, mintSession, stripAnsi, makeAsserter, deleteSession, heredocCommand, BASE } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('remix-config-first-run');
@@ -39,7 +39,6 @@ console.log(`[remix-config-first-run] sid=${sid} BASE=${BASE}`);
 const t = new Terminal(sid);
 try {
   await t.connect();
-  await sleep(2_000);
   await t.waitForPrompt(60_000);
   await t.run('mkdir -p /home/user/rx && cd /home/user/rx', 10_000);
   const create = await t.run('npx --yes create-react-router@latest mvp --yes --no-git-init --no-install 2>&1', 300_000);

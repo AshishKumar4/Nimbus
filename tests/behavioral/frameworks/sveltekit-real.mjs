@@ -43,7 +43,7 @@
 // NOT proven here: a RUNNING SvelteKit dev server. That is the next
 // milestone and this probe does not claim it.
 
-import { Terminal, mintSession, sleep, stripAnsi, makeAsserter, deleteSession, BASE } from '../_driver.mjs';
+import { Terminal, mintSession, stripAnsi, makeAsserter, deleteSession, BASE } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('sveltekit-real');
@@ -54,7 +54,6 @@ console.log(`[sveltekit-real] sid=${sid} BASE=${BASE}`);
 const t = new Terminal(sid);
 try {
   await t.connect();
-  await sleep(2_000);
   await t.waitForPrompt(60_000);
 
   await t.run('mkdir -p /home/user/sk-probe && cd /home/user/sk-probe', 10_000);

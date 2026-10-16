@@ -119,7 +119,7 @@ console.log(`SID: ${sid}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
+await t.waitForPrompt(60_000);
 
 for (const row of ROWS) {
   console.log(`\n────── row: ${row.name} ──────`);
@@ -169,7 +169,7 @@ for (const row of ROWS) {
   }
   // Stop the dev process so the next row isn't blocked by a still-running server.
   t.send('\x03'); // ctrl-c
-  await sleep(1_000);
+  await t.waitForPrompt(30_000);
   a.check(`${row.name} → ${outcome === 'timeout' ? 'silent hang (NO)' : outcome}`,
     outcome !== 'timeout',
     `outcome=${outcome} elapsed=${Date.now() - t0}ms`);

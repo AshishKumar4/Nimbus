@@ -25,15 +25,14 @@
 //
 // Black-box surfaces only: shell over WS.
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, BASE } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[#7] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2000);
-await t.waitForPrompt(15_000).catch(() => {});
+await t.waitForPrompt(15_000);
 
 async function envValue(key) {
   const r = await t.run(`node -e "console.log(JSON.stringify(process.env.${key}||null))"`, 30_000);

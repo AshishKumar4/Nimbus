@@ -22,15 +22,14 @@
 //   2. Both rows visible in `ps`
 //   3. Both produce identical stdout output
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, BASE } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[G4] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
-await t.waitForPrompt(15_000).catch(() => {});
+await t.waitForPrompt(15_000);
 
 await t.run('mkdir -p /home/user/g4-probe/node_modules/.bin', 5_000);
 await t.run('cd /home/user/g4-probe', 5_000);

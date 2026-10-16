@@ -19,7 +19,7 @@
 // require closure (webpack bundle5.js) exceeds the facet snapshot bound.
 // Both are asserted, so a silent hang or a fake success would fail here.
 
-import { Terminal, mintSession, sleep, stripAnsi, makeAsserter, deleteSession, fetchPort, BASE } from '../_driver.mjs';
+import { Terminal, mintSession, stripAnsi, makeAsserter, deleteSession, fetchPort, BASE } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('nextjs-real');
@@ -31,7 +31,6 @@ console.log(`[nextjs-real] sid=${sid} BASE=${BASE}`);
 const t = new Terminal(sid);
 try {
   await t.connect();
-  await sleep(2_000);
   await t.waitForPrompt(60_000);
 
   await t.run('mkdir -p /home/user/nextjs-probe && cd /home/user/nextjs-probe', 10_000);

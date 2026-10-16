@@ -37,9 +37,10 @@ const sid = await mintSession();
   w.send(JSON.stringify({ type: 'fs-watch-subscribe', reqId: 95_000, paths: ['/home/user'] }));
   { const t0 = Date.now(); while (!subbed && Date.now() - t0 < 5_000) await sleep(25); }
   a.check('first subscriber subscribed', subbed, '');
+  // The server has handled the close once its close frame comes back.
+  const closed = new Promise((resolve) => w.once('close', resolve));
   w.close();
-  // Wait for the close to propagate server-side cleanup.
-  await sleep(500);
+  a.check('the server answers the first subscriber\'s close', await Promise.race([closed.then(() => true), sleep(10_000).then(() => false)]), '');
 }
 
 // Second subscriber — separate WS — should receive its own events
