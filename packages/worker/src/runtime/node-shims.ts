@@ -5417,11 +5417,13 @@ const __fsMod = (() => {
   /**
    * open(2)'s refusals in open(2)'s order, from \`name\` (the name itself,
    * not followed, where it was looked at: { link, directory, size }) and
-   * \`opened\` (what the open reaches): O_EXCL of a name there (EEXIST),
+   * \`opened\` (what the open reaches): O_CREAT with O_DIRECTORY (EINVAL, as
+   * Linux since 6.4 answers), O_EXCL of a name there (EEXIST),
    * O_NOFOLLOW of a final link (ELOOP, or ENOTDIR under O_DIRECTORY), then
    * what is opened. Answers whether something is opened.
    */
   function _openRefusal(path, fl, name, opened) {
+    if (fl.create && fl.directory) throw _fsErr("EINVAL", "open", path);
     if (fl.create && fl.exclusive && (name !== undefined || opened !== undefined)) throw _fsErr("EEXIST", "open", path);
     if (!fl.followSymlinks && name?.link) throw _fsErr(fl.directory ? "ENOTDIR" : "ELOOP", "open", path);
     if (opened?.directory) throw _fsErr("EISDIR", "open", path);
@@ -5432,17 +5434,22 @@ const __fsMod = (() => {
   function _openedAs(stats) {
     return stats === undefined ? undefined : { link: stats.isSymbolicLink(), directory: stats.isDirectory(), size: stats.size };
   }
+  /** Whether this view knows nothing is at \`absPath\` (the name itself when \`noFollow\`): a judgment of nothing else, refusing nothing. */
+  function _knownAbsent(absPath, noFollow) {
+    return _statLadder(absPath, noFollow) === undefined && _nsUnlisted(absPath, !noFollow, false) === null;
+  }
 
   /**
-   * A write open as the session judges and makes it, in one call (W7 open):
-   * O_EXCL, O_NOFOLLOW, what is there, the access asked, the umask, and the
-   * create or the truncate. A name a peer changed since this view looked is
+   * An open that creates or truncates as the session judges and makes it, in
+   * one call (W7 open): O_EXCL, O_NOFOLLOW, what is there, the access asked,
+   * the umask, and the create or the truncate. A name a peer changed since this view looked is
    * refused there, never followed. Stage 3's holder handles log the same call.
    */
   function _openCall(k, fl, mode) {
     return {
       call: "open", path: k, mode: mode & 0o7777, umask: __processUmask,
       ...(fl.read ? { read: true } : {}),
+      ...(fl.write ? {} : { write: false }),
       ...(fl.create ? { create: true } : {}),
       ...(fl.truncate ? { truncate: true } : {}),
       ...(fl.exclusive ? { exclusive: true } : {}),
@@ -5454,9 +5461,10 @@ const __fsMod = (() => {
    * An open that empties the file or may make it, as this view keeps it:
    * the file empty and parked, the open logged (_openCall) for the session
    * to judge as it lands. The cell is the file's whole content
-   * when the open empties it or makes it new (O_TRUNC, O_EXCL); a create
-   * that finds a file keeps that file's bytes, which the session then
-   * answers. \`absent\`: this view knows nothing is there.
+   * when the open empties it or makes it new (O_TRUNC, O_EXCL), or when the
+   * session's answer is an empty file; a create that finds a file with
+   * bytes keeps them, which the session then answers. \`absent\`: this view
+   * knows nothing is there.
    */
   function _parkOpen(absPath, fl, mode, absent, acknowledged) {
     const k = _strip(absPath);
@@ -5464,7 +5472,9 @@ const __fsMod = (() => {
     const whole = fl.truncate || fl.exclusive;
     if (whole) _parkedPartial.delete(k);
     else _parkedPartial.set(k, __vfsWriteGenerations[k]);
-    return _logParked(absPath, { type: "call", call: _openCall(k, fl, mode) }, { acknowledged, partial: !whole });
+    // A create that may have found a file: the empty cell is its whole content when the file it opened is empty.
+    const partial = whole ? false : (answered) => answered.receipt === undefined || Number(answered.receipt.size) !== 0;
+    return _logParked(absPath, { type: "call", call: _openCall(k, fl, mode) }, { acknowledged, partial });
   }
 
   // ── FileHandle — returned from fs.promises.open ──
@@ -5766,39 +5776,29 @@ const __fsMod = (() => {
 
   async function _openAsync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
-    const createMode = _coerceMode(mode, 0o666);
-    const absPath = _target(path, fl.followSymlinks, "open");
     const supervisor = _supervisor();
-    if (supervisor && fl.write && !fl.directory && (fl.create || fl.truncate)) return _openWriteLive(path, absPath, fl, createMode, supervisor);
-    // Any other open changes nothing and looks once, at the session where
-    // there is one: the name itself under O_NOFOLLOW, else what it reaches.
+    // Without a session this view is all there is, as the sync open's.
+    if (!supervisor) return _fdHandle(openSync(path, flags, mode), "open");
+    const absPath = _target(path, fl.followSymlinks, "open");
+    if ((fl.create || fl.truncate) && !fl.directory) return _openWriteLive(path, absPath, fl, _coerceMode(mode, 0o666), supervisor);
+    // Any other open changes nothing and looks once, at the session: the
+    // name itself under O_NOFOLLOW, else what it reaches.
     let there;
-    if (supervisor && typeof supervisor.stat === "function") {
+    if (typeof supervisor.stat === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor, fl.followSymlinks);
       const meta = await _fsRpc(fl.followSymlinks ? supervisor.stat(absPath) : supervisor.lstat(absPath), "open", path, (result) => result);
       there = meta ? { link: meta.type === "symlink", directory: meta.type === "directory", size: Number(meta.size) || 0 } : undefined;
     } else {
       there = _openedAs(fl.followSymlinks ? statSync(path, { throwIfNoEntry: false }) : lstatSync(path, { throwIfNoEntry: false }));
     }
-    const exists = _openRefusal(path, fl, fl.followSymlinks ? undefined : there, there);
-    let size = exists ? there.size : 0;
-    // The authority answered, so what it said is what the sync view keeps:
-    // its stat when something is there, and when nothing is, the file this
-    // open creates is the process's own.
-    if (!exists && supervisor && typeof __resident !== "undefined") _nsOwnSet(_strip(absPath), "file", { mode: createMode, settled: true });
-    if (!exists) {
-      await _writeFileAsync(path, new Uint8Array(0), { mode: createMode });
-      size = 0;
-    } else if (fl.truncate) {
-      await _truncateAsync(path, 0);
-      size = 0;
-    }
-    return new __FileHandle(path, fl, size);
+    _openRefusal(path, fl, fl.followSymlinks ? undefined : there, there);
+    return new __FileHandle(path, fl, there.size);
   }
 
   /**
-   * A write open that creates or truncates, at the session (_openCall),
-   * answered before it returns. A file this view knows is not there is
+   * An open that creates or truncates, at the session (_openCall), every
+   * errno the session's, answered before it returns. A file this view knows
+   * is not there is
    * parked empty as the sync open's is (_parkOpen), and the answer kept as a
    * write's (_writeFileAsync); one it holds that O_TRUNC empties is trimmed
    * when the open lands, as a truncate's (_truncateAsync); a create that
@@ -5809,7 +5809,7 @@ const __fsMod = (() => {
     const k = _strip(absPath);
     const call = _openCall(k, fl, mode);
     let answer;
-    if (fl.create && _ensureWritable(absPath, "open", path, true) === true) {
+    if (fl.create && _knownAbsent(absPath, !fl.followSymlinks)) {
       const logged = _parkOpen(absPath, fl, mode, true, false);
       let kept = false;
       const ticket = _beginFill(k);

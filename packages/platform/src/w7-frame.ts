@@ -148,7 +148,9 @@ export type W7Call =
   /** utimes of the link itself (lutimes). */
   | { call: 'lutimes'; path: string; atime: number; mtime: number }
   /**
-   * open(2) of a file to write it (and to read it when `read`), as the
+   * open(2) of a file to write it (and to read it when `read`; with `write`
+   * false, to read it alone: O_RDONLY with O_CREAT or O_TRUNC, O_TRUNC
+   * asking write all the same), as the
    * session's own open decides it: a name made (`create`, `mode` less
    * `umask`) or refused (EEXIST when `exclusive`, ENOENT without `create`,
    * EISDIR, EACCES for any access asked that the file's mode refuses),
@@ -163,7 +165,7 @@ export type W7Call =
    * (EPERM: another's file), the open is refused and keeps no description,
    * so a write through it is EBADF.
    */
-  | { call: 'open'; path: string; mode: number; ino?: number; umask?: number; read?: true; create?: true; truncate?: true; exclusive?: true; nofollow?: true; description?: string; fchmod?: number }
+  | { call: 'open'; path: string; mode: number; ino?: number; umask?: number; read?: true; write?: false; create?: true; truncate?: true; exclusive?: true; nofollow?: true; description?: string; fchmod?: number }
   /** close(2) of the session's open description `description` (an `open` call's). */
   | { call: 'close'; path: string; description: string };
 
@@ -1158,11 +1160,12 @@ function parsePathCall(value: Record<string, unknown>, path: (value: unknown, la
     case 'open': {
       const flags = ['create', 'exclusive', 'nofollow', 'read', 'truncate'] as const;
       let required = keys;
-      for (const flag of ['create', 'description', 'exclusive', 'fchmod', 'ino', 'nofollow', 'read', 'truncate', 'umask']) required = required.replace(`,${flag}`, '');
+      for (const flag of ['create', 'description', 'exclusive', 'fchmod', 'ino', 'nofollow', 'read', 'truncate', 'umask', 'write']) required = required.replace(`,${flag}`, '');
       if (required !== 'call,mode,path') break;
       for (const flag of flags) {
         if (value[flag] !== undefined && value[flag] !== true) throw new Error(`w7-frame: open ${flag} is true or absent`);
       }
+      if (value.write !== undefined && value.write !== false) throw new Error('w7-frame: open write is false or absent');
       return {
         call: 'open', path: path(value.path, 'open path'), mode: u32(value.mode, 'open mode'),
         ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'open ino') }),
@@ -1172,6 +1175,7 @@ function parsePathCall(value: Record<string, unknown>, path: (value: unknown, la
         ...(value.exclusive === true ? { exclusive: true as const } : {}),
         ...(value.nofollow === true ? { nofollow: true as const } : {}),
         ...(value.read === true ? { read: true as const } : {}),
+        ...(value.write === false ? { write: false as const } : {}),
         ...(value.description === undefined ? {} : { description: descriptionId(value.description, 'open description') }),
         ...(value.fchmod === undefined ? {} : { fchmod: u32(value.fchmod, 'open fchmod') }),
       };

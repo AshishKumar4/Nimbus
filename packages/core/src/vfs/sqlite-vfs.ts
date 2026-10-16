@@ -9922,7 +9922,8 @@ export class SqliteVFS {
    * (SqliteRuntimeFsBridge.open): EEXIST for an exclusive create of a name
    * there (a link included, followed or not), ENOENT without `create`,
    * ELOOP for a link when `nofollow`, EISDIR for a directory, EACCES without
-   * write permission; a name made empty with `mode` less the call's umask, or
+   * the access asked (write, unless `write` is false and no `truncate`; read
+   * with `read`); a name made empty with `mode` less the call's umask, or
    * an existing file emptied when `truncate`; then, with `fchmod`, that file
    * given the mode (chmod's rule, EPERM for another's), all of it refused
    * together. Its answer is the file's stat.
@@ -9943,7 +9944,9 @@ export class SqliteVFS {
       this.writeFile(call.path, new Uint8Array(0), { mode: call.mode, ...(call.ino === undefined ? {} : { ino: call.ino }) }, cred);
     } else {
       // Every access asked, decided now: an O_RDWR of a write-only file is EACCES here, not at its first read.
-      if (!this.accessInode(there, (call.read === true ? 4 : 0) | 2, cred)) throw vfsKeyError('EACCES', reached.path);
+      // O_TRUNC asks write whatever the access mode, as open(2)'s does.
+      const writes = call.write !== false || call.truncate === true;
+      if (!this.accessInode(there, (call.read === true ? 4 : 0) | (writes ? 2 : 0), cred)) throw vfsKeyError('EACCES', reached.path);
       if (call.truncate === true) this.truncate(call.path, 0, cred);
     }
     if (call.fchmod !== undefined) {
@@ -9955,14 +9958,14 @@ export class SqliteVFS {
     if (call.description === undefined) return stat;
     if (described.descriptions === undefined) throw vfsError('ENOTSUP', call.path, 'no binding keeps open descriptions for this wave');
     // Its access, decided above: the open that made the file writes it whatever its mode, as creat(2) does.
-    const rights = { read: call.read === true, write: true };
+    const rights = { read: call.read === true, write: call.write !== false };
     const handle = described.descriptions.adopt(call.description, stat.ino, rights, call.path, cred);
     if (handle === null) throw vfsError('ENOENT', call.path);
     // Kept with the op's cursor, in its transaction: a re-sent open, or a drain of the process's log, finds it.
     if (described.pid !== null) {
       this.sql.exec(
         'INSERT OR REPLACE INTO vfs_wave_descriptions (pid, id, ino, rights) VALUES (?, ?, ?, ?)',
-        described.pid, call.description, stat.ino, (rights.read ? 4 : 0) | 2,
+        described.pid, call.description, stat.ino, (rights.read ? 4 : 0) | (rights.write ? 2 : 0),
       );
     }
     return Object.assign(stat, { handle });
