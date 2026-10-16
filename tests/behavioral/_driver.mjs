@@ -28,16 +28,22 @@ export const probeTarget = createProbeTarget({ base: BASE, token: AUTH_TOKEN, co
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * Read `read()` every 100 ms until `done(value)` holds or `timeoutMs` has
- * passed; resolves to the last value read, which the caller checks. The
- * bounded wait a probe uses in place of a fixed sleep.
+ * Read `read(signal)` every 100 ms until `done(value)` holds or `timeoutMs`
+ * has passed; resolves to the last value read, which the caller checks.
+ * The bounded wait a probe uses in place of a fixed sleep. `signal` aborts
+ * at the deadline, and a read still pending then rejects the wait, so a
+ * stalled read cannot outlast it.
  */
 export async function readUntil(read, done, timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs;
+  const signal = AbortSignal.timeout(timeoutMs);
+  const expired = new Promise((_, reject) => signal.addEventListener('abort',
+    () => reject(new Error(`a read was still pending at the end of its ${timeoutMs} ms wait`)), { once: true }));
+  expired.catch(() => {});
   for (;;) {
-    const value = await read();
-    if (done(value) || Date.now() >= deadline) return value;
-    await sleep(100);
+    const value = await Promise.race([read(signal), expired]);
+    if (done(value) || signal.aborted) return value;
+    await Promise.race([sleep(100), expired]).catch(() => {});
+    if (signal.aborted) return value;
   }
 }
 

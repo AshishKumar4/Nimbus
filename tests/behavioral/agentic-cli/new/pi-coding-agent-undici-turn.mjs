@@ -95,7 +95,7 @@ try {
     /LISTENING 7411|facet started \(long-running\)/.test(boot), JSON.stringify(boot.slice(-600)));
   // Ready once it serves its model list on its port.
   const serving = (r) => r.status === 200 && r.body.includes('mock-1');
-  const models = await readUntil(() => fetchPort(sid, 7411, 'v1/models'), serving, 30_000);
+  const models = await readUntil((signal) => fetchPort(sid, 7411, 'v1/models', { signal }), serving, 30_000);
   a.check('in-session model server serves its model list', serving(models), `status=${models.status} body=${models.body.slice(0, 200)}`);
 
   await t.run('mkdir -p /home/user/.pi/agent', 30_000);

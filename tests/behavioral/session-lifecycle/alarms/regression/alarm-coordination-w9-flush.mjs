@@ -45,7 +45,7 @@ a.check('node command produced flush-marker output',
   `output=${JSON.stringify(output.slice(-200))}`);
 
 // The W9 flush runs after its 250 ms debounce: read the count until it does, at most 10 s.
-const F1 = await readUntil(async () => (await diagMemory(sid))?.hib?.flushCount ?? 0, (count) => count > F0, 10_000);
+const F1 = await readUntil(async (signal) => (await diagMemory(sid, signal))?.hib?.flushCount ?? 0, (count) => count > F0, 10_000);
 console.log(`[post-exit] flushCount=${F1}`);
 
 a.check('W9 flush ran after facet exit (flushCount incremented)',

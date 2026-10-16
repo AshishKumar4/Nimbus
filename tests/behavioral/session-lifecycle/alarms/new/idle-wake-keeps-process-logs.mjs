@@ -82,7 +82,7 @@ await t.run(
   20_000,
 );
 // The W9 flush runs after its 250 ms debounce: read the count until it does, at most 10 s.
-const flushes = async () => (await diagMemory(sid))?.hib?.flushCount ?? 0;
+const flushes = async (signal) => (await diagMemory(sid, signal))?.hib?.flushCount ?? 0;
 const F2 = await readUntil(flushes, (count) => count > 0, 10_000);
 console.log(`[post-wake-exit] flushCount=${F2}`);
 a.check('W9 flush path still operational post-wake (flushCount>0)',

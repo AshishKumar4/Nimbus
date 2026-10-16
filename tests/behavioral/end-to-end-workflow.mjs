@@ -75,7 +75,8 @@ let homeText = '';
 let runtimeErrors = [];
 
 if (viteReady) {
-  a.check('the dev server serves the preview', await previewServed(sid), 'the preview never mounted the project page within 30 s');
+  const unserved = await previewServed(sid).then(() => '', (error) => error.message);
+  a.check('the dev server serves the preview', unserved === '', unserved);
 
   console.log('[end-to-end-workflow] launching headless Chrome...');
   const browser = await launchBrowser();

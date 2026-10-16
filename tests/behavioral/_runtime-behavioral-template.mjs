@@ -384,13 +384,14 @@ export async function openPage(browser, sid, opts = {}) {
  * Wait, at most `timeoutMs`, until the session's preview is the dev
  * server's page rather than the placeholder /preview/ answers while none
  * is up: the dev server mounts the project's index.html under the preview
- * path. Resolves to whether it was, for the caller to check.
+ * path. Throws with the last answer when it never is.
  */
 export async function previewServed(sid, timeoutMs = 30_000) {
   const mounted = new RegExp(`<base href="/s/${sid}/preview/`);
-  const page = () => fetch(`${BASE}/s/${sid}/preview/`, { headers: requestHeaders({}, sid), signal: AbortSignal.timeout(10_000) })
+  const page = (signal) => fetch(`${BASE}/s/${sid}/preview/`, { headers: requestHeaders({}, sid), signal })
     .then((response) => response.text(), (error) => `unreachable: ${error.message}`);
-  return mounted.test(await readUntil(page, (text) => mounted.test(text), timeoutMs));
+  const last = await readUntil(page, (text) => mounted.test(text), timeoutMs);
+  if (!mounted.test(last)) throw new Error(`the dev server did not serve /s/${sid}/preview/ within ${timeoutMs} ms; it answered ${JSON.stringify(last.slice(0, 200))}`);
 }
 
 /**

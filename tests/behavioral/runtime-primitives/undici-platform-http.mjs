@@ -83,7 +83,7 @@ try {
     /LISTENING 7311|facet started \(long-running\)/.test(boot), JSON.stringify(boot.slice(-600)));
   // Ready once it answers on its port.
   const serving = (r) => r.status === 200 && r.body === 'in-session-ok:/ready';
-  const ready = await readUntil(() => fetchPort(sid, 7311, 'ready'), serving, 30_000);
+  const ready = await readUntil((signal) => fetchPort(sid, 7311, 'ready', { signal }), serving, 30_000);
   a.check('in-session server answers on its port', serving(ready), `status=${ready.status} body=${ready.body.slice(0, 200)}`);
 
   await t.run(heredocCommand('/home/user/undici-esm.mjs', esmProbe), 30_000);
