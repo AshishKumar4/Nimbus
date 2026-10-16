@@ -241,7 +241,7 @@ console.log('  [6] only the destroy result confirms a deletion');
     port: 0,
     fetch(req, server) {
       const { pathname } = new URL(req.url);
-      // The session resets under its terminal: the socket ends with no close frame.
+      // The session resets under its terminal.
       if (pathname === '/s/arm-1/ws' && server.upgrade(req)) return undefined;
       if (req.method === 'POST' && pathname === '/new') {
         if (req.headers.get('authorization') !== 'Bearer arm-token') return new Response('unauthorized', { status: 401 });
@@ -253,7 +253,8 @@ console.log('  [6] only the destroy result confirms a deletion');
       }
       return new Response('not found', { status: 404 });
     },
-    websocket: { open(ws) { ws.terminate(); }, message() {} },
+    // Once the client has seen it open (the driver polls every 50 ms), it ends with no close frame.
+    websocket: { open(ws) { setTimeout(() => ws.terminate(), 300); }, message() {} },
   });
   const otherBase = `http://127.0.0.1:${other.port}`;
   const failed = await probe('two-targets', `
