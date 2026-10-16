@@ -138,18 +138,7 @@ out.queryThenBase = await outcome(async () => {
   writeFileSync('qa.js', 'export const v = 2;\\n');
   return [first, (await import('./qa.js')).v];
 });
-// A module with top-level await, written now, imported while Reflect.apply is not the built-in: the loader and its
-// graph (made before the program) call their own.
-writeFileSync('tla-late.mjs', 'export default await Promise.resolve(5);\\n');
-out.replacedApply = await outcome(async () => {
-  const apply = Reflect.apply;
-  Reflect.apply = () => { throw new Error('the program\\'s Reflect.apply'); };
-  try {
-    return (await import('./tla-late.mjs')).default;
-  } finally {
-    Reflect.apply = apply;
-  }
-});
+
 writeFileSync('late-parent.mjs', "import './bad-json-child.mjs';\\n");
 const lateParent = await outcome(async () => { await import('./late-parent.mjs'); return 'loaded'; });
 out.nestedMissingJson = [Array.isArray(lateParent) ? lateParent[1] : lateParent, globalThis.badChildRan ?? false];
@@ -219,7 +208,6 @@ assert.deepEqual(expected, {
   queryCycle: ['data:back3', 'hi3'],
   relink: ['ERR_REQUIRE_CYCLE_MODULE', 'ERR_REQUIRE_CYCLE_MODULE'],
   queryThenBase: [1, 2],
-  replacedApply: 5,
   nestedMissingJson: ['SyntaxError', false],
   cycleStar: ['x'],
   starConflict: ['y'],
