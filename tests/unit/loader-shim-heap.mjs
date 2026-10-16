@@ -97,13 +97,28 @@ const refused = (promise, pattern, what) => assert.rejects(Promise.resolve().the
   const cases = [
     ['a boxed number holding a buffer', { json: Object.assign(new Number(1), { payload: big() }) }],
     ['a Map holding a buffer as an own property', { json: Object.assign(new Map(), { payload: big() }) }],
-    ['a class instance holding a buffer', { json: new Payload() }],
     ['a non-enumerable own property', { json: hidden }],
     ['a holey array of length 5,000,000', { json: new Array(5_000_000) }],
+    ['a non-enumerable array index', { json: Object.defineProperty([], 0, { value: big(), enumerable: false }) }],
+    ['a small view over a large buffer', { json: new Uint8Array(big(), 0, 4) }],
+    ['a RegExp holding a buffer in lastIndex', { json: Object.assign(/x/g, { lastIndex: big() }) }],
   ];
   for (const [what, module] of cases) {
     await refused(loader.load(worker({ 'w.js': '', 'm.json': module })), /per-Worker bound/, `${what} is charged for it`);
   }
+  class Secret { #held = big(); }
+  for (const [what, module] of [['a class instance holding a buffer', { json: new Payload() }], ['a class instance with a private field', { json: new Secret() }]]) {
+    await refused(loader.load(worker({ 'w.js': '', 'm.json': module })), /instance of a class .* whose state the shim cannot account for/, `${what} is refused`);
+  }
+  const sourceGetter = /x/; Object.defineProperty(sourceGetter, 'source', { get() { throw new Error('ran'); } });
+  await refused(loader.load(worker({ 'w.js': '', 'r.json': { json: { r: sourceGetter } } })), /accessor/, 'a RegExp with an own source getter is refused, the getter never run');
+  await refused(loader.load(worker({ 'w.js': '', 't.json': { json: { toJSON() { return 'x'.repeat(100); } } } })), /toJSON/, 'a {json} module holding a toJSON is refused');
+  // Cycles, Errors, BigInt, Dates and an own __proto__ env field are charged and admitted.
+  const cyclic = new Map(); cyclic.set('self', cyclic); const ring = new Set(); ring.add(ring);
+  const error = new Error('outer', { cause: new Error('inner') }); error.cause.cause = error;
+  const env = { cyclic, ring, error, big: 2n ** 4096n, when: new Date(0) };
+  Object.defineProperty(env, '__proto__', { value: 'own', enumerable: true, writable: true, configurable: true });
+  assert.ok(await loader.load(worker({ 'w.js': '', 'd.json': { json: { when: new Date(0) } } }, { env })), 'cyclic Map, Set and Error cause, a BigInt, a Date and an own __proto__ field are admitted');
   await refused(loader.load(worker({ 'w.js': '' }, { env: { get big() { return 'x'; } } })), /accessor/, 'an accessor in the env is refused, never run');
   const sparse = []; Object.defineProperty(sparse, 0, { get() { return 'x'; }, enumerable: true });
   await refused(loader.load(worker({ 'w.js': '', 'a.json': { json: sparse } })), /accessor/, 'an accessor array element is refused');
@@ -127,7 +142,7 @@ const refused = (promise, pattern, what) => assert.rejects(Promise.resolve().the
 {
   const { key } = getKey('heap-owner', 'n', 'exact');
   const sized = (n) => worker({ 'w.js': 'export default {};' }, { env: { s: 'x'.repeat(n) } });
-  const base = priceCode(sized(0), key).entry.byteLength;
+  const base = priceCode(sized(0), key, false).entry.byteLength;
   const n = Math.floor((4 * MiB - 160 - base) / 2);
   const handle = await loader.get('exact', () => sized(n));
   assert.equal((await missed(handle)).modules['w.js'], 'export default {};', 'an entry 160 bytes under its bound (ByteLru adds that) is kept');

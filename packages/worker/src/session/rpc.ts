@@ -1634,7 +1634,7 @@ export async function _rpcLoaderCodeStore(self: RpcHost, request: LoaderStoreReq
   if (request === null || typeof request !== 'object') throw Object.assign(new Error('loaderCodeStore: EINVAL: no request'), { code: 'EINVAL' });
   self.ensureSqliteFs?.();
   if (!self.sqliteFs) throw new Error('loaderCodeStore: the session filesystem is not open');
-  return loaderCodeRegistry(self.ctx, self.sqliteFs).serve(request, stream);
+  return loaderCodeRegistry(self.sqliteFs).serve(request, stream);
 }
 
 export async function _rpcCpNextSignal(self: RpcHost, pid: number | undefined, waitMs: number): Promise<string | null> {

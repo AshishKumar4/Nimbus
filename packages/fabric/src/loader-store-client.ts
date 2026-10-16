@@ -37,6 +37,8 @@ const MAX_HAS = 256;
 /** The most one read answers (the store's LOADER_STORE_READ_BYTES). */
 export const STORE_READ_BYTES = 4 * 1024 * 1024;
 const encoder = new TextEncoder();
+/** A leading U+FEFF is the module's own, kept as it was stored. */
+const decoder = new TextDecoder('utf-8', { ignoreBOM: true, fatal: true });
 
 function* textSlices(text: string): Generator<Uint8Array> {
   for (let at = 0; at < text.length;) {
@@ -64,14 +66,20 @@ export function jsonParseCharge(text: string): number {
   for (let i = 0; i < text.length; i++) {
     const unit = text.charCodeAt(i);
     if (inString) {
-      if (unit === 0x5c) { i++; total += 2; continue; }
+      // An escape is one unit decoded: \uXXXX one, any other two-character escape one.
+      if (unit === 0x5c) { i += text.charCodeAt(i + 1) === 0x75 ? 5 : 1; total += 2; continue; }
       if (unit === 0x22) { inString = false; continue; }
       total += 2;
       continue;
     }
     if (unit === 0x22) { inString = true; total += 16; continue; }
-    if (unit === 0x7b || unit === 0x5b) total += 64 + 16 + 8;
-    else if (unit === 0x2c) total += 16 + 8;
+    if (unit === 0x7b || unit === 0x5b) {
+      total += 64;
+      // A first member or element, unless the container is empty.
+      let next = i + 1;
+      while (text.charCodeAt(next) === 0x20 || text.charCodeAt(next) === 0x0a || text.charCodeAt(next) === 0x0d || text.charCodeAt(next) === 0x09) next++;
+      if (text.charCodeAt(next) !== 0x7d && text.charCodeAt(next) !== 0x5d) total += 16 + 8;
+    } else if (unit === 0x2c) total += 16 + 8;
   }
   return total;
 }
@@ -125,12 +133,12 @@ export function restoredModule(kind: StoredKind, bytes: Uint8Array): ModuleConte
   switch (kind) {
     case 'data': return { data: exact() };
     case 'wasm': return { wasm: exact() };
-    case 'json': return { json: JSON.parse(new TextDecoder().decode(bytes)) };
-    case 'string': return new TextDecoder().decode(bytes);
-    case 'js': return { js: new TextDecoder().decode(bytes) };
-    case 'cjs': return { cjs: new TextDecoder().decode(bytes) };
-    case 'py': return { py: new TextDecoder().decode(bytes) };
-    case 'text': return { text: new TextDecoder().decode(bytes) };
+    case 'json': return { json: JSON.parse(decoder.decode(bytes)) };
+    case 'string': return decoder.decode(bytes);
+    case 'js': return { js: decoder.decode(bytes) };
+    case 'cjs': return { cjs: decoder.decode(bytes) };
+    case 'py': return { py: decoder.decode(bytes) };
+    case 'text': return { text: decoder.decode(bytes) };
   }
 }
 
@@ -159,10 +167,12 @@ export function loaderStore(env: object, ref: LoaderStoreRef) {
       for (const module of modules) {
         if (held.has(module.digest)) continue;
         const slices = module.slices()[Symbol.iterator]();
-        const stream = new ReadableStream<Uint8Array>({
+        // A byte stream, as Workers RPC carries one; each slice an owned copy, as enqueuing one transfers its buffer.
+        const stream = new ReadableStream({
+          type: 'bytes',
           pull(controller) {
             const next = slices.next();
-            if (next.done) controller.close(); else controller.enqueue(next.value);
+            if (next.done) controller.close(); else controller.enqueue(new Uint8Array(next.value));
           },
         });
         await call({ kind: 'put', digest: module.digest, size: module.size }, stream);

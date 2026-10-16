@@ -27,8 +27,9 @@ import { createHash } from 'node:crypto';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
-const { NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, resolveLoadedEntrypoint, SqliteVFS, loaderCodeRegistry, LOADER_CODE_ROOT, _rpcLoaderCodeStore, CRED_SESSION_USER } = await importWorkerBundle({
+const { NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, resolveLoadedEntrypoint, loaderHeapStats, SqliteVFS, loaderCodeRegistry, LOADER_CODE_ROOT, _rpcLoaderCodeStore, CRED_SESSION_USER } = await importWorkerBundle({
   'packages/fabric/src/bindings.ts': ['NimbusLoaderRPC', 'NimbusLoadedWorker', 'NimbusLoadedEntrypoint', 'resolveLoadedEntrypoint'],
+  'packages/fabric/src/loader-heap.ts': ['loaderHeapStats'],
   'packages/core/src/vfs/sqlite-vfs.ts': ['SqliteVFS'],
   'packages/worker/src/wrangler/loader-code-store.ts': ['loaderCodeRegistry', 'LOADER_CODE_ROOT'],
   'packages/worker/src/session/rpc.ts': ['_rpcLoaderCodeStore'],
@@ -41,7 +42,7 @@ const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 /** A session: its VFS, its incarnation's registry, and the host namespace its shim's store calls reach. */
 function session(engine) {
   const ctx = {};
-  const registry = loaderCodeRegistry(ctx, engine);
+  const registry = loaderCodeRegistry(engine);
   const calls = [];
   const host = {
     supervisorOp(envelope) {
@@ -151,8 +152,70 @@ const blob = (bytes, fill) => { const data = new Uint8Array(bytes); data.fill(fi
   const token = s.registry.mint('wrangler-1', 'LOADER');
   s.registry.commit('wrangler-1', [token]);
   const { loader } = shim(s, token);
-  await assert.rejects(loader.load(worker({ 'w.js': '', 'many.json': { json: new Array(800_000).fill({}) } })),
-    /re-creating this Worker from the store would hold .* per-Worker bound/, 'one shared object written 800,000 times parses into 800,000: refused by its restored price');
+  const pair = [{}, {}, {}, {}];
+  await assert.rejects(loader.load(worker({ 'w.js': '', 'many.json': { json: new Array(200_000).fill(pair) } })),
+    /re-creating this Worker from the store would hold .* per-Worker bound/, 'one shared array written 200,000 times parses into a million objects: refused by its restored price');
+}
+
+// ── Restored modules are cached for what they hold; text comes back as it went in ──
+{
+  const s = session(vfs());
+  const token = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [token]);
+  const { loader, missed } = shim(s, token);
+  const boundary = 1024 * 1024;
+  const crossing = 'a'.repeat(boundary - 1) + '\u{1F600}' + 'b';
+  const kept = await loader.load(worker({ 'w.js': '\uFEFFexport default {};', 'many.json': { json: new Array(100_000).fill({}) }, 'pair.txt': { text: crossing } }));
+  // Let the cache go: its 8 MiB taken by others' modules.
+  for (let i = 0; i < 3; i++) await loader.load(worker({ 'w.js': '', 'fill.bin': { data: blob(3 * MiB, i) } }));
+  const code = await missed(kept);
+  assert.equal(code.modules['w.js'], '\uFEFFexport default {};', 'a leading U+FEFF is kept');
+  assert.equal(code.modules['pair.txt'].text, crossing, 'a surrogate pair across the encoding slice is kept');
+  assert.equal(code.modules['many.json'].json.length, 100_000);
+  assert.ok(loaderHeapStats().moduleCacheBytes <= 8 * MiB, `the module cache holds at most its bound, restored graphs charged for what they hold: ${loaderHeapStats().moduleCacheBytes}`);
+  // A near-bound {json}: 1 MiB of NUL characters (six to the escape when written, one when parsed) is admitted.
+  assert.ok(await loader.load(worker({ 'w.js': '', 'nul.json': { json: '\u0000'.repeat(MiB) } })), 'a {json} string of 1 MiB NULs is admitted');
+}
+
+// ── Owners and content: retired bindings, accounting that waits for drains, content counted once, a destroyed session's new registry ──
+{
+  const engine = vfs();
+  const s = session(engine);
+  const first = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [first]);
+  const shared = blob(2 * MiB, 9);
+  await shim(s, first).loader.load(worker({ 'w.js': '', 'dep.bin': { data: shared } }));
+  const second = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [second]);
+  await shim(s, second).loader.load(worker({ 'w.js': '', 'dep.bin': { data: shared } }));
+  assert.ok(s.registry.stats().storeBytes < 3 * MiB, `adopted content is counted once: ${s.registry.stats().storeBytes}`);
+  s.registry.commit('wrangler-1', []);
+  assert.equal(await s.registry.serve({ kind: 'alive', owner: second }), false, 'a binding the next build no longer has is retired');
+
+  // A put admitted before its owner's release is accounted, and removed, once it drains.
+  const third = s.registry.mint('wrangler-2', 'LOADER');
+  const data = new TextEncoder().encode('held put');
+  let push;
+  const held = new ReadableStream({ start(controller) { push = controller; } });
+  const putting = s.registry.serve({ kind: 'put', owner: third, digest: sha(data), size: data.byteLength }, held);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  s.registry.release(third);
+  push.enqueue(data); push.close();
+  await putting;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(s.registry.stats().removing, 0, 'the released owner\'s directory is removed once its put drained');
+
+  // A put refused by its digest, and one joined, leave their streams cancelled.
+  const fourth = s.registry.mint('wrangler-2', 'LOADER');
+  let cancelled = 0;
+  const cancelling = (bytes) => new ReadableStream({ start(controller) { controller.enqueue(bytes); }, cancel() { cancelled++; } });
+  await s.registry.serve({ kind: 'put', owner: fourth, digest: 'not a digest', size: 1 }, cancelling(data)).catch(() => {});
+  assert.equal(cancelled, 1, 'a refused put\'s stream is cancelled');
+
+  // A destroyed session opens a new filesystem: a new registry, which knows no old token.
+  const fresh = loaderCodeRegistry(vfs());
+  assert.notEqual(fresh, s.registry);
+  assert.equal(await fresh.serve({ kind: 'alive', owner: fourth }), false, 'an old incarnation\'s token is unknown to the new one');
 }
 
 // ── Puts that are not what they name, or past the owner's file cap, publish nothing ──
@@ -187,9 +250,20 @@ const blob = (bytes, fill) => { const data = new Uint8Array(bytes); data.fill(fi
   s.registry.stop('wrangler-1');
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(kernel.readdir(LOADER_CODE_ROOT).length, 1, 'the stopped server\'s directory is removed');
-  session(engine);
+}
+
+// ── A new incarnation's registry sweeps what an old one left ──
+{
+  const harness = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const old = loaderCodeRegistry(engine);
+  const token = old.mint('wrangler-1', 'LOADER');
+  const data = new TextEncoder().encode('left behind');
+  await old.serve({ kind: 'put', owner: token, digest: sha(data), size: data.byteLength }, new ReadableStream({ start(c) { c.enqueue(data); c.close(); } }));
+  const reopened = new SqliteVFS(harness.sql, harness.ctx);
+  loaderCodeRegistry(reopened);
   await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(kernel.readdir(LOADER_CODE_ROOT).length, 0, 'a new incarnation sweeps what the old one left');
+  assert.equal(reopened.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 }).readdir(LOADER_CODE_ROOT).length, 0, 'the next incarnation over the same storage sweeps what the old one left');
 }
 
 // ── A process's envelope is refused the store ──

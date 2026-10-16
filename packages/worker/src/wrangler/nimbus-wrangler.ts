@@ -357,18 +357,20 @@ export class NimbusWrangler {
     const superseded = () => generation !== this.generation;
     // The loader-store owners this build's env mints: committed with it, or released.
     const owners: string[] = [];
-    let built = false;
+    let committed = false;
+    // Called at the commit point, in the same synchronous step that publishes the build's stub.
+    const commit = (): void => {
+      this.loaderStore?.commit(this.storeId, owners);
+      committed = true;
+    };
     try {
-      built = await this.buildAndLoadWith(superseded, served, owners);
-      // Its commit point was its last synchronous step: nothing came between.
-      if (built) this.loaderStore?.commit(this.storeId, owners);
-      return built;
+      return await this.buildAndLoadWith(superseded, served, owners, commit);
     } finally {
-      if (!built) for (const owner of owners) this.loaderStore?.release(owner);
+      if (!committed) for (const owner of owners) this.loaderStore?.release(owner);
     }
   }
 
-  private async buildAndLoadWith(superseded: () => boolean, served: () => void, owners: string[]): Promise<boolean> {
+  private async buildAndLoadWith(superseded: () => boolean, served: () => void, owners: string[], commit: () => void): Promise<boolean> {
     if (!this.config?.main) {
       this.onLog('\x1b[31mNo "main" entry point in wrangler config\x1b[0m\n');
       return false;
@@ -513,6 +515,7 @@ export class NimbusWrangler {
       this.doClassMap.clear();
       if (classesEntrypoint !== null) this.registerDoClasses(worker, doBindings);
       this.workerStub = worker.getEntrypoint(undefined, { limits: facetLimits('worker') });
+      commit();
 
       for (const w of result.warnings || []) {
         this.onLog(`  \x1b[33mwarning: ${w.text}\x1b[0m\n`);

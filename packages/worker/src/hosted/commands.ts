@@ -821,7 +821,7 @@ const wranglerHandler = (invokedAs: 'wrangler' | 'nimbus-wrangler') =>
       // Supervisor DO ctx — required for ctx.facets.get() when
       // synthesizing durable_objects bindings on the inner Worker.
       ctx: self.ctx,
-      loaderStore: loaderCodeRegistry(self.ctx, sqliteFs),
+      loaderStore: loaderCodeRegistry(sqliteFs),
       root: vfsRoot,
       // While the command runs, its own stderr says why a start fails; after
       // it returns, rebuilds report to the terminal.
