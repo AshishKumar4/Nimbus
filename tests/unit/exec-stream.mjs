@@ -18,6 +18,7 @@ import { collectExecStream, decodeExecStream, encodeExecStream } from '../../pac
 import { rpcExec, rpcExecStream } from '../../packages/worker/src/session/programmatic.ts';
 import { handleNimbusRemoteApi } from '../../packages/worker/src/router/remote-api.ts';
 import { Nimbus } from '../../packages/sdk/src/sandbox.ts';
+import { memoryStorage } from './lib/do-storage.mjs';
 
 const harness = createSqliteVfsTestHarness(new Database(':memory:'));
 const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, generation: 1 });
@@ -28,12 +29,7 @@ const host = {
   env: {},
   ctx: {
     waitUntil: () => {},
-    storage: {
-      get: async (key) => rows.get(key),
-      put: async (key, value) => { rows.set(key, value); },
-      delete: async (keys) => { for (const key of [keys].flat()) rows.delete(key); },
-      list: async ({ prefix }) => new Map([...rows].filter(([key]) => key.startsWith(prefix))),
-    },
+    storage: memoryStorage({ rows }),
   },
   runtimeWorkspace: ws,
   shell: ws.shell,

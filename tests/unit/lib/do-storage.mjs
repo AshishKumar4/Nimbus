@@ -43,10 +43,13 @@ export function memoryStorage({ rows = new Map(), crashable = false } = {}) {
       const entries = typeof keyOrEntries === 'string' ? { [keyOrEntries]: value } : keyOrEntries;
       commit(Object.entries(entries).map(([key, entry]) => [key, { deleted: false, value: structuredClone(entry) }]));
     },
-    async delete(key) {
-      const had = view().has(key);
-      commit([[key, { deleted: true }]]);
-      return had;
+    // One key answers whether it was there; several, how many were.
+    async delete(keyOrKeys) {
+      const keys = [keyOrKeys].flat();
+      const present = view();
+      const had = keys.filter((key) => present.has(key)).length;
+      commit(keys.map((key) => [key, { deleted: true }]));
+      return Array.isArray(keyOrKeys) ? had : had === 1;
     },
     async list({ prefix = '' } = {}) { return listed(view(), prefix); },
     async sync() { flush(); },
