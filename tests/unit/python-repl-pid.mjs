@@ -39,7 +39,7 @@ root.writeFile('py/lib/python313.zip', 'stdlib asset');
 const authority = new ProcessFiles(raw);
 const deps = {
   facetMgr: { loaderHost: () => ({ env: {}, ctx: { id: {}, waitUntil() {} }, network: ISOLATE_NETWORK }) },
-  authority, installRoot: 'py', home: '/home/user', manifest: {},
+  authority, installRoot: 'py', home: '/home/user', manifest: { version: '3.13.14-3' },
 };
 try {
   await warmPythonRepl(deps);
