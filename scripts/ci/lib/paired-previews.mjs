@@ -21,10 +21,16 @@ const git = (cwd, args) => {
 
 /** The children `run` started that have not ended, each in a process group of its own, so `halt` can end what they started too. */
 const running = new Set();
+/** Set by `halt`: from then on `run` starts nothing. */
+let halted = false;
 
 /** Run `args` in `cwd`; resolves to its stdout, rejects naming the command and its stderr's tail. */
 function run(cwd, command, args) {
   return new Promise((resolve, reject) => {
+    if (halted) {
+      reject(new Error(`halted before ${command} ${args.slice(0, 3).join(' ')} could start`));
+      return;
+    }
     const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     running.add(child);
     child.on('close', () => running.delete(child));
@@ -71,32 +77,40 @@ export function pairedPreviews({ repo, log = (line) => console.error(line) }) {
   /** The deployment `arm` serves now, read by this checkout's script (an older baseline's has no `version`). */
   const version = async (arm) => (await run(repo, 'bun', throwaway(['version'], arm))).trim();
   const receipts = {};
+  /** The stand-up while it runs, so `halt` waits for it to unwind. */
+  let standing = Promise.resolve();
+  /** Upload each arm; see standUp. */
+  const upload = async ({ baseline, candidate, releases }) => {
+    // Imported once remote-probes has checked the install: the record path lives beside the deploy code.
+    const { readState, throwawayStatePath } = await import('../../../tests/behavioral/_deploy-target.mjs');
+    const commit = { a1: baseline, a2: baseline, b: candidate };
+    const groups = new Map();
+    for (const arm of ARMS) {
+      const checkout = await checkoutAt(commit[arm]);
+      arms[arm] = { name: `pp-${runId}-${arm}`, checkout };
+      groups.set(checkout, [...(groups.get(checkout) ?? []), arm]);
+    }
+    const settled = await Promise.allSettled([...groups.values()].map(async (group) => {
+      for (const arm of group) {
+        previews.push(arms[arm]);
+        log(`paired: ${arm} is ${commit[arm].slice(0, 12)} on throwaway ${arms[arm].name}`);
+        await run(arms[arm].checkout, 'bun', [...throwaway(['up', '--bundle', releases[commit[arm]]], arm)]);
+        receipts[arm] = readState(throwawayStatePath(arms[arm].checkout, arms[arm].name))?.versionId;
+        if (!receipts[arm]) throw new Error(`${arms[arm].name}'s upload recorded no deployment in ${arms[arm].checkout}`);
+      }
+    }));
+    for (const outcome of settled) if (outcome.status === 'rejected') throw outcome.reason;
+  };
+
   return {
     /**
      * Upload `releases[baseline]` as a1 and a2 and `releases[candidate]` as b.
      * One upload at a time per checkout (they share its .wrangler state), the
      * two checkouts at once; every upload settles before a failure is thrown.
      */
-    async standUp({ baseline, candidate, releases }) {
-      // Imported once remote-probes has checked the install: the record path lives beside the deploy code.
-      const { readState, throwawayStatePath } = await import('../../../tests/behavioral/_deploy-target.mjs');
-      const commit = { a1: baseline, a2: baseline, b: candidate };
-      const groups = new Map();
-      for (const arm of ARMS) {
-        const checkout = await checkoutAt(commit[arm]);
-        arms[arm] = { name: `pp-${runId}-${arm}`, checkout };
-        groups.set(checkout, [...(groups.get(checkout) ?? []), arm]);
-      }
-      const settled = await Promise.allSettled([...groups.values()].map(async (group) => {
-        for (const arm of group) {
-          previews.push(arms[arm]);
-          log(`paired: ${arm} is ${commit[arm].slice(0, 12)} on throwaway ${arms[arm].name}`);
-          await run(arms[arm].checkout, 'bun', [...throwaway(['up', '--bundle', releases[commit[arm]]], arm)]);
-          receipts[arm] = readState(throwawayStatePath(arms[arm].checkout, arms[arm].name))?.versionId;
-          if (!receipts[arm]) throw new Error(`${arms[arm].name}'s upload recorded no deployment in ${arms[arm].checkout}`);
-        }
-      }));
-      for (const outcome of settled) if (outcome.status === 'rejected') throw outcome.reason;
+    standUp(options) {
+      standing = upload(options);
+      return standing;
     },
     /** Each arm's { base, token }, a token minted now to live `ttlMs`. */
     async credentials(ttlMs) {
@@ -112,11 +126,13 @@ export function pairedPreviews({ repo, log = (line) => console.error(line) }) {
       return Object.fromEntries(await Promise.all(ARMS.map(async (arm) => [arm, await version(arm)])));
     },
     /**
-     * End every child still running (an upload, an install) and its own
-     * children: SIGTERM, then after 30 s SIGKILL, and wait for each to end,
-     * so teardown never deletes what a writer is still making.
+     * Start nothing more, end every child still running (an upload, an
+     * install) and its own children (SIGTERM, then after 30 s SIGKILL), and
+     * wait for them and for the stand-up to unwind, so teardown never
+     * deletes what a writer is still making.
      */
     async halt() {
+      halted = true;
       const signal = (kill) => {
         for (const child of running) {
           try { process.kill(-child.pid, kill); } catch { /* its group has already ended */ }
@@ -125,7 +141,7 @@ export function pairedPreviews({ repo, log = (line) => console.error(line) }) {
       const ended = Promise.all([...running].map((child) => new Promise((resolve) => child.once('close', resolve))));
       signal('SIGTERM');
       const grace = setTimeout(() => signal('SIGKILL'), 30_000);
-      await ended;
+      await Promise.allSettled([ended, standing]);
       clearTimeout(grace);
     },
     /** Delete every Preview and worktree made here, once; returns what could not be, each with the command that finishes it. */
