@@ -5,5 +5,5 @@ export { HostedSession, type HostedSessionScope } from './hosted/session.js';
 export { collectExecStream, decodeExecStream, encodeExecStream, type ExecChunk, type ExecExit, type ExecOutput, type ExecStream, type ExecStreamName } from '@nimbus-sh/core/runtime/exec-stream.js';
 export { runtimeCatalogSource } from './runtime/runtime-catalog.js';
 export { SupervisorRPC } from './session/supervisor-rpc.js';
-export { NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket, } from '@nimbus-sh/fabric/bindings.js';
+export { NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket, } from '@nimbus-sh/fabric/bindings.js';
 //# sourceMappingURL=workspace-host.d.ts.map

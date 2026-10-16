@@ -103,7 +103,6 @@ export declare const SUPERVISOR_OP_TABLE: {
     readonly fsAwaitRecall: null;
     readonly fsRecalled: "once";
     readonly fsPublished: null;
-    readonly innerDoFetch: null;
     readonly innerDoCall: null;
     readonly kvCall: null;
     readonly r2Call: null;
