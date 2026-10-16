@@ -908,12 +908,15 @@ export async function registerHostedCommands(self, workspace) {
         },
     };
     registerShellEntrypointCommands(registry, shellEntrypointExecutor);
+    /**
+     * Whether a server adopted `pid` (the bin-spawn contract) and runs on as
+     * it: a dev server binds its stop to the pid (runsWork), a node resident
+     * holds it in the facet manager.
+     */
+    const adopted = (pid) => self.processes.runsWork(pid) || (self.facetManager?.hasResidentProcess(pid) ?? false);
     // Shell scripts that execute through the local shell still need the same
     // process-table and log-store contract as facet-backed processes. Answers
-    // 'resident' for a long-running script that succeeded: its process is left
-    // running, as a server that adopted it (a node or dev server reusing the
-    // pid) runs on. Nothing tells adoption apart from a script that simply
-    // ended (a node server holds no work on the pid the supervisor can see).
+    // 'resident' for a long-running script a server adopted, which runs on.
     const shellExecuteTracked = async (cmd, cmdCtx, opts = {}) => {
         const entry = self.processes.spawn(cmd, [cmd], cmdCtx.cwd || '/home/user', { parentPid: cmdCtx.pid });
         const pid = entry.pid;
@@ -952,6 +955,7 @@ export async function registerHostedCommands(self, workspace) {
         const stop = new AbortController();
         const stopped = self.processes.holdWork(pid, (reason) => stop.abort(reason), stop.signal);
         let exitCode = 1;
+        let handedOffToLongRunningFacet = false;
         try {
             const result = await scriptShell.execute(cmd, {
                 cwd: cmdCtx.cwd,
@@ -1020,7 +1024,7 @@ export async function registerHostedCommands(self, workspace) {
                 // emitting an immediate exit would print a false `[shell exited]` and
                 // flip the process to terminated in /api/processes. Mirror the npm-bin
                 // resolver's `handedOffToLongRunningFacet` contract.
-                const handedOffToLongRunningFacet = opts.longRunning === true && exitCode === 0;
+                handedOffToLongRunningFacet = opts.longRunning === true && exitCode === 0 && adopted(pid);
                 if (!handedOffToLongRunningFacet) {
                     try {
                         self.processes.exit(pid, exitCode);
@@ -1046,7 +1050,7 @@ export async function registerHostedCommands(self, workspace) {
                 }
             }
         }
-        return opts.longRunning === true && exitCode === 0 ? 'resident' : exitCode;
+        return handedOffToLongRunningFacet ? 'resident' : exitCode;
     };
     const runtimeCommandHint = createRuntimeCommandHintResolver(self.env);
     installNpmBinFallbackResolver(registry, {
