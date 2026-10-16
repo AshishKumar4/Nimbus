@@ -1,5 +1,5 @@
 diff --git a/index.js b/index.js
-index 80a5167..1545743 100644
+index 80a5167..977a7c7 100644
 --- a/index.js
 +++ b/index.js
 @@ -1809,0 +1810 @@ class GitConfig {
@@ -82,220 +82,29 @@ index 80a5167..1545743 100644
 +    return config
 +  }
 +
-@@ -3175,0 +3238 @@ class GitPackIndex {
-+        const oid = await shasum(GitObject.wrap({ type, object: data }));
-@@ -3178,0 +3242 @@ class GitPackIndex {
-+          oid,
-@@ -3217 +3280,0 @@ class GitPackIndex {
--    const objectsByDepth = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-@@ -3234 +3297,6 @@ class GitPackIndex {
--      if (o.oid) continue
-+      if (o.oid) {
-+        hashes.push(o.oid);
-+        offsets.set(o.oid, offset);
-+        crcs[o.oid] = o.crc;
-+        continue
-+      }
-@@ -3236,2 +3303,0 @@ class GitPackIndex {
--        p.readDepth = 0;
--        p.externalReadDepth = 0;
-@@ -3239 +3304,0 @@ class GitPackIndex {
--        objectsByDepth[p.readDepth] += 1;
-@@ -3264,0 +3330,5 @@ class GitPackIndex {
-+    const fanout = new Uint32Array(256);
-+    for (const hash of this.hashes) {
-+      fanout[parseInt(hash.slice(0, 2), 16)]++;
-+    }
-+    let count = 0;
-@@ -3266,4 +3336 @@ class GitPackIndex {
--      let count = 0;
--      for (const hash of this.hashes) {
--        if (parseInt(hash.slice(0, 2), 16) <= i) count++;
--      }
-+      count += fanout[i];
-@@ -3307 +3374 @@ class GitPackIndex {
--  async read({ oid }) {
-+  async read({ oid, readContext = { depth: 0 } }) {
-@@ -3310 +3376,0 @@ class GitPackIndex {
--        this.externalReadDepth++;
-@@ -3317 +3383 @@ class GitPackIndex {
--    return this.readSlice({ start })
-+    return this.readSlice({ start, readContext })
-@@ -3320 +3386 @@ class GitPackIndex {
--  async readSlice({ start }) {
-+  async readSlice({ start, readContext = { depth: 0 } }) {
-@@ -3324,61 +3390,69 @@ class GitPackIndex {
--    this.readDepth++;
--    const types = {
--      0b0010000: 'commit',
--      0b0100000: 'tree',
--      0b0110000: 'blob',
--      0b1000000: 'tag',
--      0b1100000: 'ofs_delta',
--      0b1110000: 'ref_delta',
--    };
--    if (!this.pack) {
--      throw new InternalError(
--        'Tried to read from a GitPackIndex with no packfile loaded into memory'
--      )
--    }
--    const raw = (await this.pack).slice(start);
--    const reader = new BufferCursor(raw);
--    const byte = reader.readUInt8();
--    // Object type is encoded in bits 654
--    const btype = byte & 0b1110000;
--    let type = types[btype];
--    if (type === undefined) {
--      throw new InternalError('Unrecognized type: 0b' + btype.toString(2))
--    }
--    // The length encoding get complicated.
--    // Last four bits of length is encoded in bits 3210
--    const lastFour = byte & 0b1111;
--    let length = lastFour;
--    // Whether the next byte is part of the variable-length encoded number
--    // is encoded in bit 7
--    const multibyte = byte & 0b10000000;
--    if (multibyte) {
--      length = otherVarIntDecode(reader, lastFour);
--    }
--    let base = null;
--    let object = null;
--    // Handle deltified objects
--    if (type === 'ofs_delta') {
--      const offset = decodeVarInt(reader);
--      const baseOffset = start - offset
--      ;({ object: base, type } = await this.readSlice({ start: baseOffset }));
--    }
--    if (type === 'ref_delta') {
--      const oid = reader.slice(20).toString('hex')
--      ;({ object: base, type } = await this.read({ oid }));
--    }
--    // Handle undeltified objects
--    const buffer = raw.slice(reader.tell());
--    object = Buffer.from(await inflate(buffer));
--    // Assert that the object length is as expected.
--    if (object.byteLength !== length) {
--      throw new InternalError(
--        `Packfile told us object would have length ${length} but it had length ${object.byteLength}`
--      )
--    }
--    if (base) {
--      object = Buffer.from(applyDelta(object, base));
--    }
--    // Cache the result based on depth.
--    if (this.readDepth > 3) {
--      // hand tuned for speed / memory usage tradeoff
--      this.offsetCache[start] = { type, object };
-+    readContext.depth++;
-+    try {
-+      const types = {
-+        0b0010000: 'commit',
-+        0b0100000: 'tree',
-+        0b0110000: 'blob',
-+        0b1000000: 'tag',
-+        0b1100000: 'ofs_delta',
-+        0b1110000: 'ref_delta',
-+      };
-+      if (!this.pack) {
-+        throw new InternalError(
-+          'Tried to read from a GitPackIndex with no packfile loaded into memory'
-+        )
-+      }
-+      const raw = (await this.pack).slice(start);
-+      const reader = new BufferCursor(raw);
-+      const byte = reader.readUInt8();
-+      // Object type is encoded in bits 654
-+      const btype = byte & 0b1110000;
-+      let type = types[btype];
-+      if (type === undefined) {
-+        throw new InternalError('Unrecognized type: 0b' + btype.toString(2))
-+      }
-+      // The length encoding get complicated.
-+      // Last four bits of length is encoded in bits 3210
-+      const lastFour = byte & 0b1111;
-+      let length = lastFour;
-+      // Whether the next byte is part of the variable-length encoded number
-+      // is encoded in bit 7
-+      const multibyte = byte & 0b10000000;
-+      if (multibyte) {
-+        length = otherVarIntDecode(reader, lastFour);
-+      }
-+      let base = null;
-+      let object = null;
-+      // Handle deltified objects
-+      if (type === 'ofs_delta') {
-+        const offset = decodeVarInt(reader);
-+        const baseOffset = start - offset
-+        ;({ object: base, type } = await this.readSlice({
-+          start: baseOffset,
-+          readContext,
-+        }));
-+      }
-+      if (type === 'ref_delta') {
-+        const oid = reader.slice(20).toString('hex')
-+        ;({ object: base, type } = await this.read({ oid, readContext }));
-+      }
-+      // Handle undeltified objects
-+      const buffer = raw.slice(reader.tell());
-+      object = Buffer.from(await inflate(buffer));
-+      // Assert that the object length is as expected.
-+      if (object.byteLength !== length) {
-+        throw new InternalError(
-+          `Packfile told us object would have length ${length} but it had length ${object.byteLength}`
-+        )
-+      }
-+      if (base) {
-+        object = Buffer.from(applyDelta(object, base));
-+      }
-+      // Cache the result based on depth.
-+      if (readContext.depth > 3) {
-+        // hand tuned for speed / memory usage tradeoff
-+        this.offsetCache[start] = { type, object };
-+      }
-+      return { type, format: 'content', object }
-+    } finally {
-+      readContext.depth--;
-@@ -3386 +3459,0 @@ class GitPackIndex {
--    return { type, format: 'content', object }
-@@ -3391,0 +3465,12 @@ const PackfileCache = Symbol('PackfileCache');
-+const packIndexCacheKey = (gitdir, filename) =>
-+  `${gitdir}/objects/pack/${filename}`;
-+
-+function seedPackfileCache({ cache, gitdir, packfileSha, index }) {
-+  if (!cache[PackfileCache]) cache[PackfileCache] = new Map();
-+  const filename = packIndexCacheKey(
-+    gitdir,
-+    `pack-${packfileSha}.idx`
-+  );
-+  cache[PackfileCache].set(filename, Promise.resolve(index));
-+}
-+
-@@ -3434,0 +3520,6 @@ async function readObjectPacked({
+@@ -3434,0 +3497,6 @@ async function readObjectPacked({
 +  if (fs.packs) {
 +    const found = await fs.packs.read(gitdir, oid);
 +    if (!found) return null
 +    // A copy: the reader's cache keeps its own.
 +    return { type: found.type, format: 'content', object: Buffer.from(found.data), source: found.source }
 +  }
-@@ -3440 +3531 @@ async function readObjectPacked({
--    const indexFile = `${gitdir}/objects/pack/${filename}`;
-+    const indexFile = packIndexCacheKey(gitdir, filename);
-@@ -4943,0 +5035,3 @@ class FileSystem {
+@@ -4943,0 +5012,3 @@ class FileSystem {
 +    // A filesystem may read its packed objects itself (by range, never a
 +    // whole pack): read(gitdir, oid), has(gitdir, oid), expand(gitdir, prefix).
 +    this.packs = typeof fs.packs === 'object' && fs.packs !== null ? fs.packs : null;
-@@ -5394 +5488,2 @@ async function writeObjectLoose({ fs, gitdir, object, format, oid }) {
+@@ -5394 +5465,2 @@ async function writeObjectLoose({ fs, gitdir, object, format, oid }) {
 -let supportsCompressionStream = null;
 +// As for inflate: workerd's CompressionStream costs ~9 ms a call, pako a small object microseconds.
 +let supportsCompressionStream = false;
-@@ -5613 +5708 @@ async function _getConfig({ fs, gitdir, path }) {
+@@ -5613 +5685 @@ async function _getConfig({ fs, gitdir, path }) {
 -  const config = await GitConfigManager.get({ fs, gitdir });
 +  const config = await GitConfigManager.read({ fs, gitdir });
-@@ -5818,0 +5914,3 @@ async function _commit({
+@@ -5818,0 +5891,3 @@ async function _commit({
 +    // Nimbus: a detached HEAD resolves to the commit it holds. The ref to move
 +    // is HEAD itself, as git moves it, not a file named after that commit.
 +    if (/^[0-9a-f]{40}$/.test(ref)) ref = 'HEAD';
-@@ -5865,2 +5963,5 @@ async function _commit({
+@@ -5865,2 +5940,5 @@ async function _commit({
 -  return GitIndexManager.acquire(
 -    { fs, gitdir, cache, allowUnmerged: false },
 +  // Nimbus: a commit of a tree it is given (a merge's) reads no index.
@@ -303,19 +112,16 @@ index 80a5167..1545743 100644
 +    ? commit => commit(null)
 +    : commit => GitIndexManager.acquire({ fs, gitdir, cache, allowUnmerged: false }, commit);
 +  return withIndex(
-@@ -5868,2 +5968,0 @@ async function _commit({
+@@ -5868,2 +5945,0 @@ async function _commit({
 -      const inodes = flatFileListToDirectoryStructure(index.entries);
 -      const inode = inodes.get('.');
-@@ -5871 +5970,2 @@ async function _commit({
+@@ -5871 +5947,2 @@ async function _commit({
 -        tree = await constructTree({ fs, gitdir, inode, dryRun });
 +        const inodes = flatFileListToDirectoryStructure(index.entries);
 +        tree = await constructTree({ fs, gitdir, inode: inodes.get('.'), dryRun });
-@@ -8149,0 +8250 @@ async function hasObjectPacked({
+@@ -8149,0 +8227 @@ async function hasObjectPacked({
 +  if (fs.packs) return fs.packs.has(gitdir, oid)
-@@ -8155 +8256 @@ async function hasObjectPacked({
--    const indexFile = `${gitdir}/objects/pack/${filename}`;
-+    const indexFile = packIndexCacheKey(gitdir, filename);
-@@ -8239,0 +8341,9 @@ class FIFO {
+@@ -8239,0 +8318,9 @@ class FIFO {
 +  // Resolves once no more than `limit` chunks wait unread: a writer that
 +  // awaits it moves only as fast as the reader (side-band backpressure).
 +  drained(limit) {
@@ -325,7 +131,7 @@ index 80a5167..1545743 100644
 +    })
 +  }
 +
-@@ -8256 +8366,7 @@ class FIFO {
+@@ -8256 +8343,7 @@ class FIFO {
 -      return { value: this._queue.shift() }
 +      const value = this._queue.shift();
 +      if (this._drained && this._queue.length <= this._drained.limit) {
@@ -334,11 +140,11 @@ index 80a5167..1545743 100644
 +        resolve();
 +      }
 +      return { value }
-@@ -8353,0 +8470,3 @@ class GitSideBand {
+@@ -8353,0 +8447,3 @@ class GitSideBand {
 +          // A reader that stores the pack as it arrives sets the pace:
 +          // at most 64 packets (4 MiB) wait for it.
 +          await packfile.drained(64);
-@@ -8583,0 +8703,22 @@ function writeUploadPackRequest({
+@@ -8583,0 +8680,22 @@ function writeUploadPackRequest({
 +// Nimbus: the smart-HTTP transport of Nimbus's protocol clients
 +// (git/pack/upload-pack.ts, receive-pack.ts): the URL, the credentials onAuth
 +// gives, and the remote's progress lines, reported as cf-git reports them.
@@ -361,17 +167,17 @@ index 80a5167..1545743 100644
 +  }
 +}
 +
-@@ -8587 +8728 @@ async function _fetch({
+@@ -8587 +8705 @@ async function _fetch({
 -  http,
 +  uploadPack,
-@@ -8591,2 +8731,0 @@ async function _fetch({
+@@ -8591,2 +8708,0 @@ async function _fetch({
 -  onAuthSuccess,
 -  onAuthFailure,
-@@ -8598 +8736,0 @@ async function _fetch({
+@@ -8598 +8713,0 @@ async function _fetch({
 -  corsProxy,
-@@ -8605 +8742,0 @@ async function _fetch({
+@@ -8605 +8719,0 @@ async function _fetch({
 -  headers = {},
-@@ -8626,18 +8763,12 @@ async function _fetch({
+@@ -8626,18 +8740,12 @@ async function _fetch({
 -  if (corsProxy === undefined) {
 -    corsProxy = await config.get('http.corsProxy');
 -  }
@@ -402,7 +208,7 @@ index 80a5167..1545743 100644
 +  const remoteRefs = new Map(
 +    [...remoteHTTP.refs].filter(([name]) => !name.endsWith('^{}'))
 +  );
-@@ -8682,17 +8812,0 @@ async function _fetch({
+@@ -8682,17 +8789,0 @@ async function _fetch({
 -  // Assemble the application/x-git-upload-pack-request
 -  const capabilities = filterCapabilities(
 -    [...remoteHTTP.capabilities],
@@ -420,13 +226,13 @@ index 80a5167..1545743 100644
 -    ]
 -  );
 -  if (relative) capabilities.push('deepen-relative');
-@@ -8723,3 +8837,2 @@ async function _fetch({
+@@ -8723,3 +8814,2 @@ async function _fetch({
 -  const packstream = writeUploadPackRequest({
 -    capabilities,
 -    wants,
 +  const answer = await uploadPack.requestPack(transport, remoteHTTP.capabilities, {
 +    wants: [...wants],
-@@ -8728,16 +8841,2 @@ async function _fetch({
+@@ -8728,16 +8818,2 @@ async function _fetch({
 -    depth,
 -    since,
 -    exclude,
@@ -445,7 +251,7 @@ index 80a5167..1545743 100644
 -    headers,
 +    ...(depth !== null ? { depth } : {}),
 +    relative,
-@@ -8745,20 +8844,27 @@ async function _fetch({
+@@ -8745,20 +8821,27 @@ async function _fetch({
 -  const response = await parseUploadPackResponse(raw.body);
 -  if (raw.headers) {
 -    response.headers = raw.headers;
@@ -493,10 +299,10 @@ index 80a5167..1545743 100644
 +            oids.add(oid);
 +          }
 +        } catch (err) {
-@@ -8767,2 +8872,0 @@ async function _fetch({
+@@ -8767,2 +8849,0 @@ async function _fetch({
 -      } catch (err) {
 -        oids.add(oid);
-@@ -8771,50 +8875,50 @@ async function _fetch({
+@@ -8771,50 +8852,50 @@ async function _fetch({
 -  }
 -  for (const oid of response.unshallows) {
 -    oids.delete(oid);
@@ -597,10 +403,10 @@ index 80a5167..1545743 100644
 +      if (prune) {
 +        response.pruned = pruned;
 +      }
-@@ -8822 +8926 @@ async function _fetch({
+@@ -8822 +8903 @@ async function _fetch({
 -  }
 +  };
-@@ -8847,15 +8951,14 @@ async function _fetch({
+@@ -8847,15 +8928,14 @@ async function _fetch({
 -  if (onProgress || onMessage) {
 -    const lines = splitLines(response.progress);
 -    forAwait(lines, async line => {
@@ -630,40 +436,33 @@ index 80a5167..1545743 100644
 +    if (prune) res.pruned = response.pruned;
 +    if (packSha) res.packfile = `objects/pack/pack-${packSha}.pack`;
 +    return res
-@@ -8864 +8966,0 @@ async function _fetch({
+@@ -8864 +8943,0 @@ async function _fetch({
 -  if (raw.body.error) throw raw.body.error
-@@ -8871,6 +8972,0 @@ async function _fetch({
+@@ -8871,6 +8949,0 @@ async function _fetch({
 -  if (response.headers) {
 -    res.headers = response.headers;
 -  }
 -  if (prune) {
 -    res.pruned = response.pruned;
 -  }
-@@ -8893 +8989,7 @@ async function _fetch({
--    await fs.write(fullpath.replace(/\.pack$/, '.idx'), await idx.toBuffer());
-+    const idxPath = fullpath.replace(/\.pack$/, '.idx');
-+    await fs.write(idxPath, await idx.toBuffer());
-+    seedPackfileCache({ cache, gitdir, packfileSha, index: idx });
-+  }
+@@ -8894,0 +8968,4 @@ async function _fetch({
 +  await updateRefs();
 +  if (prune) {
 +    res.pruned = response.pruned;
-@@ -8933,0 +9036 @@ async function _init({
++  }
+@@ -8933,0 +9011 @@ async function _init({
 +  // What git init writes where files keep an exec bit, symlinks work and names are case-sensitive.
-@@ -8938 +9041 @@ async function _init({
+@@ -8938 +9016 @@ async function _init({
 -      '\tfilemode = false\n' +
 +      '\tfilemode = true\n' +
-@@ -8940,3 +9043 @@ async function _init({
+@@ -8940,3 +9018 @@ async function _init({
 -      (bare ? '' : '\tlogallrefupdates = true\n') +
 -      '\tsymlinks = false\n' +
 -      '\tignorecase = true\n'
 +      (bare ? '' : '\tlogallrefupdates = true\n')
-@@ -9546,0 +9648 @@ async function expandOidPacked({
+@@ -9546,0 +9623 @@ async function expandOidPacked({
 +  if (fs.packs) return fs.packs.expand(gitdir, short)
-@@ -9552 +9654 @@ async function expandOidPacked({
--    const indexFile = `${gitdir}/objects/pack/${filename}`;
-+    const indexFile = packIndexCacheKey(gitdir, filename);
-@@ -10290,21 +10392,22 @@ async function _merge({
+@@ -10290,21 +10367,22 @@ async function _merge({
 -    const tree = await GitIndexManager.acquire(
 -      { fs, gitdir, cache, allowUnmerged: false },
 -      async index => {
@@ -707,33 +506,33 @@ index 80a5167..1545743 100644
 +    const tree = abortOnConflict
 +      ? await merge(null)
 +      : await GitIndexManager.acquire({ fs, gitdir, cache, allowUnmerged: false }, merge);
-@@ -10631 +10734 @@ async function fetch({
+@@ -10631 +10709 @@ async function fetch({
 -  http,
 +  uploadPack,
-@@ -10635,2 +10737,0 @@ async function fetch({
+@@ -10635,2 +10712,0 @@ async function fetch({
 -  onAuthSuccess,
 -  onAuthFailure,
-@@ -10643 +10743,0 @@ async function fetch({
+@@ -10643 +10718,0 @@ async function fetch({
 -  corsProxy,
-@@ -10650 +10749,0 @@ async function fetch({
+@@ -10650 +10724,0 @@ async function fetch({
 -  headers = {},
-@@ -10657 +10756 @@ async function fetch({
+@@ -10657 +10731 @@ async function fetch({
 -    assertParameter('http', http);
 +    assertParameter('uploadPack', uploadPack);
-@@ -10663 +10762 @@ async function fetch({
+@@ -10663 +10737 @@ async function fetch({
 -      http,
 +      uploadPack,
-@@ -10667,2 +10765,0 @@ async function fetch({
+@@ -10667,2 +10740,0 @@ async function fetch({
 -      onAuthSuccess,
 -      onAuthFailure,
-@@ -10674 +10770,0 @@ async function fetch({
+@@ -10674 +10745,0 @@ async function fetch({
 -      corsProxy,
-@@ -10681 +10776,0 @@ async function fetch({
+@@ -10681 +10751,0 @@ async function fetch({
 -      headers,
-@@ -10843 +10938 @@ async function _getConfigAll({ fs, gitdir, path }) {
+@@ -10843 +10913 @@ async function _getConfigAll({ fs, gitdir, path }) {
 -  const config = await GitConfigManager.get({ fs, gitdir });
 +  const config = await GitConfigManager.read({ fs, gitdir });
-@@ -10864,0 +10960,26 @@ async function _getConfigAll({ fs, gitdir, path }) {
+@@ -10864,0 +10935,26 @@ async function _getConfigAll({ fs, gitdir, path }) {
 +/**
 + * The variable names of a section of the repository's config file (`$GIT_DIR/config`),
 + * each once and lowercased: what `extensions` a repository declares, for one.
@@ -760,21 +559,21 @@ index 80a5167..1545743 100644
 +  }
 +}
 +
-@@ -13713 +13834 @@ async function _push({
+@@ -13713 +13809 @@ async function _push({
 -  http,
 +  receivePack,
-@@ -13717,2 +13837,0 @@ async function _push({
+@@ -13717,2 +13812,0 @@ async function _push({
 -  onAuthSuccess,
 -  onAuthFailure,
-@@ -13727,2 +13845,0 @@ async function _push({
+@@ -13727,2 +13820,0 @@ async function _push({
 -  corsProxy,
 -  headers = {},
-@@ -13756,4 +13872,0 @@ async function _push({
+@@ -13756,4 +13847,0 @@ async function _push({
 -  if (corsProxy === undefined) {
 -    corsProxy = await config.get('http.corsProxy');
 -  }
 -
-@@ -13765,14 +13878,6 @@ async function _push({
+@@ -13765,14 +13853,6 @@ async function _push({
 -  /** @type typeof import("../managers/GitRemoteHTTP").GitRemoteHTTP */
 -  const GitRemoteHTTP = GitRemoteManager.getRemoteHelperFor({ url });
 -  const httpRemote = await GitRemoteHTTP.discover({
@@ -795,7 +594,7 @@ index 80a5167..1545743 100644
 +  if (!receivePack) throw new MissingParameterError('receivePack')
 +  const transport = await nimbusTransport({ url, onAuth, onProgress, onMessage });
 +  const httpRemote = await receivePack.discover(transport);
-@@ -13905,12 +14010,2 @@ async function _push({
+@@ -13905,12 +13985,2 @@ async function _push({
 -  // We can only safely use capabilities that the server also understands.
 -  // For instance, AWS CodeCommit aborts a push if you include the `agent`!!!
 -  const capabilities = filterCapabilities(
@@ -810,7 +609,7 @@ index 80a5167..1545743 100644
 -    ? []
 +  const pack = _delete
 +    ? null
-@@ -13923,9 +14018,5 @@ async function _push({
+@@ -13923,9 +13993,5 @@ async function _push({
 -  const res = await GitRemoteHTTP.connect({
 -    http,
 -    onProgress,
@@ -825,7 +624,7 @@ index 80a5167..1545743 100644
 +    pack: pack && (async function * () { yield * pack; })(),
 +    atomic: false,
 +    pushOptions: [],
-@@ -13933,11 +14024,6 @@ async function _push({
+@@ -13933,11 +13999,6 @@ async function _push({
 -  const { packfile, progress } = await GitSideBand.demux(res.body);
 -  if (onMessage) {
 -    const lines = splitLines(progress);
@@ -843,29 +642,29 @@ index 80a5167..1545743 100644
 +  for (const { ref, ok, reason } of report.refs) result.refs[ref] = { ok, error: reason || '' };
 +  if (!result.refs[fullRemoteRef]) {
 +    result.refs[fullRemoteRef] = { ok: false, error: 'the remote did not report this ref' };
-@@ -14027 +14113 @@ async function push({
+@@ -14027 +14088 @@ async function push({
 -  http,
 +  receivePack,
-@@ -14031,2 +14116,0 @@ async function push({
+@@ -14031,2 +14091,0 @@ async function push({
 -  onAuthSuccess,
 -  onAuthFailure,
-@@ -14042,2 +14125,0 @@ async function push({
+@@ -14042,2 +14100,0 @@ async function push({
 -  corsProxy,
 -  headers = {},
-@@ -14048 +14130 @@ async function push({
+@@ -14048 +14105 @@ async function push({
 -    assertParameter('http', http);
 +    assertParameter('receivePack', receivePack);
-@@ -14054 +14136 @@ async function push({
+@@ -14054 +14111 @@ async function push({
 -      http,
 +      receivePack,
-@@ -14058,2 +14139,0 @@ async function push({
+@@ -14058,2 +14114,0 @@ async function push({
 -      onAuthSuccess,
 -      onAuthFailure,
-@@ -14068,2 +14147,0 @@ async function push({
+@@ -14068,2 +14122,0 @@ async function push({
 -      corsProxy,
 -      headers,
-@@ -17517,0 +17596 @@ var index = {
+@@ -17517,0 +17571 @@ var index = {
 +  getConfigNames,
-@@ -17576 +17655 @@ export default index;
+@@ -17576 +17630 @@ export default index;
 -export { Errors, STAGE, TREE, WORKDIR, abortMerge, add, addNote, addRemote, annotatedTag, branch, checkout, clone, commit, currentBranch, deleteBranch, deleteRef, deleteRemote, deleteTag, expandOid, expandRef, fastForward, fetch, findMergeBase, findRoot, getConfig, getConfigAll, getRemoteInfo, getRemoteInfo2, hashBlob, indexPack, init, isDescendent, isIgnored, listBranches, listFiles, listNotes, listRefs, listRemotes, listServerRefs, listTags, log, merge, packObjects, pull, push, readBlob, readCommit, readNote, readObject, readTag, readTree, remove, removeNote, renameBranch, resetIndex, resolveRef, setConfig, stash, status, statusMatrix, tag, updateIndex$1 as updateIndex, version, walk, writeBlob, writeCommit, writeObject, writeRef, writeTag, writeTree };
 +export { Errors, STAGE, TREE, WORKDIR, abortMerge, add, addNote, addRemote, annotatedTag, branch, checkout, clone, commit, currentBranch, deleteBranch, deleteRef, deleteRemote, deleteTag, expandOid, expandRef, fastForward, fetch, findMergeBase, findRoot, getConfig, getConfigAll, getConfigNames, getRemoteInfo, getRemoteInfo2, hashBlob, indexPack, init, isDescendent, isIgnored, listBranches, listFiles, listNotes, listRefs, listRemotes, listServerRefs, listTags, log, merge, packObjects, pull, push, readBlob, readCommit, readNote, readObject, readTag, readTree, remove, removeNote, renameBranch, resetIndex, resolveRef, setConfig, stash, status, statusMatrix, tag, updateIndex$1 as updateIndex, version, walk, writeBlob, writeCommit, writeObject, writeRef, writeTag, writeTree };
