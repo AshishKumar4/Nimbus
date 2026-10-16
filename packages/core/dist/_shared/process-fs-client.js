@@ -961,7 +961,12 @@ export function processFsClient(options) {
             return grants.some((grant) => !grant.ended && within(key, grant.root));
         },
         vouch(key, cursor) {
-            if (escaped !== null || client.pending() || ownHeld || cursor.rev < ownThrough)
+            if (client.pending() || ownHeld || cursor.rev < ownThrough)
+                return undefined;
+            return client.certifies(key, cursor);
+        },
+        certifies(key, cursor) {
+            if (escaped !== null)
                 return undefined;
             let found;
             for (const grant of grants) {

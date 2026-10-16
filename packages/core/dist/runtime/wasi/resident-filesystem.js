@@ -568,14 +568,21 @@ export function residentFilesystem(session, resident, delegation) {
     };
     /**
      * Whether the holder may be asked to decide a change at `key` on its
-     * walks. Where it holds `key`'s subtree, only when every name they crossed
-     * is guarded (ProcessFsClient.guards), so none changes before the process
-     * answers and the key stays what the caller's spelling denotes; else the
-     * session resolves the call. Where it does not, the holder declines it
+     * walks. Where it holds `key`'s subtree, only when every row or absence
+     * they read is one a decision may use: the process's own (decided here),
+     * or one this view has as the session does (ProcessFsClient.certifies:
+     * nothing another changed before the grant is missing from it, and
+     * nothing changes after it before the process answers). Else the session
+     * resolves the call. Where it does not hold it, the holder declines it
      * anyway, counting it toward taking the subtree.
      */
-    const decidable = (key, ...walks) => holder.client.held(key) === undefined
-        || walks.every((walk) => walk.crossed.every((name) => holder.client.guards(name)));
+    const decidable = (key, ...walks) => {
+        if (holder.client.held(key) === undefined)
+            return true;
+        const cursor = store.cursor();
+        return walks.every((walk) => walk.crossed.every((name) => holder.entry(name) !== undefined
+            || (cursor !== null && holder.client.certifies(name, cursor) !== undefined)));
+    };
     /** The authority, for a call that may change what the store holds: the barrier is owed once it returns. */
     const changing = (name, call) => {
         directoryPool?.invalidate();
@@ -1188,17 +1195,14 @@ export function residentFilesystem(session, resident, delegation) {
             : named !== undefined ? byClient('unlink', { type: 'call', call: { call: 'unlink', path: named } }) : bySessionUnlink(path)));
     };
     /**
-     * The store's bytes of the file `walk` reaches, where this view is the
-     * session's for all they depend on, as a held stat's is
-     * (ProcessFsClient.vouch at the view's cursor): every name the walk
-     * crossed vouched for, the file itself held. Undefined where the view
-     * cannot vouch for them.
+     * The store's bytes of the file `walk` reaches (a decidable walk), where
+     * this view is the session's for them (ProcessFsClient.vouch at the view's
+     * cursor: the file held, and nothing of the process's own missing from
+     * the view). Undefined where the view cannot vouch for them.
      */
-    const vouchedContent = ({ key, crossed }) => {
+    const vouchedContent = ({ key }) => {
         const cursor = store.cursor();
         if (cursor === null || holder.client.vouch(key, cursor) !== 'held')
-            return undefined;
-        if (!crossed.every((name) => holder.client.vouch(name, cursor) !== undefined))
             return undefined;
         const entry = entryAt(key);
         return entry ? store.content(key, entry.revision) : undefined;

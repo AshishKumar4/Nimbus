@@ -1929,7 +1929,11 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         return grants.some((grant) => !grant.ended && within(key, grant.root));
       },
       vouch(key, cursor) {
-        if (escaped !== null || client.pending() || ownHeld || cursor.rev < ownThrough) return void 0;
+        if (client.pending() || ownHeld || cursor.rev < ownThrough) return void 0;
+        return client.certifies(key, cursor);
+      },
+      certifies(key, cursor) {
+        if (escaped !== null) return void 0;
         let found;
         for (const grant of grants) {
           const certificate = grant.certificate;

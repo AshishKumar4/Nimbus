@@ -292,6 +292,33 @@ async function until(ready, what) {
   assert.equal(dec.decode(s.kernel.readFile('home/user/proj/d3/second.txt')), 'NEW', 'the copy took the view\'s bytes from before the grant');
 }
 
+// ── A decision reads only rows its view has as the session does, or its own ──
+// A peer makes the destination, not writable to the process, after the
+// view's last barrier and before the grant; the process then makes its own
+// source under that grant. The copy is the session's, which refuses it.
+// Red before: the holder judged the destination by the view's stale
+// absence and answered the copy, which the session then refused.
+{
+  const grant = Promise.withResolvers();
+  let afterBarrier = null;
+  const s = session({ view: { barrier: () => afterBarrier?.() }, acquired: grant.promise });
+  // Asked for once: the process's view has it absent.
+  assert.equal(await s.fs.stat('/home/user/proj/d7/dst.txt'), null);
+  // The session's: the subtree is asked for, and its grant waits.
+  await create(s.fs, '/home/user/proj/d7/warm.txt', 'w');
+  afterBarrier = async () => {
+    afterBarrier = null;
+    s.kernel.writeFile('home/user/proj/d7/dst.txt', enc.encode('THEIRS'), { mode: 0o444 });
+    grant.resolve();
+    await until(() => s.filesystem.delegations.size === 1, 'the grant');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  };
+  await create(s.fs, '/home/user/proj/d7/src.txt', 'MINE');
+  await assert.rejects(async () => s.fs.copyFile('/home/user/proj/d7/src.txt', '/home/user/proj/d7/dst.txt'), { code: 'EACCES' });
+  await s.fs.settle().catch(() => {});
+  assert.equal(dec.decode(s.kernel.readFile('home/user/proj/d7/dst.txt')), 'THEIRS');
+}
+
 // ── A copy is decided only where every name its walks cross is guarded ──
 // The destination a link outside the held subtree names, into it: a peer
 // retargets the link (no grant recalled), and the copy lands where the
