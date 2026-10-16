@@ -910,7 +910,10 @@ export async function registerHostedCommands(self, workspace) {
     registerShellEntrypointCommands(registry, shellEntrypointExecutor);
     // Shell scripts that execute through the local shell still need the same
     // process-table and log-store contract as facet-backed processes. Answers
-    // 'resident' for a long-running script a server adopted, which runs on.
+    // 'resident' for a long-running script that succeeded: its process is left
+    // running, as a server that adopted it (a node or dev server reusing the
+    // pid) runs on. Nothing tells adoption apart from a script that simply
+    // ended (a node server holds no work on the pid the supervisor can see).
     const shellExecuteTracked = async (cmd, cmdCtx, opts = {}) => {
         const entry = self.processes.spawn(cmd, [cmd], cmdCtx.cwd || '/home/user', { parentPid: cmdCtx.pid });
         const pid = entry.pid;
@@ -1017,7 +1020,7 @@ export async function registerHostedCommands(self, workspace) {
                 // emitting an immediate exit would print a false `[shell exited]` and
                 // flip the process to terminated in /api/processes. Mirror the npm-bin
                 // resolver's `handedOffToLongRunningFacet` contract.
-                const handedOffToLongRunningFacet = opts.longRunning === true && exitCode === 0 && self.processes.runsWork(pid);
+                const handedOffToLongRunningFacet = opts.longRunning === true && exitCode === 0;
                 if (!handedOffToLongRunningFacet) {
                     try {
                         self.processes.exit(pid, exitCode);
@@ -1043,7 +1046,7 @@ export async function registerHostedCommands(self, workspace) {
                 }
             }
         }
-        return opts.longRunning === true && exitCode === 0 && self.processes.runsWork(pid) ? 'resident' : exitCode;
+        return opts.longRunning === true && exitCode === 0 ? 'resident' : exitCode;
     };
     const runtimeCommandHint = createRuntimeCommandHintResolver(self.env);
     installNpmBinFallbackResolver(registry, {
