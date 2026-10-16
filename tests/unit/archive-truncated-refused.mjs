@@ -9,8 +9,9 @@
 //     and "end of file reached"; the native `gem` is the oracle when present;
 //   - an npm tarball whose tar ends inside a member, though its integrity is
 //     the registry's: the install facet fails the package and never publishes
-//     its package.json, and the shell's npm (writeTarballStream) writes no
-//     package.json. (npm's node-tar, strict, refuses it as TAR_BAD_ARCHIVE;
+//     its package.json (under a wrong integrity too, the check that failed
+//     with it left no unhandled rejection), and the shell's npm
+//     (writeTarballStream) writes no package.json. (npm's node-tar, strict, refuses it as TAR_BAD_ARCHIVE;
 //     npm itself only warns, but such a tarball fails npm's integrity check
 //     unless the registry published it truncated.)
 //
@@ -113,24 +114,33 @@ try {
   const cut = gzipSync(pkgTar.subarray(0, 512 * 5 + 900));
   const integrity = await sriOf(cut);
 
-  // The install facet: the package fails, its package.json never published.
+  // The install facet: the package fails, its package.json never published; under another tarball's integrity too, and
+  // the check that failed with it is no unhandled rejection.
   const realFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(cut.slice());
+  const unhandled = [];
+  const onUnhandled = (reason) => { unhandled.push(reason); };
+  process.on('unhandledRejection', onUnhandled);
   try {
-    const waves = [];
-    const result = await installPackagesInFacet({ packages: [{
-      name: 'cut', version: '1.0.0', tarballUrl: 'https://registry.invalid/cut.tgz', integrity,
-      pkgDir: 'node_modules/cut', installRoot: 'node_modules', mtime: 1,
-    }], concurrency: 1 }, { SUPERVISOR: {
-      async writeBatchStream(stream) {
-        const decoded = await decodeWave(stream);
-        waves.push(...decoded.paths);
-        return { ok: true, committedGroupSequence: decoded.paths.length, committedPathCount: decoded.paths.length, inodes: decoded.paths.length, chunks: decoded.chunks };
-      },
-    } });
-    assert.match(result.perPackage[0].errorText ?? '', /Unexpected EOF in archive: package\/lib\/big\.js ends after 900/, 'the facet fails the truncated package');
-    assert.ok(!waves.includes('node_modules/cut/package.json'), 'and never publishes its package.json');
+    for (const [what, sri] of [['its own integrity', integrity], ['the whole tarball\'s integrity', await sriOf(gzipSync(pkgTar))]]) {
+      const waves = [];
+      const result = await installPackagesInFacet({ packages: [{
+        name: 'cut', version: '1.0.0', tarballUrl: 'https://registry.invalid/cut.tgz', integrity: sri,
+        pkgDir: 'node_modules/cut', installRoot: 'node_modules', mtime: 1,
+      }], concurrency: 1 }, { SUPERVISOR: {
+        async writeBatchStream(stream) {
+          const decoded = await decodeWave(stream);
+          waves.push(...decoded.paths);
+          return { ok: true, committedGroupSequence: decoded.paths.length, committedPathCount: decoded.paths.length, inodes: decoded.paths.length, chunks: decoded.chunks };
+        },
+      } });
+      assert.match(result.perPackage[0].errorText ?? '', /Unexpected EOF in archive: package\/lib\/big\.js ends after 900/, `${what}: the facet fails the truncated package`);
+      assert.ok(!waves.includes('node_modules/cut/package.json'), `${what}: and never publishes its package.json`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.deepEqual(unhandled.map(String), [], 'no rejection was left unhandled');
   } finally {
+    process.off('unhandledRejection', onUnhandled);
     globalThis.fetch = realFetch;
   }
 
