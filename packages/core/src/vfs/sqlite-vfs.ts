@@ -462,8 +462,13 @@ export interface CredentialedVfs {
   readFileString(path: string): string;
   stat(path: string): VfsStat;
   lstat(path: string): VfsStat;
-  /** stat (lstat when `followLeaf` is false), or null when the name is not there: no error made for an absence. */
-  statIfPresent(path: string, followLeaf?: boolean): VfsStat | null;
+  /**
+   * stat (lstat when `followLeaf` is false), or null when the name is not
+   * there: no error made for an absence. A name below a regular file is
+   * absent too ("is it there?"), unless `belowFile` is 'ENOTDIR', which says
+   * so as stat(2) does.
+   */
+  statIfPresent(path: string, followLeaf?: boolean, belowFile?: 'absent' | 'ENOTDIR'): VfsStat | null;
   /** Whether something is at `path` (a link not followed) as published: no append stored, no holder recalled (VFS.landedAt). */
   landedAt(path: string): boolean;
   /**
@@ -3249,7 +3254,7 @@ export class SqliteVFS {
       readFileString: (path) => this.readFileString(path, bound),
       stat: (path) => this.stat(path, bound, true),
       lstat: (path) => this.stat(path, bound, false),
-      statIfPresent: (path, followLeaf = true) => this.statIfPresent(path, bound, followLeaf),
+      statIfPresent: (path, followLeaf = true, belowFile = 'absent') => this.statIfPresent(path, bound, followLeaf, this.inodes, belowFile),
       landedAt: (path) => this.landedAt(path, bound),
       utimes: (path, atimeMs, mtimeMs, options) => this.utimes(path, atimeMs, mtimeMs, bound, options?.followSymlinks !== false),
       chmod: (path, mode) => this.chmod(path, mode, bound),
@@ -5711,14 +5716,18 @@ export class SqliteVFS {
     return this.statOf(inode);
   }
 
-  /** stat, with a name that is not there (or a directory on its way that is not) answered null: an answer, not an error. */
-  private statIfPresent(path: string, cred: VfsCred, followLeaf: boolean, tree: InodeLookup = this.inodes): VfsStat | null {
+  /**
+   * stat, with a name that is not there answered null: an answer, not an
+   * error. A file on its way (ENOTDIR) is not there either, unless
+   * `belowFile` is 'ENOTDIR' (stat(2)'s answer).
+   */
+  private statIfPresent(path: string, cred: VfsCred, followLeaf: boolean, tree: InodeLookup = this.inodes, belowFile: 'absent' | 'ENOTDIR' = 'absent'): VfsStat | null {
     try {
       const inode = this.checkAccess(path, 0, cred, { followLeaf, allowMissingLeaf: true, tree }).inode;
       return inode === undefined ? null : this.statOf(inode);
     } catch (error) {
       const code = errnoCodeOf(error);
-      if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+      if (code === 'ENOENT' || (code === 'ENOTDIR' && belowFile === 'absent')) return null;
       throw error;
     }
   }
@@ -7336,9 +7345,9 @@ export class SqliteVFS {
       readFileString: (path) => dec.decode(this.readWhole(file(path))),
       stat: (path) => this.statOf(resolve(path, 0).inode!),
       lstat: (path) => this.statOf(resolve(path, 0, false).inode!),
-      statIfPresent: (path, followLeaf = true) => {
+      statIfPresent: (path, followLeaf = true, belowFile = 'absent') => {
         pinned();
-        return this.statIfPresent(path, bound, followLeaf, tree);
+        return this.statIfPresent(path, bound, followLeaf, tree, belowFile);
       },
       landedAt: (path) => probe(path) !== undefined,
       utimes: readOnly,
