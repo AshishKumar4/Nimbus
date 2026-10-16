@@ -12,6 +12,7 @@
 import { type CredentialedVfs, type SqliteVFS } from './sqlite-vfs.js';
 import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCopyOptions, VfsCred, VfsDirent, VfsOpenFile, VfsRemoval, VfsRevision, VfsStat, VfsViewOptions, VfsWriteObserver } from './vfs.js';
 import { type VfsEvent } from './events.js';
+import type { FsTime } from '../runtime/os-contracts.js';
 export declare class SqliteFiles implements VFS {
     private readonly engine;
     private readonly view;
@@ -72,7 +73,7 @@ export declare class SqliteFiles implements VFS {
     readlink(path: string): string;
     chmod(path: string, mode: number): void;
     chown(path: string, uid: number | null, gid: number | null): void;
-    utimes(path: string, atimeMs: number, mtimeMs: number): void;
+    utimes(path: string, atime: FsTime, mtime: FsTime): void;
     /** Copy inside the database: rows, not bytes. */
     copy(from: string, to: string, options?: VfsCopyOptions): number;
     /**

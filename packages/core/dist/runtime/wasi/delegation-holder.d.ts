@@ -34,7 +34,7 @@
  * a guest that waits in a syscall lets it run; one computing does not
  * (the documented limit, answered by the session's recall timeout).
  */
-import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '../os-contracts.js';
+import type { FsTime, RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '../os-contracts.js';
 import type { ResidentEntry } from './resident-filesystem.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import { type ProcessFsClient, type ProcessFsJournal, type ProcessFsSession } from '../../_shared/process-fs-client.js';
@@ -68,6 +68,17 @@ export interface HolderOptions {
     /** Where the client logs what it sends until the session answers: the process's own store, where it has one (process-fs-journal.ts). */
     readonly journal?: ProcessFsJournal;
 }
+/** A file made or rewritten here: its bytes until they are sent. */
+/** An attribute change by a descriptor: a mode, an owner (null or -1 kept), or times (FsTime). */
+export type HolderAttrChange = {
+    mode: number;
+} | {
+    uid: number | null;
+    gid: number | null;
+} | {
+    atime: FsTime;
+    mtime: FsTime;
+};
 /** The decisions the process made in a held subtree, not yet sent. */
 export interface DelegationHolder {
     /** The process's filesystem client: what the holder decided is logged into it. */
@@ -162,6 +173,22 @@ export interface DelegationHolder {
     rename(from: string, to: string, path: string): boolean;
     /** Decide an attribute change of `key`: true when decided here. */
     setattr(key: string, attrs: W7Attrs): boolean;
+    /**
+     * Decide an attribute change of the file `handleId` opened (fchmod,
+     * fchown, futimes): true when decided here, for a file of the holder's
+     * that lost its name, or one it decides under its name, its times
+     * resolved here as it is decided; false when it is the session's, through
+     * the description it holds of the file (restat after).
+     */
+    fsetattr(handleId: number, change: HolderAttrChange): boolean;
+    /** The session's stat of the file a through description opened, after a change through it: what fstat answers from now on. */
+    restat(handleId: number, stat: Omit<ResidentEntry, 'target'>): void;
+    /**
+     * The session changed `key`'s attributes itself, after everything the
+     * holder had was sent (one it holds but did not decide): what was decided
+     * of it is the session's now, and the store answers it after its barrier.
+     */
+    undecided(key: string): void;
     /** Whether a mutation at `key` would be decided here (a held subtree holds it). */
     holds(key: string): boolean;
     /** Whether anything decided here is not sent yet. */

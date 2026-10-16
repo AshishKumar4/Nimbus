@@ -9,7 +9,7 @@
  */
 import { type Awaitable } from '../vfs/vfs.js';
 import type { VfsOpenDescription } from '../vfs/sqlite-vfs.js';
-import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from './os-contracts.js';
+import type { FsTime, RuntimeFileHandle, RuntimeOpenedFile, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from './os-contracts.js';
 /** The engine's description of a file on SQLite (SqliteVFS.openDescription): every answer at once. */
 export type EngineDescription = VfsOpenDescription & {
     readonly mounted?: undefined;
@@ -49,7 +49,7 @@ export interface MountedFileDescription {
     readdir(admit?: () => void): Awaitable<RuntimeVfsDirEntry[]>;
     chmod(mode: number, admit?: () => void): Awaitable<void>;
     chown(uid: number | null, gid: number | null, admit?: () => void): Awaitable<void>;
-    utimes(atime: number, mtime: number, admit?: () => void): Awaitable<void>;
+    utimes(atime: FsTime, mtime: FsTime, admit?: () => void): Awaitable<void>;
     /** Writes what it holds; throws what that, or an earlier settle of it, failed with. */
     flush(admit?: () => void): Awaitable<void>;
     /** Writes what it holds, unasked (settleHeld): a failure is kept for its next fsync or close. */
@@ -219,7 +219,7 @@ export declare class Descriptors {
     ftruncate(id: number, size: number): Awaitable<void>;
     fchmod(id: number, mode: number): Awaitable<void>;
     fchown(id: number, uid: number | null, gid: number | null): Awaitable<void>;
-    futimes(id: number, atime: number, mtime: number): Awaitable<void>;
+    futimes(id: number, atime: FsTime, mtime: FsTime): Awaitable<void>;
 }
 export {};
 //# sourceMappingURL=descriptors.d.ts.map

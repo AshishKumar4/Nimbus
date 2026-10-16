@@ -1,3 +1,5 @@
+import type { FsTime } from '../runtime/os-contracts.js';
+
 /** What an entry is, as its filesystem says: the type every access check is given. */
 export type PosixNodeType = 'file' | 'directory' | 'symlink';
 
@@ -85,6 +87,16 @@ export function chownRefusal(
 /** The mode a chown leaves: a caller other than root clears the setuid and setgid bits. */
 export function chownedMode(mode: number, cred: Pick<PosixCred, 'uid'>): number {
   return cred.uid === 0 ? mode : mode & ~0o6000;
+}
+
+/** Whether a utimes asks for an explicit time on either side: what utimesRefusal's `explicit` is. */
+export function explicitTimes(atime: FsTime, mtime: FsTime): boolean {
+  return typeof atime === 'number' || typeof mtime === 'number';
+}
+
+/** `time` as the filesystem committing it lands it: an explicit one in whole ms, 'now' at `now`, 'omit' as `kept`. */
+export function timeAt(time: FsTime, kept: number, now: number): number {
+  return time === 'omit' ? kept : time === 'now' ? now : Math.trunc(time);
 }
 
 /**

@@ -872,6 +872,7 @@ export function processFsClient(options) {
                 root: granted.root,
                 owner: granted.owner,
                 umask: granted.umask ?? 0o022,
+                confined: granted.confined === true,
                 ...(granted.certificate === undefined ? {} : { certificate: granted.certificate }),
                 nextIno: granted.inos?.first ?? 0,
                 endIno: granted.inos?.end ?? 0,

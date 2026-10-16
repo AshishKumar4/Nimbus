@@ -2660,9 +2660,9 @@ function mkTouch() {
         if (files.length === 0)
             return await usage('missing file operand');
         const now = Date.now();
-        // null is "now" (UTIME_NOW), which needs only write permission, as GNU
-        // touch asks for when no time is given; an explicit time needs ownership.
-        let atime = null, mtime = null;
+        // 'now' (UTIME_NOW) needs only write permission, as GNU touch asks for
+        // when no time is given; an explicit time needs ownership.
+        let atime = 'now', mtime = 'now';
         if (reference !== null) {
             try {
                 const st = await statOrThrow(targetVfs, resolvePath(ctx.cwd, reference));
@@ -2693,7 +2693,7 @@ function mkTouch() {
         // -a and -m together, or neither, set both; the other is left (UTIME_OMIT).
         const setAtime = onlyAtime || !onlyMtime;
         const setMtime = onlyMtime || !onlyAtime;
-        const times = [setAtime ? atime : undefined, setMtime ? mtime : undefined];
+        const times = [setAtime ? atime : 'omit', setMtime ? mtime : 'omit'];
         let code = 0;
         for (const f of files) {
             // `-` is standard output: its times are the terminal's, not a file named '-'.

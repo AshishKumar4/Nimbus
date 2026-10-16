@@ -11,7 +11,7 @@
 import { andThen, isPromise, type Awaitable } from '../vfs/vfs.js';
 import type { VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import { fsError } from '../vfs/vfs-error.js';
-import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from './os-contracts.js';
+import type { FsTime, RuntimeFileHandle, RuntimeOpenedFile, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from './os-contracts.js';
 
 /** The engine's description of a file on SQLite (SqliteVFS.openDescription): every answer at once. */
 export type EngineDescription = VfsOpenDescription & { readonly mounted?: undefined; readonly awaits?: undefined };
@@ -51,7 +51,7 @@ export interface MountedFileDescription {
   readdir(admit?: () => void): Awaitable<RuntimeVfsDirEntry[]>;
   chmod(mode: number, admit?: () => void): Awaitable<void>;
   chown(uid: number | null, gid: number | null, admit?: () => void): Awaitable<void>;
-  utimes(atime: number, mtime: number, admit?: () => void): Awaitable<void>;
+  utimes(atime: FsTime, mtime: FsTime, admit?: () => void): Awaitable<void>;
   /** Writes what it holds; throws what that, or an earlier settle of it, failed with. */
   flush(admit?: () => void): Awaitable<void>;
   /** Writes what it holds, unasked (settleHeld): a failure is kept for its next fsync or close. */
@@ -436,7 +436,7 @@ export class Descriptors {
     const node = this.answering(id).node;
     return node.mounted ? node.chown(uid, gid, this.authority) : node.chown(uid, gid);
   }
-  futimes(id: number, atime: number, mtime: number): Awaitable<void> {
+  futimes(id: number, atime: FsTime, mtime: FsTime): Awaitable<void> {
     const node = this.answering(id).node;
     return node.mounted ? node.utimes(atime, mtime, this.authority) : node.utimes(atime, mtime);
   }

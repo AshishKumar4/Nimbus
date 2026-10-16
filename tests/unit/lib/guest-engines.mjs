@@ -116,6 +116,8 @@ function nodeBridge(fs) {
     fstat: async (id) => handle(id).stat(),
     ftruncate: async (id, size) => handle(id).truncate(size),
     fchmod: async (id, mode) => handle(id).chmod(mode),
+    fchown: async (id, uid, gid) => handle(id).chown(uid, gid),
+    futimes: async (id, atimeMs, mtimeMs) => handle(id).utimes(atimeMs / 1000, mtimeMs / 1000),
     fsync: async (id) => (id === undefined ? undefined : handle(id).sync()),
     close: async (id) => { await handle(id).close(); handles.delete(id); },
   };

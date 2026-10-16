@@ -125,7 +125,9 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
         followSymlinks?: boolean;
     }): Promise<Awaited<ReturnType<RuntimeFsBridge["stat"]>>>;
     lstat(path: string): Promise<any>;
-    utimes(path: RuntimeFsPath, atimeMs: number, mtimeMs: number): Promise<VfsMutationReceipt>;
+    utimes(path: RuntimeFsPath, atime: import("@nimbus-sh/core/runtime/os-contracts.js").FsTime, mtime: import("@nimbus-sh/core/runtime/os-contracts.js").FsTime, options?: {
+        followSymlinks?: boolean;
+    } | undefined): Promise<VfsMutationReceipt>;
     chmod(path: RuntimeFsPath, mode: number): Promise<VfsMutationReceipt>;
     access(path: RuntimeFsPath, mode: number): Promise<void>;
     chown(path: RuntimeFsPath, uid: number | null, gid: number | null, options?: {
@@ -212,7 +214,7 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
     fsFtruncate(handleId: number, size: number): Promise<Awaited<ReturnType<RuntimeFsBridge["ftruncate"]>>>;
     fsFchmod(handleId: number, mode: number): Promise<Awaited<ReturnType<RuntimeFsBridge["fchmod"]>>>;
     fsFchown(handleId: number, uid: number | null, gid: number | null): Promise<Awaited<ReturnType<RuntimeFsBridge["fchown"]>>>;
-    fsFutimes(handleId: number, atimeMs: number, mtimeMs: number): Promise<Awaited<ReturnType<RuntimeFsBridge["futimes"]>>>;
+    fsFutimes(handleId: number, atime: import("@nimbus-sh/core/runtime/os-contracts.js").FsTime, mtime: import("@nimbus-sh/core/runtime/os-contracts.js").FsTime): Promise<Awaited<ReturnType<RuntimeFsBridge["futimes"]>>>;
     fsSync(handleId?: number | undefined): Promise<Awaited<ReturnType<RuntimeFsBridge["fsync"]>>>;
     fsRealpath(path: RuntimeFsPath): Promise<Awaited<ReturnType<RuntimeFsBridge["realpath"]>>>;
     fsLinkLeadsTo(path: string, link: string): Promise<Awaited<ReturnType<RuntimeFsBridge["linkLeadsTo"]>>>;

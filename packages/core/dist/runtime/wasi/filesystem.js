@@ -836,15 +836,16 @@ export function installAuthorityFilesystem(imports, options) {
             });
         });
     });
-    const times = (st, a, m, flags) => {
+    // Each time as the guest asked it (FsTime), for the filesystem to resolve and judge as it commits.
+    const times = (a, m, flags) => {
         if ((flags & 3) === 3 || (flags & 12) === 12 || flags & ~15)
             fail('EINVAL');
-        return [flags & 2 ? Date.now() : flags & 1 ? Number(a / 1000000n) : st.atime,
-            flags & 8 ? Date.now() : flags & 4 ? Number(m / 1000000n) : st.mtime];
+        return [flags & 2 ? 'now' : flags & 1 ? Number(a / 1000000n) : 'omit',
+            flags & 8 ? 'now' : flags & 4 ? Number(m / 1000000n) : 'omit'];
     };
     imports.fd_filestat_set_times = guard(imports.fd_filestat_set_times, (fs, fd, a, m, flags) => {
         right(fd, 23);
-        return after(stat(fs, fd), st => after(fs.futimes(handle(fd).handle.id, ...times(st, a, m, flags)), () => 0));
+        return after(fs.futimes(handle(fd).handle.id, ...times(a, m, flags)), () => 0);
     }, owns);
     const ext = options.extension;
     if (ext) {
@@ -880,6 +881,6 @@ export function installAuthorityFilesystem(imports, options) {
     imports.path_filestat_set_times = guard(imports.path_filestat_set_times, (fs, fd, lookup, p, n, a, m, flags) => {
         pathRight(fd, 20);
         const target = at(fd, path(p, n)), followSymlinks = !!(lookup & 1);
-        return after(fs.stat(target, { followSymlinks }), st => after(fs.utimes(target, ...times(st ?? fail('ENOENT'), a, m, flags), { followSymlinks }), () => 0));
+        return after(fs.utimes(target, ...times(a, m, flags), { followSymlinks }), () => 0);
     });
 }

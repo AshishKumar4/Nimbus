@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { LINGER_MS } from '../../packages/core/src/_shared/process-fs-client.ts';
 import { runScenarios, sleep, until } from './lib/resident-body.mjs';
-import { APP, answeredAtOnce, ledgerScenarios } from './lib/guest-engines.mjs';
+import { APP, answeredAtOnce, ledgerScenarios, stat } from './lib/guest-engines.mjs';
 
 const OUT = `${APP}/out`;
 const enc = new TextEncoder();
@@ -229,6 +229,70 @@ const SCENARIOS = {
     await e.fs.close(opened.id);
   },
 
+  async 'fchmod, fchown and futimes change the file a description opened after its name is unlinked and taken'(e) {
+    await e.hold(OUT);
+    await e.write(`${OUT}/orphan.txt`, 'O');
+    const opened = await e.fs.open(`${OUT}/orphan.txt`, { write: true });
+    await e.fs.unlink(`${OUT}/orphan.txt`);
+    await e.write(`${OUT}/orphan.txt`, 'TAKEN');
+    const taken = await e.peerStat(`${OUT}/orphan.txt`);
+    await e.fs.fchmod(opened.id, 0o600);
+    await e.fs.fchown(opened.id, 1000, 1000);
+    await e.fs.futimes(opened.id, 5_000, 7_000);
+    const own = stat(await e.fs.fstat(opened.id));
+    assert.deepEqual([own.mode, own.mtimeMs], [0o600, 7_000], 'the description\'s own file did not change as asked');
+    await e.fs.close(opened.id);
+    const now = await e.peerStat(`${OUT}/orphan.txt`);
+    assert.deepEqual([now.mode, now.mtimeMs], [taken.mode, taken.mtimeMs], 'the file that took the name changed');
+  },
+  async 'fchmod of a file whose name is gone is judged as the session judges a description: a confined principal grants nothing'(e) {
+    // Confined (as a private /tmp principal is): it may narrow its own
+    // triad, never grant group or other bits or a set-id bit.
+    e.authority.rawVfs.confinePrincipal(1000, 'tmp/1000');
+    await e.hold(OUT);
+    // Made by this open (decided where the process holds the subtree), its name gone.
+    const opened = await e.fs.open(`${OUT}/orphan.txt`, { write: true, create: true, truncate: true, mode: 0o644 });
+    await e.fs.write(opened.id, null, enc.encode('O'));
+    await e.fs.unlink(`${OUT}/orphan.txt`);
+    await e.fs.fchmod(opened.id, 0o600);
+    await assert.rejects(e.fs.fchmod(opened.id, 0o640), { code: 'EPERM' }, 'a group bit granted');
+    await assert.rejects(e.fs.fchmod(opened.id, 0o4600), { code: 'EPERM' }, 'a set-id bit granted');
+    assert.equal(stat(await e.fs.fstat(opened.id)).mode, 0o600);
+    await e.fs.close(opened.id);
+  },
+  async 'fchmod, fchown and futimes change the file a description opened after its name is renamed'(e) {
+    await e.hold(OUT);
+    await e.write(`${OUT}/before.txt`, 'B');
+    const opened = await e.fs.open(`${OUT}/before.txt`, { write: true });
+    await e.fs.rename(`${OUT}/before.txt`, `${OUT}/after.txt`);
+    await e.fs.fchmod(opened.id, 0o640);
+    await e.fs.fchown(opened.id, 1000, 1000);
+    await e.fs.futimes(opened.id, 5_000, 9_000);
+    await e.fs.close(opened.id);
+    const moved = await e.peerStat(`${OUT}/after.txt`);
+    assert.deepEqual([moved.mode, moved.mtimeMs], [0o640, 9_000], 'the renamed file did not change as asked');
+  },
+
+  async 'fchmod, fchown and futimes through the session\'s description change the file it opened, not the name\'s'(e) {
+    await e.write(`${APP}/through.txt`, 'T');
+    const opened = await e.fs.open(`${APP}/through.txt`, { write: true });
+    await e.fs.write(opened.id, 0, enc.encode('THROUGH'));
+    await e.fs.rename(`${APP}/through.txt`, `${APP}/moved.txt`);
+    await e.write(`${APP}/through.txt`, 'TAKEN');
+    await e.fs.fsync();
+    const taken = await e.peerStat(`${APP}/through.txt`);
+    await e.fs.fchmod(opened.id, 0o640);
+    await e.fs.fchown(opened.id, 1000, 1000);
+    await e.fs.futimes(opened.id, 5_000, 11_000);
+    const own = stat(await e.fs.fstat(opened.id));
+    assert.deepEqual([own.mode, own.mtimeMs], [0o640, 11_000], 'fstat did not say what the description\'s file became');
+    await e.fs.close(opened.id);
+    const moved = await e.peerStat(`${APP}/moved.txt`);
+    assert.deepEqual([moved.mode, moved.mtimeMs], [0o640, 11_000], 'the opened file did not change as asked');
+    const now = await e.peerStat(`${APP}/through.txt`);
+    assert.deepEqual([now.mode, now.mtimeMs], [taken.mode, taken.mtimeMs], 'the file that took the name changed');
+  },
+
   // ── The namespace unavailable ──────────────────────────────────────────
   async 'with the namespace unavailable, a chmod is the session\'s, not refused'(e) {
     await e.hold(OUT);
@@ -282,23 +346,21 @@ const SCENARIOS = {
 };
 
 /** What each engine lacks today: each must fail, showing what it lacks. */
-const DECIDED_ATTRS = 'attribute changes decided in a held subtree';
 const PATH_FDS = 'descriptors on the open file, not on its name';
 const GAPS = {
-  'a chmod in a held subtree is answered at once, and the process sees it [holder]': { lacks: DECIDED_ATTRS, shows: 'not decided in the held subtree' },
-  'a utimes in a held subtree is answered at once [holder]': { lacks: DECIDED_ATTRS, shows: 'not decided in the held subtree' },
-  'a chown of the process\'s own file in a held subtree is answered at once [holder]': { lacks: DECIDED_ATTRS, shows: 'not decided in the held subtree' },
   'a copy of the process\'s own unanswered write is answered at once, with its bytes and its mode [holder]': { lacks: 'decided copies', shows: 'not decided in the held subtree' },
   'a decided copy is logged as what the destination became, in copyfile\'s order [holder]': { lacks: 'a decided copy logged as an open with its fchmod, a write and a close', shows: 'the copy is not logged as an open of its destination' },
-  'a chown by the owner clears the set-id bits, as the process sees it [holder]': { lacks: 'its own attribute changes in its view', shows: 'the set-id bits the session clears are still set' },
   'the session hears an answered change within the linger, unasked [holder]': { lacks: 'lingering answered changes', shows: 'timed out waiting for the session heard the write' },
-  'awaited chmods alone take the subtree they change [holder]': { lacks: 'attribute changes counted toward taking a subtree', shows: 'timed out waiting for the chmods took their subtree' },
   'what the process was told it wrote lands when the session kills it at once [holder]': { lacks: 'a cooperative end: its unlogged bytes logged before its facet goes', shows: 'ENOENT' },
   'a copy of a held file the process did not write is answered once it has read it [node]': { lacks: 'decided copies of a file it read', shows: 'not decided in the held subtree' },
   'a name under a file is ENOTDIR, a looping link ELOOP [node]': { lacks: 'ENOTDIR for a name under a file it made, decided in a held subtree', shows: 'Missing expected rejection' },
   'an open description reads the file it opened after its name is unlinked [node]': { lacks: PATH_FDS, shows: 'the description read the name\'s new file' },
   'a description writes the file it opened after its name is renamed [node]': { lacks: PATH_FDS, shows: 'the write did not reach the renamed file' },
   'fstat of a description whose file lost its name says so [node]': { lacks: PATH_FDS, shows: 'ENOENT' },
+  'fchmod, fchown and futimes change the file a description opened after its name is unlinked and taken [node]': { lacks: PATH_FDS, shows: 'the file that took the name changed' },
+  'fchmod, fchown and futimes change the file a description opened after its name is renamed [node]': { lacks: PATH_FDS, shows: 'ENOENT' },
+  'fchmod of a file whose name is gone is judged as the session judges a description: a confined principal grants nothing [node]': { lacks: PATH_FDS, shows: 'ENOENT' },
+  'fchmod, fchown and futimes through the session\'s description change the file it opened, not the name\'s [node]': { lacks: PATH_FDS, shows: 'the opened file did not change as asked' },
 };
 
 await runScenarios(import.meta.path, ledgerScenarios(SCENARIOS), { gaps: GAPS });

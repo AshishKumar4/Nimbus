@@ -37,6 +37,7 @@
 
 import type {
   Awaitable,
+  FsTime,
   RuntimeFileHandle,
   RuntimeFsBridge,
   RuntimeOpenedFile,
@@ -52,6 +53,8 @@ import { modeAllows } from '../../vfs/posix-access.js';
 import { openIdentified } from './filesystem.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES } from '../../constants.js';
 import { RESIDENT_PAGE_BYTES } from '@nimbus-sh/platform/limits.js';
+import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
+import type { HolderAttrChange } from './delegation-holder.js';
 import { delegationHolder, type DelegationHolder } from './delegation-holder.js';
 import { readDirectoryPool, type ReadDirectoryPool } from './read-directory-pool.js';
 import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
@@ -1195,32 +1198,31 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const passed: unknown = Reflect.get(fs, name);
     if (typeof passed !== 'function') continue;
     Reflect.set(fs, name, (handleId: number, ...rest: unknown[]) => {
-      if (holder?.owns(handleId)) return holderDescriptorCall(name, handleId, rest);
-      return Reflect.apply(passed, fs, [handleId, ...rest]);
+      if (!holder?.owns(handleId)) return Reflect.apply(passed, fs, [handleId, ...rest]);
+      if (name === 'dup') return holder.dup(handleId);
+      return holderAttrs(name, passed as (handleId: number, ...rest: unknown[]) => unknown, handleId, rest);
     });
   }
 
-  /**
-   * fchmod, futimes, fchown and dup of a descriptor of the holder's: decided
-   * here where the holder decides them, else by the file's name at the
-   * session, once what was decided is sent.
-   */
   /** An fchown side as the guest sent it: a uid or gid, or null (keep the file's). */
   const ownerSide = (value: unknown): number | null => typeof value === 'number' ? value : null;
-  const holderDescriptorCall = (name: 'fchmod' | 'fchown' | 'futimes' | 'dup', handleId: number, rest: unknown[]): unknown => {
-    const key = holder!.keyOf(handleId);
-    if (name === 'dup') return holder!.dup(handleId);
-    const attrs = name === 'fchmod' ? { mode: Number(rest[0]) }
-      : name === 'futimes' && typeof rest[0] === 'number' && typeof rest[1] === 'number' ? { atime: rest[0], mtime: rest[1] }
-      : null;
-    const bySession = (): unknown => holder!.flush().then(() => {
-      const path = '/' + key;
-      if (name === 'fchmod') return fs.chmod(path, Number(rest[0]));
-      if (name === 'fchown') return fs.chown(path, ownerSide(rest[0]), ownerSide(rest[1]));
-      return fs.utimes(path, rest[0] as number | null, rest[1] as number | null);
+  /**
+   * fchmod, fchown and futimes of a descriptor of the holder's, on the file
+   * it opened, never on a name: decided here where the holder decides that
+   * file, else through the description the session holds of it (the file
+   * written through first), and its stat as the session then says.
+   */
+  const holderAttrs = (name: 'fchmod' | 'fchown' | 'futimes', passed: (handleId: number, ...rest: unknown[]) => unknown, handleId: number, rest: unknown[]): unknown => {
+    const change: HolderAttrChange = name === 'fchmod' ? { mode: Number(rest[0]) }
+      : name === 'fchown' ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) }
+      : { atime: rest[0] as FsTime, mtime: rest[1] as FsTime };
+    if (holder!.fsetattr(handleId, change)) return undefined;
+    holder!.changing([holder!.keyOf(handleId)]);
+    return holder!.flush().then(() => holder!.sessionOf(handleId)).then(async (session) => {
+      if (session === undefined) throw fsError('EBADF', name, '/' + holder!.keyOf(handleId));
+      await passed.call(fs, session, ...rest);
+      holder!.restat(handleId, await fs.fstat(session));
     });
-    if (attrs === null) return bySession();
-    return after(holder!.setattr(key, attrs), (done) => (done ? undefined : bySession()));
   };
 
   /**
@@ -1288,6 +1290,34 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     return after(local, (done) => (done !== DELEGATE ? undefined
       : names !== undefined ? byClient('rename', { type: 'rename', from: names[0], to: names[1] }) : bySessionRename(from, to)));
   };
+  // An attribute change by name: decided here where a held subtree holds the
+  // name (counted toward taking it either way), else the session's, after
+  // what the holder has; one it holds but did not decide (another's file, a
+  // grant the session judges) is the session's in its view after. Not a
+  // link's own (lchown, lutimes), nor times now: the session's alone.
+  for (const name of ['chmod', 'chown', 'utimes'] as const) {
+    const passed = Reflect.get(fs, name) as (...args: unknown[]) => unknown;
+    Reflect.set(fs, name, (path: RuntimeFsPath, ...rest: unknown[]) => {
+      const options = rest[2] as { followSymlinks?: boolean } | undefined;
+      const attrs: W7Attrs | null = name === 'chmod' ? { mode: Number(rest[0]) }
+        : options?.followSymlinks === false ? null
+        : name === 'chown' ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) }
+        : typeof rest[0] === 'number' && typeof rest[1] === 'number' ? { atime: rest[0], mtime: rest[1] } : null;
+      if (holder === null || attrs === null) return passed.call(fs, path, ...rest);
+      let named: string | undefined;
+      const local = decide<void>(name, () => after(keyFor(path, true), (key) => {
+        if (key === DELEGATE) return DELEGATE;
+        named = key;
+        return holder!.setattr(key, attrs) ? undefined : DELEGATE;
+      }));
+      return after(local, (done) => {
+        if (done !== DELEGATE) return undefined;
+        const key = named;
+        if (key === undefined || !holder!.holds(key)) return passed.call(fs, path, ...rest);
+        return after(passed.call(fs, path, ...rest), (receipt) => { holder!.undecided(key); return receipt; });
+      });
+    });
+  }
   // Nothing of these is decided here: by the client when the store places the name.
   const byName = <A extends unknown[]>(name: 'rmdir' | 'symlink', passed: (...args: A) => Awaitable<void>, pathAt: number, op: (key: string, args: A) => ProcessFsOp) =>
     (...args: A): Awaitable<void> => {

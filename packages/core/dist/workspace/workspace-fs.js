@@ -104,9 +104,9 @@ export class WorkspaceFs {
     async chmod(path, mode) { return await this.view.chmod(this.resolve(path), mode); }
     /** chown(2): a null side keeps what the file has (chown -1). */
     async chown(path, uid, gid) { return await this.view.chown(this.resolve(path), uid, gid); }
-    /** utimensat(2): null is now, undefined leaves that time; `follow: false` sets a link's own times. */
-    async utimes(path, atimeMs, mtimeMs, options) {
-        return await this.view.utimes(this.resolve(path), atimeMs, mtimeMs, options);
+    /** utimensat(2), each time an FsTime; `follow: false` sets a link's own times. */
+    async utimes(path, atime, mtime, options) {
+        return await this.view.utimes(this.resolve(path), atime, mtime, options);
     }
     /** cp: a file (a link named as the source followed), or with `recursive` a tree, onto a name that is not there. */
     async copy(from, to, options) {
