@@ -1119,6 +1119,11 @@ var __nimbusProcessFsModule = (() => {
     EFAULT: "bad address in system call argument"
   };
 
+  function parentKey(key) {
+    const at = key.lastIndexOf("/");
+    return at < 0 ? "" : key.slice(0, at);
+  }
+
   function dataOf(op) {
     return op.type === "call" && "data" in op.call ? op.call.data : null;
   }
@@ -1296,8 +1301,6 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     return mask === void 0 ? op : { type: "call", call: { ...call, umask: mask & 511 } };
   }
   var SYMLINK_TARGET_MAX = 4096;
-  var utf8 = new TextEncoder();
-  var utf8Bytes = (text) => utf8.encode(text).byteLength;
   var GRANT_IDLE_MS = 2e3;
   var GRANT_INOS = 4096;
   var GRANT_BYTES = 64 * 1024 * 1024;
@@ -1305,10 +1308,6 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
   function standingOf(grant, key) {
     if (grant.ended || grant.closing || grant.shared) return void 0;
     return within(key, grant.root) ? "held" : within(grant.root, key) ? "above" : void 0;
-  }
-  function parentKey(key) {
-    const at = key.lastIndexOf("/");
-    return at < 0 ? "" : key.slice(0, at);
   }
   function within(key, root) {
     return root === "" || key === root || key.startsWith(`${root}/`);
@@ -1324,9 +1323,6 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     setTimeout: (callback, ms) => setTimeout(callback, ms),
     clearTimeout: (timer) => clearTimeout(timer)
   };
-  function utf8Length2(text) {
-    return new TextEncoder().encode(text).byteLength;
-  }
   function pathsOf(op) {
     switch (op.type) {
       case "call":
@@ -1521,7 +1517,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       while (queue.length > 0) {
         const next = queue[0];
         const fresh = next.paths.filter((path) => !owned.has(path));
-        const freshBytes = fresh.reduce((sum, path) => sum + utf8Length2(path), 0);
+        const freshBytes = fresh.reduce((sum, path) => sum + utf8Length(path), 0);
         if (taken.length > 0 && (next.order > limit || owned.size + fresh.length > WAVE_PATHS || pathBytes + freshBytes > WAVE_PATH_BYTES || bytes + next.bytes > WAVE_BYTES)) break;
         for (const path of fresh) owned.add(path);
         pathBytes += freshBytes;
@@ -1956,7 +1952,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         const named = pathsOf(op);
         const lingers = (acknowledged || submitOptions?.decided === true) && named.every((path) => heldGrant(path) !== void 0);
         for (const path of named) if (!canonical(path)) throw fsError("EINVAL", `EINVAL: not a filesystem path the session takes: '${path}'`, path);
-        if (op.type === "call" && op.call.call === "symlink" && utf8Bytes(op.call.target) > SYMLINK_TARGET_MAX) {
+        if (op.type === "call" && op.call.call === "symlink" && utf8Length(op.call.target) > SYMLINK_TARGET_MAX) {
           throw fsError("ENAMETOOLONG", `ENAMETOOLONG: a link's target is at most ${SYMLINK_TARGET_MAX} bytes`, op.call.path);
         }
         const parts = pieces(op);
@@ -2190,7 +2186,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         if (taken.length > 0 && seq !== taken[taken.length - 1].seq + 1) break;
         const paths = pathsOf(entry.op).filter((path) => !owned.has(path));
         const entryBytes = entry.op.type === "call" && "data" in entry.op.call ? entry.op.call.data.byteLength : 0;
-        const entryPathBytes = paths.reduce((sum, path) => sum + utf8Length2(path), 0);
+        const entryPathBytes = paths.reduce((sum, path) => sum + utf8Length(path), 0);
         if (taken.length > 0 && (owned.size + paths.length > WAVE_PATHS || pathBytes + entryPathBytes > WAVE_PATH_BYTES || bytes + entryBytes > WAVE_BYTES)) break;
         for (const path of paths) owned.add(path);
         bytes += entryBytes;
