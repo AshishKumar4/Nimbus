@@ -57,6 +57,8 @@ import { importedSpecifiers, maskSourceForImports, UndecidableSourceError } from
 import { BUNDLER_IMPORT_CONDITIONS } from '@nimbus-sh/core/runtime/bundler-resolution.js';
 import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { MODULE_PARSE_OPTIONS, parseStatements } from '@nimbus-sh/core/runtime/javascript-ast.js';
+import { bindingIdentifiers } from '@nimbus-sh/core/runtime/binding-pattern.js';
 /**
  * Stable signature for a barrel bundle's source import set. Stored in
  * pkg_esm_bundles.input_hash so a synthetic bundle generated for
@@ -279,135 +281,75 @@ export function buildSyntheticEntry(vfs, nmDir, pkgName, names) {
     const indexPath = findPackageEsmEntry(vfs, nmDir, pkgName);
     if (!indexPath)
         return null;
-    const indexCode = (() => {
-        try {
-            return vfs.readFileString(indexPath);
-        }
-        catch {
-            return null;
-        }
-    })();
-    if (!indexCode)
-        return null;
-    const exportMap = new Map();
-    // Match an entire `export { ... } from '...';` block.
-    const reExport = /export\s*\{([^}]+)\}\s*from\s*["']([^"']+)["']\s*;?/g;
-    let m;
-    while ((m = reExport.exec(indexCode)) !== null) {
-        const body = m[1];
-        const path = m[2];
-        if (!path.startsWith('.'))
-            continue; // only relative re-exports
-        for (const partRaw of body.split(',')) {
-            const part = partRaw.trim();
-            if (!part)
-                continue;
-            // `default as X`
-            const defAs = part.match(/^default\s+as\s+([A-Za-z_$][\w$]*)$/);
-            if (defAs) {
-                exportMap.set(defAs[1], { path, sourceName: 'default', isDefault: true });
-                continue;
-            }
-            // `X as Y`
-            const renamed = part.match(/^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/);
-            if (renamed) {
-                exportMap.set(renamed[2], { path, sourceName: renamed[1], isDefault: false });
-                continue;
-            }
-            // `X`
-            if (/^[A-Za-z_$][\w$]*$/.test(part)) {
-                exportMap.set(part, { path, sourceName: part, isDefault: false });
-                continue;
-            }
-            // `default` (default re-export with no rename) is rare; skip.
-        }
+    let indexCode;
+    try {
+        indexCode = vfs.readFileString(indexPath);
     }
-    // barrel fallback support — `export * from './x.js'` support.
-    //
-    // Many barrel packages (date-fns, several utility libraries, some
-    // icon kits) use `export *` aggregation instead of per-name
-    // re-exports. The original synthesizer ignored these → exportMap
-    // stayed empty → /preview/@modules/<pkg> 500'd with "synthetic
-    // entry generation returned null".
-    //
-    // Strategy: harvest each `export *` source's own top-level export
-    // declarations once, and inject them into the same exportMap with
-    // `sourceName === exportedName`. This is not a full ESM resolver
-    // (we don't follow nested `export *` chains), but it covers the
-    // common case where the file at the end of the chain has explicit
-    // `export function X` / `export const X` / `export class X` /
-    // `export { X }` declarations — which matches every barrel
-    // observed in the wild.
-    //
-    // Cap on the number of `export *` sources we walk so a pathological
-    // barrel-of-barrels can't blow the synthesizer's budget.
-    const indexDirForStar = indexPath.substring(0, indexPath.lastIndexOf('/'));
-    const reExportStar = /export\s*\*\s*from\s*["']([^"']+)["']\s*;?/g;
-    const STAR_SOURCE_CAP = 1500; // date-fns has ~290; well within cap
-    let starSourcesWalked = 0;
-    let s;
-    while ((s = reExportStar.exec(indexCode)) !== null && starSourcesWalked < STAR_SOURCE_CAP) {
-        const path = s[1];
-        if (!path.startsWith('.'))
-            continue;
-        starSourcesWalked++;
-        const fullPath = normalizeJoin(indexDirForStar, path);
+    catch {
+        return null;
+    }
+    // Each name the barrel re-exports from a module of its own package: the
+    // module's path as written, and the name it has there (null: the module's
+    // namespace, `export * as ns`). A name the barrel declares itself is no
+    // re-export, but hides a name an `export *` module exports.
+    const exportMap = new Map();
+    const own = new Set();
+    const stars = [];
+    const indexRead = eachStatement(indexCode, (statement) => {
+        if (statement.type === 'ExportNamedDeclaration') {
+            const path = relativeSource(statement.source);
+            if (path === null) {
+                for (const name of namedExports(statement))
+                    own.add(name);
+                return;
+            }
+            for (const specifier of statement.specifiers) {
+                exportMap.set(moduleExportName(specifier.exported), { path, sourceName: moduleExportName(specifier.local) });
+            }
+        }
+        else if (statement.type === 'ExportAllDeclaration') {
+            const path = relativeSource(statement.source);
+            if (path === null)
+                return;
+            if (statement.exported)
+                exportMap.set(moduleExportName(statement.exported), { path, sourceName: null });
+            else
+                stars.push(path);
+        }
+    });
+    if (!indexRead)
+        return null;
+    // `export * from './x.js'`: each name the module itself exports but
+    // `default`, unless the barrel exports it otherwise. Nested `export *` is
+    // not followed, and the walk is capped so a barrel-of-barrels cannot blow
+    // the synthesizer's budget (date-fns has ~290 sources).
+    const indexDir = indexPath.substring(0, indexPath.lastIndexOf('/'));
+    const STAR_SOURCE_CAP = 1500;
+    for (const path of stars.slice(0, STAR_SOURCE_CAP)) {
         let starCode;
         try {
-            starCode = vfs.readFileString(fullPath);
+            starCode = vfs.readFileString(normalizeJoin(indexDir, path));
         }
         catch {
-            starCode = null;
-        }
-        if (!starCode)
             continue;
-        // Harvest top-level exports from the source file. Order of patterns:
-        //   1. `export { X, Y as Z } from "..."` (re-export from elsewhere)
-        //   2. `export { X, Y as Z };` (re-export of locally-bound names)
-        //   3. `export function|class|const|let|var X` (declaration)
-        // We do NOT walk transitive `export *` chains; that's the
-        // budget cap in exchange for simplicity. esbuild handles the
-        // actual resolution at bundle time anyway — we only need enough
-        // entries in the map to MATCH the user's named imports.
-        const reInnerNamed = /export\s*\{([^}]+)\}\s*(?:from\s*["'][^"']+["'])?\s*;?/g;
-        let im;
-        while ((im = reInnerNamed.exec(starCode)) !== null) {
-            for (const partRaw of im[1].split(',')) {
-                const part = partRaw.trim();
-                if (!part)
-                    continue;
-                const renamed = part.match(/^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/);
-                if (renamed) {
-                    if (!exportMap.has(renamed[2])) {
-                        exportMap.set(renamed[2], { path, sourceName: renamed[2], isDefault: false });
-                    }
-                    continue;
-                }
-                if (/^[A-Za-z_$][\w$]*$/.test(part)) {
-                    if (!exportMap.has(part)) {
-                        exportMap.set(part, { path, sourceName: part, isDefault: false });
-                    }
-                }
-            }
         }
-        // Top-level declarations — `export function X`, `export class X`,
-        // `export const X`, `export let X`, `export var X`. Async, generator
-        // and TS modifiers (default, abstract) handled by the prefix opt-out.
-        const reDecl = /export\s+(?:async\s+)?(?:function\*?|class|const|let|var)\s+([A-Za-z_$][\w$]*)/g;
-        let dm;
-        while ((dm = reDecl.exec(starCode)) !== null) {
-            const name = dm[1];
-            if (!exportMap.has(name)) {
-                exportMap.set(name, { path, sourceName: name, isDefault: false });
+        const starRead = eachStatement(starCode, (statement) => {
+            const exported = statement.type === 'ExportNamedDeclaration'
+                ? namedExports(statement)
+                : statement.type === 'ExportAllDeclaration' && statement.exported ? [moduleExportName(statement.exported)] : [];
+            for (const name of exported) {
+                if (name !== 'default' && !own.has(name) && !exportMap.has(name))
+                    exportMap.set(name, { path, sourceName: name });
             }
-        }
+        });
+        if (!starRead)
+            return null;
     }
     if (exportMap.size === 0)
         return null;
     // Match user's requested names against the map. Build per-file
     // groupings so the synthetic entry has one re-export per source
     // file (smaller text, cleaner tree-shake graph).
-    const indexDir = indexPath.substring(0, indexPath.lastIndexOf('/'));
     const grouped = new Map();
     let matched = 0;
     for (const name of names) {
@@ -423,7 +365,7 @@ export function buildSyntheticEntry(vfs, nmDir, pkgName, names) {
             arr = [];
             grouped.set(fullPath, arr);
         }
-        arr.push({ exportedName: name, sourceName: ref.sourceName, isDefault: ref.isDefault });
+        arr.push({ exportedName: name, sourceName: ref.sourceName });
     }
     if (matched === 0)
         return null;
@@ -451,14 +393,15 @@ export function buildSyntheticEntry(vfs, nmDir, pkgName, names) {
         const items = grouped.get(filePath);
         // Sort items for determinism.
         items.sort((a, b) => a.exportedName.localeCompare(b.exportedName));
-        const memberLines = items.map(i => {
-            if (i.isDefault)
-                return `default as ${i.exportedName}`;
-            if (i.sourceName === i.exportedName)
-                return i.exportedName;
-            return `${i.sourceName} as ${i.exportedName}`;
-        });
-        lines.push(`export { ${memberLines.join(', ')} } from ${JSON.stringify(importSpec)};`);
+        const members = [];
+        for (const { exportedName, sourceName } of items) {
+            if (sourceName === null)
+                lines.push(`export * as ${exportName(exportedName)} from ${JSON.stringify(importSpec)};`);
+            else
+                members.push(sourceName === exportedName ? exportName(exportedName) : `${exportName(sourceName)} as ${exportName(exportedName)}`);
+        }
+        if (members.length > 0)
+            lines.push(`export { ${members.join(', ')} } from ${JSON.stringify(importSpec)};`);
         referencedFiles.push(filePath);
     }
     return {
@@ -558,6 +501,51 @@ export async function buildScopedSliceForSynthetic(vfs, nmDir, pkgName, referenc
         }
     }
     return { entries, totalBytes };
+}
+/**
+ * Each top-level statement of the module `source`, as it is parsed, none of
+ * them kept (core javascript-ast.ts parseStatements): a module's whole tree
+ * is 17 to 24 times its source, on the path that exists to bound memory.
+ * False when it does not parse.
+ */
+function eachStatement(source, onStatement) {
+    try {
+        parseStatements(source, MODULE_PARSE_OPTIONS, { onStatement });
+        return true;
+    }
+    catch (error) {
+        if (error instanceof SyntaxError)
+            return false;
+        throw error;
+    }
+}
+/** The specifier of `export … from` when it is relative (a module of the package itself), else null. */
+function relativeSource(source) {
+    return source && typeof source.value === 'string' && source.value.startsWith('.') ? source.value : null;
+}
+/** An export name as written, `"a-b"` or `ab`. */
+function moduleExportName(node) {
+    return node.type === 'Identifier' ? node.name : String(node.value);
+}
+/** An export name as source text: quoted unless it is a plain identifier. */
+function exportName(name) {
+    return /^[A-Za-z_$][\w$]*$/.test(name) ? name : JSON.stringify(name);
+}
+/** The names `export const a = 1, { b } = o`, `export function f`, `export class C` or `export { x as y }` exports. */
+function namedExports(statement) {
+    const names = statement.specifiers.map((specifier) => moduleExportName(specifier.exported));
+    const declaration = statement.declaration;
+    if (declaration?.type === 'VariableDeclaration') {
+        const identifiers = [];
+        for (const declarator of declaration.declarations)
+            bindingIdentifiers(declarator.id, identifiers);
+        for (const identifier of identifiers)
+            names.push(identifier.name);
+    }
+    else if (declaration) {
+        names.push(declaration.id.name);
+    }
+    return names;
 }
 /**
  * Resolve the package's root ESM entry file path: its `exports` under the

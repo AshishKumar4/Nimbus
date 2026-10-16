@@ -235,6 +235,24 @@ published independently in the `@nimbus-sh` npm scope.
   GNU's does. `rename` from, or into, a name below a regular file is
   ENOTDIR too. `mv f/x a d` with `f` a file reports `cannot stat 'f/x'` and
   still moves `a`, as GNU's does; it ended the whole command.
+- Fixed: `Bun.file` and `Bun.write` in `bun` answer as Bun's do. `text`,
+  `json`, `arrayBuffer`, `bytes` and `stream` read through the session, so
+  a file the process does not hold reads its bytes; before, `text()` and
+  `arrayBuffer()` answered empty. A missing file rejects with `ENOENT`,
+  `text()` drops a byte order mark, a directory does not `exists()`, and
+  `name` is the path as given. `Bun.write` writes the bytes of a `Blob`,
+  `Response`, `BunFile` or view, encodes a string as UTF-8 and anything
+  else as its string, and answers the byte count. Before, a `Blob` was
+  written as text (0xff became U+FFFD) and a string's count was its UTF-16
+  length. opencode's `Bun` uses the same `file` and gains `write`.
+- Fixed: a barrel package's synthetic entry reads the barrel with the
+  JavaScript parser. A re-export in a comment or a string no longer wins
+  over the real one, every name of `export const a = 1, b = 2` and of a
+  destructuring export counts, and `export * as ns` is one name. A barrel
+  that does not parse is refused rather than read in part. The barrel and
+  each module it re-exports with `export *` are read one statement at a
+  time, so no module's whole syntax tree is held in memory.
+
 - Fixed (CLI): `nimbus runtime sync` with no runtime named, and so `nimbus
   setup cloudflare`, now publishes `cpython@3.13.14-3` as the bucket's Python.
   It used to publish `python@0.29.4`, Pyodide, whose `python-runner` no host

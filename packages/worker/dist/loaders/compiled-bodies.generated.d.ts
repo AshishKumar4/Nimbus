@@ -8,4 +8,5 @@ export declare const SERIAL_BENCH_TASK: FacetTaskSource<Parameters<typeof import
 export declare const NPM_INSTALL_HELPERS_SOURCE: string;
 export declare const NPM_ABI_POLICY_SOURCE: string;
 export declare const RESIDENCY_MISS_REPORT_SOURCE: string;
+export declare const BUN_FILE_API_SOURCE: string;
 //# sourceMappingURL=compiled-bodies.generated.d.ts.map
