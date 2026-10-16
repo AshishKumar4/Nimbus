@@ -324,7 +324,7 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
     if (lost-- > 0) { first = answer; throw Object.assign(new Error('Network connection lost.'), { retryable: true }); }
     return answer;
   };
-  const opened = await c.submit({ type: 'call', call: { call: 'open', path: 'home/user/o.txt', mode: 0o644, read: true, description: 'r1' } });
+  const opened = await c.submit({ type: 'call', call: { call: 'open', path: 'home/user/o.txt', mode: 0o644, access: 'readwrite', description: 'r1' } });
   assert.equal(c.stats().resends, 1);
   const handle = first?.receipts?.[0]?.handle;
   assert.equal(typeof handle, 'number', 'the lost answer carried no descriptor');
@@ -386,7 +386,7 @@ for (const reported of ['EIO', undefined]) {
   });
   const label = reported ?? 'no errno';
   const kept = () => [...harness.sql.exec('SELECT id FROM vfs_wave_descriptions WHERE pid = ?', PID)].length;
-  await c.submit({ type: 'call', call: { call: 'open', path: 'home/user/e.txt', mode: 0o644, description: 'e1' } });
+  await c.submit({ type: 'call', call: { call: 'open', path: 'home/user/e.txt', mode: 0o644, access: 'write', description: 'e1' } });
   assert.equal(kept(), 1);
   await assert.rejects(c.submit({ type: 'call', call: { call: 'close', path: 'home/user/e.txt', description: 'e1' } }), (error) => error.code === 'EIO', `${label}: the close was not answered with its refusal`);
   assert.equal(epochs, 1, `${label}: the close's answer was taken for a lost epoch`);

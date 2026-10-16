@@ -4109,7 +4109,7 @@ const __fsMod = (() => {
     // the session unguarded, whichever wave a death stops at, and a replay
     // lands those bytes whatever has become of the source.
     const description = crypto.randomUUID().replaceAll("-", "");
-    const opened = __nimbusLogDecided(() => _vfsCall({ call: "open", path: destK, mode, create: true, truncate: true, fchmod: mode, description }));
+    const opened = __nimbusLogDecided(() => _vfsCall({ call: "open", path: destK, mode, access: "write", create: true, truncate: true, fchmod: mode, description }));
     const logged = _logParked(destAbs, { type: "call", call: { call: "write", path: destK, description, offset: 0, data: __nimbusVfsCellBytes(cell) } }, { acknowledged: true });
     const closed = __nimbusLogDecided(() => _vfsCall({ call: "close", path: destK, description }));
     const settle = () => _settleLocalAttr(own);
@@ -5434,9 +5434,13 @@ const __fsMod = (() => {
   function _openedAs(stats) {
     return stats === undefined ? undefined : { link: stats.isSymbolicLink(), directory: stats.isDirectory(), size: stats.size };
   }
-  /** Whether this view knows nothing is at \`absPath\` (the name itself when \`noFollow\`): a judgment of nothing else, refusing nothing. */
+  /**
+   * Whether this view knows nothing is at \`absPath\` (the name itself when
+   * \`noFollow\`): a judgment of nothing else, refusing nothing. A namespace
+   * that cannot answer (a relist failed) knows nothing.
+   */
   function _knownAbsent(absPath, noFollow) {
-    return _statLadder(absPath, noFollow) === undefined && _nsUnlisted(absPath, !noFollow, false) === null;
+    return _nsActive() && _statLadder(absPath, noFollow) === undefined && _nsUnlisted(absPath, !noFollow, false) === null;
   }
 
   /**
@@ -5448,8 +5452,7 @@ const __fsMod = (() => {
   function _openCall(k, fl, mode) {
     return {
       call: "open", path: k, mode: mode & 0o7777, umask: __processUmask,
-      ...(fl.read ? { read: true } : {}),
-      ...(fl.write ? {} : { write: false }),
+      access: fl.read && fl.write ? "readwrite" : fl.write ? "write" : "read",
       ...(fl.create ? { create: true } : {}),
       ...(fl.truncate ? { truncate: true } : {}),
       ...(fl.exclusive ? { exclusive: true } : {}),

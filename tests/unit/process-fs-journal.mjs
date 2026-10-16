@@ -257,7 +257,7 @@ for (const restarted of [false, true]) {
     writeBatchStream: (stream, fence) => (dead ? never : s.port.writeBatchStream(stream, fence)),
   };
   const c = processFsClient({ session: port, journal: sqlJournal(sql), retry: RETRY });
-  await c.submit({ type: 'call', call: { call: 'open', path: 'home/user/out/d.txt', mode: 0o644, description: 'w1' } }, { acknowledged: true });
+  await c.submit({ type: 'call', call: { call: 'open', path: 'home/user/out/d.txt', mode: 0o644, access: 'write', description: 'w1' } }, { acknowledged: true });
   assert.equal(sqlJournal(sql).entries().length, 0, 'the answered open stayed in the log');
   dead = true;
   c.submit({ type: 'call', call: { call: 'write', path: 'home/user/out/d.txt', description: 'w1', offset: 0, data: enc.encode('new!') } }, { acknowledged: true });
