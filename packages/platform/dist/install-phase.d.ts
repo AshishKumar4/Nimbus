@@ -2,21 +2,7 @@
  * _shared/install-phase.ts — single source of truth for the npm-install
  * state-machine phase enum.
  *
- * History: CLN-1 (2026-05-11) — consolidated from two diverged copies.
- *   - `npm/installer.ts:93-95` was the progress-event variant. Included
- *     'lock-check' (a real progress event emitted while parsing
- *     package-lock.json) but lacked 'idle'.
- *   - `observability/diag-counters.ts:33-35` was the counter-state variant.
- *     Included 'idle' (the resting state when no install is in flight)
- *     but lacked 'lock-check'. The diag-counter's `setInstallPhase()`
- *     was actually called with 'idle' (installer.ts:184,201) — passing
- *     a value not declared in installer.ts's local type. The type check
- *     fell through to diag-counters' type because installer.ts imports
- *     setInstallPhase from there; the local `InstallPhase` definition
- *     in installer.ts was only used by `InstallProgress.phase`.
- *
- * Going forward both consumers import from this module; any new phase
- * value added here is automatically available everywhere.
+ * Every consumer imports it from here, so a phase added here is everyone's.
  *
  * Phase semantics (chronological order for a single install run):
  *
