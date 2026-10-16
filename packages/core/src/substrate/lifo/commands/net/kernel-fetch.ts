@@ -14,12 +14,12 @@ import {
   awaitServedEnd,
   routeToLoopback,
   serveFromPort,
-  servedBody,
   statusText,
   type WorkspaceRequestResult,
 } from '../../kernel/local-serve.js';
 import { ISOLATE_NETWORK } from '../../../../_shared/workspace-network.js';
-import { applyRedirectPolicy, isRedirectStatus } from '../../../../runtime/http-redirect-policy.js';
+import { isNullBodyStatus } from '../../../../_shared/null-body-status.js';
+import { followRedirects, type RedirectHop, type RedirectWalk } from '../../../../runtime/http-redirect-policy.js';
 
 /**
  * The loopback port a URL asks for, or null when it is not loopback. A name
@@ -63,7 +63,7 @@ export async function dispatchWorkspaceRequest(
     const status = served.statusCode;
     return {
       kind: 'response',
-      response: new Response(servedBody(served), {
+      response: new Response(isNullBodyStatus(status) ? null : served.body, {
         status,
         statusText: statusText(status),
         headers: served.headers,
@@ -74,19 +74,8 @@ export async function dispatchWorkspaceRequest(
   return kernel.routeLoopback ? await routeToLoopback(kernel.routeLoopback, port, request) : { kind: 'refused' };
 }
 
-/** How many redirects a walk follows before it gives up: curl's and wget's default. */
-export const MAX_REDIRECTS = 20;
-
-/** A request as it goes from hop to hop of a redirect walk. */
-export interface HopRequest {
-  url: URL;
-  method: string;
-  headers: Headers;
-  body?: string;
-}
-
 /** One hop's request init, as fetch and the port registry take it: GET and HEAD carry no body. */
-export function hopInit(hop: HopRequest, signal: AbortSignal): RequestInit {
+export function hopInit(hop: RedirectHop<string>, signal: AbortSignal): RequestInit {
   const hasBody = hop.method !== 'GET' && hop.method !== 'HEAD' && hop.body !== undefined;
   return { method: hop.method, headers: hop.headers, body: hasBody ? hop.body : undefined, redirect: 'manual', signal };
 }
@@ -110,54 +99,32 @@ export async function sendHop(
   return { kind: 'response', response: await (kernel?.network ?? ISOLATE_NETWORK).forProcess(pid).fetch(url, init) };
 }
 
-/** Where a walk ended: its final response and the URL it came from, the hop that failed, or the cap. */
-export type RedirectWalkResult =
-  | { kind: 'response'; response: Response; url: URL }
-  | { kind: 'refused'; url: URL }
-  | { kind: 'aborted'; url: URL }
-  | { kind: 'timeout'; url: URL }
-  | { kind: 'too-many-redirects' };
+/** Where a command's walk ended: its final response and the URL it came from, the hop that failed, or the cap. */
+export type RedirectWalkResult = RedirectWalk<'refused' | 'aborted' | 'timeout'>;
 
 /**
- * Send `start`, and while `follow` holds and the answer is a 3xx with a
- * Location, send the request it redirects to, at most MAX_REDIRECTS times.
- * `send` serves one hop (the caller's policy: loopback, a gateway, fetch);
- * `arrived` sees each response before its body is read or dropped. A hop
- * is rewritten as fetch-follow rewrites it: 301 and 302 make a POST a
- * bodyless GET, 303 makes anything but HEAD one, content headers go with
- * the body, and credential headers when the hop crosses origins. A
- * redirect without a usable Location is final; a followed one's body is
- * cancelled.
+ * Send `start`, and while `follow` holds, the requests its redirects make,
+ * as a command follows them (followRedirects' 'command' policy): any 3xx
+ * whose Location parses, 301 and 302 making a POST a bodyless GET and 303
+ * anything but HEAD one, content headers going with the body and
+ * credential headers when a hop crosses origins. `send` serves one hop
+ * (the caller's policy: loopback, a gateway, fetch); `arrived` sees each
+ * response before its body is read or dropped.
  */
 export async function walkRedirects(
-  start: HopRequest,
+  start: RedirectHop<string>,
   options: {
     follow: boolean;
-    send: (hop: HopRequest) => Promise<WorkspaceRequestResult>;
+    send: (hop: RedirectHop<string>) => Promise<WorkspaceRequestResult>;
     arrived?: (response: Response) => Promise<void>;
   },
 ): Promise<RedirectWalkResult> {
-  const hop: HopRequest = { ...start, headers: new Headers(start.headers) };
-  for (let redirects = 0; ; redirects++) {
-    const result = await options.send(hop);
-    if (result.kind !== 'response') return { kind: result.kind, url: hop.url };
-    const { response } = result;
-    await options.arrived?.(response);
-    const location = options.follow && isRedirectStatus(response.status, 'command')
-      ? response.headers.get('location')
-      : null;
-    if (!location) return { kind: 'response', response, url: hop.url };
-    if (redirects === MAX_REDIRECTS) {
-      response.body?.cancel().catch(() => {});
-      return { kind: 'too-many-redirects' };
-    }
-    let next: URL;
-    try {
-      next = new URL(location, hop.url);
-    } catch {
-      return { kind: 'response', response, url: hop.url };
-    }
-    response.body?.cancel().catch(() => {});
-    applyRedirectPolicy(hop, response.status, next, 'command');
-  }
+  return await followRedirects(start, 'command', {
+    follow: options.follow,
+    arrived: options.arrived,
+    send: async (hop) => {
+      const result = await options.send(hop);
+      return result.kind === 'response' ? result.response : result.kind;
+    },
+  });
 }
