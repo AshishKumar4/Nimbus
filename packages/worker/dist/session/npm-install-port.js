@@ -17,28 +17,14 @@ export function createNpmInstallPort(self, filesystem) {
             if (globalBinDir)
                 await handKernelBins(filesystem, filesystem.view({ pid: spec.pid, cred }), cred, globalBinDir);
             const installCwd = globalPrefix ? `${globalPrefix}/lib` : spec.projectDir;
+            // The spec whole, but for what the port settles itself.
+            const { projectDir: _projectDir, packages, global: _global, globalPrefix: _globalPrefix, npmLog, ...asked } = spec;
             const result = await installer.install(installCwd, {
-                packages: spec.packages.length > 0 ? [...spec.packages] : undefined,
-                production: spec.production,
-                fromLockfile: spec.fromLockfile,
-                pid: spec.pid,
+                ...asked,
+                packages: packages.length > 0 ? [...packages] : undefined,
                 cred,
-                registry: spec.registry,
-                npmLog: spec.npmLog ?? undefined,
-                onProgress: spec.onProgress,
-                saveDev: spec.saveDev,
-                saveOptional: spec.saveOptional,
-                force: spec.force,
-                engineStrict: spec.engineStrict,
-                strictPeerDeps: spec.strictPeerDeps,
-                legacyPeerDeps: spec.legacyPeerDeps,
-                omitOptional: spec.omitOptional,
-                omitPeer: spec.omitPeer,
-                preferDedupe: spec.preferDedupe,
-                save: spec.save,
-                savePrefix: spec.savePrefix,
+                npmLog: npmLog ?? undefined,
                 global: globalPrefix !== undefined,
-                signal: spec.signal,
                 // On-PATH bin shims, under the install's hold: even for a partial
                 // install the linker skips what never landed, so a partial tree
                 // exposes exactly the bins that installed.

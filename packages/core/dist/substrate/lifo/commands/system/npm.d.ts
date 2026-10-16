@@ -23,6 +23,54 @@ interface PackageJson {
 }
 export type ShellExecuteFn = (cmd: string, ctx: CommandContext) => Promise<number>;
 /**
+ * What `npm install` asks of an install, as the command parsed it. The
+ * host's port hands it to its installer whole (its NpmInstallOptions are
+ * this, less what the port settles itself), so an option the command
+ * gains reaches the installer without the port naming it.
+ */
+export interface NpmInstallSpec {
+    projectDir: string;
+    packages: readonly string[];
+    global: boolean;
+    /** Resolved absolute prefix — present only when `global` is set. */
+    globalPrefix?: string;
+    /** The running command's pid — authorizes the host's batch writes. */
+    pid: number;
+    /** `--save-dev`: what is named is saved to devDependencies. */
+    saveDev?: boolean;
+    /** `--save-optional`: what is named is saved to optionalDependencies. */
+    saveOptional?: boolean;
+    /** `--force`: a peer conflict the project owns is a warning, not ERESOLVE, and node's engine is not checked. */
+    force?: boolean;
+    /** `--engine-strict`: a package whose engines exclude this node or npm fails the install, which changes nothing. */
+    engineStrict?: boolean;
+    /** `--strict-peer-deps`: any peer conflict is ERESOLVE unless forced. */
+    strictPeerDeps?: boolean;
+    /** `--legacy-peer-deps`: peers are not installed, nor checked. */
+    legacyPeerDeps?: boolean;
+    /** `--omit=optional` / `--omit=peer`: what only optional or only peer dependencies need is planned, and not installed. */
+    omitOptional?: boolean;
+    omitPeer?: boolean;
+    /** `--prefer-dedupe`: one copy serves every edge it can, an older one included. */
+    preferDedupe?: boolean;
+    /** False for `--no-save`: package.json is left as it is. */
+    save?: boolean;
+    /** What a saved range starts with ('' for `--save-exact`); '^' when not given. */
+    savePrefix?: string;
+    /** The command's: an install it stops before publication changes nothing, and one waiting for the tree never starts. */
+    signal?: AbortSignal;
+    /** Registry origin from the command's env (`NPM_REGISTRY`), else the default. */
+    registry: string;
+    /** How packuments and tarballs are read (npm's cache mode: `--offline`, `--prefer-offline`, `--prefer-online`); 'default' when not given. */
+    cache?: NpmCacheMode;
+    /** `--omit=dev` (`--production`): what only devDependencies reach is planned, not installed. */
+    production?: boolean;
+    /** `npm ci`: build npm's tree over package-lock.json, fail unless it is the lock's, then remove node_modules and install it. */
+    fromLockfile?: boolean;
+    npmLog?: NpmLogEmitter | null;
+    onProgress?: (line: string) => void;
+}
+/**
  * The host's piece of `npm install`: once the invocation has been parsed
  * into a spec and the summary output decided, the install itself is
  * whatever the host's batched installer does. Global installs carry the
@@ -30,47 +78,7 @@ export type ShellExecuteFn = (cmd: string, ctx: CommandContext) => Promise<numbe
  * `<prefix>/lib/node_modules` and `<prefix>/bin` land.
  */
 export interface NpmInstallPort {
-    install(spec: {
-        projectDir: string;
-        packages: readonly string[];
-        global: boolean;
-        /** Resolved absolute prefix — present only when `global` is set. */
-        globalPrefix?: string;
-        /** The running command's pid — authorizes the host's batch writes. */
-        pid: number;
-        /** `--save-dev`: what is named is saved to devDependencies. */
-        saveDev?: boolean;
-        /** `--save-optional`: what is named is saved to optionalDependencies. */
-        saveOptional?: boolean;
-        /** `--force`: a peer conflict the project owns is a warning, not ERESOLVE, and node's engine is not checked. */
-        force?: boolean;
-        /** `--engine-strict`: a package whose engines exclude this node or npm fails the install, which changes nothing. */
-        engineStrict?: boolean;
-        /** `--strict-peer-deps`: any peer conflict is ERESOLVE unless forced. */
-        strictPeerDeps?: boolean;
-        /** `--legacy-peer-deps`: peers are not installed, nor checked. */
-        legacyPeerDeps?: boolean;
-        /** `--omit=optional` / `--omit=peer`: what only optional or only peer dependencies need is planned, and not installed. */
-        omitOptional?: boolean;
-        omitPeer?: boolean;
-        /** `--prefer-dedupe`: one copy serves every edge it can, an older one included. */
-        preferDedupe?: boolean;
-        /** False for `--no-save`: package.json is left as it is. */
-        save?: boolean;
-        /** What a saved range starts with ('' for `--save-exact`); '^' when not given. */
-        savePrefix?: string;
-        /** The command's: an install it stops before publication changes nothing, and one waiting for the tree never starts. */
-        signal?: AbortSignal;
-        /** Registry origin from the command's env (`NPM_REGISTRY`), else the default. */
-        registry: string;
-        /** How packuments are read (npm's cache mode: `--offline`, `--prefer-offline`, `--prefer-online`); 'default' when not given. */
-        cache?: NpmCacheMode;
-        production?: boolean;
-        /** `npm ci`: build npm's tree over package-lock.json, fail unless it is the lock's, then remove node_modules and install it. */
-        fromLockfile?: boolean;
-        npmLog?: NpmLogEmitter | null;
-        onProgress?: (line: string) => void;
-    }): Promise<{
+    install(spec: NpmInstallSpec): Promise<{
         installed: string[];
         failed: string[];
         totalFiles?: number;

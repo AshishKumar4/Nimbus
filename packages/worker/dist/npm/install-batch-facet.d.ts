@@ -29,7 +29,12 @@ export interface InstallBatchSpec {
     packages: FacetPackageSpec[];
     /** Internal pLimit cap for concurrent tarball download/decompression pipelines. */
     concurrency: number;
-    /** npm's cache mode: with 'only-if-cached' (`--offline`) a tarball the cache does not have is ENOTCACHED, and none is fetched. */
+    /**
+     * npm's cache mode for the tarballs read: 'no-cache' (`--prefer-online`)
+     * downloads each; 'force-cache' (`--prefer-offline`) takes the cache's
+     * copy, downloading only one it lacks; 'only-if-cached' (`--offline`)
+     * downloads none, a tarball the cache lacks ENOTCACHED.
+     */
     cache?: NpmCacheMode;
 }
 export interface InstallBatchPerPackage {
