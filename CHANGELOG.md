@@ -5,6 +5,15 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (shell): when a here-document's command fails, the interactive
+  shell reports it the way the shell and runtimes report any caught value
+  (`_shared/error-text.js`). A thrown object's `message` is shown, and an
+  `Error` with no message is shown by its name. Before, these read
+  `heredoc error: [object Object]` and an empty `heredoc error: `.
+- Changed: a process's filesystem client counts the bytes of a wave's paths,
+  and a symlink's target, with `@nimbus-sh/platform/utf8.js`, as W7 does.
+  It used to build a text encoder for every path of every wave. A resident's
+  derived owner now comes from `sha256Hex`, with the same bytes as before.
 - Fixed (`nimbus wrangler dev`, nested Nimbus): a Worker loaded through a
   `worker_loaders` binding no longer grows the host Worker's isolate without
   bound. The Worker Loader shim used to keep every loaded Worker's whole
