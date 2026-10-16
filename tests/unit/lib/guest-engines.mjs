@@ -243,10 +243,15 @@ export async function bootEngine(kind, { seed } = {}) {
           return {
             started: Promise.resolve({ ok: true }),
             lost: new Promise(() => {}),
-            // `twice`: the session drains the log twice at once (one joins the other).
-            release: () => (twice
-              ? Promise.all([params.journal.drain(journalSource(engine.journal())), params.journal.drain(journalSource(engine.journal()))])
-              : params.journal.drain(journalSource(engine.journal()))),
+            // As the facet host releases a resident: it settles first (the
+            // host adapter's settle, its runtime's __nimbusSettle), then its
+            // log is drained. `twice`: the session drains it twice at once
+            // (one joins the other).
+            release: async () => {
+              globalThis.__nimbusSettle?.();
+              const drain = () => params.journal.drain(journalSource(engine.journal()));
+              await (twice ? Promise.all([drain(), drain()]) : drain());
+            },
             describe: () => name,
           };
         },

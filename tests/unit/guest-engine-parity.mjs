@@ -333,7 +333,6 @@ const SCENARIOS = {
 /** What each engine lacks today: each must fail, showing what it lacks. */
 const PATH_FDS = 'descriptors on the open file, not on its name';
 const GAPS = {
-  'what the process was told it wrote lands when the session kills it at once [holder]': { lacks: 'a cooperative end: its unlogged bytes logged before its facet goes', shows: 'ENOENT' },
   'a copy of a held file the process did not write is answered once it has read it [node]': { lacks: 'decided copies of a file it read', shows: 'not decided in the held subtree' },
   'a name under a file is ENOTDIR, a looping link ELOOP [node]': { lacks: 'ENOTDIR for a name under a file it made, decided in a held subtree', shows: 'Missing expected rejection' },
   'an open description reads the file it opened after its name is unlinked [node]': { lacks: PATH_FDS, shows: 'the description read the name\'s new file' },
