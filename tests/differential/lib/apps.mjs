@@ -32,8 +32,10 @@ export async function page(port, path, marker, deadlineMs = 120_000) {
     const remaining = deadlineMs - (performance.now() - start);
     if (remaining <= 0) throw new Error(`no page with ${marker} at ${path} within ${deadlineMs} ms (${attempts - 1} requests): ${answered ?? 'no request was sent'}`);
     const sent = performance.now();
+    // A request that fails, or whose body does, is a status-0 answer.
     const [status, body] = await fetch(`http://127.0.0.1:${port}${path}`, { signal: AbortSignal.timeout(remaining) })
-      .then(async (response) => [response.status, await response.text()], (error) => [0, error.message]);
+      .then(async (response) => [response.status, await response.text()])
+      .catch((error) => [0, error.message]);
     const latencyMs = performance.now() - sent;
     if (status === 200 && body.includes(marker)) return { body, latencyMs, readyMs: performance.now() - start, attempts };
     // What the server said outlives a request the deadline cut short.
