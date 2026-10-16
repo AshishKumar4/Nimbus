@@ -5,6 +5,17 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a portable workspace's `node` reads its command line as the
+  hosted `node` does (Node's own parser, NODE_OPTIONS first), and finds its
+  script the same way. `node .` runs the package's `main`, and `node start`
+  finds `start.js`. Options before the script, such as `--trace-warnings`,
+  are options. `--conditions`, `-C` and `NODE_OPTIONS='--conditions=…'`
+  apply to both `require` and `import`. Before, only a first-position `-v`,
+  `--help` or `-e` was read, `node .` read the directory, and conditions
+  were ignored. What it does not run (`--require`, `--import`, `--print`,
+  `--input-type`, a program from stdin) is refused with exit 9 instead of
+  being ignored. A script it cannot find is "node: cannot find module
+  '<script>'", as on the hosted `node`.
 - Fixed: a hosted launch's dependency walk and ES module staging decide
   what is a Node builtin the way Node's `module.isBuiltin` does
   (`runtime/node-builtins.js` `isNodeBuiltin`). The process's `require`
