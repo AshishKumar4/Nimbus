@@ -14,6 +14,8 @@ import { deflateSync } from 'node:zlib';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
+import { concatBytes } from '@nimbus-sh/core/_shared/bytes.js';
+import { objectIdPrefix } from '../pack/format.js';
 import { coneMatcher, parseConeSparseCheckout } from '../pack/sparse.js';
 import { DirCache, compareBytes, objectId } from './dircache.js';
 import { Excludes, parsePatternList } from './excludes.js';
@@ -28,10 +30,7 @@ const LOOSE_COMPRESSION = 1;
 const LOOSE_MODE = 0o444;
 /** The loose object's bytes for `type` and `data`: its header and content, deflated at git's loose compression. */
 function looseBytes(type, data) {
-    const header = new TextEncoder().encode(`${type} ${data.length}\0`);
-    const raw = new Uint8Array(header.length + data.length);
-    raw.set(header);
-    raw.set(data, header.length);
+    const raw = concatBytes([objectIdPrefix(type, data.length), data]);
     // Copied out: deflateSync's result is a view of a 16 KiB buffer (measured, Bun and Node).
     return new Uint8Array(deflateSync(raw, { level: LOOSE_COMPRESSION }));
 }

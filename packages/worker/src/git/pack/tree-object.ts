@@ -57,3 +57,95 @@ export class TreeEntries {
     return true;
   }
 }
+
+/** A tree entry as its tree holds it: its name's bytes, its canonical mode, its id's bytes. */
+export interface RawTreeEntry {
+  readonly name: Uint8Array;
+  readonly mode: number;
+  readonly oid: Uint8Array;
+}
+
+/** A tree's bytes, by its id. */
+export type TreeReader = (oid: Uint8Array) => Promise<Uint8Array>;
+
+const MODE_TREE = 0o040000;
+const EMPTY_PATH = new Uint8Array(0);
+
+/** `tree`'s entries, in its order, as views of its bytes. */
+export function rawTreeEntries(tree: Uint8Array): RawTreeEntry[] {
+  const entries: RawTreeEntry[] = [];
+  for (const e = new TreeEntries(tree); e.next();) entries.push({ name: tree.subarray(e.nameAt, e.nameEnd), mode: e.mode, oid: tree.subarray(e.oidAt, e.oidAt + OID_BYTES) });
+  return entries;
+}
+
+const isTreeMode = (mode: number) => (mode & 0o170000) === MODE_TREE;
+
+/** base_name_compare: names by bytes, a tree's as if it ended in '/'. */
+function compareRawEntries(a: RawTreeEntry, b: RawTreeEntry): number {
+  const n = Math.min(a.name.byteLength, b.name.byteLength);
+  for (let i = 0; i < n; i++) if (a.name[i] !== b.name[i]) return a.name[i] - b.name[i];
+  const ca = a.name.byteLength > n ? a.name[n] : isTreeMode(a.mode) ? 0x2f : 0;
+  const cb = b.name.byteLength > n ? b.name[n] : isTreeMode(b.mode) ? 0x2f : 0;
+  return ca - cb;
+}
+
+function joinPath(base: Uint8Array, name: Uint8Array): Uint8Array {
+  if (base.byteLength === 0) return name;
+  const out = new Uint8Array(base.byteLength + 1 + name.byteLength);
+  out.set(base);
+  out[base.byteLength] = 0x2f;
+  out.set(name, base.byteLength + 1);
+  return out;
+}
+
+function sameOid(a: Uint8Array, b: Uint8Array): boolean {
+  for (let i = 0; i < OID_BYTES; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/**
+ * A recursive tree diff (git's diff_tree_oid, no renames) of `from` to `to`
+ * (null: the empty tree): `changed` gets each leaf (a file, a symlink, a
+ * submodule) added, removed or modified (its id or mode), with its path and
+ * each side's entry or null, in git's order; a directory one side alone holds
+ * by each leaf below it. A tree both sides hold with the same id is never
+ * read, the two roots too. A tree on one side and a leaf of its name on the
+ * other sort apart (base_name_compare): each is its own change. Ends, false,
+ * when `changed` answers false.
+ */
+export async function diffTreeLeaves(
+  read: TreeReader,
+  from: Uint8Array | null,
+  to: Uint8Array | null,
+  changed: (path: Uint8Array, before: RawTreeEntry | null, after: RawTreeEntry | null) => boolean | Promise<boolean>,
+): Promise<boolean> {
+  // One entry's change below `base`: a tree's leaves, or itself.
+  const entry = (base: Uint8Array, named: RawTreeEntry, before: RawTreeEntry | null, after: RawTreeEntry | null): boolean | Promise<boolean> => {
+    const path = joinPath(base, named.name);
+    return isTreeMode(named.mode) ? walk(before?.oid ?? null, after?.oid ?? null, path) : changed(path, before, after);
+  };
+  const walk = async (a: Uint8Array | null, b: Uint8Array | null, base: Uint8Array): Promise<boolean> => {
+    if (a !== null && b !== null && sameOid(a, b)) return true;
+    const left = a === null ? [] : rawTreeEntries(await read(a));
+    const right = b === null ? [] : rawTreeEntries(await read(b));
+    let i = 0;
+    let j = 0;
+    while (i < left.length || j < right.length) {
+      const cmp = i >= left.length ? 1 : j >= right.length ? -1 : compareRawEntries(left[i], right[j]);
+      if (cmp < 0) {
+        const l = left[i++];
+        if (!(await entry(base, l, l, null))) return false;
+      } else if (cmp > 0) {
+        const r = right[j++];
+        if (!(await entry(base, r, null, r))) return false;
+      } else {
+        const l = left[i++];
+        const r = right[j++];
+        if (l.mode === r.mode && sameOid(l.oid, r.oid)) continue;
+        if (!(await entry(base, l, l, r))) return false;
+      }
+    }
+    return true;
+  };
+  return walk(from, to, EMPTY_PATH);
+}

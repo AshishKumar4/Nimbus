@@ -27,7 +27,8 @@
 //                  every N-th probe, from the K-th), so N runs together
 //                  cover it once (scripts/ci/probes.mjs).
 //   --json PATH    Also write the verdict as JSON at PATH: each probe's
-//                  exit code, seconds and output tail, and the sessions.
+//                  exit code, seconds, output tail and sessions (from the
+//                  ledger, with their abnormal closes), and the sessions.
 //
 // Optional env:
 //   NIMBUS_PROBE_ONLY   — comma-separated probe names (e.g.
@@ -99,10 +100,11 @@ import { spawn } from 'node:child_process';
 import { readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, relative, basename, resolve as resolvePath } from 'node:path';
+import { dirname, join, relative, resolve as resolvePath } from 'node:path';
 
 import { RUN_ID, cleanupRunProfiles, reapRunBrowsers } from './_probe-browser.mjs';
-import { sessionOutcomes } from './_ledger.mjs';
+import { probeSessions, sessionOutcomes } from './_ledger.mjs';
+import { namesProbe, selectionNames, selects } from './_selection.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -313,37 +315,10 @@ function isProbeFile(leaf) {
 const PROBES = walk(__dirname, isProbeFile)
   .map((abs) => relative(__dirname, abs));
 
-// A name may be given as its file, with `.mjs` or a `tests/behavioral/` prefix.
-const names = (list) => (list || '').split(',').filter(Boolean).map((name) => name.replace(/^(\.\/)?(tests\/behavioral\/)?/, '').replace(/\.mjs$/, ''));
-const only = names(process.env.NIMBUS_PROBE_ONLY);
-const skip = new Set(names(process.env.NIMBUS_PROBE_SKIP));
-
-function probeName(relPath) {
-  // Strip .mjs; keep subdirectory prefix so operator can correlate
-  // failures with files. Both forms accepted by NIMBUS_PROBE_ONLY /
-  // NIMBUS_PROBE_SKIP: full ("frameworks/astro-real") and leaf ("astro-real").
-  return relPath.replace(/\.mjs$/, '');
-}
-
-function matchAny(collection, relPath) {
-  // collection: Array<string> or Set<string>. Match against either
-  // the full relative path ("frameworks/astro-real") or the leaf
-  // ("astro-real") so legacy NIMBUS_PROBE_ONLY values keep working.
-  const full = probeName(relPath);
-  const leaf = basename(relPath).replace(/\.mjs$/, '');
-  if (Array.isArray(collection)) {
-    return collection.includes(full) || collection.includes(leaf);
-  }
-  return collection.has(full) || collection.has(leaf);
-}
-
-const selected = PROBES.filter((p) => {
-  if (only.length > 0 && !matchAny(only, p)) return false;
-  if (skip.size > 0 && matchAny(skip, p)) return false;
-  return true;
-});
+const only = selectionNames(process.env.NIMBUS_PROBE_ONLY);
+const selected = PROBES.filter((p) => selects({ only: process.env.NIMBUS_PROBE_ONLY, skip: process.env.NIMBUS_PROBE_SKIP }, p));
 // A selection that names probes and finds none ran nothing: never a pass.
-const unmatched = only.filter((name) => !PROBES.some((p) => matchAny([name], p)));
+const unmatched = only.filter((name) => !PROBES.some((p) => namesProbe([name], p)));
 if (unmatched.length > 0) {
   console.error(`FATAL: NIMBUS_PROBE_ONLY names no probe for: ${unmatched.join(', ')} (a name is a path under tests/behavioral, with or without .mjs, or a file's own name)`);
   process.exit(2);
@@ -535,10 +510,11 @@ if (leaks.length > 0) {
 }
 if (KEEP_LEDGER) console.log(`session ledger: ${LEDGER_PATH}`);
 if (JSON_REPORT) {
+  const sessionsByProbe = probeSessions(ledgerText);
   writeFileSync(JSON_REPORT, `${JSON.stringify({
     base: process.env.BASE,
     part: PART ? `${PART.k}/${PART.n}` : null,
-    probes: results,
+    probes: results.map((result) => ({ ...result, sessions: sessionsByProbe.get(result.probe) ?? [] })),
     sessions: { minted: deleted + leaks.length + ttlReaped.length, deleted, leaks: leaks.map(([sid, s]) => ({ sid, probe: s.probe, last: s.last })) },
   })}\n`);
 }

@@ -32,16 +32,8 @@ export interface ResolvedPackage {
     libc?: string[];
     /** `engines` as published: what it asks of node and npm (npm's engine check, core npm-arborist/engines.ts). */
     engines?: Readonly<Record<string, unknown>>;
-    exports: any;
     main: string;
-    module: string;
     bin: Record<string, string>;
-}
-export interface HoistPlan {
-    /** Root-level hoisted packages: name → ResolvedPackage. */
-    root: Map<string, ResolvedPackage>;
-    /** Packages nested under a dependent root does not satisfy, by placement path (placement.ts). */
-    nested: Map<string, ResolvedPackage>;
 }
 /** One package at one placement: the unit diff, fetch and lockfile work in. */
 export interface PackagePlacement {
@@ -49,6 +41,4 @@ export interface PackagePlacement {
     placement: string;
     pkg: ResolvedPackage;
 }
-/** Every placement in the plan, root first. */
-export declare function hoistPlacements(plan: HoistPlan): PackagePlacement[];
 //# sourceMappingURL=resolver.d.ts.map

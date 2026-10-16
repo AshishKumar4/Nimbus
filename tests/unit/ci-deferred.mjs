@@ -114,10 +114,32 @@ assert.equal(describeReleaseException(JSON.parse(JSON.stringify(excluded.applied
   'EXCLUDED frameworks/nuxt-real — memory failure varies (approved user, 2026-10-10; owner Main; tracking memory)');
 for (const code of [0, 1, 2]) {
   const ran = gradeMatrix([verdict([row(probe, code, approved)])], [exclusion]);
-  assert.equal(ran.exitCode, 1);
+  assert.equal(ran.exitCode, code === 2 ? 2 : 1, 'a row that exits 2 did not grade the commit');
   assert.match(ran.problems.join('\n'), /ran despite its release exclusion/);
 }
 const mixed = gradeMatrix([verdict([row(detail.probe, 1, detailChecks('no resident process was launched: oxide')), ledger])], [exclusion, detail]);
 assert.equal(mixed.exitCode, 0);
 assert.deepEqual(mixed.applied.map(entry => entry.probe), [probe, detail.probe]);
+
+// A row only the platform storage reset turned red is graded by its rerun (remote-probes regrade), red or green.
+const reset = { ...row('clang/hello', 1), regraded: { task: 'regrade clang/hello #1', evidence: ['quiet-fox-0001: platform storage reset'] } };
+const regraded = (code) => gradeMatrix([{ tasks: [
+  { task: 'part 1', outcome: { kind: 'exited' }, rows: [reset, ledger] },
+  { task: 'regrade clang/hello #1', outcome: { kind: 'exited' }, rows: [row('clang/hello', code), ledger] },
+] }], []);
+assert.equal(regraded(0).exitCode, 0);
+assert.equal(regraded(1).exitCode, 1);
+assert.match(regraded(1).red.join('\n'), /regrade clang\/hello #1/);
+// No rerun task holding that probe's row: the original row grades, red.
+const orphan = gradeMatrix([{ tasks: [{ task: 'part 1', outcome: { kind: 'exited' }, rows: [reset, ledger] }] }], []);
+assert.equal(orphan.exitCode, 1);
+assert.match(orphan.red.join('\n'), /part 1/);
+// A run that recorded a problem beyond its rows (a deployment that changed under a job) is not graded.
+const moved = gradeMatrix([{ ...verdict([row('legacy-probe', 0), ledger]), problems: ['arm b served v2 before the job and v2 after, not v1'] }], []);
+assert.equal(moved.exitCode, 2);
+assert.match(moved.problems.join('\n'), /arm b served v2/);
+// A paired perf probe that measured too few baseline rounds exits 2: not graded, not red.
+const unmeasured = gradeMatrix([verdict([row('perf-regression/cold-start', 2), ledger])], []);
+assert.equal(unmeasured.exitCode, 2);
+assert.deepEqual(unmeasured.red, []);
 console.log('ci-deferred: structured completion, exact approvals, exclusions and fail-closed release grading');

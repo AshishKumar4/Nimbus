@@ -38,7 +38,7 @@ function resolveTask(name, spec) {
   if (!version) return { ...empty, cacheWrites: [], pkg: null, error: { type: 'unresolved', reason: `no ${registryName}@${range}` } };
   const pkg = {
     name, registryName, version, tarballUrl: `https://registry.invalid/${registryName}-${version}.tgz`, integrity: `sha512-${registryName}${version}`,
-    dependencies: versions[version], exports: null, main: 'index.js', module: '', bin: {},
+    dependencies: versions[version], main: 'index.js', bin: {},
   };
   return { ...empty, pkg, cacheWrites: [registryRecord({ ...pkg, name: registryName }, Date.now())] };
 }

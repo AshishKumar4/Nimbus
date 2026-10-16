@@ -19,7 +19,6 @@
  */
 
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { ResolvedPackage } from './resolver.js';
 import { getSharedRuntimeExternals } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { SliceEntry } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import { packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
@@ -164,15 +163,3 @@ export function buildSliceForSpecifierWithCap(
 
   return { slice, totalBytes };
 }
-
-/**
- * Choose the externals list for a specifier, exported so the supervisor
- * can compute the same value when building the spec without re-pulling
- * the helper from esbuild-service.ts on the call site.
- */
-export function externalsForSpecifier(specifier: string): string[] {
-  return getSharedRuntimeExternals(specifier);
-}
-
-// Type re-export for npm/installer.ts.
-export type _ResolvedPackage = ResolvedPackage;

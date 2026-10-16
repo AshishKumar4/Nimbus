@@ -29,7 +29,7 @@ const tgz = (name, version) => `https://registry.invalid/${name}-${version}.tgz`
 const resolved = (name, version) => ({
   pkg: {
     name, version, tarballUrl: tgz(name, version), integrity: 'sha512-fixture',
-    dependencies: {}, exports: null, main: 'index.js', module: '', bin: {},
+    dependencies: {}, main: 'index.js', bin: {},
   },
   cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
 });

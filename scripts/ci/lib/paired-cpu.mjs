@@ -6,12 +6,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { mapOnArmada, overlayCommit } from './armada.mjs';
 import { NIMBUS_STATE } from './state-dir.mjs';
+import { median, medianInterval } from '../../lib/statistics.mjs';
 
-const median = (values) => {
-  const sorted = [...values].sort((a, b) => a - b);
-  return (sorted[Math.floor((sorted.length - 1) / 2)] + sorted[Math.floor(sorted.length / 2)]) / 2;
-};
-const quantile = (values, fraction) => [...values].sort((a, b) => a - b)[Math.floor(fraction * (values.length - 1))];
 
 /**
  * Each kind over `runs` (each run's results, as the bench wrote them): the
@@ -25,17 +21,7 @@ export function pairedCpuVerdicts(runs) {
     const of = runs.map((results) => results.find((result) => result.kind === kind));
     const deltas = of.map((result) => result.medianDelta - result.medianNullDelta);
     const aa = of.map((result) => result.medianNullDelta);
-    const boot = [];
-    let state = 0x51_53;
-    for (let sample = 0; sample < 3000; sample++) {
-      const draw = [];
-      for (let i = 0; i < deltas.length; i++) {
-        state ^= state << 13; state ^= state >>> 17; state ^= state << 5;
-        draw.push(deltas[(state >>> 0) % deltas.length]);
-      }
-      boot.push(median(draw));
-    }
-    const ci95 = [quantile(boot, 0.025), quantile(boot, 0.975)];
+    const ci95 = medianInterval(deltas);
     const aaSpread = [Math.min(...aa), Math.max(...aa)];
     const failures = ci95[0] > 0 ? [`slower: the paired CPU delta's interval [${ci95[0]}, ${ci95[1]}] ms lies above 0`] : [];
     return { kind, runs: deltas.length, medianA: median(of.map((result) => result.medianA)), medianB: median(of.map((result) => result.medianB)), medianDelta: median(deltas), ci95, aaSpread, failures };

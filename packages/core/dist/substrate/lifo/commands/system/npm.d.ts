@@ -1,13 +1,14 @@
 import type { Command, CommandContext } from '../types.js';
-import { type CommandRegistry } from '../registry.js';
+import type { CommandRegistry } from '../registry.js';
 import type { ProcessView as VFS } from '../../../../runtime/process-files.js';
 import type { Kernel } from '../../kernel/index.js';
 import { type NpmCacheMode } from '../../../../_shared/npm-cache-mode.js';
+import type { NpmConfig } from './npm-config.js';
 import { type NpmLogEmitter } from './npm-log.js';
 import { type EngineMismatch } from '../../../../_shared/npm-arborist/engines.js';
 /** The registry an install reads from when its env names none. */
 export declare const NPM_REGISTRY_ORIGIN = "https://registry.npmjs.org";
-interface PackageJson {
+export interface PackageJson {
     name?: string;
     version?: string;
     description?: string;
@@ -21,7 +22,19 @@ interface PackageJson {
         name: string;
     };
 }
-export type ShellExecuteFn = (cmd: string, ctx: CommandContext) => Promise<number>;
+/** A script of package.json npm runs: its event (test, pretest, …), its text, and the words npm appends to it. */
+export interface NpmScript {
+    event: string;
+    script: string;
+    args: readonly string[];
+}
+/**
+ * The host's shell, running `cmd` for the command `ctx`; for npm run, the
+ * script it is. Answers its exit code, or 'resident' for a script the host
+ * keeps running after this returns (a dev server it runs in the
+ * background): one that has not ended.
+ */
+export type ShellExecuteFn = (cmd: string, ctx: CommandContext, script?: NpmScript) => Promise<number | 'resident'>;
 /**
  * What `npm install` asks of an install, as the command parsed it. The
  * host's port hands it to its installer whole (its NpmInstallOptions are
@@ -119,6 +132,16 @@ export interface NpmCommandDeps {
      * handed to its directory's owner, so the command, as its process, can.
      */
     beforeWrite?: (ctx: CommandContext, path: string) => Promise<void>;
+    /**
+     * The host's word before npm run runs `event`'s `scripts` (its pre, its
+     * own and its post, in order), the project's package.json `manifest`: an
+     * exit code to stop with, or null to run them.
+     */
+    beforeRun?: (ctx: CommandContext, run: {
+        event: string;
+        scripts: readonly NpmScript[];
+        manifest: Readonly<PackageJson>;
+    }) => Promise<number | null>;
 }
 /**
  * The registry origin an install uses: the command's `NPM_REGISTRY`, else
@@ -137,13 +160,25 @@ export declare function npmRegistryOrigin(configured: string | undefined): strin
  */
 export declare function packagesIn(vfs: VFS, modulesDir: string): AsyncGenerator<string>;
 export declare function getBinEntries(pkg: PackageJson): Record<string, string>;
-export declare function registerBinCommand(registry: CommandRegistry, binName: string, scriptPath: string, kernel?: Kernel): void;
-export declare function createNpmCommand(registry: CommandRegistry, shellExecute?: ShellExecuteFn, kernel?: Kernel, deps?: NpmCommandDeps): Command;
+/**
+ * The prefix npm installs globally under, as `config` (read in `cwd`)
+ * resolves it: --prefix, npm_config_prefix, an .npmrc, else PREFIX or
+ * /usr/local; absolute. Its lib/node_modules holds the packages, its bin
+ * their bins.
+ */
+export declare function npmGlobalPrefixOf(config: NpmConfig, cwd: string): string;
+/** npmGlobalPrefixOf this command's configuration. */
+export declare function npmGlobalPrefix(ctx: CommandContext): Promise<string>;
+/**
+ * The npm command. It registers no commands: a project's bins are found on
+ * its scripts' PATH and global bins on the prefix's bin, so `_registry` is
+ * unread, kept for the signature's callers.
+ */
+export declare function createNpmCommand(_registry: CommandRegistry, shellExecute?: ShellExecuteFn, kernel?: Kernel, deps?: NpmCommandDeps): Command;
 /**
  * Install one package globally, through the install port (the host's, else
  * the shell's own). Called directly by `lifo install` to avoid the
  * shell.execute() round-trip, which can silently swallow output and errors.
  */
-export declare function npmInstallGlobal(packageName: string, ctx: CommandContext, registry: CommandRegistry, kernel?: Kernel, deps?: NpmCommandDeps): Promise<number>;
-export {};
+export declare function npmInstallGlobal(packageName: string, ctx: CommandContext, kernel?: Kernel, deps?: NpmCommandDeps): Promise<number>;
 //# sourceMappingURL=npm.d.ts.map

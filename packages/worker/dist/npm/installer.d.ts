@@ -32,18 +32,6 @@ import { type EngineMismatch } from '@nimbus-sh/core/_shared/npm-arborist/engine
 import { type NpmLogEmitter } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
 import type { NpmInstallSpec } from '@nimbus-sh/core/substrate/lifo/commands/system/npm.js';
 import type { BundlePoolProvider } from '../facets/prebundle-pool.js';
-import type { InstallPhase } from '@nimbus-sh/platform/install-phase.js';
-export interface InstallProgress {
-    phase: InstallPhase;
-    resolved: number;
-    totalToResolve: number;
-    fetched: number;
-    totalToFetch: number;
-    written: number;
-    totalToWrite: number;
-    cachedHits: number;
-    elapsed: number;
-}
 /**
  * What an install is asked: the command's spec (NpmInstallSpec), which the
  * hosted port hands on whole, less what the port settles itself (where it
@@ -238,7 +226,7 @@ export declare class NpmInstaller {
     /**
      * Remove `placements`, with the bins they linked, as the invoking
      * principal; a placement inside another removed one goes with it, and a
-     * bin a package of `plan` links stays. Answers the placements removed.
+     * bin a root package of `installing` links stays. Answers the placements removed.
      */
     private removePlacements;
     /**

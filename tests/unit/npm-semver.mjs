@@ -103,9 +103,6 @@ const embedded = await importResolvePreamble(['PARSE_SEMVER', 'COMPARE_SEMVER', 
     embedded.COMPARE_SEMVER(parseSemver('1.0.0-beta.15'), parseSemver('1.0.0-alpha.1')),
     compareSemver(parseSemver('1.0.0-beta.15'), parseSemver('1.0.0-alpha.1')),
   );
-  // The preamble carries the build's bundle, after the imports it reads.
-  assert.ok(NPM_RESOLVE_PREAMBLE.includes(NPM_RESOLVE_NODE_IMPORTS) && NPM_RESOLVE_PREAMBLE.includes(NPM_RESOLVE_SRC), 'the preamble splices the bundle and its imports');
-  assert.ok(NPM_RESOLVE_PREAMBLE.indexOf(NPM_RESOLVE_NODE_IMPORTS) < NPM_RESOLVE_PREAMBLE.indexOf(NPM_RESOLVE_SRC));
   // The free-name guard: the bundle reads only its imports and a facet's globals.
   const stray = [...freeNames(`${NPM_RESOLVE_NODE_IMPORTS}\n${NPM_RESOLVE_SRC}`, { sourceType: 'module' })].filter((name) => !FACET_GLOBALS.has(name));
   assert.deepEqual(stray, [], 'the bundle reads nothing a facet lacks');
@@ -138,7 +135,6 @@ const embedded = await importResolvePreamble(['PARSE_SEMVER', 'COMPARE_SEMVER', 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-  assert.match(fnSource, /PARSE_REGISTRY_REQUEST\(/, 'the facet reaches the spec parser through the preamble\'s global');
   const module = assembleLoaderWorkerModuleSource({ fnSource, preamble: NPM_RESOLVE_PREAMBLE, hasBindings: true });
   const stray = [...freeNames(module, { sourceType: 'module' })].filter((name) => !FACET_GLOBALS.has(name));
   assert.deepEqual(stray, [], 'the assembled resolver module reads nothing a facet lacks');

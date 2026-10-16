@@ -11,7 +11,7 @@
  * which are themselves held as bytes (NewEntries), straight into the file.
  */
 import { createHash } from 'node:crypto';
-import { oidFromHex, oidToHex } from '../pack/format.js';
+import { objectHash, oidFromHex, oidToHex } from '../pack/format.js';
 import { CacheTree } from './cachetree.js';
 import { UnsupportedGitOperation } from '../routing.js';
 import { errnoCodeOf, isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
@@ -90,9 +90,9 @@ function encodeVarint(value) {
     }
     return out;
 }
-/** An object's id: SHA-1 of `<type> <size>\0` and the bytes. */
+/** An object's id, in hex: SHA-1 of `<type> <size>\0` and the bytes. */
 export function objectId(type, data) {
-    return oidToHex(createHash('sha1').update(encoder.encode(`${type} ${data.length}\0`)).update(data).digest());
+    return oidToHex(objectHash(type, data));
 }
 export class IndexFormatError extends Error {
     detail;

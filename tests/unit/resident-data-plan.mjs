@@ -184,7 +184,7 @@ function sessionCtx(name, principal) {
   const npm = createSqliteVfsTestHarness();
   ctx.storage.sql = npm.sql;
   new NpmCache(npm.sql).writeLockfile('/home/user/proj', new Map([['tablepkg', {
-    name: 'tablepkg', registryName: 'tablepkg', resolvedVer: '1.0.0', integrity: 'sha512-dGFibGVwa2c=', depsJson: '{}',
+    name: 'tablepkg', registryName: 'tablepkg', resolvedVer: '1.0.0', integrity: 'sha512-dGFibGVwa2c=',
     hoistedPath: '/home/user/proj/node_modules/tablepkg',
   }]]));
   return ctx;

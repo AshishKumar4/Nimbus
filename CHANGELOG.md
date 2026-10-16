@@ -47,6 +47,83 @@ published independently in the `@nimbus-sh` npm scope.
   another character a file URL escapes imports beside itself, and its
   `import.meta.url` escapes the name as Node's `pathToFileURL` does. Before,
   `a#b/main.cjs` imported from the directory above it.
+- Fixed: `npm run`, `npm test` and `npm start` run a script as npm does.
+  The words after the script name (after `--`) are passed to it, each
+  quoted for the shell. `pre<script>` runs before the script and
+  `post<script>` after it, unless `--ignore-scripts` is given. The first
+  script that fails stops the rest. A script runs with npm's lifecycle
+  environment (`npm_lifecycle_event`, `npm_lifecycle_script`,
+  `npm_package_name`, `npm_package_version`, `npm_package_json`), and
+  `node_modules/.bin` of the project and each directory above it come
+  first on its `PATH`. Before, `npm run x -- a b` dropped `a b`, and pre
+  and post scripts did not run. Without a host shell, core npm split a
+  simple script on spaces, so `mkdir "a b"` made `"a` and `b"`.
+- Fixed: a project's bins are commands of its own scripts only. Before,
+  core npm's `npm run` registered every bin in the project's node_modules
+  as a command of the whole workspace, so a script in another project ran
+  the first project's tool. Core npm's local install now links bins into
+  `node_modules/.bin`, as npm does. Every bin shim names its target as a
+  JSON string, so a path with a quote in it still works.
+- Fixed: `lifo install`, `lifo remove` and `lifo list` find lifo packages
+  where npm installs them globally: `<prefix>/lib/node_modules`, with the
+  prefix from npm's configuration (`--prefix`, `npm_config_prefix`, an
+  `.npmrc`, else `PREFIX` or `/usr/local`). Before, lifo read
+  `/usr/lib/node_modules`, where npm installs nothing. `npm install -g`
+  takes its prefix from the same configuration, `PREFIX` included. A
+  workspace's default environment no longer sets `npm_config_prefix`, so a
+  `prefix` in `~/.npmrc` takes effect. Without one, the prefix is still
+  `/usr/local`, npm's default.
+- Breaking (core): a workspace no longer restores global packages as
+  commands when it boots. `npm install -g` links a package's bins into
+  `<prefix>/bin`, which is on the default `PATH`, and the shell finds them
+  there, as it does with npm. A prefix set in `.npmrc` behaves as with npm:
+  its `bin` must be on `PATH`. `rehydrateGlobalPackages` is replaced by
+  `rehydrateLifoPackages(view, registry, { cwd, env })`. It restores only
+  lifo commands, under npm's configured prefix, and only a host that
+  registers `createLifoPkgCommand` needs to call it at boot. No Nimbus host
+  or app registers lifo, and Kinu does not. `registerBinCommand` is gone:
+  global bins are no longer registered as commands.
+- Breaking (core): `createNpmCommand` runs every script through the host's
+  `ShellExecuteFn`. Before, `createNpmCommand(registry, undefined, kernel)`
+  ran a script with no shell operator by calling its first word from the
+  registry. Now `npm run` without a shell executor fails for every script
+  with "shell integration unavailable". A host that registers npm without
+  one should pass its shell, for example
+  `(command, ctx) => workspace.exec(command, { cwd: ctx.cwd, env: ctx.env })`,
+  writing the result's output to `ctx.stdout` and `ctx.stderr` and
+  answering its exit code. `ShellExecuteFn` takes an optional third
+  argument, the script being run (`NpmScript`). It may answer `'resident'`
+  for a script the host keeps running after the call returns, such as a
+  dev server: npm run then stops, and says that the script's `post` script
+  did not run. The new `NpmCommandDeps.beforeRun` hook receives every
+  script npm run will run (pre, own and post) and can stop the run. The
+  hosted terminal's `node_modules` check and Next.js refusal use it, so
+  they also check pre and post scripts. `npmInstallGlobal` no longer takes
+  a command registry, and `createNpmCommand` no longer reads its own.
+- Changed: the perf probes `perf-regression/cold-start`, `first-paint` and
+  `install-warm` grade the candidate against a baseline measured in the
+  same run, not against a fixed bound. `remote-probes` stands up three
+  fresh throwaways for them: two of the baseline (`--baseline`, by default
+  the commit's merge-base with origin/main; the release matrix uses the
+  commit production serves) and one of the candidate. Each round measures
+  all three at once. A probe is red when the candidate's median paired
+  log-ratio is above 0 with 95% confidence and above the two baseline
+  arms' own spread. The fixed bounds failed 25, 4 and 21 of about 560 full
+  runs of unchanged main code, and passed a 1.5x slower cold start when its
+  one sample landed under 800 ms.
+- Changed: `remote-probes` attributes every red row whose session socket
+  closed 1006 (the run's session ledger records each such close) or that
+  shows `E_NIMBUS_DO_OVERLOADED`, from the platform's own record (Workers
+  Logs and trace exceptions, read on the workstation), by the exact error on
+  each session's object. A row is rerun once, and the rerun grades it, only
+  when the probe reached its summary, every check it failed is the driver's
+  1006 close error naming a session whose socket dropped, each such session
+  shows "Internal error in Durable Object storage caused object to be
+  reset", and every session's record, read whole, shows no other class. The
+  verdict keeps both rows. Isolate memory resets, overloads and the rest
+  stay red, with their attribution printed. A target or paired throwaway
+  redeployed during a job makes the run not graded, and the release matrix
+  counts a probe that exits 2 as not graded, as `remote-probes` does.
 - Fixed: `pip install` decides which dependencies apply by the markers of
   the CPython it installs for: CPython 3.13.14 on `wasm32-wasi`, as the
   interpreter itself answers them (`sys_platform` is `"wasi"`). Before, pip
