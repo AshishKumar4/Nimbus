@@ -182,7 +182,7 @@ function shadowedGenerator(kind, key, native, interpreted) {
     apply(target, receiver, args) {
       const real = outcome(() => Reflect.apply(target, receiver, args));
       const copy = outcome(() => Reflect.apply(interpreted, receiver, args));
-      if (real.ok && copy.ok) mirrors.set(real.value, { kind, key, copy: copy.value, counterparts: new WeakMap(), steps: Promise.resolve() });
+      if (real.ok && copy.ok) mirrors.set(real.value, { kind, key, copy: copy.value, counterparts: new WeakMap(), steps: kind === 'asyncGenerator' ? Promise.resolve() : null });
       else compare(kind, key, real, copy, null);
       return forward(real);
     },

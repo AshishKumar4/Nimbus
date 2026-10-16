@@ -142,8 +142,11 @@ try {
       h.prototype = replaced;
       const hit = h();
       out.replaced = [hit.marker, hit instanceof h];
+      // A synchronous generator's call needs nothing of the program's Promise.
+      const saved = Promise;
+      try { globalThis.Promise = undefined; out.withoutPromise = Generator('yield 1')().constructor === undefined ? 'no constructor' : 'made'; } finally { globalThis.Promise = saved; }
     `);
-    assert.deepEqual(run.out, { tag: '[object GeneratorFunction]', name: 'anonymous', length: 1, instance: true, extra: 'on the prototype', first: 4, second: 5, construct: 'TypeError', detached: 'TypeError', replaced: ['replaced', true] });
+    assert.deepEqual(run.out, { tag: '[object GeneratorFunction]', name: 'anonymous', length: 1, instance: true, extra: 'on the prototype', first: 4, second: 5, construct: 'TypeError', detached: 'TypeError', replaced: ['replaced', true], withoutPromise: 'made' });
     assert.deepEqual(compared(run), { compared: 2, mismatches: [], awaiting: 0 });
   }
 
