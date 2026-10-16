@@ -57,7 +57,7 @@ import { importedSpecifiers, maskSourceForImports, UndecidableSourceError } from
 import { BUNDLER_IMPORT_CONDITIONS } from '@nimbus-sh/core/runtime/bundler-resolution.js';
 import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import { parseJavaScriptProgram } from '@nimbus-sh/core/runtime/javascript-ast.js';
+import { MODULE_PARSE_OPTIONS, parseStatements } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { bindingIdentifiers } from '@nimbus-sh/core/runtime/binding-pattern.js';
 /**
  * Stable signature for a barrel bundle's source import set. Stored in
@@ -288,9 +288,6 @@ export function buildSyntheticEntry(vfs, nmDir, pkgName, names) {
     catch {
         return null;
     }
-    const index = parseJavaScriptProgram(indexCode);
-    if (index === null)
-        return null;
     // Each name the barrel re-exports from a module of its own package: the
     // module's path as written, and the name it has there (null: the module's
     // namespace, `export * as ns`). A name the barrel declares itself is no
@@ -298,13 +295,13 @@ export function buildSyntheticEntry(vfs, nmDir, pkgName, names) {
     const exportMap = new Map();
     const own = new Set();
     const stars = [];
-    for (const statement of index.body) {
+    const indexRead = eachStatement(indexCode, (statement) => {
         if (statement.type === 'ExportNamedDeclaration') {
             const path = relativeSource(statement.source);
             if (path === null) {
                 for (const name of namedExports(statement))
                     own.add(name);
-                continue;
+                return;
             }
             for (const specifier of statement.specifiers) {
                 exportMap.set(moduleExportName(specifier.exported), { path, sourceName: moduleExportName(specifier.local) });
@@ -313,13 +310,15 @@ export function buildSyntheticEntry(vfs, nmDir, pkgName, names) {
         else if (statement.type === 'ExportAllDeclaration') {
             const path = relativeSource(statement.source);
             if (path === null)
-                continue;
+                return;
             if (statement.exported)
                 exportMap.set(moduleExportName(statement.exported), { path, sourceName: null });
             else
                 stars.push(path);
         }
-    }
+    });
+    if (!indexRead)
+        return null;
     // `export * from './x.js'`: each name the module itself exports but
     // `default`, unless the barrel exports it otherwise. Nested `export *` is
     // not followed, and the walk is capped so a barrel-of-barrels cannot blow
@@ -334,10 +333,7 @@ export function buildSyntheticEntry(vfs, nmDir, pkgName, names) {
         catch {
             continue;
         }
-        const star = parseJavaScriptProgram(starCode);
-        if (star === null)
-            return null;
-        for (const statement of star.body) {
+        const starRead = eachStatement(starCode, (statement) => {
             const exported = statement.type === 'ExportNamedDeclaration'
                 ? namedExports(statement)
                 : statement.type === 'ExportAllDeclaration' && statement.exported ? [moduleExportName(statement.exported)] : [];
@@ -345,7 +341,9 @@ export function buildSyntheticEntry(vfs, nmDir, pkgName, names) {
                 if (name !== 'default' && !own.has(name) && !exportMap.has(name))
                     exportMap.set(name, { path, sourceName: name });
             }
-        }
+        });
+        if (!starRead)
+            return null;
     }
     if (exportMap.size === 0)
         return null;
@@ -503,6 +501,23 @@ export async function buildScopedSliceForSynthetic(vfs, nmDir, pkgName, referenc
         }
     }
     return { entries, totalBytes };
+}
+/**
+ * Each top-level statement of the module `source`, as it is parsed, none of
+ * them kept (core javascript-ast.ts parseStatements): a module's whole tree
+ * is 17 to 24 times its source, on the path that exists to bound memory.
+ * False when it does not parse.
+ */
+function eachStatement(source, onStatement) {
+    try {
+        parseStatements(source, MODULE_PARSE_OPTIONS, { onStatement });
+        return true;
+    }
+    catch (error) {
+        if (error instanceof SyntaxError)
+            return false;
+        throw error;
+    }
 }
 /** The specifier of `export … from` when it is relative (a module of the package itself), else null. */
 function relativeSource(source) {

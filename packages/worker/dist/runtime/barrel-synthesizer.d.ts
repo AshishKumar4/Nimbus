@@ -166,7 +166,7 @@ export declare function transformParser(service: {
  * reachability graph and OOMs the WASM facet on icon-libraries
  * that ship 1500+ exports).
  *
- * Instead we PARSE the barrel-index file (acorn, core javascript-ast.ts),
+ * Instead we PARSE the barrel-index file (acorn, one statement at a time),
  * build a map of `<exportedName> → <relative path inside the package>`,
  * and emit direct file imports:
  *
