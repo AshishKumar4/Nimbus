@@ -14,13 +14,7 @@
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
 
-import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { localTerminal, splitScenarioOutput, startLocalProbe } from './lib/workerd-probe.mjs';
-import { withoutInternalArrow } from './lib/node-report.mjs';
+import { matchNodeInWorkerd } from './lib/node-differential.mjs';
 
 const W = '/home/user/frames';
 const FILES = {
@@ -77,41 +71,5 @@ const COMMANDS = [
   'node sameline.mjs', 'node callanon.mjs', 'node overwrite.mjs', 'node typeofs.mjs', 'node spaced.mjs', 'node names.mjs', `node --input-type=module -e "process.chdir('/'); throw new Error('moved');"`,
 ];
 
-const host = realpathSync(mkdtempSync(join(tmpdir(), 'esm-frames-')));
-process.on('exit', () => rmSync(host, { recursive: true, force: true }));
-for (const [name, text] of Object.entries(FILES)) writeFileSync(join(host, name), text);
-// What a command printed, with the place it ran named W, and the program's frames alone.
-const shown = (text, from) => text.split(from).join(W)
-  .split('\n').filter((line) => !/^\s+at /.test(line) || line.includes(`${W}/`)).join('\n');
-const run = (command) => `${command} > out.txt 2> err.txt; echo $? > code.txt`;
-const read = `node -e "const fs = require('fs'); process.stdout.write(JSON.stringify({ out: fs.readFileSync('out.txt').toString('base64'), err: fs.readFileSync('err.txt').toString('base64'), code: fs.readFileSync('code.txt', 'utf8') }))"`;
-const hostRead = (name) => spawnSync('cat', [name], { cwd: host, encoding: 'utf8' }).stdout;
-
-console.log('esm-frames-matches-node-workerd: starting local workerd');
-const probe = await startLocalProbe({ runtimes: [] });
-try {
-  const session = await localTerminal(probe, { install: [] });
-  try {
-    await session.run(`mkdir -p ${W}`, 30_000);
-    for (const [name, text] of Object.entries(FILES)) await session.writeFile(`${W}/${name}`, text);
-    for (const command of COMMANDS) {
-      assert.equal(spawnSync('sh', ['-c', run(command)], { cwd: host, env: { PATH: process.env.PATH, HOME: host } }).status, 0);
-      const want = { out: shown(hostRead('out.txt'), host), err: withoutInternalArrow(shown(hostRead('err.txt'), host)), code: hostRead('code.txt').trim() };
-      await session.run(`cd ${W} && ${run(command)}`, 120_000);
-      const r = await session.run(`cd ${W} && ${read}`, 60_000);
-      const line = splitScenarioOutput(r.stdout).lines.find((l) => l.startsWith('{'));
-      assert.ok(line, `${command}: read its output: ${r.stdout.slice(-1500)}`);
-      const got = JSON.parse(line);
-      const decode = (b64) => shown(Buffer.from(b64, 'base64').toString('utf8'), W);
-      assert.equal(decode(got.out), want.out, `${command}: stdout is Node's`);
-      assert.equal(decode(got.err), want.err, `${command}: stderr is Node's`);
-      assert.equal(got.code.trim(), want.code, `${command}: exits as Node does`);
-      console.log(`  ok  ${command.slice(0, 60)}: exit ${want.code}`);
-    }
-  } finally {
-    await session.close().catch(() => {});
-  }
-} finally {
-  await probe.stop();
-}
+await matchNodeInWorkerd('esm-frames-matches-node-workerd', W, FILES, COMMANDS);
 console.log(`esm-frames-matches-node-workerd: ${COMMANDS.length} programs' frames and arrows as Node's`);
