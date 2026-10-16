@@ -55,6 +55,37 @@ published independently in the `@nimbus-sh` npm scope.
   and an exact version built only for another platform is refused. Before,
   the first `=` requirement installed that version whatever else the
   request said.
+- Breaking (core): `scanCjsExports` (`runtime/cjs-export-names.js`) is the
+  Vite dev server's CommonJS interop scan alone, and takes no policy:
+  `scanCjsExports(source)`. The `'node'` policy, a second hand-written
+  grammar of what Node detects, is gone, and so is `CjsExportPolicy`. Node's
+  own detection is the vendored cjs-module-lexer (`runtime/cjs-module-lexer.js`
+  `createCjsLexer`), which both module loaders already use. The Vite scan's
+  results are unchanged: identical for all 10,084 CommonJS files of the
+  repository's dependencies.
+- Added (core): `bindRuntimeCommands` and `runtimeSummary`
+  (`runtime/installed-runtimes.js`), the one way an installed runtime's
+  commands are registered and summarized. Install, rehydration,
+  `RuntimeManager.list` and `listInstalledRuntimes` now all use them, and
+  their results are unchanged.
+- Fixed: a very long line at the hosted Python prompt (`python3`) reaches
+  the interpreter. Before, a line of more than about 125,000 bytes of
+  UTF-8 failed with "[python-repl] dispatch failed: Maximum call stack size
+  exceeded" before Python saw it. The prompt, TypeScript source maps, the esbuild-compatible
+  build's base64 and data-URL loaders, CSS data URLs, and stop/replay tapes
+  now share one base64 codec (`_shared/crypto.js`).
+- Fixed: a hosted or portable `node` program's package resolution errors
+  are Node's own errors, from `require()` and `import()` alike:
+  `ERR_PACKAGE_PATH_NOT_EXPORTED`, `ERR_PACKAGE_IMPORT_NOT_DEFINED`,
+  `ERR_INVALID_PACKAGE_TARGET`, `ERR_INVALID_PACKAGE_CONFIG` and
+  `ERR_INVALID_MODULE_SPECIFIER`. `String(error)` and its stack read
+  `Error [ERR_PACKAGE_PATH_NOT_EXPORTED]: …`; before, they read `Error: …`,
+  with the code only on `error.code`. The two Node 22 throws from C++ (a
+  package.json that is not JSON, `ERR_INVALID_PACKAGE_CONFIG`, and a
+  package main that names no file, `ERR_MODULE_NOT_FOUND`) are plain
+  `Error`s with their code, as in Node; `import()` used to give them the
+  `[CODE]` head. A module `require()` does not find is still a plain
+  `Error` with `code` `MODULE_NOT_FOUND`, as in Node.
 - Breaking (fabric, worker, sdk): the legacy inner Durable Object transport
   is gone. `NimbusDOStub` is no longer exported from
   `@nimbus-sh/fabric/bindings.js`, `@nimbus-sh/worker` or

@@ -10,7 +10,7 @@
 
 import { versionAtLeast } from '../npm-semver.js';
 import { bundledNames, edgeRequest, isOptional, isPeer, meets, type EdgeRequest, type EdgeType, type TreeEdge, type TreePackage } from '../npm-tree.js';
-import type { LockFlags } from './plan.js';
+import type { HostVerdicts, LockFlags } from './plan.js';
 import { gatherDepSet } from './sets.js';
 
 /** npm's string order (@isaacs/string-locale-compare's 'en'), one collator for every comparison. */
@@ -20,12 +20,6 @@ export const localeCompare = new Intl.Collator('en').compare;
 export interface HostPackages {
   readonly resolved: TreePackage;
   readonly installed: TreePackage;
-}
-
-/** Why a host would leave a package out: `refused`, wherever it is not required; `skipIfOptional`, where it is optional. */
-export interface HostVerdicts {
-  readonly refused?: string;
-  readonly skipIfOptional?: string;
 }
 
 /** What a node is. */

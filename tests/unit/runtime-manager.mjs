@@ -13,6 +13,7 @@ import { Database } from 'bun:sqlite';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { RuntimeManager } from '../../packages/core/src/runtime/runtime-manager.ts';
+import { listInstalledRuntimes } from '../../packages/core/src/runtime/installed-runtimes.ts';
 import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { suppliedRuntimeSource } from '../../packages/core/src/runtime/runtime-package.ts';
@@ -215,12 +216,29 @@ const toyRunner = () => async () => 0;
   const pkg = fakePackage({ 'bin/toy': '# t\n' });
   const first = makeManager(vfs, suppliedRuntimeSource([pkg]));
   first.manager.registerRunner('toy-runner', toyRunner);
-  await first.manager.install('toy');
+  const installed = await first.manager.install('toy');
 
   const second = makeManager(vfs, suppliedRuntimeSource([]));
   second.manager.registerRunner('toy-runner', toyRunner);
-  assert.deepEqual((await second.manager.rehydrate()).bins, ['toy']);
+  assert.deepEqual((await second.manager.rehydrate()).bins, installed.bins, 'rehydrate binds what install bound');
   assert.ok(second.registry.commands.has('toy'), 'rehydrate did not rebind the bin');
+  // The manager's listing and the hosted shell's (listInstalledRuntimes, from the disk itself) are one summary.
+  const listed = await second.manager.list();
+  assert.deepEqual(listed, await listInstalledRuntimes(vfs));
+  assert.deepEqual(Object.keys(listed[0]).sort(), ['abi', 'bins', 'license', 'name', 'root', 'sizeBytes', 'version']);
+  assert.deepEqual(listed[0].bins, ['toy']);
+}
+
+// ── A manifest that names one command twice: install answers it once, rehydration once per registration ──
+{
+  const vfs = openVfs();
+  const pkg = fakePackage({ 'bin/toy': '# t\n' }, { bins: ['toy', 'toy'] });
+  const first = makeManager(vfs, suppliedRuntimeSource([pkg]));
+  first.manager.registerRunner('toy-runner', toyRunner);
+  assert.deepEqual((await first.manager.install('toy')).bins, ['toy']);
+  const second = makeManager(vfs, suppliedRuntimeSource([]));
+  second.manager.registerRunner('toy-runner', toyRunner);
+  assert.deepEqual(await second.manager.rehydrate(), { count: 2, bins: ['toy', 'toy'] });
 }
 
 // ── Uninstall, then install, actually reinstalls ──────────────────────────

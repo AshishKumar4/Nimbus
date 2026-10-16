@@ -104,6 +104,20 @@ export declare const BUILD_BROWSER_PACKAGE_MAP_POLICY: PackageMapPolicy<string>;
 /** Compatibility surface for install/bundler/browser callers. */
 export declare function resolveExports(exportsField: ExportsField | undefined, subpath?: string, conditions?: string[], policy?: PackageMapPolicy<string>): string | null;
 /**
+ * A package resolution error Node's JavaScript gives an `ERR_*` code: its
+ * internal NodeError, `Name [CODE]: message` in its toString() and its stack
+ * (lib/internal/errors.js). A module not found by require() is not one:
+ * Node's CJS loader makes that a plain Error, its `code` MODULE_NOT_FOUND.
+ */
+export declare function resolutionError(code: string, message: string, Type?: ErrorConstructor | TypeErrorConstructor): Error;
+/**
+ * A package resolution error Node 22 throws from C++ (node_errors.h
+ * THROW_ERR_*): a package.json it cannot parse (node_modules.cc), a package
+ * main legacyMainResolve does not find (node_file.cc). A plain Error with its
+ * code, `Error: message` in its toString() and its stack, as V8 makes it.
+ */
+export declare function nativeResolutionError(code: string, message: string): Error;
+/**
  * Node's leaf validation and error construction, shared by CJS and ESM.
  * A bare imports target is delegated to the caller's package resolver; any
  * host questions it yields remain inside the same array traversal.

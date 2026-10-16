@@ -37,6 +37,7 @@ import { buildCPythonPreamble, cpythonMarkers, enterWorkingDirectory } from '@ni
 import { getFacetManagerLoaderHost } from './facet-loader-host.js';
 import { CRED_KERNEL, CRED_SESSION_USER, type NimbusFilesystemAuthority, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { exists } from '@nimbus-sh/core/vfs/vfs.js';
+import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
 
 /** Written by the driver when the source so far cannot yet be run. */
 const INCOMPLETE_MARKER = '__NIMBUS_PY_INCOMPLETE__';
@@ -116,7 +117,7 @@ const CPYTHON_STDLIB_REL = 'lib/python313.zip';
  * every escape on the way through.
  */
 function buildReplDriver(source: string): string {
-  const b64 = btoa(String.fromCharCode(...new TextEncoder().encode(source)));
+  const b64 = base64Utf8(source);
   return [
     'import base64, codeop, sys, traceback',
     'import __main__',

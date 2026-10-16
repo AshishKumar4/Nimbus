@@ -51,6 +51,7 @@ import {
 } from './css-syntax.js';
 import type { EsbuildRemotePlugin } from './esbuild-service.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+import { base64Utf8 } from '../_shared/crypto.js';
 
 export interface CssModule {
   /** The module's namespace and path, as the plugin resolved it. */
@@ -404,10 +405,7 @@ function printImport(path: string, conditions: ImportConditions | undefined, min
 
 /** esbuild's EncodeStringAsShortestDataURL. */
 export function shortestDataUrl(mimeType: string, text: string): string {
-  const bytes = new TextEncoder().encode(text);
-  let latin1 = '';
-  for (let i = 0; i < bytes.length; i += 0x8000) latin1 += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  const encoded = `data:${mimeType};base64,${btoa(latin1)}`;
+  const encoded = `data:${mimeType};base64,${base64Utf8(text)}`;
   const escaped = percentEscapedDataUrl(mimeType, text);
   return escaped.length < encoded.length ? escaped : encoded;
 }

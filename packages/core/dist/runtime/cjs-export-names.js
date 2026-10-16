@@ -1,52 +1,43 @@
 /**
- * The names a CommonJS module exports, read off acorn's tokens (so a
- * comment, a string or a template's text holds none), by one of two
- * policies over the same matches:
- *
- *   - `node`: as Node detects them before running a module, cjs-module-lexer's
- *     grammar (Node's own lexer, whose README states it). Node builds a
- *     CommonJS module's ES namespace from these (`default` is module.exports).
- *   - `vite`: every name a module may put on module.exports, for the dev
- *     server's CJS interop. Real Vite reads any named import of a CJS
- *     dependency off its default export (`mod["red"]`), so any key works
- *     there; the dev server gives the bundle named exports instead, and a
- *     name it misses is an import that fails. So: every key of a
- *     `module.exports = { ... }` literal, whatever its value (color-name's
- *     are arrays, where Node's grammar stops), and every
- *     `Object.defineProperty` of a name, getters Node calls unsafe included.
- *
- * Node's grammar. Detected, anywhere in the source, with no scope analysis:
+ * The names a CommonJS module may put on module.exports, for the Vite dev
+ * server's CJS interop (worker facets/vite-dev-server.ts), read off acorn's
+ * tokens (so a comment, a string or a template's text holds none). Real Vite
+ * reads any named import of a CJS dependency off its default export
+ * (`mod["red"]`), so any key works there; the dev server gives the bundle
+ * named exports instead, and a name it misses is an import that fails. So,
+ * anywhere in the text (CJS exports appear throughout a bundle's
+ * `__commonJS` wrappers, which Node's own lexer misreads):
  *   - `exports.a =`, `exports['a'] =`, the same on `module.exports`;
- *   - `Object.defineProperty(exports, 'a', { value: ... })` and the safe
- *     getter forms (`[enumerable: true,] get[: function [name]] () { return
- *     id[.id | ['s']][;] }`); any other define of a name opts that name out,
- *     whatever else sets it;
- *   - `module.exports = { a, b: c, 'd': e, ...f, ...require('x') }`, up to
- *     its first property of another form.
+ *   - every `Object.defineProperty(exports, 'a', ...)`, getters Node calls
+ *     unsafe included;
+ *   - every key of a `module.exports = { ... }` literal, whatever its value
+ *     (color-name's are arrays, where Node's grammar stops).
  * Reexports, whose names the caller adds by resolving and scanning them:
  *   - the requires of the last `module.exports = require('x')` or literal
- *     (each `module.exports =` starts the set again);
+ *     spread of a whole `require('x')` (each `module.exports =` starts the
+ *     set again);
  *   - a top-level `__export(require('x'))` or `__exportStar(require('x'), ...)`;
  *   - Babel's reexport loop, `Object.keys(_x).forEach(function (key) { ... })`
  *     over a top-level `var _x = require('x')` (or
- *     `_interopRequireWildcard(require('x'))`), in the forms the lexer's
- *     grammar lists.
+ *     `_interopRequireWildcard(require('x'))`), in the forms Node's lexer
+ *     lists.
+ * What Node itself detects is cjs-module-lexer's, vendored (cjs-module-lexer.ts).
  */
 import { tokenizer, tokTypes } from 'acorn';
 /** A token's value: a name's or keyword's text, a string's decoded contents (acorn's typings omit the field). */
 function tokenValue(token) {
     return token === undefined ? '' : String(Reflect.get(token, 'value'));
 }
-/** `source`'s exports and reexports by `policy`; none for a source that does not tokenize, as the lexer has none. */
-export function scanCjsExports(source, policy = 'node') {
+/** `source`'s exports and reexports; none for a source that does not tokenize. */
+export function scanCjsExports(source) {
     try {
-        return scan(source, policy);
+        return scan(source);
     }
     catch {
         return { names: [], reexports: [] };
     }
 }
-function scan(source, policy) {
+function scan(source) {
     // The tokens stream through a window: a bundle of megabytes would be
     // millions of tokens at once, and the patterns look back three tokens and
     // forward only as far as one declaration reaches.
@@ -73,7 +64,6 @@ function scan(source, policy) {
         base += drop;
     };
     const names = new Set();
-    const unsafe = new Set();
     let reexports = new Set();
     let depth = 0;
     const is = (i, type) => at(i)?.type === type;
@@ -122,14 +112,13 @@ function scan(source, policy) {
         return -1;
     };
     /**
-     * The Vite policy's `module.exports = { ... }` from the `{` at `i`: each
-     * property's key (a name, a string, a number; a method's, a getter's), the
-     * rest of the property skipped whatever it is; a spread or a computed key
-     * names nothing. Exactly the keys the literal itself puts on
-     * module.exports, without the names Node's grammar misreads (`get` of
-     * `get [a]() {}`).
+     * `module.exports = { ... }` from the `{` at `i`: each property's key (a
+     * name, a string, a number; a method's, a getter's), the rest of the
+     * property skipped whatever it is; a spread or a computed key names
+     * nothing. Exactly the keys the literal itself puts on module.exports,
+     * without the names Node's grammar misreads (`get` of `get [a]() {}`).
      */
-    const anyLiteral = (i) => {
+    const literal = (i) => {
         const key = (j) => word(j) || is(j, tokTypes.string) || is(j, tokTypes.num);
         const keyOrComputed = (j) => key(j) || is(j, tokTypes.bracketL);
         for (let k = i + 1; at(k) !== undefined && !is(k, tokTypes.braceR);) {
@@ -153,110 +142,13 @@ function scan(source, policy) {
             k++;
         }
     };
-    /** Node's `module.exports = { ... }` from the `{` at `i`. */
-    const literal = (i) => {
-        for (let k = i + 1;;) {
-            if (word(k) || is(k, tokTypes.string)) {
-                const key = text(k);
-                const keyIsString = is(k, tokTypes.string);
-                let next = k + 1;
-                if (is(next, tokTypes.colon)) {
-                    if (!word(next + 1))
-                        return;
-                    next += 2;
-                    names.add(key);
-                    // After a value, the lexer reads the next character as it stands.
-                    if (!adjacent(next))
-                        return;
-                }
-                else if (keyIsString) {
-                    return;
-                }
-                else {
-                    names.add(key);
-                }
-                k = next;
-            }
-            else if (is(k, tokTypes.ellipsis)) {
-                const required = adjacent(k + 1) ? requireAt(k + 1) : null;
-                if (required) {
-                    reexports.add(required.specifier);
-                    k = required.end;
-                }
-                else if (word(k + 1) && adjacent(k + 1)) {
-                    k += 2;
-                }
-                else {
-                    return;
-                }
-            }
-            else {
-                return;
-            }
-            if (is(k, tokTypes.braceR))
-                return;
-            if (!is(k, tokTypes.comma))
-                return;
-            k++;
-        }
-    };
-    /** `Object.defineProperty(exports, 's', { ... })` at `i`, the `Object` token. */
+    /** `Object.defineProperty(exports, 's', ...)` at `i`, the `Object` token: whatever its descriptor, a key the default export holds. */
     const define = (i) => {
         if (!(is(i + 1, tokTypes.dot) && word(i + 2, 'defineProperty') && is(i + 3, tokTypes.parenL)))
             return;
         const target = exportsAt(i + 4);
-        if (target === -1 || !is(target, tokTypes.comma) || !is(target + 1, tokTypes.string))
-            return;
-        const name = text(target + 1);
-        let k = target + 2;
-        const safe = (() => {
-            if (!is(k, tokTypes.comma) || !is(k + 1, tokTypes.braceL))
-                return false;
-            k += 2;
-            if (word(k, 'enumerable')) {
-                if (!(is(k + 1, tokTypes.colon) && is(k + 2, tokTypes._true) && is(k + 3, tokTypes.comma)))
-                    return false;
-                k += 4;
-            }
-            if (word(k, 'value'))
-                return is(k + 1, tokTypes.colon);
-            if (!word(k, 'get'))
-                return false;
-            k++;
-            if (is(k, tokTypes.colon)) {
-                if (!is(k + 1, tokTypes._function))
-                    return false;
-                k += 2;
-                if (word(k) && !is(k, tokTypes.parenL))
-                    k++;
-            }
-            if (!(is(k, tokTypes.parenL) && is(k + 1, tokTypes.parenR) && is(k + 2, tokTypes.braceL) && is(k + 3, tokTypes._return) && word(k + 4)))
-                return false;
-            k += 5;
-            if (is(k, tokTypes.dot)) {
-                if (!word(k + 1))
-                    return false;
-                k += 2;
-            }
-            else if (is(k, tokTypes.bracketL)) {
-                if (!(is(k + 1, tokTypes.string) && is(k + 2, tokTypes.bracketR)))
-                    return false;
-                k += 3;
-            }
-            if (is(k, tokTypes.semi))
-                k++;
-            if (!is(k, tokTypes.braceR))
-                return false;
-            k++;
-            if (is(k, tokTypes.comma))
-                k++;
-            return is(k, tokTypes.braceR) && is(k + 1, tokTypes.parenR);
-        })();
-        // Under Vite's policy every define names a key the default export holds.
-        if (safe || policy === 'vite')
-            names.add(name);
-        else
-            unsafe.add(name);
+        if (target !== -1 && is(target, tokTypes.comma) && is(target + 1, tokTypes.string))
+            names.add(text(target + 1));
     };
     /** Top-level `var|let|const ID = [_interopRequireWildcard(]require('x')`: ID's specifier, for Babel's loop. */
     const starBindings = new Map();
@@ -432,13 +324,9 @@ function scan(source, policy) {
             const required = requireAt(after + 1);
             if (required)
                 reexports.add(required.specifier);
-            else if (is(after + 1, tokTypes.braceL)) {
-                if (policy === 'vite')
-                    anyLiteral(after + 1);
-                else
-                    literal(after + 1);
-            }
+            else if (is(after + 1, tokTypes.braceL))
+                literal(after + 1);
         }
     }
-    return { names: [...names].filter((name) => !unsafe.has(name)), reexports: [...reexports] };
+    return { names: [...names], reexports: [...reexports] };
 }

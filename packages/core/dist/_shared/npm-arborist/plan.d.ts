@@ -32,35 +32,36 @@ export interface OmitTypes {
     readonly optional?: boolean;
     readonly peer?: boolean;
 }
-/** What a host answers for a request it resolves. */
-export type TreeResolution<P extends TreePackage> = 
 /**
- * The package for the request (under the requested name). `refused`: the
- * host cannot install it (a platform it cannot run), which fails a
- * required placement and leaves an optional one out; `skipIfOptional`: it
- * installs where required, and is left out where optional.
+ * Why a host would leave a package out. `refused`: the host cannot install it
+ * (a platform it cannot run), which fails a required placement and leaves an
+ * optional one out; `skipIfOptional`: it installs where required, and is
+ * left out where optional.
  */
-{
-    readonly package: P;
+export interface HostVerdicts {
     readonly refused?: string;
     readonly skipIfOptional?: string;
 }
+/** What a host answers for a request it resolves. */
+export type TreeResolution<P extends TreePackage> = 
+/** The package for the request (under the requested name), with the host's verdicts on it. */
+({
+    readonly package: P;
+} & HostVerdicts)
 /** Not resolved: no such package or version, or the registry failed. */
  | {
     readonly failed: string;
 };
 /**
- * A package installed before this install, at its placement (`refused` and
- * `skipIfOptional` as a resolution's; `lock`, the flags a lock records for
- * it); or a placement whose package the host cannot install at all, with why.
+ * A package installed before this install, at its placement, with the
+ * host's verdicts on it (`lock`, the flags a lock records for it); or a
+ * placement whose package the host cannot install at all, with why.
  */
-export type InstalledPackage<I extends TreePackage> = {
+export type InstalledPackage<I extends TreePackage> = ({
     readonly at: string;
     readonly pkg: I;
-    readonly refused?: string;
-    readonly skipIfOptional?: string;
     readonly lock?: LockFlags;
-} | {
+} & HostVerdicts) | {
     readonly at: string;
     readonly failed: string;
 };
