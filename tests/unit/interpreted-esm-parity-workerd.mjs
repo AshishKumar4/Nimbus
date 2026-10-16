@@ -84,18 +84,6 @@ out.cycle = await outcome(async () => [(await import(cyclic)).default, (await im
 const throwing = 'data:text/javascript,globalThis.throwRuns = (globalThis.throwRuns ?? 0) + 1; throw new Error("thrown")';
 out.throwsOnce = [await outcome(() => import(throwing)), await outcome(() => import(throwing)), globalThis.throwRuns];
 
-// A runtime-written module imported while String.prototype.charCodeAt is not the built-in.
-mkdirSync('cc', { recursive: true });
-writeFileSync('cc/dep.mjs', "export default 'charCodeAt-proof';\\n");
-writeFileSync('cc/main.cjs', "module.exports = import('./dep.mjs').then((m) => m.default);\\n");
-const charCodeAt = String.prototype.charCodeAt;
-String.prototype.charCodeAt = function (index) { return charCodeAt.call(this, index) ^ 1; };
-try {
-  out.charCodeAt = await outcome(async () => await (await import(pathToFileURL(process.cwd() + '/cc/main.cjs').href)).default);
-} finally {
-  String.prototype.charCodeAt = charCodeAt;
-}
-
 // A typeless .js that redeclares a wrapper parameter: an ES module.
 writeFileSync('det.js', 'const require = 1; globalThis.detStrict = (function(){return this})()===undefined; globalThis.detRequire = require;\\n');
 out.detected = await outcome(async () => {
@@ -148,7 +136,6 @@ assert.deepEqual(expected, {
   missingJsonName: ['SyntaxError', false],
   cycle: ['data:back', 'back', 1],
   throwsOnce: [['threw', 'Error', 'thrown'], ['threw', 'Error', 'thrown'], 1],
-  charCodeAt: 'charCodeAt-proof',
   detected: [true, 1],
   hashDirectory: 'beside',
   hashMeta: '<cwd>/a%23b/meta.mjs',

@@ -3,7 +3,8 @@
 // _shared/importer-url.ts): every printable ASCII character, controls, DEL,
 // non-ASCII, astral and lone surrogates, `#` and `?` in a name. Host Node is
 // the oracle (Bun's pathToFileURL escapes differently, so it is not asked).
-// The interpreter and the host share the one encoder.
+// The interpreter and the host share the one encoder; the host's takes
+// charCodeAt when it loads, as the guest runs it after a program does.
 //
 // Red before: the path was concatenated unescaped, so a#b/main.cjs's URL
 // ended at its `#`.
@@ -32,4 +33,12 @@ const codeAt = (text, index) => text.charCodeAt(index);
 assert.deepEqual(PATHS.map((path) => importerUrl(path, codeAt)), expected, "importerUrl is Node's pathToFileURL");
 assert.deepEqual(PATHS.map((path) => moduleImporterUrl(`/${path}`)), expected, 'with its leading slash too');
 assert.equal(moduleImporterUrl('data:text/javascript,1'), 'data:text/javascript,', 'a data: module imports from data:');
+// The guest runs moduleImporterUrl after the program does: it took charCodeAt when it loaded.
+const charCodeAt = String.prototype.charCodeAt;
+String.prototype.charCodeAt = function (index) { return charCodeAt.call(this, index) ^ 1; };
+try {
+  assert.deepEqual(PATHS.map((path) => moduleImporterUrl(path)), expected, 'whatever String.prototype.charCodeAt is now');
+} finally {
+  String.prototype.charCodeAt = charCodeAt;
+}
 console.log('ok - importer-url (a module path\'s importer URL is Node\'s pathToFileURL of it)');
