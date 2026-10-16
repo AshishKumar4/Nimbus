@@ -30,7 +30,7 @@ export declare function serveFromPort(handler: VirtualRequestHandler, request: V
  * wait stopped.
  */
 export declare function awaitServedEnd(end: Promise<void>, signal: AbortSignal): Promise<'ended' | 'refused' | 'aborted' | 'timeout'>;
-/** A served response's body as HTTP carries it: none for 204 and 304. */
+/** A served response's body as Node's HTTP server sends it: none for 204 and 304. A Response's is Fetch's (isNullBodyStatus). */
 export declare function servedBody(response: VirtualResponse): string | null;
 export declare function statusText(status: number): string;
 /** `request` through the host's loopback `router`, which observes its signal: refused when no server holds `port`. */

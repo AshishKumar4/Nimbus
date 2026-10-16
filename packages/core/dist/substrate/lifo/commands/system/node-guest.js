@@ -20,6 +20,7 @@ import { createHostsResolver } from '../../kernel/index.js';
 import { uncaughtReport, writeFailure } from '../../node-compat/output-failure.js';
 import { ProcessExitError } from '../../node-compat/index.js';
 import { useNodeErrorInspect } from '../../../../_shared/node-error.js';
+import { isNullBodyStatus } from '../../../../_shared/null-body-status.js';
 import { runNodeProgram } from './node-program.js';
 import { routeFetchThroughHost } from '../../../../runtime/realm-egress-guest.js';
 import { isEgressHostEvent } from '../../../../runtime/realm-egress.js';
@@ -328,8 +329,7 @@ async function routeLoopback(port, request) {
     const response = await answer;
     if (!response)
         return null;
-    const empty = response.status === 204 || response.status === 304;
-    return new Response(empty ? null : response.body, { status: response.status, headers: response.headers });
+    return new Response(isNullBodyStatus(response.status) ? null : response.body, { status: response.status, headers: response.headers });
 }
 /** A request the host forwards to one of the program's servers. */
 async function serve(id, port, request) {

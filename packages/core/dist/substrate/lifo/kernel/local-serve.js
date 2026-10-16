@@ -31,7 +31,7 @@ export async function awaitServedEnd(end, signal) {
         return 'refused';
     }
 }
-/** A served response's body as HTTP carries it: none for 204 and 304. */
+/** A served response's body as Node's HTTP server sends it: none for 204 and 304. A Response's is Fetch's (isNullBodyStatus). */
 export function servedBody(response) {
     return response.statusCode === 204 || response.statusCode === 304 ? null : response.body;
 }
