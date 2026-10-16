@@ -36,9 +36,14 @@ export declare class LoaderCodeRegistry {
     private readonly owners;
     /** Per (wrangler, binding): its reuse source's token. */
     private readonly sources;
-    /** Owners closed, kept until their directory is gone: their bytes stay counted until then. */
+    /** Directories queued for removal (an owner's, or a dead incarnation's), until they are gone. */
     private readonly removing;
+    /** Content this incarnation's directories hold, by digest: its size, and how many directories hold it. */
+    private readonly content;
+    /** The bytes of that content, each counted once however many directories share it. */
     private storeBytes;
+    /** New content being put, reserved against the cap until its put settles. */
+    private reserved;
     private removals;
     constructor(engine: SqliteVFS);
     /** What the store holds now, for the session's diagnostics. */
@@ -47,6 +52,7 @@ export declare class LoaderCodeRegistry {
         sources: number;
         removing: number;
         storeBytes: number;
+        reservedBytes: number;
     };
     /** A new owner, staged, for `binding` of the build of wrangler `wranglerId`: its token. */
     mint(wranglerId: string, binding: string): string;
@@ -74,9 +80,10 @@ export declare class LoaderCodeRegistry {
      * One new file of `owner`, admitted against the caps before `make`
      * creates it: a creation of the same digest under way is joined (its
      * stream then unread, cancelled by the caller), and a failed one gives its
-     * reservation back. A put brings new content (the session's cap counts
-     * it); an adoption shares its donor's. A copy from `from` is in flight on
-     * the donor too, so its removal waits for the copy.
+     * reservation back. The session's cap counts content once: a put of a
+     * digest no directory holds reserves its size until it settles, and a file
+     * published is counted while any directory holds its digest. A copy from
+     * `from` is in flight on the donor too, so its removal waits for the copy.
      */
     private create;
     /** `operation`, which reads or writes `owner`'s directory: its removal waits for it. */
@@ -85,9 +92,10 @@ export declare class LoaderCodeRegistry {
     private retire;
     /**
      * Remove `dir` once `owner`'s operations (all of them, however many come
-     * after this) have drained, with the VFS's paged recursive removal; its
-     * bytes are given back once, and only when the directory is gone. One that
-     * could not be removed stays counted and is tried again at the next removal.
+     * after this) have drained, with the VFS's paged recursive removal; once it
+     * is gone, each digest it held no other directory holds is counted no more.
+     * One that could not be removed stays queued, still counted, and every
+     * queued directory is tried again at each removal.
      */
     private queueRemoval;
     /** Whether `dir` is gone. */
