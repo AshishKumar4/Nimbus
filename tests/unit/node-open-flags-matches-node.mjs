@@ -8,6 +8,9 @@
 //     and so does the link without the flag;
 //   - a write open's other answers: EEXIST, ENOENT, EISDIR, the mode a create
 //     gives under the umask, O_TRUNC emptying and its absence keeping;
+//   - O_CREAT judged by the access asked (O_RDONLY|O_CREAT of a read-only
+//     file opens it; O_EXCL is EEXIST before any access), and a file a
+//     create makes readable at once;
 //   - O_SYNC (and the 'rs+' alias): accepted, each write made;
 //   - FileHandle.write: (string, position, encoding) writes the string in its
 //     encoding at the position; (buffer, offset, length, position) and
@@ -20,7 +23,7 @@
 // Then O_NOFOLLOW was judged before O_EXCL, so a link under O_CREAT|O_EXCL
 // was ELOOP.
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateEntrypointCode } from '../../packages/worker/src/facets/manager.ts';
@@ -35,7 +38,8 @@ const realProcess = globalThis.process;
 
 // What exists before the program runs: a file it has not read, a directory, and links to each.
 const SEEDED = {
-  files: [['seed/a.txt', 'a']],
+  files: [['seed/a.txt', 'a'], ['seed/ro.txt', 'read only']],
+  readOnly: ['seed/ro.txt'],
   dirs: ['seed', 'seed/sub'],
   links: [['seed/link-to-a', 'a.txt'], ['seed/dirlink', 'sub']],
 };
@@ -97,6 +101,18 @@ const PROGRAM = `async (fs, root) => {
     await (await fs.promises.open(P('emptied.txt'), 'w')).close();
     return [fs.readFileSync(P('fresh.txt'), 'utf8'), fs.readFileSync(P('emptied.txt'), 'utf8'), fs.existsSync(P('fresh.txt')), fs.statSync(P('emptied.txt')).size];
   });
+  // O_CREAT judges the access asked, not write: an existing file read-only to its owner opens O_RDONLY|O_CREAT, and is EEXIST under O_EXCL.
+  results.promisesWxReadOnly = await outcome(async () => { const h = await fs.promises.open(P('seed/ro.txt'), 'wx'); await h.close(); });
+  results.promisesRdonlyCreateExisting = await outcome(async () => { const h = await fs.promises.open(P('seed/ro.txt'), C.O_RDONLY | C.O_CREAT); const { buffer, bytesRead } = await h.read(Buffer.alloc(16), 0, 16, 0); await h.close(); return buffer.subarray(0, bytesRead).toString(); });
+  results.syncRdonlyCreateExisting = await outcome(() => read(fs.openSync(P('seed/ro.txt'), C.O_RDONLY | C.O_CREAT)));
+  results.promisesRdonlyTruncNoFollowLink = await outcome(async () => { const h = await fs.promises.open(P('seed/link-to-a'), C.O_RDONLY | C.O_TRUNC | C.O_NOFOLLOW); await h.close(); });
+  results.promisesRdonlyCreateNew = await outcome(async () => { const h = await fs.promises.open(P('rc-async.txt'), C.O_RDONLY | C.O_CREAT, 0o640); await h.close(); return [fs.readFileSync(P('rc-async.txt'), 'utf8'), fs.statSync(P('rc-async.txt')).mode & 0o777]; });
+  results.syncRdonlyCreateNew = await outcome(() => { fs.closeSync(fs.openSync(P('rc-sync.txt'), C.O_RDONLY | C.O_CREAT, 0o640)); return [fs.readFileSync(P('rc-sync.txt'), 'utf8'), fs.statSync(P('rc-sync.txt')).mode & 0o777]; });
+  // A create that makes the file keeps it empty and readable at once; one that writes keeps what it wrote.
+  results.promisesCreateRead = await outcome(async () => { await (await fs.promises.open(P('c-async.txt'), C.O_WRONLY | C.O_CREAT)).close(); return fs.readFileSync(P('c-async.txt'), 'utf8'); });
+  results.syncCreateRead = await outcome(() => { fs.closeSync(fs.openSync(P('c-sync.txt'), C.O_WRONLY | C.O_CREAT)); return fs.readFileSync(P('c-sync.txt'), 'utf8'); });
+  results.syncCreateWriteRead = await outcome(() => { const fd = fs.openSync(P('cw-sync.txt'), C.O_WRONLY | C.O_CREAT); fs.writeSync(fd, 'abc'); fs.closeSync(fd); return fs.readFileSync(P('cw-sync.txt'), 'utf8'); });
+  results.syncCreateDirectory = await outcome(() => { fs.closeSync(fs.openSync(P('cdir'), C.O_RDONLY | C.O_CREAT | C.O_DIRECTORY)); return fs.statSync(P('cdir')).isFile(); });
   results.noFollowFile = await outcome(async () => { const h = await fs.promises.open(P('seed/a.txt'), C.O_RDONLY | C.O_NOFOLLOW); const { buffer, bytesRead } = await h.read(Buffer.alloc(16), 0, 16, 0); await h.close(); return buffer.subarray(0, bytesRead).toString(); });
   results.followLink = await outcome(async () => { const h = await fs.promises.open(P('seed/link-to-a'), 'r'); const { buffer, bytesRead } = await h.read(Buffer.alloc(16), 0, 16, 0); await h.close(); return buffer.subarray(0, bytesRead).toString(); });
   results.targetUntouched = await fs.promises.readFile(P('seed/a.txt'), 'utf8');
@@ -128,6 +144,7 @@ let expected;
 try {
   for (const d of SEEDED.dirs) mkdirSync(join(real, d), { recursive: true });
   for (const [file, text] of SEEDED.files) writeFileSync(join(real, file), text);
+  for (const file of SEEDED.readOnly) chmodSync(join(real, file), 0o444);
   for (const [link, target] of SEEDED.links) symlinkSync(target, join(real, link));
   const oracle = spawnSync('node', ['-e', `(${PROGRAM})(require('fs'), ${JSON.stringify(real)}).then((r) => console.log(JSON.stringify(r)))`], { encoding: 'utf8' });
   if (oracle.status !== 0) throw new Error(`node: ${oracle.stderr}`);
@@ -146,6 +163,7 @@ kernel.mkdir(ROOT.slice(1), { recursive: true });
 kernel.chown(ROOT.slice(1), 1000, 1000);
 for (const d of SEEDED.dirs) { kernel.mkdir(key(d), { recursive: true }); kernel.chown(key(d), 1000, 1000); }
 for (const [file, text] of SEEDED.files) { kernel.writeFile(key(file), text); kernel.chown(key(file), 1000, 1000); }
+for (const file of SEEDED.readOnly) kernel.chmod(key(file), 0o444);
 for (const [link, target] of SEEDED.links) kernel.symlink(target, key(link));
 const dir = mkdtempSync(join(tmpdir(), 'node-open-flags-matches-node-'));
 let actual;
