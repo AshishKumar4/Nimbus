@@ -8,18 +8,13 @@
  * failed to load; a host's own package types are kept through it.
  */
 import { type EdgeRequest, type EdgeType, type TreeEdge, type TreePackage } from '../npm-tree.js';
-import type { LockFlags } from './plan.js';
+import type { HostVerdicts, LockFlags } from './plan.js';
 /** npm's string order (@isaacs/string-locale-compare's 'en'), one collator for every comparison. */
 export declare const localeCompare: (x: string, y: string) => number;
 /** The package types a host gives the engine: what it resolves, and what it says is installed. */
 export interface HostPackages {
     readonly resolved: TreePackage;
     readonly installed: TreePackage;
-}
-/** Why a host would leave a package out: `refused`, wherever it is not required; `skipIfOptional`, where it is optional. */
-export interface HostVerdicts {
-    readonly refused?: string;
-    readonly skipIfOptional?: string;
 }
 /** What a node is. */
 export type Payload<H extends HostPackages> = {
