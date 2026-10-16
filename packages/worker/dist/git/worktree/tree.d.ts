@@ -47,7 +47,8 @@ export declare function treeLeaves(store: ObjectStore, tree: string, prefix?: st
  * diff-tree -r of two trees (null for none), as pack/tree-object.ts
  * diffTreeLeaves walks it: `visit` gets every leaf path whose entry
  * differs, with each side's leaf or null. A subtree both sides hold with the
- * same id is never read.
+ * same id is never read. Names that are not UTF-8 can decode alike: their
+ * one path comes once for each.
  */
 export declare function diffTrees(store: ObjectStore, from: string | null, to: string | null, visit: (path: string, before: Leaf | null, after: Leaf | null) => Promise<void>): Promise<void>;
 /**
