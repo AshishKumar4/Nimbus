@@ -90,6 +90,14 @@ export interface DoCallRetryPolicy {
      * absent.
      */
     span?: SpanRecorder;
+    /**
+     * The failure classes (classifyDoCall) this call repeats, in place of the
+     * platform's transient ones (isRetryableDoCall): a callee that converges
+     * may repeat a class the platform does not call transient, and must not
+     * repeat one it answers another way. `overloaded` is never repeated,
+     * whatever this lists.
+     */
+    repeats?: readonly DoCallClass[];
 }
 /**
  * How an `idempotent` call ended: `answered` (an attempt succeeded),

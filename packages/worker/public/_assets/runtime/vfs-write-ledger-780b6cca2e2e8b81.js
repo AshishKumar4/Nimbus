@@ -812,6 +812,9 @@ var __nimbusProcessFsModule = (() => {
       return "hard_evict";
     return "unknown";
   }
+  function isUnexplainedPlatformError(input) {
+    return /^internal error; reference = \S+$/i.test(readMessage(input).trim());
+  }
   function isDoOverloaded(input) {
     return readMessage(input).toLowerCase().includes("durable object is overloaded");
   }
@@ -829,6 +832,7 @@ var __nimbusProcessFsModule = (() => {
     const seen =   new Set();
     const messages = [];
     let flagged = false;
+    let unexplained = false;
     let link = input;
     while (link !== null && !seen.has(link)) {
       seen.add(link);
@@ -837,6 +841,8 @@ var __nimbusProcessFsModule = (() => {
         return "overloaded";
       if ("retryable" in link && link.retryable === true)
         flagged = true;
+      if (isUnexplainedPlatformError(link))
+        unexplained = true;
       messages.push(link.message ?? "");
       const cause = link.cause;
       link = cause instanceof Error ? cause : null;
@@ -848,6 +854,8 @@ var __nimbusProcessFsModule = (() => {
     }
     if (flagged)
       return "retryable_flag";
+    if (unexplained)
+      return "platform_internal";
     return "permanent";
   }
   function readMessage(input) {

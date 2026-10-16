@@ -153,6 +153,10 @@ export type DoCallClass =
  | 'storage_reset'
 /** The runtime flagged the error `retryable` itself. */
  | 'retryable_flag'
+/** The platform failed the call without saying why ("internal error;
+ *  reference = …", isUnexplainedPlatformError): whether it ran is unknown.
+ *  Not a transient class: only a callee that converges repeats it. */
+ | 'platform_internal'
 /** The object shed the call under queue pressure. NEVER retried: retrying
  *  an overloaded object is what overloaded it. */
  | 'overloaded'

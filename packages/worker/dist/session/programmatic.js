@@ -1101,7 +1101,7 @@ async function destroySession(self, options) {
         }
         catch (e) {
             const message = e instanceof Error ? e.message : String(e);
-            throw new Error(`Nimbus destroy failed while deleting Durable Object storage: ${message}`);
+            throw new Error(`Nimbus destroy failed while deleting Durable Object storage: ${message}`, { cause: e });
         }
         // deleteAll() does NOT delete a pending alarm (per CF docs). Without
         // this, every destroyed session left an alarm behind that kept booting
