@@ -4,8 +4,8 @@
 // the editor pane and grows the terminal pane by the same amount, with
 // both panes' inline flex basis updated.
 
-import { mintSession, BASE, makeAsserter, deleteSession } from '../../_driver.mjs';
-import { launchBrowser, openPage } from '../../_runtime-behavioral-template.mjs';
+import { mintSession, BASE, makeAsserter, deleteSession, readUntil } from '../../_driver.mjs';
+import { grabHandle, launchBrowser, openPage } from '../../_runtime-behavioral-template.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('monaco-polish/new/vertical-resize-editor-terminal');
@@ -30,7 +30,6 @@ try {
       termFlex: term ? term.style.flex : null,
       handleVisible: getComputedStyle(handle).display === 'block' && hr.height > 0,
       cursor: getComputedStyle(handle).cursor,
-      hx: hr.x, hy: hr.y, hw: hr.width, hh: hr.height,
     };
   });
 
@@ -44,17 +43,11 @@ try {
     `editorH=${before.editorH} termH=${before.termH}`);
 
   // Drag the handle up by 150px: editor TOP shrinks, terminal BOTTOM grows.
-  const startX = before.hx + before.hw / 2;
-  const startY = before.hy + before.hh / 2;
-  await page.mouse.move(startX, startY);
-  await page.mouse.down();
-  await page.mouse.move(startX, startY - 60, { steps: 6 });
-  await page.mouse.move(startX, startY - 150, { steps: 12 });
-  await page.mouse.up();
-  await new Promise((res) => setTimeout(res, 300));
-
-  const after = await measure();
   const dragPx = 150;
+  const handle = await grabHandle(page, '#editorTerminalResizeHandle');
+  await handle.move(0, -dragPx);
+  await handle.release();
+  const after = await readUntil(measure, (now) => before.editorH - now.editorH > dragPx * 0.5);
   const editorDelta = before.editorH - after.editorH;
   const termDelta = after.termH - before.termH;
 

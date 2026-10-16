@@ -22,7 +22,7 @@
 //      require.main; asserts our shim sets it correctly. This
 //      isolates the require.main fix from cowsay's other quirks.
 
-import { mintSession, Terminal, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, BASE, writeFileViaShell } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[G2] sid=${sid} BASE=${BASE}`);
@@ -50,11 +50,7 @@ const selfAware =
   '}\n' +
   'console.log("MAIN-FAIL");\n' +
   'process.exit(1);\n';
-const selfAwareB64 = Buffer.from(selfAware, 'utf8').toString('base64');
-await t.run(
-  `node -e "require('fs').writeFileSync('node_modules/.bin/selfaware', Buffer.from('${selfAwareB64}','base64').toString('utf8'))"`,
-  10_000,
-);
+await writeFileViaShell((command) => t.run(command, 10_000), 'node_modules/.bin/selfaware', selfAware);
 const r1 = await t.run('selfaware', 30_000);
 const r1Out = stripAnsi(r1.output);
 const t1RequireMainOk = /MAIN-OK/.test(r1Out) && !/MAIN-FAIL/.test(r1Out);
@@ -90,11 +86,7 @@ const modernSyntax =
   'const f = new Foo();\n' +
   'console.log(f.greet());\n' +
   'process.exit(0);\n';
-const modernB64 = Buffer.from(modernSyntax, 'utf8').toString('base64');
-await t.run(
-  `node -e "require('fs').writeFileSync('node_modules/.bin/modern', Buffer.from('${modernB64}','base64').toString('utf8'))"`,
-  10_000,
-);
+await writeFileViaShell((command) => t.run(command, 10_000), 'node_modules/.bin/modern', modernSyntax);
 const r3 = await t.run('modern', 30_000);
 const r3Out = stripAnsi(r3.output);
 const t3ModernOk = /MOD-42/.test(r3Out);

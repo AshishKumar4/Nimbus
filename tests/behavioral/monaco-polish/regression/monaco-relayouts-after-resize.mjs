@@ -48,7 +48,8 @@ try {
   const settled = await readUntil(fit, fills);
   a.check('and it still fills the pane once released', fills(settled), JSON.stringify(settled));
 
-  const shown = await page.$eval('#editorPanel .view-lines', (lines) => lines.textContent);
+  // Monaco renders a space as U+00A0.
+  const shown = (await page.$eval('#editorPanel .view-lines', (lines) => lines.textContent)).replace(/\u00a0/g, ' ');
   a.check('the resized editor still renders the file', shown.includes('export const relayout'), JSON.stringify(shown.slice(0, 120)));
   a.check('no page errors', pageErrors.length === 0, JSON.stringify(pageErrors));
 } finally {

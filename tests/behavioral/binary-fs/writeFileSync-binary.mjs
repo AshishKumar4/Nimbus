@@ -13,7 +13,7 @@
 // null) and reads back hex. Expected: "a2ff0080". Pre-fix observed:
 // "efbfbdefbfbd00efbfbd" or similar replacement-char mush.
 
-import { mintSession, Terminal, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, BASE, writeFileViaShell } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[binary-fs writeFileSync] sid=${sid} BASE=${BASE}`);
@@ -37,11 +37,7 @@ fs.writeFileSync('blob.bin', Buffer.from([0xa2, 0xff, 0x00, 0x80]));
 console.log('hex:' + fs.readFileSync('blob.bin').toString('hex'));
 console.log('size:' + fs.statSync('blob.bin').size);
 `;
-const scriptB64 = Buffer.from(script, 'utf8').toString('base64');
-await t.run(
-  `node -e "require('fs').writeFileSync('blob.js', Buffer.from('${scriptB64}','base64').toString('utf8'))"`,
-  15_000,
-);
+await writeFileViaShell((command) => t.run(command, 15_000), 'blob.js', script);
 const r = await t.run('node blob.js', 15_000);
 const out = stripAnsi(r.output);
 const readHex = (out.match(/hex:([0-9a-f]*)/) || [])[1];

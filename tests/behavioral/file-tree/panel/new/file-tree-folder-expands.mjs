@@ -57,6 +57,7 @@ ws.close();
 const box = Nimbus.connect({ endpoint: BASE, headers: () => requestHeaders({}, sid) }).sandbox(sid);
 const folder = '/home/user/expand-dir';
 const child = `${folder}/child.txt`;
+await box.files.mkdir(folder);
 await box.files.write(child, 'inside the folder\n');
 const browser = await launchBrowser();
 try {

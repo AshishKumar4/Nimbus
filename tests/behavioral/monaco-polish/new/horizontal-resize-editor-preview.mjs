@@ -21,10 +21,13 @@ try {
     const center = document.getElementById('leftStack');
     const preview = document.getElementById('previewPanel');
     const grow = (element) => Number.parseFloat(element.style.flexGrow || getComputedStyle(element).flexGrow);
+    const centerWidth = center.getBoundingClientRect().width;
+    const previewWidth = preview.getBoundingClientRect().width;
     return {
-      center: center.getBoundingClientRect().width,
-      preview: preview.getBoundingClientRect().width,
+      center: centerWidth,
+      preview: previewWidth,
       centerPct: (100 * grow(center)) / (grow(center) + grow(preview)),
+      renderedPct: (100 * centerWidth) / (centerWidth + previewWidth),
     };
   });
   const start = await widths();
@@ -37,12 +40,14 @@ try {
     traded > 100 && Math.abs((held.preview - start.preview) - traded) <= 4, JSON.stringify({ start, held }));
   // To the viewport's edges (1280 px wide), the drag's farthest reach each way.
   await handle.move(1 - handle.x, 0);
-  const leftmost = await readUntil(widths, (now) => Math.abs(now.centerPct - 20) < 0.5);
+  const leftmost = await readUntil(widths, (now) => Math.abs(now.centerPct - 20) < 0.5 && Math.abs(now.renderedPct - 20) < 1);
   await handle.move(1279 - handle.x, 0);
-  const rightmost = await readUntil(widths, (now) => Math.abs(now.centerPct - 80) < 0.5);
+  const rightmost = await readUntil(widths, (now) => Math.abs(now.centerPct - 80) < 0.5 && Math.abs(now.renderedPct - 80) < 1);
   await handle.release();
-  a.check('dragged far left, the center keeps 20% of the pair', Math.abs(leftmost.centerPct - 20) < 0.5, JSON.stringify(leftmost));
-  a.check('dragged far right, the center keeps 80% of the pair', Math.abs(rightmost.centerPct - 80) < 0.5, JSON.stringify(rightmost));
+  // Set as the flex share, and drawn as the share of the width.
+  const keeps = (state, pct) => Math.abs(state.centerPct - pct) < 0.5 && Math.abs(state.renderedPct - pct) < 1;
+  a.check('dragged far left, the center keeps 20% of the pair', keeps(leftmost, 20), JSON.stringify(leftmost));
+  a.check('dragged far right, the center keeps 80% of the pair', keeps(rightmost, 80), JSON.stringify(rightmost));
   a.check('no page errors', pageErrors.length === 0, JSON.stringify(pageErrors));
 } finally {
   await browser.close();
