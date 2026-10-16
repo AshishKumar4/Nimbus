@@ -146,7 +146,13 @@ function nodeSyncBridge(fs) {
     symlink: (target, path) => fs.symlinkSync(target, path),
     readlink: (path) => fs.readlinkSync(path),
     readdir: (path) => fs.readdirSync(path).map((name) => ({ name })),
-    open: (path, flags) => ({ id: fs.openSync(path, nodeFlags(flags), flags.mode) }),
+    open: (path, flags) => {
+      const { O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND, O_EXCL } = fs.constants;
+      const write = flags.write === true || flags.append === true;
+      const access = write ? (flags.read === true ? O_RDWR : O_WRONLY) : O_RDONLY;
+      const bits = access | (flags.create ? O_CREAT : 0) | (flags.truncate ? O_TRUNC : 0) | (flags.append ? O_APPEND : 0) | (flags.exclusive ? O_EXCL : 0);
+      return { id: fs.openSync(path, bits, flags.mode) };
+    },
     read: (id, offset, length) => {
       const buffer = new Uint8Array(length);
       return buffer.subarray(0, fs.readSync(id, buffer, 0, length, offset));
@@ -246,6 +252,13 @@ export async function bootEngine(kind, { seed } = {}) {
     fs,
     /** The same filesystem for a caller that cannot wait (RuntimeSynchronousFs): Node's *Sync calls; the holder's synchronous view. */
     sync,
+    /** An awaited read of a descriptor `sync` opened: Node's fs.read of its fd; the holder's read of its id. */
+    readFd: (id, offset, length) => (kind === 'node'
+      ? new Promise((resolve, reject) => {
+        const buffer = new Uint8Array(length);
+        globalThis.__engineFs.read(id, buffer, 0, length, offset, (error, read) => (error ? reject(error) : resolve(buffer.subarray(0, read))));
+      })
+      : fs.read(id, offset, length)),
     log: handle.log,
     /** The process's log store, as a drain reads it. */
     journal: () => sqlJournal(sql),

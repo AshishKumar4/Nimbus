@@ -311,6 +311,53 @@ const SCENARIOS = {
     assert.equal(sessionText(e, `${APP}/locked/x.txt`), undefined);
   },
 
+  // ── A synchronous descriptor names its file, as on Linux ──────────────
+  async 'a synchronous open reads nothing: its read needs the bytes, an awaited read fetches them'(e) {
+    await e.authority.peer.writeFile(`${APP.slice(1)}/far.txt`, 'FAR');
+    await e.fs.readdir(APP);
+    const fd = e.sync.open(`${APP}/far.txt`, { read: true }).id;
+    assert.throws(() => e.sync.read(fd, 0, 16), { code: 'EAGAIN' });
+    assert.equal(dec.decode(await e.readFd(fd, 0, 16)), 'FAR');
+    assert.equal(dec.decode(e.sync.read(fd, 0, 16)), 'FAR');
+    e.sync.close(fd);
+  },
+  async 'a synchronous descriptor reads what is written to its file, by name or through another'(e) {
+    await e.fs.readdir(APP);
+    e.sync.writeFile(`${APP}/live.txt`, enc.encode('OLD'));
+    const r = e.sync.open(`${APP}/live.txt`, { read: true }).id;
+    e.sync.writeFile(`${APP}/live.txt`, enc.encode('NEW'));
+    assert.equal(dec.decode(e.sync.read(r, 0, 16)), 'NEW');
+    const w = e.sync.open(`${APP}/live.txt`, { read: true, write: true }).id;
+    e.sync.write(w, 0, enc.encode('X'));
+    assert.equal(dec.decode(e.sync.read(r, 0, 16)), 'XEW');
+    e.sync.ftruncate(w, 1);
+    assert.equal(dec.decode(e.sync.read(r, 0, 16)), 'X');
+    e.sync.close(w);
+    e.sync.close(r);
+  },
+  async 'a synchronous descriptor reads the file it opened after its name is unlinked'(e) {
+    await e.fs.readdir(APP);
+    e.sync.writeFile(`${APP}/kept.txt`, enc.encode('KEPT'));
+    const r = e.sync.open(`${APP}/kept.txt`, { read: true }).id;
+    e.sync.unlink(`${APP}/kept.txt`);
+    e.sync.writeFile(`${APP}/kept.txt`, enc.encode('OTHER'));
+    assert.equal(dec.decode(e.sync.read(r, 0, 16)), 'KEPT', 'the descriptor read the name\'s new file');
+    assert.equal(Number(e.sync.fstat(r).nlink), 0);
+    e.sync.close(r);
+  },
+  async 'a synchronous open is judged by its file\'s mode for the access it asks'(e) {
+    await e.fs.readdir(APP);
+    e.sync.writeFile(`${APP}/ro.txt`, enc.encode('R'));
+    e.sync.chmod(`${APP}/ro.txt`, 0o444);
+    e.sync.writeFile(`${APP}/wo.txt`, enc.encode('W'));
+    e.sync.chmod(`${APP}/wo.txt`, 0o222);
+    e.sync.close(e.sync.open(`${APP}/ro.txt`, { read: true }).id);
+    assert.throws(() => e.sync.open(`${APP}/ro.txt`, { write: true }), { code: 'EACCES' });
+    assert.throws(() => e.sync.open(`${APP}/ro.txt`, { read: true, write: true }), { code: 'EACCES' });
+    e.sync.close(e.sync.open(`${APP}/wo.txt`, { write: true }).id);
+    assert.throws(() => e.sync.open(`${APP}/wo.txt`, { read: true }), { code: 'EACCES' });
+  },
+
   // ── Descriptors ────────────────────────────────────────────────────────
   async 'an open description reads the file it opened after its name is unlinked'(e) {
     await e.hold(OUT);

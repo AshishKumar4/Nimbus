@@ -60,6 +60,8 @@ export interface HolderStore {
   entry(key: string): ResidentEntry | null | undefined;
   /** As ResidentNamespace.children. */
   children(key: string): RuntimeVfsDirEntry[] | undefined;
+  /** As ResidentNamespace.content: the store's bytes of `key` at `revision`, where it holds them. */
+  content?(key: string, revision: number): Uint8Array | undefined;
   /** As ResidentNamespace.reserve and release: what a provisional decision's bytes take of the process's budget (no grant reserved them). */
   reserve?(bytes: number): boolean;
   release?(bytes: number): void;
@@ -97,6 +99,12 @@ export type HolderAttrChange = { mode: number } | { uid: number | null; gid: num
 
 interface LocalFile {
   key: string;
+  /**
+   * A file opened by its number with no cell here (openInode): its bytes are
+   * the store's at the revision its name gives it, and once no name leads to
+   * it, at `revision`, the last it had (HolderStore.content). Never logged.
+   */
+  view?: { entry: ResidentEntry };
   /** Bytes of its buffer charged to the store's budget (HolderStore.reserve): a provisional decision's, which no grant reserved. */
   reserved?: number;
   bytes: Uint8Array;
@@ -134,6 +142,12 @@ interface LocalFile {
 
 interface LocalHandle {
   file: LocalFile;
+  /**
+   * An open of a file by its number (openInode): it reads and writes the
+   * file's cell here where there is one (files, which every descriptor and
+   * every call by name share), else `file`, its view of the store's bytes.
+   */
+  inode?: number;
   readable: boolean;
   writable: boolean;
   append: boolean;
@@ -212,6 +226,15 @@ export interface DelegationHolder {
    */
   open(key: string, path: string, flags: RuntimeOpenFlags): RuntimeFileHandle | undefined;
   /**
+   * A file opened by its number (`entry`, what `key` names), its access
+   * judged, nothing read and nothing changed: its descriptor reads and
+   * writes the file's own bytes, this process's where it has a cell for it,
+   * else the store's, as every descriptor of it and every call by name do.
+   */
+  openInode(key: string, path: string, flags: RuntimeOpenFlags, entry: ResidentEntry): RuntimeFileHandle;
+  /** The name and number of the file an inode descriptor reads by the store's bytes: what to fetch for it. Undefined for any other. */
+  inodeOf(handleId: number): { key: string; entry: ResidentEntry } | undefined;
+  /**
    * A whole file written by name (an open of `flags`, a write and a close),
    * decided here as `open` decides: its revision, or undefined when the
    * session must write it. What it takes is judged before anything is
@@ -219,10 +242,13 @@ export interface DelegationHolder {
    * the name as it was.
    */
   writeFile(key: string, path: string, bytes: Uint8Array, flags: RuntimeOpenFlags): number | undefined;
-  read(handleId: number, offset: number | null, length: number): Uint8Array;
-  write(handleId: number, offset: number | null, bytes: Uint8Array): number;
+  /** Undefined where its bytes are the store's and it does not hold them (an inode descriptor's: inodeOf). */
+  read(handleId: number, offset: number | null, length: number): Uint8Array | undefined;
+  /** Undefined where the bytes it keeps are the store's and it does not hold them (an inode descriptor's: inodeOf). */
+  write(handleId: number, offset: number | null, bytes: Uint8Array): number | undefined;
   seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number;
-  ftruncate(handleId: number, size: number): void;
+  /** False where the bytes it keeps are the store's and it does not hold them (an inode descriptor's: inodeOf). */
+  ftruncate(handleId: number, size: number): boolean;
   fstat(handleId: number): ResidentEntry;
   close(handleId: number): void;
   /** The name a descriptor of the holder's writes, now. */
@@ -354,13 +380,13 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
 
   /** Log `op`, the process told it succeeded: its names are this process's own until the view has them. */
   const acknowledged = (op: ProcessFsOp): Promise<ProcessFsAnswer> => {
+    const answered = client.submit(op, { acknowledged: true });
     const keys = keysOf(op);
     for (const key of keys) {
       const record = own.get(key);
       if (record === undefined) own.set(key, { pending: 1, settled: barriersBegun });
       else record.pending++;
     }
-    const answered = client.submit(op, { acknowledged: true });
     const settle = (refused: boolean): void => {
       for (const key of keys) {
         const record = own.get(key);
@@ -454,6 +480,43 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   const isOpen = (file: LocalFile): boolean => {
     for (const handle of handles.values()) if (handle.file === file) return true;
     return false;
+  };
+
+  /** The file a descriptor reads and writes now: an inode descriptor's cell here where there is one, else what it opened. */
+  const liveFile = (handle: LocalHandle): LocalFile => (handle.inode === undefined ? handle.file : files.get(handle.inode) ?? handle.file);
+
+  /**
+   * A view's file as it is now: the entry its name gives it while that is
+   * still its file (by its number), and its bytes there; else the last it
+   * had, nlink 0. Bytes undefined where the store does not hold them.
+   */
+  const viewed = (file: LocalFile): { entry: ResidentEntry; bytes: Uint8Array | undefined } => {
+    const view = file.view!;
+    const now = entryOf(file.key);
+    if (now && now.type === 'file' && now.dev === view.entry.dev && now.ino === view.entry.ino) view.entry = now;
+    else if (view.entry.nlink !== 0) view.entry = { ...view.entry, nlink: 0 };
+    const bytes = store.content?.(file.key, view.entry.revision);
+    return { entry: view.entry, bytes: bytes !== undefined && bytes.byteLength === view.entry.size ? bytes : undefined };
+  };
+
+  /**
+   * An inode descriptor's file made a cell here, of the store's bytes, to
+   * write: what every descriptor of it and every call by name share from
+   * now on. Undefined where the store does not hold them; ESTALE where no
+   * name leads to the file any more.
+   */
+  const cellOf = (handle: LocalHandle): LocalFile | undefined => {
+    const file = liveFile(handle);
+    if (file.view === undefined) return file;
+    const { entry, bytes } = viewed(file);
+    if (entry.nlink === 0) throw fsError('ESTALE', 'write', handle.path);
+    if (bytes === undefined) return undefined;
+    const cell: LocalFile = { key: file.key, bytes: new Uint8Array(0), length: 0, mode: entry.mode & 0o7777, logged: bytes.byteLength };
+    if (!room(cell, bytes.byteLength)) throw fsError('ENOSPC', 'write', handle.path);
+    cell.bytes.set(bytes);
+    cell.length = bytes.byteLength;
+    files.set(entry.ino, cell);
+    return cell;
   };
 
   /** Whether `file`'s mode, as decided here, refuses one of its open descriptions what it was opened to do: only its creating open could have. */
@@ -627,9 +690,10 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     file.changedFrom = Math.min(file.changedFrom ?? from, from);
     dirty.delete(file);
     dirty.add(file);
-    // A provisional decision is logged at once, as a synchronous write is
-    // parked: what the log holds unanswered is what it counts (fitsSync).
-    if (client.held(file.key) === undefined && options.provisional?.() === true) {
+    // A cell no grant holds (a provisional decision's, an inode descriptor's)
+    // is logged at once, as a synchronous write is parked: what the log holds
+    // unanswered is what it counts (fitsSync).
+    if (client.held(file.key) === undefined) {
       drain();
       return;
     }
@@ -639,6 +703,26 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       // process) keeps the bytes unlogged, for the settle, and the next flush reports it.
       try { drain(); } catch { /* the next flush reports it */ }
     }, LINGER_MS);
+  };
+
+  /**
+   * `entry`'s file loses its name here (`local`, its cell, if it has one):
+   * its inode descriptors keep what it holds until their last close, as a
+   * file without a name does. One whose bytes the store does not hold reads
+   * as a file no name leads to (ESTALE).
+   */
+  const orphan = (entry: ResidentEntry, local: LocalFile | undefined): void => {
+    for (const handle of handles.values()) {
+      if (handle.inode !== entry.ino) continue;
+      let file = local;
+      if (file === undefined) {
+        const bytes = store.content?.(handle.file.key, entry.revision);
+        if (bytes === undefined || bytes.byteLength !== entry.size) continue;
+        file = local = { key: handle.file.key, bytes: bytes.slice(), length: bytes.byteLength, mode: entry.mode & 0o7777, detached: { ...entry, nlink: 0 } };
+      }
+      handle.file = file;
+      delete handle.inode;
+    }
   };
 
   /** `file` lost its name (it was `entry`): what is written through its open descriptions stays theirs. */
@@ -668,8 +752,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     const size = Math.max(length, file.bytes.byteLength * 2, 4096);
     const more = size - file.bytes.byteLength;
     if (grant !== undefined && !client.draw(grant, more)) return false;
-    // A provisional decision's bytes take what the process's budget has (no grant reserved them).
-    if (grant === undefined && options.provisional?.() === true) {
+    // A cell no grant holds (a provisional decision's, an inode descriptor's) takes what the process's budget has.
+    if (grant === undefined) {
       if (store.reserve !== undefined && !store.reserve(more)) return false;
       file.reserved = (file.reserved ?? 0) + more;
     }
@@ -849,8 +933,26 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       return { id, path } as RuntimeFileHandle;
     },
 
+    openInode: (key, path, flags, entry) => {
+      const write = flags.write === true || flags.append === true;
+      const read = flags.read === true || !write;
+      if (!modeAllows(entry, (read ? 4 : 0) | (write ? 2 : 0), store.cred)) throw fsError('EACCES', 'open', path);
+      const file: LocalFile = { key, bytes: new Uint8Array(0), length: 0, mode: entry.mode & 0o7777, view: { entry } };
+      const id = nextHandle--;
+      handles.set(id, { file, inode: entry.ino, readable: read, writable: write, append: flags.append === true, position: 0, path });
+      return { id, path } as RuntimeFileHandle;
+    },
+
+    inodeOf: (handleId) => {
+      const handle = handles.get(handleId);
+      const file = handle === undefined ? undefined : liveFile(handle);
+      if (file?.view === undefined) return undefined;
+      const { entry } = viewed(file);
+      return entry.nlink === 0 ? undefined : { key: file.key, entry };
+    },
+
     writeFile: (key, path, bytes, flags) => {
-      const provisional = client.held(key) === undefined && options.provisional?.() === true;
+      const provisional = client.held(key) === undefined;
       if (provisional) {
         client.fitsSync(bytes.byteLength, path);
         if (store.reserve !== undefined && !store.reserve(bytes.byteLength)) throw fsError('ENOSPC', 'write', path);
@@ -917,7 +1019,10 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       return { id, path } as RuntimeFileHandle;
     },
 
-    through: (handleId) => handles.get(handleId)?.file.through !== undefined,
+    through: (handleId) => {
+      const handle = handles.get(handleId);
+      return handle !== undefined && liveFile(handle).through !== undefined;
+    },
 
     sessionOf: (handleId) => handleOf(handleId).session ?? Promise.resolve(undefined),
 
@@ -947,15 +1052,31 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     read: (handleId, offset, length) => {
       const handle = handleOf(handleId);
       if (!handle.readable) throw fsError('EBADF', 'read', handle.path);
-      const start = Math.min(offset ?? handle.position, handle.file.length);
-      const chunk = handle.file.bytes.slice(start, Math.min(handle.file.length, start + length));
+      const file = liveFile(handle);
+      let bytes = file.bytes;
+      let size = file.length;
+      if (file.view !== undefined) {
+        const seen = viewed(file);
+        if (seen.bytes === undefined) return undefined;
+        bytes = seen.bytes;
+        size = seen.bytes.byteLength;
+      }
+      const start = Math.min(offset ?? handle.position, size);
+      const chunk = bytes.slice(start, Math.min(size, start + length));
       if (offset === null) handle.position = start + chunk.byteLength;
       return chunk;
     },
 
     write: (handleId, offset, bytes) => {
       const handle = handleOf(handleId);
-      const file = handle.file;
+      if (!handle.writable) throw fsError('EBADF', 'write', handle.path);
+      // A cell no grant holds is logged at once (written): first, before anything
+      // is decided (an inode descriptor's cell is made after), whether its bytes
+      // fit what the log holds unanswered.
+      const live = liveFile(handle);
+      if (live.through === undefined && client.held(live.key) === undefined) client.fitsSync(bytes.byteLength, handle.path);
+      const file = cellOf(handle);
+      if (file === undefined) return undefined;
       if (file.through !== undefined) {
         // Through: by the file's number, ordered with everything else; an
         // O_APPEND write lands at the file's end as the session has it then.
@@ -974,16 +1095,14 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         throughLogged = ++changes;
         return bytes.byteLength;
       }
-      const start = offset ?? handle.position;
+      const start = handle.append ? file.length : offset ?? handle.position;
       const end = start + bytes.byteLength;
-      // A provisional decision's bytes are logged at once (written): first, whether they fit what the log holds unanswered.
-      if (client.held(file.key) === undefined && options.provisional?.() === true) client.fitsSync(bytes.byteLength, handle.path);
       if (!room(file, end)) throw fsError('ENOSPC', 'write', handle.path);
       const from = Math.min(start, file.length);
       if (start > file.length) file.bytes.fill(0, file.length, start);
       file.bytes.set(bytes, start);
       file.length = Math.max(file.length, end);
-      if (offset === null) handle.position = end;
+      if (offset === null || handle.append) handle.position = end;
       const entry = decided.get(file.key);
       if (entry) decided.set(file.key, { ...entry, size: file.length, mtime: now(), ctime: now() });
       written(file, from);
@@ -992,7 +1111,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
 
     seek: (handleId, offset, whence) => {
       const handle = handleOf(handleId);
-      const position = (whence === 'set' ? 0 : whence === 'current' ? handle.position : handle.file.length) + offset;
+      const file = liveFile(handle);
+      const position = (whence === 'set' ? 0 : whence === 'current' ? handle.position : file.view === undefined ? file.length : viewed(file).entry.size) + offset;
       if (position < 0) throw fsError('EINVAL', 'lseek', handle.path);
       handle.position = position;
       return position;
@@ -1000,12 +1120,14 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
 
     ftruncate: (handleId, size) => {
       const handle = handleOf(handleId);
-      const file = handle.file;
+      if (!handle.writable) throw fsError('EINVAL', 'ftruncate', handle.path);
+      const file = cellOf(handle);
+      if (file === undefined) return false;
       if (file.through !== undefined) {
         acknowledged({ type: 'call', call: { call: 'ftruncate', path: file.key, ino: file.through.ino, ...(handle.description === undefined ? {} : { description: handle.description }), size } });
         file.length = size;
         throughLogged = ++changes;
-        return;
+        return true;
       }
       if (!room(file, size)) throw fsError('ENOSPC', 'ftruncate', handle.path);
       const from = Math.min(size, file.length);
@@ -1014,17 +1136,21 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const entry = decided.get(file.key);
       if (entry) decided.set(file.key, { ...entry, size, mtime: now(), ctime: now() });
       written(file, from);
+      return true;
     },
 
     fstat: (handleId) => {
       const handle = handleOf(handleId);
+      const file = liveFile(handle);
+      // Opened by its number, no cell here: the store's, while a name leads to it.
+      if (file.view !== undefined) return viewed(file).entry;
       // Through: its stat at the open, with its size as this process made it.
-      if (handle.file.through !== undefined) return { ...handle.file.through.entry, size: handle.file.length };
+      if (file.through !== undefined) return { ...file.through.entry, size: file.length };
       // Its name gone: the description's own file, as it was then.
-      if (handle.file.detached !== undefined) return { ...handle.file.detached, size: handle.file.length };
-      const entry = decided.get(handle.file.key) ?? store.entry(handle.file.key);
+      if (file.detached !== undefined) return { ...file.detached, size: file.length };
+      const entry = decided.get(file.key) ?? store.entry(file.key);
       if (!entry) throw fsError('EBADF', 'fstat', handle.path);
-      return { ...entry, size: handle.file.length };
+      return { ...entry, size: file.length };
     },
 
     close: (handleId) => {
@@ -1039,7 +1165,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       throughLogged = ++changes;
     },
 
-    keyOf: (handleId) => handleOf(handleId).file.key,
+    keyOf: (handleId) => liveFile(handleOf(handleId)).key,
 
     dup: (handleId) => {
       const handle = handleOf(handleId);
@@ -1050,13 +1176,14 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
 
     reopen: (handleId, flags) => {
       const handle = handleOf(handleId);
-      if (handle.file.through !== undefined || flags.append) return undefined;
-      const entry = handle.file.detached ?? decided.get(handle.file.key) ?? store.entry(handle.file.key);
+      const file = liveFile(handle);
+      if (file.through !== undefined || flags.append) return undefined;
+      const entry = file.view !== undefined ? viewed(file).entry : file.detached ?? decided.get(file.key) ?? store.entry(file.key);
       if (!entry) throw fsError('EBADF', 'open', handle.path);
       if (flags.create && flags.exclusive) throw fsError('EEXIST', 'open', handle.path);
       if (!modeAllows(entry, (flags.read ? 4 : 0) | (flags.write || flags.truncate ? 2 : 0), store.cred)) throw fsError('EACCES', 'open', handle.path);
       const id = nextHandle--;
-      handles.set(id, { file: handle.file, readable: !!flags.read, writable: !!flags.write, append: false, position: 0, path: handle.path });
+      handles.set(id, { file: handle.file, ...(handle.inode === undefined ? {} : { inode: handle.inode }), readable: !!flags.read, writable: !!flags.write, append: false, position: 0, path: handle.path });
       if (flags.truncate) holder.ftruncate(id, 0);
       return {
         id, path: handle.path, position: 0, closed: false,
@@ -1097,12 +1224,16 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       if (writableParent(key, path, 'unlink') === undefined) return false;
       decided.set(key, null);
       note(parentKey(key), nameOf(key), null);
-      const local = files.get(current.ino);
-      if (local !== undefined && local.key === key) {
+      const found = files.get(current.ino);
+      const local = found !== undefined && found.key === key ? found : undefined;
+      // Its bytes go with it: nothing of them is logged, now or through a
+      // description still open on it.
+      if (local !== undefined) {
         files.delete(current.ino);
-        // Its bytes go with it: nothing of them is logged, now or through a
-        // description still open on it.
         detach(local, current);
+      }
+      orphan(current, local);
+      if (local !== undefined) {
         if (!isOpen(local)) unreserve(local);
         // Made here and never logged: the session never had the name.
         if (local.made !== undefined) return true;
@@ -1183,10 +1314,16 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       note(parentKey(to), nameOf(to), source.type);
       // A file it replaces loses its name: its open descriptions keep its bytes.
       if (target !== null) {
-        const replaced = files.get(target.ino);
-        if (replaced !== undefined && replaced.key === to) { files.delete(target.ino); detach(replaced, target); }
+        const found = files.get(target.ino);
+        const replaced = found !== undefined && found.key === to ? found : undefined;
+        if (replaced !== undefined) { files.delete(target.ino); detach(replaced, target); }
+        orphan(target, replaced);
       }
       for (const file of files.values()) if (within(file.key, from)) file.key = to + file.key.slice(from.length);
+      // An inode descriptor's file is the one it opened, under its new name.
+      for (const handle of handles.values()) {
+        if (handle.file.view !== undefined && within(handle.file.key, from)) handle.file.key = to + handle.file.key.slice(from.length);
+      }
       log({ type: 'rename', from, to });
       return true;
     },
@@ -1212,7 +1349,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     },
 
     fsetattr: (handleId, change) => {
-      const file = handleOf(handleId).file;
+      const file = liveFile(handleOf(handleId));
       if (file.through !== undefined) return false;
       const entry = file.detached ?? decided.get(file.key) ?? store.entry(file.key);
       if (entry === undefined || entry === null) return false;

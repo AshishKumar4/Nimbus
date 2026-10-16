@@ -460,6 +460,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         get cred() { return resident.cred; },
         entry: (key) => resident.entry(key),
         children: (key) => resident.children(key),
+        content: (key, revision) => resident.content(key, revision),
         reserve: (bytes) => resident.reserve(bytes),
         release: (bytes) => resident.release(bytes),
       },
@@ -1055,8 +1056,49 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     return openOnSession(path, flags);
   };
 
-  const openOnSession = (path: RuntimeFsPath, flags: RuntimeOpenFlags): RuntimeOpenedFile | Promise<RuntimeOpenedFile> => {
+  /**
+   * An open no held subtree decides, for a caller that cannot wait: the file
+   * it names opened by its number (DelegationHolder.openInode), its access
+   * judged and nothing read; one it makes, decided as a write's open is.
+   */
+  const openByNumber = (path: RuntimeFsPath, flags: RuntimeOpenFlags): RuntimeOpenedFile => {
+    if (holder === null || !store.ready() || flags.directory) throw NOT_NOW;
+    const walk = walkFor(path, flags.followSymlinks !== false);
+    if (walk === DELEGATE || walk instanceof Promise) throw NOT_NOW;
+    const entry = entryAt(walk.key);
+    if (entry === undefined) throw NOT_NOW;
+    if (entry === null) {
+      if (!flags.create) throw fsError('ENOENT', 'open', path);
+      const made = holder.open(walk.key, pathOf(path), { ...flags, write: true, create: true, truncate: true, append: false });
+      if (made === undefined) throw NOT_NOW;
+      if (flags.append) holder.setStatus(made.id, { append: true });
+      return heldOpen(made);
+    }
+    if (flags.create && flags.exclusive) throw fsError('EEXIST', 'open', path);
+    if (entry.type === 'directory' && (flags.write || flags.append)) throw fsError('EISDIR', 'open', path);
+    // An emptying open the holder did not decide is the session's.
+    if (entry.type !== 'file' || flags.truncate) throw NOT_NOW;
+    return heldOpen(holder.openInode(walk.key, pathOf(path), flags, entry));
+  };
+
+  /**
+   * A call on an inode descriptor of the holder's that needs its file's
+   * bytes the store does not hold (DelegationHolder.inodeOf): fetched by its
+   * name while that still leads to the file, and the call made again;
+   * ESTALE once none does. A call that must answer now cannot wait for them.
+   */
+  const byNumber = <T>(syscall: string, handleId: number, call: () => T | undefined): T | Promise<T> => {
+    const done = call();
+    if (done !== undefined) return done;
     if (now) throw NOT_NOW;
+    const stale = (): never => { throw fsError('ESTALE', syscall, '/' + holder!.keyOf(handleId)); };
+    const at = holder!.inodeOf(handleId);
+    if (at === undefined) return stale();
+    return Promise.resolve(contentOf(at.key, at.entry)).then(() => call() ?? stale());
+  };
+
+  const openOnSession = (path: RuntimeFsPath, flags: RuntimeOpenFlags): RuntimeOpenedFile | Promise<RuntimeOpenedFile> => {
+    if (now) return openByNumber(path, flags);
     const readOnly = !flags.write && !flags.create && !flags.truncate && !flags.append && !flags.exclusive;
     if (!readOnly) {
       // A file of the session's own filesystem is opened to write through
@@ -1155,7 +1197,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         return holder.readThrough(handleId, offset, length, readThrough(handleId));
       }
       counts.local++;
-      return holder.read(handleId, offset, length);
+      return byNumber('read', handleId, () => holder!.read(handleId, offset, length));
     }
     const file = paged.get(handleId);
     // Positional reads only: a read at the descriptor's offset is the descriptor's to advance.
@@ -1199,14 +1241,17 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   fs.write = (handleId, offset, bytes) => {
-    if (holder?.owns(handleId)) { counts.local++; return holder.write(handleId, offset, bytes); }
+    if (holder?.owns(handleId)) { counts.local++; return byNumber('write', handleId, () => holder!.write(handleId, offset, bytes)); }
     if (now) throw NOT_NOW;
     unwritten.delete(handleId);
     return changing('write', () => authority.write(handleId, offset, bytes));
   };
 
   fs.ftruncate = (handleId, size) => {
-    if (holder?.owns(handleId)) { counts.local++; holder.ftruncate(handleId, size); return; }
+    if (holder?.owns(handleId)) {
+      counts.local++;
+      return after(byNumber('ftruncate', handleId, () => (holder!.ftruncate(handleId, size) ? true : undefined)), () => undefined);
+    }
     if (now) throw NOT_NOW;
     unwritten.delete(handleId);
     return changing('ftruncate', () => authority.ftruncate(handleId, size));
