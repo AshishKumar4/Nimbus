@@ -15,6 +15,20 @@ import { type Env } from './runtime.js';
 import { type StackInfo } from './stack.js';
 /** A module cell: Node's CommonJS wrapper function. */
 export type ModuleCell = (exports: unknown, require: unknown, module: unknown, filename: unknown, dirname: unknown) => unknown;
+/**
+ * An ES module cell's ExecuteModule, once it is linked: its body, answering
+ * undefined, or (top-level await) the promise of its completion.
+ */
+export type ModuleExecution = () => unknown;
+/**
+ * An ES module cell's InitializeEnvironment (runtime/esm-graph.ts): its
+ * frame made, its function declarations hoisted, its exports published, its
+ * imports bound (each request through the require it is given) and its
+ * `export *`s copied, none of its body run; answers its ExecuteModule.
+ */
+export type ModuleLink = (exports: unknown, require: unknown, module: unknown, filename: unknown, dirname: unknown) => ModuleExecution;
+/** The link of `cell`, an ES module's cell; null for any other. */
+export declare function moduleLink(cell: ModuleCell): ModuleLink | null;
 /** esm-interop.ts's helpers, compiled from their text (ESM_MODULE_HELPERS). */
 export interface ModuleHelpers {
     readonly exports: NativeFunction;
@@ -56,6 +70,10 @@ export interface ModulePlan {
     /** The module's statements, as an async function body (top-level await). */
     readonly body: Code;
 }
-/** The wrapper function that runs `plan`. */
+/**
+ * The wrapper function that runs `plan`: its link, then its execution, as
+ * one call (a module whose body suspends rejecting for a failure linking
+ * it, rather than throwing); its link alone is moduleLink's.
+ */
 export declare function moduleCell(plan: ModulePlan, ops: HostOperators, helpers: ModuleHelpers): ModuleCell;
 //# sourceMappingURL=modules.d.ts.map
