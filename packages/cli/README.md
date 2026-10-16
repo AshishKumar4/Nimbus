@@ -129,13 +129,17 @@ redeploy. The Worker reads the catalog by that digest and nothing else.
 
 ```bash
 CLOUDFLARE_ACCOUNT_ID=<id> nimbus runtime sync --bucket nimbus-runtime-cache-public clang
-CLOUDFLARE_ACCOUNT_ID=<id> nimbus runtime sync --bucket nimbus-runtime-cache-public python
+CLOUDFLARE_ACCOUNT_ID=<id> nimbus runtime sync --bucket nimbus-runtime-cache-public cpython
 CLOUDFLARE_ACCOUNT_ID=<id> nimbus runtime sync --bucket nimbus-runtime-cache-public ruby
 ```
 
-Runtime versions default to the shipped catalog versions
-(`clang@binji-2020`, `python@0.29.4`, `ruby@3.3.4`) unless explicitly
-overridden as `name@version`.
+With no runtime named, the sync publishes `clang@binji-2020`, `cpython@3.13.14-3`
+and `ruby@3.3.4`, the versions this release ships; name another as
+`name@version`. CPython (the `python` and `python3` commands), bash and git are
+built by Nimbus. The CLI publishes them from their npm runtime packages
+(`@nimbus-sh/runtime-cpython` and so on), at the version its release names. It
+checks each tarball against the registry's integrity, and each file against the
+package's manifest, before anything reaches the bucket.
 
 ### `nimbus runtime list`
 
