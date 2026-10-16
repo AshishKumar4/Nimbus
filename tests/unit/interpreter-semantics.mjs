@@ -474,6 +474,9 @@ async function runCases(interpreterFile, opsFile) {
     await interp.moduleLink(awaits)(am.exports, require, am, '', '')();
     check('a linked module with top-level await executes to its completion', am.exports.w, 3);
     check('a CommonJS cell has no link', interp.moduleLink(interp.compileModule('/w/c2.js', 'exports.a = 1')), null);
+    check('a cell\'s requests, in the order its link requires them',
+      interp.moduleLinkRequests(interp.compileModule('/w/r.mjs', 'import "./a.js"; export * from "./b.js"; import j from "./c.json" with { type: "json" };')).map((r) => [r.source, r.type]),
+      [['./a.js', null], ['./b.js', null], ['./c.json', 'json']]);
   }
 
   console.log(`${count} cases passed`);

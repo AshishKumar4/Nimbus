@@ -11,11 +11,13 @@
  *     module's own export of that name, a `Module` tag, live enumerable
  *     getters in exported-name order), so a module in a cycle with this one
  *     finds them;
- *   - every requested module is then loaded in source order (ESM_LOAD_HELPER:
- *     the importer's require, resolving it as an import, with its `type`
- *     attribute), which gives its namespace as Node's loader makes it: an
- *     ES module's own, or a CommonJS module's, a builtin's or JSON's as
- *     Node's translators make it (node-shims); a default import reads its
+ *   - every requested module's namespace is then bound in source order
+ *     (ESM_LOAD_HELPER: the require the module's link is given, asked with
+ *     each specifier and its `type` attribute), the namespace Node's loader
+ *     makes: an ES module's own, or a CommonJS module's, a builtin's or
+ *     JSON's as Node's translators make it. Nothing is evaluated then:
+ *     node-shims evaluates the graph as ECMA-262 does (runtime/esm-graph.ts),
+ *     a module's link its InitializeEnvironment. A default import reads its
  *     `default`, and a namespace import is it;
  *   - last, each `export *` copies its module's names (ESM_STAR_HELPER) but
  *     those two of them reach different bindings of (ESM_CONFLICTS_HELPER:
@@ -54,14 +56,14 @@ export const ESM_STAR_CONFLICTS = 'nimbus:star-conflicts';
 export const ESM_CONFLICTS_HELPER = `(require) => require("", "${ESM_STAR_CONFLICTS}")`;
 
 /**
- * What a module's require is passed beside a static import's specifier: the
- * loader resolves it as Node's ESM loader does (node-shims' __requireFrom),
- * not as require() does. A require of a module takes its first argument
- * alone, as Node's does.
+ * What a module's link require is passed beside a static import's
+ * specifier (node-shims' __nimbusInterpretedRecord answers it with the
+ * namespace of the module its graph resolved the request to), apart from
+ * the conflicts an `export *` asks for (ESM_STAR_CONFLICTS).
  */
 export const ESM_STATIC_IMPORT = 'nimbus:static-import';
 
-/** A static import's module: the importer's require, told the request is an import, with its `type` attribute (or null). */
+/** A static import's namespace: the link's require, told the request is an import, with its `type` attribute (or null). */
 export const ESM_LOAD_HELPER = `(require, source, type) => require(source, "${ESM_STATIC_IMPORT}", type)`;
 
 /** The helpers as an object literal's source: what a launch compiles for its interpreter (interpreter/modules.ts ModuleHelpers). */

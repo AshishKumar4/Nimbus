@@ -10,10 +10,15 @@ published independently in the `@nimbus-sh` npm scope.
   names are checked before any module body runs. It runs once, in a cycle
   or after it throws, and its `export *` conflicts are left out of its
   namespace, as in Node. Before, a staged entry or package with such an
-  import failed to link, and an interpreted one refused it. An interpreted
-  module's static import of a `data:` module that awaits at its top level
-  is refused before that module runs (`ERR_REQUIRE_ASYNC_MODULE`). Node
-  would wait for it; use `import()` instead.
+  import failed to link, and an interpreted one refused it.
+- Fixed: a hosted program's ES modules that the interpreter evaluates
+  (files written after launch, `?query` and `#fragment` instances, `data:`
+  modules, staged modules it takes over) are linked and evaluated as
+  ECMA-262 specifies (`runtime/esm-graph.js`). A static import of a module
+  with top-level await now waits for it, as in Node; before, the importer
+  ran first. In a cycle, modules run in Node's order, whatever their kind;
+  before, the order depended on which module of the cycle was interpreted
+  or staged.
 - Fixed: a hosted `data:` JavaScript module is always an ES module, as its
   MIME type says: strict, with `this` undefined at its top level. Before,
   one without `import` or `export` ran as sloppy CommonJS.

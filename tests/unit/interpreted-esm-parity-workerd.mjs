@@ -210,13 +210,7 @@ try {
     assert.equal(setup.status, 0, setup.stdout);
     const ran = await session.run('cd /home/user && node main.mjs', 120_000);
     assert.equal(ran.status, 0, ran.stdout);
-    // Node waits for a statically imported module's top-level await; an interpreted module cannot, so Nimbus refuses
-    // the import before that module runs (and leaves no unhandled rejection: the run exits 0).
-    const { staticAwait, ...ours } = report(ran.stdout);
-    const { staticAwait: _nodeWaits, ...theirs } = expected;
-    assert.deepEqual(ours, theirs, 'staged and interpreted ES modules load as host Node loads them');
-    assert.equal(staticAwait[0], 'threw');
-    assert.match(staticAwait[2], /^A static import of data:text\/javascript,await .* cannot wait for its top-level await/);
+    assert.deepEqual(report(ran.stdout), expected, 'staged and interpreted ES modules load as host Node loads them');
   } finally {
     await session.close();
   }

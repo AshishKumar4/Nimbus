@@ -28,7 +28,7 @@ import {
   scriptExpression,
 } from '../_shared/runtime-function-source.js';
 import { Compiler, programBindings, type UnitContext, type UnitHost } from './compile.js';
-import { type ModuleCell, type ModuleHelpers, type ModuleLink, moduleCell, moduleLink } from './modules.js';
+import { type ModuleCell, type ModuleHelpers, type ModuleLink, type ModuleLinkRequest, moduleCell, moduleLink, moduleLinkRequests } from './modules.js';
 import type { HostOps, NativeFunction } from './host-ops.js';
 import { InterpreterRuntime, ROOT_ENV, frameTemplate, isObject } from './runtime.js';
 import { type FunctionScope, analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
@@ -115,6 +115,8 @@ export interface Interpreter {
    * for a CommonJS cell.
    */
   moduleLink(cell: ModuleCell): ModuleLink | null;
+  /** The static imports `cell`'s link requires (its specifiers and `type` attributes), in order; null for a CommonJS cell. */
+  moduleLinkRequests(cell: ModuleCell): readonly ModuleLinkRequest[] | null;
   /**
    * A function returning the value of the script `code` when it is one
    * expression (scriptExpression): vm.runInThisContext's code, as node-shims
@@ -393,6 +395,10 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
 
     moduleLink(cell) {
       return moduleLink(cell);
+    },
+
+    moduleLinkRequests(cell) {
+      return moduleLinkRequests(cell);
     },
 
     compileExpression(code, origin) {

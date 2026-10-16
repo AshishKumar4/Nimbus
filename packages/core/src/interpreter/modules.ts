@@ -32,12 +32,23 @@ export type ModuleExecution = () => unknown;
  */
 export type ModuleLink = (exports: unknown, require: unknown, module: unknown, filename: unknown, dirname: unknown) => ModuleExecution;
 
-/** Each ES module cell's link, by the cell. */
-const links = new SafeWeakMap<ModuleCell, ModuleLink>();
+/** A static import an ES module's link requires, in source order: its specifier and its `type` attribute. */
+export interface ModuleLinkRequest {
+  readonly source: string;
+  readonly type: string | null;
+}
+
+/** Each ES module cell's link and its requests, by the cell. */
+const links = new SafeWeakMap<ModuleCell, { readonly link: ModuleLink; readonly requests: readonly ModuleLinkRequest[] }>();
 
 /** The link of `cell`, an ES module's cell; null for any other. */
 export function moduleLink(cell: ModuleCell): ModuleLink | null {
-  return links.get(cell) ?? null;
+  return links.get(cell)?.link ?? null;
+}
+
+/** The static imports `cell`'s link requires, in the order it requires them; null for a cell that is no ES module's. */
+export function moduleLinkRequests(cell: ModuleCell): readonly ModuleLinkRequest[] | null {
+  return links.get(cell)?.requests ?? null;
 }
 
 /** esm-interop.ts's helpers, compiled from their text (ESM_MODULE_HELPERS). */
@@ -132,7 +143,7 @@ export function moduleCell(plan: ModulePlan, ops: HostOperators, helpers: Module
     }
     return execute();
   };
-  links.set(cell, linkModule);
+  links.set(cell, { link: linkModule, requests: plan.requests });
   return cell;
 }
 
