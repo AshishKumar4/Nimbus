@@ -38,12 +38,8 @@
 import type { FsTime, RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '../os-contracts.js';
 import type { ResidentEntry } from './resident-filesystem.js';
 import { fsError } from '../beneath-walk.js';
-<<<<<<< HEAD
-import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, modeAllows, utimesRefusal } from '../../vfs/posix-access.js';
-import { copiedPermissions, copyfileMode } from '../../vfs/vfs.js';
-=======
 import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, explicitTimes, modeAllows, timeAt, utimesRefusal } from '../../vfs/posix-access.js';
->>>>>>> work/holder-stage2
+import { copiedPermissions, copyfileMode } from '../../vfs/vfs.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import { processFsClient, type ProcessFsClient, type ProcessFsGrant, type ProcessFsJournal, type ProcessFsOp, type ProcessFsSession } from '../../_shared/process-fs-client.js';
 
