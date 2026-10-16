@@ -2661,7 +2661,7 @@ function mkStat(sqliteVfs: SqliteVFS): Command {
     // the rest are statted, and the status is 1.
     let unread = false;
     for (const f of files) {
-      let st: Awaited<ReturnType<typeof lstatOrThrow>>;
+      let st: NonNullable<Awaited<ReturnType<typeof vfs.stat>>>;
       try {
         const at = f.startsWith('/') ? f : ctx.cwd + '/' + f;
         st = dereference ? await statOrThrow(vfs, at) : await lstatOrThrow(vfs, at);
