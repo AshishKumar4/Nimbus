@@ -31,7 +31,6 @@ const originalSlice = Uint8Array.prototype.slice;
 try {
   const facetWorker = await importGitFacetWorker(tempDir, `
 const enc = new TextEncoder();
-export const gitHttp = {};
 export const git = {
   async fetch({ fs, dir, remote }) {
     if (remote !== 'origin') throw new Error('fetch did not receive the remote');

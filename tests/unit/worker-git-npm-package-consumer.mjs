@@ -90,8 +90,8 @@ try {
  const staged = readFileSync(new URL('public' + GIT_BUNDLE_ENTRY, installed));
  assert.equal(createHash('sha256').update(staged).digest('hex'), GIT_BUNDLE_SHA256, 'the packed facet git module is the pinned one');
  assert.deepEqual(readFileSync(new URL('vendor/git.generated.mjs', installed)), staged, 'host and facet use byte-identical canonical git code');
- const {gitHttp} = await import(new URL('vendor/git.generated.mjs', installed));
- assert.equal(gitHttp.request, gitHttp.default.request, 'the namespace and default HTTP APIs expose the same request implementation');
+ // Its git speaks HTTP through Nimbus's clients alone: cf-git's own HTTP client is not exported.
+ assert.equal('gitHttp' in await import(new URL('vendor/git.generated.mjs', installed)), false, 'the vendor module exports no HTTP client of its own');
 
  console.log('PACKED GIT OK: 2000 files, one index write, all blob ids and commit');
 } finally { db.close(); }
@@ -159,7 +159,11 @@ try {
   const imports = Object.values(bundled.metafile.outputs).flatMap(output => output.imports);
   assert.ok(imports.every(item => item.path !== 'isomorphic-git'));
   assert.ok(Object.keys(bundled.metafile.inputs).some(path => path.endsWith('/vendor/git.generated.mjs')));
-  const check = `import {git, gitHttp} from './node_modules/@nimbus-sh/worker/vendor/git.generated.mjs';
+  const check = `import * as vendor from './node_modules/@nimbus-sh/worker/vendor/git.generated.mjs';
+const {git} = vendor;
+// No HTTP client of its own is declared.
+// @ts-expect-error
+void vendor.gitHttp;
 function patched(fs: Parameters<typeof git.add>[0]['fs']) {
  void git.add({fs, dir:'/repo', filepath:['a','b']});
  void git.getConfigNames({fs, dir:'/repo', section:'remote'});
@@ -179,16 +183,12 @@ function patched(fs: Parameters<typeof git.add>[0]['fs']) {
  void git.fetch({fs, dir:'/repo', uploadPack: {discover: async () => undefined, requestPack: async () => undefined}});
 }
 void patched;
-export function request(options: Parameters<typeof gitHttp.request>[0]) {
- return [gitHttp.request(options), gitHttp.default.request(options)];
-}
 `;
   writeFileSync(join(consumer, 'consumer.mts'), check);
   writeFileSync(join(consumer, 'consumer.cts'), `export async function addFromCommonJs() {
-    const {git, gitHttp} = await import('./node_modules/@nimbus-sh/worker/vendor/git.generated.mjs');
+    const {git} = await import('./node_modules/@nimbus-sh/worker/vendor/git.generated.mjs');
     return {
       add: (options: Parameters<typeof git.add>[0]) => git.add({...options, filepath:['a','b']}),
-      request: (options: Parameters<typeof gitHttp.request>[0]) => [gitHttp.request(options), gitHttp.default.request(options)],
     };
   }`);
   run(join(root, 'node_modules/.bin/tsc'), ['--noEmit','--strict','--module','NodeNext','--moduleResolution','NodeNext','--target','ES2022','consumer.mts','consumer.cts'], consumer);

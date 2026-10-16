@@ -13,4 +13,3 @@ export declare const git: Omit<typeof Upstream, 'fetch' | 'push'> & {
     section: string; subsection?: string | null;
   }): Promise<string[]>;
 };
-export * as gitHttp from './git-http.generated.js';
