@@ -580,10 +580,9 @@ export const networkWorker = {
     } catch (e) {
       // Best-effort flush of partial state so user can inspect what landed
       try { await flushWave(); } catch { /* the failure below is the one to report */ }
-      const error = e as (Error & { code?: unknown }) | undefined;
+      const error = e as Error | undefined;
       return respond(false, {
         error: (error && error.message) || String(e),
-        errorCode: error && typeof error.code === 'string' ? error.code : undefined,
         // A write git would have failed: git's own lines (pack/mount-writer.ts).
         gitFailure: e instanceof GitWriteFailure ? e.lines : undefined,
         remoteFailure: remoteFailureOf(e, http),

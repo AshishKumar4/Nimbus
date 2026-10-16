@@ -933,7 +933,7 @@ async function runCloneSnapshot(
   return planned;
 }
 
-/** The index from the shares; a full clone's shallow file goes, and its commit-graph is written; then the marker. */
+/** The index from the shares; a full clone's shallow file goes, and its graph records stay for the graph-filters pass, or go; then the marker. */
 async function runCloneFinish(
   facetOpts: Omit<GitNetworkOpts, 'mutationOwner'>,
   identity: { jobId: string; optionsHash: string },
