@@ -84,7 +84,7 @@ await runScenarios(import.meta.path, {
     assert.equal(stat(await answersNow(e, 'stat of a known name', () => sync.stat(seed))), 4);
     await answersNow(e, 'readFile of bytes not resident', () => sync.readFile(seed), 'EAGAIN');
     // An open by its number reads nothing: the read needs the bytes, an awaited read fetches them.
-    const fd = await answersNow(e, 'a read-only open of a known name', () => sync.open(seed, { read: true })).id;
+    const fd = (await answersNow(e, 'a read-only open of a known name', () => sync.open(seed, { read: true }))).id;
     await answersNow(e, 'a read of bytes not resident', () => sync.read(fd, 0, 16), 'EAGAIN');
     assert.equal(dec.decode(await e.fs.read(fd, 0, 16)), 'SEED');
     assert.equal(dec.decode(await answersNow(e, 'a read of bytes fetched', () => sync.read(fd, 0, 16))), 'SEED');
