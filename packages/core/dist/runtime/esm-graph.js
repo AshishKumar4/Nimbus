@@ -43,8 +43,31 @@ export class OtherModuleRecord {
         this.host = host;
     }
 }
-// %Promise% as it was when this module loaded: a program may replace the global.
+// What this module calls of the built-ins, as they were when it loaded: it
+// runs after a program may have replaced them (a global, a prototype's
+// method, the array iterator), so it calls nothing else of them.
 const PromiseConstructor = Promise;
+const promiseThen = Promise.prototype.then;
+const reflectApply = Reflect.apply;
+/** Appends `item` to `list`, by index. */
+function append(list, item) {
+    list[list.length] = item;
+}
+/** Removes and answers the last element of `list`, or undefined. */
+function removeLast(list) {
+    if (list.length === 0)
+        return undefined;
+    const last = list[list.length - 1];
+    list.length--;
+    return last;
+}
+/** Whether `list` holds `item`. */
+function contains(list, item) {
+    for (let i = 0; i < list.length; i++)
+        if (list[i] === item)
+            return true;
+    return false;
+}
 /** NewPromiseCapability(%Promise%). */
 function newPromiseCapability() {
     let resolve = () => { };
@@ -73,8 +96,8 @@ export function link(module) {
     catch (error) {
         // 4. If result is an abrupt completion, then
         //   a. For each Cyclic Module Record requiredModule of stack, set requiredModule.[[Status]] to ~unlinked~.
-        for (const requiredModule of stack)
-            requiredModule.status = 'unlinked';
+        for (let i = 0; i < stack.length; i++)
+            stack[i].status = 'unlinked';
         //   c. Return ? result.
         throw error;
     }
@@ -97,17 +120,19 @@ function innerModuleLinking(module, stack, index) {
     module.dfsAncestorIndex = index;
     index++;
     // 8. Append module to stack.
-    stack.push(module);
+    append(stack, module);
     // 9. For each ModuleRequest Record request of module.[[RequestedModules]], do
-    for (const requiredModule of module.host.requestedModules()) {
+    const requested = module.host.requestedModules();
+    for (let i = 0; i < requested.length; i++) {
         //   a. Let requiredModule be GetImportedModule(module, request).
+        const requiredModule = requested[i];
         //   b. Set index to ? InnerModuleLinking(requiredModule, stack, index).
         index = innerModuleLinking(requiredModule, stack, index);
         //   c. If requiredModule is a Cyclic Module Record, then
         //     iii. If requiredModule.[[Status]] is ~linking~, then
         //       1. Set module.[[DFSAncestorIndex]] to min(module.[[DFSAncestorIndex]], requiredModule.[[DFSAncestorIndex]]).
         if (requiredModule instanceof CyclicModuleRecord && requiredModule.status === 'linking') {
-            module.dfsAncestorIndex = Math.min(module.dfsAncestorIndex, requiredModule.dfsAncestorIndex);
+            module.dfsAncestorIndex = min(module.dfsAncestorIndex, requiredModule.dfsAncestorIndex);
         }
     }
     // 10. Perform ? module.InitializeEnvironment().
@@ -119,7 +144,7 @@ function innerModuleLinking(module, stack, index) {
         while (!done) {
             //   i. Let requiredModule be the last element of stack. ii. Remove the last element of stack.
             //   (module is on stack, step 11's assertion: it is reached before stack is empty.)
-            const requiredModule = stack.pop();
+            const requiredModule = removeLast(stack);
             if (requiredModule === undefined)
                 break;
             //   iv. Set requiredModule.[[Status]] to ~linked~.
@@ -161,10 +186,10 @@ export function evaluate(start) {
     catch (error) {
         // 9. If result is an abrupt completion, then
         //   a. For each Cyclic Module Record requiredModule of stack, do
-        for (const requiredModule of stack) {
+        for (let i = 0; i < stack.length; i++) {
             //   ii. Set requiredModule.[[Status]] to ~evaluated~. iii. Set requiredModule.[[EvaluationError]] to result.
-            requiredModule.status = 'evaluated';
-            requiredModule.evaluationError = { value: error };
+            stack[i].status = 'evaluated';
+            stack[i].evaluationError = { value: error };
         }
         //   d. Perform ! Call(promiseCapability.[[Reject]], undefined, « result.[[Value]] »).
         promiseCapability.reject(error);
@@ -203,11 +228,12 @@ function innerModuleEvaluation(module, stack, index) {
     module.pendingAsyncDependencies = 0;
     index++;
     // 10. Append module to stack.
-    stack.push(module);
+    append(stack, module);
     // 11. For each ModuleRequest Record request of module.[[RequestedModules]], do
-    for (const imported of module.host.requestedModules()) {
+    const requested = module.host.requestedModules();
+    for (let i = 0; i < requested.length; i++) {
         //   a. Let requiredModule be GetImportedModule(module, request).
-        let requiredModule = imported;
+        let requiredModule = requested[i];
         //   b. Set index to ? InnerModuleEvaluation(requiredModule, stack, index).
         index = innerModuleEvaluation(requiredModule, stack, index);
         //   c. If requiredModule is a Cyclic Module Record, then
@@ -215,7 +241,7 @@ function innerModuleEvaluation(module, stack, index) {
             //   iii. If requiredModule.[[Status]] is ~evaluating~, then
             if (requiredModule.status === 'evaluating') {
                 //   1. Set module.[[DFSAncestorIndex]] to min(module.[[DFSAncestorIndex]], requiredModule.[[DFSAncestorIndex]]).
-                module.dfsAncestorIndex = Math.min(module.dfsAncestorIndex, requiredModule.dfsAncestorIndex);
+                module.dfsAncestorIndex = min(module.dfsAncestorIndex, requiredModule.dfsAncestorIndex);
             }
             else {
                 //   iv. Else,
@@ -230,7 +256,7 @@ function innerModuleEvaluation(module, stack, index) {
                 //   1. Set module.[[PendingAsyncDependencies]] to module.[[PendingAsyncDependencies]] + 1.
                 module.pendingAsyncDependencies++;
                 //   2. Append module to requiredModule.[[AsyncParentModules]].
-                requiredModule.asyncParentModules.push(module);
+                append(requiredModule.asyncParentModules, module);
             }
         }
     }
@@ -254,7 +280,7 @@ function innerModuleEvaluation(module, stack, index) {
         while (!done) {
             //   i. Let requiredModule be the last element of stack. ii. Remove the last element of stack.
             //   (module is on stack, step 14's assertion: it is reached before stack is empty.)
-            const requiredModule = stack.pop();
+            const requiredModule = removeLast(stack);
             if (requiredModule === undefined)
                 break;
             //   v. If requiredModule.[[AsyncEvaluationOrder]] is ~unset~, set requiredModule.[[Status]] to ~evaluated~.
@@ -277,22 +303,23 @@ function executeAsyncModule(module) {
     const promiseCapability = newPromiseCapability();
     // 4-8. Perform PerformPromiseThen(promiseCapability.[[Promise]], onFulfilled, onRejected), whose closures
     //      perform AsyncModuleExecutionFulfilled(module) and AsyncModuleExecutionRejected(module, error).
-    promiseCapability.promise.then(() => asyncModuleExecutionFulfilled(module), (error) => asyncModuleExecutionRejected(module, error));
+    reflectApply(promiseThen, promiseCapability.promise, [() => asyncModuleExecutionFulfilled(module), (error) => asyncModuleExecutionRejected(module, error)]);
     // 9. Perform ! module.ExecuteModule(promiseCapability).
     module.host.executeModule(promiseCapability);
 }
 /** GatherAvailableAncestors(module, execList). */
 function gatherAvailableAncestors(module, execList) {
     // 1. For each Cyclic Module Record ancestorModule of module.[[AsyncParentModules]], do
-    for (const ancestorModule of module.asyncParentModules) {
+    for (let i = 0; i < module.asyncParentModules.length; i++) {
+        const ancestorModule = module.asyncParentModules[i];
         //   a. If execList does not contain ancestorModule and ancestorModule.[[CycleRoot]].[[EvaluationError]] is ~empty~, then
-        if (!execList.includes(ancestorModule) && (ancestorModule.cycleRoot ?? ancestorModule).evaluationError === null) {
+        if (!contains(execList, ancestorModule) && (ancestorModule.cycleRoot ?? ancestorModule).evaluationError === null) {
             //   v. Set ancestorModule.[[PendingAsyncDependencies]] to ancestorModule.[[PendingAsyncDependencies]] - 1.
             ancestorModule.pendingAsyncDependencies--;
             //   vi. If ancestorModule.[[PendingAsyncDependencies]] = 0, then
             if (ancestorModule.pendingAsyncDependencies === 0) {
                 //   1. Append ancestorModule to execList.
-                execList.push(ancestorModule);
+                append(execList, ancestorModule);
                 //   2. If ancestorModule.[[HasTLA]] is false, perform GatherAvailableAncestors(ancestorModule, execList).
                 if (!ancestorModule.host.hasTLA)
                     gatherAvailableAncestors(ancestorModule, execList);
@@ -314,9 +341,10 @@ function asyncModuleExecutionFulfilled(module) {
     const execList = [];
     gatherAvailableAncestors(module, execList);
     // 11. Let sortedExecList be execList sorted by [[AsyncEvaluationOrder]] in ascending order.
-    const sortedExecList = [...execList].sort((a, b) => order(a) - order(b));
+    const sortedExecList = sortedByAsyncEvaluationOrder(execList);
     // 12. For each Cyclic Module Record ancestorModule of sortedExecList, do
-    for (const ancestorModule of sortedExecList) {
+    for (let i = 0; i < sortedExecList.length; i++) {
+        const ancestorModule = sortedExecList[i];
         //   a. If ancestorModule.[[Status]] is ~evaluated~, then assert ancestorModule.[[EvaluationError]] is not ~empty~.
         if (ancestorModule.status === 'evaluated')
             continue;
@@ -347,6 +375,23 @@ function asyncModuleExecutionFulfilled(module) {
 function order(module) {
     return typeof module.asyncEvaluationOrder === 'number' ? module.asyncEvaluationOrder : Number.MAX_SAFE_INTEGER;
 }
+/** A copy of `list` sorted by [[AsyncEvaluationOrder]], ascending (an insertion sort: the lists are short). */
+function sortedByAsyncEvaluationOrder(list) {
+    const sorted = [];
+    for (let i = 0; i < list.length; i++) {
+        let at = sorted.length;
+        while (at > 0 && order(sorted[at - 1]) > order(list[i])) {
+            sorted[at] = sorted[at - 1];
+            at--;
+        }
+        sorted[at] = list[i];
+    }
+    return sorted;
+}
+/** The lesser of two integers. */
+function min(a, b) {
+    return a < b ? a : b;
+}
 /** AsyncModuleExecutionRejected(module, error). */
 function asyncModuleExecutionRejected(module, error) {
     // 1. If module.[[Status]] is ~evaluated~, then assert module.[[EvaluationError]] is not ~empty~ and return.
@@ -360,6 +405,6 @@ function asyncModuleExecutionRejected(module, error) {
     // 9. If module.[[TopLevelCapability]] is not ~empty~, then perform ! Call(module.[[TopLevelCapability]].[[Reject]], undefined, « error »).
     module.topLevelCapability?.reject(error);
     // 10. For each Cyclic Module Record ancestorModule of module.[[AsyncParentModules]], perform AsyncModuleExecutionRejected(ancestorModule, error).
-    for (const ancestorModule of module.asyncParentModules)
-        asyncModuleExecutionRejected(ancestorModule, error);
+    for (let i = 0; i < module.asyncParentModules.length; i++)
+        asyncModuleExecutionRejected(module.asyncParentModules[i], error);
 }

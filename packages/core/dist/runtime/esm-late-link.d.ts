@@ -13,6 +13,7 @@
  * CommonJS lexer), so a launch whose imports never need it never compiles it.
  */
 import type { ModuleRequests } from '../interpreter/index.js';
+export { CyclicModuleRecord, OtherModuleRecord, evaluate, link } from './esm-graph.js';
 /** What the loader resolves a static import to. */
 export interface LateResolution {
     readonly url: string;
@@ -93,11 +94,6 @@ export declare function starConflicts(host: LateLinkHost, url: string): string[]
  * namespace taken in a cycle has them all.
  */
 export declare function namespaceNames(host: LateLinkHost, url: string): string[] | null;
-/**
- * Whether staged row `row`'s graph, not yet evaluated, reaches back to the
- * late module at `url`, through rows, the modules staging handed on and the
- * late modules its link planned: a cycle with it, which that module's own
- * link loads, after its functions and exports exist.
- */
-export declare function reachesBack(host: LateLinkHost, row: number, url: string): boolean;
+/** The names of the namespace of staged row `row`, as staging's facts read them (namespaceNames' rule); null where they do not tell. */
+export declare function rowNamespaceNames(host: LateLinkHost, row: number): string[] | null;
 //# sourceMappingURL=esm-late-link.d.ts.map

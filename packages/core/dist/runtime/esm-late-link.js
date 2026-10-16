@@ -14,6 +14,8 @@
  */
 import { cjsModuleExportNames } from './cjs-module-exports.js';
 import { dataModule } from './esm-loader-policy.js';
+// The guest's graph algorithm rides in this runtime module (RUNTIME_ESM_LATE_MODULE): node-shims evaluates late graphs by it.
+export { CyclicModuleRecord, OtherModuleRecord, evaluate, link } from './esm-graph.js';
 /** The facades' export names, by row, read once. */
 let facadeNames;
 /** A facade row's export names, or null where unknown. */
@@ -147,51 +149,18 @@ export function starConflicts(host, url) {
  * namespace taken in a cycle has them all.
  */
 export function namespaceNames(host, url) {
+    return lateModules.has(url) ? targetNamespaceNames(host, { url }) : null;
+}
+/** The names of the namespace of staged row `row`, as staging's facts read them (namespaceNames' rule); null where they do not tell. */
+export function rowNamespaceNames(host, row) {
+    return targetNamespaceNames(host, { row });
+}
+function targetNamespaceNames(host, target) {
     const late = { modules: lateModules, rows: [] };
-    if (!lateModules.has(url))
-        return null;
-    const target = { url };
     const names = exportedNames(host, late, target, new Set());
     if (names === null)
         return null;
     return names.filter((name) => resolveExport(host, late, target, name, new Set()) !== AMBIGUOUS);
-}
-/**
- * Whether staged row `row`'s graph, not yet evaluated, reaches back to the
- * late module at `url`, through rows, the modules staging handed on and the
- * late modules its link planned: a cycle with it, which that module's own
- * link loads, after its functions and exports exist.
- */
-export function reachesBack(host, row, url) {
-    const seen = new Set();
-    const stack = [{ row }];
-    while (stack.length > 0) {
-        const target = stack.pop();
-        if (target === undefined || target === null || target.names !== undefined)
-            continue;
-        if (target.row !== undefined) {
-            if (seen.has(`r${target.row}`) || host.rowKind(target.row) !== 'module' || host.rowSettled(target.row))
-                continue;
-            seen.add(`r${target.row}`);
-            for (const at of host.rowTargets(target.row)) {
-                if (at >= 0)
-                    stack.push({ row: at });
-                else {
-                    const missing = host.missing(-2 - at);
-                    if (missing !== null && 'handedOn' in missing)
-                        stack.push(handedOnTarget(missing.handedOn));
-                }
-            }
-            continue;
-        }
-        if (target.url === url)
-            return true;
-        if (seen.has(`u${target.url}`))
-            continue;
-        seen.add(`u${target.url}`);
-        stack.push(...(lateModules.get(target.url)?.edges ?? []));
-    }
-    return false;
 }
 /**
  * Plans the late module at `url` (a file's at `key`; a data: URL's is its
@@ -231,7 +200,7 @@ function plan(host, key, url, seen, order, checked, late) {
         for (let i = 0; i < bindings.locals.length; i++)
             locals.push([bindings.locals[i][0], bindings.locals[i][1]]);
     }
-    const node = { known, exports, locals, edges: [], stars: [], imports: [], reexports: [] };
+    const node = { known, exports, locals, stars: [], imports: [], reexports: [] };
     late.modules.set(url, node);
     lateModules.set(url, node);
     let at = -1;
@@ -241,9 +210,8 @@ function plan(host, key, url, seen, order, checked, late) {
         at++;
         // Checked against its attributes as the interpreter's static import checks it.
         const resolution = host.resolve(request.specifier, url, known ? bindings.types[at] : undefined);
-        const loads = lateTarget(host, resolution);
-        node.edges.push(loads);
         if (known) {
+            const loads = lateTarget(host, resolution);
             for (let i = 0; i < bindings.stars.length; i++)
                 if (bindings.stars[i] === at)
                     node.stars.push(loads);

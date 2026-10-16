@@ -15,13 +15,13 @@ export const ESM_STAR_CONFLICTS = 'nimbus:star-conflicts';
 /** The names a module's `export *`s leave out, as Node's namespace omits them: its loader's answer, through its require. */
 export const ESM_CONFLICTS_HELPER = `(require) => require("", "${ESM_STAR_CONFLICTS}")`;
 /**
- * What a module's require is passed beside a static import's specifier: the
- * loader resolves it as Node's ESM loader does (node-shims' __requireFrom),
- * not as require() does. A require of a module takes its first argument
- * alone, as Node's does.
+ * What a module's link require is passed beside a static import's
+ * specifier (node-shims' __nimbusInterpretedRecord answers it with the
+ * namespace of the module its graph resolved the request to), apart from
+ * the conflicts an `export *` asks for (ESM_STAR_CONFLICTS).
  */
 export const ESM_STATIC_IMPORT = 'nimbus:static-import';
-/** A static import's module: the importer's require, told the request is an import, with its `type` attribute (or null). */
+/** A static import's namespace: the link's require, told the request is an import, with its `type` attribute (or null). */
 export const ESM_LOAD_HELPER = `(require, source, type) => require(source, "${ESM_STATIC_IMPORT}", type)`;
 /** The helpers as an object literal's source: what a launch compiles for its interpreter (interpreter/modules.ts ModuleHelpers). */
 export const ESM_MODULE_HELPERS = `{ exports: ${ESM_EXPORTS_HELPER}, star: ${ESM_STAR_HELPER}, conflicts: ${ESM_CONFLICTS_HELPER}, load: ${ESM_LOAD_HELPER} }`;

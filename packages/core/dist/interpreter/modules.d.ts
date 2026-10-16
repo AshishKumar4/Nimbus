@@ -27,8 +27,15 @@ export type ModuleExecution = () => unknown;
  * `export *`s copied, none of its body run; answers its ExecuteModule.
  */
 export type ModuleLink = (exports: unknown, require: unknown, module: unknown, filename: unknown, dirname: unknown) => ModuleExecution;
+/** A static import an ES module's link requires, in source order: its specifier and its `type` attribute. */
+export interface ModuleLinkRequest {
+    readonly source: string;
+    readonly type: string | null;
+}
 /** The link of `cell`, an ES module's cell; null for any other. */
 export declare function moduleLink(cell: ModuleCell): ModuleLink | null;
+/** The static imports `cell`'s link requires, in the order it requires them; null for a cell that is no ES module's. */
+export declare function moduleLinkRequests(cell: ModuleCell): readonly ModuleLinkRequest[] | null;
 /** esm-interop.ts's helpers, compiled from their text (ESM_MODULE_HELPERS). */
 export interface ModuleHelpers {
     readonly exports: NativeFunction;

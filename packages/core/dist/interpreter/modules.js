@@ -1,11 +1,15 @@
 import { SafeWeakMap, promiseReject, reflectApply, resume, resumeThrowing, withElement } from './intrinsics.js';
 import { ROOT_ENV } from './runtime.js';
 import { initializeStack, popStack, pushStack, stampStack, suspendedStack } from './stack.js';
-/** Each ES module cell's link, by the cell. */
+/** Each ES module cell's link and its requests, by the cell. */
 const links = new SafeWeakMap();
 /** The link of `cell`, an ES module's cell; null for any other. */
 export function moduleLink(cell) {
-    return links.get(cell) ?? null;
+    return links.get(cell)?.link ?? null;
+}
+/** The static imports `cell`'s link requires, in the order it requires them; null for a cell that is no ES module's. */
+export function moduleLinkRequests(cell) {
+    return links.get(cell)?.requests ?? null;
 }
 /**
  * The wrapper function that runs `plan`: its link, then its execution, as
@@ -71,7 +75,7 @@ export function moduleCell(plan, ops, helpers) {
         }
         return execute();
     };
-    links.set(cell, linkModule);
+    links.set(cell, { link: linkModule, requests: plan.requests });
     return cell;
 }
 /**

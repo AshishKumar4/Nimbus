@@ -25,7 +25,7 @@
 import { parse } from 'acorn';
 import { expressionFunctionBody, parseRuntimeFunction, runtimeFunctionSource, scriptExpression, } from '../_shared/runtime-function-source.js';
 import { Compiler, programBindings } from './compile.js';
-import { moduleCell, moduleLink } from './modules.js';
+import { moduleCell, moduleLink, moduleLinkRequests } from './modules.js';
 import { InterpreterRuntime, ROOT_ENV, frameTemplate, isObject } from './runtime.js';
 import { analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
 import { ownFunctionExpression, ownProgram } from './tree.js';
@@ -300,6 +300,9 @@ export function createInterpreter(hostOps, host) {
         },
         moduleLink(cell) {
             return moduleLink(cell);
+        },
+        moduleLinkRequests(cell) {
+            return moduleLinkRequests(cell);
         },
         compileExpression(code, origin) {
             const at = scriptExpression(code, REALM);
