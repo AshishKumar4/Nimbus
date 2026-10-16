@@ -897,7 +897,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     },
 
     writeFile: (key, path, bytes, flags) => {
-      const provisional = client.held(key) === undefined;
+      const provisional = client.held(key) === undefined && options.provisional?.() === true;
       if (provisional) {
         client.fitsSync(bytes.byteLength, path);
         if (store.reserve !== undefined && !store.reserve(bytes.byteLength)) throw fsError('ENOSPC', 'write', path);
