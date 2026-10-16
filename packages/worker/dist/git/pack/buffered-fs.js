@@ -22,7 +22,7 @@ import { replaceFile } from './mount-writer.js';
 /** A record as an inode: a link followed reads as the file it names. */
 function recordStat(entry, follow) {
     return {
-        type: entry.kind === 'symlink' && !follow ? 'symlink' : entry.kind === 'dir' ? 'dir' : 'file',
+        type: entry.kind === 'symlink' && !follow ? 'symlink' : 'file',
         size: entry.size,
         mode: entry.mode,
         mtimeMs: entry.mtimeMs,
@@ -40,14 +40,8 @@ export function createBufferedFs(supervisor, stats, phaseDeadline = null, worktr
     // On a mount, a file past a wave's limit is written in place (pack/mount-writer.ts).
     const fileApi = onMount ? facetFileApi(supervisor, stats, phaseDeadline) : null;
     let mutationQueue = Promise.resolve();
-    function stampEntry(entry, mtimeMs) {
-        entry.atimeMs = mtimeMs;
-        entry.mtimeMs = mtimeMs;
-        entry.ctimeMs = mtimeMs;
-    }
-    // Each record carries its metadata (fetch and pull have no other record of
-    // a buffered file); a cut stamps the wave's mtime on it, so its stat agrees
-    // with what the wave publishes.
+    // Each record carries its metadata: a stat of a path still buffered (fetch
+    // and pull have no other record of it) answers from it.
     const writer = createWaveWriter({
         supervisor: {
             writeBatchStream(stream, fence) {
@@ -61,11 +55,6 @@ export function createBufferedFs(supervisor, stats, phaseDeadline = null, worktr
         root: null,
         worktreeRoot,
         deadline: phaseDeadline,
-        onCut(cut) {
-            for (const file of cut.files)
-                if (file.meta)
-                    stampEntry(file.meta, cut.mtimeMs);
-        },
         onWave(report) {
             stats.filesWritten += report.files;
             stats.bytesWritten += report.bytes;
@@ -111,17 +100,14 @@ export function createBufferedFs(supervisor, stats, phaseDeadline = null, worktr
         const now = Date.now();
         return recordStat(buffered.meta || { kind: buffered.kind, size: buffered.size, mode: 0o644, mtimeMs: now, ctimeMs: now, atimeMs: now }, follow);
     }
-    async function readSupervisorFile(durablePath, filepath, knownSize) {
+    async function readSupervisorFile(path) {
         await awaitSupervisorReadable();
-        let size = knownSize;
-        if (size === null) {
-            stats.supervisorRpc.stat++;
-            size = await useRpcResource(supervisor.stat(durablePath), (result) => result === null || result === undefined ? null : Number(result.size));
-        }
+        stats.supervisorRpc.stat++;
+        const size = await useRpcResource(supervisor.stat(path), (result) => result === null || result === undefined ? null : Number(result.size));
         if (size === null)
             return null;
         if (!Number.isSafeInteger(size) || size < 0)
-            throw fsError('EIO', 'open', filepath, undefined, { detail: 'invalid file size ' + String(size) });
+            throw fsError('EIO', 'open', path, undefined, { detail: 'invalid file size ' + String(size) });
         // Ordinary RPC values have a 32 MiB structured-clone ceiling, so a larger
         // file is reconstructed through the bounded range RPC, whatever its kind.
         if (size > WHOLE_FILE_RPC_SAFE_BYTES) {
@@ -129,12 +115,12 @@ export function createBufferedFs(supervisor, stats, phaseDeadline = null, worktr
             for (let offset = 0; offset < size;) {
                 const expected = Math.min(READ_RANGE_BYTES, size - offset);
                 stats.supervisorRpc.fsReadRange++;
-                offset += await useRpcResource(supervisor.fsReadRange(durablePath, offset, expected), (result) => {
+                offset += await useRpcResource(supervisor.fsReadRange(path, offset, expected), (result) => {
                     if (result === null || result === undefined)
-                        throw fsError('EIO', 'open', filepath, undefined, { detail: `range ${offset}..${offset + expected} is missing` });
+                        throw fsError('EIO', 'open', path, undefined, { detail: `range ${offset}..${offset + expected} is missing` });
                     const chunk = result instanceof Uint8Array ? result : new Uint8Array(result);
                     if (chunk.byteLength !== expected) {
-                        throw fsError('EIO', 'open', filepath, undefined, { detail: `range ${offset}..${offset + expected} returned ${chunk.byteLength} bytes` });
+                        throw fsError('EIO', 'open', path, undefined, { detail: `range ${offset}..${offset + expected} returned ${chunk.byteLength} bytes` });
                     }
                     data.set(chunk, offset);
                     return chunk.byteLength;
@@ -143,7 +129,7 @@ export function createBufferedFs(supervisor, stats, phaseDeadline = null, worktr
             return data;
         }
         stats.supervisorRpc.readFile++;
-        return useRpcResource(supervisor.readFileBytes(durablePath), (result) => {
+        return useRpcResource(supervisor.readFileBytes(path), (result) => {
             if (result === null || result === undefined)
                 return null;
             return (result instanceof Uint8Array ? result : new Uint8Array(result)).slice();
@@ -177,7 +163,7 @@ export function createBufferedFs(supervisor, stats, phaseDeadline = null, worktr
                 return buffered;
             if (writer.isBufferedDelete(p))
                 return null;
-            return readSupervisorFile(p, p, null);
+            return readSupervisorFile(p);
         },
         async writeFile(p, data, requested) {
             assertFlushHealthy();
@@ -196,25 +182,23 @@ export function createBufferedFs(supervisor, stats, phaseDeadline = null, worktr
                 buf.set(data);
             }
             return bufferMutation(async () => {
-                const now = Date.now();
                 // The session makes the file with the bits asked for (0666 when none, as
                 // a program's create) under its own creation policy: the process's
-                // umask, a default ACL, a setgid parent. This facet's own record of it
-                // is git's view, as every buffered stat here is: executable or not.
+                // umask, a default ACL, a setgid parent.
                 const mode = requested ?? 0o666;
-                const fileMetadata = {
-                    kind: 'file', size: buf.length, mode: (mode & 0o111) !== 0 ? 0o755 : 0o644, mtimeMs: now, ctimeMs: now, atimeMs: now,
-                };
                 if (fileApi !== null && buf.length > ROUTED_FILE_MAX) {
                     // What the waves hold before it lands first; then the file, as a program writes it.
                     await writer.flush();
-                    const stat = await replaceFile(fileApi, '/' + p, mode, buf);
-                    stampEntry(fileMetadata, stat.mtime);
+                    await replaceFile(fileApi, '/' + p, mode, buf);
                     stats.filesWritten++;
                     stats.bytesWritten += buf.length;
                     return;
                 }
-                await writer.file(p, mode, buf, fileMetadata);
+                // This facet's own record of it is git's view, as every buffered stat here is: executable or not.
+                const now = Date.now();
+                await writer.file(p, mode, buf, {
+                    kind: 'file', size: buf.length, mode: (mode & 0o111) !== 0 ? 0o755 : 0o644, mtimeMs: now, ctimeMs: now, atimeMs: now,
+                });
             });
         },
         // unlink(2) and rmdir(2): a buffered delete removes the whole subtree at
@@ -230,7 +214,7 @@ export function createBufferedFs(supervisor, stats, phaseDeadline = null, worktr
                 throw fsError('EISDIR', 'unlink', filepath);
             return bufferMutation(() => writer.remove(p));
         },
-        async readdir(p, filepath) {
+        async readdir(p) {
             assertFlushHealthy();
             await awaitSupervisorReadable();
             stats.supervisorRpc.readdir++;
@@ -281,7 +265,7 @@ export function createBufferedFs(supervisor, stats, phaseDeadline = null, worktr
             return bufferMutation(async () => {
                 const now = Date.now();
                 const linkMetadata = {
-                    kind: 'symlink', target, size: enc.encode(target).byteLength, mode: 0o777, mtimeMs: now, ctimeMs: now, atimeMs: now,
+                    kind: 'symlink', size: enc.encode(target).byteLength, mode: 0o777, mtimeMs: now, ctimeMs: now, atimeMs: now,
                 };
                 await writer.symlink(p, target, linkMetadata);
             });

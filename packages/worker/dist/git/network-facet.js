@@ -12,8 +12,9 @@
  *     path is atomic; a later publish-group failure may leave a committed prefix.
  *   - Clone prepare durably flushes Git metadata, then a second entrypoint
  *     invocation validates HEAD and flushes the worktree/index.
- *   - Fresh clones carry a metadata-only closed-world overlay across the
- *     invocation boundary; regular-file bytes still fall through after flush.
+ *   - Each clone phase writes through its own writer (pack/clone.ts); a
+ *     read the buffer cannot answer goes to the supervisor once its writes
+ *     are published.
  *
  * Why this fixes the hang:
  *   - CPU-heavy packfile delta resolution runs in facet (own CPU budget)
