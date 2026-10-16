@@ -14,14 +14,14 @@ import { createGitFs } from '../git-fs.js';
 import type { GitNetworkOp, GitNetworkOpts, GraphFiltersStep } from '../network-facet.js';
 import type { PathProtection } from '../worktree/verify-path.js';
 import { GIT_CLONE_JOB_MARKER } from '../clone-job.js';
-import { createBufferedFs, overlayEntryOf, type OverlayEntry } from './buffered-fs.js';
+import { createBufferedFs } from './buffered-fs.js';
 import {
   cloneBatch, cloneDiscover, cloneFast, cloneFinish, clonePlanFromStore, fetchObjects, type CloneContext, type CloneReceipt, type CloneTag,
   type PendingPack,
 } from './clone.js';
 import {
-  counted, createSupervisorRpcCounters, emptyMetadataOverlayStats, facetFileApi, facetPacksSupervisor, supervisorNames,
-  type FacetStats, type GitFacetSupervisor, type MetadataOverlayStats,
+  counted, createSupervisorRpcCounters, facetFileApi, facetPacksSupervisor, supervisorNames,
+  type FacetStats, type GitFacetSupervisor,
 } from './facet-supervisor.js';
 import { facetPacks } from './facet-packs.js';
 import { graphFiltersAssemble, graphFiltersDiscard, graphFiltersPiece, graphFiltersPlan, type GraphContext } from './graph-filters.js';
@@ -122,10 +122,6 @@ function requirePositiveMetadataNumber(value: unknown, label: string): number {
   const number = requireMetadataNumber(value, label);
   if (number === 0) throw protocolError(label + ' is invalid');
   return number;
-}
-
-function cloneJobMarkerPath(dir: string): string {
-  return normalizeVfsPath(dir) + '/.git/' + GIT_CLONE_JOB_MARKER;
 }
 
 /** The marker a clone's phases write first: it names the job that owns .git (git/clone-job.ts reads it). */
@@ -229,10 +225,12 @@ function gitPackContext(
   };
 }
 
-/** A clone's ownership checks before prepare writes anything; its authoritative root and that root's metadata. */
-async function prepareDestination(
-  supervisor: GitFacetSupervisor, stats: FacetStats, opts: FacetRequest,
-): Promise<{ root: string | null; rootMetadata: OverlayEntry | null }> {
+/**
+ * A clone's ownership checks before prepare writes anything; the root its
+ * waves publish up to. An existing empty destination keeps its mode: a
+ * wave's directory record over a directory takes none of its own.
+ */
+async function prepareDestination(supervisor: GitFacetSupervisor, stats: FacetStats, opts: FacetRequest): Promise<string | null> {
   if (opts.op !== 'clone') throw protocolError('prepare requires clone operation');
   requireProtocolString(opts.jobId, 'job id', 128);
   requireProtocolString(opts.optionsHash, 'options hash', 128);
@@ -258,14 +256,12 @@ async function prepareDestination(
        (cloneRoot !== exclusiveRoot && !cloneRoot.startsWith(exclusiveRoot + '/')))) {
     throw new Error('git clone exclusive mutation root does not cover its destination');
   }
-  let rootMetadata: OverlayEntry | null = null;
   if (existing) {
     if (!(existing.type === 'directory' || existing.type === 'dir')) throw notEmpty();
     const entries = await counted(stats, 'readdir', () => supervisor.readdir(cloneRoot));
     if (!Array.isArray(entries) || entries.length !== 0) throw notEmpty();
-    if (opts.exclusiveDestination === true) rootMetadata = overlayEntryOf(existing);
   }
-  return { root: opts.exclusiveDestination === true ? exclusiveRoot : null, rootMetadata };
+  return opts.exclusiveDestination === true ? exclusiveRoot : null;
 }
 
 /** The worker the git network facet exports. */
@@ -277,7 +273,6 @@ export const networkWorker = {
         success: false, error: 'SUPERVISOR binding missing in facet env',
         filesWritten: 0, bytesWritten: 0,
         supervisorRpc: createSupervisorRpcCounters(),
-        metadataOverlay: emptyMetadataOverlayStats(),
       }, { status: 500 });
     }
 
@@ -291,7 +286,6 @@ export const networkWorker = {
         success: false, error: 'Invalid request body: ' + (e as Error | undefined)?.message,
         filesWritten: 0, bytesWritten: 0,
         supervisorRpc: createSupervisorRpcCounters(),
-        metadataOverlay: emptyMetadataOverlayStats(),
       }, { status: 400 });
     }
 
@@ -306,7 +300,6 @@ export const networkWorker = {
     let mutated = false;
     let lastProgress: { phase: string; loaded: number; total?: number } | null = null;
     let flushWave = async (): Promise<void> => {};
-    let overlayStats: () => MetadataOverlayStats = emptyMetadataOverlayStats;
     let waveStats: () => unknown = () => undefined;
     const respond = (success: boolean, payload: Record<string, unknown> = {}, status = 200): Response => {
       const error = !success && typeof payload.error === 'string' ? payload.error : undefined;
@@ -338,7 +331,6 @@ export const networkWorker = {
       if (new URL(request.url).pathname !== expectedPath) {
         return respond(false, {
           error: 'git clone protocol: request trace marker does not match its phase identity',
-          metadataOverlay: emptyMetadataOverlayStats(),
         }, 400);
       }
     }
@@ -354,7 +346,6 @@ export const networkWorker = {
     } catch (e) {
       return respond(false, {
         error: 'Failed to load bundled isomorphic-git: ' + (e as Error | undefined)?.message,
-        metadataOverlay: emptyMetadataOverlayStats(),
       }, 500);
     }
     const git = bundle.git;
@@ -406,7 +397,7 @@ export const networkWorker = {
             partial: opts.partial === true,
             local: opts.local === true,
           });
-          return respond(true, { batch, metadataOverlay: emptyMetadataOverlayStats() });
+          return respond(true, { batch });
         }
         if (phase === 'clone-history') {
           const history = opts.history;
@@ -436,7 +427,7 @@ export const networkWorker = {
               tagInterest: history.tagInterest,
             });
           }
-          return respond(true, { history: step, metadataOverlay: emptyMetadataOverlayStats() });
+          return respond(true, { history: step });
         }
         const finished = await cloneFinish(context, {
           shares: opts.shares,
@@ -453,57 +444,30 @@ export const networkWorker = {
           await writer.remove('.git/' + GIT_CLONE_JOB_MARKER);
           await writer.flush();
         }
-        return respond(true, { finished, metadataOverlay: emptyMetadataOverlayStats() });
+        return respond(true, { finished });
       }
-      let authoritativeRoot: string | null = null;
-      let authoritativeRootMetadata: OverlayEntry | null = null;
       if (phase === 'clone-prepare') {
-        ({ root: authoritativeRoot, rootMetadata: authoritativeRootMetadata } = await prepareDestination(supervisor, stats, opts));
-      } else if (opts.op === 'clone') {
-        throw protocolError('clone requires its phases (prepare, batch, history, finish)');
-      }
-
-      const buffered = createBufferedFs(
-        supervisor,
-        stats,
-        authoritativeRoot,
-        authoritativeRootMetadata,
-        phaseDeadline,
-        // fetch, pull and push work in a repository that already exists.
-        phase === 'operation' ? normalizeVfsPath(opts.dir) : null,
-        opts.onMount === true,
-      );
-      // cf-git reads packed objects by range and stores a fetched pack as it arrives (git/pack/facet-packs.ts).
-      const fs = createGitFs(buffered.backend, facetPacks(facetPacksSupervisor(supervisor, stats, async (dir) => {
-        // A clone's objects/pack may exist only in this fs's pending writes: publish it first.
-        await buffered.backend.mkdir(normalizeVfsPath(dir));
-        await buffered.flushWave();
-      })));
-      flushWave = buffered.flushWave;
-      overlayStats = buffered.overlayStats;
-      waveStats = buffered.waveStats;
-
-      if (phase === 'clone-prepare') {
+        const root = await prepareDestination(supervisor, stats, opts);
         if (opts.filter !== undefined && opts.depth === undefined) {
           throw new Error('fatal: --filter with --no-shallow is not supported yet: clone with --depth <n>');
         }
         if (opts.exclusiveDestination !== true) throw protocolError('clone requires an exclusive destination');
-        const context = gitPackContext(supervisor, stats, opts, authoritativeRoot, phaseDeadline, log);
+        const context = gitPackContext(supervisor, stats, opts, root, phaseDeadline, log);
         // Nothing is written until the server is known to serve the clone.
         const advertisement = await cloneDiscover(context, { filter: opts.filter });
-        if (authoritativeRoot !== null && authoritativeRoot !== normalizeVfsPath(opts.dir)) {
-          mutated = true;
-          await fs.promises.mkdir(opts.dir);
-          await flushWave();
-        }
+        const writer = context.writer();
+        flushWave = () => writer.flush();
         mutated = true;
-        buffered.pinFile(cloneJobMarkerPath(opts.dir), cloneJobMarker(opts));
-        await fs.promises.mkdir(normalizeVfsPath(opts.dir) + '/.git');
-        await fs.promises.writeFile(cloneJobMarkerPath(opts.dir), cloneJobMarker(opts));
+        // Missing parents first: durable before anything below the destination.
+        if (root !== context.dir) {
+          await writer.directory('');
+          await writer.flush();
+        }
         // No Git metadata wave starts until ownership is durable. If this first
         // W7 stream loses its response, a cold abort can still prove ownership
         // from the marker; a missing or mismatched marker is never authority.
-        await flushWave();
+        writer.setPin(context.marker.path, context.marker.text);
+        await writer.flush();
         // A full clone through the fast path starts as a depth-1 one: its
         // worktree first, its history after (clone-history). A server
         // without filter or wants by id sends its one pack (cloneStream).
@@ -519,8 +483,28 @@ export const networkWorker = {
           protect: opts.protect,
         }, advertisement);
         const prepared = 'stream' in started ? { stream: started.stream } : { fast: started };
-        return respond(true, { prepared, metadataOverlay: overlayStats() });
-      } else if (opts.op === 'remote-list') {
+        return respond(true, { prepared });
+      }
+      if (opts.op === 'clone') throw protocolError('clone requires its phases (prepare, batch, history, finish)');
+
+      const buffered = createBufferedFs(
+        supervisor,
+        stats,
+        phaseDeadline,
+        // fetch, pull and push work in a repository that already exists.
+        phase === 'operation' ? normalizeVfsPath(opts.dir) : null,
+        opts.onMount === true,
+      );
+      // cf-git reads packed objects by range and stores a fetched pack as it arrives (git/pack/facet-packs.ts).
+      const fs = createGitFs(buffered.backend, facetPacks(facetPacksSupervisor(supervisor, stats, async (dir) => {
+        // Its objects/pack may exist only in this fs's pending writes: publish it first.
+        await buffered.backend.mkdir(normalizeVfsPath(dir));
+        await buffered.flushWave();
+      })));
+      flushWave = buffered.flushWave;
+      waveStats = buffered.waveStats;
+
+      if (opts.op === 'remote-list') {
         if (typeof opts.url !== 'string') throw protocolError('remote URL is missing');
         return respond(true, { remote: await listRefs({ url: opts.url, auth: opts.auth }, { forPush: opts.forPush === true }) });
       } else if (opts.op === 'remote-fetch') {
@@ -529,7 +513,7 @@ export const networkWorker = {
         const remote = opts.remoteFetch.resume
           ? await fetchPackResume(context, { pending: opts.remoteFetch.resume, budgetUnits: opts.historyBudgetUnits })
           : await fetchPack(context, { ...opts.remoteFetch, jobId: invocationId, budgetUnits: opts.historyBudgetUnits });
-        return respond(true, { remote, metadataOverlay: overlayStats() });
+        return respond(true, { remote });
       } else if (opts.op === 'remote-push') {
         if (typeof opts.url !== 'string' || !opts.remotePush) throw protocolError('remote push request is missing');
         return respond(true, { remote: await pushPack({ url: opts.url, auth: opts.auth }, opts.remotePush, opts.remotePushPack ?? null) });
@@ -546,14 +530,14 @@ export const networkWorker = {
             : step.step === 'discard'
               ? await graphFiltersDiscard(context, step)
               : await graphFiltersAssemble(context, step);
-        return respond(true, { graphFilters, metadataOverlay: overlayStats() });
+        return respond(true, { graphFilters });
       } else if (opts.op === 'fetch-objects') {
         // A partial clone's missing objects (git/promisor.ts): one request,
         // stored as a promisor pack. Writes land below the repository only.
         const root = normalizeVfsPath(opts.dir);
         const context = gitPackContext(supervisor, stats, opts, null, null, log, root);
         const fetched = await fetchObjects(context, { oids: opts.oids, jobId: invocationId });
-        return respond(true, { fetched, metadataOverlay: overlayStats() });
+        return respond(true, { fetched });
       } else if (opts.op === 'fetch') {
         // ref is the branch a pull merges; without it, the current branch's, as git fetch picks.
         await git.fetch({
@@ -576,7 +560,7 @@ export const networkWorker = {
       }
 
       await flushWave();
-      return respond(true, { metadataOverlay: overlayStats() });
+      return respond(true);
     } catch (e) {
       // Best-effort flush of partial state so user can inspect what landed
       try { await flushWave(); } catch { /* the failure below is the one to report */ }
@@ -586,7 +570,6 @@ export const networkWorker = {
         // A write git would have failed: git's own lines (pack/mount-writer.ts).
         gitFailure: e instanceof GitWriteFailure ? e.lines : undefined,
         remoteFailure: remoteFailureOf(e, http),
-        metadataOverlay: overlayStats(),
       });
     }
   },

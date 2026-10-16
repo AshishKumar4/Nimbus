@@ -65,6 +65,11 @@ published independently in the `@nimbus-sh` npm scope.
   '<n>'". Each failure exits 128. `010` is octal, so depth 8. Before, a
   clone took `0` and `abc` as depth 1 and `2junk` as depth 2, and cloned
   anyway. A clone with no `--depth` is still depth 1.
+- Fixed (git, mounted clone): when a file, an unlink or the index lock
+  fails, git's error gives strerror's words for every code the session's
+  filesystem answers. `Invalid argument`, `Directory not empty`, `Bad file
+  descriptor` and `Stale file handle` were missing, and those failures
+  printed the raw error, such as `EINVAL: …`.
 - Fixed (shell): when a here-document's command fails, the interactive
   shell reports it the way the shell and runtimes report any caught value
   (`_shared/error-text.js`). A thrown object's `message` is shown, and an

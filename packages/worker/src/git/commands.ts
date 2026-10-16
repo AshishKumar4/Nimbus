@@ -3499,8 +3499,8 @@ export async function runGitCommand(
           return 1;
         }
 
-        // A clone's closed-world filesystem view is correct only while no
-        // other session surface can mutate its destination subtree. Acquire
+        // A clone's emptiness proof and its writes hold only while no other
+        // session surface can mutate its destination subtree. Acquire
         // the lease before the facet performs its lstat/readdir emptiness
         // proof; the clone's W7 stream carries the opaque owner capability
         // through the trusted SupervisorRPC binding. Taken as the command's
