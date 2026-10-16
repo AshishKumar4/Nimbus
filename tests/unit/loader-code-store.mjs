@@ -157,6 +157,11 @@ const blob = (bytes, fill) => { const data = new Uint8Array(bytes); data.fill(fi
   const pair = [{}, {}, {}, {}];
   await assert.rejects(loader.load(worker({ 'w.js': '', 'many.json': { json: new Array(200_000).fill(pair) } })),
     /re-creating this Worker from the store would hold .* per-Worker bound/, 'one shared array written 200,000 times parses into a million objects: refused by its restored price');
+  // One Error with a 6 MiB stack shared by three {json} modules: each stores as `{}`, and none could stay in the 8 MiB cache.
+  const shared = new Error('shared'); shared.stack = 'z'.repeat(3 * MiB);
+  const error = structuredClone(shared);
+  assert.ok(await loader.load(worker({ 'w.js': '', 'a.json': { json: { error } }, 'b.json': { json: { error } }, 'c.json': { json: { error } } })),
+    'a large shared source the cache cannot keep does not count against its re-creation');
   assert.ok(await loader.load(worker({ 'w.js': '', 'near.json': { json: new Array(200_000).fill({ a: 0 }) } })),
     'one small object written 200,000 times restores just under the bound (an object member is priced as one, an array element with its backing): admitted');
 }
@@ -300,6 +305,37 @@ const blob = (bytes, fill) => { const data = new Uint8Array(bytes); data.fill(fi
   assert.equal(kernel.readdir(LOADER_CODE_ROOT).length, 1, 'A\'s directory is removed once drained, and B\'s stays');
   assert.deepEqual(await Promise.all([a, b, c].map((owner) => s.registry.serve({ kind: 'alive', owner }))), [false, false, true]);
   assert.deepEqual(s.registry.stats().sources, 1);
+}
+
+// ── A put of a digest a retired directory holds keeps the content counted when that directory goes ──
+{
+  const s = session(vfs());
+  const a = s.registry.mint('wrangler-1', 'LOADER');
+  const data = new Uint8Array(3 * MiB).fill(5);
+  const digest = sha(data);
+  await s.registry.serve({ kind: 'put', owner: a, digest, size: data.byteLength }, new ReadableStream({ start(c) { c.enqueue(data); c.close(); } }));
+  assert.equal(s.registry.stats().storeBytes, 3 * MiB);
+  // B, unable to adopt from retired A, sends the same bytes, held; A drains and goes meanwhile.
+  const b = s.registry.mint('wrangler-2', 'LOADER');
+  s.registry.release(a);
+  let push;
+  const putting = s.registry.serve({ kind: 'put', owner: b, digest, size: data.byteLength }, new ReadableStream({ start(controller) { push = controller; } }));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(s.registry.stats().removing, 0, 'A is gone');
+  assert.equal(s.registry.stats().storeBytes, 3 * MiB, 'its content stays counted for the put in flight');
+  push.enqueue(data); push.close();
+  await putting;
+  assert.equal(s.registry.stats().storeBytes, 3 * MiB, 'and once published, counted once');
+  // The same race where the put fails: nothing then holds the content, and it is given back.
+  const c = s.registry.mint('wrangler-3', 'LOADER');
+  const failing = s.registry.serve({ kind: 'put', owner: c, digest, size: data.byteLength }, new ReadableStream({ start(controller) { push = controller; } }));
+  s.registry.release(b);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  push.error(new Error('the producer failed'));
+  await failing.catch(() => {});
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(s.registry.stats().storeBytes, 0, 'a failed put with nothing holding its content gives the charge back');
+  assert.equal(s.registry.stats().putting, 0);
 }
 
 // ── A removal that fails stays counted, and is tried again at the next ──

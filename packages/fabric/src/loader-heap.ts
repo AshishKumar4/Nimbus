@@ -452,9 +452,17 @@ export function holdGetKey(charge: number): ResizableCreditLease {
 export function keep(key: string, priced: PricedCode, durable?: { readonly ref: LoaderStoreRef; readonly modules: ReadonlyMap<string, StoredModule> }): void {
   let entry: LoaderEntry = { ...priced.entry, id: ++nextEntryId };
   if (durable !== undefined) {
-    // Each module re-created from its stored bytes, or borrowed from the cache as it was admitted: whichever holds more.
+    // Each module re-created from its stored bytes, or borrowed from the cache as it was admitted. What a
+    // borrowed one holds beyond its re-creation counts only if the cache could keep it, and at most what the
+    // cache holds in all.
     let missPeak = entry.byteLength + STORE_READ_BYTES;
-    for (const [name, module] of durable.modules) missPeak += Math.max(module.missPrice, priced.moduleCharges.get(name) ?? 0);
+    let borrowed = 0;
+    for (const [name, module] of durable.modules) {
+      missPeak += module.missPrice;
+      const charge = priced.moduleCharges.get(name) ?? 0;
+      if (charge + BYTE_LRU_ENTRY_OVERHEAD <= LOADER_MODULE_CACHE_BYTES) borrowed += Math.max(0, charge - module.missPrice);
+    }
+    missPeak += Math.min(borrowed, LOADER_MODULE_CACHE_BYTES);
     if (missPeak > LOADER_WORKER_BYTES) refuse('worker-bound', `re-creating this Worker from the store would hold ${bytes(missPeak)}: ${OVER_WORKER_BOUND}`);
     const stored = new Map([...durable.modules].map(([name, { kind, size, digest }]) => [name, { kind, size, digest }] as const));
     entry = { ...entry, missPeak, store: { ref: durable.ref, modules: stored } };
