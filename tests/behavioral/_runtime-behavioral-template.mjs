@@ -35,7 +35,7 @@
 import puppeteer from 'puppeteer-core';
 import { existsSync } from 'node:fs';
 import { allocateProfileDir, releaseProfileDir } from './_probe-browser.mjs';
-import { mintSession, attachPathFor, probeTarget, Terminal, sleep, stripAnsi, BASE } from './_driver.mjs';
+import { mintSession, attachPathFor, probeTarget, Terminal, sleep, stripAnsi, writeFileViaShell, BASE } from './_driver.mjs';
 import { startDevCommand } from './_dev-start.mjs';
 
 export { BASE, mintSession, sleep, stripAnsi };
@@ -321,25 +321,7 @@ export async function openPage(browser, sid, opts = {}) {
       await page.click(selector, opts.clickOpts || {});
     },
 
-    /** Type into a focused input. */
-    async type(selector, text, delay = 0) {
-      await page.waitForSelector(selector, { timeout: 15_000 });
-      await page.type(selector, text, { delay });
-    },
-
-    /** Programmatic navigation inside the SPA (calls history.pushState
-     *  and dispatches popstate so React-Router etc. respond). Use this
-     *  when a click target isn't readily available — same effect on
-     *  the runtime as a real click on a `<Link to="/x" />`. */
-    async pushHistory(path) {
-      await page.evaluate((p) => {
-        window.history.pushState({}, '', p);
-        window.dispatchEvent(new PopStateEvent('popstate'));
-      }, path);
-    },
-
-    /** Sum the page errors + console error messages into a single
-     *  list — useful for `assertNoRuntimeErrors`. */
+    /** The page errors and console error messages, in one list. */
     collectErrors() {
       const errors = [];
       for (const e of pageErrors) errors.push({ kind: 'pageerror', ...e });
@@ -351,27 +333,9 @@ export async function openPage(browser, sid, opts = {}) {
       return errors;
     },
 
-    /** Hard assertion: no `pageerror` and no console.error fired
-     *  during the probe's lifetime. Returns the error list when
-     *  triggered (for inspection); throws otherwise. */
-    assertNoRuntimeErrors(filter = () => true) {
-      const errors = this.collectErrors().filter(filter);
-      if (errors.length > 0) {
-        const summary = errors.slice(0, 5).map((e) =>
-          `[${e.kind}] ${e.message || e.text || ''}`).join('\n');
-        throw new Error(`runtime errors observed (${errors.length}):\n${summary}`);
-      }
-      return errors;
-    },
-
     /** Get the current page URL. */
     async currentUrl() {
       return page.url();
-    },
-
-    /** Take a screenshot for diagnostic capture. Returns base64 string. */
-    async screenshotB64() {
-      return await page.screenshot({ encoding: 'base64', fullPage: true });
     },
 
     async close() {
@@ -420,11 +384,7 @@ export async function scaffoldAndStartVite(sid, opts) {
     if (lastSlash > '/home/user'.length) {
       await t.run(`mkdir -p ${abs.substring(0, lastSlash)}`, 10_000);
     }
-    const b64 = Buffer.from(content, 'utf8').toString('base64');
-    await t.run(
-      `node -e "require('fs').writeFileSync('${abs}', Buffer.from('${b64}','base64').toString('utf8'))"`,
-      30_000,
-    );
+    await writeFileViaShell((command) => t.run(command, 30_000), abs, content);
   }
 
   // Install
