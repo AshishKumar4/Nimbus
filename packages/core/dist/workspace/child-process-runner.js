@@ -1,7 +1,7 @@
 import { errorText } from '../_shared/error-text.js';
 import { ProcessView, X_OK } from '../runtime/process-files.js';
 import { shellChildRunner, textBytes } from '../runtime/child-process-manager.js';
-import { resolutionOf } from '../shell/exec-dispatch.js';
+import { resolveChildCommand } from '../shell/exec-dispatch.js';
 import { resolveContext } from '../substrate/lifo/commands/registry.js';
 import { KILLED_BY_SIGPIPE } from '../substrate/lifo/shell/signals.js';
 import { isBrokenPipe } from '../substrate/lifo/utils/bytes-io.js';
@@ -15,12 +15,9 @@ export async function resolveWorkspaceChild(workspace, request, origin) {
     if (request.command.includes('/')) {
         await view.access(request.command.startsWith('/') ? request.command : `${origin.cwd}/${request.command}`, X_OK);
     }
-    const command = await workspace.registry.resolve(request.command, resolveContext(origin.cwd, origin.env, view));
+    const command = await resolveChildCommand(workspace.registry, request.command, resolveContext(origin.cwd, origin.env, view), view);
     if (!command)
         return null;
-    const resolution = resolutionOf(command);
-    if (resolution?.kind === 'program')
-        await view.access(resolution.path, X_OK);
     return { run: context => runChildCommand(workspace, context, command) };
 }
 /** A child's isolated shell owns its work until all of its descriptors close. */

@@ -31,7 +31,7 @@ import { runNodeProgram } from './node-program.js';
 import { routeFetchThroughHost, type RealmEgressGuest } from '../../../../runtime/realm-egress-guest.js';
 import { isEgressHostEvent } from '../../../../runtime/realm-egress.js';
 import {
-  isDirEntries, isHostEvent, isNodeRealmPayload, isStat,
+  isDirEntries, isHostEvent, isNodeRealmPayload, isOutputFailures, isStat, type OutputFailure,
   type FdKind, type GuestEvent, type NodeCall, type RealmResponse,
 } from './node-realm-protocol.js';
 import { fromRealmError } from '../../../../runtime/realm.js';
@@ -133,10 +133,12 @@ const filesystem: NodeFilesystem = {
   rename: (from, to) => { call({ op: 'fs', method: 'rename', args: [from, to] }); },
   copyFile: (from, to) => { call({ op: 'fs', method: 'copyFile', args: [from, to] }); },
   chmod: (path, mode) => { call({ op: 'fs', method: 'chmod', args: [path, mode] }); },
+  chown: (path, uid, gid, follow) => { call({ op: 'fs', method: 'chown', args: [path, uid, gid, follow] }); },
   open: (path, flags) => count(call({ op: 'fs', method: 'open', args: [path, flags] }), 'open'),
   read: (fd, position, length) => bytes(call({ op: 'fs', method: 'read', args: [fd, position, length] }), 'read'),
   write: (fd, position, data) => count(call({ op: 'fs', method: 'write', args: [fd, position, data] }), 'write'),
   fstat: (fd) => stat(call({ op: 'fs', method: 'fstat', args: [fd] }), 'fstat'),
+  fchown: (fd, uid, gid) => { call({ op: 'fs', method: 'fchown', args: [fd, uid, gid] }); },
   ftruncate: (fd, size) => { call({ op: 'fs', method: 'ftruncate', args: [fd, size] }); },
   fsync: (fd) => { call({ op: 'fs', method: 'fsync', args: [fd] }); },
   close: (fd) => { call({ op: 'fs', method: 'close', args: [fd] }); },
@@ -234,6 +236,32 @@ function askSettle(): void {
   askedUpTo = upTo;
   post({ type: 'settle', upTo });
   holdWhileBusy();
+}
+/**
+ * Writes after number `after`, up to the last posted, made before this
+ * returns, as Node makes a write to a pipe or a file when it is written: the
+ * host answers once they are made, with those that failed (told only so, no
+ * event of them coming), each then told to what wrote it.
+ */
+function settleNow(round: number, after: number): void {
+  const upTo = postedOutput;
+  const failures = call({ op: 'settle', round, after, upTo });
+  if (!isOutputFailures(failures)) malformed('settle');
+  for (const failure of failures) taken(failure);
+  if (upTo > settledOutput) settledOutput = upTo;
+  const waiting = settleWaits.splice(0);
+  for (const wait of waiting) {
+    if (wait.upTo <= settledOutput) wait.resolve();
+    else settleWaits.push(wait);
+  }
+}
+/** The program's 'beforeExit' rounds so far: each settles its own writes (settleNow). */
+let beforeExitRounds = 0;
+
+/** A failed write, told to what wrote it: a stream's is heard here, whatever the program makes of it, and the host reports it no more. */
+function taken(failure: OutputFailure): void {
+  if (failure.source === 'stream') post({ type: 'heard', fd: failure.fd, writer: failure.writer });
+  outputs[failure.fd].fail(writeFailure(failure.code, failure.pipe), failure.source, failure.writer);
 }
 /** Its number. */
 function postOutput(fd: 1 | 2, source: OutputSource, writer: number, data: string | Uint8Array): number {
@@ -349,9 +377,7 @@ events.on('message', (event) => {
       return;
     }
     case 'output-failed':
-      // A stream's failure is heard here, whatever the program makes of it: the host reports it no more.
-      if (event.source === 'stream') post({ type: 'heard', fd: event.fd, writer: event.writer });
-      outputs[event.fd].fail(writeFailure(event.code, event.pipe), event.source, event.writer);
+      taken(event);
       return;
     case 'output-settled': {
       settledOutput = event.seq;
@@ -395,10 +421,27 @@ realm.on('uncaughtException', uncaught('uncaughtException'));
 // The loop ran empty: a program that would hear of a failed write
 // (LifoProcess.hearsWriteFailures), whenever it began to listen, waits for its
 // writes, as a Node process's are made before it ends. What it hears may run
-// more of it, and the loop runs empty again.
+// more of it, and the loop runs empty again. Once nothing it would hear of is
+// outstanding, its process hears 'beforeExit', as Node's does each time its
+// loop runs empty (a top-level await unsettled too); the writes its
+// listeners make are made before the loop is asked again, so that only work
+// they scheduled runs it again, as in Node.
 realm.on('beforeExit', () => {
-  if (settledOutput === postedOutput || programProcess?.hearsWriteFailures() !== true) return;
-  void outputSettled(postedOutput);
+  if (programProcess === null) return;
+  if (settledOutput < postedOutput && programProcess.hearsWriteFailures()) {
+    void outputSettled(postedOutput);
+    return;
+  }
+  // No listener: nothing is told, and nothing is settled for it.
+  if (programProcess.listenerCount('beforeExit') === 0) return;
+  const round = ++beforeExitRounds;
+  const after = postedOutput;
+  post({ type: 'settle-mark', round, after });
+  try {
+    programProcess.emitBeforeExit();
+  } finally {
+    settleNow(round, after);
+  }
 });
 // The loop ran empty with the main script still waiting: an ES module whose
 // top-level await never settled.

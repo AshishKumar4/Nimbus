@@ -92,12 +92,14 @@ switch (process.env.CASE) {
       '  MessagePort.prototype.postMessage = post;',
       // Each as a call the host's transport carries ({ id, request, wait }), so it reaches the dispatcher, which refuses it.
       '  const refused = [];',
-      '  taken.on(\'message\', (m) => { if (m && m.id >= 9000) refused.push(m.id + (m.error ? \' refused\' : \' answered\')); });',
+      '  const heard = (m) => { if (m && m.id >= 9000) refused.push(m.id + (m.error ? \' refused\' : \' answered\')); };',
+      // Its own listener refs the port, as a listener on any MessagePort does; it goes once the answers are in.
+      '  taken.on(\'message\', heard);',
       "  [{ op: 'fs', method: 'valueOf', args: [] }, { op: 'fs', method: 'constructor', args: [] }, { op: 'fs', method: 'exists', args: [42] }, { op: 'nope' }, null].forEach((request, i) => {",
       '    try { taken.postMessage({ id: 9000 + i, request, wait: false }); } catch (e) { console.log(\'NOT SENT \' + e.message); }',
       '  });',
       "  console.log('SENT ' + (taken !== null));",
-      "  setTimeout(() => console.log('ANSWERS ' + refused.sort().join(',')), 300);",
+      "  setTimeout(() => { console.log('ANSWERS ' + refused.sort().join(',')); taken.off('message', heard); }, 300);",
       '});',
     ].join(' ');
     const escaped = await within(run(`node -e "${escape}"`), 20_000, 'a guest posting on the host\'s port');
