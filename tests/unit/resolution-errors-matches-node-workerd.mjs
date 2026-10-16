@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — drives a local workerd; CI 9.4 s wall, 11.7 s CPU, 1.4 GiB peak (2026-10-16)
 // A package resolution error with an ERR_* code is Node's internal error,
 // by require() and by import(): its class (Error or TypeError), its code,
 // and `Name [CODE]` heading its toString() and its stack. Those Node 22
