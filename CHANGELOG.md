@@ -87,6 +87,30 @@ published independently in the `@nimbus-sh` npm scope.
   hosted terminal's `node_modules` check and Next.js refusal use it, so
   they also check pre and post scripts. `npmInstallGlobal` no longer takes
   a command registry, and `createNpmCommand` no longer reads its own.
+- Changed: the perf probes `perf-regression/cold-start`, `first-paint` and
+  `install-warm` grade the candidate against a baseline measured in the
+  same run, not against a fixed bound. `remote-probes` stands up three
+  fresh throwaways for them: two of the baseline (`--baseline`, by default
+  the commit's merge-base with origin/main; the release matrix uses the
+  commit production serves) and one of the candidate. Each round measures
+  all three at once. A probe is red when the candidate's median paired
+  log-ratio is above 0 with 95% confidence and above the two baseline
+  arms' own spread. The fixed bounds failed 25, 4 and 21 of about 560 full
+  runs of unchanged main code, and passed a 1.5x slower cold start when its
+  one sample landed under 800 ms.
+- Changed: `remote-probes` attributes every red row whose session socket
+  closed 1006 (the run's session ledger records each such close) or that
+  shows `E_NIMBUS_DO_OVERLOADED`, from the platform's own record (Workers
+  Logs and trace exceptions, read on the workstation), by the exact error on
+  each session's object. A row is rerun once, and the rerun grades it, only
+  when the probe reached its summary, every check it failed is the driver's
+  1006 close error naming a session whose socket dropped, each such session
+  shows "Internal error in Durable Object storage caused object to be
+  reset", and every session's record, read whole, shows no other class. The
+  verdict keeps both rows. Isolate memory resets, overloads and the rest
+  stay red, with their attribution printed. A target or paired throwaway
+  redeployed during a job makes the run not graded, and the release matrix
+  counts a probe that exits 2 as not graded, as `remote-probes` does.
 - Fixed: `pip install` decides which dependencies apply by the markers of
   the CPython it installs for: CPython 3.13.14 on `wasm32-wasi`, as the
   interpreter itself answers them (`sys_platform` is `"wasi"`). Before, pip
