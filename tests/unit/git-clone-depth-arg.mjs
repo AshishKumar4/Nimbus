@@ -27,7 +27,8 @@ const hostTry = (cwd, args) => {
   const result = spawnSync('git', args, { cwd, env: hostGitEnv(work), encoding: 'utf8' });
   return { code: result.status, stderr: result.stderr };
 };
-const session = await createFacetSession(work);
+// The staged cf-git bundle, which a fetch runs; a clone is Nimbus's own either way.
+const session = await createFacetSession(work, { realGit: true });
 const DEPTHS = ['0', '-1', 'abc', '2junk', '', '0x2', '08', ' 2', '+3', '010', '1'];
 
 try {
