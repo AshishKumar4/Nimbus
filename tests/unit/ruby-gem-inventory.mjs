@@ -11,56 +11,12 @@
 // recorded, unrelated ones and every version.
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { Database } from 'bun:sqlite';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { installedGemLibRoots, installRubyBundle, installRubyGems } from '../../packages/core/src/runtime/ruby-gems.ts';
-import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
-import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { gemWorkspace, rubyGemsRegistry } from './lib/rubygems-registry.mjs';
 
 const HOME = '/home/user/.gem';
 
-/** A .gem archive holding `files` (path → text) as its data. */
-async function gemArchive(name, version, files) {
-  const dir = await mkdtemp(join(tmpdir(), 'nimbus-gem-inventory-'));
-  try {
-    for (const [path, text] of Object.entries(files)) {
-      await mkdir(join(dir, 'data', path, '..'), { recursive: true });
-      await writeFile(join(dir, 'data', path), text);
-    }
-    for (const argv of [['tar', '-czf', 'data.tar.gz', '-C', 'data', 'lib'], ['tar', '-cf', 'out.gem', 'data.tar.gz']]) {
-      assert.equal(Bun.spawnSync(argv, { cwd: dir }).exitCode, 0, argv.join(' '));
-    }
-    return await readFile(join(dir, 'out.gem'));
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-}
-
-/** RubyGems' API for `gems` (name → version → runtime dependencies), each gem's archive a lib file. */
-async function registry(gems) {
-  const responses = new Map();
-  for (const [name, versions] of Object.entries(gems)) {
-    responses.set(`https://rubygems.org/api/v1/versions/${name}.json`, () => Response.json(Object.keys(versions).map((number) => ({ number, platform: 'ruby', prerelease: false }))));
-    for (const [version, runtime] of Object.entries(versions)) {
-      const gem = await gemArchive(name, version, { [`lib/${name}.rb`]: `# ${name} ${version}\n`, [`lib/${name}/version.rb`]: `V = "${version}"\n` });
-      responses.set(`https://rubygems.org/api/v2/rubygems/${name}/versions/${version}.json`, () => Response.json({ name, version, platform: 'ruby', gem_uri: `https://rubygems.org/gems/${name}-${version}.gem`, dependencies: { runtime } }));
-      responses.set(`https://rubygems.org/gems/${name}-${version}.gem`, () => new Response(gem));
-    }
-  }
-  return { ...ISOLATE_NETWORK, fetch: async (url) => (responses.get(String(url)) ?? (() => new Response(null, { status: 404 })))() };
-}
-
-async function home() {
-  const harness = createSqliteVfsTestHarness(new Database(':memory:'));
-  const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
-  return ws.filesystem.view({ pid: 900, cred: CRED_KERNEL });
-}
-
-const network = await registry({
+const network = await rubyGemsRegistry({
   rack: { '2.0.0': [], '3.0.0': [] },
   rackup: { '2.1.0': [{ name: 'rack', requirements: '>= 3' }] },
   unrelated: { '1.0.0': [] },
@@ -68,7 +24,7 @@ const network = await registry({
 
 // ── An install interrupted after its lib directory is finished on the next ──
 {
-  const vfs = await home();
+  const vfs = await gemWorkspace();
   await vfs.mkdir('home/user/.gem/gems/rack-3.0.0/lib', { recursive: true });
   await vfs.writeFile('home/user/.gem/gems/rack-3.0.0/lib/rack.rb', '# rack 3.0.0\n');
   assert.deepEqual(await installedGemLibRoots(vfs, HOME), [], 'an interrupted install\'s lib is on the load path');
@@ -83,7 +39,7 @@ const network = await registry({
 
 // ── Gemfile.lock is the bundle's resolution ──
 {
-  const vfs = await home();
+  const vfs = await gemWorkspace();
   await installRubyGems(vfs, [{ name: 'unrelated', requirements: [] }], { gemHome: HOME, network });
   await installRubyGems(vfs, [{ name: 'rack', requirements: ['= 2.0.0'] }], { gemHome: HOME, network });
   await vfs.mkdir('home/user/app', { recursive: true });

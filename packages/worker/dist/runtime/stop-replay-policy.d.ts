@@ -314,9 +314,6 @@ export declare const REPLAY_OPERATION_POLICY: {
     fsPublished: {
         readonly kind: "control";
     };
-    innerDoFetch: {
-        readonly kind: "effect";
-    };
     innerDoCall: {
         readonly kind: "effect";
     };

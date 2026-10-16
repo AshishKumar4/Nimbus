@@ -11,7 +11,7 @@
 
 import assert from 'node:assert/strict';
 import { NimbusWrangler } from '../../packages/worker/src/wrangler/nimbus-wrangler.ts';
-import { _rpcInnerDoFetch } from '../../packages/worker/src/session/rpc.ts';
+import { _rpcInnerDoCall } from '../../packages/worker/src/session/rpc.ts';
 
 function platformFacets() {
   const running = new Map();
@@ -65,9 +65,10 @@ const ctx = {
   facets: platformFacets(),
   exports: { NimbusDurableObjectNamespace: (options) => options },
 };
-const request = (id) => ({ bindingName: 'COUNTER', id, method: 'GET', url: 'https://inner.test/', headers: [], body: null });
-/** What object `id` answers: room-1 is one that runs on; a new id starts the class registered now. */
-const answer = async (id = 'room-1') => new TextDecoder().decode((await _rpcInnerDoFetch({ ctx }, request(id))).body);
+/** What object `id`'s fetch answers: room-1 is one that runs on; a new id starts the class registered now. */
+const answer = async (id = 'room-1') => (await _rpcInnerDoCall({ ctx }, {
+  bindingName: 'COUNTER', id, path: ['fetch'], args: [new Request('https://inner.test/')],
+})).text();
 
 /** A dev server whose builds are held until `release()`, when `hold` is set. */
 function devServer(name, { warn = false, onLog = () => {} } = {}) {

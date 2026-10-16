@@ -48,6 +48,7 @@ import { createEsmResolver } from '../_shared/esm-resolver.js';
 import { packageJsonText } from '../_shared/exports-resolver.js';
 import { forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
 import { requireWrapperCalls } from './require-wrappers.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 
 // The CommonJS resolver this walk stages from (require-resolution.ts).
 export { fileText, requireFsOverBridge, type BridgeRequireFs, type RequireFs, type StagingRequireFs } from './require-resolution.js';
@@ -300,7 +301,6 @@ export async function prefetchForRequire(
   let declined: DependencyClosureDeclined | null = null;
   let additionalBytes = 0;
   let additionalFiles = 0;
-  const encoder = new TextEncoder();
   // The phase-2 unit staged whole or not at all (an optional learned root):
   // what it staged, and whether the bound cut its closure.
   let unit: { staged: Array<[string, number]>; cut: boolean } | null = null;
@@ -391,7 +391,7 @@ export async function prefetchForRequire(
       return null;
     }
     if (policy && held === undefined) {
-      const actual = encoder.encode(content).byteLength;
+      const actual = utf8Length(content);
       if (!fits(path, actual)) return null;
       additionalBytes += actual;
       additionalFiles++;

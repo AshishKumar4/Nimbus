@@ -8,6 +8,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { hostSqlite } from '../unit/lib/host-sqlite.mjs';
+import { cpuMs, pairedKind, shuffled } from './lib/paired-cpu.mjs';
 
 const args = process.argv.slice(2);
 const option = (name) => {
@@ -20,10 +21,6 @@ const output = option('--out');
 const source = new URL('../../packages/core/src/', import.meta.url).pathname;
 const MEASURED = { vfs: ['sqlite-vfs.ts', 'path.ts', 'composite.ts', 'sqlite-files.ts'], runtime: ['process-files.ts', 'sqlite-runtime-fs-bridge.ts'] };
 const fixtures = [];
-const median = (values) => {
-  const sorted = [...values].sort((a, b) => a - b);
-  return (sorted[Math.floor((sorted.length - 1) / 2)] + sorted[Math.floor(sorted.length / 2)]) / 2;
-};
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const ITERATIONS = 24_000;
 const PAIRS = 36;
@@ -87,11 +84,6 @@ try {
     };
     return { engine, root, store, namespace, process, paths, packagePaths, chainPaths, removal, seedRemoval };
   };
-  const shuffled = (items) => {
-    const out = [...items];
-    for (let i = out.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [out[i], out[j]] = [out[j], out[i]]; }
-    return out;
-  };
   // A, the baseline; null, a second copy of the baseline, the A/A reference
   // the branch's delta is judged against; real, the branch. Made in a random
   // order and run in one each pair: where an arm's heap and database landed
@@ -123,35 +115,12 @@ try {
   };
   const cpu = async (arm, kind) => {
     if (kind === 'walked-removal') arm.seedRemoval();
-    const before = process.cpuUsage();
-    await run(arm, kind);
-    const used = process.cpuUsage(before);
-    return (used.user + used.system) / 1000;
+    return cpuMs(() => run(arm, kind));
   };
   for (const kind of ['store', 'namespace', 'namespace-walk', 'store-linked', 'store-pnpm-chain', 'store-dot', 'store-link-parent', 'store-dot-lease', 'process-view', 'process-linked', 'walked-removal']) {
     const leases = kind === 'store-dot-lease' ? Object.values(arms).map((arm) => [arm, arm.engine.acquireExclusiveMutation('lease')]) : [];
-    for (let warm = 0; warm < (kind === 'walked-removal' ? 2 : 12); warm++) for (const arm of Object.values(arms)) {
-      if (kind === 'walked-removal') arm.seedRemoval();
-      await run(arm, kind);
-    }
-    const pairs = [];
-    for (let pair = 0; pair < PAIRS; pair++) {
-      const samples = {};
-      // A1 and A2 run A's copy of the code twice a pair, so null's and real's
-      // run twice too (W, untimed): a copy that ran half as often would sit
-      // at a colder JIT tier, and that bias is larger than many deltas.
-      for (const label of shuffled(['A1', 'A2', 'null', 'Wnull', 'real', 'Wreal'])) {
-        const used = await cpu(arms[label.startsWith('A') ? 'A' : label.replace(/^W/, '')], kind);
-        if (!label.startsWith('W')) samples[label] = used;
-      }
-      const A = (samples.A1 + samples.A2) / 2;
-      pairs.push({ ...samples, delta: samples.real - A, nullDelta: samples.null - A });
-    }
-    const result = {
-      kind, iterations: kind === 'walked-removal' ? 2000 : ITERATIONS, pairs: PAIRS,
-      medianA: median(pairs.map(({ A1, A2 }) => (A1 + A2) / 2)), medianB: median(pairs.map(({ real }) => real)),
-      medianDelta: median(pairs.map((pair) => pair.delta)), medianNullDelta: median(pairs.map((pair) => pair.nullDelta)), samples: pairs,
-    };
+    const walked = kind === 'walked-removal';
+    const result = await pairedKind(kind, arms, cpu, { pairs: PAIRS, warm: walked ? 2 : 12, iterations: walked ? 2000 : ITERATIONS });
     results.push(result);
     writeFileSync(output, `${JSON.stringify(results, null, 2)}\n`);
     const { samples, ...summary } = result;

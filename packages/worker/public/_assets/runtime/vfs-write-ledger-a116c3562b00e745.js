@@ -107,7 +107,12 @@ var __nimbusProcessFsModule = (() => {
   var SUPERVISOR_READ_RESERVE_BYTES = 1024 * 1024;
   var MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES = 8 * 1024 * 1024;
 
+  var LONG_UNITS = 256;
+  var encoder = new TextEncoder();
+  var scratch;
   function utf8Length(text) {
+    if (text.length >= LONG_UNITS)
+      return longUtf8Length(text);
     let bytes = text.length;
     for (let index = 0; index < text.length; index++) {
       const unit = text.charCodeAt(index);
@@ -126,6 +131,16 @@ var __nimbusProcessFsModule = (() => {
       } else {
         bytes += 2;
       }
+    }
+    return bytes;
+  }
+  function longUtf8Length(text) {
+    scratch ??= new Uint8Array(256 * 1024);
+    let bytes = 0;
+    for (let read = 0; read < text.length; ) {
+      const done = encoder.encodeInto(read === 0 ? text : text.slice(read), scratch);
+      read += done.read;
+      bytes += done.written;
     }
     return bytes;
   }
@@ -797,6 +812,9 @@ var __nimbusProcessFsModule = (() => {
       return "hard_evict";
     return "unknown";
   }
+  function isUnexplainedPlatformError(input) {
+    return /^internal error; reference = \S+$/i.test(readMessage(input).trim());
+  }
   function isDoOverloaded(input) {
     return readMessage(input).toLowerCase().includes("durable object is overloaded");
   }
@@ -814,6 +832,7 @@ var __nimbusProcessFsModule = (() => {
     const seen =   new Set();
     const messages = [];
     let flagged = false;
+    let unexplained = false;
     let link = input;
     while (link !== null && !seen.has(link)) {
       seen.add(link);
@@ -822,6 +841,8 @@ var __nimbusProcessFsModule = (() => {
         return "overloaded";
       if ("retryable" in link && link.retryable === true)
         flagged = true;
+      if (isUnexplainedPlatformError(link))
+        unexplained = true;
       messages.push(link.message ?? "");
       const cause = link.cause;
       link = cause instanceof Error ? cause : null;
@@ -833,6 +854,8 @@ var __nimbusProcessFsModule = (() => {
     }
     if (flagged)
       return "retryable_flag";
+    if (unexplained)
+      return "platform_internal";
     return "permanent";
   }
   function readMessage(input) {
@@ -897,7 +920,7 @@ var __nimbusProcessFsModule = (() => {
   var WAVE_PATH_BYTES = W7_MAX_OWNED_PATH_BYTES - 4 * 1024;
   var WAVE_BYTES = 4 * 1024 * 1024;
   var SEND_SLICE_BYTES = 1024 * 1024;
-  var encoder = new TextEncoder();
+  var encoder2 = new TextEncoder();
   var GLOBAL_TIMERS = {
     setTimeout: (callback, ms) => setTimeout(callback, ms),
     clearTimeout: (timer) => clearTimeout(timer)

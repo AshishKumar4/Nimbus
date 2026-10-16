@@ -294,6 +294,7 @@ export function classifyDoCall(input) {
     const seen = new Set();
     const messages = [];
     let flagged = false;
+    let unexplained = false;
     let link = input;
     while (link !== null && !seen.has(link)) {
         seen.add(link);
@@ -303,6 +304,8 @@ export function classifyDoCall(input) {
             return 'overloaded';
         if ('retryable' in link && link.retryable === true)
             flagged = true;
+        if (isUnexplainedPlatformError(link))
+            unexplained = true;
         messages.push(link.message ?? '');
         const cause = link.cause;
         link = cause instanceof Error ? cause : null;
@@ -314,6 +317,9 @@ export function classifyDoCall(input) {
     }
     if (flagged)
         return 'retryable_flag';
+    // Only where nothing in the chain explains it: a wrapper's own words are not the platform's.
+    if (unexplained)
+        return 'platform_internal';
     return 'permanent';
 }
 /**

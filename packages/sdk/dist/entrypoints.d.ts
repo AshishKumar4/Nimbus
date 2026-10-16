@@ -1,2 +1,2 @@
-export { NimbusSession, NimbusPublicDirectory, SupervisorRPC, NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, CirrusHmrRPC, NimbusD1Database, NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket, } from '@nimbus-sh/worker';
+export { NimbusSession, NimbusPublicDirectory, SupervisorRPC, NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, CirrusHmrRPC, NimbusD1Database, NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket, } from '@nimbus-sh/worker';
 //# sourceMappingURL=entrypoints.d.ts.map

@@ -29,6 +29,62 @@ published independently in the `@nimbus-sh` npm scope.
   stay red, with their attribution printed. A target or paired throwaway
   redeployed during a job makes the run not graded, and the release matrix
   counts a probe that exits 2 as not graded, as `remote-probes` does.
+- Fixed: `pip install` decides which dependencies apply by the markers of
+  the CPython it installs for: CPython 3.13.14 on `wasm32-wasi`, as the
+  interpreter itself answers them (`sys_platform` is `"wasi"`). Before, pip
+  used a table left from the Pyodide runtime, CPython 3.13.2 on
+  Emscripten: a dependency guarded by `python_full_version >= "3.13.3"` was
+  dropped, and one guarded by `sys_platform == "emscripten"` installed.
+  `python --version`, `pip --version` and the Python prompt's banner read
+  the version from the installed runtime too.
+- Fixed: `pip install` installs an extra's dependencies when the extra is
+  asked for after its package was resolved without it. Before, `b`
+  requiring `a[x]` after `a` was resolved left out what `a[x]` adds.
+- Breaking (core): `@nimbus-sh/core/runtime/python-pip.js`'s
+  `PythonPipRuntimeContext` takes `markers`, the interpreter's PEP 508
+  environment (`cpythonMarkers(manifest)` from
+  `@nimbus-sh/core/runtime/cpython-runner.js` for the installed CPython),
+  and no longer takes `pyodideLockfileText` or `runtimeArtifacts`.
+  `PipInvocation.pyodidePackages` is gone, with pip's Pyodide installer,
+  which no runtime reached since the CPython runtime replaced Pyodide.
+  Runtime manifests keep their Python package metadata.
+- Fixed: `gem install` and `bundle install` hold an exact version
+  requirement to the request's other requirements and to the pure-Ruby
+  platform, as they hold any other. `gem "p", "= 1.0.0", "< 1.0.0"` now
+  fails with "no ruby platform version of p satisfies = 1.0.0, < 1.0.0",
+  and an exact version built only for another platform is refused. Before,
+  the first `=` requirement installed that version whatever else the
+  request said.
+- Breaking (fabric, worker, sdk): the legacy inner Durable Object transport
+  is gone. `NimbusDOStub` is no longer exported from
+  `@nimbus-sh/fabric/bindings.js`, `@nimbus-sh/worker` or
+  `@nimbus-sh/sdk/entrypoints`, and `InnerDoFetchAnswer` from
+  `@nimbus-sh/fabric/bindings.js`. `NimbusDurableObjectNamespace` keeps
+  `callOn` and `getOn` and loses `get`, `idFromName`, `newUniqueId` and
+  `idFromString`. The supervisor op `innerDoFetch` and
+  `NimbusSession._rpcInnerDoFetch` are gone. A `wrangler dev` Worker's
+  Durable Objects are unchanged: they already went through `callOn` and
+  `getOn`, fetch included. An embedder whose Worker entry re-exports with
+  `export * from '@nimbus-sh/sdk/entrypoints'` needs no change; one that
+  names `NimbusDOStub` in its imports or exports must drop the name.
+- Fixed: `/api/_diag/memory`'s `heap.breakdown.preBundleSliceBytes` is
+  what the pre-bundles running now hold, and the "supervisor heap" an
+  install's pre-bundle phase prints counts it. Before, it was inferred
+  from lifetime totals: a running pre-bundle's slice showed as
+  unattributed, and one whose package was reinstalled while it built left
+  28 MiB in the estimate until the session restarted.
+- Fixed (fabric): an `IsolatePool` wasm module whose name holds a quote or
+  a backslash, such as `it's.wasm`, loads. Before, the pool's generated
+  worker imported it from an unescaped string, and the dispatch failed to
+  parse. Two module names that make the same identifier are still
+  refused; the refusal now names both.
+- Fixed: a session's destroy (`DELETE /s/<id>/`, `box.destroy()`) is
+  repeated once on a fresh connection when the platform fails it with a
+  reset of the session's storage ("Internal error in Durable Object
+  storage caused object to be reset") or its undescribed "internal error".
+  Before, either answered the destroy with a 500 and left the session in
+  place. The destroy is idempotent, so the repeat answers with its result;
+  any other failure is answered as before.
 - Fixed: a portable workspace's `node` reads its command line as the
   hosted `node` does (Node's own parser, NODE_OPTIONS first), and finds its
   script the same way. `node .` runs the package's `main`, and `node start`

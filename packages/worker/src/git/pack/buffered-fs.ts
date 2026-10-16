@@ -22,6 +22,7 @@ import {
   facetFileApi, READ_RANGE_BYTES, supervisorStat, WHOLE_FILE_RPC_SAFE_BYTES, type FacetStats, type GitFacetSupervisor,
 } from './facet-supervisor.js';
 import { replaceFile } from './mount-writer.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 
 /** A buffered file or link, as the wave that publishes it will make it. */
 interface RecordEntry {
@@ -286,7 +287,7 @@ export function createBufferedFs(
       return bufferMutation(async () => {
         const now = Date.now();
         const linkMetadata: RecordEntry = {
-          kind: 'symlink', size: enc.encode(target).byteLength, mode: 0o777, mtimeMs: now, ctimeMs: now, atimeMs: now,
+          kind: 'symlink', size: utf8Length(target), mode: 0o777, mtimeMs: now, ctimeMs: now, atimeMs: now,
         };
         await writer.symlink(p, target, linkMetadata);
       });

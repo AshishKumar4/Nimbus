@@ -765,7 +765,6 @@ export class NimbusSession extends CloudflareDurableObject {
     servedReads = new ServedReads();
     async _rpcReadFile(path, pid, cred) { return _rpc._rpcReadFile(this, path, pid, cred); }
     async _rpcReadFileBytes(path, pid, cred) { return _rpc._rpcReadFileBytes(this, path, pid, cred); }
-    async _rpcInnerDoFetch(req) { return _rpc._rpcInnerDoFetch(this, req); }
     async _rpcInnerDoCall(req) { return _rpc._rpcInnerDoCall(this, req); }
     async _rpcKvCall(target, call, cred) { return _rpc._rpcKvCall(this, target, call, cred); }
     async _rpcR2Call(target, call, cred) { return _rpc._rpcR2Call(this, target, call, cred); }
@@ -1288,4 +1287,4 @@ export class NimbusSession extends CloudflareDurableObject {
 // ── W10 Inner-Worker + assets binding shims live in the fabric.
 // ── Re-exported here under their public names so src/index.ts's wrangler
 // ── entry-graph reachability is preserved.
-export { NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket, } from '@nimbus-sh/fabric/bindings.js';
+export { NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket, } from '@nimbus-sh/fabric/bindings.js';
