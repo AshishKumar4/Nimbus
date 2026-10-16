@@ -40,7 +40,8 @@
 // main commits (10-09..10-16) on unchanged code.
 
 import { mintSession, Terminal, makeAsserter, deleteSession, requestHeaders } from '../_driver.mjs';
-import { assertCandidateRounds, assertPaired, measurePaired, median, requirePairedTargets } from '../_paired.mjs';
+import { median } from '../../../scripts/lib/statistics.mjs';
+import { assertCandidateRounds, assertPaired, measurePaired, requirePairedTargets } from '../_paired.mjs';
 
 const a = makeAsserter('perf-regression/install-warm');
 const arms = requirePairedTargets('perf-regression/install-warm');

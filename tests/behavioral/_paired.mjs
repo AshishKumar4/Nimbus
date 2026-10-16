@@ -19,6 +19,7 @@
 // of the median d lies above 0 and the median d lies above the A/A interval
 // (the median n's). The bootstrap is seeded, so the same samples always
 // grade the same.
+import { median, medianInterval } from '../../scripts/lib/statistics.mjs';
 import { createProbeTarget } from './_session-transport.mjs';
 
 /** The probes graded this way, as a selection names them. */
@@ -32,8 +33,6 @@ export const PAIRED_ENV = 'NIMBUS_PAIRED_TARGETS';
 
 /** Below this share of planned rounds measured on every arm, the run does not grade. */
 const MIN_ROUND_SHARE = 0.8;
-const RESAMPLES = 4000;
-const SEED = 0x6e696d62;
 
 /**
  * The arms' probe targets. A run without them cannot grade a paired probe:
@@ -72,32 +71,6 @@ export async function measurePaired(arms, rounds, measure) {
     }
   }
   return { planned: rounds, measured, candidateFailures, baselineFailures };
-}
-
-/** The median of `values`. */
-export const median = (values) => {
-  const sorted = [...values].sort((x, y) => x - y);
-  const mid = sorted.length >> 1;
-  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-};
-
-/** mulberry32: a small seeded generator, so a verdict is a function of its samples. */
-function generator(seed) {
-  let state = seed;
-  return () => {
-    state = (state + 0x6d2b79f5) | 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-/** The 95% percentile-bootstrap interval of `values`' median. */
-function medianInterval(values) {
-  const random = generator(SEED);
-  const medians = Array.from({ length: RESAMPLES }, () => median(values.map(() => values[Math.floor(random() * values.length)])));
-  medians.sort((x, y) => x - y);
-  return [medians[Math.floor(0.025 * RESAMPLES)], medians[Math.ceil(0.975 * RESAMPLES) - 1]];
 }
 
 /**

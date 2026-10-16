@@ -2,10 +2,7 @@
 // made by the bench: A, the baseline; null, a second copy of the baseline,
 // the A/A reference the branch's delta is judged against; real, the branch.
 
-export const median = (values) => {
-  const sorted = [...values].sort((a, b) => a - b);
-  return (sorted[Math.floor((sorted.length - 1) / 2)] + sorted[Math.floor(sorted.length / 2)]) / 2;
-};
+import { median } from '../../../scripts/lib/statistics.mjs';
 
 export const shuffled = (items) => {
   const out = [...items];
