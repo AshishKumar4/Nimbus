@@ -404,6 +404,178 @@ async function until(ready, what) {
   sync.writeFile(`/home/user/other/after.bin`, chunk);
 }
 
+// ── A caller that cannot wait: its provisional decisions (provisional.ts) ──
+// No grant comes here: what the process decides synchronously outside a held
+// subtree is answered from its view, logged as it made it, and the session's
+// to refuse. `control`: the session's waves wait while it holds them, and are
+// refused or accepted in turn as `verdicts` says (true: refused).
+function provisionalSession(options = {}) {
+  const control = { held: false, entered: 0, verdicts: [], acquires: 0 };
+  let opened = Promise.withResolvers();
+  control.hold = () => { control.held = true; control.entered = 0; opened = Promise.withResolvers(); };
+  control.open = () => { control.held = false; opened.resolve(); };
+  const s = session({
+    ...options,
+    acquired: new Promise(() => { control.acquires++; }),
+    gate: { then: (resolve, reject) => { control.entered++; return (control.held ? opened.promise : Promise.resolve()).then(resolve, reject); } },
+    refuse: () => control.verdicts.shift() ?? false,
+  });
+  return { s, control, sync: s.fs.synchronous };
+}
+const OTHER = '/home/user/other';
+const other = (name) => `${OTHER}/${name}`;
+/** A file the session has, the process's (uid 1000), its bytes resident in the view. */
+async function resident(s, name, text) {
+  s.kernel.writeFile(`home/user/other/${name}`, enc.encode(text));
+  s.kernel.chown(`home/user/other/${name}`, 1000, 1000);
+  await s.fs.readdir(OTHER);
+  assert.equal(dec.decode(await s.fs.readFile(other(name))), text);
+}
+/** The view brought to the session's: a barrier taken, what was answered before it retired. */
+async function caughtUp(s) {
+  await s.fs.flush().catch(() => {});
+  s.fs.inbound();
+  await s.fs.stat(OTHER);
+}
+
+// A descriptor is its file's: once its name leads to another file, it reads
+// and changes nothing of that one (ESTALE). Red before: an inode descriptor
+// read the name's new file's row, and fchmod changed the new file.
+{
+  const { s, sync } = provisionalSession();
+  await resident(s, 'id.txt', 'AAAA');
+  const fd = sync.open(other('id.txt'), { read: true }).id;
+  s.kernel.unlink('home/user/other/id.txt');
+  s.kernel.writeFile('home/user/other/id.txt', enc.encode('BBBBBBBB'));
+  s.kernel.chown('home/user/other/id.txt', 1000, 1000);
+  assert.throws(() => sync.read(fd, 0, 16), { code: 'ESTALE' });
+  const before = s.kernel.stat('home/user/other/id.txt').mode;
+  assert.throws(() => sync.fchmod(fd, 0o600), { code: 'ESTALE' });
+  assert.equal(s.kernel.stat('home/user/other/id.txt').mode, before, 'a descriptor changed another file\'s mode');
+  sync.close(fd);
+}
+
+// The overlay is the log: a refused operation leaves it, and what remains is
+// folded again from the view's bytes; what is logged is what the process
+// did, by its descriptors. Red before: the refused append stayed in the cell,
+// and the session was sent the cell's snapshot.
+{
+  const { s, control, sync } = provisionalSession();
+  await resident(s, 'f.txt', 'ab');
+  const appender = sync.open(other('f.txt'), { write: true, append: true }).id;
+  const writer = sync.open(other('f.txt'), { read: true, write: true }).id;
+  await s.fs.flush();
+  control.hold();
+  sync.write(appender, null, enc.encode('X'));
+  await until(() => control.entered > 0, 'the append on its way');
+  sync.write(writer, 0, enc.encode('Y'));
+  assert.equal(dec.decode(sync.readFile(other('f.txt'))), 'YbX');
+  control.verdicts.push(true);
+  control.open();
+  await s.fs.flush().catch(() => {});
+  assert.equal(dec.decode(sync.readFile(other('f.txt'))), 'Yb', 'a refused append stayed in the view');
+  assert.equal(dec.decode(s.kernel.readFile('home/user/other/f.txt')), 'Yb');
+  sync.close(appender);
+  sync.close(writer);
+}
+
+// A file's first change by a descriptor is what its name shows: a stat by
+// name and the descriptor's agree. Red before: the name kept the view's size.
+{
+  const { s, sync } = provisionalSession();
+  await resident(s, 'g.txt', 'ab');
+  const fd = sync.open(other('g.txt'), { write: true }).id;
+  sync.write(fd, 2, enc.encode('cd'));
+  assert.equal(Number(sync.stat(other('g.txt')).size), 4);
+  assert.equal(Number(sync.fstat(fd).size), 4);
+  sync.close(fd);
+}
+
+// Once the view has the session's version of a file this process changed,
+// that version is what every descriptor of it reads: a peer's rewrite after
+// it, too. Red before: an open descriptor kept the process's bytes.
+{
+  const { s, sync } = provisionalSession();
+  await resident(s, 'r.txt', 'OLD');
+  const fd = sync.open(other('r.txt'), { read: true }).id;
+  sync.writeFile(other('r.txt'), enc.encode('OWN'));
+  assert.equal(dec.decode(sync.read(fd, 0, 16)), 'OWN');
+  await caughtUp(s);
+  s.kernel.writeFile('home/user/other/r.txt', enc.encode('THEIRS'));
+  s.fs.inbound();
+  await s.fs.stat(other('r.txt'));
+  assert.equal(dec.decode(sync.read(fd, 0, 16)), 'THEIRS', 'the descriptor kept the process\'s bytes after the view had the session\'s');
+  sync.close(fd);
+}
+
+// fsync of a descriptor the process closed is EBADF. Red before: answered.
+{
+  const { s, sync } = provisionalSession();
+  await resident(s, 'c.txt', 'c');
+  const fd = sync.open(other('c.txt'), { read: true }).id;
+  sync.close(fd);
+  assert.throws(() => sync.fsync(fd), { code: 'EBADF' });
+}
+
+// A change a caller that cannot wait does not make counts toward taking no
+// subtree. Red before: a refused mkdir asked for a grant.
+{
+  const { s, control, sync } = provisionalSession();
+  s.kernel.mkdir('home/user/other/d');
+  await s.fs.readdir(OTHER);
+  await s.fs.stat(other('d'));
+  const before = control.acquires;
+  assert.throws(() => sync.mkdir(other('d')), { code: 'EEXIST' });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(control.acquires, before, 'a refused change asked for a grant');
+}
+
+// A file made here is the session's file once its creating open is answered:
+// its number is the session's. Red before: it kept a number of its own.
+{
+  const { s, sync } = provisionalSession();
+  await s.fs.readdir(OTHER);
+  sync.writeFile(other('made.txt'), enc.encode('M'));
+  await s.fs.flush();
+  const fd = sync.open(other('made.txt'), { read: true }).id;
+  assert.equal(Number(sync.fstat(fd).ino), s.kernel.stat('home/user/other/made.txt').ino);
+  sync.close(fd);
+}
+
+// What a decision keeps of the process's budget is admitted before it is
+// made, its records too, and the file an unlink leaves to its descriptors:
+// refused ENOSPC, nothing changed. Red before: neither was admitted.
+{
+  const budget = { used: 0, limit: 100 };
+  const { s, sync } = provisionalSession({ budget });
+  await s.fs.readdir(OTHER);
+  assert.throws(() => sync.mkdir(other('tiny')), { code: 'ENOSPC' });
+  assert.equal(sync.stat(other('tiny')), null);
+}
+{
+  const budget = { used: 0, limit: 4096 };
+  const { s, sync } = provisionalSession({ budget });
+  await resident(s, 'big.bin', 'x'.repeat(10_000));
+  const fd = sync.open(other('big.bin'), { read: true }).id;
+  assert.throws(() => sync.unlink(other('big.bin')), { code: 'ENOSPC' });
+  assert.equal(Number(sync.stat(other('big.bin')).size), 10_000, 'a refused unlink changed the view');
+  sync.close(fd);
+}
+
+// What a decision kept goes back once the view has it, whatever became of
+// its name since. Red before: a renamed file's cell was never given back.
+{
+  const budget = { used: 0, limit: 1 << 20 };
+  const { s, sync } = provisionalSession({ budget });
+  await s.fs.readdir(OTHER);
+  sync.writeFile(other('moving.bin'), new Uint8Array(10_000));
+  sync.rename(other('moving.bin'), other('moved.bin'));
+  await caughtUp(s);
+  await caughtUp(s);
+  assert.equal(budget.used, 0, `${budget.used} bytes still taken after the view had them`);
+  assert.equal(Number(sync.stat(other('moved.bin')).size), 10_000);
+}
+
 // ── A resident's process logs what it sends in its own store until the session answers ──
 // (process-fs-journal.ts): what it dies holding, the session drains from
 // there. Red before: the holder's client was made without the journal.

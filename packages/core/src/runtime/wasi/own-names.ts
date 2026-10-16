@@ -1,17 +1,14 @@
 /**
- * What a process changed by name that its view may not have yet (VFS-9 B
- * stage 3): the entries it decided (null: removed), and the names it made
- * and removed in each directory, laid over the view's. Per name, its logged
- * ops unanswered and how many barriers had begun when the last was
- * answered: outside a subtree the process holds, a name retires once a
- * barrier begun after that lands (retire), the view having the session's
- * version of it then. A refused op's name retires at once: the session never
- * applied it, and the view's row is the session's.
+ * What a process decided by name in the subtrees it holds (VFS-9 B stage 3):
+ * the entries it decided (null: removed), and the names it made and removed
+ * in each directory, laid over the view's. They stand while it holds the
+ * subtree; once it is given back, everything decided there sent, they retire
+ * at the next barrier that lands (released, retire), the view having the
+ * session's version of them then.
  */
 
 import type { RuntimeVfsDirEntry } from '../os-contracts.js';
 import type { ResidentEntry } from './resident-filesystem.js';
-import type { ProcessFsOp } from '../../_shared/process-fs-client.js';
 
 export interface OwnNamesOptions {
   /** The view's own word, this process's aside (HolderStore.entry). */
@@ -41,10 +38,6 @@ export interface OwnNames {
   children(key: string, base: RuntimeVfsDirEntry[] | undefined): RuntimeVfsDirEntry[] | undefined;
   /** What it decided beneath `from` is beneath `to` now: `from` itself is the rename's. */
   move(from: string, to: string): void;
-  /** `op`, a provisional decision's, was logged: its names wait for its answer. Its names. */
-  logged(op: ProcessFsOp): string[];
-  /** The op that changed `keys` was answered: refused, or not. */
-  answered(keys: readonly string[], refused: boolean): void;
   /**
    * The subtree at `root` is no longer held, everything decided there
    * answered: it retires as anything of the process's own does, at the next
@@ -68,11 +61,6 @@ function nameOf(key: string): string {
 
 function within(key: string, root: string): boolean {
   return key === root || key.startsWith(`${root}/`);
-}
-
-/** The names an op changes. */
-function keysOf(op: ProcessFsOp): string[] {
-  return op.type === 'rename' ? [op.from, op.to] : op.type === 'call' ? [op.call.path] : [op.path];
 }
 
 export function ownNames(options: OwnNamesOptions): OwnNames {
@@ -157,25 +145,6 @@ export function ownNames(options: OwnNamesOptions): OwnNames {
         own.delete(key);
         own.set(moved(key), value);
         if (settling.delete(key)) settling.add(moved(key));
-      }
-    },
-    logged: (op) => {
-      const keys = keysOf(op);
-      for (const key of keys) {
-        const record = own.get(key);
-        if (record === undefined) own.set(key, { pending: 1, settled: barriers });
-        else record.pending++;
-      }
-      return keys;
-    },
-    answered: (keys, refused) => {
-      for (const key of keys) {
-        const record = own.get(key);
-        if (record === undefined) continue;
-        record.pending--;
-        record.settled = barriers;
-        if (refused) forget(key);
-        else if (record.pending === 0 && !options.held(key)) settling.add(key);
       }
     },
     released: (root) => {
