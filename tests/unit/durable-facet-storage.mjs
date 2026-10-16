@@ -102,9 +102,11 @@ function setup({ doId = 'durable-do', storage = new Map() } = {}) {
   seeded.storage.sql.exec('CREATE TABLE IF NOT EXISTS marker (v INTEGER)');
   seeded.storage.sql.exec('INSERT INTO marker VALUES (42)');
 
-  // Kill the process: a durable release aborts the facet but must NOT drop
-  // its SQLite — that is what lets a relaunch re-attach the same store.
+  // Kill the process: a durable release aborts the facet (once it has
+  // settled: at most RESIDENT_SETTLE_DEADLINE_MS) but must NOT drop its
+  // SQLite — that is what lets a relaunch re-attach the same store.
   fm.kill(spawned.pid);
+  for (let i = 0; i < 100 && world.liveFacets().includes('app-slot-0'); i++) await new Promise((resolve) => setTimeout(resolve, 5));
   assert.equal(world.liveFacets().includes('app-slot-0'), false, 'the abort dropped the live facet');
   // The durable slot row is still pinned — the name is not freed by a kill.
   assert.equal(await ctx.storage.get('durable-slot:A'), 0, 'the owner still holds its slot');
