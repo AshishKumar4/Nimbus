@@ -25,10 +25,12 @@ mock.module('cloudflare:workers', () => ({ WorkerEntrypoint: class { constructor
 const { NimbusAssetsRPC, NimbusDurableObjectNamespace, NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket } = await import('../../packages/fabric/src/bindings.ts');
 const { CirrusHmrRPC } = await import('../../packages/worker/src/facets/real-vite-hmr.ts');
 const { SupervisorRPC } = await import('../../packages/worker/src/session/supervisor-rpc.ts');
-const { createFacetWorld, createProcessHost } = await import('./lib/facet-host-harness.mjs');
 
-composeFabric({ hostNamespace: 'WORKSPACES' });
+// The facet harness, imported below, composes the supervisor entrypoint as
+// the real worker does; it keeps this namespace.
+composeFabric({ supervisorEntrypoint: 'SupervisorRPC', hostNamespace: 'WORKSPACES' });
 assert.equal(hostNamespace(), 'WORKSPACES');
+const { createFacetWorld, createProcessHost } = await import('./lib/facet-host-harness.mjs');
 
 /**
  * A WORKSPACES namespace whose hosts record every envelope they are asked

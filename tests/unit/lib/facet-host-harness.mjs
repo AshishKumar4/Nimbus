@@ -296,14 +296,17 @@ import {
 } from '../../../packages/worker/src/session/rpc.ts';
 import { isolateToken, isHostedWatch, isHostedResidency } from '../../../packages/fabric/src/peer-host.ts';
 import { processHostFor } from '../../../packages/worker/src/loaders/process-host.ts';
-import { composeFabric } from '../../../packages/fabric/src/composition.ts';
+import { composeFabric, DEFAULT_HOST_NAMESPACE, hostNamespace } from '../../../packages/fabric/src/composition.ts';
 import { openSupervisorDeliveries } from '../../../packages/core/src/workspace/supervisor-delivery.ts';
 import { sqlJournal } from '../../../packages/core/src/_shared/process-fs-journal.ts';
 import { missingAssets } from './staged-assets.mjs';
 
 // The harness plays the embedder: its ctx.exports (createCtxExports below)
-// answer to the name the real worker registers for its supervisor class.
-composeFabric({ supervisorEntrypoint: 'SupervisorRPC' });
+// answer to the name the real worker registers for its supervisor class. A
+// test that composed its own host namespace before importing the harness
+// (host-namespace-routing) keeps it.
+const composedNamespace = hostNamespace();
+composeFabric({ supervisorEntrypoint: 'SupervisorRPC', ...(composedNamespace === DEFAULT_HOST_NAMESPACE ? {} : { hostNamespace: composedNamespace }) });
 
 /** Observe the real host's public boot boundary without retaining generated source. */
 export function captureProcessBoots(world) {
