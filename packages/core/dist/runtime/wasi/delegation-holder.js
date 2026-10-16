@@ -37,7 +37,7 @@
 import { fsError } from '../beneath-walk.js';
 import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, explicitTimes, modeAllows, timeAt, utimesRefusal } from '../../vfs/posix-access.js';
 import { copiedPermissions, copyfileMode } from '../../vfs/vfs.js';
-import { processFsClient } from '../../_shared/process-fs-client.js';
+import { LINGER_MS, processFsClient } from '../../_shared/process-fs-client.js';
 /** Descriptors this holder opens are numbered below every session descriptor. */
 const FIRST_LOCAL_HANDLE = -1;
 /** A new open description's id: unguessable, so no other process's call names it. */
@@ -84,6 +84,7 @@ export function delegationHolder(options) {
     const goThrough = (file, ino, made) => {
         if (file.through !== undefined)
             return;
+        delete file.logged;
         const entry = decided.get(file.key) ?? store.entry(file.key);
         file.through = {
             ino,
@@ -148,12 +149,18 @@ export function delegationHolder(options) {
         for (const [ino, file] of open)
             goThrough(file, ino);
     };
-    /** Log each file's latest bytes, in the order last written, under the name it has now. */
+    /**
+     * Log each file's latest bytes, in the order last written, under the name
+     * it has now: whole, or where the log holds what it was up to an offset,
+     * from there (cut to its length first, where it shrank).
+     */
     const drain = () => {
         if (dirty.size > 0)
             changes++;
         for (const file of [...dirty]) {
             dirty.delete(file);
+            const from = Math.min(file.changedFrom ?? 0, file.logged ?? 0);
+            delete file.changedFrom;
             // A copy: the file's buffer keeps changing as the process writes. A
             // file made here makes its name with this write, with its number.
             const ino = file.made;
@@ -163,9 +170,20 @@ export function delegationHolder(options) {
                 goThrough(file, ino, ino);
                 continue;
             }
-            client.submit({ type: 'call', call: { call: 'writeFile', path: file.key, mode: file.mode, ...(ino === undefined ? {} : { ino }), ...(file.umask === undefined ? {} : { umask: file.umask }), data: file.bytes.slice(0, file.length) } }, { acknowledged: true });
+            if (ino === undefined && from > 0) {
+                if (file.length < file.logged)
+                    client.submit({ type: 'call', call: { call: 'ftruncate', path: file.key, size: file.length } }, { acknowledged: true });
+                if (file.length > from)
+                    client.submit({ type: 'call', call: { call: 'write', path: file.key, offset: from, data: file.bytes.slice(from, file.length) } }, { acknowledged: true });
+            }
+            else {
+                client.submit({ type: 'call', call: { call: 'writeFile', path: file.key, mode: file.mode, ...(ino === undefined ? {} : { ino }), ...(file.umask === undefined ? {} : { umask: file.umask }), data: file.bytes.slice(0, file.length) } }, { acknowledged: true });
+            }
+            file.logged = file.length;
         }
     };
+    /** Armed while a file's bytes are unlogged: logs them at the latest LINGER_MS after the first, as the client sends what lingers. */
+    let lingerTimer = null;
     /**
      * Forget what was decided under `root`: sent, so the store (after its
      * barrier) answers. Its files' open descriptions write through from now
@@ -256,16 +274,26 @@ export function delegationHolder(options) {
             throw fsError('EACCES', syscall, path);
         return parent;
     };
-    /** The file's bytes changed: logged whole before the next decision, or at the flush. */
-    const written = (file) => {
+    /**
+     * The file's bytes changed, from `from` on: logged before the next
+     * decision, at the flush, or LINGER_MS after the first unlogged change,
+     * whichever comes first.
+     */
+    const written = (file, from = 0) => {
         if (file.detached)
             return;
+        file.changedFrom = Math.min(file.changedFrom ?? from, from);
         dirty.delete(file);
         dirty.add(file);
+        lingerTimer ??= setTimeout(() => {
+            lingerTimer = null;
+            drain();
+        }, LINGER_MS);
     };
     /** `file` lost its name (it was `entry`): what is written through its open descriptions stays theirs. */
     const detach = (file, entry) => {
         file.detached = { ...entry, nlink: 0, size: file.length };
+        delete file.logged;
         dirty.delete(file);
     };
     const handleOf = (handleId) => {
@@ -379,7 +407,7 @@ export function delegationHolder(options) {
             // After everything decided before it, the destination's own bytes among them.
             drain();
             decided.set(to, entry);
-            files.set(entry.ino, { key: to, bytes: bytes.slice(), length: bytes.byteLength, mode });
+            files.set(entry.ino, { key: to, bytes: bytes.slice(), length: bytes.byteLength, mode, logged: bytes.byteLength });
             const description = descriptionId();
             changes++;
             client.submit({ type: 'call', call: { call: 'open', path: to, mode: asked, ...(made === undefined ? {} : { ino: made, umask }), create: true, truncate: true, ...(keepMode ? { fchmod: mode } : {}), description } }, { acknowledged: true });
@@ -387,6 +415,7 @@ export function delegationHolder(options) {
             client.submit({ type: 'call', call: { call: 'close', path: to, description } }, { acknowledged: true });
             return true;
         },
+        logHeld: () => { drain(); },
         content: (entry) => {
             if (entry.dev !== store.device)
                 return undefined;
@@ -569,6 +598,7 @@ export function delegationHolder(options) {
             const end = start + bytes.byteLength;
             if (!room(file, end))
                 throw fsError('ENOSPC', 'write', handle.path);
+            const from = Math.min(start, file.length);
             if (start > file.length)
                 file.bytes.fill(0, file.length, start);
             file.bytes.set(bytes, start);
@@ -578,7 +608,7 @@ export function delegationHolder(options) {
             const entry = decided.get(file.key);
             if (entry)
                 decided.set(file.key, { ...entry, size: file.length, mtime: now(), ctime: now() });
-            written(file);
+            written(file, from);
             return bytes.byteLength;
         },
         seek: (handleId, offset, whence) => {
@@ -600,13 +630,14 @@ export function delegationHolder(options) {
             }
             if (!room(file, size))
                 throw fsError('ENOSPC', 'ftruncate', handle.path);
+            const from = Math.min(size, file.length);
             if (size > file.length)
                 file.bytes.fill(0, file.length, size);
             file.length = size;
             const entry = decided.get(file.key);
             if (entry)
                 decided.set(file.key, { ...entry, size, mtime: now(), ctime: now() });
-            written(file);
+            written(file, from);
         },
         fstat: (handleId) => {
             const handle = handleOf(handleId);
