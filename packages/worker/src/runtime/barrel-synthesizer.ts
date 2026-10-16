@@ -60,7 +60,7 @@ import { importedSpecifiers, maskSourceForImports, UndecidableSourceError } from
 import { BUNDLER_IMPORT_CONDITIONS } from '@nimbus-sh/core/runtime/bundler-resolution.js';
 import { resolvePackageEntry, type ResolvablePackageJson } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import { parseJavaScriptProgram } from '@nimbus-sh/core/runtime/javascript-ast.js';
+import { MODULE_PARSE_OPTIONS, parseStatements, type AstNode } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { bindingIdentifiers } from '@nimbus-sh/core/runtime/binding-pattern.js';
 import type { ExportNamedDeclaration, Identifier, Literal } from 'acorn';
 
@@ -315,7 +315,7 @@ async function parsedImportView(source: string, path: string, parse: SourceParse
  * reachability graph and OOMs the WASM facet on icon-libraries
  * that ship 1500+ exports).
  *
- * Instead we PARSE the barrel-index file (acorn, core javascript-ast.ts),
+ * Instead we PARSE the barrel-index file (acorn, one statement at a time),
  * build a map of `<exportedName> → <relative path inside the package>`,
  * and emit direct file imports:
  *
@@ -372,8 +372,6 @@ export function buildSyntheticEntry(
   if (!indexPath) return null;
   let indexCode: string;
   try { indexCode = vfs.readFileString(indexPath); } catch { return null; }
-  const index = parseJavaScriptProgram(indexCode);
-  if (index === null) return null;
 
   // Each name the barrel re-exports from a module of its own package: the
   // module's path as written, and the name it has there (null: the module's
@@ -382,23 +380,24 @@ export function buildSyntheticEntry(
   const exportMap = new Map<string, ExportRef>();
   const own = new Set<string>();
   const stars: string[] = [];
-  for (const statement of index.body) {
+  const indexRead = eachStatement(indexCode, (statement) => {
     if (statement.type === 'ExportNamedDeclaration') {
       const path = relativeSource(statement.source);
       if (path === null) {
         for (const name of namedExports(statement)) own.add(name);
-        continue;
+        return;
       }
       for (const specifier of statement.specifiers) {
         exportMap.set(moduleExportName(specifier.exported), { path, sourceName: moduleExportName(specifier.local) });
       }
     } else if (statement.type === 'ExportAllDeclaration') {
       const path = relativeSource(statement.source);
-      if (path === null) continue;
+      if (path === null) return;
       if (statement.exported) exportMap.set(moduleExportName(statement.exported), { path, sourceName: null });
       else stars.push(path);
     }
-  }
+  });
+  if (!indexRead) return null;
 
   // `export * from './x.js'`: each name the module itself exports but
   // `default`, unless the barrel exports it otherwise. Nested `export *` is
@@ -409,16 +408,15 @@ export function buildSyntheticEntry(
   for (const path of stars.slice(0, STAR_SOURCE_CAP)) {
     let starCode: string;
     try { starCode = vfs.readFileString(normalizeJoin(indexDir, path)); } catch { continue; }
-    const star = parseJavaScriptProgram(starCode);
-    if (star === null) return null;
-    for (const statement of star.body) {
+    const starRead = eachStatement(starCode, (statement) => {
       const exported = statement.type === 'ExportNamedDeclaration'
         ? namedExports(statement)
         : statement.type === 'ExportAllDeclaration' && statement.exported ? [moduleExportName(statement.exported)] : [];
       for (const name of exported) {
         if (name !== 'default' && !own.has(name) && !exportMap.has(name)) exportMap.set(name, { path, sourceName: name });
       }
-    }
+    });
+    if (!starRead) return null;
   }
 
   if (exportMap.size === 0) return null;
@@ -576,6 +574,22 @@ export async function buildScopedSliceForSynthetic(
 interface ExportRef {
   path: string;
   sourceName: string | null;
+}
+
+/**
+ * Each top-level statement of the module `source`, as it is parsed, none of
+ * them kept (core javascript-ast.ts parseStatements): a module's whole tree
+ * is 17 to 24 times its source, on the path that exists to bound memory.
+ * False when it does not parse.
+ */
+function eachStatement(source: string, onStatement: (statement: AstNode) => void): boolean {
+  try {
+    parseStatements(source, MODULE_PARSE_OPTIONS, { onStatement });
+    return true;
+  } catch (error) {
+    if (error instanceof SyntaxError) return false;
+    throw error;
+  }
 }
 
 /** The specifier of `export … from` when it is relative (a module of the package itself), else null. */
