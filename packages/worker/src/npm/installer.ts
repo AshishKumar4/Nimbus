@@ -570,8 +570,8 @@ export class NpmInstaller {
     if (toFetch.length > 0) {
       log(`Fetching ${toFetch.length} packages... (path: batch-facet)`);
       const batchResult = engineDir !== null
-        ? await this.fetchViaBatchFacet(toFetch, `${engineDir}/node_modules`, { engine: this.store.as(opts.cred), view }, opts.pid, log, npmLog)
-        : await this.fetchIntoMount(toFetch, nmDir, principal, log, npmLog);
+        ? await this.fetchViaBatchFacet(toFetch, `${engineDir}/node_modules`, { engine: this.store.as(opts.cred), view }, opts.pid, cache, log, npmLog)
+        : await this.fetchIntoMount(toFetch, nmDir, principal, cache, log, npmLog);
       totalFiles += batchResult.filesWritten;
       published.push(...batchResult.installed);
       for (const { placement, pkg } of batchResult.installed) installedAt.set(placement, `${pkg.name}@${pkg.version}`);
@@ -1064,6 +1064,8 @@ export class NpmInstaller {
      */
     reader: { engine: CredentialedVfs; view: ProcessView },
     pid: number,
+    /** npm's cache mode for the tarballs read (InstallBatchSpec.cache). */
+    cache: NpmCacheMode,
     log: (msg: string) => void,
     npmLog: NpmLogEmitter,
   ): Promise<FetchOutcome> {
@@ -1200,7 +1202,7 @@ export class NpmInstaller {
       // runs. Tests can predict placement via Fanout's
       // `peerSiblingId(key, peerCount)` helper.
       key: `shard-${shardIdx}`,
-      args: { packages: shardSpecs, concurrency: 3 } as InstallBatchSpec,
+      args: { packages: shardSpecs, concurrency: 3, ...(cache === 'default' ? {} : { cache }) } as InstallBatchSpec,
     }));
 
     try {
@@ -1347,6 +1349,7 @@ export class NpmInstaller {
     toFetch: PackagePlacement[],
     nmDir: string,
     principal: { pid: number; cred: VfsCred; view: ProcessView; tmp: string | null },
+    cache: NpmCacheMode,
     log: (msg: string) => void,
     npmLog: NpmLogEmitter,
   ): Promise<FetchOutcome> {
@@ -1360,7 +1363,7 @@ export class NpmInstaller {
     await withRecall(() => staging.mkdir(stage, { recursive: true }));
     this.placing.add(stage);
     try {
-      const result = await this.fetchViaBatchFacet(toFetch, `${stage}/node_modules`, { engine: staging, view }, principal.pid, log, npmLog);
+      const result = await this.fetchViaBatchFacet(toFetch, `${stage}/node_modules`, { engine: staging, view }, principal.pid, cache, log, npmLog);
       const installed = [...result.installed];
       const failed = [...result.failed];
       // What failed is not put on the mount: its staged files (part of a

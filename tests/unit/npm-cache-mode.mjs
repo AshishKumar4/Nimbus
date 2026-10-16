@@ -25,7 +25,10 @@ import { loadNpmConfig } from '../../packages/core/src/substrate/lifo/commands/s
 import { PACKUMENT_TTL_MS, R2CacheClient, packumentKey, packumentL2Url, packumentUrl } from '../../packages/worker/src/npm/r2-cache.ts';
 import { registryRecord } from '../../packages/worker/src/npm/registry-record.ts';
 import { resolveOnePackumentInFacet } from '../../packages/worker/src/npm/resolve-one-facet.ts';
+import { installPackagesInFacet } from '../../packages/worker/src/npm/install-batch-facet.ts';
 import { withColoCache } from './lib/colo-cache.mjs';
+import { packageTarball, sriOf } from './lib/tarball-fixture.mjs';
+import './lib/install-facet-scope.mjs';
 import './lib/resolve-facet-scope.mjs';
 
 const failures = [];
@@ -229,6 +232,53 @@ await run('a stale colo copy over a stale R2 copy is asked of the registry on R2
   assert.equal((await resolve('^1.0.0')).pkg?.version, '1.0.0');
   assert.deepEqual(registry.requests.slice(1), [{ ifNoneMatch: '"fixture-1"', cacheControl: null }]);
   assert.equal(Number(bucket.entries.get(packumentKey(NAME, REGISTRY)).customMetadata.expiresAt), now + PACKUMENT_TTL_MS, 'R2 renewed by the 304');
+});
+
+// ── The tarballs read in each mode ─────────────────────────────────────────
+
+const TARBALL = packageTarball({ 'package/package.json': '{"name":"left-pad","version":"1.3.0"}', 'package/index.js': 'export default 1;' });
+const TARBALL_URL = `${REGISTRY}/left-pad-1.3.0.tgz`;
+const PACKAGE = { name: 'left-pad', version: '1.3.0', tarballUrl: TARBALL_URL, integrity: await sriOf(TARBALL), pkgDir: 'node_modules/left-pad', installRoot: 'node_modules', mtime: 1, chunkSize: 65_536 };
+
+/** One package installed in `cache` mode, the cache holding `cached` (null: not) and answering after `delayMs`; with the registry requests it made. */
+async function installTarball(cache, cached, delayMs = 0) {
+  let requests = 0;
+  globalThis.fetch = async () => {
+    requests++;
+    return new Response(TARBALL.slice(), { status: 200, headers: { 'content-length': String(TARBALL.length) } });
+  };
+  const supervisor = {
+    async writeBatchStream(stream) {
+      await new Response(stream).arrayBuffer();
+      return { ok: true, committedGroupSequence: 0, committedPathCount: 0, inodes: 0, chunks: 0 };
+    },
+    async getCachedTarball() {
+      if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+      return { bytes: cached, events: [] };
+    },
+    async putCachedTarball() { return true; },
+  };
+  try {
+    const result = await installPackagesInFacet({ packages: [PACKAGE], concurrency: 1, ...(cache === undefined ? {} : { cache }) }, { SUPERVISOR: supervisor });
+    return { failed: result.perPackage[0].errorText, requests };
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+await check('--offline installs a tarball the cache has, and refuses one it does not as npm does (ENOTCACHED), without the network', async () => {
+  const hit = await installTarball('only-if-cached', TARBALL);
+  assert.equal(hit.failed, undefined);
+  assert.equal(hit.requests, 0);
+  const miss = await installTarball('only-if-cached', null);
+  assert.equal(miss.failed, `request to ${TARBALL_URL} failed: cache mode is 'only-if-cached' but no cached response is available.`);
+  assert.equal(miss.requests, 0, 'the registry was asked for a tarball');
+  // A cache slow to answer: no download is started in its place.
+  const slow = await installTarball('only-if-cached', null, 200);
+  assert.equal(slow.failed, miss.failed);
+  assert.equal(slow.requests, 0, 'a download was started while the cache was asked');
+  // Every other mode fetches what the cache does not have.
+  for (const mode of [undefined, 'force-cache', 'no-cache']) assert.deepEqual(await installTarball(mode, null), { failed: undefined, requests: 1 }, String(mode));
 });
 
 Date.now = originalNow;

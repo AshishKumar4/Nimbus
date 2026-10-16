@@ -21,6 +21,7 @@
 
 import type { FacetPackageSpec } from './install-facet.js';
 import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
+import { notCachedMessage, type NpmCacheMode } from '@nimbus-sh/core/_shared/npm-cache-mode.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import { sriDigestOf, sriDigestsEqual, strongestSriEntry, type SriEntry } from '@nimbus-sh/core/_shared/tarball-integrity.js';
 
@@ -44,6 +45,8 @@ export interface InstallBatchSpec {
   packages: FacetPackageSpec[];
   /** Internal pLimit cap for concurrent tarball download/decompression pipelines. */
   concurrency: number;
+  /** npm's cache mode: with 'only-if-cached' (`--offline`) a tarball the cache does not have is ENOTCACHED, and none is fetched. */
+  cache?: NpmCacheMode;
 }
 
 export interface InstallBatchPerPackage {
@@ -318,6 +321,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     // overlap with, so no hedge is armed — the retry loop's own first fetch is
     // already the first thing that happens.
     const r2Available = sharedAcquisition === null && typeof env.SUPERVISOR.getCachedTarball === 'function';
+    const offline = batch.cache === 'only-if-cached';
     const r2WaitStart = Date.now();
     const r2P: Promise<{ bytes: Uint8Array | null; events: any[] } | null> = r2Available
       ? Promise.race([
@@ -339,7 +343,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       clearTimeout(hedgeTimer);
       hedgeTimer = null;
     };
-    if (r2Available) {
+    if (r2Available && !offline) {
       hedgeTimer = setTimeout(() => {
         hedgeTimer = null;
         speculativeFetches++;
@@ -459,6 +463,13 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       }
 
       if (!r2HitBytes) {
+        if (offline) {
+          return {
+            name: spec.name, version: spec.version, pkgDir: spec.pkgDir,
+            fileCount: 0, bytesWritten: 0, elapsed: Date.now() - t0, warnings,
+            errorText: notCachedMessage(spec.tarballUrl),
+          };
+        }
         pipelinedTarballRaceLosses++;
         // 1c. The registry's retry policy (npm/registry-retry.ts, carried
         //     by the preamble): a 5xx or a request that never answered is
