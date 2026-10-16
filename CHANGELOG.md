@@ -41,12 +41,23 @@ published independently in the `@nimbus-sh` npm scope.
   registers `createLifoPkgCommand` needs to call it at boot. No Nimbus host
   or app registers lifo, and Kinu does not. `registerBinCommand` is gone:
   global bins are no longer registered as commands.
-- Changed (core): `createNpmCommand` runs a script only through the
-  host's `ShellExecuteFn`. Without one, `npm run` says the shell is
-  unavailable, for every script. `ShellExecuteFn` takes an optional third
-  argument, the script being run. The new `NpmCommandDeps.beforeRun` hook
-  lets a host stop a run before it starts. The hosted terminal's
-  `node_modules` check and its Next.js refusal now run through that hook.
+- Breaking (core): `createNpmCommand` runs every script through the host's
+  `ShellExecuteFn`. Before, `createNpmCommand(registry, undefined, kernel)`
+  ran a script with no shell operator by calling its first word from the
+  registry. Now `npm run` without a shell executor fails for every script
+  with "shell integration unavailable". A host that registers npm without
+  one should pass its shell, for example
+  `(command, ctx) => workspace.exec(command, { cwd: ctx.cwd, env: ctx.env })`,
+  writing the result's output to `ctx.stdout` and `ctx.stderr` and
+  answering its exit code. `ShellExecuteFn` takes an optional third
+  argument, the script being run (`NpmScript`). It may answer `'resident'`
+  for a script the host keeps running after the call returns, such as a
+  dev server: npm run then stops, and says that the script's `post` script
+  did not run. The new `NpmCommandDeps.beforeRun` hook receives every
+  script npm run will run (pre, own and post) and can stop the run. The
+  hosted terminal's `node_modules` check and Next.js refusal use it, so
+  they also check pre and post scripts. `npmInstallGlobal` no longer takes
+  a command registry, and `createNpmCommand` no longer reads its own.
 - Fixed: a session's destroy (`DELETE /s/<id>/`, `box.destroy()`) is
   repeated once on a fresh connection when the platform fails it with a
   reset of the session's storage ("Internal error in Durable Object
