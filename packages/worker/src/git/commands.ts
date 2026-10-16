@@ -655,29 +655,40 @@ function parseRemoteArgs(args: readonly string[]) {
   unsupportedOption('remote', operation);
 }
 
-/**
- * An explicit `--depth` as git reads it: positive by atoi (builtin/clone.c,
- * fetch.c), then whole by strtol in base 0 (transport.c), whose value it is:
- * '010' is 8, and a hexadecimal one is not positive by atoi. Past 2^53 it
- * is not a positive number here.
- */
-function parseDepth(value: string): number {
-  const leading = /^[ \t\n\v\f\r]*([+-]?\d*)/.exec(value)?.[1] ?? '';
-  const atoi = /\d/.test(leading) ? Number(leading) : 0;
-  if (!Number.isSafeInteger(atoi) || atoi < 1) throw new Error(`depth ${value} is not a positive number`);
-  const whole = /^[ \t\n\v\f\r]*\+?(?:(0[0-7]*)|([1-9]\d*))$/.exec(value);
-  if (whole === null) throw new Error(`transport: invalid depth option '${value}'`);
-  return whole[1] !== undefined ? parseInt(whole[1], 8) : Number(whole[2]);
+/** A C long's value as glibc's strtol saturates it, then an int's: its low 32 bits. */
+function cInt(value: bigint): number {
+  const LONG_MAX = (1n << 63n) - 1n;
+  return Number(BigInt.asIntN(32, value > LONG_MAX ? LONG_MAX : value < -LONG_MAX - 1n ? -LONG_MAX - 1n : value));
 }
 
-function cloneDepth(value: string): number {
+/**
+ * An explicit `--depth` as git reads it into an int: positive by atoi
+ * (builtin/clone.c, fetch.c), then whole by strtol in base 0 (transport.c),
+ * whose value it is: '010' is 8, 4294967297 is 1, and a hexadecimal one is
+ * not positive by atoi. One that comes to 0 or less asks for no shallow
+ * boundary (fetch-pack sends no deepen): undefined.
+ */
+function parseDepth(value: string): number | undefined {
+  const leading = /^[ \t\n\v\f\r]*([+-]?\d+)/.exec(value)?.[1];
+  if (leading === undefined || cInt(BigInt(leading)) < 1) throw new Error(`depth ${value} is not a positive number`);
+  const whole = /^[ \t\n\v\f\r]*([+-]?)(?:(0[0-7]*)|([1-9]\d*))$/.exec(value);
+  if (whole === null) throw new Error(`transport: invalid depth option '${value}'`);
+  const magnitude = whole[2] !== undefined ? BigInt(`0o${whole[2]}`) : BigInt(whole[3]);
+  const depth = cInt(whole[1] === '-' ? -magnitude : magnitude);
+  return depth >= 1 ? depth : undefined;
+}
+
+function cloneDepth(value: string): number | undefined {
   try { return parseDepth(value); }
   catch (error) { throw new GitGlobalsError(`fatal: ${error instanceof Error ? error.message : String(error)}\n`, 128); }
 }
 
-function fetchDepth(flag: string, value: string | undefined): { depth: number; relative: boolean } {
+function fetchDepth(flag: string, value: string | undefined): { depth: number; relative: boolean } | undefined {
   if (flag === '--unshallow') return { depth: INFINITE_DEPTH, relative: false };
-  if (flag === '--depth') return { depth: parseDepth(value ?? ''), relative: false };
+  if (flag === '--depth') {
+    const depth = parseDepth(value ?? '');
+    return depth === undefined ? undefined : { depth, relative: false };
+  }
   const depth = Number(value);
   if (!Number.isSafeInteger(depth) || depth < 1) throw new Error(`${flag} ${value ?? ''} is not a positive number`.trimEnd());
   return { depth, relative: flag === '--deepen' };

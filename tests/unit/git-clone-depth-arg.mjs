@@ -4,8 +4,8 @@
 // a positive number" (builtin/clone.c, fetch.c); whole by strtol in base 0,
 // or "fatal: transport: invalid depth option '<n>'" (transport.c); and that
 // strtol's value is the depth ('010' is 8, ' 2' and '+3' are 2 and 3). For
-// `git clone` and for `git fetch` alike. Omitted, a clone is still depth 1,
-// as Nimbus has always cloned.
+// `git clone` and for `git fetch` alike, each as an int. Omitted, a clone
+// is still depth 1, as Nimbus has always cloned.
 //
 // Red before: a clone took 0 and 'abc' as depth 1 and '2junk' as 2, and
 // cloned; fetch said "--depth 0 is not a positive number" and took '010' as
@@ -29,7 +29,10 @@ const hostTry = (cwd, args) => {
 };
 // The staged cf-git bundle, which a fetch runs; a clone is Nimbus's own either way.
 const session = await createFacetSession(work, { realGit: true });
-const DEPTHS = ['0', '-1', 'abc', '2junk', '', '0x2', '08', ' 2', '+3', '010', '1'];
+// Read into an int as glibc reads it: 2147483648 and 03000000000 are not positive, 4294967297 is 1, and
+// 040000000000 (octal 2^32) is 0, which asks for no shallow boundary at all.
+const DEPTHS = ['0', '-1', 'abc', '2junk', '', '0x2', '08', ' 2', '+3', '010', '1',
+  '2147483648', '03000000000', '4294967297', '040000000000', '99999999999999999999'];
 
 try {
   // Twelve commits, so that 8 and 10 are different depths.
