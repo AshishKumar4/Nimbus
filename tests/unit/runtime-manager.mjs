@@ -229,6 +229,18 @@ const toyRunner = () => async () => 0;
   assert.deepEqual(listed[0].bins, ['toy']);
 }
 
+// ── A manifest that names one command twice: install answers it once, rehydration once per registration ──
+{
+  const vfs = openVfs();
+  const pkg = fakePackage({ 'bin/toy': '# t\n' }, { bins: ['toy', 'toy'] });
+  const first = makeManager(vfs, suppliedRuntimeSource([pkg]));
+  first.manager.registerRunner('toy-runner', toyRunner);
+  assert.deepEqual((await first.manager.install('toy')).bins, ['toy']);
+  const second = makeManager(vfs, suppliedRuntimeSource([]));
+  second.manager.registerRunner('toy-runner', toyRunner);
+  assert.deepEqual(await second.manager.rehydrate(), { count: 2, bins: ['toy', 'toy'] });
+}
+
 // ── Uninstall, then install, actually reinstalls ──────────────────────────
 {
   const vfs = openVfs();

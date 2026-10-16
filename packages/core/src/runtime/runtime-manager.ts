@@ -279,7 +279,7 @@ export class RuntimeManager {
     });
 
     const bins = await this.publish(async () => {
-      const handlers = await bindRuntimeCommands(this.registry, (key) => this.runnerFactories.get(key), seeded.root, manifest);
+      const { handlers } = await bindRuntimeCommands(this.registry, (key) => this.runnerFactories.get(key), seeded.root, manifest);
       await this.linkCommands(seeded.root, manifest, handlers);
       return [...handlers.keys()];
     });
