@@ -18229,11 +18229,14 @@ function resolveExports(exportsField, subpath = ".", conditions = DEFAULT_BUILD_
   if (!next.done) throw new Error("The build/browser package-map policy must be synchronous");
   return next.value ?? null;
 }
+function resolutionError(code, message, Type = Error) {
+  return nodeError(Type, code, message, void 0, resolutionError);
+}
 function createNodePackageMapPolicy(packageJsonUrl, base, internal, resolveBare) {
   const path = (url) => decodeURIComponent(url.pathname);
   const pjsonPath = path(packageJsonUrl);
   const root = new URL(".", packageJsonUrl);
-  const error2 = (code, message, Type = Error) => Object.assign(new Type(message), { code });
+  const error2 = resolutionError;
   function invalidTarget(value, match) {
     const text = typeof value === "object" && value !== null ? JSON.stringify(value) : String(value);
     const related = !internal && text.length > 0 && !text.startsWith("./");
@@ -18379,7 +18382,8 @@ var fileUrl = (path) => {
   url.pathname = path;
   return url;
 };
-var error = (code, message, Type = Error) => Object.assign(new Type(message), { code });
+var error = resolutionError;
+var moduleNotFound = (message, props) => Object.assign(new Error(message), { code: "MODULE_NOT_FOUND" }, props);
 function requireNodeModulePaths(fromDir) {
   const paths = [];
   for (let dir = absolute(fromDir); ; dir = parentDir(dir)) {
@@ -18481,11 +18485,8 @@ function createRequireResolver(host, options = {}) {
         const source = (yield* typeScriptFallback(main)) ?? (yield* typeScriptFallback(path));
         if (source) return source;
       }
-      throw Object.assign(
-        error(
-          "MODULE_NOT_FOUND",
-          "Cannot find module '" + main + `'. Please verify that the package.json has a valid "main" entry`
-        ),
+      throw moduleNotFound(
+        "Cannot find module '" + main + `'. Please verify that the package.json has a valid "main" entry`,
         { path: pkgPath, requestPath: path }
       );
     }
@@ -18565,7 +18566,7 @@ function createRequireResolver(host, options = {}) {
     }
     const path = decodeURIComponent(target.pathname);
     if ((yield* ask.kind(path)) !== "file") {
-      throw Object.assign(error("MODULE_NOT_FOUND", "Cannot find module '" + path + "'"), { path: pjsonPath });
+      throw moduleNotFound("Cannot find module '" + path + "'", { path: pjsonPath });
     }
     return absolute(path);
   }
