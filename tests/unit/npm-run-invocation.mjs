@@ -132,6 +132,20 @@ try {
     assert.equal((await ws.exec('npm install', { cwd: '/home/user/a' })).exitCode, 0, 'an install that prunes tool-a');
     assert.equal((await ws.exec('test -e /home/user/a/node_modules/.bin/toolb')).exitCode, 1, 'a pruned package\'s bin is unlinked');
   });
+
+  await check('a global install\'s bin is a command after a boot, found on PATH', async () => {
+    const install = await ws.exec('npm install -g tool-a@1.0.0', { cwd: '/home/user' });
+    assert.equal(install.exitCode, 0, install.stderr);
+    await ws.close();
+    const booted = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
+    try {
+      assert.equal(booted.registry.has('toola'), false, 'nothing registers it');
+      const ran = await booted.exec('toola', { cwd: '/home/user' });
+      assert.match(ran.stdout, /tool-a 1\.0\.0 ran/, `${ran.stdout}${ran.stderr}`);
+    } finally {
+      await booted.close();
+    }
+  });
 } finally {
   globalThis.fetch = originalFetch;
 }

@@ -103,9 +103,6 @@ const found = async (name) => (await workspace.exec(`command -v ${name}`)).stdou
 assert.equal(await found('fakebin'), '/usr/local/bin/fakebin', 'the global bin is a command, found on PATH');
 assert.equal(await found('tool'), '/usr/local/bin/tool', 'and a scoped package\'s bin');
 assert.equal(await found('stray'), '', 'a bin no install linked is no command');
-for (const bin of ['fakebin', 'tool']) {
-  const ran = await workspace.exec(bin);
-  assert.equal(ran.exitCode, 0, `${bin} runs: ${ran.stdout}${ran.stderr}`);
-}
+// That they run is npm-run-invocation's (a global install, a boot, the bin run): here node is a facet.
 assert.equal(workspace.registry.has('fakebin'), false, 'nothing registered it');
 console.log('hosted-global-bins-rehydrate: ok');
