@@ -39,15 +39,12 @@ export declare class LoaderCodeRegistry {
     /** Directories queued for removal (an owner's, or a dead incarnation's), until they are gone. */
     private readonly removing;
     /**
-     * The bytes of content this incarnation's directories hold, each digest
-     * counted once however many directories share it. The VFS is the only
-     * inventory: a digest is held while any of this incarnation's directories
-     * (an owner's, a source's, one queued for removal) has its file, and only
-     * puts in flight are kept here, transiently.
+     * The bytes this incarnation's owners hold, each owner's files counted as
+     * its own (an adopted copy too, as r7's cap counts every file a put or an
+     * adoption makes): a creation adds its size at admission and a failed one
+     * takes it back; an owner's whole count goes once its directory is gone.
      */
     private storeBytes;
-    /** Puts in flight, by digest: how many, their one size, and the content's charge they carry (0: a directory carries it). */
-    private readonly putting;
     private removals;
     constructor(engine: SqliteVFS);
     /** What the store holds now, for the session's diagnostics. */
@@ -56,7 +53,6 @@ export declare class LoaderCodeRegistry {
         sources: number;
         removing: number;
         storeBytes: number;
-        putting: number;
     };
     /** A new owner, staged, for `binding` of the build of wrangler `wranglerId`: its token. */
     mint(wranglerId: string, binding: string): string;
@@ -82,40 +78,26 @@ export declare class LoaderCodeRegistry {
     private read;
     /**
      * One new file of `owner`, admitted against the caps before `make`
-     * creates it: a creation of the same digest under way is joined (its
-     * stream then unread, cancelled by the caller), and a failed one gives its
-     * reservation back. The session's cap counts content once: a put charges
-     * its digest when no directory holds it and no put in flight has charged
-     * it, and keeps that charge until it settles (a directory holding it then
-     * keeps it counted; one that failed with nothing holding it gives it back).
-     * An adoption shares its donor's charge. A copy from `from` is in flight
-     * on the donor too, so its removal waits for the copy.
+     * creates it, and counted as its own (a put's or an adoption's alike): a
+     * creation of the same digest under way is joined (its stream then unread,
+     * cancelled by the caller), and a failed one gives its count back. A copy
+     * from `from` is in flight on the donor too, so its removal waits for it.
      */
     private create;
-    /** The size of `digest`'s file in a directory of this incarnation that counts (a live owner's, a source's, or one queued for removal), or null. */
-    private heldSize;
-    /** `digest`'s file, `size` bytes, was just removed from a directory that counts: its charge goes with it unless something else carries it. */
-    private released;
     /** `operation`, which reads or writes `owner`'s directory: its removal waits for it. */
     private track;
     /** `token` closed, its reuse-source record dropped, its directory queued for removal once nothing reads or writes it. */
     private retire;
     /**
      * Remove `dir` once `owner`'s operations (all of them, however many come
-     * after this) have drained. A directory that is not gone stays queued and
-     * is tried again at each removal; whatever of it was unlinked was given
-     * back as it went.
+     * after this) have drained, by the VFS's own paged remover; once it is
+     * gone, the owner's count goes, once. One not gone stays queued and still
+     * counted, whatever part of it went, and every queued directory is tried
+     * again at each removal. A dead incarnation's directories were never
+     * counted.
      */
     private queueRemoval;
-    /**
-     * Remove `dir`, a flat directory of at most OWNER_FILES files, whether it
-     * is gone. Its names are listed once (the VFS's one listing), and each
-     * file is stat'ed, unlinked and, when `counted`, given back the moment it
-     * is gone, in pages of REMOVE_PAGE with a turn between; so a removal that
-     * fails part way has given back exactly what it unlinked. The directory
-     * goes last. An entry that is not a file (none is made here) goes by the
-     * VFS's recursive removal.
-     */
+    /** Whether `dir` is gone. */
     private removeDir;
     /** The store's credentialed view: /.nimbus the kernel's (as every kernel store checks it), loader-code the store's own, checked at every use. */
     private storeFs;

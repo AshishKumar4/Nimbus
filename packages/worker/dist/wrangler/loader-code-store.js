@@ -32,8 +32,6 @@ const HAS_DIGESTS = 256;
 /** How long a put waits for each slice of its bytes before it is abandoned. */
 const PUT_SLICE_MS = 60_000;
 const DIGEST = /^[0-9a-f]{64}$/;
-/** How many files a removal unlinks between turns. */
-const REMOVE_PAGE = 256;
 /** A request the store refuses, by name. */
 export class LoaderStoreRefusal extends Error {
     code;
@@ -61,15 +59,12 @@ export class LoaderCodeRegistry {
     /** Directories queued for removal (an owner's, or a dead incarnation's), until they are gone. */
     removing = new Map();
     /**
-     * The bytes of content this incarnation's directories hold, each digest
-     * counted once however many directories share it. The VFS is the only
-     * inventory: a digest is held while any of this incarnation's directories
-     * (an owner's, a source's, one queued for removal) has its file, and only
-     * puts in flight are kept here, transiently.
+     * The bytes this incarnation's owners hold, each owner's files counted as
+     * its own (an adopted copy too, as r7's cap counts every file a put or an
+     * adoption makes): a creation adds its size at admission and a failed one
+     * takes it back; an owner's whole count goes once its directory is gone.
      */
     storeBytes = 0;
-    /** Puts in flight, by digest: how many, their one size, and the content's charge they carry (0: a directory carries it). */
-    putting = new Map();
     removals = Promise.resolve();
     constructor(engine) {
         this.engine = engine;
@@ -86,7 +81,7 @@ export class LoaderCodeRegistry {
     }
     /** What the store holds now, for the session's diagnostics. */
     stats() {
-        return { owners: this.owners.size, sources: this.sources.size, removing: this.removing.size, storeBytes: this.storeBytes, putting: this.putting.size };
+        return { owners: this.owners.size, sources: this.sources.size, removing: this.removing.size, storeBytes: this.storeBytes };
     }
     /** A new owner, staged, for `binding` of the build of wrangler `wranglerId`: its token. */
     mint(wranglerId, binding) {
@@ -183,7 +178,7 @@ export class LoaderCodeRegistry {
             const donor = await this.donor(owner, digest);
             if (donor === null)
                 continue;
-            await this.create(owner, digest, donor.size, false, async () => {
+            await this.create(owner, digest, donor.size, async () => {
                 fs.copyFile(`${donor.owner.dir}/${digest}`, `${owner.dir}/${digest}`);
             }, donor.owner);
             held.push(digest);
@@ -216,11 +211,7 @@ export class LoaderCodeRegistry {
             await owner.creating.get(digest)?.catch(() => { });
             if (this.size(fs, `${owner.dir}/${digest}`) !== null)
                 return false;
-            // A digest names one content, so one size: one held, or being put, of another size refuses this put.
-            const known = this.heldSize(digest) ?? this.putting.get(digest)?.size;
-            if (known !== undefined && known !== size)
-                throw new LoaderStoreRefusal(`digest ${digest} names ${known} bytes, not ${size}`, 'EINVAL');
-            await this.create(owner, digest, size, true, () => fs.writeFileFrom(`${owner.dir}/${digest}`, size, verified(stream, digest), { mode: 0o600 }).then(() => { }));
+            await this.create(owner, digest, size, () => fs.writeFileFrom(`${owner.dir}/${digest}`, size, verified(stream, digest), { mode: 0o600 }).then(() => { }));
             return true;
         }
         finally {
@@ -236,46 +227,25 @@ export class LoaderCodeRegistry {
     }
     /**
      * One new file of `owner`, admitted against the caps before `make`
-     * creates it: a creation of the same digest under way is joined (its
-     * stream then unread, cancelled by the caller), and a failed one gives its
-     * reservation back. The session's cap counts content once: a put charges
-     * its digest when no directory holds it and no put in flight has charged
-     * it, and keeps that charge until it settles (a directory holding it then
-     * keeps it counted; one that failed with nothing holding it gives it back).
-     * An adoption shares its donor's charge. A copy from `from` is in flight
-     * on the donor too, so its removal waits for the copy.
+     * creates it, and counted as its own (a put's or an adoption's alike): a
+     * creation of the same digest under way is joined (its stream then unread,
+     * cancelled by the caller), and a failed one gives its count back. A copy
+     * from `from` is in flight on the donor too, so its removal waits for it.
      */
-    create(owner, digest, size, isPut, make, from) {
+    create(owner, digest, size, make, from) {
         const joined = owner.creating.get(digest);
         if (joined !== undefined)
             return joined;
-        const pending = isPut ? this.putting.get(digest) : undefined;
-        const charge = isPut && (pending?.chargedBytes ?? 0) === 0 && this.heldSize(digest) === null ? size : 0;
-        if (owner.files + 1 > OWNER_FILES || owner.bytes + size > OWNER_BYTES || this.storeBytes + charge > STORE_BYTES) {
-            return Promise.reject(new LoaderStoreRefusal(`this owner would hold ${owner.files + 1} files and ${owner.bytes + size} bytes (at most ${OWNER_FILES} and ${OWNER_BYTES}), and the session's loader store ${this.storeBytes + charge} bytes (at most ${STORE_BYTES})`, 'ENOSPC'));
+        if (owner.files + 1 > OWNER_FILES || owner.bytes + size > OWNER_BYTES || this.storeBytes + size > STORE_BYTES) {
+            return Promise.reject(new LoaderStoreRefusal(`this owner would hold ${owner.files + 1} files and ${owner.bytes + size} bytes (at most ${OWNER_FILES} and ${OWNER_BYTES}), and the session's loader store ${this.storeBytes + size} bytes (at most ${STORE_BYTES})`, 'ENOSPC'));
         }
         owner.files++;
         owner.bytes += size;
-        this.storeBytes += charge;
-        let put;
-        if (isPut) {
-            put = pending ?? { count: 0, size, chargedBytes: 0 };
-            put.count++;
-            put.chargedBytes += charge;
-            this.putting.set(digest, put);
-        }
-        const settle = () => {
-            if (put === undefined || --put.count > 0)
-                return;
-            this.putting.delete(digest);
-            // The last put of it settled: a directory holding it carries its charge now; nothing holding it, it is given back.
-            if (this.heldSize(digest) === null)
-                this.storeBytes -= put.chargedBytes;
-        };
-        const creation = Promise.resolve().then(make).then(settle, (error) => {
+        this.storeBytes += size;
+        const creation = Promise.resolve().then(make).catch((error) => {
             owner.files--;
             owner.bytes -= size;
-            settle();
+            this.storeBytes -= size;
             throw error;
         }).finally(() => owner.creating.delete(digest));
         owner.creating.set(digest, creation);
@@ -283,28 +253,6 @@ export class LoaderCodeRegistry {
         if (from !== undefined)
             this.track(from, creation).catch(() => { });
         return creation;
-    }
-    /** The size of `digest`'s file in a directory of this incarnation that counts (a live owner's, a source's, or one queued for removal), or null. */
-    heldSize(digest) {
-        const fs = this.storeFs();
-        const dirs = [...[...this.owners.values()].filter((owner) => owner.made).map((owner) => owner.dir), ...[...this.removing].filter(([, owner]) => owner !== null).map(([dir]) => dir)];
-        for (const dir of dirs) {
-            const size = this.size(fs, `${dir}/${digest}`);
-            if (size !== null)
-                return size;
-        }
-        return null;
-    }
-    /** `digest`'s file, `size` bytes, was just removed from a directory that counts: its charge goes with it unless something else carries it. */
-    released(digest, size) {
-        if (this.heldSize(digest) !== null)
-            return;
-        const put = this.putting.get(digest);
-        if (put === undefined)
-            this.storeBytes -= size;
-        // A put of it in flight with no charge of its own carries this one now; one with its own, this file never had one.
-        else if (put.chargedBytes === 0)
-            put.chargedBytes = size;
     }
     /** `operation`, which reads or writes `owner`'s directory: its removal waits for it. */
     track(owner, operation) {
@@ -328,9 +276,11 @@ export class LoaderCodeRegistry {
     }
     /**
      * Remove `dir` once `owner`'s operations (all of them, however many come
-     * after this) have drained. A directory that is not gone stays queued and
-     * is tried again at each removal; whatever of it was unlinked was given
-     * back as it went.
+     * after this) have drained, by the VFS's own paged remover; once it is
+     * gone, the owner's count goes, once. One not gone stays queued and still
+     * counted, whatever part of it went, and every queued directory is tried
+     * again at each removal. A dead incarnation's directories were never
+     * counted.
      */
     queueRemoval(dir, owner) {
         this.removing.set(dir, owner);
@@ -341,66 +291,28 @@ export class LoaderCodeRegistry {
             for (const [pending, held] of [...this.removing]) {
                 if (held !== null && held.inFlight.size > 0)
                     continue;
-                if (await this.removeDir(pending, held !== null))
-                    this.removing.delete(pending);
+                if (!this.removeDir(pending) || !this.removing.delete(pending) || held === null)
+                    continue;
+                this.storeBytes -= held.bytes;
+                held.files = 0;
+                held.bytes = 0;
             }
         }).catch(() => { });
     }
-    /**
-     * Remove `dir`, a flat directory of at most OWNER_FILES files, whether it
-     * is gone. Its names are listed once (the VFS's one listing), and each
-     * file is stat'ed, unlinked and, when `counted`, given back the moment it
-     * is gone, in pages of REMOVE_PAGE with a turn between; so a removal that
-     * fails part way has given back exactly what it unlinked. The directory
-     * goes last. An entry that is not a file (none is made here) goes by the
-     * VFS's recursive removal.
-     */
-    async removeDir(dir, counted) {
-        const fs = this.storeFs();
-        let names;
+    /** Whether `dir` is gone. */
+    removeDir(dir) {
         try {
-            names = fs.readdir(dir).map(({ name }) => name);
+            const removal = this.storeFs().removeRecursive(dir);
+            if (removal.failures.length === 0 && removal.kept.length === 0)
+                return true;
+            console.warn(`[nimbus/loader-code-store] ${dir}: ${removal.failures.length + removal.kept.length} entries could not be removed; tried again later`);
+            return false;
         }
         catch (error) {
             if (isMissing(error))
                 return true;
-            console.warn(`[nimbus/loader-code-store] could not list ${dir}: ${error instanceof Error ? error.message : String(error)}`);
+            console.warn(`[nimbus/loader-code-store] could not remove ${dir}: ${error instanceof Error ? error.message : String(error)}`);
             return false;
-        }
-        let left = 0;
-        for (let at = 0; at < names.length; at++) {
-            if (at > 0 && at % REMOVE_PAGE === 0)
-                await new Promise((resolve) => setTimeout(resolve, 0));
-            const path = `${dir}/${names[at]}`;
-            try {
-                const stat = statOrNull(fs, path);
-                if (stat === null)
-                    continue;
-                if (stat.type === 'directory') {
-                    const removal = fs.removeRecursive(path);
-                    if (removal.failures.length > 0 || removal.kept.length > 0)
-                        left++;
-                    continue;
-                }
-                fs.unlink(path);
-                if (counted && stat.type === 'file')
-                    this.released(names[at], stat.size);
-            }
-            catch (error) {
-                if (!isMissing(error))
-                    left++;
-            }
-        }
-        if (left > 0) {
-            console.warn(`[nimbus/loader-code-store] ${dir}: ${left} entries could not be removed; tried again later`);
-            return false;
-        }
-        try {
-            fs.rmdir(dir);
-            return true;
-        }
-        catch (error) {
-            return isMissing(error);
         }
     }
     /** The store's credentialed view: /.nimbus the kernel's (as every kernel store checks it), loader-code the store's own, checked at every use. */
