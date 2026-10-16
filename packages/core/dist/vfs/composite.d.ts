@@ -21,7 +21,7 @@
  * would change what the operation means.
  */
 import type { Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsCopyOptions, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteObserver, VfsWriteWants } from './vfs.js';
-import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
+import type { FsTime, RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
 import { type VfsEvent } from './events.js';
 import { type VfsErrorCode } from './vfs-error.js';
 /**
@@ -232,7 +232,8 @@ export interface HeldFile {
     truncate(size: number, admit?: () => void): Awaitable<void>;
     chmod(mode: number, admit?: () => void): Awaitable<void>;
     chown(uid: number | null, gid: number | null, admit?: () => void): Awaitable<void>;
-    utimes(atime: number, mtime: number, admit?: () => void): Awaitable<void>;
+    /** As its backend's utimes, each time an FsTime its backend resolves as it commits. */
+    utimes(atime: FsTime, mtime: FsTime, admit?: () => void): Awaitable<void>;
     readdir(admit?: () => void): Awaitable<VfsDirent[]>;
     close(): Awaitable<void>;
 }
@@ -987,7 +988,7 @@ export declare class CompositeVFS implements VFS {
     readlink(path: string): Promise<string>;
     chmod(path: string, mode: number): Promise<void>;
     chown(path: string, uid: number | null, gid: number | null): Promise<void>;
-    utimes(path: string, atimeMs: number, mtimeMs: number): Promise<void>;
+    utimes(path: string, atime: FsTime, mtime: FsTime): Promise<void>;
     writeFileIfRevision(path: string, data: Uint8Array, expected: VfsRevision): Promise<VfsCasResult>;
     copy(from: string, to: string, options?: VfsCopyOptions): Promise<number>;
     readFileAtRevision(path: string, revision: VfsRevision, range?: {

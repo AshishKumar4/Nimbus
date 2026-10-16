@@ -14,6 +14,7 @@ import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCopyOptions, VfsCred, V
 import { syscallError, toVfsError, VfsError, VFS_ERRNO, type VfsErrorCode } from './vfs-error.js';
 import { projectChange, type VfsEvent } from './events.js';
 import { normalizeVfsPath } from './path.js';
+import type { FsTime } from '../runtime/os-contracts.js';
 
 function absolute(key: string): string {
   return key.startsWith('/') ? key : `/${key}`;
@@ -251,8 +252,8 @@ export class SqliteFiles implements VFS {
     this.run('chown', path, () => this.view.chown(path, uid, gid));
   }
 
-  utimes(path: string, atimeMs: number, mtimeMs: number): void {
-    this.run('utime', path, () => this.view.utimes(path, atimeMs, mtimeMs));
+  utimes(path: string, atime: FsTime, mtime: FsTime): void {
+    this.run('utime', path, () => this.view.utimes(path, atime, mtime));
   }
 
   /** Copy inside the database: rows, not bytes. */

@@ -302,8 +302,8 @@ export function supervisorCalls(base) {
         async lstat(path) {
             return this[CALL](this[FS_READ]('lstat', [path]));
         }
-        async utimes(path, atimeMs, mtimeMs) {
-            return this[CALL](this[FS_MUTATION]('utimes', [path, atimeMs, mtimeMs]));
+        async utimes(...args) {
+            return this[CALL](this[FS_MUTATION]('utimes', args));
         }
         async chmod(path, mode) {
             return this[CALL](this[FS_MUTATION]('chmod', [path, mode]));

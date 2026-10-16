@@ -37,6 +37,7 @@
 
 import type {
   Awaitable,
+  FsTime,
   RuntimeFileHandle,
   RuntimeFsBridge,
   RuntimeOpenedFile,
@@ -1215,10 +1216,9 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * written through first), and its stat as the session then says.
    */
   const holderAttrs = (name: 'fchmod' | 'fchown' | 'futimes', passed: (handleId: number, ...rest: unknown[]) => unknown, handleId: number, rest: unknown[]): unknown => {
-    const time = (value: unknown): number | null | undefined => (typeof value === 'number' ? value : value === null ? null : undefined);
     const change: HolderAttrChange = name === 'fchmod' ? { mode: Number(rest[0]) }
       : name === 'fchown' ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) }
-      : { atime: time(rest[0]), mtime: time(rest[1]) };
+      : { atime: rest[0] as FsTime, mtime: rest[1] as FsTime };
     if (holder!.fsetattr(handleId, change)) return undefined;
     holder!.changing([holder!.keyOf(handleId)]);
     return holder!.flush().then(() => holder!.sessionOf(handleId)).then(async (session) => {

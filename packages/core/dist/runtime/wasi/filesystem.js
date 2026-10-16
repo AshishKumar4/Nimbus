@@ -836,13 +836,12 @@ export function installAuthorityFilesystem(imports, options) {
             });
         });
     });
-    // Each time as utimes takes it, its intent kept for the judgment: now
-    // (null: a writer may), explicit ms (the owner), or kept (undefined).
+    // Each time as the guest asked it (FsTime), for the filesystem to resolve and judge as it commits.
     const times = (a, m, flags) => {
         if ((flags & 3) === 3 || (flags & 12) === 12 || flags & ~15)
             fail('EINVAL');
-        return [flags & 2 ? null : flags & 1 ? Number(a / 1000000n) : undefined,
-            flags & 8 ? null : flags & 4 ? Number(m / 1000000n) : undefined];
+        return [flags & 2 ? 'now' : flags & 1 ? Number(a / 1000000n) : 'omit',
+            flags & 8 ? 'now' : flags & 4 ? Number(m / 1000000n) : 'omit'];
     };
     imports.fd_filestat_set_times = guard(imports.fd_filestat_set_times, (fs, fd, a, m, flags) => {
         right(fd, 23);
@@ -882,7 +881,6 @@ export function installAuthorityFilesystem(imports, options) {
     imports.path_filestat_set_times = guard(imports.path_filestat_set_times, (fs, fd, lookup, p, n, a, m, flags) => {
         pathRight(fd, 20);
         const target = at(fd, path(p, n)), followSymlinks = !!(lookup & 1);
-        return after(fs.stat(target, { followSymlinks }), st => { if (st === null)
-            fail('ENOENT'); return after(fs.utimes(target, ...times(a, m, flags), { followSymlinks }), () => 0); });
+        return after(fs.utimes(target, ...times(a, m, flags), { followSymlinks }), () => 0);
     });
 }

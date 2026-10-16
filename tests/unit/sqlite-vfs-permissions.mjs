@@ -154,7 +154,7 @@ function errorCode(fn, expected) {
   user.writeFile('d/f', 'x');
   user.chmod('d/f', 0o002);
   errorCode(() => other.utimes('d/f', 1, 2), 'EPERM');
-  assert.doesNotThrow(() => other.utimes('d/f', null, null));
+  assert.doesNotThrow(() => other.utimes('d/f', 'now', 'now'));
   root.chown('d/f', 0, 0);
   assert.doesNotThrow(() => root.utimes('d/f', 3, 4));
 }

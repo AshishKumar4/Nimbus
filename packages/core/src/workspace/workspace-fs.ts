@@ -19,6 +19,7 @@ import { move, type MoveOptions } from '../vfs/move.js';
 import { syscallError, VfsError } from '../vfs/vfs-error.js';
 import type { VFS, VfsCopyOptions, VfsDirent, VfsRemoval } from '../vfs/vfs.js';
 import type { ProcessStat, ProcessView } from '../runtime/process-files.js';
+import type { FsTime } from '../runtime/os-contracts.js';
 
 export class WorkspaceFs implements VFS {
   constructor(
@@ -106,9 +107,9 @@ export class WorkspaceFs implements VFS {
   async chmod(path: string, mode: number): Promise<void> { return await this.view.chmod(this.resolve(path), mode); }
   /** chown(2): a null side keeps what the file has (chown -1). */
   async chown(path: string, uid: number | null, gid: number | null): Promise<void> { return await this.view.chown(this.resolve(path), uid, gid); }
-  /** utimensat(2): null is now, undefined leaves that time; `follow: false` sets a link's own times. */
-  async utimes(path: string, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: { follow?: boolean }): Promise<void> {
-    return await this.view.utimes(this.resolve(path), atimeMs, mtimeMs, options);
+  /** utimensat(2), each time an FsTime; `follow: false` sets a link's own times. */
+  async utimes(path: string, atime: FsTime, mtime: FsTime, options?: { follow?: boolean }): Promise<void> {
+    return await this.view.utimes(this.resolve(path), atime, mtime, options);
   }
   /** cp: a file (a link named as the source followed), or with `recursive` a tree, onto a name that is not there. */
   async copy(from: string, to: string, options?: VfsCopyOptions): Promise<number> {

@@ -40,7 +40,7 @@ import { concatBytes, dec, enc } from '../_shared/bytes.js';
 import { w7ChunkCount, w7Chunks, } from '@nimbus-sh/platform/w7-frame.js';
 import { WeightedCreditPool, } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { createHash } from 'node:crypto';
-import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, posixAccess, utimesRefusal } from './posix-access.js';
+import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, explicitTimes, posixAccess, timeAt, utimesRefusal } from './posix-access.js';
 import { RecallRequired, recallOf, withRecall } from './recall.js';
 import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../_shared/read-lease-cover.js';
 export { RecallRequired, recallOf, withRecall } from './recall.js';
@@ -4776,27 +4776,25 @@ export class SqliteVFS {
         });
         this._writeBatchOnce({ plan: builder.build(), deletedInodes: [] }, { source: 'range-mutation', limitMode: 'bounded' });
     }
-    utimes(path, atimeMs, mtimeMs, cred, followLeaf = true) {
+    utimes(path, atime, mtime, cred, followLeaf = true) {
         const resolved = this.checkAccess(path, 0, cred, { followLeaf });
         const inode = resolved.inode;
         if (!inode)
             throw vfsKeyError('ENOENT', path);
         this.admit(this.lexicalKey(path, cred), this.physicalKey(inode.path));
-        this.utimesInode(inode, atimeMs, mtimeMs, cred, resolved.path);
+        this.utimesInode(inode, atime, mtime, cred, resolved.path);
     }
     /**
      * utimes(2) on `inode`, by name or by a description of it (`path` null:
      * one whose name is gone), judged alike (utimesRefusal): explicit times by
      * the owner or root, now by anyone who may write it.
      */
-    utimesInode(inode, atimeMs, mtimeMs, cred, path) {
-        // Nothing explicit: only now (null) and omit (undefined).
-        const useNow = typeof atimeMs !== 'number' && typeof mtimeMs !== 'number';
-        const refused = utimesRefusal({ mode: inode.mode, uid: inode.uid, gid: inode.gid, type: inode.kind }, !useNow, cred);
+    utimesInode(inode, atime, mtime, cred, path) {
+        const refused = utimesRefusal({ mode: inode.mode, uid: inode.uid, gid: inode.gid, type: inode.kind }, explicitTimes(atime, mtime), cred);
         if (refused !== null)
             throw vfsKeyError(refused, path ?? 'detached inode');
-        const at = (value, kept) => (value === undefined ? kept : value !== null && Number.isFinite(value) ? Math.trunc(value) : this.now());
-        const times = { atime: at(atimeMs, inode.atime), mtime: at(mtimeMs, inode.mtime) };
+        const now = this.now();
+        const times = { atime: timeAt(atime, inode.atime, now), mtime: timeAt(mtime, inode.mtime, now) };
         if (path === null) {
             Object.assign(inode, times);
             inode.ctime = this.now();

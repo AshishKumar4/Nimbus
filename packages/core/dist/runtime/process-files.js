@@ -138,9 +138,9 @@ class GuardedProcessBridge {
         })());
     }
     truncate(path, size, options) { this.guard(); return this.target.truncate(path, size, options); }
-    utimes(path, atimeMs, mtimeMs, options) {
+    utimes(path, atime, mtime, options) {
         this.guard();
-        return this.target.utimes(path, atimeMs, mtimeMs, options);
+        return this.target.utimes(path, atime, mtime, options);
     }
     chmod(path, mode) { this.guard(); return this.target.chmod(path, mode); }
     access(path, mode) { this.guard(); return this.target.access(path, mode); }
@@ -204,7 +204,7 @@ class GuardedProcessBridge {
     ftruncate(handleId, size) { this.guard(); return this.target.ftruncate(handleId, size); }
     fchmod(handleId, mode) { this.guard(); return this.target.fchmod(handleId, mode); }
     fchown(handleId, uid, gid) { this.guard(); return this.target.fchown(handleId, uid, gid); }
-    futimes(handleId, atimeMs, mtimeMs) { this.guard(); return this.target.futimes(handleId, atimeMs, mtimeMs); }
+    futimes(handleId, atime, mtime) { this.guard(); return this.target.futimes(handleId, atime, mtime); }
     writeBatch(payload, options) {
         this.guard();
         // As writeStream: closing the scope cancels the commit.
@@ -1028,12 +1028,9 @@ class AwaitingProcessBridge {
             return this.receipt();
         });
     }
-    utimes(path, atimeMs, mtimeMs, options) {
-        return this.either([path], () => this.bridge.utimes(path, atimeMs, mtimeMs, options), async () => {
-            const p = (await this.path(path, options?.followSymlinks !== false));
-            const now = Date.now();
-            const kept = atimeMs === undefined || mtimeMs === undefined ? await this.namespace.stat(p) : null;
-            await this.namespace.utimes(p, atimeMs === undefined ? (kept?.atimeMs ?? now) : (atimeMs ?? now), mtimeMs === undefined ? (kept?.mtimeMs ?? now) : (mtimeMs ?? now));
+    utimes(path, atime, mtime, options) {
+        return this.either([path], () => this.bridge.utimes(path, atime, mtime, options), async () => {
+            await this.namespace.utimes(await this.path(path, options?.followSymlinks !== false), atime, mtime);
             return this.receipt();
         });
     }
@@ -1216,8 +1213,8 @@ class AwaitingProcessBridge {
     fchown(handleId, uid, gid) {
         return this.on(handleId, () => this.bridge.fchown(handleId, uid, gid), () => this.descriptors.fchown(handleId, uid, gid));
     }
-    futimes(handleId, atimeMs, mtimeMs) {
-        return this.on(handleId, () => this.bridge.futimes(handleId, atimeMs, mtimeMs), () => this.descriptors.futimes(handleId, atimeMs, mtimeMs));
+    futimes(handleId, atime, mtime) {
+        return this.on(handleId, () => this.bridge.futimes(handleId, atime, mtime), () => this.descriptors.futimes(handleId, atime, mtime));
     }
 }
 /** A command's view for a process binding, over any binding authority. */
@@ -1422,13 +1419,9 @@ export class ProcessView {
             await this.fs.chown(path, uid, gid, { followSymlinks });
         });
     }
-    /**
-     * utimensat(2): null is now, undefined leaves that time (only those need
-     * no more than write permission or ownership); an explicit time needs
-     * ownership. `follow: false` sets a link's own times.
-     */
-    async utimes(path, atimeMs, mtimeMs, options) {
-        await this.call(options?.follow === false ? 'lutime' : 'utime', path, () => this.fs.utimes(path, atimeMs, mtimeMs, { followSymlinks: options?.follow !== false }));
+    /** utimensat(2), each time an FsTime; `follow: false` sets a link's own times. */
+    async utimes(path, atime, mtime, options) {
+        await this.call(options?.follow === false ? 'lutime' : 'utime', path, () => this.fs.utimes(path, atime, mtime, { followSymlinks: options?.follow !== false }));
     }
     /** cp: a file (a link named as the source followed), or with `recursive` a tree, onto a name that is not there. */
     async copy(from, to, options) {
@@ -1445,7 +1438,7 @@ export class ProcessView {
             const handle = await this.fs.open(path, { write: true, create: true });
             await this.fs.close(handle.id);
             // UTIME_NOW: write permission is enough, as for touch(1).
-            await this.fs.utimes(path, null, null);
+            await this.fs.utimes(path, 'now', 'now');
         });
     }
     /** The file's bytes read around the session's content cache, re-checked for a change mid-read. */
@@ -1752,8 +1745,8 @@ export class NamespaceFs {
     }
     chmod(path, mode) { this.fs.chmod(path, mode); }
     chown(path, uid, gid) { this.fs.chown(path, uid, gid); }
-    utimes(path, atimeMs, mtimeMs, options) {
-        this.fs.utimes(path, atimeMs, mtimeMs, options);
+    utimes(path, atime, mtime, options) {
+        this.fs.utimes(path, atime, mtime, options);
     }
     copyFile(from, to) { this.fs.copyFile(from, to); }
     acquireExclusiveMutation(path, options) {

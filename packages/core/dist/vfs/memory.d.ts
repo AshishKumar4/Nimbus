@@ -7,6 +7,7 @@
  * entry so a cache over it can tell a change.
  */
 import type { SyncVFS, VFS, VfsDirent, VfsStat } from './vfs.js';
+import type { FsTime } from '../runtime/os-contracts.js';
 export declare class MemoryVFS implements VFS {
     private readonly owner;
     /** VFS.storesWrites: a regular file holds what it was written. */
@@ -55,7 +56,8 @@ export declare class MemoryVFS implements VFS {
     symlink(target: string, path: string): void;
     readlink(path: string): string;
     chmod(path: string, mode: number): void;
-    utimes(path: string, _atimeMs: number, mtimeMs: number): void;
+    /** Its entries keep an mtime alone: the atime is taken and dropped. */
+    utimes(path: string, _atime: FsTime, mtime: FsTime): void;
     describe(): {
         source: string;
         type: string;
