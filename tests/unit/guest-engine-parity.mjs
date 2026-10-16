@@ -240,7 +240,7 @@ const SCENARIOS = {
     assert.equal((await e.peerStat(`${OUT}/d`)).mode, 0o750);
     assert.equal(await e.peerText(`${OUT}/d/b.txt`), 'A');
     assert.equal((await e.peerStat(`${OUT}/d/b.txt`)).mode, 0o600);
-    assert.equal(await e.peerStat(`${OUT}/gone.txt`), null);
+    assert.equal(sessionHas(e, `${OUT}/gone.txt`), false);
   },
 
   async 'a synchronous write outside a held subtree is answered at once, seen by name, and lands'(e) {
@@ -293,7 +293,7 @@ const SCENARIOS = {
   },
 
   async 'what the session refused of a synchronous write is the next fsync\'s answer'(e) {
-    e.authority.kfs.mkdir(`${APP.slice(1)}/locked`, { mode: 0o755 });
+    await e.authority.peer.mkdir(`${APP.slice(1)}/locked`, { mode: 0o755 });
     await e.fs.readdir(APP);
     await e.fs.readdir(`${APP}/locked`);
     e.stall();
