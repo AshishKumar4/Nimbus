@@ -1332,13 +1332,23 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const current = entryOf(key);
       if (current === null && options.provisional?.() === true) throw fsError('ENOENT', 'mode' in attrs ? 'chmod' : 'uid' in attrs ? 'chown' : 'utime', '/' + key);
       if (current === undefined || current === null) return false;
-      if (deciding(key) === undefined) return false;
-      // Only the owner (or root) changes a mode, an owner or times here, as
-      // chmod, chown and utimes allow it; anything else is the session's to judge.
-      if (store.cred.uid !== 0 && store.cred.uid !== current.uid) return false;
-      if ('uid' in attrs && chownRefusal(current, kept(attrs.uid), kept(attrs.gid), store.cred) !== null) return false;
-      // A grant a confined principal may not make: the session's to judge.
-      if ('mode' in attrs && confinedModeRefusal(current.mode, attrs.mode) !== null) return false;
+      const grant = deciding(key);
+      if (grant === undefined) return false;
+      if (grant === PROVISIONAL) {
+        // Answered as this view judges it, the session's to refuse after (a
+        // principal it confines): what the view refuses is refused now.
+        const refused = 'mode' in attrs ? chmodRefusal(current, store.cred)
+          : 'uid' in attrs ? chownRefusal(current, kept(attrs.uid), kept(attrs.gid), store.cred)
+          : utimesRefusal(current, true, store.cred);
+        if (refused !== null) throw fsError(refused, 'mode' in attrs ? 'chmod' : 'uid' in attrs ? 'chown' : 'utime', '/' + key);
+      } else {
+        // Only the owner (or root) changes a mode, an owner or times here, as
+        // chmod, chown and utimes allow it; anything else is the session's to judge.
+        if (store.cred.uid !== 0 && store.cred.uid !== current.uid) return false;
+        if ('uid' in attrs && chownRefusal(current, kept(attrs.uid), kept(attrs.gid), store.cred) !== null) return false;
+        // A grant a confined principal may not make: the session's to judge.
+        if ('mode' in attrs && confinedModeRefusal(current.mode, attrs.mode) !== null) return false;
+      }
       if ('mode' in attrs) throughAt([key]);
       const next = changedBy(current, attrs);
       decided.set(key, next);
