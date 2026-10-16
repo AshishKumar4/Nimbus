@@ -92,9 +92,10 @@ const USAGE =
  *  test bucket would point the deploy at a catalog it never fetches. */
 const PRODUCTION_BUCKET = 'nimbus-runtime-cache';
 
-/** The most one file of a runtime package may hold, and the package unpacked (fetchRuntimePackage). */
+/** The most one file of a runtime package may hold, the package as tar (headers and padding included), and its entries (fetchRuntimePackage). */
 const RUNTIME_PACKAGE_FILE_BYTES = 256 * 1024 * 1024;
 const RUNTIME_PACKAGE_BYTES = 1024 * 1024 * 1024;
+const RUNTIME_PACKAGE_ENTRIES = 4096;
 
 /** Where a catalog is kept by the digest of its bytes (runtime-catalog.ts catalogKey reads the same). */
 function catalogKey(sha256) {
@@ -682,8 +683,8 @@ function manifestText(manifest) {
  * npm's, version document for `spec.npm.name` at its npm version, and the
  * tarball it names, verified against its sha512 `integrity`. The tarball is
  * read in memory, never unpacked: every entry must be a regular file, or a
- * directory, under one root, within the byte bounds above, or the package is
- * refused, so a link or a device in it is never followed. `blob(src)` is the
+ * directory, under one root, within the entry and byte bounds above, or the
+ * package is refused, so a link or a device in it is never followed. `blob(src)` is the
  * bytes of the spec file `src`, at the content key the package's manifest
  * gives its path, verified against that entry's sha256. The publisher then
  * composes its own manifest from them and refuses any difference from
@@ -709,8 +710,15 @@ async function fetchRuntimePackage(spec) {
 
   const files = new Map();
   let root = null;
-  let unpacked = 0;
-  const wanted = (header) => isRegularTarFile(header) && header.size <= RUNTIME_PACKAGE_FILE_BYTES && unpacked + header.size <= RUNTIME_PACKAGE_BYTES;
+  let records = 0;
+  let tarBytes = 0;
+  // Every record counts, its header and padding too, before any is kept: an empty file costs a record.
+  const wanted = (header) => {
+    records++;
+    tarBytes += 512 + Math.ceil(header.size / 512) * 512;
+    if (records > RUNTIME_PACKAGE_ENTRIES || tarBytes > RUNTIME_PACKAGE_BYTES) fail(`its tarball holds more than ${RUNTIME_PACKAGE_ENTRIES} entries or ${RUNTIME_PACKAGE_BYTES} bytes`);
+    return isRegularTarFile(header) && header.size <= RUNTIME_PACKAGE_FILE_BYTES;
+  };
   const gunzipped = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
   for await (const { header, data } of streamTarRecords(readableStreamToAsyncIterable(gunzipped), wanted)) {
     const top = header.name.split('/')[0];
@@ -719,7 +727,6 @@ async function fetchRuntimePackage(spec) {
     if (header.directory && header.size === 0) continue;
     if (!isRegularTarFile(header)) fail(`its tarball holds ${header.name} as something other than a regular file (type ${String.fromCharCode(header.typeFlag)})`);
     if (data === null) fail(`its tarball's ${header.name} (${header.size} bytes) exceeds what a runtime package may hold`);
-    unpacked += header.size;
     files.set(header.name.slice(root.length + 1), Buffer.from(data));
   }
   const manifestBytes = files.get('manifest.json');

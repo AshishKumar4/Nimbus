@@ -10,9 +10,10 @@
 //     package. The bucket's manifest is then byte for byte the package's.
 //     Before, the publisher stopped at the missing build tree.
 //   - A tarball that is not the one its integrity names, one whose blob is not
-//     the one its manifest names, and one holding a link (its manifest a link
-//     to a file outside, a blob a link to /dev/zero) are each refused, at
-//     once, and nothing reaches the bucket.
+//     the one its manifest names, one holding a link (its manifest a link to a
+//     file outside, a blob a link to /dev/zero), and one of more entries than
+//     a runtime package may hold are each refused by the publisher itself,
+//     well within a deadline that kills it, and nothing reaches the bucket.
 //
 // The publisher runs for real, from a temp tree laid out as the published
 // package (scripts and runtime-contracts, no wasm), against a stub wrangler
@@ -26,6 +27,7 @@ import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { syncRuntimes } from '../../packages/cli/src/commands/runtime-sync.ts';
+import { runBoundedProcess } from '../../scripts/lib/bounded-process.mjs';
 import { CPYTHON_RUNNER } from '../../packages/core/src/runtime/os-contracts.ts';
 
 const WORKER = new URL('../../packages/worker/', import.meta.url).pathname;
@@ -135,13 +137,10 @@ process.exit(1);
   const object = (key) => readFileSync(join(bucketDir, encodeURIComponent(key)));
   const emptyBucket = () => { rmSync(bucketDir, { recursive: true }); mkdirSync(bucketDir); };
 
-  /** The sync of `runtime` into an empty bucket, bounded: a refusal must come, not a read that never ends. */
+  /** The sync of `runtime` into an empty bucket. */
   const sync = async (runtime) => {
     emptyBucket();
-    return Promise.race([
-      syncRuntimes(['--bucket', 'experiment', runtime], { scriptPath: publisher }),
-      new Promise((resolve) => setTimeout(() => resolve('still running after 60 s'), 60_000)),
-    ]);
+    return syncRuntimes(['--bucket', 'experiment', runtime], { scriptPath: publisher });
   };
   /** The bucket holds `dir`'s manifest for `runtime`, byte for byte, and every blob it names. */
   const holds = (runtime, dir) => {
@@ -166,9 +165,12 @@ process.exit(1);
     serve(BASH, pack(dir, join(root, `${label}.tgz`)));
   };
   const wasm = JSON.parse(readFileSync(join(bashDir, 'manifest.json'), 'utf8')).files.find((f) => f.path.endsWith('bash.async.wasm'));
+  // The publisher the sync runs, bounded: a refusal must come by itself, and a
+  // regression that reads forever is killed, its whole process tree, at the deadline.
   const refusedLeavingNothing = async (why) => {
-    const code = await sync(BASH);
-    assert.equal(typeof code === 'number' && code !== 0, true, `${why} is refused (got ${code})`);
+    emptyBucket();
+    const run = await runBoundedProcess('node', [publisher, 'bash', '5.2.37-7', '--bucket', 'experiment'], { cwd: published, timeoutMs: 60_000 });
+    assert.equal(run.code !== null && run.code !== 0, true, `${why} is refused by the publisher itself (${run.reason || `exit ${run.code}`}):\n${run.stderr}`);
     assert.deepEqual(readdirSync(bucketDir), [], `${why}: nothing reached the bucket`);
   };
 
@@ -190,6 +192,13 @@ process.exit(1);
   // A blob as a link to a device that never ends.
   variant('linked-blob', (dir) => { rmSync(join(dir, wasm.content)); symlinkSync('/dev/zero', join(dir, wasm.content)); });
   await refusedLeavingNothing('a blob that is a link to /dev/zero');
+
+  // The genuine package beside more empty files than a runtime package may hold.
+  variant('many-entries', (dir) => {
+    mkdirSync(join(dir, 'padding'));
+    for (let i = 0; i < 5000; i++) writeFileSync(join(dir, 'padding', String(i)), '');
+  });
+  await refusedLeavingNothing('a package of more entries than its bound');
 } finally {
   process.chdir(cwd);
   registry?.stop(true);

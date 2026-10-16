@@ -14,7 +14,8 @@ published independently in the `@nimbus-sh` npm scope.
   tree. Each is staged from its npm runtime package at the version the
   release names. The tarball must match the registry's sha512 integrity, and
   it is read in memory, never unpacked: an entry that is a link or a device
-  is refused, so nothing outside the package is ever read. Each file must
+  is refused, so nothing outside the package is ever read, and so is a
+  package of more than 4,096 entries or 1 GiB of tar. Each file must
   match the package manifest's sha256, and the manifest the publisher
   composes must be the package's, byte for byte, or nothing is published.
   Before, the publisher stopped at the missing build tree. Publishing
