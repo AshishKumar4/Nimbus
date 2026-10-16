@@ -536,7 +536,6 @@ export const networkWorker = {
             const error = e;
             return respond(false, {
                 error: (error && error.message) || String(e),
-                errorCode: error && typeof error.code === 'string' ? error.code : undefined,
                 // A write git would have failed: git's own lines (pack/mount-writer.ts).
                 gitFailure: e instanceof GitWriteFailure ? e.lines : undefined,
                 remoteFailure: remoteFailureOf(e, http),

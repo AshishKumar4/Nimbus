@@ -611,7 +611,7 @@ async function runCloneSnapshot(facetOpts, identity, stream, run, tagsFound) {
         throw new GitClonePhaseError('clone-history', 'checkout-plan returned nothing', plan.diagnostic);
     return planned;
 }
-/** The index from the shares; a full clone's shallow file goes, and its commit-graph is written; then the marker. */
+/** The index from the shares; a full clone's shallow file goes, and its graph records stay for the graph-filters pass, or go; then the marker. */
 async function runCloneFinish(facetOpts, identity, shares, full, cacheTreeBytes, tags, 
 /** A full clone's commit records (runCloneHistory) make its commit-graph; else they go. */
 commitGraph, run, 
