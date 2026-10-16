@@ -17,10 +17,10 @@ import assert from 'node:assert/strict';
 import { estimateSupervisorHeap } from '../../packages/platform/src/heap-estimate.ts';
 import {
   readDiagCounters,
-  prefetchBundleStart,
-  prefetchBundleEnd,
+  attributeAllocation,
   setPrefetchCacheBytes,
 } from '../../packages/platform/src/diag-counters.ts';
+import { acquireSupervisorAllocation } from '../../packages/platform/src/heavy-alloc-coord.ts';
 import { SUPERVISOR_HEAP_CEILING_BYTES } from '../../packages/platform/src/limits.ts';
 
 const vfsInputs = { cacheHotBytes: 35 * 1024, inFlightWriteBytes: 0 };
@@ -46,7 +46,7 @@ assert.equal(estimate.blindSpotCeilingBytes, 0,
 {
   const buildBytes = 3 * 1024 * 1024;
   const cacheBytes = 5 * 1024 * 1024;
-  prefetchBundleStart(buildBytes);
+  const lease = attributeAllocation('prefetchBundleBytes', await acquireSupervisorAllocation(buildBytes));
   setPrefetchCacheBytes(cacheBytes);
   try {
     const live = estimateSupervisorHeap(readDiagCounters(), vfsInputs);
@@ -60,7 +60,7 @@ assert.equal(estimate.blindSpotCeilingBytes, 0,
       'both land in the total — this is the pressure the estimator used to miss',
     );
   } finally {
-    prefetchBundleEnd(buildBytes);
+    lease.release();
     setPrefetchCacheBytes(0);
   }
   const settled = estimateSupervisorHeap(readDiagCounters(), vfsInputs);
@@ -72,8 +72,7 @@ assert.equal(estimate.blindSpotCeilingBytes, 0,
 // A leased build is inside the allocation budget already, so attributing it
 // must move bytes out of the unattributed remainder rather than count twice.
 {
-  const leased = 2 * 1024 * 1024;
-  prefetchBundleStart(leased);
+  const lease = attributeAllocation('prefetchBundleBytes', await acquireSupervisorAllocation(2 * 1024 * 1024));
   try {
     const live = estimateSupervisorHeap(readDiagCounters(), vfsInputs);
     const b = live.breakdown;
@@ -82,10 +81,15 @@ assert.equal(estimate.blindSpotCeilingBytes, 0,
       b.preBundleSliceBytes + b.streamingBuffersBytes + b.prefetchBundleBytes +
       b.prefetchCacheBytes + b.unattributedReservationBytes;
     assert.equal(live.estimatedBytes, sum, 'estimatedBytes equals the breakdown sum');
-    assert.ok(b.unattributedReservationBytes >= 0, 'attribution never goes negative');
+    assert.equal(b.unattributedReservationBytes, 0, 'none of the lease is left unattributed');
+    lease.shrinkTo(1024 * 1024);
+    assert.equal(estimateSupervisorHeap(readDiagCounters(), vfsInputs).breakdown.prefetchBundleBytes, 1024 * 1024,
+      'a shrunk lease is counted at what it still holds');
   } finally {
-    prefetchBundleEnd(leased);
+    lease.release();
+    lease.release();
   }
+  assert.equal(readDiagCounters().prefetchBundleBytes, 0, 'released, once however often it is asked');
 }
 
 // ── The instrumented sum is still coherent ──────────────────────────────

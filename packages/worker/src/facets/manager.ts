@@ -225,11 +225,7 @@ import type { ResizableCreditLease } from '@nimbus-sh/platform/weighted-credit-p
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { streamedWasmImageDigest, type WasmImageRecord } from './wasm-image-digest.js';
 import { wasmImageDigest } from './wasm-image-key.js';
-import {
-  prefetchBundleStart,
-  prefetchBundleEnd,
-  setPrefetchCacheBytes,
-} from '@nimbus-sh/platform/diag-counters.js';
+import { attributeAllocation, setPrefetchCacheBytes } from '@nimbus-sh/platform/diag-counters.js';
 
 /**
  * The filesystem a launch's module map is built from: the process's bound
@@ -4299,7 +4295,7 @@ async function admitPrefetch(wait?: LaunchWait, bytes = SUPERVISOR_IN_FLIGHT_ALL
       lease.release();
       throw waiting.signal.reason;
     }
-    return admissionOf(lease, bytes, true);
+    return admissionOf(lease, true);
   } finally {
     waiting?.dispose();
   }
@@ -4312,28 +4308,24 @@ async function admitPrefetch(wait?: LaunchWait, bytes = SUPERVISOR_IN_FLIGHT_ALL
  */
 function tryAdmitPrefetch(bytes: number, copy = false): PrefetchAdmission | null {
   const lease = copy ? tryAcquireSupervisorCopyAllocation(bytes) : tryAcquireSupervisorAllocation(bytes);
-  return lease === null ? null : admissionOf(lease, bytes, false);
+  return lease === null ? null : admissionOf(lease, false);
 }
 
-function admissionOf(admitted: ResizableCreditLease, bytes: number, queued: boolean): PrefetchAdmission {
+function admissionOf(admitted: ResizableCreditLease, queued: boolean): PrefetchAdmission {
   // Attributed so it lands under `prefetchBundleBytes`, not the unattributed remainder.
-  let held = bytes;
-  prefetchBundleStart(held);
+  const lease = attributeAllocation('prefetchBundleBytes', admitted);
+  let released = false;
   return {
     queued,
-    held: () => held,
+    held: () => (released ? 0 : lease.bytes),
     fit(closureBytes) {
       const need = prefetchNeed(closureBytes);
-      if (held === 0 || need >= held) return;
-      admitted.shrinkTo(need);
-      prefetchBundleEnd(held - need);
-      held = need;
+      if (released || need >= lease.bytes) return;
+      lease.shrinkTo(need);
     },
     release() {
-      if (held === 0) return;
-      prefetchBundleEnd(held);
-      held = 0;
-      admitted.release();
+      released = true;
+      lease.release();
     },
   };
 }

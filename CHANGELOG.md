@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `/api/_diag/memory`'s `heap.breakdown.preBundleSliceBytes` is
+  what the pre-bundles running now hold, and the "supervisor heap" an
+  install's pre-bundle phase prints counts it. Before, it was inferred
+  from lifetime totals: a running pre-bundle's slice showed as
+  unattributed, and one whose package was reinstalled while it built left
+  28 MiB in the estimate until the session restarted.
 - Fixed (fabric): an `IsolatePool` wasm module whose name holds a quote or
   a backslash, such as `it's.wasm`, loads. Before, the pool's generated
   worker imported it from an unescaped string, and the dispatch failed to
