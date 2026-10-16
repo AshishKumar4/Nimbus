@@ -51,7 +51,7 @@ root.writeFile('py/share/cpython/python.wasm', 'compiled interpreter asset');
 root.writeFile('py/lib/python313.zip', 'stdlib asset');
 const deps = {
   facetMgr: { loaderHost: () => ({ env: {}, ctx: { id: {}, waitUntil() {} }, network: ISOLATE_NETWORK }) },
-  authority: new ProcessFiles(raw), installRoot: 'py', home: '/home/user', manifest: {},
+  authority: new ProcessFiles(raw), installRoot: 'py', home: '/home/user', manifest: { version: '3.13.14-3' },
 };
 const cred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 let text = '';
