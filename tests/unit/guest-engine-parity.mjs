@@ -27,6 +27,11 @@ const OUT = `${APP}/out`;
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
+/** What the session holds at `path` now, read as its own store reads it (no recall); undefined where nothing is. */
+function sessionText(e, path) {
+  try { return e.authority.read(path.slice(1)); } catch { return undefined; }
+}
+
 /** The change `work` makes is answered with the session's waves stalled, and the session has it once they go. */
 async function decided(e, work, landed) {
   e.stall();
@@ -231,6 +236,55 @@ const SCENARIOS = {
     assert.equal(await e.peerText(`${OUT}/d/b.txt`), 'A');
     assert.equal((await e.peerStat(`${OUT}/d/b.txt`)).mode, 0o600);
     assert.equal(await e.peerStat(`${OUT}/gone.txt`), null);
+  },
+
+  async 'a synchronous write outside a held subtree is answered at once, seen by name, and lands'(e) {
+    await e.fs.readdir(APP);
+    e.stall();
+    e.sync.writeFile(`${APP}/p.txt`, enc.encode('PROVISIONAL'));
+    assert.equal(dec.decode(e.sync.readFile(`${APP}/p.txt`)), 'PROVISIONAL');
+    assert.equal(stat(e.sync.stat(`${APP}/p.txt`)).size, 11);
+    await e.release();
+    await until(() => sessionText(e, `${APP}/p.txt`) === 'PROVISIONAL', 'the session has the write');
+  },
+  async 'synchronous mkdir -p, rename, chmod, symlink, rmdir and unlink outside a held subtree are answered at once, and land'(e) {
+    await e.fs.readdir(APP);
+    e.stall();
+    e.sync.mkdir(`${APP}/p/q`, { recursive: true, mode: 0o750 });
+    e.sync.writeFile(`${APP}/p/q/a.txt`, enc.encode('A'));
+    e.sync.rename(`${APP}/p/q/a.txt`, `${APP}/p/b.txt`);
+    e.sync.chmod(`${APP}/p/b.txt`, 0o600);
+    e.sync.symlink('b.txt', `${APP}/p/link`);
+    e.sync.mkdir(`${APP}/p/empty`);
+    e.sync.rmdir(`${APP}/p/empty`);
+    e.sync.writeFile(`${APP}/p/gone.txt`, enc.encode('G'));
+    e.sync.unlink(`${APP}/p/gone.txt`);
+    assert.equal(stat(e.sync.stat(`${APP}/p/q`)).type, 'directory');
+    assert.equal(stat(e.sync.stat(`${APP}/p/b.txt`)).mode, 0o600);
+    assert.equal(e.sync.readlink(`${APP}/p/link`), 'b.txt');
+    assert.equal(e.sync.stat(`${APP}/p/empty`), null);
+    assert.equal(e.sync.stat(`${APP}/p/gone.txt`), null);
+    assert.equal(e.sync.stat(`${APP}/p/q/a.txt`), null);
+    await e.release();
+    await until(() => sessionText(e, `${APP}/p/b.txt`) === 'A', 'the session has the rename');
+    await until(() => sessionText(e, `${APP}/p/gone.txt`) === undefined, 'the session has the unlink');
+    assert.equal((await e.peerStat(`${APP}/p/q`)).mode, 0o750);
+    assert.equal((await e.peerStat(`${APP}/p/b.txt`)).mode, 0o600);
+    assert.equal(await e.authority.peer.readlink(`${APP.slice(1)}/p/link`), 'b.txt');
+    assert.equal(await e.peerStat(`${APP}/p/empty`), null);
+  },
+  async 'a synchronous change is seen until the view has the session\'s, and the session\'s after'(e) {
+    await e.fs.readdir(APP);
+    e.sync.writeFile(`${APP}/r.txt`, enc.encode('MINE'));
+    await until(() => sessionText(e, `${APP}/r.txt`) === 'MINE', 'the session has the write');
+    // Answered, and no barrier since: the view is the process's own still.
+    assert.equal(dec.decode(e.sync.readFile(`${APP}/r.txt`)), 'MINE');
+    assert.equal(dec.decode(await e.fs.readFile(`${APP}/r.txt`)), 'MINE');
+    // Retired: a peer's change is the view's once a barrier brings it.
+    e.authority.kfs.writeFile(`${APP.slice(1)}/r.txt`, 'THEIRS');
+    await until(() => sessionText(e, `${APP}/r.txt`) === 'THEIRS', 'the peer\'s write');
+    e.fs.inbound?.();
+    assert.equal(dec.decode(await e.fs.readFile(`${APP}/r.txt`)), 'THEIRS');
   },
 
   // ── Descriptors ────────────────────────────────────────────────────────

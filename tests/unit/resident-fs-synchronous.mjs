@@ -67,8 +67,8 @@ await runScenarios(import.meta.path, {
     await answersNow(e, 'realpath', () => sync.realpath(seed), 'EAGAIN');
     await answersNow(e, 'access', () => sync.access(seed, 4), 'EAGAIN');
     await answersNow(e, 'a read-only open', () => sync.open(seed, { read: true }), 'EAGAIN');
-    // Known, its bytes not: the name answers, its content is not resident.
-    assert.equal((await e.fs.stat(seed)).size, 4);
+    // Known (listed), its bytes not: the name answers, its content is not resident.
+    assert.ok((await e.fs.readdir(APP)).some((entry) => entry.name === 'seed.txt'));
     assert.equal(stat(await answersNow(e, 'stat of a known name', () => sync.stat(seed))), 4);
     await answersNow(e, 'readFile of bytes not resident', () => sync.readFile(seed), 'EAGAIN');
     // A directory is the name's own state where the view knows it.

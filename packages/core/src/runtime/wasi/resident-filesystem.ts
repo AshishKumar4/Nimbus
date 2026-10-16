@@ -359,6 +359,8 @@ export interface ResidentDelegation {
   /** Inode numbers a first grant reserves (the client's GRANT_INOS). */
   readonly grantInos?: number;
   readonly isHomeRoot?: (key: string) => boolean;
+  /** The process's live umask, for what a caller that cannot wait makes outside a held subtree (HolderOptions.umask). */
+  readonly umask?: () => number;
   /** The process's own store's write log (HolderOptions.journal). */
   readonly journal?: ProcessFsJournal;
   readonly readDirectories?: ReadDirectorySupervisor['fsReadDirectories'];
@@ -433,7 +435,14 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     fill: (key, entry) => begin(() => resident.fill(key, entry)),
     pages: (key, revision, size, first, last) => begin(() => resident.pages(key, revision, size, first, last)),
     fillMany: (files) => begin(() => resident.fillMany(files)),
-    barrier: () => begin(() => resident.barrier()),
+    // A barrier that lands retires what this process changed and the session answered before it began.
+    barrier: () => {
+      const begun = holder?.barrierBegun();
+      return begin(() => resident.barrier()).then((ok) => {
+        if (ok && begun !== undefined) holder!.retire(begun);
+        return ok;
+      });
+    },
     cursor: () => resident.cursor(),
     admit: (answer) => resident.admit(answer),
     reserve: (bytes) => resident.reserve(bytes),
@@ -456,6 +465,9 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       ...(delegation.grantAfter === undefined ? {} : { grantAfter: delegation.grantAfter }),
       ...(delegation.grantInos === undefined ? {} : { grantInos: delegation.grantInos }),
       ...(delegation.journal === undefined ? {} : { journal: delegation.journal }),
+      ...(delegation.umask === undefined ? {} : { umask: delegation.umask }),
+      // A call of the synchronous view decides what no held subtree does, provisionally.
+      provisional: () => now,
       // What it sent changed the session: the store catches up before it answers next.
       sent: () => { owed = true; directoryPool?.invalidate(); },
     });
@@ -1358,7 +1370,10 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
   const bySessionMkdir = fs.mkdir;
   fs.mkdir = (path, options) => {
-    if (holder === null || options?.recursive) return bySessionMkdir(path, options);
+    if (holder === null) return bySessionMkdir(path, options);
+    // A caller that cannot wait makes each missing directory on the way, as
+    // mkdir -p does; any other asks the session to.
+    if (options?.recursive) return now && typeof path === 'string' ? mkdirParents(path, options) : bySessionMkdir(path, options);
     const mode = options?.mode ?? 0o777;
     let named: string | undefined;
     const local = decide<void>('mkdir', () => after(walkFor(path, false), (walk) => {
@@ -1369,6 +1384,22 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     }));
     return after(local, (done) => (done !== DELEGATE ? undefined
       : named !== undefined ? byClient('mkdir', { type: 'call', call: { call: 'mkdir', path: named, mode, ...(options?.umask === undefined ? {} : { umask: options.umask }) } }) : bySessionMkdir(path, options)));
+  };
+  const mkdirParents = (path: string, options: { mode?: number; umask?: number }): undefined => {
+    const keys = keyOf(path).split('/');
+    for (let at = 1; at <= keys.length; at++) {
+      const key = keys.slice(0, at).join('/');
+      const walked = walkOnce('', key, true);
+      if (walked === null) throw fsError('ELOOP', 'mkdir', path);
+      const entry = typeof walked === 'string' ? entryAt(walked) : undefined;
+      if (entry === undefined) throw NOT_NOW;
+      if (entry === null) {
+        fs.mkdir('/' + key, { ...(options.mode === undefined ? {} : { mode: options.mode }), ...(options.umask === undefined ? {} : { umask: options.umask }) });
+        continue;
+      }
+      if (entry.type !== 'directory') throw fsError(at === keys.length ? 'EEXIST' : 'ENOTDIR', 'mkdir', path);
+    }
+    return undefined;
   };
   const bySessionUnlink = fs.unlink;
   fs.unlink = (path) => {
@@ -1395,6 +1426,13 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const entry = entryAt(key);
     return entry ? store.content(key, entry.revision) : undefined;
   };
+  /** The bytes this view holds of file `key`, as it stands. */
+  const residentContent = (key: string): Uint8Array | undefined => {
+    const entry = entryAt(key);
+    if (!entry || entry.type !== 'file') return undefined;
+    const bytes = store.content(key, entry.revision);
+    return bytes !== undefined && bytes.byteLength === entry.size ? bytes : undefined;
+  };
   // A copy both of whose names a held subtree holds, its source's bytes the
   // holder's or ones the view vouches for: decided here; any other, the
   // session's.
@@ -1404,7 +1442,9 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const local = decide<void>('copyFile', () => after(walkFor(from, true), (source) => (source === DELEGATE ? DELEGATE
       : after(walkFor(to, true), (target) => {
         if (target === DELEGATE || !decidable(target.key, source, target)) return DELEGATE;
-        return holder!.copyFile(source.key, target.key, pathOf(to), vouchedContent(source), options?.keepMode === true) ? undefined : DELEGATE;
+        // A caller that cannot wait copies what this view holds, as it reads it.
+        const stored = vouchedContent(source) ?? (now ? residentContent(source.key) : undefined);
+        return holder!.copyFile(source.key, target.key, pathOf(to), stored, options?.keepMode === true) ? undefined : DELEGATE;
       }))));
     return after(local, (done) => (done !== DELEGATE ? undefined : bySessionCopy(from, to, options)));
   };
@@ -1452,16 +1492,23 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     });
   }
   // Nothing of these is decided here: by the client when the store places the name.
-  const byName = <A extends unknown[]>(name: 'rmdir' | 'symlink', passed: (...args: A) => Awaitable<void>, pathAt: number, op: (key: string, args: A) => ProcessFsOp) =>
+  // A caller that cannot wait has them decided by the holder (`decided`).
+  const byName = <A extends unknown[]>(name: 'rmdir' | 'symlink', passed: (...args: A) => Awaitable<void>, pathAt: number, op: (key: string, args: A) => ProcessFsOp, decided: (key: string, args: A) => boolean) =>
     (...args: A): Awaitable<void> => {
       if (holder === null) return passed(...args);
       const placed = placedWalk(args[pathAt] as RuntimeFsPath);
-      return after(placed, (walk) => (walk === DELEGATE ? passed(...args) : byClient(name, op(walk.key, args))));
+      return after(placed, (walk) => {
+        if (walk === DELEGATE) return passed(...args);
+        if (decided(walk.key, args)) { counts.local++; return undefined; }
+        return byClient(name, op(walk.key, args));
+      });
     };
   const bySessionRmdir = fs.rmdir;
-  fs.rmdir = byName('rmdir', (path: RuntimeFsPath) => bySessionRmdir(path), 0, (key) => ({ type: 'call', call: { call: 'rmdir', path: key } }));
+  fs.rmdir = byName('rmdir', (path: RuntimeFsPath) => bySessionRmdir(path), 0, (key) => ({ type: 'call', call: { call: 'rmdir', path: key } }),
+    (key, [path]) => holder!.rmdir(key, pathOf(path)));
   const bySessionSymlink = fs.symlink;
-  fs.symlink = byName('symlink', (target: string, path: RuntimeFsPath) => bySessionSymlink(target, path), 1, (key, [target]) => ({ type: 'call', call: { call: 'symlink', path: key, target } }));
+  fs.symlink = byName('symlink', (target: string, path: RuntimeFsPath) => bySessionSymlink(target, path), 1, (key, [target]) => ({ type: 'call', call: { call: 'symlink', path: key, target } }),
+    (key, [target, path]) => holder!.symlink(key, pathOf(path), target));
 
   /**
    * What a call that needed the session is told when it must answer now:
