@@ -12365,8 +12365,15 @@ const __nimbusExecutingCommonJs = new WeakSet();
 // A staged ES module is the registry's (__nimbusEsmRequire): this loads it
 // only when the interpreter evaluates it instead.
 function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = true, parent = undefined) {
+  const cacheKey = evaluationKey === resolvedPath ? "/" + resolvedPath.replace(/^\\/+/, "") : evaluationKey;
+  // A CommonJS module an import read the syntax of, not yet run: run now, once (__nimbusCommonJsPending).
+  const pending = __nimbusCommonJsPending.get(cacheKey);
+  if (pending !== undefined) {
+    __nimbusCommonJsPending.delete(cacheKey);
+    return __nimbusRunCommonJs(pending);
+  }
   // An ES module its graph has a record of: that record's, as require() evaluates one (require(esm)).
-  const record = __nimbusGraphRecords.get(evaluationKey === resolvedPath ? "/" + resolvedPath.replace(/^\\/+/, "") : evaluationKey);
+  const record = __nimbusGraphRecords.get(cacheKey);
   if (record !== undefined && record.state !== undefined) {
     if (typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(String(resolvedPath).replace(/^\\/+/, ""));
     return __nimbusRequireRecord(record, parent);
@@ -12377,6 +12384,10 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   if (__nimbusModuleLink(loaded.state.cell) !== null) return __nimbusRequireRecord(__nimbusInterpretedRecord(loaded.state), parent);
   return __nimbusRunCommonJs(loaded.state);
 }
+// The CommonJS modules an import read the syntax of (a typeless .js) and has
+// not run yet, by cacheKey: each runs once, where its graph evaluates it or
+// where a require() of it comes first.
+const __nimbusCommonJsPending = new Map();
 // What loading the file at \`resolvedPath\` as \`evaluationKey\` finds: its
 // exports where it is loaded already, or JSON (\`exports\`); else what to
 // evaluate it from (\`state\`): its Module, in require.cache, or the ES
@@ -13219,6 +13230,7 @@ function __nimbusGraphRecord(resolution, parent) {
   // its file, whatever the URL; an ES module, a query's or fragment's
   // instance is one of its own.
   if (resolution.format === "detect" && variant && !__nimbusGraphRecords.has("/" + key)) {
+    if (__nimbusCommonJsPending.has("/" + key)) return __nimbusTranslatedRecord(resolution, key, key, parent);
     const plain = __nimbusPrepareModule(key, key, false, parent, false);
     if (plain.state === undefined || __nimbusModuleLink(plain.state.cell) === null) return __nimbusTranslatedRecord(resolution, key, key, parent, plain);
     __nimbusInterpretedRecord(plain.state);
@@ -13236,12 +13248,13 @@ function __nimbusEvaluatedRecord(namespace) {
   return record;
 }
 // A CommonJS or JSON module's record, Node's translator of it: run when its
-// graph evaluates it, as an import loads it (a CommonJS module's
-// \`prepared\` already where its syntax was read first); its namespace's
-// names known before it runs, their values once it has.
+// graph evaluates it, as an import loads it (\`prepared\` where its syntax was
+// read first: pending until then); its namespace's names known before it
+// runs, their values once it has.
 function __nimbusTranslatedRecord(resolution, key, instance, parent, prepared = undefined) {
   const known = __nimbusGraphRecords.get(resolution.url);
   if (known !== undefined) return known;
+  if (prepared?.state !== undefined) __nimbusCommonJsPending.set(prepared.state.cacheKey, prepared.state);
   const translation = __nimbusTranslation(resolution);
   let outcome = null;
   const record = new (__nimbusGraphOf().OtherModuleRecord)({
@@ -13252,9 +13265,7 @@ function __nimbusTranslatedRecord(resolution, key, instance, parent, prepared = 
         return;
       }
       try {
-        const exports = prepared === undefined ? __loadModule(key, instance, false, parent)
-          : prepared.state === undefined ? prepared.exports : __nimbusRunCommonJs(prepared.state);
-        translation.fill(exports);
+        translation.fill(__loadModule(key, instance, false, parent));
         outcome = {};
       } catch (e) {
         outcome = { error: { value: e } };
@@ -13512,11 +13523,13 @@ function __nimbusStaticRecord(id, type, parentUrl, importer, data) {
     const key = resolution.path.replace(/^\\/+/, "");
     const loading = resolution.format === "detect" && __nimbusEsmId("module", key) !== -1 ? undefined : __NodeModule._cache["/" + key];
     if (loading !== undefined && __nimbusExecutingCommonJs.has(loading)) {
-      const refusal = nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot import CommonJS Module " + id + " in a cycle." + (importer?.filename ? " (from " + importer.filename + ")" : ""));
-      // Node's loader refuses it from its own frames alone: none of the program's.
-      const frames = refusal.stack.indexOf("\\n    at ");
-      if (frames !== -1) refusal.stack = refusal.stack.slice(0, frames);
-      throw refusal;
+      // Refused where the importer's link binds it: its link fails, nothing of its graph run, and the
+      // refusal's stack is the interpreter's (none of the program's frames, as Node's loader gives it).
+      const refused = __nimbusEvaluatedRecord(null);
+      refused.namespace = () => {
+        throw nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot import CommonJS Module " + id + " in a cycle." + (importer?.filename ? " (from " + importer.filename + ")" : ""));
+      };
+      return refused;
     }
   }
   return __nimbusGraphRecord(resolution, importer);
