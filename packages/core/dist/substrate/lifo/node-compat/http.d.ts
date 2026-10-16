@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
-import { type LoopbackRouter, type VirtualRequestHandler } from '../kernel/index.js';
+import { type LoopbackRouter, type VirtualRequestHandler, type VirtualResponse } from '../kernel/index.js';
 interface RequestOptions {
     hostname?: string;
     host?: string;
@@ -62,7 +62,8 @@ declare class ClientRequest extends EventEmitter {
 }
 declare class ServerResponse extends EventEmitter {
     statusCode: number;
-    statusMessage: string;
+    /** Its reason phrase: unset until writeHead names one or end() gives its status's, as Node's. */
+    statusMessage: string | undefined;
     headersSent: boolean;
     finished: boolean;
     writableEnded: boolean;
@@ -78,11 +79,7 @@ declare class ServerResponse extends EventEmitter {
     } | null;
     _donePromise: Promise<void>;
     private _doneResolve;
-    constructor(vRes: {
-        statusCode: number;
-        headers: Record<string, string>;
-        body: string;
-    });
+    constructor(vRes: VirtualResponse);
     writeHead(statusCode: number, reasonOrHeaders?: string | Record<string, string | string[]>, headers?: Record<string, string | string[]>): this;
     setHeader(name: string, value: string | string[]): this;
     getHeader(name: string): string | string[] | undefined;

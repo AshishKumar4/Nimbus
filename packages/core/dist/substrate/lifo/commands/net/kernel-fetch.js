@@ -9,7 +9,7 @@
  * instead of being mistaken for "no listener".
  */
 import { isLoopbackHost } from '../../kernel/index.js';
-import { awaitServedEnd, routeToLoopback, serveFromPort, statusText, } from '../../kernel/local-serve.js';
+import { awaitServedEnd, routeToLoopback, serveFromPort, servedReason, } from '../../kernel/local-serve.js';
 import { ISOLATE_NETWORK } from '../../../../_shared/workspace-network.js';
 import { isNullBodyStatus } from '../../../../_shared/null-body-status.js';
 import { followRedirects } from '../../../../runtime/http-redirect-policy.js';
@@ -57,7 +57,7 @@ export async function dispatchWorkspaceRequest(kernel, port, request) {
             kind: 'response',
             response: new Response(isNullBodyStatus(status) ? null : served.body, {
                 status,
-                statusText: statusText(status),
+                statusText: servedReason(served),
                 headers: served.headers,
             }),
         };

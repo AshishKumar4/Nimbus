@@ -32,7 +32,10 @@ export declare function serveFromPort(handler: VirtualRequestHandler, request: V
 export declare function awaitServedEnd(end: Promise<void>, signal: AbortSignal): Promise<'ended' | 'refused' | 'aborted' | 'timeout'>;
 /** A served response's body as Node's HTTP server sends it: none for 204 and 304. A Response's is Fetch's (isNullBodyStatus). */
 export declare function servedBody(response: VirtualResponse): string | null;
+/** The reason phrase a status has as Node's HTTP server sends it: 'unknown' for one Node does not name. */
 export declare function statusText(status: number): string;
+/** A served response's reason phrase: its handler's (writeHead's reason, statusMessage), else its status's. */
+export declare function servedReason(response: VirtualResponse): string;
 /** `request` through the host's loopback `router`, which observes its signal: refused when no server holds `port`. */
 export declare function routeToLoopback(router: LoopbackRouter, port: number, request: Request): Promise<WorkspaceRequestResult>;
 //# sourceMappingURL=local-serve.d.ts.map

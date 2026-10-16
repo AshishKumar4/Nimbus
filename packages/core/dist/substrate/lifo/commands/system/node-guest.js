@@ -329,7 +329,7 @@ async function routeLoopback(port, request) {
     const response = await answer;
     if (!response)
         return null;
-    return new Response(isNullBodyStatus(response.status) ? null : response.body, { status: response.status, headers: response.headers });
+    return new Response(isNullBodyStatus(response.status) ? null : response.body, { status: response.status, statusText: response.statusText, headers: response.headers });
 }
 /** A request the host forwards to one of the program's servers. */
 async function serve(id, port, request) {
@@ -343,7 +343,7 @@ async function serve(id, port, request) {
         handler(request, response);
         if (response._donePromise)
             await response._donePromise;
-        post({ type: 'served', id, response: { status: response.statusCode, headers: response.headers, body: response.body } });
+        post({ type: 'served', id, response: { status: response.statusCode, statusText: response.statusMessage, headers: response.headers, body: response.body } });
     }
     catch {
         post({ type: 'served', id, response: null });
