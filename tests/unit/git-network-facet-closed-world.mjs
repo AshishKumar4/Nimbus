@@ -233,6 +233,12 @@ export const git = {
     assert.equal(result.success, true, result.error);
     assert.equal(vfs.stat('empty-vfs').mode & 0o7777, 0o755, 'the existing root took file-type bits as its mode');
     assert.equal(vfs.readFileString('empty-vfs/src/file-1.txt'), 'file-1');
+    // One of another mode keeps it, as git's clone into it does (mkdir -m 700 d; git clone url d: d stays 700).
+    vfs.mkdir('empty-700');
+    vfs.chmod('empty-700', 0o700);
+    const private_ = await clone('/empty-700');
+    assert.equal(private_.success, true, private_.error);
+    assert.equal(vfs.stat('empty-700').mode & 0o7777, 0o700, 'the existing 0700 root lost its mode');
   }
 
   // ── Missing parents: created under the clone's lease, before anything below them ──

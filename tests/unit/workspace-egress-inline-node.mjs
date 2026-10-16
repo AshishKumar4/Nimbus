@@ -14,7 +14,10 @@
 //       Fetcher's), and the outcome is Node's own: the same program run by
 //       host Node against the same server gives the same results for
 //       'follow' (the default), 'manual' and 'error', a 303 after a POST, a
-//       cross-origin hop and a redirect loop.
+//       cross-origin hop and a redirect loop; a Location with a fragment, one
+//       that is not HTTP(S), and one that is not at the 21st hop (refused for
+//       its scheme before the count); a 300 (not one fetch follows) and a 307
+//       after a POST (its body and content headers kept, as a 303 drops them).
 //
 // Run by bun, it checks the source under Bun, then runs itself under node
 // against the built package (packages/core/dist: rebuild first), whose
@@ -48,7 +51,17 @@ const main = await listen(async (req, res) => {
   if (path === '/post303') { res.writeHead(303, { location: '/landed' }); res.end('see other'); return; }
   if (path === '/cross') { res.writeHead(302, { location: `${other.origin}/landed` }); res.end('moved'); return; }
   if (path === '/loop') { res.writeHead(302, { location: '/loop' }); res.end('again'); return; }
-  res.end(`landed ${req.method} auth=${req.headers.authorization ?? '-'} type=${req.headers['content-type'] ?? '-'} body=${body || '-'}`);
+  if (path === '/frag') { res.writeHead(302, { location: '/landed#part' }); res.end('moved'); return; }
+  if (path === '/ftp') { res.writeHead(302, { location: 'ftp://example.test/x' }); res.end('moved'); return; }
+  if (path === '/s300') { res.writeHead(300, { location: '/landed' }); res.end('choices'); return; }
+  if (path === '/t307') { res.writeHead(307, { location: '/landed' }); res.end('temporary'); return; }
+  if (path === '/count') {
+    const n = Number(new URL(req.url, 'http://x').searchParams.get('n') ?? 0);
+    res.writeHead(302, { location: n < 20 ? `/count?n=${n + 1}` : 'ftp://example.test/' });
+    res.end('again');
+    return;
+  }
+  res.end(`landed ${req.method} auth=${req.headers.authorization ?? '-'} type=${req.headers['content-type'] ?? '-'} enc=${req.headers['content-encoding'] ?? '-'} body=${body || '-'}`);
 });
 
 /** The egress: answers /sse, /big and /broken itself; anything else goes on to the network, as it was asked. */
@@ -166,10 +179,15 @@ try {
       const results = { default: await outcome('/hop') };
       for (const redirect of ['follow', 'manual', 'error']) {
         results['hop ' + redirect] = await outcome('/hop', { redirect });
-        results['post303 ' + redirect] = await outcome('/post303', { method: 'POST', body: 'x', headers: { 'content-type': 'text/plain' }, redirect });
+        results['post303 ' + redirect] = await outcome('/post303', { method: 'POST', body: 'x', headers: { 'content-type': 'text/plain', 'content-encoding': 'identity' }, redirect });
         results['cross ' + redirect] = await outcome('/cross', { headers: { authorization: 'Bearer t' }, redirect });
       }
       results.loop = await outcome('/loop');
+      results.frag = await outcome('/frag');
+      results.ftp = await outcome('/ftp');
+      results.count = await outcome('/count');
+      results.s300 = await outcome('/s300');
+      results.t307 = await outcome('/t307', { method: 'POST', body: 'x', headers: { 'content-type': 'text/plain', 'content-encoding': 'identity' } });
       console.log(JSON.stringify(results));
     `;
     // Spawned, not spawnSync: the servers answering it run in this process.
@@ -185,11 +203,17 @@ try {
     assert.equal(node.status, 0, node.stderr);
     const expected = JSON.parse(node.stdout);
     // What host Node gives, stated, so the comparison below is not vacuous.
-    assert.equal(expected.default.body, 'landed GET auth=- type=- body=-');
+    assert.equal(expected.default.body, 'landed GET auth=- type=- enc=- body=-');
     assert.equal(expected['hop manual'].status, 302);
     assert.equal(expected['hop error'].cause, 'unexpected redirect');
     assert.equal(expected['cross follow'].body, 'landed elsewhere GET auth=-');
     assert.equal(expected.loop.cause, 'redirect count exceeded');
+    assert.equal(expected['post303 follow'].body, 'landed GET auth=- type=- enc=- body=-');
+    assert.equal(expected.frag.url, `${main.origin}/landed`);
+    assert.equal(expected.ftp.cause, 'URL scheme must be a HTTP(S) scheme');
+    assert.equal(expected.count.cause, 'URL scheme must be a HTTP(S) scheme');
+    assert.equal(expected.s300.status, 300);
+    assert.equal(expected.t307.body, 'landed POST auth=- type=text/plain enc=identity body=x');
 
     egress.seen.length = 0;
     const r = await runProgram('redirects.mjs', program);

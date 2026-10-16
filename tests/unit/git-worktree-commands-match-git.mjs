@@ -981,6 +981,15 @@ try {
     await tag('list', ['tag']);
     await tag('-l with a pattern', ['tag', '-l', 'v*']);
     await tag('--list with two patterns', ['tag', '--list', 'l*', 'o?d']);
+    // A pattern is git's wildmatch over the whole name (ref-filter's match_pattern): negated and POSIX classes, an
+    // escape, a dot as itself. Red before: a regular expression took rel-[!x] for "rel-! or rel-x".
+    for (const name of ['rel-x', 'rel-y', 'rel-1', 'v1.0', 'v1x0']) await tag(`a tag to match, ${name}`, ['tag', name]);
+    await tag('-l with a !-negated class', ['tag', '-l', 'rel-[!x]']);
+    await tag('-l with a ^-negated class', ['tag', '-l', 'rel-[^x]']);
+    await tag('-l with a POSIX class', ['tag', '-l', 'rel-[[:digit:]]']);
+    await tag('-l with an escape', ['tag', '-l', 'rel-\\x']);
+    await tag('-l with a dot', ['tag', '-l', 'v1.0']);
+    await tag('-l with a range and a pattern of each kind', ['tag', '-l', 'rel-[a-x]', 'v1?0']);
     await tag('-n', ['tag', '-n']);
     await tag('-n2', ['tag', '-n2']);
     await tag('-d', ['tag', '-d', 'v1', 'light']);

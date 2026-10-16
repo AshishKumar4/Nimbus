@@ -9,6 +9,7 @@
  * load only for the directories a check reaches, one stack along the path
  * being checked, so a walk holds the lists of one branch of the tree.
  */
+import { patternLines } from './pattern-lines.js';
 import { WM_CASEFOLD, WM_PATHNAME, wildmatch } from './wildmatch.js';
 const NEGATIVE = 1;
 const MUSTBEDIR = 2;
@@ -24,25 +25,6 @@ function simpleLength(bytes, from = 0, to = bytes.length) {
             return i - from;
     }
     return to - from;
-}
-/** trim_trailing_spaces: unescaped trailing spaces go; an escaped one stays. */
-function trimTrailingSpaces(line) {
-    let lastSpace = -1;
-    for (let i = 0; i < line.length; i++) {
-        if (line[i] === 0x20) {
-            if (lastSpace < 0)
-                lastSpace = i;
-        }
-        else if (line[i] === 0x5c) {
-            if (++i >= line.length)
-                return line;
-            lastSpace = -1;
-        }
-        else {
-            lastSpace = -1;
-        }
-    }
-    return lastSpace < 0 ? line : line.subarray(0, lastSpace);
 }
 /** add_pattern / parse_path_pattern for one line. */
 function parsePattern(line, base) {
@@ -64,26 +46,10 @@ function parsePattern(line, base) {
         flags |= ENDSWITH;
     return { pattern: p.slice(0, length), nowildcard, flags, base };
 }
-/**
- * add_patterns_from_buffer: a pattern file's lines, `base` the repo-relative
- * directory the file sits in ('' at the top). A UTF-8 BOM, blank lines and
- * `#` comments are skipped; a CR before the LF is dropped.
- */
+/** add_patterns_from_buffer: a pattern file's patterns (patternLines), `base` the repo-relative directory the file sits in ('' at the top). */
 export function parsePatternList(bytes, base) {
     const baseBytes = encoder.encode(base ? `${base}/` : '');
-    let start = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? 3 : 0;
-    const list = [];
-    // The file reads as if it ended in a newline, as git appends one.
-    for (let i = start; i <= bytes.length; i++) {
-        if (i < bytes.length && bytes[i] !== 0x0a)
-            continue;
-        if (i !== start && bytes[start] !== 0x23) {
-            const end = i > start && bytes[i - 1] === 0x0d ? i - 1 : i;
-            list.push(parsePattern(trimTrailingSpaces(bytes.subarray(start, end)), baseBytes));
-        }
-        start = i + 1;
-    }
-    return list;
+    return patternLines(bytes).map((line) => parsePattern(line, baseBytes));
 }
 /** fspathncmp: bytes equal, ASCII letters either case under core.ignorecase. */
 function equalBytes(a, aFrom, b, bFrom, length, fold) {

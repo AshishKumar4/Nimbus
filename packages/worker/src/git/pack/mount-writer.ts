@@ -21,6 +21,7 @@
  */
 import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ROUTED_FILE_MAX } from '@nimbus-sh/core/runtime/wave-contracts.js';
+import { isVfsErrorCode, VFS_STRERROR } from '@nimbus-sh/core/vfs/vfs-error.js';
 import type { CloneReceipt, CloneWriter } from './clone.js';
 
 /** One write's bytes: well inside what one RPC carries. */
@@ -68,14 +69,6 @@ export class GitEntryWriteFailure extends GitWriteFailure {
 /** What git says once a checkout that could not write a file is done. */
 export const CHECKOUT_FAILED = 'fatal: unable to checkout working tree\n';
 
-/** strerror's words for the codes a write here can fail with (glibc's). */
-const STRERROR: Readonly<Record<string, string>> = {
-  EEXIST: 'File exists', EACCES: 'Permission denied', EPERM: 'Operation not permitted', ENOSPC: 'No space left on device',
-  EFBIG: 'File too large', ENOENT: 'No such file or directory', EROFS: 'Read-only file system', EISDIR: 'Is a directory',
-  ENOTDIR: 'Not a directory', EBUSY: 'Device or resource busy', ENOTSUP: 'Operation not supported', EIO: 'Input/output error',
-  EXDEV: 'Invalid cross-device link', ENAMETOOLONG: 'File name too long', ELOOP: 'Too many levels of symbolic links',
-};
-
 /** A call refused past the phase's deadline: the phase ends (and is retried or fails), not the file. */
 export class PhaseDeadlineError extends Error {
   constructor() {
@@ -94,10 +87,10 @@ function errnoCode(error: unknown): string | undefined {
   return head.length > 1 && head.length < 16 && head[0] === 'E' && head.toUpperCase() === head ? head : undefined;
 }
 
-/** strerror of `error`'s code, or its own message. */
+/** strerror of `error`'s code (glibc's words, core vfs-error.ts), or its own message. */
 function strerror(error: unknown): string {
   const code = errnoCode(error);
-  return (code !== undefined ? STRERROR[code] : undefined) ?? (error instanceof Error ? error.message : String(error));
+  return isVfsErrorCode(code) ? VFS_STRERROR[code] : error instanceof Error ? error.message : String(error);
 }
 
 /**
