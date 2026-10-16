@@ -137,7 +137,7 @@ const RUN_AS = { uid: 1001, gid: 1001, groups: [1001], umask: 0o022 };
   }));
   const host = createProcessHost('peer', world, { readFile: () => new TextEncoder().encode(source) }, { coordDoId: 'host-c', hostBinding: 'WORKSPACES' });
   const boot = { kind: 'code', code: { compatibilityDate: '2026-09-26', compatibilityFlags: [], mainModule: 'worker.js', modules: { 'worker.js': source } } };
-  const hosted = await host.open({ pid: 11, writerId: 'run-11', workerKey: 'renamed-peer', boot, startArgs: {} });
+  const hosted = await host.open({ pid: 11, writerId: crypto.randomUUID(), workerKey: 'renamed-peer', boot, startArgs: {} });
   try {
     await hosted.started;
     assert.ok(host.namesResolved.length > 0, 'the process was placed on a peer found through WORKSPACES');
