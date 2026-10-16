@@ -93,4 +93,11 @@ export declare function starConflicts(host: LateLinkHost, url: string): string[]
  * namespace taken in a cycle has them all.
  */
 export declare function namespaceNames(host: LateLinkHost, url: string): string[] | null;
+/**
+ * Whether staged row `row`'s graph, not yet evaluated, reaches back to the
+ * late module at `url`, through rows, the modules staging handed on and the
+ * late modules its link planned: a cycle with it, which that module's own
+ * link loads, after its functions and exports exist.
+ */
+export declare function reachesBack(host: LateLinkHost, row: number, url: string): boolean;
 //# sourceMappingURL=esm-late-link.d.ts.map

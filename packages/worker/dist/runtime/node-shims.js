@@ -13299,26 +13299,6 @@ function __nimbusDataStatic(url) {
   }
   return record.exports !== null && record.namespace === null && record.state === "evaluating" ? record.exports : __nimbusDataNamespace(record);
 }
-// Whether staged row \`id\`'s graph reaches back to the module staging handed
-// on as \`url\`: a cycle, which that module's own link loads.
-function __nimbusEsmHandsOn(id, url) {
-  const seen = new Set();
-  const stack = [id];
-  while (stack.length > 0) {
-    const at = stack.pop();
-    if (seen.has(at)) continue;
-    seen.add(at);
-    if (at < 0) {
-      const missing = __nimbusEsm.missing[-2 - at];
-      if (missing?.code === "ERR_NIMBUS_NOT_STAGED" && missing.url === url) return true;
-      continue;
-    }
-    if (__nimbusEsmRecords[at]?.state === __ESM_DONE) continue;
-    const row = __nimbusEsm.table[at];
-    if (row[0] === "module") for (const target of row[2]) stack.push(target);
-  }
-  return false;
-}
 // import() of a data: module: a JavaScript module's late graph linked first
 // (a name it imports that its module does not export rejects before any
 // body runs), then the staged modules it reaches the registry evaluates
@@ -13330,13 +13310,14 @@ async function __esmLoadData(url) {
   let record = __nimbusDataModules.get(url);
   if (record === undefined) {
     const order = __nimbusDataModuleOf(url).format === "module" ? __nimbusLateLink(url, url) : [];
+    const late = __nimbusRegistryRequire("./${RUNTIME_ESM_LATE_MODULE}");
     const linked = record = __nimbusDataLink(url, false);
     if (linked.state === "linked") {
       linked.state = "evaluating";
       linked.loading = (async () => {
         try {
           for (const id of order) {
-            if (__nimbusEsmRecord(id).state !== __ESM_DONE && !__nimbusEsmTainted(id) && !__nimbusEsmHandsOn(id, url)) await __nimbusEsmImport(id);
+            if (__nimbusEsmRecord(id).state !== __ESM_DONE && !__nimbusEsmTainted(id) && !late.reachesBack(__nimbusLateLinkHost, id, url)) await __nimbusEsmImport(id);
           }
         } catch (e) {
           linked.error = { value: e };
