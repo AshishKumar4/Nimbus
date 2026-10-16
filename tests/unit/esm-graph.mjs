@@ -136,6 +136,52 @@ const evaluated = (log) => log.filter((entry) => !entry.startsWith('init:') && !
   assert.deepEqual(log, ['link:J', 'link:J', 'init:B', 'init:A', 'J', 'J', 'B', 'A'], 'Link() and EvaluateModuleSync each time it is reached');
 }
 
+// ── Two dependencies with top-level await: their ancestor runs once both completed ──
+{
+  const { log, records } = graph({ R: { deps: ['A', 'B'] }, A: { tla: true }, B: { tla: true } });
+  link(records.R);
+  await evaluate(records.R);
+  assert.deepEqual(evaluated(log), ['A', 'B', 'A$', 'B$', 'R']);
+}
+// ── What a program may replace is never reached: a prototype's methods, the array iterator, Promise.prototype.then ──
+{
+  const log = [];
+  const records = {};
+  const requested = { A: [], B: [], C: [] };
+  const make = (name, deps, tla) => {
+    records[name] = new CyclicModuleRecord({
+      hasTLA: tla,
+      requestedModules: () => requested[name],
+      initializeEnvironment() { log[log.length] = `init:${name}`; },
+      executeModule(capability) {
+        log[log.length] = name;
+        if (tla) queueMicrotask(() => { log[log.length] = `${name}$`; capability.resolve(); });
+      },
+    });
+    return deps;
+  };
+  const depsOf = { A: make('A', ['B', 'C'], false), B: make('B', ['A', 'C'], false), C: make('C', [], true) };
+  for (const name of ['A', 'B', 'C']) for (let i = 0; i < depsOf[name].length; i++) requested[name][i] = records[depsOf[name][i]];
+  const reached = [];
+  const replaced = [
+    [Array.prototype, 'push'], [Array.prototype, 'pop'], [Array.prototype, 'includes'], [Array.prototype, 'sort'],
+    [Array.prototype, Symbol.iterator], [Promise.prototype, 'then'], [Math, 'min'],
+  ].map(([target, key]) => {
+    const original = target[key];
+    target[key] = function (...args) { reached[reached.length] = String(key); return Reflect.apply(original, this, args); };
+    return () => { target[key] = original; };
+  });
+  // Restored once the evaluation completes: its asynchronous steps (AsyncModuleExecutionFulfilled) are checked too.
+  try {
+    link(records.A);
+    await evaluate(records.A);
+  } finally {
+    for (let i = 0; i < replaced.length; i++) replaced[i]();
+  }
+  assert.deepEqual(reached, [], 'nothing replaceable was reached');
+  assert.deepEqual(evaluated(log), ['C', 'C$', 'B', 'A']);
+}
+
 // ── Differential: random graphs, as host Node evaluates the same files ──
 let seed = 0x5eed;
 const random = () => {
