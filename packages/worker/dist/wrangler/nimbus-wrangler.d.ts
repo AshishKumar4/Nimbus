@@ -17,6 +17,7 @@ import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { EsbuildReadFs, EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { CompositeVFS } from '@nimbus-sh/core/vfs/composite.js';
+import type { LoaderCodeRegistry } from './loader-code-store.js';
 export interface NimbusWranglerOptions {
     /** The workspace's network: the worker under development goes out through its egress. */
     network: WorkspaceNetwork;
@@ -37,6 +38,13 @@ export interface NimbusWranglerOptions {
     root: string;
     onLog: (msg: string) => void;
     onHmrMessage: (msg: any) => void;
+    /**
+     * The session's store of what the build's worker_loaders bindings load
+     * (loader-code-store.ts): each binding of a build is one owner, minted
+     * with its env and committed with it. Absent, the shim keeps code in its
+     * heap alone.
+     */
+    loaderStore?: LoaderCodeRegistry;
 }
 /**
  * Rewrite a Location header emitted by the inner Worker so that, when
@@ -70,6 +78,9 @@ export declare class NimbusWrangler {
     private root;
     private onLog;
     private onHmrMessage;
+    private readonly loaderStore;
+    /** This server's name to the loader store: its builds' owners are its. */
+    private readonly storeId;
     private running;
     private config;
     private workerStub;
@@ -125,6 +136,7 @@ export declare class NimbusWrangler {
      * synchronous step after the build's last wait, so nothing comes between.
      */
     private buildAndLoad;
+    private buildAndLoadWith;
     /**
      * Checks that `worker` (the inner Worker, loaded) exports each binding's
      * class, asking its own isolate once through its `classesEntrypoint`

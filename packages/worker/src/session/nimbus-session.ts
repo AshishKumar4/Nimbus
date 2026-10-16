@@ -40,6 +40,7 @@ import { CirrusReal } from '../facets/cirrus-real.js';
 import type { HmrEvent } from '../facets/real-vite-hmr.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
+import type { LoaderStoreRequest } from '../wrangler/loader-code-store.js';
 import type { NpmInstaller } from '../npm/installer.js';
 import type { PackumentReadOptions } from '../npm/r2-cache.js';
 import type { DocumentPolicy } from '@nimbus-sh/core/runtime/document-policy.js';
@@ -1023,6 +1024,10 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   async _rpcCpKill(childPid: number, signal: string, pid?: number): Promise<boolean> { return _rpc._rpcCpKill(this as any, childPid, signal, pid); }
   async _rpcCpWait(childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean) { return _rpc._rpcCpWait(this as any, childPid, waitMs, acquire, pid, knownStarted); }
   async _rpcCpBlocked(pid: number, report: unknown) { return _rpc._rpcCpBlocked(this as any, pid, report); }
+  async _rpcLoaderCodeStore(request: LoaderStoreRequest, stream: ReadableStream<Uint8Array> | undefined, pid?: number): Promise<unknown> {
+    return _rpc._rpcLoaderCodeStore(this as any, request, stream, pid);
+  }
+
   async _rpcCpNextSignal(pid: number, waitMs: number): Promise<string | null> { return _rpc._rpcCpNextSignal(this as any, pid, waitMs); }
 
   // Programmatic sandbox SDK RPC

@@ -27,6 +27,7 @@ import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
 import { PeerHost, type HostedHttpRequest, type HostedHttpResponse, type HostedReply } from '@nimbus-sh/fabric/peer-host.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type LoaderStoreRequest } from '../wrangler/loader-code-store.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import { z } from 'zod/v4';
 import type { NimbusSession } from './nimbus-session.js';
@@ -479,6 +480,13 @@ export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs:
  * takes its own: SessionProcessSupervisor.takeSignals), waiting up to
  * `waitMs`: null if none came.
  */
+/**
+ * The Worker Loader shim's code store (wrangler/loader-code-store.ts): the
+ * host's alone. A process's envelope carries its pid, an infrastructure
+ * binding's pid 0, and both are refused; only the shim, which holds the host
+ * namespace, makes a call without one.
+ */
+export declare function _rpcLoaderCodeStore(self: RpcHost, request: LoaderStoreRequest, stream: ReadableStream<Uint8Array> | undefined, pid?: number): Promise<unknown>;
 export declare function _rpcCpNextSignal(self: RpcHost, pid: number | undefined, waitMs: number): Promise<string | null>;
 export declare function _rpcCpReadOutput(self: RpcHost, childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: unknown, pid?: number): Promise<any>;
 export declare function _rpcCpDrainOutput(self: RpcHost, childPid: number, pid?: number): Promise<any>;

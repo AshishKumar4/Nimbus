@@ -891,6 +891,9 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcCpKill(childPid, signal, pid) { return _rpc._rpcCpKill(this, childPid, signal, pid); }
     async _rpcCpWait(childPid, waitMs, acquire, pid, knownStarted) { return _rpc._rpcCpWait(this, childPid, waitMs, acquire, pid, knownStarted); }
     async _rpcCpBlocked(pid, report) { return _rpc._rpcCpBlocked(this, pid, report); }
+    async _rpcLoaderCodeStore(request, stream, pid) {
+        return _rpc._rpcLoaderCodeStore(this, request, stream, pid);
+    }
     async _rpcCpNextSignal(pid, waitMs) { return _rpc._rpcCpNextSignal(this, pid, waitMs); }
     // Programmatic sandbox SDK RPC
     async _rpcReady(options) { return _programmatic.ensureProgrammaticReady(this, options); }

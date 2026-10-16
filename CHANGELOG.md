@@ -5,6 +5,40 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (`nimbus wrangler dev`, nested Nimbus): a Worker loaded through a
+  `worker_loaders` binding no longer grows the host Worker's isolate without
+  bound. The Worker Loader shim used to keep every loaded Worker's whole
+  code in memory, up to 32 Workers whatever their size; seven 20 MiB Workers
+  held 140 MiB in a 128 MiB isolate. What the shim holds is now bounded by
+  bytes, 52 MiB in all: 4 MiB of loaded Workers' env and metadata, an 8 MiB
+  cache of their modules, 32 MiB of credit for code being admitted or
+  re-created, and 8 MiB for `LOADER.get` keys in flight. Each Worker's code
+  is written to the session's store before its handle is returned, under
+  `/.nimbus/loader-code`, owned by the store's own uid and out of the session
+  user's reach. When workerd evicts a Worker, it is re-created from the store
+  even after the shim's cache has let its modules go. A Worker whose build
+  was replaced or stopped is not re-created; that call fails, naming the
+  retired binding. A rebuild sends only its changed modules: unchanged ones
+  are adopted from the previous build. Limits, each refused by name:
+  - A Worker loaded through the shim may hold at most 32 MiB live, its
+    working space included (native workerd allows 64 MiB).
+  - Its env and metadata may take at most 4 MiB.
+  - A `LOADER.get` id may be at most 262,144 characters.
+  - A `load` that arrives while the shim is busy is refused ("retry")
+    rather than queued.
+  - The store holds at most 16,384 files and 256 MiB per binding of a
+    build, and 1 GiB per session incarnation. Each binding's files count as
+    its own, so a copy shared with another binding counts again.
+  - A compiled `WebAssembly.Module`, a symbol, an accessor, a `toJSON` in a
+    `{json}` module, or an instance of a program's own class is refused:
+    the shim cannot account for what it holds.
+- Breaking (fabric): `getLoadedCodesStats` is gone from
+  `@nimbus-sh/fabric/bindings.js`. The session diagnostics' `loadedCodes` now
+  reports each of the shim's buckets with its bound (`loaderHeapStats`,
+  `@nimbus-sh/fabric/loader-heap.js`). `NimbusLoaderRPC.load` answers a
+  promise, settled once the code is admitted. New supervisor op
+  `loaderCodeStore`, which is the host's alone: any process's envelope is
+  refused.
 - Fixed: `fchmod`, `fchown` and `futimes` on a WASI program's file
   descriptor change the file it opened. Before, they changed whatever file
   had the name by then: after an unlink and a new file at that name, they

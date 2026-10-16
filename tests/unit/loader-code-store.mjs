@@ -1,0 +1,484 @@
+#!/usr/bin/env bun
+// The Worker Loader shim's code, kept in the owning session's store (FAB-2
+// step 2, loader-code-store-design-r7.md), through the shim and the session's
+// registry over a real SqliteVFS (the host op's transport stubbed: one call):
+//
+//   - a Worker is durable before its handle is returned, and a module the
+//     shim's cache let go (one over its 8 MiB holds none) is read back on a
+//     native miss, as it was loaded;
+//   - the audit's case: seven 20 MiB Workers loaded, the shim's heap keeps at
+//     most its caches, and each is re-created from the store;
+//   - a rebuild adopts its unchanged modules from its binding's reuse source
+//     and sends none of them again; the store's files are its own uid's, out
+//     of the session user's reach;
+//   - a retired build's Worker is never re-created, even one the shim's cache
+//     still holds whole;
+//   - a {json} module whose parse makes more than the shim's bound (a shared
+//     object written many times) is refused before its handle is returned;
+//   - a put of bytes that are not what its digest names publishes nothing;
+//     the owner's file cap refuses a further file, naming it; the session's
+//     1 GiB counts each binding's files as its own (an adopted copy too) and
+//     its refusal names the cap and how it counts;
+//   - a stopped server's owners and reuse sources are removed once nothing
+//     reads them (A → B → C with A's put held: A goes once drained, B stays);
+//     a removal that fails stays counted and is retried; a later
+//     incarnation's registry sweeps what an earlier one left; content is
+//     counted as each owner's own (an adopted copy too), given back once
+//     when its directory is gone, never before, never twice;
+//   - a process's envelope (pid, or an infrastructure binding's pid 0) is
+//     refused the store.
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+
+const { NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, resolveLoadedEntrypoint, loaderHeapStats, SqliteVFS, loaderCodeRegistry, LOADER_CODE_ROOT, _rpcLoaderCodeStore, CRED_SESSION_USER } = await importWorkerBundle({
+  'packages/fabric/src/bindings.ts': ['NimbusLoaderRPC', 'NimbusLoadedWorker', 'NimbusLoadedEntrypoint', 'resolveLoadedEntrypoint'],
+  'packages/fabric/src/loader-heap.ts': ['loaderHeapStats'],
+  'packages/core/src/vfs/sqlite-vfs.ts': ['SqliteVFS'],
+  'packages/worker/src/wrangler/loader-code-store.ts': ['loaderCodeRegistry', 'LOADER_CODE_ROOT'],
+  'packages/worker/src/session/rpc.ts': ['_rpcLoaderCodeStore'],
+  'packages/core/src/runtime/os-contracts.ts': ['CRED_SESSION_USER'],
+});
+
+const MiB = 1024 * 1024;
+const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
+
+/** A session: its VFS, its incarnation's registry, and the host namespace its shim's store calls reach. */
+function session(engine) {
+  const ctx = {};
+  const registry = loaderCodeRegistry(engine);
+  const calls = [];
+  const host = {
+    supervisorOp(envelope) {
+      calls.push(envelope.args[0].kind);
+      return _rpcLoaderCodeStore({ ctx, sqliteFs: engine, ensureSqliteFs() {} }, envelope.args[0], envelope.stream, envelope.pid);
+    },
+  };
+  const env = { TEST_NS: { idFromName: (name) => name, idFromString: (id) => id, get: () => host } };
+  return { ctx, engine, registry, calls, env };
+}
+function vfs() {
+  const harness = createSqliteVfsTestHarness();
+  return new SqliteVFS(harness.sql, harness.ctx);
+}
+
+/** A shim for owner `token` of `s`, over a native loader that keeps nothing. */
+function shim(s, token) {
+  const native = { gets: [] };
+  const stub = { getEntrypoint: () => ({ fetch: async () => new Response('ok') }) };
+  const env = { ...s.env, LOADER: { load: () => stub, get(key, callback) { native.gets.push(Promise.resolve().then(callback)); return stub; } } };
+  const exports = {
+    NimbusLoadedWorker({ props }) { return Object.assign(Object.create(NimbusLoadedWorker.prototype), { ctx: { props, exports }, env }); },
+    NimbusLoadedEntrypoint({ props }) { return Object.assign(Object.create(NimbusLoadedEntrypoint.prototype), { ctx: { props, exports }, env }); },
+  };
+  const store = { doId: 'session', route: { supervisorEntrypoint: 'SupervisorRPC', hostNamespace: 'TEST_NS', hostDispatchMethod: 'supervisorOp' }, owner: token };
+  const loader = Object.assign(Object.create(NimbusLoaderRPC.prototype), { ctx: { props: { depth: 1, namespace: `ns-${token}`, store }, exports }, env });
+  return {
+    loader,
+    /** The code a native miss re-creates for `loaded`'s Worker. */
+    async missed(loaded) {
+      await resolveLoadedEntrypoint(loaded.getEntrypoint());
+      return native.gets.at(-1);
+    },
+  };
+}
+const worker = (modules) => ({ compatibilityDate: '2026-09-26', mainModule: Object.keys(modules)[0], modules });
+const blob = (bytes, fill) => { const data = new Uint8Array(bytes); data.fill(fill); return data.buffer; };
+
+// ── A module over the shim's cache, read back from the store on a native miss ──
+{
+  const s = session(vfs());
+  const token = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [token]);
+  const { loader, missed } = shim(s, token);
+  const big = blob(12 * MiB, 7);
+  const loaded = await loader.load(worker({ 'w.js': 'export default {};', 'big.bin': { data: big } }));
+  const code = await missed(loaded);
+  assert.equal(sha(new Uint8Array(code.modules['big.bin'].data)), sha(new Uint8Array(big)), 'a 12 MiB module the cache cannot hold is re-created from the store, byte for byte');
+  assert.equal(code.modules['w.js'], 'export default {};');
+}
+
+// ── The audit's case: seven 20 MiB Workers, kept in the store, each re-created ──
+{
+  const s = session(vfs());
+  const token = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [token]);
+  const { loader, missed } = shim(s, token);
+  const handles = [];
+  const refs = [];
+  for (let i = 0; i < 7; i++) {
+    await (async () => {
+      const data = blob(20 * MiB, i + 1);
+      refs.push(new WeakRef(data));
+      handles.push(await loader.load(worker({ 'w.js': `export default ${i};`, 'blob.bin': { data } })));
+    })();
+  }
+  for (let i = 0; i < 5; i++) Bun.gc(true);
+  assert.ok(refs.filter((ref) => ref.deref() !== undefined).length <= 1, 'the shim keeps at most its caches of seven 20 MiB Workers');
+  for (let i = 0; i < 7; i++) {
+    const code = await missed(handles[i]);
+    assert.equal(new Uint8Array(code.modules['blob.bin'].data)[0], i + 1, `Worker ${i} is re-created from the store`);
+  }
+}
+
+// ── A rebuild adopts its unchanged modules; the store's files are out of the session user's reach ──
+{
+  const s = session(vfs());
+  const first = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [first]);
+  const shared = blob(2 * MiB, 3);
+  await shim(s, first).loader.load(worker({ 'w.js': 'export default 1;', 'dep.bin': { data: shared } }));
+  const second = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [second]);
+  s.calls.length = 0;
+  const { loader, missed } = shim(s, second);
+  const loaded = await loader.load(worker({ 'w.js': 'export default 2;', 'dep.bin': { data: shared } }));
+  assert.equal(s.calls.filter((kind) => kind === 'put').length, 1, 'only the changed module is sent; the unchanged one is adopted from the reuse source');
+  assert.equal(new Uint8Array((await missed(loaded)).modules['dep.bin'].data)[0], 3, 'and the adopted one re-creates the Worker');
+  const user = s.engine.as(CRED_SESSION_USER);
+  assert.throws(() => user.readdir(LOADER_CODE_ROOT), { code: 'EACCES' }, 'the session user cannot list the store');
+}
+
+// ── A retired build's Worker is never re-created, even one the cache holds whole ──
+{
+  const s = session(vfs());
+  const first = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [first]);
+  const { loader, missed } = shim(s, first);
+  const loaded = await loader.load(worker({ 'w.js': 'export default "small";' }));
+  s.registry.commit('wrangler-1', [s.registry.mint('wrangler-1', 'LOADER')]);
+  await assert.rejects(missed(loaded), /loader binding was retired/, 'its owner retired by the next commit');
+}
+
+// ── A {json} module that parses into more than the shim's bound is refused before its handle ──
+{
+  const s = session(vfs());
+  const token = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [token]);
+  const { loader } = shim(s, token);
+  const pair = [{}, {}, {}, {}];
+  await assert.rejects(loader.load(worker({ 'w.js': '', 'many.json': { json: new Array(200_000).fill(pair) } })),
+    /re-creating this Worker from the store would hold .* per-Worker bound/, 'one shared array written 200,000 times parses into a million objects: refused by its restored price');
+  // One Error with a 12 MiB stack (6 Mi units) shared by three {json} modules: each stores as `{}`, and none could stay in the 8 MiB cache.
+  const shared = new Error('shared'); shared.stack = 'z'.repeat(6 * MiB);
+  const error = structuredClone(shared);
+  assert.ok(await loader.load(worker({ 'w.js': '', 'a.json': { json: { error } }, 'b.json': { json: { error } }, 'c.json': { json: { error } } })),
+    'a large shared source the cache cannot keep does not count against its re-creation');
+  assert.ok(await loader.load(worker({ 'w.js': '', 'near.json': { json: new Array(200_000).fill({ a: 0 }) } })),
+    'one small object written 200,000 times restores just under the bound (an object member is priced as one, an array element with its backing): admitted');
+}
+
+// ── Restored modules are cached for what they hold; text comes back as it went in ──
+{
+  const s = session(vfs());
+  const token = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [token]);
+  const { loader, missed } = shim(s, token);
+  const boundary = 1024 * 1024;
+  const crossing = 'a'.repeat(boundary - 1) + '\u{1F600}' + 'b';
+  const kept = await loader.load(worker({ 'w.js': '\uFEFFexport default {};', 'many.json': { json: new Array(100_000).fill({}) }, 'pair.txt': { text: crossing } }));
+  // Let the cache go: its 8 MiB taken by others' modules.
+  for (let i = 0; i < 3; i++) await loader.load(worker({ 'w.js': '', 'fill.bin': { data: blob(3 * MiB, i) } }));
+  const code = await missed(kept);
+  assert.equal(code.modules['w.js'], '\uFEFFexport default {};', 'a leading U+FEFF is kept');
+  assert.equal(code.modules['pair.txt'].text, crossing, 'a surrogate pair across the encoding slice is kept');
+  assert.equal(code.modules['many.json'].json.length, 100_000);
+  assert.ok(loaderHeapStats().moduleCacheBytes <= 8 * MiB, `the module cache holds at most its bound, restored graphs charged for what they hold: ${loaderHeapStats().moduleCacheBytes}`);
+  // A near-bound {json}: 1 MiB of NUL characters (six to the escape when written, one when parsed) is admitted.
+  assert.ok(await loader.load(worker({ 'w.js': '', 'nul.json': { json: '\u0000'.repeat(MiB) } })), 'a {json} string of 1 MiB NULs is admitted');
+}
+
+// ── Owners and content: retired bindings, accounting that waits for drains, each owner's files its own, a destroyed session's new registry ──
+{
+  const engine = vfs();
+  const s = session(engine);
+  const first = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [first]);
+  const shared = blob(2 * MiB, 9);
+  await shim(s, first).loader.load(worker({ 'w.js': '', 'dep.bin': { data: shared } }));
+  const second = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [second]);
+  await shim(s, second).loader.load(worker({ 'w.js': '', 'dep.bin': { data: shared } }));
+  const both = s.registry.stats().storeBytes;
+  assert.ok(both >= 4 * MiB, `an adopted copy is its owner's, counted as the cap counts every file made: ${both}`);
+  s.registry.release(first);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const adopter = s.registry.stats().storeBytes;
+  assert.ok(adopter >= 2 * MiB && adopter < both, `the putter's count goes with its directory, the adopter's stays: ${adopter}`);
+  s.registry.commit('wrangler-1', []);
+  assert.equal(await s.registry.serve({ kind: 'alive', owner: second }), false, 'a binding the next build no longer has is retired');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(s.registry.stats().storeBytes, 0, 'and once its directory is gone, nothing is counted');
+
+  // A binding named twice is the last one's: the earlier owner is retired, rebuild after rebuild.
+  for (let build = 0; build < 3; build++) {
+    const tokens = [s.registry.mint('wrangler-3', 'DUP'), s.registry.mint('wrangler-3', 'DUP')];
+    s.registry.commit('wrangler-3', tokens);
+  }
+  assert.equal(s.registry.stats().owners, 2, 'one committed owner and one reuse source for the doubled binding, however many builds');
+  s.registry.stop('wrangler-3');
+
+  // A put admitted before its owner's release is accounted, and removed, once it drains.
+  const third = s.registry.mint('wrangler-2', 'LOADER');
+  const data = new TextEncoder().encode('held put');
+  let push;
+  const held = new ReadableStream({ start(controller) { push = controller; } });
+  const putting = s.registry.serve({ kind: 'put', owner: third, digest: sha(data), size: data.byteLength }, held);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  s.registry.release(third);
+  push.enqueue(data); push.close();
+  await putting;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(s.registry.stats().removing, 0, 'the released owner\'s directory is removed once its put drained');
+  assert.equal(s.registry.stats().storeBytes, 0, 'and its bytes given back once');
+
+  // A put refused by its digest, and one joined, leave their streams cancelled.
+  const fourth = s.registry.mint('wrangler-2', 'LOADER');
+  let cancelled = 0;
+  const cancelling = (bytes) => new ReadableStream({ start(controller) { controller.enqueue(bytes); }, cancel() { cancelled++; } });
+  await s.registry.serve({ kind: 'put', owner: fourth, digest: 'not a digest', size: 1 }, cancelling(data)).catch(() => {});
+  assert.equal(cancelled, 1, 'a refused put\'s stream is cancelled');
+  let release;
+  const slow = new ReadableStream({ start(controller) { release = () => { controller.enqueue(data); controller.close(); }; } });
+  const firstPut = s.registry.serve({ kind: 'put', owner: fourth, digest: sha(data), size: data.byteLength }, slow);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const joined = s.registry.serve({ kind: 'put', owner: fourth, digest: sha(data), size: data.byteLength }, cancelling(data));
+  release();
+  await Promise.all([firstPut, joined]);
+  assert.equal(cancelled, 2, 'a put that joined another\'s creation has its own stream cancelled');
+
+  // A destroyed session opens a new filesystem: a new registry, which knows no old token.
+  const fresh = loaderCodeRegistry(vfs());
+  assert.notEqual(fresh, s.registry);
+  assert.equal(await fresh.serve({ kind: 'alive', owner: fourth }), false, 'an old incarnation\'s token is unknown to the new one');
+}
+
+// ── Puts that are not what they name, or past the owner's file cap, publish nothing ──
+{
+  const s = session(vfs());
+  const token = s.registry.mint('wrangler-1', 'LOADER');
+  const bytes = new TextEncoder().encode('honest bytes');
+  const stream = (data) => new ReadableStream({ start(controller) { controller.enqueue(data); controller.close(); } });
+  await assert.rejects(s.registry.serve({ kind: 'put', owner: token, digest: sha(new TextEncoder().encode('other')), size: bytes.byteLength }, stream(bytes)),
+    /not what digest .* names/, 'bytes that are not what their digest names are refused');
+  assert.deepEqual(await s.registry.serve({ kind: 'has', owner: token, digests: [sha(new TextEncoder().encode('other'))] }), [], 'and nothing was published');
+  for (let i = 0; i < 16_384; i++) {
+    const data = new TextEncoder().encode(String(i));
+    await s.registry.serve({ kind: 'put', owner: token, digest: sha(data), size: data.byteLength }, stream(data));
+  }
+  const more = new TextEncoder().encode('one more');
+  await assert.rejects(s.registry.serve({ kind: 'put', owner: token, digest: sha(more), size: more.byteLength }, stream(more)),
+    /would hold 16385 files, over its cap of 16384/, 'the owner\'s 16,385th file is refused, naming the cap');
+}
+
+// ── The session's 1 GiB counts each binding's files as its own: one shared 16 MiB file adopted by 63 more owners reaches it ──
+{
+  const s = session(vfs());
+  const data = new Uint8Array(16 * MiB).fill(4);
+  const digest = sha(data);
+  const putter = s.registry.mint('wrangler-0', 'LOADER');
+  await s.registry.serve({ kind: 'put', owner: putter, digest, size: data.byteLength }, new ReadableStream({ start(c) { c.enqueue(data); c.close(); } }));
+  for (let i = 1; i < 64; i++) {
+    const adopter = s.registry.mint(`wrangler-${i}`, 'LOADER');
+    assert.deepEqual(await s.registry.serve({ kind: 'has', owner: adopter, digests: [digest] }), [digest], `owner ${i} adopts the shared file`);
+  }
+  assert.equal(s.registry.stats().storeBytes, 1024 * MiB, 'sixty-four owners of one 16 MiB file count 1 GiB');
+  const over = s.registry.mint('wrangler-64', 'LOADER');
+  await assert.rejects(s.registry.serve({ kind: 'has', owner: over, digests: [digest] }),
+    /session's loader store would hold 1090519040 bytes, over its cap of 1073741824 \(1 GiB per session incarnation, each binding's files counted as its own/,
+    'the sixty-fifth adoption is refused, naming the session\'s cap and how it counts');
+  assert.equal(s.registry.stats().storeBytes, 1024 * MiB, 'and the refusal took nothing');
+}
+
+// ── Two owners stopped together: both directories gone, nothing left counted ──
+{
+  const s = session(vfs());
+  const a = s.registry.mint('wrangler-1', 'LOADER');
+  const b = s.registry.mint('wrangler-1', 'OTHER');
+  s.registry.commit('wrangler-1', [a, b]);
+  await shim(s, a).loader.load(worker({ 'w.js': 'export default "a";' }));
+  await shim(s, b).loader.load(worker({ 'w.js': 'export default "b";' }));
+  s.registry.stop('wrangler-1');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(s.engine.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 }).readdir(LOADER_CODE_ROOT), []);
+  assert.equal(s.registry.stats().storeBytes, 0, 'each owner\'s bytes given back once');
+}
+
+// ── A → B → C with A's put held: the slot ends C's with B its source, A gone once drained, B untouched ──
+{
+  const s = session(vfs());
+  const kernel = s.engine.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 });
+  const a = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [a]);
+  const data = new TextEncoder().encode('held across two commits');
+  let push;
+  const putting = s.registry.serve({ kind: 'put', owner: a, digest: sha(data), size: data.byteLength }, new ReadableStream({ start(controller) { push = controller; } }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const b = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [b]);
+  await shim(s, b).loader.load(worker({ 'w.js': 'export default "b";' }));
+  const c = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [c]);
+  const dirs = kernel.readdir(LOADER_CODE_ROOT).length;
+  assert.equal(dirs, 2, 'A\'s directory waits for its held put; B\'s is C\'s source');
+  push.enqueue(data); push.close();
+  await putting.catch(() => {});
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(kernel.readdir(LOADER_CODE_ROOT).length, 1, 'A\'s directory is removed once drained, and B\'s stays');
+  assert.deepEqual(await Promise.all([a, b, c].map((owner) => s.registry.serve({ kind: 'alive', owner }))), [false, false, true]);
+  assert.deepEqual(s.registry.stats().sources, 1);
+}
+
+// ── A put of a digest racing its donor's removal: each owner counted once, given back once ──
+{
+  const s = session(vfs());
+  const a = s.registry.mint('wrangler-1', 'LOADER');
+  const data = new Uint8Array(3 * MiB).fill(5);
+  const digest = sha(data);
+  await s.registry.serve({ kind: 'put', owner: a, digest, size: data.byteLength }, new ReadableStream({ start(c) { c.enqueue(data); c.close(); } }));
+  assert.equal(s.registry.stats().storeBytes, 3 * MiB);
+  // B, unable to adopt from retired A, sends the same bytes, held; A drains and goes meanwhile.
+  const b = s.registry.mint('wrangler-2', 'LOADER');
+  s.registry.release(a);
+  let push;
+  const putting = s.registry.serve({ kind: 'put', owner: b, digest, size: data.byteLength }, new ReadableStream({ start(controller) { push = controller; } }));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(s.registry.stats().removing, 0, 'A is gone');
+  assert.equal(s.registry.stats().storeBytes, 3 * MiB, 'B\'s put in flight is counted, A\'s count gone');
+  push.enqueue(data); push.close();
+  await putting;
+  assert.equal(s.registry.stats().storeBytes, 3 * MiB, 'and once published, counted once');
+  // The same race where the put fails, and where it declared another size: each gives back what it took.
+  const c = s.registry.mint('wrangler-3', 'LOADER');
+  const failing = s.registry.serve({ kind: 'put', owner: c, digest, size: data.byteLength }, new ReadableStream({ start(controller) { push = controller; } }));
+  const wrong = s.registry.serve({ kind: 'put', owner: s.registry.mint('wrangler-4', 'LOADER'), digest, size: data.byteLength + 1 }, new ReadableStream({ start(controller) { controller.enqueue(data); controller.close(); } }))
+    .then(() => 'published', (error) => error.code);
+  s.registry.release(b);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  push.error(new Error('the producer failed'));
+  await failing.catch(() => {});
+  assert.equal(await wrong, 'EINVAL', 'a put whose declared size its bytes do not fill publishes nothing');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(s.registry.stats().storeBytes, 0, 'nothing left counted, never below zero');
+}
+
+// ── A removal that fails part way stays counted whole until its directory is gone, then goes once ──
+{
+  const s = session(vfs());
+  const kernel = s.engine.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 });
+  const owner = s.registry.mint('wrangler-1', 'LOADER');
+  for (let i = 0; i < 3; i++) {
+    const data = new Uint8Array(1000 + i).fill(i);
+    await s.registry.serve({ kind: 'put', owner, digest: sha(data), size: data.byteLength }, new ReadableStream({ start(c) { c.enqueue(data); c.close(); } }));
+  }
+  assert.equal(s.registry.stats().storeBytes, 3003);
+  const [dir] = kernel.readdir(LOADER_CODE_ROOT);
+  // An entry the store cannot remove: the kernel's, closed to it. The files beside it go; the directory stays.
+  kernel.mkdir(`${LOADER_CODE_ROOT}/${dir.name}/zz`, { mode: 0o755 });
+  kernel.writeFile(`${LOADER_CODE_ROOT}/${dir.name}/zz/held`, 'x');
+  kernel.chmod(`${LOADER_CODE_ROOT}/${dir.name}/zz`, 0o500);
+  s.registry.release(owner);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(s.registry.stats().removing, 1, 'the directory stays, queued');
+  assert.equal(s.registry.stats().storeBytes, 3003, 'still counted: what stays is its owner\'s until it is gone');
+  kernel.chmod(`${LOADER_CODE_ROOT}/${dir.name}/zz`, 0o777);
+  // The next removal (another owner's) tries every queued directory again.
+  const next = s.registry.mint('wrangler-2', 'LOADER');
+  const one = new Uint8Array([7]);
+  await s.registry.serve({ kind: 'put', owner: next, digest: sha(one), size: 1 }, new ReadableStream({ start(c) { c.enqueue(one); c.close(); } }));
+  s.registry.release(next);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(s.registry.stats().removing, 0, 'retried, it is gone');
+  assert.equal(s.registry.stats().storeBytes, 0, 'and its count goes once: nothing left, nothing below zero');
+  assert.deepEqual(kernel.readdir(LOADER_CODE_ROOT), []);
+}
+
+// ── A large reuse source with snapshot history rows is retired in pages, its content given back ──
+{
+  const s = session(vfs());
+  const kernel = s.engine.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 });
+  const big = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [big]);
+  let bytes = 0;
+  for (let i = 0; i < 600; i++) {
+    const data = new TextEncoder().encode(`module ${i}`);
+    bytes += data.byteLength;
+    await s.registry.serve({ kind: 'put', owner: big, digest: sha(data), size: data.byteLength }, new ReadableStream({ start(c) { c.enqueue(data); c.close(); } }));
+  }
+  assert.equal(s.registry.stats().storeBytes, bytes);
+  s.engine.snapshot('before-retire');
+  // Its build replaced twice: a reuse source, then retired.
+  for (let build = 0; build < 2; build++) s.registry.commit('wrangler-1', [s.registry.mint('wrangler-1', 'LOADER')]);
+  for (let waited = 0; s.registry.stats().removing > 0 && waited < 100; waited++) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(s.registry.stats().removing, 0, 'the 600-file directory is removed');
+  assert.equal(s.registry.stats().storeBytes, 0, 'and its content given back');
+  assert.deepEqual(kernel.readdir(LOADER_CODE_ROOT), []);
+}
+
+// ── A removal that fails stays counted, and is tried again at the next ──
+{
+  const s = session(vfs());
+  const kernel = s.engine.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 });
+  const stuck = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [stuck]);
+  await shim(s, stuck).loader.load(worker({ 'w.js': 'export default "stuck";' }));
+  const [dir] = kernel.readdir(LOADER_CODE_ROOT);
+  const counted = s.registry.stats().storeBytes;
+  // Its directory no longer writable by the store: its files cannot be unlinked.
+  kernel.chmod(`${LOADER_CODE_ROOT}/${dir.name}`, 0o500);
+  s.registry.stop('wrangler-1');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(s.registry.stats().removing, 1, 'the failed removal stays queued');
+  assert.equal(s.registry.stats().storeBytes, counted, 'and its content counted');
+  kernel.chmod(`${LOADER_CODE_ROOT}/${dir.name}`, 0o700);
+  const next = s.registry.mint('wrangler-2', 'LOADER');
+  await shim(s, next).loader.load(worker({ 'w.js': 'export default "next";' }));
+  s.registry.release(next);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(s.registry.stats().removing, 0, 'the next removal tries it again, and both are gone');
+  assert.equal(s.registry.stats().storeBytes, 0);
+  assert.deepEqual(kernel.readdir(LOADER_CODE_ROOT), []);
+}
+
+// ── Stop removes a server's directories once drained; a new incarnation sweeps what an old one left ──
+{
+  const engine = vfs();
+  const s = session(engine);
+  const token = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [token]);
+  await shim(s, token).loader.load(worker({ 'w.js': 'export default {};' }));
+  const left = s.registry.mint('wrangler-2', 'LOADER');
+  await shim(s, left).loader.load(worker({ 'w.js': 'export default 9;' }));
+  const kernel = engine.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 });
+  assert.equal(kernel.readdir(LOADER_CODE_ROOT).length, 2);
+  s.registry.stop('wrangler-1');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(kernel.readdir(LOADER_CODE_ROOT).length, 1, 'the stopped server\'s directory is removed');
+}
+
+// ── A new incarnation's registry sweeps what an old one left ──
+{
+  const harness = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const old = loaderCodeRegistry(engine);
+  const token = old.mint('wrangler-1', 'LOADER');
+  const data = new TextEncoder().encode('left behind');
+  await old.serve({ kind: 'put', owner: token, digest: sha(data), size: data.byteLength }, new ReadableStream({ start(c) { c.enqueue(data); c.close(); } }));
+  const reopened = new SqliteVFS(harness.sql, harness.ctx);
+  loaderCodeRegistry(reopened);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(reopened.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 }).readdir(LOADER_CODE_ROOT).length, 0, 'the next incarnation over the same storage sweeps what the old one left');
+}
+
+// ── A process's envelope is refused the store ──
+{
+  const s = session(vfs());
+  const token = s.registry.mint('wrangler-1', 'LOADER');
+  for (const pid of [42, 0]) {
+    await assert.rejects(_rpcLoaderCodeStore({ ctx: s.ctx, sqliteFs: s.engine, ensureSqliteFs() {} }, { kind: 'alive', owner: token }, undefined, pid),
+      /EPERM/, `an envelope with pid ${pid} is refused`);
+  }
+}
+
+console.log('loader-code-store: ok');

@@ -110,6 +110,7 @@ export declare const SUPERVISOR_OP_TABLE: {
     readonly d1Query: null;
     readonly fanoutExecute: null;
     readonly processHostProbe: null;
+    readonly loaderCodeStore: null;
     readonly hostProcess: null;
     readonly awaitHostedBoot: null;
     readonly routeHostedHttp: null;

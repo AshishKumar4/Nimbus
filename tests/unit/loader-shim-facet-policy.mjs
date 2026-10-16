@@ -35,7 +35,7 @@ const env = { LOADER: {
 const loader = Object.assign(Object.create(NimbusLoaderRPC.prototype), { ctx: { props: { namespace: 'facet-policy-owner' }, exports }, env });
 
 for (const keyed of [false, true]) {
-  const loaded = keyed ? await loader.get('fixture', () => forged) : loader.load(forged);
+  const loaded = keyed ? await loader.get('fixture', () => forged) : await loader.load(forged);
   const entry = loaded.getEntrypoint('Named', { props: { user: 'kept' }, limits: { cpuMs: 12345 } });
   await resolveLoadedEntrypoint(entry);
   assert.deepEqual(captured.starts.at(-1).options, { props: { user: 'kept' }, limits: { cpuMs: 12345, subRequests: worker.subRequests } },
