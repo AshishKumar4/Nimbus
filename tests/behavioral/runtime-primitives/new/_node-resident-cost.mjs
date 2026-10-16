@@ -4,6 +4,10 @@
 // over (4,000 of each, so the store's work outweighs the request's), enough
 // times to see past the shell's prompt polling. What a change to the resident
 // store must leave as it was.
+//
+// Category: F (forensic) — a measurement with no verdict, so run-all does not
+// discover it (the leading `_`). Run it by hand on each side of a change:
+//   BASE=<target> bun tests/behavioral/runtime-primitives/new/_node-resident-cost.mjs
 import { mintSession, deleteSession, Terminal } from '../../_driver.mjs';
 
 const REPS = Number(process.env.REPS ?? 12);
