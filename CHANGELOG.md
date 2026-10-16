@@ -5,6 +5,27 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (shell): `tar -x` and `tar -t` on an archive that ends inside a
+  file, its data or its padding, fail as GNU tar does: "tar: Unexpected EOF
+  in archive", exit 2. Before, they exited 0 and left that file out, so a
+  cut download looked whole. `tar -x` still writes what came before it, and
+  that file's whole 512-byte blocks, as GNU tar does. An archive that ends
+  between files, even partway through a header, is still whole.
+- Fixed: `gem install` refuses a gem whose `data.tar.gz` is corrupt (a gzip
+  CRC failure) or ends inside a file, as RubyGems does, and installs nothing
+  of it. Before, the files that came before the damage were installed under
+  the gem's specification, so it looked installed. An npm package whose
+  tarball ends inside a file, though its integrity matches, now fails its
+  install (the shell's `npm` and the install facet both), and its
+  `package.json` is never written; before, it was installed without the
+  rest.
+- Breaking (core): `parseTar` (`substrate/lifo/utils/archive.js`) resolves
+  `{ entries, truncated }` instead of the entries. `streamTarRecords`, and so
+  `streamTarEntries` and `streamPackageEntries`
+  (`_shared/tarball-stream.js`), throw the new `TarTruncatedError` after the
+  entries before a member the stream ends inside; `extractTarball`
+  (`_shared/tarball.js`) rejects with it, or with the gzip failure, rather
+  than resolving the files before it.
 - Fixed (`nimbus wrangler dev`, nested Nimbus): a Worker loaded through a
   `worker_loaders` binding no longer grows the host Worker's isolate without
   bound. The Worker Loader shim used to keep every loaded Worker's whole
