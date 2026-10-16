@@ -25,7 +25,7 @@
 //
 // Seam: the peer-DO RPC (`_rpcFanoutExecute`), mirroring
 // tests/unit/npm-install-partial-honesty.mjs. Registry refusals use the
-// real policy table names (`sharp`, `@tailwindcss/oxide`).
+// real policy table names (`sharp`, `@napi-rs/canvas`).
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
@@ -64,11 +64,11 @@ function advisedResult(name, version, reason, suggest, overrides = {}) {
   return r;
 }
 
-const OXIDE = {
+const CANVAS = {
   reason:
-    'Native Rust Tailwind v4 oxide engine; ships only platform-specific .node bindings plus a wasm32-wasi shard. workerd has no node:wasi, and bare native bindings cannot dlopen.',
+    'Native canvas bindings; no Workers-compatible WASM build published.',
   suggest:
-    'no Workers-compatible target — Tailwind v3 (`tailwindcss@^3`) is pure JS and works in Workers (untested by Nimbus). Tailwind v4 inherently requires the Rust oxide engine.',
+    'use canvaskit-wasm or @resvg/resvg-wasm.',
 };
 
 function makeInstaller(pkgJson, resultFor) {
@@ -263,28 +263,27 @@ function makeInstaller(pkgJson, resultFor) {
   console.log('  caseD: dev-only sharp installs with a marked advisory, exit 0');
 }
 
-// ── Case E: tailwind oxide under a dev-only root installs with a note ───
+// ── Case E: staged oxide under a dev-only root installs without a refusal ───
 //
 // @tailwindcss/vite declares @tailwindcss/oxide as a required
 // `dependencies` edge; projects list the plugin in devDependencies.
-// @tailwindcss/oxide is a policy 'fail' entry — no Workers-compatible
-// build — but npm installs it, so the install keeps it and logs one
+// oxide 4.3.3 has a staged binding, so it is not an unsupported-build
 // advisory. `--omit=dev` drops the dev root and its whole subtree.
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
-  const pluginDeps = { '@tailwindcss/oxide': '^4.1.0', 'vc-1': '1.0.0', 'vc-2': '1.0.0', 'vc-3': '1.0.0', 'vc-4': '1.0.0' };
+  const pluginDeps = { '@tailwindcss/oxide': '4.3.3', 'vc-1': '1.0.0', 'vc-2': '1.0.0', 'vc-3': '1.0.0', 'vc-4': '1.0.0' };
   const resultFor = (name) => {
-    if (name === '@tailwindcss/vite') return resolvedResult(name, '4.1.0', { dependencies: pluginDeps });
-    if (name === '@tailwindcss/oxide') return advisedResult('@tailwindcss/oxide', '4.1.0', OXIDE.reason, OXIDE.suggest);
+    if (name === '@tailwindcss/vite') return resolvedResult(name, '4.3.3', { dependencies: pluginDeps });
+    if (name === '@tailwindcss/oxide') return resolvedResult(name, '4.3.3');
     return resolvedResult(name, '1.0.0');
   };
-  const pkgJson = { name: 'vite-app', dependencies: ok, devDependencies: { '@tailwindcss/vite': '^4.1.0' } };
+  const pkgJson = { name: 'vite-app', dependencies: ok, devDependencies: { '@tailwindcss/vite': '4.3.3' } };
 
   const first = makeInstaller(pkgJson, resultFor);
   const result = await first.installer.install(PROJ);
   const output = first.log.join('\n');
   assert.deepEqual(result.failed, [], `@tailwindcss/oxide under a dev root installs (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(/\[npm\] note: @tailwindcss\/oxide has no Workers-compatible build: /.test(output), `the advisory is logged:\n${output}`);
+  assert.ok(!/\[npm\] note: @tailwindcss\/oxide has no Workers-compatible build/.test(output), `the staged binding is not refused:\n${output}`);
   assert.ok(!/\d+ required packages? (is|are) not supported on Nimbus/.test(output), 'no not-supported summary');
   for (const name of ['@tailwindcss/vite', '@tailwindcss/oxide']) {
     assert.ok(result.installed.some((entry) => entry.startsWith(`${name}@`)), `${name} installed`);
@@ -300,17 +299,17 @@ function makeInstaller(pkgJson, resultFor) {
   assert.ok(!/oxide/.test(prodOutput), 'the listed subtree is never walked under --omit=dev');
   assert.ok(!prod.root.exists(`${NM}/@tailwindcss/oxide/package.json`), '@tailwindcss/oxide is absent under --omit=dev');
   assert.ok(/\bDone!/.test(prodOutput), 'production install succeeds');
-  console.log('  caseE: @tailwindcss/oxide under a dev-only root installs with a note; --omit=dev drops it');
+  console.log('  caseE: staged oxide installs without a refusal; --omit=dev drops it');
 }
 // ── Case F: a table-listed dep under a root dependency installs + note ──
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
-  const appDeps = { '@tailwindcss/oxide': '^4.1.0', 'sc-1': '1.0.0', 'sc-2': '1.0.0', 'sc-3': '1.0.0', 'sc-4': '1.0.0' };
+  const appDeps = { '@napi-rs/canvas': '^0.1.0', 'sc-1': '1.0.0', 'sc-2': '1.0.0', 'sc-3': '1.0.0', 'sc-4': '1.0.0' };
   const { installer, log, root } = makeInstaller(
-    { name: 'needs-oxide', dependencies: { ...ok, 'some-app-dep': '^1.0.0' } },
+    { name: 'needs-canvas', dependencies: { ...ok, 'some-app-dep': '^1.0.0' } },
     (name) => {
       if (name === 'some-app-dep') return resolvedResult(name, '1.0.0', { dependencies: appDeps });
-      if (name === '@tailwindcss/oxide') return advisedResult('@tailwindcss/oxide', '4.1.0', OXIDE.reason, OXIDE.suggest);
+      if (name === '@napi-rs/canvas') return advisedResult('@napi-rs/canvas', '0.1.0', CANVAS.reason, CANVAS.suggest);
       return resolvedResult(name, '1.0.0');
     },
   );
@@ -318,12 +317,12 @@ function makeInstaller(pkgJson, resultFor) {
   const output = log.join('\n');
 
   assert.deepEqual(result.failed, [], `a listed package does not fail (failed=${JSON.stringify(result.failed)})`);
-  assert.ok(/\[npm\] note: @tailwindcss\/oxide has no Workers-compatible build: .*… try:/.test(output), `the advisory carries the hint:\n${output}`);
+  assert.ok(/\[npm\] note: @napi-rs\/canvas has no Workers-compatible build: .*… try:/.test(output), `the advisory carries the hint:\n${output}`);
   assert.ok(!/\d+ required packages? (is|are) not supported on Nimbus/.test(output), 'no not-supported summary');
-  assert.ok(root.exists(`${NM}/@tailwindcss/oxide/package.json`), '@tailwindcss/oxide installs');
+  assert.ok(root.exists(`${NM}/@napi-rs/canvas/package.json`), '@napi-rs/canvas installs');
   assert.ok(root.exists(`${NM}/some-app-dep/package.json`), 'the parent installs');
   assert.ok(/\bDone!/.test(output), 'the install succeeds');
-  console.log('  caseF: @tailwindcss/oxide under a root dependency installs with a note');
+  console.log('  caseF: @napi-rs/canvas under a root dependency installs with a note');
 }
 
 // ── Case G: dev-first ancestor, required edge deeper — end-of-walk wins ─

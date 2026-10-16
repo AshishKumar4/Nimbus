@@ -102,6 +102,20 @@ export const STAGED_BINDING_ARTIFACTS: readonly StagedBindingArtifact[] = [
       "sha256": "8d5bb39f31cc53eacb7943517a33c6a1d408549d4420186df4bdf460b0325f77",
       "bytes": 6574305
     }
+  },
+  {
+    "name": "oxide",
+    "version": "4.3.3",
+    "owner": "@tailwindcss/oxide",
+    "requiredAs": [
+      "@tailwindcss/oxide-wasm32-wasi"
+    ],
+    "memoryPages": 70,
+    "wasm": {
+      "path": "/_assets/napi-wasm/oxide/4.3.3/oxide.wasm",
+      "sha256": "161dc7f93bbedaf0989074ec099d498fa7ed399bf17294a0eb118f07762a1ea8",
+      "bytes": 1906658
+    }
   }
 ];
 /** The rolldown Nimbus itself depends on, whose build the build facet runs. */
