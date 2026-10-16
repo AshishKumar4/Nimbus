@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: in Node programs, `fs.open` honours `O_NOFOLLOW`: a final symbolic
+  link is `ELOOP`, or `ENOTDIR` with `O_DIRECTORY`, as on Linux. `O_SYNC`
+  follows each write with an fsync. `FileHandle.write` reads its arguments
+  as `fs.write` does: `handle.write('ff', 0, 'hex')` writes the byte `ff`
+  (it wrote `66 66`), and `handle.write(buffer, { offset, length,
+  position })` writes that part there.
 - Fixed (lifo `node`, X-9): `vm` is Node's. Contexts, scripts,
   `compileFunction`, `runInThisContext` and `runInNewContext` work in an
   inline `node` program and a lifo command alike; before, the module was
