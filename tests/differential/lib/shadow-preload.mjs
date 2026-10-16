@@ -11,15 +11,27 @@
 //     twice), and the two exports objects are compared;
 //   - any other function: called, or constructed with `new`, with the same
 //     receiver and arguments, and the results compared (an awaitable by
-//     what it settles to); a run whose native call changed the objects it
-//     was given is recorded as not comparable, and the copy not run;
+//     what it settles to);
 //   - a generator or async generator: the program gets the native generator
-//     objects, and each next, return and throw it makes on one is made on
-//     the interpreted copy (an object the native one handed out is sent to
-//     the copy as the copy's own), and the steps compared.
+//     function and its objects, and each next, return and throw it makes on
+//     one is made on the interpreted copy (a value the native one handed
+//     out, sent back, reaches the copy as the copy's own), and the steps
+//     compared.
 // The arguments to a constructor are converted to strings once, for both
 // (constructor-hooks.mjs). A comparison still waiting for an awaitable when
 // the run ends is reported (`awaiting`).
+//
+// THE CONTRACT: the interpreted copy runs on the same inputs as the native
+// run, after it. It is not isolated from it. So a function that changes what
+// it is given (its arguments, its receiver, state it reaches) changes it
+// twice, and the copy starts from what the native run left: `s => ++s.n` on
+// { n: 0 } is reported as a mismatch, `result: number 1 vs number 2`, and
+// the program then sees n === 2. That mismatch is this harness's limit, not
+// the interpreter's; it can only fail loudly, never pass silently. The
+// program gets the native return itself (a native Promise is the same
+// Promise), and observing it for the comparison marks it handled, so a
+// shadow run reports no unhandled rejection of a returned Promise: the
+// native and interpreted runs grade that.
 // vm.runInThisContext (jiti's, for Nuxt's config) is routed as node-shims
 // routes it in a Worker (vm-route.mjs): the native value goes to the
 // program, the interpreted one is compared; a CommonJS wrapper expression
@@ -63,14 +75,10 @@ const awaits = (o) => o.ok && isThenable(o.value);
 /** What an outcome comes to once an awaitable it returned settles. */
 const settled = (o) => (awaits(o) ? Promise.resolve(o.value).then((value) => ({ ok: true, value }), (value) => ({ ok: false, value })) : o);
 
-/**
- * Give the program what the native run came to. Observing a native Promise
- * for the comparison marks it handled, so the program gets one that settles
- * as it does, unhandled if the program leaves it so.
- */
+/** Give the program what the native run came to, itself. */
 function forward(real) {
   if (!real.ok) throw real.value;
-  return real.value instanceof Promise ? real.value.then() : real.value;
+  return real.value;
 }
 
 /** Record whether two outcomes of the same run are the same; `exportsPair()` names what to compare instead of the results. */
@@ -111,37 +119,27 @@ function compareOutcomes(label, key, real, copy, exportsPair = null, link = null
   }
 }
 
-/** What `value`'s own properties hold, read without running a getter; null where there is nothing to read. */
-function snapshot(value) {
-  if (value === null || value === globalThis || (typeof value !== 'object' && typeof value !== 'function')) return null;
-  return Reflect.ownKeys(value).map((k) => {
-    const descriptor = Reflect.getOwnPropertyDescriptor(value, k);
-    return [k, 'value' in descriptor ? descriptor.value : descriptor.get];
-  });
-}
-
-/**
- * Whether a native run changed the objects it was given (`inputs`, as
- * `before` saw them): then the interpreted copy, which shares them, would
- * start from other inputs, so the run is recorded as not comparable and
- * the copy is not run.
- */
-function changedInputs(label, key, inputs, before) {
-  const changed = inputs.some((input, i) => {
-    const after = snapshot(input);
-    return before[i] !== null && (after.length !== before[i].length || after.some(([k, v], j) => before[i][j][0] !== k || !Object.is(before[i][j][1], v)));
-  });
-  if (changed) record({ uncomparable: [{ label, key, reason: 'the native run changed its own inputs' }] });
-  return changed;
-}
-
-/** Each native generator object the program got from a shadowed generator, with its interpreted counterpart. */
+/** Each native generator object the program got from a shadowed generator, with its interpreted copy. */
 const mirrors = new WeakMap();
 
+const isObject = (value) => value !== null && (typeof value === 'object' || typeof value === 'function');
+
+/** What the copy is sent for `value`: the copy's own counterpart of a value the native generator handed out, or the value. */
+const counterpartOf = (mirror, value) => (mirror.counterparts.has(value) ? mirror.counterparts.get(value) : value);
+
+/** After a step, remember the copy's counterpart of what the native generator handed out. */
+function linkStep(mirror, real, copy) {
+  const handed = real.ok && isObject(real.value) ? real.value.value : undefined;
+  if (isObject(handed) && copy.ok && isObject(copy.value)) mirror.counterparts.set(handed, copy.value.value);
+}
+
 // Every generator's and async generator's next, return and throw: on a
-// mirrored one, the same step (with the counterparts of objects it handed
-// out) is taken on the interpreted copy and compared. The program's own
-// receiver and arguments reach the native method as they are.
+// mirrored one, the same step is taken on the interpreted copy and
+// compared. The program's own receiver and arguments reach the native
+// method as they are, and its step is never delayed. An async generator's
+// copy takes its steps in order, each once the step before it has settled
+// on both sides, so a value handed out by one is the copy's own when sent
+// back in the next.
 for (const prototype of [Object.getPrototypeOf(function* () {}).prototype, Object.getPrototypeOf(async function* () {}).prototype]) {
   for (const method of ['next', 'return', 'throw']) {
     const native = prototype[method];
@@ -149,11 +147,20 @@ for (const prototype of [Object.getPrototypeOf(function* () {}).prototype, Objec
       [method](...args) {
         const mirror = mirrors.get(this);
         const real = outcome(() => Reflect.apply(native, this, args));
-        if (mirror) {
-          const sent = args.map((arg) => (mirror.counterparts.has(arg) ? mirror.counterparts.get(arg) : arg));
-          compareOutcomes(`${mirror.kind} ${method}`, mirror.key, real, outcome(() => Reflect.apply(mirror.copy[method], mirror.copy, sent)), null, (r, c) => {
-            const handed = r.ok && r.value !== null && typeof r.value === 'object' ? r.value.value : undefined;
-            if (handed !== null && typeof handed === 'object' && c.ok && c.value !== null && typeof c.value === 'object') mirror.counterparts.set(handed, c.value.value);
+        if (mirror === undefined) return forward(real);
+        const label = `${mirror.kind} ${method}`;
+        const step = () => outcome(() => Reflect.apply(mirror.copy[method], mirror.copy, args.map((arg) => counterpartOf(mirror, arg))));
+        if (mirror.kind === 'generator') {
+          compareOutcomes(label, mirror.key, real, step(), null, (r, c) => linkStep(mirror, r, c));
+        } else {
+          record({ awaiting: 1 });
+          const realSettled = settled(real);
+          mirror.steps = mirror.steps.then(async () => {
+            const copy = await settled(step());
+            const r = await realSettled;
+            linkStep(mirror, r, copy);
+            compare(label, mirror.key, r, copy, null);
+            record({ awaiting: -1 });
           });
         }
         return forward(real);
@@ -165,24 +172,21 @@ for (const prototype of [Object.getPrototypeOf(function* () {}).prototype, Objec
 }
 
 /**
- * The generator function the program gets: callable as the native one is
- * (not a constructor), with its name, length, prototype and [[Prototype]],
- * so its objects are the native ones; each is mirrored.
+ * The generator function the program gets: the native one behind a Proxy
+ * that only intercepts calls, so its name, length, prototype (live, if the
+ * program replaces it), [[Prototype]] and refusal to construct are the
+ * native function's own, and its objects are native ones, each mirrored.
  */
 function shadowedGenerator(kind, key, native, interpreted) {
-  const shadow = {
-    [native.name](...args) {
-      const real = outcome(() => Reflect.apply(native, this, args));
-      const copy = outcome(() => Reflect.apply(interpreted, this, args));
-      if (real.ok && copy.ok) mirrors.set(real.value, { kind, key, copy: copy.value, counterparts: new WeakMap() });
+  return new Proxy(native, {
+    apply(target, receiver, args) {
+      const real = outcome(() => Reflect.apply(target, receiver, args));
+      const copy = outcome(() => Reflect.apply(interpreted, receiver, args));
+      if (real.ok && copy.ok) mirrors.set(real.value, { kind, key, copy: copy.value, counterparts: new WeakMap(), steps: Promise.resolve() });
       else compare(kind, key, real, copy, null);
       return forward(real);
     },
-  }[native.name];
-  Object.defineProperty(shadow, 'length', { value: native.length });
-  Object.defineProperty(shadow, 'prototype', { value: native.prototype, writable: true });
-  Object.setPrototypeOf(shadow, Object.getPrototypeOf(native));
-  return shadow;
+  });
 }
 
 const SSR_KEYS = ['__vite_ssr_exports__', '__vite_ssr_import_meta__', '__vite_ssr_import__', '__vite_ssr_dynamic_import__', '__vite_ssr_exportAll__', '__vite_ssr_exportName__'];
@@ -211,23 +215,17 @@ function shadowed(kind, native, interpreted, params, key) {
   }
   if (kind === 'async') {
     return async function (...args) {
-      const inputs = [this, ...args];
-      const before = inputs.map(snapshot);
       const real = await settled(outcome(() => Reflect.apply(native, this, args)));
-      if (!changedInputs('async', key, inputs, before)) compare('async', key, real, await settled(outcome(() => Reflect.apply(interpreted, this, args))), null);
+      compare('async', key, real, await settled(outcome(() => Reflect.apply(interpreted, this, args))), null);
       return forward(real);
     };
   }
   if (kind === 'generator' || kind === 'asyncGenerator') return shadowedGenerator(kind, key, native, interpreted);
   // An ordinary function: called, or constructed with `new`, both ways.
   return function (...args) {
-    const constructing = new.target !== undefined;
-    const label = constructing ? 'construct' : 'function';
-    const inputs = constructing ? args : [this, ...args];
-    const before = inputs.map(snapshot);
-    const run = (fn) => outcome(() => (constructing ? Reflect.construct(fn, args, new.target) : Reflect.apply(fn, this, args)));
+    const run = (fn) => outcome(() => (new.target === undefined ? Reflect.apply(fn, this, args) : Reflect.construct(fn, args, new.target)));
     const real = run(native);
-    if (!changedInputs(label, key, inputs, before)) compareOutcomes(label, key, real, run(interpreted));
+    compareOutcomes(new.target === undefined ? 'function' : 'construct', key, real, run(interpreted));
     return forward(real);
   };
 }
