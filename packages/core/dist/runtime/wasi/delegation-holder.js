@@ -314,8 +314,17 @@ export function delegationHolder(options) {
     };
     /** Whether directory `key` was made here, and the store knows nothing of it: its names are the ones made in it. */
     const madeHere = (key) => decided.get(key)?.type === 'directory' && !store.entry(key);
-    const entryOf = (key) => {
+    /** This process's own word on `key`: what it decided, or absent for a name not made in a directory it made. */
+    const ownEntry = (key) => {
         const own = decided.get(key);
+        if (own !== undefined)
+            return own;
+        // A directory made here has no names but the ones made in it.
+        const dir = parentKey(key);
+        return key !== '' && madeHere(dir) && !added.get(dir)?.has(nameOf(key)) ? null : undefined;
+    };
+    const entryOf = (key) => {
+        const own = ownEntry(key);
         return own !== undefined ? own : store.entry(key);
     };
     /** The ownership a new name under `parent` takes: the process's, with a setgid directory's group. */
@@ -434,14 +443,7 @@ export function delegationHolder(options) {
             : { ...entry, atime: attrs.atime, mtime: attrs.mtime, ctime: now() });
     const holder = {
         client,
-        entry: (key) => {
-            const own = decided.get(key);
-            if (own !== undefined)
-                return own;
-            // A directory made here has no names but the ones made in it.
-            const dir = parentKey(key);
-            return key !== '' && madeHere(dir) && !added.get(dir)?.has(nameOf(key)) ? null : undefined;
-        },
+        entry: (key) => ownEntry(key),
         children: (key, base) => {
             const made = added.get(key);
             const gone = removed.get(key);
