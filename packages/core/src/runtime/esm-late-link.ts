@@ -15,6 +15,7 @@
 
 import type { ModuleRequests } from '../interpreter/index.js';
 import { cjsModuleExportNames } from './cjs-module-exports.js';
+import { dataModule } from './esm-loader-policy.js';
 
 /** What the loader resolves a static import to. */
 export interface LateResolution {
@@ -233,15 +234,22 @@ export function starConflicts(host: LateLinkHost, url: string): string[] {
   return names.filter((name) => resolveExport(host, late, target, name, new Set()) === AMBIGUOUS);
 }
 
+/**
+ * Plans the late module at `url` (a file's at `key`; a data: URL's is its
+ * URL): its static imports' modules, their names, and the staged rows it
+ * reaches, into `late` and `order`.
+ */
 function plan(host: LateLinkHost, key: string, url: string, seen: Set<string>, order: number[], checked: Set<number>, late: LateGraph): void {
   if (seen.has(url)) return;
   seen.add(url);
-  const staged = host.row('module', key);
-  const text = host.source(key, staged);
+  // A data: URL's module is its body, an ES module (its MIME type's goal): no row, no file.
+  const data = url.startsWith('data:') ? dataModule(url) : null;
+  const staged = data !== null ? -1 : host.row('module', key);
+  const text = data !== null ? (data.format === 'module' ? data.source : null) : host.source(key, staged);
   if (text === null) return;
   // Read with the parse goal the loader gives it: an adopted staged module's, a module; another's, its format.
-  const format = staged !== -1 ? 'module' : host.fileFormat(key);
-  const analysis = host.requests(key, text, staged !== -1, format ?? 'detect');
+  const format = staged !== -1 || data !== null ? 'module' : host.fileFormat(key);
+  const analysis = host.requests(key, text, staged !== -1 || data !== null, format ?? 'detect');
   // A module its parser could not read (a syntax error, TypeScript, JSX) is
   // loaded as the interpreter loads it, for that load's error, before any
   // body runs; a staged one is the launch's own to link.
@@ -278,6 +286,11 @@ function plan(host: LateLinkHost, key: string, url: string, seen: Set<string>, o
         if (entry[1] === at) node.reexports.push([entry[0], loads, entry[2]]);
       }
     }
+    // A data: JavaScript module is the late graph's own, by its URL.
+    if (resolution.format === 'data') {
+      plan(host, resolution.url, resolution.url, seen, order, checked, late);
+      continue;
+    }
     if (resolution.path === undefined) continue;
     const target = resolution.path.replace(/^\/+/, '');
     const { search, hash } = new URL(resolution.url);
@@ -297,6 +310,11 @@ function lateTarget(host: LateLinkHost, resolution: LateResolution): LateTarget 
   if (resolution.format === 'builtin' && resolution.builtin !== undefined) {
     const id = host.row('builtin', resolution.builtin);
     return id !== -1 ? { row: id } : { url: resolution.url, names: host.builtinNames(resolution.builtin), commonjs: false };
+  }
+  // A data: module, by its MIME type: JavaScript a late module of its own; JSON its default alone.
+  if (resolution.format === 'data') {
+    const { format } = dataModule(resolution.url);
+    return format === 'module' ? { url: resolution.url } : format === 'json' ? { url: resolution.url, names: ['default'], commonjs: false } : null;
   }
   if (resolution.path === undefined) return null;
   const key = resolution.path.replace(/^\/+/, '');
@@ -334,8 +352,10 @@ function checkLinks(host: LateLinkHost, id: number, seen: Set<string>, checked: 
       const missing = host.missing(-2 - target);
       if (missing === null) continue;
       if ('refusal' in missing) throw missing.refusal;
+      // A query's or a fragment's file by its path; a data: module by its URL.
       const handed = new URL(missing.handedOn);
-      plan(host, decodeURIComponent(handed.pathname).replace(/^\/+/, ''), missing.handedOn, seen, [], checked, late);
+      const key = handed.protocol === 'data:' ? missing.handedOn : decodeURIComponent(handed.pathname).replace(/^\/+/, '');
+      plan(host, key, missing.handedOn, seen, [], checked, late);
     }
   };
   visit(id);

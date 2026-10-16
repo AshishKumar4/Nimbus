@@ -37,13 +37,14 @@ import { bindingIdentifiers } from './binding-pattern.js';
 /** The CommonJS exports object marked as an ES module's; answers the function that installs an export's getter. */
 export const ESM_EXPORTS_HELPER = '(() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; '
   + 'return (exports) => { O.defineProperty(exports, "__esModule", { value: true, configurable: true }); O.defineProperty(exports, tag, { value: "Module" }); '
-  + 'return (name, get) => O.defineProperty(exports, name, { enumerable: true, get }); }; })()';
+  + 'return (name, get) => O.defineProperty(exports, name, { enumerable: true, configurable: false, get }); }; })()';
 
 /**
  * `export *`: each name of the module but `default`, those already exported
- * and those `omitted` (ESM_CONFLICTS_HELPER's), read through.
+ * (enumerable: the `__esModule` marker is not, and a star replaces it as an
+ * export would) and those `omitted` (ESM_CONFLICTS_HELPER's), read through.
  */
-export const ESM_STAR_HELPER = '(exports, define, m, omitted) => { for (const k in m) { if (k === "default" || ({}).hasOwnProperty.call(exports, k)) continue; '
+export const ESM_STAR_HELPER = '(exports, define, m, omitted) => { for (const k in m) { if (k === "default" || ({}).propertyIsEnumerable.call(exports, k)) continue; '
   + 'let left = false; for (let i = 0; omitted && i < omitted.length; i++) if (omitted[i] === k) left = true; if (!left) define(k, () => m[k]); } }';
 
 /** What a module's require is passed for the names its `export *`s reach two different bindings of. */

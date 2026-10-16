@@ -61,6 +61,40 @@ out.dataStrict = await outcome(async () => {
 writeFileSync('own.mjs', 'export const __esModule = false; export const b = 2;\\n');
 out.ownEsModule = await outcome(async () => keys(await import('./own.mjs')));
 out.dataEsModule = await outcome(async () => keys(await import('data:text/javascript,export const __esModule = 7; export default 1')));
+// Through export *, and a static namespace import, whose own export no delete removes.
+writeFileSync('star.mjs', "export * from './own.mjs';\\n");
+out.starEsModule = await outcome(async () => keys(await import('./star.mjs')));
+writeFileSync('ns-user.mjs', "import * as ns from './own.mjs';\\nexport default [Reflect.deleteProperty(ns, '__esModule'), ns.__esModule];\\n");
+out.deleteEsModule = await outcome(async () => (await import('./ns-user.mjs')).default);
+
+// A static import of a data: module: one that exports \`then\`; a name it does not export (no body runs; JSON's too);
+// a cycle through a file back to it (it runs once); and one that throws, imported twice (it runs once).
+writeFileSync('then-user.mjs', "import { value } from 'data:text/javascript,export function then() {} export const value = 1';\\nexport default value;\\n");
+out.thenExport = await outcome(async () => (await import('./then-user.mjs')).default);
+const named = async (file, text) => {
+  writeFileSync(file, text);
+  try { await import('./' + file); return 'loaded'; } catch (e) { return e?.constructor?.name; }
+};
+out.missingName = [await named('missing.mjs', "globalThis.missingRan = true;\\nimport { nope } from 'data:text/javascript,export const present = 1';\\n"), globalThis.missingRan ?? false];
+out.missingJsonName = [await named('missing-json.mjs', "globalThis.jsonRan = true;\\nimport { a } from 'data:application/json,{\\"a\\":1}' with { type: 'json' };\\n"), globalThis.jsonRan ?? false];
+const back = pathToFileURL(process.cwd() + '/back.mjs').href;
+const cyclic = 'data:text/javascript,' + encodeURIComponent('import b from ' + JSON.stringify(back) + '; globalThis.dataRuns = (globalThis.dataRuns ?? 0) + 1; export default "data:" + b;');
+writeFileSync('back.mjs', 'import d from ' + JSON.stringify(cyclic) + ';\\nexport default "back";\\n');
+out.cycle = await outcome(async () => [(await import(cyclic)).default, (await import('./back.mjs')).default, globalThis.dataRuns]);
+const throwing = 'data:text/javascript,globalThis.throwRuns = (globalThis.throwRuns ?? 0) + 1; throw new Error("thrown")';
+out.throwsOnce = [await outcome(() => import(throwing)), await outcome(() => import(throwing)), globalThis.throwRuns];
+
+// A runtime-written module imported while String.prototype.charCodeAt is not the built-in.
+mkdirSync('cc', { recursive: true });
+writeFileSync('cc/dep.mjs', "export default 'charCodeAt-proof';\\n");
+writeFileSync('cc/main.cjs', "module.exports = import('./dep.mjs').then((m) => m.default);\\n");
+const charCodeAt = String.prototype.charCodeAt;
+String.prototype.charCodeAt = function (index) { return charCodeAt.call(this, index) ^ 1; };
+try {
+  out.charCodeAt = await outcome(async () => await (await import(pathToFileURL(process.cwd() + '/cc/main.cjs').href)).default);
+} finally {
+  String.prototype.charCodeAt = charCodeAt;
+}
 
 // A typeless .js that redeclares a wrapper parameter: an ES module.
 writeFileSync('det.js', 'const require = 1; globalThis.detStrict = (function(){return this})()===undefined; globalThis.detRequire = require;\\n');
@@ -107,6 +141,14 @@ assert.deepEqual(expected, {
   dataStrict: true,
   ownEsModule: [['__esModule', 'b'], false],
   dataEsModule: [['__esModule', 'default'], 7],
+  starEsModule: [['__esModule', 'b'], false],
+  deleteEsModule: [false, false],
+  thenExport: 1,
+  missingName: ['SyntaxError', false],
+  missingJsonName: ['SyntaxError', false],
+  cycle: ['data:back', 'back', 1],
+  throwsOnce: [['threw', 'Error', 'thrown'], ['threw', 'Error', 'thrown'], 1],
+  charCodeAt: 'charCodeAt-proof',
   detected: [true, 1],
   hashDirectory: 'beside',
   hashMeta: '<cwd>/a%23b/meta.mjs',
