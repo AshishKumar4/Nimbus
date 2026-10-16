@@ -17,9 +17,9 @@
 //
 // Black-box surfaces only. NO _diag.
 
-import { mintSession, Terminal, makeAsserter, sleep, BASE } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter, BASE } from './_driver.mjs';
 import {
-  launchBrowser, openPage,
+  launchBrowser, openPage, previewServed,
   RUNTIME_ERROR_MARKERS, bodyTextHasErrorMarker,
 } from './_runtime-behavioral-template.mjs';
 
@@ -75,9 +75,7 @@ let homeText = '';
 let runtimeErrors = [];
 
 if (viteReady) {
-  // Bounded settle for port-registry registration (matches pattern
-  // used in scaffoldAndStartVite helper).
-  await sleep(2_000);
+  a.check('the dev server serves the preview', await previewServed(sid), 'the preview never mounted the project page within 30 s');
 
   console.log('[end-to-end-workflow] launching headless Chrome...');
   const browser = await launchBrowser();

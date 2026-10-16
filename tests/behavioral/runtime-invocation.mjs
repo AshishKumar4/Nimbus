@@ -83,9 +83,6 @@ try {
 }
 a.check('node server.cjs produced started-marker (LISTENING or [started (long-running)])', serverStarted);
 
-// Wait briefly for OS-level bind on the port.
-await sleep(1_500);
-
 // 3a. /s/<sid>/port/<n>/ proxy for this non-watch invocation is not
 //    part of the supported contract. Explicit long-running Node servers
 //    use `node --watch` and are asserted by
@@ -123,9 +120,7 @@ await sleep(1_500);
 //    sequential short scripts BOTH appear in ps.
 {
   await t.run('node -e "console.log(\'inv-A\')"', 30_000);
-  await sleep(300);
   await t.run('node -e "console.log(\'inv-B\')"', 30_000);
-  await sleep(300);
   const r = await t.run('ps', 15_000);
   const pids = [...r.output.matchAll(/^\s*(\d+)\s+/gm)].map((m) => m[1]);
   const distinctPids = new Set(pids);

@@ -16,7 +16,7 @@
 //
 // Black-box only. NO _diag.
 
-import { mintSession, Terminal, makeAsserter, sleep, stripAnsi } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('honest-install-message');
@@ -47,8 +47,7 @@ await t.waitForPrompt(60_000);
 // Wait for the FINAL summary line to render — `Done!` may print first
 // (uncoloured) but the colour-tagged "added" line is what we assert
 // on. Wait for either green-shape OR yellow-shape OR an explicit
-// failure marker, then a small grace period so the prompt redraw
-// settles.
+// failure marker, then for the command's end.
 let rawTail = '';
 {
   await t.run('cd /home/user/Markflow', 5_000);
@@ -61,7 +60,8 @@ let rawTail = '';
     300_000,
     'install summary line',
   );
-  await sleep(2_000);
+  // The command's own end, so nothing it prints is still on its way.
+  await t.waitForPrompt(60_000);
   rawTail = t.buf;  // raw (ANSI-preserved)
   console.log(`  install completed; raw output ${rawTail.length} bytes`);
 }

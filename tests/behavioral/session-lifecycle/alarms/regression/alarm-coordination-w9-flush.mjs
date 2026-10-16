@@ -11,7 +11,7 @@
 // a flush. We measure this via hib.flushCount which increments on every
 // processLogs.flush() that has dirty data.
 
-import { mintSession, Terminal, sleep, makeAsserter, BASE } from '../../../_driver.mjs';
+import { mintSession, Terminal, readUntil, makeAsserter, BASE } from '../../../_driver.mjs';
 import { diagMemory } from '../../../heap-correctness/_diag.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -44,12 +44,8 @@ a.check('node command produced flush-marker output',
   /flush-marker/.test(output),
   `output=${JSON.stringify(output.slice(-200))}`);
 
-// Give W9 debounce window (250ms) + a comfortable margin for the
-// in-isolate setTimeout fire + flush.
-await sleep(2000);
-
-const m1 = await diagMemory(sid);
-const F1 = m1?.hib?.flushCount ?? 0;
+// The W9 flush runs after its 250 ms debounce: read the count until it does, at most 10 s.
+const F1 = await readUntil(async () => (await diagMemory(sid))?.hib?.flushCount ?? 0, (count) => count > F0, 10_000);
 console.log(`[post-exit] flushCount=${F1}`);
 
 a.check('W9 flush ran after facet exit (flushCount incremented)',

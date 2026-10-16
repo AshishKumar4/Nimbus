@@ -8,7 +8,7 @@
 // Total event COUNT should still reflect every write (100 events
 // across the frames).
 
-import { mintSession, sleep, makeAsserter, BASE, WS_BASE, wsHeaders } from '../../_driver.mjs';
+import { mintSession, sleep, readUntil, makeAsserter, BASE, WS_BASE, wsHeaders } from '../../_driver.mjs';
 import WebSocket from 'ws';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -64,25 +64,26 @@ a.check('100 fs-write protocol calls completed',
   driverResponses.size === 100,
   `responses=${driverResponses.size}`);
 
-// Wait up to 2 s for the trailing frame to land.
-await sleep(2000);
-
-const newFrames = received.slice(before);
-const allEvents = newFrames.flatMap((f) => Array.isArray(f.events) ? f.events : []);
-// Filter to events for our tagged files (the shell wrapper may emit
-// a few unrelated events for prompt-state etc.).
-const ourEvents = allEvents.filter((ev) =>
+// Events for our tagged files (the shell wrapper may emit a few unrelated
+// events for prompt-state etc.), in the frames since the burst began.
+const newFrames = () => received.slice(before);
+const allEvents = () => newFrames().flatMap((f) => Array.isArray(f.events) ? f.events : []);
+const ourEvents = () => allEvents().filter((ev) =>
   ev && typeof ev.path === 'string' && ev.path.includes(tag + '-'));
+// The trailing frame lands within 10 s: then every write has its event.
+await readUntil(() => ourEvents().length, (count) => count >= 100, 10_000);
 
-console.log(`[fs-watch-coalesces] frames=${newFrames.length} totalEvents=${allEvents.length} ourEvents=${ourEvents.length}`);
+const frames = newFrames().length;
+const ours = ourEvents().length;
+console.log(`[fs-watch-coalesces] frames=${frames} totalEvents=${allEvents().length} ourEvents=${ours}`);
 
 a.check('frames ≤ 10 (coalescing absorbed the burst)',
-  newFrames.length <= 10,
-  `frames=${newFrames.length} (allow up to 10 — typical 1-3)`);
+  frames <= 10,
+  `frames=${frames} (allow up to 10 — typical 1-3)`);
 
 a.check('our 100 writes produced ≥ 100 events across the frames',
-  ourEvents.length >= 100,
-  `ourEvents=${ourEvents.length} (expected ≥ 100)`);
+  ours >= 100,
+  `ourEvents=${ours} (expected ≥ 100)`);
 
 try { subWs.close(); } catch {}
 try { driverWs.close(); } catch {}
