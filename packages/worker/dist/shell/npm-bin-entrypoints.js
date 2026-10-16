@@ -8,12 +8,9 @@ import { firstPositional, isNonInteractiveArg, knownServerBin } from '../facets/
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { resolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { runtimeInstallHint } from '@nimbus-sh/core/shell/exec-dispatch.js';
 import { z } from 'zod/v4';
 import { classifyOpenCodeInvocation, buildOpenCodeTransportPlan } from '../runtime/opencode-invocation.js';
-/** Whether `command` is the stub a known runtime that is not installed resolves to: no registered command. */
-export function isRuntimeInstallHint(command) {
-    return '__nimbusRuntimeInstallHint' in command && command.__nimbusRuntimeInstallHint === true;
-}
 const NpmBinPackageMetadataSchema = z.object({
     name: z.string().optional(),
     version: z.string().optional(),
@@ -71,13 +68,12 @@ export function installNpmBinFallbackResolver(registry, deps) {
             }
             if (!hint)
                 return undefined;
-            const hintHandler = async (ctx) => {
+            const installSpec = hint.installSpec;
+            return runtimeInstallHint(async (ctx) => {
                 ctx.stderr.write(`${name}: command not found\n`);
-                ctx.stderr.write(`hint: install it with: nimbus install ${hint.installSpec}\n`);
+                ctx.stderr.write(`hint: install it with: nimbus install ${installSpec}\n`);
                 return 127;
-            };
-            hintHandler.__nimbusRuntimeInstallHint = true;
-            return hintHandler;
+            });
         }
         return binHandler(name, async (vfs) => await resolveNpmBin(vfs, cwd, name), false);
     };

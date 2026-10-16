@@ -102,6 +102,19 @@ const openFlagsArg = (value) => {
     }
     return value.mode === undefined ? flags : { ...flags, mode: modeArg(value.mode) };
 };
+/** A chown side: a uid or gid, or null, which keeps the file's. */
+const ownerArg = (value) => {
+    if (value === null)
+        return null;
+    if (!Number.isSafeInteger(value) || typeof value !== 'number' || value < 0 || value > 0xffffffff)
+        throw refused('owner that is not an id');
+    return value;
+};
+const flagArg = (value) => {
+    if (typeof value !== 'boolean')
+        throw refused('flag that is not a boolean');
+    return value;
+};
 const portArg = (value) => {
     if (!Number.isSafeInteger(value) || typeof value !== 'number' || value < 0 || value > 65535)
         throw refused('port that is not one');
@@ -109,7 +122,7 @@ const portArg = (value) => {
 };
 /** NodeFilesystem's `method` on `args`, each checked to be of its kind: only these, never one the object inherits. */
 function callFilesystem(fs, method, args) {
-    const [a, b, c] = args;
+    const [a, b, c, d] = args;
     switch (method) {
         case 'readFile': return fs.readFile(pathArg(a));
         case 'readFileString': return fs.readFileString(pathArg(a));
@@ -129,10 +142,12 @@ function callFilesystem(fs, method, args) {
         case 'rename': return fs.rename(pathArg(a), pathArg(b));
         case 'copyFile': return fs.copyFile(pathArg(a), pathArg(b));
         case 'chmod': return fs.chmod(pathArg(a), modeArg(b));
+        case 'chown': return fs.chown(pathArg(a), ownerArg(b), ownerArg(c), flagArg(d));
         case 'open': return fs.open(pathArg(a), openFlagsArg(b));
         case 'read': return fs.read(fdArg(a), positionArg(b), sizeArg(c));
         case 'write': return fs.write(fdArg(a), positionArg(b), bytesArg(c));
         case 'fstat': return fs.fstat(fdArg(a));
+        case 'fchown': return fs.fchown(fdArg(a), ownerArg(b), ownerArg(c));
         case 'ftruncate': return fs.ftruncate(fdArg(a), sizeArg(b));
         case 'fsync': return fs.fsync(fdArg(a));
         case 'close': return fs.close(fdArg(a));
@@ -160,6 +175,12 @@ async function performCall(call, services) {
             if (!Number.isSafeInteger(call.mask) || typeof call.mask !== 'number' || call.mask < 0 || call.mask > 0o777)
                 throw refused('mask that is not one');
             return services.setUmask(call.mask);
+        }
+        case 'settle': {
+            if (typeof call.round !== 'number' || typeof call.after !== 'number' || typeof call.upTo !== 'number'
+                || !Number.isSafeInteger(call.round) || !Number.isSafeInteger(call.after) || !Number.isSafeInteger(call.upTo))
+                throw refused('settle without its round and write numbers');
+            return services.settle(call.round, call.after, call.upTo);
         }
         case 'fdKind': {
             if (call.fd !== 0 && call.fd !== 1 && call.fd !== 2)
@@ -215,7 +236,17 @@ export async function runNodeInRealm(program, ctx, kernel) {
     let lastQueued = 0;
     let lastSettled = 0;
     let settleUpTo = 0;
+    // The writes a program's 'beforeExit' listeners make are settled by a call
+    // (settle), which may come before their events: the failures after the
+    // guest's mark are kept for it, and it waits for the writes it names.
+    let marked = null;
+    let answeredRound = 0;
+    const settleCalls = [];
     const settled = () => {
+        for (const call of settleCalls.filter((waiting) => waiting.upTo <= lastSettled)) {
+            settleCalls.splice(settleCalls.indexOf(call), 1);
+            call.resolve();
+        }
         if (settleUpTo === 0 || lastSettled < settleUpTo)
             return;
         settleUpTo = 0;
@@ -239,10 +270,14 @@ export async function runNodeInRealm(program, ctx, kernel) {
             }
             catch (error) {
                 const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
-                const failure = { fd, code: typeof code === 'string' ? code : 'EIO', pipe: ctx.isFdPipe?.(fd) === true, source, writer };
+                const failure = { seq, fd, code: typeof code === 'string' ? code : 'EIO', pipe: ctx.isFdPipe?.(fd) === true, source, writer };
                 if (flight !== undefined && !flight.heard)
                     unheard.push(failure);
-                post({ type: 'output-failed', ...failure });
+                // One a 'beforeExit' listener made is told by the settle call's answer, not as an event the guest's loop would run again for.
+                if (marked !== null && seq > marked.after)
+                    marked.failures.push(failure);
+                else
+                    post({ type: 'output-failed', ...failure });
             }
             if (flight !== undefined && --flight.pending === 0)
                 inFlight[fd].delete(writer);
@@ -352,6 +387,14 @@ export async function runNodeInRealm(program, ctx, kernel) {
                 kernel?.portRegistry.delete(port);
         },
         setUmask: (next) => { mask = next; },
+        settle: async (round, after, upTo) => {
+            if (lastSettled < upTo)
+                await new Promise((resolve) => { settleCalls.push({ upTo, resolve }); });
+            answeredRound = round;
+            const failures = marked !== null && marked.round === round ? marked.failures.filter((failure) => failure.seq > after && failure.seq <= upTo) : [];
+            marked = null;
+            return failures;
+        },
         watch: (id, path) => {
             watches.get(id)?.close();
             watches.delete(id);
@@ -388,6 +431,11 @@ export async function runNodeInRealm(program, ctx, kernel) {
                 case 'settle':
                     settleUpTo = event.upTo;
                     settled();
+                    return;
+                case 'settle-mark':
+                    // A mark whose round its call has answered already (the call came first, its writes none) keeps nothing.
+                    if (event.round > answeredRound)
+                        marked = { round: event.round, after: event.after, failures: [] };
                     return;
                 case 'exit':
                     code = event.code;

@@ -78,7 +78,8 @@ function compile(patterns: string[], syntax: Syntax, ignoreCase: boolean, word: 
 
 interface Options {
   patterns: string[] | null;
-  patternFiles: string[];
+  /** -f's and --exclude-from's files, in command-line order: each read in turn once the options are. */
+  files: { readonly kind: 'patterns' | 'exclude'; readonly file: string }[];
   syntax: Syntax;
   ignoreCase: boolean;
   invert: boolean;
@@ -106,6 +107,8 @@ interface Options {
   followLinks: boolean;
   include: string[];
   exclude: string[];
+  /** Globs that exclude only what a recursion finds: stdin's (--exclude-from=-), see below. */
+  excludeWalked: string[];
   excludeDir: string[];
   nullData: boolean;
   operands: string[];
@@ -143,11 +146,11 @@ function contextCount(value: string): number {
 
 function parseArgs(args: string[]): Options {
   const o: Options = {
-    patterns: null, patternFiles: [], syntax: 'G', ignoreCase: false, invert: false, word: false, whole: false,
+    patterns: null, files: [], syntax: 'G', ignoreCase: false, invert: false, word: false, whole: false,
     count: false, filesWith: false, filesWithout: false, max: Infinity, onlyMatching: false, quiet: false,
     noMessages: false, byteOffset: false, withName: null, label: '(standard input)', lineNumber: false,
     initialTab: false, nullName: false, after: 0, before: 0, contextGiven: false, groupSeparator: '--',
-    binaryFiles: 'binary', directories: 'read', followLinks: false, include: [], exclude: [], excludeDir: [],
+    binaryFiles: 'binary', directories: 'read', followLinks: false, include: [], exclude: [], excludeWalked: [], excludeDir: [],
     nullData: false, operands: [],
   };
   let after: number | null = null;
@@ -160,7 +163,7 @@ function parseArgs(args: string[]): Options {
       case 'G': o.syntax = 'G'; break;
       case 'P': o.syntax = 'P'; break;
       case 'e': (o.patterns ??= []).push(...value.split('\n')); break;
-      case 'f': o.patternFiles.push(value); (o.patterns ??= []); break;
+      case 'f': o.files.push({ kind: 'patterns', file: value }); (o.patterns ??= []); break;
       case 'i': case 'y': o.ignoreCase = true; break;
       case 'no-ignore-case': o.ignoreCase = false; break;
       case 'w': o.word = true; break;
@@ -197,6 +200,7 @@ function parseArgs(args: string[]): Options {
       case 'R': o.directories = 'recurse'; o.followLinks = true; break;
       case 'include': o.include.push(value); break;
       case 'exclude': o.exclude.push(value); break;
+      case 'exclude-from': o.files.push({ kind: 'exclude', file: value }); break;
       case 'exclude-dir': o.excludeDir.push(value); break;
       case 'L': o.filesWithout = true; o.filesWith = false; break;
       case 'l': o.filesWith = true; o.filesWithout = false; break;
@@ -260,19 +264,28 @@ export async function runGrep(ctx: GrepContext): Promise<number> {
     }
     o.patterns = first.split('\n');
   }
-  for (const file of o.patternFiles) {
+  // As GNU's grep reads each while it takes its option: in command-line
+  // order, stdin going to the first that names it, and the first that
+  // cannot be read the one said.
+  for (const { kind, file } of o.files) {
+    let text: string;
     try {
-      let bytes: Uint8Array;
-      if (file === '-') {
-        bytes = await readAllInput(ctx, '-');
-      } else {
-        bytes = await ctx.vfs.readFile(resolve(ctx.cwd, file));
-      }
-      const text = utf8.decode(bytes);
-      if (text !== '') o.patterns.push(...text.replace(/\n$/, '').split('\n'));
+      text = utf8.decode(file === '-' ? await readAllInput(ctx, '-') : await ctx.vfs.readFile(resolve(ctx.cwd, file)));
     } catch (error) {
       await ctx.stderr.write(`grep: ${file}: ${errorText(error)}\n`);
       return 2;
+    }
+    if (kind === 'patterns') {
+      if (text !== '') o.patterns.push(...text.replace(/\n$/, '').split('\n'));
+      continue;
+    }
+    // As gnulib's add_exclude_file: a line, less its trailing C isspace
+    // bytes, is a glob; a blank one is none. GNU's grep reads the file once
+    // for what a recursion finds and again for the command line's operands:
+    // stdin is at its end the second time, so its globs exclude only the former.
+    for (const line of text.split('\n')) {
+      const glob = line.replace(/[ \t\n\v\f\r]+$/, '');
+      if (glob !== '') (file === '-' ? o.excludeWalked : o.exclude).push(glob);
     }
   }
 
@@ -463,7 +476,7 @@ export async function runGrep(ctx: GrepContext): Promise<number> {
     return patterns.some((glob) => fnmatch(glob, base) || fnmatch(glob, path));
   };
   const included = (path: string): boolean => {
-    if (excluded(path, o.exclude)) return false;
+    if (excluded(path, o.exclude) || excluded(path, o.excludeWalked)) return false;
     if (o.include.length === 0) return true;
     const base = path.slice(path.lastIndexOf('/') + 1);
     return o.include.some((glob) => fnmatch(glob, base));

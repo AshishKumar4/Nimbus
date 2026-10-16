@@ -4450,14 +4450,6 @@ const __fsMod = (() => {
     await _structuralAsync(queue, syscall, p, judged, walked);
   }
 
-  // A chown side: -1 keeps what the file has, as Node's chown says, which the
-  // session makes in the same change (null).
-  function _coerceId(value, syscall, p) {
-    const id = Number(value);
-    if (!Number.isInteger(id) || id < -1) throw _fsErr("EINVAL", syscall, p);
-    return id === -1 ? null : id;
-  }
-
   async function _chownAsync(p, uid, gid, opts, syscallOverride, fixed) {
     const syscall = syscallOverride || (opts && opts.followSymlinks === false ? "lchown" : "chown");
     const { walked, judged, queue } = _chownJudged(p, uid, gid, opts, syscall, true, fixed);
@@ -4477,8 +4469,9 @@ const __fsMod = (() => {
       if (!existsSync(p)) throw _fsErr("ENOENT", syscall, p);
       throw _fsErr("ENOSYS", syscall, p);
     }
-    const nextUid = _coerceId(uid, syscall, p);
-    const nextGid = _coerceId(gid, syscall, p);
+    // As Node reads them (nodeOwnerId, node-arguments.ts): -1 keeps what the file has, which the session keeps in the same change.
+    const nextUid = nodeOwnerId(uid, "uid");
+    const nextGid = nodeOwnerId(gid, "gid");
     const { target, sent, guarded, entry } = _attrTarget(p, followSymlinks, syscall, followSymlinks ? "fs.promises.chown" : "fs.promises.lchown", live, fixed);
     if (entry !== undefined && __nimbusResidentModule.chownRefusal(entry, nextUid, nextGid, _posixCred()) !== null) throw _fsErr("EPERM", syscall, p);
     return {
@@ -5377,8 +5370,9 @@ const __fsMod = (() => {
   function utimes(p, atime, mtime, cb) { _utimesAsync(p, atime, mtime).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
   function lutimes(p, atime, mtime, cb) { _utimesAsync(p, atime, mtime, { followSymlinks: false }).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
   function chmod(p, mode, cb) { _chmodAsync(p, mode).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
-  function chown(p, uid, gid, cb) { _chownAsync(p, uid, gid).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
-  function lchown(p, uid, gid, cb) { _chownAsync(p, uid, gid, { followSymlinks: false }).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
+  // The callback forms check their ids at once, as Node's do: a bad one throws, never calls back.
+  function chown(p, uid, gid, cb) { nodeOwnerId(uid, "uid"); nodeOwnerId(gid, "gid"); _chownAsync(p, uid, gid).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
+  function lchown(p, uid, gid, cb) { nodeOwnerId(uid, "uid"); nodeOwnerId(gid, "gid"); _chownAsync(p, uid, gid, { followSymlinks: false }).then(() => { if (cb) cb(null); }).catch((e) => { if (cb) cb(e); }); }
   function access(p, mode, cb) {
     if (typeof mode === "function") { cb = mode; mode = undefined; }
     _accessAsync(p, mode).then(() => cb(null)).catch((e) => cb(e));
@@ -6051,6 +6045,8 @@ const __fsMod = (() => {
     handle.chmod(mode).then(() => cb(null)).catch((e) => cb(e));
   }
   function fchown(fd, uid, gid, cb) {
+    nodeOwnerId(uid, "uid");
+    nodeOwnerId(gid, "gid");
     const handle = _fdFor(fd, "fchown", cb);
     if (!handle) return;
     handle.chown(uid, gid).then(() => cb(null)).catch((error) => cb(error));
