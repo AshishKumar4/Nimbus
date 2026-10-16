@@ -6,7 +6,8 @@
  */
 import type { Awaitable, RuntimeFsBridge, RuntimeVfsStat } from './os-contracts.js';
 import {
-  createNodePackageMapPolicy, DEFAULT_CJS_CONDITIONS, packageJsonText, packageSelfReferenceSubpath, resolutionError, selectPackageMap,
+  createNodePackageMapPolicy, DEFAULT_CJS_CONDITIONS, nativeResolutionError, packageJsonText, packageSelfReferenceSubpath, resolutionError,
+  selectPackageMap,
   resolvePackageEntry, type PackageMapPolicy, type PackageMapSteps, type ResolvablePackageJson, type SelfReferencingPackageJson,
 } from '../_shared/exports-resolver.js';
 import { TYPESCRIPT_INDEX_CANDIDATES, typescriptFallbackCandidates } from '../_shared/typescript-specifiers.js';
@@ -164,7 +165,7 @@ export function createRequireResolver(host: RequireResolverHost, options: Requir
     if (text === null) { state.configs.set(path, null); return null; }
     let pkg: unknown;
     try { pkg = JSON.parse(packageJsonText(text)); }
-    catch { throw error('ERR_INVALID_PACKAGE_CONFIG', 'Invalid package config ' + path + '.'); }
+    catch { throw nativeResolutionError('ERR_INVALID_PACKAGE_CONFIG', 'Invalid package config ' + path + '.'); }
     const config: PackageConfig = pkg !== null && typeof pkg === 'object' ? pkg as PackageConfig : {};
     state.configs.set(path, config);
     return config;
@@ -271,7 +272,8 @@ export function createRequireResolver(host: RequireResolverHost, options: Requir
       if (split.subpath !== '.') return new URL(split.subpath, fileUrl(pjsonPath));
       const found = yield* loadAsDirectory(dir, state);
       if (found) return fileUrl(found);
-      throw error('ERR_MODULE_NOT_FOUND', "Cannot find package '" + dir + "/index.js' imported from " + fromDir);
+      // legacyMainResolve's.
+      throw nativeResolutionError('ERR_MODULE_NOT_FOUND', "Cannot find package '" + dir + "/index.js' imported from " + fromDir);
     }
     throw error('ERR_MODULE_NOT_FOUND', "Cannot find package '" + split.name + "' imported from " + fromDir);
   }

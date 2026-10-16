@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 // A package resolution error with an ERR_* code is Node's internal error,
 // by require() and by import(): its class (Error or TypeError), its code,
-// and `Name [CODE]` heading its toString() and its stack. A module
-// require() does not find stays a plain Error whose code is
-// MODULE_NOT_FOUND, as Node's CJS loader makes it.
+// and `Name [CODE]` heading its toString() and its stack. Those Node 22
+// throws from C++ (a package.json it cannot parse, a main legacyMainResolve
+// does not find) are plain Errors with their code, as are a module require()
+// does not find, MODULE_NOT_FOUND.
 //
 // Red before: the resolvers attached the code to a plain Error or
 // TypeError, so String(error) and its stack read `Error: …` without it.
@@ -13,7 +14,7 @@
 // change to the resolvers.
 import { matchNodeInWorkerd } from './lib/node-differential.mjs';
 
-const CASES = ['pkg/missing', '#nope', 'badtarget', 'badconfig', '#seg/../x', 'missingmain'];
+const CASES = ['pkg/missing', '#nope', 'badtarget', 'badconfig', '#seg/../x', 'missingmain', 'badjson'];
 
 const files = {
   'package.json': JSON.stringify({ name: 'app', imports: { '#seg/*': './lib/*' } }),
@@ -28,6 +29,9 @@ const files = {
   'node_modules/badconfig/a.js': 'module.exports = 3;\n',
   // A main that names no file.
   'node_modules/missingmain/package.json': JSON.stringify({ name: 'missingmain', main: 'gone.js' }),
+  // A package.json that is not JSON.
+  'node_modules/badjson/package.json': '{ not json\n',
+  'node_modules/badjson/index.js': 'module.exports = 5;\n',
   'cases.cjs': `const head = (text) => String(text).split('\\n')[0].split(': ')[0];
 const show = (label, e) => console.log(label + '|' + e.constructor.name + '|' + (e instanceof TypeError) + '|' + e.code + '|' + head(String(e)) + '|' + head(e.stack));
 const ids = ${JSON.stringify(CASES)};
