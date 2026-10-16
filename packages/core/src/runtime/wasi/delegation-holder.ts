@@ -596,15 +596,24 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         const { uid, gid } = ownership(parent);
         const stamp = now();
         entry = { type: 'file', dev: store.device, ino: made, nlink: 1, size: bytes.byteLength, atime: stamp, mtime: stamp, ctime: stamp, mode: 0o100000 | mode, uid, gid, revision: 0, target: null };
-        note(parentKey(to), nameOf(to), 'file');
       } else {
         if (!modeAllows(target, 2, store.cred)) throw fsError('EACCES', 'copyfile', path);
         entry = { ...target, size: bytes.byteLength, mode: (target.mode & ~0o7777) | mode, mtime: now(), ctime: now() };
       }
       // After everything decided before it, the destination's own bytes among them.
       drain();
+      // Held here as an emptied file's written bytes are: in its cell (an
+      // O_TRUNC open keeps it), what more they take drawn from what the
+      // grant reserved (room); else the session copies.
+      const file: LocalFile = known !== undefined && known.through === undefined ? known : { key: to, bytes: new Uint8Array(0), length: 0, mode };
+      if (!room(file, bytes.byteLength)) return false;
+      file.bytes.set(bytes);
+      file.length = bytes.byteLength;
+      file.logged = bytes.byteLength;
+      file.mode = mode;
+      if (target === null) note(parentKey(to), nameOf(to), 'file');
       decided.set(to, entry);
-      files.set(entry.ino, { key: to, bytes: bytes.slice(), length: bytes.byteLength, mode, logged: bytes.byteLength });
+      files.set(entry.ino, file);
       const description = descriptionId();
       changes++;
       client.submit({ type: 'call', call: { call: 'open', path: to, mode: asked, ...(made === undefined ? {} : { ino: made, umask }), create: true, truncate: true, ...(keepMode ? { fchmod: mode } : {}), description } }, { acknowledged: true });
