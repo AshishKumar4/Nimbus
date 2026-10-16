@@ -56,6 +56,12 @@ export function telemetry({ account, tokenFile = OBSERVABILITY_TOKEN_FILE, reque
   if (!account || !existsSync(tokenFile)) return null;
   const token = readFileSync(tokenFile, 'utf8').trim();
   return {
+    /**
+     * @param {number} from
+     * @param {number} to
+     * @param {string[][]} filters  each [key, value, operation (default eq), type (default string)]
+     * @param {{ needle?: string, limit?: number }} [options]
+     */
     async query(from, to, filters, { needle, limit = 2000 } = {}) {
       const body = {
         queryId: 'remote-probes-attribution', timeframe: { from, to }, view: 'events', limit,
