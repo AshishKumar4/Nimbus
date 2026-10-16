@@ -32,6 +32,11 @@ function sessionText(e, path) {
   try { return e.authority.read(path.slice(1)); } catch { return undefined; }
 }
 
+/** Whether the session holds a name at `path` now, read as its own store reads it (no recall). */
+function sessionHas(e, path) {
+  try { e.authority.kfs.stat(path.slice(1)); return true; } catch { return false; }
+}
+
 /** The change `work` makes is answered with the session's waves stalled, and the session has it once they go. */
 async function decided(e, work, landed) {
   e.stall();
@@ -271,7 +276,7 @@ const SCENARIOS = {
     assert.equal((await e.peerStat(`${APP}/p/q`)).mode, 0o750);
     assert.equal((await e.peerStat(`${APP}/p/b.txt`)).mode, 0o600);
     assert.equal(await e.authority.peer.readlink(`${APP.slice(1)}/p/link`), 'b.txt');
-    assert.equal(await e.peerStat(`${APP}/p/empty`), null);
+    await until(() => !sessionHas(e, `${APP}/p/empty`), 'the session has the rmdir');
   },
   async 'a synchronous change is seen until the view has the session\'s, and the session\'s after'(e) {
     await e.fs.readdir(APP);
@@ -285,6 +290,25 @@ const SCENARIOS = {
     await until(() => sessionText(e, `${APP}/r.txt`) === 'THEIRS', 'the peer\'s write');
     e.fs.inbound?.();
     assert.equal(dec.decode(await e.fs.readFile(`${APP}/r.txt`)), 'THEIRS');
+  },
+
+  async 'what the session refused of a synchronous write is the next fsync\'s answer'(e) {
+    e.authority.kfs.mkdir(`${APP.slice(1)}/locked`, { mode: 0o755 });
+    await e.fs.readdir(APP);
+    await e.fs.readdir(`${APP}/locked`);
+    e.stall();
+    e.sync.writeFile(`${APP}/locked/x.txt`, enc.encode('X'));
+    // The session's directory changes before the write reaches it: it refuses it.
+    await e.authority.peer.chmod(`${APP.slice(1)}/locked`, 0o555);
+    await e.release();
+    const fd = e.sync.open(`${APP}/other.txt`, { write: true, create: true, truncate: true, mode: 0o644 }).id;
+    let refused;
+    await until(() => {
+      try { e.sync.fsync(fd); return false; } catch (error) { refused = error; return true; }
+    }, 'the refusal reported');
+    assert.equal(refused.code, 'EACCES', refused.message);
+    e.sync.close(fd);
+    assert.equal(sessionText(e, `${APP}/locked/x.txt`), undefined);
   },
 
   // ── Descriptors ────────────────────────────────────────────────────────

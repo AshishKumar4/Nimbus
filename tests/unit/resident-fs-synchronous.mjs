@@ -67,6 +67,18 @@ await runScenarios(import.meta.path, {
     await answersNow(e, 'realpath', () => sync.realpath(seed), 'EAGAIN');
     await answersNow(e, 'access', () => sync.access(seed, 4), 'EAGAIN');
     await answersNow(e, 'a read-only open', () => sync.open(seed, { read: true }), 'EAGAIN');
+    // A change in a directory the view has not listed: the session's to judge, before anything is decided.
+    const dir = `${APP}/dir`;
+    await answersNow(e, 'writeFile', () => sync.writeFile(`${dir}/new.txt`, enc.encode('N')), 'EAGAIN');
+    await answersNow(e, 'mkdir', () => sync.mkdir(`${dir}/sub`), 'EAGAIN');
+    await answersNow(e, 'mkdir -p', () => sync.mkdir(`${dir}/a/b`, { recursive: true }), 'EAGAIN');
+    await answersNow(e, 'unlink', () => sync.unlink(`${dir}/inner.txt`), 'EAGAIN');
+    await answersNow(e, 'rename', () => sync.rename(`${dir}/inner.txt`, `${dir}/moved.txt`), 'EAGAIN');
+    await answersNow(e, 'chmod', () => sync.chmod(`${dir}/inner.txt`, 0o600), 'EAGAIN');
+    await answersNow(e, 'symlink', () => sync.symlink('inner.txt', `${dir}/link`), 'EAGAIN');
+    await answersNow(e, 'rmdir', () => sync.rmdir(`${dir}/sub`), 'EAGAIN');
+    await answersNow(e, 'copyFile', () => sync.copyFile(`${dir}/inner.txt`, `${dir}/copy.txt`), 'EAGAIN');
+    await answersNow(e, 'a write open', () => sync.open(`${dir}/new.txt`, { write: true, create: true, truncate: true, mode: 0o644 }), 'EAGAIN');
     // Known (listed), its bytes not: the name answers, its content is not resident.
     assert.ok((await e.fs.readdir(APP)).some((entry) => entry.name === 'seed.txt'));
     assert.equal(stat(await answersNow(e, 'stat of a known name', () => sync.stat(seed))), 4);
