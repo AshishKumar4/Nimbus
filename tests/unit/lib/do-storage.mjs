@@ -45,7 +45,7 @@ export function memoryStorage({ rows = new Map(), crashable = false } = {}) {
     },
     // One key answers whether it was there; several, how many were.
     async delete(keyOrKeys) {
-      const keys = [keyOrKeys].flat();
+      const keys = [...new Set([keyOrKeys].flat())];
       const present = view();
       const had = keys.filter((key) => present.has(key)).length;
       commit(keys.map((key) => [key, { deleted: true }]));
