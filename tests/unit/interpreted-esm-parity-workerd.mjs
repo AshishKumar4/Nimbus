@@ -34,6 +34,9 @@ import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
 const FILES = {
   'node_modules/dpkg/package.json': JSON.stringify({ name: 'dpkg', version: '1.0.0', type: 'module', exports: './index.js' }),
   'node_modules/dpkg/index.js': "import five from 'data:text/javascript,export default 5';\nexport default five + 1;\n",
+  'staged-json.mjs': `globalThis.stagedJsonRan = true;
+import { a } from 'data:application/json,{"a":1}' with { type: 'json' };
+`,
   'staged.mjs': `import fortyOne from 'data:text/javascript,export default 41';
 import json from 'data:application/json,{"a":1}' with { type: 'json' };
 import six from 'dpkg';
@@ -81,6 +84,21 @@ const back = pathToFileURL(process.cwd() + '/back.mjs').href;
 const cyclic = 'data:text/javascript,' + encodeURIComponent('import b from ' + JSON.stringify(back) + '; globalThis.dataRuns = (globalThis.dataRuns ?? 0) + 1; export default "data:" + b;');
 writeFileSync('back.mjs', 'import d from ' + JSON.stringify(cyclic) + ';\\nexport default "back";\\n');
 out.cycle = await outcome(async () => [(await import(cyclic)).default, (await import('./back.mjs')).default, globalThis.dataRuns]);
+// A staged module's missing JSON name, refused before it runs.
+const stagedJson = await outcome(async () => { await import('./staged-json.mjs'); return 'loaded'; });
+out.stagedMissingJson = [Array.isArray(stagedJson) ? stagedJson[1] : stagedJson, globalThis.stagedJsonRan ?? false];
+// A namespace through a cycle sees the star exports its module installs after it; stars that conflict leave the name out.
+const fileUrl = (name) => pathToFileURL(process.cwd() + '/' + name).href;
+writeFileSync('star-src.mjs', 'export const x = 1;\\n');
+const cycleStar = 'data:text/javascript,' + encodeURIComponent('import ' + JSON.stringify(fileUrl('cyc-user.mjs')) + '; export * from ' + JSON.stringify(fileUrl('star-src.mjs')) + ';');
+writeFileSync('cyc-user.mjs', 'import * as ns from ' + JSON.stringify(cycleStar) + ';\\nglobalThis.cycleKeys = () => Object.keys(ns);\\n');
+out.cycleStar = await outcome(async () => { await import(cycleStar); return globalThis.cycleKeys(); });
+writeFileSync('conflict-a.mjs', 'export const x = 1; export const y = 1;\\n');
+writeFileSync('conflict-b.mjs', 'export const x = 2;\\n');
+out.starConflict = await outcome(async () => Object.keys(await import('data:text/javascript,' + encodeURIComponent('export * from ' + JSON.stringify(fileUrl('conflict-a.mjs')) + '; export * from ' + JSON.stringify(fileUrl('conflict-b.mjs')) + ';'))));
+// A static import of a data: module that awaits at its top level and rejects: the import that reaches it rejects.
+writeFileSync('tla-user.mjs', "import 'data:text/javascript,await Promise.reject(new Error(\\"boom\\"))';\\n");
+out.staticAwait = await outcome(() => import('./tla-user.mjs'));
 const throwing = 'data:text/javascript,globalThis.throwRuns = (globalThis.throwRuns ?? 0) + 1; throw new Error("thrown")';
 out.throwsOnce = [await outcome(() => import(throwing)), await outcome(() => import(throwing)), globalThis.throwRuns];
 
@@ -136,6 +154,10 @@ assert.deepEqual(expected, {
   missingJsonName: ['SyntaxError', false],
   cycle: ['data:back', 'back', 1],
   throwsOnce: [['threw', 'Error', 'thrown'], ['threw', 'Error', 'thrown'], 1],
+  stagedMissingJson: ['SyntaxError', false],
+  cycleStar: ['x'],
+  starConflict: ['y'],
+  staticAwait: ['threw', 'Error', 'boom'],
   detected: [true, 1],
   hashDirectory: 'beside',
   hashMeta: '<cwd>/a%23b/meta.mjs',
@@ -153,7 +175,13 @@ try {
     assert.equal(setup.status, 0, setup.stdout);
     const ran = await session.run('cd /home/user && node main.mjs', 120_000);
     assert.equal(ran.status, 0, ran.stdout);
-    assert.deepEqual(report(ran.stdout), expected, 'staged and interpreted ES modules load as host Node loads them');
+    // Node waits for a statically imported module's top-level await; an interpreted module cannot, so Nimbus refuses
+    // the import before that module runs (and leaves no unhandled rejection: the run exits 0).
+    const { staticAwait, ...ours } = report(ran.stdout);
+    const { staticAwait: _nodeWaits, ...theirs } = expected;
+    assert.deepEqual(ours, theirs, 'staged and interpreted ES modules load as host Node loads them');
+    assert.equal(staticAwait[0], 'threw');
+    assert.match(staticAwait[2], /^A static import of data:text\/javascript,await .* cannot wait for its top-level await/);
   } finally {
     await session.close();
   }

@@ -6,9 +6,14 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Fixed: a hosted ES module, staged or interpreted, can statically import
-  a `data:` module (`import x from 'data:text/javascript,…'`). Before, a
-  staged entry or package with such an import failed to link, and an
-  interpreted one refused it.
+  a `data:` module (`import x from 'data:text/javascript,…'`). Its imported
+  names are checked before any module body runs. It runs once, in a cycle
+  or after it throws, and its `export *` conflicts are left out of its
+  namespace, as in Node. Before, a staged entry or package with such an
+  import failed to link, and an interpreted one refused it. An interpreted
+  module's static import of a `data:` module that awaits at its top level
+  is refused before that module runs (`ERR_REQUIRE_ASYNC_MODULE`). Node
+  would wait for it; use `import()` instead.
 - Fixed: a hosted `data:` JavaScript module is always an ES module, as its
   MIME type says: strict, with `this` undefined at its top level. Before,
   one without `import` or `export` ran as sloppy CommonJS.
