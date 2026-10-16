@@ -64,6 +64,30 @@ try {
     assert.doesNotMatch(invocation.code, /"canonicalName":"packaging","version":"25\.0"/);
   }
 
+  // A constraints file's includes are constraints, -r too; a requirements
+  // file's -c is constraints, and its -r requirements.
+  {
+    installMockPypi([
+      project('packaging', {
+        '24.2': [file('packaging', '24.2', 'packaging-24.2-py3-none-any.whl')],
+        '25.0': [file('packaging', '25.0', 'packaging-25.0-py3-none-any.whl')],
+      }),
+      project('idna', { '3.11': [file('idna', '3.11', 'idna-3.11-py3-none-any.whl')] }),
+      project('six', { '1.17.0': [file('six', '1.17.0', 'six-1.17.0-py3-none-any.whl')] }),
+    ]);
+    const vfs = new FakeVfs({
+      'home/user/project/requirements.txt': '-r nested/more.txt\n-c pins/constraints.txt\n',
+      'home/user/project/nested/more.txt': 'packaging\n',
+      'home/user/project/pins/constraints.txt': '-r pinned.txt\n',
+      'home/user/project/pins/pinned.txt': 'packaging==24.2\nidna==3.11\n',
+    });
+    const invocation = await buildPipInvocation(['install', '-r', 'requirements.txt', 'six'], 'pip', cwd, vfs, { home: '/home/user', network: ISOLATE_NETWORK, markers });
+    assert.equal(invocation.mode, 'pip', invocation.error);
+    assert.match(invocation.code, /"canonicalName":"packaging","version":"24\.2"/, 'the nested requirements file is requirements, pinned by the nested constraints');
+    assert.doesNotMatch(invocation.code, /"canonicalName":"idna"/, 'a requirements file a constraints file includes is constraints, not requirements');
+    assert.match(invocation.code, /"canonicalName":"six"/);
+  }
+
   {
     const requirementsPath = 'home/user/project/requirements.txt';
     const invocation = await buildPipInvocation(
