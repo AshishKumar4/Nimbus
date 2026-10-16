@@ -32,7 +32,6 @@ console.log(`SID: ${sid}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_500);
 await t.waitForPrompt(60_000);
 
 // Step 1: cd into the seeded app.

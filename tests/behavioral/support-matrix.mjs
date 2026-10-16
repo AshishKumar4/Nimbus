@@ -119,7 +119,7 @@ console.log(`SID: ${sid}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
+await t.waitForPrompt(60_000);
 
 for (const row of ROWS) {
   console.log(`\n────── row: ${row.name} ──────`);

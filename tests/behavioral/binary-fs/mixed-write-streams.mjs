@@ -12,14 +12,13 @@
 // Then read each back as bytes (hex) AND as utf8 string where
 // appropriate; assert round-trip preservation.
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, BASE } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[binary-fs mixed] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 await t.run('mkdir -p /home/user/bf-mix', 10_000);

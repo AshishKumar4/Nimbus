@@ -5,7 +5,7 @@
 //
 // Black-box surfaces only. NO _diag.
 
-import { mintSession, Terminal, makeAsserter, sleep } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('parallel-installs');
@@ -20,7 +20,7 @@ const installs = await Promise.allSettled(
     const sid = await mintSession();
     const t = new Terminal(sid);
     await t.connect();
-    await sleep(1_500 + Math.random() * 500);
+    await t.waitForPrompt(60_000);
     await t.run('mkdir -p /home/user/parallel && cd /home/user/parallel', 10_000);
     await t.run('echo \'{"name":"p","version":"0.0.0"}\' > package.json', 10_000);
     const r = await t.run(`npm install ${PKG}`, 240_000);

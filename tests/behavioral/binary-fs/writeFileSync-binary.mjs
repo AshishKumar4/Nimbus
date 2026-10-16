@@ -13,14 +13,13 @@
 // null) and reads back hex. Expected: "a2ff0080". Pre-fix observed:
 // "efbfbdefbfbd00efbfbd" or similar replacement-char mush.
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, BASE } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[binary-fs writeFileSync] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 await t.run('mkdir -p /home/user/bf-sync', 10_000);

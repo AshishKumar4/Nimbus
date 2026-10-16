@@ -21,7 +21,7 @@
 // (run inside Node, not workerd, where instantiate(bytes) is allowed).
 // 70 bytes including the `name` custom section.
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, BASE } from '../_driver.mjs';
 import { ADD_WASM_B64, writeWasm } from './_fixtures.mjs';
 
 const sid = await mintSession();
@@ -29,7 +29,6 @@ console.log(`[wasm-runner] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 await t.run('mkdir -p /home/user/wr-add', 10_000);

@@ -22,15 +22,14 @@
 //      require.main; asserts our shim sets it correctly. This
 //      isolates the require.main fix from cowsay's other quirks.
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, BASE } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[G2] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
-await t.waitForPrompt(15_000).catch(() => {});
+await t.waitForPrompt(15_000);
 
 await t.run('mkdir -p /home/user/g2-probe', 5_000);
 await t.run('cd /home/user/g2-probe', 5_000);

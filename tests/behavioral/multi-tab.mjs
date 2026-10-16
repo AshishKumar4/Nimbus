@@ -27,7 +27,7 @@ console.log(`SID: ${sid}`);
 // Tab 1: connect, write, close.
 const tab1 = new Terminal(sid);
 await tab1.connect();
-await sleep(2_000);
+await tab1.waitForPrompt(60_000);
 const stamp = Date.now().toString(36);
 await tab1.run('mkdir -p /home/user/multi && cd /home/user/multi', 10_000);
 await tab1.run(`echo "tab1-wrote-${stamp}" > /home/user/multi/shared.txt`, 10_000);
@@ -55,7 +55,7 @@ await tab1.close();
 // Tab 2: connect (same sid as tab1), read.
 const tab2 = new Terminal(sid);
 await tab2.connect();
-await sleep(2_500);
+await tab2.waitForPrompt(60_000);
 {
   const r = await tab2.run('cat /home/user/multi/shared.txt', 10_000);
   a.check('tab 2 (sequential reconnect) sees the file written by tab 1',
@@ -68,7 +68,7 @@ await tab2.close();
 
 const tab1b = new Terminal(sid);
 await tab1b.connect();
-await sleep(2_000);
+await tab1b.waitForPrompt(60_000);
 {
   const r = await tab1b.run('cat /home/user/multi/reverse.txt', 10_000);
   a.check('tab 1 (sequential reconnect) sees the file written by tab 2',

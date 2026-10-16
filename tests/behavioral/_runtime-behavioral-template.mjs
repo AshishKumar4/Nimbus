@@ -406,7 +406,6 @@ export async function scaffoldAndStartVite(sid, opts) {
 
   const t = new Terminal(sid);
   await t.connect();
-  await sleep(2_000);
   await t.waitForPrompt(60_000);
 
   await t.run(`mkdir -p /home/user/${opts.workdir}`, 10_000);
@@ -477,7 +476,6 @@ export async function cloneAndStartVite(sid, opts) {
 
   const t = new Terminal(sid);
   await t.connect();
-  await sleep(2_000);
   await t.waitForPrompt(60_000);
 
   await t.run('cd /home/user', 10_000);

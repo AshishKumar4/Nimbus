@@ -41,14 +41,13 @@
 // The synthetic packages are `type: module`, so they export: an ES module's
 // `module.exports` is a ReferenceError in Node (module-format-matches-node-workerd).
 
-import { Terminal, mintSession, sleep, makeAsserter, BASE } from '../_driver.mjs';
+import { Terminal, mintSession, makeAsserter, BASE } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[require-resolution/multiline-import] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 const A = makeAsserter('require-resolution/multiline-import');

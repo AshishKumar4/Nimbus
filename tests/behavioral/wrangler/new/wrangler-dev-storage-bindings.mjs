@@ -66,7 +66,7 @@ try {
     }
   }
   t.send('\x03');
-  await t.waitForPrompt(30_000).catch(() => {});
+  await t.waitForPrompt(30_000);
 } finally {
   await t.close().catch(() => {});
   const cleanup = await deleteSession(sid);
