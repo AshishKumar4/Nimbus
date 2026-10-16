@@ -335,6 +335,9 @@ export declare const REPLAY_OPERATION_POLICY: {
     processHostProbe: {
         readonly kind: "effect";
     };
+    loaderCodeStore: {
+        readonly kind: "mutation";
+    };
     hostProcess: {
         readonly kind: "effect";
     };

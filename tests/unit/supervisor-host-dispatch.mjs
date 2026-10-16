@@ -196,6 +196,7 @@ const INPUTS = {
   d1Query: [{ root: 'home/user/app', store: 'db' }, [{ sql: 'SELECT 1' }]],
   fanoutExecute: ['fn-source', [1, 2], { tag: 'probe' }],
   processHostProbe: [],
+  loaderCodeStore: [{ kind: 'alive', owner: 'token' }],
   hostProcess: [{ entry: 'boot.js' }, { workerKey: 'wk' }],
   awaitHostedBoot: ['wk'],
   routeHostedHttp: ['wk', { method: 'GET', url: 'https://hosted.test/' }],
@@ -512,7 +513,7 @@ for (const [op, route] of cases) {
       // The routed half is what the table names — drive it directly. The
       // caller owns the response — disposal happens in the RPC layer this
       // path bypasses (callers dispose via disposeRpcResource).
-      result = await ops.dispatch({ op, args: envelopeArgs, pid, writerId, run: writerId, mutationOwner });
+      result = await ops.dispatch({ op, args: envelopeArgs, pid, writerId, run: writerId, mutationOwner, ...(op === 'loaderCodeStore' ? { stream } : {}) });
     }
   } catch (error) {
     if (!Object.hasOwn(NATIVE_REFUSED, op)) throw error;

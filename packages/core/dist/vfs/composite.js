@@ -3098,8 +3098,8 @@ export class CompositeVFS {
     async chown(path, uid, gid) {
         return awaited({ syscall: 'chown', path }, () => this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'chown', at)(rel, uid, gid)));
     }
-    async utimes(path, atimeMs, mtimeMs) {
-        return awaited({ syscall: 'utime', path }, () => this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'utimes', at)(rel, atimeMs, mtimeMs)));
+    async utimes(path, atime, mtime) {
+        return awaited({ syscall: 'utime', path }, () => this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'utimes', at)(rel, atime, mtime)));
     }
     async writeFileIfRevision(path, data, expected) {
         return awaited({ syscall: 'open', path }, () => this.onCapability(path, false, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected), { written: data, creates: createsIfAbsent(expected) }));

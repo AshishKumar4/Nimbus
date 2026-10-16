@@ -110,6 +110,8 @@ export const SUPERVISOR_OP_TABLE = {
   d1Query: null,
   fanoutExecute: null,
   processHostProbe: null,
+  // The Worker Loader shim's code store (worker wrangler/loader-code-store.ts): the host's alone, never a process's.
+  loaderCodeStore: null,
   hostProcess: null,
   awaitHostedBoot: null,
   routeHostedHttp: null,
@@ -156,7 +158,7 @@ const SUPERVISOR_OPS_WITHIN: ReadonlySet<SupervisorOpName> = new Set<SupervisorO
   ...SUPERVISOR_DELIVERED_OPS, ...SUPERVISOR_JOINED_READ_OPS,
   'setUmask', 'fsStorageGrant', 'fsRead', 'writeBatchStream', 'openWaveWriter', 'retireWaveWriter', 'fsAwaitRecall', 'fsPublished',
   'wsPoll', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpWait', 'cpNextSignal', 'cpBlocked', 'hmrNextEvent', 'awaitHostedBoot',
-  'stdinFileRead', 'stdinPrepared', 'replayBoundary', 'cacheResult', 'reportRuntimeCode', 'processHostProbe',
+  'stdinFileRead', 'stdinPrepared', 'replayBoundary', 'cacheResult', 'reportRuntimeCode', 'processHostProbe', 'loaderCodeStore',
   'transform', 'allocatePort', 'getCachedTarball',
 ]);
 

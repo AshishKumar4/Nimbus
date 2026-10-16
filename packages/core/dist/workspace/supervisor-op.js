@@ -42,6 +42,11 @@ function numberArg(envelope, index) {
 function nullableNumberArg(envelope, index) {
     return envelope.args?.[index] === null ? null : numberArg(envelope, index);
 }
+/** A time as utimes and futimes take it (FsTime): finite ms, 'now' or 'omit'. */
+function timeArg(envelope, index) {
+    const value = envelope.args?.[index];
+    return value === 'now' || value === 'omit' ? value : numberArg(envelope, index);
+}
 function bytesArg(envelope, index) {
     const value = envelope.args?.[index];
     if (value instanceof Uint8Array)
@@ -186,6 +191,7 @@ export const SUPERVISOR_OP_ROUTES = {
     d1Query: { method: '_rpcD1Query', args: [0, 1] },
     fanoutExecute: { method: '_rpcFanoutExecute', args: [0, 1, 2] },
     processHostProbe: { method: '_rpcProcessHostProbe', args: [] },
+    loaderCodeStore: { method: '_rpcLoaderCodeStore', args: [0, 'stream', 'pid'] },
     hostProcess: { method: '_rpcHostProcess', args: [0, 1] },
     awaitHostedBoot: { method: '_rpcAwaitHostedBoot', args: [0] },
     routeHostedHttp: { method: '_rpcRouteHostedHttp', args: [0, 1] },
@@ -250,7 +256,7 @@ const NATIVE_OPS = {
     fsFtruncate: (e, t) => fsFor(e, t).ftruncate(numberArg(e, 0), numberArg(e, 1)),
     fsFchmod: (e, t) => fsFor(e, t).fchmod(numberArg(e, 0), numberArg(e, 1)),
     fsFchown: (e, t) => fsFor(e, t).fchown(numberArg(e, 0), nullableNumberArg(e, 1), nullableNumberArg(e, 2)),
-    fsFutimes: (e, t) => fsFor(e, t).futimes(numberArg(e, 0), numberArg(e, 1), numberArg(e, 2)),
+    fsFutimes: (e, t) => fsFor(e, t).futimes(numberArg(e, 0), timeArg(e, 1), timeArg(e, 2)),
     fsSync: (e, t) => fsFor(e, t).fsync(e.args?.[0] === undefined ? undefined : numberArg(e, 0)),
     fsRealpath: (e, t) => fsFor(e, t).realpath(FsPath.parse(e.args?.[0])),
     // Its report leaves for the hop with each failure's error as data (sendRemoval).
@@ -315,7 +321,7 @@ const NATIVE_OPS = {
     access: (e, t) => fsFor(e, t).access(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
     chown: (e, t) => fsFor(e, t).chown(FsPath.parse(e.args?.[0]), nullableNumberArg(e, 1), nullableNumberArg(e, 2), z.object({ followSymlinks: z.boolean().optional() }).optional().parse(e.args?.[3])),
     chmod: (e, t) => fsFor(e, t).chmod(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
-    utimes: (e, t) => fsFor(e, t).utimes(FsPath.parse(e.args?.[0]), numberArg(e, 1), numberArg(e, 2)),
+    utimes: (e, t) => fsFor(e, t).utimes(FsPath.parse(e.args?.[0]), timeArg(e, 1), timeArg(e, 2), z.object({ followSymlinks: z.boolean().optional() }).optional().parse(e.args?.[3])),
     fsTruncate: (e, t) => fsFor(e, t).truncate(FsPath.parse(e.args?.[0]), numberArg(e, 1), leaseOf(e)),
     fsWriteRange: (e, t) => fsFor(e, t).writeRange(FsPath.parse(e.args?.[0]), RangeOffset.parse(e.args?.[1]), writeRangeBytesArg(e, 2), leaseOf(e)),
     // The decode-drain clock starts when the envelope arrives, not when the

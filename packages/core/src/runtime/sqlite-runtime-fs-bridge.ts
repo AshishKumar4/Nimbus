@@ -29,6 +29,7 @@ import type {
   RuntimeMutationOwner,
   ExclusiveMutationGrant,
   ExclusiveMutationRequest,
+  FsTime,
 } from './os-contracts.js';
 
 export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
@@ -322,28 +323,17 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  utimes(
-    path: RuntimeFsPath,
-    atimeMs: number | null | undefined,
-    mtimeMs: number | null | undefined,
-    options: { followSymlinks?: boolean } = {},
-  ): VfsMutationReceipt {
+  utimes(path: RuntimeFsPath, atime: FsTime, mtime: FsTime, options: { followSymlinks?: boolean } = {}): VfsMutationReceipt {
     return called({ syscall: 'utimes', path }, () => {
       const follow = options.followSymlinks !== false;
       const located = this.locateMutation(path, follow, 'utimes');
       if (located.mount) {
-        const now = Date.now();
-        const kept = atimeMs === undefined || mtimeMs === undefined ? located.mount.stat(located.path, { follow }) : null;
-        mountOp(located.mount.utimes, 'utimes', path)(
-          located.path,
-          atimeMs === undefined ? kept?.atimeMs ?? now : atimeMs ?? now,
-          mtimeMs === undefined ? kept?.mtimeMs ?? now : mtimeMs ?? now,
-        );
+        mountOp(located.mount.utimes, 'utimes', path)(located.path, atime, mtime);
         return this.mountReceipt();
       }
       const p = located.path;
       if (!(follow ? this.vfs.exists(p) : this.vfs.isSymlink(p) || this.vfs.exists(p))) throw fsError('ENOENT', 'utimes', path);
-      return this.receipted(p, () => this.vfs.utimes(p, atimeMs, mtimeMs, { followSymlinks: follow }));
+      return this.receipted(p, () => this.vfs.utimes(p, atime, mtime, { followSymlinks: follow }));
     });
   }
 
@@ -1014,7 +1004,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   ftruncate(handleId: number, size: number): void { syncValue(this.descriptors.ftruncate(handleId, size)); }
   fchmod(handleId: number, mode: number): void { syncValue(this.descriptors.fchmod(handleId, mode)); }
   fchown(handleId: number, uid: number | null, gid: number | null): void { syncValue(this.descriptors.fchown(handleId, uid, gid)); }
-  futimes(handleId: number, atime: number, mtime: number): void { syncValue(this.descriptors.futimes(handleId, atime, mtime)); }
+  futimes(handleId: number, atime: FsTime, mtime: FsTime): void { syncValue(this.descriptors.futimes(handleId, atime, mtime)); }
 }
 
 /** A `..` component in a path's spelling. */

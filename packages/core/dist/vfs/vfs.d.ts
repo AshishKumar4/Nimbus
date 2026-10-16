@@ -13,7 +13,7 @@
  * 4 GB file is not a ranged read. A caller without the capability learns
  * that (ENOTSUP) and decides.
  */
-import type { RuntimeDirentType, VfsAcquireOptions, VfsAcquireResult, VfsListPage } from '../runtime/os-contracts.js';
+import type { FsTime, RuntimeDirentType, VfsAcquireOptions, VfsAcquireResult, VfsListPage } from '../runtime/os-contracts.js';
 import type { VfsEvent } from './events.js';
 import { type VfsError } from './vfs-error.js';
 export type Awaitable<T> = T | Promise<T>;
@@ -215,7 +215,8 @@ export interface VFS {
     chmod?(path: string, mode: number): Awaitable<void>;
     /** A null side keeps what the file has (chown(2)'s -1). */
     chown?(path: string, uid: number | null, gid: number | null): Awaitable<void>;
-    utimes?(path: string, atimeMs: number, mtimeMs: number): Awaitable<void>;
+    /** utimensat(2), each time an FsTime: resolved and judged here, as the change commits. */
+    utimes?(path: string, atime: FsTime, mtime: FsTime): Awaitable<void>;
     /** Copy within this backend (SQLite copies rows, not bytes). Returns entries copied. */
     copy?(from: string, to: string, options?: VfsCopyOptions): Awaitable<number>;
     /** Compare-and-write. Never emulated with read, compare, write. */
@@ -321,7 +322,7 @@ export interface SyncVFS {
     readlink?(path: string): string;
     chmod?(path: string, mode: number): void;
     chown?(path: string, uid: number | null, gid: number | null): void;
-    utimes?(path: string, atimeMs: number, mtimeMs: number): void;
+    utimes?(path: string, atime: FsTime, mtime: FsTime): void;
     copy?(from: string, to: string, options?: VfsCopyOptions): number;
     writeFileIfRevision?(path: string, data: Uint8Array, expected: VfsRevision): VfsCasResult;
     readFileAtRevision?(path: string, revision: VfsRevision, range?: VfsRange): Uint8Array;

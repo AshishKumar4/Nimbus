@@ -24,7 +24,7 @@ import type {
   Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsChanges, VfsContentRef, VfsCopyOptions, VfsCred, VfsDirent, VfsMountDescription, VfsOpenFile, VfsRemoval,
   VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteEvent, VfsWriteObserver, VfsWriteWants,
 } from './vfs.js';
-import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
+import type { FsTime, RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
 import { inWatchedTree, projectChange, type VfsEvent, type VfsEventType } from './events.js';
 import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError, type VfsErrorCode } from './vfs-error.js';
 import { normalizeVfsPath, parentOf } from './path.js';
@@ -327,7 +327,8 @@ export interface HeldFile {
   truncate(size: number, admit?: () => void): Awaitable<void>;
   chmod(mode: number, admit?: () => void): Awaitable<void>;
   chown(uid: number | null, gid: number | null, admit?: () => void): Awaitable<void>;
-  utimes(atime: number, mtime: number, admit?: () => void): Awaitable<void>;
+  /** As its backend's utimes, each time an FsTime its backend resolves as it commits. */
+  utimes(atime: FsTime, mtime: FsTime, admit?: () => void): Awaitable<void>;
   readdir(admit?: () => void): Awaitable<VfsDirent[]>;
   close(): Awaitable<void>;
 }
@@ -2070,7 +2071,7 @@ export class CompositeVFS implements VFS {
       return this.byName('fchown', (backend) => need(backend.chown, this.target.name).call(backend, this.target.rel, uid, gid), admit);
     }
 
-    utimes(atime: number, mtime: number, admit?: () => void): Awaitable<void> {
+    utimes(atime: FsTime, mtime: FsTime, admit?: () => void): Awaitable<void> {
       return this.byName('futimes', (backend) => need(backend.utimes, this.target.name).call(backend, this.target.rel, atime, mtime), admit);
     }
 
@@ -3480,9 +3481,9 @@ export class CompositeVFS implements VFS {
     return awaited({ syscall: 'chown', path }, () => this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'chown', at)(rel, uid, gid)));
   }
 
-  async utimes(path: string, atimeMs: number, mtimeMs: number): Promise<void> {
+  async utimes(path: string, atime: FsTime, mtime: FsTime): Promise<void> {
     return awaited({ syscall: 'utime', path }, () =>
-      this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'utimes', at)(rel, atimeMs, mtimeMs)));
+      this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'utimes', at)(rel, atime, mtime)));
   }
 
   async writeFileIfRevision(path: string, data: Uint8Array, expected: VfsRevision): Promise<VfsCasResult> {

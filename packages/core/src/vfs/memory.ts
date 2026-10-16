@@ -8,6 +8,8 @@
  */
 import type { SyncVFS, VFS, VfsDirent, VfsFileType, VfsStat } from './vfs.js';
 import { syscallError, type VfsError, type VfsErrorCode } from './vfs-error.js';
+import { timeAt } from './posix-access.js';
+import type { FsTime } from '../runtime/os-contracts.js';
 
 type Entry = {
   /** Its number, its own for its life (a rename keeps it). */
@@ -284,11 +286,12 @@ export class MemoryVFS implements VFS {
     this.touch(entry);
   }
 
-  utimes(path: string, _atimeMs: number, mtimeMs: number): void {
+  /** Its entries keep an mtime alone: the atime is taken and dropped. */
+  utimes(path: string, _atime: FsTime, mtime: FsTime): void {
     const call = { syscall: 'utime', path };
     const entry = this.find(path, call);
     if (entry === null) throw fail('ENOENT', call);
-    entry.mtimeMs = mtimeMs;
+    entry.mtimeMs = timeAt(mtime, entry.mtimeMs, Date.now());
     entry.revision = ++this.clock;
   }
 

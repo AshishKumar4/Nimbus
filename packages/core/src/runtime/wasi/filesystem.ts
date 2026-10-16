@@ -1,4 +1,4 @@
-import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenedFile, RuntimeOpenFlags, RuntimeSynchronousFs, RuntimeVfsStat } from '../os-contracts.js';
+import type { Awaitable, FsTime, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenedFile, RuntimeOpenFlags, RuntimeSynchronousFs, RuntimeVfsStat } from '../os-contracts.js';
 import type { SyscallResult, Errno, NimbusFsImports, WasiImports } from './types.js';
 import { DIRENT_TYPES, direntTypeOfStat } from '../../vfs/dirent-type.js';
 import type { PinnedContent, ResidentFilesystem } from './resident-filesystem.js';
@@ -852,13 +852,14 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
       });
     });
   });
-  const times = (st: RuntimeVfsStat, a: bigint, m: bigint, flags: number): [number, number] => {
+  // Each time as the guest asked it (FsTime), for the filesystem to resolve and judge as it commits.
+  const times = (a: bigint, m: bigint, flags: number): [FsTime, FsTime] => {
     if ((flags & 3) === 3 || (flags & 12) === 12 || flags & ~15) fail('EINVAL');
-    return [flags & 2 ? Date.now() : flags & 1 ? Number(a / 1000000n) : st.atime,
-      flags & 8 ? Date.now() : flags & 4 ? Number(m / 1000000n) : st.mtime];
+    return [flags & 2 ? 'now' : flags & 1 ? Number(a / 1000000n) : 'omit',
+      flags & 8 ? 'now' : flags & 4 ? Number(m / 1000000n) : 'omit'];
   };
-  imports.fd_filestat_set_times = guard(imports.fd_filestat_set_times, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, a: bigint, m: bigint, flags: number) => { right(fd, 23); return after(stat(fs, fd), st =>
-    after(fs.futimes(handle(fd).handle.id, ...times(st, a, m, flags)), () => 0)); }, owns);
+  imports.fd_filestat_set_times = guard(imports.fd_filestat_set_times, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, a: bigint, m: bigint, flags: number) => { right(fd, 23);
+    return after(fs.futimes(handle(fd).handle.id, ...times(a, m, flags)), () => 0); }, owns);
   const ext = options.extension;
   if (ext) {
     ext.fd_stat = guard(ext.fd_stat, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, out: number) => { pathRight(fd, 21); return after(stat(fs, fd), st => writeNimbusStat(out, st)); }, owns);
@@ -890,6 +891,6 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   }
   imports.path_filestat_set_times = guard(imports.path_filestat_set_times, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, lookup: number, p: number, n: number, a: bigint, m: bigint, flags: number) => { pathRight(fd, 20); 
     const target = at(fd, path(p, n)), followSymlinks = !!(lookup & 1);
-    return after(fs.stat(target, { followSymlinks }), st => after(fs.utimes(target, ...times(st ?? fail('ENOENT'), a, m, flags), { followSymlinks }), () => 0));
+    return after(fs.utimes(target, ...times(a, m, flags), { followSymlinks }), () => 0);
   });
 }

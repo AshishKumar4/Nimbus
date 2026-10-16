@@ -64,6 +64,14 @@ export function chownRefusal(entry, uid, gid, cred) {
 export function chownedMode(mode, cred) {
     return cred.uid === 0 ? mode : mode & ~0o6000;
 }
+/** Whether a utimes asks for an explicit time on either side: what utimesRefusal's `explicit` is. */
+export function explicitTimes(atime, mtime) {
+    return typeof atime === 'number' || typeof mtime === 'number';
+}
+/** `time` as the filesystem committing it lands it: an explicit one in whole ms, 'now' at `now`, 'omit' as `kept`. */
+export function timeAt(time, kept, now) {
+    return time === 'omit' ? kept : time === 'now' ? now : Math.trunc(time);
+}
 /**
  * utimes(2)'s rule: explicit times only by the owner or root (EPERM); the
  * current time by anyone who may write the entry (EACCES).

@@ -142,6 +142,9 @@ export class NimbusWrangler {
     root;
     onLog;
     onHmrMessage;
+    loaderStore;
+    /** This server's name to the loader store: its builds' owners are its. */
+    storeId = crypto.randomUUID();
     running = false;
     config = null;
     workerStub = null;
@@ -170,6 +173,7 @@ export class NimbusWrangler {
         this.root = opts.root.replace(/^\/+/, '').replace(/\/+$/, '');
         this.onLog = opts.onLog;
         this.onHmrMessage = opts.onHmrMessage;
+        this.loaderStore = opts.loaderStore;
     }
     /** Start the wrangler dev server. */
     async start() {
@@ -214,6 +218,7 @@ export class NimbusWrangler {
         }
         this.doClassMap.clear();
         this.workerStub = null;
+        this.loaderStore?.stop(this.storeId);
     }
     get isRunning() { return this.running; }
     // ── Config reading ────────────────────────────────────────────────────
@@ -301,6 +306,24 @@ export class NimbusWrangler {
     async buildAndLoad(served) {
         const generation = ++this.generation;
         const superseded = () => generation !== this.generation;
+        // The loader-store owners this build's env mints: committed with it, or released.
+        const owners = [];
+        let committed = false;
+        // Called at the commit point, in the same synchronous step that publishes the build's stub.
+        const commit = () => {
+            this.loaderStore?.commit(this.storeId, owners);
+            committed = true;
+        };
+        try {
+            return await this.buildAndLoadWith(superseded, served, owners, commit);
+        }
+        finally {
+            if (!committed)
+                for (const owner of owners)
+                    this.loaderStore?.release(owner);
+        }
+    }
+    async buildAndLoadWith(superseded, served, owners, commit) {
         if (!this.config?.main) {
             this.onLog('\x1b[31mNo "main" entry point in wrangler config\x1b[0m\n');
             return false;
@@ -412,14 +435,18 @@ export class NimbusWrangler {
                 d1: (this.config.d1_databases ?? []).flatMap((d1) => (d1.binding ? [d1.binding] : [])),
                 r2: (this.config.r2_buckets ?? []).flatMap((r2) => (r2.binding ? [r2.binding] : [])),
             });
-            const worker = this.loaderEnv.LOADER.load(applyFacetLimits('worker', {
+            // Awaited: a native loader answers a stub, a shim's (nested Nimbus) a
+            // promise settled once it admitted the code, or refused it.
+            const worker = await this.loaderEnv.LOADER.load(applyFacetLimits('worker', {
                 compatibilityDate: wrangCompatDate,
                 compatibilityFlags: wrangCompatFlags,
                 mainModule,
                 modules,
-                env: this.buildInnerEnv(),
+                env: this.buildInnerEnv(owners),
                 ...loaderOutbound(this.network),
             }));
+            if (superseded())
+                return false;
             if (classesEntrypoint !== null && !(await this.exportsDoClasses(worker, classesEntrypoint, doBindings, superseded)))
                 return false;
             if (superseded())
@@ -437,6 +464,7 @@ export class NimbusWrangler {
             if (classesEntrypoint !== null)
                 this.registerDoClasses(worker, doBindings);
             this.workerStub = worker.getEntrypoint(undefined, { limits: facetLimits('worker') });
+            commit();
             for (const w of result.warnings || []) {
                 this.onLog(`  \x1b[33mwarning: ${w.text}\x1b[0m\n`);
             }
@@ -495,7 +523,7 @@ export class NimbusWrangler {
                 registerInnerDoClass(doId, b.name, cls);
         }
     }
-    buildInnerEnv() {
+    buildInnerEnv(owners) {
         const env = {};
         // Every binding phase after vars claims its name here, so a name a
         // vars entry or an earlier binding already took is overwritten loudly.
@@ -588,13 +616,26 @@ export class NimbusWrangler {
                 // This build's own name for its keyed workers (NimbusLoaderRPC.get):
                 // another Worker, or this one's next build, never reuses one of them.
                 const namespace = crypto.randomUUID();
+                const doId = this.supervisorCtx?.id?.toString?.() || '';
                 for (const wl of this.config.worker_loaders) {
                     const binding = wl.binding;
                     if (!binding)
                         continue;
+                    // What it loads is kept in the session's store, under an owner this build commits or releases.
+                    let store;
+                    if (this.loaderStore && doId) {
+                        const owner = this.loaderStore.mint(this.storeId, binding);
+                        owners.push(owner);
+                        store = { doId, route: hostRoute() ?? undefined, owner };
+                    }
                     // A Worker it loads goes out through the Worker's own network (NimbusLoaderRPC).
                     claim('worker_loaders', binding, ctxExports.NimbusLoaderRPC({
-                        props: { depth: nextDepth, namespace: `${namespace}:${binding}`, ...(this.network.egress === undefined ? {} : { egress: this.network.egress, networkId: this.network.id }) },
+                        props: {
+                            depth: nextDepth,
+                            namespace: `${namespace}:${binding}`,
+                            ...(this.network.egress === undefined ? {} : { egress: this.network.egress, networkId: this.network.id }),
+                            ...(store === undefined ? {} : { store }),
+                        },
                     }));
                 }
             }

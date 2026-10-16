@@ -35,7 +35,7 @@
  * (the documented limit, answered by the session's recall timeout).
  */
 import { fsError } from '../beneath-walk.js';
-import { modeAllows } from '../../vfs/posix-access.js';
+import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, explicitTimes, modeAllows, timeAt, utimesRefusal } from '../../vfs/posix-access.js';
 import { processFsClient } from '../../_shared/process-fs-client.js';
 /** Descriptors this holder opens are numbered below every session descriptor. */
 const FIRST_LOCAL_HANDLE = -1;
@@ -301,6 +301,12 @@ export function delegationHolder(options) {
             });
         }
     };
+    /** An owner or group id a chown keeps (null, or -1 as fchown(2) spells it): null, as chownRefusal takes it. */
+    const kept = (id) => (id === -1 ? null : id);
+    /** `entry` as chmod, chown (the set-id bits chownedMode clears) and utimes leave it, its ctime now. */
+    const changedBy = (entry, attrs) => ('mode' in attrs ? { ...entry, mode: (entry.mode & ~0o7777) | (attrs.mode & 0o7777), ctime: now() }
+        : 'uid' in attrs ? { ...entry, uid: kept(attrs.uid) ?? entry.uid, gid: kept(attrs.gid) ?? entry.gid, mode: chownedMode(entry.mode, store.cred), ctime: now() }
+            : { ...entry, atime: attrs.atime, mtime: attrs.mtime, ctime: now() });
     const holder = {
         client,
         entry: (key) => decided.get(key),
@@ -704,22 +710,55 @@ export function delegationHolder(options) {
                 return false;
             if (client.holder(key) === undefined)
                 return false;
-            // Only the owner (or root) changes a mode or times here; anything else is the session's to refuse.
+            // Only the owner (or root) changes a mode, an owner or times here, as
+            // chmod, chown and utimes allow it; anything else is the session's to judge.
             if (store.cred.uid !== 0 && store.cred.uid !== current.uid)
                 return false;
-            if ('uid' in attrs)
+            if ('uid' in attrs && chownRefusal(current, kept(attrs.uid), kept(attrs.gid), store.cred) !== null)
+                return false;
+            // A grant a confined principal may not make: the session's to judge.
+            if ('mode' in attrs && confinedModeRefusal(current.mode, attrs.mode) !== null)
                 return false;
             if ('mode' in attrs)
                 throughAt([key]);
-            const next = 'mode' in attrs
-                ? { ...current, mode: (current.mode & ~0o7777) | (attrs.mode & 0o7777), ctime: now() }
-                : { ...current, atime: attrs.atime, mtime: attrs.mtime, ctime: now() };
+            const next = changedBy(current, attrs);
             decided.set(key, next);
             const local = files.get(current.ino);
-            if (local !== undefined && 'mode' in attrs)
-                local.mode = attrs.mode & 0o7777;
-            log({ type: 'setattr', path: key, attrs });
+            if (local !== undefined)
+                local.mode = next.mode & 0o7777;
+            log({ type: 'setattr', path: key, attrs: 'uid' in attrs ? { uid: next.uid, gid: next.gid } : attrs });
             return true;
+        },
+        fsetattr: (handleId, change) => {
+            const file = handleOf(handleId).file;
+            if (file.through !== undefined)
+                return false;
+            const entry = file.detached ?? decided.get(file.key) ?? store.entry(file.key);
+            if (entry === undefined || entry === null)
+                return false;
+            // Its times as it is decided (timeAt): now, explicit, or as they are.
+            const at = now();
+            const attrs = 'atime' in change ? { atime: timeAt(change.atime, entry.atime, at), mtime: timeAt(change.mtime, entry.mtime, at) } : change;
+            if (file.detached === undefined)
+                return holder.setattr(file.key, attrs);
+            // Its name gone, the file is this process's alone: judged and changed
+            // here, as the session judges a description, its confinement of the
+            // principal too (judged confined once no grant there says).
+            const confined = client.held(file.key)?.confined ?? true;
+            const refused = 'mode' in attrs ? chmodRefusal(entry, store.cred) ?? (confined ? confinedModeRefusal(entry.mode, attrs.mode) : null)
+                : 'uid' in attrs ? chownRefusal(entry, kept(attrs.uid), kept(attrs.gid), store.cred)
+                    : utimesRefusal(entry, 'atime' in change && explicitTimes(change.atime, change.mtime), store.cred);
+            if (refused !== null)
+                throw fsError(refused, 'mode' in attrs ? 'fchmod' : 'uid' in attrs ? 'fchown' : 'futimes', '/' + file.key);
+            file.detached = changedBy(entry, attrs);
+            file.mode = file.detached.mode & 0o7777;
+            return true;
+        },
+        undecided: (key) => { decided.delete(key); },
+        restat: (handleId, stat) => {
+            const through = handleOf(handleId).file.through;
+            if (through !== undefined)
+                through.entry = { ...stat, target: null };
         },
         holds: (key) => client.held(key) !== undefined,
         pending: () => dirty.size > 0 || client.pending(),

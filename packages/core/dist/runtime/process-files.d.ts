@@ -22,7 +22,7 @@ import type { OutputGate } from './output-gate.js';
 import { CompositeVFS } from '../vfs/composite.js';
 import { ProcVFS } from '../vfs/proc-vfs.js';
 import type { VFS, VfsCopyOptions, VfsDirent, VfsRemoval, VfsStat } from '../vfs/vfs.js';
-import { type NimbusFilesystemAuthority, type NimbusFilesystemBinding, type NimbusHostFilesystemLease, type NimbusMountEntry, type RuntimeFsBridge, type RuntimeOpenFlags, type RuntimeSynchronousFs, type RuntimeVfsDirEntry, type RuntimeVfsStat, type VfsCred } from './os-contracts.js';
+import { type NimbusFilesystemAuthority, type NimbusFilesystemBinding, type NimbusHostFilesystemLease, type NimbusMountEntry, type RuntimeFsBridge, type FsTime, type RuntimeOpenFlags, type RuntimeSynchronousFs, type RuntimeVfsDirEntry, type RuntimeVfsStat, type VfsCred } from './os-contracts.js';
 /** The session's namespace and the processes bound to it. */
 export declare class ProcessFiles implements NimbusFilesystemAuthority {
     readonly engine: SqliteVFS;
@@ -284,12 +284,8 @@ export declare class ProcessView implements VFS {
     chown(path: string, uid: number | null, gid: number | null, options?: {
         follow?: boolean;
     }): Promise<void>;
-    /**
-     * utimensat(2): null is now, undefined leaves that time (only those need
-     * no more than write permission or ownership); an explicit time needs
-     * ownership. `follow: false` sets a link's own times.
-     */
-    utimes(path: string, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: {
+    /** utimensat(2), each time an FsTime; `follow: false` sets a link's own times. */
+    utimes(path: string, atime: FsTime, mtime: FsTime, options?: {
         follow?: boolean;
     }): Promise<void>;
     /** cp: a file (a link named as the source followed), or with `recursive` a tree, onto a name that is not there. */
@@ -429,7 +425,7 @@ export declare class NamespaceFs {
     resolveSymlink(path: string): string | null;
     chmod(path: string, mode: number): void;
     chown(path: string, uid: number | null, gid: number | null): void;
-    utimes(path: string, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: {
+    utimes(path: string, atime: FsTime, mtime: FsTime, options?: {
         followSymlinks?: boolean;
     }): void;
     copyFile(from: string, to: string): void;

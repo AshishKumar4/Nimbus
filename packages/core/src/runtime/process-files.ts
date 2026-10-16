@@ -49,6 +49,7 @@ import {
   type RuntimeFsPath,
   type ExclusiveMutationGrant,
   type ExclusiveMutationRequest,
+  type FsTime,
   type RecallKind,
   type RuntimeOpenFlags,
   type RuntimeReadFileOptions,
@@ -162,8 +163,8 @@ class GuardedProcessBridge implements RuntimeFsBridge {
     })());
   }
   truncate(path: RuntimeFsPath, size: number, options?: { followSymlinks?: boolean } & RuntimeMutationOwner): VfsMutationReceipt { this.guard(); return this.target.truncate(path, size, options); }
-  utimes(path: RuntimeFsPath, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: { followSymlinks?: boolean }): VfsMutationReceipt {
-    this.guard(); return this.target.utimes(path, atimeMs, mtimeMs, options);
+  utimes(path: RuntimeFsPath, atime: FsTime, mtime: FsTime, options?: { followSymlinks?: boolean }): VfsMutationReceipt {
+    this.guard(); return this.target.utimes(path, atime, mtime, options);
   }
   chmod(path: RuntimeFsPath, mode: number): VfsMutationReceipt { this.guard(); return this.target.chmod(path, mode); }
   access(path: RuntimeFsPath, mode: number): void { this.guard(); return this.target.access(path, mode); }
@@ -222,7 +223,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   ftruncate(handleId: number, size: number): void { this.guard(); return this.target.ftruncate(handleId, size); }
   fchmod(handleId: number, mode: number): void { this.guard(); return this.target.fchmod(handleId, mode); }
   fchown(handleId: number, uid: number | null, gid: number | null): void { this.guard(); return this.target.fchown(handleId, uid, gid); }
-  futimes(handleId: number, atimeMs: number, mtimeMs: number): void { this.guard(); return this.target.futimes(handleId, atimeMs, mtimeMs); }
+  futimes(handleId: number, atime: FsTime, mtime: FsTime): void { this.guard(); return this.target.futimes(handleId, atime, mtime); }
   writeBatch(payload: BatchWritePayload, options?: { signal?: AbortSignal }): Promise<{ inodes: number; chunks: number }> {
     this.guard();
     // As writeStream: closing the scope cancels the commit.
@@ -1067,12 +1068,9 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       return this.receipt();
     });
   }
-  utimes(path: RuntimeFsPath, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: { followSymlinks?: boolean }) {
-    return this.either([path], () => this.bridge.utimes(path, atimeMs, mtimeMs, options), async () => {
-      const p = (await this.path(path, options?.followSymlinks !== false));
-      const now = Date.now();
-      const kept = atimeMs === undefined || mtimeMs === undefined ? await this.namespace.stat(p) : null;
-      await this.namespace.utimes(p, atimeMs === undefined ? (kept?.atimeMs ?? now) : (atimeMs ?? now), mtimeMs === undefined ? (kept?.mtimeMs ?? now) : (mtimeMs ?? now));
+  utimes(path: RuntimeFsPath, atime: FsTime, mtime: FsTime, options?: { followSymlinks?: boolean }) {
+    return this.either([path], () => this.bridge.utimes(path, atime, mtime, options), async () => {
+      await this.namespace.utimes(await this.path(path, options?.followSymlinks !== false), atime, mtime);
       return this.receipt();
     });
   }
@@ -1260,8 +1258,8 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     return this.on(handleId, () => this.bridge.fchown(handleId, uid, gid), () => this.descriptors.fchown(handleId, uid, gid));
   }
 
-  futimes(handleId: number, atimeMs: number, mtimeMs: number) {
-    return this.on(handleId, () => this.bridge.futimes(handleId, atimeMs, mtimeMs), () => this.descriptors.futimes(handleId, atimeMs, mtimeMs));
+  futimes(handleId: number, atime: FsTime, mtime: FsTime) {
+    return this.on(handleId, () => this.bridge.futimes(handleId, atime, mtime), () => this.descriptors.futimes(handleId, atime, mtime));
   }
 }
 
@@ -1476,13 +1474,9 @@ export class ProcessView implements VFS {
       await this.fs.chown(path, uid, gid, { followSymlinks });
     });
   }
-  /**
-   * utimensat(2): null is now, undefined leaves that time (only those need
-   * no more than write permission or ownership); an explicit time needs
-   * ownership. `follow: false` sets a link's own times.
-   */
-  async utimes(path: string, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: { follow?: boolean }): Promise<void> {
-    await this.call(options?.follow === false ? 'lutime' : 'utime', path, () => this.fs.utimes(path, atimeMs, mtimeMs, { followSymlinks: options?.follow !== false }));
+  /** utimensat(2), each time an FsTime; `follow: false` sets a link's own times. */
+  async utimes(path: string, atime: FsTime, mtime: FsTime, options?: { follow?: boolean }): Promise<void> {
+    await this.call(options?.follow === false ? 'lutime' : 'utime', path, () => this.fs.utimes(path, atime, mtime, { followSymlinks: options?.follow !== false }));
   }
   /** cp: a file (a link named as the source followed), or with `recursive` a tree, onto a name that is not there. */
   async copy(from: string, to: string, options?: VfsCopyOptions): Promise<number> {
@@ -1498,7 +1492,7 @@ export class ProcessView implements VFS {
       const handle = await this.fs.open(path, { write: true, create: true });
       await this.fs.close(handle.id);
       // UTIME_NOW: write permission is enough, as for touch(1).
-      await this.fs.utimes(path, null, null);
+      await this.fs.utimes(path, 'now', 'now');
     });
   }
   /** The file's bytes read around the session's content cache, re-checked for a change mid-read. */
@@ -1780,8 +1774,8 @@ export class NamespaceFs {
   }
   chmod(path: string, mode: number): void { this.fs.chmod(path, mode); }
   chown(path: string, uid: number | null, gid: number | null): void { this.fs.chown(path, uid, gid); }
-  utimes(path: string, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: { followSymlinks?: boolean }): void {
-    this.fs.utimes(path, atimeMs, mtimeMs, options);
+  utimes(path: string, atime: FsTime, mtime: FsTime, options?: { followSymlinks?: boolean }): void {
+    this.fs.utimes(path, atime, mtime, options);
   }
   copyFile(from: string, to: string): void { this.fs.copyFile(from, to); }
   acquireExclusiveMutation(path: string, options?: { includeMissingAncestors?: boolean }): { root: string; owner: string } {
