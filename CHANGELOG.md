@@ -14,42 +14,16 @@ published independently in the `@nimbus-sh` npm scope.
   `--help` or `-e` was read, `node .` read the directory, and conditions
   were ignored. What it does not run (`--require`, `--import`, `--print`,
   `--check`, `--input-type`, `--experimental-default-type`, a program from
-  stdin) is refused with exit 9 before anything runs. A script it cannot find is "node: cannot find module
-  '<script>'", as on the hosted `node`.
+  stdin) is refused with exit 9 before anything runs. A script it cannot
+  find is "node: cannot find module '<script>'", as on the hosted `node`.
 - Fixed: a hosted launch's dependency walk and ES module staging decide
   what is a Node builtin the way Node's `module.isBuiltin` does
   (`runtime/node-builtins.js` `isNodeBuiltin`). The process's `require`
   shares its scheme-only names and serves the builtins it implements. A
-  `node_modules/constants`
-  shadow is no longer walked: `require('constants')` is the builtin, as in
-  Node. Before, a large shadow could fail the launch over a file Node never
+  `node_modules/constants` shadow is no longer walked: `require('constants')`
+  is the builtin, as in Node. Before, a large shadow could fail the launch over a file Node never
   reads. An npm package named `sqlite`, required bare, is now shipped with
   the launch, since bare `sqlite` is no builtin.
-- Fixed: a hosted ES module, staged or interpreted, can statically import
-  a `data:` module (`import x from 'data:text/javascript,…'`). Before, a
-  staged entry or package with such an import failed to link, and an
-  interpreted one refused it.
-- Fixed: a hosted `data:` JavaScript module is always an ES module, as its
-  MIME type says: strict, with `this` undefined at its top level. Before,
-  one without `import` or `export` ran as sloppy CommonJS.
-- Fixed: a hosted ES module may export its own `__esModule`. Before, a
-  module the program wrote with `export const __esModule = false` threw a
-  TypeError, and namespaces left the name out. Now the name is in its
-  namespace, as in Node.
-- Fixed: a hosted typeless `.js` file the program writes, whose top level
-  redeclares a CommonJS wrapper name (`const require = 1`), is an ES
-  module, as Node detects it. Before, it ran as sloppy CommonJS. An
-  explicitly CommonJS file that does this is now the SyntaxError V8 gives.
-- Fixed: a hosted module under a directory whose name has `#`, `?`, `%` or
-  another character a file URL escapes imports beside itself, and its
-  `import.meta.url` escapes the name as Node's `pathToFileURL` does. Before,
-  `a#b/main.cjs` imported from the directory above it.
-- Fixed: a portable `node` program's `import()` takes its arguments as
-  Node 22's does. A second argument that is not an object (`1`, `null`), a
-  `with` that is not an object, or an attribute value that is not a string
-  is refused with V8's TypeError before anything resolves. Before, these
-  were taken as no options and the module loaded and ran. A Symbol
-  specifier is refused, where before it loaded `Symbol(s)`.
 - Fixed: a portable `node` program's `import()` refuses a second argument
   that is not an object (`1`, `null`), or a `with` that is not an object,
   with V8's TypeError before anything resolves. Before, these counted as no
