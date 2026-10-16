@@ -58,7 +58,7 @@ export class CyclicModuleRecord {
   /** [[TopLevelCapability]]: ~empty~ (null), or the capability Evaluate() made for its cycle root. */
   topLevelCapability: PromiseCapability | null = null;
   /** [[AsyncParentModules]]. */
-  readonly asyncParentModules: CyclicModuleRecord[] = [];
+  readonly asyncParentModules: CyclicModuleRecord[] = newList();
   /** [[PendingAsyncDependencies]]. */
   pendingAsyncDependencies = 0;
 
@@ -72,12 +72,37 @@ export class OtherModuleRecord {
 
 export type ModuleRecord = CyclicModuleRecord | OtherModuleRecord;
 
-// What this module calls of the built-ins, as they were when it loaded: it
-// runs after a program may have replaced them (a global, a prototype's
-// method, the array iterator), so it calls nothing else of them.
+// What this module calls of the built-ins, as they were when it loaded (a
+// host loads it before any program runs): it runs after a program may have
+// replaced them (a global, a prototype's method, the array iterator), so it
+// calls nothing else of them.
 const PromiseConstructor = Promise;
 const promiseThen = Promise.prototype.then;
 const reflectApply = Reflect.apply;
+const objectSetPrototypeOf = Object.setPrototypeOf;
+
+/**
+ * A List, as the spec's are: an array of no prototype, so an accessor a
+ * program puts on Array.prototype (an index's) never sees what it holds.
+ */
+function newList<T>(): T[] {
+  const list: T[] = [];
+  objectSetPrototypeOf(list, null);
+  return list;
+}
+
+/**
+ * The promises the graph itself thens (ExecuteAsyncModule's): a then of one
+ * consults its constructor's species (SpeciesConstructor), and these answer
+ * with this class, which no program reaches, so neither
+ * Promise[Symbol.species] nor Promise.prototype.constructor is consulted, as
+ * PerformPromiseThen consults neither.
+ */
+class GraphPromise<T> extends PromiseConstructor<T> {
+  static override get [Symbol.species](): typeof GraphPromise {
+    return GraphPromise;
+  }
+}
 
 /** Appends `item` to `list`, by index. */
 function append<T>(list: T[], item: T): void {
@@ -98,11 +123,14 @@ function contains<T>(list: readonly T[], item: T): boolean {
   return false;
 }
 
-/** NewPromiseCapability(%Promise%). */
-function newPromiseCapability(): PromiseCapability {
+/**
+ * NewPromiseCapability(%Promise%): of `C`, GraphPromise for a promise the
+ * graph thens, %Promise% for Evaluate()'s, which its host awaits.
+ */
+function newPromiseCapability(C: typeof PromiseConstructor): PromiseCapability {
   let resolve: () => void = () => {};
   let reject: (error: unknown) => void = () => {};
-  const promise = new PromiseConstructor<void>((onResolve, onReject) => {
+  const promise = new C<void>((onResolve, onReject) => {
     resolve = () => onResolve();
     reject = onReject;
   });
@@ -121,7 +149,7 @@ function incrementModuleAsyncEvaluationCount(): number {
 export function link(module: CyclicModuleRecord): void {
   // 1. Assert: module.[[Status]] is one of ~unlinked~, ~linked~, ~evaluating-async~, or ~evaluated~.
   // 2. Let stack be a new empty List.
-  const stack: CyclicModuleRecord[] = [];
+  const stack: CyclicModuleRecord[] = newList();
   // 3. Let result be Completion(InnerModuleLinking(module, stack, 0)).
   try {
     innerModuleLinking(module, stack, 0);
@@ -203,9 +231,9 @@ export function evaluate(start: CyclicModuleRecord): Promise<void> {
   // 4. If module.[[TopLevelCapability]] is not ~empty~, return module.[[TopLevelCapability]].[[Promise]].
   if (module.topLevelCapability !== null) return module.topLevelCapability.promise;
   // 5. Let stack be a new empty List.
-  const stack: CyclicModuleRecord[] = [];
+  const stack: CyclicModuleRecord[] = newList();
   // 6. Let promiseCapability be ! NewPromiseCapability(%Promise%). 7. Set module.[[TopLevelCapability]] to promiseCapability.
-  const promiseCapability = newPromiseCapability();
+  const promiseCapability = newPromiseCapability(PromiseConstructor);
   module.topLevelCapability = promiseCapability;
   // 8. Let result be Completion(InnerModuleEvaluation(module, stack, 0)).
   try {
@@ -320,7 +348,7 @@ function innerModuleEvaluation(module: ModuleRecord, stack: CyclicModuleRecord[]
 function executeAsyncModule(module: CyclicModuleRecord): void {
   // 1. Assert: module.[[Status]] is either ~evaluating~ or ~evaluating-async~. 2. Assert: module.[[HasTLA]] is true.
   // 3. Let promiseCapability be ! NewPromiseCapability(%Promise%).
-  const promiseCapability = newPromiseCapability();
+  const promiseCapability = newPromiseCapability(GraphPromise);
   // 4-8. Perform PerformPromiseThen(promiseCapability.[[Promise]], onFulfilled, onRejected), whose closures
   //      perform AsyncModuleExecutionFulfilled(module) and AsyncModuleExecutionRejected(module, error).
   reflectApply(promiseThen, promiseCapability.promise, [() => asyncModuleExecutionFulfilled(module), (error: unknown) => asyncModuleExecutionRejected(module, error)]);
@@ -358,7 +386,7 @@ function asyncModuleExecutionFulfilled(module: CyclicModuleRecord): void {
   // 7. If module.[[TopLevelCapability]] is not ~empty~, then perform ! Call(module.[[TopLevelCapability]].[[Resolve]], undefined, « undefined »).
   module.topLevelCapability?.resolve();
   // 8. Let execList be a new empty List. 9. Perform GatherAvailableAncestors(module, execList).
-  const execList: CyclicModuleRecord[] = [];
+  const execList: CyclicModuleRecord[] = newList();
   gatherAvailableAncestors(module, execList);
   // 11. Let sortedExecList be execList sorted by [[AsyncEvaluationOrder]] in ascending order.
   const sortedExecList = sortedByAsyncEvaluationOrder(execList);
@@ -397,7 +425,7 @@ function order(module: CyclicModuleRecord): number {
 
 /** A copy of `list` sorted by [[AsyncEvaluationOrder]], ascending (an insertion sort: the lists are short). */
 function sortedByAsyncEvaluationOrder(list: readonly CyclicModuleRecord[]): CyclicModuleRecord[] {
-  const sorted: CyclicModuleRecord[] = [];
+  const sorted: CyclicModuleRecord[] = newList();
   for (let i = 0; i < list.length; i++) {
     let at = sorted.length;
     while (at > 0 && order(sorted[at - 1]) > order(list[i])) {

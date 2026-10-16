@@ -42,6 +42,13 @@ const filesAt = (root) => {
   const bridged = 'data:text/javascript,' + encodeURIComponent('import b from ' + JSON.stringify(root + 'back3.mjs') + '; export function hello() { return "hi3"; } export default "data:" + b;');
   return {
   'back3.mjs': "import { hello } from './bridge.mjs?instance';\nglobalThis.back3Said = hello();\nexport default 'back3';\n",
+    // A CommonJS module that, while it runs, requires (twice) an ES module it writes, which imports it back: the
+    // cycle Node refuses, refused the second time as the first, once the first left the module unlinked.
+    'cyc-entry.cjs': "const fs = require('fs');\n"
+      + "fs.writeFileSync(__dirname + '/cyc.mjs', \"import './cyc-entry.cjs';\\nexport const x = 1;\\n\");\n"
+      + "const codes = [];\n"
+      + "for (let i = 0; i < 2; i++) { try { require('./cyc.mjs'); codes.push('loaded'); } catch (e) { codes.push(e.code ?? e.constructor.name); } }\n"
+      + "module.exports = codes;\n",
   'bridge.mjs': 'export { hello } from ' + JSON.stringify(bridged) + ';\n',
   'tla-b.mjs': "import 'data:text/javascript,export const leaf = 1';\nexport default await Promise.resolve(7);\n",
   'back2.mjs': 'import { hello } from ' + JSON.stringify(cyclic) + ';\nglobalThis.backSaid = hello();\nexport default "back";\n',
@@ -122,6 +129,26 @@ out.identity = await outcome(async () => (await import('./id-user.mjs')).default
 out.stagedCycle = await outcome(async () => [(await import(${JSON.stringify(cyclic)})).default, globalThis.backSaid]);
 out.stagedAwait = await outcome(async () => (await import(${JSON.stringify(awaiting)})).default);
 out.queryCycle = await outcome(async () => [(await import(${JSON.stringify(bridged)})).default, globalThis.back3Said]);
+// A link that failed links again from a fresh environment.
+out.relink = await outcome(async () => (await import('./cyc-entry.cjs')).default);
+// A typeless .js imported with a query, then (rewritten) by its own URL: two modules, each the file as it was.
+writeFileSync('qa.js', 'export const v = 1;\\n');
+out.queryThenBase = await outcome(async () => {
+  const first = (await import('./qa.js?x')).v;
+  writeFileSync('qa.js', 'export const v = 2;\\n');
+  return [first, (await import('./qa.js')).v];
+});
+// A module with top-level await, written now, imported while Reflect.apply is not the built-in.
+writeFileSync('tla-late.mjs', 'export default await Promise.resolve(5);\\n');
+out.replacedApply = await outcome(async () => {
+  const apply = Reflect.apply;
+  Reflect.apply = () => { throw new Error('the program\\'s Reflect.apply'); };
+  try {
+    return (await import('./tla-late.mjs')).default;
+  } finally {
+    Reflect.apply = apply;
+  }
+});
 writeFileSync('late-parent.mjs', "import './bad-json-child.mjs';\\n");
 const lateParent = await outcome(async () => { await import('./late-parent.mjs'); return 'loaded'; });
 out.nestedMissingJson = [Array.isArray(lateParent) ? lateParent[1] : lateParent, globalThis.badChildRan ?? false];
@@ -189,6 +216,9 @@ assert.deepEqual(expected, {
   stagedCycle: ['data:back', 'hi'],
   stagedAwait: 7,
   queryCycle: ['data:back3', 'hi3'],
+  relink: ['ERR_REQUIRE_CYCLE_MODULE', 'ERR_REQUIRE_CYCLE_MODULE'],
+  queryThenBase: [1, 2],
+  replacedApply: 5,
   nestedMissingJson: ['SyntaxError', false],
   cycleStar: ['x'],
   starConflict: ['y'],

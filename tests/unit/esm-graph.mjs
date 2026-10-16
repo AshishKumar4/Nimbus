@@ -185,6 +185,54 @@ const evaluated = (log) => log.filter((entry) => !entry.startsWith('init:') && !
   assert.deepEqual(evaluated(log), ['C', 'C$', 'B', 'A']);
 }
 
+// ── Nor does a program's array index accessor, Promise[Symbol.species] or Promise.prototype.constructor: the graph's
+//    Lists have no prototype, and the promise it thens answers its own species. Each installed from before Link() to
+//    after Evaluate() returns, which is when the graph registers its reaction to the awaiting module. ──
+{
+  // The test's own lists have no prototype either: the accessors would see them.
+  const list = () => Object.setPrototypeOf([], null);
+  const log = list();
+  const reached = list();
+  const records = {};
+  const requested = { A: [], B: [], C: [], D: [] };
+  const make = (name, tla) => {
+    records[name] = new CyclicModuleRecord({
+      hasTLA: tla,
+      requestedModules: () => requested[name],
+      initializeEnvironment() { log[log.length] = `init:${name}`; },
+      executeModule(capability) {
+        log[log.length] = name;
+        if (tla) queueMicrotask(() => { log[log.length] = `${name}$`; capability.resolve(); });
+      },
+    });
+  };
+  for (const [name, tla] of [['A', false], ['B', false], ['C', true], ['D', true]]) make(name, tla);
+  const edges = { A: ['B', 'C', 'D'], B: ['A', 'C'], C: [], D: [] };
+  for (const name of ['A', 'B', 'C', 'D']) for (let i = 0; i < edges[name].length; i++) requested[name][i] = records[edges[name][i]];
+  const indices = [0, 1, 2, 3];
+  for (const i of indices) {
+    Object.defineProperty(Array.prototype, i, { configurable: true, get() { reached[reached.length] = `get[${i}]`; }, set() { reached[reached.length] = `set[${i}]`; } });
+  }
+  const species = Object.getOwnPropertyDescriptor(Promise, Symbol.species);
+  Object.defineProperty(Promise, Symbol.species, { configurable: true, get() { reached[reached.length] = 'species'; throw new Error('species'); } });
+  const constructor = Promise.prototype.constructor;
+  function Hostile() {}
+  Object.defineProperty(Hostile, Symbol.species, { get() { reached[reached.length] = 'constructor'; throw new Error('constructor'); } });
+  Promise.prototype.constructor = Hostile;
+  let promise;
+  try {
+    link(records.A);
+    promise = evaluate(records.A);
+  } finally {
+    Promise.prototype.constructor = constructor;
+    Object.defineProperty(Promise, Symbol.species, species);
+    for (const i of indices) delete Array.prototype[i];
+  }
+  await promise;
+  assert.deepEqual(Array.from(reached), [], 'no accessor, species or constructor of the program was reached');
+  assert.deepEqual(evaluated(Array.from(log)), ['C', 'D', 'C$', 'D$', 'B', 'A']);
+}
+
 // ── Differential: random graphs, as host Node evaluates the same files ──
 let seed = 0x5eed;
 const random = () => {

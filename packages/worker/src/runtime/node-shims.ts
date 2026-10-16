@@ -62,7 +62,7 @@ import { COMMONJS_WRAPPER_NAMES } from '@nimbus-sh/core/runtime/javascript-ast.j
 import { NODE_SCHEME_ONLY_BUILTINS } from '@nimbus-sh/core/runtime/node-builtins.js';
 import { ESM_STAR_CONFLICTS } from '@nimbus-sh/core/runtime/esm-interop.js';
 import { ESM_BINDINGS_MODULE, ESM_BUN_SCOPE, ESM_FACADE_DIR, ESM_TOP_LEVEL_AWAIT, ESM_TYPELESS } from '@nimbus-sh/core/runtime/native-esm.js';
-import { ESM_LOADER_POLICY_SOURCE, ESM_REQUIRED_SOURCE } from '@nimbus-sh/core/runtime/compiled-bodies.generated.js';
+import { ESM_GRAPH_SOURCE, ESM_LOADER_POLICY_SOURCE, ESM_REQUIRED_SOURCE } from '@nimbus-sh/core/runtime/compiled-bodies.generated.js';
 import {
   FACET_PROVIDED_PACKAGES,
   FS_READ_BATCH_PATH_LIMIT,
@@ -12950,6 +12950,9 @@ function __nimbusEsmRequire(id, required, parent = undefined) {
 // Node's require(esm) result of a record's namespace (core runtime/native-esm-runtime.ts requiredEsModule).
 const __nimbusEsmRequired = ${ESM_REQUIRED_SOURCE}.requiredEsModule;
 const { importCallArguments: __nimbusImportCallArguments, dataModule: __nimbusDataModuleOf } = ${ESM_LOADER_POLICY_SOURCE};
+// ECMA-262's module graph algorithm (core runtime/esm-graph.ts), made before any program runs: it calls only the
+// built-ins it took then.
+const __nimbusGraph = ${ESM_GRAPH_SOURCE};
 // The package.json files Node's loader has warned are typeless (MODULE_TYPELESS_PACKAGE_JSON).
 const __nimbusTypelessWarned = new Set();
 // Node's warning of an imported .js that is an ES module by its syntax alone
@@ -13059,7 +13062,7 @@ async function __nimbusEsmInterpret(id, linked) {
   let record = __nimbusGraphRecords.get("/" + key);
   if (record === undefined) {
     try {
-      if (!linked) __nimbusGraphOf().linkAdopted(__nimbusLateLinkHost, id, key, url);
+      if (!linked) __nimbusLateOf().linkAdopted(__nimbusLateLinkHost, id, key, url);
       record = __nimbusAdoptedRecord(id, key);
     } catch (e) {
       __nimbusExplainCommonJSGlobalLike(e, url, false);
@@ -13194,8 +13197,9 @@ if (typeof __nimbusEsmHost !== "undefined" && __nimbusEsmHost !== null) __nimbus
 // module's translation by its URL, a builtin by "node:" and its name, a
 // staged module the registry evaluates by "row:" and its id.
 const __nimbusGraphRecords = new Map();
-let __nimbusGraphModule = null;
-const __nimbusGraphOf = () => __nimbusGraphModule ??= __nimbusRegistryRequire("./${RUNTIME_ESM_LATE_MODULE}");
+// The late link (core runtime/esm-late-link.ts), loaded the first time a late graph is linked.
+let __nimbusLateModule = null;
+const __nimbusLateOf = () => __nimbusLateModule ??= __nimbusRegistryRequire("./${RUNTIME_ESM_LATE_MODULE}");
 // Whether a require() is linking its graph: one that cannot wait, so a staged
 // module the registry has not evaluated is the interpreter's.
 let __nimbusGraphSync = false;
@@ -13233,7 +13237,9 @@ function __nimbusGraphRecord(resolution, parent) {
     if (__nimbusCommonJsPending.has("/" + key)) return __nimbusTranslatedRecord(resolution, key, key, parent);
     const plain = __nimbusPrepareModule(key, key, false, parent, false);
     if (plain.state === undefined || __nimbusModuleLink(plain.state.cell) === null) return __nimbusTranslatedRecord(resolution, key, key, parent, plain);
-    __nimbusInterpretedRecord(plain.state);
+    // An ES module: only the query's or fragment's instance was asked for, and the file's own URL is a module of
+    // its own, made from the file as it is when it is imported.
+    plain.state.unload();
   }
   // An ES module by its format, or by its syntax (detect): compiled now, run by its graph.
   const prepared = __nimbusPrepareModule(key, instance, false, parent, resolution.format === "module");
@@ -13243,7 +13249,7 @@ function __nimbusGraphRecord(resolution, parent) {
 // A module evaluated already (a builtin; a staged module the registry
 // evaluated; a package the facet provides): its namespace, as it is.
 function __nimbusEvaluatedRecord(namespace) {
-  const record = new (__nimbusGraphOf().OtherModuleRecord)({ link() {}, evaluateSync() {} });
+  const record = new __nimbusGraph.OtherModuleRecord({ link() {}, evaluateSync() {} });
   record.namespace = () => namespace;
   return record;
 }
@@ -13257,7 +13263,7 @@ function __nimbusTranslatedRecord(resolution, key, instance, parent, prepared = 
   if (prepared?.state !== undefined) __nimbusCommonJsPending.set(prepared.state.cacheKey, prepared.state);
   const translation = __nimbusTranslation(resolution);
   let outcome = null;
-  const record = new (__nimbusGraphOf().OtherModuleRecord)({
+  const record = new __nimbusGraph.OtherModuleRecord({
     link() {},
     evaluateSync() {
       if (outcome !== null) {
@@ -13327,14 +13333,13 @@ function __nimbusDecideStaged(placeholder, first) {
 // that order: evaluated before the graph's evaluation, they run just where
 // Node's would, though the registry evaluates asynchronously.
 function __nimbusPlanGraph(root, sync) {
-  const late = __nimbusGraphOf();
   const visited = new Set();
   const first = [];
   let ran = false;
   const visit = (record) => {
     if (visited.has(record)) return;
     visited.add(record);
-    if (!(record instanceof late.CyclicModuleRecord)) {
+    if (!(record instanceof __nimbusGraph.CyclicModuleRecord)) {
       if (record.begin !== undefined) first.push(record);
       if (record.runs?.() === true) ran = true;
       return;
@@ -13408,7 +13413,7 @@ function __nimbusInterpretedRecord(state) {
     delete __NodeModule._cache[cacheKey];
     __nimbusEsmInstances.set(cacheKey, mod);
   }
-  const late = __nimbusGraphOf();
+  const late = __nimbusLateOf();
   const importer = state.data ? undefined : mod;
   const parentUrl = state.data ? moduleUrl : builtins.url.pathToFileURL(state.filename).href;
   const requests = __nimbusModuleRequestsOf(cell);
@@ -13417,6 +13422,9 @@ function __nimbusInterpretedRecord(state) {
   let requested = null;
   let execute = null;
   let namespace = null;
+  // Whether an InitializeEnvironment of it ran: a Link that failed (here, or in a module after it) left it
+  // ~unlinked~, and the next makes its environment again, as the spec's makes a new one each time.
+  let environment = false;
   const at = (source, type) => source + "\\0" + (type ?? "");
   // What its link requires: each static import's module's namespace
   // (ESM_LOAD_HELPER: the specifier, the marker, the type attribute), and the
@@ -13424,7 +13432,7 @@ function __nimbusInterpretedRecord(state) {
   const linkRequire = (id, marker, type = null) => marker === ${JSON.stringify(ESM_STAR_CONFLICTS)}
     ? late.starConflicts(__nimbusLateLinkHost, moduleUrl)
     : requested[targets.get(at(id, type))].namespace();
-  const record = new late.CyclicModuleRecord({
+  const record = new __nimbusGraph.CyclicModuleRecord({
     hasTLA: __nimbusModuleAwaits(cell),
     requestedModules() {
       if (requested === null) {
@@ -13441,6 +13449,12 @@ function __nimbusInterpretedRecord(state) {
       return requested;
     },
     initializeEnvironment() {
+      // Its export getters are not configurable: a second link publishes them on a fresh exports object.
+      if (environment) {
+        mod.exports = {};
+        execute = null;
+      }
+      environment = true;
       const before = globalThis.__currentModulePath;
       if (!state.data) globalThis.__currentModulePath = state.resolvedPath;
       try {
@@ -13539,7 +13553,7 @@ function __nimbusGraphAwaits(record, seen) {
   if (seen.has(record)) return false;
   seen.add(record);
   if (record.awaits === true) return true;
-  if (!(record instanceof __nimbusGraphOf().CyclicModuleRecord)) return false;
+  if (!(record instanceof __nimbusGraph.CyclicModuleRecord)) return false;
   for (const target of record.host.requestedModules()) if (__nimbusGraphAwaits(target, seen)) return true;
   return false;
 }
@@ -13547,21 +13561,20 @@ function __nimbusGraphAwaits(record, seen) {
 // namespace once its evaluation completes. What escapes it is explained as
 // Node's loader explains it, by the module imported.
 async function __nimbusImportRecord(record, url) {
-  const late = __nimbusGraphOf();
   try {
-    if (!(record instanceof late.CyclicModuleRecord)) {
+    if (!(record instanceof __nimbusGraph.CyclicModuleRecord)) {
       record.host.link();
       record.host.evaluateSync();
       return record.namespace();
     }
     for (const leaf of __nimbusPlanGraph(record, false)) await leaf.begin();
-    late.link(record);
+    __nimbusGraph.link(record);
   } catch (e) {
     __nimbusExplainCommonJSGlobalLike(e, url, false);
     throw e;
   }
   try {
-    await late.evaluate(record);
+    await __nimbusGraph.evaluate(record);
   } catch (e) {
     __nimbusExplainCommonJSGlobalLike(e, url, record.host.hasTLA);
     throw e;
@@ -13598,7 +13611,6 @@ async function __nimbusImportGraph(resolution) {
 // module's in Node's shape of a required namespace (__nimbusEsmRequired);
 // another's, its exports.
 function __nimbusRequireRecord(record, parent) {
-  const late = __nimbusGraphOf();
   const state = record.state;
   if (record.status === "linking" || record.status === "evaluating") {
     if (state.adopted) __nimbusEsmRequire(state.esmId, true, parent);
@@ -13612,11 +13624,11 @@ function __nimbusRequireRecord(record, parent) {
       if (record.status === "unlinked" && !state.adopted && !state.data) __nimbusLateLink(state.resolvedPath.replace(/^\\/+/, ""), state.moduleUrl);
       __nimbusPlanGraph(record, true);
       if (__nimbusGraphAwaits(record, new Set())) throw __nimbusRequireAsync(parent, state.filename);
-      late.link(record);
+      __nimbusGraph.link(record);
     } finally {
       __nimbusGraphSync = previous;
     }
-    __nimbusReflectApply(__nimbusEsmThen, late.evaluate(record), [undefined, () => {}]);
+    __nimbusReflectApply(__nimbusEsmThen, __nimbusGraph.evaluate(record), [undefined, () => {}]);
   } else if (__nimbusGraphAwaits(record, new Set())) {
     throw __nimbusRequireAsync(parent, state.filename);
   }

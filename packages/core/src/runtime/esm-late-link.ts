@@ -17,8 +17,6 @@ import type { ModuleRequests } from '../interpreter/index.js';
 import { cjsModuleExportNames } from './cjs-module-exports.js';
 import { dataModule } from './esm-loader-policy.js';
 
-// The guest's graph algorithm rides in this runtime module (RUNTIME_ESM_LATE_MODULE): node-shims evaluates late graphs by it.
-export { CyclicModuleRecord, OtherModuleRecord, evaluate, link } from './esm-graph.js';
 
 /** What the loader resolves a static import to. */
 export interface LateResolution {
