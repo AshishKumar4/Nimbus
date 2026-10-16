@@ -12,10 +12,11 @@ published independently in the `@nimbus-sh` npm scope.
   cached copy and fails a package with none with npm's `ENOTCACHED` error,
   without the network. Each is read from the command line, `npm_config_*`
   or an `.npmrc`, as npm reads it, along with the deprecated
-  `--cache-max=0` and `--cache-min=9999`. Tarballs are still fetched as
-  before. Otherwise a cached packument is reused for 60 minutes, as
-  before, and one past that is checked against the shared cache's copy
-  before the registry.
+  `--cache-max=0` and `--cache-min=9999`. `--offline` takes tarballs only
+  from the cache too, and fails one it does not have with `ENOTCACHED`.
+  Otherwise a cached packument is reused for 60 minutes, as before, and
+  one past that is checked against the shared cache's copy before the
+  registry.
 - Fixed (`nimbus wrangler dev`, nested Nimbus): a Worker loaded through a
   `worker_loaders` binding no longer grows the host Worker's isolate without
   bound. The Worker Loader shim used to keep every loaded Worker's whole
