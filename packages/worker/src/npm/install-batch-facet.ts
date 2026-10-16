@@ -45,7 +45,12 @@ export interface InstallBatchSpec {
   packages: FacetPackageSpec[];
   /** Internal pLimit cap for concurrent tarball download/decompression pipelines. */
   concurrency: number;
-  /** npm's cache mode: with 'only-if-cached' (`--offline`) a tarball the cache does not have is ENOTCACHED, and none is fetched. */
+  /**
+   * npm's cache mode for the tarballs read: 'no-cache' (`--prefer-online`)
+   * downloads each; 'force-cache' (`--prefer-offline`) takes the cache's
+   * copy, downloading only one it lacks; 'only-if-cached' (`--offline`)
+   * downloads none, a tarball the cache lacks ENOTCACHED.
+   */
   cache?: NpmCacheMode;
 }
 
@@ -320,8 +325,16 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     // supervisor deployment) the R2 leg becomes a noop and there is nothing to
     // overlap with, so no hedge is armed — the retry loop's own first fetch is
     // already the first thing that happens.
-    const r2Available = sharedAcquisition === null && typeof env.SUPERVISOR.getCachedTarball === 'function';
-    const offline = batch.cache === 'only-if-cached';
+    //
+    // npm's cache mode (InstallBatchSpec.cache) says which of the two answer,
+    // as pacote's tarball fetch has it: 'no-cache' (`--prefer-online`)
+    // downloads the tarball and asks no cache; 'force-cache' (`--prefer-
+    // offline`) and 'only-if-cached' (`--offline`) wait for the cache's
+    // answer before any download, the latter downloading nothing; only the
+    // default mode hedges.
+    const mode = batch.cache ?? 'default';
+    const r2Available = sharedAcquisition === null && mode !== 'no-cache' && typeof env.SUPERVISOR.getCachedTarball === 'function';
+    const offline = mode === 'only-if-cached';
     const r2WaitStart = Date.now();
     const r2P: Promise<{ bytes: Uint8Array | null; events: any[] } | null> = r2Available
       ? Promise.race([
@@ -343,7 +356,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       clearTimeout(hedgeTimer);
       hedgeTimer = null;
     };
-    if (r2Available && !offline) {
+    if (r2Available && mode === 'default') {
       hedgeTimer = setTimeout(() => {
         hedgeTimer = null;
         speculativeFetches++;

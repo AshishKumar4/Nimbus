@@ -64,6 +64,7 @@ import {
 import { parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
 import { exactVersion } from '@nimbus-sh/core/_shared/npm-semver.js';
 import type { NpmCacheMode } from '@nimbus-sh/core/_shared/npm-cache-mode.js';
+import type { NpmInstallSpec } from '@nimbus-sh/core/substrate/lifo/commands/system/npm.js';
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 import type { BundlePoolProvider } from '../facets/prebundle-pool.js';
 import { Fanout, type FanoutRoute } from '@nimbus-sh/fabric/fanout.js';
@@ -169,49 +170,23 @@ interface FetchOutcome {
   filesWritten: number;
 }
 
-export interface NpmInstallOptions {
+/**
+ * What an install is asked: the command's spec (NpmInstallSpec), which the
+ * hosted port hands on whole, less what the port settles itself (where it
+ * installs, the global prefix, the log sink); and the principal, and what
+ * runs under the install's hold.
+ */
+export interface NpmInstallOptions extends Omit<NpmInstallSpec, 'projectDir' | 'packages' | 'global' | 'globalPrefix' | 'npmLog' | 'registry'> {
   /** Explicit packages (`npm install react`). */
   packages?: string[];
-  /** `--omit=dev` (`--production`): what only devDependencies reach is planned, not installed. */
-  production?: boolean;
-  /** `--omit=optional` / `--omit=peer`: likewise for what only optional, or only peer, dependencies reach. */
-  omitOptional?: boolean;
-  omitPeer?: boolean;
-  /** npm ci: install exactly the tree package-lock.json records. */
-  fromLockfile?: boolean;
-  /** The invoking process: authorizes the batch facet's writes. */
-  pid: number;
-  /** Its credential: what the project is read and written as. */
+  /** The invoking process's credential: what the project is read and written as. */
   cred: VfsCred;
   /** npm-protocol log sink (see --loglevel). */
   npmLog?: NpmLogEmitter;
-  /** Per-invocation progress: overrides the constructor's sink. */
-  onProgress?: (msg: string) => void;
   /** The command's NPM_REGISTRY; default registry.npmjs.org. */
   registry?: string;
-  /** How packuments are read: npm's cache mode (`--offline`, `--prefer-offline`, `--prefer-online`); 'default' when not given. */
-  cache?: NpmCacheMode;
-  /** `--save-dev` / `--save-optional`: where what is named is saved. */
-  saveDev?: boolean;
-  saveOptional?: boolean;
-  /** False for `--no-save`: package.json is left as it is. */
-  save?: boolean;
-  /** What a saved range starts with ('' for `--save-exact`); '^' when not given. */
-  savePrefix?: string;
-  /** `--force`: a peer conflict the project owns is a warning, and node's engine is not checked. */
-  force?: boolean;
-  /** `--engine-strict`: a package whose engines exclude this node or npm fails the install, which changes nothing. */
-  engineStrict?: boolean;
-  /** `--strict-peer-deps`: any peer conflict is ERESOLVE unless forced. */
-  strictPeerDeps?: boolean;
-  /** `--legacy-peer-deps`: peers are neither installed nor checked. */
-  legacyPeerDeps?: boolean;
-  /** `--prefer-dedupe`: one copy serves every edge it can, an older one included. */
-  preferDedupe?: boolean;
   /** A global prefix's install: npm's shallow layout, and only what is named is built and changed. */
   global?: boolean;
-  /** The command's: an install it stops before publication changes nothing; one waiting for the tree never starts. */
-  signal?: AbortSignal;
   /** Run under the install's hold, once it has installed; answers the bins it linked. */
   whileHeld?: (result: NpmInstallResult) => Promise<number>;
 }

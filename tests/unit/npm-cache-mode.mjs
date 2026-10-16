@@ -281,6 +281,16 @@ await check('--offline installs a tarball the cache has, and refuses one it does
   for (const mode of [undefined, 'force-cache', 'no-cache']) assert.deepEqual(await installTarball(mode, null), { failed: undefined, requests: 1 }, String(mode));
 });
 
+await check('--prefer-online downloads a tarball the cache has, as pacote does under preferOnline', async () => {
+  assert.deepEqual(await installTarball('no-cache', TARBALL), { failed: undefined, requests: 1 });
+});
+
+await check('--prefer-offline takes a tarball the cache is slow to answer, with no download in its place', async () => {
+  assert.deepEqual(await installTarball('force-cache', TARBALL, 200), { failed: undefined, requests: 0 });
+  // The default mode hedges a slow cache with a download (npm-install-tarball-hedge).
+  assert.deepEqual(await installTarball(undefined, TARBALL, 200), { failed: undefined, requests: 1 });
+});
+
 Date.now = originalNow;
 globalThis.fetch = originalFetch;
 assert.deepEqual(failures, []);
