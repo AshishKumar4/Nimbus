@@ -104,7 +104,7 @@ const PROGRAM = `async (fs, root) => {
   // O_CREAT judges the access asked, not write: an existing file read-only to its owner opens O_RDONLY|O_CREAT, and is EEXIST under O_EXCL.
   results.promisesWxReadOnly = await outcome(async () => { const h = await fs.promises.open(P('seed/ro.txt'), 'wx'); await h.close(); });
   results.promisesRdonlyCreateExisting = await outcome(async () => { const h = await fs.promises.open(P('seed/ro.txt'), C.O_RDONLY | C.O_CREAT); const { buffer, bytesRead } = await h.read(Buffer.alloc(16), 0, 16, 0); await h.close(); return buffer.subarray(0, bytesRead).toString(); });
-  results.syncRdonlyCreateExisting = await outcome(() => read(fs.openSync(P('seed/ro.txt'), C.O_RDONLY | C.O_CREAT)));
+  results.syncRdonlyCreateExisting = await outcome(() => { fs.closeSync(fs.openSync(P('seed/ro.txt'), C.O_RDONLY | C.O_CREAT)); return 'opened'; });
   results.promisesRdonlyTruncNoFollowLink = await outcome(async () => { const h = await fs.promises.open(P('seed/link-to-a'), C.O_RDONLY | C.O_TRUNC | C.O_NOFOLLOW); await h.close(); });
   results.promisesRdonlyCreateNew = await outcome(async () => { const h = await fs.promises.open(P('rc-async.txt'), C.O_RDONLY | C.O_CREAT, 0o640); await h.close(); return [fs.readFileSync(P('rc-async.txt'), 'utf8'), fs.statSync(P('rc-async.txt')).mode & 0o777]; });
   results.syncRdonlyCreateNew = await outcome(() => { fs.closeSync(fs.openSync(P('rc-sync.txt'), C.O_RDONLY | C.O_CREAT, 0o640)); return [fs.readFileSync(P('rc-sync.txt'), 'utf8'), fs.statSync(P('rc-sync.txt')).mode & 0o777]; });
