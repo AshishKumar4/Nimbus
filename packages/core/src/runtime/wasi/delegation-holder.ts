@@ -1018,10 +1018,15 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       // A cell no grant holds is logged at once (written): first, before anything
       // is decided (an inode descriptor's cell is made after), whether its bytes
       // fit what the log holds unanswered.
-      const live = liveFile(handle);
-      if (live.provisional === true || (live.view !== undefined && client.held(live.key) === undefined)) client.fitsSync(bytes.byteLength, handle.path);
-      const file = cellOf(handle);
-      if (file === undefined) return undefined;
+      let file = liveFile(handle);
+      if (file.view !== undefined) {
+        if (client.held(file.key) === undefined) client.fitsSync(bytes.byteLength, handle.path);
+        const cell = cellOf(handle);
+        if (cell === undefined) return undefined;
+        file = cell;
+      } else if (file.provisional === true) {
+        client.fitsSync(bytes.byteLength, handle.path);
+      }
       if (file.through !== undefined) {
         // Through: by the file's number, ordered with everything else; an
         // O_APPEND write lands at the file's end as the session has it then.
