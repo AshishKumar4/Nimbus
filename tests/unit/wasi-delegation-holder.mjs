@@ -467,11 +467,13 @@ async function caughtUp(s) {
   await s.fs.flush();
   control.hold();
   sync.write(appender, null, enc.encode('X'));
+  const sent = s.fs.flush().catch(() => {});
   await until(() => control.entered > 0, 'the append on its way');
   sync.write(writer, 0, enc.encode('Y'));
   assert.equal(dec.decode(sync.readFile(other('f.txt'))), 'YbX');
   control.verdicts.push(true);
   control.open();
+  await sent;
   await s.fs.flush().catch(() => {});
   assert.equal(dec.decode(sync.readFile(other('f.txt'))), 'Yb', 'a refused append stayed in the view');
   assert.equal(dec.decode(s.kernel.readFile('home/user/other/f.txt')), 'Yb');
