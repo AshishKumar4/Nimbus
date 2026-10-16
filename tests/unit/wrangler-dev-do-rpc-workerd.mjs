@@ -25,13 +25,9 @@
 // testing a change (dist-integrity).
 
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import net from 'node:net';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { servePlainWorkerd } from './lib/plain-workerd.mjs';
 import { startLocalProbe } from './lib/workerd-probe.mjs';
 import {
   NIMBUS_DIFFERS, SHAPED_WORKERS, WORKER, WRANGLER_CONFIG, expectedAnswers, expectedShapedAnswer,
@@ -43,15 +39,11 @@ import {
  * the JSON of `requests` GETs, in order.
  */
 async function onPlainWorkerd(source, requests) {
-  const binary = createRequire(createRequire(import.meta.url).resolve('wrangler/package.json'))('workerd').default;
-  const dir = mkdtempSync(join(tmpdir(), 'nimbus-do-rpc-'));
-  mkdirSync(join(dir, 'store'));
-  const free = net.createServer();
-  await new Promise((resolve) => free.listen(0, '127.0.0.1', resolve));
-  const port = free.address().port;
-  await new Promise((resolve) => free.close(resolve));
-  writeFileSync(join(dir, 'main.js'), source);
-  writeFileSync(join(dir, 'config.capnp'), `using Workerd = import "/workerd/workerd.capnp";
+  const served = await servePlainWorkerd({
+    name: 'do-rpc',
+    files: { 'main.js': source },
+    dirs: ['store'],
+    config: ({ port, dir }) => `using Workerd = import "/workerd/workerd.capnp";
 const config :Workerd.Config = (
   services = [
     (name = "main", worker = (
@@ -68,31 +60,18 @@ const config :Workerd.Config = (
     (name = "store", disk = (path = "${join(dir, 'store')}", writable = true)),
   ],
   sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")],
-);`);
-  const child = spawn(binary, ['serve', 'config.capnp', '--experimental'], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
-  let logs = '';
-  child.stdout.on('data', (data) => { logs += data; });
-  child.stderr.on('data', (data) => { logs += data; });
+);`,
+  });
   try {
     const answers = [];
-    const until = Date.now() + 30_000;
     while (answers.length < requests) {
-      let response;
-      try {
-        response = await fetch(`http://127.0.0.1:${port}/`);
-      } catch (error) {
-        // Not listening yet.
-        if (child.exitCode !== null || Date.now() > until) throw new Error(`plain workerd: ${error}\n${logs}`);
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        continue;
-      }
-      assert.equal(response.status, 200, logs);
+      const response = await fetch(`${served.base}/`, { signal: AbortSignal.timeout(30_000) });
+      assert.equal(response.status, 200, served.logs());
       answers.push(await response.json());
     }
     return answers;
   } finally {
-    child.kill();
-    rmSync(dir, { recursive: true, force: true });
+    await served.stop();
   }
 }
 

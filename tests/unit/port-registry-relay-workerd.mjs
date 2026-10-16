@@ -9,13 +9,10 @@
 // The client leaving is the session's incoming Request.signal, which only
 // `enable_request_signal` provides.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import net from 'node:net';
 import { build } from 'esbuild';
+import { servePlainWorkerd } from './lib/plain-workerd.mjs';
 
 const REPO = resolve(import.meta.dirname, '../..');
 const ENTRY = `
@@ -78,27 +75,25 @@ const bundled = await build({
   bundle: true, format: 'esm', platform: 'neutral', write: false, logLevel: 'error',
   mainFields: ['module', 'main'], conditions: ['workerd', 'worker', 'import'], external: ['cloudflare:*', 'node:*'],
 });
-const require = createRequire(import.meta.url);
-const binary = createRequire(require.resolve('wrangler/package.json'))('workerd').default;
-const dir = mkdtempSync(join(tmpdir(), 'port-registry-relay-'));
-const free = net.createServer(); await new Promise((done) => free.listen(0, '127.0.0.1', done));
-const port = free.address().port; await new Promise((done) => free.close(done));
-writeFileSync(join(dir, 'main.js'), bundled.outputFiles[0].text);
-writeFileSync(join(dir, 'config.capnp'), `using Workerd = import "/workerd/workerd.capnp";
+const served = await servePlainWorkerd({
+  name: 'port-registry-relay',
+  files: { 'main.js': bundled.outputFiles[0].text },
+  readyPath: '/ready',
+  args: [],
+  config: ({ port }) => `using Workerd = import "/workerd/workerd.capnp";
 const config :Workerd.Config = (services = [(name = "main", worker = (modules = [(name = "main.js", esModule = embed "main.js")],
   compatibilityDate = "2026-09-26", compatibilityFlags = ["enable_request_signal"],
   durableObjectNamespaces = [(className = "Session", uniqueKey = "port-registry-relay", enableSql = true)], durableObjectStorage = (inMemory = void),
   bindings = [(name = "SESSION", durableObjectNamespace = "Session")]))],
-  sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")]);`);
-const child = spawn(binary, ['serve', 'config.capnp'], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
-let logs = ''; child.stdout.on('data', (data) => { logs += data; }); child.stderr.on('data', (data) => { logs += data; });
-const base = `http://127.0.0.1:${port}`;
+  sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")]);`,
+});
+const { base, port } = served;
 const stats = async (key) => (await fetch(`${base}/stats?key=${key}`)).json();
 async function until(key, done, label) {
   for (const deadline = Date.now() + 10_000; ;) {
     const row = await stats(key);
     if (done(row)) return row;
-    if (Date.now() > deadline) throw new Error(`${label}: ${JSON.stringify(row)}\n${logs}`);
+    if (Date.now() > deadline) throw new Error(`${label}: ${JSON.stringify(row)}\n${served.logs()}`);
     await new Promise((wake) => setTimeout(wake, 25));
   }
 }
@@ -114,11 +109,6 @@ async function leaveAfterFirstChunk(path) {
 }
 
 try {
-  for (const deadline = Date.now() + 30_000; ;) {
-    try { await fetch(`${base}/ready`); break; } catch {}
-    if (child.exitCode !== null || Date.now() > deadline) throw new Error(logs);
-    await new Promise((wake) => setTimeout(wake, 25));
-  }
   const bulk = await fetch(`${base}/bulk?key=bulk`);
   assert.equal(bulk.headers.get('content-length'), String(8 * 1024 * 1024), 'the declared length reaches the wire');
   assert.equal(bulk.headers.get('transfer-encoding'), null, 'never chunked');
@@ -146,4 +136,4 @@ try {
     assert.notEqual(left.aborted, null, 'through the incoming request signal');
   }
   console.log('port-registry-relay-workerd: native length, 64 KiB gate chunks, mismatch, and ownership through EOF and a leaving client');
-} finally { child.kill('SIGKILL'); rmSync(dir, { recursive: true, force: true }); }
+} finally { await served.stop(); }
