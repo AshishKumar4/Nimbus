@@ -6,7 +6,7 @@
 // import of it to a read off that default (`mod["red"]`), so any key of
 // module.exports is a named import. The built-in server cannot rewrite the
 // importer; it gives the served bundle named exports instead
-// (synthesizeCjsNamedExports), from the CJS scan's Vite policy. Held here:
+// (synthesizeCjsNamedExports), from the CJS scan (cjs-export-names). Held here:
 // for real Vite's own served bundle, every key of its default that can be an
 // ES name is a named export of what the built-in server makes of it, with
 // the default's value. color-name's module.exports is an object literal of
@@ -75,7 +75,7 @@ const LITERALS = [
 for (const source of LITERALS) {
   const module = { exports: {} };
   runInNewContext(source, { module, exports: module.exports, ...UNSEEN });
-  const scanned = scanCjsExports(source, 'vite');
+  const scanned = scanCjsExports(source);
   assert.deepEqual(new Set(scanned.names), new Set(Object.keys(module.exports).filter((name) => !outside(name))), source);
   const whole = Object.keys(MODULES).filter((id) => Object.keys(MODULES[id]).every((name) => Object.hasOwn(module.exports, name)));
   assert.deepEqual(scanned.reexports, whole, `${source}: reexports`);
