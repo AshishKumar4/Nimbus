@@ -5,6 +5,17 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (git): `git tag -l <pattern>` matches as git does, with the same
+  wildmatch git uses for refs. A negated class (`rel-[!x]`), a POSIX class
+  (`[[:digit:]]`) and an escape (`\x`) now work. Before, a regular
+  expression stood in, and it read `rel-[!x]` as "rel-! or rel-x".
+- Fixed (git): `git clone --depth` and `git fetch --depth` read their
+  value as git does. `0`, a negative number or `abc` fails with "fatal:
+  depth <n> is not a positive number". `2junk` or `08` fails with "fatal:
+  transport: invalid depth option '<n>'". `010` is octal, so depth 8. Exit
+  code 128 in every case. Before, a clone took `0` and `abc` as depth 1 and
+  `2junk` as depth 2, and cloned anyway. A clone with no `--depth` is still
+  depth 1.
 - Fixed (shell): `tar -x` and `tar -t` on an archive that ends inside a
   file, its data or its padding, fail as GNU tar does: "tar: Unexpected EOF
   in archive", exit 2. Before, they exited 0 and left that file out, so a
