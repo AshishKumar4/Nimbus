@@ -33,10 +33,11 @@ import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
 
 // Written before the program runs, in the directory at \`root\` (its file: URL, with its slash): staged.
 const filesAt = (root) => {
-  // A data: module in a cycle through a staged module (back2.mjs) whose static import of it reads nothing of it.
-  const cyclic = 'data:text/javascript,' + encodeURIComponent('import b from ' + JSON.stringify(root + 'back2.mjs') + '; export default "data:" + b;');
+  // A data: module in a cycle through a staged module (back2.mjs), which calls the data: module's function before
+  // that module's body has run, as Node's hoisted functions allow.
+  const cyclic = 'data:text/javascript,' + encodeURIComponent('import b from ' + JSON.stringify(root + 'back2.mjs') + '; export function hello() { return "hi"; } export default "data:" + b;');
   return {
-  'back2.mjs': 'import d from ' + JSON.stringify(cyclic) + ';\nexport default "back";\n',
+  'back2.mjs': 'import { hello } from ' + JSON.stringify(cyclic) + ';\nglobalThis.backSaid = hello();\nexport default "back";\n',
   // Staged (the entry names it, in an import() it never makes); its JSON name is missing.
   'bad-json-child.mjs': `globalThis.badChildRan = true;
 import { a } from 'data:application/json,{"a":1}' with { type: 'json' };
@@ -111,7 +112,7 @@ out.starConflict = await outcome(async () => Object.keys(await import('data:text
 const identity = 'data:text/javascript,export const z = 1';
 writeFileSync('id-user.mjs', 'import * as ns from ' + JSON.stringify(identity) + ';\\nexport default ns;\\n');
 out.identity = await outcome(async () => (await import('./id-user.mjs')).default === await import(identity));
-out.stagedCycle = await outcome(async () => (await import(${JSON.stringify(cyclic)})).default);
+out.stagedCycle = await outcome(async () => [(await import(${JSON.stringify(cyclic)})).default, globalThis.backSaid]);
 writeFileSync('late-parent.mjs', "import './bad-json-child.mjs';\\n");
 const lateParent = await outcome(async () => { await import('./late-parent.mjs'); return 'loaded'; });
 out.nestedMissingJson = [Array.isArray(lateParent) ? lateParent[1] : lateParent, globalThis.badChildRan ?? false];
@@ -176,7 +177,7 @@ assert.deepEqual(expected, {
   throwsOnce: [['threw', 'Error', 'thrown'], ['threw', 'Error', 'thrown'], 1],
   stagedMissingJson: ['SyntaxError', false],
   identity: true,
-  stagedCycle: 'data:back',
+  stagedCycle: ['data:back', 'hi'],
   nestedMissingJson: ['SyntaxError', false],
   cycleStar: ['x'],
   starConflict: ['y'],
