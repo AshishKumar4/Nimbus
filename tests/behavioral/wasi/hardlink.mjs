@@ -9,14 +9,15 @@
 // create "dst", then path_filestat_get("dst") expects size=1. Prints
 // '1' on match.
 
-import { openWasiProbe, tailLines, trimmedLines } from './_harness.mjs';
+import { outputLines } from '../_driver.mjs';
+import { openWasiProbe, tailLines } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/hardlink', { dir: '/home/user/sb', fixture: 'hardlink', as: 'hl.wasm' });
 const { t } = probe;
 try {
   const r = await t.run('wasm-runner hl.wasm', 60_000);
   const tail = tailLines(r.output, 6);
-  const lines = trimmedLines(tail);
+  const lines = outputLines(tail);
   const ok = lines.some(s => s === '1');
 
   probe.report([['path_link(src,dst) + stat(dst).size == 1', ok]], { tail, ok });

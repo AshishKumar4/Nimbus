@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // python/script-file — `python t.py` reads + runs a script from VFS.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, heredocCommand } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, heredocCommand, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('python/script-file');
@@ -26,11 +26,10 @@ await t.run(heredocCommand('t.py', scriptPy), 15_000);
 {
   const { output, elapsed } = await t.run('python t.py', 120_000);
   const stripped = stripAnsi(output);
-  const lines = stripped.split(/\r?\n/).map((l) => l.trim());
-  const hasFromScript = lines.includes('from-script');
+  const hasFromScript = hasOutputLine(output, 'from-script');
   a.check('python t.py prints "from-script"', hasFromScript,
     hasFromScript ? `elapsed=${elapsed}ms` : JSON.stringify(stripped.slice(-400)));
-  const hasArgv = lines.some((l) => l === 'argv0=t.py');
+  const hasArgv = hasOutputLine(output, 'argv0=t.py');
   a.check('python t.py: sys.argv[0] === "t.py"', hasArgv,
     hasArgv ? '' : JSON.stringify(stripped.slice(-400)));
 }

@@ -521,13 +521,14 @@ export function termBody(raw) {
 }
 
 /**
- * Whether some line of `output`, trimmed, is exactly `expected`. A bare
- * `\r` ends a line as `\n` does: a terminal redraws over it.
+ * The lines of terminal `output`, without ANSI and trimmed. A bare `\r`
+ * ends a line as `\n` does: a terminal redraws over it.
  */
+export function outputLines(output) {
+  return stripAnsi(output).replace(/\r/g, '\n').split('\n').map((line) => line.trim());
+}
+
+/** Whether some line of `output` (outputLines) is exactly `expected`. */
 export function hasOutputLine(output, expected) {
-  return stripAnsi(output)
-    .replace(/\r/g, '\n')
-    .split('\n')
-    .map((line) => line.trim())
-    .includes(expected);
+  return outputLines(output).includes(expected);
 }

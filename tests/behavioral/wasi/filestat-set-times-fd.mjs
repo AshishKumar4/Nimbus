@@ -13,14 +13,15 @@
 // program would see this stat field; pre-B2 every touch was a silent
 // no-op. Now mtime advances.
 
-import { openWasiProbe, tailLines, trimmedLines } from './_harness.mjs';
+import { outputLines } from '../_driver.mjs';
+import { openWasiProbe, tailLines } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/filestat-set-times-fd', { dir: '/home/user/sb', fixture: 'fst-fd', as: 'fst.wasm' });
 const { t } = probe;
 try {
   const r = await t.run('wasm-runner fst.wasm', 60_000);
   const tail = tailLines(r.output, 6);
-  const lines = trimmedLines(tail);
+  const lines = outputLines(tail);
   const ok = lines.some(s => s === '1');
 
   probe.report([['fd_filestat_set_times(MTIM_NOW) → mtime > 0', ok]], { tail, ok });

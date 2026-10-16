@@ -9,14 +9,15 @@
 // and checks size == 16. Prints '1' on match. Pre-B4 returned ENOSYS → no
 // size change → '0'.
 
-import { openWasiProbe, tailLines, trimmedLines } from './_harness.mjs';
+import { outputLines } from '../_driver.mjs';
+import { openWasiProbe, tailLines } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/fd-allocate', { dir: '/home/user/sb', fixture: 'fd-allocate', as: 'all.wasm' });
 const { t } = probe;
 try {
   const r = await t.run('wasm-runner all.wasm', 60_000);
   const tail = tailLines(r.output, 6);
-  const lines = trimmedLines(tail);
+  const lines = outputLines(tail);
   const ok = lines.some(s => s === '1');
 
   probe.report([['fd_allocate(0, 16) extends file to 16 bytes', ok]], { tail, ok });

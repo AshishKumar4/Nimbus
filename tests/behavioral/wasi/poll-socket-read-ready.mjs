@@ -14,7 +14,8 @@
 //
 // External dep: tcpbin.com:4242 (same as B7 socket probes).
 
-import { openWasiProbe, tailLines, trimmedLines } from './_harness.mjs';
+import { outputLines } from '../_driver.mjs';
+import { openWasiProbe, tailLines } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/poll-socket-read-ready', { dir: '/home/user/sb', fixture: 'poll-socket-read-ready', as: 'ps.wasm' });
 const { t } = probe;
@@ -22,7 +23,7 @@ try {
   // Socket needs handshake + round-trip; 90s budget like the B7 probes.
   const r = await t.run('wasm-runner ps.wasm', 90_000);
   const tail = tailLines(r.output, 6);
-  const lines = trimmedLines(tail);
+  const lines = outputLines(tail);
   const ok = lines.some(s => s === '1');
 
   probe.report([['poll_oneoff(FD_READ on socket) fires when echo arrives', ok]], { tail, ok });

@@ -15,7 +15,8 @@
 // signal info). Modern wasi-libc's abort()→raise(SIGABRT) chain now
 // surfaces the right status to the shell.
 
-import { openWasiProbe, tailLines, trimmedLines } from './_harness.mjs';
+import { outputLines } from '../_driver.mjs';
+import { openWasiProbe, tailLines } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/proc-raise-sigabrt', { dir: '/home/user/sb', fixture: 'proc-raise-sigabrt', as: 'pra.wasm' });
 const { t } = probe;
@@ -24,7 +25,7 @@ try {
   await t.run('wasm-runner pra.wasm', 60_000);
   const r = await t.run('echo $?', 10_000);
   const tail = tailLines(r.output, 6);
-  const lines = trimmedLines(tail);
+  const lines = outputLines(tail);
   const ok = lines.some(s => s === '134');
 
   probe.report([['proc_raise(SIGABRT=6) → exit code 134', ok]], { tail, ok });

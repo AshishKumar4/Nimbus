@@ -17,14 +17,15 @@
 // Runtime-behavioral: validates the multi-subscription drain logic
 // (Promise.race winner + microtask-sentinel probe of others).
 
-import { openWasiProbe, tailLines, trimmedLines } from './_harness.mjs';
+import { outputLines } from '../_driver.mjs';
+import { openWasiProbe, tailLines } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/poll-multi-mixed', { dir: '/home/user/sb', fixture: 'poll-multi-mixed', as: 'pm.wasm' });
 const { t } = probe;
 try {
   const r = await t.run('wasm-runner pm.wasm', 30_000);
   const tail = tailLines(r.output, 6);
-  const lines = trimmedLines(tail);
+  const lines = outputLines(tail);
   const ok = lines.some(s => s === '1');
 
   probe.report([['poll_oneoff(clock+file+clock) drains always-ready file event', ok]], { tail, ok });

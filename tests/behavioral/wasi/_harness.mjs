@@ -8,7 +8,7 @@
 // ./_fixtures-stream-b.mjs, ../wasi-files/_fixtures.mjs), looked up here by
 // name; a name defined twice is refused rather than shadowed.
 
-import { BASE, Terminal, deleteSession, makeAsserter, mintSession, stripAnsi } from '../_driver.mjs';
+import { BASE, Terminal, deleteSession, makeAsserter, mintSession, outputLines } from '../_driver.mjs';
 import { FIXTURES as FILE_FIXTURES } from '../wasi-files/_fixtures.mjs';
 import { FIXTURES } from './_fixtures.mjs';
 import { STREAM_B_FIXTURES } from './_fixtures-stream-b.mjs';
@@ -28,14 +28,9 @@ export function writeWasiFixtureCmd(name, vfsPath) {
   return `node -e "require('fs').writeFileSync('${vfsPath}', Buffer.from('${b64}','base64'))"`;
 }
 
-/** The last `n` lines of a command's output, ANSI stripped. */
+/** The last `n` lines of a command's output (outputLines). */
 export function tailLines(output, n = 6) {
-  return stripAnsi(output).split(/\r?\n/).slice(-n).join('\n');
-}
-
-/** Each line of `text`, trimmed. */
-export function trimmedLines(text) {
-  return text.split(/\r?\n/).map((line) => line.trim());
+  return outputLines(output).slice(-n).join('\n');
 }
 
 /**
