@@ -46,7 +46,7 @@ function resolveFromRegistry(name, spec) {
   const { dependencies = {}, bin = {} } = versions[version];
   const pkg = {
     name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: `sha512-${name}-${version}`,
-    dependencies, exports: null, main: 'index.js', module: '', bin,
+    dependencies, main: 'index.js', bin,
   };
   return {
     pkg,

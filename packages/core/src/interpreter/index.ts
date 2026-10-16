@@ -22,25 +22,27 @@
  * an ordinary call of the global eval, which a Worker refuses at request time
  * natively too.
  */
-import { parse, type FunctionExpression, type Options, type Program } from 'acorn';
+import { parse, type FunctionExpression, type Identifier, type Options, type Program } from 'acorn';
 import {
   type SourceRealm, expressionFunctionBody, parseRuntimeFunction, runtimeFunctionSource, type RuntimeFunctionKind,
   scriptExpression,
 } from '../_shared/runtime-function-source.js';
 import { Compiler, programBindings, type UnitContext, type UnitHost } from './compile.js';
-import { type ModuleCell, type ModuleHelpers, moduleCell } from './modules.js';
+import { type ModuleCell, type ModuleHelpers, type ModuleLink, type ModuleLinkRequest, moduleCell, moduleLink, moduleLinkRequests } from './modules.js';
 import type { HostOps, NativeFunction } from './host-ops.js';
 import { InterpreterRuntime, ROOT_ENV, frameTemplate, isObject } from './runtime.js';
 import { type FunctionScope, analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
 import { type Owned, ownFunctionExpression, ownProgram } from './tree.js';
 import { own } from './parser-realm.js';
 import {
-  Error, LAUNCH_PRIMORDIALS, SafeMap, SafeWeakSet, SyntaxError, charCodeAt, isWhitespaceCode,
+  Error, LAUNCH_PRIMORDIALS, SafeMap, SafeWeakSet, SyntaxError, append, charCodeAt, contains, isWhitespaceCode, newSafeList,
   reflectGet, reflectGetOwnPropertyDescriptor, someItem, stringLastIndexOf, stringOf, stringSlice, withElement,
 } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 import { type ModuleRequest, programRequests } from './module-requests.js';
 import type { ModuleBindings } from '../runtime/esm-interop.js';
+import { bindingIdentifiers } from '../runtime/binding-pattern.js';
+import { importerUrl } from '../_shared/importer-url.js';
 import { type InterpretedFrame, type StackUnit, stampStack, stackFrames } from './stack.js';
 
 export type { HostOps } from './host-ops.js';
@@ -107,6 +109,15 @@ export interface Interpreter {
    */
   moduleAwaits(cell: unknown): boolean;
   /**
+   * The link of `cell`, an ES module's cell: its InitializeEnvironment, which
+   * answers its ExecuteModule (modules.ts ModuleLink), for a host that
+   * evaluates a module graph as ECMA-262 does (runtime/esm-graph.ts); null
+   * for a CommonJS cell.
+   */
+  moduleLink(cell: ModuleCell): ModuleLink | null;
+  /** The static imports `cell`'s link requires (its specifiers and `type` attributes), in order; null for a CommonJS cell. */
+  moduleLinkRequests(cell: ModuleCell): readonly ModuleLinkRequest[] | null;
+  /**
    * A function returning the value of the script `code` when it is one
    * expression (scriptExpression): vm.runInThisContext's code, as node-shims
    * hands it over and calls it, with the global object as `this` (a script's
@@ -172,13 +183,6 @@ function parseQuick(text: string, options: Options): Program {
   return parse(text, options);
 }
 
-/** The number of '/' characters `path` starts with. */
-function leadingSlashes(path: string): number {
-  let i = 0;
-  while (i < path.length && charCodeAt(path, i) === 0x2f) i++;
-  return i;
-}
-
 /**
  * The modules a file's text asks for, as this parser reads it
  * (module-requests.ts programRequests: imports, import() and require() of a
@@ -224,6 +228,26 @@ export interface ModuleRequests {
   readonly unread?: 'syntax' | 'unparsed';
 }
 
+/**
+ * The wrapper parameter a top-level lexical declaration of `program`
+ * redeclares, or null: V8 compiles CommonJS in Node's wrapper, and refuses
+ * one ("Identifier 'require' has already been declared").
+ */
+function redeclaredWrapperParameter(program: Program): string | null {
+  for (let i = 0; i < program.body.length; i++) {
+    const statement = program.body[i];
+    const names = newSafeList<Identifier>();
+    if (statement.type === 'ClassDeclaration' && statement.id !== null) append(names, statement.id);
+    else if (statement.type === 'VariableDeclaration' && statement.kind !== 'var') {
+      for (let d = 0; d < statement.declarations.length; d++) bindingIdentifiers(statement.declarations[d].id, names);
+    }
+    for (let n = 0; n < names.length; n++) {
+      if (contains(WRAPPER_PARAMS, names[n].name)) return names[n].name;
+    }
+  }
+  return null;
+}
+
 /** Whether a module's top level has import or export declarations. */
 function hasModuleSyntax(program: Program): boolean {
   return someItem(program.body, (s) => s.type === 'ImportDeclaration' || s.type === 'ExportNamedDeclaration'
@@ -247,7 +271,7 @@ function moduleProgram(text: string, format?: 'module' | 'commonjs'): { readonly
  */
 function formatProgram(text: string, format?: 'module' | 'commonjs'): { readonly module: boolean; readonly program: Program } {
   if (format === 'module') return { module: true, program: parseQuick(text, MODULE_OPTIONS) };
-  if (format === 'commonjs') return { module: false, program: parseQuick(text, COMMONJS_OPTIONS) };
+  if (format === 'commonjs') return { module: false, program: commonJsProgram(text) };
   let module: Program | null = null;
   try {
     module = parseQuick(text, MODULE_OPTIONS);
@@ -256,11 +280,20 @@ function formatProgram(text: string, format?: 'module' | 'commonjs'): { readonly
   }
   if (module !== null && hasModuleSyntax(module)) return { module: true, program: module };
   try {
-    return { module: false, program: parseQuick(text, COMMONJS_OPTIONS) };
+    return { module: false, program: commonJsProgram(text) };
   } catch (error) {
+    // What V8 refuses only as CommonJS (Node's throwsOnlyInCommonJSErrorMessages) is a module where it is one.
     if (module === null) throw error;
     return { module: true, program: module };
   }
+}
+
+/** `text` as V8 compiles CommonJS: a script whose top level may return, in a wrapper whose parameters it may not redeclare. */
+function commonJsProgram(text: string): Program {
+  const program = parseQuick(text, COMMONJS_OPTIONS);
+  const redeclared = redeclaredWrapperParameter(program);
+  if (redeclared !== null) throw new SyntaxError(`Identifier '${redeclared}' has already been declared`);
+  return program;
 }
 
 /** The interpreter's own built-ins, for the checks it shares with commonjs-cell.ts. */
@@ -328,7 +361,7 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
 
     compileModule(path, text, origin, javaScript = false, format) {
       if (!javaScript && UNPARSED_EXTENSIONS[extensionOf(path)]) throw new UnsupportedSyntax(`${extensionOf(path)} source`);
-      const parentUrl = stringSlice(path, 0, 5) === 'data:' ? 'data:text/javascript,' : `file:///${stringSlice(path, leadingSlashes(path))}`;
+      const parentUrl = importerUrl(path, charCodeAt);
       const stackFile = charCodeAt(path, 0) === 47 || stringSlice(path, 0, 5) === 'data:' || stringSlice(path, 0, 5) === 'file:' ? path : '/' + path;
       const moduleHost = unitHost(host, origin, parentUrl);
       const parsed = moduleProgram(text, format);
@@ -358,6 +391,14 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
 
     moduleAwaits(cell) {
       return typeof cell === 'function' && awaiting.has(cell as ModuleCell);
+    },
+
+    moduleLink(cell) {
+      return moduleLink(cell);
+    },
+
+    moduleLinkRequests(cell) {
+      return moduleLinkRequests(cell);
     },
 
     compileExpression(code, origin) {

@@ -1,12 +1,24 @@
 /**
- * Words quoted for a POSIX shell, in the two forms Nimbus writes: always
- * single-quoted (a command line built to be run), and as GNU coreutils
- * quotes a word to be read back (printf %q, and the names in coreutils'
- * messages).
+ * Words quoted for a POSIX shell, in the forms Nimbus writes: always
+ * single-quoted (a command line built to be run), as npm quotes a word it
+ * appends to a script, and as GNU coreutils quotes a word to be read back
+ * (printf %q, and the names in coreutils' messages).
  */
 /** `value` single-quoted, every `'` in it written `'\''`: one word to any POSIX shell. */
 export function singleQuote(value) {
     return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+/**
+ * `value` as npm quotes a word it appends to a script for sh
+ * (@npmcli/promise-spawn's escape.sh): bare when no character is special to
+ * the shell, else single-quoted, a leading `''` dropped.
+ */
+export function npmShellWord(value) {
+    if (value === '')
+        return `''`;
+    if (!/[\t\n\r "#$&'()*;<>?\\`|~]/.test(value))
+        return value;
+    return singleQuote(value).replace(/^(?:'')+(?!$)/, '').replace(/\\'''/g, `\\'`);
 }
 /** The escapes a `$'...'` piece writes control characters with; others are three octal digits. */
 const CONTROL_ESCAPES = { 7: 'a', 8: 'b', 9: 't', 10: 'n', 11: 'v', 12: 'f', 13: 'r' };

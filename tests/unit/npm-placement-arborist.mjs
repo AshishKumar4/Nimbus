@@ -270,7 +270,7 @@ function resolveTask(name, spec) {
     name: request.installName, version, tarballUrl: `${base}/${file}`, integrity: isBroken(file) ? NO_BYTES : integrity.get(file),
     dependencies: fields.dependencies ?? {}, peerDependencies: fields.peerDependencies, peerDependenciesMeta: fields.peerDependenciesMeta, bundleDependencies: fields.bundleDependencies,
     optionalDependencies: fields.optionalDependencies,
-    exports: null, main: 'index.js', module: '', bin: {},
+    main: 'index.js', bin: {},
   };
   return { ...empty, pkg, cacheWrites: [registryRecord(pkg, Date.now())] };
 }

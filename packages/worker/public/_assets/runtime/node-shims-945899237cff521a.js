@@ -16868,15 +16868,9 @@ function __nimbusModuleNotFound(request, parent) {
 // lib/internal/modules/helpers.js makeRequireFunction: `module`'s require,
 // resolving from `fromDir` (its file's directory). `required` false is an
 // ES module's, which only its static imports call.
-function __nimbusMakeRequire(module, fromDir = __nimbusModuleDir(module), required = true) {
-  // An interpreted ES module's static import passes its marker and its type
-  // attribute (esm-interop.ts ESM_LOAD_HELPER); its `export *` asks what it leaves out (ESM_CONFLICTS_HELPER).
+function __nimbusMakeRequire(module, fromDir = __nimbusModuleDir(module)) {
   const require = function require(id) {
-    if (arguments.length > 1 && arguments[1] === "nimbus:static-import") return __requireFrom(id, fromDir, module, false, arguments[2]);
-    if (arguments.length > 1 && arguments[1] === "nimbus:star-conflicts") {
-      return __nimbusRegistryRequire("./nimbus/esm-late.js").starConflicts(__nimbusLateLinkHost, module.__nimbusImportMeta?.url ?? builtins.url.pathToFileURL(module.filename).href);
-    }
-    return __requireFrom(id, fromDir, module, required);
+    return __requireFrom(id, fromDir, module);
   };
   function resolve(request, options) {
     if (typeof request !== "string") throw invalidArgType("request", "string", request);
@@ -18037,9 +18031,6 @@ __nimbusFrontEvents(builtins.events);
 // ═══════════════════════════════════════════════════════════════════════
 // ──  require() — full Node.js module resolution ─────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-// An interpreted module's evaluation when it completes later (top-level
-// await), by its evaluation key: what an import of it waits for.
-const __moduleEvaluations = new Map();
 // package → why the package ABI policy says it cannot run here (wasm-swap-registry.ts).
 const __nimbusAbiAdvisories = new Map([["sharp","Native libvips bindings; not portable to Workers. … try: no Workers-compatible target — render server-side or use Cloudflare Images. For the wasm32 build see @img/sharp-wasm32 entry below."],["sqlite3","Native sqlite3 .node binding. … try: better-sqlite3-wasm (untested by Nimbus) or sql.js once wasm asset loading is available."],["better-sqlite3","Native sqlite .node binding. … try: better-sqlite3-wasm (untested by Nimbus) or @libsql/client if its subpath exports resolve in your project."],["canvas","Native Cairo bindings. … try: canvaskit-wasm (Skia -> WASM, canvas-API-compatible, ~7MB; untested by Nimbus) or @resvg/resvg-wasm for SVG."],["sodium-native","Native libsodium. … try: tweetnacl (pure JS, untested by Nimbus) or libsodium-wrappers (WASM, untested by Nimbus)."],["node-pty","PTY syscalls unavailable in workerd. … try: no Workers-compatible target — use the Nimbus built-in shell."],["robotjs","Desktop automation; sandboxed Workers cannot access OS UI. … try: no Workers-compatible target."],["electron","Embedded Chromium runtime; not applicable to Workers. … try: no Workers-compatible target."],["bcrypt","Native bcrypt; pure-JS bcryptjs has an equivalent sync API but the require() name differs and Nimbus does not yet support npm aliases. … try: change `require(\"bcrypt\")` to `require(\"bcryptjs\")`, then `npm install bcryptjs`. APIs are sync-compatible."],["argon2","Native Argon2 C bindings. … try: hash-wasm for argon2d, argon2i, and argon2id."],["node-sass","Native libsass; deprecated upstream. … try: sass (dart-sass, pure JS)."],["grpc","Deprecated native gRPC. … try: @grpc/grpc-js (pure JS, untested end-to-end in Nimbus)."],["@swc/core","Native Rust SWC. … try: @swc/wasm-web for transform/parse only; it does not provide the native Plugin API."],["prisma","Native query engine; not portable to Workers in this configuration. … try: @prisma/adapter-d1 (Prisma official Workers adapter, untested by Nimbus), or migrate to drizzle-orm + @libsql/client (untested by Nimbus)."],["@prisma/client","Same as `prisma` (native query engine). … try: @prisma/adapter-d1 (untested by Nimbus), or drizzle-orm + @libsql/client (untested)."],["puppeteer","Bundled Chromium binary (~150 MB). … try: no Workers-compatible target for the bundled binary — use puppeteer-core + Cloudflare Browser Rendering (untested by Nimbus)."],["playwright","Bundled browsers (~300 MB). … try: no Workers-compatible target for bundled browsers — use @playwright/test against a remote browser endpoint (untested by Nimbus)."],["sql.js","Installs but fails at runtime because dist/sql-wasm.wasm is not available to the runtime loader. … try: For SQL in Workers, consider Cloudflare D1 or @libsql/client."],["@swc/wasm-web","Installs but fails at runtime because its generated code path depends on workerd-blocked dynamic code generation. … try: For ESM transforms consider esbuild-wasm."],["@img/sharp-wasm32","WASM build of sharp; package is wasm32-cpu-only and libvips initThreads() requires pthread support unavailable in Workers. … try: wasm-vips may work for simple pipelines; for complex pipelines, render server-side and ship pixels."],["@napi-rs/canvas","Native bindings only (linux-x64-gnu/musl, darwin-arm64/x64, android-arm64, linux-arm64-gnu/musl, win32-x64-msvc, linux-arm-gnueabihf). No WASM build published. … try: canvaskit-wasm (Skia -> WASM, canvas-API-compatible, ~7MB; untested by Nimbus) or @resvg/resvg-wasm for SVG."],["@napi-rs/canvas-wasm32-wasi","@napi-rs/canvas does not publish a wasm32-wasi variant on npm (404). The @napi-rs/canvas project ships only native bindings. No WASM/WASI build exists. … try: canvaskit-wasm (Skia -> WASM, canvas-API-compatible; untested by Nimbus) or @resvg/resvg-wasm for SVG."],["@tailwindcss/oxide","Native Rust Tailwind v4 oxide engine; ships only platform-specific .node bindings plus a wasm32-wasi shard. workerd has no node:wasi, and bare native bindings cannot dlopen. … try: no Workers-compatible target — Tailwind v3 (`tailwindcss@^3`) is pure JS and works in Workers (untested by Nimbus). Tailwind v4 inherently requires the Rust oxide engine."]]);
 
@@ -18118,7 +18109,7 @@ function __fileExists(path) {
 }
 // Resolution is the compiled core generator, over the guest's resident fs.
 // Metadata/refusal handling stays here; selection and probing never do.
-var { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, packageJsonText, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates } = (() => {
+var { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, nativeResolutionError, packageJsonText, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates } = (() => {
 var DEFAULT_ESM_CONDITIONS = ["import", "node", "node-addons", "module-sync"];
 var DEFAULT_CJS_CONDITIONS = ["require", "node", "node-addons", "module-sync"];
 var DEFAULT_BUILD_CONDITIONS = ["import", "module", "browser", "default"];
@@ -18232,11 +18223,17 @@ function resolveExports(exportsField, subpath = ".", conditions = DEFAULT_BUILD_
   if (!next.done) throw new Error("The build/browser package-map policy must be synchronous");
   return next.value ?? null;
 }
+function resolutionError(code, message, Type = Error) {
+  return nodeError(Type, code, message, void 0, resolutionError);
+}
+function nativeResolutionError(code, message) {
+  return Object.assign(new Error(message), { code });
+}
 function createNodePackageMapPolicy(packageJsonUrl, base, internal, resolveBare) {
   const path = (url) => decodeURIComponent(url.pathname);
   const pjsonPath = path(packageJsonUrl);
   const root = new URL(".", packageJsonUrl);
-  const error2 = (code, message, Type = Error) => Object.assign(new Type(message), { code });
+  const error2 = resolutionError;
   function invalidTarget(value, match) {
     const text = typeof value === "object" && value !== null ? JSON.stringify(value) : String(value);
     const related = !internal && text.length > 0 && !text.startsWith("./");
@@ -18382,7 +18379,8 @@ var fileUrl = (path) => {
   url.pathname = path;
   return url;
 };
-var error = (code, message, Type = Error) => Object.assign(new Type(message), { code });
+var error = resolutionError;
+var moduleNotFound = (message, props) => Object.assign(new Error(message), { code: "MODULE_NOT_FOUND" }, props);
 function requireNodeModulePaths(fromDir) {
   const paths = [];
   for (let dir = absolute(fromDir); ; dir = parentDir(dir)) {
@@ -18438,7 +18436,7 @@ function createRequireResolver(host, options = {}) {
     try {
       pkg = JSON.parse(packageJsonText(text));
     } catch {
-      throw error("ERR_INVALID_PACKAGE_CONFIG", "Invalid package config " + path + ".");
+      throw nativeResolutionError("ERR_INVALID_PACKAGE_CONFIG", "Invalid package config " + path + ".");
     }
     const config = pkg !== null && typeof pkg === "object" ? pkg : {};
     state.configs.set(path, config);
@@ -18484,11 +18482,8 @@ function createRequireResolver(host, options = {}) {
         const source = (yield* typeScriptFallback(main)) ?? (yield* typeScriptFallback(path));
         if (source) return source;
       }
-      throw Object.assign(
-        error(
-          "MODULE_NOT_FOUND",
-          "Cannot find module '" + main + `'. Please verify that the package.json has a valid "main" entry`
-        ),
+      throw moduleNotFound(
+        "Cannot find module '" + main + `'. Please verify that the package.json has a valid "main" entry`,
         { path: pkgPath, requestPath: path }
       );
     }
@@ -18549,7 +18544,7 @@ function createRequireResolver(host, options = {}) {
       if (split.subpath !== ".") return new URL(split.subpath, fileUrl(pjsonPath));
       const found = yield* loadAsDirectory(dir, state);
       if (found) return fileUrl(found);
-      throw error("ERR_MODULE_NOT_FOUND", "Cannot find package '" + dir + "/index.js' imported from " + fromDir);
+      throw nativeResolutionError("ERR_MODULE_NOT_FOUND", "Cannot find package '" + dir + "/index.js' imported from " + fromDir);
     }
     throw error("ERR_MODULE_NOT_FOUND", "Cannot find package '" + split.name + "' imported from " + fromDir);
   }
@@ -18568,7 +18563,7 @@ function createRequireResolver(host, options = {}) {
     }
     const path = decodeURIComponent(target.pathname);
     if ((yield* ask.kind(path)) !== "file") {
-      throw Object.assign(error("MODULE_NOT_FOUND", "Cannot find module '" + path + "'"), { path: pjsonPath });
+      throw moduleNotFound("Cannot find module '" + path + "'", { path: pjsonPath });
     }
     return absolute(path);
   }
@@ -18688,7 +18683,7 @@ function presentedCredential(value) {
 function isWebSocketUpgradeRequest(headers) {
   return headers.get("upgrade")?.toLowerCase() === "websocket";
 }
-return { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, packageJsonText, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates };
+return { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, nativeResolutionError, packageJsonText, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates };
 })();
 
 const __requireResolver = createRequireResolver({
@@ -18734,33 +18729,43 @@ function __nimbusFileImportMeta(filename, url = builtins.url.pathToFileURL(filen
 
 // Errors a known Workers-incompatible package's load threw, advised once.
 const __nimbusAdvised = new WeakSet();
-// The ES modules the interpreter evaluated from files outside the map, with
-// their compiled cells: a later require() asks whether their graphs await.
-const __nimbusRuntimeEsModules = new WeakMap();
-// Whether module `key` (format `format`) loaded as `instance` is an ES module: by its format, else staged or detected as one.
-function __nimbusLoadedEsModule(key, instance, format) {
-  if (format === "module") return true;
-  if (format !== "detect") return false;
-  if (__nimbusEsmId("module", key) !== -1) return true;
-  const cacheKey = instance === key ? "/" + key : instance;
-  const mod = __NodeModule._cache[cacheKey] ?? __nimbusEsmInstances.get(cacheKey);
-  return mod !== undefined && __nimbusRuntimeEsModules.has(mod);
-}
-// Whether a runtime ES module's graph awaits at its top level (its text read again).
-function __nimbusRuntimeGraphAwaits(key, cell) {
-  const text = __readFileOr(key, null);
-  return text !== null && __nimbusRequiredGraphAwaits(key, cell, text, new Set());
-}
 // The CommonJS modules whose bodies are running now (Node's kIsExecuting):
 // an ES module that imports one is in a require(esm) cycle.
 const __nimbusExecutingCommonJs = new WeakSet();
-// `required`: loaded by a require() call, not by an import (an interpreted
-// ES module's static import, core interpreter/modules.ts, or import()).
+// `required`: loaded by a require() call, not by an import of a CommonJS or
+// JSON module (an import of an ES module is its graph's: __nimbusGraphRecord).
 // A staged ES module is the registry's (__nimbusEsmRequire): this loads it
 // only when the interpreter evaluates it instead.
-// `esModule`: an ES module an import loads, which require.cache does not
-// hold until a require() loads it.
-function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = true, parent = undefined, esModule = false) {
+function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = true, parent = undefined) {
+  const cacheKey = evaluationKey === resolvedPath ? "/" + resolvedPath.replace(/^\/+/, "") : evaluationKey;
+  // A CommonJS module an import read the syntax of, not yet run: run now, once (__nimbusCommonJsPending).
+  const pending = __nimbusCommonJsPending.get(cacheKey);
+  if (pending !== undefined) {
+    __nimbusCommonJsPending.delete(cacheKey);
+    return __nimbusRunCommonJs(pending);
+  }
+  // An ES module its graph has a record of: that record's, as require() evaluates one (require(esm)).
+  const record = __nimbusGraphRecords.get(cacheKey);
+  if (record !== undefined && record.state !== undefined) {
+    if (typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(String(resolvedPath).replace(/^\/+/, ""));
+    return __nimbusRequireRecord(record, parent);
+  }
+  const loaded = __nimbusPrepareModule(resolvedPath, evaluationKey, required, parent, false);
+  if (loaded.state === undefined) return loaded.exports;
+  // An ES module (by its format, its syntax, or staged): its graph's.
+  if (__nimbusModuleLink(loaded.state.cell) !== null) return __nimbusRequireRecord(__nimbusInterpretedRecord(loaded.state), parent);
+  return __nimbusRunCommonJs(loaded.state);
+}
+// The CommonJS modules an import read the syntax of (a typeless .js) and has
+// not run yet, by cacheKey: each runs once, where its graph evaluates it or
+// where a require() of it comes first.
+const __nimbusCommonJsPending = new Map();
+// What loading the file at `resolvedPath` as `evaluationKey` finds: its
+// exports where it is loaded already, or JSON (`exports`); else what to
+// evaluate it from (`state`): its Module, in require.cache, or the ES
+// loader's for an import of an ES module (`esModule`), its import.meta, and
+// its cell compiled, nothing of it run.
+function __nimbusPrepareModule(resolvedPath, evaluationKey, required, parent, esModule) {
   if (typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(String(resolvedPath).replace(/^\/+/, ""));
   const filename = "/" + resolvedPath.replace(/^\/+/, "");
   const normalizedPath = filename.slice(1);
@@ -18778,17 +18783,15 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   if (cached !== undefined && adopted && required && !cached.loaded) __nimbusEsmRequire(esmId, true, parent);
   if (cached !== undefined) {
     // A require() of an ES module whose graph awaits at its top level, imported already: Node's refusal still.
-    if (required && cached.loaded && (adopted ? __nimbusEsmGraphAwaits(esmId) : __nimbusRuntimeEsModules.has(cached) && __nimbusRuntimeGraphAwaits(normalizedPath, __nimbusRuntimeEsModules.get(cached)))) {
-      throw __nimbusRequireAsync(parent, filename);
-    }
+    if (required && cached.loaded && adopted && __nimbusEsmGraphAwaits(esmId)) throw __nimbusRequireAsync(parent, filename);
     __nimbusUpdateChildren(parent, cached, true);
     if (required) __NodeModule._cache[cacheKey] ??= cached;
     const record = adopted ? __nimbusEsmRecords[esmId] : undefined;
-    return required && record?.namespace ? __nimbusEsmRequired(record) : cached.exports;
+    return { exports: required && record?.namespace ? __nimbusEsmRequired(record) : cached.exports };
   }
   if (adopted) {
     const namespace = __nimbusEsmRequire(esmId, required, parent);
-    if (namespace !== null) return namespace;
+    if (namespace !== null) return { exports: namespace };
   }
 
   const mod = new __NodeModule(filename, parent);
@@ -18822,11 +18825,12 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
       throw error;
     }
     mod.loaded = true;
-    return mod.exports;
+    return { exports: mod.exports };
   }
 
-  // JS — the cell's wrapper, called with the module's require: an ES
-  // module's links its static imports, as Node's ESM loader resolves them.
+  // JS — the cell's wrapper: a CommonJS module's, called with the module's
+  // require (__nimbusRunCommonJs); an ES module's, linked and evaluated by
+  // its graph (__nimbusInterpretedRecord).
   const modDir = __pathMod.dirname(filename);
 
   // X.5-M3: thread currently-loading module path through globalThis so the
@@ -18838,8 +18842,6 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   const moduleUrl = evaluationKey.startsWith("file:")
     ? evaluationKey : builtins.url.pathToFileURL("/" + resolvedPath).href;
   Object.defineProperty(mod, "__nimbusImportMeta", { value: __nimbusFileImportMeta("/" + resolvedPath, moduleUrl) });
-  // A require() refusing top-level await leaves its evaluation going on.
-  let evaluating = false;
   try {
     __nimbusLoadsTypeScript(normalizedPath);
     let cell = esmId === -1 ? __nimbusModuleCell(normalizedPath) : null;
@@ -18866,16 +18868,6 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
       const format = __nimbusFileFormat(filename);
       cell = __nimbusRuntimeModule(normalizedPath, text, format);
       compiledText = text;
-      // A require() of an ES module refuses its graph if any of it awaits at
-      // its top level, evaluated already or not, before any of it runs.
-      const runtimeEsModule = format === "module" || (format === undefined && __nimbusDetectedModule(cell));
-      if (runtimeEsModule) __nimbusRuntimeEsModules.set(mod, cell);
-      if (required && runtimeEsModule && __nimbusRequiredGraphAwaits(normalizedPath, cell, text, new Set())) {
-        evaluating = true;
-        throw __nimbusRequireAsync(parent, filename);
-      }
-      // A require() of an ES module links its graph before any of it runs, as its import() does.
-      if (required && runtimeEsModule) __nimbusLateLink(normalizedPath, moduleUrl);
       // An imported .js its syntax made an ES module warns as a staged one does.
       if (!required && format === undefined && filename.endsWith(".js") && __nimbusDetectedModule(cell)) {
         const scope = __esmResolver.packageScopeSync(__nimbusEsmUrl(filename));
@@ -18884,73 +18876,63 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
       globalThis.__nimbusModuleMisses.delete(normalizedPath);
     }
     __nimbusCompiling("/" + normalizedPath, () => compiledText ?? __nimbusModuleSourceText(__nimbusModuleAtPath(normalizedPath)));
-    const scopedRequire = __nimbusMakeRequire(mod, modDir);
-    // A CommonJS module's `this` is its exports, as Node calls its wrapper.
-    if (!adopted) __nimbusExecutingCommonJs.add(mod);
-    let evaluation;
-    try {
-      evaluation = __nimbusReflectApply(cell, mod.exports, [mod.exports, scopedRequire, mod, filename, modDir]);
-    } finally {
-      __nimbusExecutingCommonJs.delete(mod);
-    }
-    // A module with top-level await completes later: an import() waits for
-    // it (__esmLoad); require() refuses it, as Node's does.
-    if (evaluation && typeof evaluation.then === "function") {
-      __moduleEvaluations.set(evaluationKey, evaluation);
-      if (required && esmId !== -1) {
-        evaluation.then(undefined, () => {});
-        evaluating = true;
-        throw nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "require() cannot be used on an ESM graph with top-level await. Use import() instead. To see where the top-level await comes from, use --experimental-print-required-tla.\n  From " + (parent?.filename ?? "") + " \n  Requiring " + filename + " ");
-      }
-    }
+    return { state: { mod, cell, filename, modDir, moduleUrl, cacheKey, resolvedPath, esmId, adopted, unload, required, data: false } };
   } catch (e) {
     unload();
-    // An adopted ES module that threw stays failed: the next require() or
-    // import() of it throws what it threw, and does not evaluate it again
-    // (Node's errored module record).
-    if (adopted && !evaluating) {
+    // An adopted ES module that does not compile stays failed: the next
+    // require() or import() of it throws what it threw (Node's errored module record).
+    if (adopted) {
       const record = __nimbusEsmRecord(esmId);
       record.state = __ESM_FAILED;
       record.error = { value: e };
     }
-    // A ReferenceError for a CommonJS name is the module loader's to explain
-    // where it leaves an ES module's job, and nothing else's: a require() of
-    // an ES module is that module's job (Node's ModuleJobSync).
-    if (__nimbusIsCommonJSGlobalLikeError(e)) {
-      if (required && esmId !== -1) __nimbusExplainCommonJSGlobalLike(e, moduleUrl, false);
-      throw e;
-    }
-    // What escapes a module is the program's own error, as Node leaves it;
-    // only a package Nimbus knows has no Workers build says so, once.
-    if (e && typeof e === "object" && !__nimbusAdvised.has(e)) {
-      try {
-        const at = resolvedPath.lastIndexOf("node_modules/");
-        const parts = at < 0 ? [] : resolvedPath.slice(at + 13).split("/");
-        const pkg = parts[0] && parts[0].startsWith("@") ? parts[0] + "/" + parts[1] : parts[0];
-        const advisory = pkg ? __nimbusAbiAdvisories.get(pkg) : undefined;
-        if (advisory) {
-          __nimbusAdvised.add(e);
-          const note = "\nNimbus: " + pkg + " has no Workers-compatible build: " + advisory;
-          if (typeof e.message === "string") e.message += note;
-          if (typeof e.stack === "string") e.stack += note;
-        }
-      } catch {}
-    }
+    __nimbusAdvise(e, resolvedPath);
     throw e;
   } finally {
     globalThis.__currentModulePath = __prevModulePath;
   }
-
-  mod.loaded = true;
-  // An adopted ES module's namespace: its own names, live; a require()'s, Node's shape of it.
-  if (adopted) {
-    const record = __nimbusEsmRecord(esmId);
-    record.module = mod;
-    const exports = mod.exports;
-    record.namespace = __esmNamespaceOf(Object.keys(exports).filter((name) => name !== "__esModule"), (name) => exports[name]);
-    if (required) return __nimbusEsmRequired(record);
+}
+// Runs a CommonJS module's cell, as Node's loader calls its wrapper: its
+// `this` its exports, its require its own; its exports.
+function __nimbusRunCommonJs(state) {
+  const { mod, cell, filename, modDir, resolvedPath } = state;
+  const __prevModulePath = globalThis.__currentModulePath;
+  globalThis.__currentModulePath = resolvedPath;
+  try {
+    const scopedRequire = __nimbusMakeRequire(mod, modDir);
+    __nimbusExecutingCommonJs.add(mod);
+    try {
+      __nimbusReflectApply(cell, mod.exports, [mod.exports, scopedRequire, mod, filename, modDir]);
+    } finally {
+      __nimbusExecutingCommonJs.delete(mod);
+    }
+  } catch (e) {
+    state.unload();
+    __nimbusAdvise(e, resolvedPath);
+    throw e;
+  } finally {
+    globalThis.__currentModulePath = __prevModulePath;
   }
+  mod.loaded = true;
   return mod.exports;
+}
+// What escapes a module is the program's own error, as Node leaves it; only
+// a package Nimbus knows has no Workers build says so, once. A ReferenceError
+// for a CommonJS name is the module loader's to explain, and nothing else's.
+function __nimbusAdvise(e, resolvedPath) {
+  if (__nimbusIsCommonJSGlobalLikeError(e) || !e || typeof e !== "object" || __nimbusAdvised.has(e)) return;
+  try {
+    const at = resolvedPath.lastIndexOf("node_modules/");
+    const parts = at < 0 ? [] : resolvedPath.slice(at + 13).split("/");
+    const pkg = parts[0] && parts[0].startsWith("@") ? parts[0] + "/" + parts[1] : parts[0];
+    const advisory = pkg ? __nimbusAbiAdvisories.get(pkg) : undefined;
+    if (advisory) {
+      __nimbusAdvised.add(e);
+      const note = "\nNimbus: " + pkg + " has no Workers-compatible build: " + advisory;
+      if (typeof e.message === "string") e.message += note;
+      if (typeof e.stack === "string") e.stack += note;
+    }
+  } catch {}
 }
 
 /**
@@ -19023,8 +19005,7 @@ function createEsmResolver(host, options = {}) {
     try {
       parsed = JSON.parse(packageJsonText(text));
     } catch {
-      throw nodeError(
-        Error,
+      throw nativeResolutionError(
         "ERR_INVALID_PACKAGE_CONFIG",
         `Invalid package config ${pjsonPath}` + (base ? ` while importing ${JSON.stringify(specifier)} from ${base}` : "") + "."
       );
@@ -19092,7 +19073,7 @@ function createEsmResolver(host, options = {}) {
     }
     const dir = fileUrl(filePath(new URL(".", pjsonUrl)).replace(/\/+/g, "/"));
     const missing = filePath(new URL(config.main ?? "index.js", dir));
-    throw nodeError(Error, "ERR_MODULE_NOT_FOUND", `Cannot find package '${missing}' imported from ${base}`);
+    throw nativeResolutionError("ERR_MODULE_NOT_FOUND", `Cannot find package '${missing}' imported from ${base}`);
   }
   function* packageResolve(specifier, baseUrl) {
     if (host.isBuiltin(specifier)) return new URL("node:" + specifier);
@@ -19365,27 +19346,52 @@ function __nimbusObjectNamespace(value) {
 function __nimbusCommonJsNames(key) {
   return __nimbusRegistryRequire("./nimbus/esm-late.js").commonJsNames(__nimbusLateLinkHost, key);
 }
+// Node's translator's namespace for the CommonJS or JSON module
+// `resolution` names, one per URL: its names known before the module runs
+// (JSON's default; CommonJS's default and its lexer's names), `fill` giving
+// their values once it has: JSON's value as default; CommonJS's
+// module.exports as default (whatever its __esModule) and each lexed name's
+// own value then (createCJSModuleWrap). Filled, it is import()'s too.
+const __nimbusTranslations = new Map();
+function __nimbusTranslation(resolution) {
+  const known = __nimbusTranslations.get(resolution.url);
+  if (known !== undefined) return known;
+  const names = resolution.format === "json" ? [] : __nimbusCommonJsNames(resolution.path.replace(/^\/+/, ""));
+  let read = () => undefined;
+  const translation = {
+    namespace: __esmNamespaceOf(new Set(["default", ...names]), (name) => read(name)),
+    filled: false,
+    fill(exports) {
+      if (translation.filled) return;
+      translation.filled = true;
+      if (resolution.format === "json") {
+        read = () => exports;
+      } else {
+        const values = new Map();
+        for (const name of names) {
+          if (name === "default" || !Object.prototype.hasOwnProperty.call(exports, name)) continue;
+          // A getter may throw: the name is then undefined, as Node's.
+          try { values.set(name, exports[name]); } catch {}
+        }
+        read = (name) => name === "default" ? exports : values.get(name);
+      }
+      __esmNamespaces.set(resolution.url, translation.namespace);
+    },
+  };
+  __nimbusTranslations.set(resolution.url, translation);
+  return translation;
+}
 // An import of a module that is not an ES module, loaded as `exports`, as Node's translators make it, one per URL:
-// JSON's value as default; a builtin as default, its names read through; CommonJS's module.exports as default
-// (whatever its __esModule) and each lexed name's own value once it ran (createCJSModuleWrap).
+// a builtin as default, its names read through; JSON and CommonJS their translation's (__nimbusTranslation).
 function __nimbusTranslatedNamespace(resolution, exports) {
+  if (resolution.format !== "builtin") {
+    const translation = __nimbusTranslation(resolution);
+    translation.fill(exports);
+    return translation.namespace;
+  }
   const cached = __esmNamespaces.get(resolution.url);
   if (cached !== undefined) return cached;
-  let ns;
-  if (resolution.format === "json") {
-    ns = __esmNamespaceOf(["default"], () => exports);
-  } else if (resolution.format === "builtin") {
-    ns = __nimbusObjectNamespace(exports);
-  } else {
-    const names = __nimbusCommonJsNames(resolution.path.replace(/^\/+/, ""));
-    const values = new Map();
-    for (const name of names) {
-      if (name === "default" || !Object.prototype.hasOwnProperty.call(exports, name)) continue;
-      // A getter may throw: the name is then undefined, as Node's.
-      try { values.set(name, exports[name]); } catch {}
-    }
-    ns = __esmNamespaceOf(new Set(["default", ...names]), (name) => name === "default" ? exports : values.get(name));
-  }
+  const ns = __nimbusObjectNamespace(exports);
   __esmNamespaces.set(resolution.url, ns);
   return ns;
 }
@@ -19544,34 +19550,6 @@ function __nimbusEsmSuspends(record) {
   const row = __nimbusEsm.table[record.id];
   return row[0] === "module" && ((row[3] ?? 0) & 2) !== 0;
 }
-// Whether the graph of an ES module the interpreter evaluates for a require()
-// awaits at its top level anywhere: a staged module's by its rows, another
-// by the interpreter's compile of it.
-function __nimbusRequiredGraphAwaits(key, cell, text, seen) {
-  if (seen.has(key)) return false;
-  seen.add(key);
-  if (__nimbusModuleAwaits(cell)) return true;
-  const parentUrl = __nimbusEsmUrl("/" + key);
-  for (const request of __nimbusModuleRequests(key, text).requests) {
-    if (request.kind !== "static") continue;
-    let resolution;
-    try { resolution = __esmResolver.resolveSync(request.specifier, parentUrl); } catch { continue; }
-    if (!resolution.path) continue;
-    const target = resolution.path.replace(/^\/+/, "");
-    const id = __nimbusEsmId("module", target);
-    if (id !== -1) {
-      if (__nimbusEsmGraphAwaits(id)) return true;
-      continue;
-    }
-    if (resolution.format !== "module" && resolution.format !== "detect") continue;
-    const targetText = __readFileOr(target, null);
-    if (targetText === null) continue;
-    const targetCell = __nimbusRuntimeModule(target, targetText, resolution.format === "module" ? "module" : undefined);
-    if (resolution.format === "detect" && !__nimbusDetectedModule(targetCell)) continue;
-    if (__nimbusRequiredGraphAwaits(target, targetCell, targetText, seen)) return true;
-  }
-  return false;
-}
 // Whether a module of row `id`'s graph awaits at its top level: Node's
 // require() refuses such a graph, evaluated or not. The table does not
 // change, so neither does the answer: kept per row.
@@ -19691,9 +19669,14 @@ function __nimbusEsmRequire(id, required, parent = undefined) {
 const __nimbusEsmRequired = (()=>{function f(o){let{namespace:e}=o;return Object.hasOwn(e,"module.exports")?Reflect.get(e,"module.exports"):!Object.hasOwn(e,"default")||Object.hasOwn(e,"__esModule")?e:o.required??=s(e)}function s(o){let e=Object.create(null),l=n=>n==="__esModule"?!0:Reflect.get(o,n);for(let n of[...Object.keys(o),"__esModule"].sort())Object.defineProperty(e,n,{value:l(n),writable:!0,enumerable:!0});Object.defineProperty(e,Symbol.toStringTag,{value:"Module"}),Object.preventExtensions(e);let u=n=>e[n]=l(n);return new Proxy(e,{get:(n,t)=>typeof t=="string"&&Object.hasOwn(e,t)?u(t):Reflect.get(e,t),getOwnPropertyDescriptor(n,t){let r=Reflect.getOwnPropertyDescriptor(e,t);return r!==void 0&&typeof t=="string"&&(r.value=u(t)),r},set:()=>!1,defineProperty(n,t,r){return typeof t=="symbol"?Reflect.defineProperty(e,t,r):!Object.hasOwn(e,t)||r.configurable===!0||r.enumerable===!1||"get"in r||"set"in r||r.writable===!1?!1:!("value"in r)||Object.is(r.value,u(t))},deleteProperty:(n,t)=>typeof t=="symbol"?Reflect.deleteProperty(e,t):!Object.hasOwn(e,t)})}
 
 return {"requiredEsModule":f};})().requiredEsModule;
-const { importCallArguments: __nimbusImportCallArguments, dataModule: __nimbusDataModule } = (()=>{function u(i,t){if(typeof i=="symbol")throw new TypeError("Cannot convert a Symbol value to a string");let r=String(i),o=Object.create(null);if(t===void 0)return{specifier:r,attributes:o};if(t===null||typeof t!="object"&&typeof t!="function")throw new TypeError("The second argument to import() must be an object");let n=Reflect.get(t,"with");if(n===void 0)return{specifier:r,attributes:o};if(n===null||typeof n!="object"&&typeof n!="function")throw new TypeError("The 'assert' option must be an object");let e=!0;for(let s of Object.keys(n)){let a=Reflect.get(n,s);typeof a=="string"?o[s]=a:e=!1}if(!e)throw new TypeError("Import assertion value must be a string");return{specifier:r,attributes:o}}function f(i){let t=new TextEncoder().encode(i),r=new Uint8Array(t.length),o=0,n=e=>e>=48&&e<=57||e>=65&&e<=70||e>=97&&e<=102;for(let e=0;e<t.length;e++){let s=t[e];s===37&&e+2<t.length&&n(t[e+1])&&n(t[e+2])?(r[o++]=parseInt(String.fromCharCode(t[e+1],t[e+2]),16),e+=2):r[o++]=s}return r.subarray(0,o)}function d(i){let t=new URL(i),r=/^([^/]+\/[^;,]+)(?:[^,]*?)(;base64)?,/.exec(t.pathname),o=r===null?null:/^\s*(text|application)\/javascript\s*(;\s*charset=utf-?8\s*)?$/i.test(r[1])?"module":r[1]==="application/json"?"json":null;if(o===null)return{format:o,mime:r?.[1]??null};t.hash="";let n=t.href.slice(5),e=n.indexOf(","),s=f(n.slice(e+1));if(/; *base64$/i.test(n.slice(0,e).replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g,""))){let a="";for(let c of s)a+=String.fromCharCode(c);let l;try{l=atob(a)}catch{throw Object.assign(new TypeError("Invalid URL"),{code:"ERR_INVALID_URL",input:i})}s=Uint8Array.from(l,c=>c.charCodeAt(0))}return{format:o,source:new TextDecoder().decode(s)}}
+const { importCallArguments: __nimbusImportCallArguments, dataModule: __nimbusDataModuleOf } = (()=>{function u(i,t){if(typeof i=="symbol")throw new TypeError("Cannot convert a Symbol value to a string");let r=String(i),o=Object.create(null);if(t===void 0)return{specifier:r,attributes:o};if(t===null||typeof t!="object"&&typeof t!="function")throw new TypeError("The second argument to import() must be an object");let n=Reflect.get(t,"with");if(n===void 0)return{specifier:r,attributes:o};if(n===null||typeof n!="object"&&typeof n!="function")throw new TypeError("The 'assert' option must be an object");let e=!0;for(let s of Object.keys(n)){let a=Reflect.get(n,s);typeof a=="string"?o[s]=a:e=!1}if(!e)throw new TypeError("Import assertion value must be a string");return{specifier:r,attributes:o}}function f(i){let t=new TextEncoder().encode(i),r=new Uint8Array(t.length),o=0,n=e=>e>=48&&e<=57||e>=65&&e<=70||e>=97&&e<=102;for(let e=0;e<t.length;e++){let s=t[e];s===37&&e+2<t.length&&n(t[e+1])&&n(t[e+2])?(r[o++]=parseInt(String.fromCharCode(t[e+1],t[e+2]),16),e+=2):r[o++]=s}return r.subarray(0,o)}function d(i){let t=new URL(i),r=/^([^/]+\/[^;,]+)(?:[^,]*?)(;base64)?,/.exec(t.pathname),o=r===null?null:/^\s*(text|application)\/javascript\s*(;\s*charset=utf-?8\s*)?$/i.test(r[1])?"module":r[1]==="application/json"?"json":null;if(o===null)return{format:o,mime:r?.[1]??null};t.hash="";let n=t.href.slice(5),e=n.indexOf(","),s=f(n.slice(e+1));if(/; *base64$/i.test(n.slice(0,e).replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g,""))){let a="";for(let c of s)a+=String.fromCharCode(c);let l;try{l=atob(a)}catch{throw Object.assign(new TypeError("Invalid URL"),{code:"ERR_INVALID_URL",input:i})}s=Uint8Array.from(l,c=>c.charCodeAt(0))}return{format:o,source:new TextDecoder().decode(s)}}
 
 return {"dataModule":d,"importCallArguments":u};})();
+// ECMA-262's module graph algorithm (core runtime/esm-graph.ts), made before any program runs: it calls only the
+// built-ins it took then.
+const __nimbusGraph = (()=>{var s=class{constructor(t){this.host=t}host;status="unlinked";evaluationError=null;dfsAncestorIndex=0;cycleRoot=null;asyncEvaluationOrder="unset";topLevelCapability=null;asyncParentModules=l();pendingAsyncDependencies=0},c=class{constructor(t){this.host=t}host},v=Promise,A=Promise.prototype.then,E=Reflect.apply,T=Object.setPrototypeOf;function l(){let e=[];return T(e,null),e}var d=class e extends v{static get[Symbol.species](){return e}};function u(e,t){e[e.length]=t}function p(e){if(e.length===0)return;let t=e[e.length-1];return e.length--,t}function k(e,t){for(let n=0;n<e.length;n++)if(e[n]===t)return!0;return!1}function M(e){let t=()=>{},n=()=>{};return{promise:new e((a,i)=>{t=()=>a(),n=i}),resolve:t,reject:n}}var P=0;function x(){return P++}function w(e){let t=l();try{h(e,t,0)}catch(n){for(let o=0;o<t.length;o++)t[o].status="unlinked";throw n}}function h(e,t,n){if(e instanceof c)return e.host.link(),n;if(e.status!=="unlinked")return n;e.status="linking";let o=n;e.dfsAncestorIndex=n,n++,u(t,e);let a=e.host.requestedModules();for(let i=0;i<a.length;i++){let r=a[i];n=h(r,t,n),r instanceof s&&r.status==="linking"&&(e.dfsAncestorIndex=R(e.dfsAncestorIndex,r.dfsAncestorIndex))}if(e.host.initializeEnvironment(),e.dfsAncestorIndex===o){let i=!1;for(;!i;){let r=p(t);if(r===void 0)break;r.status="linked",r===e&&(i=!0)}}return n}function I(e){let t=e;if((t.status==="evaluating-async"||t.status==="evaluated")&&t.cycleRoot!==null&&(t=t.cycleRoot),t.topLevelCapability!==null)return t.topLevelCapability.promise;let n=l(),o=M(v);t.topLevelCapability=o;try{C(t,n,0)}catch(a){for(let i=0;i<n.length;i++)n[i].status="evaluated",n[i].evaluationError={value:a};return o.reject(a),o.promise}return t.status==="evaluated"&&o.resolve(),o.promise}function C(e,t,n){if(e instanceof c)return e.host.evaluateSync(),n;if(e.status==="evaluating-async"||e.status==="evaluated"){if(e.evaluationError===null)return n;throw e.evaluationError.value}if(e.status==="evaluating")return n;e.status="evaluating";let o=n;e.dfsAncestorIndex=n,e.pendingAsyncDependencies=0,n++,u(t,e);let a=e.host.requestedModules();for(let i=0;i<a.length;i++){let r=a[i];if(n=C(r,t,n),r instanceof s){if(r.status==="evaluating")e.dfsAncestorIndex=R(e.dfsAncestorIndex,r.dfsAncestorIndex);else if(r=r.cycleRoot??r,r.evaluationError!==null)throw r.evaluationError.value;typeof r.asyncEvaluationOrder=="number"&&(e.pendingAsyncDependencies++,u(r.asyncParentModules,e))}}if(e.host.hasTLA||e.pendingAsyncDependencies>0?(e.asyncEvaluationOrder=x(),e.pendingAsyncDependencies===0&&b(e)):e.host.executeModule(),e.dfsAncestorIndex===o){let i=!1;for(;!i;){let r=p(t);if(r===void 0)break;r.status=r.asyncEvaluationOrder==="unset"?"evaluated":"evaluating-async",r===e&&(i=!0),r.cycleRoot=e}}return n}function b(e){let t=M(d);E(A,t.promise,[()=>L(e),n=>y(e,n)]),e.host.executeModule(t)}function g(e,t){for(let n=0;n<e.asyncParentModules.length;n++){let o=e.asyncParentModules[n];!k(t,o)&&(o.cycleRoot??o).evaluationError===null&&(o.pendingAsyncDependencies--,o.pendingAsyncDependencies===0&&(u(t,o),o.host.hasTLA||g(o,t)))}}function L(e){if(e.status==="evaluated")return;e.asyncEvaluationOrder="done",e.status="evaluated",e.topLevelCapability?.resolve();let t=l();g(e,t);let n=O(t);for(let o=0;o<n.length;o++){let a=n[o];if(a.status!=="evaluated"){if(a.host.hasTLA){b(a);continue}try{a.host.executeModule()}catch(i){y(a,i);continue}a.asyncEvaluationOrder="done",a.status="evaluated",a.topLevelCapability?.resolve()}}}function f(e){return typeof e.asyncEvaluationOrder=="number"?e.asyncEvaluationOrder:Number.MAX_SAFE_INTEGER}function O(e){let t=l();for(let n=0;n<e.length;n++){let o=t.length;for(;o>0&&f(t[o-1])>f(e[n]);)t[o]=t[o-1],o--;t[o]=e[n]}return t}function R(e,t){return e<t?e:t}function y(e,t){if(e.status!=="evaluated"){e.evaluationError={value:t},e.status="evaluated",e.asyncEvaluationOrder="done",e.topLevelCapability?.reject(t);for(let n=0;n<e.asyncParentModules.length;n++)y(e.asyncParentModules[n],t)}}
+
+return {"CyclicModuleRecord":s,"OtherModuleRecord":c,"evaluate":I,"link":w};})();
 // The package.json files Node's loader has warned are typeless (MODULE_TYPELESS_PACKAGE_JSON).
 const __nimbusTypelessWarned = new Set();
 // Node's warning of an imported .js that is an ES module by its syntax alone
@@ -19792,48 +19775,25 @@ async function __nimbusEsmImport(id) {
   }
 }
 // The interpreter's evaluation of staged module `id` (an adoption), as
-// import() gives it. One it evaluated already (or is evaluating, in its
-// top-level await) is that evaluation's, its graph not resolved again. A graph workerd did not link (`linked` false:
-// it reaches a module staging handed on, or one the interpreter took) is
-// checked first as a late graph is (core esm-late-link.ts linkAdopted):
-// every imported name, before any of it runs, unless a link checked it
-// already. The interpreter evaluates it as before.
+// import() gives it: its graph's (__nimbusAdoptedRecord). A graph workerd
+// did not link (`linked` false: it reaches a module staging handed on, or
+// one the interpreter took) is checked first as a late graph is (core
+// esm-late-link.ts linkAdopted): every imported name, before any of it
+// runs, unless a link checked it already.
 async function __nimbusEsmInterpret(id, linked) {
   const key = __nimbusEsm.table[id][1];
   const url = __nimbusEsmUrl("/" + key);
-  const known = __esmNamespaces.get(url);
-  if (known !== undefined) return known;
-  // Its namespace once its evaluation completes: one still in its top-level await is waited for, its rejection given.
-  const evaluated = __nimbusEsmRecords[id];
-  if (evaluated?.state === __ESM_ADOPTED && evaluated.module !== undefined && evaluated.namespace !== null) {
-    const evaluation = __moduleEvaluations.get(key);
-    if (evaluation === undefined) return evaluated.namespace;
-    return evaluation.then(() => evaluated.namespace, (e) => { __nimbusExplainCommonJSGlobalLike(e, url, true); throw e; });
-  }
-  const pending = (async () => {
-    if (!linked) __nimbusRegistryRequire("./nimbus/esm-late.js").linkAdopted(__nimbusLateLinkHost, id, key, url);
-    let exports;
+  let record = __nimbusGraphRecords.get("/" + key);
+  if (record === undefined) {
     try {
-      exports = __loadModule(key, key, false, undefined, true);
+      if (!linked) __nimbusLateOf().linkAdopted(__nimbusLateLinkHost, id, key, url);
+      record = __nimbusAdoptedRecord(id, key);
     } catch (e) {
       __nimbusExplainCommonJSGlobalLike(e, url, false);
       throw e;
     }
-    const evaluation = __moduleEvaluations.get(key);
-    if (evaluation !== undefined) {
-      try { await evaluation; } catch (e) { __nimbusExplainCommonJSGlobalLike(e, url, true); throw e; }
-    }
-    // One namespace per module: a require()'s adoption's, or the registry's
-    // own where a static import found it evaluated (Node's D1).
-    const record = __nimbusEsmRecords[id];
-    if (record !== undefined && record.namespace !== null) return record.namespace;
-    if (exports !== null && typeof exports === "object" && Object.getPrototypeOf(exports) === null && exports[Symbol.toStringTag] === "Module" && !("__esModule" in exports)) return exports;
-    const names = exports && typeof exports === "object" ? Object.keys(exports).filter((name) => name !== "__esModule") : [];
-    return __esmNamespaceOf(names, (name) => exports[name]);
-  })();
-  __esmNamespaces.set(url, pending);
-  pending.then((namespace) => { __esmNamespaces.set(url, namespace); }, () => { __esmNamespaces.delete(url); });
-  return pending;
+  }
+  return __nimbusImportRecord(record, url);
 }
 // A refusal staging recorded (EsmStage.missing), as the error Node's loader throws.
 function __nimbusEsmRefusal(missing) {
@@ -19949,87 +19909,496 @@ function __nimbusEsmRunEntry(key) {
 }
 if (typeof __nimbusEsmHost !== "undefined" && __nimbusEsmHost !== null) __nimbusEsmHost.enter = __nimbusEsmEnter;
 
+// ═══════════════════════════════════════════════════════════════════════
+// ──  The late ES module graph (core runtime/esm-graph.ts) ────────────
+// ═══════════════════════════════════════════════════════════════════════
+// The ES modules the interpreter evaluates (a file the launch did not stage,
+// a query's or fragment's instance, a data: module, a staged module it
+// adopts) are linked and evaluated as ECMA-262 does: Link(), then
+// Evaluate(), over a record of every module their graph reaches, whatever
+// its kind. Each by its key: a file's module by its cacheKey (its path, or a
+// query's or fragment's URL), a data: module by its URL, a CommonJS or JSON
+// module's translation by its URL, a builtin by "node:" and its name, a
+// staged module the registry evaluates by "row:" and its id.
+const __nimbusGraphRecords = new Map();
+// The late link (core runtime/esm-late-link.ts), loaded the first time a late graph is linked.
+let __nimbusLateModule = null;
+const __nimbusLateOf = () => __nimbusLateModule ??= __nimbusRegistryRequire("./nimbus/esm-late.js");
+// Whether a require() is linking its graph: one that cannot wait, so a staged
+// module the registry has not evaluated is the interpreter's.
+let __nimbusGraphSync = false;
+function __nimbusGraphSet(key, record) {
+  __nimbusGraphRecords.set(key, record);
+  return record;
+}
+// The record of the module `resolution` names, imported by `parent` (its
+// Module, or undefined), made the first time it is asked for.
+function __nimbusGraphRecord(resolution, parent) {
+  if (resolution.format === "builtin") {
+    const key = "node:" + resolution.builtin;
+    return __nimbusGraphRecords.get(key) ?? __nimbusGraphSet(key, __nimbusEvaluatedRecord(__nimbusTranslatedNamespace(resolution, builtins[resolution.builtin])));
+  }
+  if (resolution.format === "data") return __nimbusGraphRecords.get(resolution.url) ?? __nimbusDataRecord(resolution.url);
+  const key = resolution.path.replace(/^\/+/, "");
+  const { search, hash } = new URL(resolution.url);
+  const variant = search !== "" || hash !== "";
+  if (!variant) {
+    const id = __nimbusEsmId("module", key);
+    if (id !== -1) return __nimbusStagedRecord(id, key, parent);
+  }
+  // A CommonJS module (by its extension or its package type) is one module by
+  // its file, whatever the URL (Node's CommonJS translator keys its cache by
+  // filename); JSON, and a query's or fragment's ES module, an instance of its own, by its URL.
+  if (resolution.format === "commonjs") return __nimbusTranslatedRecord(resolution, key, key, parent);
+  const instance = variant ? resolution.url : key;
+  if (resolution.format === "json") return __nimbusTranslatedRecord(resolution, key, instance, parent);
+  const known = __nimbusGraphRecords.get(instance === key ? "/" + key : instance);
+  if (known !== undefined) return known;
+  // A typeless .js's syntax decides (detect): CommonJS, it is one module by
+  // its file, whatever the URL; an ES module, a query's or fragment's
+  // instance is one of its own. A staged one is an ES module already, its
+  // row left to the import of its own URL.
+  if (resolution.format === "detect" && variant && !__nimbusGraphRecords.has("/" + key) && __nimbusEsmId("module", key) === -1) {
+    if (__nimbusCommonJsPending.has("/" + key)) return __nimbusTranslatedRecord(resolution, key, key, parent);
+    const plain = __nimbusPrepareModule(key, key, false, parent, false);
+    if (plain.state === undefined || __nimbusModuleLink(plain.state.cell) === null) return __nimbusTranslatedRecord(resolution, key, key, parent, plain);
+    // An ES module: only the query's or fragment's instance was asked for, and the file's own URL is a module of
+    // its own, made from the file as it is when it is imported.
+    plain.state.unload();
+  }
+  // An ES module by its format, or by its syntax (detect): compiled now, run by its graph.
+  const prepared = __nimbusPrepareModule(key, instance, false, parent, resolution.format === "module");
+  if (prepared.state === undefined || __nimbusModuleLink(prepared.state.cell) === null) return __nimbusTranslatedRecord(resolution, key, key, parent, prepared);
+  return __nimbusInterpretedRecord(prepared.state);
+}
+// A module evaluated already (a builtin; a staged module the registry
+// evaluated; a package the facet provides): its namespace, as it is.
+function __nimbusEvaluatedRecord(namespace) {
+  const record = new __nimbusGraph.OtherModuleRecord({ link() {}, evaluateSync() {} });
+  record.namespace = () => namespace;
+  return record;
+}
+// A CommonJS or JSON module's record, Node's translator of it: run when its
+// graph evaluates it, as an import loads it (`prepared` where its syntax was
+// read first: pending until then); its namespace's names known before it
+// runs, their values once it has.
+function __nimbusTranslatedRecord(resolution, key, instance, parent, prepared = undefined) {
+  const known = __nimbusGraphRecords.get(resolution.url);
+  if (known !== undefined) return known;
+  if (prepared?.state !== undefined) __nimbusCommonJsPending.set(prepared.state.cacheKey, prepared.state);
+  const translation = __nimbusTranslation(resolution);
+  let outcome = null;
+  const record = new __nimbusGraph.OtherModuleRecord({
+    link() {},
+    evaluateSync() {
+      if (outcome !== null) {
+        if (outcome.error !== undefined) throw outcome.error.value;
+        return;
+      }
+      try {
+        translation.fill(__loadModule(key, instance, false, parent));
+        outcome = {};
+      } catch (e) {
+        outcome = { error: { value: e } };
+        throw e;
+      }
+    },
+  });
+  record.namespace = () => translation.namespace;
+  // A CommonJS module not yet run runs code where its graph evaluates it (JSON does not).
+  record.runs = () => outcome === null && resolution.format !== "json";
+  return __nimbusGraphSet(resolution.url, record);
+}
+// A staged ES module's record: the registry's evaluation of it, where the
+// registry evaluates it with Node's semantics (its graph untainted, reaching
+// nothing staging handed on, awaiting nowhere at its top level) and its
+// import's plan reaches it before any module of the graph runs
+// (__nimbusPlanGraph); else the interpreter's, from its text before it was
+// staged (adopted). Undecided until that plan: a placeholder.
+function __nimbusStagedRecord(id, key, parent) {
+  const row = __nimbusEsmRecord(id);
+  const known = __nimbusGraphRecords.get("/" + key) ?? __nimbusGraphRecords.get("row:" + id);
+  if (known !== undefined) return known.decided ?? known;
+  if (row.state === __ESM_DONE && row.namespace !== null) {
+    const evaluated = __nimbusEvaluatedRecord(row.namespace);
+    // A require() refuses it where its graph awaits at its top level, evaluated or not.
+    evaluated.awaits = __nimbusEsmGraphAwaits(id);
+    return __nimbusGraphSet("row:" + id, evaluated);
+  }
+  if (!__nimbusGraphSync && !__nimbusEsmTainted(id) && !__nimbusEsmHandsOn(id) && !__nimbusEsmGraphAwaits(id)) {
+    return __nimbusGraphSet("row:" + id, { staged: true, id, key, parent, decided: null });
+  }
+  return __nimbusAdoptedRecord(id, key, parent);
+}
+// A staged module's placeholder decided: the registry's, evaluated before
+// its graph's evaluation (`first`: nothing of the graph runs before it),
+// its namespace the registry's; else the interpreter's.
+function __nimbusDecideStaged(placeholder, first) {
+  if (placeholder.decided !== null) return placeholder.decided;
+  if (first) {
+    const record = __nimbusEvaluatedRecord(null);
+    let namespace = null;
+    record.namespace = () => namespace;
+    // The registry's evaluation of it, begun once: what every graph that reaches it waits for.
+    let ready = null;
+    record.begin = () => ready ??= __nimbusReflectApply(__nimbusEsmThen, __nimbusEsmImport(placeholder.id), [(value) => { namespace = value; }]);
+    placeholder.decided = record;
+  } else {
+    placeholder.decided = __nimbusAdoptedRecord(placeholder.id, placeholder.key, placeholder.parent);
+  }
+  __nimbusGraphRecords.set("row:" + placeholder.id, placeholder.decided);
+  return placeholder.decided;
+}
+// Plans the evaluation of `root`'s graph before it is linked, in the order
+// Evaluate() runs it (InnerModuleEvaluation's: each module after the
+// modules it imports, in their order), deciding each staged module it
+// reaches: the registry's where nothing of the graph runs before it in that
+// order, else the interpreter's (`sync`, a require()'s graph, which cannot
+// wait: the interpreter's always). The registry's modules it decided, in
+// that order: evaluated before the graph's evaluation, they run just where
+// Node's would, though the registry evaluates asynchronously.
+function __nimbusPlanGraph(root, sync) {
+  const visited = new Set();
+  const first = [];
+  let ran = false;
+  const visit = (record) => {
+    if (visited.has(record)) return;
+    visited.add(record);
+    if (!(record instanceof __nimbusGraph.CyclicModuleRecord)) {
+      if (record.begin !== undefined) first.push(record);
+      if (record.runs?.() === true) ran = true;
+      return;
+    }
+    if (record.status === "evaluated" || record.status === "evaluating-async") return;
+    const requested = record.host.requestedModules();
+    for (let i = 0; i < requested.length; i++) {
+      if (requested[i].staged === true) requested[i] = __nimbusDecideStaged(requested[i], !sync && !ran);
+      visit(requested[i]);
+    }
+    ran = true;
+  };
+  visit(root);
+  return first;
+}
+// The interpreter's record of staged module `id` (an adoption).
+function __nimbusAdoptedRecord(id, key, parent = undefined) {
+  const prepared = __nimbusPrepareModule(key, key, false, parent, true);
+  if (prepared.state === undefined) return __nimbusGraphSet("row:" + id, __nimbusEvaluatedRecord(prepared.exports));
+  return __nimbusInterpretedRecord(prepared.state);
+}
+// Whether staged module `id`'s graph reaches a module staging handed on (the
+// registry cannot link it: the interpreter adopts it where it is imported).
+function __nimbusEsmHandsOn(id) {
+  const seen = new Set();
+  const stack = [id];
+  while (stack.length > 0) {
+    const at = stack.pop();
+    if (seen.has(at)) continue;
+    seen.add(at);
+    if (at < 0) {
+      if (__nimbusEsm.missing[-2 - at]?.code === "ERR_NIMBUS_NOT_STAGED") return true;
+      continue;
+    }
+    if (__nimbusEsmRecords[at]?.state === __ESM_DONE) continue;
+    const row = __nimbusEsm.table[at];
+    if (row[0] === "module") for (const target of row[2]) stack.push(target);
+  }
+  return false;
+}
+// A data: module's record: JSON its default; JavaScript an ES module,
+// whatever its syntax (its MIME type's goal), its importer its own URL.
+function __nimbusDataRecord(url) {
+  const data = __nimbusDataModuleOf(url);
+  if (data.format === "json") {
+    const value = JSON.parse(data.source);
+    return __nimbusGraphSet(url, __nimbusEvaluatedRecord(__esmNamespaceOf(["default"], () => value)));
+  }
+  if (data.format !== "module") throw nodeError(RangeError, "ERR_UNKNOWN_MODULE_FORMAT", "Unknown module format: " + data.mime + " for URL " + url);
+  const mod = { exports: {} };
+  Object.defineProperty(mod, "__nimbusImportMeta", { value: {
+    url,
+    resolve: (id) => globalThis.__nimbusImportMetaResolve(id, url),
+  } });
+  // A data URL produced at runtime is a module body, just like a written
+  // file. It is staged by the same runtime-code service, retaining its URL
+  // as the import base (relative imports from data URLs remain invalid).
+  const cell = __nimbusRuntimeModule(url, data.source, "module");
+  return __nimbusInterpretedRecord({ mod, cell, filename: undefined, modDir: undefined, moduleUrl: url, cacheKey: url, resolvedPath: url, esmId: -1, adopted: false, unload() {}, required: false, data: true });
+}
+// An interpreted ES module's record (core interpreter/modules.ts moduleLink):
+// its requests resolved as Node's ES loader resolves them, its link binding
+// each to its module's namespace, its execution its body. Its namespace is
+// one, made the first time it is asked for, with every name its link
+// exports: the late link's (export * included), else its exports' once
+// linked; taken in a cycle before either, its exports themselves.
+function __nimbusInterpretedRecord(state) {
+  const { mod, cell, cacheKey, moduleUrl } = state;
+  // A module its syntax made an ES module is the ES loader's, not require.cache's, until a require() loads it.
+  if (!state.required && !state.data && __NodeModule._cache[cacheKey] === mod) {
+    delete __NodeModule._cache[cacheKey];
+    __nimbusEsmInstances.set(cacheKey, mod);
+  }
+  const late = __nimbusLateOf();
+  const importer = state.data ? undefined : mod;
+  const parentUrl = state.data ? moduleUrl : builtins.url.pathToFileURL(state.filename).href;
+  const requests = __nimbusModuleRequestsOf(cell);
+  // Each request's index in `requested`, by its specifier and type (the plan may replace a staged module's placeholder there).
+  const targets = new Map();
+  let requested = null;
+  let execute = null;
+  let namespace = null;
+  // Whether an InitializeEnvironment of it ran: a Link that failed (here, or in a module after it) left it
+  // ~unlinked~, and the next makes its environment again, as the spec's makes a new one each time.
+  let environment = false;
+  const at = (source, type) => source + "\0" + (type ?? "");
+  // What its link requires: each static import's module's namespace
+  // (ESM_LOAD_HELPER: the specifier, the marker, the type attribute), and the
+  // names its `export *`s leave out (ESM_CONFLICTS_HELPER: its late link's).
+  const linkRequire = (id, marker, type = null) => marker === "nimbus:star-conflicts"
+    ? late.starConflicts(__nimbusLateLinkHost, moduleUrl)
+    : requested[targets.get(at(id, type))].namespace();
+  const record = new __nimbusGraph.CyclicModuleRecord({
+    hasTLA: __nimbusModuleAwaits(cell),
+    requestedModules() {
+      if (requested === null) {
+        // Kept once all resolve: a link that fails resolves them again (Link() leaves the module ~unlinked~).
+        const resolved = [];
+        // The interpreter's own list: no iterator, read by index.
+        for (let i = 0; i < requests.length; i++) {
+          const { source, type } = requests[i];
+          targets.set(at(source, type), resolved.length);
+          resolved.push(__nimbusStaticRecord(source, type, parentUrl, importer, state.data));
+        }
+        requested = resolved;
+      }
+      return requested;
+    },
+    initializeEnvironment() {
+      // Its export getters are not configurable: a second link publishes them on a fresh exports object.
+      if (environment) {
+        mod.exports = {};
+        execute = null;
+      }
+      environment = true;
+      const before = globalThis.__currentModulePath;
+      if (!state.data) globalThis.__currentModulePath = state.resolvedPath;
+      try {
+        execute = __nimbusModuleLink(cell)(mod.exports, linkRequire, mod, state.filename, state.modDir);
+      } finally {
+        globalThis.__currentModulePath = before;
+      }
+    },
+    executeModule(capability) {
+      const before = globalThis.__currentModulePath;
+      if (!state.data) globalThis.__currentModulePath = state.resolvedPath;
+      let result;
+      try {
+        result = execute();
+      } catch (e) {
+        __nimbusInterpretedFailed(state, e);
+        throw e;
+      } finally {
+        globalThis.__currentModulePath = before;
+      }
+      if (capability === undefined) {
+        __nimbusInterpretedDone(state, record);
+        return;
+      }
+      __nimbusReflectApply(__nimbusEsmThen, result, [() => {
+        __nimbusInterpretedDone(state, record);
+        capability.resolve();
+      }, (e) => {
+        __nimbusInterpretedFailed(state, e);
+        capability.reject(e);
+      }]);
+    },
+  });
+  record.state = state;
+  record.awaits = record.host.hasTLA;
+  record.namespace = () => {
+    if (namespace !== null) return namespace;
+    const names = late.namespaceNames(__nimbusLateLinkHost, moduleUrl) ?? (execute !== null ? Object.keys(mod.exports) : null);
+    if (names === null) return mod.exports;
+    return namespace = __esmNamespaceOf(names, (name) => mod.exports[name]);
+  };
+  return __nimbusGraphSet(cacheKey, record);
+}
+// An interpreted ES module's body has completed: its Module loaded; an
+// adopted module's record its namespace, its Module for a require().
+function __nimbusInterpretedDone(state, record) {
+  state.mod.loaded = true;
+  if (!state.adopted) return;
+  const row = __nimbusEsmRecord(state.esmId);
+  row.module = state.mod;
+  row.namespace = record.namespace();
+}
+// An interpreted ES module's body threw: its Module unloaded; an adopted
+// module's record keeps what it threw (Node's errored module record).
+function __nimbusInterpretedFailed(state, e) {
+  state.unload();
+  if (state.adopted) {
+    const row = __nimbusEsmRecord(state.esmId);
+    row.state = __ESM_FAILED;
+    row.error = { value: e };
+  }
+  __nimbusAdvise(e, state.resolvedPath);
+}
+// The record of what an interpreted ES module (at `parentUrl`, its Module
+// `importer`) imports as `id`, with its `type` attribute, as Node's ES loader
+// resolves it: a package the facet provides and a staged N-API binding as
+// their namespaces; a CommonJS module whose require() of an ES module led
+// here refused (a cycle); else resolved (refused with no arrow of the importer's).
+function __nimbusStaticRecord(id, type, parentUrl, importer, data) {
+  if (!data) {
+    const fromDir = __nimbusModuleDir(importer);
+    const binding = __nimbusFacetProvidedPackages.has(id) ? null : __stagedBinding(id);
+    const provided = binding ? __loadStagedBinding(binding, fromDir) : __nimbusFacetProvidedPackages.has(id) ? builtins[id] : undefined;
+    if (provided !== undefined) return __nimbusEvaluatedRecord(__nimbusObjectNamespace(provided));
+    const notCarried = __stagedBindingNotCarried(id, fromDir);
+    if (notCarried) throw notCarried;
+  }
+  const resolution = __nimbusResolveImport(id, parentUrl, type ?? null);
+  if (resolution.path && resolution.format !== "module") {
+    const key = resolution.path.replace(/^\/+/, "");
+    const loading = resolution.format === "detect" && __nimbusEsmId("module", key) !== -1 ? undefined : __NodeModule._cache["/" + key];
+    if (loading !== undefined && __nimbusExecutingCommonJs.has(loading)) {
+      // Refused where the importer's link binds it: its link fails, nothing of its graph run, and the
+      // refusal's stack is the interpreter's (none of the program's frames, as Node's loader gives it).
+      const refused = __nimbusEvaluatedRecord(null);
+      refused.namespace = () => {
+        throw nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot import CommonJS Module " + id + " in a cycle." + (importer?.filename ? " (from " + importer.filename + ")" : ""));
+      };
+      return refused;
+    }
+  }
+  return __nimbusGraphRecord(resolution, importer);
+}
+// Whether a module of `record`'s graph awaits at its top level.
+function __nimbusGraphAwaits(record, seen) {
+  if (seen.has(record)) return false;
+  seen.add(record);
+  if (record.awaits === true) return true;
+  if (!(record instanceof __nimbusGraph.CyclicModuleRecord)) return false;
+  for (const target of record.host.requestedModules()) if (__nimbusGraphAwaits(target, seen)) return true;
+  return false;
+}
+// import() of a record: linked, then evaluated (core esm-graph.ts), its
+// namespace once its evaluation completes. What escapes it is explained as
+// Node's loader explains it, by the module imported.
+async function __nimbusImportRecord(record, url) {
+  try {
+    if (!(record instanceof __nimbusGraph.CyclicModuleRecord)) {
+      record.host.link();
+      record.host.evaluateSync();
+      return record.namespace();
+    }
+    for (const leaf of __nimbusPlanGraph(record, false)) await leaf.begin();
+    __nimbusGraph.link(record);
+  } catch (e) {
+    __nimbusExplainCommonJSGlobalLike(e, url, false);
+    throw e;
+  }
+  try {
+    await __nimbusGraph.evaluate(record);
+  } catch (e) {
+    __nimbusExplainCommonJSGlobalLike(e, url, record.host.hasTLA);
+    throw e;
+  }
+  return record.namespace();
+}
+// import() of an ES module the interpreter evaluates (a file the launch did
+// not stage, a query's or fragment's instance, a data: module): its late
+// graph's names checked first, the first time (a name it imports that its
+// module does not export rejects before any body runs, in Node's words),
+// then its graph's.
+async function __nimbusImportGraph(resolution) {
+  const key = resolution.format === "data" ? resolution.url : resolution.path.replace(/^\/+/, "");
+  const recordKey = resolution.format === "data" || resolution.url.includes("?") || resolution.url.includes("#") ? resolution.url : "/" + key;
+  let record = __nimbusGraphRecords.get(recordKey);
+  try {
+    if (record === undefined || record.status === "unlinked") {
+      if (resolution.format !== "data" || __nimbusDataModuleOf(resolution.url).format === "module") __nimbusLateLink(key, resolution.url);
+    }
+    record ??= __nimbusGraphRecord(resolution, undefined);
+  } catch (e) {
+    __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
+    throw e;
+  }
+  const namespace = await __nimbusImportRecord(record, resolution.url);
+  __esmNamespaces.set(resolution.url, namespace);
+  return namespace;
+}
+// require() of an ES module the interpreter evaluates (require(esm)): its
+// graph refused where any of it awaits at its top level, before any of it
+// runs, as Node's require does; else linked and evaluated now. A require()
+// of one evaluating already is a cycle: an adopted module's refused as Node
+// refuses it, another's exports as they are. Its result: an adopted
+// module's in Node's shape of a required namespace (__nimbusEsmRequired);
+// another's, its exports.
+function __nimbusRequireRecord(record, parent) {
+  const state = record.state;
+  if (record.status === "linking" || record.status === "evaluating") {
+    if (state.adopted) __nimbusEsmRequire(state.esmId, true, parent);
+    return state.mod.exports;
+  }
+  if (record.status !== "evaluated" && record.status !== "evaluating-async") {
+    const previous = __nimbusGraphSync;
+    __nimbusGraphSync = true;
+    try {
+      // Its late graph's names, as its import() checks them: a runtime module's.
+      if (record.status === "unlinked" && !state.adopted && !state.data) __nimbusLateLink(state.resolvedPath.replace(/^\/+/, ""), state.moduleUrl);
+      __nimbusPlanGraph(record, true);
+      if (__nimbusGraphAwaits(record, new Set())) throw __nimbusRequireAsync(parent, state.filename);
+      __nimbusGraph.link(record);
+    } finally {
+      __nimbusGraphSync = previous;
+    }
+    __nimbusReflectApply(__nimbusEsmThen, __nimbusGraph.evaluate(record), [undefined, () => {}]);
+  } else if (__nimbusGraphAwaits(record, new Set())) {
+    throw __nimbusRequireAsync(parent, state.filename);
+  }
+  if (record.status !== "evaluated") throw __nimbusRequireAsync(parent, state.filename);
+  if (record.evaluationError !== null) {
+    // A ReferenceError for a CommonJS name is explained by the module required, as Node's ModuleJobSync explains it.
+    __nimbusExplainCommonJSGlobalLike(record.evaluationError.value, state.moduleUrl, false);
+    throw record.evaluationError.value;
+  }
+  __nimbusUpdateChildren(parent, state.mod, true);
+  __NodeModule._cache[state.cacheKey] ??= state.mod;
+  return state.adopted ? __nimbusEsmRequired(__nimbusEsmRecord(state.esmId)) : state.mod.exports;
+}
+
 // What import() of a resolution gives: a staged module's (or facade's)
 // namespace from the registry; a builtin's, a data: URL's, a JSON file's and
 // a file the launch did not stage, made here, once per URL.
 function __esmLoad(resolution) {
   const cached = __esmNamespaces.get(resolution.url);
   if (cached) return cached;
-  let ns;
   if (resolution.format === "builtin") {
     const id = __nimbusEsmId("builtin", resolution.builtin);
     if (id !== -1) return __nimbusEsmImport(id);
     return __nimbusTranslatedNamespace(resolution, builtins[resolution.builtin]);
-  } else if (resolution.format === "data") {
-    const data = __nimbusDataModule(resolution.url);
-    if (data.format === "json") {
-      const value = JSON.parse(data.source);
-      ns = __esmNamespaceOf(["default"], () => value);
-    } else if (data.format === "module") {
-      // A data URL produced at runtime is a module body, just like a written
-      // file. It is staged by the same runtime-code service, retaining its URL
-      // as the import base (relative imports from data URLs remain invalid).
-      const cell = __nimbusRuntimeModule(resolution.url, data.source);
-      const mod = { exports: {} };
-      Object.defineProperty(mod, "__nimbusImportMeta", { value: {
-        url: resolution.url,
-        resolve: (id) => globalThis.__nimbusImportMetaResolve(id, resolution.url),
-      } });
-      // Its static imports (ESM_LOAD_HELPER: the specifier, the marker, the type attribute). A data:
-      // module's `export *` has no facts here to leave a name out by.
-      const requireData = (id, marker, type = null) => marker === "nimbus:star-conflicts" ? [] : __nimbusStaticImport(String(id), resolution.url, undefined, type);
-      let result;
-      try {
-        result = cell(mod.exports, requireData, mod, undefined, undefined);
-      } catch (e) {
-        __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
-        throw e;
-      }
-      const namespace = () => __esmNamespaceOf(Object.keys(mod.exports).filter((n) => n !== "__esModule"), (n) => mod.exports[n]);
-      if (result && typeof result.then === "function") {
-        const pending = result.then(namespace, (error) => {
-          __esmNamespaces.delete(resolution.url);
-          __nimbusExplainCommonJSGlobalLike(error, resolution.url, true);
-          throw error;
-        });
-        __esmNamespaces.set(resolution.url, pending);
-        return pending;
-      }
-      ns = namespace();
-    } else {
-      throw nodeError(RangeError, "ERR_UNKNOWN_MODULE_FORMAT", "Unknown module format: " + data.mime + " for URL " + resolution.url);
-    }
-  } else {
-    const key = resolution.path.replace(/^\/+/, "");
-    // A query or a fragment is a module instance of its own: the interpreter's.
-    const variant = resolution.url.includes("?") || resolution.url.includes("#");
-    if (!variant) {
-      const id = __nimbusEsmId("module", key);
-      if (id !== -1) return __nimbusEsmImport(id);
-      const facade = resolution.format === "json" ? __nimbusEsmId("json", key) : __nimbusEsmId("commonjs", key);
-      if (facade !== -1) return __nimbusEsmImport(facade);
-    }
-    const esm = resolution.format === "module" || resolution.format === "detect";
-    const evaluationKey = variant ? resolution.url : key;
-    // An interpreted ES module links through its require(): the staged
-    // modules it imports are the registry's to evaluate, first.
-    if (esm) return __nimbusEsmLinkStaged(key).then(() => __esmLoadInterpreted(resolution, key, evaluationKey, esm));
-    return __esmLoadInterpreted(resolution, key, evaluationKey, esm);
   }
-  __esmNamespaces.set(resolution.url, ns);
-  return ns;
-}
-// Evaluate, in import order, the staged ES modules the interpreted module at
-// `key`'s late graph imports, once the whole graph links (core
-// esm-late-link.ts), so the interpreter finds them evaluated. A graph that
-// does not link runs none of its bodies: its import() rejects.
-async function __nimbusEsmLinkStaged(key) {
-  const order = __nimbusLateLink(key, __nimbusEsmUrl("/" + key));
-  // What one throws ends the evaluation of what imports it, as Node's
-  // does: no later import of it evaluates, and the import() rejects.
-  for (const id of order) {
-    if (__nimbusEsmRecord(id).state !== __ESM_DONE && !__nimbusEsmTainted(id)) await __nimbusEsmImport(id);
+  if (resolution.format === "data") return __nimbusImportGraph(resolution);
+  const key = resolution.path.replace(/^\/+/, "");
+  // A query or a fragment is a module instance of its own: the interpreter's.
+  const variant = resolution.url.includes("?") || resolution.url.includes("#");
+  if (!variant) {
+    const id = __nimbusEsmId("module", key);
+    if (id !== -1) return __nimbusEsmImport(id);
+    const facade = resolution.format === "json" ? __nimbusEsmId("json", key) : __nimbusEsmId("commonjs", key);
+    if (facade !== -1) return __nimbusEsmImport(facade);
   }
+  if (resolution.format === "module" || resolution.format === "detect") return __nimbusImportGraph(resolution);
+  // A CommonJS or JSON module: Node's translator of it, as require() loads it.
+  let exports;
+  try {
+    exports = __loadModule(key, variant ? resolution.url : key);
+  } catch (e) {
+    __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
+    throw e;
+  }
+  return __nimbusTranslatedNamespace(resolution, exports);
 }
 // The facts of the launch a late graph's link reads (core esm-late-link.ts LateLinkHost).
 const __nimbusLateLinkHost = {
@@ -20061,39 +20430,6 @@ const __nimbusLateLinkHost = {
 // Links the late graph of the module at `key` (`url`); the staged rows it imports, in order.
 function __nimbusLateLink(key, url) {
   return __nimbusRegistryRequire("./nimbus/esm-late.js").linkLateGraph(__nimbusLateLinkHost, key, url);
-}
-function __esmLoadInterpreted(resolution, key, evaluationKey, esm) {
-  let ns;
-  {
-    // The import is the module's job: what escapes its evaluation is
-    // explained as Node's loader explains it.
-    let exports;
-    try {
-      exports = __loadModule(key, evaluationKey, !esm, undefined, esm);
-    } catch (e) {
-      __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
-      throw e;
-    }
-    // An interpreted ES module's exports: its own names, live; another's, its translator's.
-    const namespace = () => __nimbusLoadedEsModule(key, evaluationKey, resolution.format)
-      ? __esmNamespaceOf(Object.keys(exports).filter((name) => name !== "__esModule"), (name) => exports[name])
-      : __nimbusTranslatedNamespace(resolution, exports);
-    // A module with top-level await: the import resolves once its evaluation
-    // completes, and rejects with what it throws.
-    const evaluation = __moduleEvaluations.get(evaluationKey);
-    if (evaluation !== undefined) {
-      const pending = evaluation.then(namespace, (error) => {
-        __esmNamespaces.delete(resolution.url);
-        __nimbusExplainCommonJSGlobalLike(error, resolution.url, true);
-        throw error;
-      });
-      __esmNamespaces.set(resolution.url, pending);
-      return pending;
-    }
-    ns = namespace();
-  }
-  __esmNamespaces.set(resolution.url, ns);
-  return ns;
 }
 // A bundled copy of a package the runtime provides, bound to the runtime's
 // (provided-packages.ts rewriteProvidedCommonJsModules, PROVIDED_PACKAGE_HOOK):
@@ -20518,49 +20854,23 @@ function __nimbusResolveImport(specifier, parentUrl, type) {
     throw error;
   }
 }
-// Module.prototype.require from `parent`, its requests resolving from `fromDir`;
-// not `required`, an interpreted ES module's static import, with its `type` attribute.
-function __requireFrom(id, fromDir, parent, required = true, type = null) {
+// Module.prototype.require from `parent`, its requests resolving from `fromDir`.
+function __requireFrom(id, fromDir, parent) {
   if (typeof id !== "string") throw invalidArgType("id", "string", id);
   if (id === "") throw new nodeErrorCodes.ERR_INVALID_ARG_VALUE("id", id, "must be a non-empty string");
-  // An import of a builtin is the ES loader's (__nimbusStaticImport); of a facet's package or a staged N-API binding, its namespace.
-  const builtin = required ? __nimbusBuiltinId(id) : null;
+  // A builtin; a facet's package or a staged N-API binding.
+  const builtin = __nimbusBuiltinId(id);
   if (builtin !== null) return builtins[builtin];
   const binding = __nimbusFacetProvidedPackages.has(id) ? null : __stagedBinding(id);
   const provided = binding ? __loadStagedBinding(binding, fromDir) : __nimbusFacetProvidedPackages.has(id) ? builtins[id] : undefined;
-  if (provided !== undefined) return required ? provided : __nimbusObjectNamespace(provided);
-  if (required && id.startsWith("node:")) throw nodeError(Error, "ERR_UNKNOWN_BUILTIN_MODULE", "No such built-in module: " + id);
+  if (provided !== undefined) return provided;
+  if (id.startsWith("node:")) throw nodeError(Error, "ERR_UNKNOWN_BUILTIN_MODULE", "No such built-in module: " + id);
   const notCarried = __stagedBindingNotCarried(id, fromDir);
   if (notCarried) throw notCarried;
-  if (!required) return __nimbusStaticImport(id, builtins.url.pathToFileURL(parent?.filename ?? "/" + String(fromDir).replace(/^\/+/, "") + "/[import]").href, parent, type);
   const resolved = __resolveFrom(id, fromDir, parent?.filename);
   if (!resolved) throw __nimbusModuleNotFound(id, parent);
-  return __loadModule(resolved, resolved, required, parent);
+  return __loadModule(resolved, resolved, true, parent);
 }
-// An interpreted ES module's static import, as Node's ES loader makes it: resolved (refused with no arrow of the
-// importer's), checked against its `type` attribute, loaded, and given as its module's namespace.
-function __nimbusStaticImport(id, parentUrl, parent, type) {
-  const resolution = __nimbusResolveImport(id, parentUrl, type ?? null);
-  if (resolution.format === "builtin") return __nimbusTranslatedNamespace(resolution, builtins[resolution.builtin]);
-  if (!resolution.path) throw nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "A static import of " + resolution.url + " has no file to load synchronously");
-  const key = resolution.path.replace(/^\/+/, "");
-  const esModule = resolution.format === "module" || (resolution.format === "detect" && __nimbusEsmId("module", key) !== -1);
-  // A CommonJS module still loading is one whose require() of an ES
-  // module led here: Node's loader refuses the cycle (require(esm)).
-  const loading = esModule ? undefined : __NodeModule._cache["/" + key];
-  if (loading !== undefined && __nimbusExecutingCommonJs.has(loading)) {
-    throw nodeError(Error, "ERR_REQUIRE_CYCLE_MODULE", "Cannot import CommonJS Module " + id + " in a cycle." + (parent?.filename ? " (from " + parent.filename + ")" : ""));
-  }
-  // A query's or fragment's ES module or JSON is its own instance, by its
-  // URL; a CommonJS module (by its extension, its package type or its
-  // syntax) is one module by its file, whatever the URL (Node's CommonJS
-  // translator keys its cache by filename).
-  const { search, hash } = new URL(resolution.url);
-  const instance = (search !== "" || hash !== "") && (esModule || resolution.format === "json") ? resolution.url : key;
-  const exports = __loadModule(key, instance, false, parent, esModule);
-  return __nimbusLoadedEsModule(key, instance, resolution.format) ? exports : __nimbusTranslatedNamespace(resolution, exports);
-}
-
 // V8's errors compiling CommonJS that an ES module would not have
 // (lib/internal/modules/helpers.js esmSyntaxErrorMessages), and those only
 // CommonJS throws, which Node retries as a module (throwsOnlyInCommonJSErrorMessages).

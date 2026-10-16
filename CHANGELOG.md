@@ -14,6 +14,88 @@ published independently in the `@nimbus-sh` npm scope.
   failed with "invalid path", a file `\uFEFFf` was created as `f`, and
   `readlink` lost the BOM from its link's target. A `.git/commondir` loses
   only its line's end, as git reads it.
+- Fixed: a hosted ES module, staged or interpreted, can statically import
+  a `data:` module (`import x from 'data:text/javascript,…'`). Its imported
+  names are checked before any module body runs. It runs once, in a cycle
+  or after it throws, and its `export *` conflicts are left out of its
+  namespace, as in Node. Before, a staged entry or package with such an
+  import failed to link, and an interpreted one refused it.
+- Fixed: a hosted program's ES modules that the interpreter evaluates
+  (files written after launch, `?query` and `#fragment` instances, `data:`
+  modules, staged modules it takes over) are linked and evaluated as
+  ECMA-262 specifies (`runtime/esm-graph.js`). A static import of a module
+  with top-level await now waits for it, as in Node; before, the importer
+  ran first. In a cycle, modules run in Node's order, whatever their kind;
+  before, the order depended on which module of the cycle was interpreted
+  or staged.
+- Fixed: a hosted `data:` JavaScript module is always an ES module, as its
+  MIME type says: strict, with `this` undefined at its top level. Before,
+  one without `import` or `export` ran as sloppy CommonJS.
+- Fixed: a hosted ES module may export its own `__esModule`. Before, a
+  module the program wrote with `export const __esModule = false` threw a
+  TypeError, and namespaces left the name out. Now the name is in its
+  namespace, as in Node.
+- Fixed: a hosted typeless `.js` file the program writes, whose top level
+  redeclares a CommonJS wrapper name (`const require = 1`), is an ES
+  module, as Node detects it. Before, it ran as sloppy CommonJS. An
+  explicitly CommonJS file that does this is now the SyntaxError V8 gives.
+- Fixed: a hosted module under a directory whose name has `#`, `?`, `%` or
+  another character a file URL escapes imports beside itself, and its
+  `import.meta.url` escapes the name as Node's `pathToFileURL` does. Before,
+  `a#b/main.cjs` imported from the directory above it.
+- Fixed: `npm run`, `npm test` and `npm start` run a script as npm does.
+  The words after the script name (after `--`) are passed to it, each
+  quoted for the shell. `pre<script>` runs before the script and
+  `post<script>` after it, unless `--ignore-scripts` is given. The first
+  script that fails stops the rest. A script runs with npm's lifecycle
+  environment (`npm_lifecycle_event`, `npm_lifecycle_script`,
+  `npm_package_name`, `npm_package_version`, `npm_package_json`), and
+  `node_modules/.bin` of the project and each directory above it come
+  first on its `PATH`. Before, `npm run x -- a b` dropped `a b`, and pre
+  and post scripts did not run. Without a host shell, core npm split a
+  simple script on spaces, so `mkdir "a b"` made `"a` and `b"`.
+- Fixed: a project's bins are commands of its own scripts only. Before,
+  core npm's `npm run` registered every bin in the project's node_modules
+  as a command of the whole workspace, so a script in another project ran
+  the first project's tool. Core npm's local install now links bins into
+  `node_modules/.bin`, as npm does. Every bin shim names its target as a
+  JSON string, so a path with a quote in it still works.
+- Fixed: `lifo install`, `lifo remove` and `lifo list` find lifo packages
+  where npm installs them globally: `<prefix>/lib/node_modules`, with the
+  prefix from npm's configuration (`--prefix`, `npm_config_prefix`, an
+  `.npmrc`, else `PREFIX` or `/usr/local`). Before, lifo read
+  `/usr/lib/node_modules`, where npm installs nothing. `npm install -g`
+  takes its prefix from the same configuration, `PREFIX` included. A
+  workspace's default environment no longer sets `npm_config_prefix`, so a
+  `prefix` in `~/.npmrc` takes effect. Without one, the prefix is still
+  `/usr/local`, npm's default.
+- Breaking (core): a workspace no longer restores global packages as
+  commands when it boots. `npm install -g` links a package's bins into
+  `<prefix>/bin`, which is on the default `PATH`, and the shell finds them
+  there, as it does with npm. A prefix set in `.npmrc` behaves as with npm:
+  its `bin` must be on `PATH`. `rehydrateGlobalPackages` is replaced by
+  `rehydrateLifoPackages(view, registry, { cwd, env })`. It restores only
+  lifo commands, under npm's configured prefix, and only a host that
+  registers `createLifoPkgCommand` needs to call it at boot. No Nimbus host
+  or app registers lifo, and Kinu does not. `registerBinCommand` is gone:
+  global bins are no longer registered as commands.
+- Breaking (core): `createNpmCommand` runs every script through the host's
+  `ShellExecuteFn`. Before, `createNpmCommand(registry, undefined, kernel)`
+  ran a script with no shell operator by calling its first word from the
+  registry. Now `npm run` without a shell executor fails for every script
+  with "shell integration unavailable". A host that registers npm without
+  one should pass its shell, for example
+  `(command, ctx) => workspace.exec(command, { cwd: ctx.cwd, env: ctx.env })`,
+  writing the result's output to `ctx.stdout` and `ctx.stderr` and
+  answering its exit code. `ShellExecuteFn` takes an optional third
+  argument, the script being run (`NpmScript`). It may answer `'resident'`
+  for a script the host keeps running after the call returns, such as a
+  dev server: npm run then stops, and says that the script's `post` script
+  did not run. The new `NpmCommandDeps.beforeRun` hook receives every
+  script npm run will run (pre, own and post) and can stop the run. The
+  hosted terminal's `node_modules` check and Next.js refusal use it, so
+  they also check pre and post scripts. `npmInstallGlobal` no longer takes
+  a command registry, and `createNpmCommand` no longer reads its own.
 - Fixed: `pip install` decides which dependencies apply by the markers of
   the CPython it installs for: CPython 3.13.14 on `wasm32-wasi`, as the
   interpreter itself answers them (`sys_platform` is `"wasi"`). Before, pip
@@ -53,6 +135,24 @@ published independently in the `@nimbus-sh` npm scope.
   commands are registered and summarized. Install, rehydration,
   `RuntimeManager.list` and `listInstalledRuntimes` now all use them, and
   their results are unchanged.
+- Fixed: a very long line at the hosted Python prompt (`python3`) reaches
+  the interpreter. Before, a line of more than about 125,000 bytes of
+  UTF-8 failed with "[python-repl] dispatch failed: Maximum call stack size
+  exceeded" before Python saw it. The prompt, TypeScript source maps, the esbuild-compatible
+  build's base64 and data-URL loaders, CSS data URLs, and stop/replay tapes
+  now share one base64 codec (`_shared/crypto.js`).
+- Fixed: a hosted or portable `node` program's package resolution errors
+  are Node's own errors, from `require()` and `import()` alike:
+  `ERR_PACKAGE_PATH_NOT_EXPORTED`, `ERR_PACKAGE_IMPORT_NOT_DEFINED`,
+  `ERR_INVALID_PACKAGE_TARGET`, `ERR_INVALID_PACKAGE_CONFIG` and
+  `ERR_INVALID_MODULE_SPECIFIER`. `String(error)` and its stack read
+  `Error [ERR_PACKAGE_PATH_NOT_EXPORTED]: …`; before, they read `Error: …`,
+  with the code only on `error.code`. The two Node 22 throws from C++ (a
+  package.json that is not JSON, `ERR_INVALID_PACKAGE_CONFIG`, and a
+  package main that names no file, `ERR_MODULE_NOT_FOUND`) are plain
+  `Error`s with their code, as in Node; `import()` used to give them the
+  `[CODE]` head. A module `require()` does not find is still a plain
+  `Error` with `code` `MODULE_NOT_FOUND`, as in Node.
 - Breaking (fabric, worker, sdk): the legacy inner Durable Object transport
   is gone. `NimbusDOStub` is no longer exported from
   `@nimbus-sh/fabric/bindings.js`, `@nimbus-sh/worker` or

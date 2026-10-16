@@ -49,7 +49,6 @@ import { normalizeVfsPath } from '../vfs/path.js';
 import { makeNimbusVerbHandler } from '../runtime/nimbus-command.js';
 import { composeRuntimeSources, suppliedRuntimeSource, } from '../runtime/runtime-package.js';
 import { registerUnixCommands } from '../shell/unix-commands.js';
-import { rehydrateGlobalPackages } from '../substrate/lifo/commands/system/lifo.js';
 import { registerMountCommands } from '../shell/mount-commands.js';
 import { installPathExecResolver } from '../shell/exec-dispatch.js';
 import { adoptCtxExports, composeFabric } from '@nimbus-sh/platform/composition.js';
@@ -382,15 +381,6 @@ export class NimbusWorkspace {
                 }
             }
             await runtimes.rehydrate();
-            // Globally installed npm and lifo packages come back as commands, once,
-            // here: the workspace is composed with them registered (a failure
-            // leaves those commands out, and says so).
-            try {
-                await rehydrateGlobalPackages(new ProcessView(ownerLease.fs), registry);
-            }
-            catch (error) {
-                console.error('[nimbus] global npm commands were not restored:', error);
-            }
             // The one `nimbus` verb: installs go through the manager, and a host with
             // application verbs supplies them — a bare workspace reports that it has
             // no session to address.
@@ -593,7 +583,6 @@ function defaultEnv(home) {
         TMPDIR: '/tmp',
         XDG_CONFIG_HOME: `${home}/.config`,
         XDG_DATA_HOME: `${home}/.local/share`,
-        npm_config_prefix: '/usr/local',
         PORT: '3000',
         HOST: '0.0.0.0',
     };

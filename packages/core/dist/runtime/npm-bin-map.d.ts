@@ -30,4 +30,10 @@ export declare function npmBinMap(packageName: string, bin: unknown): Map<string
  * kind npm reads, is deleted.
  */
 export declare function normalizePackageJsonBin(pkg: Record<string, unknown>): void;
+/**
+ * The file a bin is linked as: a Node script in `shimDir` that runs
+ * `target`, named relative to it as npm's .bin symlinks are, so a tree
+ * moved whole (a staged install renamed into place) still runs.
+ */
+export declare function npmBinShim(shimDir: string, target: string): string;
 //# sourceMappingURL=npm-bin-map.d.ts.map

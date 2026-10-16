@@ -1,9 +1,8 @@
 import { ISOLATE_NETWORK } from '../../../../_shared/workspace-network.js';
-import { resolveContext } from '../registry.js';
 import { basename, join, relative, resolve } from '../../utils/path.js';
 import { writeTarballStream } from '../../../../_shared/tarball.js';
 import { isNativeBinPath } from '../../../../runtime/os-contracts.js';
-import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
+import { npmBinMap, npmBinShim } from '../../../../runtime/npm-bin-map.js';
 import { pickPackumentVersion } from '../../../../_shared/npm-semver.js';
 import { parseRegistryRequest, splitPackageSpec } from '../../../../_shared/npm-spec.js';
 import { notCachedMessage } from '../../../../_shared/npm-cache-mode.js';
@@ -16,7 +15,8 @@ import { npmInstallInvocation, } from './npm-install-args.js';
 import { installSummary, npmDevEnginesLines, npmEngineLines, npmLogEnabled, npmRemovedLine, parseNpmLogLevel } from './npm-log.js';
 import { checkDevEngines } from '../../../../_shared/npm-libs.js';
 import { checkEngines } from '../../../../_shared/npm-arborist/engines.js';
-import { NODE_SYSTEM, NODE_VERSION, NPM_VERSION, SYSTEM_IDENTITY } from '../../../../constants.js';
+import { DEFAULT_PATH, NODE_SYSTEM, NODE_VERSION, NPM_VERSION, SYSTEM_IDENTITY } from '../../../../constants.js';
+import { npmShellWord } from '../../../../_shared/shell-quote.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
 import { direntTypeIn } from '../../../../vfs/dirent-type.js';
 /** The registry an install reads from when its env names none. */
@@ -276,18 +276,6 @@ export async function* packagesIn(vfs, modulesDir) {
 export function getBinEntries(pkg) {
     return Object.fromEntries(npmBinMap(pkg.name ?? '', pkg.bin));
 }
-export function registerBinCommand(registry, binName, scriptPath, kernel) {
-    registry.registerLazy(binName, () => import('./node.js').then((mod) => ({
-        default: (async (ctx) => {
-            // Use kernel's portRegistry if available, otherwise fall back to default
-            const nodeCommand = kernel ? mod.createNodeCommand(kernel) : mod.default;
-            return (await nodeCommand({
-                ...ctx,
-                args: [scriptPath, ...ctx.args],
-            }));
-        }),
-    })));
-}
 /** The kernel-less shell's install queues are one namespace. */
 const NO_KERNEL = {};
 const describeError = (error) => error instanceof Error ? error.message : String(error);
@@ -404,8 +392,21 @@ async function installTree(roots, install, project) {
         // What is on disk the tree does not hold goes (npm prunes it).
         const removals = onDisk.filter((at) => !inTree(at));
         const publish = planned.filter((node) => inTree(node.at)).sort((x, y) => depthOf(x.at) - depthOf(y.at));
-        if (publish.length === 0 && removals.length === 0)
+        // A project's .bin is the bins of its top-level packages as they are now;
+        // a global install links its roots'. What the packages it replaces or
+        // removes linked is read first, to unlink what they no longer do.
+        const { globalBinDir } = install;
+        const binDir = globalBinDir ?? join(targetBase, '.bin');
+        const topLevel = [...plan.nodes.keys()].filter((at) => inTree(at) && depthOf(at) === 1);
+        const linking = globalBinDir
+            ? publish.filter((node) => node.edge.from === '').map((node) => node.at)
+            : topLevel;
+        const replaced = globalBinDir ? linking : [...new Set([...onDisk.filter((at) => depthOf(at) === 1), ...topLevel])];
+        const before = await linkedBins(vfs, targetBase, replaced, binDir);
+        if (publish.length === 0 && removals.length === 0) {
+            await relinkBins(vfs, binDir, before, await linkedBins(vfs, targetBase, linking, binDir));
             return { installed: [], failed: [], plannedVersion, engines };
+        }
         const journal = InstallJournal.begin(vfs, targetBase, run);
         const retiredAt = new Map();
         // The package the step being made is for, should it fail.
@@ -452,12 +453,10 @@ async function installTree(roots, install, project) {
             return await fail(current, describeError(error));
         }
         await journal.commit(stderr);
-        if (install.globalBinDir) {
-            for (const node of publish) {
-                if (node.edge.from === '')
-                    await linkGlobalBins(node.pkg.info, join(targetBase, node.at), install.globalBinDir, install);
-            }
-        }
+        // npm's bin links, found through PATH: a global install's roots' into
+        // the prefix's bin, a project's top-level packages' into its
+        // node_modules/.bin, which its scripts have first on PATH (npmScriptEnv).
+        await relinkBins(vfs, binDir, before, await linkedBins(vfs, targetBase, linking, binDir));
         return { installed: publish.map((node) => `${node.pkg.name}@${node.pkg.version}`), failed: [], plannedVersion, engines };
     }
     finally {
@@ -467,16 +466,50 @@ async function installTree(roots, install, project) {
         catch { /* none was made */ }
     }
 }
-/** Link a globally installed root's bins into the prefix's bin directory, and register them as commands. */
-async function linkGlobalBins(info, targetDir, globalBinDir, install) {
-    for (const [binName, binPath] of Object.entries(getBinEntries(info))) {
-        const scriptPath = resolve(targetDir, binPath);
-        registerBinCommand(install.registry, binName, scriptPath, install.kernel);
-        try {
-            (await install.vfs.mkdir(globalBinDir, { recursive: true }));
+/**
+ * The shims linking the bins of the packages at `placements` (under
+ * `targetBase`, as their package.json files are now) into `binDir`, as
+ * [bin name, shim] (npmBinShim), every package's: two may link one name. A
+ * native launcher (.exe/.node) runs nowhere here, and is not linked.
+ */
+async function linkedBins(vfs, targetBase, placements, binDir) {
+    const shims = [];
+    for (const at of placements) {
+        const packageDir = join(targetBase, at);
+        const manifest = await packageJsonIn(vfs, packageDir);
+        if (manifest === null)
+            continue;
+        const name = typeof manifest.json.name === 'string' ? manifest.json.name : placementName(at);
+        for (const [bin, target] of npmBinMap(name, manifest.json.bin)) {
+            if (!isNativeBinPath(target))
+                shims.push([bin, npmBinShim(binDir, resolve(packageDir, target))]);
         }
-        catch { /* exists */ }
-        (await install.vfs.writeFile(join(globalBinDir, binName), `#!/usr/bin/env node\nrequire('${scriptPath}');\n`));
+    }
+    return shims;
+}
+/**
+ * `binDir` from the shims `before` (what the packages an install replaces
+ * linked) to the shims `after` (the last package's of a name wins, as
+ * npm's): each of `after` written, executable, unless it is there already,
+ * and a name `after` lacks removed while it is still one of the shims
+ * `before` linked under it (another package's link of that name stays).
+ */
+async function relinkBins(vfs, binDir, before, links) {
+    const after = new Map(links);
+    const current = async (shim) => (await vfs.exists(shim) ? await vfs.readFileString(shim) : null);
+    for (const [name, text] of before) {
+        const shim = join(binDir, name);
+        if (!after.has(name) && await current(shim) === text)
+            await vfs.remove(shim, { force: true });
+    }
+    if (after.size > 0)
+        await vfs.mkdir(binDir, { recursive: true });
+    for (const [name, text] of after) {
+        const shim = join(binDir, name);
+        if (await current(shim) === text)
+            continue;
+        await vfs.writeFile(shim, text);
+        await vfs.chmod(shim, 0o755);
     }
 }
 // ─── Subcommands ───
@@ -498,7 +531,7 @@ async function printHelp(ctx) {
 // `npm init`, `npm create` and `npm innit` are npm-init.ts's: npm's own
 // libraries there (hosted-git-info, npm-package-arg, semver, the SPDX list)
 // are evaluated the first time a session runs one, not when it starts.
-async function npmInstall(ctx, registry, kernel, deps) {
+async function npmInstall(ctx, kernel, deps) {
     const invocation = npmInstallInvocation(await npmConfigOf(ctx));
     const packages = invocation.packages;
     if (invocation.unsupported.length > 0) {
@@ -519,10 +552,8 @@ async function npmInstall(ctx, registry, kernel, deps) {
             return 1;
         }
     }
-    // The prefix a global install resolves under — `--prefix` wins, then
-    // the env's npm_config_prefix, then /usr/local. Both sides derive
-    // `<prefix>/lib/node_modules` and `<prefix>/bin` from it.
-    const globalPrefix = resolveNpmPrefixVfs(ctx.cwd, ctx.env, invocation.prefix);
+    // Both sides derive `<prefix>/lib/node_modules` and `<prefix>/bin` from it.
+    const globalPrefix = await npmGlobalPrefix(ctx);
     const globalBinDir = `${globalPrefix}/bin`;
     const npmRegistry = registryOf(ctx, invocation);
     const startTime = Date.now();
@@ -530,7 +561,7 @@ async function npmInstall(ctx, registry, kernel, deps) {
     // host's, else the shell's own (shellInstallPort). This command owns the
     // summary and the progress channel — per-invocation, so two terminals'
     // installs can't interleave lines on one installer.
-    const installer = deps?.installer ?? shellInstallPort(ctx, registry, kernel);
+    const installer = deps?.installer ?? shellInstallPort(ctx, kernel);
     const npmLog = invocation.loglevel
         ? async (level, line) => { if (npmLogEnabled(invocation.loglevel, level))
             await ctx.stderr.write(`${line}\n`); }
@@ -585,7 +616,7 @@ async function npmInstall(ctx, registry, kernel, deps) {
  * the project's roots with the packages named, under the tree's hold, and
  * saves what was named to package.json once the install is complete.
  */
-function shellInstallPort(ctx, registry, kernel) {
+function shellInstallPort(ctx, kernel) {
     return {
         async install(spec) {
             const signal = spec.signal ?? ctx.signal;
@@ -594,7 +625,7 @@ function shellInstallPort(ctx, registry, kernel) {
             const globalBinDir = spec.global ? `${spec.globalPrefix}/bin` : undefined;
             const tree = {
                 targetBase, vfs, network: (kernel?.network ?? ISOLATE_NETWORK).forProcess(ctx.pid), npmRegistry: spec.registry, cache: spec.cache ?? 'default', signal,
-                stdout: ctx.stdout, stderr: ctx.stderr, registry, kernel,
+                stdout: ctx.stdout, stderr: ctx.stderr,
                 force: spec.force === true, engineStrict: spec.engineStrict === true, strictPeerDeps: spec.strictPeerDeps === true, legacyPeerDeps: spec.legacyPeerDeps === true, preferDedupe: spec.preferDedupe === true,
                 omit: { dev: spec.production === true, optional: spec.omitOptional === true, peer: spec.omitPeer === true },
                 ...(globalBinDir ? { globalBinDir } : {}),
@@ -637,11 +668,18 @@ async function holdShellTree(vfs, kernel, modulesDir, signal) {
     const held = holdTree(kernel ?? NO_KERNEL, await canonicalTreePath((path) => vfs.realpath(path), modulesDir), signal);
     return typeof held === 'function' ? held : await held;
 }
-/** npm's prefix resolution: --prefix wins, then npm_config_prefix, then
- *  /usr/local; a relative value resolves against cwd. Absolute result. */
-function resolveNpmPrefixVfs(cwd, env, explicit) {
-    const raw = explicit ?? env['npm_config_prefix'] ?? '/usr/local';
-    return resolve(cwd, raw);
+/**
+ * The prefix npm installs globally under, as `config` (read in `cwd`)
+ * resolves it: --prefix, npm_config_prefix, an .npmrc, else PREFIX or
+ * /usr/local; absolute. Its lib/node_modules holds the packages, its bin
+ * their bins.
+ */
+export function npmGlobalPrefixOf(config, cwd) {
+    return resolve(cwd, String(config.get('prefix')));
+}
+/** npmGlobalPrefixOf this command's configuration. */
+export async function npmGlobalPrefix(ctx) {
+    return npmGlobalPrefixOf(await npmConfigOf(ctx), ctx.cwd);
 }
 /**
  * The invocation as npm's configuration reads it (npm-config.ts: npm's
@@ -655,7 +693,7 @@ async function npmInvocation(ctx) {
     const global = config.get('global') === true || config.get('location') === 'global';
     return {
         names: config.positionals.slice(1),
-        prefix: global ? resolve(ctx.cwd, String(config.get('prefix'))) : null,
+        prefix: global ? await npmGlobalPrefix(ctx) : null,
         save: config.get('save') !== false,
     };
 }
@@ -878,99 +916,103 @@ async function npmList(ctx) {
     await ctx.stderr.write(['code ELSPROBLEMS', ...problems].map((line) => `npm error ${line}\n`).join(''));
     return 1;
 }
-async function npmRun(ctx, shellExecute, registry, kernel) {
-    const args = ctx.args.slice(1);
-    const scriptName = args[0];
+/**
+ * npm's run (`npm run`, `run-script`, `test`, `start`): the project's script
+ * for the event, its pre<event> before it and post<event> after it unless
+ * --ignore-scripts, each through the host's shell as @npmcli/run-script runs
+ * one: the words after the event (after `--`) appended to the event's own
+ * script, each quoted for sh (npmShellWord), under npm's lifecycle
+ * environment (npmScriptEnv). The first script that fails stops the rest.
+ */
+async function npmRun(ctx, shellExecute, deps) {
+    const config = await npmConfigOf(ctx);
+    const [command, ...words] = config.positionals;
+    const [event, args] = command === 'run' || command === 'run-script' ? [words[0], words.slice(1)] : [command, words];
     const pkg = (await readProjectPackageJson(ctx.vfs, ctx.cwd));
     if (!pkg) {
         await ctx.stderr.write('npm ERR! no package.json found\n');
         return 1;
     }
-    if (!scriptName) {
-        // List available scripts
-        if (!pkg.scripts || Object.keys(pkg.scripts).length === 0) {
+    const scripts = pkg.scripts ?? {};
+    if (event === undefined) {
+        if (Object.keys(scripts).length === 0) {
             await ctx.stdout.write('No scripts defined in package.json\n');
             return 0;
         }
         await ctx.stdout.write('Available scripts:\n');
-        for (const [name, cmd] of Object.entries(pkg.scripts)) {
+        for (const [name, cmd] of Object.entries(scripts)) {
             await ctx.stdout.write(`  ${name}\n    ${cmd}\n`);
         }
         return 0;
     }
-    if (!pkg.scripts || !pkg.scripts[scriptName]) {
-        await ctx.stderr.write(`npm ERR! Missing script: "${scriptName}"\n`);
-        if (pkg.scripts) {
+    const own = Object.hasOwn(scripts, event) ? scripts[event] : undefined;
+    if (own === undefined) {
+        if (config.get('if-present') === true)
+            return 0;
+        await ctx.stderr.write(`npm ERR! Missing script: "${event}"\n`);
+        if (Object.keys(scripts).length > 0) {
             await ctx.stderr.write('\nAvailable scripts:\n');
-            for (const name of Object.keys(pkg.scripts)) {
+            for (const name of Object.keys(scripts)) {
                 await ctx.stderr.write(`  - ${name}\n`);
             }
         }
         return 1;
     }
-    const script = pkg.scripts[scriptName];
-    await ctx.stdout.write(`\n> ${pkg.name || ''}@${pkg.version || '1.0.0'} ${scriptName}\n`);
-    await ctx.stdout.write(`> ${script}\n\n`);
-    // Register local bin scripts from node_modules so they're available in scripts
-    if (registry) {
-        (await registerLocalBins(ctx.vfs, ctx.cwd, registry, kernel));
+    // Positional words go to the event's own script, not to its pre and post.
+    const lifecycle = [{ event, script: own, args }];
+    if (config.get('ignore-scripts') !== true) {
+        const pre = scripts[`pre${event}`];
+        const post = scripts[`post${event}`];
+        if (pre)
+            lifecycle.unshift({ event: `pre${event}`, script: pre, args: [] });
+        if (post)
+            lifecycle.push({ event: `post${event}`, script: post, args: [] });
     }
-    // For simple scripts (single command, no shell operators), invoke directly
-    // to avoid extra stack frames from shell.execute → interpreter chain
-    if (registry) {
-        const trimmed = script.trim();
-        const hasShellSyntax = /[;&|`$(){}]/.test(trimmed);
-        if (!hasShellSyntax) {
-            const parts = trimmed.split(/\s+/);
-            const cmdName = parts[0];
-            const cmdArgs = parts.slice(1);
-            const cmd = await registry.resolve(cmdName, resolveContext(ctx.cwd, ctx.env, ctx.vfs));
-            if (cmd) {
-                return (await cmd({ ...ctx, args: cmdArgs }));
-            }
+    const refused = await deps?.beforeRun?.(ctx, { event, scripts: lifecycle, manifest: pkg });
+    if (refused !== undefined && refused !== null)
+        return refused;
+    if (!shellExecute) {
+        await ctx.stderr.write('(shell integration unavailable, run the command directly)\n');
+        return 1;
+    }
+    for (const [at, run] of lifecycle.entries()) {
+        await ctx.stdout.write(`\n> ${pkg.name || ''}@${pkg.version || '1.0.0'} ${run.event}\n> ${`${run.script.trim()} ${run.args.join(' ')}`.trim()}\n\n`);
+        const command = [run.script, ...run.args.map(npmShellWord)].join(' ');
+        const outcome = await shellExecute(command, { ...ctx, env: npmScriptEnv(ctx, pkg, run.event, run.script) }, run);
+        if (outcome === 'resident') {
+            // It runs on after npm run returns, so what would follow its end cannot.
+            for (const after of lifecycle.slice(at + 1))
+                await ctx.stderr.write(`npm warn ${after.event} not run: ${run.event} is still running\n`);
+            return 0;
         }
+        if (outcome !== 0)
+            return outcome;
     }
-    if (shellExecute) {
-        return (await shellExecute(script, ctx));
-    }
-    // No shell access - print the command for the user
-    await ctx.stderr.write('(shell integration unavailable, run the command directly)\n');
-    return 1;
+    return 0;
 }
-/** Scan node_modules for packages with bin entries and register them as commands */
-async function registerLocalBins(vfs, cwd, registry, kernel) {
-    const nmDir = join(cwd, 'node_modules');
-    let count = 0;
-    for await (const name of packagesIn(vfs, nmDir))
-        count += await registerPkgBins(vfs, join(nmDir, name), registry, kernel);
-    return count;
-}
-async function registerPkgBins(vfs, pkgDir, registry, kernel) {
-    const pkgJsonPath = join(pkgDir, 'package.json');
-    if (!(await vfs.exists(pkgJsonPath)))
-        return 0;
-    let count = 0;
-    try {
-        const pkg = JSON.parse((await vfs.readFileString(pkgJsonPath)));
-        const bins = getBinEntries(pkg);
-        for (const [binName, binPath] of Object.entries(bins)) {
-            // Native-executable bins (.exe/.node) are not runnable here; skip
-            // them so a package whose only bin is a native launcher (e.g.
-            // opencode-ai's bin/opencode.exe) is handled by the npm-bin
-            // fallback resolver, which reads the authoritative bin manifest
-            // (including staged-artifact sentinels) instead of this raw scan.
-            if (isNativeBinPath(binPath))
-                continue;
-            // Only register if not already in registry
-            if (!registry.has(binName)) {
-                const scriptPath = resolve(pkgDir, binPath);
-                registerBinCommand(registry, binName, scriptPath, kernel);
-                count++;
-            }
-        }
+/**
+ * The environment npm runs a script of `pkg` under (@npmcli/run-script):
+ * the command's, with the script's event and text, the package's name,
+ * version and package.json, and node_modules/.bin of the project and of
+ * each directory above it first on PATH, so a project's bins are found
+ * from its scripts, and only from them.
+ */
+function npmScriptEnv(ctx, pkg, event, script) {
+    const bins = [];
+    for (let dir = resolve(ctx.cwd);; dir = resolve(dir, '..')) {
+        bins.push(join(dir, 'node_modules', '.bin'));
+        if (dir === '/')
+            break;
     }
-    catch { /* ignore */ }
-    return count;
+    return {
+        ...ctx.env,
+        npm_package_json: join(resolve(ctx.cwd), 'package.json'),
+        npm_lifecycle_event: event,
+        npm_lifecycle_script: script,
+        npm_package_name: pkg.name ?? '',
+        npm_package_version: pkg.version ?? '',
+        PATH: [...bins, ctx.env.PATH ?? DEFAULT_PATH].join(':'),
+    };
 }
 async function npmInfo(ctx, network) {
     const args = ctx.args.slice(1);
@@ -1042,7 +1084,7 @@ async function npmSearch(ctx, network) {
 }
 // ─── Factory ───
 /** The command npm runs for `subcommand` (one of its aliases), or null for one it does not know. */
-function npmSubcommand(subcommand, registry, shellExecute, kernel, deps) {
+function npmSubcommand(subcommand, shellExecute, kernel, deps) {
     switch (subcommand) {
         case 'init':
         case 'create':
@@ -1051,7 +1093,7 @@ function npmSubcommand(subcommand, registry, shellExecute, kernel, deps) {
         case 'install':
         case 'i':
         case 'add':
-            return (ctx) => npmInstall(ctx, registry, kernel, deps);
+            return (ctx) => npmInstall(ctx, kernel, deps);
         case 'ci':
         case 'clean-install':
         case 'install-clean':
@@ -1066,11 +1108,9 @@ function npmSubcommand(subcommand, registry, shellExecute, kernel, deps) {
             return (ctx) => npmList(ctx);
         case 'run':
         case 'run-script':
-            return (ctx) => npmRun(ctx, shellExecute, registry, kernel);
         case 'start':
-            return (ctx) => npmRun({ ...ctx, args: ['run', 'start', ...ctx.args.slice(1)] }, shellExecute, registry);
         case 'test':
-            return (ctx) => npmRun({ ...ctx, args: ['run', 'test', ...ctx.args.slice(1)] }, shellExecute, registry);
+            return (ctx) => npmRun(ctx, shellExecute, deps);
         case 'info':
         case 'view':
         case 'show':
@@ -1081,7 +1121,12 @@ function npmSubcommand(subcommand, registry, shellExecute, kernel, deps) {
             return null;
     }
 }
-export function createNpmCommand(registry, shellExecute, kernel, deps) {
+/**
+ * The npm command. It registers no commands: a project's bins are found on
+ * its scripts' PATH and global bins on the prefix's bin, so `_registry` is
+ * unread, kept for the signature's callers.
+ */
+export function createNpmCommand(_registry, shellExecute, kernel, deps) {
     return async (ctx) => {
         const subcommand = ctx.args[0];
         if (!subcommand || subcommand === '--help' || subcommand === '-h') {
@@ -1092,7 +1137,7 @@ export function createNpmCommand(registry, shellExecute, kernel, deps) {
             await ctx.stdout.write(NPM_VERSION + '\n');
             return 0;
         }
-        const run = npmSubcommand(subcommand, registry, shellExecute, kernel, deps);
+        const run = npmSubcommand(subcommand, shellExecute, kernel, deps);
         if (run === null) {
             await ctx.stderr.write(`npm: unknown command '${subcommand}'\n`);
             await ctx.stderr.write('Run npm --help for usage\n');
@@ -1184,10 +1229,10 @@ async function npmCi(ctx, deps) {
  * the shell's own). Called directly by `lifo install` to avoid the
  * shell.execute() round-trip, which can silently swallow output and errors.
  */
-export async function npmInstallGlobal(packageName, ctx, registry, kernel, deps) {
+export async function npmInstallGlobal(packageName, ctx, kernel, deps) {
     const startTime = Date.now();
-    const prefix = resolveNpmPrefixVfs(ctx.cwd, ctx.env, null);
-    const installer = deps?.installer ?? shellInstallPort(ctx, registry, kernel);
+    const prefix = await npmGlobalPrefix(ctx);
+    const installer = deps?.installer ?? shellInstallPort(ctx, kernel);
     const { installed, failed } = await installer.install({
         projectDir: ctx.cwd, packages: [packageName], global: true, globalPrefix: prefix, pid: ctx.pid, signal: ctx.signal, registry: getRegistry(ctx.env),
     });

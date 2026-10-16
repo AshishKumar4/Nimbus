@@ -1,6 +1,6 @@
 /**
  * npm-resolve-preamble.ts — preamble injected into IsolatePool isolates
- * that run src/npm/resolve-facet.ts and src/npm/resolve-one-facet.ts.
+ * that run src/npm/resolve-one-facet.ts.
  *
  * IsolatePool evaluates a task expression compiled at build time. The
  * resolver's explicit guest-global policy/semver bindings are supplied here.

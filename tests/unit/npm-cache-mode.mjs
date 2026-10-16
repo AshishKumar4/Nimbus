@@ -168,7 +168,7 @@ await run('--prefer-online asks the registry again on its ETag however fresh the
 await run('--prefer-online reads the packument where an exact version\'s session record would answer', async () => {
   const registry = fakeRegistry();
   const resolve = session(fakeBucket());
-  const record = registryRecord({ name: NAME, version: '1.0.0', registryName: NAME, tarballUrl: `${REGISTRY}/fixture-1.0.0.tgz`, integrity: 'sha512-AAAA', dependencies: {}, main: '', module: '', bin: {} }, 1);
+  const record = registryRecord({ name: NAME, version: '1.0.0', registryName: NAME, tarballUrl: `${REGISTRY}/fixture-1.0.0.tgz`, integrity: 'sha512-AAAA', dependencies: {}, main: '', bin: {} }, 1);
   assert.equal((await resolve('1.0.0', 'default', [record])).pkg?.version, '1.0.0');
   assert.equal(registry.requests.length, 0, 'the record answers in the default mode');
   assert.equal((await resolve('1.0.0', 'no-cache', [record])).pkg?.version, '1.0.0');

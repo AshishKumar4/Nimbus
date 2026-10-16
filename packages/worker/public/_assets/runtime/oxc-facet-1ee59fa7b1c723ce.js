@@ -6908,8 +6908,8 @@ error: the Oxc transform crashed (${reason})`);
     }
   }
 
-  var ESM_EXPORTS_HELPER = '(() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; return (exports) => { O.defineProperty(exports, "__esModule", { value: true }); O.defineProperty(exports, tag, { value: "Module" }); return (name, get) => O.defineProperty(exports, name, { enumerable: true, get }); }; })()';
-  var ESM_STAR_HELPER = '(exports, define, m, omitted) => { for (const k in m) { if (k === "default" || ({}).hasOwnProperty.call(exports, k)) continue; let left = false; for (let i = 0; omitted && i < omitted.length; i++) if (omitted[i] === k) left = true; if (!left) define(k, () => m[k]); } }';
+  var ESM_EXPORTS_HELPER = '(() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; return (exports) => { O.defineProperty(exports, "__esModule", { value: true, configurable: true }); O.defineProperty(exports, tag, { value: "Module" }); return (name, get) => O.defineProperty(exports, name, { enumerable: true, configurable: false, get }); }; })()';
+  var ESM_STAR_HELPER = '(exports, define, m, omitted) => { for (const k in m) { if (k === "default" || ({}).propertyIsEnumerable.call(exports, k)) continue; let left = false; for (let i = 0; omitted && i < omitted.length; i++) if (omitted[i] === k) left = true; if (!left) define(k, () => m[k]); } }';
   var ESM_STAR_CONFLICTS = "nimbus:star-conflicts";
   var ESM_CONFLICTS_HELPER = `(require) => require("", "${ESM_STAR_CONFLICTS}")`;
   var ESM_STATIC_IMPORT = "nimbus:static-import";
@@ -10147,6 +10147,22 @@ error: the Oxc transform crashed (${reason})`);
     return containsModuleSyntax(stripped()) ? "module" : "commonjs";
   }
 
+  var enc = new TextEncoder();
+  var dec = new TextDecoder();
+
+  var HKDF_SALT = enc.encode("nimbus-sh sealed-json v2");
+  function base64(bytes) {
+    let binary = "";
+    const chunk = 32768;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+  }
+  function base64Utf8(value) {
+    return base64(enc.encode(value));
+  }
+
   var amaro = null;
   async function stripTypeScript(code, filename, { mode, sourceMap }, packageType) {
     const { transformSync } = await (amaro ??= Promise.resolve().then(() => __toESM(require_dist(), 1)));
@@ -10172,12 +10188,6 @@ error: the Oxc transform crashed (${reason})`);
     return { code: `${output.code}
 
 //# sourceMappingURL=data:application/json;base64,${base64Utf8(output.map)}`, format };
-  }
-  function base64Utf8(text) {
-    const bytes = new TextEncoder().encode(text);
-    let binary = "";
-    for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
-    return btoa(binary);
   }
 
   var runtime = { rewriteDynamicImports, readEsModule, rewriteProvidedCommonJsModules, stripTypeScript };

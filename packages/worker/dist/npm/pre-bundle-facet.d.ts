@@ -18,18 +18,10 @@
  * part of the spec; the bundler reads from that in-memory map.
  */
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { ResolvedPackage } from './resolver.js';
 import type { SliceEntry } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 export type { PrebundleResult, PrebundleSpec, SlicedDir, SlicedFile, SliceEntry } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 export declare function buildSliceForSpecifierWithCap(vfs: CredentialedVfs, specifier: string, nmDir: string, capBytes: number): {
     slice: SliceEntry[];
     totalBytes: number;
 } | null;
-/**
- * Choose the externals list for a specifier, exported so the supervisor
- * can compute the same value when building the spec without re-pulling
- * the helper from esbuild-service.ts on the call site.
- */
-export declare function externalsForSpecifier(specifier: string): string[];
-export type _ResolvedPackage = ResolvedPackage;
 //# sourceMappingURL=pre-bundle-facet.d.ts.map

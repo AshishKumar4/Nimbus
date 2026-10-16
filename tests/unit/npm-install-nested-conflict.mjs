@@ -55,7 +55,7 @@ function resolveFromRegistry(name, spec) {
   const peerDependencies = entry.peerDependencies;
   const pkg = {
     name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: `sha512-${name}-${version}`,
-    dependencies, peerDependencies, exports: null, main: 'index.js', module: '', bin: {},
+    dependencies, peerDependencies, main: 'index.js', bin: {},
   };
   return {
     pkg,

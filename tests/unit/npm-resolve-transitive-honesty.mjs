@@ -41,8 +41,8 @@ const versionEntry = (name, version, dependencies = {}) => ({
 const packument = (name, versions, distTags = {}) => JSON.stringify({ name, 'dist-tags': distTags, versions });
 const cacheEntry = (name, version) => ({
   name, registryName: name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: `sha512-${version}`,
-  depsJson: '{}', peerDepsJson: '{}', exportsJson: 'null', main: 'index.js', moduleField: '', binJson: '{}',
-  platformJson: '{}', optionalDepsJson: '{}', fetchedAt: 0,
+  depsJson: '{}', peerDepsJson: '{}', main: 'index.js', binJson: '{}',
+  platformJson: '{}', optionalDepsJson: '{}',
 });
 
 // ── 1. chokidar is a dependency like any other ──────────────────────────────

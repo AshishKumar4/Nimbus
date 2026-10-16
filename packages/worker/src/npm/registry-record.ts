@@ -24,9 +24,7 @@ export interface RegistryCacheEntry {
    * the column existed (added via ALTER TABLE, see ensureSchema).
    */
   peerDepsJson?: string;
-  exportsJson: string;    // JSON-encoded exports field
   main: string;
-  moduleField: string;
   binJson: string;        // JSON-encoded bin field
   /**
    * JSON-encoded npm platform constraints — `{ os?, cpu?, libc? }`.
@@ -50,7 +48,6 @@ export interface RegistryCacheEntry {
   bundleJson?: string;
   /** JSON-encoded `engines` as published; '' for none. */
   enginesJson?: string;
-  fetchedAt: number;
 }
 
 // The shapes a record's JSON fields have.
@@ -88,8 +85,8 @@ function ranges(json: string | undefined): Record<string, string> | undefined {
   return Object.keys(map).length > 0 ? map : undefined;
 }
 
-/** The record of `pkg`, fetched at `fetchedAt`, as the cache keeps it. */
-export function registryRecord(pkg: ResolvedPackage, fetchedAt: number): RegistryCacheEntry {
+/** The record of `pkg`, as the cache keeps it. */
+export function registryRecord(pkg: ResolvedPackage): RegistryCacheEntry {
   return {
     name: pkg.name,
     version: pkg.version,
@@ -98,16 +95,13 @@ export function registryRecord(pkg: ResolvedPackage, fetchedAt: number): Registr
     integrity: pkg.integrity,
     depsJson: JSON.stringify(pkg.dependencies),
     peerDepsJson: JSON.stringify(pkg.peerDependencies ?? {}),
-    exportsJson: JSON.stringify(pkg.exports ?? {}),
     main: pkg.main,
-    moduleField: pkg.module,
     binJson: JSON.stringify(pkg.bin),
     platformJson: JSON.stringify({ os: pkg.os, cpu: pkg.cpu, libc: pkg.libc }),
     optionalDepsJson: JSON.stringify(pkg.optionalDependencies ?? {}),
     peerMetaJson: JSON.stringify(pkg.peerDependenciesMeta ?? {}),
     bundleJson: pkg.bundleDependencies === undefined ? '' : JSON.stringify(pkg.bundleDependencies),
     enginesJson: pkg.engines === undefined ? '' : JSON.stringify(pkg.engines),
-    fetchedAt,
   };
 }
 
@@ -134,9 +128,7 @@ export function resolvedFromRecord(record: RegistryCacheEntry): ResolvedPackage 
     cpu: isStringList(platform.cpu) ? platform.cpu : undefined,
     libc: isStringList(platform.libc) ? platform.libc : undefined,
     ...(engines === undefined ? {} : { engines }),
-    exports: decoded(record.exportsJson, isAnyJson, null),
     main: record.main,
-    module: record.moduleField,
     bin: decoded(record.binJson, isStringMap, {}),
   };
 }

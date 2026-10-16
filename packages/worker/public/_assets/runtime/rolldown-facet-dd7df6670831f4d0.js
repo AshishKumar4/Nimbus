@@ -1129,7 +1129,7 @@ var require_base64 = __commonJS({
 // ../../node_modules/.bun/source-map-js@1.2.1/node_modules/source-map-js/lib/base64-vlq.js
 var require_base64_vlq = __commonJS({
   "../../node_modules/.bun/source-map-js@1.2.1/node_modules/source-map-js/lib/base64-vlq.js"(exports) {
-    var base64 = require_base64();
+    var base642 = require_base64();
     var VLQ_BASE_SHIFT = 5;
     var VLQ_BASE = 1 << VLQ_BASE_SHIFT;
     var VLQ_BASE_MASK = VLQ_BASE - 1;
@@ -1152,7 +1152,7 @@ var require_base64_vlq = __commonJS({
         if (vlq > 0) {
           digit |= VLQ_CONTINUATION_BIT;
         }
-        encoded += base64.encode(digit);
+        encoded += base642.encode(digit);
       } while (vlq > 0);
       return encoded;
     };
@@ -1165,7 +1165,7 @@ var require_base64_vlq = __commonJS({
         if (aIndex >= strLen) {
           throw new Error("Expected more digits in base 64 VLQ value.");
         }
-        digit = base64.decode(aStr.charCodeAt(aIndex++));
+        digit = base642.decode(aStr.charCodeAt(aIndex++));
         if (digit === -1) {
           throw new Error("Invalid base64 digit: " + aStr.charAt(aIndex - 1));
         }
@@ -13987,6 +13987,24 @@ function longUtf8Length(text) {
   return bytes;
 }
 
+// ../core/src/_shared/bytes.ts
+var enc = new TextEncoder();
+var dec = new TextDecoder();
+
+// ../core/src/_shared/crypto.ts
+var HKDF_SALT = enc.encode("nimbus-sh sealed-json v2");
+function base64(bytes) {
+  let binary = "";
+  const chunk = 32768;
+  for (let i2 = 0; i2 < bytes.length; i2 += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i2, i2 + chunk));
+  }
+  return btoa(binary);
+}
+function base64Utf8(value) {
+  return base64(enc.encode(value));
+}
+
 // ../core/src/runtime/css-bundle.ts
 var CssError = class extends Error {
   constructor(diagnostic) {
@@ -14262,10 +14280,7 @@ function printImport(path3, conditions, minify2) {
   return minify2 ? `@import${quoteString(path3)}${printed};` : `@import ${quoteString(path3)}${printed ? " " + printed : ""};`;
 }
 function shortestDataUrl(mimeType, text) {
-  const bytes = new TextEncoder().encode(text);
-  let latin1 = "";
-  for (let i2 = 0; i2 < bytes.length; i2 += 32768) latin1 += String.fromCharCode(...bytes.subarray(i2, i2 + 32768));
-  const encoded = `data:${mimeType};base64,${btoa(latin1)}`;
+  const encoded = `data:${mimeType};base64,${base64Utf8(text)}`;
   const escaped = percentEscapedDataUrl(mimeType, text);
   return escaped.length < encoded.length ? escaped : encoded;
 }
@@ -15364,14 +15379,9 @@ function extensionOf(path3) {
   const dot = base.lastIndexOf(".");
   return dot > 0 ? base.slice(dot).toLowerCase() : "";
 }
-function base64Of(bytes) {
-  let latin1 = "";
-  for (let i2 = 0; i2 < bytes.length; i2 += 32768) latin1 += String.fromCharCode(...bytes.subarray(i2, i2 + 32768));
-  return btoa(latin1);
-}
 function dataUrlOf(path3, bytes) {
   const mime = guessMimeType(extensionOf(path3), bytes);
-  const encoded = `data:${mime};base64,${base64Of(bytes)}`;
+  const encoded = `data:${mime};base64,${base64(bytes)}`;
   let text;
   try {
     text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
@@ -15783,9 +15793,9 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
         return value(relativeUrl(`${entryDir}entry.js`, await emitAsset({ namespace, path: path3 }, bytesOf())));
       }
       if (loader === "dataurl") return value(dataUrlOf(path3, bytesOf()));
-      if (loader === "base64") return value(base64Of(bytesOf()));
+      if (loader === "base64") return value(base64(bytesOf()));
       if (loader === "binary") {
-        return { code: `module.exports = Uint8Array.from(atob(${JSON.stringify(base64Of(bytesOf()))}), (c) => c.charCodeAt(0));`, moduleType: "js" };
+        return { code: `module.exports = Uint8Array.from(atob(${JSON.stringify(base64(bytesOf()))}), (c) => c.charCodeAt(0));`, moduleType: "js" };
       }
       let compiled = null;
       try {

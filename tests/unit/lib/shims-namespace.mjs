@@ -141,9 +141,15 @@ function __nimbusModuleCell(key) {
   }
   return __nimbusTestCells.get(key);
 }
-// Its cells are the store's text: none is an ES module a launch lowered.
+// Its cells are the store's text: none is an ES module a launch lowered, nor has an ES module's link.
 function __nimbusModuleCellIsEsModule() {
   return false;
+}
+function __nimbusModuleLink() {
+  return null;
+}
+function __nimbusModuleRequestsOf() {
+  return null;
 }
 // No runtime code is staged in a standalone factory.
 function __nimbusRuntimeModule(path) {

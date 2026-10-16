@@ -1087,6 +1087,14 @@ function __nimbusDetectedModule(cell) {
 function __nimbusModuleAwaits(cell) {
   return __nimbusInterpreter !== null && __nimbusInterpreter.moduleAwaits(cell);
 }
+// An interpreted ES module's link, which answers its execution (moduleLink), and the static imports it requires
+// (moduleLinkRequests); null for any other cell.
+function __nimbusModuleLink(cell) {
+  return __nimbusInterpreter === null ? null : __nimbusInterpreter.moduleLink(cell);
+}
+function __nimbusModuleRequestsOf(cell) {
+  return __nimbusInterpreter === null ? null : __nimbusInterpreter.moduleLinkRequests(cell);
+}
 // A staged module's code from an origin (runtimeFunctionModule): a module
 // takes the origin's Function; a constructor's code takes its import() too,
 // or the shape that reads the global Function for an origin without one,

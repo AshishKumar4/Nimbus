@@ -29,7 +29,7 @@ root.writeFile('app/src/main.js', "import { x } from 'pkg';\nconsole.log(x);\n")
 const resolved = {
   pkg: {
     name: 'pkg', version: '1.0.0', tarballUrl: 'https://registry.invalid/pkg-1.0.0.tgz', integrity: 'sha512-fixture',
-    dependencies: {}, exports: null, main: 'index.js', module: '', bin: {},
+    dependencies: {}, main: 'index.js', bin: {},
   },
   cacheWrites: [], messages: [], events: [],
   packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
