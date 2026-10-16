@@ -259,6 +259,13 @@ assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
   assert.deepEqual(await run(main, '/private/bin/hello-cli; echo s=$?'), ['s=126\n', '/private/bin/hello-cli: Permission denied\n', 0]);
 }
 
+// A child launcher never runs a runtime's install hint: core's spawn (cpSpawn,
+// a WASI or facet program's) answers ENOENT, as Node's does for a command
+// that is not there, and as the worker's does.
+await assert.rejects(main.children.spawn({ parentPid: main.shellProcessPid, command: 'hintedtool', args: [],
+  cwd: '/tmp', env: { HOME: '/home/main', PATH: mainPath }, stdio: ['ignore', 'pipe', 'pipe'] }),
+  (error) => error.code === 'ENOENT', 'spawn of an install hint is ENOENT');
+
 // ── child_process.spawn in a Worker program searches the child's PATH ─────
 {
   const { NimbusSession, SessionFilesystem, bindRuntimeServices, installNpmBinFallbackResolver: bundledResolver } = await importWorkerBundle({

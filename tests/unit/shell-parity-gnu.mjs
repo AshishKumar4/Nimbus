@@ -11,7 +11,9 @@
 //     trailing blanks gone, blank lines none), on the command line and in a
 //     recursion; FILE '-' is stdin, which GNU's grep reads for a recursion
 //     and finds at its end for the command line; one it cannot read ends it
-//     with 2.
+//     with 2. -f and --exclude-from files are read in command-line order
+//     (stdin taken by the first; the first unreadable one said); a line's
+//     trailing blanks are C's isspace bytes, a no-break space kept.
 //
 // Red before: stat stopped at the first operand it could not stat, called
 // every failure "No such file or directory", named operands by their
@@ -25,7 +27,7 @@ import { join } from 'node:path';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { hostSqlite } from './lib/host-sqlite.mjs';
 
-const FILES = { f: 'one\ntwo\n', g: 'alpha\nbeta\ngamma\n', 'tree/a.log': 'a log\n', 'tree/b.txt': 'a text\n', 'tree/sub/c.txt': 'a sub\n' };
+const FILES = { f: 'one\ntwo\n', g: 'alpha\nbeta\ngamma\n', n: 'needle\n', 'ex-nbsp': 'g\u00a0\n', 'tree/a.log': 'a log\n', 'tree/b.txt': 'a text\n', 'tree/sub/c.txt': 'a sub\n' };
 const CASES = [
   // stat
   'stat -c %n f nope g',
@@ -42,6 +44,12 @@ const CASES = [
   'printf "*.log\\n" | grep -r --exclude-from=- a tree | sort',
   'printf "*.txt\\n" > ex; grep -r --exclude-from=ex --exclude=*.log a tree | sort; rm -f ex',
   'grep --exclude-from=nope a g',
+  // Pattern and exclusion files are read in command-line order: the first takes stdin.
+  'printf "needle\\n" | grep --exclude-from=- -f - n',
+  'printf "needle\\n" | grep -f - --exclude-from=- -H needle n',
+  'grep -f nope --exclude-from=nope2 a g; grep --exclude-from=nope2 -f nope a g',
+  // Only the byte blanks C's isspace names are trimmed: a no-break space stays in the glob.
+  'grep --exclude-from=ex-nbsp -c a g',
   'printf "g\\n" > ex; grep --exclude-f=ex -c a g f; rm -f ex',
 ];
 
