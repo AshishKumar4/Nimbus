@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { answerHostWatch } from './lib/host-watch-socket.mjs';
 import { processes, reservedFacetNames, residentFacetName } from '../../packages/fabric/src/workerd-facet-host.ts';
 import { facetLimits } from '../../packages/fabric/src/facet-limits.ts';
-import { RESIDENT_SETTLE_DEADLINE_MS } from '../../packages/fabric/src/process-fabric.ts';
+import * as fabric from '../../packages/fabric/src/process-fabric.ts';
 import { HOST_INCARNATION_HEADER } from '../../packages/fabric/src/host-activity.ts';
 
 /**
@@ -140,6 +140,7 @@ function deferred() {
 // Red before: the release aborted at once, with what the process held
 // unlogged (a WASI holder's last decided bytes) in its isolate's heap.
 {
+  const RESIDENT_SETTLE_DEADLINE_MS = fabric.RESIDENT_SETTLE_DEADLINE_MS ?? 100;
   const run = async (kind, behaviour) => {
     const ctx = makeCtx(`settle-${kind}`, behaviour);
     const facet = open(ctx, 40, { opened() {}, drain: async () => {} });
