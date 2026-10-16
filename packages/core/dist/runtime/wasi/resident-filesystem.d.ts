@@ -34,7 +34,7 @@
  *   - A name the store does not know (its directory not listed yet) is not
  *     absent: the adapter lists the directory and walks again.
  */
-import type { RuntimeFsBridge, RuntimeFsPath, RuntimeVfsDirEntry, RuntimeVfsStat } from '../os-contracts.js';
+import type { RuntimeFsBridge, RuntimeFsPath, RuntimeSynchronousFs, RuntimeVfsDirEntry, RuntimeVfsStat } from '../os-contracts.js';
 import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
 import type { VfsAcquireResult } from '../os-contracts.js';
 import type { ProcessFsJournal, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
@@ -122,6 +122,13 @@ export interface PinnedContent {
 }
 export interface ResidentFilesystem extends RuntimeFsBridge {
     /**
+     * The same filesystem for a caller that cannot wait: each call answered
+     * now from what this process holds and has decided, or refused before it
+     * begins anything (EAGAIN: what it needs is the session's, not resident;
+     * the name's own state where the view knows it). Never a promise.
+     */
+    readonly synchronous: RuntimeSynchronousFs;
+    /**
      * The bytes of the file `path` names, which `stat` describes, kept for a
      * descriptor until it releases them: one buffer per revision however many
      * descriptors read it, charged once to the store's budget. Null when they
@@ -189,6 +196,10 @@ export interface ResidentFilesystemStats {
     barriers: number;
     /** Wall time the process spent waiting on the session for any of the above, in ms. */
     waitMs: number;
+    /** Session interactions begun: calls, listings, lookups, fills, pages and barriers. */
+    sessionCalls: number;
+    /** Synchronous calls refused because they needed the session (not resident). */
+    notResident: number;
     /** File bytes pinned for descriptors now, and how many buffers hold them. */
     pinnedBytes: number;
     pins: number;

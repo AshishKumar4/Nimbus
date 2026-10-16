@@ -85,6 +85,13 @@ const MUTATIONS = new Set([
     'futimes', 'writeBatch', 'writeStream',
 ]);
 const DESCRIPTOR_CALLS = new Set(['read', 'write', 'close', 'fstat', 'dup', 'seek', 'setStatus', 'readdirHandle', 'ftruncate', 'fchmod', 'fchown', 'futimes', 'fsync']);
+/**
+ * Thrown where a call that must answer now (ResidentFilesystem.synchronous)
+ * would begin waiting on the session, before anything it would have done.
+ */
+const NOT_NOW = Symbol('not now');
+/** A bridge's calls with no synchronous form (RuntimeSynchronousFs). */
+const NO_SYNCHRONOUS_FORM = new Set(['synchronous', 'subscribe', 'writeStream', 'writeBatch', 'writeFileFrom', 'acquire', 'copyTree', 'gateLaunch', 'awaitRecall']);
 function after(value, next) {
     return value instanceof Promise ? value.then(next) : next(value);
 }
@@ -119,11 +126,19 @@ function statOf(entry) {
 const identity = (dev, ino) => `${dev}:${ino}`;
 export function residentFilesystem(session, resident, delegation) {
     let directoryPool = null;
-    const counts = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, readAhead: 0, barriers: 0, waitMs: 0, pinnedBytes: 0, pins: 0, pagedReads: 0, pagesFetched: 0 };
-    // Every wait on the session is timed where it leaves: the authority's calls
-    // and the store's listings, fills and barriers. A facet's clock moves only
-    // across I/O, so this is the part of a run's wall time the filesystem cost.
-    const timed = (value) => {
+    const counts = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, readAhead: 0, barriers: 0, waitMs: 0, sessionCalls: 0, notResident: 0, pinnedBytes: 0, pins: 0, pagedReads: 0, pagesFetched: 0 };
+    /** A call of `synchronous` is running: it answers now or not at all (NOT_NOW). */
+    let now = false;
+    // Every session interaction begins here, given as what would begin it: the
+    // authority's calls and the store's listings, lookups, fills, pages and
+    // barriers. One that must answer now is refused before it begins (NOT_NOW).
+    // Each wait is timed: a facet's clock moves only across I/O, so this is the
+    // part of a run's wall time the filesystem cost.
+    const begin = (io) => {
+        if (now)
+            throw NOT_NOW;
+        counts.sessionCalls++;
+        const value = io();
         if (!(value instanceof Promise))
             return value;
         const started = Date.now();
@@ -140,6 +155,8 @@ export function residentFilesystem(session, resident, delegation) {
             // Whatever the session is asked, it has what this process decided first.
             // A refusal it met is the next sync's to report, not this call's.
             return (...args) => {
+                if (now)
+                    throw NOT_NOW;
                 if (typeof name === 'string' && DESCRIPTOR_CALLS.has(name) && typeof args[0] === 'number' && directoryPool?.closed(args[0])) {
                     throw fsError('EBADF', name, String(args[0]));
                 }
@@ -152,8 +169,8 @@ export function residentFilesystem(session, resident, delegation) {
                 if (holder !== null && typeof name === 'string' && NAME_OR_ACCESS_CHANGES.has(name))
                     holder.changing();
                 return holder !== null && holder.pending()
-                    ? timed(holder.send().then(() => Reflect.apply(value, target, args)))
-                    : timed(Reflect.apply(value, target, args));
+                    ? begin(() => holder.send().then(() => Reflect.apply(value, target, args)))
+                    : begin(() => Reflect.apply(value, target, args));
             };
         },
     });
@@ -167,14 +184,14 @@ export function residentFilesystem(session, resident, delegation) {
             return own !== undefined ? own : resident.entry(key);
         },
         children: (key) => (holder === null ? resident.children(key) : holder.children(key, resident.children(key))),
-        list: (key) => timed(resident.list(key)),
-        lookup: (keys, content) => timed(resident.lookup(keys, content)),
-        listTree: (key) => timed(resident.listTree(key)),
+        list: (key) => begin(() => resident.list(key)),
+        lookup: (keys, content) => begin(() => resident.lookup(keys, content)),
+        listTree: (key) => begin(() => resident.listTree(key)),
         content: (key, revision) => resident.content(key, revision),
-        fill: (key, entry) => timed(resident.fill(key, entry)),
-        pages: (key, revision, size, first, last) => timed(resident.pages(key, revision, size, first, last)),
-        fillMany: (files) => timed(resident.fillMany(files)),
-        barrier: () => timed(resident.barrier()),
+        fill: (key, entry) => begin(() => resident.fill(key, entry)),
+        pages: (key, revision, size, first, last) => begin(() => resident.pages(key, revision, size, first, last)),
+        fillMany: (files) => begin(() => resident.fillMany(files)),
+        barrier: () => begin(() => resident.barrier()),
         cursor: () => resident.cursor(),
         admit: (answer) => resident.admit(answer),
         reserve: (bytes) => resident.reserve(bytes),
@@ -202,7 +219,7 @@ export function residentFilesystem(session, resident, delegation) {
         });
         if (delegation.readDirectories)
             directoryPool = readDirectoryPool({
-                call: (request) => { delegated('readDirectories'); return timed(delegation.readDirectories(request)); }, store, client: holder.client,
+                call: (request) => { delegated('readDirectories'); return begin(() => delegation.readDirectories(request)); }, store, client: holder.client,
                 before: async () => { if (holder?.pending())
                     await holder.send(); },
             });
@@ -419,6 +436,9 @@ export function residentFilesystem(session, resident, delegation) {
             const walked = walkOnce(root, name, follow, crossed);
             if (walked === null || walked === DELEGATE || typeof walked === 'string')
                 return walked;
+            // A name this view does not know is the session's to say.
+            if (now)
+                throw NOT_NOW;
             if (asked >= MAX_LISTINGS_PER_CALL)
                 return DELEGATE;
             const parent = parentKey(walked.missing);
@@ -488,6 +508,8 @@ export function residentFilesystem(session, resident, delegation) {
         const held = store.content(key, entry.revision);
         if (held !== undefined && held.byteLength === entry.size)
             return held;
+        if (now)
+            throw NOT_NOW;
         const fill = () => {
             counts.fills++;
             counts.filledBytes += entry.size;
@@ -508,8 +530,10 @@ export function residentFilesystem(session, resident, delegation) {
      */
     const answer = (name, local, remote) => {
         // What this process wrote through is the session's before the store
-        // answers for it: sent first (and the barrier owed), so it reads its own writes.
-        if (holder !== null && holder.throughPending())
+        // answers for it: sent first (and the barrier owed), so it reads its own
+        // writes. A call that answers now answers from this view as it stands,
+        // where a file written through is the session's to read.
+        if (holder !== null && holder.throughPending() && !now)
             return holder.send().then(() => answer(name, local, remote));
         const settle = (value) => {
             if (value !== DELEGATE) {
@@ -523,7 +547,7 @@ export function residentFilesystem(session, resident, delegation) {
             delegated(name);
             return remote();
         }
-        if (owed) {
+        if (owed && !now) {
             counts.barriers++;
             return store.barrier().then((ok) => {
                 // Still owed until a barrier lands: this call is the session's, and so is the next one's question.
@@ -550,7 +574,7 @@ export function residentFilesystem(session, resident, delegation) {
                 counts.local++;
             return value;
         };
-        if (owed) {
+        if (owed && !now) {
             counts.barriers++;
             return store.barrier().then((ok) => {
                 if (!ok || !store.ready())
@@ -585,6 +609,8 @@ export function residentFilesystem(session, resident, delegation) {
     };
     /** The authority, for a call that may change what the store holds: the barrier is owed once it returns. */
     const changing = (name, call) => {
+        if (now)
+            throw NOT_NOW;
         directoryPool?.invalidate();
         delegated(name);
         try {
@@ -613,9 +639,13 @@ export function residentFilesystem(session, resident, delegation) {
         const mutates = MUTATIONS.has(name);
         Reflect.set(fs, name, mutates
             ? (...args) => changing(name, () => call(...args))
-            : (...args) => { delegated(name); return call(...args); });
+            : (...args) => {
+                if (now)
+                    throw NOT_NOW;
+                delegated(name);
+                return call(...args);
+            });
     }
-    Reflect.set(fs, 'synchronous', authority.synchronous);
     fs.inbound = () => { owed = true; directoryPool?.invalidate(); };
     fs.cancelPendingDirectories = () => { owed = true; directoryPool?.cancelPending(); };
     fs.holding = () => holder?.pending() ?? false;
@@ -745,6 +775,8 @@ export function residentFilesystem(session, resident, delegation) {
         const known = store.children(key);
         if (known !== undefined)
             return known;
+        if (now)
+            throw NOT_NOW;
         counts.treeListings++;
         return store.listTree(key)
             .then((whole) => (whole ? true : store.list(key)))
@@ -797,7 +829,7 @@ export function residentFilesystem(session, resident, delegation) {
     }), () => authority.access(path, mode));
     fs.open = (path, flags) => {
         const readOnly = !flags.write && !flags.create && !flags.truncate && !flags.append && !flags.exclusive;
-        if (directoryPool && readOnly && flags.read === true && flags.directory === true && flags.followSymlinks !== false && flags.expectedRevision === undefined) {
+        if (directoryPool && !now && readOnly && flags.read === true && flags.directory === true && flags.followSymlinks !== false && flags.expectedRevision === undefined) {
             return answer('open', () => after(resolve(path, true), async (key) => {
                 if (key === DELEGATE || key === null || key === '' || entryAt(key)?.type !== 'directory')
                     return DELEGATE;
@@ -849,6 +881,8 @@ export function residentFilesystem(session, resident, delegation) {
         return openOnSession(path, flags);
     };
     const openOnSession = (path, flags) => {
+        if (now)
+            throw NOT_NOW;
         const readOnly = !flags.write && !flags.create && !flags.truncate && !flags.append && !flags.exclusive;
         if (!readOnly) {
             // A file of the session's own filesystem is opened to write through
@@ -903,8 +937,11 @@ export function residentFilesystem(session, resident, delegation) {
         if (holder?.owns(handleId)) {
             // Written through: the session's live stat of its file, once what it
             // wrote is there; a name that no longer leads to its file is gone (nlink 0).
-            if (holder.through(handleId))
+            if (holder.through(handleId)) {
+                if (now)
+                    throw NOT_NOW;
                 return liveThrough(handleId);
+            }
             counts.local++;
             return statOf(holder.fstat(handleId));
         }
@@ -947,8 +984,11 @@ export function residentFilesystem(session, resident, delegation) {
     };
     fs.read = (handleId, offset, length) => {
         if (holder?.owns(handleId)) {
-            if (holder.through(handleId))
+            if (holder.through(handleId)) {
+                if (now)
+                    throw NOT_NOW;
                 return holder.readThrough(handleId, offset, length, readThrough(handleId));
+            }
             counts.local++;
             return holder.read(handleId, offset, length);
         }
@@ -1003,6 +1043,8 @@ export function residentFilesystem(session, resident, delegation) {
             counts.local++;
             return holder.write(handleId, offset, bytes);
         }
+        if (now)
+            throw NOT_NOW;
         unwritten.delete(handleId);
         return changing('write', () => authority.write(handleId, offset, bytes));
     };
@@ -1012,6 +1054,8 @@ export function residentFilesystem(session, resident, delegation) {
             holder.ftruncate(handleId, size);
             return;
         }
+        if (now)
+            throw NOT_NOW;
         unwritten.delete(handleId);
         return changing('ftruncate', () => authority.ftruncate(handleId, size));
     };
@@ -1022,6 +1066,8 @@ export function residentFilesystem(session, resident, delegation) {
         }
         // A descriptor of the holder's closes here: what it wrote is in the log.
         if (holder?.owns(handleId)) {
+            if (now && throughReaders.has(handleId))
+                throw NOT_NOW;
             counts.local++;
             holder.close(handleId);
             // A refusal already recorded is the close's to report, as a write-back
@@ -1034,6 +1080,8 @@ export function residentFilesystem(session, resident, delegation) {
             delegated('close');
             return after(authority.close(reader), report);
         }
+        if (now)
+            throw NOT_NOW;
         if (readers.delete(handleId)) {
             directories.delete(handleId);
             paged.delete(handleId);
@@ -1053,6 +1101,12 @@ export function residentFilesystem(session, resident, delegation) {
         return after(listingOf(key), (entries) => (entries === DELEGATE ? DELEGATE : byCodeUnit(entries)));
     }, () => authority.readdirHandle(handleId));
     fs.fsync = (handleId) => {
+        // A call that answers now cannot wait for the session: what it refused of
+        // what this process logged so far is this sync's answer.
+        if (now) {
+            holder?.reportRecorded();
+            return;
+        }
         // Synced means in the session: everything this process logged is answered first.
         if (handleId !== undefined && holder?.owns(handleId))
             return holder.flush();
@@ -1089,6 +1143,8 @@ export function residentFilesystem(session, resident, delegation) {
                 counts.local++;
                 return heldOpen(local);
             }
+            if (now)
+                throw NOT_NOW;
             const identity = held.fstat(target.handle);
             const name = '/' + held.keyOf(target.handle);
             return held.flush().then(() => held.sessionOf(target.handle)).then((session) => (session === undefined
@@ -1122,6 +1178,8 @@ export function residentFilesystem(session, resident, delegation) {
                 : { atime: rest[0], mtime: rest[1] };
         if (holder.fsetattr(handleId, change))
             return undefined;
+        if (now)
+            throw NOT_NOW;
         holder.changing([holder.keyOf(handleId)]);
         return holder.flush().then(() => holder.sessionOf(handleId)).then(async (session) => {
             if (session === undefined)
@@ -1137,6 +1195,8 @@ export function residentFilesystem(session, resident, delegation) {
      * sends what the process logged first).
      */
     const byClient = (name, op) => {
+        if (now)
+            throw NOT_NOW;
         delegated(name);
         // A name it changes: the files the process holds open at or under it write through first.
         if (op.type === 'rename')
@@ -1150,7 +1210,7 @@ export function residentFilesystem(session, resident, delegation) {
     const placedWalk = (path) => {
         if (holder === null || !store.ready())
             return DELEGATE;
-        if (!owed)
+        if (!owed || now)
             return walkFor(path, false);
         counts.barriers++;
         return store.barrier().then((ok) => {
@@ -1161,6 +1221,30 @@ export function residentFilesystem(session, resident, delegation) {
         });
     };
     // Changes by name a held subtree holds are decided here; any other is the session's, through the client.
+    // A whole file written by name: made or emptied, written and closed here
+    // where the holder decides that open, as the three calls are.
+    const bySessionWriteFile = fs.writeFile;
+    fs.writeFile = (path, bytes, options) => {
+        if (holder === null || options?.createParents === true || options?.expectedRevision !== undefined)
+            return bySessionWriteFile(path, bytes, options);
+        const data = typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes;
+        const flags = { write: true, create: true, truncate: true, mode: 0o666, ...(options?.umask === undefined ? {} : { umask: options.umask }) };
+        const local = decide('writeFile', () => after(walkFor(path, true), (walk) => {
+            if (walk === DELEGATE || !decidable(walk.key, walk))
+                return DELEGATE;
+            const handle = holder.open(walk.key, pathOf(path), flags);
+            if (handle === undefined)
+                return DELEGATE;
+            try {
+                holder.write(handle.id, 0, data);
+                return holder.fstat(handle.id).revision;
+            }
+            finally {
+                holder.close(handle.id);
+            }
+        }));
+        return after(local, (done) => (done !== DELEGATE ? done : bySessionWriteFile(path, bytes, options)));
+    };
     const bySessionMkdir = fs.mkdir;
     fs.mkdir = (path, options) => {
         if (holder === null || options?.recursive)
@@ -1284,5 +1368,54 @@ export function residentFilesystem(session, resident, delegation) {
     fs.rmdir = byName('rmdir', (path) => bySessionRmdir(path), 0, (key) => ({ type: 'call', call: { call: 'rmdir', path: key } }));
     const bySessionSymlink = fs.symlink;
     fs.symlink = byName('symlink', (target, path) => bySessionSymlink(target, path), 1, (key, [target]) => ({ type: 'call', call: { call: 'symlink', path: key, target } }));
+    /**
+     * What a call that needed the session is told when it must answer now:
+     * the name's own state where this view knows it, as the session would say
+     * it (a directory, a name the process may not read); else EAGAIN, naming
+     * what is not resident here.
+     */
+    const notResident = (syscall, target) => {
+        counts.notResident++;
+        const path = typeof target === 'number'
+            ? (holder?.owns(target) ? '/' + holder.keyOf(target) : String(target))
+            : typeof target === 'string' || (typeof target === 'object' && target !== null && 'path' in target) ? pathOf(target) : '';
+        if (typeof target === 'string' && !target.split('/').includes('..')) {
+            const walked = walkOnce('', keyOf(target), true);
+            const entry = typeof walked === 'string' ? entryAt(walked) : undefined;
+            if (entry?.type === 'directory')
+                return fsError('EISDIR', syscall, target);
+            if (entry && !modeAllows(entry, 4, store.cred))
+                return fsError('EACCES', syscall, target);
+        }
+        return fsError('EAGAIN', syscall, path, undefined, {
+            detail: `resource temporarily unavailable, ${syscall} '${path}' — '${path}' exists but its content is not resident in this process, and a synchronous call cannot wait to fetch it`,
+        });
+    };
+    const synchronous = Object.create(null);
+    for (const name of names) {
+        if (NO_SYNCHRONOUS_FORM.has(name) || typeof Reflect.get(fs, name) !== 'function')
+            continue;
+        Reflect.set(synchronous, name, (...args) => {
+            const was = now;
+            now = true;
+            try {
+                const value = Reflect.apply(Reflect.get(fs, name), fs, args);
+                if (value instanceof Promise) {
+                    value.catch(() => { });
+                    throw new Error(`${name}: the synchronous filesystem began a wait`);
+                }
+                return value;
+            }
+            catch (error) {
+                if (error === NOT_NOW)
+                    throw notResident(name, args[0]);
+                throw error;
+            }
+            finally {
+                now = was;
+            }
+        });
+    }
+    Reflect.set(fs, 'synchronous', synchronous);
     return fs;
 }
