@@ -755,6 +755,26 @@ for (const epochs of [false, true]) {
   await flushed;
 }
 
+// ── A pin changed by a microtask queued before the cut is the cut's ─────
+// The cut runs in a later turn than the mutation that asks for it: a pin a
+// microtask queued before it sets or clears is set or cleared in the wave.
+{
+  const target = session();
+  const cut = [];
+  const writer = createWaveWriter({ supervisor: target.supervisor, root: 'r', base: 'r', onCut: ({ files }) => cut.push(files.map((file) => file.path)) });
+  await writer.file('a', 0o644, new TextEncoder().encode('a'));
+  writer.setPin('marker', 'cleared before the cut');
+  const first = writer.flush();
+  queueMicrotask(() => writer.clearPin('marker'));
+  await first;
+  await writer.file('b', 0o644, new TextEncoder().encode('b'));
+  const second = writer.flush();
+  queueMicrotask(() => writer.setPin('marker', 'set before the cut'));
+  await second;
+  assert.deepEqual(cut, [['r/a'], ['r/b', 'r/marker']], 'each wave carries the pin as it stood when the cut ran');
+  assert.equal(new TextDecoder().decode(target.files.get('r/marker').bytes), 'set before the cut');
+}
+
 // ── An RPC stub supervisor ─────────────────────────────────────────────
 // A facet's env.SUPERVISOR is an RPC stub: every property is a remote
 // method, `.call` and `.apply` included. The writer calls its methods as

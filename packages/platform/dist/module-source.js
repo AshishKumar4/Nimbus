@@ -1,3 +1,4 @@
+import { utf8Length } from './utf8.js';
 /** Source already verified against its deployment pin. Shared across generated programs. */
 export class ImmutableModuleSource {
     asset;
@@ -16,7 +17,7 @@ export class ModuleSource {
     byteLength;
     constructor(parts) {
         this.parts = parts;
-        this.byteLength = parts.reduce((bytes, part) => bytes + (typeof part === 'string' ? new TextEncoder().encode(part).byteLength : part.byteLength), 0);
+        this.byteLength = parts.reduce((bytes, part) => bytes + (typeof part === 'string' ? utf8Length(part) : part.byteLength), 0);
     }
     get text() {
         return this.joined ??= this.parts.map((part) => typeof part === 'string' ? part : part.text).join('');

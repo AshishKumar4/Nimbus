@@ -39,6 +39,7 @@ const outputs = [
       ['ESM_LOADER_POLICY_SOURCE', './esm-loader-policy.js', ['importCallArguments', 'dataModule']],
       ['ESM_GRAPH_SOURCE', './esm-graph.js', ['CyclicModuleRecord', 'OtherModuleRecord', 'link', 'evaluate']],
       ['HTTP_REDIRECT_POLICY_SOURCE', './http-redirect-policy.js', ['isRedirectStatus', 'applyRedirectPolicy']],
+      ['UTF8_LENGTH_SOURCE', null, [], "export { utf8Length } from './packages/platform/src/utf8.ts';"],
     ],
   },
   {

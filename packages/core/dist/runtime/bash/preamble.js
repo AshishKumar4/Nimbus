@@ -7,6 +7,7 @@ import { outputControlReader } from '../wasi/output-control.js';
 import { clockNs, clockResolutionNs, realtimeNs } from '../wasi/clock.js';
 import { unixGroups, unixUsers } from '../../shell/unix-accounts.js';
 import { ARENA_SIZE, CaptureStore } from './capture-store.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 const PAGE = 65536, te = new TextEncoder(), td = new TextDecoder();
 const E = { ACCES: 2, BADF: 8, EXIST: 20, INVAL: 28, ISDIR: 31, LOOP: 32, NOENT: 44, NOSYS: 52, NOTDIR: 54, NOTEMPTY: 55, PERM: 63, RANGE: 68, SPIPE: 70, SRCH: 71 };
 class Exit {
@@ -353,7 +354,7 @@ function makeWasiFs(s, proc, DV, U8, io, memory, synchronous = false, resident) 
     const imports = {
         ...makeUnsupported(s),
         fd_prestat_get(fd, out) { const e = proc.fds.get(fd); if (e?.kind !== 'preopen')
-            return E.BADF; DV().setUint8(out, 0); DV().setUint32(out + 4, te.encode(e.wasiPath).length, true); return 0; },
+            return E.BADF; DV().setUint8(out, 0); DV().setUint32(out + 4, utf8Length(e.wasiPath), true); return 0; },
         fd_prestat_dir_name(fd, out, cap) { const e = proc.fds.get(fd); if (e?.kind !== 'preopen')
             return E.BADF; const bytes = te.encode(e.wasiPath); if (cap < bytes.length)
             return E.INVAL; U8().set(bytes, out); return 0; },
@@ -771,14 +772,14 @@ function makeProc(s, pid, ppid, fds) {
     const wasiBase = makeWasiFs(s, proc, DV, U8, io, () => proc.inst.exports.memory, false, proc.resident);
     const wasi = {
         ...wasiBase,
-        args_sizes_get: (a, b) => { const dv = DV(); dv.setUint32(a, s.argv.length, true); dv.setUint32(b, s.argv.reduce((x, v) => x + te.encode(v).length + 1, 0), true); return 0; },
+        args_sizes_get: (a, b) => { const dv = DV(); dv.setUint32(a, s.argv.length, true); dv.setUint32(b, s.argv.reduce((x, v) => x + utf8Length(v) + 1, 0), true); return 0; },
         args_get: (ptrs, buf) => { const dv = DV(); let p = buf; for (const a of s.argv) {
             dv.setUint32(ptrs, p, true);
             ptrs += 4;
             p += wstr(p, a);
             U8()[p++] = 0;
         } return 0; },
-        environ_sizes_get: (a, b) => { const dv = DV(); dv.setUint32(a, s.environ.length, true); dv.setUint32(b, s.environ.reduce((x, v) => x + te.encode(v).length + 1, 0), true); return 0; },
+        environ_sizes_get: (a, b) => { const dv = DV(); dv.setUint32(a, s.environ.length, true); dv.setUint32(b, s.environ.reduce((x, v) => x + utf8Length(v) + 1, 0), true); return 0; },
         environ_get: (ptrs, buf) => { const dv = DV(); let p = buf; for (const v of s.environ) {
             dv.setUint32(ptrs, p, true);
             ptrs += 4;
@@ -1536,9 +1537,9 @@ async function doExec(s, proc) {
     };
     const wasi = {
         ...makeWasiFs(s, proc, DV, U8, io, memory, !canPark),
-        args_sizes_get: (a, b) => { DV().setUint32(a, argv.length, true); DV().setUint32(b, argv.reduce((n, v) => n + te.encode(v).length + 1, 0), true); return 0; },
+        args_sizes_get: (a, b) => { DV().setUint32(a, argv.length, true); DV().setUint32(b, argv.reduce((n, v) => n + utf8Length(v) + 1, 0), true); return 0; },
         args_get: (a, b) => writeStrings(argv, a, b),
-        environ_sizes_get: (a, b) => { DV().setUint32(a, env.length, true); DV().setUint32(b, env.reduce((n, v) => n + te.encode(v).length + 1, 0), true); return 0; },
+        environ_sizes_get: (a, b) => { DV().setUint32(a, env.length, true); DV().setUint32(b, env.reduce((n, v) => n + utf8Length(v) + 1, 0), true); return 0; },
         environ_get: (a, b) => writeStrings(env, a, b),
         proc_exit: (code) => { throw new Exit(code); },
     };

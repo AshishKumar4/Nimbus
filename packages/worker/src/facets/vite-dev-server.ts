@@ -69,6 +69,7 @@ import {
   TAILWIND_PLAY_VERSION,
 } from '../tailwind-play.generated.js';
 import { recallOf, withRecall } from '@nimbus-sh/core/vfs/recall.js';
+import { staticExtension, staticMimeType, staticMimeTypes } from '@nimbus-sh/fabric/static-mime.js';
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -203,10 +204,8 @@ const ERROR_OVERLAY_CLIENT = `<script>(()=>{const s=(m)=>{let o=document.getElem
 
 // ── MIME types ───────────────────────────────────────────────────────────
 
-const MIME_TYPES: Record<string, string> = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'application/javascript; charset=utf-8',
-  '.mjs': 'application/javascript; charset=utf-8',
+/** The shared static vocabulary, with what the dev server also serves. */
+const MIME_TYPES = staticMimeTypes({
   '.cjs': 'application/javascript; charset=utf-8',
   '.ts': 'application/javascript; charset=utf-8',
   '.tsx': 'application/javascript; charset=utf-8',
@@ -219,28 +218,14 @@ const MIME_TYPES: Record<string, string> = {
   // resolver correctness problem. At least the MIME is right.
   '.vue': 'application/javascript; charset=utf-8',
   '.svelte': 'application/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.ico': 'image/x-icon',
-  '.webp': 'image/webp',
-  '.woff': 'font/woff',
-  '.woff2': 'font/woff2',
   '.ttf': 'font/ttf',
   '.otf': 'font/otf',
-  '.txt': 'text/plain; charset=utf-8',
   '.md': 'text/plain; charset=utf-8',
-  '.wasm': 'application/wasm',
-  '.map': 'application/json; charset=utf-8',
   '.mp4': 'video/mp4',
   '.webm': 'video/webm',
   '.mp3': 'audio/mpeg',
   '.pdf': 'application/pdf',
-};
+});
 
 /** File extensions that should be treated as static assets when imported from JS */
 const ASSET_EXTS = new Set([
@@ -1908,10 +1893,9 @@ export class ViteDevServer {
       // public/ directory — serve static assets as-is
       const publicPath = this.root + '/public' + pathname;
       if (this.vfs.exists(publicPath) && !this.vfs.isDirectory(publicPath)) {
-        const ext = pathname.includes('.') ? '.' + pathname.split('.').pop()!.toLowerCase() : '';
         const data = this.vfs.readFile(publicPath);
         return new Response(data, {
-          headers: { ...headers, 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream' },
+          headers: { ...headers, 'Content-Type': staticMimeType(MIME_TYPES, staticExtension(pathname)) },
         });
       }
 
@@ -2378,16 +2362,8 @@ export class ViteDevServer {
       }
     }
 
-    // Extract extension using slash-aware dot detection. Naive `split('.').pop()`
-    // returns garbage for paths with dotted directories like `/src/v1.0/App`
-    // (would produce `ext = '.0/app'`). We only accept a dot that occurs AFTER
-    // the final slash and has at least one character after it.
-    const pExtLastSlash = pathname.lastIndexOf('/');
-    const pExtLastDot = pathname.lastIndexOf('.');
-    const ext = (pExtLastDot > pExtLastSlash && pExtLastDot < pathname.length - 1)
-      ? pathname.substring(pExtLastDot).toLowerCase()
-      : '';
-    const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+    const ext = staticExtension(pathname);
+    const contentType = staticMimeType(MIME_TYPES, ext);
 
     // Every HTML page gets the dev head, as Vite's transformIndexHtml gives
     // every page of a multi-page app; only the root index.html takes a <base>.

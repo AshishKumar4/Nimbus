@@ -14,4 +14,5 @@ export declare const ESM_REQUIRED_SOURCE: string;
 export declare const ESM_LOADER_POLICY_SOURCE: string;
 export declare const ESM_GRAPH_SOURCE: string;
 export declare const HTTP_REDIRECT_POLICY_SOURCE: string;
+export declare const UTF8_LENGTH_SOURCE: string;
 //# sourceMappingURL=compiled-bodies.generated.d.ts.map
