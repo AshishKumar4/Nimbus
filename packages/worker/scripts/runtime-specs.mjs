@@ -143,8 +143,9 @@ export const SPECS = {
     },
     license_text: GPL_3_LICENSE_NOTICE(),
   },
+  // Pyodide's runner is gone (no host registers python-runner): this entry
+  // publishes only on request. `nimbus runtime sync`'s Python is cpython's.
   'python/0.29.4': {
-    cliDefaultSync: true,
     license: 'MPL-2.0',
     wasi_namespace: null,        // Pyodide is Emscripten, not WASI
     upstream_base: 'https://cdn.jsdelivr.net/pyodide/v0.29.4/full',
@@ -232,8 +233,9 @@ export const SPECS = {
   // above this is a real WASI module: it talks to runtime/wasi/preamble.ts, so
   // it has no filesystem of its own to copy in and diff back out.
   //
-  // Additive alongside python/0.29.4. Nothing reads these keys until
-  // session/init.ts routes `python` at the cpython-runner factory.
+  // The Python `nimbus runtime sync` publishes by default (cliDefaultSync):
+  // hosts register cpython-runner, and from the published CLI, which has no
+  // build tree, it is staged from @nimbus-sh/runtime-cpython at this version.
   // -1: the same CPython 3.13.14 rebuilt by build-python.sh, now reproducible
   // (fixed stamps), at neutral build paths: 3.13.14's files carried the build
   // machine's paths (OpenSSL's directories, .pyc source paths, sysconfig).
@@ -243,6 +245,7 @@ export const SPECS = {
   // -3: nimbus_py_run flushes before every return, its early one too, and
   // the host no longer flushes after it; netdb's records are nimbus-libc's.
   'cpython/3.13.14-3': {
+    cliDefaultSync: true,
     license: 'PSF-2.0',
     wasi_namespace: 'wasi_snapshot_preview1',
     local_base: '../wasm/python',

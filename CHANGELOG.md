@@ -5,6 +5,18 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (CLI): `nimbus runtime sync` with no runtime named, and so `nimbus
+  setup cloudflare`, now publishes `cpython@3.13.14-3` as the bucket's Python.
+  It used to publish `python@0.29.4`, Pyodide, whose `python-runner` no host
+  registers anymore, so a fresh bucket's `python` could not be installed.
+  The published CLI can publish the runtimes Nimbus builds itself (cpython,
+  bash, git), although the published `@nimbus-sh/worker` has no wasm build
+  tree. Each is staged from its npm runtime package at the version the
+  release names. The tarball must match the registry's sha512 integrity,
+  each file must match the package manifest's sha256, and the manifest the
+  publisher composes must be the package's, byte for byte, or nothing is
+  published. Before, the publisher stopped at the missing build tree.
+
 - Fixed (build): the dist fixpoint's input fingerprint covers what the
   packages' builds run and import outside their own trees. That is the
   shared body compiler (`scripts/compile-facet-bodies.mjs`,
