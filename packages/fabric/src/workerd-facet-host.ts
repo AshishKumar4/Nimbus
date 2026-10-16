@@ -550,22 +550,26 @@ function spawnResident(
     // answer (gone, or never started again: the start above refuses once
     // released), is not waited for; one that does not answer in time is
     // aborted at the deadline.
-    if (params.journal && !lostAlready) await settled(facet);
-    endResidency();
-    try { facets.abort(name, new Error('Nimbus: resident process released')); } catch { /* already gone */ }
-    if (explicit) book.live.delete(name);
+    const ended = (params.journal && !lostAlready ? settled(facet) : Promise.resolve()).then(() => {
+      endResidency();
+      try { facets.abort(name, new Error('Nimbus: resident process released')); } catch { /* already gone */ }
+      if (explicit) book.live.delete(name);
+    });
     // What the process logged and the session never answered is in its
     // facet's store: drained before the store goes, and before the release
-    // settles (its exit is reported after). A drain that fails keeps the
-    // store, for the session's next drain of that name.
+    // settles (its exit is reported after). The drain starts now, so an end
+    // told after it waits for it; its store is read once the resident has
+    // settled and gone. A drain that fails keeps the store, for the session's
+    // next drain of that name.
     if (params.journal) {
       try {
-        await params.journal.drain(facetJournal(ctx, env, name));
+        await params.journal.drain(onceSettled(ended, facetJournal(ctx, env, name)));
       } catch (error) {
         console.error(`[nimbus] the write log of pid ${params.pid} (facet '${name}') was not drained: ${error instanceof Error ? error.message : String(error)}`);
         return;
       }
     }
+    await ended;
     // The two release classes: an ephemeral facet's SQLite is the process's
     // alone, so it goes with it, and a durable one's is the application
     // itself: abort ends the process, the data stays for the next boot, and
@@ -670,6 +674,16 @@ function spawnResident(
     release,
     name,
     slot,
+  };
+}
+
+/** `source`, read once `ready` has settled. */
+function onceSettled(ready: Promise<void>, source: ProcessFsJournalSource): ProcessFsJournalSource {
+  return {
+    numberings: () => ready.then(() => source.numberings()),
+    number: (numbering) => ready.then(() => source.number(numbering)),
+    readAfter: (after, maxBytes) => ready.then(() => source.readAfter(after, maxBytes)),
+    dropThrough: (jid) => ready.then(() => source.dropThrough(jid)),
   };
 }
 
