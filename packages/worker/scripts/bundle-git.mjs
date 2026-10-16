@@ -46,23 +46,11 @@ const ENTRY_FILE = join(root, '.git-bundle-entry.js');
 // Upstream declarations are copied mechanically; only the tracked patch's
 // public signature changes live here. No consumer dependency on the build input.
 const GIT_TYPES = `import type * as Upstream from './git-upstream.generated.js';
-type Add = Parameters<typeof Upstream.add>[0];
-type Remove = Parameters<typeof Upstream.remove>[0];
-type Commit = Parameters<typeof Upstream.commit>[0];
-type Matrix = Parameters<typeof Upstream.statusMatrix>[0];
-type Checkout = Parameters<typeof Upstream.checkout>[0];
 type Fetch = Parameters<typeof Upstream.fetch>[0];
-export declare const git: Omit<typeof Upstream, 'add' | 'remove' | 'commit' | 'statusMatrix' | 'fetch'> & {
-  add(options: Omit<Add, 'filepath'> & { filepath: string | string[] }): ReturnType<typeof Upstream.add>;
-  remove(options: Omit<Remove, 'filepath'> & { filepath: string | string[] }): ReturnType<typeof Upstream.remove>;
-  commit(options: Commit & { rawMessage?: boolean }): ReturnType<typeof Upstream.commit>;
-  statusMatrix(options: Matrix & { deferRefresh?: boolean }): ReturnType<typeof Upstream.statusMatrix>;
+export declare const git: Omit<typeof Upstream, 'fetch'> & {
   fetch(options: Fetch & {
     uploadPack: { discover(...args: never[]): Promise<unknown>; requestPack(...args: never[]): Promise<unknown> };
   }): ReturnType<typeof Upstream.fetch>;
-  stage(options: Pick<Add, 'fs' | 'dir' | 'gitdir' | 'cache' | 'force' | 'parallel'> & {
-    add?: string[]; remove?: string[];
-  }): Promise<void>;
   getConfigNames(options: Pick<Parameters<typeof Upstream.getConfig>[0], 'fs' | 'dir' | 'gitdir'> & {
     section: string; subsection?: string | null;
   }): Promise<string[]>;
