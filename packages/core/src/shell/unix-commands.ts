@@ -2138,7 +2138,8 @@ function mkLs(): Command {
         }
       } catch (e) {
         (await ctx.stderr.write(`ls: cannot access '${arg}': ${strerror(e)}\n`));
-        exit = 1;
+        // GNU's "serious trouble": an operand it cannot reach.
+        exit = 2;
       }
     }
 
@@ -2202,7 +2203,8 @@ function mkRm(): Command {
           code = 1;
         }
       } catch (error) {
-        if (force && isVfsError(error, 'ENOENT')) continue;
+        // -f ignores a name not there, or one below a regular file, as coreutils' ignorable_missing does.
+        if (force && (isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR'))) continue;
         await ctx.stderr.write(`rm: cannot remove '${target}': ${strerror(error)}\n`);
         code = 1;
       }
