@@ -18,6 +18,7 @@
  */
 import { encodeIdxV2, encodeRev } from './idx.js';
 import { oidToHex, PackFormatError } from './format.js';
+import { concatBytes } from '@nimbus-sh/core/_shared/bytes.js';
 /** Pieces of a ranged write: the session appends a piece in place below 512 KiB. */
 const WRITE_PIECE_BYTES = 448 * 1024;
 /** Pieces of a ranged read: well inside what one RPC may carry. */
@@ -98,7 +99,7 @@ export async function installPack(files, request) {
     const pieces = [];
     for await (const piece of encodeIdxV2(result.objects, result.packSha, async function* () { yield entries; }))
         pieces.push(piece);
-    const idx = concat(pieces);
+    const idx = concatBytes(pieces);
     const rev = encodeRev(entries, result.packSha);
     const promisor = request.promisor === undefined ? [] : [{ path: final + '.promisor', bytes: encoder.encode(request.promisor) }];
     if (record.length === 0) {
@@ -117,18 +118,6 @@ export async function installPack(files, request) {
     await files.rename(tmpFile(dir, tmpName, 'rev'), final + '.rev');
     await files.rename(tmpFile(dir, tmpName, 'idx'), final + '.idx');
     return summary;
-}
-function concat(parts) {
-    let size = 0;
-    for (const part of parts)
-        size += part.byteLength;
-    const out = new Uint8Array(size);
-    size = 0;
-    for (const part of parts) {
-        out.set(part, size);
-        size += part.byteLength;
-    }
-    return out;
 }
 /**
  * A step run again whose pack was installed, or was being named, when its

@@ -241,7 +241,6 @@ export declare function clonePlanFromStore(context: CloneContext, request: {
     sparse?: boolean;
     protect?: PathProtection;
 }): Promise<ClonePrepared>;
-export declare function concat(parts: Uint8Array[]): Uint8Array;
 /** One batch: its blobs fetched by id, written at their paths as they resolve. */
 export declare function cloneBatch(context: CloneContext, request: {
     jobId: string;

@@ -16,7 +16,7 @@
  */
 import { createHash } from 'node:crypto';
 import { strerror } from '@nimbus-sh/core/vfs/vfs-error.js';
-import { oidToHex } from '../pack/format.js';
+import { objectIdPrefix, oidToHex } from '../pack/format.js';
 import { EMPTY_BLOB, S_IFGITLINK, S_IFLNK, S_IFMT, S_IFREG, decodePath, objectId } from './dircache.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 export function newCounters() {
@@ -48,7 +48,7 @@ export async function worktreeBlobId(tree, path, st) {
         return objectId('blob', await worktreeBlob(tree, path, st.type));
     }
     tree.counters.filesRead++;
-    const hash = createHash('sha1').update(encoder.encode(`blob ${st.size}\0`));
+    const hash = createHash('sha1').update(objectIdPrefix('blob', st.size));
     for (let offset = 0; offset < st.size;) {
         const chunk = await tree.fs.readRange(path, offset, Math.min(HASH_CHUNK, st.size - offset));
         // Shorter than its stat said: the file changed under the read, and so is not the blob.

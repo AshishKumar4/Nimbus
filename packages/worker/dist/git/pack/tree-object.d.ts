@@ -25,4 +25,25 @@ export declare class TreeEntries {
     constructor(tree: Uint8Array);
     next(): boolean;
 }
+/** A tree entry as its tree holds it: its name's bytes, its canonical mode, its id's bytes. */
+export interface RawTreeEntry {
+    readonly name: Uint8Array;
+    readonly mode: number;
+    readonly oid: Uint8Array;
+}
+/** A tree's bytes, by its id. */
+export type TreeReader = (oid: Uint8Array) => Promise<Uint8Array>;
+/** `tree`'s entries, in its order, as views of its bytes. */
+export declare function rawTreeEntries(tree: Uint8Array): RawTreeEntry[];
+/**
+ * A recursive tree diff (git's diff_tree_oid, no renames) of `from` to `to`
+ * (null: the empty tree): `changed` gets each leaf (a file, a symlink, a
+ * submodule) added, removed or modified (its id or mode), with its path and
+ * each side's entry or null, in git's order; a directory one side alone holds
+ * by each leaf below it. A tree both sides hold with the same id is never
+ * read, the two roots too. A tree on one side and a leaf of its name on the
+ * other sort apart (base_name_compare): each is its own change. Ends, false,
+ * when `changed` answers false.
+ */
+export declare function diffTreeLeaves(read: TreeReader, from: Uint8Array | null, to: Uint8Array | null, changed: (path: Uint8Array, before: RawTreeEntry | null, after: RawTreeEntry | null) => boolean | Promise<boolean>): Promise<boolean>;
 //# sourceMappingURL=tree-object.d.ts.map

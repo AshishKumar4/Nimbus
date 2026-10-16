@@ -44,11 +44,12 @@ export declare function readTree(store: ObjectStore, oid: string): Promise<TreeE
  */
 export declare function treeLeaves(store: ObjectStore, tree: string, prefix?: string, within?: (dir: string) => boolean): AsyncGenerator<Leaf>;
 /**
- * diff-tree -r of two trees (null for none): `visit` gets every leaf path
- * whose entry differs, with each side's leaf or null. A subtree both sides
- * hold with the same id is never read.
+ * diff-tree -r of two trees (null for none), as pack/tree-object.ts
+ * diffTreeLeaves walks it: `visit` gets every leaf path whose entry
+ * differs, with each side's leaf or null. A subtree both sides hold with the
+ * same id is never read.
  */
-export declare function diffTrees(store: ObjectStore, from: string | null, to: string | null, visit: (path: string, before: Leaf | null, after: Leaf | null) => Promise<void>, prefix?: string): Promise<void>;
+export declare function diffTrees(store: ObjectStore, from: string | null, to: string | null, visit: (path: string, before: Leaf | null, after: Leaf | null) => Promise<void>): Promise<void>;
 /**
  * write-tree: the index's stage-0 entries as trees, and the cache tree that
  * records them (every node valid), as the TREE extension's bytes. Entries
