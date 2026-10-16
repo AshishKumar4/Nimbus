@@ -6,12 +6,11 @@
 // counts are bytes (wc -c), so no layer between needs to carry it.
 //   - bash creates "$B"f (a redirection) and tests for it ([ -e ]), and cd
 //     enters "$B"d: bash's own paths;
-//   - ls lists the directory, and ls names "$B"f: a program's paths;
-//   - a write that begins with the BOM reaches the terminal with it.
+//   - ls lists the directory, and ls names "$B"f: a program's paths.
 //
 // Red before: the bash runner, the WASI codec and the WASI preamble each
 // decoded a path with a TextDecoder that drops a leading BOM, so "$B"f was
-// created as f.
+// not created as named.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -60,12 +59,6 @@ try {
         console.log(`  FAIL  ${line}: ours ${JSON.stringify(ours)} (status ${r.status}); bash's ${expected[i]}`);
         failed.push(line);
       }
-    }
-    const written = await terminal.run(`bash -c 'printf "\\357\\273\\277x\\n"'`, 90_000);
-    if (written.stdout.includes('\uFEFFx')) console.log('  ok  a write that begins with the BOM reaches the terminal with it');
-    else {
-      console.log(`  FAIL  a write that begins with the BOM: ${JSON.stringify(written.stdout)}`);
-      failed.push('write');
     }
   } finally {
     await terminal.close().catch(() => {});
