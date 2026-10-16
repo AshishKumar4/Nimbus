@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "a0b6f554f7ef5526d63106eeff51c01e897e3ef55c9cd8b51725a09f91716b94",
+  "fingerprint": "631dff52a7934f6d09be5d2670c274c8018450932da516303ecf22b52d2203e2",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2930,9 +2930,9 @@
     "packages/worker/dist/workspace.d.ts": "bd1c85ffa94a05bed412c9bdfc154eaf00c1c6fd621390bc9dc213f40fb61679",
     "packages/worker/dist/workspace.d.ts.map": "b78ea1190da530c08dafb38289d7507945803d5a78d0ad041dc31a212e189075",
     "packages/worker/dist/workspace.js": "6378bf2e4ee8854ee859c94b2c3ff5ecfa5cd23fe997b32ae8ff0b9b347e1b48",
-    "packages/worker/dist/wrangler/loader-code-store.d.ts": "9f835eef1530d2abc7ffa83b5e540247438f768ceb816d12e842f6a7aab0199a",
-    "packages/worker/dist/wrangler/loader-code-store.d.ts.map": "72de2fbef29432457573698dc4b032f89663efb9e3138beeb2f1d6c1d7c2f607",
-    "packages/worker/dist/wrangler/loader-code-store.js": "495b09da9bfe013f75366d473071a03be67a4274d06eeea9377fd71df4e2b9eb",
+    "packages/worker/dist/wrangler/loader-code-store.d.ts": "f922ef1c2d107f32dd0799234e926b5bd75df1233932310f4df81a2860e1f34c",
+    "packages/worker/dist/wrangler/loader-code-store.d.ts.map": "2b2d87dcb626f4a70959c3f608162be421203b607335ba26cfb9e7d373451f17",
+    "packages/worker/dist/wrangler/loader-code-store.js": "701f3c3e9715b6706e22292e02b1bfad5b177271e3faaf3012050dac88150fee",
     "packages/worker/dist/wrangler/nimbus-wrangler.d.ts": "acc3a3dfd27709fb5435067972f6db22eaa04a15beb67f1ddbe03d743c9e70b2",
     "packages/worker/dist/wrangler/nimbus-wrangler.d.ts.map": "4381b8342f1cea5a6b3cc4df85b42b410ad024fd8385f5757b1bf6a803b764d1",
     "packages/worker/dist/wrangler/nimbus-wrangler.js": "df3f5d78c477ed9e49d50c837c32c3d512ef76c0a3794eae658f92363c69f0e6",
@@ -3367,7 +3367,7 @@
     "packages/worker/src/vfs/resident/transport.ts": "7a391e7af59333d23d64671860470e82b3c313bfa7c553e1d2726c737803a758",
     "packages/worker/src/workspace-host.ts": "1219ddb513bd3c1486330eed4fe63025a83862908d11620c77a6d28d5c837cc5",
     "packages/worker/src/workspace.ts": "39d753a50eadabfd3c9739bdfff05f9874ce6333761914ed5698a8d9fac5013c",
-    "packages/worker/src/wrangler/loader-code-store.ts": "f6c86bc01ba8299a8ecf68b453a5ec2efdf2839d47ba20b213ff7cc49f022175",
+    "packages/worker/src/wrangler/loader-code-store.ts": "284daa62ee564ee0bfca0fb7e07791210b96d01024d605d7895d39d69eb79d09",
     "packages/worker/src/wrangler/nimbus-wrangler.ts": "9ef01ca1113927787f544ac5dd862b52f15cfb241aa4fc4ea02d3e319774b97b",
     "packages/worker/src/wrangler/wrangler-config.ts": "4576f90f079be8c425a0388bcb18ff13a62819ca113351bf6a9d8fa9a2012f06",
     "packages/worker/tsconfig.json": "fa6f4d05c31f08aebf48fc3a2373a2478cb3df3f937c5246a9c47a310ec08c0b",

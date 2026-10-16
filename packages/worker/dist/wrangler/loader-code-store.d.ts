@@ -46,7 +46,7 @@ export declare class LoaderCodeRegistry {
      * puts in flight are kept here, transiently.
      */
     private storeBytes;
-    /** Puts in flight, by digest: how many, and whether the content's charge is theirs (no directory held it). */
+    /** Puts in flight, by digest: how many, their one size, and the content's charge they carry (0: a directory carries it). */
     private readonly putting;
     private removals;
     constructor(engine: SqliteVFS);
@@ -92,26 +92,30 @@ export declare class LoaderCodeRegistry {
      * on the donor too, so its removal waits for the copy.
      */
     private create;
-    /** Whether a directory of this incarnation but `except` (a live owner's, a source's, or one queued for removal) has the file of `digest`. */
-    private holds;
+    /** The size of `digest`'s file in a directory of this incarnation that counts (a live owner's, a source's, or one queued for removal), or null. */
+    private heldSize;
+    /** `digest`'s file, `size` bytes, was just removed from a directory that counts: its charge goes with it unless something else carries it. */
+    private released;
     /** `operation`, which reads or writes `owner`'s directory: its removal waits for it. */
     private track;
     /** `token` closed, its reuse-source record dropped, its directory queued for removal once nothing reads or writes it. */
     private retire;
     /**
      * Remove `dir` once `owner`'s operations (all of them, however many come
-     * after this) have drained, with the VFS's paged recursive removal. Its
-     * files are listed first, and in the same synchronous step that removes it
-     * each digest no other directory holds is counted no more, or, when a put
-     * of it is in flight, its charge passes to that put. One that could not be
-     * removed stays queued, still counted, and every queued directory is tried
-     * again at each removal. A dead incarnation's directories were never
-     * counted: their removal gives nothing back.
+     * after this) have drained. A directory that is not gone stays queued and
+     * is tried again at each removal; whatever of it was unlinked was given
+     * back as it went.
      */
     private queueRemoval;
-    /** `dir`'s files: their digest and size (a flat directory, at most OWNER_FILES). */
-    private files;
-    /** Whether `dir` is gone. */
+    /**
+     * Remove `dir`, a flat directory of at most OWNER_FILES files, whether it
+     * is gone. Its names are listed once (the VFS's one listing), and each
+     * file is stat'ed, unlinked and, when `counted`, given back the moment it
+     * is gone, in pages of REMOVE_PAGE with a turn between; so a removal that
+     * fails part way has given back exactly what it unlinked. The directory
+     * goes last. An entry that is not a file (none is made here) goes by the
+     * VFS's recursive removal.
+     */
     private removeDir;
     /** The store's credentialed view: /.nimbus the kernel's (as every kernel store checks it), loader-code the store's own, checked at every use. */
     private storeFs;
