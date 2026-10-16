@@ -985,7 +985,10 @@ registerShellEntrypointCommands(registry, shellEntrypointExecutor);
 
 // Shell scripts that execute through the local shell still need the same
 // process-table and log-store contract as facet-backed processes. Answers
-// 'resident' for a long-running script a server adopted, which runs on.
+// 'resident' for a long-running script that succeeded: its process is left
+// running, as a server that adopted it (a node or dev server reusing the
+// pid) runs on. Nothing tells adoption apart from a script that simply
+// ended (a node server holds no work on the pid the supervisor can see).
 const shellExecuteTracked = async (
   cmd: string,
   cmdCtx: CommandContext,
@@ -1093,7 +1096,7 @@ const shellExecuteTracked = async (
       // emitting an immediate exit would print a false `[shell exited]` and
       // flip the process to terminated in /api/processes. Mirror the npm-bin
       // resolver's `handedOffToLongRunningFacet` contract.
-      const handedOffToLongRunningFacet = opts.longRunning === true && exitCode === 0 && self.processes.runsWork(pid);
+      const handedOffToLongRunningFacet = opts.longRunning === true && exitCode === 0;
       if (!handedOffToLongRunningFacet) {
         try { self.processes.exit(pid, exitCode); } catch {}
         try {
@@ -1114,7 +1117,7 @@ const shellExecuteTracked = async (
       }
     }
   }
-  return opts.longRunning === true && exitCode === 0 && self.processes.runsWork(pid) ? 'resident' : exitCode;
+  return opts.longRunning === true && exitCode === 0 ? 'resident' : exitCode;
 };
 const runtimeCommandHint = createRuntimeCommandHintResolver(self.env as any);
 installNpmBinFallbackResolver(registry, {
