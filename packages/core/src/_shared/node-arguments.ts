@@ -50,6 +50,16 @@ export function validateUint32(value: unknown, name: string, positive = false): 
   return value;
 }
 
+/**
+ * A uid or gid as Node's chown reads it (an integer from -1 to 2 ** 32 - 1):
+ * -1, and 2 ** 32 - 1, which Node's binding converts to the same uid_t, keep
+ * the file's (null).
+ */
+export function nodeOwnerId(value: unknown, name: string): number | null {
+  const id = validateInt32(value, name, -1, 4294967295);
+  return id === -1 || id === 4294967295 ? null : id;
+}
+
 /** stringToFlags: an open's flags, a flag string from Node's table or an int32 of bits; none is 'r'. */
 export function stringToFlags(flags: unknown, name = 'flags'): number {
   if (typeof flags === 'number') return validateInt32(flags, name);

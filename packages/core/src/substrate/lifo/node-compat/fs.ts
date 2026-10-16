@@ -12,7 +12,7 @@ import { DIRENT_TYPES, direntTypeOfStat } from '../../../vfs/dirent-type.js';
 import { S_IFMT } from '../../../vfs/vfs.js';
 import { invalidArgType, nodeError, nodeSystemError } from '../../../_shared/node-error.js';
 import {
-  O_ACCMODE, O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR, O_SYNC, O_TRUNC, O_WRONLY, parseFileMode, stringToFlags,
+  O_ACCMODE, O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR, O_SYNC, O_TRUNC, O_WRONLY, nodeOwnerId, parseFileMode, stringToFlags,
 } from '../../../_shared/node-arguments.js';
 
 export interface FSWatcher extends EventEmitter {
@@ -345,8 +345,15 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     vfs.chmod(resolvePath(cwd, path), parseFileMode(mode, 'mode'));
   }
 
-  function chownSync(_path: string | URL, _uid: number, _gid: number): void {
-    // No-op in VFS
+  // chown(2) and lchown(2): a side Node's -1 names keeps the file's, in the same change.
+  function chownSync(path: string | URL, uid: number, gid: number): void {
+    const abs = resolvePath(cwd, path);
+    vfs.chown(abs, nodeOwnerId(uid, 'uid'), nodeOwnerId(gid, 'gid'), true);
+  }
+
+  function lchownSync(path: string | URL, uid: number, gid: number): void {
+    const abs = resolvePath(cwd, path);
+    vfs.chown(abs, nodeOwnerId(uid, 'uid'), nodeOwnerId(gid, 'gid'), false);
   }
 
   function accessSync(path: string | URL, _mode?: number): void {
@@ -428,6 +435,12 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     onDescriptor(fd, 'ftruncate', (id) => vfs.ftruncate(id, Math.max(0, len ?? 0)));
   }
 
+  function fchownSync(fd: number, uid: number, gid: number): void {
+    const owner = nodeOwnerId(uid, 'uid');
+    const group = nodeOwnerId(gid, 'gid');
+    onDescriptor(fd, 'fchown', (id) => vfs.fchown(id, owner, group));
+  }
+
   function fsyncSync(fd: number): void {
     onDescriptor(fd, 'fsync', (id) => vfs.fsync(id));
   }
@@ -468,6 +481,25 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
       }
     });
   }
+  // Their ids are checked at once, as Node's are: a bad one throws, never calls back.
+  function chown(path: string | URL, uid: number, gid: number, cb: Callback<void>): void {
+    const owner = nodeOwnerId(uid, 'uid');
+    const group = nodeOwnerId(gid, 'gid');
+    wrapCallback(() => vfs.chown(resolvePath(cwd, path), owner, group, true), cb);
+  }
+
+  function lchown(path: string | URL, uid: number, gid: number, cb: Callback<void>): void {
+    const owner = nodeOwnerId(uid, 'uid');
+    const group = nodeOwnerId(gid, 'gid');
+    wrapCallback(() => vfs.chown(resolvePath(cwd, path), owner, group, false), cb);
+  }
+
+  function fchown(fd: number, uid: number, gid: number, cb: Callback<void>): void {
+    const owner = nodeOwnerId(uid, 'uid');
+    const group = nodeOwnerId(gid, 'gid');
+    wrapCallback(() => onDescriptor(fd, 'fchown', (id) => vfs.fchown(id, owner, group)), cb);
+  }
+
 
   function readFile(path: string | URL, optionsOrCb: string | { encoding?: string } | Callback<string | Uint8Array>, cb?: Callback<string | Uint8Array>): void {
     const callback = typeof optionsOrCb === 'function' ? optionsOrCb : cb!;
@@ -712,7 +744,8 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     realpath: async (path: string | URL) => realpathSync(path),
     truncate: async (path: string | URL, len?: number) => truncateSync(path, len),
     chmod: async (path: string | URL, mode: number | string) => chmodSync(path, mode),
-    chown: async (_path: string | URL, _uid: number, _gid: number) => {},
+    chown: async (path: string | URL, uid: number, gid: number) => chownSync(path, uid, gid),
+    lchown: async (path: string | URL, uid: number, gid: number) => lchownSync(path, uid, gid),
     open: async (path: string | URL, flags?: string | number, mode?: number) => {
       const fd = openSync(path, flags, mode);
       return {
@@ -726,6 +759,7 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
           bytesWritten: writeSync(fd, data),
         }),
         stat: async () => fstatSync(fd),
+        chown: async (uid: number, gid: number) => fchownSync(fd, uid, gid),
         truncate: async (len?: number) => ftruncateSync(fd, len),
       };
     },
@@ -771,6 +805,8 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     copyFileSync,
     chmodSync,
     chownSync,
+    lchownSync,
+    fchownSync,
     accessSync,
     realpathSync,
     truncateSync,
@@ -803,6 +839,9 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     write,
     fsync,
     fstat,
+    chown,
+    lchown,
+    fchown,
     realpath,
     // Streams
     ReadStream,

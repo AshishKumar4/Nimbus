@@ -9,16 +9,17 @@
 //     over the VM's own wrapper (RUBY_RUNNER_PREAMBLE_TAIL, the VM stood in
 //     for by a recorder of what it evaluates), then the host's Ruby running
 //     that, in a directory holding the files.
-//   - a program that keeps running (a script) runs as the caller, as a
-//     one-shot run does: the resident process's start (ruby-resident.ts)
-//     hands __rubyRun the invocation as the runner made it, whose
-//     credential makes the VM's filesystem its resident one; without it,
-//     the VM fell back to the live bridge.
+//   - a program that keeps running (a script) and the prompt run as the
+//     caller, as a one-shot run does: the resident process's start
+//     (ruby-resident.ts) hands __rubyRun the invocation as the runner made
+//     it, and the prompt's step (repl-facet-tasks.ts) the caller's
+//     credential, with which the VM's filesystem is its resident one;
+//     without it, the VM fell back to the live bridge.
 //
 // Red before: the runner wrote `require "./literal#{7}"` into the program,
 // a double-quoted literal Ruby interpolates; the one-shot task and the
 // resident start each rebuilt the invocation field by field, the resident
-// one without the credential.
+// one without the credential; the prompt's step had none.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -43,6 +44,8 @@ plugin({
     }));
   },
 });
+const { RUBY_REPL_TASK } = await import('../../packages/worker/src/loaders/compiled-bodies.generated.ts');
+const rubyReplStepFacetFn = new Function(`return (${RUBY_REPL_TASK.source});`)();
 
 if (spawnSync('ruby', ['--version'], { encoding: 'utf8' }).status !== 0) {
   console.log('ruby-invocation-carried: SKIPPED (no host ruby)');
@@ -137,6 +140,16 @@ try {
   } finally {
     rmSync(workerDir, { recursive: true, force: true });
   }
+}
+
+// ── The prompt's step hands __rubyRun the caller's credential ──
+{
+  let ranWith = null;
+  globalThis.__rubyRun = async (args) => { ranWith = args; return { exitCode: 0, stdout: '', stderr: '' }; };
+  delete globalThis.__nimbusRubyPromptStarted;
+  const result = await rubyReplStepFacetFn({ userCode: 'p 1', home: '/home/user', cwd: '/home/user', binName: 'ruby', supervisorPid: 9, cred: CRED }, {});
+  assert.equal(result.exitCode, 0);
+  check('the prompt runs as the caller', { cred: ranWith.cred, requires: ranWith.requires }, { cred: CRED, requires: [] });
 }
 
 assert.deepEqual(failed, [], failed.join('\n'));

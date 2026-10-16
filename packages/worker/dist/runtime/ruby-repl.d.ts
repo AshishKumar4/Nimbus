@@ -26,7 +26,7 @@
  */
 import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
-import { type NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type NimbusFilesystemAuthority, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 export interface RubyReplDeps {
     facetMgr: FacetManager;
     /** Owns the installed interpreter blob the prompt is booted from. */
@@ -40,6 +40,8 @@ export interface RubyReplDeps {
      * the caller's, as the caller sees it.
      */
     pid: number;
+    /** The invoking process's credential: the prompt's filesystem is its resident one, as a one-shot run's is. */
+    cred: VfsCred;
     /** The caller's HOME. */
     home: string;
     /** The shell's working directory: where the prompt starts. */

@@ -1613,6 +1613,14 @@ export declare class SqliteVFS {
     private getDefaultAcl;
     private chown;
     /**
+     * chown's judgement of `inode`, and its change: EPERM unless chownRefusal
+     * allows it, a null side kept, and the set-id bits a non-root change
+     * clears. A linked file (its path, and the lexical key it was named by) is
+     * admitted and changed as its row; an open one unlinked (null) in its
+     * inode alone.
+     */
+    private chownInode;
+    /**
      * Enumerate the filesystem, one bounded page at a time.
      *
      * This is the answer to a question no facet could previously ask. A process

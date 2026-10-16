@@ -1814,18 +1814,8 @@ export class SqliteVFS {
                 return opened.path === null ? [] : this.readdir(opened.path, CRED_KERNEL);
             },
             chmod: owned((mode) => this.chmodInode(current(), mode, cred, opened.path)),
-            chown: owned((uid, gid) => {
-                if (cred.uid !== 0)
-                    throw vfsKeyError('EPERM', path);
-                if (opened.path !== null)
-                    this.chown(opened.path, uid, gid, CRED_KERNEL, true);
-                else {
-                    const inode = current();
-                    inode.uid = uid ?? inode.uid;
-                    inode.gid = gid ?? inode.gid;
-                    inode.ctime = this.now();
-                }
-            }),
+            // fchown(2): judged as chown is, for the descriptor's credential, on the file it opened, linked or not.
+            chown: owned((uid, gid) => this.chownInode(current(), uid, gid, cred, opened.path === null ? null : { path: opened.path, lexical: this.lexicalKey(opened.path, CRED_KERNEL) })),
             utimes: owned((atime, mtime) => {
                 if (cred.uid !== 0 && cred.uid !== current().uid && !rights.write)
                     throw vfsKeyError('EPERM', path);
@@ -4881,18 +4871,30 @@ export class SqliteVFS {
         const inode = resolved.inode;
         if (!inode)
             throw vfsKeyError('ENOENT', path);
+        this.chownInode(inode, uid, gid, cred, { path: resolved.path, lexical: this.lexicalKey(path, cred) });
+    }
+    /**
+     * chown's judgement of `inode`, and its change: EPERM unless chownRefusal
+     * allows it, a null side kept, and the set-id bits a non-root change
+     * clears. A linked file (its path, and the lexical key it was named by) is
+     * admitted and changed as its row; an open one unlinked (null) in its
+     * inode alone.
+     */
+    chownInode(inode, uid, gid, cred, linked) {
         if (uid !== null && (!Number.isSafeInteger(uid) || uid < 0))
             throw vfsError('EINVAL', `invalid uid ${uid}`);
         if (gid !== null && (!Number.isSafeInteger(gid) || gid < 0))
             throw vfsError('EINVAL', `invalid gid ${gid}`);
         if (chownRefusal(inode, uid, gid, cred) !== null)
-            throw vfsKeyError('EPERM', resolved.path);
-        this.admit(this.lexicalKey(path, cred), this.physicalKey(inode.path));
-        this.publishMetadata(inode, {
-            uid: uid ?? inode.uid,
-            gid: gid ?? inode.gid,
-            mode: chownedMode(inode.mode, cred),
-        });
+            throw vfsKeyError('EPERM', linked?.path ?? 'detached inode');
+        const changed = { uid: uid ?? inode.uid, gid: gid ?? inode.gid, mode: chownedMode(inode.mode, cred) };
+        if (linked === null) {
+            Object.assign(inode, changed);
+            inode.ctime = this.now();
+            return;
+        }
+        this.admit(linked.lexical, this.physicalKey(inode.path));
+        this.publishMetadata(inode, changed);
     }
     /**
      * Enumerate the filesystem, one bounded page at a time.
