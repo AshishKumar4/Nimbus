@@ -83,6 +83,14 @@ import { z } from 'zod/v4';
  */
 export const RESIDENT_PROCESS_CLASS = 'NimbusProcess';
 /**
+ * How long a release waits for its resident to settle (log into its own
+ * store what its process was told it wrote and has not logged) before it
+ * aborts the facet anyway. The call goes to an isolate in this object and
+ * logs into local SQLite, about a millisecond; one that has not answered in
+ * this is running without yielding, and only delays the kill.
+ */
+export const RESIDENT_SETTLE_DEADLINE_MS = 100;
+/**
  * A generated module map. Only bounded, fixed-size module text rides inline;
  * anything whose size is a function of the user's disk is named by VFS path
  * and read when the facet loads, so the bytes are transient rather than

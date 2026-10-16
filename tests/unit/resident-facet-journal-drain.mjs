@@ -15,9 +15,15 @@ import assert from 'node:assert/strict';
 import { answerHostWatch } from './lib/host-watch-socket.mjs';
 import { processes, reservedFacetNames, residentFacetName } from '../../packages/fabric/src/workerd-facet-host.ts';
 import { facetLimits } from '../../packages/fabric/src/facet-limits.ts';
+import * as fabric from '../../packages/fabric/src/process-fabric.ts';
+import { HOST_INCARNATION_HEADER } from '../../packages/fabric/src/host-activity.ts';
 
-/** A `ctx.facets` that records each call in order, and opens the reader over a name's store. */
-function makeCtx(id) {
+/**
+ * A `ctx.facets` that records each call in order, and opens the reader over a
+ * name's store. `settle`: the resident's settle (recorded, then answered);
+ * `watch`: its host watch.
+ */
+function makeCtx(id, { settle = async () => {}, watch = answerHostWatch() } = {}) {
   const events = [];
   const stored = new Set();
   const loaded = [];
@@ -48,7 +54,8 @@ function makeCtx(id) {
         return {
           async startProcess() { return { ok: true }; },
           async handleHttpRequest() { return new Response('ok'); },
-          fetch: answerHostWatch(),
+          settle() { events.push(`settle ${name}`); return settle(start); },
+          fetch: watch,
         };
       },
       abort(name) { events.push(`abort ${name}`); },
@@ -124,6 +131,60 @@ function deferred() {
   // Its name is never handed out again (a minted name may hold a previous incarnation's store).
   const next = open(ctx, 11);
   assert.notEqual(next.slot, facet.slot);
+}
+
+// ── Released, a resident settles first (what its process was told it wrote
+//    and has not logged, logged into its store), then is aborted and its log
+//    drained; one that does not answer in time is aborted at the deadline,
+//    one that refuses or is lost already is not waited for ───────────────
+// Red before: the release aborted at once, with what the process held
+// unlogged (a WASI holder's last decided bytes) in its isolate's heap.
+{
+  const RESIDENT_SETTLE_DEADLINE_MS = fabric.RESIDENT_SETTLE_DEADLINE_MS ?? 100;
+  const run = async (kind, behaviour, drain = async () => {}) => {
+    const ctx = makeCtx(`settle-${kind}`, behaviour);
+    const facet = open(ctx, 40, { opened() {}, drain });
+    // Held, so its host watches it (and learns of its loss).
+    const lease = facet.acquireActivity();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    lease.release();
+    const name = residentFacetName(facet.slot);
+    const t0 = performance.now();
+    await facet.release();
+    const after = ctx.events.slice(ctx.events.indexOf(`get ${name}`));
+    return { after, name, ms: performance.now() - t0 };
+  };
+  const answered = await run('answers', {});
+  const at = (event) => answered.after.indexOf(event);
+  assert.ok(at(`settle ${answered.name}`) >= 0, `the resident was not asked to settle: ${answered.after.join(', ')}`);
+  assert.ok(at(`settle ${answered.name}`) < at(`abort ${answered.name}`), 'aborted before it settled');
+
+  const hung = await run('hangs', { settle: () => new Promise(() => {}) });
+  assert.ok(hung.after.includes(`abort ${hung.name}`), 'a resident that never settles was never aborted');
+  assert.ok(hung.ms >= RESIDENT_SETTLE_DEADLINE_MS - 5, `aborted before the deadline: ${hung.ms} ms`);
+
+  // A facet gone: the stub starts it again, which a release refuses.
+  const refused = await run('refuses', { settle: async (start) => { await start(); } });
+  assert.ok(refused.after.includes(`abort ${refused.name}`));
+  assert.ok(refused.ms < RESIDENT_SETTLE_DEADLINE_MS / 2, `a refused settle waited for the deadline: ${refused.ms} ms`);
+
+  // Its host watch ends: the facet is gone before the release.
+  const ended = async () => new Response(new ReadableStream({ start(controller) { controller.close(); } }), { headers: { [HOST_INCARNATION_HEADER]: 'gone' } });
+  const lost = await run('lost', { watch: ended });
+  assert.ok(!lost.after.includes(`settle ${lost.name}`), 'a lost resident was asked to settle');
+  assert.ok(lost.ms < RESIDENT_SETTLE_DEADLINE_MS / 2, `a lost resident's release waited: ${lost.ms} ms`);
+
+  // Its drain fails at once while it is still settling: the release ends with its facet all the same.
+  // Red before: the release ended at the failure, the facet aborted only at the deadline, after.
+  const realError = console.error;
+  console.error = () => {};
+  let failing;
+  try {
+    failing = await run('drain-fails', { settle: () => new Promise(() => {}) }, async () => { throw new Error('facet unreachable'); });
+  } finally {
+    console.error = realError;
+  }
+  assert.ok(failing.after.includes(`abort ${failing.name}`), `the release ended before its facet: ${failing.after.join(', ')}`);
 }
 
 // ── A drain that fails keeps the store, and says so, named ────

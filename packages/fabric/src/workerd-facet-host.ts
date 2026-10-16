@@ -46,6 +46,7 @@ import {
 import {
   ProcessHostLost,
   RESIDENT_PROCESS_CLASS,
+  RESIDENT_SETTLE_DEADLINE_MS,
   residentLoaderConfig,
   type HostedProcess,
   type OneShotCode,
@@ -99,6 +100,8 @@ async function stagedOneShot(key: string, stage: unknown, supervisor: Supervisor
 /** The subset of a facet stub a resident process exposes to whoever opened it. */
 interface ResidentFacetStub {
   startProcess(args?: unknown): Promise<unknown>;
+  /** What its process was told it wrote and has not logged yet, logged into its store (the host adapter's settle). */
+  settle(): Promise<void>;
   /**
    * A facet stub is a Durable Object stub, so it fetches: every request the
    * host adapter takes (observeResidentConfig). An upgrade's 101 keeps its
@@ -479,9 +482,14 @@ function spawnResident(
   let released = false;
   let refused: { error: unknown } | undefined;
   const watchCapability = crypto.randomUUID();
-  let markLost: (error: Error) => void = () => {};
-  const lost = new Promise<never>((_, reject) => { markLost = reject; });
+  let lostAlready = false;
+  let rejectLost: (error: Error) => void = () => {};
+  const lost = new Promise<never>((_, reject) => { rejectLost = reject; });
   lost.catch(() => {});
+  const markLost = (error: Error): void => {
+    lostAlready = true;
+    rejectLost(error);
+  };
   const start = async (): Promise<{ class: unknown }> => {
     if (released) {
       throw new Error(`Nimbus: resident process ${params.pid} is no longer running`);
@@ -536,21 +544,34 @@ function spawnResident(
     released = true;
     stopObserving();
     facetOfPid(ctx).delete(params.pid);
-    endResidency();
-    try { facets.abort(name, new Error('Nimbus: resident process released')); } catch { /* already gone */ }
-    if (explicit) book.live.delete(name);
+    // What its process was told it wrote and has not logged yet, logged into
+    // its store before the abort (settle), for the drain below: as write(2)
+    // outlives a killed writer. A facet already lost, or one that does not
+    // answer (gone, or never started again: the start above refuses once
+    // released), is not waited for; one that does not answer in time is
+    // aborted at the deadline.
+    const ended = (params.journal && !lostAlready ? settled(facet) : Promise.resolve()).then(() => {
+      endResidency();
+      try { facets.abort(name, new Error('Nimbus: resident process released')); } catch { /* already gone */ }
+      if (explicit) book.live.delete(name);
+    });
     // What the process logged and the session never answered is in its
     // facet's store: drained before the store goes, and before the release
-    // settles (its exit is reported after). A drain that fails keeps the
-    // store, for the session's next drain of that name.
+    // settles (its exit is reported after). The drain starts now, so an end
+    // told after it waits for it; its store is read once the resident has
+    // settled and gone. A drain that fails keeps the store, for the session's
+    // next drain of that name.
     if (params.journal) {
       try {
-        await params.journal.drain(facetJournal(ctx, env, name));
+        await params.journal.drain(onceSettled(ended, facetJournal(ctx, env, name)));
       } catch (error) {
         console.error(`[nimbus] the write log of pid ${params.pid} (facet '${name}') was not drained: ${error instanceof Error ? error.message : String(error)}`);
+        // Its store kept for that drain; the release still ends with the facet.
+        await ended;
         return;
       }
     }
+    await ended;
     // The two release classes: an ephemeral facet's SQLite is the process's
     // alone, so it goes with it, and a durable one's is the application
     // itself: abort ends the process, the data stays for the next boot, and
@@ -656,6 +677,29 @@ function spawnResident(
     name,
     slot,
   };
+}
+
+/** `source`, read once `ready` has settled. */
+function onceSettled(ready: Promise<void>, source: ProcessFsJournalSource): ProcessFsJournalSource {
+  return {
+    numberings: () => ready.then(() => source.numberings()),
+    number: (numbering) => ready.then(() => source.number(numbering)),
+    readAfter: (after, maxBytes) => ready.then(() => source.readAfter(after, maxBytes)),
+    dropThrough: (jid) => ready.then(() => source.dropThrough(jid)),
+  };
+}
+
+/** `facet`'s settle, answered, refused or not answered within RESIDENT_SETTLE_DEADLINE_MS: settled however it went. */
+async function settled(facet: ResidentFacetStub): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const deadline = new Promise<void>((resolve) => { timer = setTimeout(resolve, RESIDENT_SETTLE_DEADLINE_MS); });
+  try {
+    await Promise.race([Promise.resolve().then(() => facet.settle()), deadline]);
+  } catch {
+    // Refused: gone, or a facet with no settle. Its log stands as it is.
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
 }
 
 /**

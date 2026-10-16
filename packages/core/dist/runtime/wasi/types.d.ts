@@ -411,6 +411,8 @@ declare global {
     var __wasiAdoptSupervisor: ((sup: WasiSupervisorStub | null) => void) | undefined;
     /** A run's result once what the process wrote is in the session: a refusal fails it, named (wasi/preamble.ts). */
     var __wasiSettled: (<R extends WasiRunResult>(result: R) => Promise<R>) | undefined;
+    /** A resident's settle before its facet goes (the host adapter's `settle`): what its process holds unlogged, logged. */
+    var __nimbusSettle: (() => void) | undefined;
     var __wasiSupervisorOutput: typeof import('./stdio.js').wasiOutputRelay;
     var __wasiOutputControl: typeof import('./output-control.js').outputControlReader;
     var __nimbusVirtualSockets: VirtualSocketKernel | undefined;
