@@ -598,7 +598,6 @@ export function provisional(host) {
             if (!desc.write)
                 throw fsError('EINVAL', 'ftruncate', desc.path);
             contentOp(desc, { kind: 'truncate', size, at: host.now() }, { type: 'call', call: { call: 'ftruncate', path: desc.inode.key, ...by(desc), size } }, 0, 'ftruncate');
-            return true;
         },
         seek: (handleId, offset, whence) => {
             const desc = descOf(handleId);

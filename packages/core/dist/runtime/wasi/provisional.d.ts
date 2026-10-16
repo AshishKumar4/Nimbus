@@ -89,10 +89,9 @@ export interface Provisional {
     writeFile(key: string, path: string, bytes: Uint8Array, row: ResidentEntry | null, umask: number | undefined): boolean;
     /** Undefined where its bytes are the store's and it does not hold them: inodeOf says what to fetch. */
     read(handleId: number, offset: number | null, length: number): Uint8Array | undefined;
-    /** Undefined where the bytes it keeps are the store's and it does not hold them. */
-    write(handleId: number, offset: number | null, bytes: Uint8Array): number | undefined;
-    /** False where the bytes it keeps are the store's and it does not hold them. */
-    ftruncate(handleId: number, size: number): boolean;
+    /** Logged as made: it needs none of the file's bytes (what it keeps is folded over them when they are held). */
+    write(handleId: number, offset: number | null, bytes: Uint8Array): number;
+    ftruncate(handleId: number, size: number): void;
     seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number;
     fstat(handleId: number): ResidentEntry;
     fsetattr(handleId: number, attrs: DescriptorAttrs): void;
