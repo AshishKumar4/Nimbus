@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "555a0b6f3e9c3cd8170ed4d74122bfb7c4e8721c2a1efbe1bb487c03bad02392",
+  "fingerprint": "c1e28b5c436dcf4c16d1131e1a28f19a0a065fdd065fc7c200ec992567479c4a",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -398,8 +398,8 @@
     "packages/core/dist/runtime/cpython-preamble.d.ts.map": "2544e0eb39bd4e002b3cb8e31eee50454b2a1a8a462d78623541cf0e17b73bed",
     "packages/core/dist/runtime/cpython-preamble.js": "1103b785c0fb29534ecbc14de6117cb00c47a015bb4977eed4b94dbdea5a3ad5",
     "packages/core/dist/runtime/cpython-runner.d.ts": "eea1a126421176fa34d83f455988c1feea09238b0650115b00621059f772e475",
-    "packages/core/dist/runtime/cpython-runner.d.ts.map": "64eab8d5aae69e29137148b04b6cdcb0fb5eb6ba815bbb07d672c2d50de3b480",
-    "packages/core/dist/runtime/cpython-runner.js": "5ee99d2ee20cc30c48dd3b9eb3c37b216ff684e89cdc6efaa371e2d4775496d9",
+    "packages/core/dist/runtime/cpython-runner.d.ts.map": "10f8c18bcbb4f1bf93bea14849c53e9fe0745743a9563b840dde13253d540c4e",
+    "packages/core/dist/runtime/cpython-runner.js": "5727dacb4c065e9b8bd3d8f15d660cf64ead67d5383f632ea641c6ea7fdb941a",
     "packages/core/dist/runtime/css-bundle.d.ts": "0edc4a8ab4ad22710e75f30077acf08b15e03a19713b22d86938baa8b1fd4be4",
     "packages/core/dist/runtime/css-bundle.d.ts.map": "0a13743873bfaaebe8f7abf7274884d8aadb495b08d1cdaa2a870a13ecc49352",
     "packages/core/dist/runtime/css-bundle.js": "33dca80523abad528185d5189757614d5766a2d48849dbbfb45ea10e6c396abf",
@@ -1501,7 +1501,7 @@
     "packages/core/src/runtime/comment-strip.ts": "cbfea67bdc8c7bd618716a71d80bf3be0527386f3128ba64fd51a199f4532c38",
     "packages/core/src/runtime/compiled-bodies.generated.ts": "e84e8eb06bc5f6b049246df9df03d9f434eeeadd5e4f2e941cfc7f3140b027d6",
     "packages/core/src/runtime/cpython-preamble.ts": "38fcb78f8a1e32089e2ffa00edb5aa5abe37184598354829728d15901423494b",
-    "packages/core/src/runtime/cpython-runner.ts": "fb47d9a6bd4c7537af4cdc0ece4847999f336f915d282e735a00c5318bf2ad99",
+    "packages/core/src/runtime/cpython-runner.ts": "18878519b4c6c428ecaa24c93afdbe1e8b740d41ddc99c6ed1f14e98e10a2795",
     "packages/core/src/runtime/css-bundle.ts": "fbe4b93ba2aaf5d9c4c2cf28b7c451abeddf391aee90219198b1a77d53b08ff0",
     "packages/core/src/runtime/css-syntax.ts": "44bbbbbdf2398d0c6af55df46b71ecc5a075495e3e120cdc363a9d15a01a9a8b",
     "packages/core/src/runtime/delegations.ts": "7f27cf2c78483e307b6234fbb578fc8f1dfeb5f408c6585e2a4ce87c1353ee47",

@@ -196,7 +196,6 @@ export function makeCPythonRunnerFactory(deps) {
         const sciWasmVfs = findFile(CPYTHON_SCI_WASM_REL);
         const sciPackagesVfs = findFile(CPYTHON_SCI_PACKAGES_REL);
         const stdlibVfs = findFile(CPYTHON_STDLIB_REL);
-        const markers = cpythonMarkers(manifest);
         return async function cpythonBinHandler(ctx) {
             const cred = requireVfsCred(ctx.cred, binName);
             const vfs = ctx.vfs;
@@ -212,7 +211,7 @@ export function makeCPythonRunnerFactory(deps) {
                 home,
                 // pip's process's network (WorkspaceNetwork.forProcess).
                 network: deps.network.forProcess(ctx.pid),
-                markers,
+                markers: cpythonMarkers(manifest),
             };
             const isPipBin = _binKind === 'pip' || binName === 'pip' || binName === 'pip3';
             const pipInvocation = isPipBin
@@ -223,12 +222,12 @@ export function makeCPythonRunnerFactory(deps) {
                 return pipInvocation.exitCode;
             }
             if (pipInvocation.mode !== 'pip' && hasLeadingCliFlag(argv, PYTHON_VERSION_FLAGS)) {
-                ctx.stdout.write(`Python ${markers.python_full_version} (CPython, wasm32-wasi, Nimbus runtime)\n`);
+                ctx.stdout.write(`Python ${cpythonMarkers(manifest).python_full_version} (CPython, wasm32-wasi, Nimbus runtime)\n`);
                 return 0;
             }
             if (pipInvocation.mode !== 'pip' && hasLeadingCliFlag(argv, PYTHON_HELP_FLAGS)) {
                 ctx.stdout.write(`usage: ${binName} [option] ... [-c cmd | -m mod | file | -] [arg] ...\n`);
-                ctx.stdout.write(`Nimbus CPython ${markers.python_version} runtime (wasm32-wasi).\n`);
+                ctx.stdout.write(`Nimbus CPython ${cpythonMarkers(manifest).python_version} runtime (wasm32-wasi).\n`);
                 ctx.stdout.write('Supported: -c <code>, -m <module>, <file.py>, stdin via -, and the session filesystem directly.\n');
                 ctx.stdout.write('zlib, lzma, bz2, hashlib, ssl, sqlite3 and sockets are built in; pure-Python wheels install with pip.\n');
                 return 0;
