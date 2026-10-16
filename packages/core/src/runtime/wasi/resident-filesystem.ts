@@ -253,6 +253,9 @@ interface Unknown { readonly missing: string }
 /** Where a path leads: its key, null for ELOOP, or DELEGATE when the authority must say. */
 type Resolution = string | null | Delegate;
 
+/** A mutation's walk: the key it reached, and every name it looked up on the way, in order. */
+interface Walk { readonly key: string; readonly crossed: readonly string[] }
+
 /** Bytes pinned for descriptors: one buffer per file revision (or held version), and how many hold it. The pin is the only owner of the buffer. */
 interface Pin {
   bytes: Uint8Array;
@@ -744,9 +747,11 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     return after(local(), settle);
   };
 
-  /** The resolved key of `path` for a mutation the holder may decide, or DELEGATE; `crossed`, the names its walk looked up. */
-  const keyFor = (path: RuntimeFsPath, follow: boolean, crossed?: string[]): string | Delegate | Promise<string | Delegate> =>
-    after(resolve(path, follow, false, crossed), (key) => (typeof key === 'string' && key !== '' ? key : DELEGATE));
+  /** `path`'s walk for a mutation (the key it resolves to, and every name crossed to it), or DELEGATE. */
+  const walkFor = (path: RuntimeFsPath, follow: boolean): Walk | Delegate | Promise<Walk | Delegate> => {
+    const crossed: string[] = [];
+    return after(resolve(path, follow, false, crossed), (key) => (typeof key === 'string' && key !== '' ? { key, crossed } : DELEGATE));
+  };
 
   /**
    * Whether the holder may be asked to decide a change at `key` on its
@@ -756,8 +761,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * session resolves the call. Where it does not, the holder declines it
    * anyway, counting it toward taking the subtree.
    */
-  const decidable = (key: string, ...walks: readonly string[][]): boolean => holder!.client.held(key) === undefined
-    || walks.every((crossed) => crossed.every((name) => holder!.client.guards(name)));
+  const decidable = (key: string, ...walks: Walk[]): boolean => holder!.client.held(key) === undefined
+    || walks.every((walk) => walk.crossed.every((name) => holder!.client.guards(name)));
 
   /** The authority, for a call that may change what the store holds: the barrier is owed once it returns. */
   const changing = <T>(name: string, call: () => T | Promise<T>): T | Promise<T> => {
@@ -984,9 +989,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     }
     if (!readOnly && holder !== null) {
       // A file made or emptied in a subtree this process holds is decided here.
-      const crossed: string[] = [];
-      const local = decide<RuntimeOpenedFile>('open', () => after(keyFor(path, true, crossed), (key) => (key === DELEGATE || !decidable(key, crossed) ? DELEGATE
-        : after(holder!.open(key, typeof path === 'string' ? path : path.path, flags), (handle) => (handle === undefined ? DELEGATE : heldOpen(handle))))));
+      const local = decide<RuntimeOpenedFile>('open', () => after(walkFor(path, true), (walk) => (walk === DELEGATE || !decidable(walk.key, walk) ? DELEGATE
+        : after(holder!.open(walk.key, typeof path === 'string' ? path : path.path, flags), (handle) => (handle === undefined ? DELEGATE : heldOpen(handle))))));
       return after(local, (handle) => (handle === DELEGATE ? openOnSession(path, flags) : handle));
     }
     return openOnSession(path, flags);
@@ -1001,12 +1005,12 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       // place, or one on a mount is the session's descriptor.
       const through = (): RuntimeOpenedFile | Delegate | Promise<RuntimeOpenedFile | Delegate> => {
         if (holder === null || !store.ready() || flags.directory) return DELEGATE;
-        return after(keyFor(path, false), (key) => {
-          if (key === DELEGATE) return DELEGATE;
-          const there = entryAt(key);
+        return after(walkFor(path, false), (walk) => {
+          if (walk === DELEGATE) return DELEGATE;
+          const there = entryAt(walk.key);
           if (there === undefined || there?.type === 'directory') return DELEGATE;
           delegated('open');
-          return after(holder!.openThrough(key, typeof path === 'string' ? path : path.path, flags), (handle) => { owed = true; return heldOpen(handle); });
+          return after(holder!.openThrough(walk.key, typeof path === 'string' ? path : path.path, flags), (handle) => { owed = true; return heldOpen(handle); });
         });
       };
       return after(through(), (handle) => {
@@ -1258,14 +1262,14 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
   const pathOf = (path: RuntimeFsPath): string => (typeof path === 'string' ? path : path.path);
   /** Where the store places `path` (its directory resolved, the name itself not followed), current first; DELEGATE when it cannot say. */
-  const placedKey = (path: RuntimeFsPath): string | Delegate | Promise<string | Delegate> => {
+  const placedWalk = (path: RuntimeFsPath): Walk | Delegate | Promise<Walk | Delegate> => {
     if (holder === null || !store.ready()) return DELEGATE;
-    if (!owed) return keyFor(path, false);
+    if (!owed) return walkFor(path, false);
     counts.barriers++;
     return store.barrier().then((ok) => {
       if (!ok || !store.ready()) return DELEGATE;
       owed = false;
-      return keyFor(path, false);
+      return walkFor(path, false);
     });
   };
 
@@ -1275,12 +1279,11 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     if (holder === null || options?.recursive) return bySessionMkdir(path, options);
     const mode = options?.mode ?? 0o777;
     let named: string | undefined;
-    const crossed: string[] = [];
-    const local = decide<void>('mkdir', () => after(keyFor(path, false, crossed), (key) => {
-      if (key === DELEGATE) return DELEGATE;
-      named = key;
-      if (!decidable(key, crossed)) return DELEGATE;
-      return after(holder!.mkdir(key, pathOf(path), mode, options?.umask), (done) => (done ? undefined : DELEGATE));
+    const local = decide<void>('mkdir', () => after(walkFor(path, false), (walk) => {
+      if (walk === DELEGATE) return DELEGATE;
+      named = walk.key;
+      if (!decidable(walk.key, walk)) return DELEGATE;
+      return after(holder!.mkdir(walk.key, pathOf(path), mode, options?.umask), (done) => (done ? undefined : DELEGATE));
     }));
     return after(local, (done) => (done !== DELEGATE ? undefined
       : named !== undefined ? byClient('mkdir', { type: 'call', call: { call: 'mkdir', path: named, mode, ...(options?.umask === undefined ? {} : { umask: options.umask }) } }) : bySessionMkdir(path, options)));
@@ -1289,23 +1292,23 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   fs.unlink = (path) => {
     if (holder === null) return bySessionUnlink(path);
     let named: string | undefined;
-    const crossed: string[] = [];
-    const local = decide<void>('unlink', () => after(keyFor(path, false, crossed), (key) => {
-      if (key === DELEGATE) return DELEGATE;
-      named = key;
-      if (!decidable(key, crossed)) return DELEGATE;
-      return after(holder!.unlink(key, pathOf(path)), (done) => (done ? undefined : DELEGATE));
+    const local = decide<void>('unlink', () => after(walkFor(path, false), (walk) => {
+      if (walk === DELEGATE) return DELEGATE;
+      named = walk.key;
+      if (!decidable(walk.key, walk)) return DELEGATE;
+      return after(holder!.unlink(walk.key, pathOf(path)), (done) => (done ? undefined : DELEGATE));
     }));
     return after(local, (done) => (done !== DELEGATE ? undefined
       : named !== undefined ? byClient('unlink', { type: 'call', call: { call: 'unlink', path: named } }) : bySessionUnlink(path)));
   };
   /**
-   * The store's bytes of file `key`, where this view is the session's for
-   * all they depend on, as a held stat's is (ProcessFsClient.vouch at the
-   * view's cursor): every name the walk `crossed` vouched for, the file
-   * itself held. Undefined where the view cannot vouch for them.
+   * The store's bytes of the file `walk` reaches, where this view is the
+   * session's for all they depend on, as a held stat's is
+   * (ProcessFsClient.vouch at the view's cursor): every name the walk
+   * crossed vouched for, the file itself held. Undefined where the view
+   * cannot vouch for them.
    */
-  const vouchedContent = (key: string, crossed: readonly string[]): Uint8Array | undefined => {
+  const vouchedContent = ({ key, crossed }: Walk): Uint8Array | undefined => {
     const cursor = store.cursor();
     if (cursor === null || holder!.client.vouch(key, cursor) !== 'held') return undefined;
     if (!crossed.every((name) => holder!.client.vouch(name, cursor) !== undefined)) return undefined;
@@ -1318,12 +1321,10 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const bySessionCopy = fs.copyFile;
   fs.copyFile = (from, to, options) => {
     if (holder === null) return bySessionCopy(from, to, options);
-    const read: string[] = [];
-    const written: string[] = [];
-    const local = decide<void>('copyFile', () => after(keyFor(from, true, read), (source) => (source === DELEGATE ? DELEGATE
-      : after(keyFor(to, true, written), (target) => {
-        if (target === DELEGATE || !decidable(target, read, written)) return DELEGATE;
-        return holder!.copyFile(source, target, pathOf(to), vouchedContent(source, read), options?.keepMode === true) ? undefined : DELEGATE;
+    const local = decide<void>('copyFile', () => after(walkFor(from, true), (source) => (source === DELEGATE ? DELEGATE
+      : after(walkFor(to, true), (target) => {
+        if (target === DELEGATE || !decidable(target.key, source, target)) return DELEGATE;
+        return holder!.copyFile(source.key, target.key, pathOf(to), vouchedContent(source), options?.keepMode === true) ? undefined : DELEGATE;
       }))));
     return after(local, (done) => (done !== DELEGATE ? undefined : bySessionCopy(from, to, options)));
   };
@@ -1331,14 +1332,12 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   fs.rename = (from, to) => {
     if (holder === null) return bySessionRename(from, to);
     let names: [string, string] | undefined;
-    const moved: string[] = [];
-    const placed: string[] = [];
-    const local = decide<void>('rename', () => after(keyFor(from, false, moved), (source) => (source === DELEGATE ? DELEGATE
-      : after(keyFor(to, false, placed), (target) => {
+    const local = decide<void>('rename', () => after(walkFor(from, false), (source) => (source === DELEGATE ? DELEGATE
+      : after(walkFor(to, false), (target) => {
         if (target === DELEGATE) return DELEGATE;
-        names = [source, target];
-        if (!decidable(source, moved, placed)) return DELEGATE;
-        return after(holder!.rename(source, target, pathOf(from)), (done) => (done ? undefined : DELEGATE));
+        names = [source.key, target.key];
+        if (!decidable(source.key, source, target)) return DELEGATE;
+        return after(holder!.rename(source.key, target.key, pathOf(from)), (done) => (done ? undefined : DELEGATE));
       }))));
     return after(local, (done) => (done !== DELEGATE ? undefined
       : names !== undefined ? byClient('rename', { type: 'rename', from: names[0], to: names[1] }) : bySessionRename(from, to)));
@@ -1358,12 +1357,11 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         : typeof rest[0] === 'number' && typeof rest[1] === 'number' ? { atime: rest[0], mtime: rest[1] } : null;
       if (holder === null || attrs === null) return passed.call(fs, path, ...rest);
       let named: string | undefined;
-      const crossed: string[] = [];
-      const local = decide<void>(name, () => after(keyFor(path, true, crossed), (key) => {
-        if (key === DELEGATE) return DELEGATE;
-        named = key;
-        if (!decidable(key, crossed)) return DELEGATE;
-        return holder!.setattr(key, attrs) ? undefined : DELEGATE;
+      const local = decide<void>(name, () => after(walkFor(path, true), (walk) => {
+        if (walk === DELEGATE) return DELEGATE;
+        named = walk.key;
+        if (!decidable(walk.key, walk)) return DELEGATE;
+        return holder!.setattr(walk.key, attrs) ? undefined : DELEGATE;
       }));
       return after(local, (done) => {
         if (done !== DELEGATE) return undefined;
@@ -1377,8 +1375,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const byName = <A extends unknown[]>(name: 'rmdir' | 'symlink', passed: (...args: A) => Awaitable<void>, pathAt: number, op: (key: string, args: A) => ProcessFsOp) =>
     (...args: A): Awaitable<void> => {
       if (holder === null) return passed(...args);
-      const placed = placedKey(args[pathAt] as RuntimeFsPath);
-      return after(placed, (key) => (key === DELEGATE ? passed(...args) : byClient(name, op(key, args))));
+      const placed = placedWalk(args[pathAt] as RuntimeFsPath);
+      return after(placed, (walk) => (walk === DELEGATE ? passed(...args) : byClient(name, op(walk.key, args))));
     };
   const bySessionRmdir = fs.rmdir;
   fs.rmdir = byName('rmdir', (path: RuntimeFsPath) => bySessionRmdir(path), 0, (key) => ({ type: 'call', call: { call: 'rmdir', path: key } }));
