@@ -99,7 +99,8 @@ async function same(label) {
 try {
   const cloned = await realGit(work, ['clone', '-q', `${server.url}/repo.git`, host]);
   assert.equal(cloned.code, 0, cloned.stderr);
-  const ourClone = await session.git('/home/user', ['clone', '-q', `${server.url}/repo.git`, ours]);
+  // Host git's clone is the whole history: ours takes --no-shallow for it.
+  const ourClone = await session.git('/home/user', ['clone', '-q', '--no-shallow', `${server.url}/repo.git`, ours]);
   assert.equal(ourClone.code, 0, ourClone.stderr);
   await same('clone');
 
