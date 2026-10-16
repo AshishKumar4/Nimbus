@@ -14,8 +14,8 @@
 //
 // External dep: tcpbin.com:4242 (same as B7 socket probes).
 
-import { outputLines } from '../_driver.mjs';
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/poll-socket-read-ready', { dir: '/home/user/sb', fixture: 'poll-socket-read-ready', as: 'ps.wasm' });
 const { t } = probe;

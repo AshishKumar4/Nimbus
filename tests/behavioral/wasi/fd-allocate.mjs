@@ -9,8 +9,8 @@
 // and checks size == 16. Prints '1' on match. Pre-B4 returned ENOSYS → no
 // size change → '0'.
 
-import { outputLines } from '../_driver.mjs';
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/fd-allocate', { dir: '/home/user/sb', fixture: 'fd-allocate', as: 'all.wasm' });
 const { t } = probe;

@@ -5,7 +5,8 @@
 // the program sees its own filename as argv[0]. We don't pass extra
 // args here, so argc should be 1 → output "1\n".
 
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/args', { dir: '/home/user/wasi', fixture: 'args', as: 'args.wasm' });
 const { t } = probe;

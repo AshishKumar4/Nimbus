@@ -9,10 +9,7 @@
 //   - a server that ended stays ended: a request to the preview path or its
 //     port does not start it again.
 
-import {
-  BASE, Terminal, mintSession, deleteSession, makeAsserter, heredocCommand,
-  fetchPreview, fetchPort,
-} from '../../_driver.mjs';
+import { BASE, Terminal, mintSession, deleteSession, makeAsserter, heredocCommand, fetchPreview, fetchPort, outputLines } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('preview/new/real-vite-lifecycle');
@@ -48,8 +45,8 @@ try {
   };
   const servers = async () => {
     const ps = await terminal.run('ps', 10_000);
-    return ps.output.split('\n').filter((l) => l.includes('vite (real,'))
-      .map((l) => { const [pid, status] = l.trim().split(/\s+/); return { pid: Number(pid), status }; });
+    return outputLines(ps.output).filter((l) => l.includes('vite (real,'))
+      .map((l) => { const [pid, status] = l.split(/\s+/); return { pid: Number(pid), status }; });
   };
   const statusOf = async (pid) => (await servers()).find((s) => s.pid === pid)?.status;
   const start = async () => {

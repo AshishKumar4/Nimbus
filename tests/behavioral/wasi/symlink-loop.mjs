@@ -13,8 +13,8 @@
 // Runtime-behavioral: pre-B3 path_open would either ENOSYS the symlink
 // or (worse) infinite-loop. ELOOP is the spec-mandated response.
 
-import { outputLines } from '../_driver.mjs';
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/symlink-loop', { dir: '/home/user/sb', fixture: 'symlink-loop', as: 'loop.wasm' });
 const { t } = probe;

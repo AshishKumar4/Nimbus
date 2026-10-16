@@ -10,7 +10,7 @@
 // 128 bytes so each LEB128 length is one byte < 0x80; opcodes and indices
 // are in the ASCII range too.
 
-import { stripAnsi } from '../_driver.mjs';
+import { tailLines } from '../_driver.mjs';
 
 /**
  * 70-byte AssemblyScript-compiled add(i32,i32) → i32, with a name section.
@@ -44,6 +44,6 @@ export function writeWasm(t, name, b64) {
 /** Run `cmd` and match a single-integer line `expected` in the last six lines. */
 export async function runFor(t, cmd, expected) {
   const r = await t.run(cmd, 60_000);
-  const tail = stripAnsi(r.output).split(/\r?\n/).slice(-6).join('\n');
+  const tail = tailLines(r.output, 6);
   return { cmd, matched: new RegExp(`^\\s*${expected}\\s*$`, 'm').test(tail), tail };
 }

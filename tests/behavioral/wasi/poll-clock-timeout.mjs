@@ -12,8 +12,8 @@
 // sleep/select/poll based program failed at the syscall boundary. This
 // probe validates the JSPI-wrapped setTimeout deadline path works on prod.
 
-import { outputLines } from '../_driver.mjs';
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/poll-clock-timeout', { dir: '/home/user/sb', fixture: 'poll-clock-timeout', as: 'pc.wasm' });
 const { t } = probe;

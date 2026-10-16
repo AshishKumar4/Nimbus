@@ -9,8 +9,8 @@
 // Fixture: creates "tf2.dat", calls path_filestat_set_times(_, 1, …, 8),
 // reads back via path_filestat_get, prints '1' if mtime > 0 else '0'.
 
-import { outputLines } from '../_driver.mjs';
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/filestat-set-times-path', { dir: '/home/user/sb', fixture: 'fst-path', as: 'fst-p.wasm' });
 const { t } = probe;

@@ -8,8 +8,8 @@
 // Note: an empty directory still yields synthetic "." / ".." entries from
 // most WASI impls, so bufused > 0 is expected.
 
-import { outputLines } from '../_driver.mjs';
-import { openWasiProbe, tailLines } from '../wasi/_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from '../wasi/_harness.mjs';
 
 const probe = await openWasiProbe('wasi-files/mkdir-readdir', { dir: '/home/user/w2', fixture: 'mkdir-readdir', as: 'mkr.wasm' });
 const { t } = probe;

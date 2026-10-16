@@ -14,8 +14,8 @@
 // half-close vs full-close, (2) the readable side still functions
 // post-shutdown.
 
-import { outputLines } from '../_driver.mjs';
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/sock-shutdown-write', { dir: '/home/user/sb', fixture: 'sock-shutdown-write', as: 'ss.wasm' });
 const { t } = probe;

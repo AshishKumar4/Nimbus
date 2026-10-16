@@ -5,8 +5,8 @@
 // probe to proc-raise-sigabrt: validates the encoding holds for multiple
 // signals (not hardcoded for SIGABRT).
 
-import { outputLines } from '../_driver.mjs';
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/proc-raise-sigterm', { dir: '/home/user/sb', fixture: 'proc-raise-sigterm', as: 'prt.wasm' });
 const { t } = probe;

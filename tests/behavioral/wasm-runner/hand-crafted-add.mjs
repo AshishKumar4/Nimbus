@@ -21,7 +21,7 @@
 // (run inside Node, not workerd, where instantiate(bytes) is allowed).
 // 70 bytes including the `name` custom section.
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, sleep, stripAnsi, BASE, tailLines } from '../_driver.mjs';
 import { ADD_WASM_B64, writeWasm } from './_fixtures.mjs';
 
 const sid = await mintSession();
@@ -46,13 +46,13 @@ const fixtureOk = /\badd\.wasm\b/.test(stripAnsi(lsResult.output));
 // ── A: --version smoke ──
 const versionResult = await t.run('wasm-runner --version', 15_000);
 const versionOut = stripAnsi(versionResult.output);
-const versionOk = /\b\d+\.\d+\.\d+\b/.test(versionOut.split(/\r?\n/).slice(-3).join('\n'));
+const versionOk = /\b\d+\.\d+\.\d+\b/.test(tailLines(versionOut, 3));
 
 // ── B: add(3, 4) → 7 ──
 const addResult = await t.run('wasm-runner add.wasm add 3 4', 60_000);
 const addOut = stripAnsi(addResult.output);
 // The literal "7" must appear AFTER the user's command echo (last 4 lines).
-const tail = addOut.split(/\r?\n/).slice(-6).join('\n');
+const tail = tailLines(addOut, 6);
 const addOk = /^\s*7\s*$/m.test(tail) && !/\berror\b/i.test(tail.toLowerCase());
 
 // ── C: ps shows wasm-runner row ──

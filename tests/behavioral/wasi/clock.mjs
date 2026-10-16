@@ -3,7 +3,8 @@
 // return errno=0 (ESUCCESS). Fixture writes ('0' + errno) + '\n', so a
 // successful call produces "0\n".
 
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/clock', { dir: '/home/user/wasi', fixture: 'clock', as: 'clock.wasm' });
 const { t } = probe;

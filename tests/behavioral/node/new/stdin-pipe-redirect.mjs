@@ -14,7 +14,7 @@
 //   however slow its writer, and gets all of a `< file`, which is the file
 //   itself.
 
-import { BASE, makeAsserter, mintSession, deleteSession, Terminal, writeFileViaShell, fetchPort, sleep } from '../../_driver.mjs';
+import { BASE, makeAsserter, mintSession, deleteSession, Terminal, writeFileViaShell, fetchPort, sleep, outputLines } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -31,7 +31,7 @@ const SCRIPTS = {
 const sid = await mintSession();
 console.log(`SID: ${sid}`);
 const t = new Terminal(sid);
-const line = (out, label) => (out.split(/\r?\n/).find((l) => l.startsWith(label + ' ')) ?? '').trim();
+const line = (out, label) => outputLines(out).find((l) => l.startsWith(label + ' ')) ?? '';
 try {
   await t.connect();
   await t.waitForPrompt(60_000);

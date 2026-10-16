@@ -15,8 +15,8 @@
 // signal info). Modern wasi-libc's abort()→raise(SIGABRT) chain now
 // surfaces the right status to the shell.
 
-import { outputLines } from '../_driver.mjs';
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/proc-raise-sigabrt', { dir: '/home/user/sb', fixture: 'proc-raise-sigabrt', as: 'pra.wasm' });
 const { t } = probe;

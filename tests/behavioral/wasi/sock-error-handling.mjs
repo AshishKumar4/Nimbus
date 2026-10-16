@@ -18,8 +18,8 @@
 // runtime-policy-rejected with a different error path. ".invalid" is
 // the cleanest "user-side bad input" check.
 
-import { outputLines } from '../_driver.mjs';
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/sock-error-handling', { dir: '/home/user/sb', fixture: 'sock-error-handling', as: 'se.wasm' });
 const { t } = probe;

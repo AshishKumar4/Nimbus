@@ -8,8 +8,8 @@
 // Fixture: creates "p.dat", subscribes to FD_READ on its fd, asserts
 // poll returns nev=1 AND event.type==1.
 
-import { outputLines } from '../_driver.mjs';
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/poll-file-ready', { dir: '/home/user/sb', fixture: 'poll-file-ready', as: 'pf.wasm' });
 const { t } = probe;

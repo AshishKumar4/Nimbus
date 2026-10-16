@@ -7,8 +7,8 @@
 // we assert. The '0' character would mean envc=0 which is the only fail
 // state we care about for this probe.
 
-import { outputLines } from '../_driver.mjs';
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/env', { dir: '/home/user/wasi', fixture: 'env', as: 'env.wasm' });
 const { t } = probe;

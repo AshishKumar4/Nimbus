@@ -10,8 +10,8 @@
 // widen to rb=~0, ri=~0. Expects errno 76 = ENOTCAPABLE. Prints
 // '0' + (errno%10) + '\\n' = '6\\n'.
 
-import { outputLines } from '../_driver.mjs';
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/fdstat-rights-no-widen', { dir: '/home/user/sb', fixture: 'fdstat-rights-no-widen', as: 'fsr2.wasm' });
 const { t } = probe;

@@ -13,8 +13,8 @@
 // program would see this stat field; pre-B2 every touch was a silent
 // no-op. Now mtime advances.
 
-import { outputLines } from '../_driver.mjs';
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/filestat-set-times-fd', { dir: '/home/user/sb', fixture: 'fst-fd', as: 'fst.wasm' });
 const { t } = probe;

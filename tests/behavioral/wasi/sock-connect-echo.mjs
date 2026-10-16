@@ -20,7 +20,8 @@
 // service is down at probe time, this probe failing's — see
 // alternate endpoints (gopher.floodgap.com:70 is a documented fallback).
 
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/sock-connect-echo', { dir: '/home/user/sb', fixture: 'sock-connect-echo', as: 'sc.wasm' });
 const { t } = probe;

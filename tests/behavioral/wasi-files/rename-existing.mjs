@@ -6,8 +6,8 @@
 // reads "b" back and echoes it. With the W-3 fix the readback shows "A\n";
 // without the fix, path_rename either errors or "b" still reads "B\n".
 
-import { outputLines } from '../_driver.mjs';
-import { openWasiProbe, tailLines } from '../wasi/_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from '../wasi/_harness.mjs';
 
 const probe = await openWasiProbe('wasi-files/rename-existing', { dir: '/home/user/w2', fixture: 'rename-existing', as: 're.wasm' });
 const { t } = probe;

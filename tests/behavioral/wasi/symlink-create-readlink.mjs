@@ -14,8 +14,8 @@
 // Runtime-behavioral: pre-B3 path_symlink/readlink returned ENOSYS so
 // any user program (git, npm linking node_modules/.bin/*) crashed.
 
-import { outputLines } from '../_driver.mjs';
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/symlink-create-readlink', { dir: '/home/user/sb', fixture: 'symlink-create-readlink', as: 'sym.wasm' });
 const { t } = probe;

@@ -5,8 +5,8 @@
 // path_filestat_get and prints ('0' + (size%10)) + '\n'. With size=13,
 // expected stdout = "3\n".
 
-import { outputLines } from '../_driver.mjs';
-import { openWasiProbe, tailLines } from '../wasi/_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from '../wasi/_harness.mjs';
 
 const probe = await openWasiProbe('wasi-files/filestat', { dir: '/home/user/w2', fixture: 'filestat', as: 'fs.wasm' });
 const { t } = probe;

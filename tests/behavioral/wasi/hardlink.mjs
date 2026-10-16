@@ -9,8 +9,8 @@
 // create "dst", then path_filestat_get("dst") expects size=1. Prints
 // '1' on match.
 
-import { outputLines } from '../_driver.mjs';
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/hardlink', { dir: '/home/user/sb', fixture: 'hardlink', as: 'hl.wasm' });
 const { t } = probe;

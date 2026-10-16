@@ -17,8 +17,8 @@
 // Runtime-behavioral: validates the multi-subscription drain logic
 // (Promise.race winner + microtask-sentinel probe of others).
 
-import { outputLines } from '../_driver.mjs';
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/poll-multi-mixed', { dir: '/home/user/sb', fixture: 'poll-multi-mixed', as: 'pm.wasm' });
 const { t } = probe;

@@ -10,8 +10,8 @@
 // fd_fdstat_get, prints '1' if BOTH match exactly. Pre-B6 the shim
 // returned a hardcoded 0x3FFFFFFF mask regardless of narrowing → '0'.
 
-import { outputLines } from '../_driver.mjs';
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/fdstat-set-rights', { dir: '/home/user/sb', fixture: 'fdstat-set-rights', as: 'fsr.wasm' });
 const { t } = probe;
