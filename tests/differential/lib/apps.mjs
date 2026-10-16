@@ -27,16 +27,17 @@ function sh(cwd, command) {
  */
 export async function page(port, path, marker, deadlineMs = 120_000) {
   const start = performance.now();
-  let last = 'no request answered';
+  let answered = null;
   for (let attempts = 1; ; attempts++) {
     const remaining = deadlineMs - (performance.now() - start);
-    if (remaining <= 0) throw new Error(`no page with ${marker} at ${path} within ${deadlineMs} ms (${attempts - 1} requests): ${last}`);
+    if (remaining <= 0) throw new Error(`no page with ${marker} at ${path} within ${deadlineMs} ms (${attempts - 1} requests): ${answered ?? 'no request was sent'}`);
     const sent = performance.now();
     const [status, body] = await fetch(`http://127.0.0.1:${port}${path}`, { signal: AbortSignal.timeout(remaining) })
       .then(async (response) => [response.status, await response.text()], (error) => [0, error.message]);
     const latencyMs = performance.now() - sent;
     if (status === 200 && body.includes(marker)) return { body, latencyMs, readyMs: performance.now() - start, attempts };
-    last = `${status} ${body.slice(0, 300)}`;
+    // What the server said outlives a request the deadline cut short.
+    if (status !== 0 || answered === null) answered = `${status} ${body.slice(0, 300)}`;
     await sleep(Math.min(500, Math.max(0, deadlineMs - (performance.now() - start))));
   }
 }
