@@ -429,6 +429,8 @@ realm.on('beforeExit', () => {
     void outputSettled(postedOutput);
     return;
   }
+  // No listener: nothing is told, and nothing is settled for it.
+  if (programProcess.listenerCount('beforeExit') === 0) return;
   const after = postedOutput;
   post({ type: 'settle-mark', after });
   try {
