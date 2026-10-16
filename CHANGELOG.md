@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `gem install` and `bundle install` hold an exact version
+  requirement to the request's other requirements and to the pure-Ruby
+  platform, as they hold any other. `gem "p", "= 1.0.0", "< 1.0.0"` now
+  fails with "no ruby platform version of p satisfies = 1.0.0, < 1.0.0",
+  and an exact version built only for another platform is refused. Before,
+  the first `=` requirement installed that version whatever else the
+  request said.
 - Fixed: a portable workspace's `node` reads its command line as the
   hosted `node` does (Node's own parser, NODE_OPTIONS first), and finds its
   script the same way. `node .` runs the package's `main`, and `node start`
