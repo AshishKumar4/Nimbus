@@ -97,6 +97,9 @@ const {
   readState,
   requireAccountPin,
   TargetNotReadyError,
+  throwawayName,
+  throwawayStateDir,
+  throwawayStatePath,
   waitForTarget,
   withSecretsFile,
   wrangle,
@@ -108,10 +111,8 @@ const { uploadConfig } = await import('../../scripts/ci/lib/release.mjs');
 const PROBE_APP = join(ROOT, 'apps', 'probe');
 /** Machine state: every Preview this machine deleted, until its hostname stops answering. */
 const DELETED_PATH = join(MACHINE_STATE_DIR, 'deleted-previews.json');
-const STATE_DIR = join(ROOT, '.wrangler', 'throwaway-targets');
+const STATE_DIR = throwawayStateDir(ROOT);
 
-/** Throwaways are always `<prefix><suffix>` so a stray one is obvious. */
-const NAME_PREFIX = 'nimbus-tw-';
 const DEFAULT_TTL_MS = 3 * 60 * 60 * 1000;
 
 /**
@@ -162,7 +163,7 @@ async function up() {
   }
   const bundle = uploadConfig(flags.bundle, 'apps/probe', { root: ROOT, preview: true, log });
   const account = requireAccountPin();
-  const name = flags.name ? qualify(flags.name) : `${NAME_PREFIX}${randomSuffix()}`;
+  const name = throwawayName(flags.name || randomSuffix());
   const preview = previewName(name);
 
   // Redeploying a throwaway under a name it already has is routine — a
@@ -489,7 +490,7 @@ async function waitForHostnameGone(base) {
 // ── State ────────────────────────────────────────────────────────────
 
 function statePath(name) {
-  return join(STATE_DIR, `${name}.json`);
+  return throwawayStatePath(ROOT, name);
 }
 
 function requireState(name) {
@@ -507,7 +508,7 @@ function listStateNames() {
 }
 
 function resolveName() {
-  if (flags.name) return qualify(flags.name);
+  if (flags.name) return throwawayName(flags.name);
   const names = listStateNames();
   if (names.length === 1) return names[0];
   if (names.length === 0) throw new Error('no throwaway target recorded — run `up` first');
@@ -516,9 +517,6 @@ function resolveName() {
 
 // ── Small helpers ────────────────────────────────────────────────────
 
-function qualify(name) {
-  return name.startsWith(NAME_PREFIX) ? name : `${NAME_PREFIX}${name}`;
-}
 
 function randomSuffix() {
   return crypto.randomUUID().slice(0, 8);

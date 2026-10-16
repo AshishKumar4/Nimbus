@@ -182,7 +182,11 @@ try {
     const up = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'up', '--name', flags.deploy, '--bundle', releases[sha]], { cwd: repo, stdio: ['ignore', 'ignore', 'inherit'] });
     if (up.status !== 0) throw new Error(`the upload of the release to ${flags.deploy} failed (exit ${up.status}); the release is in ${releases[sha]}`);
   }
-  Object.assign(expected, await deployments());
+  // A target this run uploaded must serve that upload (its record's versionId); one it did not, what it serves now.
+  if (throwaway !== undefined) {
+    const { readState, throwawayStatePath } = await import('../../tests/behavioral/_deploy-target.mjs');
+    expected[`target ${throwaway}`] = flags.deploy ? readState(throwawayStatePath(repo, throwaway))?.versionId : (await deployments())[`target ${throwaway}`];
+  }
   if (baseline) {
     console.error(`remote-probes: ${paired.join(', ')} graded against ${baseline.slice(0, 12)}${baseline === sha ? ' (the candidate itself)' : ''}`);
     arms = pairedPreviews({ repo });

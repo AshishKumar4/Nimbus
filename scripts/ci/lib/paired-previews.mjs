@@ -78,6 +78,8 @@ export function pairedPreviews({ repo, log = (line) => console.error(line) }) {
      * two checkouts at once; every upload settles before a failure is thrown.
      */
     async standUp({ baseline, candidate, releases }) {
+      // Imported once remote-probes has checked the install: the record path lives beside the deploy code.
+      const { readState, throwawayStatePath } = await import('../../../tests/behavioral/_deploy-target.mjs');
       const commit = { a1: baseline, a2: baseline, b: candidate };
       const groups = new Map();
       for (const arm of ARMS) {
@@ -90,7 +92,8 @@ export function pairedPreviews({ repo, log = (line) => console.error(line) }) {
           previews.push(arms[arm]);
           log(`paired: ${arm} is ${commit[arm].slice(0, 12)} on throwaway ${arms[arm].name}`);
           await run(arms[arm].checkout, 'bun', [...throwaway(['up', '--bundle', releases[commit[arm]]], arm)]);
-          receipts[arm] = await version(arm);
+          receipts[arm] = readState(throwawayStatePath(arms[arm].checkout, arms[arm].name))?.versionId;
+          if (!receipts[arm]) throw new Error(`${arms[arm].name}'s upload recorded no deployment in ${arms[arm].checkout}`);
         }
       }));
       for (const outcome of settled) if (outcome.status === 'rejected') throw outcome.reason;
@@ -100,7 +103,7 @@ export function pairedPreviews({ repo, log = (line) => console.error(line) }) {
       return Object.fromEntries(await Promise.all(ARMS.map(async (arm) => [arm,
         JSON.parse(await run(arms[arm].checkout, 'bun', [...throwaway(['token', '--json', '--ttl-ms', String(ttlMs)], arm)]))])));
     },
-    /** The deployment each arm served once its upload was ready: what every job must find. */
+    /** The deployment each arm's upload made (its record's versionId): what every job must find. */
     receipts() {
       return { ...receipts };
     },
@@ -108,13 +111,22 @@ export function pairedPreviews({ repo, log = (line) => console.error(line) }) {
     async versions() {
       return Object.fromEntries(await Promise.all(ARMS.map(async (arm) => [arm, await version(arm)])));
     },
-    /** End every child still running (an upload, an install) and its own children, and wait for them, at most 30 s. */
+    /**
+     * End every child still running (an upload, an install) and its own
+     * children: SIGTERM, then after 30 s SIGKILL, and wait for each to end,
+     * so teardown never deletes what a writer is still making.
+     */
     async halt() {
-      const ended = [...running].map((child) => new Promise((resolve) => {
-        child.once('close', resolve);
-        try { process.kill(-child.pid, 'SIGTERM'); } catch { resolve(); }
-      }));
-      await Promise.race([Promise.all(ended), new Promise((resolve) => setTimeout(resolve, 30_000))]);
+      const signal = (kill) => {
+        for (const child of running) {
+          try { process.kill(-child.pid, kill); } catch { /* its group has already ended */ }
+        }
+      };
+      const ended = Promise.all([...running].map((child) => new Promise((resolve) => child.once('close', resolve))));
+      signal('SIGTERM');
+      const grace = setTimeout(() => signal('SIGKILL'), 30_000);
+      await ended;
+      clearTimeout(grace);
     },
     /** Delete every Preview and worktree made here, once; returns what could not be, each with the command that finishes it. */
     teardown() {
