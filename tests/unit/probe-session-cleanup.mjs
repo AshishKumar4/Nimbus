@@ -9,6 +9,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { retryAfterMs, sessionOutcomes } from '../behavioral/_ledger.mjs';
+import { mintedSessions } from '../../scripts/ci/lib/reset-attribution.mjs';
 
 const DRIVER = join(dirname(fileURLToPath(import.meta.url)), '..', 'behavioral', '_driver.mjs');
 const SCRATCH = mkdtempSync(join(tmpdir(), 'probe-session-cleanup-'));
@@ -229,6 +230,47 @@ console.log('  [6] only the destroy result confirms a deletion');
     assert.equal(retryAfterMs(bad, now), null, `ignored: ${JSON.stringify(bad)}`);
   }
   console.log('  [8] a 503 at exit is tried again, after Retry-After, at most 4 times; a leak only if every try fails');
+}
+
+// [9] A paired probe mints on targets of its own (_paired.mjs): each session
+// is asked for, authenticated and deleted on the target it was minted on, and
+// a failure names that target, which remote-probes reads to attribute a reset.
+{
+  const otherDeletes = [];
+  const other = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const { pathname } = new URL(req.url);
+      if (req.method === 'POST' && pathname === '/new') {
+        if (req.headers.get('authorization') !== 'Bearer arm-token') return new Response('unauthorized', { status: 401 });
+        return new Response(null, { status: 302, headers: { Location: '/s/arm-1/' } });
+      }
+      if (req.method === 'DELETE' && pathname === '/s/arm-1/') {
+        otherDeletes.push(req.headers.get('authorization'));
+        return Response.json({ ok: true, result: { ok: true, killed: 0, destroyedAt: 1234, reason: null } });
+      }
+      return new Response('not found', { status: 404 });
+    },
+  });
+  const otherBase = `http://127.0.0.1:${other.port}`;
+  const failed = await probe('two-targets', `
+    import { createProbeTarget } from ${JSON.stringify(join(dirname(DRIVER), '_session-transport.mjs'))};
+    const arm = createProbeTarget({ base: ${JSON.stringify(otherBase)}, token: 'arm-token' });
+    const a = await mintSession(arm);
+    if (requestHeaders({}, a).Authorization !== 'Bearer arm-token') throw Error('the arm session lost its target credential');
+    if (wsHeaders(a).headers.Authorization !== 'Bearer arm-token') throw Error('the arm session lost its socket credential');
+    const b = await mintSession();
+    if (requestHeaders({}, b).Authorization !== 'Bearer probe-token') throw Error('the suite session took the arm credential');
+    throw new Error('probe failed');
+  `);
+  other.stop(true);
+  assert.equal(failed.code, 1, failed.stderr);
+  assert.match(failed.stderr, /probe failed/);
+  assert.deepEqual(otherDeletes, ['Bearer arm-token'], 'the exit hook deletes the arm session on its own target');
+  assert.deepEqual(failed.deletes, ['fixture-1 Bearer probe-token']);
+  assert.deepEqual(mintedSessions(failed.stderr, `http://127.0.0.1:${target.port}`).map(({ sid, base }) => [sid, base]),
+    [['arm-1', otherBase], ['fixture-1', `http://127.0.0.1:${target.port}`]]);
+  console.log('  [9] sessions minted on another target are authenticated, deleted and named on it');
 }
 
 target.stop(true);

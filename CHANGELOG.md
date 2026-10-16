@@ -5,6 +5,25 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: the perf probes `perf-regression/cold-start`, `first-paint` and
+  `install-warm` grade the candidate against a baseline measured in the
+  same run, not against a fixed bound. `remote-probes` stands up three
+  fresh throwaways for them: two of the baseline (`--baseline`, by default
+  the commit's merge-base with origin/main; the release matrix uses the
+  commit production serves) and one of the candidate. Each round measures
+  all three at once. A probe is red when the candidate's median paired
+  log-ratio is above 0 with 95% confidence and above the two baseline
+  arms' own spread. The fixed bounds failed 25, 4 and 21 of about 560 full
+  runs of unchanged main code, and passed a 1.5x slower cold start when its
+  one sample landed under 800 ms.
+- Changed: `remote-probes` attributes every red row that shows a 1006 close
+  or `E_NIMBUS_DO_OVERLOADED` from the platform's own record (Workers Logs
+  and trace exceptions, read on the workstation), by the exact error on the
+  session's object. A row whose sessions show only "Internal error in
+  Durable Object storage caused object to be reset" is rerun once, and the
+  rerun grades it; the verdict keeps both. Isolate memory resets, overloads
+  and the rest stay red, with their attribution printed. A throwaway target
+  redeployed during the run makes the run not graded.
 - Fixed: a portable workspace's `node` reads its command line as the
   hosted `node` does (Node's own parser, NODE_OPTIONS first), and finds its
   script the same way. `node .` runs the package's `main`, and `node start`

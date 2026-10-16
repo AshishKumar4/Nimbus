@@ -92,7 +92,8 @@ export function gradeMatrix(verdicts, deferred) {
         problems.push(`${task.task} was not graded (${task.outcome?.kind ?? 'no outcome'})`);
         continue;
       }
-      for (const row of task.rows) rows.push({ ...row, task: task.task });
+      // A row remote-probes regraded (only the platform storage reset turned it red) is graded by its rerun's task.
+      for (const row of task.rows) if (!row.regraded) rows.push({ ...row, task: task.task });
     }
   }
   for (const row of rows) {

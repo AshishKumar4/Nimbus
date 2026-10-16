@@ -381,6 +381,22 @@ again.
   job's environment. A task that starts too late for the token is not
   graded. No output contains the token. The suite runs in 4 parts of 4
   probes at a time, with Chromium, and checks the session ledger.
+- The perf probes in `PAIRED_PROBES` (`tests/behavioral/_paired.mjs`:
+  cold-start, first-paint, install-warm) grade the candidate against a
+  baseline measured in the same run. When the selection has one,
+  `remote-probes` builds the baseline (`--baseline <commit>`, default the
+  merge-base with origin/main; `release.mjs staging` passes the commit
+  production serves) beside the candidate, stands up three fresh
+  throwaways (two of the baseline, one of the candidate), runs those probes
+  in a task of their own and deletes the throwaways at the end. Run by
+  hand without them, a paired probe exits 2.
+- A red row that shows a 1006 close or `E_NIMBUS_DO_OVERLOADED` is
+  attributed from Workers Logs and traces by the exact error on the
+  session's object (`scripts/ci/lib/reset-attribution.mjs`, with the
+  observability token in `~/.config/nimbus/cf-observability-token`). Only a
+  row whose sessions show "Internal error in Durable Object storage caused
+  object to be reset" alone is rerun, once; the rerun grades it. An isolate
+  memory reset is Nimbus's own memory and stays red.
 - `--deploy` builds the bundle in a container (the dist gate, then
   `wrangler deploy --dry-run`) and uploads it from this machine with your
   wrangler login. The upload is not a build. No Cloudflare credential goes

@@ -13,7 +13,8 @@
 //
 // The token is the target's, minted for this run with a lifetime bounded by
 // it: it is read from the environment, never argv, and every output this
-// writes has it replaced by [NIMBUS_PROBE_TOKEN]. --only and --skip are run-all's NIMBUS_PROBE_ONLY and
+// writes has it replaced by [NIMBUS_PROBE_TOKEN], as are the paired targets'
+// tokens (NIMBUS_PAIRED_TARGETS). --only and --skip are run-all's NIMBUS_PROBE_ONLY and
 // NIMBUS_PROBE_SKIP (an empty value selects nothing out); --part is run-all's.
 // Probes run CI-strict (--no-retry).
 //
@@ -44,7 +45,10 @@ function usage(why) {
 }
 
 const token = process.env.NIMBUS_PROBE_TOKEN ?? '';
-const scrub = (text) => (token ? text.replaceAll(token, '[NIMBUS_PROBE_TOKEN]') : text);
+// The paired perf probes' targets (tests/behavioral/_paired.mjs) carry tokens of their own.
+const paired = process.env.NIMBUS_PAIRED_TARGETS ? Object.values(JSON.parse(process.env.NIMBUS_PAIRED_TARGETS)).map((arm) => arm.token) : [];
+const secrets = [token, ...paired].filter(Boolean);
+const scrub = (text) => secrets.reduce((scrubbed, secret) => scrubbed.replaceAll(secret, '[NIMBUS_PROBE_TOKEN]'), text);
 const rows = [];
 const notGraded = (why) => {
   writeFileSync(flags.out, `${JSON.stringify({ base: flags.base ?? null, part: flags.part ?? null, rows: [...rows, { name: 'probes', exitCode: 2, seconds: 0, output: scrub(why) }] })}\n`);
@@ -59,7 +63,7 @@ const notGraded = (why) => {
  */
 function scrubbing(write) {
   let held = '';
-  const keep = Math.max(0, token.length - 1);
+  const keep = Math.max(0, ...secrets.map((secret) => secret.length - 1));
   return {
     push(text) {
       const whole = scrub(held + text);

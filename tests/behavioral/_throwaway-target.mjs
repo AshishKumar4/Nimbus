@@ -53,6 +53,7 @@
 //           (_deploy-target.mjs PROBE_TARGET_VARS), as staging is
 //   token   [--name <n>] [--ttl-ms <ms>] [--json]   → the token, or JSON {base, token}
 //   session [--name <n>] [--ttl-ms <ms>]   → JSON {base, sessionId, token}
+//   version [--name <n>]                   → the id of the deployment the Preview serves
 //   down    [--name <n>] | --all
 //   list    every Preview under the parent, and which ones this checkout holds
 //
@@ -139,7 +140,7 @@ const flags = parseFlags(rest);
  */
 const varOverrides = [...PROBE_TARGET_VARS, ...rest.flatMap((arg, i) => (arg === '--var' && rest[i + 1] ? ['--var', rest[i + 1]] : []))];
 
-const COMMANDS = { up, token, session, down, list };
+const COMMANDS = { up, token, session, version, down, list };
 const run = COMMANDS[command];
 if (!run) {
   console.error(`usage: bun tests/behavioral/_throwaway-target.mjs <${Object.keys(COMMANDS).join('|')}> [flags]`);
@@ -238,6 +239,15 @@ async function token() {
   const state = requireState(resolveName());
   const jwt = await mintProbeToken(state.secret, ttlMs());
   process.stdout.write(flags.json ? `${JSON.stringify({ base: state.base, token: jwt })}\n` : jwt);
+}
+
+/** The deployment the Preview serves now: remote-probes reads it before and after a run, and grades only a run it did not change under. */
+async function version() {
+  const state = requireState(resolveName());
+  const account = requireAccountPin();
+  const latest = await latestDeployment({ account, token: apiToken({ cwd: PROBE_APP, account }), preview: state.preview });
+  if (!latest?.id) throw new Error(`${state.name} serves no deployment`);
+  process.stdout.write(`${latest.id}\n`);
 }
 
 async function session() {

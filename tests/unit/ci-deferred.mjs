@@ -120,4 +120,14 @@ for (const code of [0, 1, 2]) {
 const mixed = gradeMatrix([verdict([row(detail.probe, 1, detailChecks('no resident process was launched: oxide')), ledger])], [exclusion, detail]);
 assert.equal(mixed.exitCode, 0);
 assert.deepEqual(mixed.applied.map(entry => entry.probe), [probe, detail.probe]);
+
+// A row only the platform storage reset turned red is graded by its rerun (remote-probes regrade), red or green.
+const reset = { ...row('clang/hello', 1), regraded: { task: 'regrade clang/hello #1', evidence: ['quiet-fox-0001: platform storage reset'] } };
+const regraded = (code) => gradeMatrix([{ tasks: [
+  { task: 'part 1', outcome: { kind: 'exited' }, rows: [reset, ledger] },
+  { task: 'regrade clang/hello #1', outcome: { kind: 'exited' }, rows: [row('clang/hello', code), ledger] },
+] }], []);
+assert.equal(regraded(0).exitCode, 0);
+assert.equal(regraded(1).exitCode, 1);
+assert.match(regraded(1).red.join('\n'), /regrade clang\/hello #1/);
 console.log('ci-deferred: structured completion, exact approvals, exclusions and fail-closed release grading');
