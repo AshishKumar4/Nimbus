@@ -63,6 +63,8 @@ import {
 } from '../facets/wasm-swap-registry.js';
 import { parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
 import { exactVersion } from '@nimbus-sh/core/_shared/npm-semver.js';
+import type { NpmCacheMode } from '@nimbus-sh/core/_shared/npm-cache-mode.js';
+import type { NpmInstallSpec } from '@nimbus-sh/core/substrate/lifo/commands/system/npm.js';
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 import type { BundlePoolProvider } from '../facets/prebundle-pool.js';
 import { Fanout, type FanoutRoute } from '@nimbus-sh/fabric/fanout.js';
@@ -168,47 +170,23 @@ interface FetchOutcome {
   filesWritten: number;
 }
 
-export interface NpmInstallOptions {
+/**
+ * What an install is asked: the command's spec (NpmInstallSpec), which the
+ * hosted port hands on whole, less what the port settles itself (where it
+ * installs, the global prefix, the log sink); and the principal, and what
+ * runs under the install's hold.
+ */
+export interface NpmInstallOptions extends Omit<NpmInstallSpec, 'projectDir' | 'packages' | 'global' | 'globalPrefix' | 'npmLog' | 'registry'> {
   /** Explicit packages (`npm install react`). */
   packages?: string[];
-  /** `--omit=dev` (`--production`): what only devDependencies reach is planned, not installed. */
-  production?: boolean;
-  /** `--omit=optional` / `--omit=peer`: likewise for what only optional, or only peer, dependencies reach. */
-  omitOptional?: boolean;
-  omitPeer?: boolean;
-  /** npm ci: install exactly the tree package-lock.json records. */
-  fromLockfile?: boolean;
-  /** The invoking process: authorizes the batch facet's writes. */
-  pid: number;
-  /** Its credential: what the project is read and written as. */
+  /** The invoking process's credential: what the project is read and written as. */
   cred: VfsCred;
   /** npm-protocol log sink (see --loglevel). */
   npmLog?: NpmLogEmitter;
-  /** Per-invocation progress: overrides the constructor's sink. */
-  onProgress?: (msg: string) => void;
   /** The command's NPM_REGISTRY; default registry.npmjs.org. */
   registry?: string;
-  /** `--save-dev` / `--save-optional`: where what is named is saved. */
-  saveDev?: boolean;
-  saveOptional?: boolean;
-  /** False for `--no-save`: package.json is left as it is. */
-  save?: boolean;
-  /** What a saved range starts with ('' for `--save-exact`); '^' when not given. */
-  savePrefix?: string;
-  /** `--force`: a peer conflict the project owns is a warning, and node's engine is not checked. */
-  force?: boolean;
-  /** `--engine-strict`: a package whose engines exclude this node or npm fails the install, which changes nothing. */
-  engineStrict?: boolean;
-  /** `--strict-peer-deps`: any peer conflict is ERESOLVE unless forced. */
-  strictPeerDeps?: boolean;
-  /** `--legacy-peer-deps`: peers are neither installed nor checked. */
-  legacyPeerDeps?: boolean;
-  /** `--prefer-dedupe`: one copy serves every edge it can, an older one included. */
-  preferDedupe?: boolean;
   /** A global prefix's install: npm's shallow layout, and only what is named is built and changed. */
   global?: boolean;
-  /** The command's: an install it stops before publication changes nothing; one waiting for the tree never starts. */
-  signal?: AbortSignal;
   /** Run under the install's hold, once it has installed; answers the bins it linked. */
   whileHeld?: (result: NpmInstallResult) => Promise<number>;
 }
@@ -385,8 +363,9 @@ export class NpmInstaller {
     const lockfile = this.cache.readLockfile(projDir);
     const { roots, named, devOnly, advised, manifest } = await this.buildRoots(projDir, project, opts, log);
     const omit = { dev: opts.production === true, optional: opts.omitOptional === true, peer: opts.omitPeer === true };
+    const cache = opts.cache ?? 'default';
     const engine = {
-      devOnly, advised, registry, omit,
+      devOnly, advised, registry, cache, omit,
       global: opts.global === true, force: opts.force === true, strictPeerDeps: opts.strictPeerDeps === true,
       legacyPeerDeps: opts.legacyPeerDeps === true, preferDedupe: opts.preferDedupe === true,
     };
@@ -406,7 +385,7 @@ export class NpmInstaller {
     let tree: PlannedTree;
     let usedLockfile = false;
     if (opts.fromLockfile) {
-      const locked = await this.treeFromPackageLock(network, projDir, project, log, npmLog, registry, opts.legacyPeerDeps === true);
+      const locked = await this.treeFromPackageLock(network, projDir, project, log, npmLog, registry, cache, opts.legacyPeerDeps === true);
       tree = await this.resolveTreeViaFanout(network, roots, locked.installed, log, npmLog, { ...engine, locked: locked.suspect ? 'suspect' : 'trusted' });
       if (tree.plan.lockMismatches.length > 0) {
         throw new Error(
@@ -566,8 +545,8 @@ export class NpmInstaller {
     if (toFetch.length > 0) {
       log(`Fetching ${toFetch.length} packages... (path: batch-facet)`);
       const batchResult = engineDir !== null
-        ? await this.fetchViaBatchFacet(toFetch, `${engineDir}/node_modules`, { engine: this.store.as(opts.cred), view }, opts.pid, log, npmLog)
-        : await this.fetchIntoMount(toFetch, nmDir, principal, log, npmLog);
+        ? await this.fetchViaBatchFacet(toFetch, `${engineDir}/node_modules`, { engine: this.store.as(opts.cred), view }, opts.pid, cache, log, npmLog)
+        : await this.fetchIntoMount(toFetch, nmDir, principal, cache, log, npmLog);
       totalFiles += batchResult.filesWritten;
       published.push(...batchResult.installed);
       for (const { placement, pkg } of batchResult.installed) installedAt.set(placement, `${pkg.name}@${pkg.version}`);
@@ -755,12 +734,15 @@ export class NpmInstaller {
       devOnly?: ReadonlySet<string>;
       advised?: Set<string>;
       registry?: string;
+      /** npm's cache mode for the packuments read. */
+      cache?: NpmCacheMode;
       /** What `--omit` leaves out is planned, not installed, and not announced. */
       omit?: OmitTypes;
     } = {},
   ): Promise<PlannedTree> {
     const t0 = Date.now();
     const registry = npmRegistryOrigin(opts.registry);
+    const cache = opts.cache ?? 'default';
     const devOnly = opts.devOnly ?? new Set<string>();
     // Policy advisories already announced — one `note:` line per name
     // per install, shared with applyW6Registry which runs first.
@@ -873,6 +855,7 @@ export class NpmInstaller {
               fetchTimeoutMs: 15_000,
               retries: 3,
               registry,
+              cache,
             };
             return { key: `${name}@${range}`, args: taskSpec };
           });
@@ -1056,6 +1039,8 @@ export class NpmInstaller {
      */
     reader: { engine: CredentialedVfs; view: ProcessView },
     pid: number,
+    /** npm's cache mode for the tarballs read (InstallBatchSpec.cache). */
+    cache: NpmCacheMode,
     log: (msg: string) => void,
     npmLog: NpmLogEmitter,
   ): Promise<FetchOutcome> {
@@ -1192,7 +1177,7 @@ export class NpmInstaller {
       // runs. Tests can predict placement via Fanout's
       // `peerSiblingId(key, peerCount)` helper.
       key: `shard-${shardIdx}`,
-      args: { packages: shardSpecs, concurrency: 3 } as InstallBatchSpec,
+      args: { packages: shardSpecs, concurrency: 3, ...(cache === 'default' ? {} : { cache }) } as InstallBatchSpec,
     }));
 
     try {
@@ -1339,6 +1324,7 @@ export class NpmInstaller {
     toFetch: PackagePlacement[],
     nmDir: string,
     principal: { pid: number; cred: VfsCred; view: ProcessView; tmp: string | null },
+    cache: NpmCacheMode,
     log: (msg: string) => void,
     npmLog: NpmLogEmitter,
   ): Promise<FetchOutcome> {
@@ -1352,7 +1338,7 @@ export class NpmInstaller {
     await withRecall(() => staging.mkdir(stage, { recursive: true }));
     this.placing.add(stage);
     try {
-      const result = await this.fetchViaBatchFacet(toFetch, `${stage}/node_modules`, { engine: staging, view }, principal.pid, log, npmLog);
+      const result = await this.fetchViaBatchFacet(toFetch, `${stage}/node_modules`, { engine: staging, view }, principal.pid, cache, log, npmLog);
       const installed = [...result.installed];
       const failed = [...result.failed];
       // What failed is not put on the mount: its staged files (part of a
@@ -1677,6 +1663,7 @@ export class NpmInstaller {
     log: (msg: string) => void,
     npmLog: NpmLogEmitter,
     registry: string,
+    cache: NpmCacheMode,
     legacyPeerDeps: boolean,
   ): Promise<{ installed: Array<InstalledPackage<ResolvedPackage>>; lockName: string; suspect: boolean }> {
     let lockName: string | undefined;
@@ -1779,7 +1766,7 @@ export class NpmInstaller {
     // package there, anything it brings below it, unless the lock already
     // placed that path.
     for (const { placement, folderName, spec } of swapPlacements) {
-      const swapped = await this.resolveTreeViaFanout(network, [{ name: folderName, range: spec, type: 'prod' }], [], log, npmLog, { registry });
+      const swapped = await this.resolveTreeViaFanout(network, [{ name: folderName, range: spec, type: 'prod' }], [], log, npmLog, { registry, cache });
       const parent = placement.includes('/node_modules/') ? parentPlacement(placement) : null;
       const rebase = (path: string) => (parent === null ? path : `${parent}/node_modules/${path}`);
       const failed = new Map(swapped.plan.failures.map((failure) => [failure.id, failure]));

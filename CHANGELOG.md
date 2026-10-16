@@ -5,6 +5,20 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Added: `npm install` and `npm ci` read packuments in npm's cache modes.
+  `--prefer-online` checks a cached packument with the registry however
+  fresh it is (a `304` keeps it). `--prefer-offline` uses any cached copy,
+  however old, and fetches only what is not cached. `--offline` uses any
+  cached copy and fails a package with none with npm's `ENOTCACHED` error,
+  without the network. Each is read from the command line, `npm_config_*`
+  or an `.npmrc`, as npm reads it, along with the deprecated
+  `--cache-max=0` and `--cache-min=9999`. Tarballs are read in the same
+  mode: `--prefer-online` downloads each, `--prefer-offline` takes the
+  cache's copy and downloads only one it lacks, and `--offline` downloads
+  none, failing one the cache lacks with `ENOTCACHED`.
+  Otherwise a cached packument is reused for 60 minutes, as before, and
+  one past that is checked against the shared cache's copy before the
+  registry.
 - Fixed: a session's own server sends its reason phrase as Node's server
   does. That is the phrase Node's `http.STATUS_CODES` gives the status
   ("unknown" for a status it does not name), or the phrase the handler set

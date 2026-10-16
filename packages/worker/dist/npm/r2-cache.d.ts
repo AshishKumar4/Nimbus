@@ -62,6 +62,7 @@
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { NPM_REGISTRY_ORIGIN, npmRegistryOrigin } from '@nimbus-sh/core/substrate/lifo/commands/system/npm.js';
 import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
+import { type NpmCacheMode } from '@nimbus-sh/core/_shared/npm-cache-mode.js';
 /** Schema version baked into every cache key. Bump to invalidate
  *  everything atomically (e.g. if the storage shape changes or a bug
  *  poisoned a class of keys).
@@ -112,11 +113,13 @@ export declare function packumentUrl(name: string, registry?: string): string;
  *  the R2 path and go straight to the network — they're the long tail
  *  for which W7 (streams over RPC) will close the gap. */
 export declare const MAX_R2_TARBALL_BYTES: number;
-/** How a packument is read: through the cache, or (`revalidate`) past it to the registry, however fresh the cached copy. */
+/** How a packument is read: through the cache in npm's mode (`cache`), or (`revalidate`) past it to the registry, however fresh the cached copy. */
 export interface PackumentReadOptions {
     retries?: number;
     timeoutMs?: number;
     registry?: string;
+    /** npm's cache mode (npm-cache-mode.ts); 'default' when absent. */
+    cache?: NpmCacheMode;
     /** The cached copy cannot answer what is asked: ask the registry (past its CDN) before saying nothing does. */
     revalidate?: boolean;
 }
@@ -321,21 +324,25 @@ export declare class R2CacheClient {
      *
      * Returns CachedPackument with `expired` set true when the entry's
      * customMetadata.expiresAt is in the past. Callers MUST honour
-     * `expired` — only treat as a hot hit when false. Stale-while-error
-     * is the only valid use of expired data.
+     * `expired`: only treat as a hot hit when false, unless npm's mode keeps
+     * to any copy (force-cache, only-if-cached).
      *
      * L2 (cache-and-scrub W-A): we wrap the R2 read in `caches.default`.
      * On hit, we read both the packument JSON and the absolute
      * `expiresAt` timestamp from the L2 entry's headers — the absolute
      * timestamp matters because L2 may serve a cached response near
      * the end of its TTL, and the caller's `expired` check still needs
-     * to fire correctly. On miss, we fall through to R2 and write back
-     * to L2 until the R2 entry's customMetadata.expiresAt
-     * (fillPackumentL2).
+     * to fire correctly. On a miss, or a hit past its time, we fall through
+     * to R2 and write back to L2 until the R2 entry's
+     * customMetadata.expiresAt (fillPackumentL2).
      */
     getPackument(name: string, registry?: string, 
     /** Also what a refetch is made conditional on (etag, stored), which an expired entry always carries. */
-    validators?: boolean): Promise<CachedPackument | null>;
+    validators?: boolean, 
+    /** 'colo': a stale colo copy answers as it is (npm's force-cache and only-if-cached keep to any copy), without reading R2. */
+    stale?: 'colo' | 'r2'): Promise<CachedPackument | null>;
+    /** R2's copy of a packument (getPackument's L3), the colo's filled with it while it is fresh; null where R2 has none. */
+    private getPackumentL3;
     /**
      * The colo copy of a packument, kept until `expiresAt`: the cache layer
      * drops it at its max-age, and the absolute time rides in a header so a

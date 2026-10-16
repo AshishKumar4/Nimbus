@@ -5,6 +5,10 @@
  */
 import type { NpmConfig } from './npm-config.js';
 import { parseNpmLogLevel, type NpmLogLevel } from './npm-log.js';
+import { npmCacheMode, type NpmCacheMode } from '../../../../_shared/npm-cache-mode.js';
+
+/** npm's options its cache mode is read from: `--offline`, `--prefer-offline`, `--prefer-online`, and the deprecated aliases of the latter two. */
+const CACHE_MODE_KEYS = ['offline', 'prefer-offline', 'prefer-online', 'cache-min', 'cache-max'] as const;
 
 export interface NpmInstallInvocation {
   packages: string[];
@@ -50,6 +54,8 @@ export interface NpmInstallInvocation {
   engineStrict: boolean;
   /** The registry npm's configuration names (`--registry`, npm_config_registry, an .npmrc); null where only npm's default does. */
   registry: string | null;
+  /** How the install's packuments are read: npm's cache mode (npm-cache-mode.ts) from its configuration. */
+  cache: NpmCacheMode;
   /** Options npm has that this npm does not implement, as npm ERR! lines: the install refuses them rather than ignore them. */
   unsupported: string[];
 }
@@ -107,6 +113,7 @@ export function npmInstallInvocation(config: NpmConfig): NpmInstallInvocation {
     savePrefix: flag('save-exact') ? '' : text('save-prefix') ?? '',
     engineStrict: flag('engine-strict'),
     registry: set('registry') ? text('registry') : null,
+    cache: npmCacheMode(config.flattened(CACHE_MODE_KEYS)),
     unsupported,
   };
 }

@@ -6,6 +6,7 @@ import { isNativeBinPath } from '../../../../runtime/os-contracts.js';
 import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
 import { pickPackumentVersion } from '../../../../_shared/npm-semver.js';
 import { parseRegistryRequest, splitPackageSpec } from '../../../../_shared/npm-spec.js';
+import { notCachedMessage } from '../../../../_shared/npm-cache-mode.js';
 import { canonicalTreePath, depthOf, holdTree, isOptional, manifestEdges, meets, namedPackages, packageJsonText, parentPlacement, placementName, projectRoots, readPackageJson, saveNamed, withoutDeclared, } from '../../../../_shared/npm-tree.js';
 import { planTree, requiredFailures } from '../../../../_shared/npm-arborist/plan.js';
 import { InstallJournal } from './npm-journal.js';
@@ -156,9 +157,13 @@ function encodePackageName(name) {
  * _shared/npm-spec.ts parseRegistryRequest, npm-semver.ts
  * pickPackumentVersion).
  */
-async function fetchPackageInfo(network, registry, name, version, signal) {
+async function fetchPackageInfo(network, registry, name, version, signal, 
+/** The shell keeps no packuments: under `--offline` none is read. */
+cache = 'default') {
     const request = parseRegistryRequest(name, version ?? '');
     const url = `${registry}/${encodePackageName(request.registryName)}`;
+    if (cache === 'only-if-cached')
+        throw Object.assign(new Error(notCachedMessage(url)), { code: 'ENOTCACHED' });
     const response = await network.fetch(url, {
         signal,
         headers: { Accept: 'application/json' },
@@ -341,7 +346,7 @@ async function installTree(roots, install, project) {
             for (const { name, range } of requests) {
                 await stdout.write(`  ${name}${range ? '@' + range : ''}...\n`);
                 try {
-                    const info = await fetchPackageInfo(network, npmRegistry, name, range || null, signal);
+                    const info = await fetchPackageInfo(network, npmRegistry, name, range || null, signal, install.cache);
                     answers.push({ package: { ...info, name, registryName: info.name, integrity: info.dist.integrity, bundleDependencies: info.bundleDependencies ?? info.bundledDependencies, info } });
                 }
                 catch (error) {
@@ -538,6 +543,7 @@ async function npmInstall(ctx, registry, kernel, deps) {
             globalPrefix: invocation.global ? globalPrefix : undefined,
             pid: ctx.pid,
             registry: npmRegistry,
+            cache: invocation.cache,
             production: invocation.production,
             saveDev: invocation.saveDev,
             saveOptional: invocation.saveOptional,
@@ -587,7 +593,7 @@ function shellInstallPort(ctx, registry, kernel) {
             const targetBase = spec.global ? `${spec.globalPrefix}/lib/node_modules` : join(spec.projectDir, 'node_modules');
             const globalBinDir = spec.global ? `${spec.globalPrefix}/bin` : undefined;
             const tree = {
-                targetBase, vfs, network: (kernel?.network ?? ISOLATE_NETWORK).forProcess(ctx.pid), npmRegistry: spec.registry, signal,
+                targetBase, vfs, network: (kernel?.network ?? ISOLATE_NETWORK).forProcess(ctx.pid), npmRegistry: spec.registry, cache: spec.cache ?? 'default', signal,
                 stdout: ctx.stdout, stderr: ctx.stderr, registry, kernel,
                 force: spec.force === true, engineStrict: spec.engineStrict === true, strictPeerDeps: spec.strictPeerDeps === true, legacyPeerDeps: spec.legacyPeerDeps === true, preferDedupe: spec.preferDedupe === true,
                 omit: { dev: spec.production === true, optional: spec.omitOptional === true, peer: spec.omitPeer === true },
@@ -1146,6 +1152,7 @@ async function npmCi(ctx, deps) {
             pid: ctx.pid,
             signal: ctx.signal,
             registry: registryOf(ctx, invocation),
+            cache: invocation.cache,
             production: invocation.production,
             omitOptional: invocation.omitOptional,
             omitPeer: invocation.omitPeer,
