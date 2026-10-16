@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 /**
- * check-runtime-packages.mjs — core's `prepublishOnly` gate.
+ * check-runtime-packages.mjs — the `prepublishOnly` gate of core, the worker
+ * and the CLI.
  *
  * A core release names runner keys (BASH_RUNNER and friends), and a runtime
- * package on npm names the runner it was built for. core 0.11.0 shipped
+ * package on npm names the runner it was built for. The worker's runtime specs
+ * and the CLI's `nimbus runtime sync` publish a runtime Nimbus builds from its
+ * npm package, at the spec's version, so they need it there too. core 0.11.0 shipped
  * `bash-runner@2` while npm still served the `bash-runner` build, and every
  * embedder's `bash` became "command not found". So core does not publish
  * until, for every runtime spec with an `npm` entry

@@ -27,6 +27,8 @@ import { fileURLToPath } from 'node:url';
 import {
   BuildFailure,
   BUILD_FIXPOINT,
+  BUILT_PACKAGES,
+  INPUT_ROOTS,
   assertDistMatchesSource,
   checkStagedAssets,
   fingerprintBuildInputs,
@@ -35,6 +37,7 @@ import {
   snapshotBuildOutputs,
   withCheckoutLock,
 } from '../../scripts/dist-integrity.mjs';
+import { buildReads } from '../../scripts/lib/build-reads.mjs';
 import { assertGeneratedSourcesAreCurrent } from './lib/generated-freshness.mjs';
 
 // ── [1] THE INVARIANT, over the real repo ────────────────────────────
@@ -914,6 +917,76 @@ process.exit(1);
   rmSync(lock);
   assert.equal(lockRefusal(root, 500), null, 'and this process can take the lock again');
   console.log('  ok  [26] a lock whose holder cannot be described is released, and the gate refuses as a failed build');
+}
+
+// ── [27] RED: every file the build runs or reads outside the inputs is an input ─
+// A package's build reaches past its own src and scripts: its package.json
+// runs ../../scripts/compile-facet-bodies.mjs, its scripts import
+// ../../../scripts/lib/compiled-bodies.mjs, and the orchestrator imports its
+// own helpers. A file the build reads that the fingerprint does not cover is a
+// change the warm path accepts unbuilt (compiled-bodies' target moved from
+// esnext to es2018, and the record still verified). buildReads walks what the
+// builds run through every literal reference (scripts/lib/build-reads.mjs);
+// each reference it cannot resolve is accounted for below, and a new one
+// fails until it is.
+{
+  const repo = fileURLToPath(new URL('../../', import.meta.url));
+  const { reads, uncovered, unresolved } = buildReads({ root: repo, packages: BUILT_PACKAGES, inputs: INPUT_ROOTS });
+  assert.deepEqual(uncovered, [], `files the build runs or reads that the input fingerprint does not cover:\n  ${uncovered.join('\n  ')}`);
+  const COMPUTED = [
+    // A module of the script's own making, as a temp file or a data: URL: no file of the tree.
+    ['scripts/dist-integrity.mjs', 'import(pathToFileURL(modulePath).href)'],
+    ['packages/core/scripts/generate-filesystem-mirrors.mjs', 'import(`data:'],
+    ['packages/worker/scripts/interpreter-bundle.mjs', 'import(`data:'],
+    // A built package's dist: an output, digested as one.
+    ['packages/worker/scripts/bundle-node-shims.mjs', "import(path.join(ROOT, 'dist/"],
+    ['packages/worker/scripts/bundle-facet-workers.mjs', "import(pathToFileURL(join(root, '..', 'core', 'dist',"],
+    // Not the build: the runtime publisher's build trees (each spec's local_base), and a runtime package it made.
+    ['packages/worker/scripts/bundle-runtime.mjs', 'new URL(`${spec.local_base}/'],
+    ['packages/core/scripts/check-runtime-packages.mjs', "import(pathToFileURL(join(dir, 'index.js')).href)"],
+    // The running node's own option table.
+    ['packages/core/scripts/gen-node-cli-options.mjs', 'require(INTERNAL_OPTIONS)'],
+    // opencode's checkout, which rebuild-opencode's inputs digest (opencode/inputs.mjs).
+    ['packages/worker/scripts/opencode/build-node.ts', 'import(path.join(dir, "script/generate.ts"))'],
+  ];
+  const accounted = (ref) => COMPUTED.some(([file, text]) => ref.file === file && ref.text.startsWith(text));
+  const strays = unresolved.filter((ref) => !accounted(ref));
+  assert.deepEqual(strays, [], `references built at run time, not accounted for as outside the build's inputs:\n  ${strays.map((r) => `${r.file}:${r.line} ${r.text}`).join('\n  ')}`);
+  const stale = COMPUTED.filter(([file, text]) => !unresolved.some((ref) => ref.file === file && ref.text.startsWith(text)));
+  assert.deepEqual(stale, [], 'every accounted reference is still there');
+  console.log(`  ok  [27] every file the build runs or reads (${reads.length}) is under INPUT_ROOTS; ${unresolved.length} run-time references accounted for`);
+}
+
+// ── [28] RED: an edge written any way a script names a file is walked ─────
+// A comment inside an import, a template literal, and a URL beside
+// import.meta.url each name a file the walk must reach; a reference built at
+// run time is reported, not dropped.
+{
+  const root = mkdtempSync(join(tmpdir(), 'build-reads-'));
+  try {
+    mkdirSync(join(root, 'packages/a/scripts'), { recursive: true });
+    mkdirSync(join(root, 'scripts'), { recursive: true });
+    mkdirSync(join(root, 'lib'), { recursive: true });
+    writeFileSync(join(root, 'packages/a/package.json'), JSON.stringify({ scripts: { build: 'node ../../scripts/run.mjs && node scripts/build.mjs' } }));
+    writeFileSync(join(root, 'packages/a/scripts/build.mjs'), [
+      "import { readFileSync } from 'node:fs';",
+      "import staticEdge from /* hidden */ '../../../lib/static.mjs';",
+      'const templated = await import(`../../../lib/template.mjs`);',
+      "const data = readFileSync(new URL('../../../lib/data.json', import.meta.url));",
+      'const computed = await import(`../../../lib/${staticEdge}.mjs`);',
+    ].join('\n'));
+    writeFileSync(join(root, 'scripts/run.mjs'), "export * from './helper.mjs';\n");
+    for (const file of ['scripts/helper.mjs', 'lib/static.mjs', 'lib/template.mjs']) writeFileSync(join(root, file), 'export default 1;\n');
+    writeFileSync(join(root, 'lib/data.json'), '{}\n');
+    const inputs = ['packages/a/scripts', 'packages/a/package.json'];
+    const { uncovered, unresolved } = buildReads({ root, packages: ['a'], inputs });
+    assert.deepEqual(uncovered, ['lib/data.json', 'lib/static.mjs', 'lib/template.mjs', 'scripts/helper.mjs', 'scripts/run.mjs'], 'each form reaches its file');
+    assert.deepEqual(unresolved.map(({ file, line }) => `${file}:${line}`), ['packages/a/scripts/build.mjs:5'], 'the computed import is reported');
+    assert.deepEqual(buildReads({ root, packages: ['a'], inputs: [...inputs, 'lib', 'scripts'] }).uncovered, [], 'and covered, none is left');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+  console.log('  ok  [28] an import behind a comment, a template literal and a URL beside import.meta.url are walked; a computed one is reported');
 }
 
 console.log('dist-integrity: all cases passed');
