@@ -33,7 +33,7 @@ const user = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
  * call. `acquired`: what the session's grant waits for. `grantBytes`: the
  * storage a grant reserves.
  */
-function session({ grantInos, journal, gate, refuse, view, acquired, grantBytes } = {}) {
+function session({ grantInos, journal, gate, refuse, view, acquired, grantBytes, budget } = {}) {
   const harness = createSqliteVfsTestHarness();
   const engine = new SqliteVFS(harness.sql, harness.ctx);
   const kernel = engine.as(CRED_KERNEL);
@@ -89,8 +89,14 @@ function session({ grantInos, journal, gate, refuse, view, acquired, grantBytes 
       await view.barrier?.();
       return true;
     },
-    reserve: () => true,
-    release: () => {},
+    // `budget`: the bytes the process may hold outside the store, counted as they are taken and given back.
+    reserve: (bytes) => {
+      if (budget === undefined) return true;
+      if (budget.used + bytes > budget.limit) return false;
+      budget.used += bytes;
+      return true;
+    },
+    release: (bytes) => { if (budget !== undefined) budget.used -= bytes; },
   };
   const waves = [];
   // In process: nothing between the client and the session loses a call, so it fences nothing.
@@ -357,6 +363,44 @@ async function until(ready, what) {
   assert.equal((s.fs.stats().delegated.copyFile ?? 0) - before, 1, 'a copy past the grant\'s reservation was held here');
   await s.fs.settle();
   for (const name of ['c1.bin', 'c2.bin']) assert.equal(dec.decode(s.kernel.readFile(`home/user/proj/d6/${name}`)), big);
+}
+
+// ── A synchronous write no held subtree decides takes the process's budget ──
+// Decided provisionally, its bytes are charged to the store's budget; one the
+// budget has no room for is refused ENOSPC before anything changes; and what
+// the cells took goes back once the view has them. Past the client's cap on
+// synchronous bytes it is refused as the client refuses one (ENOMEM).
+{
+  const budget = { used: 0, limit: 64 * 1024 };
+  const s = session({ budget });
+  const sync = s.fs.synchronous;
+  await s.fs.readdir('/home/user/other');
+  sync.writeFile('/home/user/other/a.bin', new Uint8Array(20 * 1024));
+  assert.ok(budget.used >= 20 * 1024, `the write took ${budget.used} bytes of the budget`);
+  assert.throws(() => sync.writeFile('/home/user/other/b.bin', new Uint8Array(60 * 1024)), { code: 'ENOSPC' });
+  assert.equal(sync.stat('/home/user/other/b.bin'), null, 'a refused write changed the view');
+  await s.fs.flush();
+  // The view has it once a barrier lands: what its cell took goes back.
+  s.fs.inbound();
+  assert.equal((await s.fs.stat('/home/user/other/a.bin')).size, 20 * 1024);
+  assert.equal(budget.used, 0, `${budget.used} bytes still taken after the view had them`);
+}
+{
+  const s = session();
+  const sync = s.fs.synchronous;
+  await s.fs.readdir('/home/user/other');
+  const chunk = new Uint8Array(1024 * 1024);
+  let refused;
+  let written = 0;
+  for (; written < 300 && refused === undefined; written++) {
+    try { sync.writeFile(`/home/user/other/f${written}.bin`, chunk); } catch (error) { refused = error; }
+  }
+  assert.equal(refused?.code, 'ENOMEM', `${written} synchronous MiB without a yield: ${refused?.message ?? 'all answered'}`);
+  assert.equal(sync.stat(`/home/user/other/f${written - 1}.bin`), null, 'the refused write changed the view');
+  assert.equal(sync.stat(`/home/user/other/f${written - 2}.bin`).size, chunk.byteLength);
+  // Once it yields, what it logged is sent, and it writes again.
+  await s.fs.flush();
+  sync.writeFile(`/home/user/other/after.bin`, chunk);
 }
 
 // ── A resident's process logs what it sends in its own store until the session answers ──

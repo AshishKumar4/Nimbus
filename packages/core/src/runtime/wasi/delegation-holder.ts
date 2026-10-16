@@ -60,6 +60,9 @@ export interface HolderStore {
   entry(key: string): ResidentEntry | null | undefined;
   /** As ResidentNamespace.children. */
   children(key: string): RuntimeVfsDirEntry[] | undefined;
+  /** As ResidentNamespace.reserve and release: what a provisional decision's bytes take of the process's budget (no grant reserved them). */
+  reserve?(bytes: number): boolean;
+  release?(bytes: number): void;
 }
 
 export interface HolderOptions {
@@ -94,6 +97,8 @@ export type HolderAttrChange = { mode: number } | { uid: number | null; gid: num
 
 interface LocalFile {
   key: string;
+  /** Bytes of its buffer charged to the store's budget (HolderStore.reserve): a provisional decision's, which no grant reserved. */
+  reserved?: number;
   bytes: Uint8Array;
   length: number;
   mode: number;
@@ -206,6 +211,14 @@ export interface DelegationHolder {
    * session is to decide it.
    */
   open(key: string, path: string, flags: RuntimeOpenFlags): RuntimeFileHandle | undefined;
+  /**
+   * A whole file written by name (an open of `flags`, a write and a close),
+   * decided here as `open` decides: its revision, or undefined when the
+   * session must write it. What it takes is judged before anything is
+   * decided, so a refusal (ENOSPC, a provisional decision's ENOMEM) leaves
+   * the name as it was.
+   */
+  writeFile(key: string, path: string, bytes: Uint8Array, flags: RuntimeOpenFlags): number | undefined;
   read(handleId: number, offset: number | null, length: number): Uint8Array;
   write(handleId: number, offset: number | null, bytes: Uint8Array): number;
   seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number;
@@ -367,8 +380,18 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     removed.get(parentKey(key))?.delete(nameOf(key));
     if (added.get(key)?.size === 0) added.delete(key);
     for (const [ino, file] of files) {
-      if (file.key === key && file.through === undefined && file.detached === undefined && !dirty.has(file) && !isOpen(file)) files.delete(ino);
+      if (file.key === key && file.through === undefined && file.detached === undefined && !dirty.has(file) && !isOpen(file)) {
+        files.delete(ino);
+        unreserve(file);
+      }
     }
+  };
+
+  /** What `file`'s cell took of the process's budget goes back. */
+  const unreserve = (file: LocalFile): void => {
+    if (file.reserved === undefined) return;
+    store.release?.(file.reserved);
+    delete file.reserved;
   };
 
   /**
@@ -590,6 +613,12 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     file.changedFrom = Math.min(file.changedFrom ?? from, from);
     dirty.delete(file);
     dirty.add(file);
+    // A provisional decision is logged at once, as a synchronous write is
+    // parked: what the log holds unanswered is what it counts (fitsSync).
+    if (client.held(file.key) === undefined && options.provisional?.() === true) {
+      drain();
+      return;
+    }
     lingerTimer ??= setTimeout(() => {
       lingerTimer = null;
       // No caller to answer here: a log that refuses (the session ended the
@@ -613,15 +642,23 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
 
   /**
    * Room for `length` bytes of `file`: drawn from the storage its subtree's
-   * grant reserved while one holds it. A file whose grant is being given back
-   * (renewed, idle) or is gone grows as any write does: the session judges
-   * its bytes when they reach it (a refusal then is the flush's error).
+   * grant reserved while one holds it; a provisional decision's from the
+   * process's budget (HolderStore.reserve), given back when its cell goes.
+   * A file whose grant is being given back (renewed, idle) or is gone grows
+   * as any write does: the session judges its bytes when they reach it (a
+   * refusal then is the flush's error).
    */
   const room = (file: LocalFile, length: number): boolean => {
     if (length <= file.bytes.byteLength) return true;
     const grant = client.held(file.key);
     const size = Math.max(length, file.bytes.byteLength * 2, 4096);
-    if (grant !== undefined && !client.draw(grant, size - file.bytes.byteLength)) return false;
+    const more = size - file.bytes.byteLength;
+    if (grant !== undefined && !client.draw(grant, more)) return false;
+    // A provisional decision's bytes take what the process's budget has (no grant reserved them).
+    if (grant === undefined && options.provisional?.() === true) {
+      if (store.reserve !== undefined && !store.reserve(more)) return false;
+      file.reserved = (file.reserved ?? 0) + more;
+    }
     const next = new Uint8Array(size);
     next.set(file.bytes.subarray(0, file.length));
     file.bytes = next;
@@ -804,6 +841,37 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       return { id, path } as RuntimeFileHandle;
     },
 
+    writeFile: (key, path, bytes, flags) => {
+      const provisional = client.held(key) === undefined && options.provisional?.() === true;
+      if (provisional) {
+        client.fitsSync(bytes.byteLength, path);
+        if (store.reserve !== undefined && !store.reserve(bytes.byteLength)) throw fsError('ENOSPC', 'write', path);
+      }
+      let handle: RuntimeFileHandle | undefined;
+      try {
+        handle = holder.open(key, path, flags);
+      } finally {
+        if (provisional && handle === undefined) store.release?.(bytes.byteLength);
+      }
+      if (handle === undefined) return undefined;
+      const file = handleOf(handle.id).file;
+      if (provisional) {
+        // Its bytes are the ones reserved for them.
+        unreserve(file);
+        file.bytes = bytes.slice();
+        file.reserved = bytes.byteLength;
+        file.length = bytes.byteLength;
+        const entry = decided.get(key);
+        if (entry) decided.set(key, { ...entry, size: file.length, mtime: now(), ctime: now() });
+        written(file, 0);
+      } else {
+        holder.write(handle.id, 0, bytes);
+      }
+      const revision = holder.fstat(handle.id).revision;
+      holder.close(handle.id);
+      return revision;
+    },
+
     openThrough: async (key, path, flags) => {
       const description = descriptionId();
       const call: ProcessFsOp = {
@@ -900,6 +968,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       }
       const start = offset ?? handle.position;
       const end = start + bytes.byteLength;
+      // A provisional decision's bytes are logged at once (written): first, whether they fit what the log holds unanswered.
+      if (client.held(file.key) === undefined && options.provisional?.() === true) client.fitsSync(bytes.byteLength, handle.path);
       if (!room(file, end)) throw fsError('ENOSPC', 'write', handle.path);
       const from = Math.min(start, file.length);
       if (start > file.length) file.bytes.fill(0, file.length, start);
@@ -952,6 +1022,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     close: (handleId) => {
       const handle = handleOf(handleId);
       handles.delete(handleId);
+      // A file that lost its name gives back what its cell took with its last descriptor.
+      if (handle.file.detached !== undefined && !isOpen(handle.file)) unreserve(handle.file);
       // The session's description closes with its last descriptor here (a dup shares it), in the log's order.
       if (handle.description === undefined) return;
       for (const other of handles.values()) if (other === handle) return;
@@ -1023,6 +1095,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         // Its bytes go with it: nothing of them is logged, now or through a
         // description still open on it.
         detach(local, current);
+        if (!isOpen(local)) unreserve(local);
         // Made here and never logged: the session never had the name.
         if (local.made !== undefined) return true;
       }

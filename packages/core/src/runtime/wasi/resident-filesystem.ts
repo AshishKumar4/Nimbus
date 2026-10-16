@@ -460,6 +460,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         get cred() { return resident.cred; },
         entry: (key) => resident.entry(key),
         children: (key) => resident.children(key),
+        reserve: (bytes) => resident.reserve(bytes),
+        release: (bytes) => resident.release(bytes),
       },
       isHomeRoot: delegation.isHomeRoot,
       ...(delegation.grantAfter === undefined ? {} : { grantAfter: delegation.grantAfter }),
@@ -1357,14 +1359,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const flags: RuntimeOpenFlags = { write: true, create: true, truncate: true, mode: 0o666, ...(options?.umask === undefined ? {} : { umask: options.umask }) };
     const local = decide<number>('writeFile', () => after(walkFor(path, true), (walk) => {
       if (walk === DELEGATE || !decidable(walk.key, walk)) return DELEGATE;
-      const handle = holder!.open(walk.key, pathOf(path), flags);
-      if (handle === undefined) return DELEGATE;
-      try {
-        holder!.write(handle.id, 0, data);
-        return holder!.fstat(handle.id).revision;
-      } finally {
-        holder!.close(handle.id);
-      }
+      return holder!.writeFile(walk.key, pathOf(path), data, flags) ?? DELEGATE;
     }));
     return after(local, (done) => (done !== DELEGATE ? done : bySessionWriteFile(path, bytes, options)));
   };

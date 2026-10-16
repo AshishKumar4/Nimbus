@@ -281,7 +281,7 @@ const SCENARIOS = {
     assert.equal(dec.decode(e.sync.readFile(`${APP}/r.txt`)), 'MINE');
     assert.equal(dec.decode(await e.fs.readFile(`${APP}/r.txt`)), 'MINE');
     // Retired: a peer's change is the view's once a barrier brings it.
-    e.authority.kfs.writeFile(`${APP.slice(1)}/r.txt`, 'THEIRS');
+    await e.authority.peer.writeFile(`${APP.slice(1)}/r.txt`, 'THEIRS');
     await until(() => sessionText(e, `${APP}/r.txt`) === 'THEIRS', 'the peer\'s write');
     e.fs.inbound?.();
     assert.equal(dec.decode(await e.fs.readFile(`${APP}/r.txt`)), 'THEIRS');
