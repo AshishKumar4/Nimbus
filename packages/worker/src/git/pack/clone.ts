@@ -1034,8 +1034,8 @@ export async function cloneFinish(
     full?: boolean;
     cacheTreeBytes?: number;
     tags?: readonly CloneTag[];
-    /** A full clone's commit records (history.ts graphLists), or null when one did not parse: no graph. */
-    graph?: { name: string; bytes: number }[] | null;
+    /** Whether a clone's commit records (GRAPH_RECORDS_DIR) make its commit-graph: false, they go. */
+    commitGraph?: boolean;
     /** A file could not be written: as git dies before it writes its index, there is none. */
     checkoutFailed?: boolean;
   },
@@ -1065,7 +1065,7 @@ export async function cloneFinish(
   // the annotated ones with their commits; tagsHeld), each a loose ref.
   for (const tag of request.tags ?? []) await writer.file('.git/' + tag.name, 0o644, encoder.encode(tag.oid + '\n'));
   const tags = request.tags?.length ?? 0;
-  if (request.graph === null) {
+  if (request.commitGraph === false) {
     const records = await context.supervisor.readdir(join(context.dir, GRAPH_RECORDS_DIR));
     for (const name of records) await writer.remove(GRAPH_RECORDS_DIR + '/' + name);
     if (records.length > 0) await writer.remove(GRAPH_RECORDS_DIR, true);

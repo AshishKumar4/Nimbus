@@ -90,7 +90,7 @@ interface FacetRequest {
   full?: boolean;
   cacheTreeBytes?: number;
   tags?: readonly CloneTag[];
-  graph?: { name: string; bytes: number }[] | null;
+  commitGraph?: boolean;
   checkoutFailed?: boolean;
   /** For graph-filters: the step to run. */
   graphFilters: GraphFiltersStep;
@@ -443,7 +443,7 @@ export const networkWorker = {
           full: opts.full === true,
           cacheTreeBytes: opts.cacheTreeBytes,
           tags: opts.tags,
-          graph: opts.graph,
+          commitGraph: opts.commitGraph,
           checkoutFailed: opts.checkoutFailed === true,
         });
         // The marker goes last: until it does, a failure leaves the clone abortable.
@@ -580,10 +580,9 @@ export const networkWorker = {
     } catch (e) {
       // Best-effort flush of partial state so user can inspect what landed
       try { await flushWave(); } catch { /* the failure below is the one to report */ }
-      const error = e as (Error & { code?: unknown }) | undefined;
+      const error = e as Error | undefined;
       return respond(false, {
         error: (error && error.message) || String(e),
-        errorCode: error && typeof error.code === 'string' ? error.code : undefined,
         // A write git would have failed: git's own lines (pack/mount-writer.ts).
         gitFailure: e instanceof GitWriteFailure ? e.lines : undefined,
         remoteFailure: remoteFailureOf(e, http),

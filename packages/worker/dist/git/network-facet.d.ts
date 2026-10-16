@@ -85,19 +85,6 @@ export interface GitNetworkOpts {
         username: string;
         password: string;
     };
-    /** Author and committer (for pull merges), as the supervisor's git resolved them. */
-    author?: {
-        name: string;
-        email: string;
-        timestamp?: number;
-        timezoneOffset?: number;
-    };
-    committer?: {
-        name: string;
-        email: string;
-        timestamp?: number;
-        timezoneOffset?: number;
-    };
     /** Total operation budget (ms). Clone default 30 min; other ops default 5 min. */
     timeout?: number;
     /** Clone-only: caller holds an exclusive mutation lease for dir. */
