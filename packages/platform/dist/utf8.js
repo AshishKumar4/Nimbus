@@ -9,7 +9,6 @@
  */
 /** From this many UTF-16 units, a string is counted natively (longUtf8Length). */
 const LONG_UNITS = 256;
-const NON_ASCII = /[^\x00-\x7f]/;
 const encoder = new TextEncoder();
 /** Where longUtf8Length's encodes land: written, never read. */
 let scratch;
@@ -42,16 +41,11 @@ export function utf8Length(text) {
     return bytes;
 }
 /**
- * A long string's UTF-8 length at the engine's speed: ASCII text, most of
- * any source, is its length, which one scan finds; other text is encoded a
- * slice at a time into one reused buffer, only the count kept. For 31 M
- * units of a module map, V8 took 40-60 ms counting a unit at a time and
- * 11 ms this way. encodeInto never splits a surrogate pair, so each slice
- * starts on a code point.
+ * A long string's UTF-8 length at the engine's speed: encoded a slice at a
+ * time into one reused buffer, only the count kept. encodeInto never splits
+ * a surrogate pair, so each slice starts on a code point.
  */
 function longUtf8Length(text) {
-    if (!NON_ASCII.test(text))
-        return text.length;
     scratch ??= new Uint8Array(256 * 1024);
     let bytes = 0;
     for (let read = 0; read < text.length;) {

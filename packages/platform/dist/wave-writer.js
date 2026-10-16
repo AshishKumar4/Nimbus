@@ -481,6 +481,9 @@ export class WaveWriter {
      * in flight and one buffers.
      */
     async cut() {
+        // A later turn than the mutation that asks: a pin set or cleared by a
+        // microtask queued before the cut is the wave's.
+        await Promise.resolve();
         if (this.inFlight) {
             const waitStarted = Date.now();
             await this.inFlight.catch(() => { });

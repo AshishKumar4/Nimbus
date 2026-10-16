@@ -108,7 +108,6 @@ var __nimbusProcessFsModule = (() => {
   var MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES = 8 * 1024 * 1024;
 
   var LONG_UNITS = 256;
-  var NON_ASCII = /[^\x00-\x7f]/;
   var encoder = new TextEncoder();
   var scratch;
   function utf8Length(text) {
@@ -136,8 +135,6 @@ var __nimbusProcessFsModule = (() => {
     return bytes;
   }
   function longUtf8Length(text) {
-    if (!NON_ASCII.test(text))
-      return text.length;
     scratch ??= new Uint8Array(256 * 1024);
     let bytes = 0;
     for (let read = 0; read < text.length; ) {

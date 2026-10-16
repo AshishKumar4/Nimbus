@@ -13950,7 +13950,6 @@ function spaceAfterUrl(handlers) {
 
 // ../platform/dist/utf8.js
 var LONG_UNITS = 256;
-var NON_ASCII = /[^\x00-\x7f]/;
 var encoder = new TextEncoder();
 var scratch;
 function utf8Length(text) {
@@ -13978,8 +13977,6 @@ function utf8Length(text) {
   return bytes;
 }
 function longUtf8Length(text) {
-  if (!NON_ASCII.test(text))
-    return text.length;
   scratch ??= new Uint8Array(256 * 1024);
   let bytes = 0;
   for (let read = 0; read < text.length; ) {
