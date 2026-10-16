@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "99e587c762cc20fddf14fa88c3172b3d75b8296729732dba21796e4848a3ff99",
+  "fingerprint": "e05fc7cb82e509efd4ad07156721405bda0504af384b26d52fbbe9329908c23e",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1013,8 +1013,8 @@
     "packages/core/dist/substrate/lifo/commands/text/diff.d.ts.map": "4ebee9ed998bbbb515d5cb11e71384690789f462f8676371096d82b0815aecc9",
     "packages/core/dist/substrate/lifo/commands/text/diff.js": "fb024362e70d2ca739623ee7dda8d9459bde040cd6cb2492c82b34e0f3353da2",
     "packages/core/dist/substrate/lifo/commands/text/grep.d.ts": "29362065cb119c0ca07f2fea53d8173d8e3aa7f6be77eeed99dd317ccc321085",
-    "packages/core/dist/substrate/lifo/commands/text/grep.d.ts.map": "4c6eea02f6cf56c54f3285a776a6e438eb66371c3566802faa2988478aa78c5b",
-    "packages/core/dist/substrate/lifo/commands/text/grep.js": "96bb46d790843130e7c2edf5b9da73a51fc202cdea02b3720fdb0d8fe8ba978a",
+    "packages/core/dist/substrate/lifo/commands/text/grep.d.ts.map": "726eff6a3e8c9c3d7117404c2468888ad87fd6c5e2ff082cbb8304c7f1513b62",
+    "packages/core/dist/substrate/lifo/commands/text/grep.js": "d3d384cfce4bd0780f66bfb4ce72f892d1cdee4fd0730b90fe9e9a79c8e66822",
     "packages/core/dist/substrate/lifo/commands/text/head.d.ts": "d73fdba9969bdc952747edc9805945c6de7681ba6dc66f83cf0f3cd51e38ad06",
     "packages/core/dist/substrate/lifo/commands/text/head.d.ts.map": "09ffd9dbefb49852a0f574a7e233c3ead3056ef084e72bb9fb115cad3e095e47",
     "packages/core/dist/substrate/lifo/commands/text/head.js": "c9143e9a4b4e5b388361e1291846d84b202ad69ab3f182417d43e2be70f8522b",
@@ -1689,7 +1689,7 @@
     "packages/core/src/substrate/lifo/commands/text/cut.ts": "39eac43a39c49aa8c3fcb82fec3878f6d715faca693dda443a0a4017cb26c4a7",
     "packages/core/src/substrate/lifo/commands/text/diff-analysis.ts": "1dea2bfb211440b2dc306833523163b939f51fa9113b8aae5f99c46ddfe17c56",
     "packages/core/src/substrate/lifo/commands/text/diff.ts": "1c99a1c9f8e021bc3203b8bdef567c1c1696202100fb74786c2d3b3733904559",
-    "packages/core/src/substrate/lifo/commands/text/grep.ts": "497e7015d1bf70ce1513f13e0a22530a87090c871706cb43f7577547ecc71712",
+    "packages/core/src/substrate/lifo/commands/text/grep.ts": "689a53b12e4170e4ceeb006e8f74b7582aa857d4a10bc533b164ee403ef2fc5c",
     "packages/core/src/substrate/lifo/commands/text/head.ts": "883ccae9ecc2ce859b3fbc422681207a645d5c39cc3b24576feb85cc0bc19b62",
     "packages/core/src/substrate/lifo/commands/text/less.ts": "58b1efcd8538156957fea65a063252c8f89d8afb6fe81739225cefb54af705a3",
     "packages/core/src/substrate/lifo/commands/text/nano.ts": "8bb54879f3a377ae44977727b9dde1a8d63176da643c7bdcd9245fcde1542583",

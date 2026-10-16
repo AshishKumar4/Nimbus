@@ -90,7 +90,7 @@ function parseArgs(args) {
         count: false, filesWith: false, filesWithout: false, max: Infinity, onlyMatching: false, quiet: false,
         noMessages: false, byteOffset: false, withName: null, label: '(standard input)', lineNumber: false,
         initialTab: false, nullName: false, after: 0, before: 0, contextGiven: false, groupSeparator: '--',
-        binaryFiles: 'binary', directories: 'read', followLinks: false, include: [], exclude: [], excludeFiles: [], excludeDir: [],
+        binaryFiles: 'binary', directories: 'read', followLinks: false, include: [], exclude: [], excludeFiles: [], excludeWalked: [], excludeDir: [],
         nullData: false, operands: [],
     };
     let after = null;
@@ -320,14 +320,17 @@ export async function runGrep(ctx) {
             return 2;
         }
     }
-    // As gnulib's add_exclude_file: a line, its trailing blanks gone, is a glob; a blank one is none.
+    // As gnulib's add_exclude_file: a line, its trailing blanks gone, is a
+    // glob; a blank one is none. GNU's grep reads the file once for what a
+    // recursion finds and again for the command line's operands: stdin ('-')
+    // is at its end the second time, so its globs exclude only the former.
     for (const file of o.excludeFiles) {
         try {
             const bytes = file === '-' ? await readAllInput(ctx, '-') : await ctx.vfs.readFile(resolve(ctx.cwd, file));
             for (const line of utf8.decode(bytes).split('\n')) {
                 const glob = line.replace(/\s+$/, '');
                 if (glob !== '')
-                    o.exclude.push(glob);
+                    (file === '-' ? o.excludeWalked : o.exclude).push(glob);
             }
         }
         catch (error) {
@@ -582,7 +585,7 @@ export async function runGrep(ctx) {
         return patterns.some((glob) => fnmatch(glob, base) || fnmatch(glob, path));
     };
     const included = (path) => {
-        if (excluded(path, o.exclude))
+        if (excluded(path, o.exclude) || excluded(path, o.excludeWalked))
             return false;
         if (o.include.length === 0)
             return true;
