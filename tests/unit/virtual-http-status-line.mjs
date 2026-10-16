@@ -2,14 +2,14 @@
 // A session server's reason phrase reaches its clients as Node's server
 // sends it (ticket-lifo-status-text): its status's phrase from Node's whole
 // table ('unknown' for one Node does not name), or the one its handler
-// named (writeHead's reason, statusMessage). The shell's curl -i prints it,
+// named (writeHead's reason, statusMessage). The shell's curl -I prints it,
 // and another node program's http.get reads it as statusMessage, through
 // its host. And a listen callback is called as Node calls it, the server
 // its `this`. The oracle is the same server and client programs run by host
 // Node, and the host's curl.
 //
 // Red before: the kernel's table held 18 statuses and ignored the handler's
-// reason (curl printed "HTTP/1.1 205" and "HTTP/1.1 200 OK" for a 200
+// reason (curl -I printed "HTTP/1.1 205" and "HTTP/1.1 200 OK" for a 200
 // "Fine By Me"), the realm carried no reason at all (http.get read ''), and
 // `this` in a listen callback was undefined, so the server's program threw.
 // Run by bun, the test checks the source under Bun, then runs itself under
@@ -43,7 +43,7 @@ const CLIENT = `const get = (path) => new Promise((resolve) => {
 (async () => { const out = []; for (const path of ${JSON.stringify(PATHS)}) out.push(await get(path)); console.log(JSON.stringify(out)); })();`;
 const firstLine = (text) => text.split('\n')[0].replace(/\r$/, '');
 
-// ── The oracle: host Node serves, host Node's http.get and host curl -i ask ──
+// ── The oracle: host Node serves, host Node's http.get and host curl -I ask ──
 const host = mkdtempSync(join(tmpdir(), 'status-line-'));
 writeFileSync(join(host, 'server.js'), SERVER);
 writeFileSync(join(host, 'client.js'), CLIENT);
@@ -64,7 +64,7 @@ try {
   });
   const client = await ask(['node', join(host, 'client.js'), base]);
   const curl = [];
-  for (const path of PATHS) curl.push(firstLine((await ask(['curl', '-si', `${base}/${path}`])).out));
+  for (const path of PATHS) curl.push(firstLine((await ask(['curl', '-sI', `${base}/${path}`])).out));
   expected = { bound, client: JSON.parse(client.out), curl };
 } finally {
   server.kill();
@@ -75,7 +75,7 @@ assert.equal(expected.bound, 'true');
 assert.deepEqual(expected.curl.slice(2, 5), ['HTTP/1.1 205 Reset Content', 'HTTP/1.1 206 Partial Content', 'HTTP/1.1 299 unknown']);
 assert.deepEqual(expected.client.slice(-2), [['reason/x', 200, 'Fine By Me'], ['message/x', 202, 'Custom']]);
 
-// ── The session: its node serves, another node program and curl -i ask ───
+// ── The session: its node serves, another node program and curl -I ask ───
 const { sql, transactions } = await hostSqlite();
 const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1 });
 const run = async (command, options = {}) => {
@@ -96,20 +96,20 @@ try {
   assert.equal(client.code, 0, client.err);
   assert.deepEqual(JSON.parse(client.out), expected.client, "another node program's http.get reads what host Node's does");
   const curl = [];
-  for (const path of PATHS) curl.push(firstLine((await run(`curl -si ${base}/${path}`)).out));
-  assert.deepEqual(curl, expected.curl, 'curl -i prints the status line host curl prints');
+  for (const path of PATHS) curl.push(firstLine((await run(`curl -sI ${base}/${path}`)).out));
+  assert.deepEqual(curl, expected.curl, 'curl -I prints the status line host curl prints');
 } finally {
   stop.abort();
-  const ended = await served;
-  assert.match(ended.out, /^listening 8132 true$/m, 'the listen callback ran with the server as its this');
+  await served;
   await ws.close();
 }
+assert.match((await served).out, /^listening 8132 true$/m, 'the listen callback ran with the server as its this');
 
 if (underBun) {
   const node = spawnSync('node', ['--no-warnings', fileURLToPath(import.meta.url)], { encoding: 'utf8', timeout: 120_000 });
   assert.equal(node.status, 0, `under node:\n${node.stdout}${node.stderr}`);
   assert.match(node.stdout, /^ok - under node/m, node.stdout);
-  console.log('ok - virtual-http-status-line (a session server\'s reason phrase reaches curl -i and another program\'s http.get as Node\'s does; listen\'s callback has its server; under Bun and Node)');
+  console.log('ok - virtual-http-status-line (a session server\'s reason phrase reaches curl -I and another program\'s http.get as Node\'s does; listen\'s callback has its server; under Bun and Node)');
 } else {
   console.log('ok - under node');
 }

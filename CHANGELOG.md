@@ -8,10 +8,10 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: a session's own server sends its reason phrase as Node's server
   does. That is the phrase Node's `http.STATUS_CODES` gives the status
   ("unknown" for a status it does not name), or the phrase the handler set
-  with `writeHead(status, reason)` or `res.statusMessage`. `curl -i` prints
+  with `writeHead(status, reason)` or `res.statusMessage`. `curl -I` prints
   it, `fetch` gets it as `statusText`, and `http.get` from another program
   gets it as `statusMessage`. Before, the shell knew 18 phrases and ignored
-  the handler's, so `curl -i` printed `HTTP/1.1 205` and `HTTP/1.1 200 OK`
+  the handler's, so `curl -I` printed `HTTP/1.1 205` and `HTTP/1.1 200 OK`
   for a 200 "Fine By Me". Another program's `http.get` got no phrase at all.
 - Fixed: `server.listen(port, callback)` in a portable `node` program
   calls `callback` with the server as `this`, as Node does. Before, `this`
