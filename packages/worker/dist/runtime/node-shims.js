@@ -58,7 +58,7 @@ import { COMMONJS_WRAPPER_NAMES } from '@nimbus-sh/core/runtime/javascript-ast.j
 import { NODE_SCHEME_ONLY_BUILTINS } from '@nimbus-sh/core/runtime/node-builtins.js';
 import { ESM_STAR_CONFLICTS, ESM_STATIC_IMPORT } from '@nimbus-sh/core/runtime/esm-interop.js';
 import { ESM_BINDINGS_MODULE, ESM_BUN_SCOPE, ESM_FACADE_DIR, ESM_TOP_LEVEL_AWAIT, ESM_TYPELESS } from '@nimbus-sh/core/runtime/native-esm.js';
-import { ESM_LOADER_POLICY_SOURCE, ESM_REQUIRED_SOURCE } from '@nimbus-sh/core/runtime/compiled-bodies.generated.js';
+import { ESM_LOADER_POLICY_SOURCE, ESM_REQUIRED_SOURCE, UTF8_LENGTH_SOURCE } from '@nimbus-sh/core/runtime/compiled-bodies.generated.js';
 import { FACET_PROVIDED_PACKAGES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, NIMBUS_AI_GATEWAY_PORT, NODE_VERSION, NODE_VERSIONS, VFS_CAPACITY, } from '@nimbus-sh/core/constants.js';
 import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
 import { NATIVE_HTTP_SOURCE } from './native-http.js';
@@ -966,6 +966,7 @@ const __fsConstants = Object.freeze({
 // ═══════════════════════════════════════════════════════════════════════
 // libuv's words for each code (core vfs-error.ts ERRNO_DESCRIPTION).
 const __nimbusErrnoDescription = ${JSON.stringify(ERRNO_DESCRIPTION)};
+const { utf8Length: __nimbusUtf8Length } = ${UTF8_LENGTH_SOURCE};
 const __fsMod = (() => {
   const _enc = new TextEncoder();
   const _dec = new TextDecoder();
@@ -982,7 +983,7 @@ const __fsMod = (() => {
   // and the bundle-cap accounting on the host side.
   function _byteLen(v) {
     if (_isBytes(v)) return v.byteLength;
-    if (typeof v === "string") return _enc.encode(v).length;
+    if (typeof v === "string") return __nimbusUtf8Length(v);
     return 0;
   }
   // Coerce to bytes for binary-write paths. Strings are UTF-8-encoded
@@ -6932,7 +6933,7 @@ const __fsMod = (() => {
         try {
           if (this._anyBytes) {
             let total = 0;
-            for (const c of this._chunks) total += (c instanceof Uint8Array) ? c.byteLength : _enc.encode(c).length;
+            for (const c of this._chunks) total += (c instanceof Uint8Array) ? c.byteLength : __nimbusUtf8Length(c);
             const out = new Uint8Array(total); let off = 0;
             for (const c of this._chunks) { const b = (c instanceof Uint8Array) ? c : _enc.encode(c); out.set(b, off); off += b.byteLength; }
             writeFileSync(this.path, out, this._createOptions());

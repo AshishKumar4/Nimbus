@@ -38,6 +38,7 @@ import type {
 import { bundleCss, CssError, percentEscapedDataUrl, type CssAssets, type CssModule } from './css-bundle.js';
 import { resolveTsSettings, type TsSettings } from './tsconfig-raw.js';
 import { compileForBuild, jsxAndTypescriptOf, type CompatApi } from './rolldown-compat.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 
 /**
  * The part of rolldown's JavaScript API a build uses. Its transform and
@@ -420,7 +421,6 @@ async function locateUnresolved(
   return records.map((r) => message(r.text, placed.get(r) ?? null, r.pluginName));
 }
 
-const utf8Length = (text: string) => new TextEncoder().encode(text).length;
 
 class BuildError extends Error {
   constructor(readonly messages: esbuild.Message[]) {
@@ -752,7 +752,7 @@ async function build(
       if (!answer || answer.contents === undefined) raise(`No loader produced ${fileOf({ namespace, path })}`);
       const loader = answer!.loader ?? 'js';
       const contents = answer!.contents!;
-      inputBytes.set(id, typeof contents === 'string' ? new TextEncoder().encode(contents).length : contents.length);
+      inputBytes.set(id, typeof contents === 'string' ? utf8Length(contents) : contents.length);
       const text = typeof contents === 'string' ? contents : loader === 'binary' || loader === 'base64' || loader === 'dataurl' || loader === 'file' ? '' : new TextDecoder().decode(contents);
       const lastSlash = path.lastIndexOf('/');
       loaded.set(id, {

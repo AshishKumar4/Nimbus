@@ -22,6 +22,17 @@ published independently in the `@nimbus-sh` npm scope.
   `getOn`, fetch included. An embedder whose Worker entry re-exports with
   `export * from '@nimbus-sh/sdk/entrypoints'` needs no change; one that
   names `NimbusDOStub` in its imports or exports must drop the name.
+- Fixed: `/api/_diag/memory`'s `heap.breakdown.preBundleSliceBytes` is
+  what the pre-bundles running now hold, and the "supervisor heap" an
+  install's pre-bundle phase prints counts it. Before, it was inferred
+  from lifetime totals: a running pre-bundle's slice showed as
+  unattributed, and one whose package was reinstalled while it built left
+  28 MiB in the estimate until the session restarted.
+- Fixed (fabric): an `IsolatePool` wasm module whose name holds a quote or
+  a backslash, such as `it's.wasm`, loads. Before, the pool's generated
+  worker imported it from an unescaped string, and the dispatch failed to
+  parse. Two module names that make the same identifier are still
+  refused; the refusal now names both.
 - Fixed: a session's destroy (`DELETE /s/<id>/`, `box.destroy()`) is
   repeated once on a fresh connection when the platform fails it with a
   reset of the session's storage ("Internal error in Durable Object

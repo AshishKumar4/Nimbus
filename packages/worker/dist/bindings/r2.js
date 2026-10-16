@@ -33,6 +33,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod/v4';
 import { ensureBindingDir, fileStream, writeBody } from './body.js';
 import { cursorAfter, cursorKey, listObjectFiles, objectFileName, objectStoreDir, removeObjectFiles, uploadFileName, utf8Order } from './object-store.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 /** R2's limit on one upload (a put): 5 GiB less 5 MiB. */
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024 - 5 * 1024 * 1024;
 const HttpMetadataSchema = z.object({
@@ -116,7 +117,7 @@ function r2Error(action, message, code) {
     return new Error(`${action}: ${message} (${code})`);
 }
 function validateKey(action, key) {
-    if (new TextEncoder().encode(key).byteLength > MAX_KEY_BYTES)
+    if (utf8Length(key) > MAX_KEY_BYTES)
         throw r2Error(action, 'The specified object name is not valid.', 10020);
 }
 function includesEtag(conditions, etag, comparison) {

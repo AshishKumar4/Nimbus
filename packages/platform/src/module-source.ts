@@ -1,3 +1,5 @@
+import { utf8Length } from './utf8.js';
+
 /** A deployed source asset: its digest, not its pathname, is its identity. */
 export interface ModuleSourceAsset {
   path: string;
@@ -26,7 +28,7 @@ export class ModuleSource {
   private joined: string | undefined;
   readonly byteLength: number;
   constructor(readonly parts: readonly ModuleSourcePart[]) {
-    this.byteLength = parts.reduce((bytes, part) => bytes + (typeof part === 'string' ? new TextEncoder().encode(part).byteLength : part.byteLength), 0);
+    this.byteLength = parts.reduce((bytes, part) => bytes + (typeof part === 'string' ? utf8Length(part) : part.byteLength), 0);
   }
   get text(): string {
     return this.joined ??= this.parts.map((part) => typeof part === 'string' ? part : part.text).join('');

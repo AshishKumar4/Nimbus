@@ -3,6 +3,7 @@
  * token provenance across hibernation, not a second mutation journal. */
 import { LruMap } from '../_shared/lru-map.js';
 import { normalizeVfsPath } from '../vfs/path.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 const REPOSITORIES = 128;
 const TOKENS_PER_REPOSITORY = 32;
 const MAX_REPLY_BYTES = 64 * 1024;
@@ -63,7 +64,7 @@ function boundedMounts(mounts) {
     if (mounts === null)
         return null;
     const unique = [...new Set(mounts)].sort();
-    return unique.reduce((bytes, path) => bytes + encoder.encode(path).byteLength + 1, 0) > MAX_MOUNT_BYTES ? null : unique;
+    return unique.reduce((bytes, path) => bytes + utf8Length(path) + 1, 0) > MAX_MOUNT_BYTES ? null : unique;
 }
 const mergeMounts = (before, after) => before === null || after === null ? null : boundedMounts([...before, ...after]);
 export function makeGitFsmonitor(state) {
@@ -136,7 +137,7 @@ export function makeGitFsmonitor(state) {
                     if (point === root || root.startsWith(point + '/') || point === '')
                         return reply(['/']);
                     const name = point.slice(prefix.length) + '/';
-                    size += encoder.encode(name).byteLength + 1;
+                    size += utf8Length(name) + 1;
                     paths.add(name);
                 }
                 // Even this fast path is after acquisition: restore/epoch changes
@@ -166,7 +167,7 @@ export function makeGitFsmonitor(state) {
                     const name = entry.structural || entry.subtree || entry.stat?.type === 'directory' ? `${relative}/` : relative;
                     if (paths.has(name))
                         continue;
-                    size += encoder.encode(name).byteLength + 1;
+                    size += utf8Length(name) + 1;
                     if (size > MAX_REPLY_BYTES)
                         return reply(['/']);
                     paths.add(name);
