@@ -63,12 +63,14 @@ export async function* treeLeaves(store, tree, prefix = '', within = () => true)
 /** A tree path's bytes as treeLeaves names it: each name decoded on its own, as readTree decodes it. */
 function decodeTreePath(raw) {
     let path = '';
-    let start = 0;
-    for (let end = raw.indexOf(0x2f); end !== -1; end = raw.indexOf(0x2f, start)) {
-        path += decodePath(raw.subarray(start, end)) + '/';
+    for (let start = 0;;) {
+        const end = raw.indexOf(0x2f, start);
+        const name = decodePath(raw.subarray(start, end === -1 ? raw.length : end));
+        path = path ? `${path}/${name}` : name;
+        if (end === -1)
+            return path;
         start = end + 1;
     }
-    return path + decodePath(raw.subarray(start));
 }
 /**
  * diff-tree -r of two trees (null for none), as pack/tree-object.ts

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "483e9467400de0e4109d9372cb4b53cbeaec0f8fb883b24878e75a13ecfe4267",
+  "fingerprint": "274dfe0123d617415362217dad6e80d0441d3e448c7ed368292086416b972fa7",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2503,8 +2503,8 @@
     "packages/worker/dist/git/worktree/status.d.ts.map": "55e8e5bffe3ece555e069312a6f9db0c7874e8a219170ac4c17cd5d2f8d337f1",
     "packages/worker/dist/git/worktree/status.js": "a7f3ee2db74a733e59690180dcbdc5652cafe3ab2b7e701f7d85a935ec80c543",
     "packages/worker/dist/git/worktree/tree.d.ts": "5a14863d064d23002dd46fffe6d14b9622fa65cdb3feae5929411afe2e521004",
-    "packages/worker/dist/git/worktree/tree.d.ts.map": "7bd3f3eb0105601f72846278d36f483219c2cfa43cdf5a88e0522cc0063cbffd",
-    "packages/worker/dist/git/worktree/tree.js": "fed10d393305d038b1cec7f9e1870cc3808327dbe2d7e52bccf5c8e3009de3ca",
+    "packages/worker/dist/git/worktree/tree.d.ts.map": "58789dd13aa01cb187cd34dae53555fb8f9b0859d981e4e889566aa91f61ff90",
+    "packages/worker/dist/git/worktree/tree.js": "0721ed3a111206a416c6e04f1af6cfe9ad9ea794a5779806437e2d414c18fcfb",
     "packages/worker/dist/git/worktree/verify-path.d.ts": "5c5dd10fb2ba4a25c7a5027a046d557850c7cc6d25512a98c5a0cebaada1ee6d",
     "packages/worker/dist/git/worktree/verify-path.d.ts.map": "5d17220e9a101e889cb3f48ed3935d44053c10ae0306d082c1309bd73b29af2d",
     "packages/worker/dist/git/worktree/verify-path.js": "83cc9e69eb40cc04f99bd127f2c0697ee8e4e0bbc708d5cf4e359e1a7ebbe1df",
@@ -3242,7 +3242,7 @@
     "packages/worker/src/git/worktree/refname.ts": "cf41e2b23278146be5f87595c1b065fb71a76d207016e4e252ac793bcb6a288c",
     "packages/worker/src/git/worktree/repo.ts": "fd7b8eee033692a7bb8b4c54c227bb7972d9db89c7e6c8e991ddf4163ac108dd",
     "packages/worker/src/git/worktree/status.ts": "7cf5bdc72de5c353b49c98a9ed0450f96e445eda2015d61a1d53cce727af5278",
-    "packages/worker/src/git/worktree/tree.ts": "e5afd714751b82dae3c726606a33d73a77eb3e67195057917950347deb6b8bf4",
+    "packages/worker/src/git/worktree/tree.ts": "ff223284c8fe482a84808d32748abd54af402a22ff2fc7bbbe0f77991ce5e984",
     "packages/worker/src/git/worktree/verify-path.ts": "98867f333caf836dcea8dcfecb99815e9069137c4702dcb45fa6250db5360534",
     "packages/worker/src/git/worktree/walk.ts": "543649807a7bac68c00477fb22480b3aa455d7f6e7a371f5641b22727efd8f2e",
     "packages/worker/src/git/worktree/wildmatch.ts": "ade00bc5f60c1530410a370f8d6f47c3dc0f2b94a24bcff4c25c646ac66ac367",
