@@ -62,7 +62,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PAIRED_ENV, PAIRED_PROBES } from '../../tests/behavioral/_paired.mjs';
 import { PROBE_TARGET_SKIPS } from '../../tests/behavioral/_probe-target-skips.mjs';
-import { selects } from '../../tests/behavioral/_selection.mjs';
+import { namesProbe, selectionNames, selects } from '../../tests/behavioral/_selection.mjs';
 import { mapOnArmada } from './lib/armada.mjs';
 import { assertInstalled } from './lib/installed.mjs';
 import { defaultBaseline, standUpPaired } from './lib/paired-previews.mjs';
@@ -126,6 +126,8 @@ const skip = flags.skip ?? (hosted ? '' : PROBE_TARGET_SKIPS.join(','));
 const throwaway = flags.deploy ?? target[2];
 // A hosted demo has no paired targets; its checks are named, and none is paired.
 const paired = hosted ? [] : PAIRED_PROBES.filter((probe) => selects({ only: flags.only, skip }, `${probe}.mjs`));
+// An --only that names nothing but paired probes needs no parts.
+const suite = !flags.only || selectionNames(flags.only).some((name) => !paired.some((probe) => namesProbe([name], `${probe}.mjs`)));
 
 let baseline = null;
 let pairedRun = null;
@@ -186,7 +188,7 @@ async function probeRun() {
   // The paired probes run in a task of their own, one at a time; the parts skip them.
   const partSkip = [skip, ...paired].filter(Boolean).join(',');
   const items = [
-    ...Array.from({ length: parts }, (_, i) => ({ task: `part ${i + 1}/${parts}`, part: `${i + 1}/${parts}`, only: flags.only ?? '', skip: partSkip, jobs })),
+    ...(suite ? Array.from({ length: parts }, (_, i) => ({ task: `part ${i + 1}/${parts}`, part: `${i + 1}/${parts}`, only: flags.only ?? '', skip: partSkip, jobs })) : []),
     ...(paired.length > 0 ? [{ task: 'paired perf', part: '1/1', only: paired.join(','), skip, jobs: 1 }] : []),
     ...(flags.repeat ?? '').split(',').filter(Boolean).flatMap((probe) => Array.from({ length: times }, (_, i) => ({
       task: `${probe} #${i + 1}`, part: '1/1', only: probe, skip, jobs: 1,
