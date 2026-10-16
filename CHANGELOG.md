@@ -25,6 +25,9 @@ published independently in the `@nimbus-sh` npm scope.
   and what it points to only with `-L`.
 - Fixed: `grep --exclude-from=FILE` excludes the globs listed in FILE. It
   was refused as an invalid option.
+- Fixed: the `ruby` prompt runs as the caller, as `ruby -e` does, so its
+  file calls use the resident filesystem instead of a supervisor round trip
+  each. A file one line opens stays open on the next, as in irb.
 - Fixed (lifo `node`, X-9): `vm` is Node's. Contexts, scripts,
   `compileFunction`, `runInThisContext` and `runInNewContext` work in an
   inline `node` program and a lifo command alike; before, the module was
