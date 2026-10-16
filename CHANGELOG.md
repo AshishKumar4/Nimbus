@@ -5,6 +5,18 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Breaking (fabric, worker, sdk): the legacy inner Durable Object transport
+  is gone. `NimbusDOStub` is no longer exported from
+  `@nimbus-sh/fabric/bindings.js`, `@nimbus-sh/worker` or
+  `@nimbus-sh/sdk/entrypoints`, and `InnerDoFetchAnswer` from
+  `@nimbus-sh/fabric/bindings.js`. `NimbusDurableObjectNamespace` keeps
+  `callOn` and `getOn` and loses `get`, `idFromName`, `newUniqueId` and
+  `idFromString`. The supervisor op `innerDoFetch` and
+  `NimbusSession._rpcInnerDoFetch` are gone. A `wrangler dev` Worker's
+  Durable Objects are unchanged: they already went through `callOn` and
+  `getOn`, fetch included. An embedder whose Worker entry re-exports with
+  `export * from '@nimbus-sh/sdk/entrypoints'` needs no change; one that
+  names `NimbusDOStub` in its imports or exports must drop the name.
 - Fixed: a portable workspace's `node` reads its command line as the
   hosted `node` does (Node's own parser, NODE_OPTIONS first), and finds its
   script the same way. `node .` runs the package's `main`, and `node start`

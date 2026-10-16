@@ -10,8 +10,8 @@
  *      (the Durable Object) and SupervisorRPC + the inner-Worker
  *      binding shims (NimbusAssetsRPC, NimbusLoaderRPC,
  *      NimbusLoadedWorker, NimbusLoadedEntrypoint,
- *      NimbusDurableObjectNamespace, NimbusDOStub, NimbusKVNamespace,
- *      NimbusD1Binding, NimbusR2Bucket) and the class each `wrangler dev`
+ *      NimbusDurableObjectNamespace, NimbusKVNamespace, NimbusD1Binding,
+ *      NimbusR2Bucket) and the class each `wrangler dev`
  *      D1 binding's database is a facet of (NimbusD1Database) all need to
  *      be reachable as exports of the entrypoint module.
  *
@@ -32,7 +32,6 @@ import {
   NimbusLoadedWorker,
   NimbusLoadedEntrypoint,
   NimbusDurableObjectNamespace,
-  NimbusDOStub,
   NimbusKVNamespace,
   NimbusD1Binding,
   NimbusR2Bucket,
@@ -141,7 +140,6 @@ export {
   NimbusLoadedWorker,
   NimbusLoadedEntrypoint,
   NimbusDurableObjectNamespace,
-  NimbusDOStub,
   CirrusHmrRPC,
   NimbusD1Database,
   NimbusKVNamespace,
