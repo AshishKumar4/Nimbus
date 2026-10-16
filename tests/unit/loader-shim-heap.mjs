@@ -113,6 +113,17 @@ const refused = (promise, pattern, what) => assert.rejects(Promise.resolve().the
   const sourceGetter = /x/; Object.defineProperty(sourceGetter, 'source', { get() { throw new Error('ran'); } });
   await refused(loader.load(worker({ 'w.js': '', 'r.json': { json: { r: sourceGetter } } })), /accessor/, 'a RegExp with an own source getter is refused, the getter never run');
   await refused(loader.load(worker({ 'w.js': '', 't.json': { json: { toJSON() { return 'x'.repeat(100); } } } })), /toJSON/, 'a {json} module holding a toJSON is refused');
+  // An Error's stack is charged for what it holds, as cloned or not; a boxed BigInt for its integer; an array's every index.
+  const longStack = new Error('x'); longStack.stack = 'y'.repeat(20 * MiB);
+  await refused(loader.load(worker({ 'w.js': '', 'e.json': { json: { e: structuredClone(longStack) } } })), /per-Worker bound/, 'a cloned Error with a 20 MiB stack is charged for it');
+  const { key: priceKey } = getKey('heap-owner', 'n', 'price');
+  const entryOf = (envValue) => priceCode(worker({ 'w.js': '' }, { env: { v: envValue } }), priceKey, false).entry.byteLength;
+  // JavaScriptCore's BigInts reach about 128 KiB: 64 KiB each, eighty boxes of one hold 5 MiB as charged.
+  const integer = 2n ** (8n * 64n * 1024n);
+  assert.equal(entryOf(Object(integer)) - entryOf(integer), 64, 'a boxed BigInt is charged its integer and one object more');
+  await refused(loader.load(worker({ 'w.js': '' }, { env: { b: Array.from({ length: 80 }, () => Object(integer)) } })), /entry bound/, 'eighty boxed 64 KiB integers are over the entry bound');
+  assert.equal(entryOf(new Array(1000).fill(null)) - entryOf(new Array(1000)), 8 * 1000, 'each own index is charged beside the backing');
+  await refused(loader.load(worker({ 'w.js': '' }, { env: { a: new Array(262_144).fill(null) } })), /entry bound/, 'a dense array of 262,144 nulls is over the entry bound');
   // Cycles, Errors, BigInt, Dates and an own __proto__ env field are charged and admitted.
   const cyclic = new Map(); cyclic.set('self', cyclic); const ring = new Set(); ring.add(ring);
   const error = new Error('outer', { cause: new Error('inner') }); error.cause.cause = error;

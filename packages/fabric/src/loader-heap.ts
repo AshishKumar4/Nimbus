@@ -61,8 +61,6 @@ const MAP_ENTRIES = Map.prototype.entries;
 const SET_VALUES = Set.prototype.values;
 /** The longest array the walk lists the keys of (each a string while it is walked). */
 const ARRAY_WALK_MAX = 262_144;
-/** What an Error's stack holds at most: V8 keeps ten frames. */
-const STACK_CHARGE = 4096;
 
 /** `owner`'s own getter of `key`. */
 function getter(owner: object, key: string): (this: unknown) => unknown {
@@ -76,10 +74,15 @@ function isPlainObject(value: object): boolean {
   return proto === Object.prototype || proto === null;
 }
 
+/** Whether `fn` is the engine's own code. */
+function isNative(fn: Function): boolean {
+  return /\{\s*\[native code\]\s*\}\s*$/.test(Reflect.apply(Function.prototype.toString, fn, []));
+}
+
 /** An object the runtime made (a service binding, an RPC stub): its class's constructor is native code. */
 function isHostObject(value: object): boolean {
   const ctor = Object.getPrototypeOf(value)?.constructor;
-  return typeof ctor === 'function' && /\{\s*\[native code\]\s*\}\s*$/.test(Function.prototype.toString.call(ctor));
+  return typeof ctor === 'function' && isNative(ctor);
 }
 
 function className(value: object): string {
@@ -119,7 +122,8 @@ export function liveCharge(root: unknown, limit: number, at: string, seen: Charg
       const descriptor = Object.getOwnPropertyDescriptor(owner, key);
       if (descriptor === undefined) continue;
       if (!('value' in descriptor)) throw new LoaderRefusal(`Nimbus Worker Loader: ${path}.${key} is an accessor, which the shim cannot account for without running it`);
-      if (!(indexed && isIndex(key)) && add(SLOT + stringCharge(key))) return true;
+      // An array's index is a slot of its backing (charged at its length) and one element more; any other key is a named slot.
+      if (add(indexed && isIndex(key) ? ARRAY_ELEMENT : SLOT + stringCharge(key))) return true;
       stack.push({ value: descriptor.value, path: `${path}.${key}` });
     }
     return false;
@@ -181,12 +185,19 @@ export function liveCharge(root: unknown, limit: number, at: string, seen: Charg
       const text: string = Reflect.apply(String.prototype.valueOf, value, []);
       stack.push({ value: text, path });
       skip = (key) => key === 'length' || (isIndex(key) && Number(key) < text.length);
-    } else if (value instanceof Number || value instanceof Boolean || value instanceof BigInt) {
+    } else if (value instanceof BigInt) {
+      // Its integer is of any width: unboxed by the built-in, never the object's own method.
+      stack.push({ value: Reflect.apply(BigInt.prototype.valueOf, value, []), path });
+    } else if (value instanceof Number || value instanceof Boolean) {
       // Its primitive is held in its slot; nothing of it is run.
     } else if (value instanceof Error) {
-      // V8's stack is an own accessor of the engine's, never run here: charged at its most (ten frames).
-      if (add(STACK_CHARGE)) return Infinity;
-      skip = (key) => key === 'stack';
+      // Its stack, when the engine's own accessor holds it, is read through that native getter (never a program's) and charged in full.
+      const stack = Object.getOwnPropertyDescriptor(value, 'stack');
+      if (stack !== undefined && typeof stack.get === 'function' && isNative(stack.get)) {
+        const text: unknown = Reflect.apply(stack.get, value, []);
+        if (add(SLOT + (typeof text === 'string' ? stringCharge(text) : 0))) return Infinity;
+        skip = (key) => key === 'stack';
+      }
     } else if (!isPlainObject(value) && !(value instanceof Date) && !isHostObject(value)) {
       // An instance of a class of the program's own: its private fields are out of any walk's reach.
       throw new LoaderRefusal(`Nimbus Worker Loader: ${path} is an instance of a class (${className(value)}) whose state the shim cannot account for`);

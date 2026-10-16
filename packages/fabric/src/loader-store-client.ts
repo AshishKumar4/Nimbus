@@ -63,6 +63,9 @@ function* bufferSlices(buffer: ArrayBuffer): Generator<Uint8Array> {
 export function jsonParseCharge(text: string): number {
   let total = 0;
   let inString = false;
+  // The containers open around the scan: true for an array, whose elements also take a backing slot.
+  const open: boolean[] = [];
+  const member = (): number => (open.at(-1) === true ? 16 + 8 : 16);
   for (let i = 0; i < text.length; i++) {
     const unit = text.charCodeAt(i);
     if (inString) {
@@ -75,11 +78,13 @@ export function jsonParseCharge(text: string): number {
     if (unit === 0x22) { inString = true; total += 16; continue; }
     if (unit === 0x7b || unit === 0x5b) {
       total += 64;
+      open.push(unit === 0x5b);
       // A first member or element, unless the container is empty.
       let next = i + 1;
       while (text.charCodeAt(next) === 0x20 || text.charCodeAt(next) === 0x0a || text.charCodeAt(next) === 0x0d || text.charCodeAt(next) === 0x09) next++;
-      if (text.charCodeAt(next) !== 0x7d && text.charCodeAt(next) !== 0x5d) total += 16 + 8;
-    } else if (unit === 0x2c) total += 16 + 8;
+      if (text.charCodeAt(next) !== 0x7d && text.charCodeAt(next) !== 0x5d) total += member();
+    } else if (unit === 0x7d || unit === 0x5d) open.pop();
+    else if (unit === 0x2c) total += member();
   }
   return total;
 }

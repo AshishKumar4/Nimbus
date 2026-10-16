@@ -47,8 +47,8 @@ interface Owner {
   state: OwnerState;
   files: number;
   bytes: number;
-  /** What its own puts brought into the store: the session's cap counts content once, adopted copies share it. */
-  putBytes: number;
+  /** The files it holds, by digest: their size. Bounded by OWNER_FILES. */
+  readonly held: Map<string, number>;
   /** Creations under way, by digest: a second creation of one joins it. */
   readonly creating: Map<string, Promise<void>>;
   /** Every operation reading or writing its directory: its removal waits for them. */
@@ -85,9 +85,14 @@ export class LoaderCodeRegistry {
   private readonly owners = new Map<string, Owner>();
   /** Per (wrangler, binding): its reuse source's token. */
   private readonly sources = new Map<string, string>();
-  /** Owners closed, kept until their directory is gone: their bytes stay counted until then. */
-  private readonly removing = new Set<Owner>();
+  /** Directories queued for removal (an owner's, or a dead incarnation's), until they are gone. */
+  private readonly removing = new Map<string, Owner | null>();
+  /** Content this incarnation's directories hold, by digest: its size, and how many directories hold it. */
+  private readonly content = new Map<string, { readonly size: number; holders: number }>();
+  /** The bytes of that content, each counted once however many directories share it. */
   private storeBytes = 0;
+  /** New content being put, reserved against the cap until its put settles. */
+  private reserved = 0;
   private removals: Promise<void> = Promise.resolve();
 
   constructor(private readonly engine: SqliteVFS) {
@@ -102,8 +107,8 @@ export class LoaderCodeRegistry {
   }
 
   /** What the store holds now, for the session's diagnostics. */
-  stats(): { owners: number; sources: number; removing: number; storeBytes: number } {
-    return { owners: this.owners.size, sources: this.sources.size, removing: this.removing.size, storeBytes: this.storeBytes };
+  stats(): { owners: number; sources: number; removing: number; storeBytes: number; reservedBytes: number } {
+    return { owners: this.owners.size, sources: this.sources.size, removing: this.removing.size, storeBytes: this.storeBytes, reservedBytes: this.reserved };
   }
 
   /** A new owner, staged, for `binding` of the build of wrangler `wranglerId`: its token. */
@@ -111,7 +116,7 @@ export class LoaderCodeRegistry {
     const token = crypto.randomUUID();
     const dir = `${LOADER_CODE_ROOT}/${crypto.randomUUID().replaceAll('-', '')}`;
     this.owners.set(token, {
-      token, dir, made: false, wranglerId, binding, state: 'staged', files: 0, bytes: 0, putBytes: 0, creating: new Map(), inFlight: new Set(),
+      token, dir, made: false, wranglerId, binding, state: 'staged', files: 0, bytes: 0, held: new Map(), creating: new Map(), inFlight: new Set(),
     });
     return token;
   }
@@ -126,7 +131,11 @@ export class LoaderCodeRegistry {
     const committing = new Map<string, Owner>();
     for (const token of tokens) {
       const owner = this.owners.get(token);
-      if (owner !== undefined && owner.state === 'staged' && owner.wranglerId === wranglerId) committing.set(owner.binding, owner);
+      if (owner === undefined || owner.state !== 'staged' || owner.wranglerId !== wranglerId) continue;
+      // A binding named twice is the last one's, as the env it went into: the earlier owner is retired.
+      const earlier = committing.get(owner.binding);
+      if (earlier !== undefined) this.retire(earlier.token);
+      committing.set(owner.binding, owner);
     }
     for (const previous of [...this.owners.values()]) {
       if (previous.wranglerId !== wranglerId || previous.state !== 'committed') continue;
@@ -211,7 +220,6 @@ export class LoaderCodeRegistry {
 
   /** The bytes of module `digest`, `size` long, written from `stream` and published only if they are what `digest` names. */
   private async put(owner: Owner, digest: string, size: number, stream: ReadableStream<Uint8Array> | undefined): Promise<boolean> {
-    let unused = stream;
     try {
       if (!DIGEST.test(String(digest)) || !Number.isSafeInteger(size) || size < 0 || stream === undefined) {
         throw new LoaderStoreRefusal('put names a SHA-256 digest, a size and its bytes', 'EINVAL');
@@ -219,13 +227,11 @@ export class LoaderCodeRegistry {
       const fs = this.ownerFs(owner);
       await owner.creating.get(digest)?.catch(() => {});
       if (this.size(fs, `${owner.dir}/${digest}`) !== null) return false;
-      await this.create(owner, digest, size, true, () => {
-        unused = undefined;
-        return fs.writeFileFrom(`${owner.dir}/${digest}`, size, verified(stream, digest), { mode: 0o600 }).then(() => {});
-      });
+      await this.create(owner, digest, size, true, () => fs.writeFileFrom(`${owner.dir}/${digest}`, size, verified(stream, digest), { mode: 0o600 }).then(() => {}));
       return true;
     } finally {
-      await unused?.cancel().catch(() => {});
+      // Read to its end, or not at all (joined, refused before a byte was read): either way its producer is let go.
+      await stream?.cancel().catch(() => {});
     }
   }
 
@@ -240,28 +246,36 @@ export class LoaderCodeRegistry {
    * One new file of `owner`, admitted against the caps before `make`
    * creates it: a creation of the same digest under way is joined (its
    * stream then unread, cancelled by the caller), and a failed one gives its
-   * reservation back. A put brings new content (the session's cap counts
-   * it); an adoption shares its donor's. A copy from `from` is in flight on
-   * the donor too, so its removal waits for the copy.
+   * reservation back. The session's cap counts content once: a put of a
+   * digest no directory holds reserves its size until it settles, and a file
+   * published is counted while any directory holds its digest. A copy from
+   * `from` is in flight on the donor too, so its removal waits for the copy.
    */
   private create(owner: Owner, digest: string, size: number, isPut: boolean, make: () => Promise<void>, from?: Owner): Promise<void> {
     const joined = owner.creating.get(digest);
     if (joined !== undefined) return joined;
-    const content = isPut ? size : 0;
-    if (owner.files + 1 > OWNER_FILES || owner.bytes + size > OWNER_BYTES || this.storeBytes + content > STORE_BYTES) {
+    const reserve = isPut && !this.content.has(digest) ? size : 0;
+    if (owner.files + 1 > OWNER_FILES || owner.bytes + size > OWNER_BYTES || this.storeBytes + this.reserved + reserve > STORE_BYTES) {
       return Promise.reject(new LoaderStoreRefusal(
-        `this owner would hold ${owner.files + 1} files and ${owner.bytes + size} bytes (at most ${OWNER_FILES} and ${OWNER_BYTES}), and the session's loader store ${this.storeBytes + content} bytes (at most ${STORE_BYTES})`,
+        `this owner would hold ${owner.files + 1} files and ${owner.bytes + size} bytes (at most ${OWNER_FILES} and ${OWNER_BYTES}), and the session's loader store ${this.storeBytes + this.reserved + reserve} bytes (at most ${STORE_BYTES})`,
         'ENOSPC'));
     }
     owner.files++;
     owner.bytes += size;
-    owner.putBytes += content;
-    this.storeBytes += content;
-    const creation = Promise.resolve().then(make).catch((error: unknown) => {
+    this.reserved += reserve;
+    const creation = Promise.resolve().then(make).then(() => {
+      this.reserved -= reserve;
+      owner.held.set(digest, size);
+      const held = this.content.get(digest);
+      if (held !== undefined) held.holders++;
+      else {
+        this.content.set(digest, { size, holders: 1 });
+        this.storeBytes += size;
+      }
+    }, (error: unknown) => {
+      this.reserved -= reserve;
       owner.files--;
       owner.bytes -= size;
-      owner.putBytes -= content;
-      this.storeBytes -= content;
       throw error;
     }).finally(() => owner.creating.delete(digest));
     owner.creating.set(digest, creation);
@@ -290,23 +304,25 @@ export class LoaderCodeRegistry {
 
   /**
    * Remove `dir` once `owner`'s operations (all of them, however many come
-   * after this) have drained, with the VFS's paged recursive removal; its
-   * bytes are given back once, and only when the directory is gone. One that
-   * could not be removed stays counted and is tried again at the next removal.
+   * after this) have drained, with the VFS's paged recursive removal; once it
+   * is gone, each digest it held no other directory holds is counted no more.
+   * One that could not be removed stays queued, still counted, and every
+   * queued directory is tried again at each removal.
    */
   private queueRemoval(dir: string, owner: Owner | null): void {
-    if (owner !== null) this.removing.add(owner);
+    this.removing.set(dir, owner);
     this.removals = this.removals.then(async () => {
       if (owner !== null) while (owner.inFlight.size > 0) await Promise.allSettled([...owner.inFlight]);
-      if (this.removeDir(dir) && owner !== null) {
-        this.storeBytes -= owner.putBytes;
-        this.removing.delete(owner);
-      }
-      for (const left of [...this.removing]) {
-        if (left !== owner && left.inFlight.size === 0 && this.removeDir(left.dir)) {
-          this.storeBytes -= left.putBytes;
-          this.removing.delete(left);
+      for (const [pending, held] of [...this.removing]) {
+        if (held !== null && held.inFlight.size > 0) continue;
+        if (!this.removeDir(pending) || !this.removing.delete(pending) || held === null) continue;
+        for (const digest of held.held.keys()) {
+          const content = this.content.get(digest);
+          if (content === undefined || --content.holders > 0) continue;
+          this.content.delete(digest);
+          this.storeBytes -= content.size;
         }
+        held.held.clear();
       }
     }).catch(() => {});
   }

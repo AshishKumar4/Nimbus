@@ -18,8 +18,10 @@
 //   - a put of bytes that are not what its digest names publishes nothing;
 //     the owner's file cap refuses a further file by name;
 //   - a stopped server's owners and reuse sources are removed once nothing
-//     reads them; a later incarnation's registry sweeps what an earlier one
-//     left;
+//     reads them (A → B → C with A's put held: A goes once drained, B stays);
+//     a removal that fails stays counted and is retried; a later
+//     incarnation's registry sweeps what an earlier one left; content is
+//     counted once however many directories share it, until the last goes;
 //   - a process's envelope (pid, or an infrastructure binding's pid 0) is
 //     refused the store.
 import assert from 'node:assert/strict';
@@ -155,6 +157,8 @@ const blob = (bytes, fill) => { const data = new Uint8Array(bytes); data.fill(fi
   const pair = [{}, {}, {}, {}];
   await assert.rejects(loader.load(worker({ 'w.js': '', 'many.json': { json: new Array(200_000).fill(pair) } })),
     /re-creating this Worker from the store would hold .* per-Worker bound/, 'one shared array written 200,000 times parses into a million objects: refused by its restored price');
+  assert.ok(await loader.load(worker({ 'w.js': '', 'near.json': { json: new Array(200_000).fill({ a: 0 }) } })),
+    'one small object written 200,000 times restores just under the bound (an object member is priced as one, an array element with its backing): admitted');
 }
 
 // ── Restored modules are cached for what they hold; text comes back as it went in ──
@@ -189,8 +193,22 @@ const blob = (bytes, fill) => { const data = new Uint8Array(bytes); data.fill(fi
   s.registry.commit('wrangler-1', [second]);
   await shim(s, second).loader.load(worker({ 'w.js': '', 'dep.bin': { data: shared } }));
   assert.ok(s.registry.stats().storeBytes < 3 * MiB, `adopted content is counted once: ${s.registry.stats().storeBytes}`);
+  const withShared = s.registry.stats().storeBytes;
+  s.registry.release(first);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(s.registry.stats().storeBytes, withShared, 'content an adopter still holds stays counted once its putter is gone');
   s.registry.commit('wrangler-1', []);
   assert.equal(await s.registry.serve({ kind: 'alive', owner: second }), false, 'a binding the next build no longer has is retired');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(s.registry.stats().storeBytes, 0, 'and once no directory holds it, it is counted no more');
+
+  // A binding named twice is the last one's: the earlier owner is retired, rebuild after rebuild.
+  for (let build = 0; build < 3; build++) {
+    const tokens = [s.registry.mint('wrangler-3', 'DUP'), s.registry.mint('wrangler-3', 'DUP')];
+    s.registry.commit('wrangler-3', tokens);
+  }
+  assert.equal(s.registry.stats().owners, 2, 'one committed owner and one reuse source for the doubled binding, however many builds');
+  s.registry.stop('wrangler-3');
 
   // A put admitted before its owner's release is accounted, and removed, once it drains.
   const third = s.registry.mint('wrangler-2', 'LOADER');
@@ -204,6 +222,7 @@ const blob = (bytes, fill) => { const data = new Uint8Array(bytes); data.fill(fi
   await putting;
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(s.registry.stats().removing, 0, 'the released owner\'s directory is removed once its put drained');
+  assert.equal(s.registry.stats().storeBytes, 0, 'and its bytes given back once');
 
   // A put refused by its digest, and one joined, leave their streams cancelled.
   const fourth = s.registry.mint('wrangler-2', 'LOADER');
@@ -211,6 +230,14 @@ const blob = (bytes, fill) => { const data = new Uint8Array(bytes); data.fill(fi
   const cancelling = (bytes) => new ReadableStream({ start(controller) { controller.enqueue(bytes); }, cancel() { cancelled++; } });
   await s.registry.serve({ kind: 'put', owner: fourth, digest: 'not a digest', size: 1 }, cancelling(data)).catch(() => {});
   assert.equal(cancelled, 1, 'a refused put\'s stream is cancelled');
+  let release;
+  const slow = new ReadableStream({ start(controller) { release = () => { controller.enqueue(data); controller.close(); }; } });
+  const firstPut = s.registry.serve({ kind: 'put', owner: fourth, digest: sha(data), size: data.byteLength }, slow);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const joined = s.registry.serve({ kind: 'put', owner: fourth, digest: sha(data), size: data.byteLength }, cancelling(data));
+  release();
+  await Promise.all([firstPut, joined]);
+  assert.equal(cancelled, 2, 'a put that joined another\'s creation has its own stream cancelled');
 
   // A destroyed session opens a new filesystem: a new registry, which knows no old token.
   const fresh = loaderCodeRegistry(vfs());
@@ -234,6 +261,70 @@ const blob = (bytes, fill) => { const data = new Uint8Array(bytes); data.fill(fi
   const more = new TextEncoder().encode('one more');
   await assert.rejects(s.registry.serve({ kind: 'put', owner: token, digest: sha(more), size: more.byteLength }, stream(more)),
     /would hold 16385 files/, 'the owner\'s 16,385th file is refused by name');
+}
+
+// ── Two owners stopped together: both directories gone, nothing left counted ──
+{
+  const s = session(vfs());
+  const a = s.registry.mint('wrangler-1', 'LOADER');
+  const b = s.registry.mint('wrangler-1', 'OTHER');
+  s.registry.commit('wrangler-1', [a, b]);
+  await shim(s, a).loader.load(worker({ 'w.js': 'export default "a";' }));
+  await shim(s, b).loader.load(worker({ 'w.js': 'export default "b";' }));
+  s.registry.stop('wrangler-1');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(s.engine.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 }).readdir(LOADER_CODE_ROOT), []);
+  assert.equal(s.registry.stats().storeBytes, 0, 'each owner\'s bytes given back once');
+}
+
+// ── A → B → C with A's put held: the slot ends C's with B its source, A gone once drained, B untouched ──
+{
+  const s = session(vfs());
+  const kernel = s.engine.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 });
+  const a = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [a]);
+  const data = new TextEncoder().encode('held across two commits');
+  let push;
+  const putting = s.registry.serve({ kind: 'put', owner: a, digest: sha(data), size: data.byteLength }, new ReadableStream({ start(controller) { push = controller; } }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const b = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [b]);
+  await shim(s, b).loader.load(worker({ 'w.js': 'export default "b";' }));
+  const c = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [c]);
+  const dirs = kernel.readdir(LOADER_CODE_ROOT).length;
+  assert.equal(dirs, 2, 'A\'s directory waits for its held put; B\'s is C\'s source');
+  push.enqueue(data); push.close();
+  await putting.catch(() => {});
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(kernel.readdir(LOADER_CODE_ROOT).length, 1, 'A\'s directory is removed once drained, and B\'s stays');
+  assert.deepEqual(await Promise.all([a, b, c].map((owner) => s.registry.serve({ kind: 'alive', owner }))), [false, false, true]);
+  assert.deepEqual(s.registry.stats().sources, 1);
+}
+
+// ── A removal that fails stays counted, and is tried again at the next ──
+{
+  const s = session(vfs());
+  const kernel = s.engine.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 });
+  const stuck = s.registry.mint('wrangler-1', 'LOADER');
+  s.registry.commit('wrangler-1', [stuck]);
+  await shim(s, stuck).loader.load(worker({ 'w.js': 'export default "stuck";' }));
+  const [dir] = kernel.readdir(LOADER_CODE_ROOT);
+  const counted = s.registry.stats().storeBytes;
+  // Its directory no longer writable by the store: its files cannot be unlinked.
+  kernel.chmod(`${LOADER_CODE_ROOT}/${dir.name}`, 0o500);
+  s.registry.stop('wrangler-1');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(s.registry.stats().removing, 1, 'the failed removal stays queued');
+  assert.equal(s.registry.stats().storeBytes, counted, 'and its content counted');
+  kernel.chmod(`${LOADER_CODE_ROOT}/${dir.name}`, 0o700);
+  const next = s.registry.mint('wrangler-2', 'LOADER');
+  await shim(s, next).loader.load(worker({ 'w.js': 'export default "next";' }));
+  s.registry.release(next);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(s.registry.stats().removing, 0, 'the next removal tries it again, and both are gone');
+  assert.equal(s.registry.stats().storeBytes, 0);
+  assert.deepEqual(kernel.readdir(LOADER_CODE_ROOT), []);
 }
 
 // ── Stop removes a server's directories once drained; a new incarnation sweeps what an old one left ──
