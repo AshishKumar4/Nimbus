@@ -61,6 +61,7 @@ out.module = {
   esmDefault: await outcome(async () => { const { default: M } = await import('node:module'); return [M === Module, typeof new M('y')]; }),
   isBuiltinAgrees: ['http2', 'fs', 'esbuild', 'node:test'].map((name) => Module.isBuiltin(name) === Module.Module.isBuiltin(name)),
   nodeEsbuild: await outcome(() => typeof require('node:esbuild')),
+  importNodeEsbuild: await outcome(async () => typeof (await import('node:esbuild'))),
 };
 const fsCommon = require('node:fs');
 const existsSync = fsCommon.existsSync;
