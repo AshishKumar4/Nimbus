@@ -128,7 +128,7 @@ function placedSite(site) {
     });
 }
 /** A loader's own sources, builtins, records and metadata under one private URL root. */
-export async function createNativeEsmLoader(context, cjs, main) {
+export async function createNativeEsmLoader(context, cjs, main, conditions = []) {
     const hostModule = await installHooks();
     const bun = Reflect.get(globalThis, 'Bun') !== undefined;
     const id = String(++nextLoader);
@@ -153,7 +153,7 @@ export async function createNativeEsmLoader(context, cjs, main) {
         // The resolver names a bare provided package node:<name> too; a written node:<name> is refused at resolveRecord.
         isBuiltin: (specifier) => Object.hasOwn(cjs.moduleMap, specifier.startsWith('node:') ? specifier.slice(5) : specifier),
         cjsResolve: (specifier, parent) => cjs.resolveFilename(specifier, dirname(parent)),
-    }, { cwd: () => context.cwd, stripTypes: false });
+    }, { cwd: () => context.cwd, stripTypes: false, conditions });
     function recordFor(resolution) {
         const known = records.get(resolution.url);
         if (known)

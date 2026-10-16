@@ -87,7 +87,13 @@ declare module 'nopt' {
 }
 
 declare module '@npmcli/config/lib/definitions/index.js' {
-  interface Definition { default: unknown; type: unknown; deprecated?: string }
+  interface Definition {
+    default: unknown;
+    type: unknown;
+    deprecated?: string;
+    /** Sets this key's flat option(s) in `flat` from `data` (@npmcli/config's flat). */
+    flatten?: (key: string, data: Record<string, unknown>, flat: Record<string, unknown>) => void;
+  }
   const npmDefinitions: { definitions: Record<string, Definition>; shorthands: Record<string, string[]> };
   export default npmDefinitions;
 }

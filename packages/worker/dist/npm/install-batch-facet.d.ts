@@ -20,6 +20,7 @@
  */
 import type { FacetPackageSpec } from './install-facet.js';
 import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
+import { type NpmCacheMode } from '@nimbus-sh/core/_shared/npm-cache-mode.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 export interface InstallBatchSpec {
@@ -28,6 +29,13 @@ export interface InstallBatchSpec {
     packages: FacetPackageSpec[];
     /** Internal pLimit cap for concurrent tarball download/decompression pipelines. */
     concurrency: number;
+    /**
+     * npm's cache mode for the tarballs read: 'no-cache' (`--prefer-online`)
+     * downloads each; 'force-cache' (`--prefer-offline`) takes the cache's
+     * copy, downloading only one it lacks; 'only-if-cached' (`--offline`)
+     * downloads none, a tarball the cache lacks ENOTCACHED.
+     */
+    cache?: NpmCacheMode;
 }
 export interface InstallBatchPerPackage {
     name: string;

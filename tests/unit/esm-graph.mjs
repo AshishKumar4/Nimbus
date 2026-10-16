@@ -166,7 +166,10 @@ const evaluated = (log) => log.filter((entry) => !entry.startsWith('init:') && !
   const replaced = [
     [Array.prototype, 'push'], [Array.prototype, 'pop'], [Array.prototype, 'includes'], [Array.prototype, 'sort'],
     [Array.prototype, Symbol.iterator], [Promise.prototype, 'then'], [Math, 'min'],
-  ].map(([target, key]) => {
+  ].map((entry) => {
+    // Not destructured: the array iterator may already be replaced.
+    const target = entry[0];
+    const key = entry[1];
     const original = target[key];
     target[key] = function (...args) { reached[reached.length] = String(key); return Reflect.apply(original, this, args); };
     return () => { target[key] = original; };

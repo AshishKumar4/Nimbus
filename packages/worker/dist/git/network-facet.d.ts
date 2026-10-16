@@ -12,8 +12,9 @@
  *     path is atomic; a later publish-group failure may leave a committed prefix.
  *   - Clone prepare durably flushes Git metadata, then a second entrypoint
  *     invocation validates HEAD and flushes the worktree/index.
- *   - Fresh clones carry a metadata-only closed-world overlay across the
- *     invocation boundary; regular-file bytes still fall through after flush.
+ *   - Each clone phase writes through its own writer (pack/clone.ts); a
+ *     read the buffer cannot answer goes to the supervisor once its writes
+ *     are published.
  *
  * Why this fixes the hang:
  *   - CPU-heavy packfile delta resolution runs in facet (own CPU budget)
@@ -27,7 +28,7 @@
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { RemoteFailure } from './pack/remote-failure.js';
 import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
-import { type MetadataOverlayStats, type SupervisorRpcCounters } from './pack/facet-supervisor.js';
+import { type SupervisorRpcCounters } from './pack/facet-supervisor.js';
 import type { PathProtection } from './worktree/verify-path.js';
 import type { FetchPackRequest, FetchPackStep, PushPackRequest, fetchPackResume, listRefs, pushPack } from './pack/remote.js';
 export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects' | 'graph-filters' | 'remote-list' | 'remote-fetch' | 'remote-push';
@@ -84,19 +85,6 @@ export interface GitNetworkOpts {
     auth?: {
         username: string;
         password: string;
-    };
-    /** Author and committer (for pull merges), as the supervisor's git resolved them. */
-    author?: {
-        name: string;
-        email: string;
-        timestamp?: number;
-        timezoneOffset?: number;
-    };
-    committer?: {
-        name: string;
-        email: string;
-        timestamp?: number;
-        timezoneOffset?: number;
     };
     /** Total operation budget (ms). Clone default 30 min; other ops default 5 min. */
     timeout?: number;
@@ -185,7 +173,6 @@ export interface GitNetworkResult {
     filesWritten: number;
     bytesWritten: number;
     supervisorRpc: SupervisorRpcCounters;
-    metadataOverlay: MetadataOverlayStats;
     phases?: GitNetworkPhaseDiagnostic[];
     errorPhase?: GitCloneInvocationPhase | 'operation';
     errorCode?: GitNetworkErrorCode;

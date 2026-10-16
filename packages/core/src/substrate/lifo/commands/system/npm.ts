@@ -9,6 +9,7 @@ import { isNativeBinPath } from '../../../../runtime/os-contracts.js';
 import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
 import { pickPackumentVersion } from '../../../../_shared/npm-semver.js';
 import { parseRegistryRequest, splitPackageSpec } from '../../../../_shared/npm-spec.js';
+import { notCachedMessage, type NpmCacheMode } from '../../../../_shared/npm-cache-mode.js';
 import {
 	canonicalTreePath, depthOf, holdTree, isOptional, manifestEdges, meets, namedPackages, packageJsonText, parentPlacement, placementName,
 	projectRoots, readPackageJson, saveNamed, withoutDeclared,
@@ -61,6 +62,55 @@ export type ShellExecuteFn = (
 ) => Promise<number>;
 
 /**
+ * What `npm install` asks of an install, as the command parsed it. The
+ * host's port hands it to its installer whole (its NpmInstallOptions are
+ * this, less what the port settles itself), so an option the command
+ * gains reaches the installer without the port naming it.
+ */
+export interface NpmInstallSpec {
+  projectDir: string;
+  packages: readonly string[];
+  global: boolean;
+  /** Resolved absolute prefix — present only when `global` is set. */
+  globalPrefix?: string;
+  /** The running command's pid — authorizes the host's batch writes. */
+  pid: number;
+  /** `--save-dev`: what is named is saved to devDependencies. */
+  saveDev?: boolean;
+  /** `--save-optional`: what is named is saved to optionalDependencies. */
+  saveOptional?: boolean;
+  /** `--force`: a peer conflict the project owns is a warning, not ERESOLVE, and node's engine is not checked. */
+  force?: boolean;
+  /** `--engine-strict`: a package whose engines exclude this node or npm fails the install, which changes nothing. */
+  engineStrict?: boolean;
+  /** `--strict-peer-deps`: any peer conflict is ERESOLVE unless forced. */
+  strictPeerDeps?: boolean;
+  /** `--legacy-peer-deps`: peers are not installed, nor checked. */
+  legacyPeerDeps?: boolean;
+  /** `--omit=optional` / `--omit=peer`: what only optional or only peer dependencies need is planned, and not installed. */
+  omitOptional?: boolean;
+  omitPeer?: boolean;
+  /** `--prefer-dedupe`: one copy serves every edge it can, an older one included. */
+  preferDedupe?: boolean;
+  /** False for `--no-save`: package.json is left as it is. */
+  save?: boolean;
+  /** What a saved range starts with ('' for `--save-exact`); '^' when not given. */
+  savePrefix?: string;
+  /** The command's: an install it stops before publication changes nothing, and one waiting for the tree never starts. */
+  signal?: AbortSignal;
+  /** Registry origin from the command's env (`NPM_REGISTRY`), else the default. */
+  registry: string;
+  /** How packuments and tarballs are read (npm's cache mode: `--offline`, `--prefer-offline`, `--prefer-online`); 'default' when not given. */
+  cache?: NpmCacheMode;
+  /** `--omit=dev` (`--production`): what only devDependencies reach is planned, not installed. */
+  production?: boolean;
+  /** `npm ci`: build npm's tree over package-lock.json, fail unless it is the lock's, then remove node_modules and install it. */
+  fromLockfile?: boolean;
+  npmLog?: NpmLogEmitter | null;
+  onProgress?: (line: string) => void;
+}
+
+/**
  * The host's piece of `npm install`: once the invocation has been parsed
  * into a spec and the summary output decided, the install itself is
  * whatever the host's batched installer does. Global installs carry the
@@ -68,45 +118,7 @@ export type ShellExecuteFn = (
  * `<prefix>/lib/node_modules` and `<prefix>/bin` land.
  */
 export interface NpmInstallPort {
-  install(spec: {
-    projectDir: string;
-    packages: readonly string[];
-    global: boolean;
-    /** Resolved absolute prefix — present only when `global` is set. */
-    globalPrefix?: string;
-    /** The running command's pid — authorizes the host's batch writes. */
-    pid: number;
-    /** `--save-dev`: what is named is saved to devDependencies. */
-    saveDev?: boolean;
-    /** `--save-optional`: what is named is saved to optionalDependencies. */
-    saveOptional?: boolean;
-    /** `--force`: a peer conflict the project owns is a warning, not ERESOLVE, and node's engine is not checked. */
-    force?: boolean;
-    /** `--engine-strict`: a package whose engines exclude this node or npm fails the install, which changes nothing. */
-    engineStrict?: boolean;
-    /** `--strict-peer-deps`: any peer conflict is ERESOLVE unless forced. */
-    strictPeerDeps?: boolean;
-    /** `--legacy-peer-deps`: peers are not installed, nor checked. */
-    legacyPeerDeps?: boolean;
-    /** `--omit=optional` / `--omit=peer`: what only optional or only peer dependencies need is planned, and not installed. */
-    omitOptional?: boolean;
-    omitPeer?: boolean;
-    /** `--prefer-dedupe`: one copy serves every edge it can, an older one included. */
-    preferDedupe?: boolean;
-    /** False for `--no-save`: package.json is left as it is. */
-    save?: boolean;
-    /** What a saved range starts with ('' for `--save-exact`); '^' when not given. */
-    savePrefix?: string;
-    /** The command's: an install it stops before publication changes nothing, and one waiting for the tree never starts. */
-    signal?: AbortSignal;
-    /** Registry origin from the command's env (`NPM_REGISTRY`), else the default. */
-    registry: string;
-    production?: boolean;
-    /** `npm ci`: build npm's tree over package-lock.json, fail unless it is the lock's, then remove node_modules and install it. */
-    fromLockfile?: boolean;
-    npmLog?: NpmLogEmitter | null;
-    onProgress?: (line: string) => void;
-  }): Promise<{ installed: string[]; failed: string[]; totalFiles?: number; fromCacheHits?: number; linkedBins?: number; engines?: readonly EngineMismatch[] }>;
+  install(spec: NpmInstallSpec): Promise<{ installed: string[]; failed: string[]; totalFiles?: number; fromCacheHits?: number; linkedBins?: number; engines?: readonly EngineMismatch[] }>;
   /**
    * The host's records of the bins of `packages`, which `npm uninstall`
    * removed from `modulesDir`: retired, shims and all, so no later install
@@ -276,9 +288,12 @@ async function fetchPackageInfo(
 	name: string,
 	version: string | null,
 	signal: AbortSignal,
+	/** The shell keeps no packuments: under `--offline` none is read. */
+	cache: NpmCacheMode = 'default',
 ): Promise<RegistryVersionInfo> {
 	const request = parseRegistryRequest(name, version ?? '');
 	const url = `${registry}/${encodePackageName(request.registryName)}`;
+	if (cache === 'only-if-cached') throw Object.assign(new Error(notCachedMessage(url)), { code: 'ENOTCACHED' });
 	const response = await network.fetch(url, {
 		signal,
 		headers: { Accept: 'application/json' },
@@ -420,6 +435,8 @@ interface TreeInstall {
 	/** Every registry request goes through it (the workspace's, under an egress). */
 	network: WorkspaceNetwork;
 	npmRegistry: string;
+	/** npm's cache mode for its packuments. */
+	cache: NpmCacheMode;
 	/** The command's: it stops the install before publication, never during it. */
 	signal: AbortSignal;
 	stdout: CommandOutputStream;
@@ -536,7 +553,7 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall, pro
 			for (const { name, range } of requests) {
 				await stdout.write(`  ${name}${range ? '@' + range : ''}...\n`);
 				try {
-					const info = await fetchPackageInfo(network, npmRegistry, name, range || null, signal);
+					const info = await fetchPackageInfo(network, npmRegistry, name, range || null, signal, install.cache);
 					answers.push({ package: { ...info, name, registryName: info.name, integrity: info.dist.integrity, bundleDependencies: info.bundleDependencies ?? info.bundledDependencies, info } });
 				} catch (error) {
 					answers.push({ failed: describeError(error) });
@@ -727,6 +744,7 @@ async function npmInstall(
 			globalPrefix: invocation.global ? globalPrefix : undefined,
 			pid: ctx.pid,
 			registry: npmRegistry,
+			cache: invocation.cache,
 			production: invocation.production,
 			saveDev: invocation.saveDev,
 			saveOptional: invocation.saveOptional,
@@ -775,7 +793,7 @@ function shellInstallPort(ctx: CommandContext, registry: CommandRegistry, kernel
 			const targetBase = spec.global ? `${spec.globalPrefix}/lib/node_modules` : join(spec.projectDir, 'node_modules');
 			const globalBinDir = spec.global ? `${spec.globalPrefix}/bin` : undefined;
 			const tree: TreeInstall = {
-				targetBase, vfs, network: (kernel?.network ?? ISOLATE_NETWORK).forProcess(ctx.pid), npmRegistry: spec.registry, signal,
+				targetBase, vfs, network: (kernel?.network ?? ISOLATE_NETWORK).forProcess(ctx.pid), npmRegistry: spec.registry, cache: spec.cache ?? 'default', signal,
 				stdout: ctx.stdout, stderr: ctx.stderr, registry, kernel,
 				force: spec.force === true, engineStrict: spec.engineStrict === true, strictPeerDeps: spec.strictPeerDeps === true, legacyPeerDeps: spec.legacyPeerDeps === true, preferDedupe: spec.preferDedupe === true,
 				omit: { dev: spec.production === true, optional: spec.omitOptional === true, peer: spec.omitPeer === true },
@@ -1363,6 +1381,7 @@ async function npmCi(ctx: CommandContext, deps?: NpmCommandDeps): Promise<number
 			pid: ctx.pid,
 			signal: ctx.signal,
 			registry: registryOf(ctx, invocation),
+			cache: invocation.cache,
 			production: invocation.production,
 			omitOptional: invocation.omitOptional,
 			omitPeer: invocation.omitPeer,

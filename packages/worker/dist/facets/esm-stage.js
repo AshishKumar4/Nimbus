@@ -18,6 +18,7 @@ import { FACET_PROVIDED_PACKAGES } from '@nimbus-sh/core/constants.js';
 import { cjsModuleExportNamesAsync } from '@nimbus-sh/core/runtime/cjs-module-exports.js';
 import { builtinFacadeModule, commonJsFacadeModule, jsonFacadeModule, ESM_BUN_SCOPE, ESM_FACADE_DIR, ESM_TOP_LEVEL_AWAIT, ESM_TYPELESS, ESM_HOST_MODULE, ESM_HOST_SOURCE, ESM_META_MODULE, metaModuleSource, stageEsModule, } from '@nimbus-sh/core/runtime/native-esm.js';
 import { NODE_BUILTIN_EXPORTS } from '@nimbus-sh/core/runtime/node-builtin-exports.js';
+import { isNodeBuiltin } from '@nimbus-sh/core/runtime/node-builtins.js';
 import { UNDICI_SHIM_EXPORTS } from '@nimbus-sh/core/runtime/undici-shim.js';
 import { resolveRequireEx } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { typeScriptUnderNodeModules } from '@nimbus-sh/core/runtime/module-format.js';
@@ -39,14 +40,6 @@ export const ESM_MISSING_DIR = 'nimbus/missing/';
 export const ESM_NOT_STAGED = 'ERR_NIMBUS_NOT_STAGED';
 /** The names each package the process provides has beside `default` (constants.ts FACET_PROVIDED_PACKAGES). */
 const PROVIDED_PACKAGE_EXPORTS = { undici: UNDICI_SHIM_EXPORTS };
-/** Builtins Node names only with their scheme (module.isBuiltin('test') is false). */
-const SCHEME_ONLY_BUILTINS = { sea: true, sqlite: true, test: true, 'test/reporters': true };
-/** module.isBuiltin, by Node 22.22.3's builtin table. */
-function isNodeBuiltin(specifier) {
-    if (specifier.startsWith('node:'))
-        return Object.hasOwn(NODE_BUILTIN_EXPORTS, specifier.slice(5));
-    return Object.hasOwn(NODE_BUILTIN_EXPORTS, specifier) && !SCHEME_ONLY_BUILTINS[specifier];
-}
 /** `make()`'s promise, once per key of `cache`. */
 function once(cache, key, make) {
     let found = cache.get(key);

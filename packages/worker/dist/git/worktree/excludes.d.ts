@@ -20,11 +20,7 @@ interface PathPattern {
 }
 /** One file's patterns, in the order the file gives them. */
 export type PatternList = PathPattern[];
-/**
- * add_patterns_from_buffer: a pattern file's lines, `base` the repo-relative
- * directory the file sits in ('' at the top). A UTF-8 BOM, blank lines and
- * `#` comments are skipped; a CR before the LF is dropped.
- */
+/** add_patterns_from_buffer: a pattern file's patterns (patternLines), `base` the repo-relative directory the file sits in ('' at the top). */
 export declare function parsePatternList(bytes: Uint8Array, base: string): PatternList;
 /**
  * The exclude rules of one worktree. `readGitignore(dir)` answers the bytes

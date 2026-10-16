@@ -182,6 +182,7 @@ export async function createNativeEsmLoader(
 	context: NodeContext,
 	cjs: CjsLoader,
 	main?: { readonly filename: string; readonly source: string },
+	conditions: readonly string[] = [],
 ): Promise<LifoNativeLoader> {
 	const hostModule = await installHooks();
 	const bun = Reflect.get(globalThis, 'Bun') !== undefined;
@@ -206,7 +207,7 @@ export async function createNativeEsmLoader(
 		// The resolver names a bare provided package node:<name> too; a written node:<name> is refused at resolveRecord.
 		isBuiltin: (specifier) => Object.hasOwn(cjs.moduleMap, specifier.startsWith('node:') ? specifier.slice(5) : specifier),
 		cjsResolve: (specifier, parent) => cjs.resolveFilename(specifier, dirname(parent)),
-	}, { cwd: () => context.cwd, stripTypes: false });
+	}, { cwd: () => context.cwd, stripTypes: false, conditions });
 
 	function recordFor(resolution: EsmResolution): ModuleRecord {
 		const known = records.get(resolution.url);

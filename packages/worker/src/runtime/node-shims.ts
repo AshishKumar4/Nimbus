@@ -59,6 +59,7 @@ import { NODE_SYSTEM, SYSTEM_IDENTITY } from '@nimbus-sh/core/constants.js';
 import { DIRENT_TYPES } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { STDIN_SYNC_READ_BYTES, STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { COMMONJS_WRAPPER_NAMES } from '@nimbus-sh/core/runtime/javascript-ast.js';
+import { NODE_SCHEME_ONLY_BUILTINS } from '@nimbus-sh/core/runtime/node-builtins.js';
 import { ESM_STAR_CONFLICTS, ESM_STATIC_IMPORT } from '@nimbus-sh/core/runtime/esm-interop.js';
 import { ESM_BINDINGS_MODULE, ESM_BUN_SCOPE, ESM_FACADE_DIR, ESM_TOP_LEVEL_AWAIT, ESM_TYPELESS } from '@nimbus-sh/core/runtime/native-esm.js';
 import { ESM_LOADER_POLICY_SOURCE, ESM_REQUIRED_SOURCE } from '@nimbus-sh/core/runtime/compiled-bodies.generated.js';
@@ -11433,7 +11434,7 @@ builtins.tty = {
 // would otherwise conclude e.g. undici ships with node.
 const __nimbusFacetProvidedPackages = new Set(${FACET_PROVIDED_PACKAGES_LITERAL});
 // Node's builtins that exist only with the scheme (lib/internal/bootstrap/realm.js schemelessBlockList).
-const __NODE_SCHEME_ONLY_BUILTINS = new Set(["sea", "sqlite", "test", "test/reporters"]);
+const __NODE_SCHEME_ONLY_BUILTINS = new Set(${JSON.stringify(NODE_SCHEME_ONLY_BUILTINS)});
 // The Node builtin \`specifier\` names, by its id, or null: what require,
 // import, module.isBuiltin, module.builtinModules and
 // process.getBuiltinModule read. The packages the process provides are in

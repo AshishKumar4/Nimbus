@@ -60,6 +60,7 @@ try {
     { file: '/*\n!/*/\n/A/\n!/A/*/\n/A/B/\n/D/\n', label: 'other case, core.ignoreCase', ignoreCase: true },
     { file: '/*\n!/*/\n/A/\n', label: 'other case, case-sensitive' },
     { file: '# a comment\n/*\n!/*/\n\n/c/  \n', label: 'comments, blank lines and trailing spaces' },
+    { file: '\ufeff/*\n!/*/\n/c/', label: 'a BOM, and a last line without its newline' },
   ];
   for (const { file, label, ignoreCase = false } of handWritten) {
     writeFileSync(join(repo, '.git/info/sparse-checkout'), file);
@@ -73,7 +74,7 @@ try {
   }
   console.log(`  ok  ${handWritten.length} sparse-checkout files written by hand: host git's in/out paths`);
 
-  for (const file of ['/*\n!/*/\n*.txt\n', '/*\n!/*/\n!/a/*/\n', '/*\n!/*/\n/a/**/\n', '/*\n!/*/\n/a\n', '/*\n!/*/\n/a*/\n', '/*\n!/*/\n/a/\n!/a/*/\n/a/\n']) {
+  for (const file of ['/*\n!/*/\n*.txt\n', '/*\n!/*/\n\ufeff/c/\n', '/*\n!/*/\n!/a/*/\n', '/*\n!/*/\n/a/**/\n', '/*\n!/*/\n/a\n', '/*\n!/*/\n/a*/\n', '/*\n!/*/\n/a/\n!/a/*/\n/a/\n']) {
     assert.equal(parseConeSparseCheckout(file), null, `not cone patterns: ${JSON.stringify(file)}`);
   }
   console.log('  ok  what is not a cone pattern is not read as one');

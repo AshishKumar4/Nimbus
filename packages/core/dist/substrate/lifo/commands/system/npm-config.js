@@ -144,6 +144,15 @@ export async function loadNpmConfig(vfs, cwd, env, argv) {
         get,
         find: (key) => layers.find(({ data }) => key in data)?.where ?? 'default',
         default: (key) => defaults[key],
+        flattened: (keys) => {
+            const flat = {};
+            for (const { data } of [...layers].reverse()) {
+                for (const key of Object.keys(data))
+                    if (keys.includes(key))
+                        definitions[key]?.flatten?.(key, data, flat);
+            }
+            return flat;
+        },
         localPrefix,
         positionals: remain,
         warnings,

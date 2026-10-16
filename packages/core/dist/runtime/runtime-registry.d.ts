@@ -150,14 +150,7 @@ export interface RuntimeRunOpts {
      */
     launchesServer?: boolean;
 }
-/** The VFS surface script resolution needs. */
-export interface ScriptResolutionFs {
-    isFile(path: string): boolean | Promise<boolean>;
-    readFileString(path: string): string | Promise<string>;
-}
-export declare function resolveRuntimeScriptPath(fs: ScriptResolutionFs, cwd: string, target: string, opts?: {
-    preferModuleField?: boolean;
-}): Promise<string | null>;
+export { resolveRuntimeScriptPath, type ScriptResolutionFs } from './script-path.js';
 /**
  * A subcommand handler. `runAsRuntime` re-enters the standard flow — flag
  * span, script resolution, transform, exec — with a rewritten argv, as if

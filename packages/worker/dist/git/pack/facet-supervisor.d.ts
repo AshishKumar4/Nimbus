@@ -20,8 +20,6 @@ export type GitFacetSupervisor = Pick<SupervisorRPC, 'stat' | 'lstat' | 'readdir
 /** A file larger than this comes back by ranges: an RPC value's structured-clone ceiling. */
 export declare const WHOLE_FILE_RPC_SAFE_BYTES: number;
 export declare const READ_RANGE_BYTES: number;
-export declare const METADATA_MAX_ENTRIES = 100000;
-export declare const METADATA_MAX_ACCOUNTED_BYTES: number;
 /** The supervisor calls an invocation made, by kind: what it reports, and network-facet.ts totals. */
 export interface SupervisorRpcCounters {
     stat: number;
@@ -48,13 +46,6 @@ export interface FacetStats {
     bytesWritten: number;
     supervisorRpc: SupervisorRpcCounters;
 }
-export interface MetadataOverlayStats {
-    entries: number;
-    accountedBytes: number;
-    maxEntries: number;
-    maxAccountedBytes: number;
-}
-export declare function emptyMetadataOverlayStats(): MetadataOverlayStats;
 /** `call`'s result, counted under `name`, its RPC resource disposed. */
 export declare function counted<T>(stats: FacetStats, name: keyof SupervisorRpcCounters, call: () => Promise<T>): Promise<T>;
 /** A supervisor stat, its missing fields as the session's own git reads them. */

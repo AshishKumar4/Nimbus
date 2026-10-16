@@ -18,6 +18,7 @@
  * build time. Tar streaming and the wave writer are guest preamble bindings;
  * supervisor authority arrives in env, and all request data in batch.
  */
+import { notCachedMessage } from '@nimbus-sh/core/_shared/npm-cache-mode.js';
 import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '@nimbus-sh/core/_shared/tarball-integrity.js';
 // The registry's retry policy and tarball integrity: in the facet, the
 // preamble's (loaders/npm-install-preamble.ts) by the same identifiers.
@@ -186,7 +187,16 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
         // supervisor deployment) the R2 leg becomes a noop and there is nothing to
         // overlap with, so no hedge is armed — the retry loop's own first fetch is
         // already the first thing that happens.
-        const r2Available = sharedAcquisition === null && typeof env.SUPERVISOR.getCachedTarball === 'function';
+        //
+        // npm's cache mode (InstallBatchSpec.cache) says which of the two answer,
+        // as pacote's tarball fetch has it: 'no-cache' (`--prefer-online`)
+        // downloads the tarball and asks no cache; 'force-cache' (`--prefer-
+        // offline`) and 'only-if-cached' (`--offline`) wait for the cache's
+        // answer before any download, the latter downloading nothing; only the
+        // default mode hedges.
+        const mode = batch.cache ?? 'default';
+        const r2Available = sharedAcquisition === null && mode !== 'no-cache' && typeof env.SUPERVISOR.getCachedTarball === 'function';
+        const offline = mode === 'only-if-cached';
         const r2WaitStart = Date.now();
         const r2P = r2Available
             ? Promise.race([
@@ -206,7 +216,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             clearTimeout(hedgeTimer);
             hedgeTimer = null;
         };
-        if (r2Available) {
+        if (r2Available && mode === 'default') {
             hedgeTimer = setTimeout(() => {
                 hedgeTimer = null;
                 speculativeFetches++;
@@ -327,6 +337,13 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                 resp = new Response(r2HitBytes, { status: 200 });
             }
             if (!r2HitBytes) {
+                if (offline) {
+                    return {
+                        name: spec.name, version: spec.version, pkgDir: spec.pkgDir,
+                        fileCount: 0, bytesWritten: 0, elapsed: Date.now() - t0, warnings,
+                        errorText: notCachedMessage(spec.tarballUrl),
+                    };
+                }
                 pipelinedTarballRaceLosses++;
                 // 1c. The registry's retry policy (npm/registry-retry.ts, carried
                 //     by the preamble): a 5xx or a request that never answered is

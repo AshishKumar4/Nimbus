@@ -29,12 +29,25 @@ published independently in the `@nimbus-sh` npm scope.
   another character a file URL escapes imports beside itself, and its
   `import.meta.url` escapes the name as Node's `pathToFileURL` does. Before,
   `a#b/main.cjs` imported from the directory above it.
-- Fixed: a portable `node` program's `import()` takes its arguments as
-  Node 22's does. A second argument that is not an object (`1`, `null`), a
-  `with` that is not an object, or an attribute value that is not a string
-  is refused with V8's TypeError before anything resolves. Before, these
-  were taken as no options and the module loaded and ran. A Symbol
-  specifier is refused, where before it loaded `Symbol(s)`.
+- Fixed: a portable workspace's `node` reads its command line as the
+  hosted `node` does (Node's own parser, NODE_OPTIONS first), and finds its
+  script the same way. `node .` runs the package's `main`, and `node start`
+  finds `start.js`. Options before the script, such as `--trace-warnings`,
+  are options. `--conditions`, `-C` and `NODE_OPTIONS='--conditions=…'`
+  apply to both `require` and `import`. Before, only a first-position `-v`,
+  `--help` or `-e` was read, `node .` read the directory, and conditions
+  were ignored. What it does not run (`--require`, `--import`, `--print`,
+  `--check`, `--input-type`, `--experimental-default-type`, a program from
+  stdin) is refused with exit 9 before anything runs. A script it cannot
+  find is "node: cannot find module '<script>'", as on the hosted `node`.
+- Fixed: a hosted launch's dependency walk and ES module staging decide
+  what is a Node builtin the way Node's `module.isBuiltin` does
+  (`runtime/node-builtins.js` `isNodeBuiltin`). The process's `require`
+  shares its scheme-only names and serves the builtins it implements. A
+  `node_modules/constants` shadow is no longer walked: `require('constants')`
+  is the builtin, as in Node. Before, a large shadow could fail the launch over a file Node never
+  reads. An npm package named `sqlite`, required bare, is now shipped with
+  the launch, since bare `sqlite` is no builtin.
 - Fixed: a portable `node` program's `import()` refuses a second argument
   that is not an object (`1`, `null`), or a `with` that is not an object,
   with V8's TypeError before anything resolves. Before, these counted as no
@@ -57,6 +70,20 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: a portable `node` program can `import { version, transform } from
   'esbuild'` with the names `require('esbuild')` has. Before, it failed to
   link. `node:esbuild` and `node:rimraf` are not modules, as in Node.
+- Added: `npm install` and `npm ci` read packuments in npm's cache modes.
+  `--prefer-online` checks a cached packument with the registry however
+  fresh it is (a `304` keeps it). `--prefer-offline` uses any cached copy,
+  however old, and fetches only what is not cached. `--offline` uses any
+  cached copy and fails a package with none with npm's `ENOTCACHED` error,
+  without the network. Each is read from the command line, `npm_config_*`
+  or an `.npmrc`, as npm reads it, along with the deprecated
+  `--cache-max=0` and `--cache-min=9999`. Tarballs are read in the same
+  mode: `--prefer-online` downloads each, `--prefer-offline` takes the
+  cache's copy and downloads only one it lacks, and `--offline` downloads
+  none, failing one the cache lacks with `ENOTCACHED`.
+  Otherwise a cached packument is reused for 60 minutes, as before, and
+  one past that is checked against the shared cache's copy before the
+  registry.
 - Fixed: a session's own server sends its reason phrase as Node's server
   does. That is the phrase Node's `http.STATUS_CODES` gives the status
   ("unknown" for a status it does not name), or the phrase the handler set
@@ -106,6 +133,22 @@ published independently in the `@nimbus-sh` npm scope.
   remote API's base path and how a configured one is read. The SDK's
   `Nimbus.connect` and the worker's remote API both use them now, in place
   of a copy each. Base paths behave as before.
+- Fixed (git): `git tag -l <pattern>` matches as git does, with the same
+  wildmatch git uses for refs. A negated class (`rel-[!x]`), a POSIX class
+  (`[[:digit:]]`) and an escape (`\x`) now work. Before, a regular
+  expression stood in, and it read `rel-[!x]` as "rel-! or rel-x".
+- Fixed (git): `git clone --depth` and `git fetch --depth` read their
+  value as git does, into an int. `0`, a negative number, `abc` or
+  `2147483648` fails with "fatal: depth <n> is not a positive number".
+  `2junk` or `08` fails with "fatal: transport: invalid depth option
+  '<n>'". Each failure exits 128. `010` is octal, so depth 8. Before, a
+  clone took `0` and `abc` as depth 1 and `2junk` as depth 2, and cloned
+  anyway. A clone with no `--depth` is still depth 1.
+- Fixed (git, mounted clone): when a file, an unlink or the index lock
+  fails, git's error gives strerror's words for every code the session's
+  filesystem answers. `Invalid argument`, `Directory not empty`, `Bad file
+  descriptor` and `Stale file handle` were missing, and those failures
+  printed the raw error, such as `EINVAL: …`.
 - Fixed (shell): when a here-document's command fails, the interactive
   shell reports it the way the shell and runtimes report any caught value
   (`_shared/error-text.js`). A thrown object's `message` is shown, and an
