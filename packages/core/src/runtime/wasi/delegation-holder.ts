@@ -40,6 +40,7 @@ import type { ResidentEntry } from './resident-filesystem.js';
 import { fsError } from '../beneath-walk.js';
 import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, explicitTimes, modeAllows, timeAt, utimesRefusal } from '../../vfs/posix-access.js';
 import { copiedPermissions, copyfileMode } from '../../vfs/vfs.js';
+import { ownNames } from './own-names.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import { LINGER_MS, processFsClient, type ProcessFsAnswer, type ProcessFsClient, type ProcessFsGrant, type ProcessFsJournal, type ProcessFsOp, type ProcessFsSession } from '../../_shared/process-fs-client.js';
 
@@ -346,10 +347,18 @@ function within(key: string, root: string): boolean {
 export function delegationHolder(options: HolderOptions): DelegationHolder {
   const { store } = options;
   const now = options.now ?? Date.now;
-  /** Decided entries (null: removed) and decided names per directory. */
-  const decided = new Map<string, ResidentEntry | null>();
-  const added = new Map<string, Map<string, RuntimeVfsDirEntry['type']>>();
-  const removed = new Map<string, Set<string>>();
+  /** What it decided by name, until the view has it. */
+  const names = ownNames({
+    entry: (key) => store.entry(key),
+    held: (key) => client.held(key) !== undefined,
+    // A cell goes with its name, but for bytes still unlogged or open.
+    forgot: (key, entry) => {
+      const file = entry ? files.get(entry.ino) : undefined;
+      if (file === undefined || file.key !== key || file.through !== undefined || dirty.has(file) || isOpen(file)) return;
+      files.delete(entry!.ino);
+      unreserve(file);
+    },
+  });
   /** Files whose bytes are here, by inode number. */
   const files = new Map<number, LocalFile>();
   const handles = new Map<number, LocalHandle>();
@@ -363,58 +372,12 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   let throughLogged = 0;
   let sentAt = 0;
 
-  /**
-   * What this process changed by name that the view may not have yet, per
-   * key: its ops unanswered (pending), and how many barriers had begun when
-   * the last was answered (settled). Outside a held subtree a key retires
-   * once a barrier begun after that lands (retire); a refused op's at once,
-   * the session never having applied it.
-   */
-  const own = new Map<string, { pending: number; settled: number }>();
-  /** Of those, the ones all answered outside a held subtree: what a landed barrier may retire. */
-  const settling = new Set<string>();
-  let barriersBegun = 0;
-
-  /** The names an op changes. */
-  const keysOf = (op: ProcessFsOp): string[] => (op.type === 'rename' ? [op.from, op.to] : op.type === 'call' ? [op.call.path] : [op.path]);
-
   /** Log `op`, the process told it succeeded: its names are this process's own until the view has them. */
   const acknowledged = (op: ProcessFsOp): Promise<ProcessFsAnswer> => {
     const answered = client.submit(op, { acknowledged: true });
-    const keys = keysOf(op);
-    for (const key of keys) {
-      const record = own.get(key);
-      if (record === undefined) own.set(key, { pending: 1, settled: barriersBegun });
-      else record.pending++;
-    }
-    const settle = (refused: boolean): void => {
-      for (const key of keys) {
-        const record = own.get(key);
-        if (record === undefined) continue;
-        record.pending--;
-        record.settled = barriersBegun;
-        if (refused) forget(key);
-        else if (record.pending === 0 && client.held(key) === undefined) settling.add(key);
-      }
-    };
-    void answered.then((answer) => settle(answer.failed !== undefined), () => settle(true));
+    const keys = names.logged(op);
+    void answered.then((answer) => names.answered(keys, answer.failed !== undefined), () => names.answered(keys, true));
     return answered;
-  };
-
-  /** `key`'s own record goes: the view's row answers for it from now on, but for bytes still written or open. */
-  const forget = (key: string): void => {
-    const entry = decided.get(key);
-    own.delete(key);
-    settling.delete(key);
-    decided.delete(key);
-    added.get(parentKey(key))?.delete(nameOf(key));
-    removed.get(parentKey(key))?.delete(nameOf(key));
-    if (added.get(key)?.size === 0) added.delete(key);
-    const file = entry ? files.get(entry.ino) : undefined;
-    if (file !== undefined && file.key === key && file.through === undefined && !dirty.has(file) && !isOpen(file)) {
-      files.delete(entry!.ino);
-      unreserve(file);
-    }
   };
 
   /** What `file`'s cell took of the process's budget goes back. */
@@ -451,7 +414,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   const goThrough = (file: LocalFile, ino: number, made?: number): void => {
     if (file.through !== undefined) return;
     delete file.logged;
-    const entry = decided.get(file.key) ?? store.entry(file.key);
+    const entry = names.decided(file.key) ?? store.entry(file.key);
     file.through = {
       ino,
       entry: entry ?? {
@@ -521,7 +484,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
 
   /** Whether `file`'s mode, as decided here, refuses one of its open descriptions what it was opened to do: only its creating open could have. */
   const refusedByMode = (file: LocalFile): boolean => {
-    const entry = decided.get(file.key);
+    const entry = names.decided(file.key);
     if (entry === undefined || entry === null) return false;
     for (const handle of handles.values()) {
       if (handle.file === file && !modeAllows(entry, handle.readable ? 6 : 2, store.cred)) return true;
@@ -596,9 +559,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   const dropDecisions = (root: string): void => {
     drain();
     for (const [ino, file] of files) if (within(file.key, root)) goThrough(file, ino);
-    // What it logged stays this process's own until the view has it (retire); what it never logged goes now.
-    for (const key of [...decided.keys()]) if (within(key, root) && !own.has(key)) forget(key);
-    for (const [key, record] of own) if (record.pending === 0 && within(key, root)) settling.add(key);
+    names.released(root);
     options.sent?.();
   };
 
@@ -634,41 +595,15 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     options.sent?.();
   };
 
-  /** Whether directory `key` was made here, and the store knows nothing of it: its names are the ones made in it. */
-  const madeHere = (key: string): boolean => decided.get(key)?.type === 'directory' && !store.entry(key);
-
-  /** This process's own word on `key`: what it decided, or absent for a name not made in a directory it made. */
-  const ownEntry = (key: string): ResidentEntry | null | undefined => {
-    const own = decided.get(key);
-    if (own !== undefined) return own;
-    // A directory made here has no names but the ones made in it.
-    const dir = parentKey(key);
-    return key !== '' && madeHere(dir) && !added.get(dir)?.has(nameOf(key)) ? null : undefined;
-  };
-
   const entryOf = (key: string): ResidentEntry | null | undefined => {
-    const own = ownEntry(key);
-    return own !== undefined ? own : store.entry(key);
+    const mine = names.entry(key);
+    return mine !== undefined ? mine : store.entry(key);
   };
 
   /** The ownership a new name under `parent` takes: the process's, with a setgid directory's group. */
   const ownership = (parent: ResidentEntry): { uid: number; gid: number; setgid: boolean } => {
     const setgid = (parent.mode & 0o2000) !== 0;
     return { uid: store.cred.uid, gid: setgid ? parent.gid : store.cred.gid, setgid };
-  };
-
-  const note = (dir: string, name: string, type: RuntimeVfsDirEntry['type'] | null): void => {
-    if (type === null) {
-      added.get(dir)?.delete(name);
-      let gone = removed.get(dir);
-      if (gone === undefined) removed.set(dir, gone = new Set());
-      gone.add(name);
-    } else {
-      removed.get(dir)?.delete(name);
-      let made = added.get(dir);
-      if (made === undefined) added.set(dir, made = new Map());
-      made.set(name, type);
-    }
   };
 
   /** The parent of `key`, when the process may make a name in it: a known, writable, searchable directory of the session's filesystem. */
@@ -785,20 +720,9 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
 
   const holder: DelegationHolder = {
     client,
-    entry: (key) => ownEntry(key),
+    entry: (key) => names.entry(key),
 
-    children: (key, base) => {
-      const made = added.get(key);
-      const gone = removed.get(key);
-      if (made === undefined && gone === undefined) return base;
-      // A directory made here has no names but the ones made in it; one the
-      // store has not listed is listed first (undefined asks for that).
-      if (base === undefined && !madeHere(key)) return undefined;
-      const out = new Map<string, RuntimeVfsDirEntry['type']>();
-      for (const child of base ?? []) if (!gone?.has(child.name)) out.set(child.name, child.type);
-      for (const [name, type] of made ?? []) out.set(name, type);
-      return [...out].map(([name, type]) => ({ name, type }));
-    },
+    children: (key, base) => names.children(key, base),
 
     copyFile: (from, to, path, stored, keepMode) => {
       const source = entryOf(from);
@@ -848,8 +772,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       file.length = bytes.byteLength;
       file.logged = bytes.byteLength;
       file.mode = mode;
-      if (target === null) note(parentKey(to), nameOf(to), 'file');
-      decided.set(to, entry);
+      if (target === null) names.note(parentKey(to), nameOf(to), 'file');
+      names.decide(to, entry);
       files.set(entry.ino, file);
       const description = descriptionId();
       changes++;
@@ -898,8 +822,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
           type: 'file', dev: store.device, ino, nlink: 1, size: 0, atime: stamp, mtime: stamp, ctime: stamp,
           mode: 0o100000 | (asked & ~umask), uid, gid, revision: 0, target: null,
         };
-        decided.set(key, entry);
-        note(parentKey(key), nameOf(key), 'file');
+        names.decide(key, entry);
+        names.note(parentKey(key), nameOf(key), 'file');
         // Its mode was decided under this umask: the session applies the same
         // one, and the number a grant reserved (a provisional one is the session's to give).
         file = { key, bytes: new Uint8Array(0), length: 0, mode: asked, ...(grant === PROVISIONAL ? {} : { made: ino }), umask };
@@ -925,7 +849,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         file = known !== undefined && known.through === undefined ? known : { key, bytes: new Uint8Array(0), length: 0, mode: current.mode & 0o7777 };
         file.length = 0;
         files.set(current.ino, file);
-        decided.set(key, { ...current, size: 0, mtime: now(), ctime: now() });
+        names.decide(key, { ...current, size: 0, mtime: now(), ctime: now() });
         written(file);
       }
       const id = nextHandle--;
@@ -971,8 +895,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         file.bytes = bytes.slice();
         file.reserved = bytes.byteLength;
         file.length = bytes.byteLength;
-        const entry = decided.get(key);
-        if (entry) decided.set(key, { ...entry, size: file.length, mtime: now(), ctime: now() });
+        const entry = names.decided(key);
+        if (entry) names.decide(key, { ...entry, size: file.length, mtime: now(), ctime: now() });
         written(file, 0);
       } else {
         holder.write(handle.id, 0, bytes);
@@ -1103,8 +1027,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       file.bytes.set(bytes, start);
       file.length = Math.max(file.length, end);
       if (offset === null || handle.append) handle.position = end;
-      const entry = decided.get(file.key);
-      if (entry) decided.set(file.key, { ...entry, size: file.length, mtime: now(), ctime: now() });
+      const entry = names.decided(file.key);
+      if (entry) names.decide(file.key, { ...entry, size: file.length, mtime: now(), ctime: now() });
       written(file, from);
       return bytes.byteLength;
     },
@@ -1133,8 +1057,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const from = Math.min(size, file.length);
       if (size > file.length) file.bytes.fill(0, file.length, size);
       file.length = size;
-      const entry = decided.get(file.key);
-      if (entry) decided.set(file.key, { ...entry, size, mtime: now(), ctime: now() });
+      const entry = names.decided(file.key);
+      if (entry) names.decide(file.key, { ...entry, size, mtime: now(), ctime: now() });
       written(file, from);
       return true;
     },
@@ -1148,7 +1072,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       if (file.through !== undefined) return { ...file.through.entry, size: file.length };
       // Its name gone: the description's own file, as it was then.
       if (file.detached !== undefined) return { ...file.detached, size: file.length };
-      const entry = decided.get(file.key) ?? store.entry(file.key);
+      const entry = names.decided(file.key) ?? store.entry(file.key);
       if (!entry) throw fsError('EBADF', 'fstat', handle.path);
       return { ...entry, size: file.length };
     },
@@ -1178,7 +1102,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const handle = handleOf(handleId);
       const file = liveFile(handle);
       if (file.through !== undefined || flags.append) return undefined;
-      const entry = file.view !== undefined ? viewed(file).entry : file.detached ?? decided.get(file.key) ?? store.entry(file.key);
+      const entry = file.view !== undefined ? viewed(file).entry : file.detached ?? names.decided(file.key) ?? store.entry(file.key);
       if (!entry) throw fsError('EBADF', 'open', handle.path);
       if (flags.create && flags.exclusive) throw fsError('EEXIST', 'open', handle.path);
       if (!modeAllows(entry, (flags.read ? 4 : 0) | (flags.write || flags.truncate ? 2 : 0), store.cred)) throw fsError('EACCES', 'open', handle.path);
@@ -1206,12 +1130,12 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const stamp = now();
       const umask = mask ?? umaskOf(grant);
       const perm = (mode & 0o777 & ~umask) | (setgid ? 0o2000 : 0);
-      decided.set(key, {
+      names.decide(key, {
         type: 'directory', dev: store.device, ino, nlink: 2, size: 0, atime: stamp, mtime: stamp, ctime: stamp,
         mode: 0o40000 | perm, uid, gid, revision: 0, target: null,
       });
-      note(parentKey(key), nameOf(key), 'directory');
-      added.set(key, added.get(key) ?? new Map());
+      names.note(parentKey(key), nameOf(key), 'directory');
+      names.madeDirectory(key);
       log({ type: 'call', call: { call: 'mkdir', path: key, mode: mode & 0o777, ...(grant === PROVISIONAL ? {} : { ino }), umask } });
       return true;
     },
@@ -1222,8 +1146,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       if (current === undefined || current === null || current.type === 'directory') return false;
       if (deciding(key) === undefined) return false;
       if (writableParent(key, path, 'unlink') === undefined) return false;
-      decided.set(key, null);
-      note(parentKey(key), nameOf(key), null);
+      names.decide(key, null);
+      names.note(parentKey(key), nameOf(key), null);
       const found = files.get(current.ino);
       const local = found !== undefined && found.key === key ? found : undefined;
       // Its bytes go with it: nothing of them is logged, now or through a
@@ -1252,10 +1176,9 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       if (names === undefined) return false;
       if (names.length > 0) throw fsError('ENOTEMPTY', 'rmdir', path);
       if (deciding(key) === undefined || writableParent(key, path, 'rmdir') === undefined) return false;
-      decided.set(key, null);
-      note(parentKey(key), nameOf(key), null);
-      added.delete(key);
-      removed.delete(key);
+      names.decide(key, null);
+      names.note(parentKey(key), nameOf(key), null);
+      names.removedDirectory(key);
       log({ type: 'call', call: { call: 'rmdir', path: key } });
       return true;
     },
@@ -1271,11 +1194,11 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const { uid, gid } = ownership(parent);
       const stamp = now();
       // Numbered here until the view has the session's (a symlink's op carries no number).
-      decided.set(key, {
+      names.decide(key, {
         type: 'symlink', dev: store.device, ino: nextLocalIno++, nlink: 1, size: new TextEncoder().encode(target).byteLength,
         atime: stamp, mtime: stamp, ctime: stamp, mode: 0o120777, uid, gid, revision: 0, target,
       });
-      note(parentKey(key), nameOf(key), 'symlink');
+      names.note(parentKey(key), nameOf(key), 'symlink');
       log({ type: 'call', call: { call: 'symlink', path: key, target } });
       return true;
     },
@@ -1294,24 +1217,11 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       // What was written before the rename is logged under the name it had.
       drain();
       // What was decided under the source moves with it.
-      for (const [key, value] of [...decided]) {
-        if (key !== from && within(key, from)) { decided.delete(key); decided.set(to + key.slice(from.length), value); }
-      }
-      for (const map of [added, removed] as Map<string, unknown>[]) {
-        for (const [key, value] of [...map]) if (within(key, from)) { map.delete(key); map.set(to + key.slice(from.length), value); }
-      }
-      // And the names beneath it are its own under their new names (the rename's are its own).
-      for (const [key, value] of [...own]) {
-        if (key === from || !within(key, from)) continue;
-        const moved = to + key.slice(from.length);
-        own.delete(key);
-        own.set(moved, value);
-        if (settling.delete(key)) settling.add(moved);
-      }
-      decided.set(from, null);
-      decided.set(to, { ...source, ctime: now() });
-      note(parentKey(from), nameOf(from), null);
-      note(parentKey(to), nameOf(to), source.type);
+      names.move(from, to);
+      names.decide(from, null);
+      names.decide(to, { ...source, ctime: now() });
+      names.note(parentKey(from), nameOf(from), null);
+      names.note(parentKey(to), nameOf(to), source.type);
       // A file it replaces loses its name: its open descriptions keep its bytes.
       if (target !== null) {
         const found = files.get(target.ino);
@@ -1351,7 +1261,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       }
       if ('mode' in attrs) throughAt([key]);
       const next = changedBy(current, attrs);
-      decided.set(key, next);
+      names.decide(key, next);
       const local = files.get(current.ino);
       if (local !== undefined) local.mode = next.mode & 0o7777;
       log({ type: 'setattr', path: key, attrs: 'uid' in attrs ? { uid: next.uid, gid: next.gid } : attrs });
@@ -1361,7 +1271,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     fsetattr: (handleId, change) => {
       const file = liveFile(handleOf(handleId));
       if (file.through !== undefined) return false;
-      const entry = file.detached ?? decided.get(file.key) ?? store.entry(file.key);
+      const entry = file.detached ?? names.decided(file.key) ?? store.entry(file.key);
       if (entry === undefined || entry === null) return false;
       // Its times as it is decided (timeAt): now, explicit, or as they are.
       const at = now();
@@ -1379,21 +1289,15 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       file.mode = file.detached.mode & 0o7777;
       return true;
     },
-    undecided: (key) => { decided.delete(key); },
+    undecided: (key) => { names.undecide(key); },
     restat: (handleId, stat) => {
       const through = handleOf(handleId).file.through;
       if (through !== undefined) through.entry = { ...stat, target: null };
     },
 
     holds: (key) => client.held(key) !== undefined,
-    barrierBegun: () => ++barriersBegun,
-    retire: (begun) => {
-      for (const key of [...settling]) {
-        const record = own.get(key);
-        if (record === undefined || client.held(key) !== undefined) settling.delete(key);
-        else if (record.pending === 0 && record.settled < begun) forget(key);
-      }
-    },
+    barrierBegun: () => names.barrierBegun(),
+    retire: (begun) => names.retire(begun),
     pending: () => dirty.size > 0 || client.pending(),
     flush: async () => {
       drain();
