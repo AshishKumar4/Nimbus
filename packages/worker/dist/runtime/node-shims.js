@@ -57,7 +57,7 @@ import { STDIN_SYNC_READ_BYTES, STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/c
 import { COMMONJS_WRAPPER_NAMES } from '@nimbus-sh/core/runtime/javascript-ast.js';
 import { ESM_STAR_CONFLICTS, ESM_STATIC_IMPORT } from '@nimbus-sh/core/runtime/esm-interop.js';
 import { ESM_BINDINGS_MODULE, ESM_BUN_SCOPE, ESM_FACADE_DIR, ESM_TOP_LEVEL_AWAIT, ESM_TYPELESS } from '@nimbus-sh/core/runtime/native-esm.js';
-import { ESM_REQUIRED_SOURCE } from '@nimbus-sh/core/runtime/compiled-bodies.generated.js';
+import { ESM_LOADER_POLICY_SOURCE, ESM_REQUIRED_SOURCE } from '@nimbus-sh/core/runtime/compiled-bodies.generated.js';
 import { FACET_PROVIDED_PACKAGES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, NIMBUS_AI_GATEWAY_PORT, NODE_VERSION, NODE_VERSIONS, VFS_CAPACITY, } from '@nimbus-sh/core/constants.js';
 import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
 import { NATIVE_HTTP_SOURCE } from './native-http.js';
@@ -12956,6 +12956,7 @@ function __nimbusEsmRequire(id, required, parent = undefined) {
 }
 // Node's require(esm) result of a record's namespace (core runtime/native-esm-runtime.ts requiredEsModule).
 const __nimbusEsmRequired = ${ESM_REQUIRED_SOURCE}.requiredEsModule;
+const { importCallArguments: __nimbusImportCallArguments, dataModule: __nimbusDataModule } = ${ESM_LOADER_POLICY_SOURCE};
 // The package.json files Node's loader has warned are typeless (MODULE_TYPELESS_PACKAGE_JSON).
 const __nimbusTypelessWarned = new Set();
 // Node's warning of an imported .js that is an ES module by its syntax alone
@@ -13223,21 +13224,15 @@ function __esmLoad(resolution) {
     if (id !== -1) return __nimbusEsmImport(id);
     return __nimbusTranslatedNamespace(resolution, builtins[resolution.builtin]);
   } else if (resolution.format === "data") {
-    const url = new URL(resolution.url);
-    const comma = url.pathname.indexOf(',');
-    const header = url.pathname.slice(0, comma);
-    const mediaType = header.split(';')[0].toLowerCase();
-    const payload = url.pathname.slice(comma + 1);
-    const text = header.split(';').includes('base64')
-      ? __BufferMod.from(decodeURIComponent(payload), 'base64').toString('utf8') : decodeURIComponent(payload);
-    if (mediaType === "application/json") {
-      const value = JSON.parse(text);
+    const data = __nimbusDataModule(resolution.url);
+    if (data.format === "json") {
+      const value = JSON.parse(data.source);
       ns = __esmNamespaceOf(["default"], () => value);
-    } else if (mediaType === "text/javascript" || mediaType === "application/javascript") {
+    } else if (data.format === "module") {
       // A data URL produced at runtime is a module body, just like a written
       // file. It is staged by the same runtime-code service, retaining its URL
       // as the import base (relative imports from data URLs remain invalid).
-      const cell = __nimbusRuntimeModule(resolution.url, text);
+      const cell = __nimbusRuntimeModule(resolution.url, data.source);
       const mod = { exports: {} };
       Object.defineProperty(mod, "__nimbusImportMeta", { value: {
         url: resolution.url,
@@ -13265,7 +13260,7 @@ function __esmLoad(resolution) {
       }
       ns = namespace();
     } else {
-      throw nodeError(TypeError, "ERR_UNKNOWN_MODULE_FORMAT", "Unsupported data module MIME type: " + mediaType);
+      throw nodeError(RangeError, "ERR_UNKNOWN_MODULE_FORMAT", "Unknown module format: " + data.mime + " for URL " + resolution.url);
     }
   } else {
     const key = resolution.path.replace(/^\\/+/, "");
@@ -13579,20 +13574,8 @@ async function __nimbusStageImport(specifier, parentUrl) {
 }
 globalThis.__nimbusDynamicImport = function __nimbusDynamicImport(parentUrl, specifier, options) {
   return Promise.resolve().then(async () => {
-    const text = String(specifier);
-    const attributes = {};
     // V8's own checks and messages (node 22), which run before resolution.
-    if (options !== undefined) {
-      if (options === null || typeof options !== "object") throw new TypeError("The second argument to import() must be an object");
-      const withAttributes = options.with;
-      if (withAttributes !== undefined) {
-        if (withAttributes === null || typeof withAttributes !== "object") throw new TypeError("The 'assert' option must be an object");
-        for (const key of Object.keys(withAttributes)) {
-          if (typeof withAttributes[key] !== "string") throw new TypeError("Import assertion value must be a string");
-          attributes[key] = withAttributes[key];
-        }
-      }
-    }
+    const { specifier: text, attributes } = __nimbusImportCallArguments(specifier, options);
     // Counted as the program's own work: a floating import(...).then(...) keeps
     // the process while it fetches, as Node's loader keeps it while it reads.
     const resolution = await __nimbusTrackOp(__nimbusStageImport(text, parentUrl));
