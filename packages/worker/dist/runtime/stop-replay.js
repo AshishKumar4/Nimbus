@@ -522,6 +522,18 @@ const __nimbusStopReplay = (() => {
       else if (path.length > WRITE_ENTRY_MAX - 64) unreplayable("changed a file whose path is longer than " + (WRITE_ENTRY_MAX - 64) + " characters first");
       else run.tape.writes[run.tape.writes.length] = name + " " + path + " " + digest(op);
     },
+    // A change the program asked for and found made already, so made
+    // nothing and is no mutation: mkdir -p of a directory there. A run again
+    // finds what the run before it made, so the change of the tape it would
+    // have made next is made again by being there.
+    found(op) {
+      if (!run || !run.armed || !run.tape || !replaying() || run.replay.listen !== true) return;
+      if (run.writesAt >= run.replayedWrites) return;
+      const call = op.type === "call" ? op.call : op;
+      const name = op.type === "call" ? "" + call.call : "" + op.type;
+      const path = typeof call.path === "string" ? call.path : "";
+      if (run.tape.writes[run.writesAt] === name + " " + path + " " + digest(op)) run.writesAt++;
+    },
     // A server's first listen, before it binds or reserves anything. A run
     // again of a run that stopped here has reached where it stopped; a
     // promotable run stops (and never comes back here), or throws why it
