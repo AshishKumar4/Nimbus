@@ -245,16 +245,9 @@ export function starConflicts(host: LateLinkHost, url: string): string[] {
  * namespace taken in a cycle has them all.
  */
 export function namespaceNames(host: LateLinkHost, url: string): string[] | null {
-  return lateModules.has(url) ? targetNamespaceNames(host, { url }) : null;
-}
-
-/** The names of the namespace of staged row `row`, as staging's facts read them (namespaceNames' rule); null where they do not tell. */
-export function rowNamespaceNames(host: LateLinkHost, row: number): string[] | null {
-  return targetNamespaceNames(host, { row });
-}
-
-function targetNamespaceNames(host: LateLinkHost, target: LateTarget): string[] | null {
   const late: LateGraph = { modules: lateModules, rows: [] };
+  if (!lateModules.has(url)) return null;
+  const target: LateTarget = { url };
   const names = exportedNames(host, late, target, new Set());
   if (names === null) return null;
   return names.filter((name) => resolveExport(host, late, target, name, new Set()) !== AMBIGUOUS);

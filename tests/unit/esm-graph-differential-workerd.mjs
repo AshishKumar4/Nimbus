@@ -46,6 +46,9 @@ for (let g = 0; g < GRAPHS; g++) {
     if (modules[i].kind === 'cjs') continue;
     for (let j = 0; j < size; j++) {
       if (j === i || random() >= 0.35) continue;
+      // A staged module is linked against the files there when the launch began: one it imports that the program
+      // writes later is refused (ticket-staged-import-of-later-file.md), where Node finds it. Not in these graphs.
+      if (modules[i].kind === 'staged' && (modules[j].kind === 'file' || modules[j].kind === 'query')) continue;
       // A data: module's URL holds what it imports: data: modules import only lower data: modules (no cycle of URLs).
       if (modules[i].kind === 'data' && modules[j].kind === 'data' && j > i) continue;
       modules[i].deps.push(j);
