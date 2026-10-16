@@ -50,8 +50,13 @@ function shadowRun(name, source) {
   return { out: JSON.parse(run.stdout.trim().split('\n').at(-1)), report: readReport(report) };
 }
 
-/** The report's comparisons: how many, and the mismatches. */
-const compared = ({ report }) => ({ compared: report.compared ?? 0, mismatches: report.mismatches ?? [] });
+/** The report's comparisons: how many, the mismatches, those still waiting at exit, and those not comparable. */
+const compared = ({ report }) => ({
+  compared: report.compared ?? 0,
+  mismatches: report.mismatches ?? [],
+  awaiting: report.awaiting ?? 0,
+  uncomparable: (report.uncomparable ?? []).length,
+});
 
 try {
   // Each argument is converted to a string once, as Function converts it: the
@@ -65,7 +70,7 @@ try {
       try { Function(Symbol('body')); out.symbol = 'built'; } catch (e) { out.symbol = e.constructor.name; }
     `);
     assert.deepEqual(run.out, { value: 1, conversions: 1, symbol: 'TypeError' });
-    assert.deepEqual(compared(run), { compared: 1, mismatches: [] });
+    assert.deepEqual(compared(run), { compared: 1, mismatches: [], awaiting: 0, uncomparable: 0 });
   }
 
   // An ordinary function called with new is constructed both ways and compared.
@@ -76,7 +81,7 @@ try {
       const out = { x: point.x, twice: point.twice, instance: point instanceof Point };
     `);
     assert.deepEqual(run.out, { x: 3, twice: 6, instance: true });
-    assert.deepEqual(compared(run), { compared: 1, mismatches: [] });
+    assert.deepEqual(compared(run), { compared: 1, mismatches: [], awaiting: 0, uncomparable: 0 });
   }
 
   // A function returning a Promise gives the program that Promise, and the
@@ -90,7 +95,7 @@ try {
       out.rejected = await fails().then(() => 'fulfilled', (e) => e.message);
     `);
     assert.deepEqual(run.out, { promise: true, value: 2, rejected: 'no' });
-    assert.deepEqual(compared(run), { compared: 2, mismatches: [] });
+    assert.deepEqual(compared(run), { compared: 2, mismatches: [], awaiting: 0, uncomparable: 0 });
   }
 
   // A generator's and an async generator's iterations are compared step by step.
@@ -105,10 +110,92 @@ try {
     `);
     assert.deepEqual(run.out, { counted: [0, 10], awaited: ['a', 'b'] });
     // Each next(), to the one that ends it: three of each kind.
-    assert.deepEqual(compared(run), { compared: 6, mismatches: [] });
+    assert.deepEqual(compared(run), { compared: 6, mismatches: [], awaiting: 0, uncomparable: 0 });
+  }
+  // The hooked constructors' [[Prototype]]s are the hooked ones: AsyncFunction's parent is the hooked Function.
+  {
+    const run = shadowRun('constructor-parents', `
+      const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+      const out = { parent: Object.getPrototypeOf(AsyncFunction) === Function, value: Object.getPrototypeOf(AsyncFunction)('return 7')() };
+    `);
+    assert.deepEqual(run.out, { parent: true, value: 7 });
+    assert.deepEqual(compared(run), { compared: 1, mismatches: [], awaiting: 0, uncomparable: 0 });
+  }
+
+  // A generator function is one to the program, and its objects are native ones.
+  {
+    const run = shadowRun('generator-shape', `
+      const Generator = Object.getPrototypeOf(function* () {}).constructor;
+      const g = Generator('n', 'yield n; yield n + 1;');
+      g.prototype.extra = 'on the prototype';
+      const it = g(4);
+      const out = {
+        tag: Object.prototype.toString.call(g),
+        name: g.name,
+        length: g.length,
+        instance: it instanceof g,
+        extra: it.extra,
+        first: Object.getPrototypeOf(it).next.call(it).value,
+        second: it.next().value,
+      };
+      try { Reflect.construct(Object, [], g); out.construct = 'constructed'; } catch (e) { out.construct = e.constructor.name; }
+      const detached = it.next;
+      try { detached.call({}); out.detached = 'advanced'; } catch (e) { out.detached = e.constructor.name; }
+    `);
+    assert.deepEqual(run.out, { tag: '[object GeneratorFunction]', name: 'anonymous', length: 1, instance: true, extra: 'on the prototype', first: 4, second: 5, construct: 'TypeError', detached: 'TypeError' });
+    assert.deepEqual(compared(run), { compared: 2, mismatches: [], awaiting: 0, uncomparable: 0 });
+  }
+
+  // An object a generator yields, sent back in, reaches the copy as the copy's own.
+  {
+    const run = shadowRun('generator-token', `
+      const Generator = Object.getPrototypeOf(function* () {}).constructor;
+      const it = Generator('const token = {}; return (yield token) === token;')();
+      const first = it.next();
+      const out = { same: it.next(first.value).value };
+    `);
+    assert.deepEqual(run.out, { same: true });
+    assert.deepEqual(compared(run), { compared: 2, mismatches: [], awaiting: 0, uncomparable: 0 });
+  }
+
+  // A run whose native call changes its inputs runs once and is not compared.
+  {
+    const run = shadowRun('changed-inputs', `
+      const Count = Function('s', 'this.n = ++s.n;');
+      const state = { n: 0 };
+      const counted = new Count(state);
+      const out = { n: counted.n, state: state.n };
+    `);
+    assert.deepEqual(run.out, { n: 1, state: 1 });
+    assert.deepEqual(compared(run), { compared: 0, mismatches: [], awaiting: 0, uncomparable: 1 });
+  }
+
+  // A thenable is the program's as returned, and compared by what it settles to;
+  // a rejected Promise the program leaves alone is still unhandled.
+  {
+    const run = shadowRun('awaitables', `
+      const unhandled = [];
+      process.on('unhandledRejection', (reason) => unhandled.push(reason.message));
+      const thenable = Function('return { then(resolve) { resolve(5); } }')();
+      const out = { thenable: typeof thenable.then === 'function' && !(thenable instanceof Promise), settled: await thenable };
+      Function('return Promise.reject(new Error("left alone"))')();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      out.unhandled = unhandled;
+    `);
+    assert.deepEqual(run.out, { thenable: true, settled: 5, unhandled: ['left alone'] });
+    assert.deepEqual(compared(run), { compared: 2, mismatches: [], awaiting: 0, uncomparable: 0 });
+  }
+
+  // A comparison still waiting when the run ends is reported.
+  {
+    const run = shadowRun('never-settles', `
+      Function('return new Promise(() => {})')();
+      const out = {};
+    `);
+    assert.deepEqual(compared(run), { compared: 0, mismatches: [], awaiting: 1, uncomparable: 0 });
   }
 } finally {
   rmSync(work, { recursive: true, force: true });
   rmSync(dir, { recursive: true, force: true });
 }
-console.log('ok - differential-shadow: pair-aware comparison; coercion once; construction, Promises and generators compared');
+console.log('ok - differential-shadow: pair-aware comparison; coercion once; construction, awaitables and generators compared as the program sees them');

@@ -22,6 +22,7 @@ export const FUNCTION_KINDS = [
  * `new` builds as `new` would.
  */
 export function hookFunctionConstructors(hook) {
+  const hookedOf = new Map();
   for (const [kind, Native] of FUNCTION_KINDS) {
     const hooked = function (...args) {
       const strings = args.map((arg) => `${arg}`);
@@ -31,8 +32,13 @@ export function hookFunctionConstructors(hook) {
     Object.defineProperty(hooked, 'name', { value: Native.name });
     Object.defineProperty(hooked, 'length', { value: Native.length });
     Object.defineProperty(hooked, 'prototype', { value: Native.prototype, writable: false });
-    Object.setPrototypeOf(hooked, Object.getPrototypeOf(Native));
-    Object.defineProperty(Native.prototype, 'constructor', { value: hooked, writable: true, configurable: true, enumerable: false });
-    if (kind === 'function') globalThis.Function = hooked;
+    hookedOf.set(Native, hooked);
   }
+  // Each one's [[Prototype]] is as the native one's, hooked: AsyncFunction's is Function.
+  for (const [Native, hooked] of hookedOf) {
+    const parent = Object.getPrototypeOf(Native);
+    Object.setPrototypeOf(hooked, hookedOf.get(parent) ?? parent);
+    Object.defineProperty(Native.prototype, 'constructor', { value: hooked, writable: true, configurable: true, enumerable: false });
+  }
+  globalThis.Function = hookedOf.get(Function);
 }
