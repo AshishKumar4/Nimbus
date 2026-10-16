@@ -56,6 +56,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, openSync, c
 import { execFileSync, execSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+import { isRegularTarFile, readableStreamToAsyncIterable, streamTarRecords } from '@nimbus-sh/core/_shared/tarball-stream.js';
 import { SPECS } from './runtime-specs.mjs';
 
 const ACCOUNT = process.env.CLOUDFLARE_ACCOUNT_ID;
@@ -90,6 +91,11 @@ const USAGE =
  *  describes what production reads, so regenerating it from an isolated
  *  test bucket would point the deploy at a catalog it never fetches. */
 const PRODUCTION_BUCKET = 'nimbus-runtime-cache';
+
+/** The most one file of a runtime package may hold, the package as tar (headers and padding included), and its entries (fetchRuntimePackage). */
+const RUNTIME_PACKAGE_FILE_BYTES = 256 * 1024 * 1024;
+const RUNTIME_PACKAGE_BYTES = 1024 * 1024 * 1024;
+const RUNTIME_PACKAGE_ENTRIES = 4096;
 
 /** Where a catalog is kept by the digest of its bytes (runtime-catalog.ts catalogKey reads the same). */
 function catalogKey(sha256) {
@@ -169,22 +175,19 @@ if (!spec) {
   console.error(`known: ${Object.keys(SPECS).join(', ')}`);
   process.exit(2);
 }
-if (RUNTIME === 'cpython') {
+// A runtime built in this repository (`local_base`) is staged from its build
+// tree when the tree is here (a tree missing a file stops at that file). The
+// published @nimbus-sh/worker carries no wasm build tree, so there a runtime
+// with an `npm` entry is staged from its published runtime package instead
+// (see fetchRuntimePackage).
+const LOCAL_TREE = spec.local_base !== undefined && existsSync(new URL(`${spec.local_base}/`, import.meta.url));
+if (LOCAL_TREE && RUNTIME === 'cpython') {
   const { checkPythonInputs } = await import('../wasm/python/inputs.mjs');
   await checkPythonInputs();
 }
-if (RUNTIME === 'bash') {
+if (LOCAL_TREE && RUNTIME === 'bash') {
   const { checkBashInputs } = await import('../wasm/bash/inputs.mjs');
   await checkBashInputs();
-}
-if (spec.auxiliary_bins) {
-  const list = new URL(`${spec.local_base}/${spec.auxiliary_bins}`, import.meta.url);
-  const names = readFileSync(list, 'utf8').split('\n').filter(Boolean);
-  spec.synthetic_files.NIMBUS_AUX_BIN = Buffer.from('Nimbus WASI multicall entry\n');
-  for (const name of names) {
-    if (name.includes('/') || name === '.' || name === '..') throw new Error(`Invalid multicall entry: ${name}`);
-    spec.files.push({ src: 'NIMBUS_AUX_BIN', vfs: `bin/${name}`, mode: 'exec' });
-  }
 }
 // Checked before anything is staged: which runtimes we publish to npm is a
 // decision, and a spec that has not made it should cost nothing to find out.
@@ -213,6 +216,21 @@ if (NPM_OUT_DIR) {
 } else {
   console.log(`[bundle-runtime] bucket:   ${BUCKET}`);
   console.log(`[bundle-runtime] account:  ${ACCOUNT}`);
+}
+
+const runtimePackage = spec.local_base !== undefined && !LOCAL_TREE && spec.npm && !NPM_OUT_DIR
+  ? await fetchRuntimePackage(spec)
+  : null;
+if (spec.auxiliary_bins) {
+  const list = runtimePackage
+    ? runtimePackage.blob(spec.auxiliary_bins)
+    : readFileSync(new URL(`${spec.local_base}/${spec.auxiliary_bins}`, import.meta.url));
+  const names = list.toString('utf8').split('\n').filter(Boolean);
+  spec.synthetic_files.NIMBUS_AUX_BIN = Buffer.from('Nimbus WASI multicall entry\n');
+  for (const name of names) {
+    if (name.includes('/') || name === '.' || name === '..') throw new Error(`Invalid multicall entry: ${name}`);
+    spec.files.push({ src: 'NIMBUS_AUX_BIN', vfs: `bin/${name}`, mode: 'exec' });
+  }
 }
 
 // ── 0. Optional repackage step (sysroot-prep wave) ──────────────────
@@ -255,6 +273,10 @@ for (const f of spec.files) {
         `tar -xzf "${tarballLocal}" -C "${workDir}" --strip-components=2 "${spec.tarball_extract}/${f.src}"`,
         { stdio: 'inherit' },
       );
+    } else if (runtimePackage) {
+      mkdirSync(dirname(local), { recursive: true });
+      writeFileSync(local, runtimePackage.blob(f.src));
+      console.log(`[bundle-runtime] package ${f.src} ← ${spec.npm.name}@${runtimePackage.version}`);
     } else if (spec.local_base) {
       // Locally-built runtime (no upstream binary channel): stage the
       // artifact from the repo build tree, resolved against this script.
@@ -303,6 +325,13 @@ if (!spec.ingest_only) {
 }
 
 const totalMb = (downloaded.reduce((a, f) => a + f.size, 0) / 1024 / 1024).toFixed(2);
+
+// Staged from a runtime package, what this spec publishes must be exactly
+// what the package carries, before anything reaches the bucket.
+if (runtimePackage && manifestText(composeManifest(downloaded, packageRuntimeArtifacts)) !== runtimePackage.manifest) {
+  console.error(`ERROR: ${spec.npm.name}@${runtimePackage.version}'s manifest is not the one ${key} composes from its files; nothing was published.`);
+  process.exit(1);
+}
 
 // ── --npm-package: the same artifacts, published through npm ────────
 // Everything above this line is the staging the R2 path performs, and
@@ -646,6 +675,78 @@ function composeManifest(downloaded, packageRuntimeArtifacts) {
 
 function manifestText(manifest) {
   return JSON.stringify(manifest, null, 2);
+}
+
+/**
+ * A `local_base` runtime's published npm package, for a publish without the
+ * build tree (the published @nimbus-sh/worker): `npm_config_registry`'s, or
+ * npm's, version document for `spec.npm.name` at its npm version, and the
+ * tarball it names, verified against its sha512 `integrity`. The tarball is
+ * read in memory, never unpacked: every entry must be a regular file, or a
+ * directory, under one root, within the entry and byte bounds above, or the
+ * package is refused, so a link or a device in it is never followed. `blob(src)` is the
+ * bytes of the spec file `src`, at the content key the package's manifest
+ * gives its path, verified against that entry's sha256. The publisher then
+ * composes its own manifest from them and refuses any difference from
+ * `manifest`, the package's.
+ */
+async function fetchRuntimePackage(spec) {
+  const registry = (process.env.npm_config_registry || 'https://registry.npmjs.org').replace(/\/+$/, '');
+  const version = spec.npm.version ?? VERSION;
+  const fail = (why) => {
+    console.error(`ERROR: ${spec.npm.name}@${version}: ${why}`);
+    console.error(`       This tree has no build of ${key} (${spec.local_base}): publish from a checkout that builds it, or from the package once it is published.`);
+    process.exit(1);
+  };
+  const document = await fetch(`${registry}/${spec.npm.name.replace('/', '%2f')}/${encodeURIComponent(version)}`);
+  if (!document.ok) fail(`not on ${registry} (${document.status})`);
+  const { dist } = await document.json();
+  const integrity = /^sha512-([A-Za-z0-9+/=]+)$/.exec(dist?.integrity ?? '');
+  if (!integrity || typeof dist?.tarball !== 'string') fail('its version document names no tarball with a sha512 integrity');
+  const tarball = await fetch(dist.tarball);
+  if (!tarball.ok) fail(`its tarball answered ${tarball.status}`);
+  const bytes = Buffer.from(await tarball.arrayBuffer());
+  if (createHash('sha512').update(bytes).digest('base64') !== integrity[1]) fail('its tarball is not the one its integrity names');
+
+  const files = new Map();
+  let root = null;
+  let records = 0;
+  let tarBytes = 0;
+  // Every record counts, its header and padding too, before any is kept: an empty file costs a record.
+  const wanted = (header) => {
+    records++;
+    tarBytes += 512 + Math.ceil(header.size / 512) * 512;
+    if (records > RUNTIME_PACKAGE_ENTRIES || tarBytes > RUNTIME_PACKAGE_BYTES) fail(`its tarball holds more than ${RUNTIME_PACKAGE_ENTRIES} entries or ${RUNTIME_PACKAGE_BYTES} bytes`);
+    return isRegularTarFile(header) && header.size <= RUNTIME_PACKAGE_FILE_BYTES;
+  };
+  const gunzipped = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  for await (const { header, data } of streamTarRecords(readableStreamToAsyncIterable(gunzipped), wanted)) {
+    const top = header.name.split('/')[0];
+    root ??= top;
+    if (header.name === '' || top !== root) fail(`its tarball has an entry outside ${root}/: ${JSON.stringify(header.name)}`);
+    if (header.directory && header.size === 0) continue;
+    if (!isRegularTarFile(header)) fail(`its tarball holds ${header.name} as something other than a regular file (type ${String.fromCharCode(header.typeFlag)})`);
+    if (data === null) fail(`its tarball's ${header.name} (${header.size} bytes) exceeds what a runtime package may hold`);
+    files.set(header.name.slice(root.length + 1), Buffer.from(data));
+  }
+  const manifestBytes = files.get('manifest.json');
+  if (manifestBytes === undefined) fail('its tarball has no manifest.json');
+  const manifest = manifestBytes.toString('utf8');
+  const entries = JSON.parse(manifest).files;
+  if (!Array.isArray(entries)) fail('its manifest lists no files');
+  console.log(`[bundle-runtime] staging from ${spec.npm.name}@${version} (${registry})`);
+  return {
+    version,
+    manifest,
+    blob(src) {
+      const vfs = spec.files.find((f) => f.src === src)?.vfs;
+      const entry = entries.find((e) => e?.path === vfs);
+      const blob = typeof entry?.content === 'string' && entry.content.endsWith(`/${src}`) ? files.get(entry.content) : undefined;
+      if (blob === undefined) fail(`its manifest has no blob for ${src}`);
+      if (createHash('sha256').update(blob).digest('hex') !== entry.sha256) fail(`its ${src} is not the blob its manifest names`);
+      return blob;
+    },
+  };
 }
 
 // ── --npm-package ────────────────────────────────────────────────────

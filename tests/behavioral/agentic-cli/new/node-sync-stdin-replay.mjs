@@ -162,7 +162,11 @@ try {
     `answered ${JSON.stringify(answer.stdout)}, log ${JSON.stringify(log)}`);
   await box.processes.kill(job.pid).catch(() => {});
 } finally {
-  await box.destroy().catch(() => {});
+  // The probe made this sandbox, so its cleanup is the probe's, and a
+  // failed one is a failed probe (an error above still propagates).
+  const destroyed = await box.destroy({ reason: 'node-sync-stdin-replay-complete' })
+    .then((result) => result, (error) => ({ ok: false, error: String(error?.message ?? error) }));
+  a.check('the sandbox is destroyed', destroyed.ok === true && typeof destroyed.destroyedAt === 'number', JSON.stringify(destroyed));
 }
 const s = a.summary();
 process.exit(s.fail === 0 ? 0 : 1);
