@@ -33,6 +33,7 @@ import {
   type SessionRestartPolicy as NimbusRestartPolicy,
   type SessionAppVisibility as NimbusAppVisibility,
   type SessionAppTarget as NimbusAppTarget,
+  type SessionDurableAppOptions as NimbusDurableAppOptions,
   type SessionApp, type SessionExposedApp,
   type SessionTerminalSize as NimbusTerminalSize,
   type SessionDestroyOptions as NimbusDestroyOptions,
@@ -49,7 +50,7 @@ import {
   type SessionAvailableRuntime as NimbusAvailableRuntime,
 } from '@nimbus-sh/core/runtime/session-protocol.js';
 export type {
-  NimbusSessionSurface, NimbusRestartPolicy, NimbusAppVisibility, NimbusAppTarget,
+  NimbusSessionSurface, NimbusRestartPolicy, NimbusAppVisibility, NimbusAppTarget, NimbusDurableAppOptions,
   NimbusTerminalSize, NimbusDestroyOptions, NimbusDestroyResult, NimbusStartResult,
   NimbusProcess, NimbusProcessLogChunk, NimbusProcessExitInfo, NimbusProcessLogsOptions,
   NimbusProcessLogsResult, NimbusPort, NimbusFileStat, NimbusRuntimeSummary, NimbusAvailableRuntime,
@@ -57,6 +58,7 @@ export type {
 import { z } from 'zod/v4';
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
 import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
+import { normalizeRemoteBasePath } from '@nimbus-sh/core/runtime/remote-http-contract.js';
 import { isNimbusIdComponent } from '@nimbus-sh/core/_shared/id-component.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import {
@@ -273,7 +275,7 @@ export class Nimbus {
     return new Nimbus({
       kind: 'remote',
       endpoint: trimTrailingSlashes(options.endpoint),
-      basePath: normalizeBasePath(options.basePath ?? '/api/nimbus/v1'),
+      basePath: normalizeRemoteBasePath(options.basePath),
       token: options.token,
       headers: options.headers,
       fetch: fetchImpl,
@@ -667,7 +669,7 @@ export class NimbusSandbox {
      * answers is minted here and survives every reset, so the URL it builds
      * is the URL the application keeps.
      */
-    ensureDurableApp: async (input: { owner: string; preferredPort?: number; visibility?: 'scoped' | 'public' }) => {
+    ensureDurableApp: async (input: NimbusDurableAppOptions) => {
       await this.ready();
       return this.rpc(this.stub()._rpcEnsureDurableApp(input));
     },
@@ -986,19 +988,6 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 function isNimbusTarget(value: unknown): value is NimbusTarget {
   return !!value && typeof value === 'object' && 'kind' in value;
-}
-
-function normalizeBasePath(path: string): string {
-  const trimmed = trimSlashes(String(path || '/api/nimbus/v1'));
-  return `/${trimmed}`;
-}
-
-function trimSlashes(value: string): string {
-  let start = 0;
-  let end = value.length;
-  while (start < end && value[start] === '/') start++;
-  while (end > start && value[end - 1] === '/') end--;
-  return value.slice(start, end);
 }
 
 function trimTrailingSlashes(value: string): string {
