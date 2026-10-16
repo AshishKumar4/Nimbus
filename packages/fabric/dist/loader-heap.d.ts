@@ -80,8 +80,14 @@ export interface PricedCode {
     /** Each module's charge on its own, as the module cache would hold it. */
     readonly moduleCharges: ReadonlyMap<string, number>;
 }
-/** Price `code`, admitted under `key` (whose own charge the caller holds): refused by name over any bound. */
-export declare function priceCode(code: WorkerCode, key: string): PricedCode;
+/**
+ * Price `code`, admitted under `key` (whose own charge the caller holds):
+ * refused by name over any bound. The whole WorkerCode is walked first, as
+ * it arrived (every own property, the module map's too, an accessor refused
+ * before anything reads it); each module on its own, as the cache would hold
+ * it; and the entry as it is kept, with its durable records when `durable`.
+ */
+export declare function priceCode(code: WorkerCode, key: string, durable: boolean): PricedCode;
 /** `credit`, refused by name when the whole pool could never grant it. */
 export declare function withinCredit(credit: number): number;
 /** Code credit for an argument that has already arrived: granted now, or the call is refused. */

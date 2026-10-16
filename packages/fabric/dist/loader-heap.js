@@ -39,6 +39,35 @@ function isIndex(key) {
     const index = Number(key);
     return Number.isInteger(index) && index >= 0 && index < 2 ** 32 - 1 && String(index) === key;
 }
+const TYPED_ARRAY_LENGTH = getter(Object.getPrototypeOf(Uint8Array.prototype), 'length');
+const REGEXP_SOURCE = getter(RegExp.prototype, 'source');
+const REGEXP_FLAGS = getter(RegExp.prototype, 'flags');
+const MAP_ENTRIES = Map.prototype.entries;
+const SET_VALUES = Set.prototype.values;
+/** The longest array the walk lists the keys of (each a string while it is walked). */
+const ARRAY_WALK_MAX = 262_144;
+/** What an Error's stack holds at most: V8 keeps ten frames. */
+const STACK_CHARGE = 4096;
+/** `owner`'s own getter of `key`. */
+function getter(owner, key) {
+    const get = Object.getOwnPropertyDescriptor(owner, key)?.get;
+    if (get === undefined)
+        throw new Error(`no getter ${key}`);
+    return get;
+}
+function isPlainObject(value) {
+    const proto = Object.getPrototypeOf(value);
+    return proto === Object.prototype || proto === null;
+}
+/** An object the runtime made (a service binding, an RPC stub): its class's constructor is native code. */
+function isHostObject(value) {
+    const ctor = Object.getPrototypeOf(value)?.constructor;
+    return typeof ctor === 'function' && /\{\s*\[native code\]\s*\}\s*$/.test(Function.prototype.toString.call(ctor));
+}
+function className(value) {
+    const ctor = Object.getPrototypeOf(value)?.constructor;
+    return typeof ctor === 'function' && typeof ctor.name === 'string' && ctor.name !== '' ? ctor.name : 'anonymous';
+}
 /**
  * Everything `root` holds live, charged once per object (`seen` shared
  * across calls), or Infinity once the charge passes `limit` (the walk stops
@@ -56,8 +85,12 @@ export function liveCharge(root, limit, at, seen = new Set()) {
         total += n;
         return total > limit;
     };
-    /** Each own property of `owner` but those `skip` names (its intrinsic storage), its key charged and its value queued. */
-    const properties = (owner, path, skip) => {
+    /**
+     * Each own property of `owner` but those `skip` names (its intrinsic
+     * storage), its key charged (an array's index as its backing slot, already
+     * charged) and its value queued.
+     */
+    const properties = (owner, path, skip, indexed) => {
         for (const key of Reflect.ownKeys(owner)) {
             if (typeof key === 'symbol')
                 throw new LoaderRefusal(`Nimbus Worker Loader: ${path} has a symbol-keyed property, which the shim cannot account for`);
@@ -68,7 +101,7 @@ export function liveCharge(root, limit, at, seen = new Set()) {
                 continue;
             if (!('value' in descriptor))
                 throw new LoaderRefusal(`Nimbus Worker Loader: ${path}.${key} is an accessor, which the shim cannot account for without running it`);
-            if (add(SLOT + stringCharge(key)))
+            if (!(indexed && isIndex(key)) && add(SLOT + stringCharge(key)))
                 return true;
             stack.push({ value: descriptor.value, path: `${path}.${key}` });
         }
@@ -114,58 +147,59 @@ export function liveCharge(root, limit, at, seen = new Set()) {
         }
         else if (ArrayBuffer.isView(value)) {
             stack.push({ value: value.buffer, path });
-            skip = isIndex;
+            // A typed array's elements are its buffer's; a DataView has none of its own.
+            if (!(value instanceof DataView)) {
+                const length = Number(Reflect.apply(TYPED_ARRAY_LENGTH, value, []));
+                skip = (key) => isIndex(key) && Number(key) < length;
+            }
         }
         else if (Array.isArray(value)) {
-            // V8 holds a holey array's backing store at its length.
+            // V8 holds a holey array's backing store at its length; each index, enumerable or not, is walked as a property.
             if (add(ARRAY_ELEMENT * value.length))
                 return Infinity;
+            if (value.length > ARRAY_WALK_MAX)
+                throw new LoaderRefusal(`Nimbus Worker Loader: ${path} is an array of ${value.length.toLocaleString('en-US')} elements, over the ${ARRAY_WALK_MAX.toLocaleString('en-US')} the shim walks`);
             skip = (key) => key === 'length';
-            for (const key of Object.keys(value)) {
-                if (!isIndex(key))
-                    continue;
-                const descriptor = Object.getOwnPropertyDescriptor(value, key);
-                if (descriptor !== undefined && !('value' in descriptor))
-                    throw new LoaderRefusal(`Nimbus Worker Loader: ${path}[${key}] is an accessor, which the shim cannot account for without running it`);
-                if (add(ARRAY_ELEMENT))
-                    return Infinity;
-                stack.push({ value: descriptor?.value, path: `${path}[${key}]` });
-            }
-            const named = skip;
-            skip = (key) => named(key) || isIndex(key);
         }
         else if (value instanceof Map) {
-            for (const [key, entry] of value) {
+            for (const [key, entry] of Reflect.apply(MAP_ENTRIES, value, [])) {
                 if (add(COLLECTION_ENTRY))
                     return Infinity;
                 stack.push({ value: key, path: `${path}<key>` }, { value: entry, path: `${path}<value>` });
             }
         }
         else if (value instanceof Set) {
-            for (const entry of value) {
+            for (const entry of Reflect.apply(SET_VALUES, value, [])) {
                 if (add(COLLECTION_ENTRY))
                     return Infinity;
                 stack.push({ value: entry, path: `${path}<entry>` });
             }
         }
         else if (value instanceof RegExp) {
-            if (add(stringCharge(value.source) + stringCharge(value.flags)))
+            // Read through RegExp's own getters, never an own accessor of the object.
+            if (add(stringCharge(String(Reflect.apply(REGEXP_SOURCE, value, []))) + stringCharge(String(Reflect.apply(REGEXP_FLAGS, value, [])))))
                 return Infinity;
-            skip = (key) => key === 'lastIndex';
         }
         else if (value instanceof String) {
-            stack.push({ value: value.valueOf(), path });
-            skip = (key) => key === 'length' || isIndex(key);
+            const text = Reflect.apply(String.prototype.valueOf, value, []);
+            stack.push({ value: text, path });
+            skip = (key) => key === 'length' || (isIndex(key) && Number(key) < text.length);
         }
         else if (value instanceof Number || value instanceof Boolean || value instanceof BigInt) {
-            stack.push({ value: value.valueOf(), path });
+            // Its primitive is held in its slot; nothing of it is run.
         }
-        else if (value instanceof Error && !Object.hasOwn(value, 'name')) {
-            if (add(stringCharge(value.name)))
+        else if (value instanceof Error) {
+            // V8's stack is an own accessor of the engine's, never run here: charged at its most (ten frames).
+            if (add(STACK_CHARGE))
                 return Infinity;
+            skip = (key) => key === 'stack';
+        }
+        else if (!isPlainObject(value) && !(value instanceof Date) && !isHostObject(value)) {
+            // An instance of a class of the program's own: its private fields are out of any walk's reach.
+            throw new LoaderRefusal(`Nimbus Worker Loader: ${path} is an instance of a class (${className(value)}) whose state the shim cannot account for`);
         }
         // Every object's own properties: a plain object's, a built-in's beside its storage, and an instance's of any class.
-        if (properties(value, path, skip))
+        if (properties(value, path, skip, Array.isArray(value)))
             return Infinity;
     }
     return total;
@@ -196,16 +230,20 @@ export function jsonTextBound(value, limit) {
             total += 5;
             continue;
         }
-        // A typed array is written as an object of its elements, `"i":n` each; a buffer, a Map and a Set as `{}`.
-        if (ArrayBuffer.isView(item)) {
-            total += 2 + 32 * item.byteLength;
+        const toJSON = Reflect.get(item, 'toJSON');
+        if (item instanceof Date && toJSON === Date.prototype.toJSON) {
+            total += 32;
             continue;
         }
-        if (item instanceof ArrayBuffer || item instanceof Map || item instanceof Set) {
-            total += 2;
-            continue;
+        if (toJSON !== undefined)
+            throw new LoaderRefusal('Nimbus Worker Loader: a {json} module holds a toJSON, whose text the shim cannot bound without running it');
+        // A typed array is written as an object of its elements, `"i":n` each, beside its own enumerable properties.
+        let keys = Object.keys(item);
+        if (ArrayBuffer.isView(item) && !(item instanceof DataView)) {
+            total += 32 * item.byteLength;
+            keys = keys.filter((key) => !isIndex(key));
         }
-        const values = Array.isArray(item) ? item : Object.entries(item).flat();
+        const values = Array.isArray(item) ? item : keys.flatMap((key) => [key, Reflect.get(item, key)]);
         total += 2 + values.length;
         for (const entry of values)
             stack.push(entry);
@@ -284,38 +322,41 @@ function refuse(event, message) {
     throw new LoaderRefusal(`Nimbus Worker Loader: ${message}`);
 }
 const OVER_WORKER_BOUND = `over the Nimbus Worker Loader shim's per-Worker bound of ${bytes(LOADER_WORKER_BYTES)} (LOADER_WORKER_BYTES; native workerd allows ${bytes(DYNAMIC_WORKER_CODE_LIMIT_BYTES)})`;
-/** Price `code`, admitted under `key` (whose own charge the caller holds): refused by name over any bound. */
-export function priceCode(code, key) {
+/** What a durable entry keeps beyond its code: per module its slot record ({kind, size, digest}), and the store's reference. */
+const DURABLE_MODULE = 320;
+const DURABLE_REF = 1024;
+/**
+ * Price `code`, admitted under `key` (whose own charge the caller holds):
+ * refused by name over any bound. The whole WorkerCode is walked first, as
+ * it arrived (every own property, the module map's too, an accessor refused
+ * before anything reads it); each module on its own, as the cache would hold
+ * it; and the entry as it is kept, with its durable records when `durable`.
+ */
+export function priceCode(code, key, durable) {
+    const total = liveCharge(code, LOADER_WORKER_BYTES, 'code', new Set());
+    if (total > LOADER_WORKER_BYTES)
+        refuse('worker-bound', `this Worker holds more than ${bytes(LOADER_WORKER_BYTES)} live: ${OVER_WORKER_BOUND}`);
     const { modules: moduleMap, ...rest } = code;
     if (moduleMap === null || typeof moduleMap !== 'object')
         refuse('no-modules', 'the code has no module map');
-    const seen = new Set();
     const moduleCharges = new Map();
-    let charge = OBJECT;
     let jsonText = 0;
     for (const name of Object.keys(moduleMap)) {
-        const descriptor = Object.getOwnPropertyDescriptor(moduleMap, name);
-        if (descriptor === undefined || !('value' in descriptor))
-            refuse('accessor', `module ${JSON.stringify(name)} is an accessor, which the shim cannot account for without running it`);
-        const content = descriptor.value;
-        const at = `modules[${JSON.stringify(name)}]`;
-        const shared = SLOT + stringCharge(name) + liveCharge(content, LOADER_WORKER_BYTES, at, seen);
-        charge += shared;
-        if (charge > LOADER_WORKER_BYTES)
-            refuse('worker-bound', `this Worker holds more than ${bytes(LOADER_WORKER_BYTES)} live, counting through module ${JSON.stringify(name)}: ${OVER_WORKER_BOUND}`);
-        moduleCharges.set(name, SLOT + stringCharge(name) + liveCharge(content, Infinity, at));
+        const content = Object.getOwnPropertyDescriptor(moduleMap, name)?.value;
+        moduleCharges.set(name, SLOT + stringCharge(name) + liveCharge(content, Infinity, `modules[${JSON.stringify(name)}]`));
         if (typeof content === 'object' && content !== null && 'json' in content) {
             jsonText += 2 * jsonTextBound(content.json, LOADER_WORKER_BYTES);
             if (jsonText > LOADER_WORKER_BYTES)
                 refuse('worker-bound', `module ${JSON.stringify(name)}'s JSON text could take more than ${bytes(LOADER_WORKER_BYTES)}: ${OVER_WORKER_BOUND}`);
         }
     }
-    const entryCharge = liveCharge(rest, LOADER_ENTRY_CACHE_BYTES, 'code') + stringCharge(key)
+    const records = durable ? DURABLE_REF + DURABLE_MODULE * moduleCharges.size : 0;
+    const entryCharge = liveCharge(rest, LOADER_ENTRY_CACHE_BYTES, 'code') + stringCharge(key) + records
         + [...moduleCharges.keys()].reduce((sum, name) => sum + SLOT + stringCharge(name), 0);
     if (entryCharge + BYTE_LRU_ENTRY_OVERHEAD > LOADER_ENTRY_CACHE_BYTES) {
         refuse('entry-bound', `this Worker's env and metadata charge ${entryCharge === Infinity ? `over ${bytes(LOADER_ENTRY_CACHE_BYTES)}` : bytes(entryCharge + BYTE_LRU_ENTRY_OVERHEAD)}, over the shim's ${bytes(LOADER_ENTRY_CACHE_BYTES)} entry bound (LOADER_ENTRY_CACHE_BYTES)`);
     }
-    charge += liveCharge(rest, LOADER_WORKER_BYTES, 'code', seen) + stringCharge(key);
+    const charge = total + stringCharge(key) + records;
     if (charge > LOADER_WORKER_BYTES)
         refuse('worker-bound', `this Worker holds ${bytes(charge)} live: ${OVER_WORKER_BOUND}`);
     // Re-created from the cache, a Worker borrows what it holds; from its store (keep), it is priced again.
@@ -393,9 +434,10 @@ export function holdGetKey(charge) {
 export function keep(key, priced, durable) {
     let entry = { ...priced.entry, id: ++nextEntryId };
     if (durable !== undefined) {
+        // Each module re-created from its stored bytes, or borrowed from the cache as it was admitted: whichever holds more.
         let missPeak = entry.byteLength + STORE_READ_BYTES;
-        for (const module of durable.modules.values())
-            missPeak += module.missPrice;
+        for (const [name, module] of durable.modules)
+            missPeak += Math.max(module.missPrice, priced.moduleCharges.get(name) ?? 0);
         if (missPeak > LOADER_WORKER_BYTES)
             refuse('worker-bound', `re-creating this Worker from the store would hold ${bytes(missPeak)}: ${OVER_WORKER_BOUND}`);
         const stored = new Map([...durable.modules].map(([name, { kind, size, digest }]) => [name, { kind, size, digest }]));
@@ -448,8 +490,10 @@ export async function withMissCode(key, env, use) {
             const stored = entry.store?.modules.get(name);
             if (content === undefined && store !== null && stored !== undefined) {
                 content = restoredModule(stored.kind, await store.read(stored));
-                if (stored.size + BYTE_LRU_ENTRY_OVERHEAD <= LOADER_MODULE_CACHE_BYTES)
-                    modules.set(moduleKey(entry, name), { byteLength: stored.size, content });
+                // Cached as it was restored, charged for what it holds (a parsed {json} more than its text).
+                const charge = SLOT + stringCharge(name) + liveCharge(content, LOADER_MODULE_CACHE_BYTES, `modules[${JSON.stringify(name)}]`);
+                if (charge + BYTE_LRU_ENTRY_OVERHEAD <= LOADER_MODULE_CACHE_BYTES)
+                    modules.set(moduleKey(entry, name), { byteLength: charge, content });
                 reads++;
             }
             // An own property whatever the name, `__proto__` included.

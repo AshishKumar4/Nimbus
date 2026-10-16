@@ -335,7 +335,7 @@ export class NimbusLoaderRPC extends WorkerEntrypoint {
         if (!outerLoader)
             throw new Error('Nimbus: outer env.LOADER missing');
         const key = _genStubId();
-        const priced = priceCode(code, key);
+        const priced = priceCode(code, key, this.ctx.props?.store !== undefined);
         const lease = admitNow(admissionCredit(this.ctx.props, priced));
         try {
             return await admitLoaded(this.ctx, this.env, outerLoader, key, priced);
@@ -375,7 +375,7 @@ export class NimbusLoaderRPC extends WorkerEntrypoint {
                 const kept = loadedCode(key);
                 if (kept !== undefined)
                     return loadedWorker(this.ctx, key, guestFacetPolicy(kept));
-                const priced = priceCode(await callback(), key);
+                const priced = priceCode(await callback(), key, this.ctx.props?.store !== undefined);
                 lease.shrinkTo(withinCredit(admissionCredit(this.ctx.props, priced)));
                 return await admitLoaded(this.ctx, this.env, outerLoader, key, priced);
             }

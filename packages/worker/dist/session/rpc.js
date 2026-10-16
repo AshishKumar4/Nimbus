@@ -1428,7 +1428,7 @@ export async function _rpcLoaderCodeStore(self, request, stream, pid) {
     self.ensureSqliteFs?.();
     if (!self.sqliteFs)
         throw new Error('loaderCodeStore: the session filesystem is not open');
-    return loaderCodeRegistry(self.ctx, self.sqliteFs).serve(request, stream);
+    return loaderCodeRegistry(self.sqliteFs).serve(request, stream);
 }
 export async function _rpcCpNextSignal(self, pid, waitMs) {
     if (pid === undefined || isPriorGenerationPid(self, pid))
