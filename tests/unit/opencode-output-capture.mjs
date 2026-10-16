@@ -1,93 +1,175 @@
+#!/usr/bin/env bun
+// What a process prints reaches whoever reads it, whole and once, through
+// the complete generated entry that runs it, each with a program of its own:
+//
+//   - the opencode one-shot runner answers its run with what the program
+//     printed: bytes split across writes decode to whole characters, one
+//     decoder per stream; the exact allowance (1 MiB a stream) fits, and one
+//     byte more is refused with EFBIG, through process.stdout and through
+//     the process module alike; a program that catches the refusal still
+//     answers exit 1 and names the overflow; and the error report keeps its
+//     own bounded tail (64 KiB) however long the error is;
+//   - the attached opencode runner, a one-shot node and a resident node send
+//     what the program prints live to SUPERVISOR, byte for byte, once, and a
+//     one-shot node's run answers no second, whole-output copy of it.
+//
+// Each program runs in a child process of its own: a runner replaces the
+// realm's process, console and timers.
+
 import assert from 'node:assert/strict';
-import { generateOpencodeRunnerCode } from '../../packages/worker/src/runtime/opencode-facet-runner.ts';
-import { generateEntrypointCode, generateLongRunningNodeCode } from '../../packages/worker/src/facets/manager.ts';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 
-const cred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
-const sources = nodeFacetSources('const __nimbusTestShimMarker = true;');
-const { code: source } = generateOpencodeRunnerCode({
-  argv: ['--version'], env: {}, cred, cwd: '/home/user', stdin: '', sources,
-  vfsBundle: '{}', mode: 'oneshot',
-});
-const captureStart = source.indexOf('const __ocTailCap =');
-const captureEnd = source.indexOf('const __ocFmt =', captureStart);
-assert.ok(captureStart >= 0 && captureEnd > captureStart, 'the generated runner contains its bounded result capture');
-const createCapture = new Function(`
-  let stdout = '', stderr = '', exitCode = 0;
-  const process = { stdout: {}, stderr: {}, env: {}, chdir() {} };
-  const argv = [], env = {}, cwd = '/home/user', __ocMode = 'oneshot', __ocResident = false;
-  let __ocExited = false;
-  const decoders = { stdout: new TextDecoder(), stderr: new TextDecoder() };
-  const __nimbusOutText = (which, bytes) => decoders[which].decode(bytes, { stream: true });
-  const __nimbusOutBytes = value => value instanceof Uint8Array ? value : new TextEncoder().encode(value);
-  const __processMod = {
-    stdout: { write: bytes => { stdout += __nimbusOutText('stdout', bytes); } },
-    stderr: { write: bytes => { stderr += __nimbusOutText('stderr', bytes); } },
-  };
-  ${source.slice(captureStart, captureEnd)}
-  return { write: (which, bytes) => process[which].write(bytes),
-    writeAlias: (which, bytes) => __processMod[which].write(bytes),
-    diagnostic: text => __ocAppendDiagnostic(text),
-    result: () => ({ stdout, stderr, exitCode, error: typeof __ocCaptureError === 'undefined' ? null : __ocCaptureError }), cap: 1024 * 1024 };
+const realProcess = globalThis.process;
+const realExit = realProcess.exit.bind(realProcess);
+const realStdout = realProcess.stdout.write.bind(realProcess.stdout);
+const realStderr = realProcess.stderr.write.bind(realProcess.stderr);
+
+const CAP = 1024 * 1024;
+const TAIL = 64 * 1024;
+const LIVE = `console.log("L".repeat(${256 * 1024})); console.error("error");`;
+
+// An opencode bundle's program: it reaches the runner's node builtins as opencode's own imports do.
+const opencodeProgram = (body) => `
+const builtins = globalThis.__nimbusOpencodeBuiltins;
+export async function nimbusMain() {
+${body}
+}
+`;
+const overflows = (which) => opencodeProgram(`
+  process.${which}.write(new Uint8Array(${CAP}).fill(65));
+  let caught = 'nothing';
+  try { builtins.process.${which}.write(new Uint8Array([66])); } catch (error) { caught = error.code; }
+  builtins.fs.writeFileSync("/home/user/caught.txt", caught);
 `);
-const split = createCapture();
-split.write('stdout', new Uint8Array([0xc3]));
-split.write('stderr', new Uint8Array([0xe2, 0x82]));
-split.write('stdout', new Uint8Array([0xa9]));
-split.write('stderr', new Uint8Array([0xac]));
-assert.deepEqual(split.result(), { stdout: 'é', stderr: '€', exitCode: 0, error: null }, 'capture has one streaming decoder per result stream');
-for (const which of ['stdout', 'stderr']) {
-  const capture = createCapture();
-  capture.write(which, new Uint8Array(capture.cap).fill(65));
-  assert.equal(capture.result()[which].length, capture.cap, 'the exact declared allowance fits');
-  assert.throws(() => capture.writeAlias(which, new Uint8Array([66])), { code: 'EFBIG' }, 'the shim fd alias shares the same capture allowance and refuses the next byte');
-  assert.equal(capture.result()[which].length, capture.cap);
-  assert.equal(capture.result().exitCode, 1, 'catching the write error cannot turn an oversized result into success');
-  capture.diagnostic('D'.repeat(128 * 1024) + '\nEFBIG\n');
-  assert.equal(capture.result().stderr.length, 64 * 1024, 'error reporting remains bounded independently of the requested result');
-  assert.match(capture.result().stderr, /EFBIG\n$/);
-}
-assert.ok(source.includes('if (__ocCaptureError && !__ocLoadError) __ocLoadError = __ocCaptureError.message;'), 'the final result surfaces an overflow even if guest code caught it');
 
-// Execute each generated live-console override with an accounted byte sink.
-// An arbitrarily large live write must not also append to the return capture.
-const state = { bundle: {}, manifest: {}, metadata: {}, cursor: 0, serializedManifest: '{}', serializedMetadata: '{}' };
-const shims = generateShimsCode();
-const helperStart = shims.indexOf('function __nimbusWriteLiveOutput(');
-const helperEnd = shims.indexOf('function __nimbusReportProcessExit(', helperStart);
-assert.ok(helperStart >= 0 && helperEnd > helperStart);
-for (const code of [
-  (await generateEntrypointCode('', state, false, sources)).code,
-  (await generateLongRunningNodeCode('', state, { cred }, false, sources)).code,
-]) {
-  const start = code.indexOf('if (__supervisor && !captureOutput) {');
-  const end = code.indexOf('try { globalThis.console =', start);
-  assert.ok(start >= 0 && end > start);
-  const writes = [];
-  const run = new Function('__queueRpcWrite', `
-    let stdout = '', stderr = '';
-    const __supervisor = {}, captureOutput = false, __nimbusProgramStopped = false;
-    const __nimbusOutEnc = new TextEncoder();
-    const __nimbusOutBytes = value => value instanceof Uint8Array ? value : __nimbusOutEnc.encode(value);
-    const __nimbusOutText = (_which, bytes) => new TextDecoder().decode(bytes);
-    const outputStream = () => ({ writableLength: 0, writableHighWaterMark: 16 * 1024, emit() {} });
-    const __processMod = { stdout: outputStream(), stderr: outputStream() };
-    const __utilMod = { format: (...a) => a.join(' ') };
-    // The canonical Console routes to its configured streams; the manager
-    // deliberately no longer replaces its formatting methods.
-    const __consoleMod = {
-      log: (...a) => __processMod.stdout.write(__utilMod.format(...a) + '\\n'),
-      error: (...a) => __processMod.stderr.write(__utilMod.format(...a) + '\\n'),
-    };
-    ${shims.slice(helperStart, helperEnd)}
-    ${code.slice(start, end)}
-    __consoleMod.log('L'.repeat(256 * 1024));
-    __consoleMod.error('error');
-    return { stdout, stderr };
-  `);
-  const result = run((which, bytes) => writes.push([which, bytes]));
-  assert.deepEqual(result, { stdout: '', stderr: '' }, 'live console retains no parallel whole-output capture');
-  assert.deepEqual(writes.map(([which, bytes]) => [which, bytes.byteLength]), [['stdout', 256 * 1024 + 1], ['stderr', 6]]);
+/** Each case: run in its own child, it resolves to nothing or throws what it saw. */
+const CASES = {
+  async 'opencode one-shot: split bytes decode per stream'() {
+    const answer = await opencodeOneShot(opencodeProgram(`
+      process.stdout.write(new Uint8Array([0xc3]));
+      process.stderr.write(new Uint8Array([0xe2, 0x82]));
+      process.stdout.write(new Uint8Array([0xa9]));
+      process.stderr.write(new Uint8Array([0xac]));
+    `));
+    assert.deepEqual(answer.result, { exitCode: 0, stdout: 'é', stderr: '€' });
+  },
+  async 'opencode one-shot: stdout past its allowance is refused, caught or not'() {
+    const answer = await opencodeOneShot(overflows('stdout'));
+    assert.equal(answer.caught, 'EFBIG', 'the process module refuses the byte past the allowance');
+    assert.equal(answer.result.exitCode, 1, 'catching the refusal does not turn an oversized result into success');
+    assert.equal(answer.result.stdout.length, CAP, 'the exact allowance fits');
+    assert.match(answer.result.stderr, /^EFBIG: opencode one-shot stdout result exceeds 1048576 bytes\n$/);
+  },
+  async 'opencode one-shot: stderr past its allowance is refused, and the report keeps its tail'() {
+    const answer = await opencodeOneShot(overflows('stderr'));
+    assert.equal(answer.caught, 'EFBIG');
+    assert.equal(answer.result.exitCode, 1);
+    assert.equal(answer.result.stderr.length, TAIL, 'the report is the bounded tail of stderr');
+    assert.match(answer.result.stderr, /^A+EFBIG: opencode one-shot stderr result exceeds 1048576 bytes\n$/);
+  },
+  async 'opencode one-shot: a long error report keeps its own bounded tail'() {
+    const answer = await opencodeOneShot(opencodeProgram(`throw new Error("D".repeat(${2 * TAIL}));`));
+    assert.equal(answer.result.exitCode, 1);
+    assert.equal(answer.result.stderr.length, TAIL);
+  },
+  async 'opencode attached: live bytes reach SUPERVISOR whole and once'() {
+    const { createAuthority } = await import('./lib/resident-body.mjs');
+    const { opSender, supervisorDouble } = await import('./lib/supervisor-double.mjs');
+    const { importOpencodeRunner } = await import('./lib/opencode-runner-module.mjs');
+    const { facetSql, CRED } = await import('./lib/resident-body.mjs');
+    const authority = createAuthority();
+    const { pid } = authority.host.processes.spawn('opencode', ['opencode'], '/home/user', { cred: CRED, longRunning: true });
+    const send = opSender((envelope) => authority.host.supervisorOp({ ...envelope, pid }));
+    const sent = { stdout: [], stderr: [] };
+    const exited = Promise.withResolvers();
+    const supervisor = supervisorDouble(async (name, args) => {
+      if (name === 'stdout' || name === 'stderr') { sent[name].push(...args[0]); return; }
+      if (name === 'reportExit') { exited.resolve(args[0]); return; }
+      return send(name, args);
+    });
+    const { runner } = await importOpencodeRunner({
+      mode: 'attached',
+      program: opencodeProgram(`
+        process.stdout.write(new Uint8Array([0xc3]));
+        process.stdout.write(new Uint8Array([0xa9]));
+        builtins.process.stderr.write("error\\n");
+        process.exit(0);
+      `),
+      env: { NIMBUS_ATTACHED_TTY: '1', NIMBUS_CP_CHILD_PID: String(pid) },
+      vfsCursor: JSON.stringify(authority.cursor()),
+    });
+    await new runner.NimbusProcess({ storage: { sql: facetSql() }, waitUntil() {}, id: { toString: () => 'output-capture' } }, { SUPERVISOR: supervisor }).startProcess();
+    assert.equal(await exited.promise, 0);
+    // The attached TUI draws on its terminal too: what the program printed is in the stream, once.
+    const text = (bytes) => new TextDecoder().decode(new Uint8Array(bytes));
+    assert.equal(text(sent.stdout).split('é').length - 1, 1, `stdout carries the program's character once: ${JSON.stringify(text(sent.stdout).slice(-200))}`);
+    assert.equal(text(sent.stderr).split('error\n').length - 1, 1, `stderr carries the program's line once: ${JSON.stringify(text(sent.stderr).slice(-200))}`);
+  },
+  async 'node one-shot: live output reaches SUPERVISOR once, and the run keeps no copy'() {
+    const { createAuthority } = await import('./lib/resident-body.mjs');
+    const { adoptSessionSupervisor, oneShotManager, runnerLoader } = await import('./lib/one-shot-runner.mjs');
+    const { host, rawVfs } = createAuthority();
+    const sent = { stdout: '', stderr: '' };
+    adoptSessionSupervisor(host, (text, stream) => { sent[stream] += text; });
+    const manager = oneShotManager('output-capture', { host, rawVfs, loader: runnerLoader('output-capture') });
+    const result = await manager.exec(LIVE, { filename: '/home/user/live.js', dirname: '/home/user', cwd: '/home/user', captureOutput: false });
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.deepEqual(sent, { stdout: `${'L'.repeat(256 * 1024)}\n`, stderr: 'error\n' });
+    assert.deepEqual([result.stdout, result.stderr], ['', ''], 'the run answers no whole-output copy of what it sent live');
+  },
+  async 'node resident: live output reaches SUPERVISOR once'() {
+    const { createAuthority, facetSupervisor, launchResident, until } = await import('./lib/resident-body.mjs');
+    const authority = createAuthority();
+    const { supervisor, log } = facetSupervisor(authority);
+    await launchResident({ program: LIVE, env: { SUPERVISOR: supervisor }, authority });
+    await until(() => log.stderr === 'error\n', 'the resident\'s stderr line', 10_000);
+    assert.deepEqual([log.stdout, log.stderr], [`${'L'.repeat(256 * 1024)}\n`, 'error\n']);
+  },
+};
+
+/** Run `program` as the opencode bundle of a one-shot runner: its answer, and what it caught. */
+async function opencodeOneShot(program) {
+  const { createAuthority, CRED } = await import('./lib/resident-body.mjs');
+  const { opSender, supervisorDouble } = await import('./lib/supervisor-double.mjs');
+  const { importOpencodeRunner } = await import('./lib/opencode-runner-module.mjs');
+  const authority = createAuthority();
+  const { pid } = authority.host.processes.spawn('opencode', ['opencode'], '/home/user', { cred: CRED });
+  const send = opSender((envelope) => authority.host.supervisorOp({ ...envelope, pid }));
+  const supervisor = supervisorDouble((name, args) => send(name, args));
+  const { runner } = await importOpencodeRunner({ mode: 'oneshot', program, vfsCursor: JSON.stringify(authority.cursor()) });
+  const response = await runner.default.fetch(new Request('http://facet/run', { method: 'POST' }), { SUPERVISOR: supervisor });
+  let caught = null;
+  try { caught = authority.read('home/user/caught.txt'); } catch { /* the program wrote none */ }
+  return { result: await response.json(), caught };
 }
-console.log('opencode-output-capture: bounded explicit results and no duplicate live console capture');
+
+const which = realProcess.env.NIMBUS_OUTPUT_CAPTURE_CASE;
+if (which) {
+  try {
+    await CASES[which]();
+    realStdout(`OUTPUT-CAPTURE-OK ${which}\n`);
+    realExit(0);
+  } catch (error) {
+    realStderr(`OUTPUT-CAPTURE-FAILED ${which}\n${(error && error.stack) || error}\n`);
+    realExit(1);
+  }
+} else {
+  const failures = [];
+  for (const name of Object.keys(CASES)) {
+    const child = Bun.spawnSync({
+      cmd: [realProcess.execPath, import.meta.path],
+      env: { ...realProcess.env, NIMBUS_OUTPUT_CAPTURE_CASE: name },
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: 60_000,
+    });
+    const stdout = child.stdout.toString();
+    if (child.exitCode === 0 && stdout.includes(`OUTPUT-CAPTURE-OK ${name}`)) {
+      console.log(`  ok  ${name}`);
+    } else {
+      console.log(`  FAIL ${name} (exit ${child.exitCode})\n${stdout.slice(-2000)}${child.stderr.toString().slice(-4000)}`);
+      failures.push(name);
+    }
+  }
+  assert.deepEqual(failures, [], 'every entry delivers what its program printed');
+  console.log('opencode-output-capture: what a program prints reaches its reader whole and once, through every entry');
+}

@@ -52,16 +52,17 @@ export function runnerLoader(name, { rewrite = (config) => config, get } = {}) {
 /**
  * SUPERVISOR as the session serves it, as binding and capability alike:
  * every op for the process's own pid through `host`'s supervisor-op handler;
- * stdout and stderr go to `onOutput` as text, and reportExit is dropped.
+ * stdout and stderr go to `onOutput(text, stream)`, and reportExit is dropped.
  */
 export function adoptSessionSupervisor(host, onOutput) {
-  const dec = new TextDecoder();
+  // One decoder per stream: a character split across two writes is whole in neither.
+  const decoders = { stdout: new TextDecoder(), stderr: new TextDecoder() };
   adoptCtxExports({
     // The binding's factory is generic over its stub; this one answers every op.
     SupervisorRPC: /** @type {any} */ (({ props }) => {
       const send = opSender((envelope) => host.supervisorOp({ ...envelope, pid: props?.pid }));
       return supervisorDouble(async (op, args) => {
-        if (op === 'stdout' || op === 'stderr') { onOutput(dec.decode(/** @type {Uint8Array} */ (args[0]))); return; }
+        if (op === 'stdout' || op === 'stderr') { onOutput(decoders[op].decode(/** @type {Uint8Array} */ (args[0]), { stream: true }), op); return; }
         if (op === 'reportExit') return;
         return send(op, args);
       });
