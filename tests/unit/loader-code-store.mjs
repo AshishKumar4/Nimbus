@@ -16,7 +16,9 @@
 //   - a {json} module whose parse makes more than the shim's bound (a shared
 //     object written many times) is refused before its handle is returned;
 //   - a put of bytes that are not what its digest names publishes nothing;
-//     the owner's file cap refuses a further file by name;
+//     the owner's file cap refuses a further file, naming it; the session's
+//     1 GiB counts each binding's files as its own (an adopted copy too) and
+//     its refusal names the cap and how it counts;
 //   - a stopped server's owners and reuse sources are removed once nothing
 //     reads them (A → B → C with A's put held: A goes once drained, B stays);
 //     a removal that fails stays counted and is retried; a later
@@ -267,7 +269,26 @@ const blob = (bytes, fill) => { const data = new Uint8Array(bytes); data.fill(fi
   }
   const more = new TextEncoder().encode('one more');
   await assert.rejects(s.registry.serve({ kind: 'put', owner: token, digest: sha(more), size: more.byteLength }, stream(more)),
-    /would hold 16385 files/, 'the owner\'s 16,385th file is refused by name');
+    /would hold 16385 files, over its cap of 16384/, 'the owner\'s 16,385th file is refused, naming the cap');
+}
+
+// ── The session's 1 GiB counts each binding's files as its own: one shared 16 MiB file adopted by 63 more owners reaches it ──
+{
+  const s = session(vfs());
+  const data = new Uint8Array(16 * MiB).fill(4);
+  const digest = sha(data);
+  const putter = s.registry.mint('wrangler-0', 'LOADER');
+  await s.registry.serve({ kind: 'put', owner: putter, digest, size: data.byteLength }, new ReadableStream({ start(c) { c.enqueue(data); c.close(); } }));
+  for (let i = 1; i < 64; i++) {
+    const adopter = s.registry.mint(`wrangler-${i}`, 'LOADER');
+    assert.deepEqual(await s.registry.serve({ kind: 'has', owner: adopter, digests: [digest] }), [digest], `owner ${i} adopts the shared file`);
+  }
+  assert.equal(s.registry.stats().storeBytes, 1024 * MiB, 'sixty-four owners of one 16 MiB file count 1 GiB');
+  const over = s.registry.mint('wrangler-64', 'LOADER');
+  await assert.rejects(s.registry.serve({ kind: 'has', owner: over, digests: [digest] }),
+    /session's loader store would hold 1090519040 bytes, over its cap of 1073741824 \(1 GiB per session incarnation, each binding's files counted as its own/,
+    'the sixty-fifth adoption is refused, naming the session\'s cap and how it counts');
+  assert.equal(s.registry.stats().storeBytes, 1024 * MiB, 'and the refusal took nothing');
 }
 
 // ── Two owners stopped together: both directories gone, nothing left counted ──
