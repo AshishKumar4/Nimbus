@@ -5,6 +5,42 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a session's own server sends its reason phrase as Node's server
+  does. That is the phrase Node's `http.STATUS_CODES` gives the status
+  ("unknown" for a status it does not name), or the phrase the handler set
+  with `writeHead(status, reason)` or `res.statusMessage`. `curl -I` prints
+  it, `fetch` gets it as `statusText`, and `http.get` from another program
+  gets it as `statusMessage`. Before, the shell knew 18 phrases and ignored
+  the handler's, so `curl -I` printed `HTTP/1.1 205` and `HTTP/1.1 200 OK`
+  for a 200 "Fine By Me". Another program's `http.get` got no phrase at all.
+- Fixed: `server.listen(port, callback)` in a portable `node` program
+  calls `callback` with the server as `this`, as Node does. Before, `this`
+  was undefined, so `this.address()` threw.
+- Fixed: a session's own server can answer 205 (Reset Content). `curl`
+  gets it, and so does `http.get` from another portable `node` program.
+  Before, the response was rebuilt with the empty body its server ended,
+  which a Response refuses for 205: `curl` reported "Failed to connect"
+  and `http.get` failed with `ECONNREFUSED`. 204 and 304 were already
+  right.
+- Changed: `curl -L` and `wget` walk redirects with the same code as a
+  portable `node` program's `fetch` under an egress
+  (`runtime/http-redirect-policy.js` `followRedirects`). Each keeps its own
+  policy: which statuses it follows, and what a Location it cannot use
+  means. Two edge cases change:
+  - A Location is checked before the 20-redirect cap, as Node's fetch
+    checks it. A `fetch` whose 21st response redirects to a URL that is not
+    HTTP(S) fails "URL scheme must be a HTTP(S) scheme", as in Node, rather
+    than "redirect count exceeded". With `curl -L` or `wget`, a 21st
+    redirect whose Location does not parse is the answer rather than "too
+    many redirects".
+  - The body of a redirect that is followed, or that redirect mode
+    `'error'` refuses, is cancelled without waiting for the cancel, as
+    undici does. A cancel that fails no longer fails the `fetch`.
+- Breaking (core): `MAX_REDIRECTS` moved from
+  `substrate/lifo/commands/net/kernel-fetch.js` to
+  `runtime/http-redirect-policy.js`. `HopRequest` is gone; use
+  `RedirectHop<string>`. A walk's `response` result now also says whether
+  it was `redirected`.
 - Fixed (SDK): `box.ports.ensureDurableApp({ owner, name })` through
   `Nimbus.connect` now passes the app's `name` to the session, as
   `Nimbus.fromEnv` always has. Before, the remote API rebuilt the request
@@ -18,6 +54,22 @@ published independently in the `@nimbus-sh` npm scope.
   remote API's base path and how a configured one is read. The SDK's
   `Nimbus.connect` and the worker's remote API both use them now, in place
   of a copy each. Base paths behave as before.
+- Fixed (git): `git tag -l <pattern>` matches as git does, with the same
+  wildmatch git uses for refs. A negated class (`rel-[!x]`), a POSIX class
+  (`[[:digit:]]`) and an escape (`\x`) now work. Before, a regular
+  expression stood in, and it read `rel-[!x]` as "rel-! or rel-x".
+- Fixed (git): `git clone --depth` and `git fetch --depth` read their
+  value as git does, into an int. `0`, a negative number, `abc` or
+  `2147483648` fails with "fatal: depth <n> is not a positive number".
+  `2junk` or `08` fails with "fatal: transport: invalid depth option
+  '<n>'". Each failure exits 128. `010` is octal, so depth 8. Before, a
+  clone took `0` and `abc` as depth 1 and `2junk` as depth 2, and cloned
+  anyway. A clone with no `--depth` is still depth 1.
+- Fixed (git, mounted clone): when a file, an unlink or the index lock
+  fails, git's error gives strerror's words for every code the session's
+  filesystem answers. `Invalid argument`, `Directory not empty`, `Bad file
+  descriptor` and `Stale file handle` were missing, and those failures
+  printed the raw error, such as `EINVAL: …`.
 - Fixed (shell): when a here-document's command fails, the interactive
   shell reports it the way the shell and runtimes report any caught value
   (`_shared/error-text.js`). A thrown object's `message` is shown, and an

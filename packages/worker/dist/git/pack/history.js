@@ -121,12 +121,13 @@ function hexBytes(hex) {
 }
 async function settle(writer, kind, stored, list, graph, listName, watch) {
     const lists = await list.write(writer, listName);
-    const graphLists = graph.refused ? null : await graph.write(writer, 'graph-' + listName);
+    if (!graph.refused)
+        await graph.write(writer, 'graph-' + listName);
     await writer.flush();
     const tagsFound = [...watch.found];
     if ('pending' in stored)
-        return { kind, pack: null, pending: stored.pending, lists, graphLists, tagsFound };
-    return { kind, pack: stored.summary, pending: null, lists, graphLists, tagsFound };
+        return { kind, pack: null, pending: stored.pending, lists, graphRefused: graph.refused, tagsFound };
+    return { kind, pack: stored.summary, pending: null, lists, graphRefused: graph.refused, tagsFound };
 }
 /** What a piece records as its objects resolve, and which of the clone's tags' ids it meets. */
 function watcher(kind, list, graph, watch) {
@@ -184,7 +185,7 @@ export async function historyResume(context, request) {
     const settled = await settledBefore(context, request.pending.tmpName, recordName);
     if (settled !== null) {
         const extra = settled.extra;
-        return { kind: request.kind, pack: settled.summary, pending: null, lists: extra.lists, graphLists: extra.graphLists === undefined ? [] : extra.graphLists, tagsFound: extra.tagsFound };
+        return { kind: request.kind, pack: settled.summary, pending: null, lists: extra.lists, graphRefused: extra.graphRefused === true, tagsFound: extra.tagsFound };
     }
     const writer = context.writer();
     writer.setPin(context.marker.path, context.marker.text, true);
@@ -193,7 +194,6 @@ export async function historyResume(context, request) {
     const watch = new TagWatch(request.tagInterest ?? []);
     const listName = 'list-' + request.piece + '-' + request.part;
     let lists = [];
-    let graphLists = [];
     const stored = await resumePack(context, writer, request.pending, {
         cacheBytes: HISTORY_CACHE_BYTES,
         recentBytes: HISTORY_RECENT_BYTES,
@@ -201,16 +201,17 @@ export async function historyResume(context, request) {
         onObject: watcher(request.kind, list, graph, watch),
         record: {
             name: recordName,
-            publish: async () => ({
-                lists: (lists = await list.write(writer, listName)),
-                graphLists: (graphLists = graph.refused ? null : await graph.write(writer, 'graph-' + listName)),
-                tagsFound: [...watch.found],
-            }),
+            publish: async () => {
+                lists = await list.write(writer, listName);
+                if (!graph.refused)
+                    await graph.write(writer, 'graph-' + listName);
+                return { lists, graphRefused: graph.refused, tagsFound: [...watch.found] };
+            },
         },
     });
     if ('pending' in stored)
         return await settle(writer, request.kind, stored, list, graph, listName, watch);
-    return { kind: request.kind, pack: stored.summary, pending: null, lists, graphLists, tagsFound: [...watch.found] };
+    return { kind: request.kind, pack: stored.summary, pending: null, lists, graphRefused: graph.refused, tagsFound: [...watch.found] };
 }
 /** An open-addressing set of 20-byte ids, each with a basename: the plan's only large structure. */
 class BlobTable {

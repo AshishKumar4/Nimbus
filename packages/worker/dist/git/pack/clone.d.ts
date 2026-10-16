@@ -265,11 +265,8 @@ export declare function cloneFinish(context: CloneContext, request: {
     full?: boolean;
     cacheTreeBytes?: number;
     tags?: readonly CloneTag[];
-    /** A full clone's commit records (history.ts graphLists), or null when one did not parse: no graph. */
-    graph?: {
-        name: string;
-        bytes: number;
-    }[] | null;
+    /** Whether a clone's commit records (GRAPH_RECORDS_DIR) make its commit-graph: false, they go. */
+    commitGraph?: boolean;
     /** A file could not be written: as git dies before it writes its index, there is none. */
     checkoutFailed?: boolean;
 }): Promise<{

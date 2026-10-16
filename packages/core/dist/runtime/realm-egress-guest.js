@@ -3,14 +3,13 @@
  * crossing to the host.
  */
 import { routeWebSocketsThroughHost } from './realm-websocket-guest.js';
+import { isNullBodyStatus } from '../_shared/null-body-status.js';
 /** A Request's redirect mode, as its type names it (a string, in the platform's typing). */
 function redirectMode(mode) {
     if (mode === 'follow' || mode === 'manual' || mode === 'error')
         return mode;
     throw new TypeError(`fetch: unknown redirect mode ${JSON.stringify(mode)}`);
 }
-/** Statuses whose response has no body (the Response constructor refuses one). */
-const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
 /**
  * Route this realm's `fetch` through its host (`post` crosses to it), and
  * relay WebSocket frames unless the caller supplies `webSocketRefusal`. The host
@@ -59,7 +58,7 @@ export function routeFetchThroughHost(post, waiting, webSocketRefusal) {
         };
         const head = (answer) => {
             await_(false);
-            const withBody = answer.body && !NULL_BODY_STATUSES.has(answer.status);
+            const withBody = answer.body && !isNullBodyStatus(answer.status);
             if (answer.body && !withBody) {
                 post({ type: 'egress-cancel', id });
                 done();

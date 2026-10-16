@@ -355,7 +355,9 @@ export class WaveWriter {
     }
     // ── Internals ────────────────────────────────────────────────────────
     key(path) {
-        return this.options.base ? this.options.base + '/' + path : path;
+        if (!this.options.base)
+            return path;
+        return path ? this.options.base + '/' + path : this.options.base;
     }
     tally() {
         return { pathCount: this.owned.size, pathBytes: this.ownedPathBytes };

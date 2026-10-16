@@ -16,7 +16,7 @@
 
 import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
 import { isWebSocketGuestEvent, isWebSocketHostEvent, RealmWebSockets, type WebSocketGuestEvent, type WebSocketHostEvent } from './realm-websocket.js';
-import { applyRedirectPolicy, isRedirectStatus, type RedirectHop } from './http-redirect-policy.js';
+import { followRedirects, isRedirectStatus } from './http-redirect-policy.js';
 
 // ── The protocol ────────────────────────────────────────────────────────────
 
@@ -98,41 +98,34 @@ export function isEgressHostEvent(value: unknown): value is EgressHostEvent {
 
 // ── The host's side ─────────────────────────────────────────────────────────
 
-/** At most this many redirects followed, as fetch follows them. */
-const MAX_REDIRECTS = 20;
-
 /**
  * `request` through `network`, each hop its own request with redirect
  * 'manual', and the realm's redirect mode applied here: as workerd's fetch
  * follows a Fetcher's redirects (each hop to the Fetcher) and as Node's fetch
  * follows them (the HTTP-redirect fetch of https://fetch.spec.whatwg.org,
  * undici lib/web/fetch/index.js), so the egress sees every request the
- * realm's redirects make. Rejects as Node's fetch fails: 'unexpected
- * redirect' under 'error', 'redirect count exceeded' past 20.
+ * realm's redirects make (followRedirects' 'fetch' policy). Rejects as
+ * Node's fetch fails: 'unexpected redirect' under 'error', 'redirect count
+ * exceeded' past 20.
  */
 async function fetchFollowing(network: WorkspaceNetwork, request: EgressRequest, signal: AbortSignal): Promise<{ response: Response; url: string; redirected: boolean }> {
-  const hop: RedirectHop<Uint8Array | null> = {
-    url: new URL(request.url), method: request.method, body: request.body,
-    headers: new Headers(request.headers.map(([name, value]) => [name, value])),
-  };
-  hop.url.hash = '';
-  for (let followed = 0; ; followed++) {
-    const response = await network.fetch(hop.url.href, { method: hop.method, headers: hop.headers, body: hop.body, redirect: 'manual', signal });
-    const answered = { response, url: hop.url.href, redirected: followed > 0 };
-    if (!isRedirectStatus(response.status, 'fetch') || request.redirect === 'manual') return answered;
-    if (request.redirect === 'error') {
-      await response.body?.cancel();
-      throw new Error('unexpected redirect');
-    }
-    const location = response.headers.get('location');
-    if (location === null) return answered;
-    await response.body?.cancel();
-    if (followed === MAX_REDIRECTS) throw new Error('redirect count exceeded');
-    const next = new URL(location, hop.url);
-    next.hash = '';
-    if (next.protocol !== 'http:' && next.protocol !== 'https:') throw new Error('URL scheme must be a HTTP(S) scheme');
-    applyRedirectPolicy(hop, response.status, next, 'fetch');
-  }
+  const url = new URL(request.url);
+  url.hash = '';
+  const walk = await followRedirects<Uint8Array | null>(
+    { url, method: request.method, body: request.body, headers: new Headers(request.headers.map(([name, value]) => [name, value])) },
+    'fetch',
+    {
+      follow: request.redirect !== 'manual',
+      send: (hop) => network.fetch(hop.url.href, { method: hop.method, headers: hop.headers, body: hop.body, redirect: 'manual', signal }),
+      arrived: async (response) => {
+        if (request.redirect !== 'error' || !isRedirectStatus(response.status, 'fetch')) return;
+        response.body?.cancel().catch(() => {});
+        throw new Error('unexpected redirect');
+      },
+    },
+  );
+  if (walk.kind !== 'response') throw new Error('redirect count exceeded');
+  return { response: walk.response, url: walk.url.href, redirected: walk.redirected };
 }
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
