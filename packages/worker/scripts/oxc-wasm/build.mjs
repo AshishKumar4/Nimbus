@@ -135,7 +135,7 @@ function wasmFacts(bytes) {
     do { byte = bytes[at++]; result |= (byte & 0x7f) << shift; shift += 7; } while (byte & 0x80);
     return result >>> 0;
   };
-  const str = () => { const n = u(); const s = new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes.subarray(at, at + n)); at += n; return s; };
+  const str = () => { const n = u(); const s = new TextDecoder().decode(bytes.subarray(at, at + n)); at += n; return s; };
   const facts = { imports: [], exports: [], memories: [] };
   while (at < bytes.length) {
     const id = bytes[at++];
