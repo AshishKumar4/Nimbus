@@ -31,6 +31,14 @@ published independently in the `@nimbus-sh` npm scope.
   and an exact version built only for another platform is refused. Before,
   the first `=` requirement installed that version whatever else the
   request said.
+- Breaking (core): `scanCjsExports` (`runtime/cjs-export-names.js`) is the
+  Vite dev server's CommonJS interop scan alone, and takes no policy:
+  `scanCjsExports(source)`. The `'node'` policy, a second hand-written
+  grammar of what Node detects, is gone, and so is `CjsExportPolicy`. Node's
+  own detection is the vendored cjs-module-lexer (`runtime/cjs-module-lexer.js`
+  `createCjsLexer`), which both module loaders already use. The Vite scan's
+  results are unchanged: identical for all 10,084 CommonJS files of the
+  repository's dependencies.
 - Breaking (fabric, worker, sdk): the legacy inner Durable Object transport
   is gone. `NimbusDOStub` is no longer exported from
   `@nimbus-sh/fabric/bindings.js`, `@nimbus-sh/worker` or
