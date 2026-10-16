@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: Tailwind CSS v4 works again. Its scanner, `@tailwindcss/oxide`
+  4.3.3, runs from Nimbus's staged threadless build, so `@tailwindcss/vite`,
+  `@tailwindcss/postcss` and `@tailwindcss/cli` install and serve. A Vite
+  dev server's stylesheet carries the utilities the project's files use,
+  including files edited or added while it runs, and `vite build` writes
+  them too. Before, the install noted that oxide had no Workers-compatible
+  build, and Tailwind v4 could not load.
+
 - Fixed: a session's destroy (`DELETE /s/<id>/`, `box.destroy()`) is
   repeated once on a fresh connection when the platform fails it with a
   reset of the session's storage ("Internal error in Durable Object
@@ -219,11 +227,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 - Fixed: in Node programs, `fs.open` honours `O_NOFOLLOW`: a final symbolic
   link is `ELOOP`, or `ENOTDIR` with `O_DIRECTORY`, as on Linux, and
-  `EEXIST` under `O_CREAT|O_EXCL`. A write open is one call the session
-  judges with its create, truncate and flags, so a file a peer replaces
-  with a link after the program looked is refused, not followed and
-  emptied. `O_SYNC`
-  follows each write with an fsync. `FileHandle.write` reads its arguments
+  `EEXIST` under `O_CREAT|O_EXCL`. An open that creates or truncates is one
+  call the session judges with its flags and the access it asks, so a file
+  a peer replaces with a link after the program looked is refused, not
+  followed and emptied, and `O_RDONLY|O_CREAT` opens a file its owner may
+  only read. `O_CREAT|O_DIRECTORY` is `EINVAL`. `O_SYNC` follows each write
+  with an fsync. `FileHandle.write` reads its arguments
   as `fs.write` does: `handle.write('ff', 0, 'hex')` writes the byte `ff`
   (it wrote `66 66`), and `handle.write(buffer, { offset, length,
   position })` writes that part there.
