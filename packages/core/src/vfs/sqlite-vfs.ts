@@ -5874,7 +5874,7 @@ export class SqliteVFS {
    * admitted and changed as its row; an open one unlinked (null) in its
    * inode alone.
    */
-  private chownInode(inode: INode, uid: number | null, gid: number | null, cred: VfsCred, linked: { readonly path: string; readonly lexical: string } | null): void {
+  private chownInode(inode: INode, uid: number | null, gid: number | null, cred: VfsCred, linked: { readonly path: string; readonly lexical: LexicalVfsKey } | null): void {
     if (uid !== null && (!Number.isSafeInteger(uid) || uid < 0)) throw vfsError('EINVAL', `invalid uid ${uid}`);
     if (gid !== null && (!Number.isSafeInteger(gid) || gid < 0)) throw vfsError('EINVAL', `invalid gid ${gid}`);
     if (chownRefusal(inode, uid, gid, cred) !== null) throw vfsKeyError('EPERM', linked?.path ?? 'detached inode');
