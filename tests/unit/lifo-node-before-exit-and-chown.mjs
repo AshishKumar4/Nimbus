@@ -25,6 +25,7 @@ const mine = (p, l) => { const s = (l ? fs.lstatSync : fs.statSync)(p); return [
 const t = (f) => { try { f(); return "ok" } catch (e) { return e.code } };
 console.log("keep", t(() => fs.chownSync("own", -1, process.getgid())), mine("own"));
 console.log("keep2", t(() => fs.chownSync("own", process.getuid(), -1)), mine("own"));
+console.log("keepMax", t(() => fs.chownSync("own", 0xffffffff, 0xffffffff)), t(() => fs.chownSync("own", 2 ** 32 - 1, process.getgid())), mine("own"));
 console.log("root", t(() => fs.chownSync("own", 0, 0)));
 console.log("range", t(() => fs.chownSync("own", -2, 0)), t(() => fs.chownSync("own", 2 ** 32, 0)));
 console.log("type", t(() => fs.chownSync("own", "1", 0)), t(() => fs.chownSync("own", 1.5, 0)));
@@ -53,6 +54,8 @@ const CASES = [
     'an error a listener took does not'],
   [`node -e 'let n = 0; process.stdout.on("error", (e) => { console.error("heard", e.code) }); process.on("beforeExit", () => { n++; console.error("beforeExit", n); process.stdout.write("x\\n") })' > /dev/full; echo "status=$?"`,
     'a write it makes to /dev/full is heard once, and the loop is not run again for it'],
+  [`node -e 'let n = 0; process.stdout.on("error", (e) => { console.error("heard", e.code, n) }); process.on("beforeExit", () => { n++; if (n === 1) setTimeout(() => {}, 1); else if (n === 2) process.stdout.write("x\\n") }); process.on("exit", () => console.error("rounds", n))' > /dev/full; echo "status=$?"`,
+    'a round that writes nothing, then one at the same write number whose write fails: heard in its round, no third'],
   [`echo 'process.on("beforeExit", () => console.log("beforeExit")); await new Promise(() => {})' > tla.mjs; node tla.mjs; echo "status=$?"; rm -f tla.mjs`,
     'a top-level await unsettled hears it before its warning and 13'],
   [`rm -f own own.lnk && touch own && ln -s own own.lnk && node -e '${CHOWN}'; echo "status=$?"; rm -f own own.lnk`,
