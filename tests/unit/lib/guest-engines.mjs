@@ -123,6 +123,42 @@ function nodeBridge(fs) {
   };
 }
 
+/**
+ * The node shim's synchronous `fs` as RuntimeSynchronousFs: each method
+ * Node's own *Sync call, a descriptor its fd.
+ */
+function nodeSyncBridge(fs) {
+  const absent = (stat) => {
+    try { return stat(); } catch (error) { if (error?.code === 'ENOENT') return null; throw error; }
+  };
+  return {
+    stat: (path, options) => absent(() => (options?.followSymlinks === false ? fs.lstatSync(path) : fs.statSync(path))),
+    readFile: (path) => new Uint8Array(fs.readFileSync(path)),
+    writeFile: (path, bytes) => { fs.writeFileSync(path, bytes); },
+    chmod: (path, mode) => fs.chmodSync(path, mode),
+    chown: (path, uid, gid) => fs.chownSync(path, uid, gid),
+    utimes: (path, atimeMs, mtimeMs) => fs.utimesSync(path, atimeMs / 1000, mtimeMs / 1000),
+    copyFile: (from, to) => fs.copyFileSync(from, to),
+    mkdir: (path, options) => { fs.mkdirSync(path, options); },
+    unlink: (path) => fs.unlinkSync(path),
+    rmdir: (path) => fs.rmdirSync(path),
+    rename: (from, to) => fs.renameSync(from, to),
+    symlink: (target, path) => fs.symlinkSync(target, path),
+    readlink: (path) => fs.readlinkSync(path),
+    readdir: (path) => fs.readdirSync(path).map((name) => ({ name })),
+    open: (path, flags) => ({ id: fs.openSync(path, nodeFlags(flags), flags.mode) }),
+    read: (id, offset, length) => {
+      const buffer = new Uint8Array(length);
+      return buffer.subarray(0, fs.readSync(id, buffer, 0, length, offset));
+    },
+    write: (id, offset, bytes) => fs.writeSync(id, bytes, 0, bytes.byteLength, offset),
+    fstat: (id) => fs.fstatSync(id),
+    ftruncate: (id, size) => fs.ftruncateSync(id, size),
+    fsync: (id) => (id === undefined ? undefined : fs.fsyncSync(id)),
+    close: (id) => fs.closeSync(id),
+  };
+}
+
 /** The WASI body's own filesystem for a guest that parks, over `supervisor`, as a facet's body builds it. */
 async function holderBridge(supervisor) {
   const modulePath = join(tmpdir(), `guest-engine-holder-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
@@ -192,18 +228,24 @@ export async function bootEngine(kind, { seed } = {}) {
   // The facet's own store, where the process logs what it sends (process-fs-journal.ts).
   const sql = facetSql();
   let fs;
+  let sync;
   if (kind === 'node') {
     await launchResident({ authority, program: NODE_PROGRAM, env: { SUPERVISOR: handle.supervisor }, sql, cursor: authority.cursor(), cwd: APP });
     await until(() => globalThis.__engineFs !== undefined, 'the process lends its fs');
     fs = nodeBridge(globalThis.__engineFs);
+    sync = nodeSyncBridge(globalThis.__engineFs);
   } else {
     globalThis.__nimbusFsJournalSql = sql;
     fs = await holderBridge(handle.supervisor);
+    // As the codec calls the synchronous view: its own copies keep their mode.
+    sync = new Proxy(fs.synchronous, { get: (target, name) => (name === 'copyFile' ? (from, to) => target.copyFile(from, to, { keepMode: true }) : target[name]) });
   }
   const engine = {
     kind,
     authority,
     fs,
+    /** The same filesystem for a caller that cannot wait (RuntimeSynchronousFs): Node's *Sync calls; the holder's synchronous view. */
+    sync,
     log: handle.log,
     /** The process's log store, as a drain reads it. */
     journal: () => sqlJournal(sql),

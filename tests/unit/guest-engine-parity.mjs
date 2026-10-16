@@ -25,6 +25,7 @@ import { APP, answeredAtOnce, ledgerScenarios, stat } from './lib/guest-engines.
 
 const OUT = `${APP}/out`;
 const enc = new TextEncoder();
+const dec = new TextDecoder();
 
 /** The change `work` makes is answered with the session's waves stalled, and the session has it once they go. */
 async function decided(e, work, landed) {
@@ -198,6 +199,38 @@ const SCENARIOS = {
     await e.fs.readdir(`${APP}/modes`);
     for (let i = 0; i < 12; i++) await e.fs.chmod(`${APP}/modes/f${i}`, 0o600);
     await until(() => e.held(`${APP}/modes/x`), 'the chmods took their subtree', 5_000);
+  },
+
+  // ── Synchronous calls: answered now, from what the process holds ──────
+  async 'a synchronous write in a held subtree is answered at once, and read back at once'(e) {
+    await e.hold(OUT);
+    await e.fs.readdir(OUT);
+    e.stall();
+    const written = e.sync.writeFile(`${OUT}/sync.txt`, enc.encode('SYNC'));
+    assert.ok(!(written instanceof Promise), 'a synchronous write began a wait');
+    assert.equal(dec.decode(e.sync.readFile(`${OUT}/sync.txt`)), 'SYNC');
+    assert.equal(stat(e.sync.stat(`${OUT}/sync.txt`)).size, 4);
+    await e.release();
+    assert.equal(await e.peerText(`${OUT}/sync.txt`), 'SYNC');
+  },
+  async 'synchronous mkdir, rename, chmod and unlink in a held subtree are answered at once'(e) {
+    await e.hold(OUT);
+    await e.fs.readdir(OUT);
+    e.stall();
+    e.sync.mkdir(`${OUT}/d`, { mode: 0o750 });
+    e.sync.writeFile(`${OUT}/a.txt`, enc.encode('A'));
+    e.sync.rename(`${OUT}/a.txt`, `${OUT}/d/b.txt`);
+    e.sync.chmod(`${OUT}/d/b.txt`, 0o600);
+    assert.equal(stat(e.sync.stat(`${OUT}/d/b.txt`)).mode, 0o600);
+    assert.equal(e.sync.stat(`${OUT}/a.txt`), null);
+    e.sync.writeFile(`${OUT}/gone.txt`, enc.encode('G'));
+    e.sync.unlink(`${OUT}/gone.txt`);
+    assert.equal(e.sync.stat(`${OUT}/gone.txt`), null);
+    await e.release();
+    assert.equal((await e.peerStat(`${OUT}/d`)).mode, 0o750);
+    assert.equal(await e.peerText(`${OUT}/d/b.txt`), 'A');
+    assert.equal((await e.peerStat(`${OUT}/d/b.txt`)).mode, 0o600);
+    assert.equal(await e.peerStat(`${OUT}/gone.txt`), null);
   },
 
   // ── Descriptors ────────────────────────────────────────────────────────
