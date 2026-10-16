@@ -19,7 +19,9 @@ published independently in the `@nimbus-sh` npm scope.
   JavaScript parser. A re-export in a comment or a string no longer wins
   over the real one, every name of `export const a = 1, b = 2` and of a
   destructuring export counts, and `export * as ns` is one name. A barrel
-  that does not parse is refused rather than read in part.
+  that does not parse is refused rather than read in part. The barrel and
+  each module it re-exports with `export *` are read one statement at a
+  time, so no module's whole syntax tree is held in memory.
 
 - Fixed (CLI): `nimbus runtime sync` with no runtime named, and so `nimbus
   setup cloudflare`, now publishes `cpython@3.13.14-3` as the bucket's Python.
