@@ -909,7 +909,8 @@ export async function registerHostedCommands(self, workspace) {
     };
     registerShellEntrypointCommands(registry, shellEntrypointExecutor);
     // Shell scripts that execute through the local shell still need the same
-    // process-table and log-store contract as facet-backed processes.
+    // process-table and log-store contract as facet-backed processes. Answers
+    // 'resident' for a long-running script a server adopted, which runs on.
     const shellExecuteTracked = async (cmd, cmdCtx, opts = {}) => {
         const entry = self.processes.spawn(cmd, [cmd], cmdCtx.cwd || '/home/user', { parentPid: cmdCtx.pid });
         const pid = entry.pid;
@@ -1042,7 +1043,7 @@ export async function registerHostedCommands(self, workspace) {
                 }
             }
         }
-        return exitCode;
+        return opts.longRunning === true && exitCode === 0 ? 'resident' : exitCode;
     };
     const runtimeCommandHint = createRuntimeCommandHintResolver(self.env);
     installNpmBinFallbackResolver(registry, {
@@ -1076,7 +1077,7 @@ export async function registerHostedCommands(self, workspace) {
         installer: createNpmInstallPort(self, workspace.filesystem),
         // Releases before 0.13.2 wrote package.json as root.
         beforeWrite: (ctx, path) => handKernelArtifact(workspace.filesystem, ctx.vfs, ctx.cred, path),
-        beforeRun: async (ctx, { event, script, manifest }) => {
+        beforeRun: async (ctx, { event: ran, scripts, manifest }) => {
             // Nimbus's own flags, anywhere on the command line, before `--` or after.
             const words = ctx.args;
             // ── node_modules preflight ────────────────────────────────────
@@ -1094,14 +1095,16 @@ export async function registerHostedCommands(self, workspace) {
             if (!bypassRunCheck) {
                 const guard = await checkNodeModulesGuard(ctx.vfs, `/${normalizeVfsPath(ctx.cwd || '/home/user')}`);
                 if (guard.missing) {
-                    const bundler = detectBundlerBin(script);
-                    if (bundler) {
+                    for (const { event, script } of scripts) {
+                        const bundler = detectBundlerBin(script);
+                        if (!bundler)
+                            continue;
                         // Hard fail: script needs a bundler binary that lives in node_modules/.bin.
                         await ctx.stderr.write('\x1b[31m\u2718\x1b[0m \x1b[1mnode_modules/ not found\x1b[0m — ' +
                             `script "${event}" runs \x1b[36m${bundler}\x1b[0m which needs installed dependencies ` +
                             `(${guard.depCount} declared).\n` +
                             '  Run \x1b[36mnpm install\x1b[0m first,\n' +
-                            '  or re-run with \x1b[36mnpm run ' + event + ' -- --force\x1b[0m to skip this check.\n');
+                            '  or re-run with \x1b[36mnpm run ' + ran + ' -- --force\x1b[0m to skip this check.\n');
                         return 1;
                     }
                     // Soft warning: script might not need deps; let it try.
@@ -1114,7 +1117,7 @@ export async function registerHostedCommands(self, workspace) {
             // Nimbus ships: a deterministic refusal, rather than a script that hangs
             // or (build) resets the isolate during spawn. A one-off symbol-detection
             // guard, not a per-framework code path.
-            if (refusedNextSubcommand(event, script, manifest, words)) {
+            if (scripts.some(({ event, script }) => refusedNextSubcommand(event, script, manifest, words))) {
                 await ctx.stderr.write(NEXT_REFUSAL_MESSAGE);
                 return 127;
             }
