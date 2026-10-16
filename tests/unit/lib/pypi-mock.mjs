@@ -1,8 +1,18 @@
-// What pip's planner (core runtime/python-pip.ts) reads: a filesystem that
-// holds a few files, PyPI's JSON API answered from fixtures, and the
-// environment markers of the interpreter it plans for.
+// What pip (core runtime/python-pip.ts) reads and what it installs: a
+// filesystem that holds a few files, PyPI's JSON API answered from fixtures
+// (wheelhouse: real wheels, by file URL), the environment markers of the
+// interpreter it plans for, and pipInstall, which runs its install as the
+// CPython runner does, with the host's python3.
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { ISOLATE_NETWORK } from '../../../packages/core/src/_shared/workspace-network.ts';
+import { buildPipInvocation, pythonSitePackages } from '../../../packages/core/src/runtime/python-pip.ts';
 
 export class FakeVfs {
   constructor(files = {}, deniedPaths = []) {
@@ -97,4 +107,73 @@ export function installMockPypi(projects) {
       }),
     };
   } });
+}
+
+/** A scratch directory on the host, with a home and a project in it, removed by `done`. */
+export function scratch() {
+  const root = mkdtempSync(join(tmpdir(), 'nimbus-pip-'));
+  const home = join(root, 'home');
+  const projectDir = join(root, 'project');
+  mkdirSync(projectDir, { recursive: true });
+  return { root, home, project: projectDir, done: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+/**
+ * `projects` as PyPI serves them from `dir`: each pure wheel (py3-none-any)
+ * a real one, its module and its dist-info, named by file URL and digest.
+ * Other files are left as they are, for the planner to refuse.
+ */
+export function wheelhouse(dir, projects) {
+  const pure = (entry) => entry.filename.endsWith('-py3-none-any.whl');
+  writeWheels(projects.flatMap((pkg) => Object.entries(pkg.versions).flatMap(([version, files]) =>
+    files.filter(pure).map((entry) => ({ path: join(dir, entry.filename), name: pkg.name, version })))));
+  const served = (entry) => {
+    const path = join(dir, entry.filename);
+    return { ...entry, url: pathToFileURL(path).href, digests: { sha256: createHash('sha256').update(readFileSync(path)).digest('hex') } };
+  };
+  return projects.map((pkg) => ({
+    ...pkg,
+    versions: Object.fromEntries(Object.entries(pkg.versions).map(([version, files]) => [version, files.map((entry) => (pure(entry) ? served(entry) : entry))])),
+  }));
+}
+
+/** Each wheel of `wheels` ({ path, name, version }) written by python3's zipfile, as a pure wheel holds it. */
+export function writeWheels(wheels) {
+  const made = spawnSync('python3', ['-c', `
+import json, sys, zipfile
+for w in json.load(sys.stdin):
+    module = w["name"].replace("-", "_").lower()
+    dist = w["name"].replace("-", "_") + "-" + w["version"] + ".dist-info"
+    with zipfile.ZipFile(w["path"], "w") as z:
+        z.writestr(module + "/__init__.py", "VERSION = " + json.dumps(w["version"]) + "\\n")
+        z.writestr(dist + "/METADATA", "Metadata-Version: 2.1\\nName: " + w["name"] + "\\nVersion: " + w["version"] + "\\n")
+        z.writestr(dist + "/WHEEL", "Wheel-Version: 1.0\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n")
+        z.writestr(dist + "/RECORD", "")
+`], { input: JSON.stringify(wheels), encoding: 'utf8' });
+  assert.equal(made.status, 0, made.stderr);
+}
+
+/** The host's filesystem, as pip's planner reads it (paths without the leading slash). */
+const hostVfs = {
+  exists: (path) => existsSync(`/${path.replace(/^\/+/, '')}`),
+  readFile: (path) => new Uint8Array(readFileSync(`/${path.replace(/^\/+/, '')}`)),
+};
+
+/**
+ * `pip install argv` in `place` (scratch's project, for its home): the plan
+ * buildPipInvocation makes, run by python3 as the CPython runner runs it.
+ * Answers why it failed, or each package the user's site-packages then
+ * holds, as name==version from its METADATA.
+ */
+export async function pipInstall(argv, place, { network = ISOLATE_NETWORK, markers: environment = markers } = {}) {
+  const invocation = await buildPipInvocation(['install', ...argv], 'pip', place.project, hostVfs, { home: place.home, network, markers: environment });
+  if (invocation.mode !== 'pip') return { error: invocation.error ?? `pip planned no install (${invocation.mode})` };
+  const run = spawnSync('python3', ['-c', invocation.code], { encoding: 'utf8' });
+  if (run.status !== 0) return { error: `${run.stdout}${run.stderr}` };
+  const site = `/${pythonSitePackages(place.home)}`;
+  const installed = readdirSync(site).filter((entry) => entry.endsWith('.dist-info')).map((entry) => {
+    const metadata = readFileSync(join(site, entry, 'METADATA'), 'utf8');
+    return `${/^Name: (.*)$/m.exec(metadata)?.[1]}==${/^Version: (.*)$/m.exec(metadata)?.[1]}`;
+  });
+  return { installed: installed.sort() };
 }

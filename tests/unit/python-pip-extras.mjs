@@ -9,29 +9,24 @@
 // resolved without x never installed x's dependency `c`.
 
 import assert from 'node:assert/strict';
-import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
-import { buildPipInvocation } from '../../packages/core/src/runtime/python-pip.ts';
-import { FakeVfs, cwd, file, installMockPypi, markers, project, restoreFetch } from './lib/pypi-mock.mjs';
+import { file, installMockPypi, pipInstall, project, restoreFetch, scratch, wheelhouse } from './lib/pypi-mock.mjs';
 
 const wheel = (name) => ({ '1.0.0': [file(name, '1.0.0', `${name}-1.0.0-py3-none-any.whl`)] });
-
+const place = scratch();
 try {
-  installMockPypi([
+  installMockPypi(wheelhouse(place.root, [
     project('a', wheel('a'), { '1.0.0': ['c; extra == "x"', 'd; extra == "y"', 'b'] }),
     project('b', wheel('b'), { '1.0.0': ['a[x]'] }),
     project('e', wheel('e'), { '1.0.0': ['a[y]'] }),
     project('c', wheel('c')),
     project('d', wheel('d')),
-  ]);
-  const invocation = await buildPipInvocation(['install', 'a', 'e'], 'pip', cwd, new FakeVfs(), { home: '/home/user', network: ISOLATE_NETWORK, markers });
-  assert.equal(invocation.mode, 'pip', invocation.error);
-  const installs = (name) => invocation.code.includes(`"canonicalName":"${name}"`);
-  assert.ok(installs('c'), 'b asks for a[x] after a was resolved without x: x\'s dependency c is installed');
-  assert.ok(installs('d'), 'e asks for a[y]: y\'s dependency d is installed too');
-  assert.ok(['a', 'b', 'e'].every(installs));
+  ]));
+  assert.deepEqual(await pipInstall(['a', 'e'], place), { installed: ['a==1.0.0', 'b==1.0.0', 'c==1.0.0', 'd==1.0.0', 'e==1.0.0'] },
+    'b asks for a[x] after a was resolved without x, and e for a[y]: c and d are installed');
   console.log('  ✓ an extra asked for after its package resolved adds its dependencies; the a ↔ b cycle ends');
 } finally {
   restoreFetch();
+  place.done();
 }
 
 console.log('python-pip-extras: ok');

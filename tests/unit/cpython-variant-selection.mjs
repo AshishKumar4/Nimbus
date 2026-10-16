@@ -17,9 +17,7 @@
 
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
@@ -27,7 +25,7 @@ import {
   pythonSitePackages,
   sessionUsesSciVariant,
 } from '../../packages/core/src/runtime/python-pip.ts';
-import { markers } from './lib/pypi-mock.mjs';
+import { markers, pipInstall, scratch } from './lib/pypi-mock.mjs';
 
 /** A VFS that knows only which paths exist, which is all the selector reads. */
 function vfsWith(paths) {
@@ -48,72 +46,46 @@ assert.equal(
 console.log('  ok  a session without compiled packages stays on the base interpreter');
 
 // ── Installing numpy is what selects it, and pip is what records that ───────
-// The dist-info path is not written out here: it is taken from the install
-// pip actually generates, so the two halves cannot drift apart.
-const install = await buildPipInvocation(['install', 'numpy'], 'pip', '/home/user', vfsWith([]), { home: '/home/user', network: ISOLATE_NETWORK, markers });
-assert.equal(install.error, undefined, `pip install numpy failed to plan: ${install.error}`);
-assert.equal(install.mode, 'pip');
-
-const distInfoDirs = [...install.code.matchAll(/"canonicalName":\s*"([^"]+)",\s*"version":\s*"([^"]+)"/g)]
-  .map(([, name, version]) => `${name}-${version}.dist-info`);
-assert.deepEqual(distInfoDirs, ['numpy-2.4.3.dist-info'],
-  `pip install numpy must record exactly numpy, got ${JSON.stringify(distInfoDirs)}`);
-assert.match(install.code, /_nimbus_install_variant_package/,
-  'numpy must install through the variant path, not by fetching a wheel');
-// The helper that fetches wheels is always emitted, so the claim is about the
-// data it is handed: nothing is downloaded, because the code is already here.
-assert.match(install.code, /^remote_wheels = \[\]$/m,
-  'there is no numpy wheel to fetch: its code is already in the interpreter');
-assert.match(install.code, /^source_packages = \[\]$/m,
-  'numpy has no source archive to unpack either');
-console.log('  ok  pip install numpy records it instead of fetching a wheel');
-
-// The record pip writes is exactly what the selector looks for. This is the
-// join that makes `pip install numpy` change the next interpreter, and it is
-// asserted by feeding one side's output into the other.
-for (const dir of distInfoDirs) {
-  assert.equal((await sessionUsesSciVariant(vfsWith([`${pythonSitePackages('/home/user')}/${dir}`]), '/home/user')), true,
-    `${dir} is written by pip but does not select the sci variant`);
-}
-console.log('  ok  the record pip writes is the record the selector reads');
-
-// The generated installer itself, run by a real CPython against a scratch
-// site-packages: it writes the record once and leaves an existing one alone.
+// pip's install, run as the CPython runner runs it, with no network to reach:
+// numpy's code is already in the interpreter, so nothing is fetched, and what
+// it writes is the record the selector reads.
 {
-  const site = mkdtempSync(join(tmpdir(), 'variant-site-'));
+  const place = scratch();
   try {
-    const code = install.code
-      .replace(/^target_site_packages = .*$/m, `target_site_packages = ${JSON.stringify(site)}`);
-    const run = () => {
-      const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
-      assert.equal(result.status, 0, `generated install failed: ${result.stderr}`);
-      assert.match(result.stdout, /^Successfully installed numpy/m);
-    };
-    run();
-    const distInfo = join(site, distInfoDirs[0]);
+    assert.deepEqual(await pipInstall(['numpy'], place), { installed: ['numpy==2.4.3'] }, 'pip install numpy records exactly numpy');
+    const site = `/${pythonSitePackages(place.home)}`;
+    const distInfo = join(site, 'numpy-2.4.3.dist-info');
     assert.equal(readFileSync(join(distInfo, 'METADATA'), 'utf8'), 'Metadata-Version: 2.1\nName: numpy\nVersion: 2.4.3\n');
     assert.equal(readFileSync(join(distInfo, 'WHEEL'), 'utf8'),
       'Wheel-Version: 1.0\nGenerator: Nimbus pip\nRoot-Is-Purelib: true\nTag: py3-none-any\n');
     assert.equal(readFileSync(join(distInfo, 'RECORD'), 'utf8'), '');
+    console.log('  ok  pip install numpy records it instead of fetching a wheel');
+
+    // The record pip writes is exactly what the selector looks for: the join
+    // that makes `pip install numpy` change the next interpreter.
+    const written = readdirSync(site).map((entry) => `${pythonSitePackages(place.home)}/${entry}`);
+    assert.equal((await sessionUsesSciVariant(vfsWith(written), place.home)), true,
+      `${written.join(', ')} is written by pip but does not select the sci variant`);
+    console.log('  ok  the record pip writes is the record the selector reads');
+
     writeFileSync(join(distInfo, 'METADATA'), 'kept');
-    run();
+    assert.equal((await pipInstall(['numpy'], place)).error, undefined, 'a second install of numpy succeeds');
     assert.equal(readFileSync(join(distInfo, 'METADATA'), 'utf8'), 'kept', 'an installed variant record is not rewritten');
+    console.log('  ok  the generated installer writes the variant record once');
   } finally {
-    rmSync(site, { recursive: true, force: true });
+    place.done();
   }
 }
-console.log('  ok  the generated installer writes the variant record once');
 
 // ── markupsafe selects it too, and its pin matches the compiled half ────────
 // Its Python half installs from source and its _speedups is compiled into the
 // variant, so the two are only compatible at one version. build-python.sh pins
 // the same one; a bump on either side without the other is what this catches.
-const ms = await buildPipInvocation(['install', 'markupsafe'], 'pip', '/home/user', vfsWith([]), { home: '/home/user', network: ISOLATE_NETWORK, markers });
-assert.equal(ms.error, undefined, `pip install markupsafe failed to plan: ${ms.error}`);
-const msVersion = ms.code.match(/markupsafe-([0-9.]+)\/src\/markupsafe/)?.[1];
-assert.equal(msVersion, '3.0.3', 'markupsafe must be pinned to the release _speedups.c is built from');
+const ms = await buildPipInvocation(['install', 'markupsafe<3.0.3'], 'pip', '/home/user', vfsWith([]), { home: '/home/user', network: ISOLATE_NETWORK, markers });
+assert.match(ms.error ?? '', /available artifact is markupsafe==3\.0\.3/,
+  'markupsafe must be pinned to the release _speedups.c is built from');
 assert.equal(
-  (await sessionUsesSciVariant(vfsWith([`${pythonSitePackages('/home/user')}/markupsafe-${msVersion}.dist-info`]), '/home/user')),
+  (await sessionUsesSciVariant(vfsWith([`${pythonSitePackages('/home/user')}/markupsafe-3.0.3.dist-info`]), '/home/user')),
   true,
   'markupsafe has a compiled half in the variant, so installing it must select the variant',
 );

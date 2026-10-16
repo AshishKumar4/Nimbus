@@ -9,20 +9,13 @@
 // dropped, and one for Emscripten installed.
 
 import assert from 'node:assert/strict';
-import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
-import { buildPipInvocation } from '../../packages/core/src/runtime/python-pip.ts';
-import { FakeVfs, cwd, file, installMockPypi, markers, project, restoreFetch } from './lib/pypi-mock.mjs';
+import { file, installMockPypi, markers, pipInstall, project, restoreFetch, scratch, wheelhouse } from './lib/pypi-mock.mjs';
 
 const leaf = (name) => project(name, { '1.0.0': [file(name, '1.0.0', `${name.replace(/-/g, '_')}-1.0.0-py3-none-any.whl`)] });
-const planned = async (env) => {
-  const invocation = await buildPipInvocation(['install', 'app'], 'pip', cwd, new FakeVfs(), { home: '/home/user', network: ISOLATE_NETWORK, markers: env });
-  assert.equal(invocation.mode, 'pip', invocation.error);
-  return ['app', 'wasi-only', 'emscripten-only', 'patched-only', 'older-only']
-    .filter((name) => invocation.code.includes(`"canonicalName":"${name}"`));
-};
-
+const wasi = scratch();
+const older = scratch();
 try {
-  installMockPypi([
+  installMockPypi(wheelhouse(wasi.root, [
     project('app', { '1.0.0': [file('app', '1.0.0', 'app-1.0.0-py3-none-any.whl')] }, {
       '1.0.0': [
         'wasi-only; sys_platform == "wasi"',
@@ -32,15 +25,19 @@ try {
       ],
     }),
     leaf('wasi-only'), leaf('emscripten-only'), leaf('patched-only'), leaf('older-only'),
-  ]);
-  assert.deepEqual(await planned(markers), ['app', 'wasi-only', 'patched-only'],
+  ]));
+  const installed = await pipInstall(['app'], wasi);
+  assert.deepEqual(installed, { installed: ['app==1.0.0', 'patched-only==1.0.0', 'wasi-only==1.0.0'] },
     'CPython 3.13.14 on WASI takes the WASI and >= 3.13.3 dependencies');
   console.log('  ✓ the interpreter\'s own markers decide: sys_platform "wasi", python_full_version 3.13.14');
-  assert.deepEqual(await planned({ ...markers, python_full_version: '3.13.2', implementation_version: '3.13.2' }), ['app', 'wasi-only', 'older-only'],
+  const other = await pipInstall(['app'], older, { markers: { ...markers, python_full_version: '3.13.2', implementation_version: '3.13.2' } });
+  assert.deepEqual(other, { installed: ['app==1.0.0', 'older-only==1.0.0', 'wasi-only==1.0.0'] },
     'an interpreter at 3.13.2 takes the < 3.13.3 dependency instead');
   console.log('  ✓ another interpreter\'s markers decide for it');
 } finally {
   restoreFetch();
+  wasi.done();
+  older.done();
 }
 
 console.log('python-pip-markers: ok');
