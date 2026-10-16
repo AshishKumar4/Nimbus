@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Added (core): `bindRuntimeCommands` and `runtimeSummary`
+  (`runtime/installed-runtimes.js`), the one way an installed runtime's
+  commands are registered and summarized. Install, rehydration,
+  `RuntimeManager.list` and `listInstalledRuntimes` now all use them, and
+  their results are unchanged.
 - Breaking (fabric, worker, sdk): the legacy inner Durable Object transport
   is gone. `NimbusDOStub` is no longer exported from
   `@nimbus-sh/fabric/bindings.js`, `@nimbus-sh/worker` or
