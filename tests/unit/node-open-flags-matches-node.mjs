@@ -90,6 +90,13 @@ const PROGRAM = `async (fs, root) => {
     fs.closeSync(fs.openSync(P('learned.txt'), C.O_WRONLY | C.O_TRUNC | C.O_NOFOLLOW));
     return [...sizes, fs.lstatSync(P('learned.txt')).size];
   });
+  results.syncReadsAfterAsyncOpens = await outcome(async () => {
+    await fs.promises.writeFile(P('emptied.txt'), 'content');
+    fs.readFileSync(P('emptied.txt'));
+    await (await fs.promises.open(P('fresh.txt'), 'w')).close();
+    await (await fs.promises.open(P('emptied.txt'), 'w')).close();
+    return [fs.readFileSync(P('fresh.txt'), 'utf8'), fs.readFileSync(P('emptied.txt'), 'utf8'), fs.existsSync(P('fresh.txt')), fs.statSync(P('emptied.txt')).size];
+  });
   results.noFollowFile = await outcome(async () => { const h = await fs.promises.open(P('seed/a.txt'), C.O_RDONLY | C.O_NOFOLLOW); const { buffer, bytesRead } = await h.read(Buffer.alloc(16), 0, 16, 0); await h.close(); return buffer.subarray(0, bytesRead).toString(); });
   results.followLink = await outcome(async () => { const h = await fs.promises.open(P('seed/link-to-a'), 'r'); const { buffer, bytesRead } = await h.read(Buffer.alloc(16), 0, 16, 0); await h.close(); return buffer.subarray(0, bytesRead).toString(); });
   results.targetUntouched = await fs.promises.readFile(P('seed/a.txt'), 'utf8');

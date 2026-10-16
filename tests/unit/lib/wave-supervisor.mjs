@@ -38,8 +38,8 @@ async function replay(supervisor, stream) {
   };
   const abs = (key) => '/' + key;
   // The receipt is the session's stat of the file, as it answers one: the mock's own.
-  const receipt = async (path, revision, look = typeof supervisor.lstat === 'function' ? supervisor.lstat : null) => {
-    const stat = look === null ? null : await look.call(supervisor, abs(path));
+  const receipt = async (path, revision) => {
+    const stat = typeof supervisor.lstat === 'function' ? await supervisor.lstat(abs(path)) : null;
     if (!stat) return;
     progress.receipts.push({
       path, ino: Number(stat.ino) || 0, mode: Number(stat.mode) || 0, size: Number(stat.size) || 0,
@@ -116,7 +116,7 @@ async function replay(supervisor, stream) {
               if (!there) revision = await supervisor.writeFile(abs(call.path), new Uint8Array(0));
               else if (call.truncate === true) noted(await supervisor.fsTruncate(abs(call.path), 0));
             }
-            await receipt(call.path, revision, lstat);
+            await receipt(call.path, revision);
           }
           // A write description's open or close (a WASI process's): no test that drives this supervisor makes one.
           else if (call.call === 'open' || call.call === 'close') throw new Error(`wave-supervisor: ${call.call} calls of a description are not modeled`);

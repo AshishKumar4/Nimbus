@@ -5451,19 +5451,20 @@ const __fsMod = (() => {
   }
 
   /**
-   * An open that empties the file or may make it, as this view keeps it: the
-   * file empty and parked, the open logged (_openCall). The cell is the
-   * file's whole content when the open empties it or makes it new (O_TRUNC,
-   * O_EXCL); a create that finds a file keeps that file's bytes, which the
-   * session then answers. \`absent\`: this view knows nothing is there.
+   * A synchronous open that empties the file or may make it, as this view
+   * keeps it: the file empty and parked, the open logged (_openCall) for the
+   * session to judge again as it lands. The cell is the file's whole content
+   * when the open empties it or makes it new (O_TRUNC, O_EXCL); a create
+   * that finds a file keeps that file's bytes, which the session then
+   * answers. \`absent\`: this view knows nothing is there.
    */
-  function _parkOpen(absPath, fl, mode, absent, acknowledged) {
+  function _parkOpen(absPath, fl, mode, absent) {
     const k = _strip(absPath);
     _parkWrite(k, new Uint8Array(0), mode, absent);
     const whole = fl.truncate || fl.exclusive;
     if (whole) _parkedPartial.delete(k);
     else _parkedPartial.set(k, __vfsWriteGenerations[k]);
-    return _logParked(absPath, { type: "call", call: _openCall(k, fl, mode) }, { acknowledged, partial: !whole });
+    return _logParked(absPath, { type: "call", call: _openCall(k, fl, mode) }, { acknowledged: true, partial: !whole });
   }
 
   // ── FileHandle — returned from fs.promises.open ──
@@ -5795,27 +5796,41 @@ const __fsMod = (() => {
     return new __FileHandle(path, fl, size);
   }
 
-  /** A write open at the session (_openCall): its answer is the opened file's stat, which the sync view keeps. */
+  /**
+   * A write open at the session (_openCall), its answer awaited before this
+   * view keeps anything of it: the opened file's stat, and the cell it
+   * emptied. Answered without its stat (a session that gives none for the
+   * call), the view asks for it.
+   */
   async function _openWriteLive(path, absPath, fl, mode, supervisor) {
     await _flushLocalPathToSupervisor(absPath, supervisor, fl.followSymlinks);
-    // What this view keeps meanwhile: an empty file where the open empties one or may make one.
-    const absent = fl.create || fl.truncate ? _ensureWritable(absPath, "open", path, true) : false;
-    const logged = fl.truncate || absent ? _parkOpen(absPath, fl, mode, absent, false) : { answer: _vfsCall(_openCall(_strip(absPath), fl, mode)), claimed: null };
-    let receipt;
+    const k = _strip(absPath);
+    const generation = __vfsWriteGenerations[k];
+    const localCell = _bundleLookup(absPath);
+    let answer;
     let kept = false;
-    const ticket = _beginFill(_strip(absPath));
+    const ticket = _beginFill(k);
     try {
-      const answer = await _fsRpc(logged.answer, "open", path, (result) => result);
-      if (logged.claimed !== null) await logged.claimed;
+      const sent = _ownMutation(
+        absPath,
+        () => _fsRpc(_vfsCall(_openCall(k, fl, mode)), "open", path, (result) => { answer = result; return _receiptOf(result); }),
+        () => {
+          if (fl.truncate && __vfsWriteGenerations[k] === generation && localCell !== undefined) _truncateLocalCell(absPath, 0);
+        },
+      );
+      sent.catch(() => {});
+      await __nimbusQueueVfsMutation(absPath, () => sent);
       _markVfsStale();
-      receipt = answer.receipt;
-      if (receipt === undefined) throw _fsErr("EIO", "open", path);
-      kept = _noteLearnedStat(absPath, _receiptStat(receipt), ticket, typeof receipt.revision === "number" ? receipt.revision : undefined);
+      const receipt = answer?.receipt;
+      if (receipt !== undefined) kept = _noteLearnedStat(absPath, _receiptStat(receipt), ticket, typeof receipt.revision === "number" ? receipt.revision : undefined);
     } finally {
       _endFill(ticket);
     }
     if (!kept) await _learnLive(absPath, supervisor);
-    return new __FileHandle(path, fl, Number(receipt.size) || 0);
+    const receipt = answer?.receipt;
+    const size = receipt !== undefined ? Number(receipt.size) || 0
+      : Number((fl.followSymlinks ? statSync : lstatSync)(path, { throwIfNoEntry: false })?.size ?? 0);
+    return new __FileHandle(path, fl, size);
   }
 
   function openSync(path, flags, mode) {
@@ -5839,7 +5854,7 @@ const __fsMod = (() => {
       // Creating or truncating also makes the file resident, which is what
       // lets the sync read/write path serve it without blocking; the open
       // itself is the session's to judge again as it lands (_parkOpen).
-      _parkOpen(absPath, fl, createMode, !exists, true);
+      _parkOpen(absPath, fl, createMode, !exists);
       size = 0;
     }
     return new __FileHandle(path, fl, size).fd;
