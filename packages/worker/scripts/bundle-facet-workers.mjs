@@ -860,6 +860,7 @@ async function main() {
   const shimResolution = await bundleAsPreamble(
     join(coreRoot, 'src', '_shared', 'node-shim-resolution.ts'),
     'node-shim-resolution',
+    { shared: ['node-error'] },
   );
   for (const name of ['createRequireResolver', 'requireNodeModulePaths', 'createNodePackageMapPolicy', 'resolveExports', 'resolvePackageEntry', 'packageSelfReferenceSubpath', 'typescriptFallbackCandidates', 'stripsTypeScript', 'presentedCredential', 'isWebSocketUpgradeRequest']) {
     if (!new RegExp(`^function ${name}\\(`, 'm').test(shimResolution)) {
