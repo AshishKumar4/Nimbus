@@ -5,8 +5,6 @@
 import assert from 'node:assert/strict';
 
 export class FakeVfs {
-  get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
-
   constructor(files = {}, deniedPaths = []) {
     this.files = new Map(Object.entries(files).map(([path, value]) => [
       path,
@@ -47,7 +45,7 @@ export const markers = {
 const originalFetch = globalThis.fetch;
 
 export function restoreFetch() {
-  globalThis.fetch = originalFetch;
+  Object.assign(globalThis, { fetch: originalFetch });
 }
 
 export function file(name, version, filename, options = {}) {
@@ -73,7 +71,7 @@ export function project(name, versions, requiresDist = {}) {
 /** PyPI's JSON API for `projects`, as the global fetch. */
 export function installMockPypi(projects) {
   const byName = new Map(projects.map((pkg) => [pkg.name, pkg]));
-  globalThis.fetch = async (rawUrl) => {
+  Object.assign(globalThis, { fetch: async (rawUrl) => {
     const url = new URL(rawUrl);
     const parts = url.pathname.split('/').filter(Boolean);
     assert.equal(parts[0], 'pypi');
@@ -98,5 +96,5 @@ export function installMockPypi(projects) {
         urls: version ? pkg.versions[version] : [],
       }),
     };
-  };
+  } });
 }
