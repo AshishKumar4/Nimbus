@@ -5,8 +5,9 @@
 // Host git builds each repository and runs the same commands; the exits are
 // git's, and the checkout leaves the target's content in the file the reset
 // wrote.
-//   - A nested name led by a BOM (d/<BOM>bom), written by a reset --hard
-//     first: the checkout updates it.
+//   - A nested name led by a BOM (d/<BOM>bom), and a file in a directory
+//     named by a BOM alone, written by a reset --hard first: the checkout
+//     updates each.
 //   - A file renamed from one name that is not UTF-8 to another (0x81 to
 //     0x80, and 0x80 to 0x81): both decode to U+FFFD, one path, which the
 //     checkout leaves holding the new content.
@@ -103,6 +104,10 @@ const cases = {
   'a nested name led by a BOM': ({ one, two, tree }) => [
     tree([['40000', Buffer.from('d'), tree([['100644', nested, one]])]]),
     tree([['40000', Buffer.from('d'), tree([['100644', nested, two]])]]),
+  ],
+  'a file in a directory named by a BOM alone': ({ one, two, tree }) => [
+    tree([['40000', BOM, tree([['100644', Buffer.from('file'), one]])]]),
+    tree([['40000', BOM, tree([['100644', Buffer.from('file'), two]])]]),
   ],
   'a rename from 0x81 to 0x80': ({ one, two, tree }) => [tree([['100644', Buffer.from([0x81]), one]]), tree([['100644', Buffer.from([0x80]), two]])],
   'a rename from 0x80 to 0x81': ({ one, two, tree }) => [tree([['100644', Buffer.from([0x80]), one]]), tree([['100644', Buffer.from([0x81]), two]])],
