@@ -4914,7 +4914,9 @@ const __fsMod = (() => {
       else if (was.type === "directory") known.add(dir);
     }
     // Each directory this call makes, shallowest first, as mkdir -p takes
-    // them: one already there (or made by another) answers success.
+    // them: one already there (or made by another) answers success, and is
+    // what a run again finds of its run before (stop-replay found).
+    if (__nimbusReplay && opts?.recursive) for (const [dir, at] of created) if (known.has(at)) __nimbusReplay.found({ type: "call", call: { call: "mkdir", path: dir, mode, existing: "ok" } });
     const made = created.filter(([, dir]) => !known.has(dir)).map(([dir]) => ({ dir, mode }));
     const queued = _queueStructuralMutation(sent, "mkdir", p, () => Promise.all(
       made.map(({ dir, mode }) => _vfsCall({ call: "mkdir", path: dir, mode, existing: "ok" })),
