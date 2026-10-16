@@ -389,7 +389,7 @@ export const networkWorker = {
                     full: opts.full === true,
                     cacheTreeBytes: opts.cacheTreeBytes,
                     tags: opts.tags,
-                    graph: opts.graph,
+                    commitGraph: opts.commitGraph,
                     checkoutFailed: opts.checkoutFailed === true,
                 });
                 // The marker goes last: until it does, a failure leaves the clone abortable.

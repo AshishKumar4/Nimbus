@@ -858,7 +858,7 @@ export async function cloneFinish(context, request) {
     for (const tag of request.tags ?? [])
         await writer.file('.git/' + tag.name, 0o644, encoder.encode(tag.oid + '\n'));
     const tags = request.tags?.length ?? 0;
-    if (request.graph === null) {
+    if (request.commitGraph === false) {
         const records = await context.supervisor.readdir(join(context.dir, GRAPH_RECORDS_DIR));
         for (const name of records)
             await writer.remove(GRAPH_RECORDS_DIR + '/' + name);

@@ -78,9 +78,6 @@ function positiveSafeInteger(value, fallback, label) {
     }
     return Number(value);
 }
-function parseGitNetworkErrorCode(value) {
-    return value === 'GitCloneBudgetExceeded' ? value : undefined;
-}
 function parseSupervisorRpcCounters(value) {
     const reported = value && typeof value === 'object'
         ? value
@@ -199,17 +196,15 @@ class GitClonePhaseError extends Error {
     phase;
     diagnostic;
     mutated;
-    errorCode;
     /** A write git would have failed: git's lines (GitNetworkResult.gitFailure). */
     gitFailure;
     remoteFailure;
-    constructor(phase, message, diagnostic, errorCode, gitFailure, remoteFailure) {
+    constructor(phase, message, diagnostic, gitFailure, remoteFailure) {
         super(message);
         this.name = 'GitClonePhaseError';
         this.phase = phase;
         this.diagnostic = diagnostic;
         this.mutated = diagnostic.mutated;
-        this.errorCode = errorCode;
         this.gitFailure = gitFailure;
         this.remoteFailure = remoteFailure;
     }
@@ -234,7 +229,7 @@ class GitCloneBudgetExceededError extends GitClonePhaseError {
     budget;
     constructor(phase, budget, diagnostic) {
         super(phase, `git clone budget exhausted after ${budget.batchesCompleted} batches / ` +
-            `${budget.filesWritten} files (elapsed=${budget.elapsedMs}ms limit=${budget.limitMs}ms)`, diagnostic, 'GitCloneBudgetExceeded');
+            `${budget.filesWritten} files (elapsed=${budget.elapsedMs}ms limit=${budget.limitMs}ms)`, diagnostic);
         this.name = 'GitCloneBudgetExceededError';
         this.budget = budget;
     }
@@ -482,7 +477,7 @@ async function invokeClonePhase(phase, opts, run) {
         throwIfCancelled(run.signal);
     }
     if (invocation.result.success !== true) {
-        throw new GitClonePhaseError(phase, typeof invocation.result.error === 'string' ? invocation.result.error : phase + ' failed', invocation.diagnostic, undefined, typeof invocation.result.gitFailure === 'string' ? invocation.result.gitFailure : undefined, parseRemoteFailure(invocation.result.remoteFailure));
+        throw new GitClonePhaseError(phase, typeof invocation.result.error === 'string' ? invocation.result.error : phase + ' failed', invocation.diagnostic, typeof invocation.result.gitFailure === 'string' ? invocation.result.gitFailure : undefined, parseRemoteFailure(invocation.result.remoteFailure));
     }
     return invocation;
 }
@@ -523,9 +518,9 @@ local = false) {
 const CLONE_HISTORY_CONCURRENCY = 1;
 /**
  * A clone's history (git/pack/history.ts): commits, then trees, then blobs;
- * all of it, or (`facetOpts.depth`) a shallow clone's commits. Returns the
- * commits' records for the commit-graph, or null when one did not parse (no
- * graph).
+ * all of it, or (`facetOpts.depth`) a shallow clone's commits. Answers
+ * whether its commits' records make a commit-graph: false when one did not
+ * parse, as git then writes none.
  */
 async function runCloneHistory(facetOpts, identity, fast, run, tagsFound) {
     const base = { ...facetOpts, ...identity, capabilities: fast.capabilities };
@@ -541,14 +536,12 @@ async function runCloneHistory(facetOpts, identity, fast, run, tagsFound) {
     /** A piece, and its continuations while its decoding runs past a budget. */
     // The commits piece meets every commit and annotated tag of the history: it watches for the tags'.
     const tagInterest = [...new Set(fast.tags.flatMap((tag) => [tag.oid, tag.peeled]))];
-    let graph = [];
+    let graphed = true;
     const piece = async (kind, name, request) => {
         const watch = kind === 'commits' && tagInterest.length > 0 ? { tagInterest } : {};
         const recorded = (step) => {
-            if (step.graphLists === null || graph === null)
-                graph = null;
-            else
-                graph.push(...step.graphLists ?? []);
+            if (step.graphRefused === true)
+                graphed = false;
         };
         let { step, elapsed } = await invoke({ step: 'piece', kind, piece: name, ...request, ...watch });
         const lists = [...step.lists];
@@ -588,7 +581,7 @@ async function runCloneHistory(facetOpts, identity, fast, run, tagsFound) {
     if (run.progress) {
         await writeCloneProgressLine(run.progress, `\n[git] clone-history complete (${pieces} requests, ${(packBytes / 1048576).toFixed(1)}MB)\n`, run.signal);
     }
-    return graph;
+    return graphed;
 }
 /**
  * A streamed clone after prepare: its pack's decoding continued from the
@@ -620,11 +613,11 @@ async function runCloneSnapshot(facetOpts, identity, stream, run, tagsFound) {
 }
 /** The index from the shares; a full clone's shallow file goes, and its commit-graph is written; then the marker. */
 async function runCloneFinish(facetOpts, identity, shares, full, cacheTreeBytes, tags, 
-/** A full clone's commit records (runCloneHistory), for its commit-graph. */
-graph, run, 
+/** A full clone's commit records (runCloneHistory) make its commit-graph; else they go. */
+commitGraph, run, 
 /** A file could not be written: no index, and the marker stays for the clone's cleanup. */
 checkoutFailed = false) {
-    const finish = await invokeClonePhase('clone-finish', { ...facetOpts, ...identity, shares, full, cacheTreeBytes, tags, graph, checkoutFailed }, run);
+    const finish = await invokeClonePhase('clone-finish', { ...facetOpts, ...identity, shares, full, cacheTreeBytes, tags, commitGraph, checkoutFailed }, run);
     if (run.progress)
         await writeClonePhaseProgress(run.progress, finish.diagnostic, run.signal);
 }
@@ -828,7 +821,7 @@ export async function execGitNetwork(ctx, env, opts, /**
                         typeof prepare.result.prepared !== 'object') {
                         throw new GitClonePhaseError('clone-prepare', typeof prepare.result.error === 'string'
                             ? prepare.result.error
-                            : 'clone-prepare returned an invalid result', prepare.diagnostic, undefined, typeof prepare.result.gitFailure === 'string' ? prepare.result.gitFailure : undefined, parseRemoteFailure(prepare.result.remoteFailure));
+                            : 'clone-prepare returned an invalid result', prepare.diagnostic, typeof prepare.result.gitFailure === 'string' ? prepare.result.gitFailure : undefined, parseRemoteFailure(prepare.result.remoteFailure));
                     }
                     if (!opts.quiet)
                         await writeClonePhaseProgress(supervisorBinding, prepare.diagnostic, signal);
@@ -864,15 +857,14 @@ export async function execGitNetwork(ctx, env, opts, /**
                         throw new GitClonePhaseError('clone-prepare', 'clone-prepare returned no plan', prepare.diagnostic);
                     const shares = await runCloneBatches(facetOpts, identity, fast, run, prepared.stream !== undefined);
                     const full = facetOpts.depth === undefined;
-                    let graph = null;
+                    let commitGraph = false;
                     // Commits past the worktree's have blobs it did not fetch: a full
                     // clone's history, and a --depth N clone's (N > 1) unless partial.
                     const older = full || (facetOpts.depth > 1 && facetOpts.filter === undefined);
                     if (older && prepared.fast !== undefined && fast.commit !== null) {
-                        const records = await runCloneHistory(facetOpts, identity, fast, run, tagsFound);
+                        const graphed = await runCloneHistory(facetOpts, identity, fast, run, tagsFound);
                         // The commit-graph is a full clone's: git writes none in a shallow repository.
-                        if (full)
-                            graph = records;
+                        commitGraph = full && graphed;
                     }
                     // A clone that is not partial has every object once its batches (and history) are in.
                     if (prepared.fast !== undefined && facetOpts.filter === undefined) {
@@ -886,7 +878,7 @@ export async function execGitNetwork(ctx, env, opts, /**
                         ...fast.checkoutErrors ?? [],
                         ...[...run.checkoutErrors.entries()].sort(([a], [b]) => a - b).flatMap(([, errors]) => errors),
                     ];
-                    await runCloneFinish(facetOpts, identity, shares, full, fast.cacheTreeBytes, tags, graph, run, checkoutErrors.length > 0);
+                    await runCloneFinish(facetOpts, identity, shares, full, fast.cacheTreeBytes, tags, commitGraph, run, checkoutErrors.length > 0);
                     if (checkoutErrors.length > 0) {
                         facets.fence?.();
                         return {
@@ -956,9 +948,7 @@ export async function execGitNetwork(ctx, env, opts, /**
                         success: false,
                         error: phaseError.message,
                         errorPhase: phaseError.phase,
-                        errorCode: phaseError instanceof GitCloneBudgetExceededError
-                            ? phaseError.code
-                            : phaseError.errorCode,
+                        errorCode: phaseError instanceof GitCloneBudgetExceededError ? phaseError.code : undefined,
                         gitFailure: phaseError.gitFailure,
                         remoteFailure: phaseError.remoteFailure,
                         budget: phaseError instanceof GitCloneBudgetExceededError
