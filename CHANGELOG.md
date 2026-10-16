@@ -18,6 +18,15 @@ published independently in the `@nimbus-sh` npm scope.
   remote API's base path and how a configured one is read. The SDK's
   `Nimbus.connect` and the worker's remote API both use them now, in place
   of a copy each. Base paths behave as before.
+- Fixed (shell): when a here-document's command fails, the interactive
+  shell reports it the way the shell and runtimes report any caught value
+  (`_shared/error-text.js`). A thrown object's `message` is shown, and an
+  `Error` with no message is shown by its name. Before, these read
+  `heredoc error: [object Object]` and an empty `heredoc error: `.
+- Changed: a process's filesystem client counts the bytes of a wave's paths,
+  and a symlink's target, with `@nimbus-sh/platform/utf8.js`, as W7 does.
+  It used to build a text encoder for every path of every wave. A resident's
+  derived owner now comes from `sha256Hex`, with the same bytes as before.
 - Fixed (shell): `tar -x` and `tar -t` on an archive that ends inside a
   file, its data or its padding, fail as GNU tar does: "tar: Unexpected EOF
   in archive", exit 2. Before, they exited 0 and left that file out, so a
