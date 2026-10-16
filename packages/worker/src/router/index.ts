@@ -528,6 +528,8 @@ export function createNimbusHandler(
         requiredScopes: ['session:create'],
       });
       if (auth instanceof Response) return auth;
+      // SCRATCH, never merged: a fixed +300 ms on the cold-start path, to prove the paired grader goes red.
+      await new Promise((resolve) => setTimeout(resolve, 300));
 
       const sessionId = generateSessionId();
       // Authenticated creates get an attach URL carrying a short-lived,
