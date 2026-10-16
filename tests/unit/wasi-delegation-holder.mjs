@@ -372,7 +372,8 @@ async function until(ready, what) {
 // synchronous bytes it is refused as the client refuses one (ENOMEM).
 {
   const budget = { used: 0, limit: 64 * 1024 };
-  const s = session({ budget });
+  // No grant comes: the writes stay provisional.
+  const s = session({ budget, acquired: new Promise(() => {}) });
   const sync = s.fs.synchronous;
   await s.fs.readdir('/home/user/other');
   sync.writeFile('/home/user/other/a.bin', new Uint8Array(20 * 1024));

@@ -569,8 +569,17 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   /** Whether directory `key` was made here, and the store knows nothing of it: its names are the ones made in it. */
   const madeHere = (key: string): boolean => decided.get(key)?.type === 'directory' && !store.entry(key);
 
-  const entryOf = (key: string): ResidentEntry | null | undefined => {
+  /** This process's own word on `key`: what it decided, or absent for a name not made in a directory it made. */
+  const ownEntry = (key: string): ResidentEntry | null | undefined => {
     const own = decided.get(key);
+    if (own !== undefined) return own;
+    // A directory made here has no names but the ones made in it.
+    const dir = parentKey(key);
+    return key !== '' && madeHere(dir) && !added.get(dir)?.has(nameOf(key)) ? null : undefined;
+  };
+
+  const entryOf = (key: string): ResidentEntry | null | undefined => {
+    const own = ownEntry(key);
     return own !== undefined ? own : store.entry(key);
   };
 
@@ -687,13 +696,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
 
   const holder: DelegationHolder = {
     client,
-    entry: (key) => {
-      const own = decided.get(key);
-      if (own !== undefined) return own;
-      // A directory made here has no names but the ones made in it.
-      const dir = parentKey(key);
-      return key !== '' && madeHere(dir) && !added.get(dir)?.has(nameOf(key)) ? null : undefined;
-    },
+    entry: (key) => ownEntry(key),
 
     children: (key, base) => {
       const made = added.get(key);
