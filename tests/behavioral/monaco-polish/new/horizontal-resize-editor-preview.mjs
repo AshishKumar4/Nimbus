@@ -1,40 +1,52 @@
 #!/usr/bin/env bun
-// monaco-polish/new/horizontal-resize-editor-preview — H2 handle resizes the
-// center workspace column against preview.
+// monaco-polish/new/horizontal-resize-editor-preview — the editor↔preview
+// handle, dragged in a real Chrome: it offers a column-resize cursor, the
+// center column and the preview trade width while it is held, and the
+// center keeps between 20% and 80% of the pair however far it is dragged.
 
-import { mintSession, BASE, makeAsserter, requestHeaders } from '../../_driver.mjs';
+import { BASE, mintSession, deleteSession, makeAsserter } from '../../_driver.mjs';
+import { grabHandle, launchBrowser, openPage, readUntil } from '../../_runtime-behavioral-template.mjs';
 
-if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('monaco-polish/new/horizontal-resize-editor-preview');
-console.log(`monaco-polish/new/horizontal-resize-editor-preview — ${process.env.BASE}`);
-
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders({}, sid) });
-const html = await r.text();
+const browser = await launchBrowser();
+try {
+  const { page, pageErrors } = await openPage(browser, sid);
+  await page.goto(`${BASE}/s/${sid}/`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  await page.waitForSelector('#resizeHandle', { visible: true, timeout: 30_000 });
+  a.check('the handle offers a column-resize cursor',
+    await page.$eval('#resizeHandle', (handle) => getComputedStyle(handle).cursor) === 'col-resize');
+  // The center column's and the preview's widths, and the center's share of the pair as its flex sets it.
+  const widths = () => page.evaluate(() => {
+    const center = document.getElementById('leftStack');
+    const preview = document.getElementById('previewPanel');
+    const grow = (element) => Number.parseFloat(element.style.flexGrow || getComputedStyle(element).flexGrow);
+    return {
+      center: center.getBoundingClientRect().width,
+      preview: preview.getBoundingClientRect().width,
+      centerPct: (100 * grow(center)) / (grow(center) + grow(preview)),
+    };
+  });
+  const start = await widths();
 
-a.check('#resizeHandle DOM still present',
-  /id=["']resizeHandle["']/.test(html),
-  `resizeHandle missing`);
-
-a.check("PaneResizer binds startDrag('middle', e) for #resizeHandle",
-  /h2\s*=\s*document\.getElementById\(['"]resizeHandle['"]\)[\s\S]{0,300}h2\.addEventListener\(['"]mousedown['"]\s*,\s*\(e\)\s*=>\s*startDrag\(['"]middle['"]\s*,\s*e\)\)/.test(html),
-  `middle-handle bind missing`);
-
-a.check('applyMiddlePreviewFlex updates center stack flex',
-  /function applyMiddlePreviewFlex\(\)[\s\S]{0,500}stack\.style\.flex\s*=/.test(html),
-  `leftStack flex mutation missing`);
-
-a.check('applyMiddlePreviewFlex updates preview flex',
-  /function applyMiddlePreviewFlex\(\)[\s\S]{0,500}prev\.style\.flex\s*=/.test(html),
-  `preview flex mutation missing`);
-
-a.check('applyMiddlePreviewFlex no longer branches to legacy split mode',
-  !/layout\s*===\s*['"]split['"]/.test(html),
-  `split branch still present`);
-
-a.check('Middle-handle clamps middlePct to 20-80',
-  /Math\.max\(20,\s*Math\.min\(80,/.test(html),
-  `middle clamp missing`);
-
-const sum = a.summary();
-process.exit(sum.fail > 0 ? 1 : 0);
+  const handle = await grabHandle(page, '#resizeHandle');
+  await handle.move(-150, 0);
+  const held = await readUntil(widths, (now) => now.center < start.center - 100);
+  const traded = start.center - held.center;
+  a.check('the center narrows and the preview widens by as much while it is held',
+    traded > 100 && Math.abs((held.preview - start.preview) - traded) <= 4, JSON.stringify({ start, held }));
+  // To the viewport's edges (1280 px wide), the drag's farthest reach each way.
+  await handle.move(1 - handle.x, 0);
+  const leftmost = await readUntil(widths, (now) => Math.abs(now.centerPct - 20) < 0.5);
+  await handle.move(1279 - handle.x, 0);
+  const rightmost = await readUntil(widths, (now) => Math.abs(now.centerPct - 80) < 0.5);
+  await handle.release();
+  a.check('dragged far left, the center keeps 20% of the pair', Math.abs(leftmost.centerPct - 20) < 0.5, JSON.stringify(leftmost));
+  a.check('dragged far right, the center keeps 80% of the pair', Math.abs(rightmost.centerPct - 80) < 0.5, JSON.stringify(rightmost));
+  a.check('no page errors', pageErrors.length === 0, JSON.stringify(pageErrors));
+} finally {
+  await browser.close();
+  await deleteSession(sid);
+}
+const result = a.summary();
+process.exit(result.fail ? 1 : 0);

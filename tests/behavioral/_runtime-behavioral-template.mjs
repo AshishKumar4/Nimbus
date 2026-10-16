@@ -139,6 +139,39 @@ export function waitForSessionTerminalText(page, pattern, timeout = 30_000) {
   return page.waitForFunction(sessionTerminalInPage, { timeout }, pattern.source);
 }
 
+/**
+ * Read `read()` every 100 ms until `done(value)` holds or `timeoutMs` has
+ * passed; resolves to the last value read, which the caller checks.
+ */
+export async function readUntil(read, done, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = await read();
+    if (done(value) || Date.now() >= deadline) return value;
+    await sleep(100);
+  }
+}
+
+/**
+ * Press the mouse on the centre of `selector` (a pane's resize handle) and
+ * hold it. Resolves to { x, y, move(dx, dy), release() }: where it
+ * pressed; `move` drags to that offset from there, still held, so a probe
+ * can read the panes mid-drag; `release` lets go.
+ */
+export async function grabHandle(page, selector) {
+  const box = await (await page.waitForSelector(selector, { visible: true, timeout: 30_000 })).boundingBox();
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  return {
+    x,
+    y,
+    move: (dx, dy) => page.mouse.move(x + dx, y + dy, { steps: 10 }),
+    release: () => page.mouse.up(),
+  };
+}
+
 export async function applyProbeCookies(page, base = BASE, sid) {
   // Bearers belong to the target's transport, never to every request a page
   // might make (including cross-origin navigation/iframes). Attach exchanges
