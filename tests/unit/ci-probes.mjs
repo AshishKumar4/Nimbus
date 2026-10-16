@@ -28,7 +28,7 @@ try {
   const behavioral = join(root, 'tests', 'behavioral');
   mkdirSync(behavioral, { recursive: true });
   mkdirSync(join(root, 'scripts', 'ci', 'lib'), { recursive: true });
-  for (const file of ['run-all.mjs', '_probe-browser.mjs', '_ledger.mjs', '_session-transport.mjs', '_assertions.mjs']) copyFileSync(join(REPO, 'tests', 'behavioral', file), join(behavioral, file));
+  for (const file of ['run-all.mjs', '_probe-browser.mjs', '_ledger.mjs', '_session-transport.mjs', '_assertions.mjs', '_selection.mjs']) copyFileSync(join(REPO, 'tests', 'behavioral', file), join(behavioral, file));
   copyFileSync(join(REPO, 'scripts', 'ci', 'probes.mjs'), join(root, 'scripts', 'ci', 'probes.mjs'));
   copyFileSync(join(REPO, 'scripts', 'ci', 'lib', 'probe-screenshots.mjs'), join(root, 'scripts', 'ci', 'lib', 'probe-screenshots.mjs'));
   const capture = `if (process.env.NIMBUS_PROBE_SCREENSHOTS) require('fs').writeFileSync(require('path').join(process.env.NIMBUS_PROBE_SCREENSHOTS, 'capture.png'), Buffer.from('${PNG.toString('base64')}', 'base64'));\n`;
