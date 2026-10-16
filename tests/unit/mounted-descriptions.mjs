@@ -465,7 +465,7 @@ await check('a wave\'s description of a mounted file holds it: its writes, appen
     return result;
   };
   try {
-    const opened = await wave([{ type: 'call', call: { call: 'open', path: 'g/x', mode: 0o644, read: true, description: 'd1' } }]);
+    const opened = await wave([{ type: 'call', call: { call: 'open', path: 'g/x', mode: 0o644, access: 'readwrite', description: 'd1' } }]);
     assert.equal(opened.receipts.length, 1, 'the open answers its file');
     files.vfs.unmount('/g');
     files.vfs.mount('/g', second);
@@ -480,6 +480,26 @@ await check('a wave\'s description of a mounted file holds it: its writes, appen
     await wave([{ type: 'call', call: { call: 'close', path: 'g/x', description: 'd1' } }]);
   } finally {
     files.vfs.unmount('/g');
+  }
+});
+
+// ── A wave's open keeps the access it asked, on a mount as on SQLite ──
+await check('a wave\'s read-only description of a mounted file refuses a write through it (EBADF)', async () => {
+  const mounted = new MemoryVFS({ uid: 1000, gid: 1000 });
+  mounted.writeFile('/x', enc.encode('kept'));
+  files.vfs.mount('/ro', mounted);
+  const proc = files.bind({ pid: ++pid, cred: USER });
+  const wave = (ops) => proc.writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops }));
+  try {
+    const opened = await wave([{ type: 'call', call: { call: 'open', path: 'ro/x', mode: 0o644, access: 'read', description: 'r1' } }]);
+    assert.equal(opened.ok, true, JSON.stringify(opened.error));
+    const written = await wave([{ type: 'call', call: { call: 'write', path: 'ro/x', description: 'r1', offset: 0, data: enc.encode('XX') } }]);
+    assert.equal(written.ok, false, 'a write through a read-only description is refused');
+    assert.equal(written.error?.errno ?? written.sequence?.refused?.errno, 'EBADF');
+    assert.equal(dec.decode(mounted.readFile('/x')), 'kept');
+    await wave([{ type: 'call', call: { call: 'close', path: 'ro/x', description: 'r1' } }]);
+  } finally {
+    files.vfs.unmount('/ro');
   }
 });
 
@@ -782,7 +802,7 @@ await check('a wave\'s call through a description is that description\'s: its fi
   files.vfs.mount('/e', first);
   const wave = waveOf(files.bind({ pid: ++pid, cred: USER }));
   try {
-    const opened = await wave([{ type: 'call', call: { call: 'open', path: 'e/x', mode: 0o644, read: true, description: 'd1' } }]);
+    const opened = await wave([{ type: 'call', call: { call: 'open', path: 'e/x', mode: 0o644, access: 'readwrite', description: 'd1' } }]);
     assert.equal(opened.ok, true, JSON.stringify(opened.error));
     files.vfs.unmount('/e');
     const live = await wave([{ type: 'call', call: { call: 'write', path: 'e/x', description: 'd1', offset: 0, data: enc.encode('FI') } }]);
@@ -812,7 +832,7 @@ await check('a wave\'s open of a mounted file answers its descriptor, and answer
   const procPid = ++pid;
   const proc = files.bind({ pid: procPid, cred: USER });
   const send = waveOf(proc, { sequence: { writer: `${procPid}:w`, first: 1, ack: 0, pid: procPid } });
-  const open = [{ type: 'call', call: { call: 'open', path: 'rc/x', mode: 0o644, read: true, description: 'd1' } }];
+  const open = [{ type: 'call', call: { call: 'open', path: 'rc/x', mode: 0o644, access: 'readwrite', description: 'd1' } }];
   try {
     const first = await send(open);
     assert.equal(first.ok, true, JSON.stringify(first.error));
@@ -839,7 +859,7 @@ await check('a wave\'s change through a description does not reach its mount onc
   // An observer: the before-image is read first, by awaiting.
   const stop = files.vfs.observeWrites(() => {});
   try {
-    const opened = await wave([{ type: 'call', call: { call: 'open', path: 'k/x', mode: 0o644, read: true, description: 'd1' } }]);
+    const opened = await wave([{ type: 'call', call: { call: 'open', path: 'k/x', mode: 0o644, access: 'readwrite', description: 'd1' } }]);
     assert.equal(opened.ok, true, JSON.stringify(opened.error));
     let release;
     gate = new Promise((resolve) => { release = resolve; });
@@ -965,7 +985,7 @@ await check('a re-sent open of a description on an awaiting mount stops with its
   files.vfs.mount('/rs', asyncOnly(backend, { deep: true, beforeCall: (method) => (gate !== null && method === 'stat' ? (entered(), gate) : undefined) }));
   const procPid = ++pid;
   const send = waveOf(files.bind({ pid: procPid, cred: USER }), { sequence: { writer: `${procPid}:w`, first: 1, ack: 0, pid: procPid } });
-  const open = [{ type: 'call', call: { call: 'open', path: 'rs/x', mode: 0o644, read: true, description: 'd1' } }];
+  const open = [{ type: 'call', call: { call: 'open', path: 'rs/x', mode: 0o644, access: 'readwrite', description: 'd1' } }];
   let release = () => {};
   try {
     assert.equal((await send(open)).ok, true);
@@ -1046,7 +1066,7 @@ await check('a wave\'s close of a mounted description answers what its backend\'
   files.vfs.mount('/cw', reopening(credentialed(), failing, false));
   const wave = waveOf(files.bind({ pid: ++pid, cred: USER }));
   try {
-    const opened = await wave([{ type: 'call', call: { call: 'open', path: 'cw/x', mode: 0o644, read: true, description: 'd1' } }]);
+    const opened = await wave([{ type: 'call', call: { call: 'open', path: 'cw/x', mode: 0o644, access: 'readwrite', description: 'd1' } }]);
     assert.equal(opened.ok, true, JSON.stringify(opened.error));
     const closed = await wave([{ type: 'call', call: { call: 'close', path: 'cw/x', description: 'd1' } }]);
     assert.equal(closed.ok, false);
@@ -1082,8 +1102,8 @@ await check('a mounted description that takes an id the session kept for a file 
   proc.writeFile('/home/user/ri.txt', 'here');
   const at = (first) => waveOf(proc, { sequence: { writer: `${procPid}:w`, first, ack: first - 1, pid: procPid } });
   try {
-    assert.equal((await at(1)([{ type: 'call', call: { call: 'open', path: 'home/user/ri.txt', mode: 0o644, read: true, description: 'd1' } }])).ok, true);
-    assert.equal((await at(2)([{ type: 'call', call: { call: 'open', path: 'ri/x', mode: 0o644, read: true, description: 'd1' } }])).ok, true);
+    assert.equal((await at(1)([{ type: 'call', call: { call: 'open', path: 'home/user/ri.txt', mode: 0o644, access: 'readwrite', description: 'd1' } }])).ok, true);
+    assert.equal((await at(2)([{ type: 'call', call: { call: 'open', path: 'ri/x', mode: 0o644, access: 'readwrite', description: 'd1' } }])).ok, true);
     assert.equal((await at(3)([{ type: 'call', call: { call: 'close', path: 'ri/x', description: 'd1' } }])).ok, true);
     const late = await at(4)([{ type: 'call', call: { call: 'write', path: 'home/user/ri.txt', description: 'd1', offset: 0, data: enc.encode('NO') } }]);
     assert.equal(late.error?.errno ?? late.sequence?.refused?.errno, 'EBADF');

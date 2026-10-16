@@ -208,6 +208,16 @@ published independently in the `@nimbus-sh` npm scope.
   file but did not own it was refused (`EPERM`). A time left as it is
   (`UTIME_OMIT`) is the one the file has when the change lands; before, a
   change to it made in between could be undone.
+- Fixed: in Node programs, `fs.open` honours `O_NOFOLLOW`: a final symbolic
+  link is `ELOOP`, or `ENOTDIR` with `O_DIRECTORY`, as on Linux, and
+  `EEXIST` under `O_CREAT|O_EXCL`. A write open is one call the session
+  judges with its create, truncate and flags, so a file a peer replaces
+  with a link after the program looked is refused, not followed and
+  emptied. `O_SYNC`
+  follows each write with an fsync. `FileHandle.write` reads its arguments
+  as `fs.write` does: `handle.write('ff', 0, 'hex')` writes the byte `ff`
+  (it wrote `66 66`), and `handle.write(buffer, { offset, length,
+  position })` writes that part there.
 - Fixed (CLI): `nimbus runtime sync` with no runtime named, and so `nimbus
   setup cloudflare`, now publishes `cpython@3.13.14-3` as the bucket's Python.
   It used to publish `python@0.29.4`, Pyodide, whose `python-runner` no host

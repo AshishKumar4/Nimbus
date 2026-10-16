@@ -95,6 +95,15 @@ export declare function openMounted(options: MountedDescriptionOptions): Awaitab
  * offset of its own. O_TRUNC cuts it only once it is known to be that file.
  */
 export declare function reopenMounted(description: MountedFileDescription, options: Omit<MountedDescriptionOptions, 'name'>): Awaitable<MountedFileDescription>;
-/** The description of `file`, opened already (openOnMount), its number `ino`: what its descriptors share. */
-export declare function describeMounted(context: MountedDescriptionContext, file: HeldFile, ino: number): MountedFileDescription;
+/**
+ * The description of `file`, opened already (openOnMount), its number `ino`:
+ * what its descriptors share, with the rights its open asked. A read or a
+ * write it was not opened for is EBADF, as through the engine's own
+ * description (SqliteVFS.describeInode), whoever asks: a descriptor, or a
+ * wave's call that names it.
+ */
+export declare function describeMounted(context: MountedDescriptionContext, file: HeldFile, ino: number, rights: {
+    read: boolean;
+    write: boolean;
+}): MountedFileDescription;
 //# sourceMappingURL=mounted-description.d.ts.map

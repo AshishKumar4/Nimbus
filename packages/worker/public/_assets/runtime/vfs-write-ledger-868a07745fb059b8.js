@@ -130,6 +130,9 @@ var __nimbusProcessFsModule = (() => {
     return bytes;
   }
 
+  function isOpenAccess(value) {
+    return value === "read" || value === "write" || value === "readwrite";
+  }
   var W7_MAGIC = new Uint8Array([78, 87, 55, 4]);
   var W7_MAGIC_V3 = new Uint8Array([78, 87, 55, 3]);
   var ENCODER_PULL_BYTES = 256 * 1024;
@@ -536,27 +539,30 @@ var __nimbusProcessFsModule = (() => {
           break;
         return { call: "lchown", path: path(value.path, "lchown path"), uid: ownerId(value.uid, "lchown uid"), gid: ownerId(value.gid, "lchown gid") };
       case "open": {
-        const flags = ["create", "exclusive", "nofollow", "read", "truncate"];
+        const flags = ["create", "exclusive", "nofollow", "truncate"];
         let required = keys;
-        for (const flag of ["create", "description", "exclusive", "fchmod", "ino", "nofollow", "read", "truncate", "umask"])
+        for (const flag of ["create", "description", "exclusive", "fchmod", "ino", "nofollow", "truncate", "umask"])
           required = required.replace(`,${flag}`, "");
-        if (required !== "call,mode,path")
+        if (required !== "access,call,mode,path")
           break;
         for (const flag of flags) {
           if (value[flag] !== void 0 && value[flag] !== true)
             throw new Error(`w7-frame: open ${flag} is true or absent`);
         }
+        const access = value.access;
+        if (!isOpenAccess(access))
+          throw new Error(`w7-frame: open access is 'read', 'write' or 'readwrite': got ${String(access)}`);
         return {
           call: "open",
           path: path(value.path, "open path"),
           mode: u32(value.mode, "open mode"),
+          access,
           ...value.ino === void 0 ? {} : { ino: inodeNumber(value.ino, "open ino") },
           ...value.umask === void 0 ? {} : { umask: umaskOf(value.umask, "open umask") },
           ...value.create === true ? { create: true } : {},
           ...value.truncate === true ? { truncate: true } : {},
           ...value.exclusive === true ? { exclusive: true } : {},
           ...value.nofollow === true ? { nofollow: true } : {},
-          ...value.read === true ? { read: true } : {},
           ...value.description === void 0 ? {} : { description: descriptionId(value.description, "open description") },
           ...value.fchmod === void 0 ? {} : { fchmod: u32(value.fchmod, "open fchmod") }
         };
@@ -2420,7 +2426,9 @@ function __nimbusSubmitVfs(op, acknowledged = false) {
  * the parked cell at `path`, in the client's log now, in the order the
  * program made it, and claim the cell with its answer: once the session has
  * it, the cell retires (stamped with the revision it made, or evicted when
- * it was not the file's whole content: `partial`); refused, it is dropped.
+ * it was not the file's whole content: `partial`, or `partial(answer)`
+ * when only the answer says, as an open's receipt does for a file a create
+ * may have found); refused, it is dropped.
  * Answers the session's answer; `acknowledged`: the program was already
  * told it succeeded, so a refusal is reported, never thrown.
  */
@@ -2429,7 +2437,7 @@ function __nimbusLogVfsWrite(path, op, options = {}) {
   const answer = __nimbusSubmitVfs(op, acknowledged);
   const claimed = __nimbusClaimVfsWrite(path, () => answer.then((answered) => {
     if (answered.failed) return __nimbusVfsRefusedResult;
-    if (options.partial) return __nimbusVfsAppendRangeResult;
+    if (typeof options.partial === "function" ? options.partial(answered) : options.partial) return __nimbusVfsAppendRangeResult;
     return answered.receipt?.revision ?? answered.mutation?.after;
   }), false, acknowledged);
   // The claim settles with the answer; a refusal is the answer's to report.

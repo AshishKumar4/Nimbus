@@ -37,7 +37,7 @@ import { recordFailure } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { concatBytes, dec, enc } from '../_shared/bytes.js';
-import { w7ChunkCount, w7Chunks, } from '@nimbus-sh/platform/w7-frame.js';
+import { openAccessMask, openAccessRights, w7ChunkCount, w7Chunks, } from '@nimbus-sh/platform/w7-frame.js';
 import { WeightedCreditPool, } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { createHash } from 'node:crypto';
 import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, explicitTimes, posixAccess, timeAt, utimesRefusal } from './posix-access.js';
@@ -8969,7 +8969,7 @@ export class SqliteVFS {
      * (SqliteRuntimeFsBridge.open): EEXIST for an exclusive create of a name
      * there (a link included, followed or not), ENOENT without `create`,
      * ELOOP for a link when `nofollow`, EISDIR for a directory, EACCES without
-     * write permission; a name made empty with `mode` less the call's umask, or
+     * the access asked (openAccessMask); a name made empty with `mode` less the call's umask, or
      * an existing file emptied when `truncate`; then, with `fchmod`, that file
      * given the mode (chmod's rule, EPERM for another's), all of it refused
      * together. Its answer is the file's stat.
@@ -8977,12 +8977,15 @@ export class SqliteVFS {
     openToWrite(call, caller, described) {
         const cred = withUmask(caller, call.umask);
         const follow = call.nofollow !== true;
-        const name = this.checkAccess(call.path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode;
+        const named = this.checkAccess(call.path, 0, cred, { followLeaf: false, allowMissingLeaf: true });
+        const name = named.inode;
         if (name !== undefined && call.create === true && call.exclusive === true)
             throw vfsError('EEXIST', call.path);
         if (!follow && name?.kind === 'symlink')
             throw vfsError('ELOOP', call.path);
-        const there = follow ? this.checkAccess(call.path, 0, cred, { allowMissingLeaf: true }).inode : name;
+        // A name that is no link is what a followed open reaches: one walk answers both.
+        const reached = follow && name?.kind === 'symlink' ? this.checkAccess(call.path, 0, cred, { allowMissingLeaf: true }) : named;
+        const there = reached.inode;
         if (there === undefined && call.create !== true)
             throw vfsError('ENOENT', call.path);
         if (there?.kind === 'directory')
@@ -8992,7 +8995,8 @@ export class SqliteVFS {
         }
         else {
             // Every access asked, decided now: an O_RDWR of a write-only file is EACCES here, not at its first read.
-            this.checkAccess(call.path, (call.read === true ? 4 : 0) | 2, cred);
+            if (!this.accessInode(there, openAccessMask(call), cred))
+                throw vfsKeyError('EACCES', reached.path);
             if (call.truncate === true)
                 this.truncate(call.path, 0, cred);
         }
@@ -9008,13 +9012,13 @@ export class SqliteVFS {
         if (described.descriptions === undefined)
             throw vfsError('ENOTSUP', call.path, 'no binding keeps open descriptions for this wave');
         // Its access, decided above: the open that made the file writes it whatever its mode, as creat(2) does.
-        const rights = { read: call.read === true, write: true };
+        const rights = openAccessRights(call.access);
         const handle = described.descriptions.adopt(call.description, stat.ino, rights, call.path, cred);
         if (handle === null)
             throw vfsError('ENOENT', call.path);
         // Kept with the op's cursor, in its transaction: a re-sent open, or a drain of the process's log, finds it.
         if (described.pid !== null) {
-            this.sql.exec('INSERT OR REPLACE INTO vfs_wave_descriptions (pid, id, ino, rights) VALUES (?, ?, ?, ?)', described.pid, call.description, stat.ino, (rights.read ? 4 : 0) | 2);
+            this.sql.exec('INSERT OR REPLACE INTO vfs_wave_descriptions (pid, id, ino, rights) VALUES (?, ?, ?, ?)', described.pid, call.description, stat.ino, (rights.read ? 4 : 0) | (rights.write ? 2 : 0));
         }
         return Object.assign(stat, { handle });
     }
