@@ -1055,7 +1055,7 @@ export function residentFilesystem(session, resident, delegation) {
                 return holder.readThrough(handleId, offset, length, readThrough(handleId));
             }
             counts.local++;
-            return byNumber('read', handleId, () => holder.read(handleId, offset, length));
+            return holder.read(handleId, offset, length) ?? byNumber('read', handleId, () => holder.read(handleId, offset, length));
         }
         const file = paged.get(handleId);
         // Positional reads only: a read at the descriptor's offset is the descriptor's to advance.
@@ -1106,7 +1106,7 @@ export function residentFilesystem(session, resident, delegation) {
     fs.write = (handleId, offset, bytes) => {
         if (holder?.owns(handleId)) {
             counts.local++;
-            return byNumber('write', handleId, () => holder.write(handleId, offset, bytes));
+            return holder.write(handleId, offset, bytes) ?? byNumber('write', handleId, () => holder.write(handleId, offset, bytes));
         }
         if (now)
             throw NOT_NOW;

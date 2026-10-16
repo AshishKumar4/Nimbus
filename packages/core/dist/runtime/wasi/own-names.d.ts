@@ -38,11 +38,15 @@ export interface OwnNames {
     children(key: string, base: RuntimeVfsDirEntry[] | undefined): RuntimeVfsDirEntry[] | undefined;
     /** What it decided beneath `from` is beneath `to` now: `from` itself is the rename's. */
     move(from: string, to: string): void;
-    /** `op` was logged: its names wait for its answer. Its names. */
+    /** `op`, a provisional decision's, was logged: its names wait for its answer. Its names. */
     logged(op: ProcessFsOp): string[];
     /** The op that changed `keys` was answered: refused, or not. */
     answered(keys: readonly string[], refused: boolean): void;
-    /** The subtree at `root` is no longer held: what it logged there retires as anything of its own does, and what it never logged goes now. */
+    /**
+     * The subtree at `root` is no longer held, everything decided there
+     * answered: it retires as anything of the process's own does, at the next
+     * barrier that lands.
+     */
     released(root: string): void;
     /** A barrier begins: its number, which `retire` takes once it lands. */
     barrierBegun(): number;

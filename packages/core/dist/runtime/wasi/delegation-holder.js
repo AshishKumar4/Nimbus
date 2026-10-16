@@ -84,11 +84,17 @@ export function delegationHolder(options) {
     let changes = 0;
     let throughLogged = 0;
     let sentAt = 0;
-    /** Log `op`, the process told it succeeded: its names are this process's own until the view has them. */
-    const acknowledged = (op) => {
+    /**
+     * Log `op`, the process told it succeeded. A provisional decision's names
+     * are this process's own until the view has them (OwnNames); a held
+     * subtree's are while it holds it.
+     */
+    const acknowledged = (op, provisional = false) => {
         const answered = client.submit(op, { acknowledged: true });
-        const keys = names.logged(op);
-        void answered.then((answer) => names.answered(keys, answer.failed !== undefined), () => names.answered(keys, true));
+        if (provisional) {
+            const keys = names.logged(op);
+            void answered.then((answer) => names.answered(keys, answer.failed !== undefined), () => names.answered(keys, true));
+        }
         return answered;
     };
     /** What `file`'s cell took of the process's budget goes back. */
@@ -189,7 +195,10 @@ export function delegationHolder(options) {
             throw fsError('ESTALE', 'write', handle.path);
         if (bytes === undefined)
             return undefined;
-        const cell = { key: file.key, bytes: new Uint8Array(0), length: 0, mode: entry.mode & 0o7777, logged: bytes.byteLength };
+        const cell = {
+            key: file.key, bytes: new Uint8Array(0), length: 0, mode: entry.mode & 0o7777, logged: bytes.byteLength,
+            ...(client.held(file.key) === undefined ? { provisional: true } : {}),
+        };
         if (!room(cell, bytes.byteLength))
             throw fsError('ENOSPC', 'write', handle.path);
         cell.bytes.set(bytes);
@@ -253,12 +262,12 @@ export function delegationHolder(options) {
             }
             if (ino === undefined && from > 0) {
                 if (file.length < file.logged)
-                    acknowledged({ type: 'call', call: { call: 'ftruncate', path: file.key, size: file.length } });
+                    acknowledged({ type: 'call', call: { call: 'ftruncate', path: file.key, size: file.length } }, file.provisional);
                 if (file.length > from)
-                    acknowledged({ type: 'call', call: { call: 'write', path: file.key, offset: from, data: file.bytes.slice(from, file.length) } });
+                    acknowledged({ type: 'call', call: { call: 'write', path: file.key, offset: from, data: file.bytes.slice(from, file.length) } }, file.provisional);
             }
             else {
-                acknowledged({ type: 'call', call: { call: 'writeFile', path: file.key, mode: file.mode, ...(ino === undefined ? {} : { ino }), ...(file.umask === undefined ? {} : { umask: file.umask }), data: file.bytes.slice(0, file.length) } });
+                acknowledged({ type: 'call', call: { call: 'writeFile', path: file.key, mode: file.mode, ...(ino === undefined ? {} : { ino }), ...(file.umask === undefined ? {} : { umask: file.umask }), data: file.bytes.slice(0, file.length) } }, file.provisional);
             }
             // Unlogged until the log took it: one that refused it (the session
             // ended the process) leaves it for the settle's (logHeld).
@@ -308,7 +317,7 @@ export function delegationHolder(options) {
     const log = (op) => {
         drain();
         changes++;
-        acknowledged(op);
+        acknowledged(op, options.provisional?.() === true);
     };
     /** What was logged up to `covered` reached the session: the store owes a barrier once something did. */
     const sentSome = (covered) => {
@@ -348,10 +357,9 @@ export function delegationHolder(options) {
         file.changedFrom = Math.min(file.changedFrom ?? from, from);
         dirty.delete(file);
         dirty.add(file);
-        // A cell no grant holds (a provisional decision's, an inode descriptor's)
-        // is logged at once, as a synchronous write is parked: what the log holds
-        // unanswered is what it counts (fitsSync).
-        if (client.held(file.key) === undefined) {
+        // A cell no grant holds is logged at once, as a synchronous write is
+        // parked: what the log holds unanswered is what it counts (fitsSync).
+        if (file.provisional === true) {
             drain();
             return;
         }
@@ -414,8 +422,8 @@ export function delegationHolder(options) {
         const more = size - file.bytes.byteLength;
         if (grant !== undefined && !client.draw(grant, more))
             return false;
-        // A cell no grant holds (a provisional decision's, an inode descriptor's) takes what the process's budget has.
-        if (grant === undefined) {
+        // A cell no grant holds takes what the process's budget has.
+        if (grant === undefined && file.provisional === true) {
             if (store.reserve !== undefined && !store.reserve(more))
                 return false;
             file.reserved = (file.reserved ?? 0) + more;
@@ -443,8 +451,8 @@ export function delegationHolder(options) {
             : { ...entry, atime: attrs.atime, mtime: attrs.mtime, ctime: now() });
     const holder = {
         client,
-        entry: (key) => names.entry(key),
-        children: (key, base) => names.children(key, base),
+        entry: names.entry,
+        children: names.children,
         copyFile: (from, to, path, stored, keepMode) => {
             const source = entryOf(from);
             // The source as the session's copy reads it: a file it may read, no set-id bit (the session's to judge).
@@ -500,6 +508,8 @@ export function delegationHolder(options) {
             // O_TRUNC open keeps it), what more they take drawn from what the
             // grant reserved (room); else the session copies.
             const file = known !== undefined && known.through === undefined ? known : { key: to, bytes: new Uint8Array(0), length: 0, mode };
+            if (grant === PROVISIONAL)
+                file.provisional = true;
             if (!room(file, bytes.byteLength))
                 return false;
             file.bytes.set(bytes);
@@ -512,9 +522,10 @@ export function delegationHolder(options) {
             files.set(entry.ino, file);
             const description = descriptionId();
             changes++;
-            acknowledged({ type: 'call', call: { call: 'open', path: to, mode: asked, ...(made !== undefined ? { ino: made, umask } : grant === PROVISIONAL && target === null ? { umask } : {}), create: true, truncate: true, ...(keepMode ? { fchmod: mode } : {}), description } });
-            acknowledged({ type: 'call', call: { call: 'write', path: to, ...(made === undefined ? {} : { ino: made }), description, offset: 0, data: bytes.slice() } });
-            acknowledged({ type: 'call', call: { call: 'close', path: to, description } });
+            const provisional = grant === PROVISIONAL;
+            acknowledged({ type: 'call', call: { call: 'open', path: to, mode: asked, ...(made !== undefined ? { ino: made, umask } : provisional && target === null ? { umask } : {}), create: true, truncate: true, ...(keepMode ? { fchmod: mode } : {}), description } }, provisional);
+            acknowledged({ type: 'call', call: { call: 'write', path: to, ...(made === undefined ? {} : { ino: made }), description, offset: 0, data: bytes.slice() } }, provisional);
+            acknowledged({ type: 'call', call: { call: 'close', path: to, description } }, provisional);
             return true;
         },
         logHeld: () => {
@@ -567,7 +578,7 @@ export function delegationHolder(options) {
                 names.note(parentKey(key), nameOf(key), 'file');
                 // Its mode was decided under this umask: the session applies the same
                 // one, and the number a grant reserved (a provisional one is the session's to give).
-                file = { key, bytes: new Uint8Array(0), length: 0, mode: asked, ...(grant === PROVISIONAL ? {} : { made: ino }), umask };
+                file = { key, bytes: new Uint8Array(0), length: 0, mode: asked, ...(grant === PROVISIONAL ? { provisional: true } : { made: ino }), umask };
                 files.set(ino, file);
                 // Made here: the name exists from now on, in the log's order. Logged
                 // with its bytes, before the next decision (drain), as one call.
@@ -593,6 +604,8 @@ export function delegationHolder(options) {
                 // A description writing it through is the session's: decided here anew.
                 const known = files.get(current.ino);
                 file = known !== undefined && known.through === undefined ? known : { key, bytes: new Uint8Array(0), length: 0, mode: current.mode & 0o7777 };
+                if (grant === PROVISIONAL)
+                    file.provisional = true;
                 file.length = 0;
                 files.set(current.ino, file);
                 names.decide(key, { ...current, size: 0, mtime: now(), ctime: now() });
@@ -752,7 +765,7 @@ export function delegationHolder(options) {
             // is decided (an inode descriptor's cell is made after), whether its bytes
             // fit what the log holds unanswered.
             const live = liveFile(handle);
-            if (live.through === undefined && client.held(live.key) === undefined)
+            if (live.provisional === true || (live.view !== undefined && client.held(live.key) === undefined))
                 client.fitsSync(bytes.byteLength, handle.path);
             const file = cellOf(handle);
             if (file === undefined)
