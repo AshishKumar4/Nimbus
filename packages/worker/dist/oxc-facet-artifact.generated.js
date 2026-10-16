@@ -10,8 +10,8 @@
  * OXC_FACET_BUILD_ID is a content-hash prefix, OXC_FACET_SHA256 the
  * digest every fetch is verified against.
  *
- * Size: 377.18 KiB
+ * Size: 377.20 KiB
  */
-export const OXC_FACET_ASSET_PATH = "/_assets/runtime/oxc-facet-57f9cbb4c9ae0704.js";
-export const OXC_FACET_BUILD_ID = "57f9cbb4c9ae0704";
-export const OXC_FACET_SHA256 = "57f9cbb4c9ae070478a0c8d82006a7cb0d5fbee2e1f3acf9b152f28f3bdbbc9d";
+export const OXC_FACET_ASSET_PATH = "/_assets/runtime/oxc-facet-b8411f2d044a2d73.js";
+export const OXC_FACET_BUILD_ID = "b8411f2d044a2d73";
+export const OXC_FACET_SHA256 = "b8411f2d044a2d73a8115f74081b18416712af5d79f46398514bdce06d9b4b33";

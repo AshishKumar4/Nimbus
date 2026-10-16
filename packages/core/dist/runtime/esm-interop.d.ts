@@ -7,7 +7,8 @@
  * itself (native-esm.ts). The linking:
  *
  *   - the export getters are installed first, on the CommonJS exports object
- *     (ESM_EXPORTS_HELPER: `__esModule`, a `Module` tag, live enumerable
+ *     (ESM_EXPORTS_HELPER: `__esModule`, not enumerable and replaced by a
+ *     module's own export of that name, a `Module` tag, live enumerable
  *     getters in exported-name order), so a module in a cycle with this one
  *     finds them;
  *   - every requested module is then loaded in source order (ESM_LOAD_HELPER:
@@ -52,7 +53,7 @@ export declare const ESM_STATIC_IMPORT = "nimbus:static-import";
 /** A static import's module: the importer's require, told the request is an import, with its `type` attribute (or null). */
 export declare const ESM_LOAD_HELPER = "(require, source, type) => require(source, \"nimbus:static-import\", type)";
 /** The helpers as an object literal's source: what a launch compiles for its interpreter (interpreter/modules.ts ModuleHelpers). */
-export declare const ESM_MODULE_HELPERS = "{ exports: (() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; return (exports) => { O.defineProperty(exports, \"__esModule\", { value: true }); O.defineProperty(exports, tag, { value: \"Module\" }); return (name, get) => O.defineProperty(exports, name, { enumerable: true, get }); }; })(), star: (exports, define, m, omitted) => { for (const k in m) { if (k === \"default\" || ({}).hasOwnProperty.call(exports, k)) continue; let left = false; for (let i = 0; omitted && i < omitted.length; i++) if (omitted[i] === k) left = true; if (!left) define(k, () => m[k]); } }, conflicts: (require) => require(\"\", \"nimbus:star-conflicts\"), load: (require, source, type) => require(source, \"nimbus:static-import\", type) }";
+export declare const ESM_MODULE_HELPERS = "{ exports: (() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; return (exports) => { O.defineProperty(exports, \"__esModule\", { value: true, configurable: true }); O.defineProperty(exports, tag, { value: \"Module\" }); return (name, get) => O.defineProperty(exports, name, { enumerable: true, get }); }; })(), star: (exports, define, m, omitted) => { for (const k in m) { if (k === \"default\" || ({}).hasOwnProperty.call(exports, k)) continue; let left = false; for (let i = 0; omitted && i < omitted.length; i++) if (omitted[i] === k) left = true; if (!left) define(k, () => m[k]); } }, conflicts: (require) => require(\"\", \"nimbus:star-conflicts\"), load: (require, source, type) => require(source, \"nimbus:static-import\", type) }";
 /**
  * One name an import binds: the module's namespace, or one of its exports
  * by name (`default` included, which `import d from` binds too). A string

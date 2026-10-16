@@ -1,7 +1,7 @@
 import { bindingIdentifiers } from './binding-pattern.js';
 /** The CommonJS exports object marked as an ES module's; answers the function that installs an export's getter. */
 export const ESM_EXPORTS_HELPER = '(() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; '
-    + 'return (exports) => { O.defineProperty(exports, "__esModule", { value: true }); O.defineProperty(exports, tag, { value: "Module" }); '
+    + 'return (exports) => { O.defineProperty(exports, "__esModule", { value: true, configurable: true }); O.defineProperty(exports, tag, { value: "Module" }); '
     + 'return (name, get) => O.defineProperty(exports, name, { enumerable: true, get }); }; })()';
 /**
  * `export *`: each name of the module but `default`, those already exported
