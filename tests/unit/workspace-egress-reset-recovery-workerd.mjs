@@ -1,5 +1,5 @@
-// @tier slow — drives a local workerd
 // @serial
+// @tier slow — drives a local workerd
 // A reset's recovery re-drives a process through the workspace's network
 // before the session has made its workspace (Kinu ask 20; the egress
 // review's P1). Both of the session's recovery pumps run before it:

@@ -1,5 +1,5 @@
-// @tier slow — drives a local workerd
 // @serial
+// @tier slow — drives a local workerd
 // TypeScript as Node 22.22.3 runs it (core runtime/typescript-strip.ts,
 // amaro, Node's own stripper): each program's stdout, its stderr byte for
 // byte (but the stack frames, which are the runtime's own beside the

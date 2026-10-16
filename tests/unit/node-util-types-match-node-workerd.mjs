@@ -1,5 +1,5 @@
-// @tier slow — drives a local workerd
 // @serial
+// @tier slow — drives a local workerd
 // util.types as a session's `node` program sees it, against host Node
 // 22.22.3's: every function Node has, and what each answers for values that
 // only a brand check tells apart (a proxy, an object that inherits a Date's

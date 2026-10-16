@@ -1,5 +1,5 @@
-// @tier slow — drives a local workerd
 // @serial
+// @tier slow — drives a local workerd
 // Stack frames and the fatal report's arrow, for ES modules small and large
 // (each staged for the registry: core runtime/native-esm.ts) and for
 // CommonJS: an ES module's frame names its file: URL, a CommonJS module's its
