@@ -17,9 +17,11 @@ import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contra
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
+import { concatBytes } from '@nimbus-sh/core/_shared/bytes.js';
 
 import type { ProjectFs } from '../../runtime/project-fs.js';
 import type { GitPacksSeam } from '../pack/store.js';
+import { objectIdPrefix, type GitObjectType } from '../pack/format.js';
 import { coneMatcher, parseConeSparseCheckout, type SparseMatcher } from '../pack/sparse.js';
 import { DirCache, compareBytes, objectId, type IndexEdit } from './dircache.js';
 import { Excludes, parsePatternList, type PatternList } from './excludes.js';
@@ -65,11 +67,8 @@ const LOOSE_COMPRESSION = 1;
 const LOOSE_MODE = 0o444;
 
 /** The loose object's bytes for `type` and `data`: its header and content, deflated at git's loose compression. */
-function looseBytes(type: string, data: Uint8Array): Uint8Array {
-  const header = new TextEncoder().encode(`${type} ${data.length}\0`);
-  const raw = new Uint8Array(header.length + data.length);
-  raw.set(header);
-  raw.set(data, header.length);
+function looseBytes(type: GitObjectType, data: Uint8Array): Uint8Array {
+  const raw = concatBytes([objectIdPrefix(type, data.length), data]);
   // Copied out: deflateSync's result is a view of a 16 KiB buffer (measured, Bun and Node).
   return new Uint8Array(deflateSync(raw, { level: LOOSE_COMPRESSION }));
 }
@@ -169,7 +168,7 @@ export class WorktreeRepo {
    * repository lacks it (and `sink` holds it back for no wave), its loose
    * bytes put into `sink`.
    */
-  private async writeObject(sink: ObjectSink, type: 'blob' | 'tree' | 'commit' | 'tag', data: Uint8Array): Promise<string> {
+  private async writeObject(sink: ObjectSink, type: GitObjectType, data: Uint8Array): Promise<string> {
     const oid = objectId(type, data);
     if (sink.pending(oid) || await this.store.has(oid)) return oid;
     await sink.put(oid, looseBytes(type, data));

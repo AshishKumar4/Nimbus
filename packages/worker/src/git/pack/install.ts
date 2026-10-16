@@ -19,6 +19,7 @@
 
 import { encodeIdxV2, encodeRev } from './idx.js';
 import { oidToHex, PackFormatError } from './format.js';
+import { concatBytes } from '@nimbus-sh/core/_shared/bytes.js';
 import type { PackProcessResult, PackStore, WorkTally } from './processor.js';
 
 /** The session's ranged file calls, as a facet makes them. */
@@ -145,7 +146,7 @@ export async function installPack(files: PackFiles, request: InstallRequest): Pr
   const entries = result.entries;
   const pieces: Uint8Array[] = [];
   for await (const piece of encodeIdxV2(result.objects, result.packSha, async function* () { yield entries; })) pieces.push(piece);
-  const idx = concat(pieces);
+  const idx = concatBytes(pieces);
   const rev = encodeRev(entries, result.packSha);
   const promisor = request.promisor === undefined ? [] : [{ path: final + '.promisor', bytes: encoder.encode(request.promisor) }];
   if (record.length === 0) {
@@ -164,18 +165,6 @@ export async function installPack(files: PackFiles, request: InstallRequest): Pr
   await files.rename(tmpFile(dir, tmpName, 'rev'), final + '.rev');
   await files.rename(tmpFile(dir, tmpName, 'idx'), final + '.idx');
   return summary;
-}
-
-function concat(parts: Uint8Array[]): Uint8Array {
-  let size = 0;
-  for (const part of parts) size += part.byteLength;
-  const out = new Uint8Array(size);
-  size = 0;
-  for (const part of parts) {
-    out.set(part, size);
-    size += part.byteLength;
-  }
-  return out;
 }
 
 /**

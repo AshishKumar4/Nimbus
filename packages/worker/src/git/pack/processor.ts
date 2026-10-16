@@ -30,6 +30,7 @@ import {
   inflateChunkSize,
   encodeObjectHeader,
   encodePackHeader,
+  objectHash,
   objectIdPrefix,
   oidFromHex,
   oidToHex,
@@ -416,10 +417,6 @@ export function plainBytes(bytes: Uint8Array): Uint8Array {
   return Object.getPrototypeOf(bytes) === Uint8Array.prototype ? bytes : new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 }
 
-function hashObject(type: GitObjectType, data: Uint8Array): Uint8Array {
-  return createHash('sha1').update(objectIdPrefix(type, data.byteLength)).update(data).digest();
-}
-
 /** Records are read at most this many objects ahead of the pack header's count. */
 const INITIAL_RECORD_CAPACITY = 1 << 16;
 
@@ -643,7 +640,7 @@ export class PackStreamProcessor {
       object = { type: typeName(header.type), data: payload };
     }
     this.cache.set(offset, { ...object, byteLength: object.data.byteLength });
-    const oid = hashObject(object.type, object.data);
+    const oid = objectHash(object.type, object.data);
     this.work.hashed(object.data.byteLength);
     this.records.add(oid, offset, crc32(packed));
     this.byOid?.set(oidToHex(oid), offset);
@@ -704,7 +701,7 @@ export class PackStreamProcessor {
       packed.set(entryHeader);
       packed.set(body, entryHeader.byteLength);
       await this.output.write(packed);
-      this.records.add(hashObject(object.type, object.data), offset, crc32(packed));
+      this.records.add(objectHash(object.type, object.data), offset, crc32(packed));
       offset += packed.byteLength;
       appended++;
     }

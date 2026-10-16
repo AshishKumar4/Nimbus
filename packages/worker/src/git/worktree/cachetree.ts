@@ -16,6 +16,7 @@
  */
 
 import { oidFromHex, oidToHex } from '../pack/format.js';
+import { concatBytes } from '@nimbus-sh/core/_shared/bytes.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -36,18 +37,6 @@ function nodeHeader(name: Uint8Array, count: number, subtrees: number): Uint8Arr
   return out;
 }
 
-function concat(parts: readonly Uint8Array[]): Uint8Array {
-  let size = 0;
-  for (const part of parts) size += part.length;
-  const out = new Uint8Array(size);
-  let at = 0;
-  for (const part of parts) {
-    out.set(part, at);
-    at += part.length;
-  }
-  return out;
-}
-
 /** One subtree being built: its name and its bytes as written (name first). */
 export interface BuiltSubtree {
   name: Uint8Array;
@@ -64,7 +53,7 @@ export function encodeNode(name: string, count: number, oid: string | null, subt
   const parts = [nodeHeader(nameBytes, count, subtrees.length)];
   if (count >= 0 && oid !== null) parts.push(oidFromHex(oid));
   for (const sub of subtrees) parts.push(sub.bytes);
-  return { name: nameBytes, bytes: concat(parts) };
+  return { name: nameBytes, bytes: concatBytes(parts) };
 }
 
 /**
