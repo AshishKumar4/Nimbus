@@ -245,55 +245,11 @@ export function transportFailure(request, detail) {
 }
 /**
  * What `error`, the facet's failure, says failed at the git server: an
- * UploadPackError's (a clone's own requests), or cf-git's through `http`;
+ * UploadPackError's (Nimbus's requests: upload-pack.ts, receive-pack.ts);
  * undefined when it is not the server's failure.
  */
-export function remoteFailureOf(error, http) {
-    // An UploadPackError carries its own (upload-pack.ts).
+export function remoteFailureOf(error) {
     if (error instanceof Error && error.name === 'UploadPackError')
         return error.failure;
-    return http?.failureOf(error);
-}
-/** An empty body, as cf-git reads a response body (an async iterable of chunks). */
-async function* emptyBody() { }
-/**
- * `http` with each failure kept: a request that threw (the transport: that
- * error), and an answer with a failing status (answeredFailure; cf-git then
- * reads an empty body). cf-git's HttpError for that status, or the
- * transport's own error, is then known for what it is.
- */
-export function observedGitHttp(http) {
-    let thrown = null;
-    let answered = null;
-    return {
-        async request(req) {
-            const request = req.method === 'POST' ? 'rpc' : 'discovery';
-            let response;
-            try {
-                response = await http.request(req);
-            }
-            catch (error) {
-                thrown = { error, failure: transportFailure(request, error instanceof Error ? error.message : String(error)) };
-                throw error;
-            }
-            if (response.statusCode < 400)
-                return response;
-            const body = response.body;
-            const headers = (response.headers ?? {});
-            const contentType = Object.entries(headers).find(([name]) => name.toLowerCase() === 'content-type')?.[1];
-            answered = await answeredFailure(request, response.statusCode, contentType, body && Symbol.asyncIterator in body ? body : null);
-            return { ...response, body: emptyBody() };
-        },
-        failureOf(error) {
-            if (thrown !== null && thrown.error === error)
-                return thrown.failure;
-            // isomorphic-git's HttpError: the status the server answered.
-            const code = error && typeof error === 'object' ? error.code : undefined;
-            const status = error && typeof error === 'object' ? error.data?.statusCode : undefined;
-            if (code === 'HttpError' && typeof status === 'number') {
-                return answered !== null && answered.status === status ? answered : { kind: 'status', status };
-            }
-            return undefined;
-        },
-    };
+    return undefined;
 }
