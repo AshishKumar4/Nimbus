@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a session's destroy (`DELETE /s/<id>/`, `box.destroy()`) is
+  repeated once on a fresh connection when the platform fails it with a
+  reset of the session's storage ("Internal error in Durable Object
+  storage caused object to be reset") or its undescribed "internal error".
+  Before, either answered the destroy with a 500 and left the session in
+  place. The destroy is idempotent, so the repeat answers with its result;
+  any other failure is answered as before.
 - Fixed: a portable workspace's `node` reads its command line as the
   hosted `node` does (Node's own parser, NODE_OPTIONS first), and finds its
   script the same way. `node .` runs the package's `main`, and `node start`

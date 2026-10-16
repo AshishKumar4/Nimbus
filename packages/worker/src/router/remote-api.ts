@@ -23,6 +23,8 @@ import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { doUnavailableError } from './do-errors.js';
+import { idempotent } from '@nimbus-sh/fabric/do-calls.js';
+import type { DoCallClass } from '@nimbus-sh/platform/oom-classify.js';
 import { codeRuntimeRequirement, runtimePolicyError, type NimbusConfig, type NimbusSandboxProfile, type NimbusRuntimeAction } from '@nimbus-sh/config/sandbox';
 export type { NimbusConfig, NimbusSandboxProfile, NimbusRuntimePolicy, NimbusRuntimeName } from '@nimbus-sh/config/sandbox';
 
@@ -57,9 +59,22 @@ interface NimbusRemoteEnv extends Partial<NimbusAuthEnv> {
   NIMBUS_SESSION?: NimbusSessionNamespace;
 }
 
+/**
+ * The failure classes (classifyDoCall) a session's destroy is repeated
+ * after, once, on a fresh stub: the object reset under the call, and the
+ * platform's failure of it without a cause. A destroy is idempotent
+ * (rpcDestroy: one at a time, and a destroyed session destroys to the same
+ * answer), so its repeat changes nothing the first may have done. Both
+ * answered DELETEs 500 on 2026-10-16, main and branches alike. Any other
+ * class (a code update, an overloaded object: 503) answers as before.
+ */
+const DESTROY_REPEATS: readonly DoCallClass[] = ['storage_reset', 'platform_internal'];
+
 interface RemoteContext {
   env: NimbusRemoteEnv;
   stub: SessionRouterRpc;
+  /** A fresh stub to the same session, for a call repeated after the first one's failed (DESTROY_REPEATS). */
+  freshStub(): SessionRouterRpc;
   body: SessionRequest;
   profileName: string;
   profile: NimbusSandboxProfile;
@@ -135,12 +150,14 @@ export async function handleNimbusRemoteApi(
     ?? {};
   const root = body.root ?? profile.root ?? DEFAULT_HOME;
   const doName = `${remoteAuth.tenantSegment}:${match.sandboxId}`;
-  const id = env.NIMBUS_SESSION.idFromName(doName);
-  const stub = env.NIMBUS_SESSION.get(id);
+  const sessions = env.NIMBUS_SESSION;
+  const id = sessions.idFromName(doName);
+  const stub = sessions.get(id);
 
   const ctx: RemoteContext = {
     env,
     stub,
+    freshStub: () => sessions.get(id),
     body,
     profileName,
     profile,
@@ -404,9 +421,16 @@ async function dispatchRemoteRpc(ctx: RemoteContext): Promise<unknown> {
     }
     case 'unexposePort':
       return ctx.stub._rpcUnexposePort(numberArg(args[0], 'port'));
-    case 'destroy':
+    case 'destroy': {
       requireAnyScope(ctx, ['session:destroy', 'session:admin']);
-      return ctx.stub._rpcDestroy(objectArg(args[0])).then((result) => {
+      // The request's stub first; a repeat on a fresh one.
+      let handed = false;
+      const session = (): SessionRouterRpc => (handed ? ctx.freshStub() : (handed = true, ctx.stub));
+      const options = objectArg(args[0]);
+      return idempotent('destroy', session, (stub) => stub._rpcDestroy(options), {
+        maxAttempts: 2,
+        repeats: DESTROY_REPEATS,
+      }).then((result) => {
         // Proven destroy, reported as internal metadata for the caller's
         // response policy — no JSON re-parse needed to rediscover it.
         const outcome = result as { ok?: unknown; destroyedAt?: unknown } | undefined;
@@ -416,6 +440,7 @@ async function dispatchRemoteRpc(ctx: RemoteContext): Promise<unknown> {
         }
         return result;
       });
+    }
     default:
       throw apiError(`Unknown Nimbus sandbox operation: ${String(op)}`, 'E_REMOTE_OP', 400);
   }

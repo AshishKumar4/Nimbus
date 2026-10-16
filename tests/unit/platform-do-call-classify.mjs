@@ -74,6 +74,14 @@ assert.equal(
   assert.equal(cls(a), 'permanent');
 }
 
+// The platform's failure without a cause, on any link: a wrapper's own words
+// are not it, and a cause anywhere in the chain explains it.
+assert.equal(cls(new Error('internal error; reference = r3f')), 'platform_internal');
+assert.equal(cls(new Error('destroy failed: internal error; reference = r3f', { cause: new Error('internal error; reference = r3f') })), 'platform_internal');
+assert.equal(cls(new Error('destroy failed: internal error; reference = r3f')), 'permanent');
+assert.equal(cls(new Error('internal error; reference = r3f', { cause: new Error('This script has been upgraded.') })), 'superseded_isolate');
+assert.equal(cls(Object.assign(new Error('internal error; reference = r3f'), { retryable: true })), 'retryable_flag');
+
 // Everything else is permanent, including non-Error throws.
 assert.equal(cls(new Error('no grant from receiver for cross-owner sender')), 'permanent');
 assert.equal(cls('a bare string'), 'permanent');
@@ -90,6 +98,7 @@ assert.equal(isRetryableDoCall('connection_lost'), true);
 assert.equal(isRetryableDoCall('storage_reset'), true);
 assert.equal(isRetryableDoCall('retryable_flag'), true);
 assert.equal(isRetryableDoCall('overloaded'), false);
+assert.equal(isRetryableDoCall('platform_internal'), false);
 assert.equal(isRetryableDoCall('permanent'), false);
 
 console.log('ok - platform-do-call-classify (prose chain, per-link flags, overloaded veto, cycle guard)');
