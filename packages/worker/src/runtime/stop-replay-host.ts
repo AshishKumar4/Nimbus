@@ -1,17 +1,9 @@
+import { base64Decode } from '@nimbus-sh/core/_shared/crypto.js';
 import { REPLAY_PREFIX_MAX_BYTES, REPLAY_TAPE_MAX_READINGS, REPLAY_TAPE_MAX_RANDOM_BYTES, REPLAY_TAPE_MAX_WRITES, REPLAY_WRITE_ENTRY_MAX_CHARS, STOP_RECORD_MAX_CHARS, STOP_RECORD_PREFIX, type ReplayTape, type StopRecord, type StoppedOutput } from './stop-replay-contracts.js';
 
+/** A tape's bytes from their base64: none for an absent or empty entry. */
 export function decodeBase64(text: string | undefined): Uint8Array {
-  if (!text) return new Uint8Array(0);
-  const binary = atob(text);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-
-export function encodeBase64(bytes: Uint8Array): string {
-  let text = '';
-  for (let i = 0; i < bytes.byteLength; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(text);
+  return text ? base64Decode(text) : new Uint8Array(0);
 }
 
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;

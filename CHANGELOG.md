@@ -44,6 +44,12 @@ published independently in the `@nimbus-sh` npm scope.
   commands are registered and summarized. Install, rehydration,
   `RuntimeManager.list` and `listInstalledRuntimes` now all use them, and
   their results are unchanged.
+- Fixed: a very long line at the hosted Python prompt (`python3`) reaches
+  the interpreter. Before, a line of more than about 125,000 bytes of
+  UTF-8 failed with "[python-repl] dispatch failed: Maximum call stack size
+  exceeded" before Python saw it. The prompt, TypeScript source maps, the esbuild-compatible
+  build's base64 and data-URL loaders, CSS data URLs, and stop/replay tapes
+  now share one base64 codec (`_shared/crypto.js`).
 - Breaking (fabric, worker, sdk): the legacy inner Durable Object transport
   is gone. `NimbusDOStub` is no longer exported from
   `@nimbus-sh/fabric/bindings.js`, `@nimbus-sh/worker` or

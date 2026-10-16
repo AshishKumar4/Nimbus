@@ -5,6 +5,7 @@
 
 import { typeScriptFormat, type PackageType } from './module-format.js';
 import type { TypeScriptRefusal } from './typescript-refusal.js';
+import { base64Utf8 } from '../_shared/crypto.js';
 
 /** Stripped code and the format Node runs it in, or why Node refuses it. */
 export type StrippedTypeScript = { code: string; format: 'module' | 'commonjs' } | { refusal: TypeScriptRefusal };
@@ -45,11 +46,4 @@ export async function stripTypeScript(
   const format = typeScriptFormat(filename, () => packageType, () => output.code) ?? 'commonjs';
   if (!output.map) return { code: output.code, format };
   return { code: `${output.code}\n\n//# sourceMappingURL=data:application/json;base64,${base64Utf8(output.map)}`, format };
-}
-
-function base64Utf8(text: string): string {
-  const bytes = new TextEncoder().encode(text);
-  let binary = '';
-  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(binary);
 }
