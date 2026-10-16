@@ -181,6 +181,21 @@ export function delegationHolder(options) {
         return { entry: view.entry, bytes: bytes !== undefined && bytes.byteLength === view.entry.size ? bytes : undefined };
     };
     /**
+     * The cell an inode descriptor writes `bytes` more into: its file's, made
+     * here of the store's bytes where it has none (cellOf), once they fit what
+     * the log holds unanswered. Undefined where the store does not hold them.
+     */
+    const inodeCell = (handle, bytes) => {
+        if (!handle.writable)
+            throw fsError('EBADF', 'write', handle.path);
+        const file = liveFile(handle);
+        if (file.view === undefined)
+            return file;
+        if (client.held(file.key) === undefined)
+            client.fitsSync(bytes, handle.path);
+        return cellOf(handle);
+    };
+    /**
      * An inode descriptor's file made a cell here, of the store's bytes, to
      * write: what every descriptor of it and every call by name share from
      * now on. Undefined where the store does not hold them; ESTALE where no
@@ -761,23 +776,12 @@ export function delegationHolder(options) {
         },
         write: (handleId, offset, bytes) => {
             const handle = handleOf(handleId);
-            if (!handle.writable)
-                throw fsError('EBADF', 'write', handle.path);
-            // A cell no grant holds is logged at once (written): first, before anything
-            // is decided (an inode descriptor's cell is made after), whether its bytes
-            // fit what the log holds unanswered.
-            let file = liveFile(handle);
-            if (file.view !== undefined) {
-                if (client.held(file.key) === undefined)
-                    client.fitsSync(bytes.byteLength, handle.path);
-                const cell = cellOf(handle);
-                if (cell === undefined)
-                    return undefined;
-                file = cell;
-            }
-            else if (file.provisional === true) {
+            const file = handle.inode === undefined ? handle.file : inodeCell(handle, bytes.byteLength);
+            if (file === undefined)
+                return undefined;
+            // A cell no grant holds is logged at once (written): first, before it changes, whether its bytes fit what the log holds unanswered.
+            if (file.provisional === true)
                 client.fitsSync(bytes.byteLength, handle.path);
-            }
             if (file.through !== undefined) {
                 // Through: by the file's number, ordered with everything else; an
                 // O_APPEND write lands at the file's end as the session has it then.
