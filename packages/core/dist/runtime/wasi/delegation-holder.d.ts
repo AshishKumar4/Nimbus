@@ -68,6 +68,17 @@ export interface HolderOptions {
     /** Where the client logs what it sends until the session answers: the process's own store, where it has one (process-fs-journal.ts). */
     readonly journal?: ProcessFsJournal;
 }
+/** A file made or rewritten here: its bytes until they are sent. */
+/** An attribute change by a descriptor: a mode, an owner (null or -1 kept), or times as utimes takes them (null now, undefined kept). */
+export type HolderAttrChange = {
+    mode: number;
+} | {
+    uid: number | null;
+    gid: number | null;
+} | {
+    atime: number | null | undefined;
+    mtime: number | null | undefined;
+};
 /** The decisions the process made in a held subtree, not yet sent. */
 export interface DelegationHolder {
     /** The process's filesystem client: what the holder decided is logged into it. */
@@ -176,12 +187,12 @@ export interface DelegationHolder {
     setattr(key: string, attrs: W7Attrs): boolean;
     /**
      * Decide an attribute change of the file `handleId` opened (fchmod,
-     * fchown, futimes; `explicit` false: the times are now): true when decided
-     * here, for a file of the holder's that lost its name, or one it decides
-     * under its name; false when it is the session's, through the
-     * description it holds of the file (restat after).
+     * fchown, futimes, each time as utimes takes it: null now, undefined
+     * kept): true when decided here, for a file of the holder's that lost its
+     * name, or one it decides under its name; false when it is the session's,
+     * through the description it holds of the file (restat after).
      */
-    fsetattr(handleId: number, attrs: W7Attrs, explicit: boolean): boolean;
+    fsetattr(handleId: number, change: HolderAttrChange): boolean;
     /** The session's stat of the file a through description opened, after a change through it: what fstat answers from now on. */
     restat(handleId: number, stat: Omit<ResidentEntry, 'target'>): void;
     /**

@@ -222,7 +222,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     ftruncate(handleId: number, size: number): void;
     fchmod(handleId: number, mode: number): void;
     fchown(handleId: number, uid: number | null, gid: number | null): void;
-    futimes(handleId: number, atime: number, mtime: number): void;
+    futimes(handleId: number, atime: number | null | undefined, mtime: number | null | undefined): void;
 }
 /** A whole read's `maxBytes` (RuntimeReadFileOptions): a regular file of at most `maxBytes` bytes is read whole; a directory answers as a read does. */
 export declare function fitsWholeRead(stat: {

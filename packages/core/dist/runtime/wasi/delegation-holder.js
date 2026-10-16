@@ -788,17 +788,26 @@ export function delegationHolder(options) {
             log({ type: 'setattr', path: key, attrs: 'uid' in attrs ? { uid: next.uid, gid: next.gid } : attrs });
             return true;
         },
-        fsetattr: (handleId, attrs, explicit) => {
+        fsetattr: (handleId, change) => {
             const file = handleOf(handleId).file;
             if (file.through !== undefined)
                 return false;
+            const entry = file.detached ?? decided.get(file.key) ?? store.entry(file.key);
+            if (entry === undefined || entry === null)
+                return false;
+            // Times as utimes leaves them: now, explicit, or kept.
+            const attrs = 'atime' in change
+                ? { atime: change.atime === undefined ? entry.atime : change.atime ?? now(), mtime: change.mtime === undefined ? entry.mtime : change.mtime ?? now() }
+                : change;
             if (file.detached === undefined)
                 return holder.setattr(file.key, attrs);
-            // Its name gone, the file is this process's alone: judged and changed here.
-            const entry = file.detached;
-            const refused = 'mode' in attrs ? chmodRefusal(entry, store.cred)
+            // Its name gone, the file is this process's alone: judged and changed
+            // here, as the session judges a description, its confinement of the
+            // principal too (judged confined once no grant there says).
+            const confined = client.held(file.key)?.confined ?? true;
+            const refused = 'mode' in attrs ? chmodRefusal(entry, store.cred) ?? (confined ? confinedModeRefusal(entry.mode, attrs.mode) : null)
                 : 'uid' in attrs ? chownRefusal(entry, kept(attrs.uid), kept(attrs.gid), store.cred)
-                    : utimesRefusal(entry, explicit, store.cred);
+                    : utimesRefusal(entry, 'atime' in change && (typeof change.atime === 'number' || typeof change.mtime === 'number'), store.cred);
             if (refused !== null)
                 throw fsError(refused, 'mode' in attrs ? 'fchmod' : 'uid' in attrs ? 'fchown' : 'futimes', '/' + file.key);
             file.detached = changedBy(entry, attrs);

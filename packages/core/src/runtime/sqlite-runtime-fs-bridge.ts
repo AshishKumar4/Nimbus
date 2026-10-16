@@ -1014,7 +1014,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   ftruncate(handleId: number, size: number): void { syncValue(this.descriptors.ftruncate(handleId, size)); }
   fchmod(handleId: number, mode: number): void { syncValue(this.descriptors.fchmod(handleId, mode)); }
   fchown(handleId: number, uid: number | null, gid: number | null): void { syncValue(this.descriptors.fchown(handleId, uid, gid)); }
-  futimes(handleId: number, atime: number, mtime: number): void { syncValue(this.descriptors.futimes(handleId, atime, mtime)); }
+  futimes(handleId: number, atime: number | null | undefined, mtime: number | null | undefined): void { syncValue(this.descriptors.futimes(handleId, atime, mtime)); }
 }
 
 /** A `..` component in a path's spelling. */

@@ -51,7 +51,8 @@ export interface MountedFileDescription {
   readdir(admit?: () => void): Awaitable<RuntimeVfsDirEntry[]>;
   chmod(mode: number, admit?: () => void): Awaitable<void>;
   chown(uid: number | null, gid: number | null, admit?: () => void): Awaitable<void>;
-  utimes(atime: number, mtime: number, admit?: () => void): Awaitable<void>;
+  /** As utimes: null now, undefined kept. */
+  utimes(atime: number | null | undefined, mtime: number | null | undefined, admit?: () => void): Awaitable<void>;
   /** Writes what it holds; throws what that, or an earlier settle of it, failed with. */
   flush(admit?: () => void): Awaitable<void>;
   /** Writes what it holds, unasked (settleHeld): a failure is kept for its next fsync or close. */
@@ -436,7 +437,7 @@ export class Descriptors {
     const node = this.answering(id).node;
     return node.mounted ? node.chown(uid, gid, this.authority) : node.chown(uid, gid);
   }
-  futimes(id: number, atime: number, mtime: number): Awaitable<void> {
+  futimes(id: number, atime: number | null | undefined, mtime: number | null | undefined): Awaitable<void> {
     const node = this.answering(id).node;
     return node.mounted ? node.utimes(atime, mtime, this.authority) : node.utimes(atime, mtime);
   }

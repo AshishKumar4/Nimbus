@@ -1092,11 +1092,11 @@ export function residentFilesystem(session, resident, delegation) {
      * written through first), and its stat as the session then says.
      */
     const holderAttrs = (name, passed, handleId, rest) => {
-        const explicit = name !== 'futimes' || (rest[0] !== null && rest[0] !== undefined);
-        const attrs = name === 'fchmod' ? { mode: Number(rest[0]) }
+        const time = (value) => (typeof value === 'number' ? value : value === null ? null : undefined);
+        const change = name === 'fchmod' ? { mode: Number(rest[0]) }
             : name === 'fchown' ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) }
-                : explicit ? { atime: Number(rest[0]), mtime: Number(rest[1]) } : { atime: Date.now(), mtime: Date.now() };
-        if (holder.fsetattr(handleId, attrs, explicit))
+                : { atime: time(rest[0]), mtime: time(rest[1]) };
+        if (holder.fsetattr(handleId, change))
             return undefined;
         holder.changing([holder.keyOf(handleId)]);
         return holder.flush().then(() => holder.sessionOf(handleId)).then(async (session) => {

@@ -105,6 +105,8 @@ export interface ProcessFsGrant {
   readonly owner: string;
   /** The umask the session applies to the process's creates. */
   readonly umask: number;
+  /** The session confines the process's principal: a mode it may not grant (confinedModeRefusal) it refuses. */
+  readonly confined: boolean;
   /** Where the session stood when it recorded the grant (vouch); a session before it gives none. */
   readonly certificate?: GrantCertificate;
 }
@@ -1180,6 +1182,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         root: granted.root,
         owner: granted.owner,
         umask: granted.umask ?? 0o022,
+        confined: granted.confined === true,
         ...(granted.certificate === undefined ? {} : { certificate: granted.certificate }),
         nextIno: granted.inos?.first ?? 0,
         endIno: granted.inos?.end ?? 0,
