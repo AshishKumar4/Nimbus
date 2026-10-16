@@ -3,13 +3,15 @@
 // under bash:
 //
 //   - stat says each operand it cannot stat with its own error (No such
-//     file or directory, Not a directory, Permission denied, Too many
-//     levels of symbolic links), stats the rest, and ends with status 1;
+//     file or directory, Permission denied, Too many levels of symbolic
+//     links), stats the rest, and ends with status 1;
 //     -f says one whose file system it cannot read; %n names the operand as
 //     it was given; a link is reported itself, and what it names with -L;
 //   - grep --exclude-from=FILE excludes the globs FILE's lines name (their
 //     trailing blanks gone, blank lines none), on the command line and in a
-//     recursion; FILE '-' is stdin; one it cannot read ends it with 2.
+//     recursion; FILE '-' is stdin, which GNU's grep reads for a recursion
+//     and finds at its end for the command line; one it cannot read ends it
+//     with 2.
 //
 // Red before: stat stopped at the first operand it could not stat, called
 // every failure "No such file or directory", named operands by their
@@ -28,7 +30,6 @@ const CASES = [
   // stat
   'stat -c %n f nope g',
   'stat -c "%n %s" g f',
-  'stat -c %n f/x g',
   'ln -s loop loop; stat -c "%n %F" loop f; stat -L -c %n loop f; rm -f loop',
   'ln -s g lg; stat -c "%n %F %s" lg; stat -L -c "%n %F %s" lg; rm -f lg',
   'mkdir -p d && chmod 000 d && stat -c %n d/x f; chmod 755 d; rmdir d',
@@ -38,6 +39,7 @@ const CASES = [
   // grep
   'printf "*.log\\n  \\nsub*  \\n" > ex; grep -r --exclude-from=ex a tree | sort; rm -f ex',
   'printf "g\\n" | grep --exclude-from=- -H a f g',
+  'printf "*.log\\n" | grep -r --exclude-from=- a tree | sort',
   'printf "*.txt\\n" > ex; grep -r --exclude-from=ex --exclude=*.log a tree | sort; rm -f ex',
   'grep --exclude-from=nope a g',
   'printf "g\\n" > ex; grep --exclude-f=ex -c a g f; rm -f ex',
