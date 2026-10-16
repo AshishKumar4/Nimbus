@@ -33,7 +33,7 @@ import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.j
 import type { ReplAdapter, ReplPushResult } from './repl-session.js';
 import { ReplSession } from './repl-session.js';
 import { sessionUsesSciVariant } from '@nimbus-sh/core/runtime/python-pip.js';
-import { buildCPythonPreamble, enterWorkingDirectory } from '@nimbus-sh/core/runtime/cpython-runner.js';
+import { buildCPythonPreamble, cpythonMarkers, enterWorkingDirectory } from '@nimbus-sh/core/runtime/cpython-runner.js';
 import { getFacetManagerLoaderHost } from './facet-loader-host.js';
 import { CRED_KERNEL, CRED_SESSION_USER, type NimbusFilesystemAuthority, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { exists } from '@nimbus-sh/core/vfs/vfs.js';
@@ -169,7 +169,7 @@ class PythonReplAdapter implements ReplAdapter {
 
   banner(): string {
     return (
-      'Python 3.13.14 (CPython, wasm32-wasi, Nimbus runtime)\r\n' +
+      `Python ${cpythonMarkers(this.deps.manifest).python_full_version} (CPython, wasm32-wasi, Nimbus runtime)\r\n` +
       'Type "exit()" or press Ctrl-D to exit.\r\n'
     );
   }

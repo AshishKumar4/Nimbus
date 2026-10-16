@@ -410,28 +410,28 @@ async function installOneGem(vfs, req, ctx) {
     ctx.report.installed.push(installedKey);
     ctx.visiting.delete(visitKey);
 }
+/**
+ * The version of `name` a request with `requirements` installs: a pure-Ruby
+ * build that holds every requirement. An exact requirement names the
+ * version to fetch, and is held to the rest like any other; otherwise the
+ * newest release that holds them.
+ */
 async function resolveGemMetadata(network, name, requirements) {
-    const exact = exactVersionRequirement(requirements);
-    if (exact)
-        return fetchGemMetadata(network, name, exact);
-    const versions = await fetchGemVersions(network, name);
-    const selected = versions
-        .filter((v) => !v.prerelease)
-        .filter((v) => !v.platform || v.platform === 'ruby')
-        .filter((v) => typeof v.number === 'string' && satisfiesRequirements(v.number, requirements))
-        .sort((a, b) => -compareVersions(a.number || '0', b.number || '0'))[0];
-    if (!selected?.number) {
-        throw new Error(`no ruby platform version of ${name} satisfies ${requirements.join(', ') || '>= 0'}`);
+    const installable = (version, platform) => (!platform || platform === 'ruby') && satisfiesRequirements(version, requirements);
+    const version = exactVersionRequirement(requirements) ?? (await fetchGemVersions(network, name))
+        .flatMap((v) => (!v.prerelease && typeof v.number === 'string' && installable(v.number, v.platform) ? [v.number] : []))
+        .sort((a, b) => -compareVersions(a, b))[0];
+    if (version !== undefined && satisfiesRequirements(version, requirements)) {
+        const metadata = await fetchGemMetadata(network, name, version);
+        if (installable(metadata.version, metadata.platform))
+            return metadata;
     }
-    return fetchGemMetadata(network, name, selected.number);
+    throw new Error(`no ruby platform version of ${name} satisfies ${requirements.join(', ') || '>= 0'}`);
 }
 async function fetchGemMetadata(network, name, version) {
-    const url = version
-        ? `${RUBYGEMS_API}/api/v2/rubygems/${encodeURIComponent(name)}/versions/${encodeURIComponent(version)}.json`
-        : `${RUBYGEMS_API}/api/v1/gems/${encodeURIComponent(name)}.json`;
-    const resp = await network.fetch(url);
+    const resp = await network.fetch(`${RUBYGEMS_API}/api/v2/rubygems/${encodeURIComponent(name)}/versions/${encodeURIComponent(version)}.json`);
     if (!resp.ok)
-        throw new Error(`RubyGems metadata fetch failed for ${name}${version ? '-' + version : ''}: HTTP ${resp.status}`);
+        throw new Error(`RubyGems metadata fetch failed for ${name}-${version}: HTTP ${resp.status}`);
     return await resp.json();
 }
 async function fetchGemVersions(network, name) {
