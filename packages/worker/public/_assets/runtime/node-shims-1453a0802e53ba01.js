@@ -20033,9 +20033,9 @@ function __nimbusDataStatic(url) {
   }
   return record.exports !== null && record.namespace === null && record.state === "evaluating" ? record.exports : __nimbusDataNamespace(record);
 }
-// Whether staged row `id`'s graph reaches a module staging handed on: the
-// interpreter adopts it where it is imported, not the registry ahead of it.
-function __nimbusEsmHandsOn(id) {
+// Whether staged row `id`'s graph reaches back to the module staging handed
+// on as `url`: a cycle, which that module's own link loads.
+function __nimbusEsmHandsOn(id, url) {
   const seen = new Set();
   const stack = [id];
   while (stack.length > 0) {
@@ -20043,7 +20043,8 @@ function __nimbusEsmHandsOn(id) {
     if (seen.has(at)) continue;
     seen.add(at);
     if (at < 0) {
-      if (__nimbusEsm.missing[-2 - at]?.code === "ERR_NIMBUS_NOT_STAGED") return true;
+      const missing = __nimbusEsm.missing[-2 - at];
+      if (missing?.code === "ERR_NIMBUS_NOT_STAGED" && missing.url === url) return true;
       continue;
     }
     if (__nimbusEsmRecords[at]?.state === __ESM_DONE) continue;
@@ -20055,9 +20056,9 @@ function __nimbusEsmHandsOn(id) {
 // import() of a data: module: a JavaScript module's late graph linked first
 // (a name it imports that its module does not export rejects before any
 // body runs), then the staged modules it reaches the registry evaluates
-// (one whose graph reaches back to a handed-on module is the module's own
-// link's to load, after its functions and exports exist, as Node's order
-// is), its own evaluation begun before them (`loading`, which another
+// (one whose graph reaches back to it, a cycle, is its own link's to load,
+// after its functions and exports exist, as Node's order is), its own
+// evaluation begun before them (`loading`, which another
 // import() waits for); its namespace once its body (and top-level await) completes.
 async function __esmLoadData(url) {
   let record = __nimbusDataModules.get(url);
@@ -20069,7 +20070,7 @@ async function __esmLoadData(url) {
       linked.loading = (async () => {
         try {
           for (const id of order) {
-            if (__nimbusEsmRecord(id).state !== __ESM_DONE && !__nimbusEsmTainted(id) && !__nimbusEsmHandsOn(id)) await __nimbusEsmImport(id);
+            if (__nimbusEsmRecord(id).state !== __ESM_DONE && !__nimbusEsmTainted(id) && !__nimbusEsmHandsOn(id, url)) await __nimbusEsmImport(id);
           }
         } catch (e) {
           linked.error = { value: e };
