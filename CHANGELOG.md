@@ -16,6 +16,15 @@ published independently in the `@nimbus-sh` npm scope.
   '<n>'". Each failure exits 128. `010` is octal, so depth 8. Before, a
   clone took `0` and `abc` as depth 1 and `2junk` as depth 2, and cloned
   anyway. A clone with no `--depth` is still depth 1.
+- Fixed (shell): when a here-document's command fails, the interactive
+  shell reports it the way the shell and runtimes report any caught value
+  (`_shared/error-text.js`). A thrown object's `message` is shown, and an
+  `Error` with no message is shown by its name. Before, these read
+  `heredoc error: [object Object]` and an empty `heredoc error: `.
+- Changed: a process's filesystem client counts the bytes of a wave's paths,
+  and a symlink's target, with `@nimbus-sh/platform/utf8.js`, as W7 does.
+  It used to build a text encoder for every path of every wave. A resident's
+  derived owner now comes from `sha256Hex`, with the same bytes as before.
 - Fixed (shell): `tar -x` and `tar -t` on an archive that ends inside a
   file, its data or its padding, fail as GNU tar does: "tar: Unexpected EOF
   in archive", exit 2. Before, they exited 0 and left that file out, so a

@@ -1,6 +1,7 @@
 import { endsHeredoc, lex } from '../substrate/lifo/shell/lexer.js';
 import { TokenKind } from '../substrate/lifo/shell/types.js';
 import type { ShellInputSubmission, ShellQueuedInput } from './input-submission.js';
+import { errorText } from '../_shared/error-text.js';
 
 interface ShellLike {
   executeLine(line: string, submission?: ShellInputSubmission): Promise<void>;
@@ -295,15 +296,11 @@ export class HeredocHandler {
     try {
       await this._executeOriginalLine(script, submission);
     } catch (error) {
-      this.terminal.write(`\x1b[31mheredoc error: ${errorMessage(error)}\x1b[0m\r\n`);
+      this.terminal.write(`\x1b[31mheredoc error: ${errorText(error)}\x1b[0m\r\n`);
       this._printPrompt();
       await this.shell.drainPasteQueue();
     }
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 // ── Line-editor extension (readline parity) ─────────────────────────────
