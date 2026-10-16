@@ -50,6 +50,8 @@ export interface HolderStore {
     entry(key: string): ResidentEntry | null | undefined;
     /** As ResidentNamespace.children. */
     children(key: string): RuntimeVfsDirEntry[] | undefined;
+    /** As ResidentNamespace.content: the store's bytes of `key` at `revision`, where it holds them. */
+    content?(key: string, revision: number): Uint8Array | undefined;
     /** As ResidentNamespace.reserve and release: what a provisional decision's bytes take of the process's budget (no grant reserved them). */
     reserve?(bytes: number): boolean;
     release?(bytes: number): void;
@@ -153,6 +155,18 @@ export interface DelegationHolder {
      */
     open(key: string, path: string, flags: RuntimeOpenFlags): RuntimeFileHandle | undefined;
     /**
+     * A file opened by its number (`entry`, what `key` names), its access
+     * judged, nothing read and nothing changed: its descriptor reads and
+     * writes the file's own bytes, this process's where it has a cell for it,
+     * else the store's, as every descriptor of it and every call by name do.
+     */
+    openInode(key: string, path: string, flags: RuntimeOpenFlags, entry: ResidentEntry): RuntimeFileHandle;
+    /** The name and number of the file an inode descriptor reads by the store's bytes: what to fetch for it. Undefined for any other. */
+    inodeOf(handleId: number): {
+        key: string;
+        entry: ResidentEntry;
+    } | undefined;
+    /**
      * A whole file written by name (an open of `flags`, a write and a close),
      * decided here as `open` decides: its revision, or undefined when the
      * session must write it. What it takes is judged before anything is
@@ -160,10 +174,13 @@ export interface DelegationHolder {
      * the name as it was.
      */
     writeFile(key: string, path: string, bytes: Uint8Array, flags: RuntimeOpenFlags): number | undefined;
-    read(handleId: number, offset: number | null, length: number): Uint8Array;
-    write(handleId: number, offset: number | null, bytes: Uint8Array): number;
+    /** Undefined where its bytes are the store's and it does not hold them (an inode descriptor's: inodeOf). */
+    read(handleId: number, offset: number | null, length: number): Uint8Array | undefined;
+    /** Undefined where the bytes it keeps are the store's and it does not hold them (an inode descriptor's: inodeOf). */
+    write(handleId: number, offset: number | null, bytes: Uint8Array): number | undefined;
     seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number;
-    ftruncate(handleId: number, size: number): void;
+    /** False where the bytes it keeps are the store's and it does not hold them (an inode descriptor's: inodeOf). */
+    ftruncate(handleId: number, size: number): boolean;
     fstat(handleId: number): ResidentEntry;
     close(handleId: number): void;
     /** The name a descriptor of the holder's writes, now. */
