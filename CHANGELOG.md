@@ -5,6 +5,19 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (SDK): `box.ports.ensureDurableApp({ owner, name })` through
+  `Nimbus.connect` now passes the app's `name` to the session, as
+  `Nimbus.fromEnv` always has. Before, the remote API rebuilt the request
+  without it, so a durable app reserved remotely had no name. The input
+  type is now the session protocol's `SessionDurableAppOptions`, exported as
+  `NimbusDurableAppOptions`, and it includes `name`. Every input that
+  compiled before still compiles. Remotely, a `name` that is not a string is
+  refused (`E_ARG_SHAPE`), as `exposeApp`'s is.
+- Added (core): `runtime/remote-http-contract.js`, with
+  `DEFAULT_REMOTE_BASE_PATH` and `normalizeRemoteBasePath`. These are the
+  remote API's base path and how a configured one is read. The SDK's
+  `Nimbus.connect` and the worker's remote API both use them now, in place
+  of a copy each. Base paths behave as before.
 - Fixed (shell): when a here-document's command fails, the interactive
   shell reports it the way the shell and runtimes report any caught value
   (`_shared/error-text.js`). A thrown object's `message` is shown, and an

@@ -9,6 +9,7 @@ import {
 } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
 import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
+import { normalizeRemoteBasePath } from '@nimbus-sh/core/runtime/remote-http-contract.js';
 import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import {
   NimbusAuthError,
@@ -73,7 +74,6 @@ interface RemoteAuthResult {
   verified: VerifiedNimbusToken | null;
 }
 
-const DEFAULT_REMOTE_BASE_PATH = '/api/nimbus/v1';
 
 export interface NimbusRemoteApiOutbox {
   /** The sid whose destroy this call proved, if any. Set by dispatch. */
@@ -206,7 +206,7 @@ function normalizeRemoteConfig(remote: boolean | NimbusRemoteApiConfig | undefin
   const value = typeof remote === 'object' ? remote : {};
   return {
     enabled: remote === true || value.enabled === true,
-    basePath: normalizeBasePath(value.basePath ?? DEFAULT_REMOTE_BASE_PATH),
+    basePath: normalizeRemoteBasePath(value.basePath),
     allowLegacy: value.allowLegacy === true,
     requiredScopes: value.requiredScopes ?? ['sandbox:use'],
   };
@@ -395,7 +395,7 @@ async function dispatchRemoteRpc(ctx: RemoteContext): Promise<unknown> {
       return ctx.stub._rpcEnsureDurableApp({
         owner: stringArg(input.owner, 'owner'),
         ...(input.preferredPort === undefined ? {} : { preferredPort: numberArg(input.preferredPort, 'preferredPort') }),
-        ...(input.visibility === undefined ? {} : { visibility: input.visibility === 'public' ? 'public' : 'scoped' }),
+        ...exposeOptions(input),
       });
     }
     case 'removeDurableApp': {
@@ -583,19 +583,6 @@ function remoteError(value: unknown): ApiError {
 
 function errorMessage(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
-}
-
-function normalizeBasePath(path: string): string {
-  const trimmed = trimSlashes(String(path || DEFAULT_REMOTE_BASE_PATH));
-  return `/${trimmed}`;
-}
-
-function trimSlashes(value: string): string {
-  let start = 0;
-  let end = value.length;
-  while (start < end && value[start] === '/') start++;
-  while (end > start && value[end - 1] === '/') end--;
-  return value.slice(start, end);
 }
 
 function remoteJson(value: unknown, status = 200, headers: Record<string, string> = {}): Response {

@@ -3,6 +3,7 @@ import { isValidSessionId } from '../_shared/session-id.js';
 import { SessionRequestSchema, } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
 import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
+import { normalizeRemoteBasePath } from '@nimbus-sh/core/runtime/remote-http-contract.js';
 import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { NimbusAuthError, isNimbusIdComponent, } from '../auth/index.js';
 import { authorizeRequest } from '../auth/middleware.js';
@@ -12,7 +13,6 @@ import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream } from '@
 import { parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { doUnavailableError } from './do-errors.js';
 import { codeRuntimeRequirement, runtimePolicyError } from '@nimbus-sh/config/sandbox';
-const DEFAULT_REMOTE_BASE_PATH = '/api/nimbus/v1';
 export async function handleNimbusRemoteApi(request, env, sdk, outbox) {
     const remote = normalizeRemoteConfig(sdk?.remote);
     if (!remote.enabled)
@@ -124,7 +124,7 @@ function normalizeRemoteConfig(remote) {
     const value = typeof remote === 'object' ? remote : {};
     return {
         enabled: remote === true || value.enabled === true,
-        basePath: normalizeBasePath(value.basePath ?? DEFAULT_REMOTE_BASE_PATH),
+        basePath: normalizeRemoteBasePath(value.basePath),
         allowLegacy: value.allowLegacy === true,
         requiredScopes: value.requiredScopes ?? ['sandbox:use'],
     };
@@ -306,7 +306,7 @@ async function dispatchRemoteRpc(ctx) {
             return ctx.stub._rpcEnsureDurableApp({
                 owner: stringArg(input.owner, 'owner'),
                 ...(input.preferredPort === undefined ? {} : { preferredPort: numberArg(input.preferredPort, 'preferredPort') }),
-                ...(input.visibility === undefined ? {} : { visibility: input.visibility === 'public' ? 'public' : 'scoped' }),
+                ...exposeOptions(input),
             });
         }
         case 'removeDurableApp': {
@@ -483,19 +483,6 @@ function remoteError(value) {
 }
 function errorMessage(value) {
     return value instanceof Error ? value.message : String(value);
-}
-function normalizeBasePath(path) {
-    const trimmed = trimSlashes(String(path || DEFAULT_REMOTE_BASE_PATH));
-    return `/${trimmed}`;
-}
-function trimSlashes(value) {
-    let start = 0;
-    let end = value.length;
-    while (start < end && value[start] === '/')
-        start++;
-    while (end > start && value[end - 1] === '/')
-        end--;
-    return value.slice(start, end);
 }
 function remoteJson(value, status = 200, headers = {}) {
     return corsResponse(JSON.stringify(WireEncoder.parse(value)), status, {
