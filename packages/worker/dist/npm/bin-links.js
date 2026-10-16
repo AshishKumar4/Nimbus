@@ -1,6 +1,6 @@
 import { projectEntryType } from '../runtime/project-fs.js';
 import { normalizeVfsPath, resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import { npmBinMap, npmBinName } from '@nimbus-sh/core/runtime/npm-bin-map.js';
+import { npmBinMap, npmBinName, npmBinShim } from '@nimbus-sh/core/runtime/npm-bin-map.js';
 import { STAGED_ARTIFACT_BIN_PREFIX } from '../facets/wasm-swap-registry.js';
 import { z } from 'zod/v4';
 /**
@@ -61,18 +61,7 @@ export function createNpmBinShim(entry, shimDir) {
         // the bin manifest. The shim body is only a marker for PATH discovery.
         return `#!/usr/bin/env node\n// nimbus staged artifact: ${entry.targetPath}\n`;
     }
-    // Relative to the shim, as npm's .bin symlinks are, so a node_modules
-    // tree that is moved (a staged install renamed into place) still runs.
-    return `#!/usr/bin/env node\nrequire(${JSON.stringify(relativeRequest(shimDir, entry.targetPath))});\n`;
-}
-function relativeRequest(fromDir, target) {
-    const from = normalizeVfsPath(fromDir).split('/').filter(Boolean);
-    const to = normalizeVfsPath(target).split('/').filter(Boolean);
-    let common = 0;
-    while (common < from.length && common < to.length - 1 && from[common] === to[common])
-        common++;
-    const rel = [...from.slice(common).map(() => '..'), ...to.slice(common)].join('/');
-    return rel.startsWith('../') ? rel : `./${rel}`;
+    return npmBinShim(shimDir, entry.targetPath);
 }
 export function packageBinEntries(pkg, nodeModulesPath) {
     const bins = npmBinMap(pkg.name, pkg.bin);

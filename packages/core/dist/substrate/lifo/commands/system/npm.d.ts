@@ -1,5 +1,5 @@
 import type { Command, CommandContext } from '../types.js';
-import { type CommandRegistry } from '../registry.js';
+import type { CommandRegistry } from '../registry.js';
 import type { ProcessView as VFS } from '../../../../runtime/process-files.js';
 import type { Kernel } from '../../kernel/index.js';
 import { type NpmCacheMode } from '../../../../_shared/npm-cache-mode.js';
@@ -7,7 +7,7 @@ import { type NpmLogEmitter } from './npm-log.js';
 import { type EngineMismatch } from '../../../../_shared/npm-arborist/engines.js';
 /** The registry an install reads from when its env names none. */
 export declare const NPM_REGISTRY_ORIGIN = "https://registry.npmjs.org";
-interface PackageJson {
+export interface PackageJson {
     name?: string;
     version?: string;
     description?: string;
@@ -21,7 +21,14 @@ interface PackageJson {
         name: string;
     };
 }
-export type ShellExecuteFn = (cmd: string, ctx: CommandContext) => Promise<number>;
+/** A script of package.json npm runs: its event (test, pretest, …), its text, and the words npm appends to it. */
+export interface NpmScript {
+    event: string;
+    script: string;
+    args: readonly string[];
+}
+/** The host's shell, running `cmd` for the command `ctx`; for npm run, the script it is. */
+export type ShellExecuteFn = (cmd: string, ctx: CommandContext, script?: NpmScript) => Promise<number>;
 /**
  * What `npm install` asks of an install, as the command parsed it. The
  * host's port hands it to its installer whole (its NpmInstallOptions are
@@ -119,6 +126,14 @@ export interface NpmCommandDeps {
      * handed to its directory's owner, so the command, as its process, can.
      */
     beforeWrite?: (ctx: CommandContext, path: string) => Promise<void>;
+    /**
+     * The host's word before npm run runs `run` (pre and post scripts with
+     * it), the project's package.json `manifest`: an exit code to stop with,
+     * or null to run it.
+     */
+    beforeRun?: (ctx: CommandContext, run: NpmScript & {
+        manifest: Readonly<PackageJson>;
+    }) => Promise<number | null>;
 }
 /**
  * The registry origin an install uses: the command's `NPM_REGISTRY`, else
@@ -145,5 +160,4 @@ export declare function createNpmCommand(registry: CommandRegistry, shellExecute
  * shell.execute() round-trip, which can silently swallow output and errors.
  */
 export declare function npmInstallGlobal(packageName: string, ctx: CommandContext, registry: CommandRegistry, kernel?: Kernel, deps?: NpmCommandDeps): Promise<number>;
-export {};
 //# sourceMappingURL=npm.d.ts.map
