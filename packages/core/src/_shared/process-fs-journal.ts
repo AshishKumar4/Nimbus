@@ -18,8 +18,13 @@
  * on, entries are numbered under `writer` from `seq`, one each, in order
  * (number()). A new numbering is recorded only when the client opens a new
  * writer epoch, so the journal writes one row per change, and deletes it.
+ *
+ * A row outlives the version that wrote it (a deploy between a process's
+ * death and its drain): every read of one passes it through currentCall,
+ * which gives an earlier version's form of an op this version's.
  */
 
+import type { W7Call } from '@nimbus-sh/platform/w7-frame.js';
 import type { ProcessFsOp } from './process-fs-client.js';
 
 /** Where a numbering of the log starts: from `jid` on, numbered under `writer` from `seq`. */
@@ -69,8 +74,26 @@ function rowOf(op: ProcessFsOp): { json: string; data: Uint8Array | null } {
   return { json: JSON.stringify({ type: 'call', call }), data };
 }
 
+/**
+ * An open as a version before the W7 open's `access` journaled it: O_RDWR
+ * as `read: true`, O_WRONLY as no access field.
+ */
+type JournaledOpen = Omit<Extract<W7Call, { call: 'open' }>, 'access'> & { access?: undefined; read?: true };
+/** A row's op as the journal may hold it: this version's, or one with an earlier version's open. */
+type JournaledOp = Exclude<ProcessFsOp, { type: 'call' }> | { type: 'call'; call: W7Call | JournaledOpen };
+
+/** `call` as this version's frame takes it: a journaled open given the access it had. */
+function currentCall(call: W7Call | JournaledOpen): W7Call {
+  if (call.call === 'open' && call.access === undefined) {
+    const { read, ...open } = call;
+    return { ...open, access: read === true ? 'readwrite' : 'write' };
+  }
+  return call;
+}
+
 function opOf(json: string, data: unknown): ProcessFsOp {
-  const op = JSON.parse(json) as ProcessFsOp;
+  const journaled: JournaledOp = JSON.parse(json);
+  const op: ProcessFsOp = journaled.type === 'call' ? { type: 'call', call: currentCall(journaled.call) } : journaled;
   if (data === null || data === undefined) return op;
   const bytes = data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer);
   return { type: 'call', call: { ...(op as { call: object }).call, data: bytes } } as ProcessFsOp;
