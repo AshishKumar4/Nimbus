@@ -29,7 +29,9 @@ import { disposeRpcResource, useRpcResource } from '@nimbus-sh/platform/rpc-disp
 import { stagedBootAssembler } from './composition.js';
 import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
 import { innerDoIdFromName } from './inner-do-env.js';
-import { assertModuleMapWithinCodeLimit } from './budgets.js';
+import { assertModuleMapWithinCodeLimit, LOADER_CODE_CREDIT_BYTES } from './budgets.js';
+import { admitInTurn, admitNow, getKey, holdGetKey, keep, loadedCode, priceCode, withinCredit, withMissCode } from './loader-heap.js';
+import { loaderStore, STORE_READ_BYTES, storedModule } from './loader-store-client.js';
 import { applyFacetLimits, facetLimits, guestFacetPolicy, effectiveFacetLimits, facetLoaderKey, FACET_LIMITS } from './facet-limits.js';
 import { bindingSupervisor, egressMarker, workspaceOutbound } from './supervisor-props.js';
 /**
@@ -216,37 +218,6 @@ function mimeTypeForPath(path) {
  * runaway and we throw a clear error. Default limit is 4; overridable
  * via the NIMBUS_INNER_LOADER_DEPTH env var on the outermost session.
  */
-/**
- * Module-level map of loaded worker CODE (not stubs), keyed by a random
- * id. WorkerStubs are I/O objects tied to a request context, so they
- * can't be stashed for later use ("Cannot perform I/O on behalf of a
- * different request"). Storing the code instead lets each new outer
- * request re-load the worker in its own context via env.LOADER.get(id)
- * — workerd caches by id so repeated loads are essentially free.
- *
- * H7 (memory accounting cleanup). The pre-fix comment said "GC isn't
- * needed" because "inner stubs that reference them die with the DO."
- * That was true for STUBS but FALSE for these CODE entries: nothing
- * deletes them. `wrangler dev`'s rebuild-on-save loop calls load()
- * on every save, so the Map grows without bound until the supervisor
- * isolate is evicted (or hits the 128 MiB hard cap and crashes).
- *
- * Fix: hard-cap LRU. The Map's iteration order is insertion order;
- * we re-insert on every read AND eviction-on-overflow drops the
- * oldest entry. _LOADED_CODES_MAX is a documented architectural cap
- * (32 entries). Eviction count is observable via getLoadedCodesStats()
- * which the diag endpoint surfaces.
- *
- * Why 32? wrangler dev's typical rebuild burst is < 5 entries before
- * the user notices and stops typing. 32 covers a power user's
- * iteration cycle and a reasonable amount of `LOADER.get(id, cb)`
- * memoization without exposing more than a few MiB of code text in
- * the worst case (typical user-worker bundle: 50-300 KiB; 32 × 300 KiB
- * = ~10 MiB ceiling — well under the 64 MiB supervisor budget).
- */
-const _NIMBUS_LOADED_CODES = new Map();
-const _LOADED_CODES_MAX = 32;
-let _loadedCodesEvictions = 0;
 const FacetLimitsSchema = z.object({ cpuMs: z.number().int().nonnegative(), subRequests: z.number().int().nonnegative() });
 const FacetPolicySchema = z.object({
     kind: z.custom(value => typeof value === 'string' && Object.hasOwn(FACET_LIMITS, value)),
@@ -286,65 +257,24 @@ async function materializeNestedRpcRequest(request) {
         init.duplex = 'half';
     return new Request(request.url, init);
 }
-/**
- * Insert OR refresh a key in the LRU. New keys may evict the oldest
- * entry if at the cap; existing keys are re-inserted to update their
- * recency.
- */
-function _loadedCodesPut(key, code) {
-    // If the key already exists, delete first so re-insertion lands at
-    // the MRU end of the iteration order (LRU-style refresh).
-    if (_NIMBUS_LOADED_CODES.has(key)) {
-        _NIMBUS_LOADED_CODES.delete(key);
-    }
-    else if (_NIMBUS_LOADED_CODES.size >= _LOADED_CODES_MAX) {
-        // Evict the LRU entry — the first key in insertion order.
-        const oldest = _NIMBUS_LOADED_CODES.keys().next();
-        if (!oldest.done) {
-            _NIMBUS_LOADED_CODES.delete(oldest.value);
-            _loadedCodesEvictions++;
-        }
-    }
-    _NIMBUS_LOADED_CODES.set(key, code);
-}
-function _loadedCodesGet(key) {
-    const v = _NIMBUS_LOADED_CODES.get(key);
-    if (v === undefined)
-        return undefined;
-    // LRU-refresh on read so memoization-style usage (LOADER.get(id, cb)
-    // re-hitting the same id repeatedly) keeps the entry warm.
-    _NIMBUS_LOADED_CODES.delete(key);
-    _NIMBUS_LOADED_CODES.set(key, v);
-    return v;
-}
-/**
- * Diagnostic surface for /api/_diag/memory. Returns a snapshot of
- * the Map state — entry count, configured cap, eviction counter
- * since isolate boot. Pure read; no I/O.
- */
-export function getLoadedCodesStats() {
-    return {
-        entries: _NIMBUS_LOADED_CODES.size,
-        maxEntries: _LOADED_CODES_MAX,
-        evictions: _loadedCodesEvictions,
-    };
-}
 function _genStubId() {
     return 'ldr-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 /**
- * Look up the stored code by key and create a fresh outer WorkerStub
- * in the CURRENT request context. Uses LOADER.get(id, cb) so repeated
- * calls reuse the same dynamic worker rather than spawning new ones.
+ * A fresh outer WorkerStub for the Worker the shim holds under `key`, in the
+ * CURRENT request context. Uses LOADER.get(id, cb) so repeated calls reuse
+ * the same dynamic worker rather than spawning new ones; on the loader's
+ * miss, the code is re-created from the shim's heap (withMissCode), or fails
+ * by name once the shim no longer holds it.
  */
-function _resolveStubInCurrentContext(outerLoader, key, network, policy) {
+function _resolveStubInCurrentContext(env, outerLoader, key, network, policy) {
     if (key === undefined)
         return null;
-    const code = _loadedCodesGet(key);
+    const code = loadedCode(key);
     if (!code)
         return null;
     const carried = policy ?? guestFacetPolicy(code);
-    return outerLoader.get(facetLoaderKey(carried.kind, key, carried.limits), async () => applyFacetLimits(carried.kind, workspaceOutbound(code, network), carried.limits));
+    return outerLoader.get(facetLoaderKey(carried.kind, key, carried.limits), () => withMissCode(key, env, (missed) => applyFacetLimits(carried.kind, workspaceOutbound(missed, network), carried.limits)));
 }
 /**
  * The policy a loaded entrypoint runs under: the one its props carry, else
@@ -354,7 +284,7 @@ function _resolveStubInCurrentContext(outerLoader, key, network, policy) {
 function entrypointPolicy(props) {
     if (props.policy !== undefined)
         return props.policy;
-    const stored = _loadedCodesGet(props.key);
+    const stored = loadedCode(props.key);
     if (stored !== undefined)
         return guestFacetPolicy(stored);
     const kind = props.stage !== undefined ? 'process' : 'worker';
@@ -392,30 +322,27 @@ function assertLoaderDepthOk(props, env) {
 /** Hop 1: env.LOADER.{load,get} forwarded to the outer loader. */
 export class NimbusLoaderRPC extends WorkerEntrypoint {
     /**
-     * Inner: env.LOADER.load(code). Stashes the CODE (not a stub — stubs
-     * are I/O-bound to the calling request context) and returns a
-     * NimbusLoadedWorker RPC stub. Each downstream call re-loads the
-     * worker in its own request context via LOADER.get(key, cb).
+     * Inner: env.LOADER.load(code). Keeps the CODE (not a stub — stubs are
+     * I/O-bound to the calling request context), bounded (loader-heap.ts), and
+     * returns a NimbusLoadedWorker RPC stub. Each downstream call re-loads the
+     * worker in its own request context via LOADER.get(key, cb). The argument
+     * has already arrived: its whole live input is charged, and credited now or
+     * refused, before it is validated or kept.
      */
-    load(code) {
+    async load(code) {
         assertLoaderDepthOk(this.ctx.props, this.env);
         const outerLoader = this.env?.LOADER;
         if (!outerLoader)
             throw new Error('Nimbus: outer env.LOADER missing');
-        // Validate by loading once in THIS context (fails fast on bad code).
-        // The stub is discarded; downstream calls re-load fresh in their
-        // own context.
-        const policy = guestFacetPolicy(code);
-        outerLoader.load(applyFacetLimits(policy.kind, workspaceOutbound(code, loaderNetwork(this.ctx.props)), policy.limits));
         const key = _genStubId();
-        _loadedCodesPut(key, code);
-        const ctxExports = shimCtxExports(this.ctx);
-        if (!ctxExports.NimbusLoadedWorker) {
-            throw new Error('Nimbus: ctx.exports.NimbusLoadedWorker unavailable');
+        const priced = priceCode(code, key);
+        const lease = admitNow(admissionCredit(this.ctx.props, priced));
+        try {
+            return await admitLoaded(this.ctx, this.env, outerLoader, key, priced);
         }
-        return ctxExports.NimbusLoadedWorker({
-            props: { key, policy, depth: this.ctx.props?.depth || 0, ...loaderNetwork(this.ctx.props) },
-        });
+        finally {
+            lease.release();
+        }
     }
     /**
      * Inner: env.LOADER.get(id, callback). The inner's callback returns a code
@@ -432,19 +359,74 @@ export class NimbusLoaderRPC extends WorkerEntrypoint {
         if (typeof namespace !== 'string' || namespace === '') {
             throw new Error('Nimbus: this Worker Loader binding was minted without an owner namespace, so it has no keyed workers');
         }
-        const key = 'get:' + JSON.stringify([namespace, this.ctx.props?.networkId ?? null, id]);
-        if (_loadedCodesGet(key) === undefined) {
-            const code = await callback();
-            _loadedCodesPut(key, code);
+        // Bounded before it is built, and held under the key allowance; the
+        // code credit is waited for holding only that, then shrunk to the code.
+        // A hit holds no credit; a miss holds its key and arguments under the key
+        // allowance while it waits for its code reservation, then looks again (a
+        // get of the same key may have been admitted meanwhile).
+        const { key, charge } = getKey(namespace, this.ctx.props?.networkId ?? null, id);
+        const hit = loadedCode(key);
+        if (hit !== undefined)
+            return loadedWorker(this.ctx, key, guestFacetPolicy(hit));
+        const held = holdGetKey(charge);
+        try {
+            const lease = await admitInTurn(LOADER_CODE_CREDIT_BYTES, `LOADER.get(${JSON.stringify(String(id).slice(0, 64))})`);
+            try {
+                const kept = loadedCode(key);
+                if (kept !== undefined)
+                    return loadedWorker(this.ctx, key, guestFacetPolicy(kept));
+                const priced = priceCode(await callback(), key);
+                lease.shrinkTo(withinCredit(admissionCredit(this.ctx.props, priced)));
+                return await admitLoaded(this.ctx, this.env, outerLoader, key, priced);
+            }
+            finally {
+                lease.release();
+            }
         }
-        const ctxExports = shimCtxExports(this.ctx);
-        if (!ctxExports.NimbusLoadedWorker) {
-            throw new Error('Nimbus: ctx.exports.NimbusLoadedWorker unavailable');
+        finally {
+            held.release();
         }
-        return ctxExports.NimbusLoadedWorker({
-            props: { key, policy: guestFacetPolicy(_loadedCodesGet(key)), depth: this.ctx.props?.depth || 0, ...loaderNetwork(this.ctx.props) },
-        });
     }
+}
+/**
+ * Validate `priced` through the outer loader, awaiting its answer (in nested
+ * Nimbus that loader is itself a shim, whose admission can refuse), keep it,
+ * and return its handle.
+ */
+async function admitLoaded(ctx, env, outerLoader, key, priced) {
+    const policy = guestFacetPolicy(priced.code);
+    await outerLoader.load(applyFacetLimits(policy.kind, workspaceOutbound(priced.code, loaderNetwork(ctx.props)), policy.limits));
+    const ref = ctx.props?.store;
+    if (ref === undefined) {
+        keep(key, priced);
+    }
+    else {
+        // Durable before its handle is returned: the heap is then only a cache of it.
+        const stored = new Map();
+        for (const [name, content] of Object.entries(priced.code.modules))
+            stored.set(name, await storedModule(content));
+        await loaderStore(env, ref).keep([...stored.values()]);
+        keep(key, priced, { ref, modules: stored });
+    }
+    return loadedWorker(ctx, key, policy);
+}
+/**
+ * An admission's credit: its whole live input, and with a store the bounded
+ * working space of keeping it (an encoded slice, a put frame, and its
+ * `{json}` modules' texts).
+ */
+function admissionCredit(props, priced) {
+    return Math.max(1, priced.charge + (props?.store === undefined ? 0 : 2 * STORE_READ_BYTES + priced.jsonText));
+}
+/** The NimbusLoadedWorker handle on `key`. */
+function loadedWorker(ctx, key, policy) {
+    const ctxExports = shimCtxExports(ctx);
+    if (!ctxExports.NimbusLoadedWorker) {
+        throw new Error('Nimbus: ctx.exports.NimbusLoadedWorker unavailable');
+    }
+    return ctxExports.NimbusLoadedWorker({
+        props: { key, policy, depth: ctx.props?.depth || 0, ...loaderNetwork(ctx.props) },
+    });
 }
 /** Hop 2: the returned "worker" stub. Exposes .getEntrypoint(). */
 export class NimbusLoadedWorker extends WorkerEntrypoint {
@@ -479,12 +461,11 @@ export class NimbusLoadedWorker extends WorkerEntrypoint {
         const outerLoader = this.env?.LOADER;
         if (!outerLoader)
             throw new Error('Nimbus: outer env.LOADER missing');
-        const outer = _resolveStubInCurrentContext(outerLoader, props.key, loaderNetwork(props), props.policy);
-        if (!outer)
-            throw new Error('Nimbus: loaded worker code missing (key=' + props.key + ')');
-        const code = _loadedCodesGet(props.key);
-        const policy = props.policy ?? guestFacetPolicy(code);
-        return outer.getDurableObjectClass(name, startOptions(policy, options));
+        const outer = _resolveStubInCurrentContext(this.env, outerLoader, props.key, loaderNetwork(props), props.policy);
+        const code = props.key === undefined ? undefined : loadedCode(props.key);
+        if (!outer || !code)
+            throw new Error(`Nimbus: dynamic worker '${props.key}' is no longer loaded: the shim's cache evicted it`);
+        return outer.getDurableObjectClass(name, startOptions(props.policy ?? guestFacetPolicy(code), options));
     }
 }
 /** A loaded entrypoint's props, as it was minted with them. */
@@ -526,7 +507,7 @@ export async function resolveLoadedEntrypoint(entry) {
         // loader's own cache. The cache-miss callback fails loud: a spec-free
         // stub is a handle on a worker someone else loaded — re-loading it from
         // code would boot an empty isolate, a silent wrong answer.
-        outerStub = _resolveStubInCurrentContext(outerLoader, props.key, loaderNetwork(props), policy)
+        outerStub = _resolveStubInCurrentContext(env, outerLoader, props.key, loaderNetwork(props), policy)
             ?? outerLoader.get(facetLoaderKey(policy.kind, props.key, policy.limits), async () => {
                 throw new Error(`Nimbus: dynamic worker '${props.key}' is no longer loaded (evicted?)`);
             });

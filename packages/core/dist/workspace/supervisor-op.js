@@ -186,6 +186,7 @@ export const SUPERVISOR_OP_ROUTES = {
     d1Query: { method: '_rpcD1Query', args: [0, 1] },
     fanoutExecute: { method: '_rpcFanoutExecute', args: [0, 1, 2] },
     processHostProbe: { method: '_rpcProcessHostProbe', args: [] },
+    loaderCodeStore: { method: '_rpcLoaderCodeStore', args: [0, 'stream', 'pid'] },
     hostProcess: { method: '_rpcHostProcess', args: [0, 1] },
     awaitHostedBoot: { method: '_rpcAwaitHostedBoot', args: [0] },
     routeHostedHttp: { method: '_rpcRouteHostedHttp', args: [0, 1] },

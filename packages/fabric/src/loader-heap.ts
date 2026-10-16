@@ -18,9 +18,11 @@
 import { BYTE_LRU_ENTRY_OVERHEAD, ByteLru } from '@nimbus-sh/core/_shared/lru-map.js';
 import { WeightedCreditPool, type ResizableCreditLease } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import type { ModuleContent, WorkerCode } from '@nimbus-sh/platform/worker-code.js';
+import { loaderStore, restoredModule, STORE_READ_BYTES, type LoaderStoreRef, type StoredKind, type StoredModule } from './loader-store-client.js';
 import {
   DYNAMIC_WORKER_CODE_LIMIT_BYTES,
   LOADER_CODE_CREDIT_BYTES,
+  LOADER_WORKER_BYTES,
   LOADER_ENTRY_CACHE_BYTES,
   LOADER_GET_ID_MAX_CHARS,
   LOADER_KEY_ALLOWANCE_BYTES,
@@ -46,29 +48,43 @@ function stringCharge(text: string): number {
   return STRING + 2 * text.length;
 }
 
-function isPlainObject(value: object): boolean {
-  const proto = Object.getPrototypeOf(value);
-  return proto === Object.prototype || proto === null;
+/** Whether `key` is an array index (its charge is the array's backing store). */
+function isIndex(key: string): boolean {
+  const index = Number(key);
+  return Number.isInteger(index) && index >= 0 && index < 2 ** 32 - 1 && String(index) === key;
 }
 
+/** A walk's identity set, shared across the walks of one admission so a shared object is charged once. */
+export type ChargeSeen = Set<object>;
+
 /**
- * Everything `root` holds live, charged once per object, or Infinity once
- * the charge passes `limit` (the walk stops there). Throws LoaderRefusal for
- * a compiled WebAssembly.Module or a value it cannot account for, `at` naming
- * where.
+ * Everything `root` holds live, charged once per object (`seen` shared
+ * across calls), or Infinity once the charge passes `limit` (the walk stops
+ * there). Every own property of every object is walked, a built-in's too
+ * (its intrinsic storage charged by its kind); a function (an RPC stub, a
+ * service binding) is a capability, charged as one and not walked. Throws
+ * LoaderRefusal, `at` naming where, for a compiled WebAssembly.Module, a
+ * symbol, or an accessor, whose value the shim cannot account for without
+ * running it.
  */
-export function liveCharge(root: unknown, limit: number, at: string): number {
-  const seen = new Set<object>();
+export function liveCharge(root: unknown, limit: number, at: string, seen: ChargeSeen = new Set()): number {
   const stack: Array<{ value: unknown; path: string }> = [{ value: root, path: at }];
   let total = 0;
   const add = (n: number): boolean => {
     total += n;
     return total > limit;
   };
-  const property = (owner: object, key: string, path: string): boolean => {
-    const descriptor = Object.getOwnPropertyDescriptor(owner, key);
-    if (add(SLOT + stringCharge(key))) return true;
-    if (descriptor && 'value' in descriptor) stack.push({ value: descriptor.value, path: `${path}.${key}` });
+  /** Each own property of `owner` but those `skip` names (its intrinsic storage), its key charged and its value queued. */
+  const properties = (owner: object, path: string, skip: (key: string) => boolean): boolean => {
+    for (const key of Reflect.ownKeys(owner)) {
+      if (typeof key === 'symbol') throw new LoaderRefusal(`Nimbus Worker Loader: ${path} has a symbol-keyed property, which the shim cannot account for`);
+      if (skip(key)) continue;
+      const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+      if (descriptor === undefined) continue;
+      if (!('value' in descriptor)) throw new LoaderRefusal(`Nimbus Worker Loader: ${path}.${key} is an accessor, which the shim cannot account for without running it`);
+      if (add(SLOT + stringCharge(key))) return true;
+      stack.push({ value: descriptor.value, path: `${path}.${key}` });
+    }
     return false;
   };
   for (let item = stack.pop(); item !== undefined; item = stack.pop()) {
@@ -83,7 +99,8 @@ export function liveCharge(root: unknown, limit: number, at: string): number {
         if (add(STRING + Math.ceil(value.toString(16).length / 2))) return Infinity;
         continue;
       case 'function':
-        // A capability (an RPC stub, a service binding): charged as one, never walked.
+        if (seen.has(value)) continue;
+        seen.add(value);
         if (add(OBJECT)) return Infinity;
         continue;
       case 'symbol':
@@ -94,60 +111,77 @@ export function liveCharge(root: unknown, limit: number, at: string): number {
     if (value instanceof WebAssembly.Module) {
       throw new LoaderRefusal(`Nimbus Worker Loader: ${path} is a compiled WebAssembly.Module, which cannot cross to the loader: pass its bytes ({ wasm: ArrayBuffer })`);
     }
-    if (value instanceof ArrayBuffer || (typeof SharedArrayBuffer === 'function' && value instanceof SharedArrayBuffer)) {
-      if (add(OBJECT + value.byteLength)) return Infinity;
-      continue;
-    }
-    if (ArrayBuffer.isView(value)) {
-      if (add(OBJECT)) return Infinity;
-      stack.push({ value: value.buffer, path });
-      continue;
-    }
     if (add(OBJECT)) return Infinity;
-    if (Array.isArray(value)) {
+    let skip: (key: string) => boolean = () => false;
+    if (value instanceof ArrayBuffer || (typeof SharedArrayBuffer === 'function' && value instanceof SharedArrayBuffer)) {
+      if (add(value.byteLength)) return Infinity;
+    } else if (ArrayBuffer.isView(value)) {
+      stack.push({ value: value.buffer, path });
+      skip = isIndex;
+    } else if (Array.isArray(value)) {
       // V8 holds a holey array's backing store at its length.
       if (add(ARRAY_ELEMENT * value.length)) return Infinity;
+      skip = (key) => key === 'length';
       for (const key of Object.keys(value)) {
-        const index = Number(key);
-        if (Number.isInteger(index) && index >= 0 && String(index) === key) {
-          if (add(ARRAY_ELEMENT)) return Infinity;
-          stack.push({ value: value[index], path: `${path}[${key}]` });
-        } else if (property(value, key, path)) return Infinity;
+        if (!isIndex(key)) continue;
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        if (descriptor !== undefined && !('value' in descriptor)) throw new LoaderRefusal(`Nimbus Worker Loader: ${path}[${key}] is an accessor, which the shim cannot account for without running it`);
+        if (add(ARRAY_ELEMENT)) return Infinity;
+        stack.push({ value: descriptor?.value, path: `${path}[${key}]` });
       }
-      continue;
-    }
-    if (value instanceof Map) {
+      const named = skip;
+      skip = (key) => named(key) || isIndex(key);
+    } else if (value instanceof Map) {
       for (const [key, entry] of value) {
         if (add(COLLECTION_ENTRY)) return Infinity;
         stack.push({ value: key, path: `${path}<key>` }, { value: entry, path: `${path}<value>` });
       }
-      continue;
-    }
-    if (value instanceof Set) {
+    } else if (value instanceof Set) {
       for (const entry of value) {
         if (add(COLLECTION_ENTRY)) return Infinity;
         stack.push({ value: entry, path: `${path}<entry>` });
       }
-      continue;
-    }
-    if (value instanceof Date) continue;
-    if (value instanceof RegExp) {
+    } else if (value instanceof RegExp) {
       if (add(stringCharge(value.source) + stringCharge(value.flags))) return Infinity;
-      continue;
-    }
-    if (value instanceof String || value instanceof Number || value instanceof Boolean || value instanceof BigInt) {
+      skip = (key) => key === 'lastIndex';
+    } else if (value instanceof String) {
       stack.push({ value: value.valueOf(), path });
-      continue;
+      skip = (key) => key === 'length' || isIndex(key);
+    } else if (value instanceof Number || value instanceof Boolean || value instanceof BigInt) {
+      stack.push({ value: value.valueOf(), path });
+    } else if (value instanceof Error && !Object.hasOwn(value, 'name')) {
+      if (add(stringCharge(value.name))) return Infinity;
     }
-    if (value instanceof Error) {
-      if (!Object.hasOwn(value, 'name') && add(stringCharge(value.name))) return Infinity;
-      for (const key of Object.getOwnPropertyNames(value)) if (property(value, key, path)) return Infinity;
-      continue;
-    }
-    if (!isPlainObject(value)) continue; // A capability: an RPC stub, a service binding, a stream. Charged as one.
-    for (const key of Object.keys(value)) if (property(value, key, path)) return Infinity;
+    // Every object's own properties: a plain object's, a built-in's beside its storage, and an instance's of any class.
+    if (properties(value, path, skip)) return Infinity;
   }
   return total;
+}
+
+/**
+ * At most how long `JSON.stringify(value)` is, in UTF-16 units, bounded
+ * before it is built: every string at its worst escaping (6 per unit, and its
+ * quotes), 25 per number, 5 per literal, and 2 per container plus 1 per
+ * separator; Infinity past `limit`.
+ */
+export function jsonTextBound(value: unknown, limit: number): number {
+  const stack: unknown[] = [value];
+  let total = 0;
+  // A shared object is written each time it is reached, so nothing is skipped; a cycle runs past `limit`.
+  while (stack.length > 0) {
+    if (total > limit) return Infinity;
+    const item = stack.pop();
+    if (typeof item === 'string') { total += 6 * item.length + 2; continue; }
+    if (typeof item === 'number' || typeof item === 'bigint') { total += 25; continue; }
+    if (typeof item !== 'object' || item === null) { total += 5; continue; }
+    // A typed array is written as an object of its elements, `"i":n` each; a buffer, a Map and a Set as `{}`.
+    if (ArrayBuffer.isView(item)) { total += 2 + 32 * item.byteLength; continue; }
+    if (item instanceof ArrayBuffer || item instanceof Map || item instanceof Set) { total += 2; continue; }
+    const values = Array.isArray(item) ? item : Object.entries(item).flat();
+    total += 2 + values.length;
+    for (const entry of values) stack.push(entry);
+  }
+  return total > limit ? Infinity : total;
 }
 
 /**
@@ -172,11 +206,16 @@ export function jsonStringLength(text: string, limit: number): number {
 
 /** A loaded Worker, but for its modules: what a native miss re-creates it from. */
 interface LoaderEntry {
+  /** Its charge, without ByteLru's own per-entry overhead (which ByteLru adds). */
   readonly byteLength: number;
+  /** Its modules' name in the module cache: short, whatever its key's length. */
+  readonly id: number;
   readonly code: Omit<WorkerCode, 'modules'>;
   readonly modules: readonly string[];
-  /** What a native miss holds of it at its peak: its modules' charges and the entry's own. */
+  /** What a native miss holds of it at its peak: its modules' working prices, the entry's own charge and a read frame. */
   readonly missPeak: number;
+  /** Where its modules are durable, when its binding has a store: a module the cache let go is read back from there. */
+  readonly store?: { readonly ref: LoaderStoreRef; readonly modules: ReadonlyMap<string, { readonly kind: StoredKind; readonly size: number; readonly digest: string }> };
 }
 
 /** One module's content, charged. */
@@ -189,12 +228,13 @@ const entries = new ByteLru<string, LoaderEntry>(LOADER_ENTRY_CACHE_BYTES);
 const modules = new ByteLru<string, CachedModule>(LOADER_MODULE_CACHE_BYTES);
 const codeCredit = new WeightedCreditPool(LOADER_CODE_CREDIT_BYTES);
 const keyAllowance = new WeightedCreditPool(LOADER_KEY_ALLOWANCE_BYTES);
+let nextEntryId = 0;
 let refusals = 0;
 let keyRefused = 0;
 let nativeMisses = 0;
 let evictedMisses = 0;
 
-const moduleKey = (key: string, name: string): string => `${key}\0${name}`;
+const moduleKey = (entry: LoaderEntry, name: string): string => `${entry.id}\0${name}`;
 
 /** The shim's counters: each bucket on its own, and their sum as a stated upper bound (borrowed buffers counted twice). */
 export function loaderHeapStats() {
@@ -231,12 +271,17 @@ function refuse(event: string, message: string): never {
   throw new LoaderRefusal(`Nimbus Worker Loader: ${message}`);
 }
 
+const OVER_WORKER_BOUND = `over the Nimbus Worker Loader shim's per-Worker bound of ${bytes(LOADER_WORKER_BYTES)} (LOADER_WORKER_BYTES; native workerd allows ${bytes(DYNAMIC_WORKER_CODE_LIMIT_BYTES)})`;
+
 /** What an admission holds, priced before it holds credit for it. */
 export interface PricedCode {
   readonly code: WorkerCode;
-  /** Its whole live input. */
+  /** Its whole live input, shared objects charged once. */
   readonly charge: number;
-  readonly entry: LoaderEntry;
+  /** At most what its `{json}` modules' texts hold while it keeps them (twice their bounded length). */
+  readonly jsonText: number;
+  readonly entry: Omit<LoaderEntry, 'id'>;
+  /** Each module's charge on its own, as the module cache would hold it. */
   readonly moduleCharges: ReadonlyMap<string, number>;
 }
 
@@ -244,32 +289,44 @@ export interface PricedCode {
 export function priceCode(code: WorkerCode, key: string): PricedCode {
   const { modules: moduleMap, ...rest } = code;
   if (moduleMap === null || typeof moduleMap !== 'object') refuse('no-modules', 'the code has no module map');
+  const seen: ChargeSeen = new Set();
   const moduleCharges = new Map<string, number>();
   let charge = OBJECT;
+  let jsonText = 0;
   for (const name of Object.keys(moduleMap)) {
-    const content = moduleMap[name];
-    const moduleCharge = SLOT + stringCharge(name) + liveCharge(content, DYNAMIC_WORKER_CODE_LIMIT_BYTES, `modules[${JSON.stringify(name)}]`);
-    moduleCharges.set(name, moduleCharge);
-    charge += moduleCharge;
-    if (charge > DYNAMIC_WORKER_CODE_LIMIT_BYTES) {
-      refuse('worker-bound', `this Worker holds over ${bytes(DYNAMIC_WORKER_CODE_LIMIT_BYTES)} live (the per-Worker bound, DYNAMIC_WORKER_CODE_LIMIT_BYTES), counting through module ${JSON.stringify(name)}`);
+    const descriptor = Object.getOwnPropertyDescriptor(moduleMap, name);
+    if (descriptor === undefined || !('value' in descriptor)) refuse('accessor', `module ${JSON.stringify(name)} is an accessor, which the shim cannot account for without running it`);
+    const content: unknown = descriptor.value;
+    const at = `modules[${JSON.stringify(name)}]`;
+    const shared = SLOT + stringCharge(name) + liveCharge(content, LOADER_WORKER_BYTES, at, seen);
+    charge += shared;
+    if (charge > LOADER_WORKER_BYTES) refuse('worker-bound', `this Worker holds more than ${bytes(LOADER_WORKER_BYTES)} live, counting through module ${JSON.stringify(name)}: ${OVER_WORKER_BOUND}`);
+    moduleCharges.set(name, SLOT + stringCharge(name) + liveCharge(content, Infinity, at));
+    if (typeof content === 'object' && content !== null && 'json' in content) {
+      jsonText += 2 * jsonTextBound(content.json, LOADER_WORKER_BYTES);
+      if (jsonText > LOADER_WORKER_BYTES) refuse('worker-bound', `module ${JSON.stringify(name)}'s JSON text could take more than ${bytes(LOADER_WORKER_BYTES)}: ${OVER_WORKER_BOUND}`);
     }
   }
-  const entryCharge = liveCharge(rest, LOADER_ENTRY_CACHE_BYTES, 'code') + stringCharge(key) + BYTE_LRU_ENTRY_OVERHEAD
+  const entryCharge = liveCharge(rest, LOADER_ENTRY_CACHE_BYTES, 'code') + stringCharge(key)
     + [...moduleCharges.keys()].reduce((sum, name) => sum + SLOT + stringCharge(name), 0);
-  if (entryCharge > LOADER_ENTRY_CACHE_BYTES) {
-    refuse('entry-bound', `this Worker's env and metadata charge ${entryCharge === Infinity ? `over ${bytes(LOADER_ENTRY_CACHE_BYTES)}` : bytes(entryCharge)}, over the shim's ${bytes(LOADER_ENTRY_CACHE_BYTES)} entry bound (LOADER_ENTRY_CACHE_BYTES)`);
+  if (entryCharge + BYTE_LRU_ENTRY_OVERHEAD > LOADER_ENTRY_CACHE_BYTES) {
+    refuse('entry-bound', `this Worker's env and metadata charge ${entryCharge === Infinity ? `over ${bytes(LOADER_ENTRY_CACHE_BYTES)}` : bytes(entryCharge + BYTE_LRU_ENTRY_OVERHEAD)}, over the shim's ${bytes(LOADER_ENTRY_CACHE_BYTES)} entry bound (LOADER_ENTRY_CACHE_BYTES)`);
   }
-  const missPeak = [...moduleCharges.values()].reduce((sum, n) => sum + n, entryCharge);
-  if (charge + entryCharge > DYNAMIC_WORKER_CODE_LIMIT_BYTES || missPeak > DYNAMIC_WORKER_CODE_LIMIT_BYTES) {
-    refuse('worker-bound', `this Worker holds ${bytes(Math.max(charge + entryCharge, missPeak))} live, over the per-Worker bound of ${bytes(DYNAMIC_WORKER_CODE_LIMIT_BYTES)} (DYNAMIC_WORKER_CODE_LIMIT_BYTES)`);
-  }
-  return { code, charge: charge + entryCharge, entry: { byteLength: entryCharge, code: rest, modules: [...moduleCharges.keys()], missPeak }, moduleCharges };
+  charge += liveCharge(rest, LOADER_WORKER_BYTES, 'code', seen) + stringCharge(key);
+  if (charge > LOADER_WORKER_BYTES) refuse('worker-bound', `this Worker holds ${bytes(charge)} live: ${OVER_WORKER_BOUND}`);
+  // Re-created from the cache, a Worker borrows what it holds; from its store (keep), it is priced again.
+  return { code, charge, jsonText, entry: { byteLength: entryCharge, code: rest, modules: [...moduleCharges.keys()], missPeak: charge }, moduleCharges };
+}
+
+/** `credit`, refused by name when the whole pool could never grant it. */
+export function withinCredit(credit: number): number {
+  if (credit > LOADER_CODE_CREDIT_BYTES) refuse('worker-bound', `admitting this Worker holds ${bytes(credit)} with its working space: ${OVER_WORKER_BOUND}`);
+  return Math.max(1, credit);
 }
 
 /** Code credit for an argument that has already arrived: granted now, or the call is refused. */
 export function admitNow(charge: number): ResizableCreditLease {
-  const lease = codeCredit.tryAcquire(Math.max(1, charge));
+  const lease = codeCredit.tryAcquire(withinCredit(charge));
   if (lease === null) {
     const { current } = codeCredit.stats;
     refuse('busy', `the shim is holding ${bytes(current)} of other Workers' code (bound ${bytes(LOADER_CODE_CREDIT_BYTES)}, LOADER_CODE_CREDIT_BYTES) and this one needs ${bytes(charge)}; retry`);
@@ -287,48 +344,65 @@ export async function admitInTurn(charge: number, what: string): Promise<Resizab
 }
 
 /**
- * A `get`'s key, bounded before it is built: each id at most
- * LOADER_GET_ID_MAX_CHARS units, its JSON length counted, its charge granted
- * from the key allowance now or the call refused. Returns the key and the
- * lease the caller releases when the call returns.
+ * A `get`'s key, bounded before it is built: each of its parts a string (the
+ * network id may be null) of at most LOADER_GET_ID_MAX_CHARS units, its JSON
+ * length counted first. Its `charge` is the key's and the raw parts' own,
+ * which a miss holds under the key allowance (holdGetKey); a hit holds none.
  */
-export function admitGetKey(namespace: string, networkId: string | null, id: unknown): { key: string; lease: ResizableCreditLease } {
-  if (typeof id !== 'string') refuse('get-id', 'a LOADER.get id must be a string');
-  const bounded = (name: string, value: string): void => {
+export function getKey(namespace: unknown, networkId: unknown, id: unknown): { key: string; charge: number } {
+  const part = (name: string, value: unknown, nullable: boolean): string | null => {
+    if (value === null && nullable) return null;
+    if (typeof value !== 'string') refuse('get-id', `a LOADER.get ${name} must be a string`);
     if (value.length > LOADER_GET_ID_MAX_CHARS) {
       refuse('get-id', `a LOADER.get ${name} of ${value.length.toLocaleString('en-US')} UTF-16 units is over the shim's ${LOADER_GET_ID_MAX_CHARS.toLocaleString('en-US')} (LOADER_GET_ID_MAX_CHARS)`);
     }
+    return value;
   };
-  bounded('id', id);
-  bounded('namespace', namespace);
-  if (networkId !== null) bounded('network id', networkId);
-  const textId = id;
-  const length = 'get:'.length + 2 + jsonStringLength(namespace, LOADER_ENTRY_CACHE_BYTES) + 1
-    + (networkId === null ? 4 : jsonStringLength(networkId, LOADER_ENTRY_CACHE_BYTES)) + 1 + jsonStringLength(textId, LOADER_ENTRY_CACHE_BYTES);
-  const charge = STRING + 2 * length;
-  if (charge > LOADER_ENTRY_CACHE_BYTES) {
+  const textId = part('id', id, false);
+  const space = part('namespace', namespace, false);
+  const network = part('network id', networkId, true);
+  const parts = [space, network, textId];
+  const length = 'get:'.length + 4 + parts.reduce((sum, value) => sum + (value === null ? 4 : jsonStringLength(value, LOADER_ENTRY_CACHE_BYTES)), 0);
+  if (STRING + 2 * length > LOADER_ENTRY_CACHE_BYTES) {
     refuse('get-id', `a LOADER.get key of ${length.toLocaleString('en-US')} characters charges over the shim's ${bytes(LOADER_ENTRY_CACHE_BYTES)} entry bound`);
   }
+  const charge = STRING + 2 * length + parts.reduce((sum, value) => sum + (value === null ? 0 : stringCharge(value)), 0);
+  return { key: 'get:' + JSON.stringify(parts), charge };
+}
+
+/** A missed `get`'s key and arguments, held under the key allowance: granted now, or the call is refused. */
+export function holdGetKey(charge: number): ResizableCreditLease {
   const lease = keyAllowance.tryAcquire(charge);
   if (lease === null) {
     keyRefused++;
-    refuse('key-allowance', `the shim is holding ${bytes(keyAllowance.stats.current)} of other LOADER.get keys (bound ${bytes(LOADER_KEY_ALLOWANCE_BYTES)}, LOADER_KEY_ALLOWANCE_BYTES) and this key needs ${bytes(charge)}; retry`);
+    refuse('key-allowance', `the shim is holding ${bytes(keyAllowance.stats.current)} of other LOADER.get keys (bound ${bytes(LOADER_KEY_ALLOWANCE_BYTES)}, LOADER_KEY_ALLOWANCE_BYTES) and this one needs ${bytes(charge)}; retry`);
   }
-  return { key: 'get:' + JSON.stringify([namespace, networkId, textId]), lease };
+  return lease;
 }
 
-/** Keep an admitted Worker: its entry, and each module the module cache keeps. */
-export function keep(key: string, priced: PricedCode): void {
-  entries.set(key, priced.entry);
+/**
+ * Keep an admitted Worker: its entry, and each module the module cache can
+ * hold (one larger than it is not offered, so it never flushes the rest).
+ * One whose modules are durable (`stored`, in `ref`'s store) is re-created
+ * from there once the cache lets them go, so its miss peak is priced from
+ * their working prices, and refused over the per-Worker bound before its
+ * handle is returned.
+ */
+export function keep(key: string, priced: PricedCode, durable?: { readonly ref: LoaderStoreRef; readonly modules: ReadonlyMap<string, StoredModule> }): void {
+  let entry: LoaderEntry = { ...priced.entry, id: ++nextEntryId };
+  if (durable !== undefined) {
+    let missPeak = entry.byteLength + STORE_READ_BYTES;
+    for (const module of durable.modules.values()) missPeak += module.missPrice;
+    if (missPeak > LOADER_WORKER_BYTES) refuse('worker-bound', `re-creating this Worker from the store would hold ${bytes(missPeak)}: ${OVER_WORKER_BOUND}`);
+    const stored = new Map([...durable.modules].map(([name, { kind, size, digest }]) => [name, { kind, size, digest }] as const));
+    entry = { ...entry, missPeak, store: { ref: durable.ref, modules: stored } };
+  }
+  entries.set(key, entry);
   for (const [name, charge] of priced.moduleCharges) {
-    modules.set(moduleKey(key, name), { byteLength: charge, content: priced.code.modules[name] });
+    if (charge + BYTE_LRU_ENTRY_OVERHEAD > LOADER_MODULE_CACHE_BYTES) continue;
+    modules.set(moduleKey(entry, name), { byteLength: charge, content: priced.code.modules[name] });
   }
   report('admitted', { key, charge: priced.charge });
-}
-
-/** Whether `key` names a Worker the shim still has an entry for. */
-export function isLoaded(key: string): boolean {
-  return entries.get(key) !== undefined;
 }
 
 /** The code `key` was admitted with but its modules (its policy's source), or undefined once evicted. */
@@ -339,28 +413,44 @@ export function loadedCode(key: string): Omit<WorkerCode, 'modules'> | undefined
 /**
  * A native miss's code for `key`: credit for its miss peak taken first,
  * holding nothing but the key while it waits; the entry looked up again once
- * it is granted, and every module from the cache. A Worker the shim no longer
- * holds fails by name. The lease is held until `use` returns.
+ * it is granted (one replaced meanwhile by a larger one is refused, as its
+ * lease does not cover it), its owner asked whether it is alive (a retired
+ * build's Worker is never re-created), and every module from the cache or,
+ * the cache having let it go, from its store (through `env`'s host
+ * namespace). A Worker the shim no longer holds fails by name. The lease is
+ * held until `use` returns.
  */
-export async function withMissCode<T>(key: string, use: (code: WorkerCode) => T | Promise<T>): Promise<T> {
+export async function withMissCode<T>(key: string, env: object, use: (code: WorkerCode) => T | Promise<T>): Promise<T> {
   nativeMisses++;
-  const peak = entries.get(key)?.missPeak;
-  if (peak === undefined) {
+  const evicted = (): never => {
     evictedMisses++;
     report('evicted', { key });
     throw new LoaderRefusal(`Nimbus: dynamic worker '${key}' is no longer loaded: the shim's cache evicted it`);
-  }
+  };
+  const peak = entries.get(key)?.missPeak ?? evicted();
   const lease = await admitInTurn(peak, `re-creating dynamic worker '${key}'`);
   try {
-    const evicted = (): never => {
-      evictedMisses++;
-      report('evicted', { key });
-      throw new LoaderRefusal(`Nimbus: dynamic worker '${key}' is no longer loaded: the shim's cache evicted it`);
-    };
     const entry = entries.get(key) ?? evicted();
+    if (entry.missPeak > peak) refuse('replaced', `dynamic worker '${key}' was loaded again, larger, while its re-creation waited; retry`);
+    const store = entry.store === undefined ? null : loaderStore(env, entry.store.ref);
+    if (store !== null && !(await store.alive())) {
+      report('retired', { key });
+      throw new LoaderRefusal(`Nimbus: dynamic worker '${key}': this worker's loader binding was retired: its build was replaced or stopped`);
+    }
     const assembled: Record<string, ModuleContent> = {};
-    for (const name of entry.modules) assembled[name] = (modules.get(moduleKey(key, name)) ?? evicted()).content;
-    report('native-miss', { key, missPeak: peak });
+    let reads = 0;
+    for (const name of entry.modules) {
+      let content = modules.get(moduleKey(entry, name))?.content;
+      const stored = entry.store?.modules.get(name);
+      if (content === undefined && store !== null && stored !== undefined) {
+        content = restoredModule(stored.kind, await store.read(stored));
+        if (stored.size + BYTE_LRU_ENTRY_OVERHEAD <= LOADER_MODULE_CACHE_BYTES) modules.set(moduleKey(entry, name), { byteLength: stored.size, content });
+        reads++;
+      }
+      // An own property whatever the name, `__proto__` included.
+      Object.defineProperty(assembled, name, { value: content ?? evicted(), enumerable: true, writable: true, configurable: true });
+    }
+    report('native-miss', { key, missPeak: peak, storeReads: reads });
     return await use({ ...entry.code, modules: assembled });
   } finally {
     lease.release();

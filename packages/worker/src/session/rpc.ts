@@ -73,6 +73,7 @@ import {
   type VfsListTree,
 } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { loaderCodeRegistry, type LoaderStoreRequest } from '../wrangler/loader-code-store.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import type { BatchInodeEntry } from '@nimbus-sh/platform/w7-frame.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
@@ -1622,6 +1623,20 @@ export async function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: n
  * takes its own: SessionProcessSupervisor.takeSignals), waiting up to
  * `waitMs`: null if none came.
  */
+/**
+ * The Worker Loader shim's code store (wrangler/loader-code-store.ts): the
+ * host's alone. A process's envelope carries its pid, an infrastructure
+ * binding's pid 0, and both are refused; only the shim, which holds the host
+ * namespace, makes a call without one.
+ */
+export async function _rpcLoaderCodeStore(self: RpcHost, request: LoaderStoreRequest, stream: ReadableStream<Uint8Array> | undefined, pid?: number): Promise<unknown> {
+  if (pid !== undefined) throw Object.assign(new Error('loaderCodeStore: EPERM: the loader code store is the host\'s'), { code: 'EPERM' });
+  if (request === null || typeof request !== 'object') throw Object.assign(new Error('loaderCodeStore: EINVAL: no request'), { code: 'EINVAL' });
+  self.ensureSqliteFs?.();
+  if (!self.sqliteFs) throw new Error('loaderCodeStore: the session filesystem is not open');
+  return loaderCodeRegistry(self.ctx, self.sqliteFs).serve(request, stream);
+}
+
 export async function _rpcCpNextSignal(self: RpcHost, pid: number | undefined, waitMs: number): Promise<string | null> {
     if (pid === undefined || isPriorGenerationPid(self, pid)) return null;
     return self.processes.nextSignal(pid, Number(waitMs) || 0);

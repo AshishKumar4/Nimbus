@@ -27,6 +27,7 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod/v4';
 import type { HostRoute } from './composition.js';
 import type { D1QueryRequest, D1QueryResponse, KvGetOptions, KvListOptions, KvPutOptions, KvPutValue, R2PutBody, R2WireGetOptions, R2WireListOptions, R2WirePutOptions } from './inner-storage-env.js';
+import { type LoaderStoreRef } from './loader-store-client.js';
 import { type FacetCodePolicy } from './facet-limits.js';
 import { type SupervisorBindingProps } from './supervisor-props.js';
 import type { WorkspaceEgress } from '@nimbus-sh/core/_shared/workspace-network.js';
@@ -54,7 +55,8 @@ interface LoadedWorker {
  * does not name it (see {@link ./process-fabric.js} StagedBootAssembler).
  */
 interface OuterWorkerLoader {
-    load(code: WorkerCode): LoadedWorker;
+    /** Native, a stub; a shim's in nested Nimbus, an RPC promise of one, settled once it admitted the code. */
+    load(code: WorkerCode): LoadedWorker | Promise<LoadedWorker>;
     get(id: string, getCode: () => Promise<object>): LoadedWorker;
 }
 /**
@@ -131,16 +133,6 @@ declare const NimbusLoadedEntrypointPropsSchema: z.ZodObject<{
     egress: z.ZodOptional<z.ZodCustom<WorkspaceEgress, WorkspaceEgress>>;
 }, z.core.$loose>;
 type NimbusLoadedEntrypointProps = z.infer<typeof NimbusLoadedEntrypointPropsSchema>;
-/**
- * Diagnostic surface for /api/_diag/memory. Returns a snapshot of
- * the Map state — entry count, configured cap, eviction counter
- * since isolate boot. Pure read; no I/O.
- */
-export declare function getLoadedCodesStats(): {
-    entries: number;
-    maxEntries: number;
-    evictions: number;
-};
 /** Props every Worker-Loader hop carries: how deep this Nimbus already is, and whose network it loads into. */
 interface NimbusLoaderDepthProps {
     depth?: number;
@@ -158,16 +150,20 @@ interface NimbusLoaderDepthProps {
      * (LOADER.get) are cached. Two owners in one isolate never share one.
      */
     namespace?: string;
+    /** Where what it loads is kept durable (the session's loader code store), when its minter has one. */
+    store?: LoaderStoreRef;
 }
 /** Hop 1: env.LOADER.{load,get} forwarded to the outer loader. */
 export declare class NimbusLoaderRPC extends WorkerEntrypoint<NimbusLoaderShimEnv, NimbusLoaderDepthProps> {
     /**
-     * Inner: env.LOADER.load(code). Stashes the CODE (not a stub — stubs
-     * are I/O-bound to the calling request context) and returns a
-     * NimbusLoadedWorker RPC stub. Each downstream call re-loads the
-     * worker in its own request context via LOADER.get(key, cb).
+     * Inner: env.LOADER.load(code). Keeps the CODE (not a stub — stubs are
+     * I/O-bound to the calling request context), bounded (loader-heap.ts), and
+     * returns a NimbusLoadedWorker RPC stub. Each downstream call re-loads the
+     * worker in its own request context via LOADER.get(key, cb). The argument
+     * has already arrived: its whole live input is charged, and credited now or
+     * refused, before it is validated or kept.
      */
-    load(code: WorkerCode): unknown;
+    load(code: WorkerCode): Promise<unknown>;
     /**
      * Inner: env.LOADER.get(id, callback). The inner's callback returns a code
      * object, cached under this loader's owner, its network and `id`: an id is

@@ -350,6 +350,18 @@ export declare function loaderLedgerStats(ctx: object, probeTurn?: boolean): {
  * fan-outs had claimed, is what the operator needs to know to shrink anything.
  */
 export declare function withDynamicWorkerCapNamed<E>(ctx: object, error: E): E | Error;
+/** Loaded Workers' env and metadata, charged in full. */
+export declare const LOADER_ENTRY_CACHE_BYTES: number;
+/** Loaded Workers' module contents, a cache that may evict them. */
+export declare const LOADER_MODULE_CACHE_BYTES: number;
+/** What admissions and native misses hold live beyond the caches: one Worker at the shim's bound fits. */
+export declare const LOADER_CODE_CREDIT_BYTES: number;
+/** The most one Worker loaded through the shim may hold live, its working space included: the Nimbus shim's limit, not workerd's. */
+export declare const LOADER_WORKER_BYTES: number;
+/** The keys and arguments of `LOADER.get` calls in flight, granted now or refused. */
+export declare const LOADER_KEY_ALLOWANCE_BYTES: number;
+/** The longest `LOADER.get` id, namespace or network id, in UTF-16 units: escaped, a key stays under the entry bound. */
+export declare const LOADER_GET_ID_MAX_CHARS = 262144;
 /**
  * Total bytes a dynamic Worker's module map may carry, across every member of
  * it. A hard platform limit, not a policy knob: 62 MiB lands and 64 MiB is

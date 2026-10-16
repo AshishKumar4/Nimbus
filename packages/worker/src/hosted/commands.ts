@@ -19,6 +19,7 @@ import { jsReplProgram } from '@nimbus-sh/core/runtime/js-repl.js';
 import { resolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 import { normalizeVfsPath, resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
+import { loaderCodeRegistry } from '../wrangler/loader-code-store.js';
 import { filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard, detectUnsupportedWranglerConfig, refusedNextSubcommand, NEXT_REFUSAL_MESSAGE } from '../session/helpers.js';
 import { createViteCommand } from '../session/vite-command.js';
 import { HeredocHandler, LineEditorExtender } from '@nimbus-sh/core/shell/features.js';
@@ -820,6 +821,7 @@ const wranglerHandler = (invokedAs: 'wrangler' | 'nimbus-wrangler') =>
       // Supervisor DO ctx — required for ctx.facets.get() when
       // synthesizing durable_objects bindings on the inner Worker.
       ctx: self.ctx,
+      loaderStore: loaderCodeRegistry(self.ctx, sqliteFs),
       root: vfsRoot,
       // While the command runs, its own stderr says why a start fails; after
       // it returns, rebuilds report to the terminal.
