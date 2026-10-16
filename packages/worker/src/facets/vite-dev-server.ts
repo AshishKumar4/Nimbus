@@ -335,7 +335,7 @@ export function rewriteExternalRequires(code: string, basePath: string): string 
  * Cloudflare Workers runtime disallows string-to-code generation outside of
  * module initialization.
  *
- * The names are the CJS scan's Vite policy over the entire bundled text:
+ * The names are the CJS scan's (runtime/cjs-export-names.ts) over the entire bundled text:
  * `exports.NAME =`, `exports["NAME"] =`, `module.exports.NAME =`, every
  * `Object.defineProperty(exports, "NAME", ...)`, and every key of a
  * `module.exports = { ... }` literal whatever its value.
@@ -395,7 +395,7 @@ export function synthesizeCjsNamedExports(code: string): string {
 
 /**
  * The names a CJS bundle source exports that can be ES named exports:
- * runtime/cjs-export-names.ts's scan under its Vite policy (every key a
+ * runtime/cjs-export-names.ts's scan (every key a
  * module may put on module.exports, anywhere in the text: CJS exports appear
  * throughout __commonJS wrappers; real Vite reads any named import off the
  * default, so a name missed here is an import that fails), less `default`
@@ -403,7 +403,7 @@ export function synthesizeCjsNamedExports(code: string): string {
  * ES identifier.
  */
 function extractCjsExportNames(code: string): string[] {
-  return scanCjsExports(code, 'vite').names.filter(n =>
+  return scanCjsExports(code).names.filter(n =>
     /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(n) &&
     n !== 'default' &&
     !RESERVED_ES_KEYWORDS.has(n),
@@ -453,8 +453,8 @@ const EXPORT_SCAN: ScanBudget = { files: 64, fileBytes: 1024 * 1024, totalBytes:
 /**
  * The names the module at `entry` exports, as far as its source and the
  * relative modules it re-exports say: ESM `export`s (es-module-lexer), or
- * for a module without them, CommonJS's (cjs-export-names under the Vite
- * policy). Best effort, and bounded (EXPORT_SCAN): what cannot be read,
+ * for a module without them, CommonJS's (cjs-export-names). Best effort,
+ * and bounded (EXPORT_SCAN): what cannot be read,
  * resolved or afforded adds nothing.
  */
 function moduleExportNames(vfs: CredentialedVfs, entry: string): Set<string> {
@@ -508,7 +508,7 @@ function moduleExportNames(vfs: CredentialedVfs, entry: string): Set<string> {
       }
     } catch { /* not ESM: the CommonJS scan below */ }
     if (esm) continue;
-    const cjs = scanCjsExports(source, 'vite');
+    const cjs = scanCjsExports(source);
     for (const name of cjs.names) names.add(name);
     for (const specifier of cjs.reexports) {
       const target = specifier.startsWith('.') ? resolveRelative(path, specifier) : null;

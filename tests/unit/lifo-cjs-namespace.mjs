@@ -11,17 +11,14 @@
 // a name detected but never set is undefined. The lifo node returned
 // module.exports itself. One module's namespace is one object, however
 // import() names it; the lifo node made a new one for each import(). The
-// cases run in Node 22 where it is installed; the scan
-// (runtime/cjs-export-names.ts) is also checked against the real
-// cjs-module-lexer, the worker's build-time dependency, over a corpus.
+// cases run in Node 22 where it is installed. (The loaders' lexer is the
+// vendored cjs-module-lexer, checked by cjs-module-lexer-vendor.mjs.)
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
-import { scanCjsExports } from '../../packages/core/src/runtime/cjs-export-names.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const FILES = {
@@ -40,30 +37,11 @@ const WANT = [
   '',
 ].join('\n');
 
-// The real lexer, as Node runs it: its pure-JS build (the package's `default` export).
-const lexer = createRequire(join(import.meta.dir, '../../packages/worker/package.json'))('cjs-module-lexer');
-const CORPUS = [
-  ...Object.values(FILES).filter((text) => !text.includes('await import')),
-  'exports.a = 1; exports . b = 2; exports.c == 3; exports.d += 4; foo.exports.e = 5; exports.default = 6;',
-  "module.exports = { a, b: c, 'd': e, ...f, g: h() , i };",
-  'module.exports = { "aliceblue": [240, 248, 255], "red": [255, 0, 0] };',
-  "module.exports = { a: b , c }; module.exports = require('./x'); module.exports = require('./y');",
-  "Object.defineProperty(exports, 'a', { value: 1 }); Object.defineProperty(module.exports, 'b', { enumerable: true, get() { return q['p']; } });",
-  "Object.defineProperty(exports, 'c', { enumerable: false, get () { return p; } }); Object.defineProperty(exports, 'd', { get: () => p }); exports.d = 1;",
-  "Object.defineProperty(exports, '__esModule', { value: true }); __exportStar(require('./s'), exports); tslib.__export(require('./t')); function f() { __exportStar(require('./nested'), exports); }",
-  'const t = `exports.inTemplate = ${ exports.inSubst = 1 }`; const r = /exports.inRegex = 1/; exports.after = 1;',
-  "exports['quoted\\'s'] = 1; exports[\"dq\"] = 2; exports[name] = 3;",
-];
-
 const node = spawnSync('node', ['--version'], { encoding: 'utf8' }).stdout?.trim();
 const disk = mkdtempSync(join(tmpdir(), 'lifo-cjs-ns-'));
 const harness = createSqliteVfsTestHarness();
 const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
 try {
-  for (const source of CORPUS) {
-    const real = lexer.parse(source);
-    assert.deepEqual(scanCjsExports(source), { names: real.exports, reexports: real.reexports }, source);
-  }
   for (const [name, text] of Object.entries(FILES)) {
     mkdirSync(join(disk, 'ns'), { recursive: true });
     writeFileSync(join(disk, 'ns', name), text);
@@ -78,4 +56,4 @@ try {
   await ws.close();
   rmSync(disk, { recursive: true, force: true });
 }
-console.log(`lifo-cjs-namespace: ${CORPUS.length} sources scan as cjs-module-lexer does${node?.startsWith('v22') ? `; Node ${node} agrees` : ''}`);
+console.log(`lifo-cjs-namespace: CommonJS namespaces as Node's${node?.startsWith('v22') ? `; Node ${node} agrees` : ''}`);
