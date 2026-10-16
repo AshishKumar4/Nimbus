@@ -1,49 +1,54 @@
 #!/usr/bin/env bun
-// editor/monaco/new/monaco-themed-properly — VSCode-equivalent
-// styling: dark theme, font, status bar, editor chrome.
-//
-// HTML-shape probe — verifies the CSS + inline JS ship the proper
-// theming (the user said "current is useless — make it nice").
+// editor/monaco/new/monaco-themed-properly — VSCode-equivalent chrome
+// around the editor, in a real Chrome: the dark editor panel, the blue
+// status bar with its cursor and language labels, and both labels
+// following the editor (the user said "current is useless — make it
+// nice"). The editor's own options are monaco-vscode-features'.
 
-import { mintSession, BASE, makeAsserter, requestHeaders } from '../../../_driver.mjs';
+import { BASE, mintSession, deleteSession, makeAsserter, requestHeaders } from '../../../_driver.mjs';
+import { launchBrowser, openPage } from '../../../_runtime-behavioral-template.mjs';
+import { Nimbus } from '../../../../../packages/sdk/src/index.ts';
 
-if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('editor/monaco/new/monaco-themed-properly');
-console.log(`editor/monaco/new/monaco-themed-properly — ${process.env.BASE}`);
-
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders({}, sid) });
-const html = await r.text();
+const box = Nimbus.connect({ endpoint: BASE, headers: () => requestHeaders({}, sid) }).sandbox(sid);
+const path = '/home/user/themed.js';
+const browser = await launchBrowser();
+try {
+  await box.files.write(path, 'const a = 1;\nconst bc = 2;\n');
+  const { page, pageErrors } = await openPage(browser, sid);
+  await page.goto(`${BASE}/s/${sid}/`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  await page.waitForFunction(() => window.__nimbusMonacoEditor, { timeout: 60_000 });
 
-// CSS — panel background matches VSCode (#1e1e1e).
-a.check('panel-editor background #1e1e1e (VSCode dark)',
-  /\.panel-editor\s*\{[^}]*background:\s*#1e1e1e/.test(html),
-  `panel-editor background wrong`);
+  const chrome = await page.evaluate(() => {
+    const visible = (id) => {
+      const element = document.getElementById(id);
+      const box = element?.getBoundingClientRect();
+      return Boolean(box && box.width > 0 && box.height > 0 && getComputedStyle(element).visibility !== 'hidden');
+    };
+    return {
+      panel: getComputedStyle(document.getElementById('editorPanel')).backgroundColor,
+      bar: getComputedStyle(document.getElementById('editorStatusBar')).backgroundColor,
+      shown: ['editorStatusBar', 'editorStatusPos', 'editorStatusLang'].filter(visible),
+    };
+  });
+  a.check('the editor panel is VSCode dark (#1e1e1e)', chrome.panel === 'rgb(30, 30, 30)', chrome.panel);
+  a.check('the status bar is VSCode blue (#007acc)', chrome.bar === 'rgb(0, 122, 204)', chrome.bar);
+  a.check('the status bar shows its cursor and language labels', chrome.shown.length === 3, JSON.stringify(chrome.shown));
 
-// CSS — bottom status bar with VSCode blue (#007acc).
-a.check('editor-statusbar uses VSCode blue (#007acc)',
-  /\.editor-statusbar\s*\{[^}]*background:\s*#007acc/.test(html),
-  `statusbar color missing`);
-a.check('editor-statusbar DOM element present',
-  /id=["']editorStatusBar["']/.test(html),
-  `statusbar DOM missing`);
-a.check('statusbar position element present',
-  /id=["']editorStatusPos["']/.test(html),
-  `Ln/Col element missing`);
-a.check('statusbar language element present',
-  /id=["']editorStatusLang["']/.test(html),
-  `language element missing`);
-
-// Cursor position handler wires status bar updates.
-a.check('onDidChangeCursorPosition wired to statusbar',
-  /onDidChangeCursorPosition\(\(e\)\s*=>\s*\{[^}]*statusPos/.test(html),
-  `cursor-pos handler not wired`);
-a.check('onDidChangeModelLanguage wired to statusbar',
-  /onDidChangeModelLanguage\(\(e\)\s*=>\s*\{[^}]*statusLang/.test(html),
-  `language-change handler not wired`);
-
-// The editor's font chain, size and theme are monaco-vscode-features'
-// option contract; this probe owns the chrome around the editor.
-
-const sum = a.summary();
-process.exit(sum.fail > 0 ? 1 : 0);
+  await page.locator(`.tree-node[data-path="${path}"]`).click();
+  await page.waitForFunction(() => document.getElementById('editorStatusLang').textContent === 'javascript', { timeout: 30_000 });
+  a.check('opening a JavaScript file shows its language', true);
+  await page.evaluate(() => window.__nimbusMonacoEditor.setPosition({ lineNumber: 2, column: 3 }));
+  await page.waitForFunction(() => document.getElementById('editorStatusPos').textContent === 'Ln 2, Col 3', { timeout: 10_000 });
+  a.check('moving the cursor shows its line and column', true);
+  await page.evaluate(() => window.monaco.editor.setModelLanguage(window.__nimbusMonacoEditor.getModel(), 'json'));
+  await page.waitForFunction(() => document.getElementById('editorStatusLang').textContent === 'json', { timeout: 10_000 });
+  a.check('changing the model\'s language shows the new one', true);
+  a.check('no page errors', pageErrors.length === 0, JSON.stringify(pageErrors));
+} finally {
+  await browser.close();
+  await deleteSession(sid);
+}
+const result = a.summary();
+process.exit(result.fail ? 1 : 0);

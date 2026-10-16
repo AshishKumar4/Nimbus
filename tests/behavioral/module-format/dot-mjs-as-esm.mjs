@@ -33,14 +33,13 @@
 // The wild case, sv's own engine-*.mjs, runs once in
 // frameworks/sveltekit-real.
 
-import { Terminal, mintSession, sleep, makeAsserter, BASE } from '../_driver.mjs';
+import { Terminal, mintSession, makeAsserter, BASE } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[module-format/dot-mjs-as-esm] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 const A = makeAsserter('module-format/dot-mjs-as-esm');

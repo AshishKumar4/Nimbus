@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { mintSession, Terminal, BASE, AUTH_TOKEN, sleep, deleteSession, makeAsserter } from '../_driver.mjs';
+import { mintSession, Terminal, BASE, AUTH_TOKEN, deleteSession, makeAsserter } from '../_driver.mjs';
 import { diagMemory } from '../heap-correctness/_diag.mjs';
 import { Nimbus } from '../../../packages/sdk/src/index.ts';
 
@@ -37,10 +37,6 @@ try {
   a.check('warm-up holds no runtime image in the session LRU',
     (warmedMem.vfsDetail?.lruBytes ?? 0) < 4_500_000,
     `lruBytes=${warmedMem.vfsDetail?.lruBytes}`);
-  for (let index = 1; index <= 3; index++) {
-    await sleep(30_000);
-    await snapshot(`idle ${index * 30}s`);
-  }
 } finally {
   await terminal.close();
   const cleanup = await deleteSession(sid);

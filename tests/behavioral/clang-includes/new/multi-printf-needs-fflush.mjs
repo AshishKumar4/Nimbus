@@ -49,12 +49,8 @@ a.check('no fflush: first line printed (line-buffered first \\n flush)', /L1_NO_
   JSON.stringify(outB.slice(-300)));
 a.check('no fflush: exits 0 (graceful, just buffered tail lost)', rb.exitCode === 0,
   JSON.stringify(outB.slice(-200)));
-// Document the known-limitation: second line is lost. NOT asserted as
-// pass-or-fail because the desired long-term behaviour is for L2 to
-// also print (after crt1 v13 lands). Today the probe records the
-// behaviour but doesn't fail on it.
-const l2Missing = !/L2_NO_FLUSH/.test(outB);
-console.log(`  (known-limit) no-fflush: L2 ${l2Missing ? 'MISSING (v12 crt1 limitation)' : 'PRESENT (good — crt1 fixed)'}`);
+// Whether the second line is lost is not graded: it is the known crt1 v12
+// limitation, and the long-term behaviour is for it to print too.
 
 await t.close();
 const sum = a.summary();

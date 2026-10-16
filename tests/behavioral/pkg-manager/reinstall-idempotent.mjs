@@ -7,10 +7,10 @@
 //   1. First install completes ok.
 //   2. Second install completes < 5 s AND emits a "already installed"
 //      / "fresh" / "skipping" marker, NOT a fetching marker.
-//   3. After second install, the files are still there + manifest
-//      unchanged.
+//   3. After second install, the installed manifest (at the path the
+//      first install named) has the same sha256 and mtime.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, termBody } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('pkg-manager/reinstall-idempotent');
@@ -23,23 +23,27 @@ await t.connect();
 await t.waitForPrompt(60_000);
 
 // 1. First install. Must show a success/install marker — NOT
-//    "nimbus: command not found".
+//    "nimbus: command not found" — naming the directory it installed:
+//    "[clang] installed at usr/lib/nimbus/clang/<version> (X MiB)".
+let manifest = null;
 {
   const { elapsed, output } = await t.run('nimbus install clang', 120_000);
   const stripped = stripAnsi(output);
-  const installedOk = /installed at .*\.nimbus|clang.*installed/i.test(stripped)
-    && !/command not found/.test(stripped);
-  a.check('first install completes with success marker (not "command not found")',
-    installedOk,
-    installedOk ? `elapsed=${elapsed}ms` : JSON.stringify(stripped.slice(-200)));
+  const installed = stripped.match(/installed at\s+\/?(usr\/lib\/nimbus\/clang\/[\w.-]+)/);
+  manifest = installed && !/command not found/.test(stripped) ? `/${installed[1]}/manifest.json` : null;
+  a.check('first install completes, naming the directory it installed', manifest !== null,
+    manifest ? `elapsed=${elapsed}ms manifest=${manifest}` : JSON.stringify(stripped.slice(-200)));
 }
 
-// Snapshot manifest mtime+content for comparison after second install.
-let firstMtime = '';
-{
-  const { output } = await t.run('stat -c %Y /usr/lib/nimbus/clang/binji-2020/manifest.json 2>/dev/null || cat /usr/lib/nimbus/clang/binji-2020/manifest.json | wc -c', 10_000);
-  firstMtime = stripAnsi(output).trim();
+/** The installed manifest's sha256 and mtime; null when it cannot be read. */
+async function manifestState() {
+  if (manifest === null) return null;
+  const { output, exitCode } = await t.run(`sha256sum ${manifest} && stat -c %Y ${manifest}`, 10_000);
+  return exitCode === 0 ? termBody(output).trim() : null;
 }
+
+const before = await manifestState();
+a.check('the installed manifest reads back', before !== null, `manifest=${manifest}`);
 
 // 2. Second install — must be fast + use a "skip" path AND NOT
 //    "command not found".
@@ -56,12 +60,11 @@ let firstMtime = '';
     skipMarker ? '' : `output tail=${JSON.stringify(stripped.slice(-300))}`);
 }
 
-// 3. Manifest unchanged.
+// 3. The manifest is the same bytes, never rewritten.
 {
-  const { output } = await t.run('stat -c %Y /usr/lib/nimbus/clang/binji-2020/manifest.json 2>/dev/null || cat /usr/lib/nimbus/clang/binji-2020/manifest.json | wc -c', 10_000);
-  const secondMtime = stripAnsi(output).trim();
-  a.check('manifest preserved across idempotent reinstall', firstMtime === secondMtime,
-    `before=${firstMtime} after=${secondMtime}`);
+  const after = await manifestState();
+  a.check('manifest content and mtime preserved across idempotent reinstall', before !== null && after === before,
+    `before=${JSON.stringify(before)} after=${JSON.stringify(after)}`);
 }
 
 await t.close();

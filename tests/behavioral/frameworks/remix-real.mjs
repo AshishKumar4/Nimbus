@@ -34,7 +34,7 @@
 // What a user needs: `react-router dev` serves the app through the port
 // route on its first run, as the other framework probes require.
 
-import { Terminal, mintSession, sleep, stripAnsi, makeAsserter, deleteSession, BASE } from '../_driver.mjs';
+import { Terminal, mintSession, stripAnsi, makeAsserter, deleteSession, BASE, writeFileViaShell } from '../_driver.mjs';
 import { launchFrameworkDev } from '../_framework-dev.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -46,7 +46,6 @@ console.log(`[remix-real] sid=${sid} BASE=${BASE}`);
 const t = new Terminal(sid);
 try {
   await t.connect();
-  await sleep(2_000);
   await t.waitForPrompt(60_000);
 
   await t.run('mkdir -p /home/user/remix-probe && cd /home/user/remix-probe', 10_000);
@@ -71,7 +70,7 @@ try {
     'const d = Object.assign({}, p.dependencies, p.devDependencies);',
     'console.log("EXTRACTED=" + JSON.stringify({ rr: Boolean(d["react-router"]), dev: Boolean(d["@react-router/dev"]), script: (p.scripts || {}).dev || null, root: fs.existsSync("/home/user/remix-probe/mvp/app/root.tsx") }));',
   ].join('\n');
-  await t.run(`printf '%s' '${Buffer.from(extractCheck).toString('base64')}' | base64 -d > /home/user/remix-probe/extracted.js`, 15_000);
+  await writeFileViaShell((command) => t.run(command, 15_000), '/home/user/remix-probe/extracted.js', extractCheck);
   const extracted = await t.run('node /home/user/remix-probe/extracted.js', 30_000);
   const extractedOut = stripAnsi(extracted.output);
   a.check('the template extracts: a React Router project (package.json, app/root.tsx)',
@@ -83,15 +82,14 @@ try {
 
   // readable-stream's constructor stealing: Node runs `Duplex.call(this)`
   // on an existing instance, and so must Nimbus.
-  await t.waitForPrompt(60_000).catch(() => {});
+  await t.waitForPrompt(60_000);
   const repro = [
     'const s=require("stream");',
     'function Child(){ s.Duplex.call(this); }',
     'Object.setPrototypeOf(Child.prototype, s.Duplex.prototype);',
     'try{ new Child(); console.log("NEW=ok"); }catch(e){ console.log("NEW_ERR="+e.message); }',
   ].join('\n');
-  const b64 = Buffer.from(repro).toString('base64');
-  await t.run(`printf '%s' '${b64}' | base64 -d > /home/user/remix-probe/rs.js`, 15_000);
+  await writeFileViaShell((command) => t.run(command, 15_000), '/home/user/remix-probe/rs.js', repro);
   const r = await t.run('node /home/user/remix-probe/rs.js 2>&1', 30_000);
   const rOut = stripAnsi(r.output);
   a.check('Duplex.call(this) constructs a stream, as in Node (readable-stream constructor stealing)',
@@ -106,7 +104,7 @@ try {
   };
   await t.run('mkdir -p /home/user/remix-probe/cond', 10_000);
   for (const [name, text] of Object.entries(condFiles)) {
-    await t.run(`printf '%s' '${Buffer.from(text).toString('base64')}' | base64 -d > /home/user/remix-probe/cond/${name}`, 15_000);
+    await writeFileViaShell((command) => t.run(command, 15_000), `/home/user/remix-probe/cond/${name}`, text);
   }
   const cond = stripAnsi((await t.run('cd /home/user/remix-probe/cond && node --conditions=development main.mjs 2>&1', 30_000)).output);
 

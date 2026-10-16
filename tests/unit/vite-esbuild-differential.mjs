@@ -22,7 +22,8 @@
 // than Vite 7 (esbuild 0.28), the difference is printed with its case and
 // the case says why (`versions`). A `fallback` case, where the server keeps
 // its own JSX defaults or cannot read vite.config statically, must differ
-// from every Vite, in the way the case names.
+// from every Vite, and make what the case names (`nimbus`): its output
+// runs to the outcome named, from the esbuild options named.
 
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -189,8 +190,11 @@ try {
     const configFile = await readViteConfigFile(kernel, ROOT, async (source) => (await engine.transform(source, { loader: 'ts', format: 'esm' })).code);
     assert.equal(configFile.error, null, `${name}: vite.config read`);
     const settings = viteEsbuildSettings(configFile.path ? configFile.config : null);
-    const sameConfig = JSON.stringify(sorted(settings.esbuild)) === JSON.stringify(sorted(recorded[TARGET].esbuild));
-    if (!sameConfig && !definition.fallback) fail(`${name}: config.esbuild\n      Vite 7: ${JSON.stringify(recorded[TARGET].esbuild)}\n      ours:   ${JSON.stringify(settings.esbuild)}`);
+    assert.equal(Boolean(definition.fallback), Boolean(definition.nimbus), `${name}: a fallback names what the server makes (\`nimbus\`)`);
+    const expectedEsbuild = definition.nimbus?.esbuild ?? recorded[TARGET].esbuild;
+    if (JSON.stringify(sorted(settings.esbuild)) !== JSON.stringify(sorted(expectedEsbuild))) {
+      fail(`${name}: config.esbuild\n      ${definition.nimbus?.esbuild ? 'named' : 'Vite 7'}: ${JSON.stringify(expectedEsbuild)}\n      ours:   ${JSON.stringify(settings.esbuild)}`);
+    }
 
     // Each module, served.
     const server = new ViteDevServer({
@@ -220,6 +224,9 @@ try {
         if (definition.fallback) {
           if (COLUMNS.some((column) => text(vite[column]) === text(ours))) {
             fail(`${name} ${path}: expected to differ from Vite (${definition.fallback}), but made the same: ${text(ours)}`);
+          }
+          if (text(ours) !== text(definition.nimbus.outcome)) {
+            fail(`${name} ${path}: expected (${definition.fallback})\n      named: ${text(definition.nimbus.outcome)}\n      ours:  ${text(ours)}`);
           }
         } else if (text(target) !== text(ours)) {
           fail(`${name} ${path}: served\n      Vite 7: ${text(target)}\n      ours:   ${text(ours)}`);

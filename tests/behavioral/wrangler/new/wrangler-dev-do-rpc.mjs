@@ -16,7 +16,8 @@
 //
 // Black-box: the session's terminal and the Worker's URL only.
 
-import { deleteSession, makeAsserter, mintSession, requestHeaders, stripAnsi, Terminal } from '../../_driver.mjs';
+import { dirname } from 'node:path';
+import { deleteSession, makeAsserter, mintSession, requestHeaders, stripAnsi, Terminal, writeFileViaShell } from '../../_driver.mjs';
 import {
   NIMBUS_DIFFERS, SHAPED_WORKERS, WORKER, WRANGLER_CONFIG, expectedAnswers, expectedShapedAnswer,
 } from './_do-rpc-worker.mjs';
@@ -33,10 +34,10 @@ const t = new Terminal(sid);
 try {
   await t.connect();
   await t.waitForPrompt(60_000);
-  const write = (path, content) => t.run(
-    `node -e "require('fs').mkdirSync(require('path').dirname('${path}'),{recursive:true});require('fs').writeFileSync('${path}', Buffer.from('${Buffer.from(content).toString('base64')}','base64'))"`,
-    60_000,
-  );
+  const write = async (path, content) => {
+    await t.run(`mkdir -p ${dirname(path)}`, 10_000);
+    return writeFileViaShell((command) => t.run(command, 60_000), path, content);
+  };
   const answer = async () => {
     const response = await fetch(`${process.env.BASE}/s/${sid}/worker/`, { headers: requestHeaders({}, sid) });
     const body = await response.text();
@@ -56,7 +57,7 @@ try {
     const answers = [];
     while (built && answers.length < requests) answers.push(await answer());
     t.send('\x03');
-    await t.waitForPrompt(30_000).catch(() => {});
+    await t.waitForPrompt(30_000);
     return answers;
   };
 

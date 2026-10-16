@@ -44,8 +44,7 @@
 //   - any file whose leaf basename starts with `_` (helpers like
 //     `_driver.mjs`, `_runtime-behavioral-template.mjs`, `_fixtures.mjs`,
 //     `_keys.mjs`, `_recipe.mjs`, `_diag.mjs`)
-//   - any file named `run-all.mjs` (the root runner and the
-//     `keybindings/run-all.mjs` sub-runner)
+//   - this runner, `run-all.mjs`
 //   - non-`.mjs` files
 //
 // Retry-on-banner:
@@ -308,7 +307,7 @@ function walk(root, predicate, out = []) {
 function isProbeFile(leaf) {
   if (!leaf.endsWith('.mjs')) return false;
   if (leaf.startsWith('_')) return false;        // helpers
-  if (leaf === 'run-all.mjs') return false;      // root + sub-runners
+  if (leaf === 'run-all.mjs') return false;
   return true;
 }
 

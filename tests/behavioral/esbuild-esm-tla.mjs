@@ -14,14 +14,13 @@
 // that the transformed output has NO esbuild "Unexpected" error for an
 // ESM+TLA source.
 
-import { Terminal, mintSession, sleep, stripAnsi, BASE, heredocCommand } from './_driver.mjs';
+import { Terminal, mintSession, stripAnsi, BASE, heredocCommand } from './_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[esbuild-esm-tla] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 // Drop a small .mjs file that mimics nuxi's entry: ESM imports + top-level

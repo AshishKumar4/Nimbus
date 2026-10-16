@@ -3,7 +3,7 @@
 //   nimbus install ruby && ruby -e 'puts "hi"'
 // must print exactly "hi\n" on PROD.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('ruby/hello-world');
@@ -34,8 +34,7 @@ await t.run('nimbus install ruby', 180_000);
 {
   const { output, elapsed } = await t.run(`ruby -e 'puts "hi"'`, 120_000);
   const stripped = stripAnsi(output);
-  const lines = stripped.split(/\r?\n/).map((l) => l.trim());
-  const hasHi = lines.some((l) => l === 'hi');
+  const hasHi = hasOutputLine(output, 'hi');
   a.check('ruby -e \'puts "hi"\' prints "hi"', hasHi,
     hasHi ? `elapsed=${elapsed}ms` : JSON.stringify(stripped.slice(-400)));
 }

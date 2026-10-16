@@ -3,8 +3,13 @@
 
 const describe = (v) => (typeof v === 'function' ? `function ${v.name}` : typeof v === 'object' && v !== null ? Object.prototype.toString.call(v) : `${typeof v} ${String(v).slice(0, 80)}`);
 
-/** Whether two values a program observes are the same: equal primitives, functions of the same source, objects of the same shape. */
-export function same(a, b, path, depth, seen) {
+/**
+ * Whether two values a program observes are the same: equal primitives,
+ * functions of the same source, objects of the same shape. `seen` holds the
+ * pairs of objects being or already compared, so a cycle ends and a value
+ * reached twice on one side is compared with each of its counterparts.
+ */
+export function same(a, b, path, depth, seen = new Map()) {
   if (Object.is(a, b)) return null;
   // A symbol made by Symbol(description) is a new one each time the module runs.
   if (typeof a === 'symbol' && typeof b === 'symbol' && Symbol.keyFor(a) === undefined && a.description === b.description) return null;
@@ -23,8 +28,9 @@ export function same(a, b, path, depth, seen) {
     return null;
   }
   if (typeof a !== 'object' || a === null || b === null) return `${path}: ${describe(a)} vs ${describe(b)}`;
-  if (seen.has(a)) return null;
-  seen.add(a);
+  const counterparts = seen.get(a) ?? new Set();
+  if (counterparts.has(b)) return null;
+  seen.set(a, counterparts.add(b));
   if (Object.prototype.toString.call(a) !== Object.prototype.toString.call(b)) return `${path}: ${describe(a)} vs ${describe(b)}`;
   if (typeof a.then === 'function') return null;
   if (depth <= 0) return null;

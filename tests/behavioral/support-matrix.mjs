@@ -21,7 +21,7 @@
 //
 // Black-box only.
 
-import { mintSession, Terminal, makeAsserter, sleep, stripAnsi } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter, sleep, stripAnsi, writeFileViaShell } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('support-matrix');
@@ -119,7 +119,7 @@ console.log(`SID: ${sid}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
+await t.waitForPrompt(60_000);
 
 for (const row of ROWS) {
   console.log(`\n────── row: ${row.name} ──────`);
@@ -139,8 +139,7 @@ for (const row of ROWS) {
       const full = `${dir}/${path}`;
       const parent = full.split('/').slice(0, -1).join('/');
       if (parent) await t.run(`mkdir -p ${parent}`, 5_000);
-      const b64 = Buffer.from(content, 'utf8').toString('base64');
-      await t.run(`node -e "require('fs').writeFileSync('${full}', Buffer.from('${b64}','base64').toString('utf8'))"`, 10_000);
+      await writeFileViaShell((command) => t.run(command, 10_000), full, content);
     }
   };
   try {
@@ -169,7 +168,7 @@ for (const row of ROWS) {
   }
   // Stop the dev process so the next row isn't blocked by a still-running server.
   t.send('\x03'); // ctrl-c
-  await sleep(1_000);
+  await t.waitForPrompt(30_000);
   a.check(`${row.name} → ${outcome === 'timeout' ? 'silent hang (NO)' : outcome}`,
     outcome !== 'timeout',
     `outcome=${outcome} elapsed=${Date.now() - t0}ms`);

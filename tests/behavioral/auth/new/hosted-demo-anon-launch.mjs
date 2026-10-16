@@ -51,7 +51,7 @@
 //   — and reap on their own ~600s TTL. The refusal is asserted: a 200
 //   here was the session shell's HTML, reported as a deletion.
 
-import { BASE, Terminal, makeAsserter, requestHeaders } from '../../_driver.mjs';
+import { BASE, Terminal, makeAsserter, requestHeaders, hasOutputLine } from '../../_driver.mjs';
 
 const a = makeAsserter('auth/new/hosted-demo-anon-launch');
 
@@ -171,7 +171,7 @@ try {
   const { output } = await term.run(`echo ${nonce}`, 45_000);
   // The echoed command line contains the nonce too, so require it on a
   // line of its own — that is the shell's output, not our input coming back.
-  ranCommand = output.split('\n').some((line) => line.trim() === nonce);
+  ranCommand = hasOutputLine(output, nonce);
   commandDetail = JSON.stringify(output.slice(-200));
 } catch (e) {
   commandDetail = e?.message ?? String(e);

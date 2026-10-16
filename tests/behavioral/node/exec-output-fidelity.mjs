@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 // node/exec-output-fidelity — a process's stdout must reach its stdout fd,
-// whatever the shell made that fd: a file, a pipe, or the caller of a
-// programmatic exec.
+// whatever the shell made that fd: a file or a pipe, and the terminal while
+// the process still runs. A programmatic exec's output is
+// sdk/new/live-sdk-exec-output's.
 //
 // WHY THE ASSERTIONS LOOK LIKE THIS
 //   A facet-hosted runtime streams its output straight to the session
@@ -14,13 +15,6 @@
 //   The controls (`echo`, a shell builtin that is not facet-hosted) prove
 //   the redirect and the pipe themselves work, so a failure below is about
 //   the runtime's output and not about shell plumbing.
-//
-// COVERAGE THIS CLOSES
-//   tests/behavioral/sdk/new/live-sdk-remote-smoke.mjs already asserts
-//   exec('node -e ...') returns its stdout, but it is listed in
-//   _probe-target-skips.mjs because it needs hosted-demo OAuth — so no
-//   headless run has ever executed that assertion. This probe runs against
-//   any bearer-token target (apps/probe, staging, a throwaway).
 
 import { mintSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
 
@@ -104,44 +98,10 @@ await t.run('node -e "console.log(42)" > /home/user/node.txt', 30_000);
   a.check('stdout reaches the terminal while the process is still running',
     liveBeforeExit,
     'nothing appeared before exit — output is being buffered until the process ends');
-  await t.waitForPrompt(30_000).catch(() => {});
+  await t.waitForPrompt(30_000);
 }
 
 await t.close();
-
-// ── The programmatic path: exec()'s result IS the output ──────────────
-// Headless, over the same remote RPC API a ComputeSDK provider uses.
-if (process.env.NIMBUS_PROBE_TOKEN) {
-  const { Nimbus } = await import('../../../packages/sdk/src/index.ts');
-  const box = Nimbus.connect({
-    endpoint: process.env.BASE,
-    token: process.env.NIMBUS_PROBE_TOKEN,
-  }).sandbox(`execout-${Date.now().toString(36)}`);
-
-  try {
-    const shell = await box.exec('echo 42');
-    a.check('control: programmatic exec returns shell stdout',
-      shell.stdout.trim() === '42', `stdout: ${JSON.stringify(shell.stdout)}`);
-
-    const node = await box.exec('node -e "console.log(42)"');
-    a.check('programmatic exec returns node stdout',
-      node.stdout.trim() === '42',
-      `exit ${node.exitCode}, stdout: ${JSON.stringify(node.stdout)}, stderr: ${JSON.stringify(node.stderr.slice(0, 200))}`);
-
-    const code = await box.runCode('console.log(42)');
-    a.check('runCode returns its output',
-      code.stdout.trim() === '42',
-      `exit ${code.exitCode}, stdout: ${JSON.stringify(code.stdout)}`);
-  } finally {
-    // The probe made this sandbox, so its cleanup is the probe's, and a
-    // failed one is a failed probe (an error above still propagates).
-    const destroyed = await box.destroy({ reason: 'exec-output-fidelity-cleanup' })
-      .then((result) => result, (error) => ({ ok: false, error: String(error?.message ?? error) }));
-    a.check('the sandbox is destroyed', destroyed.ok === true && typeof destroyed.destroyedAt === 'number', JSON.stringify(destroyed));
-  }
-} else {
-  console.log('  (skipped programmatic checks — NIMBUS_PROBE_TOKEN not set)');
-}
 
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);

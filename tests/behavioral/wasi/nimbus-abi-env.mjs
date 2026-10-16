@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // wasi/nimbus-abi-env — compiled WASI binaries see the stable Nimbus ABI.
 
-import { mintSession, deleteSession, Terminal, makeAsserter, heredocCommand, stripAnsi } from '../_driver.mjs';
+import { mintSession, deleteSession, Terminal, makeAsserter, heredocCommand, stripAnsi, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('wasi/nimbus-abi-env');
@@ -10,10 +10,6 @@ console.log(`wasi/nimbus-abi-env — ${process.env.BASE}`);
 const sid = await mintSession();
 console.log(`SID: ${sid}`);
 const t = new Terminal(sid);
-
-function hasLine(text, line) {
-  return text.split(/\r?\n/).map((value) => value.trim()).includes(line);
-}
 
 try {
   await t.connect();
@@ -64,9 +60,9 @@ int main(void) {
   {
     const r = await t.run('./abi', 60_000);
     const out = stripAnsi(r.output);
-    a.check('WASI env exposes NIMBUS_OS=nimbus', hasLine(out, 'OS=nimbus'), JSON.stringify(out.slice(-500)));
-    a.check('WASI env exposes NIMBUS_ABI=wasm32-wasi-nimbus', hasLine(out, 'ABI=wasm32-wasi-nimbus'), JSON.stringify(out.slice(-500)));
-    a.check('WASI env exposes NIMBUS_ABI_TARGET=wasm32-wasi-nimbus', hasLine(out, 'TARGET=wasm32-wasi-nimbus'), JSON.stringify(out.slice(-500)));
+    a.check('WASI env exposes NIMBUS_OS=nimbus', hasOutputLine(out, 'OS=nimbus'), JSON.stringify(out.slice(-500)));
+    a.check('WASI env exposes NIMBUS_ABI=wasm32-wasi-nimbus', hasOutputLine(out, 'ABI=wasm32-wasi-nimbus'), JSON.stringify(out.slice(-500)));
+    a.check('WASI env exposes NIMBUS_ABI_TARGET=wasm32-wasi-nimbus', hasOutputLine(out, 'TARGET=wasm32-wasi-nimbus'), JSON.stringify(out.slice(-500)));
     a.check('ABI fixture exits 0', r.exitCode === 0, JSON.stringify(out.slice(-300)));
   }
 } finally {

@@ -26,7 +26,7 @@
 // a coherent Worker project — is the real, provable capability and is
 // what this probe asserts.
 
-import { Terminal, mintSession, sleep, stripAnsi, makeAsserter, deleteSession, BASE } from '../_driver.mjs';
+import { Terminal, mintSession, stripAnsi, makeAsserter, deleteSession, BASE, writeFileViaShell } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('cloudflare-pages-real');
@@ -37,7 +37,6 @@ console.log(`[cloudflare-pages-real] sid=${sid} BASE=${BASE}`);
 const t = new Terminal(sid);
 try {
   await t.connect();
-  await sleep(2_000);
   await t.waitForPrompt(60_000);
 
   await t.run('mkdir -p /home/user/c3-probe && cd /home/user/c3-probe', 10_000);
@@ -75,8 +74,7 @@ try {
     'try { src = fs.readdirSync("mvp/src"); } catch {}',
     'console.log("SRC_ENTRY=" + (src.some(f => f === "index.js" || f === "index.ts") ? "yes" : "no"));',
   ].join('\n');
-  const b64 = Buffer.from(scriptBody, 'utf8').toString('base64');
-  await t.run(`echo ${b64} | base64 -d > /home/user/c3-probe/__check.js`, 15_000);
+    await writeFileViaShell((command) => t.run(command, 15_000), '/home/user/c3-probe/__check.js', scriptBody);
   const probe = await t.run('node /home/user/c3-probe/__check.js', 25_000);
   const out = stripAnsi(probe.output);
   const yes = (k) => new RegExp(k + '=yes').test(out);
