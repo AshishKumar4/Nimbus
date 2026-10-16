@@ -90,6 +90,7 @@ const DESCRIPTOR_CALLS = new Set(['read', 'write', 'close', 'fstat', 'dup', 'see
  * would begin waiting on the session, before anything it would have done.
  */
 const NOT_NOW = Symbol('not now');
+const notNow = () => { throw NOT_NOW; };
 /** A bridge's calls with no synchronous form (RuntimeSynchronousFs). */
 const NO_SYNCHRONOUS_FORM = new Set(['synchronous', 'subscribe', 'writeStream', 'writeBatch', 'writeFileFrom', 'acquire', 'copyTree', 'gateLaunch', 'awaitRecall']);
 function after(value, next) {
@@ -452,7 +453,7 @@ export function residentFilesystem(session, resident, delegation) {
                 return walked;
             // A name this view does not know is the session's to say.
             if (now)
-                throw NOT_NOW;
+                notNow();
             if (asked >= MAX_LISTINGS_PER_CALL)
                 return DELEGATE;
             const parent = parentKey(walked.missing);
@@ -523,7 +524,7 @@ export function residentFilesystem(session, resident, delegation) {
         if (held !== undefined && held.byteLength === entry.size)
             return held;
         if (now)
-            throw NOT_NOW;
+            notNow();
         const fill = () => {
             counts.fills++;
             counts.filledBytes += entry.size;
@@ -790,7 +791,7 @@ export function residentFilesystem(session, resident, delegation) {
         if (known !== undefined)
             return known;
         if (now)
-            throw NOT_NOW;
+            notNow();
         counts.treeListings++;
         return store.listTree(key)
             .then((whole) => (whole ? true : store.list(key)))

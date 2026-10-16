@@ -578,7 +578,9 @@ export function delegationHolder(options) {
                 names.note(parentKey(key), nameOf(key), 'file');
                 // Its mode was decided under this umask: the session applies the same
                 // one, and the number a grant reserved (a provisional one is the session's to give).
-                file = { key, bytes: new Uint8Array(0), length: 0, mode: asked, ...(grant === PROVISIONAL ? { provisional: true } : { made: ino }), umask };
+                file = { key, bytes: new Uint8Array(0), length: 0, mode: asked, made: grant === PROVISIONAL ? undefined : ino, umask };
+                if (grant === PROVISIONAL)
+                    file.provisional = true;
                 files.set(ino, file);
                 // Made here: the name exists from now on, in the log's order. Logged
                 // with its bytes, before the next decision (drain), as one call.
@@ -764,12 +766,18 @@ export function delegationHolder(options) {
             // A cell no grant holds is logged at once (written): first, before anything
             // is decided (an inode descriptor's cell is made after), whether its bytes
             // fit what the log holds unanswered.
-            const live = liveFile(handle);
-            if (live.provisional === true || (live.view !== undefined && client.held(live.key) === undefined))
+            let file = liveFile(handle);
+            if (file.view !== undefined) {
+                if (client.held(file.key) === undefined)
+                    client.fitsSync(bytes.byteLength, handle.path);
+                const cell = cellOf(handle);
+                if (cell === undefined)
+                    return undefined;
+                file = cell;
+            }
+            else if (file.provisional === true) {
                 client.fitsSync(bytes.byteLength, handle.path);
-            const file = cellOf(handle);
-            if (file === undefined)
-                return undefined;
+            }
             if (file.through !== undefined) {
                 // Through: by the file's number, ordered with everything else; an
                 // O_APPEND write lands at the file's end as the session has it then.
