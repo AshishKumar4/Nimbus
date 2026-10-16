@@ -72,6 +72,11 @@ try {
       const ours = await session.git('/home/user/fetching', ['fetch', '-q', '--depth', depth]);
       compare(`fetch --depth ${JSON.stringify(depth)}`, { code: ours.code, stderr: ours.stderr }, theirs);
     }
+    // A depth that asks for no deepen is still a depth option: with --deepen beside it, refused as any depth is.
+    for (const depth of ['1', '040000000000']) {
+      const both = await session.git('/home/user/fetching', ['fetch', '-q', '--depth', depth, '--deepen', '1']);
+      compare(`fetch --depth ${depth} --deepen 1`, { code: both.code, stderr: both.stderr }, { code: 128, stderr: 'fatal: --depth, --deepen and --unshallow are mutually exclusive\n' });
+    }
   } finally {
     server.stop();
   }

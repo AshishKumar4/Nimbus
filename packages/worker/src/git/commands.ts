@@ -327,10 +327,12 @@ const INFINITE_DEPTH = 0x7fffffff;
  */
 export function parseFetchDepth(args: readonly string[]): { depth: number; relative: boolean } | undefined {
   let found: { depth: number; relative: boolean } | undefined;
+  let seen = false;
   for (let i = 0; i < args.length; i++) {
     const [flag, inline] = args[i].split('=', 2);
     if (!FETCH_DEPTH_FLAGS.includes(flag)) continue;
-    if (found !== undefined) throw new Error('--depth, --deepen and --unshallow are mutually exclusive');
+    if (seen) throw new Error('--depth, --deepen and --unshallow are mutually exclusive');
+    seen = true;
     found = fetchDepth(flag, flag === '--unshallow' ? undefined : inline ?? args[++i]);
   }
   return found;
@@ -698,6 +700,8 @@ function parseTransportArgs(command: 'fetch' | 'pull' | 'push', args: readonly s
   let quiet = false;
   let dashdash = false;
   let deepen: { depth: number; relative: boolean } | undefined;
+  // One of --depth, --deepen, --unshallow was given (a depth of 0 or less among them asks for no deepen).
+  let deepenGiven = false;
   const operands: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -707,7 +711,8 @@ function parseTransportArgs(command: 'fetch' | 'pull' | 'push', args: readonly s
     const eq = arg.indexOf('=');
     const flag = eq < 0 ? arg : arg.slice(0, eq);
     if (command === 'fetch' && FETCH_DEPTH_FLAGS.includes(flag)) {
-      if (deepen !== undefined) throw new GitGlobalsError('fatal: --depth, --deepen and --unshallow are mutually exclusive\n', 128);
+      if (deepenGiven) throw new GitGlobalsError('fatal: --depth, --deepen and --unshallow are mutually exclusive\n', 128);
+      deepenGiven = true;
       if (flag === '--unshallow' && eq >= 0) unsupportedOption(command, arg);
       const value = flag === '--unshallow' ? undefined : eq < 0 ? requiredValue(args, ++i, flag) : arg.slice(eq + 1);
       try { deepen = fetchDepth(flag, value); }
