@@ -66,7 +66,7 @@ await runScenarios(import.meta.path, {
     await answersNow(e, 'readlink', () => sync.readlink(seed), 'EAGAIN');
     await answersNow(e, 'realpath', () => sync.realpath(seed), 'EAGAIN');
     await answersNow(e, 'access', () => sync.access(seed, 4), 'EAGAIN');
-    await answersNow(e, 'a read-only open', () => sync.open(seed, { read: true }), 'EAGAIN');
+    await answersNow(e, 'a read-only open of an unknown name', () => sync.open(seed, { read: true }), 'EAGAIN');
     // A change in a directory the view has not listed: the session's to judge, before anything is decided.
     const dir = `${APP}/dir`;
     await answersNow(e, 'writeFile', () => sync.writeFile(`${dir}/new.txt`, enc.encode('N')), 'EAGAIN');
@@ -83,6 +83,12 @@ await runScenarios(import.meta.path, {
     assert.ok((await e.fs.readdir(APP)).some((entry) => entry.name === 'seed.txt'));
     assert.equal(stat(await answersNow(e, 'stat of a known name', () => sync.stat(seed))), 4);
     await answersNow(e, 'readFile of bytes not resident', () => sync.readFile(seed), 'EAGAIN');
+    // An open by its number reads nothing: the read needs the bytes, an awaited read fetches them.
+    const fd = await answersNow(e, 'a read-only open of a known name', () => sync.open(seed, { read: true })).id;
+    await answersNow(e, 'a read of bytes not resident', () => sync.read(fd, 0, 16), 'EAGAIN');
+    assert.equal(dec.decode(await e.fs.read(fd, 0, 16)), 'SEED');
+    assert.equal(dec.decode(await answersNow(e, 'a read of bytes fetched', () => sync.read(fd, 0, 16))), 'SEED');
+    sync.close(fd);
     // A directory is the name's own state where the view knows it.
     assert.equal((await e.fs.stat(`${APP}/dir`)).type, 'directory');
     await answersNow(e, 'readFile of a directory', () => sync.readFile(`${APP}/dir`), 'EISDIR');

@@ -316,7 +316,8 @@ const SCENARIOS = {
     await e.authority.peer.writeFile(`${APP.slice(1)}/far.txt`, 'FAR');
     await e.fs.readdir(APP);
     const fd = e.sync.open(`${APP}/far.txt`, { read: true }).id;
-    assert.throws(() => e.sync.read(fd, 0, 16), { code: 'EAGAIN' });
+    // Its bytes now, where the process holds them; else not resident, refused at the read.
+    try { assert.equal(dec.decode(e.sync.read(fd, 0, 16)), 'FAR'); } catch (error) { assert.equal(error.code, 'EAGAIN', error.message); }
     assert.equal(dec.decode(await e.readFd(fd, 0, 16)), 'FAR');
     assert.equal(dec.decode(e.sync.read(fd, 0, 16)), 'FAR');
     e.sync.close(fd);
