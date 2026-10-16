@@ -1473,6 +1473,9 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         entry.reject(fsError(errno, message, path));
       }
     };
+    const forget = (through, applied) => {
+      if (applied || !(sealed || processGone !== null && journal.durable)) journal.dropThrough(through);
+    };
     const opOf2 = (entry) => entry.op ?? journal.read(entry.jid);
     const retirePending = async () => {
       while (retiring.length > 0) {
@@ -1542,7 +1545,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           return;
         }
         for (const entry of entries) fail(entry, "EIO", `the session gave this process no writer: ${error2 instanceof Error ? error2.message : String(error2)}`);
-        journal.dropThrough(entries[entries.length - 1].jid);
+        forget(entries[entries.length - 1].jid, false);
         return;
       }
       let ops;
@@ -1559,7 +1562,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         const code = error2?.code;
         const errno = typeof code === "string" && /^E[A-Z0-9]+$/.test(code) ? code : "EIO";
         for (const entry of entries) fail(entry, errno, `this write could not be sent: ${error2 instanceof Error ? error2.message : String(error2)}`);
-        journal.dropThrough(entries[entries.length - 1].jid);
+        forget(entries[entries.length - 1].jid, false);
         epoch = null;
         for (const entry of queue) entry.seq = 0;
         return;
@@ -1636,7 +1639,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         back.push(entry);
       }
       const answeredThrough = back.length === 0 ? entries[entries.length - 1].jid : back[0].jid - 1;
-      if (answeredThrough >= entries[0].jid) journal.dropThrough(answeredThrough);
+      if (answeredThrough >= entries[0].jid) forget(answeredThrough, true);
       if (back.length === 0) return;
       if (answer.ok || refused !== null) {
         for (const entry of back) entry.lingers = false;
@@ -1650,7 +1653,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         counters.lost++;
         fail(entry, "EIO", message);
       }
-      if (!sealed) journal.dropThrough(entries[entries.length - 1].jid);
+      forget(entries[entries.length - 1].jid, false);
       if (writer !== null) retiring.push(writer);
       epoch = null;
       ownThrough = Infinity;
@@ -1666,7 +1669,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         }
         fail(entry, "ESRCH", processGone.message);
       }
-      if (!journal.durable) journal.dropThrough(ended[ended.length - 1].jid);
+      forget(ended[ended.length - 1].jid, false);
       if (writer !== null) retiring.push(writer);
       epoch = null;
       ownThrough = Infinity;
@@ -1681,7 +1684,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         }
         fail(entry, "EIO", refusal.message);
       }
-      if (!journal.durable) journal.dropThrough(stopped[stopped.length - 1].jid);
+      forget(stopped[stopped.length - 1].jid, false);
       epoch = null;
       ownThrough = Infinity;
     };

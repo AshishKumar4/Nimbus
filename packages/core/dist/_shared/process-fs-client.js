@@ -302,7 +302,7 @@ export function processFsClient(options) {
     /** A grant being taken (no other is asked for meanwhile), and whether waves wait for it (while it is asked for). */
     let claiming = null;
     let paused = false;
-    /** The session's drain owns the journal (seal): nothing more is sent, and nothing unapplied forgotten. */
+    /** The session's drain owns the journal (seal): nothing more is sent. */
     let sealed = false;
     /** The wave in flight, settled once its answer is applied. */
     let sending = null;
@@ -332,6 +332,17 @@ export function processFsClient(options) {
         else {
             entry.reject(fsError(errno, message, path));
         }
+    };
+    /**
+     * Drop the journal through `through`: what the session `applied` (or
+     * refused, its verdict), always; anything else only while the journal is
+     * the process's. It is the session's drain's once the process is sealed
+     * (seal), or once the session ended it over a durable journal: the drain
+     * sends what it holds, so nothing it did not take is forgotten here.
+     */
+    const forget = (through, applied) => {
+        if (applied || !(sealed || (processGone !== null && journal.durable)))
+            journal.dropThrough(through);
     };
     /** An entry's change: the heap's copy, or the journal's. */
     const opOf = (entry) => entry.op ?? journal.read(entry.jid);
@@ -428,7 +439,7 @@ export function processFsClient(options) {
             }
             for (const entry of entries)
                 fail(entry, 'EIO', `the session gave this process no writer: ${error instanceof Error ? error.message : String(error)}`);
-            journal.dropThrough(entries[entries.length - 1].jid);
+            forget(entries[entries.length - 1].jid, false);
             return;
         }
         let ops;
@@ -452,7 +463,7 @@ export function processFsClient(options) {
             const errno = typeof code === 'string' && /^E[A-Z0-9]+$/.test(code) ? code : 'EIO';
             for (const entry of entries)
                 fail(entry, errno, `this write could not be sent: ${error instanceof Error ? error.message : String(error)}`);
-            journal.dropThrough(entries[entries.length - 1].jid);
+            forget(entries[entries.length - 1].jid, false);
             // An epoch numbers ops by their place in the log: dropped, these leave
             // a gap the session would refuse what follows for. What follows is
             // numbered under a new epoch (nothing of this wave left, and what the
@@ -545,7 +556,7 @@ export function processFsClient(options) {
         // What was answered is forgotten: a prefix of the log (waves are cut in order).
         const answeredThrough = back.length === 0 ? entries[entries.length - 1].jid : back[0].jid - 1;
         if (answeredThrough >= entries[0].jid)
-            journal.dropThrough(answeredThrough);
+            forget(answeredThrough, true);
         if (back.length === 0)
             return;
         if (answer.ok || refused !== null) {
@@ -570,8 +581,7 @@ export function processFsClient(options) {
             counters.lost++;
             fail(entry, 'EIO', message);
         }
-        if (!sealed)
-            journal.dropThrough(entries[entries.length - 1].jid);
+        forget(entries[entries.length - 1].jid, false);
         if (writer !== null)
             retiring.push(writer);
         epoch = null;
@@ -582,8 +592,8 @@ export function processFsClient(options) {
     /**
      * The session ended the process: what it logged is refused, and its
      * waiters told so. A durable journal keeps it for the session's drain
-     * (what the process was told it wrote outlives it, as write(2)'s does);
-     * any other forgets it.
+     * (forget: what the process was told it wrote outlives it, as write(2)'s
+     * does); any other forgets it.
      */
     const endedProcess = (entries, refusal, writer) => {
         processGone ??= refusal;
@@ -595,8 +605,7 @@ export function processFsClient(options) {
             }
             fail(entry, 'ESRCH', processGone.message);
         }
-        if (!journal.durable)
-            journal.dropThrough(ended[ended.length - 1].jid);
+        forget(ended[ended.length - 1].jid, false);
         if (writer !== null)
             retiring.push(writer);
         epoch = null;
@@ -612,8 +621,7 @@ export function processFsClient(options) {
             }
             fail(entry, 'EIO', refusal.message);
         }
-        if (!journal.durable)
-            journal.dropThrough(stopped[stopped.length - 1].jid);
+        forget(stopped[stopped.length - 1].jid, false);
         epoch = null;
         ownThrough = Infinity;
     };
