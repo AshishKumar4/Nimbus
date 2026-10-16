@@ -6,7 +6,11 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Fixed: in Node programs, `fs.open` honours `O_NOFOLLOW`: a final symbolic
-  link is `ELOOP`, or `ENOTDIR` with `O_DIRECTORY`, as on Linux. `O_SYNC`
+  link is `ELOOP`, or `ENOTDIR` with `O_DIRECTORY`, as on Linux, and
+  `EEXIST` under `O_CREAT|O_EXCL`. A write open is one call the session
+  judges with its create, truncate and flags, so a file a peer replaces
+  with a link after the program looked is refused, not followed and
+  emptied. `O_SYNC`
   follows each write with an fsync. `FileHandle.write` reads its arguments
   as `fs.write` does: `handle.write('ff', 0, 'hex')` writes the byte `ff`
   (it wrote `66 66`), and `handle.write(buffer, { offset, length,
