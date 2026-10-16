@@ -49,7 +49,9 @@ import type { ExclusiveMutationGrant, GrantCertificate, RecallKind } from '../ru
 import { WAVE_BYTES, WAVE_PATHS, WAVE_PATH_BYTES, openWaveEpoch, sendWaveAttempts, waveAttemptsOf, type WaveFence, type WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import { classifyMessage } from '@nimbus-sh/platform/oom-classify.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { SYSCALL_VERDICTS, type VfsErrorCode } from '../vfs/vfs-error.js';
+import { parentKey } from '../vfs/path.js';
 import type { WaveMutation, WriteBatchStreamResult, WriteStreamReceipt } from '../runtime/wave-contracts.js';
 import { memoryJournal, type ProcessFsJournal, type ProcessFsJournalSource, type ProcessFsNumbering } from './process-fs-journal.js';
 
@@ -442,8 +444,6 @@ function withUmaskOf(op: ProcessFsOp, umask: (() => number | undefined) | undefi
 /** A link's target, at most (PATH_MAX, as symlink(2) bounds it). */
 const SYMLINK_TARGET_MAX = 4096;
 
-const utf8 = new TextEncoder();
-const utf8Bytes = (text: string): number => utf8.encode(text).byteLength;
 /** A grant unused this long is given back. */
 export const GRANT_IDLE_MS = 2_000;
 /** Inode numbers a first grant of a subtree reserves; each renewal doubles it. */
@@ -469,11 +469,6 @@ interface Grant extends ProcessFsGrant {
 function standingOf(grant: Grant, key: string): 'held' | 'above' | undefined {
   if (grant.ended || grant.closing || grant.shared) return undefined;
   return within(key, grant.root) ? 'held' : within(grant.root, key) ? 'above' : undefined;
-}
-
-function parentKey(key: string): string {
-  const at = key.lastIndexOf('/');
-  return at < 0 ? '' : key.slice(0, at);
 }
 
 function within(key: string, root: string): boolean {
@@ -512,10 +507,6 @@ const GLOBAL_TIMERS: WaveTimers = {
   setTimeout: (callback, ms) => setTimeout(callback, ms),
   clearTimeout: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
 };
-
-function utf8Length(text: string): number {
-  return new TextEncoder().encode(text).byteLength;
-}
 
 function pathsOf(op: ProcessFsOp): string[] {
   switch (op.type) {
@@ -1301,7 +1292,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       const lingers = (acknowledged || submitOptions?.decided === true) && named.every((path) => heldGrant(path) !== undefined);
       for (const path of named) if (!canonical(path)) throw fsError('EINVAL', `EINVAL: not a filesystem path the session takes: '${path}'`, path);
       // A link's target past PATH_MAX is refused here, as symlink(2) refuses it; no wave could carry it.
-      if (op.type === 'call' && op.call.call === 'symlink' && utf8Bytes(op.call.target) > SYMLINK_TARGET_MAX) {
+      if (op.type === 'call' && op.call.call === 'symlink' && utf8Length(op.call.target) > SYMLINK_TARGET_MAX) {
         throw fsError('ENAMETOOLONG', `ENAMETOOLONG: a link's target is at most ${SYMLINK_TARGET_MAX} bytes`, op.call.path);
       }
       const parts = pieces(op);

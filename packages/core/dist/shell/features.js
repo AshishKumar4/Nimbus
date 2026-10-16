@@ -1,5 +1,6 @@
 import { endsHeredoc, lex } from '../substrate/lifo/shell/lexer.js';
 import { TokenKind } from '../substrate/lifo/shell/types.js';
+import { errorText } from '../_shared/error-text.js';
 /**
  * The here-documents `input` opens, when a body is still to come: null when
  * it opens none, or every body and its terminator are there (a command
@@ -251,14 +252,11 @@ export class HeredocHandler {
             await this._executeOriginalLine(script, submission);
         }
         catch (error) {
-            this.terminal.write(`\x1b[31mheredoc error: ${errorMessage(error)}\x1b[0m\r\n`);
+            this.terminal.write(`\x1b[31mheredoc error: ${errorText(error)}\x1b[0m\r\n`);
             this._printPrompt();
             await this.shell.drainPasteQueue();
         }
     }
-}
-function errorMessage(error) {
-    return error instanceof Error ? error.message : String(error);
 }
 // ── Line-editor extension (readline parity) ─────────────────────────────
 /**

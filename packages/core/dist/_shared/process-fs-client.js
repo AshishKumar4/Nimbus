@@ -47,7 +47,9 @@ import { encodeWriteBatch } from '@nimbus-sh/platform/w7-frame.js';
 import { WAVE_BYTES, WAVE_PATHS, WAVE_PATH_BYTES, openWaveEpoch, sendWaveAttempts, waveAttemptsOf } from '@nimbus-sh/platform/wave-writer.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import { classifyMessage } from '@nimbus-sh/platform/oom-classify.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { SYSCALL_VERDICTS } from '../vfs/vfs-error.js';
+import { parentKey } from '../vfs/path.js';
 import { memoryJournal } from './process-fs-journal.js';
 export { journalSource, memoryJournal, sqlJournal } from './process-fs-journal.js';
 /** The calls' answers (vfs-error.ts), as the write ledger spliced beside this client classifies what a program caught. */
@@ -121,8 +123,6 @@ function withUmaskOf(op, umask) {
 }
 /** A link's target, at most (PATH_MAX, as symlink(2) bounds it). */
 const SYMLINK_TARGET_MAX = 4096;
-const utf8 = new TextEncoder();
-const utf8Bytes = (text) => utf8.encode(text).byteLength;
 /** A grant unused this long is given back. */
 export const GRANT_IDLE_MS = 2_000;
 /** Inode numbers a first grant of a subtree reserves; each renewal doubles it. */
@@ -136,10 +136,6 @@ function standingOf(grant, key) {
     if (grant.ended || grant.closing || grant.shared)
         return undefined;
     return within(key, grant.root) ? 'held' : within(grant.root, key) ? 'above' : undefined;
-}
-function parentKey(key) {
-    const at = key.lastIndexOf('/');
-    return at < 0 ? '' : key.slice(0, at);
 }
 function within(key, root) {
     return root === '' || key === root || key.startsWith(`${root}/`);
@@ -156,9 +152,6 @@ const GLOBAL_TIMERS = {
     setTimeout: (callback, ms) => setTimeout(callback, ms),
     clearTimeout: (timer) => clearTimeout(timer),
 };
-function utf8Length(text) {
-    return new TextEncoder().encode(text).byteLength;
-}
 function pathsOf(op) {
     switch (op.type) {
         case 'call': return op.call.call === 'copyFile' ? [op.call.path, op.call.from] : [op.call.path];
@@ -999,7 +992,7 @@ export function processFsClient(options) {
                 if (!canonical(path))
                     throw fsError('EINVAL', `EINVAL: not a filesystem path the session takes: '${path}'`, path);
             // A link's target past PATH_MAX is refused here, as symlink(2) refuses it; no wave could carry it.
-            if (op.type === 'call' && op.call.call === 'symlink' && utf8Bytes(op.call.target) > SYMLINK_TARGET_MAX) {
+            if (op.type === 'call' && op.call.call === 'symlink' && utf8Length(op.call.target) > SYMLINK_TARGET_MAX) {
                 throw fsError('ENAMETOOLONG', `ENAMETOOLONG: a link's target is at most ${SYMLINK_TARGET_MAX} bytes`, op.call.path);
             }
             const parts = pieces(op);

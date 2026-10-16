@@ -94,10 +94,10 @@ export function pathsOverlap(left, right) {
         || left.startsWith(`${right}/`)
         || right.startsWith(`${left}/`);
 }
-/** Return the canonical VFS parent key, or an empty string for root-level paths. */
 /** The directory a storage key (already normalized) is under: '' at the root. */
 export function parentKey(key) {
-    return key.includes('/') ? key.substring(0, key.lastIndexOf('/')) : '';
+    const at = key.lastIndexOf('/');
+    return at < 0 ? '' : key.slice(0, at);
 }
 /** The directory a path is in, by its last '/': '/' for a path directly under the root (or none). */
 export function parentOf(path) {

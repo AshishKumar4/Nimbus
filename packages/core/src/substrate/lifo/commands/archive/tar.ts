@@ -1,4 +1,4 @@
-import type { Command } from '../types.js';
+import type { Command, CommandContext } from '../types.js';
 import { resolve, dirname } from '../../utils/path.js';
 import { createTar, parseTar, compressGzip, decompressGzip, collectFiles } from '../../utils/archive.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
@@ -108,7 +108,7 @@ const command: Command = async (ctx) => {
         data = await decompressGzip(data);
       }
 
-      const entries = await parseTar(data);
+      const { entries, truncated } = await parseTar(data);
 
       // Ensure target dir exists
       if (changeDir) {
@@ -131,6 +131,8 @@ const command: Command = async (ctx) => {
           await ctx.stdout.write(`${entry.path}\n`);
         }
       }
+      // GNU tar's words, twice as it says them extracting, once listing.
+      if (truncated) return unexpectedEof(ctx, 2);
     } else if (list) {
       let data = (await ctx.vfs.readFile(archivePath));
 
@@ -138,10 +140,11 @@ const command: Command = async (ctx) => {
         data = await decompressGzip(data);
       }
 
-      const entries = await parseTar(data);
+      const { entries, truncated } = await parseTar(data);
       for (const entry of entries) {
         await ctx.stdout.write(`${entry.path}${entry.type === 'directory' ? '/' : ''}\n`);
       }
+      if (truncated) return unexpectedEof(ctx, 1);
     }
   } catch (e) {
     if (isVfsError(e)) {
@@ -155,3 +158,9 @@ const command: Command = async (ctx) => {
 };
 
 export default command;
+
+/** An archive that ended inside a member, after what came before it was extracted or listed: GNU tar's report and status. */
+async function unexpectedEof(ctx: CommandContext, times: number): Promise<number> {
+  await ctx.stderr.write('tar: Unexpected EOF in archive\n'.repeat(times) + 'tar: Error is not recoverable: exiting now\n');
+  return 2;
+}
