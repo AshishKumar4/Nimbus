@@ -10,5 +10,5 @@ export interface LifoNativeLoader extends NativeModuleLoader {
 export declare function createNativeEsmLoader(context: NodeContext, cjs: CjsLoader, main?: {
     readonly filename: string;
     readonly source: string;
-}): Promise<LifoNativeLoader>;
+}, conditions?: readonly string[]): Promise<LifoNativeLoader>;
 //# sourceMappingURL=native-esm-loader.d.ts.map

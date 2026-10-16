@@ -10,6 +10,7 @@ import { createEsmResolver, type EsmResolution } from '../../../_shared/esm-reso
 import { pathToFileURL } from './file-url.js';
 import { cjsModuleExportNames } from '../../../runtime/cjs-module-exports.js';
 import { NODE_BUILTIN_EXPORTS } from '../../../runtime/node-builtin-exports.js';
+import { dataModule, importCallArguments } from '../../../runtime/esm-loader-policy.js';
 import { escapedIdentifierNames, readModuleImportSites } from '../../../runtime/dynamic-import-rewrite.js';
 import { hasTopLevelAwait } from '../../../runtime/esm-require-hoist.js';
 import { applySourceEdits, containsModuleSyntax, isAstNode, MODULE_PARSE_OPTIONS, parseStatements } from '../../../runtime/javascript-ast.js';
@@ -20,6 +21,7 @@ import {
 import { requiredEsModule, sourceColumn, type RequiredEsModule } from '../../../runtime/native-esm-runtime.js';
 import { dirname } from '../utils/path.js';
 import type { CjsLoader, NativeModuleLoader } from './cjs-loader.js';
+import { isProvidedPackage, servedName } from './module.js';
 import type { NodeContext } from './index.js';
 
 const PRIVATE_PATH = '/__nimbus_lifo__/';
@@ -180,6 +182,7 @@ export async function createNativeEsmLoader(
 	context: NodeContext,
 	cjs: CjsLoader,
 	main?: { readonly filename: string; readonly source: string },
+	conditions: readonly string[] = [],
 ): Promise<LifoNativeLoader> {
 	const hostModule = await installHooks();
 	const bun = Reflect.get(globalThis, 'Bun') !== undefined;
@@ -190,10 +193,6 @@ export async function createNativeEsmLoader(
 	const byName = new Map<string, ModuleRecord>();
 	const exportNames = new Map<string, Set<string>>();
 	const builtinSync = new Set<() => void>();
-	const makeModule = cjs.moduleMap.module;
-	cjs.moduleMap.module = () => ({ ...(makeModule() as object), syncBuiltinESMExports() {
-		for (const sync of builtinSync) sync();
-	} });
 	const evalMain = main?.filename === '[eval]';
 	const mainPath = evalMain ? `${context.cwd}/[eval1]` : main?.filename;
 	const mainUrl = mainPath ? pathToFileURL(mainPath).href : undefined;
@@ -205,9 +204,10 @@ export async function createNativeEsmLoader(
 		},
 		realpath: (path) => path === mainPath ? path : context.filesystem().realpath(path),
 		readText: (path) => path === mainPath ? main!.source : context.filesystem().exists(path) ? context.filesystem().readFileString(path) : null,
+		// The resolver names a bare provided package node:<name> too; a written node:<name> is refused at resolveRecord.
 		isBuiltin: (specifier) => Object.hasOwn(cjs.moduleMap, specifier.startsWith('node:') ? specifier.slice(5) : specifier),
 		cjsResolve: (specifier, parent) => cjs.resolveFilename(specifier, dirname(parent)),
-	}, { cwd: () => context.cwd, stripTypes: false });
+	}, { cwd: () => context.cwd, stripTypes: false, conditions });
 
 	function recordFor(resolution: EsmResolution): ModuleRecord {
 		const known = records.get(resolution.url);
@@ -220,14 +220,11 @@ export async function createNativeEsmLoader(
 			format = containsModuleSyntax(source) ? 'module' : 'commonjs';
 		}
 		if (format === 'data') {
-			const url = new URL(resolution.url);
-			const comma = url.pathname.indexOf(',');
-			const header = url.pathname.slice(0, comma);
-			if (!header.startsWith('text/javascript') && !header.startsWith('application/json')) {
-				throw Object.assign(new RangeError(`Unknown module format: ${header} for URL ${resolution.url}`), { code: 'ERR_UNKNOWN_MODULE_FORMAT' });
+			const data = dataModule(resolution.url);
+			if (data.format === null) {
+				throw Object.assign(new RangeError(`Unknown module format: ${data.mime} for URL ${resolution.url}`), { code: 'ERR_UNKNOWN_MODULE_FORMAT' });
 			}
-			source = header.endsWith(';base64') ? atob(url.pathname.slice(comma + 1)) : decodeURIComponent(url.pathname.slice(comma + 1));
-			format = header.startsWith('application/json') ? 'json' : 'module';
+			({ format, source } = data);
 		}
 		const recordId = byId.length;
 		const publicUrl = new URL(resolution.url);
@@ -250,6 +247,10 @@ export async function createNativeEsmLoader(
 	}
 
 	function resolveRecord(specifier: string, parent: string, attributes: Record<string, unknown> = {}): ModuleRecord {
+		// A provided package is no core module: node:esbuild names none, as in Node.
+		if (specifier.startsWith('node:') && servedName(cjs.moduleMap, specifier) === null) {
+			throw Object.assign(new Error(`No such built-in module: ${specifier}`), { code: 'ERR_UNKNOWN_BUILTIN_MODULE' });
+		}
 		const resolution = resolver.resolveSync(specifier, parent);
 		resolver.validateAttributes(resolution.url, resolution.format, attributes);
 		return recordFor(resolution);
@@ -348,14 +349,22 @@ export async function createNativeEsmLoader(
 		}
 	}
 
+	/** A builtin as require() has it: a core module by its scheme, a provided package by its name. */
+	const requireBuiltin = (name: string): unknown => cjs.requireFrom(context.cwd)(isProvidedPackage(name) ? name : `node:${name}`);
+	/** A builtin facade's names: a core module's Node's, a provided package's its own (as require() gives it). */
+	function builtinExportNames(name: string): readonly string[] {
+		if (!isProvidedPackage(name)) return NODE_BUILTIN_EXPORTS[name] ?? [];
+		const exported = requireBuiltin(name);
+		return (typeof exported === 'object' && exported !== null) || typeof exported === 'function'
+			? Object.keys(exported).filter((key) => key !== 'default') : [];
+	}
+
 	const native: LifoNativeLoader = {
 		async importModule(specifier, parentUrl, options) {
 			let record: ModuleRecord | undefined;
 			try {
-				if (typeof specifier === 'symbol') throw new TypeError('Cannot convert a Symbol value to a string');
-				const attributes = typeof options === 'object' && options !== null && 'with' in options && typeof options.with === 'object' && options.with !== null
-					? options.with as Record<string, unknown> : {};
-				record = resolveRecord(String(specifier), parentUrl, attributes);
+				const call = importCallArguments(specifier, options);
+				record = resolveRecord(call.specifier, parentUrl, call.attributes);
 				return await import(/* @vite-ignore */ root + record.name);
 			} catch (error) { if (bun) failedGraph(record, error); return explain(error); }
 		},
@@ -382,6 +391,9 @@ export async function createNativeEsmLoader(
 				return await import(/* @vite-ignore */ root + record.name);
 			} catch (error) { if (bun) failedGraph(record, error); return explain(error); }
 		},
+		syncBuiltinESMExports() {
+			for (const sync of builtinSync) sync();
+		},
 		dispose() { loaders.delete(id); },
 	};
 	const hooks: HookLoader = {
@@ -406,7 +418,7 @@ export async function createNativeEsmLoader(
 			}
 			const record = byName.get(name);
 			if (!record) throw new Error(`lifo: unknown native module ${url}`);
-			if (record.resolution.format === 'builtin') return engineSource(builtinFacadeModule(record.name, record.id, NODE_BUILTIN_EXPORTS[record.resolution.builtin!] ?? []), record.name);
+			if (record.resolution.format === 'builtin') return engineSource(builtinFacadeModule(record.name, record.id, builtinExportNames(record.resolution.builtin!)), record.name);
 			if (record.resolution.format === 'json') return engineSource(commonJsFacadeModule(record.name, record.id, ['default']), record.name);
 			if (record.resolution.format === 'commonjs') {
 				const names = cjsModuleExportNames(record.resolution.path!, {
@@ -452,7 +464,7 @@ export async function createNativeEsmLoader(
 				i: (specifier: string, options?: unknown) => native.importModule(specifier, resolution.url, options),
 				c: () => { record.state = 'entered'; },
 				r: (namespace?: Record<string, unknown>) => { record.namespace = namespace; record.state = 'done'; },
-				l: () => resolution.format === 'builtin' ? cjs.requireFrom(context.cwd)(`node:${resolution.builtin}`)
+				l: () => resolution.format === 'builtin' ? requireBuiltin(resolution.builtin!)
 					: resolution.format === 'json' && !path ? JSON.parse(sourceOf(record)) : cjs.load(path!),
 				s: (sync: () => void) => { builtinSync.add(sync); },
 				q: undefined, f: undefined, d: undefined,

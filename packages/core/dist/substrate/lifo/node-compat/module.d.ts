@@ -11,6 +11,14 @@
  * a built-in is, but no part of Node's core, so not in builtinModules.
  */
 export declare const PROVIDED_PACKAGES: readonly ["rimraf", "esbuild"];
+/** Whether the module map's `name` is a provided npm package rather than a core module. */
+export declare function isProvidedPackage(name: string): boolean;
+/**
+ * The module map's name for `specifier`, or null when the map serves no such
+ * module: `node:` names a core module only (`node:esbuild` is no module, as
+ * in Node), a bare name a core module or a provided package.
+ */
+export declare function servedName(moduleMap: Record<string, () => unknown>, specifier: string): string | null;
 export type RequireFunction = ((id: string) => unknown) & {
     resolve: ((id: string, options?: {
         paths?: string[];
@@ -42,48 +50,28 @@ export declare class Module {
     static _cache: Record<string, unknown>;
 }
 /**
- * The `module` built-in over a module map: its builtinModules are the map's
- * names, and createRequire is `createRequire` (the CommonJS loader's, which
- * resolves files and packages too) or, for a bare map, one that serves the
- * map's built-ins alone.
+ * The `module` built-in over a module map, as Node's is its Module class
+ * (module.exports = Module, and Module.Module is Module): its builtinModules
+ * are the map's core names, and createRequire is `createRequire` (the
+ * CommonJS loader's, which resolves files and packages too) or, for a bare
+ * map, one that serves the map's built-ins alone.
  */
 export declare function createModuleShim(moduleMap: Record<string, () => unknown>, createRequire?: (filename: string | URL) => RequireFunction): {
-    Module: {
-        new (id?: string, parent?: Module | null): {
-            id: string;
-            filename: string;
-            exports: unknown;
-            parent: Module | null;
-            children: Module[];
-            loaded: boolean;
-            paths: string[];
-            require(_id: string): unknown;
-        };
-        createRequire: (filename: string | URL) => RequireFunction;
-        _cache: Record<string, unknown>;
-        builtinModules: string[];
-        isBuiltin: (specifier: string) => boolean;
-        _resolveFilename(request: string): string;
+    new (id?: string, parent?: Module | null): {
+        id: string;
+        filename: string;
+        exports: unknown;
+        parent: Module | null;
+        children: Module[];
+        loaded: boolean;
+        paths: string[];
+        require(_id: string): unknown;
     };
+    createRequire: (filename: string | URL) => RequireFunction;
+    _cache: Record<string, unknown>;
     builtinModules: string[];
     isBuiltin: (specifier: string) => boolean;
-    createRequire: (filename: string | URL) => RequireFunction;
-    default: {
-        new (id?: string, parent?: Module | null): {
-            id: string;
-            filename: string;
-            exports: unknown;
-            parent: Module | null;
-            children: Module[];
-            loaded: boolean;
-            paths: string[];
-            require(_id: string): unknown;
-        };
-        createRequire: (filename: string | URL) => RequireFunction;
-        _cache: Record<string, unknown>;
-        builtinModules: string[];
-        isBuiltin: (specifier: string) => boolean;
-        _resolveFilename(request: string): string;
-    };
+    Module: /*elided*/ any;
+    _resolveFilename(request: string): string;
 };
 //# sourceMappingURL=module.d.ts.map

@@ -55,6 +55,10 @@ export interface NodeCommandLine extends NodeLaunch {
     programIndex: number;
     /** `--input-type`: what `-e` code and stdin are (`module`, `commonjs`), the command line's over NODE_OPTIONS'. */
     inputType?: string;
+    /** `-c`/`--check`: the script's syntax is checked, and it does not run. */
+    check: boolean;
+    /** `--experimental-default-type`: the format of a file with no other, the command line's over NODE_OPTIONS'. */
+    defaultType?: string;
     version: boolean;
     help: boolean;
 }

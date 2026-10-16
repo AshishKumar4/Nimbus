@@ -5,6 +5,47 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a portable workspace's `node` reads its command line as the
+  hosted `node` does (Node's own parser, NODE_OPTIONS first), and finds its
+  script the same way. `node .` runs the package's `main`, and `node start`
+  finds `start.js`. Options before the script, such as `--trace-warnings`,
+  are options. `--conditions`, `-C` and `NODE_OPTIONS='--conditions=…'`
+  apply to both `require` and `import`. Before, only a first-position `-v`,
+  `--help` or `-e` was read, `node .` read the directory, and conditions
+  were ignored. What it does not run (`--require`, `--import`, `--print`,
+  `--check`, `--input-type`, `--experimental-default-type`, a program from
+  stdin) is refused with exit 9 before anything runs. A script it cannot
+  find is "node: cannot find module '<script>'", as on the hosted `node`.
+- Fixed: a hosted launch's dependency walk and ES module staging decide
+  what is a Node builtin the way Node's `module.isBuiltin` does
+  (`runtime/node-builtins.js` `isNodeBuiltin`). The process's `require`
+  shares its scheme-only names and serves the builtins it implements. A
+  `node_modules/constants` shadow is no longer walked: `require('constants')`
+  is the builtin, as in Node. Before, a large shadow could fail the launch over a file Node never
+  reads. An npm package named `sqlite`, required bare, is now shipped with
+  the launch, since bare `sqlite` is no builtin.
+- Fixed: a portable `node` program's `import()` refuses a second argument
+  that is not an object (`1`, `null`), or a `with` that is not an object,
+  with V8's TypeError before anything resolves. Before, these counted as no
+  options, and the module loaded and ran. An attribute value that is not a
+  string is now V8's TypeError, read after every other value, instead of
+  `ERR_INVALID_ARG_TYPE`. A hosted program's `import()` of a Symbol is now
+  refused as Node refuses it; before, it looked for a package named
+  `Symbol(s)`.
+- Fixed: a portable `node` program reads a `data:` URL module as Node 22
+  does. Base64 JSON and JavaScript are read as UTF-8, so `"✓"` arrives
+  intact instead of as `"â\u009c\u0093"`. `application/javascript` is a
+  module. An unknown type such as `text/javascriptx` fails with
+  `ERR_UNKNOWN_MODULE_FORMAT` instead of loading. A hosted program's
+  unknown type is now Node's RangeError, "Unknown module format: <type>
+  for URL <url>", where it was a TypeError.
+- Fixed: a portable `node` program's `node:module` is Node's `Module`
+  class. `new Module(id)` works, `Module.Module === Module`, and the
+  default import is the same class. Before, it was a plain object and
+  `new Module()` threw.
+- Fixed: a portable `node` program can `import { version, transform } from
+  'esbuild'` with the names `require('esbuild')` has. Before, it failed to
+  link. `node:esbuild` and `node:rimraf` are not modules, as in Node.
 - Added: `npm install` and `npm ci` read packuments in npm's cache modes.
   `--prefer-online` checks a cached packument with the registry however
   fresh it is (a `304` keeps it). `--prefer-offline` uses any cached copy,

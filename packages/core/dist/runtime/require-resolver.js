@@ -28,6 +28,7 @@
  */
 import { METADATA_CANDIDATE_WORK, heldCellText, packageJsonVisible, resolveRequireEx, } from './require-resolution.js';
 import { FACET_PROVIDED_PACKAGES, VFS_BUNDLE_MAX_BYTES } from '../constants.js';
+import { isNodeBuiltin } from './node-builtins.js';
 import { stripLeadingSlashes } from '../vfs/path.js';
 import { isNativeBinPath } from './os-contracts.js';
 import { stripCommentsForImports } from './comment-strip.js';
@@ -719,24 +720,16 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         throw error;
     }
 }
-const BUILTINS = new Set([
-    'fs', 'path', 'os', 'events', 'stream', 'buffer', 'util', 'url', 'crypto',
-    'assert', 'querystring', 'string_decoder', 'child_process', 'process',
-    'console', 'http', 'https', 'http2', 'net', 'dns', 'tls', 'tty',
-    'module', 'timers', 'zlib', 'readline', 'perf_hooks', 'worker_threads',
-    'vm', 'v8', 'inspector', 'cluster', 'domain', 'punycode', 'wasi',
-    'trace_events', 'dgram', 'sqlite', 'repl',
-]);
 /**
  * Specifiers the walker must not follow: the facet resolves them from its own
- * `builtins` table, never from the bundle. That is node core plus the npm
- * packages the facet provides itself — walking those would spend the bundle's
- * file and byte budget shipping sources that `require()` can never reach.
+ * `builtins` table, never from the bundle. That is node core, as Node names
+ * it (isNodeBuiltin: `constants` is one; bare `sqlite` is a package), plus
+ * the npm packages the facet provides itself — walking those would spend the
+ * bundle's file and byte budget shipping sources that `require()` can never
+ * reach. A `node:` name that is no builtin has nothing to walk either.
  */
 function isFacetProvided(id) {
-    if (id.startsWith('node:'))
-        return true;
-    return BUILTINS.has(id) || FACET_PROVIDED_PACKAGES.includes(id);
+    return id.startsWith('node:') || isNodeBuiltin(id) || FACET_PROVIDED_PACKAGES.includes(id);
 }
 /**
  * Node's ESM resolver over the walk's filesystem (the process's loader

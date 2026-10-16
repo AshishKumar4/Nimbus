@@ -16696,7 +16696,7 @@ builtins.tty = {
 // would otherwise conclude e.g. undici ships with node.
 const __nimbusFacetProvidedPackages = new Set(["undici"]);
 // Node's builtins that exist only with the scheme (lib/internal/bootstrap/realm.js schemelessBlockList).
-const __NODE_SCHEME_ONLY_BUILTINS = new Set(["sea", "sqlite", "test", "test/reporters"]);
+const __NODE_SCHEME_ONLY_BUILTINS = new Set(["sea","sqlite","test","test/reporters"]);
 // The Node builtin `specifier` names, by its id, or null: what require,
 // import, module.isBuiltin, module.builtinModules and
 // process.getBuiltinModule read. The packages the process provides are in
@@ -19688,6 +19688,9 @@ function __nimbusEsmRequire(id, required, parent = undefined) {
 const __nimbusEsmRequired = (()=>{function f(o){let{namespace:e}=o;return Object.hasOwn(e,"module.exports")?Reflect.get(e,"module.exports"):!Object.hasOwn(e,"default")||Object.hasOwn(e,"__esModule")?e:o.required??=s(e)}function s(o){let e=Object.create(null),l=n=>n==="__esModule"?!0:Reflect.get(o,n);for(let n of[...Object.keys(o),"__esModule"].sort())Object.defineProperty(e,n,{value:l(n),writable:!0,enumerable:!0});Object.defineProperty(e,Symbol.toStringTag,{value:"Module"}),Object.preventExtensions(e);let u=n=>e[n]=l(n);return new Proxy(e,{get:(n,t)=>typeof t=="string"&&Object.hasOwn(e,t)?u(t):Reflect.get(e,t),getOwnPropertyDescriptor(n,t){let r=Reflect.getOwnPropertyDescriptor(e,t);return r!==void 0&&typeof t=="string"&&(r.value=u(t)),r},set:()=>!1,defineProperty(n,t,r){return typeof t=="symbol"?Reflect.defineProperty(e,t,r):!Object.hasOwn(e,t)||r.configurable===!0||r.enumerable===!1||"get"in r||"set"in r||r.writable===!1?!1:!("value"in r)||Object.is(r.value,u(t))},deleteProperty:(n,t)=>typeof t=="symbol"?Reflect.deleteProperty(e,t):!Object.hasOwn(e,t)})}
 
 return {"requiredEsModule":f};})().requiredEsModule;
+const { importCallArguments: __nimbusImportCallArguments, dataModule: __nimbusDataModule } = (()=>{function u(i,t){if(typeof i=="symbol")throw new TypeError("Cannot convert a Symbol value to a string");let r=String(i),o=Object.create(null);if(t===void 0)return{specifier:r,attributes:o};if(t===null||typeof t!="object"&&typeof t!="function")throw new TypeError("The second argument to import() must be an object");let n=Reflect.get(t,"with");if(n===void 0)return{specifier:r,attributes:o};if(n===null||typeof n!="object"&&typeof n!="function")throw new TypeError("The 'assert' option must be an object");let e=!0;for(let s of Object.keys(n)){let a=Reflect.get(n,s);typeof a=="string"?o[s]=a:e=!1}if(!e)throw new TypeError("Import assertion value must be a string");return{specifier:r,attributes:o}}function f(i){let t=new TextEncoder().encode(i),r=new Uint8Array(t.length),o=0,n=e=>e>=48&&e<=57||e>=65&&e<=70||e>=97&&e<=102;for(let e=0;e<t.length;e++){let s=t[e];s===37&&e+2<t.length&&n(t[e+1])&&n(t[e+2])?(r[o++]=parseInt(String.fromCharCode(t[e+1],t[e+2]),16),e+=2):r[o++]=s}return r.subarray(0,o)}function d(i){let t=new URL(i),r=/^([^/]+\/[^;,]+)(?:[^,]*?)(;base64)?,/.exec(t.pathname),o=r===null?null:/^\s*(text|application)\/javascript\s*(;\s*charset=utf-?8\s*)?$/i.test(r[1])?"module":r[1]==="application/json"?"json":null;if(o===null)return{format:o,mime:r?.[1]??null};t.hash="";let n=t.href.slice(5),e=n.indexOf(","),s=f(n.slice(e+1));if(/; *base64$/i.test(n.slice(0,e).replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g,""))){let a="";for(let c of s)a+=String.fromCharCode(c);let l;try{l=atob(a)}catch{throw Object.assign(new TypeError("Invalid URL"),{code:"ERR_INVALID_URL",input:i})}s=Uint8Array.from(l,c=>c.charCodeAt(0))}return{format:o,source:new TextDecoder().decode(s)}}
+
+return {"dataModule":d,"importCallArguments":u};})();
 // The package.json files Node's loader has warned are typeless (MODULE_TYPELESS_PACKAGE_JSON).
 const __nimbusTypelessWarned = new Set();
 // Node's warning of an imported .js that is an ES module by its syntax alone
@@ -19955,21 +19958,15 @@ function __esmLoad(resolution) {
     if (id !== -1) return __nimbusEsmImport(id);
     return __nimbusTranslatedNamespace(resolution, builtins[resolution.builtin]);
   } else if (resolution.format === "data") {
-    const url = new URL(resolution.url);
-    const comma = url.pathname.indexOf(',');
-    const header = url.pathname.slice(0, comma);
-    const mediaType = header.split(';')[0].toLowerCase();
-    const payload = url.pathname.slice(comma + 1);
-    const text = header.split(';').includes('base64')
-      ? __BufferMod.from(decodeURIComponent(payload), 'base64').toString('utf8') : decodeURIComponent(payload);
-    if (mediaType === "application/json") {
-      const value = JSON.parse(text);
+    const data = __nimbusDataModule(resolution.url);
+    if (data.format === "json") {
+      const value = JSON.parse(data.source);
       ns = __esmNamespaceOf(["default"], () => value);
-    } else if (mediaType === "text/javascript" || mediaType === "application/javascript") {
+    } else if (data.format === "module") {
       // A data URL produced at runtime is a module body, just like a written
       // file. It is staged by the same runtime-code service, retaining its URL
       // as the import base (relative imports from data URLs remain invalid).
-      const cell = __nimbusRuntimeModule(resolution.url, text);
+      const cell = __nimbusRuntimeModule(resolution.url, data.source);
       const mod = { exports: {} };
       Object.defineProperty(mod, "__nimbusImportMeta", { value: {
         url: resolution.url,
@@ -19997,7 +19994,7 @@ function __esmLoad(resolution) {
       }
       ns = namespace();
     } else {
-      throw nodeError(TypeError, "ERR_UNKNOWN_MODULE_FORMAT", "Unsupported data module MIME type: " + mediaType);
+      throw nodeError(RangeError, "ERR_UNKNOWN_MODULE_FORMAT", "Unknown module format: " + data.mime + " for URL " + resolution.url);
     }
   } else {
     const key = resolution.path.replace(/^\/+/, "");
@@ -20328,20 +20325,8 @@ async function __nimbusStageImport(specifier, parentUrl) {
 }
 globalThis.__nimbusDynamicImport = function __nimbusDynamicImport(parentUrl, specifier, options) {
   return Promise.resolve().then(async () => {
-    const text = String(specifier);
-    const attributes = {};
     // V8's own checks and messages (node 22), which run before resolution.
-    if (options !== undefined) {
-      if (options === null || typeof options !== "object") throw new TypeError("The second argument to import() must be an object");
-      const withAttributes = options.with;
-      if (withAttributes !== undefined) {
-        if (withAttributes === null || typeof withAttributes !== "object") throw new TypeError("The 'assert' option must be an object");
-        for (const key of Object.keys(withAttributes)) {
-          if (typeof withAttributes[key] !== "string") throw new TypeError("Import assertion value must be a string");
-          attributes[key] = withAttributes[key];
-        }
-      }
-    }
+    const { specifier: text, attributes } = __nimbusImportCallArguments(specifier, options);
     // Counted as the program's own work: a floating import(...).then(...) keeps
     // the process while it fetches, as Node's loader keeps it while it reads.
     const resolution = await __nimbusTrackOp(__nimbusStageImport(text, parentUrl));

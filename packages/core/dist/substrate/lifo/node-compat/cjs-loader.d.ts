@@ -22,6 +22,8 @@ export interface ModuleScope {
 export interface NativeModuleLoader {
     importModule(specifier: string, parentUrl: string, options?: unknown): Promise<unknown>;
     requireModule(filename: string, parentFilename?: string): unknown;
+    /** module.syncBuiltinESMExports: each builtin's ES module namespace takes its exports' current values. */
+    syncBuiltinESMExports(): void;
 }
 export interface CjsLoader {
     /** The built-ins `require` serves; `module`'s createRequire is this loader's. */
