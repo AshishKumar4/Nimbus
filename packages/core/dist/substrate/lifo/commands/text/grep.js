@@ -90,7 +90,7 @@ function parseArgs(args) {
         count: false, filesWith: false, filesWithout: false, max: Infinity, onlyMatching: false, quiet: false,
         noMessages: false, byteOffset: false, withName: null, label: '(standard input)', lineNumber: false,
         initialTab: false, nullName: false, after: 0, before: 0, contextGiven: false, groupSeparator: '--',
-        binaryFiles: 'binary', directories: 'read', followLinks: false, include: [], exclude: [], excludeDir: [],
+        binaryFiles: 'binary', directories: 'read', followLinks: false, include: [], exclude: [], excludeFiles: [], excludeDir: [],
         nullData: false, operands: [],
     };
     let after = null;
@@ -200,6 +200,9 @@ function parseArgs(args) {
                 break;
             case 'exclude':
                 o.exclude.push(value);
+                break;
+            case 'exclude-from':
+                o.excludeFiles.push(value);
                 break;
             case 'exclude-dir':
                 o.excludeDir.push(value);
@@ -311,6 +314,21 @@ export async function runGrep(ctx) {
             const text = utf8.decode(bytes);
             if (text !== '')
                 o.patterns.push(...text.replace(/\n$/, '').split('\n'));
+        }
+        catch (error) {
+            await ctx.stderr.write(`grep: ${file}: ${errorText(error)}\n`);
+            return 2;
+        }
+    }
+    // As gnulib's add_exclude_file: a line, its trailing blanks gone, is a glob; a blank one is none.
+    for (const file of o.excludeFiles) {
+        try {
+            const bytes = file === '-' ? await readAllInput(ctx, '-') : await ctx.vfs.readFile(resolve(ctx.cwd, file));
+            for (const line of utf8.decode(bytes).split('\n')) {
+                const glob = line.replace(/\s+$/, '');
+                if (glob !== '')
+                    o.exclude.push(glob);
+            }
         }
         catch (error) {
             await ctx.stderr.write(`grep: ${file}: ${errorText(error)}\n`);
