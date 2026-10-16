@@ -7,14 +7,12 @@
 // the URL in tab 1, writes a file, closes/refreshes/reopens (tab 2),
 // and sees the file. That's the platform's "shareable URL" promise.
 //
-// Note: on the current platform, two SIMULTANEOUS WS clients on the
-// SAME sid is gated (409-style) — the second connection gets refused
-// with WS close 1002. That's a documented architectural choice (single
-// owner per session at a time). The behavioral assertion below probes
-// the SEQUENTIAL contract (tab 2 sees what tab 1 wrote after tab 1
-// closes), which is what users actually do.
+// Two SIMULTANEOUS terminals on the SAME sid are not: while one tab holds
+// the terminal, a second terminal upgrade answers 409 (one owner at a
+// time, session/routes.ts). Both contracts are asserted: the sequential
+// one users rely on, and the refusal with the holder unharmed.
 
-import { mintSession, Terminal, makeAsserter, sleep, wsHeaders } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter, sleep, wsHeaders, WS_BASE, hasOutputLine } from './_driver.mjs';
 import WebSocket from 'ws';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -33,23 +31,27 @@ await tab1.run('mkdir -p /home/user/multi && cd /home/user/multi', 10_000);
 await tab1.run(`echo "tab1-wrote-${stamp}" > /home/user/multi/shared.txt`, 10_000);
 await tab1.close();
 
-// Document the simultaneous-WS gate (informational; not gating).
+// One terminal owner at a time: while a tab holds a session's terminal, a
+// second terminal socket on it is refused, and the holder keeps working.
 {
   const sid2 = await mintSession();
-  // Open WS A, then attempt WS B — observe close code 1002 if gated.
-  const wsA = new WebSocket(process.env.BASE.replace(/^http/, 'ws') + `/s/${sid2}/ws`, wsHeaders(sid2));
-  await new Promise((res) => { wsA.on('open', res); wsA.on('error', () => res()); });
-  await sleep(500);
-  let secondClosed = false;
-  let secondOpen = false;
-  const wsB = new WebSocket(process.env.BASE.replace(/^http/, 'ws') + `/s/${sid2}/ws`, wsHeaders(sid2));
-  wsB.on('open', () => { secondOpen = true; });
-  wsB.on('close', () => { secondClosed = true; });
-  wsB.on('error', () => { /* eaten */ });
-  await sleep(3_000);
-  try { wsA.close(); } catch {}
-  try { wsB.close(); } catch {}
-  console.log(`  (info) simultaneous same-sid WS: secondOpen=${secondOpen} secondClosed=${secondClosed}`);
+  const holder = new Terminal(sid2);
+  await holder.connect();
+  await holder.waitForPrompt(60_000);
+  const second = new WebSocket(`${WS_BASE}/s/${sid2}/ws`, wsHeaders(sid2));
+  const outcome = await Promise.race([
+    new Promise((resolve) => {
+      second.once('open', () => resolve('opened'));
+      second.once('error', (error) => resolve(`refused: ${error.message}`));
+      second.once('close', (code) => resolve(`closed ${code}`));
+    }),
+    sleep(10_000).then(() => 'no answer in 10 s'),
+  ]);
+  second.terminate();
+  a.check('a second terminal socket on a held session is refused', outcome.startsWith('refused'), outcome);
+  const { output } = await holder.run('echo still-the-owner', 10_000);
+  a.check('the holding tab keeps its terminal', hasOutputLine(output, 'still-the-owner'), JSON.stringify(output.slice(-200)));
+  await holder.close();
 }
 
 // Tab 2: connect (same sid as tab1), read.
