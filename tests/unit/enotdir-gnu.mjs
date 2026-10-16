@@ -49,7 +49,7 @@ const CASES = [
   'printf a > r1; rm f/x r1; echo "rm=$?"; test -e r1; echo "r1=$?"',
   'touch f/x t1; echo "touch=$?"; test -e t1; echo "t1=$?"',
   'printf a > h1; chmod 600 f/x h1; echo "chmod=$?"; stat -c %a h1',
-  'printf a > o1; chown "$(id -u)" f/x o1; echo "chown=$?"',
+  'printf a > o1; chown "$(stat -c %u o1)" f/x o1; echo "chown=$?"',
   'printf a > k1; cat f/x k1; echo "cat=$?"',
   'mkdir f/x n1; echo "mkdir=$?"; test -d n1; echo "n1=$?"',
   'mkdir -p q1/e; rmdir f/x q1/e; echo "rmdir=$?"; test -e q1/e; echo "e=$?"',
