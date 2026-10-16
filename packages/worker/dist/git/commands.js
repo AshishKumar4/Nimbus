@@ -281,12 +281,14 @@ const INFINITE_DEPTH = 0x7fffffff;
  */
 export function parseFetchDepth(args) {
     let found;
+    let seen = false;
     for (let i = 0; i < args.length; i++) {
         const [flag, inline] = args[i].split('=', 2);
         if (!FETCH_DEPTH_FLAGS.includes(flag))
             continue;
-        if (found !== undefined)
+        if (seen)
             throw new Error('--depth, --deepen and --unshallow are mutually exclusive');
+        seen = true;
         found = fetchDepth(flag, flag === '--unshallow' ? undefined : inline ?? args[++i]);
     }
     return found;
@@ -707,21 +709,28 @@ function parseRemoteArgs(args) {
     }
     unsupportedOption('remote', operation);
 }
+/** A C long's value as glibc's strtol saturates it, then an int's: its low 32 bits. */
+function cInt(value) {
+    const LONG_MAX = (1n << 63n) - 1n;
+    return Number(BigInt.asIntN(32, value > LONG_MAX ? LONG_MAX : value < -LONG_MAX - 1n ? -LONG_MAX - 1n : value));
+}
 /**
- * An explicit `--depth` as git reads it: positive by atoi (builtin/clone.c,
- * fetch.c), then whole by strtol in base 0 (transport.c), whose value it is:
- * '010' is 8, and a hexadecimal one is not positive by atoi. Past 2^53 it
- * is not a positive number here.
+ * An explicit `--depth` as git reads it into an int: positive by atoi
+ * (builtin/clone.c, fetch.c), then whole by strtol in base 0 (transport.c),
+ * whose value it is: '010' is 8, 4294967297 is 1, and a hexadecimal one is
+ * not positive by atoi. One that comes to 0 or less asks for no shallow
+ * boundary (fetch-pack sends no deepen): undefined.
  */
 function parseDepth(value) {
-    const leading = /^[ \t\n\v\f\r]*([+-]?\d*)/.exec(value)?.[1] ?? '';
-    const atoi = /\d/.test(leading) ? Number(leading) : 0;
-    if (!Number.isSafeInteger(atoi) || atoi < 1)
+    const leading = /^[ \t\n\v\f\r]*([+-]?\d+)/.exec(value)?.[1];
+    if (leading === undefined || cInt(BigInt(leading)) < 1)
         throw new Error(`depth ${value} is not a positive number`);
-    const whole = /^[ \t\n\v\f\r]*\+?(?:(0[0-7]*)|([1-9]\d*))$/.exec(value);
+    const whole = /^[ \t\n\v\f\r]*([+-]?)(?:(0[0-7]*)|([1-9]\d*))$/.exec(value);
     if (whole === null)
         throw new Error(`transport: invalid depth option '${value}'`);
-    return whole[1] !== undefined ? parseInt(whole[1], 8) : Number(whole[2]);
+    const magnitude = whole[2] !== undefined ? BigInt(`0o${whole[2]}`) : BigInt(whole[3]);
+    const depth = cInt(whole[1] === '-' ? -magnitude : magnitude);
+    return depth >= 1 ? depth : undefined;
 }
 function cloneDepth(value) {
     try {
@@ -734,8 +743,10 @@ function cloneDepth(value) {
 function fetchDepth(flag, value) {
     if (flag === '--unshallow')
         return { depth: INFINITE_DEPTH, relative: false };
-    if (flag === '--depth')
-        return { depth: parseDepth(value ?? ''), relative: false };
+    if (flag === '--depth') {
+        const depth = parseDepth(value ?? '');
+        return depth === undefined ? undefined : { depth, relative: false };
+    }
     const depth = Number(value);
     if (!Number.isSafeInteger(depth) || depth < 1)
         throw new Error(`${flag} ${value ?? ''} is not a positive number`.trimEnd());
@@ -745,6 +756,8 @@ function parseTransportArgs(command, args, env) {
     let quiet = false;
     let dashdash = false;
     let deepen;
+    // One of --depth, --deepen, --unshallow was given (a depth of 0 or less among them asks for no deepen).
+    let deepenGiven = false;
     const operands = [];
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
@@ -763,8 +776,9 @@ function parseTransportArgs(command, args, env) {
         const eq = arg.indexOf('=');
         const flag = eq < 0 ? arg : arg.slice(0, eq);
         if (command === 'fetch' && FETCH_DEPTH_FLAGS.includes(flag)) {
-            if (deepen !== undefined)
+            if (deepenGiven)
                 throw new GitGlobalsError('fatal: --depth, --deepen and --unshallow are mutually exclusive\n', 128);
+            deepenGiven = true;
             if (flag === '--unshallow' && eq >= 0)
                 unsupportedOption(command, arg);
             const value = flag === '--unshallow' ? undefined : eq < 0 ? requiredValue(args, ++i, flag) : arg.slice(eq + 1);
