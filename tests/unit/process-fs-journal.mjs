@@ -284,6 +284,44 @@ for (const restarted of [false, true]) {
   assert.equal(kept(), 0, 'what the session kept of its descriptions outlived the process');
 }
 
+// ── A log the version before a W7 open's access wrote, drained by this one ──
+// Its rows hold opens as that version's session took them: O_RDWR as
+// `read: true`, O_WRONLY as no access field. A deploy between a process's
+// death and its drain hands them to this version, whose frame takes an open's
+// access only as `access`; each lands with the access it had, its writes
+// with it. Red before: the drain sent them as they were, and the frame
+// refused the open, so it and every write after it were lost.
+{
+  const s = session();
+  for (const name of ['rw.txt', 'w.txt']) {
+    s.kernel.writeFile(`home/user/out/${name}`, enc.encode('old!'));
+    s.kernel.chown(`home/user/out/${name}`, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  }
+  const sql = facetSql();
+  sqlJournal(sql);
+  const rows = [
+    [{ type: 'call', call: { call: 'open', path: 'home/user/out/rw.txt', mode: 0o644, read: true, description: 'd-rw' } }, null],
+    [{ type: 'call', call: { call: 'write', path: 'home/user/out/rw.txt', description: 'd-rw', offset: 0 } }, enc.encode('RW!!')],
+    [{ type: 'call', call: { call: 'close', path: 'home/user/out/rw.txt', description: 'd-rw' } }, null],
+    [{ type: 'call', call: { call: 'open', path: 'home/user/out/w.txt', mode: 0o644, truncate: true, description: 'd-w' } }, null],
+    [{ type: 'call', call: { call: 'write', path: 'home/user/out/w.txt', description: 'd-w', offset: 0 } }, enc.encode('W')],
+    [{ type: 'call', call: { call: 'close', path: 'home/user/out/w.txt', description: 'd-w' } }, null],
+    [{ type: 'call', call: { call: 'open', path: 'home/user/out/made.txt', mode: 0o640, create: true, exclusive: true, umask: 0o022 } }, null],
+  ];
+  rows.forEach(([op, data], i) => sql.exec('INSERT INTO nimbus_fs_journal (jid, op, data) VALUES (?, ?, ?)', i + 1, JSON.stringify(op), data));
+  const lease = s.files.openHost(CRED_SESSION_USER);
+  const drained = await drainProcessFsJournal({ journal: journalSource(sqlJournal(sql)), session: journalDrainSession(lease.fs, PID), retry: RETRY });
+  await lease.dispose();
+  assert.deepEqual(drained.failures, [], 'the drain refused an open the version before wrote');
+  assert.equal(drained.landed, rows.length);
+  assert.deepEqual(
+    { rw: s.text('home/user/out/rw.txt'), w: s.text('home/user/out/w.txt'), made: s.text('home/user/out/made.txt'), mode: s.kernel.stat('home/user/out/made.txt').mode & 0o777 },
+    { rw: 'RW!!', w: 'W', made: '', mode: 0o640 },
+  );
+  assert.equal(sqlJournal(sql).entries().length, 0);
+  s.engine.forgetSequences(PID);
+}
+
 // ── The effect gate: an effect waits for every change ahead of it to be answered, durable log or not ──
 // (ProcessFsClient.effect.) Red before: there was no gate, and a one-shot's
 // output left ahead of changes it could still lose; then (review 2) a
