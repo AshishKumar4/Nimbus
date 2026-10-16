@@ -68,7 +68,8 @@ const mtime = await stat(['-c', '%Y', 'a.txt']);
 assert.match(mtime.stdout, /^\d{10}\n$/, 'mtime is epoch seconds');
 
 const escapes = await stat(['-c', '%n:%s\\t%%', 'a.txt']);
-assert.equal(escapes.stdout, '/home/user/a.txt:6\t%\n');
+// %n is the operand as it was given, as GNU's stat prints it.
+assert.equal(escapes.stdout, 'a.txt:6\t%\n');
 
 const printf = await stat(['--printf=%s', 'a.txt']);
 assert.equal(printf.stdout, '6', '--printf does not append a newline');
@@ -100,7 +101,7 @@ assert.equal(unknowns.stdout, '1|-|0|?\n');
 const terse = await stat(['-t', 'a.txt']);
 assert.equal(terse.exitCode, 0, terse.stderr);
 assert.equal(terse.stdout.trim().split(' ').length, 17, terse.stdout);
-assert.ok(terse.stdout.startsWith('/home/user/a.txt 6 '), terse.stdout);
+assert.ok(terse.stdout.startsWith('a.txt 6 '), terse.stdout);
 
 // -f reports the filesystem, with the same numbers df reads.
 const fsReport = await stat(['-f', '/home/user']);
@@ -142,7 +143,8 @@ assert.match(missingArgument.stderr, /requires an argument/);
 // The default report still works.
 const plain = await stat(['a.txt']);
 assert.equal(plain.exitCode, 0, plain.stderr);
-assert.match(plain.stdout, /File: \/home\/user\/a\.txt/);
+// The File line names the operand as it was given, as GNU's does.
+assert.match(plain.stdout, /File: a\.txt\n/);
 assert.match(plain.stdout, /Uid: \(1000\/user\)/);
 
 console.log('unix stat format: ok');
