@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "8dda9f8f2a6e7b7774a01d120a32d63cc6d245e1092fed29b21932b62b6f50b8",
+  "fingerprint": "7a51e846565d72ad7efa187cf21426095551b4fa4d37436934f7f371d8c6851e",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1792,7 +1792,7 @@
     "packages/core/src/types/node-module.d.ts": "d167a36e13931595e2733d51519f5cd60102fc680dcacd2afef17b1e5fa11e35",
     "packages/core/src/types/node-worker-threads.d.ts": "0d9e7fc634c50ab2328d9d4ce5ba8aef747685cd77a1fc55724273d2da9db1ce",
     "packages/core/src/types/node-zlib.d.ts": "6a2d801eb505f60eb0a67103a5e698ae11fcebf4b30fb268b7bf9ed836ba867f",
-    "packages/core/src/types/npm-libs.d.ts": "42a1cdc387b315d8b31d4bd8b20da18bd660ff0fabf2aa41c276a759b48345d5",
+    "packages/core/src/types/npm-libs.d.ts": "9ad0279b42a9664b794ed37aa7a626f0975c52201112bf15e1e5daa968572ddf",
     "packages/core/src/vfs/chunk-codec.ts": "5813343d3d7ea72567a1b13e3b13e6045f4aaca0dc2be7ebf691b6874e9150b9",
     "packages/core/src/vfs/composite.ts": "dd800f928ba467f9aa069170b731415305279a576dd3494346740713920251a9",
     "packages/core/src/vfs/content-chunking.ts": "233171797daf4525018f5b2f57c7f79afaf244810fac502a843ec5ca1476df0c",
