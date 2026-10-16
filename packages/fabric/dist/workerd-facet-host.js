@@ -514,7 +514,7 @@ function spawnResident(ctx, env, disk, supervisor, params) {
 }
 /** `facet`'s settle, answered, refused or not answered within RESIDENT_SETTLE_DEADLINE_MS: settled however it went. */
 async function settled(facet) {
-    let timer;
+    let timer = null;
     const deadline = new Promise((resolve) => { timer = setTimeout(resolve, RESIDENT_SETTLE_DEADLINE_MS); });
     try {
         await Promise.race([Promise.resolve().then(() => facet.settle()), deadline]);
@@ -523,7 +523,8 @@ async function settled(facet) {
         // Refused: gone, or a facet with no settle. Its log stands as it is.
     }
     finally {
-        clearTimeout(timer);
+        if (timer !== null)
+            clearTimeout(timer);
     }
 }
 /**
