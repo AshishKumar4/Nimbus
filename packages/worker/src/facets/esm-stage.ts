@@ -23,6 +23,7 @@ import {
   stageEsModule, type StagedEsModule,
 } from '@nimbus-sh/core/runtime/native-esm.js';
 import { NODE_BUILTIN_EXPORTS } from '@nimbus-sh/core/runtime/node-builtin-exports.js';
+import { isNodeBuiltin } from '@nimbus-sh/core/runtime/node-builtins.js';
 import { UNDICI_SHIM_EXPORTS } from '@nimbus-sh/core/runtime/undici-shim.js';
 import { resolveRequireEx, type BridgeRequireFs } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { typeScriptUnderNodeModules, type ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
@@ -96,15 +97,6 @@ export const ESM_NOT_STAGED = 'ERR_NIMBUS_NOT_STAGED';
 
 /** The names each package the process provides has beside `default` (constants.ts FACET_PROVIDED_PACKAGES). */
 const PROVIDED_PACKAGE_EXPORTS: Readonly<Record<string, readonly string[]>> = { undici: UNDICI_SHIM_EXPORTS };
-
-/** Builtins Node names only with their scheme (module.isBuiltin('test') is false). */
-const SCHEME_ONLY_BUILTINS: Readonly<Record<string, true>> = { sea: true, sqlite: true, test: true, 'test/reporters': true };
-
-/** module.isBuiltin, by Node 22.22.3's builtin table. */
-function isNodeBuiltin(specifier: string): boolean {
-  if (specifier.startsWith('node:')) return Object.hasOwn(NODE_BUILTIN_EXPORTS, specifier.slice(5));
-  return Object.hasOwn(NODE_BUILTIN_EXPORTS, specifier) && !SCHEME_ONLY_BUILTINS[specifier];
-}
 
 /** What staging reads of the launch's filesystem. */
 export interface EsmStageFs {
