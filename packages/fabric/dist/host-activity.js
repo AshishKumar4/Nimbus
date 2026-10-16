@@ -392,6 +392,13 @@ const sent = (response) => {
     const admitted = this.#admit(request);
     return admitted instanceof Request ? super.handleHttpRequest(admitted) : admitted;
   }
+  // Its host's call before it ends the process: what the process was told it
+  // wrote and has not logged yet, logged into this facet's store
+  // (globalThis.__nimbusSettle, its runtime's; a runtime that logs each
+  // change as it makes it has none).
+  settle() {
+    globalThis.__nimbusSettle?.();
+  }
   // The host's one entry. A watch reports this instance's incarnation; a data
   // request carries its admission in its headers until its host holds a live
   // watch that found this instance, and none after. An upgrade goes to the

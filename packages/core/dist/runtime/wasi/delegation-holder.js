@@ -415,6 +415,7 @@ export function delegationHolder(options) {
             client.submit({ type: 'call', call: { call: 'close', path: to, description } }, { acknowledged: true });
             return true;
         },
+        logHeld: () => { drain(); },
         content: (entry) => {
             if (entry.dev !== store.device)
                 return undefined;

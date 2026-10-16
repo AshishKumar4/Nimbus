@@ -595,6 +595,7 @@ export function residentFilesystem(session, resident, delegation) {
     fs.inbound = () => { owed = true; directoryPool?.invalidate(); };
     fs.cancelPendingDirectories = () => { owed = true; directoryPool?.cancelPending(); };
     fs.holding = () => holder?.pending() ?? false;
+    fs.logHeld = () => holder?.logHeld();
     // What leaves the process is preceded by everything it logged.
     fs.flush = async () => { await holder?.flush(); };
     fs.settle = async () => {

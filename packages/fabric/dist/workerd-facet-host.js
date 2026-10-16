@@ -20,7 +20,7 @@ import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { StorageLedger, forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { getCtxExports, stagedBootAssembler, } from './composition.js';
 import { assertModuleMapWithinCodeLimit, beginLoaderFetch, beginLoaderFetchWhenFree, claimAdmission, launchWorkerKey, readmitRefused, withDynamicWorkerCapNamed, } from './budgets.js';
-import { ProcessHostLost, RESIDENT_PROCESS_CLASS, residentLoaderConfig, } from './process-fabric.js';
+import { ProcessHostLost, RESIDENT_PROCESS_CLASS, RESIDENT_SETTLE_DEADLINE_MS, residentLoaderConfig, } from './process-fabric.js';
 import { bindingSupervisor, egressMarker, supervisorLoaderKey, workspaceOutbound } from './supervisor-props.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { PROCESS_FS_JOURNAL_READER_SOURCE } from '@nimbus-sh/core/_shared/process-fs-journal-reader-source.generated.js';
@@ -290,9 +290,14 @@ function spawnResident(ctx, env, disk, supervisor, params) {
     let released = false;
     let refused;
     const watchCapability = crypto.randomUUID();
-    let markLost = () => { };
-    const lost = new Promise((_, reject) => { markLost = reject; });
+    let lostAlready = false;
+    let rejectLost = () => { };
+    const lost = new Promise((_, reject) => { rejectLost = reject; });
     lost.catch(() => { });
+    const markLost = (error) => {
+        lostAlready = true;
+        rejectLost(error);
+    };
     const start = async () => {
         if (released) {
             throw new Error(`Nimbus: resident process ${params.pid} is no longer running`);
@@ -357,6 +362,14 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         released = true;
         stopObserving();
         facetOfPid(ctx).delete(params.pid);
+        // What its process was told it wrote and has not logged yet, logged into
+        // its store before the abort (settle), for the drain below: as write(2)
+        // outlives a killed writer. A facet already lost, or one that does not
+        // answer (gone, or never started again: the start above refuses once
+        // released), is not waited for; one that does not answer in time is
+        // aborted at the deadline.
+        if (params.journal && !lostAlready)
+            await settled(facet);
         endResidency();
         try {
             facets.abort(name, new Error('Nimbus: resident process released'));
@@ -498,6 +511,20 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         name,
         slot,
     };
+}
+/** `facet`'s settle, answered, refused or not answered within RESIDENT_SETTLE_DEADLINE_MS: settled however it went. */
+async function settled(facet) {
+    let timer;
+    const deadline = new Promise((resolve) => { timer = setTimeout(resolve, RESIDENT_SETTLE_DEADLINE_MS); });
+    try {
+        await Promise.race([Promise.resolve().then(() => facet.settle()), deadline]);
+    }
+    catch {
+        // Refused: gone, or a facet with no settle. Its log stands as it is.
+    }
+    finally {
+        clearTimeout(timer);
+    }
 }
 /**
  * A resident's failed start, logged to the session's log with the facet and
