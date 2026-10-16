@@ -7,7 +7,6 @@ export {
   NimbusLoadedWorker,
   NimbusLoadedEntrypoint,
   NimbusDurableObjectNamespace,
-  NimbusDOStub,
   CirrusHmrRPC,
   NimbusD1Database,
   NimbusKVNamespace,

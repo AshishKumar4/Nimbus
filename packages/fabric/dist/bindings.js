@@ -14,8 +14,8 @@
  * through that RPC stub. Co-located here for grep-ability.
  *
  * NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker,
- * NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub,
- * NimbusKVNamespace, NimbusD1Binding and NimbusR2Bucket are public API of
+ * NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusKVNamespace,
+ * NimbusD1Binding and NimbusR2Bucket are public API of
  * the embedder's Worker: wrangler resolves them by class name
  * and ctx.exports auto-populates them by export name, so the embedder's entry
  * module re-exports them under exactly these names.
@@ -28,7 +28,6 @@ import { z } from 'zod/v4';
 import { disposeRpcResource, useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { stagedBootAssembler } from './composition.js';
 import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
-import { innerDoIdFromName } from './inner-do-env.js';
 import { assertModuleMapWithinCodeLimit, LOADER_CODE_CREDIT_BYTES } from './budgets.js';
 import { admitInTurn, admitNow, getKey, holdGetKey, keep, loadedCode, priceCode, withinCredit, withMissCode } from './loader-heap.js';
 import { loaderStore, STORE_READ_BYTES, storedModule } from './loader-store-client.js';
@@ -615,40 +614,8 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
  * with a local namespace (inner-do-env.ts, inner-env.ts) that makes ids
  * and stubs itself, and relays each member a stub's caller reaches, its
  * fetch included, to `callOn` or `getOn`.
- *
- * `idFromName`, `newUniqueId`, `idFromString` and `get` answer as before, for
- * a caller that awaits them. idFromName produces prefix `name:` (a
- * deterministic hash, innerDoIdFromName); newUniqueId uses `uniq:`; the
- * prefixes keep the two id spaces distinct.
  */
 export class NimbusDurableObjectNamespace extends WorkerEntrypoint {
-    /** Stable string id derived from a name. Hash is deterministic. */
-    idFromName(name) {
-        return innerDoIdFromName(name);
-    }
-    /** Fresh random id (matches DurableObjectNamespace.newUniqueId()). */
-    newUniqueId() {
-        return 'uniq:' + Math.random().toString(36).slice(2) + Date.now().toString(36);
-    }
-    /** Accept-through for an already-formatted id. */
-    idFromString(s) {
-        return s;
-    }
-    /** Return a stub bound to the given id. */
-    get(id) {
-        const ctxExports = shimCtxExports(this.ctx);
-        if (!ctxExports.NimbusDOStub)
-            throw new Error('Nimbus: ctx.exports.NimbusDOStub unavailable');
-        const props = this.ctx.props || {};
-        return ctxExports.NimbusDOStub({
-            props: {
-                bindingName: props.bindingName,
-                supervisorDoId: props.supervisorDoId,
-                route: props.route,
-                id: String(id),
-            },
-        });
-    }
     /**
      * The member of object `id` at `path` (names from the object down), called
      * with `args`: its answer, or what it throws, as the object gave it.
@@ -672,53 +639,14 @@ function supervisorOf(env, props) {
         throw new Error('supervisorDoId missing');
     let stub = null;
     try {
-        const ns = hostNamespaceBinding(env ?? {}, 'NimbusDOStub', props.route);
+        const ns = hostNamespaceBinding(env ?? {}, 'NimbusDurableObjectNamespace', props.route);
         stub = ns.get(ns.idFromString(supervisorDoId));
         const held = stub;
-        return { dispatch: hostOpDispatch(stub, 'NimbusDOStub', props.route), release: () => disposeRpcResource(held) };
+        return { dispatch: hostOpDispatch(stub, 'NimbusDurableObjectNamespace', props.route), release: () => disposeRpcResource(held) };
     }
     catch (e) {
         disposeRpcResource(stub);
         throw e;
-    }
-}
-function isInnerDoFetchAnswer(value) {
-    return value !== null && typeof value === 'object'
-        && 'status' in value && typeof value.status === 'number'
-        && 'statusText' in value && typeof value.statusText === 'string'
-        && 'headers' in value && Array.isArray(value.headers)
-        && 'body' in value && (value.body === null || value.body instanceof ArrayBuffer);
-}
-/**
- * The inner object's fetch: the request forwarded whole (method, body,
- * headers) as fields the session reconstructs, and its response rebuilt here
- * from the fields the session answers. A binding that cannot reach the
- * session answers 500.
- */
-async function innerDoFetch(env, props, request) {
-    let supervisor;
-    try {
-        supervisor = supervisorOf(env, props);
-    }
-    catch (e) {
-        return new Response(`Nimbus: ${e instanceof Error ? e.message : String(e)}`, { status: 500 });
-    }
-    try {
-        const body = request.method !== 'GET' && request.method !== 'HEAD' ? await request.arrayBuffer() : null;
-        const headerList = [];
-        request.headers.forEach((v, k) => { headerList.push([k, v]); });
-        return await useRpcResource(supervisor.dispatch({
-            op: 'innerDoFetch',
-            args: [{ bindingName: String(props.bindingName || ''), id: String(props.id || ''), method: request.method, url: request.url, headers: headerList, body }],
-        }), (res) => {
-            if (!isInnerDoFetchAnswer(res)) {
-                return new Response('Nimbus: innerDoFetch returned an invalid result', { status: 502 });
-            }
-            return new Response(res.body, { status: res.status, statusText: res.statusText, headers: res.headers });
-        });
-    }
-    finally {
-        supervisor.release();
     }
 }
 /**
@@ -737,18 +665,6 @@ async function innerDoMember(env, props, path, args) {
     }
     finally {
         supervisor.release();
-    }
-}
-/**
- * A Durable-Object-namespace-stub for a specific id, for a caller of the
- * binding's own `get`: its fetch. The important invariant: EVERY call
- * resolves the inner DO class via getInnerDoClass() (./inner-do-registry.js)
- * and spins up / attaches to a facet via the supervisor's ctx.facets in the
- * SAME outer request context — never reusing stubs across requests.
- */
-export class NimbusDOStub extends WorkerEntrypoint {
-    async fetch(request) {
-        return innerDoFetch(this.env, this.ctx.props || {}, request);
     }
 }
 /**

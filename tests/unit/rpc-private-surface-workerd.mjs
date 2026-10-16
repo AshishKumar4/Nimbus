@@ -23,8 +23,8 @@
 //   - NimbusFsJournalReader (an ended process's journal, held by the drain).
 //     Red before: `journal()` answered functions that append to it.
 //   - ProcessSupervisor (a one-shot's SUPERVISOR), NimbusLoadedWorker,
-//     NimbusAssetsRPC, NimbusDurableObjectNamespace and NimbusDOStub: their
-//     fields and other names answer nothing either.
+//     NimbusAssetsRPC and NimbusDurableObjectNamespace: their fields and
+//     other names answer nothing either.
 //   - NimbusAssetsRPC reads as the process the host minted it for. Red
 //     before: it read every asset as the session's user.
 //   - NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket (a wrangler-dev
@@ -218,13 +218,13 @@ try {
   }
   await nothingElse('NimbusAssetsRPC', COMMON);
   {
-    const id = await asGuest('dons-intended', 'idFromName', ['room'], 'NimbusDurableObjectNamespace');
-    assert.equal(id.ok, true, `idFromName: ${JSON.stringify(id)}`);
-    assert.equal(typeof id.value, 'string');
-    console.log('  ok  NimbusDurableObjectNamespace: idFromName answers');
+    const called = await asGuest('dons-intended', 'callOn', ['room', ['ping'], [1]], 'NimbusDurableObjectNamespace');
+    assert.deepEqual(called, { ok: true, value: null }, JSON.stringify(called));
+    assert.deepEqual((await asked('dons-intended')).map((e) => [e.op, e.args]),
+      [['innerDoCall', [{ bindingName: 'COUNTER', id: 'room', path: ['ping'], args: [1] }]]], 'a member call is its object\'s');
+    console.log('  ok  NimbusDurableObjectNamespace: callOn reaches the session for its object');
   }
-  await nothingElse('NimbusDurableObjectNamespace', COMMON);
-  await nothingElse('NimbusDOStub', COMMON);
+  await nothingElse('NimbusDurableObjectNamespace', [['idFromName', ['room']], ['newUniqueId'], ['idFromString', ['x']], ['get', ['room']], ...COMMON]);
 
   // ── The storage bindings: each call is its own store's ────────────────────
   {
