@@ -132,8 +132,9 @@ async function storageOf(io, gitDir) {
     let commonDir = io.env.GIT_COMMON_DIR ? '/' + resolveVfsPath(io.env.GIT_COMMON_DIR, io.cwd) : gitDir;
     if (!io.env.GIT_COMMON_DIR) {
         const common = await io.readFile(gitDir + '/commondir');
+        // Its line's end dropped, and nothing else (setup.c get_common_dir_noenv).
         if (common !== null)
-            commonDir = '/' + resolveVfsPath(nameDec.decode(common).trimEnd(), gitDir);
+            commonDir = '/' + resolveVfsPath(nameDec.decode(common).replace(/[\r\n]+$/, ''), gitDir);
     }
     return {
         ...(commonDir !== gitDir ? { commonDir } : {}),
