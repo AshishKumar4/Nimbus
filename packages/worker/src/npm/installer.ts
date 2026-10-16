@@ -63,6 +63,7 @@ import {
 } from '../facets/wasm-swap-registry.js';
 import { parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
 import { exactVersion } from '@nimbus-sh/core/_shared/npm-semver.js';
+import type { NpmCacheMode } from '@nimbus-sh/core/_shared/npm-cache-mode.js';
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 import type { BundlePoolProvider } from '../facets/prebundle-pool.js';
 import { Fanout, type FanoutRoute } from '@nimbus-sh/fabric/fanout.js';
@@ -188,6 +189,8 @@ export interface NpmInstallOptions {
   onProgress?: (msg: string) => void;
   /** The command's NPM_REGISTRY; default registry.npmjs.org. */
   registry?: string;
+  /** How packuments are read: npm's cache mode (`--offline`, `--prefer-offline`, `--prefer-online`); 'default' when not given. */
+  cache?: NpmCacheMode;
   /** `--save-dev` / `--save-optional`: where what is named is saved. */
   saveDev?: boolean;
   saveOptional?: boolean;
@@ -385,8 +388,9 @@ export class NpmInstaller {
     const lockfile = this.cache.readLockfile(projDir);
     const { roots, named, devOnly, advised, manifest } = await this.buildRoots(projDir, project, opts, log);
     const omit = { dev: opts.production === true, optional: opts.omitOptional === true, peer: opts.omitPeer === true };
+    const cache = opts.cache ?? 'default';
     const engine = {
-      devOnly, advised, registry, omit,
+      devOnly, advised, registry, cache, omit,
       global: opts.global === true, force: opts.force === true, strictPeerDeps: opts.strictPeerDeps === true,
       legacyPeerDeps: opts.legacyPeerDeps === true, preferDedupe: opts.preferDedupe === true,
     };
@@ -406,7 +410,7 @@ export class NpmInstaller {
     let tree: PlannedTree;
     let usedLockfile = false;
     if (opts.fromLockfile) {
-      const locked = await this.treeFromPackageLock(network, projDir, project, log, npmLog, registry, opts.legacyPeerDeps === true);
+      const locked = await this.treeFromPackageLock(network, projDir, project, log, npmLog, registry, cache, opts.legacyPeerDeps === true);
       tree = await this.resolveTreeViaFanout(network, roots, locked.installed, log, npmLog, { ...engine, locked: locked.suspect ? 'suspect' : 'trusted' });
       if (tree.plan.lockMismatches.length > 0) {
         throw new Error(
@@ -755,12 +759,15 @@ export class NpmInstaller {
       devOnly?: ReadonlySet<string>;
       advised?: Set<string>;
       registry?: string;
+      /** npm's cache mode for the packuments read. */
+      cache?: NpmCacheMode;
       /** What `--omit` leaves out is planned, not installed, and not announced. */
       omit?: OmitTypes;
     } = {},
   ): Promise<PlannedTree> {
     const t0 = Date.now();
     const registry = npmRegistryOrigin(opts.registry);
+    const cache = opts.cache ?? 'default';
     const devOnly = opts.devOnly ?? new Set<string>();
     // Policy advisories already announced — one `note:` line per name
     // per install, shared with applyW6Registry which runs first.
@@ -873,6 +880,7 @@ export class NpmInstaller {
               fetchTimeoutMs: 15_000,
               retries: 3,
               registry,
+              cache,
             };
             return { key: `${name}@${range}`, args: taskSpec };
           });
@@ -1677,6 +1685,7 @@ export class NpmInstaller {
     log: (msg: string) => void,
     npmLog: NpmLogEmitter,
     registry: string,
+    cache: NpmCacheMode,
     legacyPeerDeps: boolean,
   ): Promise<{ installed: Array<InstalledPackage<ResolvedPackage>>; lockName: string; suspect: boolean }> {
     let lockName: string | undefined;
@@ -1779,7 +1788,7 @@ export class NpmInstaller {
     // package there, anything it brings below it, unless the lock already
     // placed that path.
     for (const { placement, folderName, spec } of swapPlacements) {
-      const swapped = await this.resolveTreeViaFanout(network, [{ name: folderName, range: spec, type: 'prod' }], [], log, npmLog, { registry });
+      const swapped = await this.resolveTreeViaFanout(network, [{ name: folderName, range: spec, type: 'prod' }], [], log, npmLog, { registry, cache });
       const parent = placement.includes('/node_modules/') ? parentPlacement(placement) : null;
       const rebase = (path: string) => (parent === null ? path : `${parent}/node_modules/${path}`);
       const failed = new Map(swapped.plan.failures.map((failure) => [failure.id, failure]));

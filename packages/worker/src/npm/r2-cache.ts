@@ -64,6 +64,7 @@ import { ISOLATE_NETWORK, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/
 import { NPM_REGISTRY_ORIGIN, npmRegistryOrigin } from '@nimbus-sh/core/substrate/lifo/commands/system/npm.js';
 import type { CacheKind, CacheStatEvent, CacheTier } from '@nimbus-sh/core/_shared/cache-stats.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
+import { notCachedMessage, type NpmCacheMode } from '@nimbus-sh/core/_shared/npm-cache-mode.js';
 import { retryingRegistryFetch } from './registry-retry.js';
 import { sriDigestOf, sriDigestsEqual, sriEntries, type SriEntry } from '@nimbus-sh/core/_shared/tarball-integrity.js';
 import { ByteLru } from '@nimbus-sh/core/_shared/lru-map.js';
@@ -145,11 +146,13 @@ export const MAX_R2_TARBALL_BYTES = 30 * 1024 * 1024;
 
 // ── Types ───────────────────────────────────────────────────────────────
 
-/** How a packument is read: through the cache, or (`revalidate`) past it to the registry, however fresh the cached copy. */
+/** How a packument is read: through the cache in npm's mode (`cache`), or (`revalidate`) past it to the registry, however fresh the cached copy. */
 export interface PackumentReadOptions {
   retries?: number;
   timeoutMs?: number;
   registry?: string;
+  /** npm's cache mode (npm-cache-mode.ts); 'default' when absent. */
+  cache?: NpmCacheMode;
   /** The cached copy cannot answer what is asked: ask the registry (past its CDN) before saying nothing does. */
   revalidate?: boolean;
 }
@@ -614,23 +617,25 @@ export class R2CacheClient {
    *
    * Returns CachedPackument with `expired` set true when the entry's
    * customMetadata.expiresAt is in the past. Callers MUST honour
-   * `expired` — only treat as a hot hit when false. Stale-while-error
-   * is the only valid use of expired data.
+   * `expired`: only treat as a hot hit when false, unless npm's mode keeps
+   * to any copy (force-cache, only-if-cached).
    *
    * L2 (cache-and-scrub W-A): we wrap the R2 read in `caches.default`.
    * On hit, we read both the packument JSON and the absolute
    * `expiresAt` timestamp from the L2 entry's headers — the absolute
    * timestamp matters because L2 may serve a cached response near
    * the end of its TTL, and the caller's `expired` check still needs
-   * to fire correctly. On miss, we fall through to R2 and write back
-   * to L2 until the R2 entry's customMetadata.expiresAt
-   * (fillPackumentL2).
+   * to fire correctly. On a miss, or a hit past its time, we fall through
+   * to R2 and write back to L2 until the R2 entry's
+   * customMetadata.expiresAt (fillPackumentL2).
    */
   async getPackument(
     name: string,
     registry: string = NPM_REGISTRY_ORIGIN,
     /** Also what a refetch is made conditional on (etag, stored), which an expired entry always carries. */
     validators = false,
+    /** 'colo': a stale colo copy answers as it is (npm's force-cache and only-if-cached keep to any copy), without reading R2. */
+    stale: 'colo' | 'r2' = 'r2',
   ): Promise<CachedPackument | null> {
     // ── L2 fast path (per-colo) ───────────────────────────────────
     const l2Key = new Request(packumentL2Url(name, registry));
@@ -662,9 +667,18 @@ export class R2CacheClient {
         : ageMs >= PACKUMENT_TTL_MS;
       if (!expired && !validators) return { json, ageMs, expired };
       const etag = l2Hit.headers.get('x-nimbus-etag');
-      return etag ? { json, ageMs, expired, etag } : { json, ageMs, expired };
+      const colo: CachedPackument = etag ? { json, ageMs, expired, etag } : { json, ageMs, expired };
+      // Past its time, R2's copy is read before the registry is asked:
+      // another colo may have renewed it. Where R2 has none, this one stands.
+      if (!expired || stale === 'colo') return colo;
+      return (await this.getPackumentL3(name, registry, l2Key, validators)) ?? colo;
     }
     this._recordMiss('L2', 'packument');
+    return this.getPackumentL3(name, registry, l2Key, validators);
+  }
+
+  /** R2's copy of a packument (getPackument's L3), the colo's filled with it while it is fresh; null where R2 has none. */
+  private async getPackumentL3(name: string, registry: string, l2Key: Request, validators: boolean): Promise<CachedPackument | null> {
     // ── L3 path (cross-tenant) ────────────────────────────────────
     if (!this.packumentBucket) {
       this._recordMiss('L3', 'packument');
@@ -751,11 +765,16 @@ export class R2CacheClient {
   ): Promise<PackumentReadThrough> {
     const registry = options?.registry ?? NPM_REGISTRY_ORIGIN;
     const shared = network.egress === undefined;
-    const revalidate = options?.revalidate === true;
-    const cached = shared ? await this.getPackument(name, registry, revalidate) : null;
-    if (cached && !cached.expired && cached.json && !revalidate) {
+    const mode = options?.cache ?? 'default';
+    // npm's force-cache and only-if-cached answer any copy, stale or not;
+    // no-cache (and the resolver's revalidate) asks the registry on it, however fresh.
+    const keepsToCache = mode === 'force-cache' || mode === 'only-if-cached';
+    const asksAgain = mode === 'no-cache' || options?.revalidate === true;
+    const cached = shared ? await this.getPackument(name, registry, asksAgain, keepsToCache ? 'colo' : 'r2') : null;
+    if (cached && cached.json && (keepsToCache || (!cached.expired && !asksAgain))) {
       return { json: cached.json, source: 'r2-cache' };
     }
+    if (mode === 'only-if-cached') return { json: null, source: 'r2-cache', failure: notCachedMessage(packumentUrl(name, registry)) };
     return this.fetchPackument(name, registry, cached, options, network);
   }
 

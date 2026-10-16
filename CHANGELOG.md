@@ -5,6 +5,17 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Added: `npm install` and `npm ci` read packuments in npm's cache modes.
+  `--prefer-online` checks a cached packument with the registry however
+  fresh it is (a `304` keeps it). `--prefer-offline` uses any cached copy,
+  however old, and fetches only what is not cached. `--offline` uses any
+  cached copy and fails a package with none with npm's `ENOTCACHED` error,
+  without the network. Each is read from the command line, `npm_config_*`
+  or an `.npmrc`, as npm reads it, along with the deprecated
+  `--cache-max=0` and `--cache-min=9999`. Tarballs are still fetched as
+  before. Otherwise a cached packument is reused for 60 minutes, as
+  before, and one past that is checked against the shared cache's copy
+  before the registry.
 - Fixed (CLI): `nimbus runtime sync` with no runtime named, and so `nimbus
   setup cloudflare`, now publishes `cpython@3.13.14-3` as the bucket's Python.
   It used to publish `python@0.29.4`, Pyodide, whose `python-runner` no host

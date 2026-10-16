@@ -54,6 +54,7 @@ import type { ResolvedPackage } from './resolver.js';
 import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
 import type { FacetRegistryEvent } from './resolve-facet.js';
 import type { PackumentReadOptions } from './r2-cache.js';
+import type { NpmCacheMode } from '@nimbus-sh/core/_shared/npm-cache-mode.js';
 import { isEngines, registryRecord, resolvedFromRecord, type RegistryCacheEntry } from './registry-record.js';
 import type { PackageStagedArtifactEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { compareSemver, exactVersion, isSemverRange, parseSemver, pickInstalledVersion, stagedBindingVersion as stagedBindingVersionOf } from '@nimbus-sh/core/_shared/npm-semver.js';
@@ -110,6 +111,13 @@ export interface ResolveOneSpec {
   retries: number;
   /** Registry origin the packument is read from (the install's `NPM_REGISTRY`). */
   registry: string;
+  /**
+   * npm's cache mode for the packument (npm-cache-mode.ts); 'default' when
+   * absent. Under 'no-cache' the packument is asked again, so a record does
+   * not answer in its place; under 'force-cache' and 'only-if-cached' the
+   * cached copy answers what it can, and is not asked again where it cannot.
+   */
+  cache?: NpmCacheMode;
 }
 
 export interface ResolveOneResult {
@@ -350,9 +358,10 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   //    of a package, never the registry's whole list, and npm's choice needs
   //    every one (a fresh `^2` beside a cached 2.0.0 and five 3.x is 2.1.0).
   //    Records are the registry package's (an alias's target's), by its name.
+  //    Under --prefer-online the packument is asked again instead, as npm asks.
   const cached = (() => {
     const entries = spec.cachedEntries || [];
-    if (entries.length === 0) return null;
+    if (entries.length === 0 || spec.cache === 'no-cache') return null;
     const candidates = entries.filter((e) => e.name === request.registryName);
     if (candidates.length === 0) return null;
     const picked = EXACT_VERSION(request.range);
@@ -399,6 +408,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         retries: Math.max(0, spec.retries ?? 3),
         timeoutMs: spec.fetchTimeoutMs ?? 15_000,
         registry: spec.registry,
+        ...(spec.cache === undefined || spec.cache === 'default' ? {} : { cache: spec.cache }),
         ...(revalidate ? { revalidate: true } : {}),
       }),
       (r) => ({ json: r.json, source: r.source, events: r.events, status: r.status, failure: r.failure }),
@@ -497,9 +507,12 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   const choose = (data: Packument) => PICK_INSTALLED_VERSION(data.versions, data['dist-tags'], request.range, stagedVersions);
   let packument: Loaded = await loadPackument(effName);
   if ('failed' in packument) return packument.failed;
-  // One pick; a cached packument asked again only where it answered nothing (or not the staged version).
+  // One pick; a cached packument asked again only where it answered nothing
+  // (or not the staged version), and never where npm's mode keeps to the
+  // cache (--prefer-offline, --offline).
   let version = choose(packument.data);
-  if (packument.source === 'r2-cache' && (stagedVersion !== null ? version !== stagedVersion : version === null)) {
+  const keepsToCache = spec.cache === 'force-cache' || spec.cache === 'only-if-cached';
+  if (!keepsToCache && packument.source === 'r2-cache' && (stagedVersion !== null ? version !== stagedVersion : version === null)) {
     const again = await askAgain(effName);
     if (again) {
       packument = again;
@@ -518,7 +531,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
     }
     if (covered) {
       let target: Loaded = await loadPackument(__swap.to);
-      if (!('failed' in target) && target.source === 'r2-cache' && readProperty(target.data.versions, String(own)) === undefined) {
+      if (!keepsToCache && !('failed' in target) && target.source === 'r2-cache' && readProperty(target.data.versions, String(own)) === undefined) {
         target = await askAgain(__swap.to) ?? target;
       }
       if ('failed' in target) return target.failed;

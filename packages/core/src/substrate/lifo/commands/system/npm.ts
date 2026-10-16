@@ -9,6 +9,7 @@ import { isNativeBinPath } from '../../../../runtime/os-contracts.js';
 import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
 import { pickPackumentVersion } from '../../../../_shared/npm-semver.js';
 import { parseRegistryRequest, splitPackageSpec } from '../../../../_shared/npm-spec.js';
+import { notCachedMessage, type NpmCacheMode } from '../../../../_shared/npm-cache-mode.js';
 import {
 	canonicalTreePath, depthOf, holdTree, isOptional, manifestEdges, meets, namedPackages, packageJsonText, parentPlacement, placementName,
 	projectRoots, readPackageJson, saveNamed, withoutDeclared,
@@ -101,6 +102,8 @@ export interface NpmInstallPort {
     signal?: AbortSignal;
     /** Registry origin from the command's env (`NPM_REGISTRY`), else the default. */
     registry: string;
+    /** How packuments are read (npm's cache mode: `--offline`, `--prefer-offline`, `--prefer-online`); 'default' when not given. */
+    cache?: NpmCacheMode;
     production?: boolean;
     /** `npm ci`: build npm's tree over package-lock.json, fail unless it is the lock's, then remove node_modules and install it. */
     fromLockfile?: boolean;
@@ -276,9 +279,12 @@ async function fetchPackageInfo(
 	name: string,
 	version: string | null,
 	signal: AbortSignal,
+	/** The shell keeps no packuments: under `--offline` none is read. */
+	cache: NpmCacheMode = 'default',
 ): Promise<RegistryVersionInfo> {
 	const request = parseRegistryRequest(name, version ?? '');
 	const url = `${registry}/${encodePackageName(request.registryName)}`;
+	if (cache === 'only-if-cached') throw Object.assign(new Error(notCachedMessage(url)), { code: 'ENOTCACHED' });
 	const response = await network.fetch(url, {
 		signal,
 		headers: { Accept: 'application/json' },
@@ -420,6 +426,8 @@ interface TreeInstall {
 	/** Every registry request goes through it (the workspace's, under an egress). */
 	network: WorkspaceNetwork;
 	npmRegistry: string;
+	/** npm's cache mode for its packuments. */
+	cache: NpmCacheMode;
 	/** The command's: it stops the install before publication, never during it. */
 	signal: AbortSignal;
 	stdout: CommandOutputStream;
@@ -536,7 +544,7 @@ async function installTree(roots: readonly TreeRoot[], install: TreeInstall, pro
 			for (const { name, range } of requests) {
 				await stdout.write(`  ${name}${range ? '@' + range : ''}...\n`);
 				try {
-					const info = await fetchPackageInfo(network, npmRegistry, name, range || null, signal);
+					const info = await fetchPackageInfo(network, npmRegistry, name, range || null, signal, install.cache);
 					answers.push({ package: { ...info, name, registryName: info.name, integrity: info.dist.integrity, bundleDependencies: info.bundleDependencies ?? info.bundledDependencies, info } });
 				} catch (error) {
 					answers.push({ failed: describeError(error) });
@@ -727,6 +735,7 @@ async function npmInstall(
 			globalPrefix: invocation.global ? globalPrefix : undefined,
 			pid: ctx.pid,
 			registry: npmRegistry,
+			cache: invocation.cache,
 			production: invocation.production,
 			saveDev: invocation.saveDev,
 			saveOptional: invocation.saveOptional,
@@ -775,7 +784,7 @@ function shellInstallPort(ctx: CommandContext, registry: CommandRegistry, kernel
 			const targetBase = spec.global ? `${spec.globalPrefix}/lib/node_modules` : join(spec.projectDir, 'node_modules');
 			const globalBinDir = spec.global ? `${spec.globalPrefix}/bin` : undefined;
 			const tree: TreeInstall = {
-				targetBase, vfs, network: (kernel?.network ?? ISOLATE_NETWORK).forProcess(ctx.pid), npmRegistry: spec.registry, signal,
+				targetBase, vfs, network: (kernel?.network ?? ISOLATE_NETWORK).forProcess(ctx.pid), npmRegistry: spec.registry, cache: spec.cache ?? 'default', signal,
 				stdout: ctx.stdout, stderr: ctx.stderr, registry, kernel,
 				force: spec.force === true, engineStrict: spec.engineStrict === true, strictPeerDeps: spec.strictPeerDeps === true, legacyPeerDeps: spec.legacyPeerDeps === true, preferDedupe: spec.preferDedupe === true,
 				omit: { dev: spec.production === true, optional: spec.omitOptional === true, peer: spec.omitPeer === true },
@@ -1363,6 +1372,7 @@ async function npmCi(ctx: CommandContext, deps?: NpmCommandDeps): Promise<number
 			pid: ctx.pid,
 			signal: ctx.signal,
 			registry: registryOf(ctx, invocation),
+			cache: invocation.cache,
 			production: invocation.production,
 			omitOptional: invocation.omitOptional,
 			omitPeer: invocation.omitPeer,
