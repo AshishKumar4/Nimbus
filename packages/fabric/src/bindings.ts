@@ -40,6 +40,7 @@ import type { WorkspaceEgress } from '@nimbus-sh/core/_shared/workspace-network.
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { EntrypointLoopbackFactory } from './composition.js';
 import type { WorkerCode, EntrypointOptions } from './vendor/types.js';
+import { staticExtension, staticMimeType, staticMimeTypes } from './static-mime.js';
 
 /**
  * `ctx.exports` for the loopback hops: workerd mints one factory per top-level
@@ -214,7 +215,7 @@ export class NimbusAssetsRPC extends WorkerEntrypoint<object, NimbusAssetsProps>
               return new Response(body, {
                 status: 200,
                 headers: {
-                  'Content-Type': mimeTypeForPath(candidate),
+                  'Content-Type': staticMimeType(ASSET_MIME_TYPES, staticExtension(candidate)),
                   'Cache-Control': 'no-store',
                 },
               });
@@ -232,34 +233,14 @@ export class NimbusAssetsRPC extends WorkerEntrypoint<object, NimbusAssetsProps>
 }
 
 /**
- * Pick a sensible content-type from a filename. Conservative list; the
- * inner Worker can always override via the response it constructs
- * (which Workers Assets won't touch for env.ASSETS.fetch results).
+ * The shared static vocabulary, with what ASSETS also serves. The inner
+ * Worker can always override it in the response it builds (Workers Assets
+ * leaves env.ASSETS.fetch results alone).
  */
-function mimeTypeForPath(path: string): string {
-  const i = path.lastIndexOf('.');
-  if (i < 0) return 'application/octet-stream';
-  const ext = path.slice(i + 1).toLowerCase();
-  switch (ext) {
-    case 'html': case 'htm': return 'text/html; charset=utf-8';
-    case 'css':              return 'text/css; charset=utf-8';
-    case 'js': case 'mjs':   return 'application/javascript; charset=utf-8';
-    case 'json':             return 'application/json; charset=utf-8';
-    case 'svg':              return 'image/svg+xml';
-    case 'png':              return 'image/png';
-    case 'jpg': case 'jpeg': return 'image/jpeg';
-    case 'webp':             return 'image/webp';
-    case 'gif':              return 'image/gif';
-    case 'ico':              return 'image/x-icon';
-    case 'woff':             return 'font/woff';
-    case 'woff2':            return 'font/woff2';
-    case 'txt':              return 'text/plain; charset=utf-8';
-    case 'xml':              return 'application/xml; charset=utf-8';
-    case 'wasm':             return 'application/wasm';
-    case 'map':              return 'application/json; charset=utf-8';
-    default: return 'application/octet-stream';
-  }
-}
+const ASSET_MIME_TYPES = staticMimeTypes({
+  '.htm': 'text/html; charset=utf-8',
+  '.xml': 'application/xml; charset=utf-8',
+});
 
 /**
  * Worker Loader binding shim.

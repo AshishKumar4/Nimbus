@@ -25,6 +25,7 @@ import { z } from 'zod/v4';
 import { jsgInt } from '@nimbus-sh/fabric/jsg-int.js';
 import { ensureBindingDir, fileStream, writeBody } from './body.js';
 import { cursorAfter, cursorKey, listObjectFiles, objectFileName, objectStoreDir, removeObjectFiles, uploadFileName, utf8Order } from './object-store.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 /** A key's sidecar, as the store wrote it. */
 const KvMetaSchema = z.object({ exp: z.number().optional(), meta: z.json().optional(), v: z.literal(1) });
 /** Cloudflare's KV limits, as its local store enforces them. */
@@ -35,7 +36,6 @@ const MAX_LIST_KEYS = 1000;
 const MAX_VALUE_BYTES = 25 * 1024 * 1024;
 const MAX_METADATA_BYTES = 1024;
 const MAX_BULK_KEYS = 100;
-const utf8Bytes = (text) => new TextEncoder().encode(text).byteLength;
 /** A request the store refused, as workerd's KV client throws it. */
 function failed(method, status, message) {
     return new Error(`KV ${method} failed: ${status} ${message}`);
@@ -46,7 +46,7 @@ function validateKeyName(method, key) {
         throw new TypeError('Key name cannot be empty.');
     if (key === '.' || key === '..')
         throw new TypeError(`"${key}" is not allowed as a key name.`);
-    const bytes = utf8Bytes(key);
+    const bytes = utf8Length(key);
     if (bytes > MAX_KEY_BYTES)
         throw failed(method, 414, `UTF-8 encoded length of ${bytes} exceeds key length limit of ${MAX_KEY_BYTES}.`);
 }
@@ -114,7 +114,7 @@ export class KvEmulator {
             meta.exp = expiration;
         }
         if (metadata !== undefined) {
-            const bytes = utf8Bytes(JSON.stringify(metadata));
+            const bytes = utf8Length(JSON.stringify(metadata));
             if (bytes > MAX_METADATA_BYTES)
                 throw failed('PUT', 413, `Metadata length of ${bytes} exceeds limit of ${MAX_METADATA_BYTES}.`);
             meta.meta = metadata;
@@ -143,7 +143,7 @@ export class KvEmulator {
         if (limit > MAX_LIST_KEYS)
             throw failed('GET', 400, `Invalid key_count_limit of ${limit}. Please specify an integer less than ${MAX_LIST_KEYS}.`);
         const prefix = options?.prefix == null ? '' : String(options.prefix);
-        const prefixBytes = utf8Bytes(prefix);
+        const prefixBytes = utf8Length(prefix);
         if (prefixBytes > MAX_KEY_BYTES)
             throw failed('GET', 414, `UTF-8 encoded length of ${prefixBytes} exceeds key length limit of ${MAX_KEY_BYTES}.`);
         const after = options?.cursor == null ? undefined : cursorKey(String(options.cursor));
@@ -206,7 +206,7 @@ export class KvEmulator {
                 throw failed('GET_BULK', 400, 'Key names must not be empty');
             if (name === '.' || name === '..')
                 throw failed('GET_BULK', 400, `Illegal key name "${name}". Please use a different name.`);
-            const bytes = utf8Bytes(name);
+            const bytes = utf8Length(name);
             if (bytes > MAX_KEY_BYTES)
                 throw failed('GET_BULK', 414, `UTF-8 encoded length of ${bytes} exceeds key length limit of ${MAX_KEY_BYTES}.`);
             checkCacheTtl('GET_BULK', cacheTtl);
