@@ -9,7 +9,9 @@
 //
 //   - text, json, arrayBuffer, bytes and stream read the file's bytes, text
 //     without a byte order mark; a missing file rejects with ENOENT; exists
-//     and size answer as Bun's (a directory does not exist as a file);
+//     and size answer as Bun's (a directory does not exist as a file; size,
+//     synchronous in Bun, is the namespace's stat of a file the process does
+//     not hold, and 0 for a name that has none);
 //   - Bun.write takes the bytes of a Blob, a Response, a BunFile or a view
 //     (its offset kept), encodes a string as UTF-8 and anything else as its
 //     string, writes to a path or a BunFile, and answers the byte count.
@@ -33,7 +35,7 @@ import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
 
 const SEEDED = {
   dirs: ['seed', 'out'],
-  far: [['a.txt', new TextEncoder().encode('far\n')], ['bin', new Uint8Array([0x00, 0xfe, 0x01])]],
+  far: [['a.txt', new TextEncoder().encode('far\n')], ['bin', new Uint8Array([0x00, 0xfe, 0x01])], ['sized', new Uint8Array(1234)]],
   files: [['seed/a.txt', new TextEncoder().encode('hé\n')], ['seed/data.json', new TextEncoder().encode('{"k":[1,2]}')], ['seed/bin', new Uint8Array([0xff, 0x00, 0x7f, 0x80])], ['seed/bom.txt', new Uint8Array([0xef, 0xbb, 0xbf, 0x68, 0x69])]],
 };
 
@@ -45,6 +47,9 @@ const PROGRAM = `async (Bun, root, far) => {
   const outcome = async (f) => { try { const r = await f(); return r === undefined ? 'ok' : r; } catch (e) { return { code: e.code }; } };
   const written = async (path, data) => { const n = await Bun.write(path, data); return [n, hex(new Uint8Array(await Bun.file(path).arrayBuffer()))]; };
   const r = {};
+  // First, before anything reads it: the size of a file the process does not hold.
+  r.farSize = Bun.file(F('sized')).size;
+  r.farSizeBelowFile = Bun.file(F('sized/x')).size;
   r.text = await outcome(() => Bun.file(P('seed/a.txt')).text());
   r.json = await outcome(() => Bun.file(P('seed/data.json')).json());
   r.textBom = await outcome(() => Bun.file(P('seed/bom.txt')).text());
@@ -72,6 +77,7 @@ const PROGRAM = `async (Bun, root, far) => {
   r.farBytes = await outcome(async () => hex(await Bun.file(F('bin')).bytes()));
   r.farStream = await outcome(async () => hex(new Uint8Array(await new Response(Bun.file(F('bin')).stream()).arrayBuffer())));
   r.farExists = await outcome(() => Bun.file(F('a.txt')).exists());
+
   r.writeFarFile = await outcome(() => written(P('out/far.bin'), Bun.file(F('bin'))));
   r.writeToBunFile = await outcome(async () => { const n = await Bun.write(Bun.file(P('out/dst.txt')), 'dst'); return [n, await Bun.file(P('out/dst.txt')).text()]; });
   return r;
