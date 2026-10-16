@@ -5798,9 +5798,10 @@ const __fsMod = (() => {
 
   /**
    * A write open at the session (_openCall), its answer awaited before this
-   * view keeps anything of it: the opened file's stat, and the cell it
-   * emptied. Answered without its stat (a session that gives none for the
-   * call), the view asks for it.
+   * view keeps anything of it, as a truncate's is (_truncateAsync): the cell
+   * it holds emptied under O_TRUNC, and a file the open made or emptied
+   * without a cell here kept empty and resident, at the stat the session
+   * answered. An open that changed nothing changes nothing here.
    */
   async function _openWriteLive(path, absPath, fl, mode, supervisor) {
     await _flushLocalPathToSupervisor(absPath, supervisor, fl.followSymlinks);
@@ -5808,7 +5809,6 @@ const __fsMod = (() => {
     const generation = __vfsWriteGenerations[k];
     const localCell = _bundleLookup(absPath);
     let answer;
-    let kept = false;
     const ticket = _beginFill(k);
     try {
       const sent = _ownMutation(
@@ -5820,13 +5820,16 @@ const __fsMod = (() => {
       );
       sent.catch(() => {});
       await __nimbusQueueVfsMutation(absPath, () => sent);
-      _markVfsStale();
       const receipt = answer?.receipt;
-      if (receipt !== undefined) kept = _noteLearnedStat(absPath, _receiptStat(receipt), ticket, typeof receipt.revision === "number" ? receipt.revision : undefined);
+      const emptied = (fl.create || fl.truncate) && receipt !== undefined && Number(receipt.size) === 0;
+      if (emptied && localCell === undefined) {
+        _installResident(absPath, new Uint8Array(0), ticket);
+        _noteLearnedStat(absPath, _receiptStat(receipt), ticket, typeof receipt.revision === "number" ? receipt.revision : undefined);
+      }
+      if (emptied || fl.truncate) _markVfsStale();
     } finally {
       _endFill(ticket);
     }
-    if (!kept) await _learnLive(absPath, supervisor);
     const receipt = answer?.receipt;
     const size = receipt !== undefined ? Number(receipt.size) || 0
       : Number((fl.followSymlinks ? statSync : lstatSync)(path, { throwIfNoEntry: false })?.size ?? 0);
