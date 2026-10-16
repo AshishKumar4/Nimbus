@@ -5,10 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- Fixed: a hosted launch decides what is a Node builtin the way Node's
-  `module.isBuiltin` does, using one list
-  (`runtime/node-builtins.js` `isNodeBuiltin`) for the dependency walk, ES
-  module staging and the process's `require`. A `node_modules/constants`
+- Fixed: a hosted launch's dependency walk and ES module staging decide
+  what is a Node builtin the way Node's `module.isBuiltin` does
+  (`runtime/node-builtins.js` `isNodeBuiltin`). The process's `require`
+  shares its scheme-only names and serves the builtins it implements. A
+  `node_modules/constants`
   shadow is no longer walked: `require('constants')` is the builtin, as in
   Node. Before, a large shadow could fail the launch over a file Node never
   reads. An npm package named `sqlite`, required bare, is now shipped with
