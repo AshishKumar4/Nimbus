@@ -636,7 +636,7 @@ export function delegationHolder(options) {
             return entry.nlink === 0 ? undefined : { key: file.key, entry };
         },
         writeFile: (key, path, bytes, flags) => {
-            const provisional = client.held(key) === undefined;
+            const provisional = client.held(key) === undefined && options.provisional?.() === true;
             if (provisional) {
                 client.fitsSync(bytes.byteLength, path);
                 if (store.reserve !== undefined && !store.reserve(bytes.byteLength))
