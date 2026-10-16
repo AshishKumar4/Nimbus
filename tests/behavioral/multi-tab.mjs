@@ -12,8 +12,10 @@
 // time, session/routes.ts). Both contracts are asserted: the sequential
 // one users rely on, and the refusal with the holder unharmed.
 
-import { mintSession, Terminal, makeAsserter, sleep, wsHeaders, WS_BASE, hasOutputLine } from './_driver.mjs';
-import WebSocket from 'ws';
+import { randomBytes } from 'node:crypto';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+import { mintSession, Terminal, makeAsserter, sleep, requestHeaders, WS_BASE, hasOutputLine } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('multi-tab');
@@ -38,17 +40,27 @@ await tab1.close();
   const holder = new Terminal(sid2);
   await holder.connect();
   await holder.waitForPrompt(60_000);
-  const second = new WebSocket(`${WS_BASE}/s/${sid2}/ws`, wsHeaders(sid2));
-  const outcome = await Promise.race([
-    new Promise((resolve) => {
-      second.once('open', () => resolve('opened'));
-      second.once('error', (error) => resolve(`refused: ${error.message}`));
-      second.once('close', (code) => resolve(`closed ${code}`));
-    }),
-    sleep(10_000).then(() => 'no answer in 10 s'),
-  ]);
-  second.terminate();
-  a.check('a second terminal socket on a held session is refused', outcome.startsWith('refused'), outcome);
+  // A terminal upgrade as a browser sends it, with the session's credentials:
+  // the session answers 409 and why (session/routes.ts), not 101.
+  const url = new URL(`${WS_BASE.replace(/^ws/, 'http')}/s/${sid2}/ws`);
+  const refusal = await new Promise((resolve) => {
+    const upgrade = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, {
+      headers: { ...requestHeaders({}, sid2), Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': randomBytes(16).toString('base64') },
+      timeout: 10_000,
+    });
+    upgrade.on('response', (response) => {
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => { body += chunk; });
+      response.on('end', () => resolve({ status: response.statusCode, body }));
+    });
+    upgrade.on('upgrade', (response, socket) => { socket.destroy(); resolve({ status: response.statusCode, body: '' }); });
+    upgrade.on('timeout', () => upgrade.destroy(new Error('no answer in 10 s')));
+    upgrade.on('error', (error) => resolve({ status: null, body: error.message }));
+    upgrade.end();
+  });
+  a.check('a second terminal on a held session is refused with 409 and why',
+    refusal.status === 409 && refusal.body.includes('session already has active terminal'), JSON.stringify(refusal));
   const { output } = await holder.run('echo still-the-owner', 10_000);
   a.check('the holding tab keeps its terminal', hasOutputLine(output, 'still-the-owner'), JSON.stringify(output.slice(-200)));
   await holder.close();
