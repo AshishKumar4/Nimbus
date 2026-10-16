@@ -371,7 +371,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     readonly servedReads: ServedReads;
     _rpcReadFile(path: string, pid?: number, cred?: VfsCred): Promise<string | null>;
     _rpcReadFileBytes(path: string, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;
-    _rpcInnerDoFetch(req: any): Promise<any>;
     _rpcInnerDoCall(req: any): Promise<unknown>;
     _rpcKvCall(target: {
         root: string;
@@ -843,5 +842,5 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     /** W5: bridge _w5PersistRing → ctx.waitUntil. Delegator → ./session/ws.ts (S7). */
     _w5SafePersistRing(): void;
 }
-export { NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket, } from '@nimbus-sh/fabric/bindings.js';
+export { NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket, } from '@nimbus-sh/fabric/bindings.js';
 //# sourceMappingURL=nimbus-session.d.ts.map

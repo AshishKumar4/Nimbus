@@ -16,7 +16,7 @@
  * via the stub).
  *
  * Per DEFECT-D1: ctx is taken via `(self as any).ctx` cast where needed
- * (rpcInnerDoFetch uses self.ctx.id and self.ctx.facets). The InitHost-style escape applies because
+ * (_rpcInnerDoCall uses self.ctx.id and self.ctx.facets). The InitHost-style escape applies because
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
@@ -27,9 +27,7 @@ import { isBrokenPipe } from '@nimbus-sh/core/substrate/lifo/utils/bytes-io.js';
 import { STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 import type { ProcessExitNotice, ProcessExitNoticeSource } from '@nimbus-sh/core/runtime/process-exit-notices.js';
-import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { getInnerDoClass, innerDoFacetName, noteInnerDoFacetOpened } from '@nimbus-sh/fabric/inner-do-registry.js';
-import type { InnerDoFetchAnswer } from '@nimbus-sh/fabric/bindings.js';
 import type { D1QueryResponse, D1QuerySql, KvCall, R2Call } from '@nimbus-sh/fabric/inner-storage-env.js';
 import { KvEmulator, serveKvCall } from '../bindings/kv.js';
 import { R2Emulator, serveR2Call } from '../bindings/r2.js';
@@ -254,73 +252,6 @@ export async function _rpcReadFile(self: RpcHost, path: string, pid?: number, cr
  */
 export async function _rpcReadFileBytes(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<Uint8Array | null> {
   return self.supervisorOp({ op: 'readFileBytes', args: [path], pid, cred }) as Promise<Uint8Array | null>;
-}
-
-  /**
-   * Phase-3 inner-DO fetch dispatcher. Called by NimbusDOStub.fetch()
-   * from the inner Worker via the env.NIMBUS_SESSION loopback. We
-   * resolve the inner DO class from the module-level registry (keyed
-   * by <thisDoId>:<bindingName>), use ctx.facets.get with the inner's
-   * id string as the facet id, and forward the serialized Request.
-   *
-   * All steps run in THIS RPC method's context, so no cross-request
-   * I/O boundaries are crossed — the ctx.facets stub and its fetch()
-   * are both created here.
-   */
-export async function _rpcInnerDoFetch(self: RpcHost, req: {
-    bindingName: string;
-    id: string;
-    method: string;
-    url: string;
-    headers: [string, string][];
-    body: ArrayBuffer | null;
-  }): Promise<InnerDoFetchAnswer> {
-    const facet = innerDoFacet(self, req.bindingName, req.id);
-    if (!facet) {
-      const body = enc.encode(
-        `Nimbus: inner DO binding '${req.bindingName}' has no registered class (supervisor=${self.ctx.id.toString()})`,
-      );
-      return {
-        status: 502,
-        statusText: 'Bad Gateway',
-        headers: [['Content-Type', 'text/plain']],
-        body: body.buffer as ArrayBuffer,
-      };
-    }
-    try {
-      // Reconstruct the Request in the current context.
-      const headers = new Headers();
-      for (const [k, v] of req.headers) headers.append(k, v);
-      const r = new Request(req.url, {
-        method: req.method,
-        headers,
-        body: req.body,
-      });
-      const res: Response = await facet.fetch(r);
-      try {
-        const resHeaderList: [string, string][] = [];
-        res.headers.forEach((v: string, k: string) => { resHeaderList.push([k, v]); });
-        const resBody = await res.arrayBuffer();
-        return {
-          status: res.status,
-          statusText: res.statusText,
-          headers: resHeaderList,
-          body: resBody,
-        };
-      } finally {
-        disposeRpcResource(res);
-      }
-    } catch (e: any) {
-      const body = enc.encode(
-        `Nimbus inner DO error: ${e?.message || String(e)}`,
-      );
-      return {
-        status: 500,
-        statusText: 'Internal Server Error',
-        headers: [['Content-Type', 'text/plain']],
-        body: body.buffer as ArrayBuffer,
-      };
-    }
 }
 
 /**

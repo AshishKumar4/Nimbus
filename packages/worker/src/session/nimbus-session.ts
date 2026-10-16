@@ -893,7 +893,6 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
 
   async _rpcReadFile(path: string, pid?: number, cred?: VfsCred): Promise<string | null> { return _rpc._rpcReadFile(this as any, path, pid, cred); }
   async _rpcReadFileBytes(path: string, pid?: number, cred?: VfsCred): Promise<Uint8Array | null> { return _rpc._rpcReadFileBytes(this as any, path, pid, cred); }
-  async _rpcInnerDoFetch(req: any): Promise<any> { return _rpc._rpcInnerDoFetch(this as any, req); }
   async _rpcInnerDoCall(req: any): Promise<unknown> { return _rpc._rpcInnerDoCall(this as any, req); }
   async _rpcKvCall(target: { root: string; store: string }, call: KvCall, cred?: VfsCred) { return _rpc._rpcKvCall(this, target, call, cred); }
   async _rpcR2Call(target: { root: string; store: string }, call: R2Call, cred?: VfsCred) { return _rpc._rpcR2Call(this, target, call, cred); }
@@ -1474,7 +1473,6 @@ export {
   NimbusLoadedWorker,
   NimbusLoadedEntrypoint,
   NimbusDurableObjectNamespace,
-  NimbusDOStub,
   NimbusKVNamespace,
   NimbusD1Binding,
   NimbusR2Bucket,

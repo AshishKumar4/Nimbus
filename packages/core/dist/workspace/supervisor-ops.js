@@ -103,7 +103,6 @@ export const SUPERVISOR_OP_TABLE = {
     fsAwaitRecall: null,
     fsRecalled: 'once',
     fsPublished: null,
-    innerDoFetch: null,
     innerDoCall: null,
     kvCall: null,
     r2Call: null,
