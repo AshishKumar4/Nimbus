@@ -56,6 +56,8 @@ const git = (...args) => {
  * `command --baseline <baselineDir> --out <file>`. Writes
  * the receipt under NIMBUS_STATE/`receipts`, prints the verdicts, and exits
  * 0 only when every run finished and no kind is slower.
+ *
+ * @param {{ name: string, receipts: string, source: string, baselineDir: string, files?: string[], command: string[] }} bench
  */
 export async function remotePairedCpu({ name, receipts, source, baselineDir, files, command }) {
   const RUNS = 8;
