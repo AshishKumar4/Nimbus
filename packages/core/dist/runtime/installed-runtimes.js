@@ -196,22 +196,32 @@ bound) {
     for (const { root, manifest } of await listInstalledManifestsView(vfs)) {
         if (!await runtimePayloadIntact(vfs, root, manifest))
             continue;
-        const handlers = new Map();
-        for (const ep of runtimeEntrypoints(manifest)) {
-            const factory = runnerFor(ep.runner);
-            if (!factory)
-                continue; // runner not registered yet — skip
-            const handler = await factory(manifest, root, ep.binName, ep.kind);
-            registry.register(ep.binName, handler);
-            handlers.set(ep.binName, handler);
-            bins.push(ep.binName);
-        }
+        const handlers = await bindRuntimeCommands(registry, runnerFor, root, manifest);
+        bins.push(...handlers.keys());
         await bound?.(root, manifest, handlers);
     }
     return { count: bins.length, bins };
 }
-export async function listInstalledRuntimes(vfs) {
-    return (await listInstalledManifests(vfs)).map(({ root, manifest }) => ({
+/**
+ * Registers the commands of the runtime `manifest` describes, installed at
+ * `root`: each entrypoint's handler, made by its runner's factory; one whose
+ * runner is not registered yet is left out. Its handlers, by name.
+ */
+export async function bindRuntimeCommands(registry, runnerFor, root, manifest) {
+    const handlers = new Map();
+    for (const ep of runtimeEntrypoints(manifest)) {
+        const factory = runnerFor(ep.runner);
+        if (!factory)
+            continue;
+        const handler = await factory(manifest, root, ep.binName, ep.kind);
+        registry.register(ep.binName, handler);
+        handlers.set(ep.binName, handler);
+    }
+    return handlers;
+}
+/** The installed runtime at `root`, as `runtime list` shows it. */
+export function runtimeSummary(root, manifest) {
+    return {
         name: manifest.name,
         version: manifest.version,
         root,
@@ -219,5 +229,8 @@ export async function listInstalledRuntimes(vfs) {
         bins: runtimeEntrypoints(manifest).map((e) => e.binName),
         sizeBytes: manifest.files.reduce((a, f) => a + f.size, 0),
         license: manifest.license,
-    }));
+    };
+}
+export async function listInstalledRuntimes(vfs) {
+    return (await listInstalledManifests(vfs)).map(({ root, manifest }) => runtimeSummary(root, manifest));
 }
