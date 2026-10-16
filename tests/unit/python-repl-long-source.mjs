@@ -38,8 +38,9 @@ mock.module('cloudflare:workers', () => ({ DurableObject: class {}, WorkerEntryp
 const { runPythonRepl } = await import('../../packages/worker/src/runtime/python-repl.ts');
 const { WebSocketTerminal } = await import('../../packages/worker/src/facets/ws-terminal.ts');
 
-// 300,000 characters of two-byte UTF-8 (600,000 bytes), far past any engine's argument limit, and a few wider ones.
-const LINE = `s = "${'é'.repeat(300_000)}✓😀"`;
+// 400,000 characters of two-byte UTF-8 (800,000 bytes) and a few wider ones: past the argument limit of workerd's
+// V8, where the prompt runs (about 125,000), and of Bun's JSC, where this test runs (about 700,000).
+const LINE = `s = "${'é'.repeat(400_000)}✓😀"`;
 
 const harness = createSqliteVfsTestHarness();
 const raw = new SqliteVFS(harness.sql, harness.ctx);
