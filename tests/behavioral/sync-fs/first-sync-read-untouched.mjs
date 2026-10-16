@@ -37,7 +37,7 @@
 //   must FAIL. A probe with only a passing arm is the failure mode that has
 //   bitten this project repeatedly, and it bit this probe on its first run.
 
-import { mintSession, Terminal, sleep, BASE, makeAsserter, deleteSession } from '../_driver.mjs';
+import { mintSession, Terminal, BASE, makeAsserter, deleteSession } from '../_driver.mjs';
 
 /** Outside /home/user, and past the bundle's byte cap. */
 const DIR = '/opt/appdata/locale/deep';
@@ -52,7 +52,6 @@ console.log(`[sync-fs first-sync-read] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 // ── Put the file where nothing will stage it ────────────────────────────────

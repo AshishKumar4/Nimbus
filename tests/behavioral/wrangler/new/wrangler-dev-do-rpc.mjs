@@ -56,7 +56,7 @@ try {
     const answers = [];
     while (built && answers.length < requests) answers.push(await answer());
     t.send('\x03');
-    await t.waitForPrompt(30_000).catch(() => {});
+    await t.waitForPrompt(30_000);
     return answers;
   };
 

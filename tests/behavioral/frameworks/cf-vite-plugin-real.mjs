@@ -24,7 +24,7 @@
 // install still work, and the plugin install fails with the named-sharp
 // diagnostic instead of silently producing a broken project.
 
-import { Terminal, mintSession, sleep, stripAnsi, deleteSession, makeAsserter, BASE } from '../_driver.mjs';
+import { Terminal, mintSession, stripAnsi, deleteSession, makeAsserter, BASE } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('cf-vite-plugin-real');
@@ -35,7 +35,6 @@ console.log(`[cf-vite-plugin-real] sid=${sid} BASE=${BASE}`);
 const t = new Terminal(sid);
 try {
   await t.connect();
-  await sleep(2_000);
   await t.waitForPrompt(60_000);
 
   // ── Phase 1: npm create vite (react-ts) ────────────────────────────

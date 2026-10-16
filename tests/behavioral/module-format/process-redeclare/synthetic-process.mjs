@@ -14,14 +14,13 @@
 // a block, where a lexical declaration of any name shadows instead of
 // colliding (core/_shared/commonjs-cell.ts, THE WRAPPER).
 
-import { Terminal, mintSession, sleep, makeAsserter, BASE } from '../../_driver.mjs';
+import { Terminal, mintSession, makeAsserter, BASE } from '../../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[process-redeclare/synthetic-process] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 const A = makeAsserter('process-redeclare/synthetic-process');

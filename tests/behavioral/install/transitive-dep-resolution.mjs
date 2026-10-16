@@ -18,14 +18,13 @@
 //      (all major-only ranges of '1' / '2' / '7'). If any transitive
 //      dep is dropped, rimraf's CJS require chain fails at runtime.
 
-import { Terminal, mintSession, sleep, makeAsserter, BASE } from '../_driver.mjs';
+import { Terminal, mintSession, makeAsserter, BASE } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[transitive-dep-resolution] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 const A = makeAsserter('install/transitive-dep-resolution');

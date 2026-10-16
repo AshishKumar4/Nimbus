@@ -20,7 +20,7 @@
 //
 // Black-box only. NO _diag.
 
-import { mintSession, Terminal, makeAsserter, sleep, stripAnsi, fetchPort, requestHeaders } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, fetchPort, requestHeaders } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('wrangler-dev-clone');
@@ -31,7 +31,7 @@ console.log(`SID: ${sid}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
+await t.waitForPrompt(60_000);
 
 // Step 1: write a minimal Workers project (no node_modules needed).
 {

@@ -10,14 +10,13 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Terminal, mintSession, sleep, makeAsserter, BASE } from '../_driver.mjs';
+import { Terminal, mintSession, makeAsserter, BASE } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[observability/unhandled-rejection] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 const A = makeAsserter('observability/unhandled-rejection');

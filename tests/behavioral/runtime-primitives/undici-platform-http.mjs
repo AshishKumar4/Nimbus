@@ -13,7 +13,7 @@
 // does, at import time) reports an unexplained "Connection error", and a
 // program that reaches for a session port after installing it gets nothing.
 
-import { mintSession, deleteSession, Terminal, makeAsserter, heredocCommand, stripAnsi, sleep } from '../_driver.mjs';
+import { mintSession, deleteSession, Terminal, makeAsserter, heredocCommand, stripAnsi, fetchPort, readUntil } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('runtime-primitives/undici-platform-http');
@@ -81,7 +81,10 @@ try {
   const boot = stripAnsi((await t.run('node /home/user/undici-server.js', 90_000)).output);
   a.check('in-session server is listening',
     /LISTENING 7311|facet started \(long-running\)/.test(boot), JSON.stringify(boot.slice(-600)));
-  await sleep(3000);
+  // Ready once it answers on its port.
+  const serving = (r) => r.status === 200 && r.body === 'in-session-ok:/ready';
+  const ready = await readUntil((signal) => fetchPort(sid, 7311, 'ready', { signal }), serving, 30_000);
+  a.check('in-session server answers on its port', serving(ready), `status=${ready.status} body=${ready.body.slice(0, 200)}`);
 
   await t.run(heredocCommand('/home/user/undici-esm.mjs', esmProbe), 30_000);
   const esm = stripAnsi((await t.run('node /home/user/undici-esm.mjs', 180_000)).output);

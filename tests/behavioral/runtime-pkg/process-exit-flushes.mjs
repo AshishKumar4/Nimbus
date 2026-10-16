@@ -23,15 +23,14 @@
 // where some indirection rebinds `process`. Probe asserts that EVERY
 // path correctly flushes and surfaces the code.
 
-import { mintSession, Terminal, sleep, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, BASE } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[G1] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
-await t.waitForPrompt(15_000).catch(() => {});
+await t.waitForPrompt(15_000);
 
 await t.run('mkdir -p /home/user/g1-probe', 5_000);
 await t.run('cd /home/user/g1-probe', 5_000);

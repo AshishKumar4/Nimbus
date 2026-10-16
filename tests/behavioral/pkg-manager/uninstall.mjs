@@ -15,7 +15,16 @@ const t = new Terminal(sid);
 await t.connect();
 await t.waitForPrompt(60_000);
 
-await t.run('nimbus install clang', 120_000);
+// The install names the directory it installed: "[clang] installed at usr/lib/nimbus/clang/<version> (X MiB)".
+let dir = null;
+{
+  const stripped = stripAnsi((await t.run('nimbus install clang', 120_000)).output);
+  dir = stripped.match(/installed at\s+\/?(usr\/lib\/nimbus\/clang\/[\w.-]+)/)?.[1] ?? null;
+  a.check('the install names the directory it installed', dir !== null, JSON.stringify(stripped.slice(-200)));
+  dir = dir && `/${dir}`;
+}
+const exists = async (path) => (await t.run(`test -e ${path}`, 10_000)).exitCode === 0;
+a.check('the installed bin directory exists before uninstall', dir !== null && await exists(`${dir}/bin/clang`), `dir=${dir}`);
 
 // Uninstall.
 {
@@ -26,29 +35,15 @@ await t.run('nimbus install clang', 120_000);
     ok ? `elapsed=${elapsed}ms` : `output=${JSON.stringify(stripped.slice(-300))}`);
 }
 
-// Bin path no longer exists. Use shell `ls` against the PARENT dir;
-// the directory itself should no longer exist (covered by next check
-// too), but if it does exist we'd see the file listing.
+// The directory the install named is gone, and the clang root no longer lists it.
 {
-  const { output } = await t.run('ls /usr/lib/nimbus/clang/binji-2020/bin/', 10_000);
-  const stripped = stripAnsi(output);
-  const lines = stripped.split(/\r?\n/).map((l) => l.trim());
-  // After uninstall, the directory shouldn't exist; ls prints an
-  // error OR an empty listing. We assert NO line consists of literally
-  // "clang" (which is what `ls` would print if the file were present).
-  const present = lines.some((l) => l === 'clang' || l === 'wasm-ld');
-  a.check('installed bin path is removed', !present,
-    !present ? '' : `output=${JSON.stringify(stripped.slice(-200))}`);
-}
-
-// Install dir removed.
-{
+  a.check('installed bin path is removed', dir !== null && !await exists(`${dir}/bin/clang`), `dir=${dir}`);
+  a.check('install directory removed', dir !== null && !await exists(dir), `dir=${dir}`);
   const { output } = await t.run('ls /usr/lib/nimbus/clang', 10_000);
   const stripped = stripAnsi(output);
-  const removed = /ENOENT|No such|cannot access|not found/i.test(stripped)
-    || !/binji-2020/.test(stripped);
-  a.check('install directory removed', removed,
-    removed ? '' : `output=${JSON.stringify(stripped.slice(-200))}`);
+  const version = dir?.split('/').pop();
+  a.check('the clang root no longer lists the installed version', dir !== null && !stripped.split(/\s+/).includes(version),
+    `version=${version} ls=${JSON.stringify(stripped.slice(-200))}`);
 }
 
 // nimbus install --list no longer lists clang.

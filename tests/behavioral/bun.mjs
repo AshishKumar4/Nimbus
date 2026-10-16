@@ -24,7 +24,7 @@ const sid = await mintSession();
 console.log(`SID: ${sid}`);
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
+await t.waitForPrompt(60_000);
 await t.run('mkdir -p /home/user/bun-probe && cd /home/user/bun-probe', 10_000);
 
 // 1. bun --version

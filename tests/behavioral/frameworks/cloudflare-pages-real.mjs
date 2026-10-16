@@ -26,7 +26,7 @@
 // a coherent Worker project — is the real, provable capability and is
 // what this probe asserts.
 
-import { Terminal, mintSession, sleep, stripAnsi, makeAsserter, deleteSession, BASE } from '../_driver.mjs';
+import { Terminal, mintSession, stripAnsi, makeAsserter, deleteSession, BASE } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('cloudflare-pages-real');
@@ -37,7 +37,6 @@ console.log(`[cloudflare-pages-real] sid=${sid} BASE=${BASE}`);
 const t = new Terminal(sid);
 try {
   await t.connect();
-  await sleep(2_000);
   await t.waitForPrompt(60_000);
 
   await t.run('mkdir -p /home/user/c3-probe && cd /home/user/c3-probe', 10_000);

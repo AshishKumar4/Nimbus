@@ -35,7 +35,7 @@
 import puppeteer from 'puppeteer-core';
 import { existsSync } from 'node:fs';
 import { allocateProfileDir, releaseProfileDir } from './_probe-browser.mjs';
-import { mintSession, attachPathFor, probeTarget, Terminal, sleep, stripAnsi, BASE } from './_driver.mjs';
+import { mintSession, attachPathFor, probeTarget, readUntil, requestHeaders, Terminal, sleep, stripAnsi, BASE } from './_driver.mjs';
 import { startDevCommand } from './_dev-start.mjs';
 
 export { BASE, mintSession, sleep, stripAnsi };
@@ -381,6 +381,20 @@ export async function openPage(browser, sid, opts = {}) {
 }
 
 /**
+ * Wait, at most `timeoutMs`, until the session's preview is the dev
+ * server's page rather than the placeholder /preview/ answers while none
+ * is up: the dev server mounts the project's index.html under the preview
+ * path. Throws with the last answer when it never is.
+ */
+export async function previewServed(sid, timeoutMs = 30_000) {
+  const mounted = new RegExp(`<base href="/s/${sid}/preview/`);
+  const page = (signal) => fetch(`${BASE}/s/${sid}/preview/`, { headers: requestHeaders({}, sid), signal })
+    .then((response) => response.text(), (error) => `unreachable: ${error.message}`);
+  const last = await readUntil(page, (text) => mounted.test(text), timeoutMs);
+  if (!mounted.test(last)) throw new Error(`the dev server did not serve /s/${sid}/preview/ within ${timeoutMs} ms; it answered ${JSON.stringify(last.slice(0, 200))}`);
+}
+
+/**
  * High-level helper: scaffold a project, install, start vite,
  * wait until vite logs "ready". Returns a `Terminal` keyed to `sid`
  * that the caller can keep using (e.g. to send Ctrl-C at end).
@@ -406,7 +420,6 @@ export async function scaffoldAndStartVite(sid, opts) {
 
   const t = new Terminal(sid);
   await t.connect();
-  await sleep(2_000);
   await t.waitForPrompt(60_000);
 
   await t.run(`mkdir -p /home/user/${opts.workdir}`, 10_000);
@@ -432,9 +445,7 @@ export async function scaffoldAndStartVite(sid, opts) {
   const installTail = stripAnsi(installR.output).split(/\r?\n/).slice(-6).join('\n');
   const { ready: viteReady } = await startDevCommand({ terminal: t, cwd: `/home/user/${opts.workdir}`, command: devCmd,
     ready: text => devReadyMarkers.some(marker => text.includes(marker)), budgetMs: devReadyTimeoutMs });
-  // Bounded settle time so the port-registry registration completes
-  // before the iframe loads. NOT a retry — a single bounded yield.
-  await sleep(2_000);
+  if (viteReady) await previewServed(sid);
 
   return { terminal: t, viteReady, installTail };
 }
@@ -477,7 +488,6 @@ export async function cloneAndStartVite(sid, opts) {
 
   const t = new Terminal(sid);
   await t.connect();
-  await sleep(2_000);
   await t.waitForPrompt(60_000);
 
   await t.run('cd /home/user', 10_000);
@@ -515,8 +525,7 @@ export async function cloneAndStartVite(sid, opts) {
   const installTail = stripAnsi(installR.output).split(/\r?\n/).slice(-12).join('\n');
   const { ready: viteReady } = await startDevCommand({ terminal: t, cwd: `/home/user/${opts.workdir}`, command: devCmd,
     ready: text => devReadyMarkers.some(marker => text.includes(marker)), budgetMs: devReadyTimeoutMs });
-  // Bounded settle so port-registry registration completes.
-  await sleep(3_000);
+  if (viteReady) await previewServed(sid);
 
   return { terminal: t, viteReady, installTail, cloneOk: true, cloneTail };
 }
