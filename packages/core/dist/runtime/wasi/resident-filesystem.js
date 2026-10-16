@@ -230,9 +230,12 @@ export function residentFilesystem(session, resident, delegation) {
      * One walk over what the store knows: the resolved key, ELOOP (null), a
      * directory to list first, or DELEGATE when the walk reaches what this
      * adapter does not answer. The authority's refusals are thrown as its own.
+     * `crossed`: every name it looked up, in order.
      */
-    const walkOnce = (root, name, follow) => {
+    const walkOnce = (root, name, follow, crossed) => {
         const walk = walkBeneath(root, { root, path: name, beneath: true }, follow, store.cred, () => false);
+        if (crossed !== undefined)
+            crossed.length = 0;
         for (let step = walk.next();;) {
             if (step.done)
                 return step.value;
@@ -245,6 +248,7 @@ export function residentFilesystem(session, resident, delegation) {
                 continue;
             }
             const key = keyOf(lookup.stat);
+            crossed?.push(key);
             if (key === '') {
                 step = walk.next(ROOT_FOR_WALK);
                 continue;
@@ -383,8 +387,8 @@ export function residentFilesystem(session, resident, delegation) {
                 fetchingAhead.delete(path); });
         return fetched;
     };
-    /** Where a path leads (its key), listing what the walk needs; DELEGATE for what this adapter does not answer. */
-    const resolve = (path, follow, content = false) => {
+    /** Where a path leads (its key), listing what the walk needs; DELEGATE for what this adapter does not answer. `crossed`: the names the walk that placed it looked up. */
+    const resolve = (path, follow, content = false, crossed) => {
         let root;
         let name;
         if (typeof path === 'string') {
@@ -412,7 +416,7 @@ export function residentFilesystem(session, resident, delegation) {
         // unless it is past the listing's bound.
         const looked = new Set();
         const attempt = (asked) => {
-            const walked = walkOnce(root, name, follow);
+            const walked = walkOnce(root, name, follow, crossed);
             if (walked === null || walked === DELEGATE || typeof walked === 'string')
                 return walked;
             if (asked >= MAX_LISTINGS_PER_CALL)
@@ -557,8 +561,21 @@ export function residentFilesystem(session, resident, delegation) {
         }
         return after(local(), settle);
     };
-    /** The resolved key of `path` for a mutation the holder may decide, or DELEGATE. */
-    const keyFor = (path, follow) => after(resolve(path, follow), (key) => (typeof key === 'string' && key !== '' ? key : DELEGATE));
+    /** The resolved key of `path` for a mutation the holder may decide, or DELEGATE; `crossed`, the names its walk looked up. */
+    const keyFor = (path, follow, crossed) => after(resolve(path, follow, false, crossed), (key) => (typeof key === 'string' && key !== '' ? key : DELEGATE));
+    /**
+     * Whether the holder may decide a change at `key` on its walks: every name
+     * they crossed guarded (ProcessFsClient.guards), so none changes before the
+     * process answers and the key stays what the caller's spelling denotes.
+     * Else the session resolves the call, the change still counted toward
+     * taking `key`'s subtree (ProcessFsClient.holder), as a decided one is.
+     */
+    const decidable = (key, ...walks) => {
+        if (walks.every((crossed) => crossed.every((name) => holder.client.guards(name))))
+            return true;
+        holder.client.holder(key);
+        return false;
+    };
     /** The authority, for a call that may change what the store holds: the barrier is owed once it returns. */
     const changing = (name, call) => {
         directoryPool?.invalidate();
@@ -817,7 +834,8 @@ export function residentFilesystem(session, resident, delegation) {
         }
         if (!readOnly && holder !== null) {
             // A file made or emptied in a subtree this process holds is decided here.
-            const local = decide('open', () => after(keyFor(path, true), (key) => (key === DELEGATE ? DELEGATE
+            const crossed = [];
+            const local = decide('open', () => after(keyFor(path, true, crossed), (key) => (key === DELEGATE || !decidable(key, crossed) ? DELEGATE
                 : after(holder.open(key, typeof path === 'string' ? path : path.path, flags), (handle) => (handle === undefined ? DELEGATE : heldOpen(handle))))));
             return after(local, (handle) => (handle === DELEGATE ? openOnSession(path, flags) : handle));
         }
@@ -1142,10 +1160,13 @@ export function residentFilesystem(session, resident, delegation) {
             return bySessionMkdir(path, options);
         const mode = options?.mode ?? 0o777;
         let named;
-        const local = decide('mkdir', () => after(keyFor(path, false), (key) => {
+        const crossed = [];
+        const local = decide('mkdir', () => after(keyFor(path, false, crossed), (key) => {
             if (key === DELEGATE)
                 return DELEGATE;
             named = key;
+            if (!decidable(key, crossed))
+                return DELEGATE;
             return after(holder.mkdir(key, pathOf(path), mode, options?.umask), (done) => (done ? undefined : DELEGATE));
         }));
         return after(local, (done) => (done !== DELEGATE ? undefined
@@ -1156,29 +1177,47 @@ export function residentFilesystem(session, resident, delegation) {
         if (holder === null)
             return bySessionUnlink(path);
         let named;
-        const local = decide('unlink', () => after(keyFor(path, false), (key) => {
+        const crossed = [];
+        const local = decide('unlink', () => after(keyFor(path, false, crossed), (key) => {
             if (key === DELEGATE)
                 return DELEGATE;
             named = key;
+            if (!decidable(key, crossed))
+                return DELEGATE;
             return after(holder.unlink(key, pathOf(path)), (done) => (done ? undefined : DELEGATE));
         }));
         return after(local, (done) => (done !== DELEGATE ? undefined
             : named !== undefined ? byClient('unlink', { type: 'call', call: { call: 'unlink', path: named } }) : bySessionUnlink(path)));
     };
+    /**
+     * The store's bytes of file `key`, where this view is the session's for
+     * all they depend on, as a held stat's is (ProcessFsClient.vouch at the
+     * view's cursor): every name the walk `crossed` vouched for, the file
+     * itself held. Undefined where the view cannot vouch for them.
+     */
+    const vouchedContent = (key, crossed) => {
+        const cursor = store.cursor();
+        if (cursor === null || holder.client.vouch(key, cursor) !== 'held')
+            return undefined;
+        if (!crossed.every((name) => holder.client.vouch(name, cursor) !== undefined))
+            return undefined;
+        const entry = entryAt(key);
+        return entry ? store.content(key, entry.revision) : undefined;
+    };
     // A copy both of whose names a held subtree holds, its source's bytes the
-    // holder's or what the store read under the grant: decided here; any
-    // other, the session's.
+    // holder's or ones the view vouches for: decided here; any other, the
+    // session's.
     const bySessionCopy = fs.copyFile;
     fs.copyFile = (from, to, options) => {
         if (holder === null)
             return bySessionCopy(from, to, options);
-        const local = decide('copyFile', () => after(keyFor(from, true), (source) => (source === DELEGATE ? DELEGATE
-            : after(keyFor(to, true), (target) => {
-                if (target === DELEGATE)
+        const read = [];
+        const written = [];
+        const local = decide('copyFile', () => after(keyFor(from, true, read), (source) => (source === DELEGATE ? DELEGATE
+            : after(keyFor(to, true, written), (target) => {
+                if (target === DELEGATE || !decidable(target, read, written))
                     return DELEGATE;
-                const entry = entryAt(source);
-                const stored = entry ? store.content(source, entry.revision) : undefined;
-                return holder.copyFile(source, target, pathOf(to), stored, options?.keepMode === true) ? undefined : DELEGATE;
+                return holder.copyFile(source, target, pathOf(to), vouchedContent(source, read), options?.keepMode === true) ? undefined : DELEGATE;
             }))));
         return after(local, (done) => (done !== DELEGATE ? undefined : bySessionCopy(from, to, options)));
     };
@@ -1187,11 +1226,15 @@ export function residentFilesystem(session, resident, delegation) {
         if (holder === null)
             return bySessionRename(from, to);
         let names;
-        const local = decide('rename', () => after(keyFor(from, false), (source) => (source === DELEGATE ? DELEGATE
-            : after(keyFor(to, false), (target) => {
+        const moved = [];
+        const placed = [];
+        const local = decide('rename', () => after(keyFor(from, false, moved), (source) => (source === DELEGATE ? DELEGATE
+            : after(keyFor(to, false, placed), (target) => {
                 if (target === DELEGATE)
                     return DELEGATE;
                 names = [source, target];
+                if (!decidable(source, moved, placed))
+                    return DELEGATE;
                 return after(holder.rename(source, target, pathOf(from)), (done) => (done ? undefined : DELEGATE));
             }))));
         return after(local, (done) => (done !== DELEGATE ? undefined
@@ -1213,10 +1256,13 @@ export function residentFilesystem(session, resident, delegation) {
             if (holder === null || attrs === null)
                 return passed.call(fs, path, ...rest);
             let named;
-            const local = decide(name, () => after(keyFor(path, true), (key) => {
+            const crossed = [];
+            const local = decide(name, () => after(keyFor(path, true, crossed), (key) => {
                 if (key === DELEGATE)
                     return DELEGATE;
                 named = key;
+                if (!decidable(key, crossed))
+                    return DELEGATE;
                 return holder.setattr(key, attrs) ? undefined : DELEGATE;
             }));
             return after(local, (done) => {
