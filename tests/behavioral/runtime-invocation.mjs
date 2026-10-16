@@ -83,7 +83,7 @@ try {
 }
 a.check('node server.cjs produced started-marker (LISTENING or [started (long-running)])', serverStarted);
 
-// 3b. In-shell curl routes loopback requests through the session port registry.
+// Then in-shell curl routes loopback requests through the session port registry.
 //     "[started (long-running)]" is printed before the server binds, so the
 //     request is retried until the server answers, within its 14 s life.
 {
