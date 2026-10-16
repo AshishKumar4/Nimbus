@@ -5451,20 +5451,20 @@ const __fsMod = (() => {
   }
 
   /**
-   * A synchronous open that empties the file or may make it, as this view
-   * keeps it: the file empty and parked, the open logged (_openCall) for the
-   * session to judge again as it lands. The cell is the file's whole content
+   * An open that empties the file or may make it, as this view keeps it:
+   * the file empty and parked, the open logged (_openCall) for the session
+   * to judge as it lands. The cell is the file's whole content
    * when the open empties it or makes it new (O_TRUNC, O_EXCL); a create
    * that finds a file keeps that file's bytes, which the session then
    * answers. \`absent\`: this view knows nothing is there.
    */
-  function _parkOpen(absPath, fl, mode, absent) {
+  function _parkOpen(absPath, fl, mode, absent, acknowledged) {
     const k = _strip(absPath);
     _parkWrite(k, new Uint8Array(0), mode, absent);
     const whole = fl.truncate || fl.exclusive;
     if (whole) _parkedPartial.delete(k);
     else _parkedPartial.set(k, __vfsWriteGenerations[k]);
-    return _logParked(absPath, { type: "call", call: _openCall(k, fl, mode) }, { acknowledged: true, partial: !whole });
+    return _logParked(absPath, { type: "call", call: _openCall(k, fl, mode) }, { acknowledged, partial: !whole });
   }
 
   // ── FileHandle — returned from fs.promises.open ──
@@ -5797,38 +5797,46 @@ const __fsMod = (() => {
   }
 
   /**
-   * A write open at the session (_openCall), its answer awaited before this
-   * view keeps anything of it, as a truncate's is (_truncateAsync): the cell
-   * it holds emptied under O_TRUNC, and a file the open made or emptied
-   * without a cell here kept empty and resident, at the stat the session
-   * answered. An open that changed nothing changes nothing here.
+   * A write open at the session (_openCall), answered before it returns. A
+   * file this view knows is not there is parked empty as the sync open's is
+   * (_parkOpen), and the answer kept as a write's (_writeFileAsync); one it
+   * holds that O_TRUNC empties is trimmed when the open lands, as a
+   * truncate's (_truncateAsync); an open that changes nothing keeps nothing.
    */
   async function _openWriteLive(path, absPath, fl, mode, supervisor) {
     await _flushLocalPathToSupervisor(absPath, supervisor, fl.followSymlinks);
     const k = _strip(absPath);
-    const generation = __vfsWriteGenerations[k];
-    const localCell = _bundleLookup(absPath);
+    const call = _openCall(k, fl, mode);
     let answer;
-    const ticket = _beginFill(k);
-    try {
+    if (fl.create && _ensureWritable(absPath, "open", path, true) === true) {
+      const logged = _parkOpen(absPath, fl, mode, true, false);
+      let kept = false;
+      const ticket = _beginFill(k);
+      try {
+        answer = await _fsRpc(logged.answer, "open", path, (result) => result);
+        await logged.claimed;
+        _markVfsStale();
+        const receipt = answer.receipt;
+        if (receipt !== undefined) kept = _noteLearnedStat(absPath, _receiptStat(receipt), ticket, typeof receipt.revision === "number" ? receipt.revision : undefined);
+      } finally {
+        _endFill(ticket);
+      }
+      if (!kept) await _learnLive(absPath, supervisor);
+    } else if (fl.truncate) {
+      const generation = __vfsWriteGenerations[k];
+      const localCell = _bundleLookup(absPath);
       const sent = _ownMutation(
         absPath,
-        () => _fsRpc(_vfsCall(_openCall(k, fl, mode)), "open", path, (result) => { answer = result; return _receiptOf(result); }),
+        () => _fsRpc(_vfsCall(call), "open", path, (result) => { answer = result; return _receiptOf(result); }),
         () => {
-          if (fl.truncate && __vfsWriteGenerations[k] === generation && localCell !== undefined) _truncateLocalCell(absPath, 0);
+          if (__vfsWriteGenerations[k] === generation && localCell !== undefined) _truncateLocalCell(absPath, 0);
         },
       );
       sent.catch(() => {});
       await __nimbusQueueVfsMutation(absPath, () => sent);
-      const receipt = answer?.receipt;
-      const emptied = (fl.create || fl.truncate) && receipt !== undefined && Number(receipt.size) === 0;
-      if (emptied && localCell === undefined) {
-        _installResident(absPath, new Uint8Array(0), ticket);
-        _noteLearnedStat(absPath, _receiptStat(receipt), ticket, typeof receipt.revision === "number" ? receipt.revision : undefined);
-      }
-      if (emptied || fl.truncate) _markVfsStale();
-    } finally {
-      _endFill(ticket);
+      _markVfsStale();
+    } else {
+      answer = await _fsRpc(_vfsCall(call), "open", path, (result) => result);
     }
     const receipt = answer?.receipt;
     const size = receipt !== undefined ? Number(receipt.size) || 0
@@ -5857,7 +5865,7 @@ const __fsMod = (() => {
       // Creating or truncating also makes the file resident, which is what
       // lets the sync read/write path serve it without blocking; the open
       // itself is the session's to judge again as it lands (_parkOpen).
-      _parkOpen(absPath, fl, createMode, !exists);
+      _parkOpen(absPath, fl, createMode, !exists, true);
       size = 0;
     }
     return new __FileHandle(path, fl, size).fd;
