@@ -82,6 +82,8 @@ export function delegationHolder(options) {
      * the session never having applied it.
      */
     const own = new Map();
+    /** Of those, the ones all answered outside a held subtree: what a landed barrier may retire. */
+    const settling = new Set();
     let barriersBegun = 0;
     /** The names an op changes. */
     const keysOf = (op) => (op.type === 'rename' ? [op.from, op.to] : op.type === 'call' ? [op.call.path] : [op.path]);
@@ -105,6 +107,8 @@ export function delegationHolder(options) {
                 record.settled = barriersBegun;
                 if (refused)
                     forget(key);
+                else if (record.pending === 0 && client.held(key) === undefined)
+                    settling.add(key);
             }
         };
         void answered.then((answer) => settle(answer.failed !== undefined), () => settle(true));
@@ -112,17 +116,18 @@ export function delegationHolder(options) {
     };
     /** `key`'s own record goes: the view's row answers for it from now on, but for bytes still written or open. */
     const forget = (key) => {
+        const entry = decided.get(key);
         own.delete(key);
+        settling.delete(key);
         decided.delete(key);
         added.get(parentKey(key))?.delete(nameOf(key));
         removed.get(parentKey(key))?.delete(nameOf(key));
         if (added.get(key)?.size === 0)
             added.delete(key);
-        for (const [ino, file] of files) {
-            if (file.key === key && file.through === undefined && file.detached === undefined && !dirty.has(file) && !isOpen(file)) {
-                files.delete(ino);
-                unreserve(file);
-            }
+        const file = entry ? files.get(entry.ino) : undefined;
+        if (file !== undefined && file.key === key && file.through === undefined && !dirty.has(file) && !isOpen(file)) {
+            files.delete(entry.ino);
+            unreserve(file);
         }
     };
     /** What `file`'s cell took of the process's budget goes back. */
@@ -278,6 +283,9 @@ export function delegationHolder(options) {
         for (const key of [...decided.keys()])
             if (within(key, root) && !own.has(key))
                 forget(key);
+        for (const [key, record] of own)
+            if (record.pending === 0 && within(key, root))
+                settling.add(key);
         options.sent?.();
     };
     const client = processFsClient({
@@ -995,11 +1003,15 @@ export function delegationHolder(options) {
                     }
             }
             // And the names beneath it are its own under their new names (the rename's are its own).
-            for (const [key, value] of [...own])
-                if (key !== from && within(key, from)) {
-                    own.delete(key);
-                    own.set(to + key.slice(from.length), value);
-                }
+            for (const [key, value] of [...own]) {
+                if (key === from || !within(key, from))
+                    continue;
+                const moved = to + key.slice(from.length);
+                own.delete(key);
+                own.set(moved, value);
+                if (settling.delete(key))
+                    settling.add(moved);
+            }
             decided.set(from, null);
             decided.set(to, { ...source, ctime: now() });
             note(parentKey(from), nameOf(from), null);
@@ -1079,8 +1091,11 @@ export function delegationHolder(options) {
         holds: (key) => client.held(key) !== undefined,
         barrierBegun: () => ++barriersBegun,
         retire: (begun) => {
-            for (const [key, record] of [...own]) {
-                if (record.pending === 0 && record.settled < begun && client.held(key) === undefined)
+            for (const key of [...settling]) {
+                const record = own.get(key);
+                if (record === undefined || client.held(key) !== undefined)
+                    settling.delete(key);
+                else if (record.pending === 0 && record.settled < begun)
                     forget(key);
             }
         },
