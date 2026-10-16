@@ -41,11 +41,15 @@ export interface OwnNames {
   children(key: string, base: RuntimeVfsDirEntry[] | undefined): RuntimeVfsDirEntry[] | undefined;
   /** What it decided beneath `from` is beneath `to` now: `from` itself is the rename's. */
   move(from: string, to: string): void;
-  /** `op` was logged: its names wait for its answer. Its names. */
+  /** `op`, a provisional decision's, was logged: its names wait for its answer. Its names. */
   logged(op: ProcessFsOp): string[];
   /** The op that changed `keys` was answered: refused, or not. */
   answered(keys: readonly string[], refused: boolean): void;
-  /** The subtree at `root` is no longer held: what it logged there retires as anything of its own does, and what it never logged goes now. */
+  /**
+   * The subtree at `root` is no longer held, everything decided there
+   * answered: it retires as anything of the process's own does, at the next
+   * barrier that lands.
+   */
   released(root: string): void;
   /** A barrier begins: its number, which `retire` takes once it lands. */
   barrierBegun(): number;
@@ -79,9 +83,11 @@ export function ownNames(options: OwnNamesOptions): OwnNames {
   /** Of those, the ones all answered outside a held subtree: what a landed barrier may retire. */
   const settling = new Set<string>();
   let barriers = 0;
+  /** The directories made here: until the view has one, its names are the ones made in it. */
+  const made = new Set<string>();
 
   /** Whether directory `key` was made here, and the view knows nothing of it: its names are the ones made in it. */
-  const madeHere = (key: string): boolean => decided.get(key)?.type === 'directory' && !options.entry(key);
+  const madeHere = (key: string): boolean => made.has(key) && decided.get(key)?.type === 'directory' && !options.entry(key);
 
   /** `key`'s record goes: the view's row answers for it from now on. */
   const forget = (key: string): void => {
@@ -89,6 +95,7 @@ export function ownNames(options: OwnNamesOptions): OwnNames {
     own.delete(key);
     settling.delete(key);
     decided.delete(key);
+    made.delete(key);
     added.get(parentKey(key))?.delete(nameOf(key));
     removed.get(parentKey(key))?.delete(nameOf(key));
     if (added.get(key)?.size === 0) added.delete(key);
@@ -98,7 +105,7 @@ export function ownNames(options: OwnNamesOptions): OwnNames {
   return {
     entry: (key) => {
       const mine = decided.get(key);
-      if (mine !== undefined) return mine;
+      if (mine !== undefined || made.size === 0) return mine;
       const dir = parentKey(key);
       return key !== '' && madeHere(dir) && !added.get(dir)?.has(nameOf(key)) ? null : undefined;
     },
@@ -118,8 +125,12 @@ export function ownNames(options: OwnNamesOptions): OwnNames {
         made.set(name, type);
       }
     },
-    madeDirectory: (key) => { added.set(key, added.get(key) ?? new Map()); },
+    madeDirectory: (key) => {
+      made.add(key);
+      added.set(key, added.get(key) ?? new Map());
+    },
     removedDirectory: (key) => {
+      made.delete(key);
       added.delete(key);
       removed.delete(key);
     },
@@ -137,6 +148,7 @@ export function ownNames(options: OwnNamesOptions): OwnNames {
     move: (from, to) => {
       const moved = (key: string): string => to + key.slice(from.length);
       for (const [key, value] of [...decided]) if (key !== from && within(key, from)) { decided.delete(key); decided.set(moved(key), value); }
+      for (const key of [...made]) if (within(key, from)) { made.delete(key); made.add(moved(key)); }
       for (const map of [added, removed] as Map<string, unknown>[]) {
         for (const [key, value] of [...map]) if (within(key, from)) { map.delete(key); map.set(moved(key), value); }
       }
@@ -167,8 +179,12 @@ export function ownNames(options: OwnNamesOptions): OwnNames {
       }
     },
     released: (root) => {
-      for (const key of [...decided.keys()]) if (within(key, root) && !own.has(key)) forget(key);
-      for (const [key, record] of own) if (record.pending === 0 && within(key, root)) settling.add(key);
+      for (const key of decided.keys()) {
+        if (!within(key, root)) continue;
+        const record = own.get(key);
+        if (record === undefined) own.set(key, { pending: 0, settled: barriers });
+        if (record === undefined || record.pending === 0) settling.add(key);
+      }
     },
     barrierBegun: () => ++barriers,
     retire: (begun) => {

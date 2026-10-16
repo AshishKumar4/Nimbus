@@ -1197,7 +1197,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         return holder.readThrough(handleId, offset, length, readThrough(handleId));
       }
       counts.local++;
-      return byNumber('read', handleId, () => holder!.read(handleId, offset, length));
+      return holder.read(handleId, offset, length) ?? byNumber('read', handleId, () => holder!.read(handleId, offset, length));
     }
     const file = paged.get(handleId);
     // Positional reads only: a read at the descriptor's offset is the descriptor's to advance.
@@ -1241,7 +1241,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   fs.write = (handleId, offset, bytes) => {
-    if (holder?.owns(handleId)) { counts.local++; return byNumber('write', handleId, () => holder!.write(handleId, offset, bytes)); }
+    if (holder?.owns(handleId)) { counts.local++; return holder.write(handleId, offset, bytes) ?? byNumber('write', handleId, () => holder!.write(handleId, offset, bytes)); }
     if (now) throw NOT_NOW;
     unwritten.delete(handleId);
     return changing('write', () => authority.write(handleId, offset, bytes));
