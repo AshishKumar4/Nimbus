@@ -483,6 +483,26 @@ await check('a wave\'s description of a mounted file holds it: its writes, appen
   }
 });
 
+// ── A wave's open keeps the access it asked, on a mount as on SQLite ──
+await check('a wave\'s read-only description of a mounted file refuses a write through it (EBADF)', async () => {
+  const mounted = new MemoryVFS({ uid: 1000, gid: 1000 });
+  mounted.writeFile('/x', enc.encode('kept'));
+  files.vfs.mount('/ro', mounted);
+  const proc = files.bind({ pid: ++pid, cred: USER });
+  const wave = (ops) => proc.writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops }));
+  try {
+    const opened = await wave([{ type: 'call', call: { call: 'open', path: 'ro/x', mode: 0o644, access: 'read', description: 'r1' } }]);
+    assert.equal(opened.ok, true, JSON.stringify(opened.error));
+    const written = await wave([{ type: 'call', call: { call: 'write', path: 'ro/x', description: 'r1', offset: 0, data: enc.encode('XX') } }]);
+    assert.equal(written.ok, false, 'a write through a read-only description is refused');
+    assert.equal(written.error?.errno ?? written.sequence?.refused?.errno, 'EBADF');
+    assert.equal(dec.decode(mounted.readFile('/x')), 'kept');
+    await wave([{ type: 'call', call: { call: 'close', path: 'ro/x', description: 'r1' } }]);
+  } finally {
+    files.vfs.unmount('/ro');
+  }
+});
+
 // ── open(2)'s rule, in Linux's order, on every filesystem: a mount's (either face), SQLite's ──
 const kernel = ws.vfs.as(CRED_KERNEL);
 kernel.writeFile('home/user/rule.txt', 'rule');
