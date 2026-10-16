@@ -258,8 +258,9 @@ export function delegationHolder(options) {
         return file === undefined || file.through !== undefined ? undefined : file.bytes.slice(0, file.length);
     };
     const prov = provisionalDecisions({
-        device: store.device,
-        cred: store.cred,
+        // The store's, as it knows it when asked (it learns it at its first barrier).
+        get device() { return store.device; },
+        get cred() { return store.cred; },
         row: (key) => entryOf(key),
         children: (key) => names.children(key, store.children(key)),
         content: (key, revision) => {
