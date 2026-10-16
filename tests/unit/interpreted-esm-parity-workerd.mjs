@@ -27,11 +27,20 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
 
-// Written before the program runs: staged.
-const FILES = {
+// Written before the program runs, in the directory at \`root\` (its file: URL, with its slash): staged.
+const filesAt = (root) => {
+  // A data: module in a cycle through a staged module (back2.mjs) whose static import of it reads nothing of it.
+  const cyclic = 'data:text/javascript,' + encodeURIComponent('import b from ' + JSON.stringify(root + 'back2.mjs') + '; export default "data:" + b;');
+  return {
+  'back2.mjs': 'import d from ' + JSON.stringify(cyclic) + ';\nexport default "back";\n',
+  // Staged (the entry names it, in an import() it never makes); its JSON name is missing.
+  'bad-json-child.mjs': `globalThis.badChildRan = true;
+import { a } from 'data:application/json,{"a":1}' with { type: 'json' };
+`,
   'node_modules/dpkg/package.json': JSON.stringify({ name: 'dpkg', version: '1.0.0', type: 'module', exports: './index.js' }),
   'node_modules/dpkg/index.js': "import five from 'data:text/javascript,export default 5';\nexport default five + 1;\n",
   'staged-json.mjs': `globalThis.stagedJsonRan = true;
@@ -44,6 +53,7 @@ export default [fortyOne, json, six];
 `,
   'main.mjs': `import { writeFileSync, mkdirSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+if (globalThis.never) { await import('./back2.mjs'); await import('./bad-json-child.mjs'); }
 const out = {};
 // Each case on its own: one that fails is its error, and the rest still run.
 const outcome = async (thunk) => {
@@ -96,6 +106,15 @@ out.cycleStar = await outcome(async () => { await import(cycleStar); return glob
 writeFileSync('conflict-a.mjs', 'export const x = 1; export const y = 1;\\n');
 writeFileSync('conflict-b.mjs', 'export const x = 2;\\n');
 out.starConflict = await outcome(async () => Object.keys(await import('data:text/javascript,' + encodeURIComponent('export * from ' + JSON.stringify(fileUrl('conflict-a.mjs')) + '; export * from ' + JSON.stringify(fileUrl('conflict-b.mjs')) + ';'))));
+// One namespace by either import; a data: cycle through a staged module; a staged module's missing JSON name, reached
+// through a module written now.
+const identity = 'data:text/javascript,export const z = 1';
+writeFileSync('id-user.mjs', 'import * as ns from ' + JSON.stringify(identity) + ';\\nexport default ns;\\n');
+out.identity = await outcome(async () => (await import('./id-user.mjs')).default === await import(identity));
+out.stagedCycle = await outcome(async () => (await import(${JSON.stringify(cyclic)})).default);
+writeFileSync('late-parent.mjs', "import './bad-json-child.mjs';\\n");
+const lateParent = await outcome(async () => { await import('./late-parent.mjs'); return 'loaded'; });
+out.nestedMissingJson = [Array.isArray(lateParent) ? lateParent[1] : lateParent, globalThis.badChildRan ?? false];
 // A static import of a data: module that awaits at its top level and rejects: the import that reaches it rejects.
 writeFileSync('tla-user.mjs', "import 'data:text/javascript,await Promise.reject(new Error(\\"boom\\"))';\\n");
 out.staticAwait = await outcome(() => import('./tla-user.mjs'));
@@ -119,6 +138,7 @@ out.hashMeta = await outcome(async () => (await import(pathToFileURL(process.cwd
   .replace(pathToFileURL(process.cwd() + '/').href, '<cwd>/'));
 console.log('PARITY ' + JSON.stringify(out));
 `,
+  };
 };
 
 const report = (stdout) => {
@@ -131,7 +151,7 @@ const report = (stdout) => {
 const host = mkdtempSync(join(tmpdir(), 'interpreted-esm-'));
 let expected;
 try {
-  for (const [name, text] of Object.entries(FILES)) {
+  for (const [name, text] of Object.entries(filesAt(pathToFileURL(host).href + '/'))) {
     mkdirSync(dirname(join(host, name)), { recursive: true });
     writeFileSync(join(host, name), text);
   }
@@ -155,6 +175,9 @@ assert.deepEqual(expected, {
   cycle: ['data:back', 'back', 1],
   throwsOnce: [['threw', 'Error', 'thrown'], ['threw', 'Error', 'thrown'], 1],
   stagedMissingJson: ['SyntaxError', false],
+  identity: true,
+  stagedCycle: 'data:back',
+  nestedMissingJson: ['SyntaxError', false],
   cycleStar: ['x'],
   starConflict: ['y'],
   staticAwait: ['threw', 'Error', 'boom'],
@@ -168,7 +191,7 @@ const probe = await startLocalProbe({ runtimes: [] });
 try {
   const session = await localTerminal(probe, { install: [] });
   try {
-    const payload = Buffer.from(JSON.stringify(FILES)).toString('base64');
+    const payload = Buffer.from(JSON.stringify(filesAt('file:///home/user/'))).toString('base64');
     const setup = await session.run(
       `cd /home/user && node -e "const f=JSON.parse(Buffer.from('${payload}','base64').toString());for(const [n,t] of Object.entries(f)){require('fs').mkdirSync(require('path').dirname(n),{recursive:true});require('fs').writeFileSync(n,t)}console.log('SETUP')"`,
     );
