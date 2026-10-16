@@ -49,6 +49,8 @@ export interface ExclusiveMutationLease {
     readonly bytes?: number;
     /** A delegation whose reads recall it: the epoch and revision it was recorded at. */
     readonly certificate?: GrantCertificate;
+    /** Its holder's principal is confined (confinePrincipal), as `as(cred)` grants it. */
+    readonly confined?: boolean;
 }
 /** Inode numbers reserved for a delegation's holder: [first, end). */
 export interface InodeRange {
