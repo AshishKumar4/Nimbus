@@ -5,6 +5,42 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a session's own server sends its reason phrase as Node's server
+  does. That is the phrase Node's `http.STATUS_CODES` gives the status
+  ("unknown" for a status it does not name), or the phrase the handler set
+  with `writeHead(status, reason)` or `res.statusMessage`. `curl -I` prints
+  it, `fetch` gets it as `statusText`, and `http.get` from another program
+  gets it as `statusMessage`. Before, the shell knew 18 phrases and ignored
+  the handler's, so `curl -I` printed `HTTP/1.1 205` and `HTTP/1.1 200 OK`
+  for a 200 "Fine By Me". Another program's `http.get` got no phrase at all.
+- Fixed: `server.listen(port, callback)` in a portable `node` program
+  calls `callback` with the server as `this`, as Node does. Before, `this`
+  was undefined, so `this.address()` threw.
+- Fixed: a session's own server can answer 205 (Reset Content). `curl`
+  gets it, and so does `http.get` from another portable `node` program.
+  Before, the response was rebuilt with the empty body its server ended,
+  which a Response refuses for 205: `curl` reported "Failed to connect"
+  and `http.get` failed with `ECONNREFUSED`. 204 and 304 were already
+  right.
+- Changed: `curl -L` and `wget` walk redirects with the same code as a
+  portable `node` program's `fetch` under an egress
+  (`runtime/http-redirect-policy.js` `followRedirects`). Each keeps its own
+  policy: which statuses it follows, and what a Location it cannot use
+  means. Two edge cases change:
+  - A Location is checked before the 20-redirect cap, as Node's fetch
+    checks it. A `fetch` whose 21st response redirects to a URL that is not
+    HTTP(S) fails "URL scheme must be a HTTP(S) scheme", as in Node, rather
+    than "redirect count exceeded". With `curl -L` or `wget`, a 21st
+    redirect whose Location does not parse is the answer rather than "too
+    many redirects".
+  - The body of a redirect that is followed, or that redirect mode
+    `'error'` refuses, is cancelled without waiting for the cancel, as
+    undici does. A cancel that fails no longer fails the `fetch`.
+- Breaking (core): `MAX_REDIRECTS` moved from
+  `substrate/lifo/commands/net/kernel-fetch.js` to
+  `runtime/http-redirect-policy.js`. `HopRequest` is gone; use
+  `RedirectHop<string>`. A walk's `response` result now also says whether
+  it was `redirected`.
 - Fixed (SDK): `box.ports.ensureDurableApp({ owner, name })` through
   `Nimbus.connect` now passes the app's `name` to the session, as
   `Nimbus.fromEnv` always has. Before, the remote API rebuilt the request

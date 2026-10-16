@@ -5,6 +5,7 @@ export const record = (value) => typeof value === 'object' && value !== null;
 const stringRecord = (value) => record(value) && Object.values(value).every((entry) => typeof entry === 'string');
 const isOutputSource = (value) => value === 'stream' || value === 'console';
 const isResponse = (value) => value === null || (record(value) && typeof value.status === 'number' && stringRecord(value.headers)
+    && (value.statusText === undefined || typeof value.statusText === 'string')
     && (typeof value.body === 'string' || value.body instanceof Uint8Array));
 export function isGuestEvent(value) {
     if (isEgressGuestEvent(value))
