@@ -14,6 +14,12 @@ published independently in the `@nimbus-sh` npm scope.
   only root could. `futimes` with explicit times needs the owner, as
   `utimes` does. Before, any process that opened the file to write could set
   them.
+- Fixed: setting a file's times to now (`touch`, or `UTIME_NOW` from a WASI
+  program) needs only write permission, by name or by descriptor, on a
+  mount as on the session's files. Before, a process that could write a
+  file but did not own it was refused (`EPERM`). A time left as it is
+  (`UTIME_OMIT`) is the one the file has when the change lands; before, a
+  change to it made in between could be undone.
 - Fixed (lifo `node`, X-9): `vm` is Node's. Contexts, scripts,
   `compileFunction`, `runInThisContext` and `runInNewContext` work in an
   inline `node` program and a lifo command alike; before, the module was

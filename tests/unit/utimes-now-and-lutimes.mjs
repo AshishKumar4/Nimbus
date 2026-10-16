@@ -32,9 +32,9 @@ const user = engine.as(USER);
 
 // Now: write permission is enough.
 for (const [label, run] of [
-  ['engine', () => user.utimes('home/user/rootw', null, null)],
-  ['bridge', () => bridge.utimes('/home/user/rootw', null, null)],
-  ['view', () => view.utimes('/home/user/rootw', null, null)],
+  ['engine', () => user.utimes('home/user/rootw', 'now', 'now')],
+  ['bridge', () => bridge.utimes('/home/user/rootw', 'now', 'now')],
+  ['view', () => view.utimes('/home/user/rootw', 'now', 'now')],
   ['view touch', () => view.touch('/home/user/rootw')],
 ]) {
   kernel.utimes('home/user/rootw', 1000, 1000);
@@ -44,7 +44,7 @@ for (const [label, run] of [
 // Explicit times need ownership; now without write is refused too.
 assert.equal(await code(() => bridge.utimes('/home/user/rootw', 5000, 5000)), 'EPERM');
 assert.equal(await code(() => view.utimes('/home/user/rootw', 5000, 5000)), 'EPERM');
-assert.equal(await code(() => view.utimes('/home/user/rootr', null, null)), 'EACCES');
+assert.equal(await code(() => view.utimes('/home/user/rootr', 'now', 'now')), 'EACCES');
 
 // lutimes: the link's own times.
 await view.writeFile('/home/user/target', 'y');

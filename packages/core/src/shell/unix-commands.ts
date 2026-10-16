@@ -9,7 +9,7 @@
 
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { ProcessView } from '../runtime/process-files.js';
-import { requireVfsCred } from '../runtime/os-contracts.js';
+import { requireVfsCred, type FsTime } from '../runtime/os-contracts.js';
 import { dec, enc } from '../_shared/bytes.js';
 import { errorText } from '../_shared/error-text.js';
 import { shellEscape } from '../_shared/shell-quote.js';
@@ -2301,9 +2301,9 @@ function mkTouch(): Command {
     }
     if (files.length === 0) return await usage('missing file operand');
     const now = Date.now();
-    // null is "now" (UTIME_NOW), which needs only write permission, as GNU
-    // touch asks for when no time is given; an explicit time needs ownership.
-    let atime: number | null = null, mtime: number | null = null;
+    // 'now' (UTIME_NOW) needs only write permission, as GNU touch asks for
+    // when no time is given; an explicit time needs ownership.
+    let atime: FsTime = 'now', mtime: FsTime = 'now';
     if (reference !== null) {
       try {
         const st = await statOrThrow(targetVfs, resolvePath(ctx.cwd, reference));
@@ -2327,7 +2327,7 @@ function mkTouch(): Command {
     // -a and -m together, or neither, set both; the other is left (UTIME_OMIT).
     const setAtime = onlyAtime || !onlyMtime;
     const setMtime = onlyMtime || !onlyAtime;
-    const times = [setAtime ? atime : undefined, setMtime ? mtime : undefined] as const;
+    const times = [setAtime ? atime : 'omit', setMtime ? mtime : 'omit'] as const;
     let code = 0;
     for (const f of files) {
       // `-` is standard output: its times are the terminal's, not a file named '-'.
