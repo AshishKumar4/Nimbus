@@ -331,9 +331,12 @@ export const PROCESS_HOST_MODES = ['facet', 'peer'];
  * `deliveries: true` makes the coordinator a host that applies its processes'
  * mutations exactly once (it opens its delivery store, as NimbusSession
  * does); the host then reports that instance's `hostIncarnation`.
+ *
+ * `hostBinding` names the peers' namespace in the hosts' env, as an embedder
+ * that composes its own (composeFabric({ hostNamespace })) names it.
  */
 export function createProcessHost(mode, world, disk, {
-  env, coordDoId = 'coord-do-id', colocated = false, peerWithoutFacets = false, deliveries = false,
+  env, coordDoId = 'coord-do-id', colocated = false, peerWithoutFacets = false, deliveries = false, hostBinding = 'NIMBUS_SESSION',
 } = {}) {
   const hostEnv = env ?? {
     LOADER: world.loader,
@@ -346,10 +349,10 @@ export function createProcessHost(mode, world, disk, {
     host.hostIncarnation = hostIncarnation;
     return host;
   }
-  const { ns, peers, calls, stubs } = createPeerNamespace(world, hostEnv, { colocated, peerWithoutFacets });
+  const { ns, peers, calls, stubs } = createPeerNamespace(world, hostEnv, { colocated, peerWithoutFacets, hostBinding });
   const host = processHostFor(
     coordinator,
-    { NIMBUS_SESSION: ns, NIMBUS_PROCESS_HOST: 'peer' },
+    { [hostBinding]: ns, NIMBUS_PROCESS_HOST: 'peer' },
     () => disk,
   );
   host.peers = peers;
@@ -368,8 +371,9 @@ export function createProcessHost(mode, world, disk, {
  * `colocated: true` makes every peer report the COORDINATOR's isolate;
  * `peerWithoutFacets: true` gives each peer no `ctx.facets`. Each peer's storage records the alarm it arms
  * (`ctx.storage.alarmAt`). `onPeer(peer)` sees each peer as it is made.
+ * Each peer finds the namespace in its env as `hostBinding`.
  */
-export function createPeerNamespace(world, hostEnv, { colocated = false, peerWithoutFacets = false, onPeer } = {}) {
+export function createPeerNamespace(world, hostEnv, { colocated = false, peerWithoutFacets = false, onPeer, hostBinding = 'NIMBUS_SESSION' } = {}) {
   const calls = [];
   const stubs = [];
   /** Each request a coordinator routed to a peer, and the ones it abandoned, by id. */
@@ -388,7 +392,7 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
       ctx.storage.setAlarm = async (at) => { ctx.storage.alarmAt = at; };
       peer = {
         ctx,
-        env: { ...hostEnv, NIMBUS_SESSION: ns },
+        env: { ...hostEnv, [hostBinding]: ns },
         // A peer is a DIFFERENT Durable Object, so it reports a different
         // isolate. Modelling that matters: `isolateToken()` is a module
         // singleton, so calling the real probe in-process would make every
