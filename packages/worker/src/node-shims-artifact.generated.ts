@@ -45,9 +45,9 @@ export const JS_PARSER_BUILD_ID: string = "c8d022179f0f679e";
 export const JS_PARSER_SHA256: string = "c8d022179f0f679e691a2a5e721f967bf9b9711f8bbf82c2d2371cde49258907";
 
 /** dist/runtime/node-lib-module.js generateNodeLibModule() */
-export const NODE_LIB_ENTRY: string = "/_assets/runtime/node-lib-7198ee6fa1559b36.js";
-export const NODE_LIB_BUILD_ID: string = "7198ee6fa1559b36";
-export const NODE_LIB_SHA256: string = "7198ee6fa1559b36b665b3497cf837eabe32f02482986ac6d4b642a2d96a2167";
+export const NODE_LIB_ENTRY: string = "/_assets/runtime/node-lib-87b52afb47082f0b.js";
+export const NODE_LIB_BUILD_ID: string = "87b52afb47082f0b";
+export const NODE_LIB_SHA256: string = "87b52afb47082f0bd69fe63cf8f1fcff68b37d97caf11c6fbce973fd5edd4633";
 
 /** dist/runtime/node-lib-module.js generateNodeLibRestModule() */
 export const NODE_LIB_REST_ENTRY: string = "/_assets/runtime/node-lib-rest-f11f64906eddd5c3.js";

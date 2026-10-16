@@ -33,6 +33,7 @@
  * named), and one inside comes back. A directory outside the cone goes once
  * a removal empties it.
  */
+import { nameDec } from '@nimbus-sh/core/_shared/bytes.js';
 import { NewEntries, S_IFGITLINK, S_IFMT, comparePaths } from './dircache.js';
 import { diffTrees } from './tree.js';
 import { walkTreeAndIndex } from './status.js';
@@ -628,7 +629,7 @@ async function applyOps(ctx, ops, sparse) {
         if (op.method !== 'mkdir-index') {
             const { data } = await store.read(op.oid);
             if (op.mode === 0o120000) {
-                await writer.symlink(new TextDecoder().decode(data), file(op.path));
+                await writer.symlink(nameDec.decode(data), file(op.path));
             }
             else {
                 const fileMode = op.mode === 0o100755 ? 0o755 : 0o644;
