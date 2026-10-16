@@ -134,6 +134,8 @@ export function delegationHolder(options) {
         };
         const bytes = file.bytes.subarray(0, file.length);
         file.bytes = new Uint8Array(0);
+        // Its bytes are the session's from now on: what they took goes back.
+        unreserve(file);
         dirty.delete(file);
         const opened = [...new Set(handles.values())].filter((handle) => handle.file === file && handle.description === undefined);
         opened.forEach((handle, at) => {
