@@ -172,7 +172,7 @@ await run('--prefer-online reads the packument where an exact version\'s session
   assert.equal(registry.requests.length, 1, 'the record answered in place of the registry');
 });
 
-await run('--prefer-offline answers a stale copy without the network, and fetches a missing one', async () => {
+await run('--prefer-offline answers a stale copy without the network, and fetches a missing one', async (colo) => {
   const registry = fakeRegistry();
   const resolve = session(fakeBucket());
   assert.equal((await resolve('^1.0.0')).pkg?.version, '1.0.0');
@@ -181,12 +181,14 @@ await run('--prefer-offline answers a stale copy without the network, and fetche
   assert.equal((await resolve('^1.0.0', 'force-cache')).pkg?.version, '1.0.0', 'the stale copy answers');
   assert.equal((await resolve('1.0.1', 'force-cache')).error?.type, 'unresolved', 'and is not asked again where it lacks the version');
   assert.equal(registry.requests.length, 1, 'the network was asked');
+  // Another session, in another colo: no copy anywhere.
+  colo.entries.clear();
   const missing = session(fakeBucket());
   assert.equal((await missing('^1.0.0', 'force-cache')).pkg?.version, '1.0.1', 'a package with no copy is fetched');
   assert.equal(registry.requests.length, 2);
 });
 
-await run('--offline answers a stale copy, and refuses a missing one as npm does (ENOTCACHED), without the network', async () => {
+await run('--offline answers a stale copy, and refuses a missing one as npm does (ENOTCACHED), without the network', async (colo) => {
   const registry = fakeRegistry();
   const resolve = session(fakeBucket());
   assert.equal((await resolve('^1.0.0')).pkg?.version, '1.0.0');
@@ -194,6 +196,7 @@ await run('--offline answers a stale copy, and refuses a missing one as npm does
   now = START + PACKUMENT_TTL_MS + 1_000;
   assert.equal((await resolve('^1.0.0', 'only-if-cached')).pkg?.version, '1.0.0', 'the stale copy answers');
   assert.equal((await resolve('1.0.1', 'only-if-cached')).error?.type, 'unresolved', 'and is not asked again where it lacks the version');
+  colo.entries.clear();
   const missing = await session(fakeBucket())('^1.0.0', 'only-if-cached');
   assert.equal(missing.pkg, null);
   assert.match(missing.error?.reason ?? '', new RegExp(`request to ${packumentUrl(NAME, REGISTRY).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} failed: cache mode is 'only-if-cached' but no cached response is available\\.`));
