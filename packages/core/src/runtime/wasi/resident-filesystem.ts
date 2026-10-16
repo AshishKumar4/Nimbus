@@ -749,17 +749,15 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     after(resolve(path, follow, false, crossed), (key) => (typeof key === 'string' && key !== '' ? key : DELEGATE));
 
   /**
-   * Whether the holder may decide a change at `key` on its walks: every name
-   * they crossed guarded (ProcessFsClient.guards), so none changes before the
-   * process answers and the key stays what the caller's spelling denotes.
-   * Else the session resolves the call, the change still counted toward
-   * taking `key`'s subtree (ProcessFsClient.holder), as a decided one is.
+   * Whether the holder may be asked to decide a change at `key` on its
+   * walks. Where it holds `key`'s subtree, only when every name they crossed
+   * is guarded (ProcessFsClient.guards), so none changes before the process
+   * answers and the key stays what the caller's spelling denotes; else the
+   * session resolves the call. Where it does not, the holder declines it
+   * anyway, counting it toward taking the subtree.
    */
-  const decidable = (key: string, ...walks: readonly string[][]): boolean => {
-    if (walks.every((crossed) => crossed.every((name) => holder!.client.guards(name)))) return true;
-    holder!.client.holder(key);
-    return false;
-  };
+  const decidable = (key: string, ...walks: readonly string[][]): boolean => holder!.client.held(key) === undefined
+    || walks.every((crossed) => crossed.every((name) => holder!.client.guards(name)));
 
   /** The authority, for a call that may change what the store holds: the barrier is owed once it returns. */
   const changing = <T>(name: string, call: () => T | Promise<T>): T | Promise<T> => {
