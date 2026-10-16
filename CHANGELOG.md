@@ -5,6 +5,26 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a portable `node` program's `import()` takes its arguments as
+  Node 22's does. A second argument that is not an object (`1`, `null`), a
+  `with` that is not an object, or an attribute value that is not a string
+  is refused with V8's TypeError before anything resolves. Before, these
+  were taken as no options and the module loaded and ran. A Symbol
+  specifier is refused, where before it loaded `Symbol(s)`.
+- Fixed: a portable `node` program reads a `data:` URL module as Node 22
+  does. Base64 JSON and JavaScript are read as UTF-8, so `"✓"` arrives
+  intact instead of as `"â\u009c\u0093"`. `application/javascript` is a
+  module. An unknown type such as `text/javascriptx` fails with
+  `ERR_UNKNOWN_MODULE_FORMAT` instead of loading. A hosted program's
+  unknown type is now Node's RangeError, "Unknown module format: <type>
+  for URL <url>", where it was a TypeError.
+- Fixed: a portable `node` program's `node:module` is Node's `Module`
+  class. `new Module(id)` works, `Module.Module === Module`, and the
+  default import is the same class. Before, it was a plain object and
+  `new Module()` threw.
+- Fixed: a portable `node` program can `import { version, transform } from
+  'esbuild'` with the names `require('esbuild')` has. Before, it failed to
+  link. `node:esbuild` and `node:rimraf` are not modules, as in Node.
 - Fixed: a session's own server sends its reason phrase as Node's server
   does. That is the phrase Node's `http.STATUS_CODES` gives the status
   ("unknown" for a status it does not name), or the phrase the handler set

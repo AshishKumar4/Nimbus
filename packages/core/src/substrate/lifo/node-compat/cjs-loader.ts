@@ -18,7 +18,7 @@
 import { Buffer } from 'node:buffer';
 import { fileURLToPath } from 'node:url';
 import { createModuleMap, ProcessExitError, type NodeContext } from './index.js';
-import { createModuleShim, type RequireFunction } from './module.js';
+import { createModuleShim, servedName, type RequireFunction } from './module.js';
 import { pathToFileURL } from './file-url.js';
 import { rewriteDynamicImports, unusedIdentifier } from '../../../runtime/dynamic-import-rewrite.js';
 import { isEsModuleFile, type PackageType } from '../../../runtime/module-format.js';
@@ -76,6 +76,8 @@ export interface ModuleScope {
 export interface NativeModuleLoader {
 	importModule(specifier: string, parentUrl: string, options?: unknown): Promise<unknown>;
 	requireModule(filename: string, parentFilename?: string): unknown;
+	/** module.syncBuiltinESMExports: each builtin's ES module namespace takes its exports' current values. */
+	syncBuiltinESMExports(): void;
 }
 
 export interface CjsLoader {
@@ -138,7 +140,7 @@ export function createCjsLoader(context: NodeContext, scope: ModuleScope, option
 		},
 		readText(path) { return filesystem().readFileString(path); },
 		realpath(path) { return filesystem().realpath(path); },
-		isBuiltin(id) { return !!moduleMap[id.startsWith('node:') ? id.slice(5) : id]; },
+		isBuiltin(id) { return servedName(moduleMap, id) !== null; },
 	}, { ...options, policy: options.policy ?? LIFO_REQUIRE_POLICY });
 
 	// createRequire(filename) is require as a module at `filename` has it: a path, or a file: URL's decoded path.
@@ -147,7 +149,7 @@ export function createCjsLoader(context: NodeContext, scope: ModuleScope, option
 			const path = filename instanceof URL || String(filename).startsWith('file:') ? fileURLToPath(filename) : String(filename);
 			return requireFrom(dirname(path), path);
 		});
-		const api = {
+		return Object.assign(shim, {
 			_resolveFilename(id: string, parent?: { filename?: string }, _isMain?: boolean, request?: { paths?: string[] }) {
 				return requireFrom(dirname(parent?.filename ?? context.filename)).resolve(id, request);
 			},
@@ -156,17 +158,15 @@ export function createCjsLoader(context: NodeContext, scope: ModuleScope, option
 			},
 			_nodeModulePaths: requireNodeModulePaths,
 			globalPaths: [...((options.policy ?? LIFO_REQUIRE_POLICY).globalFolders ?? [])],
-		};
-		Object.assign(shim.Module, api);
-		return Object.assign(shim, api);
+			syncBuiltinESMExports() { native?.syncBuiltinESMExports(); },
+		});
 	};
 
 	function requireFrom(dir: string, parentFilename?: string): RequireFunction {
 		const req = ((id: string) => requireModule(id, dir, parentFilename)) as RequireFunction;
 		req.resolve = (id: string, options?: { paths?: string[] }) => {
 			if (typeof id !== 'string') throw invalidArgType('request', 'string', id);
-			const name = id.startsWith('node:') ? id.slice(5) : id;
-			if (moduleMap[name]) return id;
+			if (servedName(moduleMap, id) !== null) return id;
 			if (options?.paths !== undefined && !Array.isArray(options.paths)) {
 				throw Object.assign(new TypeError('The property "options.paths" must be an Array'), { code: 'ERR_INVALID_ARG_VALUE' });
 			}
@@ -189,7 +189,7 @@ export function createCjsLoader(context: NodeContext, scope: ModuleScope, option
 		};
 		req.resolve.paths = (id: string) => {
 			if (typeof id !== 'string') throw invalidArgType('request', 'string', id);
-			if (moduleMap[id.startsWith('node:') ? id.slice(5) : id]) return null;
+			if (servedName(moduleMap, id) !== null) return null;
 			return id === '.' || id === '..' || id.startsWith('./') || id.startsWith('../')
 				? [dir] : [...requireNodeModulePaths(dir), ...((options.policy ?? LIFO_REQUIRE_POLICY).globalFolders ?? [])];
 		};
@@ -198,11 +198,12 @@ export function createCjsLoader(context: NodeContext, scope: ModuleScope, option
 	}
 
 	function requireModule(id: string, dir: string, parentFilename?: string): unknown {
-		const name = id.startsWith('node:') ? id.slice(5) : id;
-		if (moduleMap[name]) {
-			if (!builtins.has(name)) builtins.set(name, moduleMap[name]());
-			return builtins.get(name);
+		const served = servedName(moduleMap, id);
+		if (served !== null) {
+			if (!builtins.has(served)) builtins.set(served, moduleMap[served]());
+			return builtins.get(served);
 		}
+		const name = id.startsWith('node:') ? id.slice(5) : id;
 		if (id.startsWith('node:')) throw Object.assign(new Error('No such built-in module: ' + id), { code: 'ERR_UNKNOWN_BUILTIN_MODULE' });
 		const path = resolveFilename(id, dir);
 		if (path !== null) return path.startsWith('node:') ? requireModule(path, dir, parentFilename) : load(path, undefined, parentFilename);

@@ -14,6 +14,22 @@
 export const PROVIDED_PACKAGES = ['rimraf', 'esbuild'] as const;
 const provided: ReadonlySet<string> = new Set(PROVIDED_PACKAGES);
 
+/** Whether the module map's `name` is a provided npm package rather than a core module. */
+export function isProvidedPackage(name: string): boolean {
+  return provided.has(name);
+}
+
+/**
+ * The module map's name for `specifier`, or null when the map serves no such
+ * module: `node:` names a core module only (`node:esbuild` is no module, as
+ * in Node), a bare name a core module or a provided package.
+ */
+export function servedName(moduleMap: Record<string, () => unknown>, specifier: string): string | null {
+  const scheme = specifier.startsWith('node:');
+  const name = scheme ? specifier.slice(5) : specifier;
+  return Object.hasOwn(moduleMap, name) && !(scheme && provided.has(name)) ? name : null;
+}
+
 export type RequireFunction = ((id: string) => unknown) & {
   resolve: ((id: string, options?: { paths?: string[] }) => string) & { paths?: (id: string) => string[] | null };
   cache: Record<string, unknown>;
@@ -30,23 +46,15 @@ export function makeCreateRequire(
     const cache: Record<string, unknown> = {};
 
     const req = function require(id: string): unknown {
-      const name = id.startsWith('node:') ? id.slice(5) : id;
-
-      if (cache[name]) return cache[name];
-
-      if (moduleMap[name]) {
-        const mod = moduleMap[name]();
-        cache[name] = mod;
-        return mod;
-      }
-
-      throw new Error(`Cannot find module '${id}'`);
+      const name = servedName(moduleMap, id);
+      if (name === null) throw new Error(`Cannot find module '${id}'`);
+      return cache[name] ??= moduleMap[name]();
     } as RequireFunction;
 
     req.resolve = (id: string): string => {
-      const name = id.startsWith('node:') ? id.slice(5) : id;
-      if (moduleMap[name]) return name;
-      throw new Error(`Cannot find module '${id}'`);
+      const name = servedName(moduleMap, id);
+      if (name === null) throw new Error(`Cannot find module '${id}'`);
+      return name;
     };
 
     req.cache = cache;
@@ -92,10 +100,11 @@ export class Module {
 }
 
 /**
- * The `module` built-in over a module map: its builtinModules are the map's
- * names, and createRequire is `createRequire` (the CommonJS loader's, which
- * resolves files and packages too) or, for a bare map, one that serves the
- * map's built-ins alone.
+ * The `module` built-in over a module map, as Node's is its Module class
+ * (module.exports = Module, and Module.Module is Module): its builtinModules
+ * are the map's core names, and createRequire is `createRequire` (the
+ * CommonJS loader's, which resolves files and packages too) or, for a bare
+ * map, one that serves the map's built-ins alone.
  */
 export function createModuleShim(
   moduleMap: Record<string, () => unknown>,
@@ -112,13 +121,8 @@ export function createModuleShim(
     static _cache: Record<string, unknown> = {};
     static builtinModules = names;
     static isBuiltin = isMapBuiltin;
+    static Module: typeof LoaderModule;
   }
-
-  return {
-    Module: LoaderModule,
-    builtinModules: names,
-    isBuiltin: isMapBuiltin,
-    createRequire,
-    default: LoaderModule,
-  };
+  LoaderModule.Module = LoaderModule;
+  return LoaderModule;
 }
