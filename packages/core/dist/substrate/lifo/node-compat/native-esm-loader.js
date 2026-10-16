@@ -150,7 +150,8 @@ export async function createNativeEsmLoader(context, cjs, main) {
         },
         realpath: (path) => path === mainPath ? path : context.filesystem().realpath(path),
         readText: (path) => path === mainPath ? main.source : context.filesystem().exists(path) ? context.filesystem().readFileString(path) : null,
-        isBuiltin: (specifier) => servedName(cjs.moduleMap, specifier) !== null,
+        // The resolver names a bare provided package node:<name> too; a written node:<name> is refused at resolveRecord.
+        isBuiltin: (specifier) => Object.hasOwn(cjs.moduleMap, specifier.startsWith('node:') ? specifier.slice(5) : specifier),
         cjsResolve: (specifier, parent) => cjs.resolveFilename(specifier, dirname(parent)),
     }, { cwd: () => context.cwd, stripTypes: false });
     function recordFor(resolution) {
@@ -190,6 +191,10 @@ export async function createNativeEsmLoader(context, cjs, main) {
         return record.source ??= context.filesystem().readFileString(record.resolution.path);
     }
     function resolveRecord(specifier, parent, attributes = {}) {
+        // A provided package is no core module: node:esbuild names none, as in Node.
+        if (specifier.startsWith('node:') && servedName(cjs.moduleMap, specifier) === null) {
+            throw Object.assign(new Error(`No such built-in module: ${specifier}`), { code: 'ERR_UNKNOWN_BUILTIN_MODULE' });
+        }
         const resolution = resolver.resolveSync(specifier, parent);
         resolver.validateAttributes(resolution.url, resolution.format, attributes);
         return recordFor(resolution);
