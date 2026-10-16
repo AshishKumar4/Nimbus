@@ -627,7 +627,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       files.set(entry.ino, file);
       const description = descriptionId();
       changes++;
-      client.submit({ type: 'call', call: { call: 'open', path: to, mode: asked, ...(made === undefined ? {} : { ino: made, umask }), create: true, truncate: true, ...(keepMode ? { fchmod: mode } : {}), description } }, { acknowledged: true });
+      client.submit({ type: 'call', call: { call: 'open', path: to, mode: asked, access: 'write', ...(made === undefined ? {} : { ino: made, umask }), create: true, truncate: true, ...(keepMode ? { fchmod: mode } : {}), description } }, { acknowledged: true });
       client.submit({ type: 'call', call: { call: 'write', path: to, ...(made === undefined ? {} : { ino: made }), description, offset: 0, data: bytes.slice() } }, { acknowledged: true });
       client.submit({ type: 'call', call: { call: 'close', path: to, description } }, { acknowledged: true });
       return true;
