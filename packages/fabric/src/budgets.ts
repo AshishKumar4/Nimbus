@@ -113,9 +113,10 @@ interface Waiter {
 }
 
 interface LoaderLedger {
-  /** Loader id → open holds on it, under a claim or not. A key is present only while held. */
-  inFlight: Map<string, number>;
-  /** Loader id → the process each open hold on it is for; null for a hold no process owns. */
+  /**
+   * Loader id → the process each open hold on it is for, under a claim or
+   * not; null for a hold no process owns. A key is present only while held.
+   */
   holders: Map<string, Array<number | null>>;
   /** Process → its open holds: a process with none is not a holder whose state matters. */
   processHolds: Map<number, number>;
@@ -164,7 +165,7 @@ function ledger(ctx: object): LoaderLedger {
   let entry = ledgers.get(ctx);
   if (!entry) {
     entry = {
-      inFlight: new Map(), holders: new Map(), processHolds: new Map(), news: new Map(), graph: undefined, outside: new Map(),
+      holders: new Map(), processHolds: new Map(), news: new Map(), graph: undefined, outside: new Map(),
       schedule: decideOnALaterTurn, deciding: false,
       turnDelays: [], decisionDelays: [], turnProbePending: false,
       claims: new Set(), peak: 0, readmitted: 0,
@@ -183,7 +184,7 @@ function inUse(entry: LoaderLedger): number {
     count += Math.max(claim.width, claim.keys.size);
     for (const key of claim.keys.keys()) covered.add(key);
   }
-  for (const key of entry.inFlight.keys()) if (!covered.has(key)) count++;
+  for (const key of entry.holders.keys()) if (!covered.has(key)) count++;
   return count;
 }
 
@@ -208,7 +209,6 @@ function count(map: Map<string, number>, key: string, by: 1 | -1): void {
 
 /** Take one hold, for process `holder` if it is one's; the caller admits waiters after. */
 function hold(entry: LoaderLedger, workerKey: string, claim: ClaimEntry | undefined, holder: number | null): EndLoaderFetch {
-  count(entry.inFlight, workerKey, 1);
   if (claim) count(claim.keys, workerKey, 1);
   const holders = entry.holders.get(workerKey) ?? [];
   holders.push(holder);
@@ -220,7 +220,6 @@ function hold(entry: LoaderLedger, workerKey: string, claim: ClaimEntry | undefi
   const end: EndLoaderFetch = (failure) => {
     if (ended) return;
     ended = true;
-    count(entry.inFlight, workerKey, -1);
     if (claim) count(claim.keys, workerKey, -1);
     holders.splice(holders.indexOf(holder), 1);
     if (holders.length === 0) entry.holders.delete(workerKey);
@@ -275,7 +274,7 @@ function refused(entry: LoaderLedger, epoch: number): void {
 function admissible(entry: LoaderLedger, waiter: Waiter): boolean {
   // Requests to a worker already in flight count once, even while paused;
   // a call the platform refused waits the pause out all the same.
-  if (entry.inFlight.has(waiter.key) && !(waiter.refused && entry.pauseMs > 0)) return true;
+  if (entry.holders.has(waiter.key) && !(waiter.refused && entry.pauseMs > 0)) return true;
   if (entry.pauseMs > 0) return false;
   if (waiter.claim && entry.claims.has(waiter.claim) && waiter.claim.keys.size < waiter.claim.width) return true;
   return inUse(entry) < DO_DYNAMIC_WORKER_LIMIT;
@@ -292,7 +291,7 @@ function admitWaiters(entry: LoaderLedger): void {
   for (let i = 0; i < entry.waiters.length;) {
     const waiter = entry.waiters[i];
     if (!admissible(entry, waiter)) { i++; continue; }
-    const joins = entry.inFlight.has(waiter.key);
+    const joins = entry.holders.has(waiter.key);
     entry.waiters.splice(i, 1);
     waiter.admit(hold(entry, waiter.key, waiter.claim, waiter.process?.pid ?? null));
     if (!joins) i = 0;
@@ -977,7 +976,7 @@ export function loaderLedgerStats(ctx: object, probeTurn = false): {
       decisionP50Ms: percentile(decisions, .5), decisionP95Ms: percentile(decisions, .95),
     },
     limit: DO_DYNAMIC_WORKER_LIMIT,
-    inFlightWorkers: [...entry.inFlight.keys()],
+    inFlightWorkers: [...entry.holders.keys()],
     holders: Object.fromEntries([...entry.holders].map(([key, owners]) => [key, [...owners]])),
     waiters: entry.waiters.map((w) => ({ key: w.key, pid: w.process?.pid })),
     news: Object.fromEntries([...entry.news].map(([pid, news]) => [pid, { ...news }])),
@@ -1007,8 +1006,8 @@ export function withDynamicWorkerCapNamed<E>(ctx: object, error: E): E | Error {
   const entry = ledger(ctx);
   const platform = error instanceof Error ? error.message : String(error);
   return new Error(
-    `${platform} — this Durable Object had ${entry.inFlight.size} distinct dynamic worker(s) in flight `
-      + `(${[...entry.inFlight.keys()].join(', ') || 'none recorded'}) and ${claimedWidth(entry)} claimed by fan-outs, `
+    `${platform} — this Durable Object had ${entry.holders.size} distinct dynamic worker(s) in flight `
+      + `(${[...entry.holders.keys()].join(', ') || 'none recorded'}) and ${claimedWidth(entry)} claimed by fan-outs, `
       + `against a limit of ${DO_DYNAMIC_WORKER_LIMIT}; peak ${entry.peak}`,
     { cause: error },
   );
