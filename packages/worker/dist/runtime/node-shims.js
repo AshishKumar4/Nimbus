@@ -5396,7 +5396,16 @@ const __fsMod = (() => {
       truncate: (bits & O_TRUNC) !== 0,
       exclusive: (bits & O_EXCL) !== 0,
       directory: (bits & O_DIRECTORY) !== 0,
+      // O_NOFOLLOW: a final symbolic link is not opened (_refuseFinalLink).
+      followSymlinks: (bits & O_NOFOLLOW) === 0,
+      // O_SYNC (O_DSYNC's bit among its own): each write is followed by what fsync does for it.
+      sync: (bits & O_SYNC) !== 0,
     };
+  }
+
+  /** open(2) with O_NOFOLLOW of a final symbolic link: ELOOP, or ENOTDIR when O_DIRECTORY asks for a directory. */
+  function _refuseFinalLink(path, fl, own) {
+    if (own && own.isSymbolicLink()) throw _fsErr(fl.directory ? "ENOTDIR" : "ELOOP", "open", path);
   }
 
   // ── FileHandle — returned from fs.promises.open ──
@@ -5458,7 +5467,7 @@ const __fsMod = (() => {
   class __FileHandle {
     constructor(path, flagInfo, size) {
       this._path = path;
-      this._abs = _target(path, true, "open");
+      this._abs = _target(path, flagInfo.followSymlinks, "open");
       this._flags = flagInfo;
       this._position = 0;
       this._size = size;
@@ -5489,18 +5498,12 @@ const __fsMod = (() => {
     async write(buffer, offset, length, position) {
       this._assertOpen("write");
       if (!this._flags.write) throw _fsErr("EBADF", "write", this._path);
-      let bytes;
-      let pos;
-      if (typeof buffer === "string") {
-        // write(string[, position[, encoding]])
-        bytes = _enc.encode(buffer);
-        pos = (offset === undefined || offset === null) ? null : Math.max(0, Number(offset));
-      } else {
-        const o = offset || 0;
-        const l = (length === undefined || length === null) ? buffer.length - o : Number(length);
-        bytes = buffer.subarray(o, o + l);
-        pos = (position === undefined || position === null) ? null : Math.max(0, Number(position));
-      }
+      // As writeSync and callback write read them: (string[, position[,
+      // encoding]]), (buffer[, offset[, length[, position]]]) or (buffer, {
+      // offset, length, position }).
+      const norm = _normWriteArgs(buffer, offset, length, position);
+      const bytes = norm.bytes;
+      const pos = _isCurrentPos(norm.pos) ? null : Math.max(0, Number(norm.pos));
       const at = this._flags.append ? this._size : (pos === null ? this._position : pos);
       if (bytes.byteLength === 0) {
         return { bytesWritten: 0, buffer };
@@ -5558,6 +5561,7 @@ const __fsMod = (() => {
       }
       this._size = Math.max(this._size, writeAt + bytes.byteLength);
       if (pos === null || this._flags.append) this._position = writeAt + bytes.byteLength;
+      if (this._flags.sync) await this.sync();
       return { bytesWritten: bytes.byteLength, buffer };
     }
     async readFile(opts) { return _readFileAsync(this._path, opts); }
@@ -5649,6 +5653,7 @@ const __fsMod = (() => {
         ? { type: "call", call: { call: "append", path: key, data: _ownedCell(bytes) } }
         : { type: "call", call: { call: "write", path: key, offset: at, data: _ownedCell(bytes) } });
       if (pos === null || this._flags.append) this._position = at + bytes.byteLength;
+      if (this._flags.sync) fsyncSync(this.fd);
       return bytes.byteLength;
     }
     _truncateSync(len) {
@@ -5703,7 +5708,12 @@ const __fsMod = (() => {
   async function _openAsync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
     const createMode = _coerceMode(mode, 0o666);
-    const absPath = _target(path, true, "open");
+    const absPath = _target(path, fl.followSymlinks, "open");
+    if (!fl.followSymlinks) {
+      let own = null;
+      try { own = await _lstatAsync(path); } catch (e) { if (e.code !== "ENOENT") throw e; }
+      _refuseFinalLink(path, fl, own);
+    }
     const supervisor = _supervisor();
     let liveMeta = null;
     if (supervisor && typeof supervisor.stat === "function") {
@@ -5738,7 +5748,8 @@ const __fsMod = (() => {
   function openSync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
     const createMode = _coerceMode(mode, 0o666);
-    const absPath = _target(path, true, "open");
+    const absPath = _target(path, fl.followSymlinks, "open");
+    if (!fl.followSymlinks) _refuseFinalLink(path, fl, lstatSync(path, { throwIfNoEntry: false }));
     const st = statSync(path, { throwIfNoEntry: false });
     if (st && st.isDirectory()) throw _fsErr("EISDIR", "open", path);
     const exists = st !== undefined;
