@@ -23,7 +23,7 @@
 // the case says why (`versions`). A `fallback` case, where the server keeps
 // its own JSX defaults or cannot read vite.config statically, must differ
 // from every Vite, and make what the case names (`nimbus`): its output
-// runs, with the imports named, from the esbuild options named.
+// runs to the outcome named, from the esbuild options named.
 
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -225,8 +225,8 @@ try {
           if (COLUMNS.some((column) => text(vite[column]) === text(ours))) {
             fail(`${name} ${path}: expected to differ from Vite (${definition.fallback}), but made the same: ${text(ours)}`);
           }
-          if (!ours.exports || text(ours.imports) !== text(definition.nimbus.imports)) {
-            fail(`${name} ${path}: expected to run with ${text(definition.nimbus.imports)} (${definition.fallback}), but made ${text(ours)}`);
+          if (text(ours) !== text(definition.nimbus.outcome)) {
+            fail(`${name} ${path}: expected (${definition.fallback})\n      named: ${text(definition.nimbus.outcome)}\n      ours:  ${text(ours)}`);
           }
         } else if (text(target) !== text(ours)) {
           fail(`${name} ${path}: served\n      Vite 7: ${text(target)}\n      ours:   ${text(ours)}`);
