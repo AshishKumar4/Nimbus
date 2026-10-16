@@ -1,5 +1,6 @@
 import { isWebSocketHostEvent } from './realm-websocket.js';
 import { webSocketClose, webSocketConstructor, webSocketSend } from './websocket-arguments.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 /** A WebSocket's native event surface, with its transport owned by the host. */
 export function routeWebSocketsThroughHost(post, waiting, nextId) {
     const sockets = new Map();
@@ -49,7 +50,7 @@ export function routeWebSocketsThroughHost(post, waiting, nextId) {
             if (this.#state !== 1)
                 return;
             const payload = typeof value === 'string' || value instanceof Uint8Array ? value : value.arrayBuffer().then((buffer) => new Uint8Array(buffer));
-            const length = typeof value === 'string' ? new TextEncoder().encode(value).byteLength : value instanceof Uint8Array ? value.byteLength : value.size;
+            const length = typeof value === 'string' ? utf8Length(value) : value instanceof Uint8Array ? value.byteLength : value.size;
             this.#buffered += length;
             this.#sending = this.#sending.then(async () => {
                 const data = await payload;

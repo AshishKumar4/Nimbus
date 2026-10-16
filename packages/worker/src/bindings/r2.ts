@@ -39,6 +39,7 @@ import type {
 } from '@nimbus-sh/fabric/inner-storage-env.js';
 import { ensureBindingDir, fileStream, writeBody } from './body.js';
 import { cursorAfter, cursorKey, listObjectFiles, objectFileName, objectStoreDir, removeObjectFiles, uploadFileName, utf8Order } from './object-store.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 
 /** R2's limit on one upload (a put): 5 GiB less 5 MiB. */
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024 - 5 * 1024 * 1024;
@@ -141,7 +142,7 @@ function r2Error(action: string, message: string, code: number): Error {
 }
 
 function validateKey(action: string, key: string): void {
-  if (new TextEncoder().encode(key).byteLength > MAX_KEY_BYTES) throw r2Error(action, 'The specified object name is not valid.', 10020);
+  if (utf8Length(key) > MAX_KEY_BYTES) throw r2Error(action, 'The specified object name is not valid.', 10020);
 }
 
 function includesEtag(conditions: readonly R2EtagCondition[], etag: string, comparison: 'strong' | 'weak'): boolean {

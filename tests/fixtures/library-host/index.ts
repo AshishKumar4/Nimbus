@@ -24,7 +24,6 @@ export {
   NimbusLoadedWorker,
   NimbusLoadedEntrypoint,
   NimbusDurableObjectNamespace,
-  NimbusDOStub,
 } from '@nimbus-sh/worker/workspace-host';
 
 composeFabric({

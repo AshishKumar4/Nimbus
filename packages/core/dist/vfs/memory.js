@@ -1,6 +1,6 @@
 import { syscallError } from './vfs-error.js';
 import { timeAt } from './posix-access.js';
-const encoder = new TextEncoder();
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 const EMPTY = new Uint8Array(0);
 function fail(code, call) {
     return syscallError(code, call.syscall, call.path, { dest: call.dest });
@@ -79,7 +79,7 @@ export class MemoryVFS {
         return {
             ino: entry.ino,
             type: entry.type,
-            size: entry.type === 'symlink' ? encoder.encode(entry.target).length : entry.data.length,
+            size: entry.type === 'symlink' ? utf8Length(entry.target) : entry.data.length,
             mtimeMs: entry.mtimeMs,
             revision: entry.revision,
             mode: entry.mode,

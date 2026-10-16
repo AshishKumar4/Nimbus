@@ -29,6 +29,7 @@ import { ensureKernelStoreRoot, KERNEL_STORE_ROOT } from './kernel-store-root.js
 import { parseProcessSignalName } from '@nimbus-sh/core/runtime/process-io-protocol.js';
 import { createNodeFacetRuntime, fetchNodeFacetSources, nodeFacetSource } from '../runtime/node-shims-artifact.js';
 import { moduleSource } from '@nimbus-sh/platform/module-source.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { NODE_SHIMS_IMPORTS } from '../runtime/node-shims-imports.js';
 import { VFS_CURSOR_SEED_SOURCE, serializeFacetVfsCursor, } from '@nimbus-sh/core/_shared/facet-vfs-cursor.js';
@@ -103,7 +104,7 @@ import { CRED_KERNEL, isNativeBinPath, launchNamedPaths, requireVfsCred } from '
 import { acquireSupervisorAllocation, acquireSupervisorCopyAllocation, readSupervisorAllocationBudget, tryAcquireSupervisorAllocation, tryAcquireSupervisorCopyAllocation, } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { streamedWasmImageDigest } from './wasm-image-digest.js';
 import { wasmImageDigest } from './wasm-image-key.js';
-import { prefetchBundleStart, prefetchBundleEnd, setPrefetchCacheBytes, } from '@nimbus-sh/platform/diag-counters.js';
+import { attributeAllocation, setPrefetchCacheBytes } from '@nimbus-sh/platform/diag-counters.js';
 const launchAdapters = new WeakMap();
 /** The exact type of `entry` in `dir` on a launch's fs, lstat'ing it where its listing could not type it. */
 function launchEntryType(vfs, dir, entry) {
@@ -1829,29 +1830,7 @@ export function generatedMapTextBytes(generated, room) {
         return null;
     let bytes = sharedBytes;
     for (const text of texts)
-        bytes += mapTextBytes(text);
-    return bytes;
-}
-const NON_ASCII = /[^\x00-\x7f]/;
-const mapTextEncoder = new TextEncoder();
-let mapTextScratch;
-/**
- * The UTF-8 bytes of a map's text, at native speed: ASCII text, most of a
- * map, is its length, which one scan finds; other text is encoded a slice at
- * a time into one reused buffer, only the count kept. For 31 M units, an
- * astro-sized map, Node's V8 took 40-60 ms counting a unit at a time
- * (_encodedSourceBytes) and 11 ms this way.
- */
-function mapTextBytes(text) {
-    if (!NON_ASCII.test(text))
-        return text.length;
-    mapTextScratch ??= new Uint8Array(256 * 1024);
-    let bytes = 0;
-    for (let read = 0; read < text.length;) {
-        const done = mapTextEncoder.encodeInto(read === 0 ? text : text.slice(read), mapTextScratch);
-        read += done.read;
-        bytes += done.written;
-    }
+        bytes += utf8Length(text);
     return bytes;
 }
 /**
@@ -1883,7 +1862,7 @@ export function learnedRuntimeCodeWithin(bytes, learned, room) {
 function moduleMemberBytes(members) {
     let bytes = 0;
     for (const member of Object.values(members))
-        bytes += typeof member === 'string' ? mapTextBytes(member) : member.wasm.byteLength;
+        bytes += typeof member === 'string' ? utf8Length(member) : member.wasm.byteLength;
     return bytes;
 }
 /** The entry the one-shot host adds to a map (fabric workerd-facet-host.ts oneShotEntry, about 600 bytes): at most this. */
@@ -1928,7 +1907,7 @@ async function _readBundleCell(vfs, path) {
 function _bundleCellRawBytes(cell) {
     if (cell instanceof Uint8Array)
         return cell.byteLength;
-    return typeof cell === 'string' ? _encodedSourceBytes(cell) : 0;
+    return typeof cell === 'string' ? utf8Length(cell) : 0;
 }
 function _bundleCellLength(cell) {
     return typeof cell === 'string' ? cell.length : cell.byteLength;
@@ -2124,26 +2103,6 @@ function _serializeBundleForFacet(bundle) {
 }
 const FACET_VFS_MODULE_PREFIX = '__nimbus_vfs_bundle_';
 const FACET_VFS_MODULE_SOURCE_MARGIN = 1024;
-/**
- * UTF-8 byte length of a generated module source, counted rather than
- * materialized.
- *
- * `new TextEncoder().encode(source).length` answers the same question by
- * allocating a second full copy of the string and then reading one number off
- * it. For pi's inline bundle expression that is an 18.26 MB Uint8Array, live
- * on the session DO beside the 18.26 MB string it measures, whose only use is
- * its own `.length` — and the encode also flattens the string it is given,
- * so a rope the template builder had not yet paid for becomes flat too.
- *
- * Same discipline `_jsonEncodedBytes` applies to a cell's JSON text:
- * sizing something never allocates a copy of it. Exactly equivalent to the
- * encoder, including its replacement of an unpaired surrogate with U+FFFD.
- */
-function _encodedSourceBytes(source) {
-    // UTF-8 bytes, a lone surrogate as U+FFFD's three: mapTextBytes, natively
-    // (the guard measures every cell and emit of a launch with it).
-    return mapTextBytes(source);
-}
 function _facetBundleModuleSource(bundle) {
     return `export default ${_serializeBundleForFacet(bundle)};`;
 }
@@ -2153,8 +2112,8 @@ function _facetBundleModuleSource(bundle) {
  * a side module wraps it in. Measured off the serializer itself so the
  * counts and the thing they count cannot drift.
  */
-const _FACET_INLINE_ENVELOPE_BYTES = _encodedSourceBytes(_serializeBundleForFacet({}));
-const _FACET_MODULE_ENVELOPE_BYTES = _encodedSourceBytes(_facetBundleModuleSource({}));
+const _FACET_INLINE_ENVELOPE_BYTES = utf8Length(_serializeBundleForFacet({}));
+const _FACET_MODULE_ENVELOPE_BYTES = utf8Length(_facetBundleModuleSource({}));
 /**
  * What one cell adds to a generated bundle source, counted rather than built.
  *
@@ -2353,7 +2312,7 @@ async function serializeFacetVfsData(bundle, pacer, consume) {
         const moduleName = `${FACET_VFS_MODULE_PREFIX}${index}.js`;
         const alias = `__nimbusVfsBundle${index}`;
         const source = _facetBundleModuleSource(chunk);
-        if (_encodedSourceBytes(source) > BUNDLE_MAX_ENCODED_BYTES) {
+        if (utf8Length(source) > BUNDLE_MAX_ENCODED_BYTES) {
             throw new Error(`Nimbus: generated VFS side module exceeds encoded limit: ${moduleName}`);
         }
         modules[moduleName] = source;
@@ -2413,7 +2372,7 @@ async function serializeFacetVfsData(bundle, pacer, consume) {
  * readFileSync can go back to the supervisor for what was left out.
  */
 export function assertStagedBundleFitsRpcPayload(serialized, bundle) {
-    const bytes = _encodedSourceBytes(serialized);
+    const bytes = utf8Length(serialized);
     if (bytes <= MAX_RPC_SAFE_PAYLOAD_BYTES)
         return;
     const cells = Object.entries(bundle)
@@ -3695,7 +3654,7 @@ async function admitPrefetch(wait, bytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGE
             lease.release();
             throw waiting.signal.reason;
         }
-        return admissionOf(lease, bytes, true);
+        return admissionOf(lease, true);
     }
     finally {
         waiting?.dispose();
@@ -3708,29 +3667,24 @@ async function admitPrefetch(wait, bytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGE
  */
 function tryAdmitPrefetch(bytes, copy = false) {
     const lease = copy ? tryAcquireSupervisorCopyAllocation(bytes) : tryAcquireSupervisorAllocation(bytes);
-    return lease === null ? null : admissionOf(lease, bytes, false);
+    return lease === null ? null : admissionOf(lease, false);
 }
-function admissionOf(admitted, bytes, queued) {
+function admissionOf(admitted, queued) {
     // Attributed so it lands under `prefetchBundleBytes`, not the unattributed remainder.
-    let held = bytes;
-    prefetchBundleStart(held);
+    const lease = attributeAllocation('prefetchBundleBytes', admitted);
+    let released = false;
     return {
         queued,
-        held: () => held,
+        held: () => (released ? 0 : lease.bytes),
         fit(closureBytes) {
             const need = prefetchNeed(closureBytes);
-            if (held === 0 || need >= held)
+            if (released || need >= lease.bytes)
                 return;
-            admitted.shrinkTo(need);
-            prefetchBundleEnd(held - need);
-            held = need;
+            lease.shrinkTo(need);
         },
         release() {
-            if (held === 0)
-                return;
-            prefetchBundleEnd(held);
-            held = 0;
-            admitted.release();
+            released = true;
+            lease.release();
         },
     };
 }
@@ -4010,7 +3964,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     }
     // A module's emit is part of what its path costs, beside its file when that is carried.
     for (const [path, emit] of emits) {
-        const bytes = _encodedSourceBytes(emit);
+        const bytes = utf8Length(emit);
         rawBytes.set(path, (rawBytes.get(path) ?? 0) + bytes);
         rawTotal += bytes;
     }
@@ -5765,7 +5719,7 @@ export class FacetManager {
                 return generated;
             const source = vfsState.bundleSource;
             const keys = source ? JSON.parse(source.runtimeCode) : [];
-            const learned = keys.map((key) => [key, mapTextBytes(generated.codeModules[runtimeCodeModuleName(key)] ?? '')]);
+            const learned = keys.map((key) => [key, utf8Length(generated.codeModules[runtimeCodeModuleName(key)] ?? '')]);
             generated = undefined;
             const { kept, over } = learnedRuntimeCodeWithin(bytes, learned, room);
             if (over > 0 || !source)
@@ -5824,7 +5778,7 @@ export class FacetManager {
     _residentMemberBytes(pid, sqliteModules, staged, wasmImports) {
         let bytes = moduleMemberBytes(sqliteModules) + hostAdapterBytes('worker.js');
         if (staged)
-            bytes += mapTextBytes(staged.loader) + staged.trampoline.byteLength;
+            bytes += utf8Length(staged.loader) + staged.trampoline.byteLength;
         // Sized as the process its boot reads them as (_residentDisk).
         const fs = this.vfs?.as(this.processes.cred(pid));
         for (const path of [...wasmImports.map((image) => image.vfsPath), ...Object.values(staged?.bindingPaths ?? {})]) {
@@ -6864,10 +6818,10 @@ export class FacetManager {
                     if (diagSink) {
                         diagSink.moduleMapBytes = generatedWorker.source.byteLength;
                         for (const source of Object.values(generatedWorker.modules)) {
-                            diagSink.moduleMapBytes += _encodedSourceBytes(source);
+                            diagSink.moduleMapBytes += utf8Length(source);
                         }
                         for (const text of [...Object.values(generatedWorker.codeModules), ...Object.values(generatedWorker.esModules)]) {
-                            diagSink.moduleMapBytes += _encodedSourceBytes(text);
+                            diagSink.moduleMapBytes += utf8Length(text);
                         }
                         for (const source of Object.values(generatedWorker.immutableModules))
                             diagSink.moduleMapBytes += source.byteLength;
@@ -6876,12 +6830,12 @@ export class FacetManager {
                         }
                         // Read before the release below, which is the last moment the
                         // three parts of that total are separable.
-                        diagSink.bundleBytes = _encodedSourceBytes(vfsState.bundleSource?.expression ?? '');
+                        diagSink.bundleBytes = utf8Length(vfsState.bundleSource?.expression ?? '');
                         for (const source of Object.values(vfsState.bundleSource?.modules ?? {})) {
-                            diagSink.bundleBytes += _encodedSourceBytes(source);
+                            diagSink.bundleBytes += utf8Length(source);
                         }
                         for (const text of Object.values(vfsState.bundleSource?.codeModules ?? {})) {
-                            diagSink.bundleBytes += _encodedSourceBytes(text);
+                            diagSink.bundleBytes += utf8Length(text);
                         }
                     }
                     // A run after a stop loads what the first run loaded, or nothing:
@@ -7925,7 +7879,7 @@ export class FacetManager {
         let bundleBytes = 0;
         if (diagOn) {
             for (const source of [...Object.values(generatedWorker.modules), ...Object.values(generatedWorker.codeModules), ...Object.values(generatedWorker.esModules)]) {
-                bundleBytes += _encodedSourceBytes(source);
+                bundleBytes += utf8Length(source);
             }
             moduleMapBytes = generatedWorker.source.byteLength + bundleBytes
                 + Object.values(generatedWorker.immutableModules).reduce((bytes, source) => bytes + source.byteLength, 0);

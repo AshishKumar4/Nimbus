@@ -31,6 +31,7 @@
 import { bundleCss, CssError, percentEscapedDataUrl } from './css-bundle.js';
 import { resolveTsSettings } from './tsconfig-raw.js';
 import { compileForBuild, jsxAndTypescriptOf } from './rolldown-compat.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 /** esbuild options a Nimbus build may pass; anything else is refused. */
 const SUPPORTED = new Set([
     'entryPoints', 'bundle', 'format', 'target', 'platform', 'outdir', 'outfile', 'sourcemap', 'minify', 'external',
@@ -379,7 +380,6 @@ async function locateUnresolved(api, options, records, loaded) {
     }
     return records.map((r) => message(r.text, placed.get(r) ?? null, r.pluginName));
 }
-const utf8Length = (text) => new TextEncoder().encode(text).length;
 class BuildError extends Error {
     messages;
     constructor(messages) {
@@ -702,7 +702,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
                 raise(`No loader produced ${fileOf({ namespace, path })}`);
             const loader = answer.loader ?? 'js';
             const contents = answer.contents;
-            inputBytes.set(id, typeof contents === 'string' ? new TextEncoder().encode(contents).length : contents.length);
+            inputBytes.set(id, typeof contents === 'string' ? utf8Length(contents) : contents.length);
             const text = typeof contents === 'string' ? contents : loader === 'binary' || loader === 'base64' || loader === 'dataurl' || loader === 'file' ? '' : new TextDecoder().decode(contents);
             const lastSlash = path.lastIndexOf('/');
             loaded.set(id, {

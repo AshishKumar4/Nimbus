@@ -149,9 +149,11 @@ export interface HeapBreakdown {
     vfsLruBytes: number;
     /** SqliteVFS current logical retained write payload bytes. */
     vfsInFlightBytes: number;
-    /** Pre-bundle slice bytes resident in supervisor heap (peak across
-     *  in-flight pool slots × SLICE_CAP_BYTES). Drops to 0 once
-     *  A'.2/A'.3 stream the slice through ReadableStream-over-RPC. */
+    /**
+     * Bytes the slices of pre-bundles in flight hold (diag-counters
+     * `preBundleSliceBytes`): each build's lease, from its worst case down to
+     * the slice it walked, released as the build ends, however it ends.
+     */
     preBundleSliceBytes: number;
     /**
      * In-flight supervisor RPC payload bytes (Phase 2 A'.2).
@@ -198,23 +200,6 @@ export interface VfsHeapInputs {
     /** Current sum of in-flight write payloads (or 0 if none). */
     inFlightWriteBytes: number;
 }
-/**
- * Estimate pre-bundle slice bytes resident in the supervisor heap.
- *
- * Pre A'.2: the supervisor builds the slice in heap (up to
- * SLICE_CAP_BYTES = 28 MiB per concurrent slot) before passing to the
- * pre-bundle facet. With PRE_BUNDLE_CONCURRENCY = 1 the cap is 28 MiB.
- *
- * Diag counters track pre-bundle attempts/completions but not
- * in-flight slice bytes specifically. Until A'.2 streams the slice,
- * we treat the slice as PRESENT in supervisor heap iff the pre-bundle
- * phase is active AND a slot is in flight (no completion yet for the
- * current attempted count).
- *
- * After A'.2 lands the slice flows via ReadableStream-over-RPC and
- * supervisor never holds the bytes — this contribution drops to 0.
- */
-export declare function estimatePreBundleSliceBytes(c: DiagCounters): number;
 /**
  * Build a heap estimate from runtime counters + VFS inputs.
  *

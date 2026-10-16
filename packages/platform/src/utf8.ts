@@ -7,7 +7,15 @@
  * TextEncoder would write: one to four per code point, and three for a
  * lone surrogate, which it writes as U+FFFD.
  */
+
+/** From this many UTF-16 units, a string is counted natively (longUtf8Length). */
+const LONG_UNITS = 256;
+const encoder = new TextEncoder();
+/** Where longUtf8Length's encodes land: written, never read. */
+let scratch: Uint8Array | undefined;
+
 export function utf8Length(text: string): number {
+  if (text.length >= LONG_UNITS) return longUtf8Length(text);
   let bytes = text.length;
   for (let index = 0; index < text.length; index++) {
     const unit = text.charCodeAt(index);
@@ -26,6 +34,22 @@ export function utf8Length(text: string): number {
     } else {
       bytes += 2;
     }
+  }
+  return bytes;
+}
+
+/**
+ * A long string's UTF-8 length at the engine's speed: encoded a slice at a
+ * time into one reused buffer, only the count kept. encodeInto never splits
+ * a surrogate pair, so each slice starts on a code point.
+ */
+function longUtf8Length(text: string): number {
+  scratch ??= new Uint8Array(256 * 1024);
+  let bytes = 0;
+  for (let read = 0; read < text.length;) {
+    const done = encoder.encodeInto(read === 0 ? text : text.slice(read), scratch);
+    read += done.read;
+    bytes += done.written;
   }
   return bytes;
 }

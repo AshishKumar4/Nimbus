@@ -384,7 +384,7 @@ them, rooted in the process table, with no TTL.
 ## Binding shims
 
 `NimbusLoaderRPC`, `NimbusLoadedWorker`, `NimbusLoadedEntrypoint`,
-`NimbusAssetsRPC`, `NimbusDurableObjectNamespace`, and `NimbusDOStub` give a
+`NimbusAssetsRPC` and `NimbusDurableObjectNamespace` give a
 dynamically-loaded inner Worker working `env` bindings.
 
 Three platform rules shape them. A `WorkerStub` does not serialize, so each
