@@ -1,10 +1,13 @@
 // Worker modules imported into a bun test. Session and router modules reach
 // `cloudflare:workers`, which bun cannot resolve outside workerd, so they are
-// bundled as one graph with it stubbed, and the bundle imported.
+// bundled as one graph with it stubbed, and the bundle imported. Core is not
+// copied into the graph: it is imported from its sources, as the test
+// imports it, so the bundle and the test share one core, as a deployed
+// worker has one (a WeakMap of core's, a class of core's, is one).
 
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const root = new URL('../../../', import.meta.url).pathname;
@@ -39,6 +42,8 @@ export async function importWorkerBundle(exports, { stubs = [] } = {}) {
           stubs.forEach(({ filter }, i) => {
             builder.onResolve({ filter }, () => ({ path: String(i), namespace: 'stub' }));
           });
+          // After the stubs, so a stub of a core module still wins.
+          builder.onResolve({ filter: /^@nimbus-sh\/core(\/|$)/ }, ({ path, importer }) => ({ path: Bun.resolveSync(path, dirname(importer)), external: true }));
           builder.onLoad({ filter: /.*/, namespace: 'stub' }, ({ path }) => ({
             contents: path === 'cloudflare:workers' ? CLOUDFLARE_WORKERS : stubs[Number(path)].contents,
             loader: 'js',

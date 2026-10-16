@@ -68,7 +68,8 @@ const mtime = await stat(['-c', '%Y', 'a.txt']);
 assert.match(mtime.stdout, /^\d{10}\n$/, 'mtime is epoch seconds');
 
 const escapes = await stat(['-c', '%n:%s\\t%%', 'a.txt']);
-assert.equal(escapes.stdout, '/home/user/a.txt:6\t%\n');
+// %n is the operand as it was given, as GNU's stat prints it.
+assert.equal(escapes.stdout, 'a.txt:6\t%\n');
 
 const printf = await stat(['--printf=%s', 'a.txt']);
 assert.equal(printf.stdout, '6', '--printf does not append a newline');
