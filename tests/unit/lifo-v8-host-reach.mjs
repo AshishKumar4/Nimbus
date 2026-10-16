@@ -3,8 +3,9 @@
 // serialize, deserialize and heap statistics are the engine's), but a v8
 // function that would reach past the program, to the host's files or the
 // engine's flags (a heap snapshot file, coverage, V8 flags), refuses as an
-// unavailable feature, naming itself, and does nothing; so do vm, domain,
-// trace_events and wasi, whole.
+// unavailable feature, naming itself, and does nothing; so do domain,
+// trace_events and wasi, whole. vm is the engine's but for its main-context
+// loader, which imports past the program's module map (lifo-node-vm.mjs).
 //
 // Red before: lifo's v8 was a stub whose serialize returned no bytes and
 // whose deserialize returned undefined, and it had none of these names.
@@ -38,16 +39,23 @@ for (const name of ['writeHeapSnapshot', 'setFlagsFromString', 'setHeapSnapshotN
     message: `The feature v8.${name} is unavailable on the current platform, which is being used to run Node.js`,
   });
 }
-// Whole modules that reach past the program: vm (its main-context loader
-// imports past the program's module map), domain (it sets the engine's own
-// process), trace_events and wasi (the host's files).
-for (const name of ['vm', 'domain', 'trace_events', 'wasi']) {
+// Whole modules that reach past the program: domain (it sets the engine's
+// own process), trace_events and wasi (the host's files).
+for (const name of ['domain', 'trace_events', 'wasi']) {
   assert.throws(() => map[name](), {
     name: 'TypeError',
     code: 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM',
     message: `The feature ${name} is unavailable on the current platform, which is being used to run Node.js`,
   });
 }
+// vm's main-context loader.
+const vm = map.vm();
+assert.equal(vm.runInNewContext('a + 1', { a: 1 }), 2, 'vm is the engine\'s');
+assert.throws(() => new vm.Script("import('fs')", { filename: '/x.js', importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER }), {
+  name: 'TypeError',
+  code: 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM',
+  message: 'The feature vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER is unavailable on the current platform, which is being used to run Node.js',
+});
 assert.deepEqual(readdirSync('.'), before, 'no file was written');
 assert.equal(existsSync('x'), false);
 console.log('lifo-v8-host-reach: ok');

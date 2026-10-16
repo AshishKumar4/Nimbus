@@ -14,6 +14,17 @@ published independently in the `@nimbus-sh` npm scope.
   only root could. `futimes` with explicit times needs the owner, as
   `utimes` does. Before, any process that opened the file to write could set
   them.
+- Fixed (lifo `node`, X-9): `vm` is Node's. Contexts, scripts,
+  `compileFunction`, `runInThisContext` and `runInNewContext` work in an
+  inline `node` program and a lifo command alike; before, the module was
+  refused. `importModuleDynamically:
+  vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER` is refused
+  (`ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`) at each compile and context that
+  names it, because the engine's own loader would import the host's files
+  at the program's paths. A program's options reach the engine as they are,
+  and a program's own callback is its own. `vm.SourceTextModule`
+  and `vm.SyntheticModule` are absent, as in Node without
+  `--experimental-vm-modules`. `domain` stays refused.
 
 - Fixed: `bash` and its BusyBox commands read accounts from `/etc/passwd`
   and `/etc/group` at each lookup. `~user` is the user's home and `~root`
