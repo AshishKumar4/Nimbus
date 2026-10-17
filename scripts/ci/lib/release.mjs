@@ -14,7 +14,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
-import { loadConfig, resolveWorkerName } from '../../deploy-isolation.mjs';
+import { loadConfig } from '../../deploy-isolation.mjs';
 import { filesUnder } from '../../lib/fs-walk.mjs';
 import { mapOnArmada } from './armada.mjs';
 import { NIMBUS_STATE } from './state-dir.mjs';
@@ -86,16 +86,6 @@ export function productionCommit() {
     .sort((x, y) => Date.parse(y.at) - Date.parse(x.at));
   if (promoted.length === 0) throw new Error(`no green promotion is recorded under ${RELEASES}, so the commit production serves is not known here`);
   return promoted[0].commit;
-}
-
-/**
- * The Worker hosted-demo's staging deploy lands on, as the checkout at
- * `root` configures it (generated from apps/nimbus-deployments.json): the
- * one name the staging target deploys, checks and records, and the release
- * looks it up by.
- */
-export function hostedStagingName(root) {
-  return resolveWorkerName(loadConfig('apps/hosted-demo/wrangler.jsonc', root), 'staging');
 }
 
 /** The release in `dir`. */
