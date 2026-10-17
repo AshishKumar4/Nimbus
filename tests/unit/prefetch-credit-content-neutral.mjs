@@ -62,12 +62,13 @@ async function compare(free, expectBounce) {
   const capacity = readSupervisorAllocationBudget().capacity;
   const held = await acquireSupervisorAllocation(capacity - free);
   let finished = false;
+  let bounced = false;
   const running = launch(bounded).then(() => { finished = true; });
   try {
     if (expectBounce) {
       await until(() => readSupervisorAllocationBudget().queued === 1 || finished, 'the bounded first try returns its credit and queues its full ask', 20_000);
-      assert.equal(finished, false, 'the crossing build must bounce, not publish a smaller map');
-      assert.equal(readSupervisorAllocationBudget().current, held.bytes, 'the partial gather dropped its credit before the full FIFO ask');
+      bounced = !finished;
+      if (bounced) assert.equal(readSupervisorAllocationBudget().current, held.bytes, 'the partial gather dropped its credit before the full FIFO ask');
     } else {
       await running;
       assert.equal(readSupervisorAllocationBudget().queued, 0, 'a fitting first try does not bounce');
@@ -83,6 +84,7 @@ async function compare(free, expectBounce) {
   assert.deepEqual(actual.bundle, baseline.bundle, 'bundle paths and bytes are identical');
   assert.deepEqual(actual.modules, baseline.modules, 'the complete generated module/code/ESM map is byte-identical');
   assert.deepEqual(actual.dataPlan, baseline.dataPlan, 'the data plan is identical');
+  if (expectBounce) assert.ok(bounced, 'the crossing first try bounces instead of publishing a smaller map');
   const budget = readSupervisorAllocationBudget();
   assert.equal(budget.current, 0);
   assert.equal(budget.queued, 0);
