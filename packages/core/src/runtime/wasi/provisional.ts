@@ -74,6 +74,8 @@ export interface ProvisionalHost {
   drain(): void;
   /** What was logged here was answered: the view owes the session's version of it (a barrier). */
   sent(): void;
+  /** Whether the process sees anything of its provisional decisions now: what reads by name and by number consult them only while it does. */
+  active(on: boolean): void;
   /** Whether a held subtree holds `key`: its grant decides there, and its names wait for it. */
   held(key: string): boolean;
   /** Count a change at `key` toward taking a subtree there, as a decided one is: once it is made. */
@@ -202,6 +204,14 @@ export function provisional(host: ProvisionalHost): Provisional {
   let ids = 0;
   let barriers = 0;
   let localIno = LOCAL_INOS;
+  let wasActive = false;
+  /** Told the host when the process starts or stops seeing anything of its decisions here. */
+  const activity = (): void => {
+    const on = layer.size > 0 || touched.size > 0;
+    if (on === wasActive) return;
+    wasActive = on;
+    host.active(on);
+  };
 
   const identity = (dev: number, ino: number): string => `${dev}:${ino}`;
 
@@ -317,6 +327,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       inode.state = copyState(inode.base);
     }
     touched.set(inode.key, inode);
+    activity();
     const record: InodeRecord = { id: ++ids, op, answered: false };
     inode.records.push(record);
     inode.state = applyOp(inode.state!, op);
@@ -335,6 +346,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     host.release(inode.reserved);
     inode.reserved = 0;
     inodes.delete(identity(inode.dev, inode.ino));
+    activity();
   };
 
   /**
@@ -388,6 +400,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     for (const record of nameRecords) record.replay();
     touched.clear();
     for (const inode of inodes.values()) if (inode.state !== null) touched.set(inode.key, inode);
+    activity();
   };
 
   /**
@@ -440,6 +453,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       inode.unnamed = false;
       if (inode.state !== null) touched.set(key, inode);
     }
+    activity();
   };
 
   /** The parent of `key`, when the process may make a name in it: a known, writable, searchable directory of the session's filesystem. */
@@ -469,6 +483,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       inode.base = { bytes: new Uint8Array(0), size: 0, mode, uid, gid, atime: at, mtime: at, ctime: at };
       inode.state = copyState(inode.base);
       touched.set(key, inode);
+      activity();
     }
     inodes.set(identity(row.dev, row.ino), inode);
     return inode;
@@ -961,6 +976,7 @@ export function provisional(host: ProvisionalHost): Provisional {
         }
         release(inode);
       }
+      activity();
     },
   };
   return provisional;

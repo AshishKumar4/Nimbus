@@ -524,12 +524,26 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     client,
     drain,
     sent: () => options.sent?.(),
+    // Reads by name and by number consult them only while the process sees any.
+    active: (on) => {
+      holder.entry = on ? composedEntry : names.entry;
+      holder.children = on ? composedChildren : names.children;
+      holder.content = on ? composedContent : heldContent;
+    },
     held: (key) => client.held(key) !== undefined,
     count: (key) => { client.holder(key); },
     umask: () => options.umask?.() ?? 0o022,
     now,
     nextHandle: () => nextHandle--,
   });
+
+  // The provisional decisions are the newest wherever they are pending: a held subtree decides nothing there (deciding).
+  const composedEntry = (key: string): ResidentEntry | null | undefined => {
+    const mine = prov.entry(key);
+    return mine !== undefined ? mine : names.entry(key);
+  };
+  const composedChildren = (key: string, base: RuntimeVfsDirEntry[] | undefined): RuntimeVfsDirEntry[] | undefined => prov.children(key, names.children(key, base));
+  const composedContent = (entry: ResidentEntry): Uint8Array | undefined => prov.content(entry) ?? heldContent(entry);
 
   /** Log a decision, after the bytes written before it. */
   const log = (op: ProcessFsOp): void => {
@@ -637,13 +651,10 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     client,
     provisional: prov,
 
-    // The provisional decisions are the newest wherever they are pending: a held subtree decides nothing there (deciding).
-    entry: (key) => {
-      const mine = prov.entry(key);
-      return mine !== undefined ? mine : names.entry(key);
-    },
+    // Composed with the provisional decisions while the process sees any (ProvisionalHost.active).
+    entry: names.entry,
 
-    children: (key, base) => prov.children(key, names.children(key, base)),
+    children: names.children,
 
     copyFile: (from, to, path, stored, keepMode) => {
       const source = entryOf(from);
@@ -707,7 +718,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       drain();
     },
 
-    content: (entry) => prov.content(entry) ?? heldContent(entry),
+    content: heldContent,
 
     owns: (handleId) => handles.has(handleId) || prov.owns(handleId),
 
