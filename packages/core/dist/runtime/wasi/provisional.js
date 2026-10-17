@@ -1068,6 +1068,7 @@ export function provisional(host) {
             loggedOn([fold(inode, op, described)], { type: 'setattr', path: inode.key, attrs, ...(described === undefined ? {} : { description: described }) });
             fit(inode);
         },
+        keep: (dev, ino, syscall, path) => keepForDescriptors(inodeAtNumber(dev, ino), 0, syscall, path),
         abandon: (handleId) => {
             delete descOf(handleId).description;
             provisional.close(handleId);

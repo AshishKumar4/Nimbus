@@ -991,7 +991,7 @@ export function residentFilesystem(session, resident, delegation) {
     /** `handleId`'s file as the session's open description of it has it (Provisional.sessionOf), once what this process logged is there. */
     const statByAnchor = async (handleId) => {
         const key = holder.keyOf(handleId);
-        await holder.flush();
+        await holder.send();
         const session = holder.provisional.sessionOf(handleId);
         if (session === undefined)
             throw fsError('ESTALE', 'fstat', '/' + key);
@@ -1001,7 +1001,8 @@ export function residentFilesystem(session, resident, delegation) {
     /** A read through the session's open description of `handleId`'s file (Provisional.sessionOf), at `offset` or the descriptor's position. */
     const readByAnchor = async (handleId, offset, length) => {
         const key = holder.keyOf(handleId);
-        await holder.flush();
+        // What this process logged reaches the session first; a refusal among it is the next sync's to report, not this read's.
+        await holder.send();
         const session = holder.provisional.sessionOf(handleId);
         if (session === undefined)
             throw fsError('ESTALE', 'read', '/' + key);

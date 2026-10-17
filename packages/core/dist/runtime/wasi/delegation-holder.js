@@ -117,9 +117,11 @@ export function delegationHolder(options) {
             return;
         dirty.delete(inode);
         delete cell.logged;
+        // A made file's cell keeps the mode its open asked, its umask beside it, until a chmod here decides it.
+        const mode = cell.umask === undefined ? cell.mode : cell.mode & ~cell.umask;
         const entry = decided.get(inode.key) ?? store.entry(inode.key) ?? {
             type: 'file', dev: store.device, ino: inode.ino, nlink: 1, size: cell.length, atime: now(), mtime: now(), ctime: now(),
-            mode: 0o100000 | cell.mode, uid: store.cred.uid, gid: store.cred.gid, revision: 0, target: null,
+            mode: 0o100000 | mode, uid: store.cred.uid, gid: store.cred.gid, revision: 0, target: null,
         };
         // Each that may write: one opened only to read reads the content here, and needs none.
         const opened = prov.descriptorsOf(inode).filter((desc) => desc.description === undefined && desc.write);
@@ -134,7 +136,17 @@ export function delegationHolder(options) {
                 acknowledged({ type: 'call', call: { call: 'write', path: inode.key, ino: made, description, offset: 0, data: owned(cell.bytes, cell.length) } });
             }
         });
-        prov.unhold(inode, { ...entry, dev: inode.dev, ino: inode.ino, mode: (entry.mode & ~0o7777) | cell.mode });
+        prov.unhold(inode, { ...entry, dev: inode.dev, ino: inode.ino, mode: (entry.mode & ~0o7777) | mode });
+    };
+    /** Whether file `entry`'s descriptors kept what the view has of it (Provisional.keep), its name about to go; false where the budget has no room. */
+    const kept = (entry, syscall, path) => {
+        try {
+            prov.keep(entry.dev, entry.ino, syscall, path);
+            return true;
+        }
+        catch {
+            return false;
+        }
     };
     /** What is decided here, else what the view has, at `inode`'s name while that name leads to the file. */
     const atName = (inode) => {
@@ -729,9 +741,12 @@ export function delegationHolder(options) {
                 return false;
             if (writableParent(key, path, 'unlink') === undefined)
                 return false;
+            const local = prov.inode(current.dev, current.ino);
+            // One the provisional decisions hold: its descriptors keep the view's bytes of it before the name goes, else the session's.
+            if (local?.cell === undefined && !kept(current, 'unlink', path))
+                return false;
             decided.set(key, null);
             names.note(parentKey(key), nameOf(key), null);
-            const local = prov.inode(current.dev, current.ino);
             if (local?.cell !== undefined && local.key === key) {
                 const made = local.cell.made;
                 // Its bytes go with it: nothing of them is logged, now or through a
@@ -761,6 +776,8 @@ export function delegationHolder(options) {
             if (from === to)
                 return true;
             if (writableParent(from, path, 'rename') === undefined || writableParent(to, path, 'rename') === undefined)
+                return false;
+            if (target !== null && prov.inode(target.dev, target.ino)?.cell === undefined && !kept(target, 'rename', path))
                 return false;
             // What was written before the rename is logged under the name it had.
             drain();
@@ -807,8 +824,10 @@ export function delegationHolder(options) {
             const next = changedBy(current, attrs);
             decided.set(key, next);
             const local = prov.inode(current.dev, current.ino)?.cell;
-            if (local !== undefined)
+            if (local !== undefined) {
                 local.mode = next.mode & 0o7777;
+                delete local.umask;
+            }
             log({ type: 'setattr', path: key, attrs: 'uid' in attrs ? { uid: next.uid, gid: next.gid } : attrs });
             return true;
         },
