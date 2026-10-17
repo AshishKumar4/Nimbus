@@ -119,6 +119,8 @@ export interface Inode {
     /** `base` with `records` folded over it: what the process sees. */
     state: InodeState | null;
     records: InodeRecord[];
+    /** What `records` keep of the budget (recordCost each), kept as they come and go. */
+    recordsCost: number;
     /** No name leads to it any more: its descriptors keep what it holds until the last closes. */
     unnamed: boolean;
     /** Made by this process and not yet numbered by the session (reconcile). */
@@ -156,6 +158,8 @@ interface InodeRecord {
     answered: boolean;
     /** Barriers begun when it was answered: one begun after retires it. */
     answeredAt: number;
+    /** Gone from its inode's records (refused, retired or moved): its answer says nothing more. */
+    gone?: true;
 }
 /** A descriptor: of an Inode, with the rights, offset and session description of its open. */
 export interface Desc {
