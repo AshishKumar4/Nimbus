@@ -73,11 +73,12 @@ export function timeAt(time, kept, now) {
     return time === 'omit' ? kept : time === 'now' ? now : Math.trunc(time);
 }
 /**
- * utimes(2)'s rule: explicit times only by the owner or root (EPERM); the
- * current time by anyone who may write the entry (EACCES).
+ * utimensat(2)'s rule: explicit times only by the owner or root (EPERM); the
+ * current time (and an omitted one) by the owner, root or anyone who may
+ * write the entry (EACCES).
  */
 export function utimesRefusal(entry, explicit, cred) {
     if (!explicit)
-        return posixAccess(entry, 0o2, cred) ? null : 'EACCES';
+        return cred.uid === 0 || cred.uid === entry.uid || posixAccess(entry, 0o2, cred) ? null : 'EACCES';
     return cred.uid !== 0 && cred.uid !== entry.uid ? 'EPERM' : null;
 }

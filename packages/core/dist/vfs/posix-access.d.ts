@@ -70,8 +70,9 @@ export declare function explicitTimes(atime: FsTime, mtime: FsTime): boolean;
 /** `time` as the filesystem committing it lands it: an explicit one in whole ms, 'now' at `now`, 'omit' as `kept`. */
 export declare function timeAt(time: FsTime, kept: number, now: number): number;
 /**
- * utimes(2)'s rule: explicit times only by the owner or root (EPERM); the
- * current time by anyone who may write the entry (EACCES).
+ * utimensat(2)'s rule: explicit times only by the owner or root (EPERM); the
+ * current time (and an omitted one) by the owner, root or anyone who may
+ * write the entry (EACCES).
  */
 export declare function utimesRefusal(entry: {
     readonly mode: number;

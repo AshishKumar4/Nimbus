@@ -367,7 +367,7 @@ var __nimbusResidentModule = (() => {
   }
   function utimesRefusal(entry, explicit, cred) {
     if (!explicit)
-      return posixAccess(entry, 2, cred) ? null : "EACCES";
+      return cred.uid === 0 || cred.uid === entry.uid || posixAccess(entry, 2, cred) ? null : "EACCES";
     return cred.uid !== 0 && cred.uid !== entry.uid ? "EPERM" : null;
   }
 
