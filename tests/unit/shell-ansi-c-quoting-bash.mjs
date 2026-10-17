@@ -49,6 +49,17 @@ const CASES = [
   String.raw`x=$'a\tb'; [[ $x == a$'\t'b ]] && echo tab; [[ '*' == $'\052' ]] && echo literal; [[ abc == $'*' ]] || echo nonglob`,
   `cat <<EOF${HEX}\n$'\\t' "$'x'"\nEOF`,
   String.raw`f() { printf '<%s>' "$@"; }; f $'one two' $'three'; echo` + HEX,
+  // $$ is the shell's pid, two dollars taken together: a quote after it is its own.
+  String.raw`printf '<%s>' $$'x' $$$'\x41' "$(printf %s $$'y')" | tr -d 0-9`,
+  // A comment inside $(...) is comment text, quotes and all, to its line's end.
+  `printf '<%s>' "$(printf x # $'a\\'\n)" "$(printf y # it's\n)"${HEX}`,
+  // \\U past U+10FFFF is bash's wider UTF-8, to U+7FFFFFFF; past that, nothing.
+  show(String.raw`$'\U00110000' $'\U7FFFFFFF' $'\U80000000' x`),
+  String.raw`{ printf '\U00110000|'; echo -e '\U001FFFFF|\U80000000|'; }` + HEX,
+  // $'...' alone reads \x{H...}: its hex digits as one byte, the brace optional at the end.
+  show(String.raw`$'\x{41}' $'\x{141}' $'\x{}z' $'\x{41' $'\x{4}b'`),
+  // A here-document's body is literal text, inside a parameter's default word too.
+  "unset x; cat <<EOF" + HEX + "\n${x:-$'\\t'} ${x-$'\\n'}\nEOF",
 ];
 
 // A line of its own for the status, so a here-document's delimiter ends its line.
@@ -89,7 +100,9 @@ const continued = {
   closed: continuationState(String.raw`echo $'a\''`),
   backslashAtEnd: continuationState("echo $'a\\"),
   closedThenOpen: continuationState(String.raw`echo $'a' 'b`),
+  evenDollars: continuationState(String.raw`echo $$'a\'`),
+  oddDollars: continuationState(String.raw`echo $$$'a\'`),
 };
-assert.deepEqual(continued, { unclosed: 'single', closed: null, backslashAtEnd: 'single', closedThenOpen: 'single' });
+assert.deepEqual(continued, { unclosed: 'single', closed: null, backslashAtEnd: 'single', closedThenOpen: 'single', evenDollars: null, oddDollars: 'single' });
 assert.deepEqual(failed, [], `as bash:\n${failed.join('\n')}`);
 console.log(`shell-ansi-c-quoting-bash: ${CASES.length} lines as bash's`);
