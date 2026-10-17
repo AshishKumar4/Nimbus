@@ -5,7 +5,11 @@
 // second. Strings mix ASCII, the BMP below and above the surrogates
 // (U+E000..U+FFFF), astral code points, and lone surrogates, which UTF-8
 // writes as U+FFFD. The names composite.ts and git's dircache.ts export
-// (comparePaths) are the same function.
+// (comparePaths) are the same function. Two strings UTF-8 writes alike
+// (lone halves where the other has other lone halves) are still ordered,
+// one way and the other the reverse, so a mounted namespace's listing,
+// whose names are a backend's own strings, pages past neither; and a long
+// run of them is compared without recursing.
 //
 // Red before: composite's and git's comparators ordered a lone surrogate
 // by its own value, so U+D800 and U+DC00 differed where their bytes (EF BF
@@ -39,13 +43,22 @@ for (let i = 0; i < strings.length; i += 3) {
     const a = strings[i];
     const b = strings[j];
     const want = bytesOrder(a, b);
-    assert.equal(sign(compareUtf8(a, b)), want, `compareUtf8(${JSON.stringify(a)}, ${JSON.stringify(b)})`);
+    const got = sign(compareUtf8(a, b));
+    const label = `compareUtf8(${JSON.stringify(a)}, ${JSON.stringify(b)})`;
+    if (want !== 0 || a === b) assert.equal(got, want, label);
+    else {
+      assert.notEqual(got, 0, `${label}: two strings, one encoding, still two`);
+      assert.equal(sign(compareUtf8(b, a)), -got, `${label}: and the reverse`);
+    }
     pairs++;
   }
 }
 assert.equal(compositeOrder, compareUtf8, 'composite\'s comparePaths is compareUtf8');
 assert.equal(gitOrder, compareUtf8, 'git\'s comparePaths is compareUtf8');
-assert.equal(compareUtf8('\ud800', '\udc00'), 0, 'two lone surrogates are one U+FFFD');
+assert.equal(bytesOrder('\ud800', '\udc00'), 0, 'two lone surrogates are one U+FFFD to UTF-8');
+assert.ok(compareUtf8('\ud800', '\udc00') < 0 && compareUtf8('\udc00', '\ud800') > 0, 'and two strings to the order');
+const long = 100_000;
+assert.equal(sign(compareUtf8('\udc00'.repeat(long), '\udfff'.repeat(long))), -1, 'a long run of lone halves, without recursing');
 assert.ok(compareUtf8('\ud800', '\ue000') > 0, 'a lone surrogate (U+FFFD) after U+E000');
 
 // SQLite's ORDER BY of the same strings, encoded as it stores them (UTF-8, a lone surrogate as U+FFFD).
@@ -57,5 +70,27 @@ for (const text of distinct) insert.run(text);
 const sqliteOrder = db.query('SELECT path FROM t ORDER BY path').all().map((row) => row.path);
 assert.deepEqual([...distinct].sort(compareUtf8), sqliteOrder, 'compareUtf8 sorts as SQLite\'s ORDER BY');
 db.close();
+
+// A mounted backend's own names, listed a page at a time: none passed over.
+{
+  const { CompositeVFS } = await import('../../packages/core/src/vfs/composite.ts');
+  const { MemoryVFS } = await import('../../packages/core/src/vfs/memory.ts');
+  const owner = { uid: 1000, gid: 1000 };
+  const root = new CompositeVFS(new MemoryVFS(owner));
+  const mounted = new MemoryVFS(owner);
+  const names = ['\ud800', '\udc00', '\udbff', 'a', '\ue000'];
+  for (const name of names) mounted.writeFile('/' + name, new TextEncoder().encode(name));
+  root.mkdir('/m');
+  root.mount('/m', mounted);
+  const walked = await root.feed.walk(['/m'], 100);
+  const listed = [];
+  for (let after = null; ;) {
+    const page = root.feed.list(after, 2, walked);
+    listed.push(...page.entries.map((entry) => entry.path));
+    if (page.next === null) break;
+    after = page.next;
+  }
+  for (const name of names) assert.ok(listed.includes('/m/' + name), `${JSON.stringify(name)} is listed: ${JSON.stringify(listed)}`);
+}
 
 console.log(`utf8-path-order: ok (${pairs} pairs against Buffer, ${distinct.length} strings against SQLite)`);
