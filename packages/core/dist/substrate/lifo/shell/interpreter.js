@@ -202,6 +202,8 @@ export class Interpreter {
             handle.refs++;
         child.localFrames = this.localFrames.map((frame) => new Map(frame));
         child.errexitSuppressionDepth = this.errexitSuppressionDepth;
+        // A pipeline's element and a substitution run the trap's action still (bash keeps running_trap).
+        child.trapEntryStatus = this.trapEntryStatus;
         return child;
     }
     getLastExitCode() {
@@ -328,6 +330,8 @@ export class Interpreter {
             // A job is a process of its own, as a fork makes one: its commands run
             // as it, on its own thread of work, until a kill of it stops them.
             const child = this.fork();
+            // A job, as a ( … ) subshell, is a shell of its own: no trap's action runs in it.
+            child.trapEntryStatus = null;
             const job = this.config.jobTable.start({ command: this.getListCommandText(list), cwd: this.config.getCwd(), parent }, async ({ identity, signal }) => {
                 backgroundIo.commandIdentity = identity;
                 backgroundIo.signal = signal;
@@ -663,6 +667,7 @@ export class Interpreter {
     }
     async executeSubshell(node, io) {
         const child = this.fork();
+        child.trapEntryStatus = null;
         const subshellIo = this.createCommandIo(io);
         subshellIo.positionals = this.forkPositionals(io);
         let exitCode;
