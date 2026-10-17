@@ -2293,7 +2293,11 @@ export class SqliteVFS {
             access: (path, mode) => { this.checkAccess(path, mode, bound); },
             mkdir: (path, options) => this.mkdir(path, options, withUmask(bound, options?.umask)),
             writeFile: (path, content, options) => this.writeFile(path, content, options, withUmask(bound, options?.umask)),
-            writeFileFrom: (path, size, source, options) => this.spanning(() => this.writeFileFrom(path, size, source, options, bound, mutationOwner, origin), mutationOwner),
+            writeFileFrom: (path, size, source, options) => {
+                // Its caller's holds as the call begins: spanning may start it later, behind a snapshot.
+                const holds = this.activeHolds;
+                return this.spanning(() => this.writeFileFrom(path, size, source, options, bound, mutationOwner, origin, holds), mutationOwner);
+            },
             symlink: (target, path) => this.symlink(target, path, bound),
             readlink: (path) => this.readlink(path, bound),
             resolveSymlink: (path) => this.resolveSymlink(path, bound),
@@ -2326,7 +2330,8 @@ export class SqliteVFS {
             copyTreeAsync: (src, dest, options) => {
                 const owner = mutationOwner ?? options?.mutationOwner;
                 const job = this.withMutationOwner(owner, () => this.planCopyTree(src, dest, bound, options));
-                return this.spanning(() => this.copyTreeInSlices(job, owner, origin), owner);
+                const holds = this.activeHolds;
+                return this.spanning(() => this.copyTreeInSlices(job, owner, origin, holds), owner);
             },
             writeBatch: (payload) => this.writeBatch(payload, bound),
             wave: (options, work) => this.wave(mutationOwner === undefined ? options : { ...options, mutationOwner }, work, bound, origin),
@@ -5811,10 +5816,9 @@ export class SqliteVFS {
         };
         return job;
     }
-    async copyTreeInSlices(job, owner, origin = null) {
+    async copyTreeInSlices(job, owner, origin = null, holds = null) {
         const reservation = this.reserveCopy(job);
-        // Each slice is its caller's, the delegations its process holds included, whichever turn runs it.
-        const holds = this.activeHolds;
+        // Each slice is its caller's, the delegations its process held as it called included, whichever turn runs it.
         const run = (id) => this.withHolds(holds, () => this.asOrigin(origin, () => this.withMutationOwner(owner, () => this.withReservation(reservation, () => this.runCopyTree(job, id, JOB_SLICE_PAGES)))));
         try {
             let slice = run(null);
@@ -8233,15 +8237,14 @@ export class SqliteVFS {
      * file's tail on every piece, and a piece past half a transaction's blob
      * bound copies the manifest of everything before it again.
      */
-    async writeFileFrom(path, size, source, options, cred, mutationOwner, origin = null) {
+    async writeFileFrom(path, size, source, options, cred, mutationOwner, origin = null, holds = null) {
         if (!Number.isSafeInteger(size) || size < 0)
             throw vfsError('EINVAL', path, `invalid size ${size}`);
         const atMost = options?.atMost === true;
         // uid 0 may use the ledger's kernel reserve (callerView), but that view
         // only covers a call's synchronous part, and this one awaits its source:
         // each transaction below is run with the caller's own privilege and the
-        // delegations its process holds, as its call.
-        const holds = this.activeHolds;
+        // delegations its process held as it called, as its call.
         const asCaller = (fn) => {
             const prior = this.privileged;
             this.privileged = cred.uid === 0;
