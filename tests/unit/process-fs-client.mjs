@@ -790,6 +790,49 @@ for (const continues of [true, false]) {
   assert.ok(s.calls.waves <= 3, `${s.calls.waves} waves`);
 }
 
+// ── Many small writes fold without changing their bytes, order or answers ──
+for (const call of ['appendFile', 'append', 'write']) {
+  const s = session();
+  const path = `home/user/small-${call}`;
+  s.kernel.writeFile(path, new Uint8Array());
+  s.kernel.chown(path, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  const ino = s.kernel.stat(path).ino;
+  const c = client(s);
+  const count = 20_000;
+  const want = Uint8Array.from({ length: count * 10 }, (_, i) => (i * 17 + Math.floor(i / 10)) % 256);
+  let answers = 0;
+  for (let i = 0; i < count; i++) {
+    const at = i * 10;
+    const op = { type: 'call', call: { call, path, data: want.subarray(at, at + 10), ...(call === 'appendFile' ? { mode: 0o644 } : { ino }), ...(call === 'write' ? { offset: at } : {}) } };
+    c.submit(op, { acknowledged: true }).then(() => { answers++; });
+  }
+  await c.settle();
+  assert.deepEqual(s.kernel.readFile(path), want, `${call}: a small write was lost, doubled or reordered`);
+  assert.equal(c.stats().folded, count - 1, `${call}: consecutive writes did not fold`);
+  assert.equal(answers, count, `${call}: a folded write was not answered`);
+}
+
+// ── A new tail and a later wave never borrow another entry's spare capacity ──
+for (const durable of [false, true]) {
+  const s = session();
+  const c = client(s, durable ? { journal: sqlJournal(createSqliteVfsTestHarness().sql) } : {});
+  c.submit(writeFile('home/user/capacity-a', 'a'), { acknowledged: true });
+  c.submit(appendFile('home/user/capacity-a', 'x'.repeat(100)), { acknowledged: true });
+  c.submit({ type: 'call', call: { call: 'write', path: 'home/user/capacity-a', offset: 500, data: enc.encode('new') } }, { acknowledged: true });
+  c.submit({ type: 'call', call: { call: 'write', path: 'home/user/capacity-a', offset: 503, data: enc.encode('!') } }, { acknowledged: true });
+  c.submit(writeFile('home/user/capacity-b', 'b'), { acknowledged: true });
+  c.submit(appendFile('home/user/capacity-b', 'y'), { acknowledged: true });
+  await c.flush();
+  const a = s.kernel.readFile('home/user/capacity-a');
+  assert.equal(dec.decode(a.subarray(0, 101)), 'a' + 'x'.repeat(100));
+  assert.equal(dec.decode(a.subarray(500)), 'new!', 'a new entry reused an older entry\'s buffer for the same path');
+  assert.equal(s.text('home/user/capacity-b'), 'by');
+  c.submit(writeFile('home/user/capacity-c', 'c'), { acknowledged: true });
+  c.submit(appendFile('home/user/capacity-c', 'z'), { acknowledged: true });
+  await c.settle();
+  assert.equal(s.text('home/user/capacity-c'), 'cz');
+}
+
 // ── What the process answered in a held subtree lingers: it goes with the
 //    next op someone awaits, when hurried or flushed, or after lingerMs; what
 //    it answered elsewhere goes at once ──

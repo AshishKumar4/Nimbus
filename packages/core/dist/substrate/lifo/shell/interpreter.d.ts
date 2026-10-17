@@ -27,6 +27,16 @@ export declare class ExitSignal {
     exitCode: number;
     constructor(exitCode: number);
 }
+/**
+ * A function call past the nesting bound (functionNestingLimit): the rest of
+ * the line it is in is discarded (bash's jump_to_top_level(DISCARD)): a
+ * shell goes on with the next line it reads, its own or a `source`d file's
+ * or a trap's, with $? 1; a child shell (subshell, substitution, pipeline
+ * element, job) ends with 1. Neither `||`, `if` nor a loop goes on.
+ */
+export declare class FunctionNestingSignal {
+    readonly exitCode = 1;
+}
 export interface BuiltinExecutionContext {
     interactive?: boolean;
     vfs: ProcessView;
@@ -175,6 +185,8 @@ export declare class Interpreter {
     private exitTrapDepth;
     /** One frame per running function call, holding the bindings `local` shadowed. */
     private localFrames;
+    /** A child shell (fork): a discarded line ends it (finishChild). */
+    private child;
     constructor(config: InterpreterConfig);
     /** The functions this shell defines, for a run whose own definitions must not outlast it (restoreFunctions). */
     saveFunctions(): FunctionTable;
@@ -190,7 +202,12 @@ export declare class Interpreter {
     getLastExitCode(): number;
     setLastExitCode(exitCode: number): void;
     executeScript(script: ScriptNode, terminalStdin?: TerminalInputStream): Promise<number>;
-    /** Runs `script`'s lists; one run `inline` (eval's, a sourced file's, an alias's text) leaves an `exit` to the shell that runs it. */
+    /**
+     * Runs `script`'s lists. As lines a shell reads (`readsLines`: its own,
+     * a sourced file's, a trap's; not an alias's text, which is part of the
+     * line it is in), a line a nested call discards ends, and the next runs
+     * with $? 1, in a shell that is no child: a child's ends (finishChild).
+     */
     private executeScriptWithIo;
     executeLine(input: string, terminalStdin?: TerminalInputStream, options?: {
         runExitTrap?: boolean;
@@ -251,6 +268,14 @@ export declare class Interpreter {
      * Returns false when the name is readonly, which the caller reports.
      */
     private applyAssignment;
+    /** Bash's PIPESTATUS: `statuses`, its array alone. */
+    private setPipestatus;
+    /**
+     * How many function calls may be running at once: FUNCNEST where it is a
+     * number above 0, as bash reads it at each call (a `local FUNCNEST` included),
+     * but never past MAX_FUNCTION_NESTING, which applies where it is not.
+     */
+    private functionNestingLimit;
     private executeFunction;
     /**
      * Bind a name to the running function, unset, so an assignment to it does
