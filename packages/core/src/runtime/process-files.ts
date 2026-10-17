@@ -38,6 +38,7 @@ import { abandon, andThen, readDeclaredSource, readRangeOrWhole, readText, type 
 import type { VFS, VfsCopyOptions, VfsDirent, VfsRemoval, VfsRemovalFailure, VfsStat } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import {
+  sameFileVersion,
   CRED_KERNEL,
   isVfsCred,
   requireVfsCred,
@@ -1039,9 +1040,16 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   }
   readRange(path: RuntimeFsPath, offset: number, length: number, options?: RuntimeReadOptions) {
     return this.either([path], () => this.bridge.readRange(path, offset, length, options), () => this.absent(async () => {
+      // A mounted file, as the synchronous bridge judges one: the engine's revisions name none, and
+      // a listing's stat is checked before the read and after it, which an await comes between.
+      if (options?.expectedEpoch !== undefined) throw fsError('ESTALE', 'read', path);
+      const expected = options?.expectedFile;
+      if (expected !== undefined && !sameFileVersion(await this.stat(path), expected)) throw fsError('ESTALE', 'read', path);
       const name = await this.path(path);
       const view = await this.viewed(name, true);
-      return view ? view.slice(offset, offset + length) : readRangeOrWhole(this.namespace, name, offset, length);
+      const bytes = await (view ? view.slice(offset, offset + length) : readRangeOrWhole(this.namespace, name, offset, length));
+      if (expected !== undefined && !sameFileVersion(await this.stat(path), expected)) throw fsError('ESTALE', 'read', path);
+      return bytes;
     }));
   }
 
