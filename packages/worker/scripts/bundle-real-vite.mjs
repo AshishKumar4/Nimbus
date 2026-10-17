@@ -69,13 +69,14 @@ const HARD_STUBS = [
 // esbuild-wasm adds ~2.3 MB of JS + WASM to the facet for zero
 // runtime benefit — big contributor to the facet OOM at 137.
 // What Vite 6 reads of it: transform, build and formatMessages by name,
-// context on the default export.
+// context on the default export, and version, which it re-exports.
 const ESBUILD_STUB_SRC = `
 const thrower = (name) => () => { throw new Error('[cirrus-real] esbuild.' + name + ' stubbed — real-vite facet does not ship esbuild runtime'); };
 export const transform = thrower('transform');
 export const build = thrower('build');
 export const context = thrower('context');
 export const formatMessages = async () => [];
+export const version = '0.0.0-cirrus-stub';
 export default { transform, build, context, formatMessages };
 `;
 
