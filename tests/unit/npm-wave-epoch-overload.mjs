@@ -27,9 +27,10 @@ const OVERLOADED = 'Durable Object is overloaded. Requests queued for too long.'
     'package/package.json': '{"name":"fixture","version":"1.0.0"}',
     'package/index.js': 'module.exports = 1;',
   });
+  const files = packages.flatMap(({ pkgDir }) => [`${pkgDir}/index.js`, `${pkgDir}/package.json`]).sort();
   for (const shed of [1, 2]) {
     let opens = 0;
-    let writes = 0;
+    const written = [];
     const result = await installPackagesInFacet({ packages, concurrency: 3 }, {
       SUPERVISOR: {
         async getCachedTarball() { return { bytes: tarball.slice(), events: [] }; },
@@ -39,17 +40,18 @@ const OVERLOADED = 'Durable Object is overloaded. Requests queued for too long.'
           return 'accepted-writer';
         },
         async writeBatchStream(stream) {
-          writes++;
           const wave = await decodeWave(stream);
+          written.push(...wave.paths);
           return { ok: true, committedGroupSequence: 1, committedPathCount: wave.paths.length, inodes: wave.paths.length, chunks: wave.chunks };
         },
       },
     });
-    const failed = result.perPackage.filter((entry) => entry.errorText);
-    assert.deepEqual(failed.map((entry) => entry.errorText), [], `${shed} shed open(s): no package fails`);
+    assert.deepEqual(
+      result.perPackage.map(({ name, version, pkgDir, fileCount, errorText }) => ({ name, version, pkgDir, fileCount, errorText })),
+      packages.map(({ name, version, pkgDir }) => ({ name, version, pkgDir, fileCount: 2, errorText: undefined })),
+      `${shed} shed open(s): every package installs at its place`);
     assert.equal(opens, shed + 1, 'the open is made again until the session answers it');
-    assert.ok(writes > 0, 'and the waves are written under it');
-    assert.ok(result.perPackage.every((entry) => entry.fileCount === 2), 'every package publishes its files');
+    assert.deepEqual(written.sort(), files, 'and every package file is written under it, once');
   }
   // An open the session refused for a reason of its own is its verdict: not made again.
   let opens = 0;
