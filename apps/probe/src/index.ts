@@ -27,6 +27,7 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import { MemoryVFS } from '@nimbus-sh/core/vfs/memory.js';
 import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { processHostMode } from '../../../packages/worker/src/loaders/process-host.js';
+import { nimbusDebugEnabled } from '../../../packages/worker/src/_shared/nimbus-debug.js';
 import { disposeRpcResource } from '../../../packages/platform/src/rpc-dispose.js';
 import { peerPlacement } from '@nimbus-sh/fabric/process-host.js';
 import { abortFacet } from '@nimbus-sh/fabric/workerd-facet-host.js';
@@ -239,7 +240,7 @@ export class TestTlsEgress extends TestEgress implements WorkspaceEgressTls {
 /** The SDK's session under the embedder's per-session test egress. */
 export class NimbusSession extends SdkNimbusSession {
   private requireProbeDiagnostics(): void {
-    if (!('NIMBUS_DEBUG' in this.env) || this.env.NIMBUS_DEBUG !== '1') throw new Error('probe diagnostics are disabled');
+    if (!this.nimbusDebug) throw new Error('probe diagnostics are disabled');
   }
   _rpcProbePlacement(pid: number) {
     this.requireProbeDiagnostics();
@@ -403,7 +404,7 @@ async function spawnEmbedderWorker(request: Request, env: any, sessionId: string
 async function probeHostLoss(request: Request, env: ProbeEnv, sessionId: string): Promise<Response> {
   let owner: DurableObjectStub<NimbusSession> | undefined;
   try {
-    if (env.NIMBUS_DEBUG !== '1') return new Response('Not found', { status: 404 });
+    if (!nimbusDebugEnabled(env)) return new Response('Not found', { status: 404 });
     const verified = await verifyRequestToken(request, env);
     if (!verified) return authRequiredResponse();
     requireScopes(verified, ['sandbox:use']);

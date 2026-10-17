@@ -19,6 +19,7 @@ import { isHostedWatch, isHostedWebSocket, isHostedResidency, type PeerHost } fr
 import { hostActivity, type HostActivityLease } from '@nimbus-sh/fabric/host-activity.js';
 import type { WebSocketRelay } from '../session/ws-relay.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
+import { nimbusDebugEnabled } from '../_shared/nimbus-debug.js';
 import { answerSupervisorOp, buildSessionSupervisorOps, type SessionSupervisorOps } from '../session/supervisor-op.js';
 import { armLogJanitor, armResidentKeepalive, endResidentKeepalive, installLogPersistence, logJanitorFired, noteResidentClient, residentKeepaliveFired, type ResidentKeepaliveCycle } from '../session/hibernation.js';
 import { takeLegacyResetNotice } from '../session/legacy-reset.js';
@@ -154,7 +155,7 @@ class RuntimeOwner {
   get sessionBasePath() { return this.options.basePath ?? ''; }
   get sessionOrigin() { return this.options.origin ?? ''; }
   get viteBasePath() { return `${this.sessionBasePath}/preview`; }
-  get nimbusDebug() { return Reflect.get(this.env, 'NIMBUS_DEBUG') === '1'; }
+  get nimbusDebug() { return nimbusDebugEnabled(this.env); }
 
   assertOpen(): void {
     if (this._w1SessionDestroyed) throw new Error('Nimbus runtime is closed');
