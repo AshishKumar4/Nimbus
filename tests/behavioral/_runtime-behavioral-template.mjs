@@ -254,10 +254,30 @@ export async function exchangeAttachCookie(page, sid) {
   }
 }
 
+/**
+ * Print every navigation of `page`'s top document that the page itself
+ * starts (a script, a meta or header refresh, a frame navigating its top),
+ * with why and when: a probe's own goto starts none. Evidence for a probe
+ * that finds its page replaced; it never fails one.
+ */
+async function reportPageNavigations(page) {
+  const since = performance.now();
+  const cdp = await page.createCDPSession();
+  await cdp.send('Page.enable');
+  const { frameTree } = await cdp.send('Page.getFrameTree');
+  cdp.on('Page.frameRequestedNavigation', ({ frameId, reason, url, disposition }) => {
+    if (frameId !== frameTree.frame.id) return;
+    const at = new URL(url);
+    at.search = at.search ? '?…' : '';
+    console.log(`  [page] the page navigated itself (${reason}, ${disposition}) to ${at} at +${Math.round(performance.now() - since)} ms`);
+  });
+}
+
 export async function openPage(browser, sid, opts = {}) {
   const page = await browser.newPage();
   await applyProbeCookies(page, BASE, sid);
   await exchangeAttachCookie(page, sid);
+  await reportPageNavigations(page);
   const consoleMessages = [];
   const pageErrors = [];
 
