@@ -68,6 +68,13 @@ export interface SimpleCommandNode {
     assignments: AssignmentNode[];
     words: WordPart[][];
     redirections: RedirectionNode[];
+    /**
+     * The aliases whose replacement text this command was read from: none of
+     * them is expanded again as its command word (bash's rule, a read-time
+     * one: a function defined there keeps it; a later parse, a command
+     * substitution's or a sourced file's, starts afresh).
+     */
+    aliasesExpanding?: ReadonlySet<string>;
 }
 export interface RedirectionNode {
     operator: 'write' | 'append' | 'read' | 'readWrite' | 'writeAll' | 'dupOutput' | 'dupInput' | 'heredoc';

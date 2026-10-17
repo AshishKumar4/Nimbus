@@ -105,12 +105,6 @@ type ExecutionIo = {
     interactive?: boolean;
     /** Files the enclosing redirections hold open, by their stream. */
     openFiles?: ReadonlyMap<CommandInputStream | CommandOutputStream, OpenFile>;
-    /**
-     * The aliases whose expansion this runs within: none of them is expanded
-     * again inside it (bash's rule), so an alias that names itself, directly
-     * or through another, runs that name as a command once.
-     */
-    aliasesExpanding?: ReadonlySet<string>;
 };
 /** A shell's function definitions, by name. */
 export type FunctionTable = ReadonlyMap<string, CompoundCommandNode>;

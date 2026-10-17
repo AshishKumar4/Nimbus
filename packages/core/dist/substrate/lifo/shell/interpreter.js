@@ -77,6 +77,49 @@ function redirectionDiagnostic(error) {
                     : error.message;
     return `sh: ${error.target}: ${reason}\n`;
 }
+/** Marks every simple command of `lists`, read from an alias's text, with the aliases it was read within. */
+function markAliasText(lists, aliasesExpanding) {
+    for (const list of lists) {
+        for (const entry of list.entries) {
+            for (const command of entry.pipeline.commands)
+                markAliasCommand(command, aliasesExpanding);
+        }
+    }
+}
+function markAliasCommand(command, aliasesExpanding) {
+    switch (command.type) {
+        case 'simple_command':
+            command.aliasesExpanding = aliasesExpanding;
+            return;
+        case 'if':
+            for (const clause of command.clauses) {
+                markAliasText(clause.condition, aliasesExpanding);
+                markAliasText(clause.body, aliasesExpanding);
+            }
+            if (command.elseBody !== null)
+                markAliasText(command.elseBody, aliasesExpanding);
+            return;
+        case 'while':
+        case 'until':
+            markAliasText(command.condition, aliasesExpanding);
+            markAliasText(command.body, aliasesExpanding);
+            return;
+        case 'for':
+        case 'group':
+        case 'subshell':
+            markAliasText(command.body, aliasesExpanding);
+            return;
+        case 'case':
+            for (const item of command.items)
+                markAliasText(item.body, aliasesExpanding);
+            return;
+        case 'function_def':
+            markAliasCommand(command.body, aliasesExpanding);
+            return;
+        case 'double_bracket':
+            return;
+    }
+}
 function terminalStdinFd(io, stdin = io.stdin) {
     return io.terminalFds?.stdin ?? ((!stdin || stdin === io.terminalStdin) && Boolean(io.terminalStdin));
 }
@@ -649,12 +692,16 @@ export class Interpreter {
         const aliases = replacesShell || viaCommand ? undefined : this.config.aliases;
         if (aliases) {
             const aliasValue = aliases.get(name);
-            if (aliasValue !== undefined && !io.aliasesExpanding?.has(name)) {
-                // Rebuild the command line with the alias expanded
+            if (aliasValue !== undefined && !cmd.aliasesExpanding?.has(name)) {
+                // Rebuild the command line with the alias expanded: its commands are
+                // read from the alias's text, so none of them expands it, or the
+                // aliases this one was read within, again.
                 const expandedLine = aliasValue + (args.length > 0 ? ' ' + args.join(' ') : '');
-                const aliasesExpanding = new Set(io.aliasesExpanding);
+                const aliasesExpanding = new Set(cmd.aliasesExpanding);
                 aliasesExpanding.add(name);
-                return (await this.executeLineWithIo(expandedLine, { ...io, aliasesExpanding }));
+                const script = parse(lex(expandedLine));
+                markAliasText(script.lists, aliasesExpanding);
+                return (await this.executeScriptWithIo(script, io));
             }
         }
         // Apply per-command assignments (temporary env)
@@ -1128,8 +1175,6 @@ export class Interpreter {
             next.interactive = true;
         if (io.openFiles)
             next.openFiles = io.openFiles;
-        if (io.aliasesExpanding)
-            next.aliasesExpanding = io.aliasesExpanding;
         return next;
     }
     /** Per-execution direct-terminal write, isolated from a nested capture. */
