@@ -24,10 +24,19 @@ export const shellWord = (text) => `'${text.replaceAll("'", "'\\''")}'`;
 export const placed = (text, from, root) => text.split(from).join(root);
 
 /**
+ * Where a compared text was printed: its stream, by host Node or the
+ * session, the tree's place there and the name it is given, and the command.
+ * @typedef {{ stream: 'out' | 'err', side: 'node' | 'workerd', from: string, root: string, command: string }} Printed
+ */
+
+/**
  * The default of what is compared of `stream` ('out' or 'err') printed on
  * `side` ('node', host Node, or 'workerd'): the tree's place named `root`, a
  * warning's pid as PID, frames not under the tree left out, and, of Node's
  * stderr, its internal arrow (the runtime prints none).
+ *
+ * @param {string} text
+ * @param {Printed} printed
  */
 export function nodeShown(text, { stream, side, from, root }) {
   const kept = placed(text, from, root).replace(/^\(node:\d+\) /gm, '(node:PID) ')
@@ -41,6 +50,12 @@ export function nodeShown(text, { stream, side, from, root }) {
  * and fail naming every command whose exit code, or whose `streams` as
  * `shown(text, { stream, side, from, root, command })` keeps them, are not
  * Node's.
+ *
+ * @param {string} label
+ * @param {string} root
+ * @param {Record<string, string>} files
+ * @param {string[]} commands
+ * @param {{ shown?: (text: string, printed: Printed) => string, streams?: Array<'out' | 'err'> }} [options]
  */
 export async function matchNodeInWorkerd(label, root, files, commands, { shown = nodeShown, streams = ['out', 'err'] } = {}) {
   const host = realpathSync(mkdtempSync(join(tmpdir(), `${label}-`)));
