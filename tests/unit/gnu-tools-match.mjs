@@ -39,8 +39,8 @@ for (const name of readdirSync(dir).filter((file) => file.endsWith('.json')).sor
     return { stdout, exitCode: r.exitCode, stderr: r.stderr };
   };
   if (fixture.tool === 'sed') {
-    const reference = fixture.cases.find(({ args }) => args === "'3q5' seq");
-    assert.ok(reference);
+    const reference = fixture.cases.find(({ exit }) => exit === 5);
+    assert.ok(reference, 'sed records a case that exits 5');
     const differentStatus = await run("'3q2' seq");
     assert.equal(differentStatus.stdout, reference.stdout, 'the status control prints the same bytes');
     assert.equal(differentStatus.exitCode, 2);
