@@ -4,6 +4,7 @@
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { parseArgs } from 'node:util';
 import { mapOnArmada, overlayCommit } from './armada.mjs';
 import { NIMBUS_STATE } from './state-dir.mjs';
 import { median, medianInterval } from '../../lib/statistics.mjs';
@@ -42,13 +43,15 @@ const git = (...args) => {
  * `command --baseline <baselineDir> --out <file>`. Writes
  * the receipt under NIMBUS_STATE/`receipts`, prints the verdicts, and exits
  * 0 only when every run finished and no kind is slower.
+ * `--short` runs two small workload smoke checks without grading performance.
  *
  * @param {{ name: string, receipts: string, source: string, baselineDir: string, files?: string[], command: string[] }} bench
  */
 export async function remotePairedCpu({ name, receipts, source, baselineDir, files, command }) {
-  const RUNS = 8;
-  const [baseline, revision = 'HEAD'] = process.argv.slice(2);
-  if (!baseline) throw new Error(`usage: ${name}.mjs <baseline> [<revision>]`);
+  const { values, positionals } = parseArgs({ options: { short: { type: 'boolean', default: false } }, allowPositionals: true });
+  const RUNS = values.short ? 2 : 8;
+  const [baseline, revision = 'HEAD'] = positionals;
+  if (!baseline || positionals.length > 2) throw new Error(`usage: ${name}.mjs <baseline> [<revision>] [--short]`);
   const repo = git('rev-parse', '--show-toplevel').trim();
   const sha = git('rev-parse', `${revision}^{commit}`).trim();
   const base = git('rev-parse', `${baseline}^{commit}`).trim();
@@ -57,17 +60,18 @@ export async function remotePairedCpu({ name, receipts, source, baselineDir, fil
   const run = await mapOnArmada({
     repo, sha: measured, files: [], items: Array.from({ length: RUNS }, (_, i) => i + 1), pool: RUNS, timeout: 1200,
     label: `${name} ${sha.slice(0, 12)}`,
-    command: [...command, '--baseline', baselineDir, '--out', '{out}'],
+    command: [...command, '--baseline', baselineDir, '--out', '{out}', ...(values.short ? ['--short'] : [])],
   });
   const runs = run.outputs.filter((output) => output !== null).map((output) => JSON.parse(output));
-  const verdicts = pairedCpuVerdicts(runs);
+  const verdicts = values.short ? [] : pairedCpuVerdicts(runs);
   const directory = join(NIMBUS_STATE, receipts);
   mkdirSync(directory, { recursive: true });
-  const receipt = join(directory, `${sha.slice(0, 12)}-${run.jobId}.json`);
-  writeFileSync(receipt, `${JSON.stringify({ baseline: base, head: sha, verdicts, ...run }, null, 2)}\n`);
+  const receipt = join(directory, `${values.short ? 'short-' : ''}${sha.slice(0, 12)}-${run.jobId}.json`);
+  writeFileSync(receipt, `${JSON.stringify({ baseline: base, head: sha, short: values.short, performanceGraded: !values.short, verdicts, ...run }, null, 2)}\n`);
   console.log(`receipt: ${receipt}`);
   for (const outcome of run.outcomes) if (outcome.kind !== 'exited' || outcome.exitCode !== 0) console.log(outcome.tail);
   for (const verdict of verdicts) console.log(JSON.stringify(verdict));
   const complete = runs.length === RUNS && run.outcomes.every((outcome) => outcome.kind === 'exited' && outcome.exitCode === 0);
+  if (values.short) console.log(`short smoke: ${runs.length}/${RUNS} runs completed; performance is not graded`);
   process.exit(complete && verdicts.every((verdict) => verdict.failures.length === 0) ? 0 : 1);
 }
