@@ -98,7 +98,7 @@ await t.run(heredocCommand('/home/user/thor-case.rb', THOR_CASE), 20_000);
 // A home an earlier Nimbus wrote keeps its wrapper: one version's executable,
 // loaded whatever RubyGems chooses. The next `gem install` (of a gem already
 // there) makes it current, as the session's start does.
-await t.run(heredocCommand(`${HOME}/bin/thor`, `#!/usr/bin/env ruby\nload "${HOME}/gems/thor-1.2.2/bin/thor"\n`), 20_000);
+await t.run(heredocCommand(`${HOME}/bin/thor`, `#!/usr/bin/env ruby\nload "${HOME}/gems/thor-1.2.2/bin/thor"`), 20_000);
 {
   const again = await t.run('gem install thor -v 1.2.2', 180_000);
   a.check('gem install of an installed thor', again.exitCode === 0, stripAnsi(again.output).slice(-300));
