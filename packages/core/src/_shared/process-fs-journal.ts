@@ -100,8 +100,8 @@ function opOf(json: string, data: unknown): ProcessFsOp {
 }
 
 /**
- * The journal in a process's own SQLite: entries, their appended data
- * pieces (joined only when read), and numberings (one row per writer epoch).
+ * The journal in a process's own SQLite. Reads also accept appended pieces;
+ * writes keep complete rows until that reader has shipped for one release.
  * A facet that restarts opens the same tables: everything left unanswered.
  */
 export function sqlJournal(sql: JournalSql): ProcessFsJournal {
@@ -148,14 +148,10 @@ export function sqlJournal(sql: JournalSql): ProcessFsJournal {
       if (row === undefined) throw new Error(`process-fs journal: entry ${jid} is not held`);
       return readRow(row);
     },
-    replace(jid, op, append) {
-      if (append !== undefined) {
-        sql.exec('INSERT INTO nimbus_fs_journal_parts (jid, data) VALUES (?, ?)', jid, append);
-        withParts.add(jid);
-        bytes += append.byteLength;
-        return;
-      }
-      const before = [...sql.exec('SELECT COALESCE(LENGTH(data), 0) + (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nimbus_fs_journal_parts WHERE jid = ?) AS bytes FROM nimbus_fs_journal WHERE jid = ?', jid, jid)][0];
+    replace(jid, op) {
+      const before = withParts.has(jid)
+        ? [...sql.exec('SELECT COALESCE(LENGTH(data), 0) + (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nimbus_fs_journal_parts WHERE jid = ?) AS bytes FROM nimbus_fs_journal WHERE jid = ?', jid, jid)][0]
+        : [...sql.exec('SELECT LENGTH(data) AS bytes FROM nimbus_fs_journal WHERE jid = ?', jid)][0];
       const row = rowOf(op);
       sql.exec('UPDATE nimbus_fs_journal SET op = ?, data = ? WHERE jid = ?', row.json, row.data, jid);
       withParts.delete(jid);

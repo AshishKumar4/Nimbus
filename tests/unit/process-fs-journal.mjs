@@ -20,6 +20,7 @@ import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervis
 import { createSupervisorOpHandler, journalDrainSession } from '../../packages/core/src/workspace/supervisor-op.ts';
 import { drainProcessFsJournal, journalSource, memoryJournal, processFsClient, sqlJournal } from '../../packages/core/src/_shared/process-fs-client.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { sqlJournal as mainJournal } from './fixtures/process-fs-journal-main.ts';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -137,6 +138,61 @@ function mortalPort(s, live = Infinity) {
     assert.equal(s.text(`home/user/out/log${k}`), want, `log${k}: an append was lost, doubled or reordered`);
   }
   assert.equal(reopened.entries().length, 0);
+}
+
+// ── Rollback to main still drains the complete unsent folded row ──
+{
+  const s = session();
+  const sql = facetSql();
+  const journal = sqlJournal(sql);
+  const c = processFsClient({ session: mortalPort(s, 0), journal, retry: RETRY });
+  const want = Uint8Array.from({ length: 20_000 }, (_, i) => (i * 29 + Math.floor(i / 10)) % 256);
+  c.submit(writeFile('home/user/out/rollback', ''), { acknowledged: true });
+  for (let at = 0; at < want.byteLength; at += 10) c.submit({ type: 'call', call: { call: 'appendFile', path: 'home/user/out/rollback', mode: 0o644, data: want.subarray(at, at + 10) } }, { acknowledged: true });
+  c.seal();
+  assert.equal(c.stats().folded, want.byteLength / 10);
+  assert.equal([...sql.exec('SELECT COUNT(*) AS n FROM nimbus_fs_journal_parts')][0].n, 0, 'the stage-one writer emitted parts');
+  const old = mainJournal(sql);
+  assert.deepEqual(old.entries()[0].op.call.data, want, 'main recovered only a prefix of the folded row');
+  const drained = await drainProcessFsJournal({ journal: journalSource(old), session: s.port, retry: RETRY });
+  assert.deepEqual(drained.failures, []);
+  assert.deepEqual(s.kernel.readFile('home/user/out/rollback'), want);
+  assert.deepEqual(old.entries(), []);
+}
+
+// ── The stage-one reader drains the parts a later writer will leave ──
+{
+  const s = session();
+  const sql = facetSql();
+  const writer = sqlJournal(sql);
+  const path = 'home/user/out/future-parts';
+  const want = Uint8Array.from({ length: 20_000 }, (_, i) => (i * 31 + Math.floor(i / 10)) % 256);
+  const jid = writer.append({ type: 'call', call: { call: 'writeFile', path, mode: 0o600, data: want.subarray(0, 10) } });
+  for (let at = 10; at < want.byteLength; at += 10) sql.exec('INSERT INTO nimbus_fs_journal_parts (jid, data) VALUES (?, ?)', jid, want.subarray(at, at + 10));
+  const reopened = sqlJournal(sql);
+  assert.equal(reopened.bytes, want.byteLength);
+  assert.deepEqual(reopened.read(jid).call.data, want);
+  assert.deepEqual(reopened.readAfter(0, 1)[0].op.call.data, want);
+  const drained = await drainProcessFsJournal({ journal: journalSource(reopened), session: s.port, retry: RETRY });
+  assert.deepEqual(drained.failures, []);
+  assert.deepEqual(s.kernel.readFile(path), want);
+  assert.equal(s.kernel.stat(path).mode & 0o777, 0o600);
+  assert.equal([...sql.exec('SELECT COUNT(*) AS n FROM nimbus_fs_journal_parts')][0].n, 0, 'acknowledgement left future parts behind');
+  assert.equal(sqlJournal(sql).bytes, 0);
+}
+
+// ── A full replacement atomically discards future-writer parts ──
+{
+  const sql = facetSql();
+  const writer = sqlJournal(sql);
+  const jid = writer.append(writeFile('home/user/out/replaced-parts', 'old'));
+  sql.exec('INSERT INTO nimbus_fs_journal_parts (jid, data) VALUES (?, ?)', jid, enc.encode('-parts'));
+  const reopened = sqlJournal(sql);
+  assert.equal(dec.decode(reopened.read(jid).call.data), 'old-parts');
+  reopened.replace(jid, writeFile('home/user/out/replaced-parts', 'whole'));
+  assert.equal(dec.decode(reopened.read(jid).call.data), 'whole');
+  assert.equal(dec.decode(mainJournal(sql).read(jid).call.data), 'whole');
+  assert.equal(sqlJournal(sql).bytes, 5);
 }
 
 // ── A folded tail survives a restart, including a rewrite of appended bytes ──
@@ -290,7 +346,7 @@ function mortalPort(s, live = Infinity) {
   assert.equal(dec.decode(journal.read(a).call.data), 'a+');
   journal.replace(a, writeFile('home/user/out/a', 'new'));
   assert.equal(dec.decode(oneQuery(() => journal.read(a)).call.data), 'new');
-  journal.replace(b, writeFile('home/user/out/b', 'b+'), enc.encode('+'));
+  harness.sql.exec('INSERT INTO nimbus_fs_journal_parts (jid, data) VALUES (?, ?)', b, enc.encode('+'));
   const reopened = sqlJournal(harness.sql);
   assert.equal(dec.decode(reopened.read(b).call.data), 'b+');
   assert.equal(dec.decode(oneQuery(() => reopened.read(a)).call.data), 'new');
