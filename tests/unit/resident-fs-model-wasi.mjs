@@ -73,11 +73,13 @@ async function run(steps) {
     // Attribute operations need live descriptions, not immutable read-only copies.
     const open = (name, flags) => guest.open(name, { ...flags, allocate: true });
 
-    const check = async (label, contents = false) => {
+    const check = async (label, contents = false, peer = false) => {
       for (const [fd, opened] of fds) {
         await compareStat(`${label}: fd ${fd} fd_filestat_get`, () => guest.fstat(opened.guest), () => fstat(opened.direct));
         if (opened.flags.read) await compare(`${label}: fd ${fd} fd_pread`, () => guest.pread(opened.guest, 1 << 12), async () => dec.decode(await direct.read(opened.direct, 0, 1 << 12)));
       }
+      // Descriptors must be live without input. The peer's completion then refreshes path lookups.
+      if (peer) guest.inbound();
       for (const name of NAMES) {
         await compareStat(`${label}: ${name} path_filestat_get`, () => guest.stat(path(name)), () => stat(name));
         if (!contents) continue;
@@ -154,7 +156,7 @@ async function run(steps) {
         if (step.op === 'catchUp') guest.inbound();
       } else if (step.op === 'peer') await peerStep(step, label);
       else await processStep(step, label);
-      await check(label);
+      await check(label, false, step.op === 'peer');
     }
     for (const fd of [...fds.keys()]) await processStep({ op: 'close', fd }, 'the end');
     assert.equal(await guest.settle(), null, 'the end: unsettled writes');
