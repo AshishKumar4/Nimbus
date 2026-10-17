@@ -9226,7 +9226,14 @@ export class SqliteVFS {
             removedDirectories: new Array(),
         };
         const maintenancePending = this.maintenancePending;
-        const openBefore = new Map([...this.openNodes].map(opened => [opened, { path: opened.path, inode: opened.inode }]));
+        // A detached file (unlinked, still open) has no row a rollback brings
+        // back: its fields, which a write, truncate or chmod through it edits in
+        // place (commitRewrite), are kept to put back.
+        const openBefore = new Map([...this.openNodes].map(opened => [opened, {
+                path: opened.path,
+                inode: opened.inode,
+                fields: opened.path === null ? { ...opened.inode } : null,
+            }]));
         this.transactionPublication = publication;
         let result;
         try {
@@ -9263,9 +9270,12 @@ export class SqliteVFS {
                         continue;
                     }
                     // The committed row the description named, as the object every other
-                    // lookup of that path now shares.
+                    // lookup of that path now shares; a detached file's own object (its
+                    // descriptions share it), as it was.
                     const live = previous.path === null ? undefined : this.inodes.get(previous.path);
                     opened.inode = live !== undefined && live.ino === previous.inode.ino ? live : previous.inode;
+                    if (previous.fields !== null)
+                        Object.assign(previous.inode, previous.fields);
                     opened.path = previous.path;
                 }
             }
