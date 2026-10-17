@@ -173,7 +173,7 @@ async function dispatch(bytes, argv, output) {
   });
   const refused = await rewriting('', opts);
   assert.notEqual(refused.exitCode, 0);
-  assert.match(refused.stderr, /not the image it was opened as|EFBIG/, 'a program written since its inspection is refused');
+  assert.match(refused.stderr, /ESTALE/, 'a program written since its inspection is refused');
 }
 
 {

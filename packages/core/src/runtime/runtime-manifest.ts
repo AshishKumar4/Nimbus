@@ -16,7 +16,6 @@
 
 import { z } from 'zod/v4';
 import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
-import type { ImageDigest } from './facet-host.js';
 
 export interface ManifestFile {
   /** VFS path relative to /usr/lib/nimbus/<name>/<version>/. */
@@ -91,14 +90,9 @@ export interface RuntimeManifest {
 
 export const HexSha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 
-/**
- * `rel` as `manifest` installs it under `installRoot`: its path, with the
- * digest and size the manifest vouches for (an image's, ImageDigest); null
- * when the manifest has no such file.
- */
-export function installedFile(manifest: RuntimeManifest, installRoot: string, rel: string): (ImageDigest & { path: string }) | null {
-  const entry = manifest.files.find((f) => f.path === rel);
-  return entry ? { path: `${installRoot}/${entry.path}`, sha256: entry.sha256, size: entry.size } : null;
+/** Where `manifest` installs `rel` under `installRoot`; null when the manifest has no such file. */
+export function installedPath(manifest: RuntimeManifest, installRoot: string, rel: string): string | null {
+  return manifest.files.some((f) => f.path === rel) ? `${installRoot}/${rel}` : null;
 }
 
 /**

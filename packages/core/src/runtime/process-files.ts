@@ -23,7 +23,7 @@ import { WaveIngest } from './wave-ingest.js';
 import { Hydrator, type HydratorOptions } from './hydration.js';
 import { Delegations, type DelegationRevoked } from './delegations.js';
 import type { OutputGate } from './output-gate.js';
-import type { FacetImage, ImageDigest } from './facet-host.js';
+import type { FacetImage } from './facet-host.js';
 import { withRecall } from '../vfs/recall.js';
 import type { VfsEvent } from '../vfs/events.js';
 import type { BatchWritePayload } from '@nimbus-sh/platform/w7-frame.js';
@@ -75,7 +75,6 @@ import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors
 import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted, reopenMounted } from '../vfs/mounted-description.js';
 import { registerDirectoryReadBridge, directoryReadHandleClosed } from './read-directory-batch.js';
 import { readLeaseCovers, SESSION_KERNEL_ROOTS } from '../_shared/read-lease-cover.js';
-import { sha256Hex } from '../_shared/crypto.js';
 
 function immutableCredential(cred: Readonly<VfsCred>): VfsCred {
   // One frozen whole already (a process table's: ProcessTable.credOf) is kept, not copied again.
@@ -188,6 +187,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   symlink(target: string, path: RuntimeFsPath): void { this.guard(); return this.target.symlink(target, path); }
   fsync(handleId?: number): void { this.guard(); return this.target.fsync(handleId); }
   revision(path?: RuntimeFsPath): number { this.guard(); return this.target.revision(path); }
+  contentKey(path: RuntimeFsPath): string { this.guard(); return this.reading(() => this.target.contentKey(path)); }
   acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult {
     this.guard();
     return this.withReadLease(this.target.acquire(epoch, cursor, options), options);
@@ -814,6 +814,11 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
 
   gateLaunch(named: readonly string[]): Promise<void> { return this.bridge.gateLaunch(named); }
   revision(path?: RuntimeFsPath): number { return this.bridge.revision(path); }
+  contentKey(path: RuntimeFsPath) {
+    return this.either([path], () => this.bridge.contentKey(path), async () => {
+      throw syscallError('ENOTSUP', 'open', await this.path(path));
+    });
+  }
   /** The process's namespace's changes at `path` and under it (CompositeVFS.watchChanges), named as its listings name them; stopped with its scope. */
   subscribe(path: string, listener: (event: VfsEvent) => void, options?: { follow?: boolean }): () => void {
     this.authority();
@@ -1012,6 +1017,8 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       const name = await this.path(path, follow);
       // Only SQLite bounds a whole read (SqliteRuntimeFsBridge.readFile): a mount answers EFBIG, unread.
       if (options?.maxBytes !== undefined) throw syscallError('EFBIG', 'read', name);
+      // Nor does a mount keep content keys to read by.
+      if (options?.contentKey !== undefined) throw syscallError('ENOTSUP', 'read', name);
       const bytes = (await this.viewed(name, follow)) ?? (await this.namespace.readFile(name));
       // An uncached read hands back bytes of its own, as SqliteRuntimeFsBridge's does.
       return options?.cached === false ? bytes.slice() : bytes;
@@ -1505,14 +1512,21 @@ export class ProcessView implements VFS {
    * backend, held once, and the caller's own: the read's buffer, never copied
    * again here. `maxBytes` as readFile's.
    */
-  async readFileUncached(path: string, options?: { maxBytes?: number }): Promise<Uint8Array> {
-    const bytes = await this.call('open', path, () => this.fs.readFile(path, { cached: false, maxBytes: options?.maxBytes }));
+  async readFileUncached(path: string, options?: { maxBytes?: number; contentKey?: string }): Promise<Uint8Array> {
+    const bytes = await this.call('open', path, () => this.fs.readFile(path, { cached: false, maxBytes: options?.maxBytes, contentKey: options?.contentKey }));
     if (bytes === null) throw syscallError('ENOENT', 'open', path);
     return bytes;
   }
-  /** `path` as the wasm image `expected` names, read through this view when the host builds the facet (openFacetImage). */
-  async image(path: string, expected: ImageDigest): Promise<FacetImage> {
-    return await openFacetImage((use) => use(this), path, expected);
+  /** The file's content key (RuntimeFsBridge.contentKey): equal keys, equal bytes; ENOTSUP where the filesystem keeps none. */
+  async contentKey(path: string): Promise<string> {
+    const { fs } = this;
+    const contentKey = fs.contentKey;
+    if (contentKey === undefined) throw syscallError('ENOTSUP', 'open', path);
+    return await this.call('open', path, () => contentKey.call(fs, path));
+  }
+  /** `path` as a wasm image a facet loads, read through this view when the host builds the facet (openFacetImage). */
+  async image(path: string): Promise<FacetImage> {
+    return await openFacetImage((use) => use(this), path);
   }
   /**
    * rm: a file, or with `recursive` a tree, whole or not at all; `force`
@@ -1676,47 +1690,39 @@ export async function withOpenFiles<T>(
 }
 
 /**
- * `path` as the wasm image `expected` names ({@link FacetImage}), each access
- * made through a view `through` hands for its duration: a stat now, and the
- * bytes only when the host builds the facet. Its identity is the digest, so
- * it names the same bytes in every session, store and epoch. A read is bounded
- * at the expected size where the filesystem can bound one (SQLite; a mount
- * answers EFBIG, unread), and its bytes are the image or the read is refused
- * (ESTALE): whatever happened to the file, a facet loads only the bytes its
- * identity names.
+ * `path` as a wasm image a facet loads ({@link FacetImage}), each access made
+ * through a view `through` hands for its duration: its content key and size
+ * now, and its bytes only when the host builds the facet. The key is the
+ * store's own record of the bytes (RuntimeFsBridge.contentKey), so the
+ * image's identity names the same bytes in every session and store, and
+ * nothing is hashed. A read takes only the bytes the key names, bounded at
+ * the size opened, both checked in the read's own turn: whatever happened to
+ * the file, a facet loads those bytes or none (ESTALE, EFBIG). A mount keeps
+ * no content keys, so an image there is refused (ENOTSUP).
  */
-async function openFacetImage(
-  through: <T>(use: (view: ProcessView) => Promise<T>) => Promise<T>,
-  path: string,
-  expected: ImageDigest,
-): Promise<FacetImage> {
-  // Taken now: the image is these bytes whatever the caller's object says later.
-  const { sha256, size } = expected;
-  const opened = await through((view) => view.stat(path));
-  if (opened === null) throw syscallError('ENOENT', 'open', path);
-  if (opened.type !== 'file') throw syscallError('EISDIR', 'open', path);
+async function openFacetImage(through: <T>(use: (view: ProcessView) => Promise<T>) => Promise<T>, path: string): Promise<FacetImage> {
+  const { key, size } = await through(async (view) => {
+    const opened = await view.stat(path);
+    if (opened === null) throw syscallError('ENOENT', 'open', path);
+    if (opened.type !== 'file') throw syscallError('EISDIR', 'open', path);
+    return { key: await view.contentKey(path), size: opened.size };
+  });
   return {
     path,
-    identity: `sha256:${sha256}`,
+    identity: `content:${key}`,
     size,
     peak: size,
-    read: () => through(async (view) => {
-      const bytes = await view.readFileUncached(path, { maxBytes: size });
-      if (bytes.byteLength !== size || await sha256Hex(bytes) !== sha256) {
-        throw syscallError('ESTALE', 'open', path, { detail: 'the file is not the image it was opened as' });
-      }
-      return bytes;
-    }),
+    read: () => through((view) => view.readFileUncached(path, { contentKey: key, maxBytes: size })),
   };
 }
 
 /**
- * `path` as the wasm image `expected` names, read as `cred` through a host
- * view of its own at every load: for a facet that outlives the view it was
- * opened from (a shell's bash, a git that leaves its facet warm, a REPL).
+ * `path` as a wasm image a facet loads, read as `cred` through a host view
+ * of its own at every load: for a facet that outlives the view it was opened
+ * from (a shell's bash, a git that leaves its facet warm, a REPL).
  */
-export async function hostImage(authority: NimbusFilesystemAuthority, cred: Readonly<VfsCred>, path: string, expected: ImageDigest): Promise<FacetImage> {
-  return await openFacetImage((use) => withHostView(authority, cred, use), path, expected);
+export async function hostImage(authority: NimbusFilesystemAuthority, cred: Readonly<VfsCred>, path: string): Promise<FacetImage> {
+  return await openFacetImage((use) => withHostView(authority, cred, use), path);
 }
 
 /** A process's stat: everything stat(2) answers, which the bridge always has. */
