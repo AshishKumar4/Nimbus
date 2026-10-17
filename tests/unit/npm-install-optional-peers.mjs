@@ -18,8 +18,7 @@ import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { resolveOnePackumentInFacet } from '../../packages/worker/src/npm/resolve-one-facet.ts';
-import './lib/resolve-facet-scope.mjs';
+import { npmRegistry } from './lib/npm-registry.mjs';
 import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
@@ -27,40 +26,22 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 const PROJ = 'app';
 const NM = `${PROJ}/node_modules`;
 
-/** name -> the one version's manifest fields beyond name and version. */
+/** name -> version -> manifest fields beyond name and version. */
 const REGISTRY = {
-  tool: {
+  tool: { '1.0.0': {
     dependencies: { helper: '^1.0.0' },
     peerDependencies: { host: '^1.0.0', styler: '^1.0.0', listed: '^1.0.0' },
     peerDependenciesMeta: { styler: { optional: true }, listed: { optional: true } },
-  },
-  helper: { peerDependencies: { extra: '^1.0.0' }, peerDependenciesMeta: { extra: { optional: true } } },
-  host: {},
-  styler: { dependencies: { 'styler-dep': '^1.0.0' } },
-  'styler-dep': {},
-  listed: {},
-  extra: {},
+  } },
+  helper: { '1.0.0': { peerDependencies: { extra: '^1.0.0' }, peerDependenciesMeta: { extra: { optional: true } } } },
+  host: { '1.0.0': {} },
+  styler: { '1.0.0': { dependencies: { 'styler-dep': '^1.0.0' } } },
+  'styler-dep': { '1.0.0': {} },
+  listed: { '1.0.0': {} },
+  extra: { '1.0.0': {} },
 };
 
-const asked = [];
-function packumentFor(name) {
-  const fields = REGISTRY[name];
-  if (!fields) return null;
-  return JSON.stringify({
-    name,
-    'dist-tags': { latest: '1.0.0' },
-    versions: { '1.0.0': { name, version: '1.0.0', ...fields, dist: { tarball: `https://registry.invalid/${name}-1.0.0.tgz`, integrity: `sha512-${name}` } } },
-  });
-}
-const resolverEnv = {
-  SUPERVISOR: {
-    async getPackument(name) {
-      asked.push(name);
-      const json = packumentFor(name);
-      return json === null ? { events: [], status: 404, source: 'network' } : { events: [], json, source: 'network' };
-    },
-  },
-};
+const { resultFor, asked } = npmRegistry(REGISTRY);
 
 const harness = createSqliteVfsTestHarness(new Database(':memory:'));
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -68,10 +49,7 @@ const root = vfs.as(CRED_KERNEL);
 root.mkdir(NM, { recursive: true });
 root.writeFile(`${PROJ}/package.json`, JSON.stringify({ name: 'fixture', dependencies: { tool: '^1.0.0' }, devDependencies: { listed: '^1.0.0' } }));
 const log = [];
-const env = makeFanoutEnv({
-  root, NM,
-  resultFor: (name, spec) => resolveOnePackumentInFacet({ cachedEntries: [], fetchTimeoutMs: 1_000, retries: 0, ...spec }, resolverEnv),
-});
+const env = makeFanoutEnv({ root, NM, resultFor });
 const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
 const installer = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: (msg) => log.push(msg) });
 

@@ -19,6 +19,7 @@ import assert from 'node:assert/strict';
 import { makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
+import { npmRegistry } from './lib/npm-registry.mjs';
 
 const {
   ensureNpmInstaller, ensureGlobalPrefixDirs, createNpmInstallPort, createNpmCommand, NimbusWorkspace, SessionProcessSupervisor, SqliteVFS,
@@ -43,22 +44,17 @@ const kernel = vfs.as(CRED_KERNEL);
 
 // The registry: opencode-ai's bin is a staged artifact (the package's own is a native launcher); tool's is its file.
 const packages = {
-  'opencode-ai': { resolvedBin: { opencode: 'nimbus-staged:opencode' }, bin: { opencode: 'bin/opencode.exe' }, files: { 'bin/opencode.exe': 'MZ' } },
-  tool: { resolvedBin: { tool: 'bin/cli.js' }, bin: { tool: 'bin/cli.js' }, files: { 'bin/cli.js': 'console.log("tool")\n' } },
+  'opencode-ai': { bin: { opencode: 'bin/opencode.exe' }, files: { 'bin/opencode.exe': 'MZ' } },
+  tool: { bin: { tool: 'bin/cli.js' }, files: { 'bin/cli.js': 'console.log("tool")\n' } },
   // Two packages with one command.
-  old: { resolvedBin: { cmd: 'bin/cli.js' }, bin: { cmd: 'bin/cli.js' }, files: { 'bin/cli.js': 'console.log("old")\n' } },
-  new: { resolvedBin: { cmd: 'bin/cli.js' }, bin: { cmd: 'bin/cli.js' }, files: { 'bin/cli.js': 'console.log("new")\n' } },
+  old: { bin: { cmd: 'bin/cli.js' }, files: { 'bin/cli.js': 'console.log("old")\n' } },
+  new: { bin: { cmd: 'bin/cli.js' }, files: { 'bin/cli.js': 'console.log("new")\n' } },
 };
+const { resultFor } = npmRegistry(Object.fromEntries(Object.entries(packages).map(([name, { bin }]) => [name, { '1.0.0': { bin } }])));
 const env = makeFanoutEnv({
   root: user,
   NM: 'unused',
-  resultFor: (name) => ({
-    pkg: {
-      name, version: '1.0.0', tarballUrl: `https://registry.invalid/${name}-1.0.0.tgz`, integrity: 'sha512-fixture',
-      dependencies: {}, main: 'index.js', bin: packages[name].resolvedBin,
-    },
-    cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-  }),
+  resultFor,
   manifestFor: (p) => ({ name: p.name, version: p.version, bin: packages[p.name].bin }),
   filesFor: (p) => packages[p.name].files,
 });

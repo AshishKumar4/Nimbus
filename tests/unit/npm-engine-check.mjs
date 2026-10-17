@@ -29,20 +29,11 @@ import { createNpmCommand } from '../../packages/core/src/substrate/lifo/command
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
+import { npmRegistry } from './lib/npm-registry.mjs';
 
 const PROJ = 'app';
 const NM = `${PROJ}/node_modules`;
 const FAR = { node: '>=99' };
-
-function resolvedResult(name, version, overrides = {}) {
-  return {
-    pkg: {
-      name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
-      dependencies: {}, main: 'index.js', bin: {}, ...overrides,
-    },
-    cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-  };
-}
 
 function makeInstaller(pkgJson, packages) {
   const harness = createSqliteVfsTestHarness(new Database(':memory:'));
@@ -50,7 +41,8 @@ function makeInstaller(pkgJson, packages) {
   const root = vfs.as(CRED_KERNEL);
   root.mkdir(NM, { recursive: true });
   root.writeFile(`${PROJ}/package.json`, JSON.stringify(pkgJson));
-  const env = makeFanoutEnv({ root, NM, resultFor: (name) => packages[name] ?? null });
+  const { resultFor } = npmRegistry(packages);
+  const env = makeFanoutEnv({ root, NM, resultFor });
   const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
   return { installer: kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: () => {} }), root };
 }
@@ -78,10 +70,10 @@ function makeInstaller(pkgJson, packages) {
 // ── The session's installer checks the tree it plans ─────────────────────
 {
   const packages = {
-    dep: resolvedResult('dep', '1.0.0', { engines: FAR, dependencies: { deep: '1.0.0' }, optionalDependencies: { maybe: '1.0.0' } }),
-    deep: resolvedResult('deep', '1.0.0', { engines: { node: '>=18', npm: '>=99' } }),
-    maybe: resolvedResult('maybe', '1.0.0', { engines: FAR }),
-    fine: resolvedResult('fine', '1.0.0', { engines: { node: '>=18' } }),
+    dep: { '1.0.0': { engines: FAR, dependencies: { deep: '1.0.0' }, optionalDependencies: { maybe: '1.0.0' } } },
+    deep: { '1.0.0': { engines: { node: '>=18', npm: '>=99' } } },
+    maybe: { '1.0.0': { engines: FAR } },
+    fine: { '1.0.0': { engines: { node: '>=18' } } },
   };
   const app = { name: 'app', version: '1.0.0', engines: FAR, dependencies: { dep: '1.0.0', fine: '1.0.0' } };
 
@@ -111,11 +103,11 @@ function makeInstaller(pkgJson, packages) {
 // ── In the order npm's builder placed them: a's b, top-level, is taken before c's z, and b's d before z ──
 {
   const packages = {
-    a: resolvedResult('a', '1.0.0', { dependencies: { b: '1.0.0' } }),
-    b: resolvedResult('b', '1.0.0', { dependencies: { d: '1.0.0' } }),
-    c: resolvedResult('c', '1.0.0', { dependencies: { z: '1.0.0' } }),
-    d: resolvedResult('d', '1.0.0', { engines: FAR }),
-    z: resolvedResult('z', '1.0.0', { engines: FAR }),
+    a: { '1.0.0': { dependencies: { b: '1.0.0' } } },
+    b: { '1.0.0': { dependencies: { d: '1.0.0' } } },
+    c: { '1.0.0': { dependencies: { z: '1.0.0' } } },
+    d: { '1.0.0': { engines: FAR } },
+    z: { '1.0.0': { engines: FAR } },
   };
   const { installer } = makeInstaller({ name: 'app', version: '1.0.0', dependencies: { a: '1.0.0', c: '1.0.0' } }, packages);
   assert.deepEqual((await installer.install(PROJ)).engines.map((m) => m.pkgid), ['d@1.0.0', 'z@1.0.0']);
@@ -124,8 +116,8 @@ function makeInstaller(pkgJson, packages) {
 // ── An optional package whose engines exclude this runtime is left out, unsaid, whatever --engine-strict or --force ──
 {
   const packages = {
-    fine: resolvedResult('fine', '1.0.0', { engines: { node: '>=18' } }),
-    maybe: resolvedResult('maybe', '1.0.0', { engines: FAR }),
+    fine: { '1.0.0': { engines: { node: '>=18' } } },
+    maybe: { '1.0.0': { engines: FAR } },
   };
   for (const options of [{}, { engineStrict: true }, { force: true }]) {
     const { installer, root } = makeInstaller({ name: 'app', version: '1.0.0', dependencies: { fine: '1.0.0' }, optionalDependencies: { maybe: '1.0.0' } }, packages);
