@@ -15,6 +15,7 @@
 // A divergence must be listed, with its reason, in the fixture's DIVERGENT.
 
 import assert from 'node:assert/strict';
+import { tokenizer } from 'acorn';
 import { CASES, DIVERGENT } from '../fixtures/transform-differential/cases.mjs';
 import { generateTransformFacetRuntimeSource } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { rewriteDynamicImports } from '../../packages/core/src/runtime/dynamic-import-rewrite.ts';
@@ -24,6 +25,7 @@ import { wrapCommonJsCell } from '../../packages/core/src/_shared/commonjs-cell.
 import { programLaunchesServer } from '../../packages/core/src/runtime/server-launch.ts';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
 import { oxcEngine } from './lib/oxc-engine.mjs';
+import { originalPosition } from './lib/sourcemap-vlq.mjs';
 
 const { runTransformRequest } = new Function(`${generateTransformFacetRuntimeSource()}\nreturn { runTransformRequest };`)();
 // What the transform facet's preamble installs beside its engine.
@@ -102,6 +104,22 @@ async function observe(code, dependencies = null) {
 }
 
 const loaderOf = (name) => (/\.tsx$/.test(name) ? 'tsx' : /\.[mc]?ts$/.test(name) ? 'ts' : /\.jsx$/.test(name) ? 'jsx' : 'js');
+function refusal(error, map = null) {
+  assert.ok(error instanceof Error);
+  assert.ok(Array.isArray(error.errors));
+  assert.ok(error.errors.length > 0);
+  return {
+    refused: true,
+    kind: error.constructor.name,
+    locations: error.errors.map(({ location }) => {
+      if (location === null) return null;
+      assert.ok(Number.isInteger(location.line) && location.line > 0);
+      assert.ok(Number.isInteger(location.column) && location.column >= 0);
+      return map === null ? [location.line, location.column] : originalPosition(map, location.line, location.column);
+    }),
+  };
+}
+
 const outcomes = {
   async commonjs(engine, name, source) {
     const url = `file:///app/${name}`;
@@ -109,7 +127,7 @@ const outcomes = {
       const { code } = await runTransformRequest(engine, source, { loader: loaderOf(name), format: 'cjs', dynamicImportParent: url }, runtime);
       return await observe(code);
     } catch (error) {
-      return { refused: true, topLevelAwait: /top-level await.*not supported.*cjs/i.test(String(error.message)) };
+      return refusal(error);
     }
   },
   async browser(engine, name, source) {
@@ -117,17 +135,28 @@ const outcomes = {
     let code;
     try {
       ({ code } = await engine.transform(source, { loader: loaderOf(name) === 'js' ? 'ts' : loaderOf(name), format: 'esm', target: 'esnext', jsx: 'automatic', define, sourcemap: 'inline', supported: { 'dynamic-import': false, 'import-meta': false } }));
-    } catch {
-      return { refused: true };
+    } catch (error) {
+      return refusal(error);
     }
-    assert.match(code, /\/\/# sourceMappingURL=data:application\/json;(charset=utf-8;)?base64,/, `${name}: the browser module carries its map`);
+    const comments = [];
+    const tokens = [...tokenizer(code, { ecmaVersion: 'latest', allowHashBang: true, locations: true, onComment: comments })];
+    const mapUrl = comments.flatMap(({ value }) => [...value.matchAll(/[#@]\s*sourceMappingURL\s*=\s*(\S+)/g)]).at(-1)?.[1];
+    assert.equal(new URL(mapUrl).protocol, 'data:', `${name}: the browser map is inline`);
+    const map = await (await fetch(mapUrl)).json();
+    assert.equal(map.version, 3);
+    if (name === 'destructure.mjs') {
+      const token = tokens.find(({ type, value }) => type.label === 'name' && value === 'obj');
+      assert.ok(token, 'the transformed module retains the source binding');
+      assert.deepEqual(originalPosition(map, token.loc.start.line, token.loc.start.column), [1, source.indexOf('obj')],
+        'the browser map points the emitted binding back to its source position');
+      assert.ok(map.sourcesContent.includes(source), 'the map carries the source as written');
+    }
     // One engine reads both outputs as CommonJS, so only the first pass differs.
     try {
       const { code: cjs } = await esbuild.transform(code, { loader: 'js', format: 'cjs', supported: { 'dynamic-import': true, 'import-meta': true } });
       return await observe(cjs);
     } catch (error) {
-      // Where in the output it was refused depends on the printer; why does not.
-      return { refused: true, reread: String(error.message).split('\n')[1].replace(/^<stdin>:\d+:\d+: /, '') };
+      return { ...refusal(error, map), reread: true };
     }
   },
 };
@@ -261,15 +290,19 @@ console.log(`  ok  ${CASES.length} modules x ${Object.keys(outcomes).length} tra
   console.log('  ok  the server classifier distinguishes serve, build and help in transformed CommonJS');
 }
 
-// ── Refusals keep esbuild's message shape ───────────────────────────────────
+// ── Refusals carry structured locations and reject unsupported options ─────
 {
-  await assert.rejects(oxcEngine.transform('await 1; export {};', { loader: 'js', format: 'cjs' }),
-    (error) => /^Transform failed with 1 error:\n<stdin>:1:0: ERROR: Top-level await is currently not supported with the "cjs" output format$/.test(error.message) && error.errors[0].location.line === 1);
-  await assert.rejects(oxcEngine.transform('let a = ;', { loader: 'js', format: 'cjs' }), /Transform failed with 1 error:\n<stdin>:1:8: ERROR: /);
-  await assert.rejects(oxcEngine.transform('x', { loader: 'css' }), /oxc transform: loader "css" is not supported/);
-  await assert.rejects(oxcEngine.transform('x', { target: 'es2020' }), /oxc transform: target "es2020" is not supported/);
-  await assert.rejects(oxcEngine.transform('<C />', { loader: 'jsx', jsx: 'preserve', format: 'cjs' }), /jsx "preserve" is not supported with format "cjs"/);
-  console.log('  ok  refusals read as esbuild\'s, and unsupported options are refused, not ignored');
+  for (const [source, location] of [['await 1; export {};', [1, 0]], ['let a = ;', [1, 8]]]) {
+    await assert.rejects(oxcEngine.transform(source, { loader: 'js', format: 'cjs' }), (error) => {
+      assert.deepEqual(refusal(error), { refused: true, kind: 'Error', locations: [location] });
+      assert.equal(error.errors[0].location.lineText, source);
+      return true;
+    });
+  }
+  await assert.rejects(oxcEngine.transform('x', { loader: 'css' }), Error);
+  await assert.rejects(oxcEngine.transform('x', { target: 'es2020' }), Error);
+  await assert.rejects(oxcEngine.transform('<C />', { loader: 'jsx', jsx: 'preserve', format: 'cjs' }), Error);
+  console.log('  ok  refusals locate invalid source, and unsupported options are refused, not ignored');
 }
 
 await stopEsbuildEngine();
