@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { RecallRequired } from '../../packages/core/src/vfs/recall.ts';
+import { prebundleSliceBytes } from '../../packages/core/src/runtime/prebundle-slice.ts';
 import { PrebundlePool } from '../../packages/worker/src/facets/prebundle-pool.ts';
 import { buildPrebundle, storedPrebundle } from '../../packages/worker/src/npm/browser-prebundle.ts';
 import { NpmCache } from '../../packages/worker/src/npm/cache.ts';
@@ -138,6 +139,28 @@ await runScenarios(fileURLToPath(import.meta.url), {
     const plan = planSliceForSpecifierWithCap(fs, 'pkg', 'home/user/app/node_modules', 1024 * 1024);
     fs.writeFile(dir + '/index.js', 'export const x = 2;');
     assert.throws(() => materializePrebundleSlice(fs, plan), PrebundlePlanChanged);
+  },
+  canonicalPlannedNames() {
+    const { fs, dir } = inputFixture();
+    fs.writeFile(dir + '/日本語.js', 'export const y = 1;');
+    const plan = planSliceForSpecifierWithCap(fs, 'pkg', 'home/user/app/node_modules', 1024 * 1024);
+    const slice = materializePrebundleSlice(fs, plan);
+    assert.deepEqual(slice.map((entry) => entry.path), plan.entries.map((entry) => entry.slicePath));
+    assert.ok(slice.every((entry) => entry.path.startsWith('/') && !entry.path.startsWith('//')));
+    assert.equal(prebundleSliceBytes(slice), plan.allocationBytes, 'canonical paths have one UTF-8/V8 byte-size calculation');
+  },
+  equivalentInputNames() {
+    const { fs, dir } = inputFixture();
+    let lookups = 0;
+    const inputs = new PrebundleInputs({ ...fs, revision(path) {
+      if (path !== undefined) lookups++;
+      return fs.revision(path);
+    } });
+    inputs.fs.readFileString(dir + '/index.js');
+    inputs.fs.readFileString('/' + dir + '/index.js');
+    assert.equal(lookups, 1, 'the VFS-rooted spellings name the same consulted file');
+    fs.writeFile(dir + '/index.js', 'export const x = 2;');
+    assert.equal(inputs.current(), false);
   },
   missingDependencyAppears() {
     const { fs, dir } = inputFixture();

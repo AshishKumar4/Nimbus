@@ -362,7 +362,7 @@ async function discoverSlice(
     plan = planSliceFromPaths(ctx.vfs, paths, PRE_BUNDLE_SLICE_CAP_BYTES, inputs);
   } else plan = planSliceForSpecifierWithCap(ctx.vfs, specifier, nmDir, PRE_BUNDLE_SLICE_CAP_BYTES, inputs);
   if (plan === null) return null;
-  const sources = plan.entries.filter((item) => !item.isDir).map((item) => '/' + item.path.replace(/^\/+/, ''));
+  const sources = plan.entries.filter((item) => !item.isDir).map((item) => item.slicePath);
   const request = prebundleRequest(specifier, manifestsOf(sources, (path) => {
     try { return inputs.fs.readFileString(path); } catch { return null; }
   }));

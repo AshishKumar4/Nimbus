@@ -41,7 +41,9 @@ function vanished(error: unknown): boolean {
   return code === 'ENOENT' || code === 'ENOTDIR';
 }
 
-export type PrebundleReadFs = Pick<CredentialedVfs, 'exists' | 'isDirectory' | 'access' | 'stat' | 'readdir' | 'readFile' | 'readFileString' | 'revision'>;
+export type PrebundleReadFs = Pick<CredentialedVfs, 'exists' | 'isDirectory' | 'access' | 'readdir' | 'readFile' | 'readFileString' | 'revision'> & {
+  stat(path: string): Readonly<VfsStat>;
+};
 
 /** Only consulted answers guard a plan: sibling package/synthetic writes are not inputs. */
 export class PrebundleInputs {
@@ -75,8 +77,7 @@ export class PrebundleInputs {
       stat: (path) => {
         try {
           const stat = vfs.stat(path);
-          const observed = { ...stat };
-          this.remember(`stat:${path}`, () => sameStat(vfs.stat(path), observed));
+          this.remember(`stat:${path}`, () => sameStat(vfs.stat(path), stat));
           return stat;
         } catch (error) {
           this.remember(`stat:${path}`, () => unavailable(() => { vfs.stat(path); }));
@@ -105,7 +106,7 @@ export class PrebundleInputs {
   }
 
   private file(path: string): void {
-    const key = `file:${path}`;
+    const key = `file:${path.startsWith('/') ? path.slice(1) : path}`;
     if (this.checks.has(key)) return;
     const revision = this.vfs.revision(path);
     this.remember(key, () => this.vfs.revision(path) === revision);
@@ -132,7 +133,7 @@ function unavailable(read: () => void): boolean {
   }
 }
 
-function sameStat(now: VfsStat, observed: VfsStat): boolean {
+function sameStat(now: Readonly<VfsStat>, observed: Readonly<VfsStat>): boolean {
   // A directory's subtree generation/mtime changes when an unrelated descendant is written.
   return now.dev === observed.dev && now.ino === observed.ino && now.type === observed.type
     && now.mode === observed.mode && now.uid === observed.uid && now.gid === observed.gid
@@ -145,7 +146,7 @@ function sameDirectory(now: ReturnType<PrebundleReadFs['readdir']>, observed: Re
   return now.length === observed.length && now.every((entry, i) => entry.name === observed[i]?.name && entry.type === observed[i]?.type);
 }
 
-export interface SlicePlanEntry { path: string; isDir: boolean; size: number }
+export interface SlicePlanEntry { path: string; slicePath: string; isDir: boolean; size: number }
 export interface PrebundleSlicePlan {
   inputs: PrebundleInputs;
   entries: SlicePlanEntry[];
@@ -188,13 +189,13 @@ export function planSliceForSpecifierWithCap(
       const stat = vfs.stat(path);
       const slicePath = '/' + path.replace(/^\/+/, '');
       if (stat.type === 'directory') {
-        entries.push({ path, isDir: true, size: 0 });
+        entries.push({ path, slicePath, isDir: true, size: 0 });
         allocationBytes += prebundleEntryBytes(slicePath);
         return allocationBytes <= capBytes;
       }
       totalBytes += stat.size + path.length;
       if (totalBytes > capBytes) return false; // caller bails
-      entries.push({ path, isDir: false, size: stat.size });
+      entries.push({ path, slicePath, isDir: false, size: stat.size });
       allocationBytes += prebundleEntryBytes(slicePath, stat.size);
       return allocationBytes <= capBytes;
     } catch (error) {
@@ -301,10 +302,11 @@ export function planSliceFromPaths(vfs: PrebundleReadFs, paths: ReadonlyArray<{ 
   let allocationBytes = 0;
   for (const entry of paths) {
     const size = entry.isDir ? 0 : vfs.stat(entry.path).size;
+    const slicePath = '/' + entry.path.replace(/^\/+/, '');
     if (!entry.isDir) totalBytes += size + entry.path.length;
     if (totalBytes > capBytes) return null;
-    entries.push({ ...entry, size });
-    allocationBytes += prebundleEntryBytes('/' + entry.path.replace(/^\/+/, ''), size);
+    entries.push({ ...entry, slicePath, size });
+    allocationBytes += prebundleEntryBytes(slicePath, size);
     if (allocationBytes > capBytes) return null;
   }
   return { inputs, entries, totalBytes, allocationBytes };
@@ -316,7 +318,7 @@ export function materializePrebundleSlice(vfs: PrebundleReadFs, plan: PrebundleS
   if (!plan.inputs.current()) throw new PrebundlePlanChanged();
   const slice: SliceEntry[] = [];
   for (const entry of plan.entries) {
-    const path = '/' + entry.path.replace(/^\/+/, '');
+    const path = entry.slicePath;
     if (entry.isDir) { slice.push({ path, isDir: true }); continue; }
     try {
       const bytes = vfs.readFile(entry.path);
