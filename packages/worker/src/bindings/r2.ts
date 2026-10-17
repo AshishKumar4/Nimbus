@@ -40,6 +40,7 @@ import type {
 import { ensureBindingDir, fileStream, writeBody } from './body.js';
 import { cursorAfter, cursorKey, listObjectFiles, objectFileName, objectStoreDir, removeObjectFiles, uploadFileName, utf8Order } from './object-store.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+import { bytesToHex } from '@nimbus-sh/platform/hex.js';
 
 /** R2's limit on one upload (a put): 5 GiB less 5 MiB. */
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024 - 5 * 1024 * 1024;
@@ -134,7 +135,6 @@ const HASHES: readonly { name: R2HashName; label: string }[] = [
   { name: 'sha512', label: 'SHA-512' },
 ];
 
-const hex = (bytes: Uint8Array): string => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 
 /** An error of R2's, as workerd's R2 client throws it: the action, the message, R2's code. */
 function r2Error(action: string, message: string, code: number): Error {
@@ -259,7 +259,7 @@ export class R2Emulator {
       if (metadataBytes > MAX_METADATA_BYTES) throw r2Error('put', 'Your metadata headers exceed the maximum allowed metadata size.', 10012);
       const checksums: R2WireChecksums = {};
       for (const { name, label, digest } of digests) {
-        const computed = hex(digest.digest());
+        const computed = digest.digest('hex');
         const provided = options.checksums?.[name];
         if (provided !== undefined && provided !== computed) {
           throw r2Error('put', [
@@ -277,7 +277,7 @@ export class R2Emulator {
       }
       const side: R2Sidecar = {
         etag: checksums.md5 ?? '',
-        version: hex(crypto.getRandomValues(new Uint8Array(16))),
+        version: bytesToHex(crypto.getRandomValues(new Uint8Array(16))),
         size,
         uploaded: Date.now(),
         checksums,

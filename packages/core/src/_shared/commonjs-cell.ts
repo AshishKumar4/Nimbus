@@ -349,8 +349,7 @@ export type RuntimeCodeEntry =
 
 /** The key of a piece of runtime code: SHA-256 of runtimeCodeKeySource, hex. */
 export function runtimeCodeKey(entry: RuntimeCodeEntry): string {
-  const digest = createHash('sha256').update(new TextEncoder().encode(runtimeCodeKeySource(entry))).digest();
-  return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return createHash('sha256').update(new TextEncoder().encode(runtimeCodeKeySource(entry))).digest('hex');
 }
 
 /** What a piece of runtime code is charged against RUNTIME_CODE_MAX_BYTES (runtimeCodeSourceCharge). */

@@ -81,6 +81,11 @@ The 2026-10-14 and 2026-10-15 versions reached production but were never publish
   an open description the session kept across a restart are kept too
   (they were refused EBADF), and a shared directory stays shared after a
   refused rename of it.
+- Added (platform): `@nimbus-sh/platform/hex.js`, `bytesToHex(bytes)`
+  (unseparated lowercase hex, through the runtime's native
+  `Uint8Array.prototype.toHex` where it has one) and `HEX_BYTE` (each byte
+  value's two digits). Nimbus's content keys, digests, git object ids and
+  tokens spell through it; the strings are unchanged.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
