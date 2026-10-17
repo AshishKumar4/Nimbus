@@ -135,18 +135,30 @@ for (const face of ['synchronous', 'awaiting']) for (const [index, testCase] of 
   let pid = 2;
   if (index === 0) {
     const proc = bind({ pid: pid++, cred: creds.get(2) });
-    const step = { root: '/a', path: 'm/gone', follow: true, expect: { path: '/a/none' } };
-    const wrong = { ...step, expect: { path: '/a/other-absent-leaf' } };
-    const beneath = { root: step.root, path: step.path, beneath: true };
-    assert.equal(await proc.stat(beneath), null, `${face}: the dangling link starts absent`);
-    for (const probe of [step, wrong]) {
-      assert.equal(await kernel.stat(probe.expect.path, { followSymlinks: false }), null);
-      const got = await answer(proc, kernel, probe, files.vfs, face);
-      if (probe === step) assert.deepEqual(got, probe.expect, `${face}: the correct absent leaf agrees`);
-      else assert.notDeepEqual(got, probe.expect, `${face}: a wrong absent leaf must be rejected`);
-      assert.equal(await kernel.stat(probe.expect.path, { followSymlinks: false }), null, `${face}: the marker is removed`);
-      assert.equal(await proc.stat(beneath), null, `${face}: probing leaves the dangling link absent`);
-    }
+    const child = new MemoryVFS();
+    files.vfs.mount('/marker-parent/m', face === 'awaiting' ? asyncOnly(child, { deep: true }) : child);
+    try {
+      const parent = await kernel.stat('/marker-parent');
+      const descendant = await kernel.stat('/marker-parent/m');
+      for (const step of [
+        { root: '/a', path: 'm/gone', follow: true, expect: { path: '/a/none' } },
+        { root: '/marker-parent', path: 'none', follow: false, expect: { path: '/marker-parent/none' } },
+      ]) {
+        const wrong = { ...step, expect: { path: `${step.root}/other-absent-leaf` } };
+        const beneath = { root: step.root, path: step.path, beneath: true };
+        assert.equal(await proc.stat(beneath), null, `${face}: the leaf starts absent`);
+        for (const probe of [step, wrong]) {
+          assert.equal(await kernel.stat(probe.expect.path, { followSymlinks: false }), null);
+          const got = await answer(proc, kernel, probe, files.vfs, face);
+          if (probe === step) assert.deepEqual(got, probe.expect, `${face}: the correct absent leaf agrees`);
+          else assert.notDeepEqual(got, probe.expect, `${face}: a wrong absent leaf must be rejected`);
+          assert.equal(await kernel.stat(probe.expect.path, { followSymlinks: false }), null, `${face}: the marker is removed`);
+          assert.equal(await proc.stat(beneath), null, `${face}: probing leaves the leaf absent`);
+          assert.deepEqual(await kernel.stat('/marker-parent'), parent, `${face}: the synthesized parent is restored`);
+          assert.deepEqual(await kernel.stat('/marker-parent/m'), descendant, `${face}: a descendant mount is unchanged`);
+        }
+      }
+    } finally { files.vfs.unmount('/marker-parent/m'); }
   }
   for (const [at, step] of testCase.steps.entries()) {
     steps++;
