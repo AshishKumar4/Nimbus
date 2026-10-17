@@ -314,7 +314,8 @@ export function buildRuntimeHandler(spec, ctx0) {
                 return null;
             }
             const transforms = stripTypes !== 'javascript' && stripTypes.mode === 'transform';
-            const sourceUrl = input.stripped && !transforms;
+            // amaro's transform gives a source map where maps are on (a strip, none), and Node's code carries it in the sourceURL's place.
+            const sourceUrl = input.stripped && !(transforms && stripTypes.sourceMap);
             // Node's warning is a next tick's, which a CommonJS eval's synchronous refusal ends the process before.
             const transformWarning = transforms && input.stripAttempted && input.refusal === undefined && (input.hint === undefined || input.esModule);
             const typeScript = sourceUrl || transformWarning || input.hint !== undefined
