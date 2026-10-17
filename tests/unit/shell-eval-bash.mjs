@@ -3,8 +3,9 @@
 // assignments, `cd`, functions and aliases are that shell's; its `return`,
 // `break` and `exit` act there; its status is the last command's, 0 where
 // there is none; in a pipeline or a subshell it is that child's. Before, the
-// shell had no `eval` ("eval: command not found"). Host bash is the oracle
-// (stdout, status, stderr without bash's line prefix).
+// shell had no `eval` ("eval: command not found"); a sourced file's `exit`
+// ended only the file, as an eval's or an alias's would have. Host bash is
+// the oracle (stdout, status, stderr without bash's line prefix).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -36,6 +37,11 @@ const CASES = [
   "eval 'echo $((1 + 2))'",
   "eval 'g() { echo defined; }'; g",
   "eval 'nosuchcommand'; echo \"st=$?\"",
+  // A sourced file's `exit` ends the shell too.
+  "printf 'exit 6\\n' > s.sh; . ./s.sh; echo no",
+  "printf 'exit 7\\n' > s.sh; ( . ./s.sh; echo no ); echo \"st=$?\"",
+  // So does an alias's.
+  "alias q='exit 3'\nq\necho no",
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, a function's `environment: line 2: ` (the armada image's bash). */
