@@ -626,25 +626,31 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     this.bound.delete(pid);
     const scope = this.processes.get(pid);
     this.processes.delete(pid);
-    this.retireWriter(pid);
-    if (!scope || scope.closed) return { lost: [] };
     const lost: number[] = [];
-    for (const [id, opened] of scope.handles) {
-      if (opened.node.mounted && opened.node.pendingBytes() > 0) lost.push(id);
-      // Dropped unflushed; a description another process still holds stays open.
-      if (--opened.refs > 0) continue;
-      const { node } = opened;
-      // A mount's file its backend holds open is closed with nothing written
-      // (MountedFileDescription.discard); the engine's is closed, so it pins
-      // nothing (an unlinked file's content): what was written through it is
-      // the file's already.
-      abandon(node.mounted ? { close: () => node.discard() } : node);
+    try {
+      if (scope && !scope.closed) {
+        for (const [id, opened] of scope.handles) {
+          if (opened.node.mounted && opened.node.pendingBytes() > 0) lost.push(id);
+          // Dropped unflushed; a description another process still holds stays open.
+          if (--opened.refs > 0) continue;
+          const { node } = opened;
+          // A mount's file its backend holds open is closed with nothing written
+          // (MountedFileDescription.discard); the engine's is closed, so it pins
+          // nothing (an unlinked file's content): what was written through it,
+          // held appends included, is the file's already.
+          abandon(node.mounted ? { close: () => node.discard() } : node);
+        }
+        scope.handles.clear();
+        scope.held.clear();
+        scope.waveDescriptions.clear();
+        closeScopeSignal(scope);
+        this.stopSubscriptions(scope);
+      }
+    } finally {
+      // Its delegations end once its descriptions are closed, as closeProcess
+      // orders it: a held append is written under them, not recalled from it.
+      this.retireWriter(pid);
     }
-    scope.handles.clear();
-    scope.held.clear();
-    scope.waveDescriptions.clear();
-    closeScopeSignal(scope);
-    this.stopSubscriptions(scope);
     return { lost };
   }
 

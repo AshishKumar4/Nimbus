@@ -3,15 +3,21 @@
 // held, as a Linux process's exit drops its descriptors' references: an
 // unlinked file its descriptor held open is collected once no description
 // holds it, as after a close. A description another process still holds
-// stays open, and reads through that process as before.
+// stays open, and reads through that process as before. What a write
+// through the killed process's description already put in the file is the
+// file's, under a delegation the process held as well.
 //
 // Red before: ProcessFiles.killProcess closed a last description only on a
 // mount; the engine's description of an unlinked file stayed open, so its
 // content stayed pinned for the engine's life.
+// (And closing it after the process's delegations ended lost its held
+// appends: written as another's, they were recalled from it.)
 
 import assert from 'node:assert/strict';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processFiles } from './lib/process-bridge.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -57,6 +63,29 @@ async function heldUnlinked(name, pids) {
   assert.equal(new TextDecoder().decode(await other.proc.read(other.fd.id, 0, 64)), 'the bytes of two', 'and reads there');
   files.killProcess(9);
   assert.equal(collected(), before, 'the last holder killed, it is collected');
+}
+
+// Appends through its description, under its own delegation, then killed: they are the file's.
+{
+  const h = createSqliteVfsTestHarness();
+  const vfs = new SqliteVFS(h.sql, h.ctx);
+  const k = vfs.as(CRED_KERNEL);
+  k.mkdir('home/user/repo', { recursive: true });
+  k.chown('home/user', 1000, 1000);
+  k.chown('home/user/repo', 1000, 1000);
+  const filesystem = new ProcessFiles(vfs);
+  const pid = 4242;
+  const proc = filesystem.bind({ pid, cred: user });
+  const op = createSupervisorOpHandler({ vfs, filesystem });
+  const grant = await op({ op: 'fsAcquireExclusiveMutation', args: ['/home/user/repo', { delegate: { reads: true } }], pid });
+  assert.ok(grant.owner, 'the process holds the subtree');
+  // Its appends are held (no lease presented: the engine holds a run of them), to be written with its delegation.
+  const fd = proc.open('/home/user/repo/log', { write: true, append: true, create: true });
+  for (const line of ['one\n', 'two\n']) proc.write(fd.id, null, new TextEncoder().encode(line));
+  filesystem.killProcess(pid);
+  assert.equal(new TextDecoder().decode(k.readFile('home/user/repo/log')), 'one\ntwo\n', 'its appends are the file\'s');
+  assert.equal(filesystem.delegations.size, 0, 'its delegation ended with it');
+  h.db.close();
 }
 
 console.log('kill-releases-descriptions: ok');
