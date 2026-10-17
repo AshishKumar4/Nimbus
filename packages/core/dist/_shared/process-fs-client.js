@@ -177,6 +177,15 @@ function isProcessGone(error) {
 function descriptionOf(call) {
     return 'description' in call ? call.description : undefined;
 }
+function extended(call, data, buffer) {
+    const size = call.data.byteLength + data.byteLength;
+    if (buffer === null || buffer.byteLength < size) {
+        buffer = new Uint8Array(Math.min(DATA_PIECE_BYTES, Math.max(size, (buffer?.byteLength ?? call.data.byteLength) * 2)));
+        buffer.set(call.data);
+    }
+    buffer.set(data, call.data.byteLength);
+    return { op: { type: 'call', call: { ...call, data: buffer.subarray(0, size) } }, buffer, append: data };
+}
 /**
  * `next` folded into `last`, the log's unsent tail, when it is the same
  * file's next bytes and nothing was logged between them: a whole write
@@ -194,27 +203,18 @@ function folded(last, next, buffer) {
     if (a.path !== b.path || descriptionOf(a) !== descriptionOf(b) || a.data.byteLength + b.data.byteLength > DATA_PIECE_BYTES)
         return null;
     const inoOf = (call) => ('ino' in call ? call.ino : undefined);
-    const join = () => {
-        const size = a.data.byteLength + b.data.byteLength;
-        if (buffer === null || buffer.byteLength < size) {
-            buffer = new Uint8Array(Math.min(DATA_PIECE_BYTES, Math.max(size, (buffer?.byteLength ?? a.data.byteLength) * 2)));
-            buffer.set(a.data);
-        }
-        buffer.set(b.data, a.data.byteLength);
-        return { op: { type: 'call', call: { ...a, data: buffer.subarray(0, size) } }, buffer, append: b.data };
-    };
     if (b.call === 'writeFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) {
         // The last write's file is made (or kept) by the first: its make wins, the bytes are the last's.
         return { op: { type: 'call', call: { ...a, call: 'writeFile', data: b.data } }, buffer: null };
     }
     if (b.call === 'appendFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) {
-        return join();
+        return extended(a, b.data, buffer);
     }
     if (b.call === 'append' && a.call === 'append' && inoOf(a) === inoOf(b)) {
-        return join();
+        return extended(a, b.data, buffer);
     }
     if (b.call === 'write' && a.call === 'write' && inoOf(a) === inoOf(b) && a.offset + a.data.byteLength === b.offset) {
-        return join();
+        return extended(a, b.data, buffer);
     }
     return null;
 }
