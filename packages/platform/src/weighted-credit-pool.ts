@@ -242,13 +242,22 @@ export class WeightedCreditPool {
    */
   acquireAhead(bytes: number, signal?: AbortSignal): CreditWait {
     this.validateRequest(bytes);
+    // A small ask keeps its reserve, ahead of the small asks queued there.
+    const small = this.isSmall(bytes) ? this.small : null;
+    if (small !== null) {
+      const shared = this.general.tryAcquire(bytes, true);
+      if (shared) return { lease: Promise.resolve(shared), granted: () => true };
+      return small.acquireAhead(bytes, signal);
+    }
     return this.general.acquireAhead(bytes, signal);
   }
 
   /** acquireAhead's credit now, or null. */
   tryAcquireAhead(bytes: number): ResizableCreditLease | null {
     this.validateRequest(bytes);
-    return this.general.tryAcquire(bytes, true);
+    const shared = this.general.tryAcquire(bytes, true);
+    const small = this.isSmall(bytes) ? this.small : null;
+    return shared ?? small?.tryAcquire(bytes, true) ?? null;
   }
 
   acquire(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease> {

@@ -100,8 +100,9 @@ function park(budget, bytes) {
     parked.push(launch);
   }
   await settled();
-  // Each facet's next write needs credit only the parked maps hold.
-  const writes = facets.map(() => acquireSupervisorRunningAllocation(share));
+  // Each facet's next write needs credit only the parked maps hold: all of it, between them.
+  const write = Math.floor(capacity / DO_DYNAMIC_WORKER_LIMIT);
+  const writes = facets.map(() => acquireSupervisorRunningAllocation(write));
   const leases = await Promise.race([
     Promise.all(writes),
     new Promise((_, reject) => setTimeout(() => reject(new Error('a running facet waited on a launch that is not running')), 5_000)),
