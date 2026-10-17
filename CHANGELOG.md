@@ -5,8 +5,40 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- Fixed: bounded launch preparation refuses oversized enrichment reads
-  before reading them, sharing one credit gate across all staging passes.
+- Fixed: when sessions compete for an isolate's transient budget, a
+  program's launch no longer reads past the share it holds while it
+  stages its files. A read that would take it over is refused before it
+  happens, and the launch asks for the whole budget once, as it already
+  did when its files outgrew its share.
+
+## 2026-10-17: platform 0.12.0, core 0.23.0, fabric 0.18.0, worker 0.21.0, sdk 0.17.0, cli 0.2.8, loom 0.3.1, react 0.3.3, create-nimbus-app 0.2.4, runtime-bash 5.2.37-7, runtime-cpython 3.13.14-3, runtime-git 2.53.0-1 (config 0.3.1 unchanged)
+
+The 2026-10-14 and 2026-10-15 versions reached production but were never published to npm; these carry their changes too. The runtimes need core 0.23.0: it is the first core that registers bash-runner@6, cpython-runner@3 and git-runner@2.
+
+- Fixed: a WASI process that makes a directory and then a file in it,
+  as `pip install` does for each package, no longer fails ENOENT about
+  once in a hundred runs. That happened when the process's hold on the
+  subtree was renewed or given back while the new file's name was being
+  looked up: the lookup carried on over a listing from before the
+  directory reached the session. Each step of a lookup now catches up
+  with the session first when the process has sent it anything.
+- Fixed: a process that wrote a file through a descriptor in a subtree it
+  held itself (a WASI process's delegation) could lose those bytes when
+  the file stayed open more than 100 ms after the write. The held write
+  was stored later as if another process had made it, the store refused
+  it, and the close failed with EBADF. It is now stored as the writer's.
+  A close whose held writes the store refuses now reports that refusal,
+  for example ENOSPC, and names the file, instead of EBADF.
+- Fixed: a running program no longer stalls waiting on launches that are not
+  running. A Durable Object runs at most ten Dynamic Workers. When every one
+  ran a program whose next write needed supervisor credit, and parked
+  launches or loads waiting for a worker held that credit, neither side could
+  go on. Credit is now taken before a worker, never while holding one, and a
+  running program's writes and session calls come first. When only parked
+  launches' module maps, or credit a load took and has not used, stand in
+  the way, that credit is reclaimed: the launch prepares again at its turn,
+  and the load takes its credit once it has a worker. A load refused its
+  credit fails at once with EAGAIN.
 - Fixed: launch-credit contention no longer changes which learned reads or
   lazy imports are staged. A tight first try now retries with full credit
   instead of trimming the program's snapshot.

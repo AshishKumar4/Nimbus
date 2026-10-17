@@ -17,16 +17,19 @@
 //     worker waits for none;
 //   - the credit a load takes is its own and is given back however its wait
 //     for a worker ends: a launch's dispatch killed as it regains its worker,
-//     a refused call's readmission given up, an attempt a timeout left running.
+//     a refused call's readmission given up, an attempt a timeout left running;
+//   - a launch's load refused its credit is refused at once, though the worker
+//     it gave back for the wait is taken: it waits for no worker to say so.
 
 import assert from 'node:assert/strict';
+import { jest } from 'bun:test';
 import {
   SupervisorAllocationBudget,
   SupervisorLoadWaitError,
   acquireSupervisorAllocation,
   readSupervisorAllocationBudget,
 } from '../../packages/platform/src/heavy-alloc-coord.ts';
-import { SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES as CAPACITY } from '../../packages/platform/src/limits.ts';
+import { SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES as CAPACITY, SUPERVISOR_LOAD_WAIT_MS } from '../../packages/platform/src/limits.ts';
 import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
 import { DO_DYNAMIC_WORKER_LIMIT, beginLoaderFetch, withLaunchAdmission } from '../../packages/fabric/src/budgets.ts';
 import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
@@ -273,6 +276,45 @@ const WASM = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
   for (let i = 0; i < 100 && readSupervisorAllocationBudget().current > 0; i++) await sleep(10);
   assert.equal(readSupervisorAllocationBudget().current, 0, 'each attempt gave back the credit it was granted');
   console.log('  ✓ an attempt a timeout left running keeps its own credit');
+}
+
+// ── through IsolatePool: a launch's load refused its credit is refused at once ─
+{
+  const MiB = 1024 * 1024;
+  const ctx = { id: { toString: () => 'refused-credit-do' }, waitUntil() {} };
+  const env = { LOADER: { get(_id, load) { return { getEntrypoint: () => ({ async execute() { await load(); return 'ok'; } }) }; } } };
+  const image = { path: '/refused.wasm', identity: 'refused', size: 8 * MiB, peak: 8 * MiB, async read() { return WASM; } };
+  const pool = new IsolatePool(env, ctx, { tag: 'refused', network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0, wasmModules: { 'primary.wasm': image } });
+  const whole = await acquireSupervisorAllocation(CAPACITY);
+  const others = Array.from({ length: DO_DYNAMIC_WORKER_LIMIT - 1 }, (_, i) => beginLoaderFetch(ctx, `other-${i}`));
+  // A turn of the event loop the fake timers do not hold back.
+  const turn = () => new Promise((resolve) => {
+    const { port1, port2 } = new MessageChannel();
+    port1.onmessage = () => { port1.close(); resolve(); };
+    port2.postMessage(null);
+  });
+  let last;
+  jest.useFakeTimers();
+  try {
+    await withLaunchAdmission(ctx, { pid: 41, ancestors: [] }, undefined, async () => {
+      let outcome = null;
+      pool.map(facetTaskSource('(value) => value'), [1]).then(() => { outcome = 'ok'; }, (error) => { outcome = error; });
+      for (let i = 0; i < 500 && readSupervisorAllocationBudget().queued === 0; i++) await turn();
+      assert.equal(readSupervisorAllocationBudget().queued, 1, 'its load waits for credit');
+      // The worker it gave back for the wait, another facet takes.
+      last = beginLoaderFetch(ctx, 'last');
+      jest.advanceTimersByTime(SUPERVISOR_LOAD_WAIT_MS);
+      for (let i = 0; i < 500 && outcome === null; i++) await turn();
+      assert.ok(outcome instanceof SupervisorLoadWaitError, `refused by name, at once: ${outcome}`);
+    });
+  } finally {
+    jest.useRealTimers();
+  }
+  whole.release();
+  last();
+  for (const end of others) end();
+  assert.equal(readSupervisorAllocationBudget().current, 0);
+  console.log('  ✓ a launch\'s load refused its credit is refused at once');
 }
 
 console.log('facet-load-admission: ok');

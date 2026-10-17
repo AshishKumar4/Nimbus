@@ -11,6 +11,8 @@
 //   - An ordinary ask reclaims nothing.
 //   - A load holding its credit while it waits for a worker (a refused call's
 //     readmission) is reclaimed for running work, and loads once let in.
+//   - So is credit a load took for a worker the loader then answers warm,
+//     which never calls back for it.
 //   - The full cycle: every worker held by a running facet whose next write
 //     needs credit, and the budget full of parked launches each waiting for
 //     a worker. The writes get their credit, the facets end, and the parked
@@ -214,6 +216,44 @@ function park(budget, bytes) {
   for (const end of facets.slice(1)) end();
   assert.equal(readSupervisorAllocationBudget().current, 0, 'nothing stays held');
   console.log('  ✓ a load waiting for a worker holding its credit is reclaimed for running work');
+}
+
+// ── credit a warm worker never used is reclaimed for its own running work ───
+{
+  const MiB = 1024 * 1024;
+  const capacity = readSupervisorAllocationBudget().capacity;
+  // The loader keeps its workers; a Durable Object's pools know only those they made.
+  const cache = new Map();
+  let builds = 0;
+  const env = {
+    LOADER: {
+      get(id, load) {
+        return {
+          getEntrypoint: () => ({
+            async execute(value) {
+              if (!cache.has(id)) { cache.set(id, await load()); builds++; }
+              // The running program's next write.
+              const write = await Promise.race([
+                acquireSupervisorRunningAllocation(4 * MiB),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('a warm worker\'s write waited on credit its own load took')), 5_000)),
+              ]);
+              write.release();
+              return value;
+            },
+          }),
+        };
+      },
+    },
+  };
+  const image = { path: '/warm.wasm', identity: 'warm', size: 8 * MiB, peak: capacity, async read() { return new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]); } };
+  const run = (ctx) => new IsolatePool(env, ctx, { tag: 'warm', network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0, wasmModules: { 'primary.wasm': image } })
+    .map(facetTaskSource('(value) => value'), [1]);
+  assert.deepEqual(await run({ id: { toString: () => 'running-work-warm' }, waitUntil() {} }), [1]);
+  // The same Durable Object again, its pools new: they take credit for a worker the loader has warm.
+  assert.deepEqual(await run({ id: { toString: () => 'running-work-warm' }, waitUntil() {} }), [1]);
+  assert.equal(builds, 1, 'answered warm, it read nothing');
+  assert.equal(readSupervisorAllocationBudget().current, 0, 'nothing stays held');
+  console.log('  ✓ credit a warm worker never used is reclaimed for its own running work');
 }
 
 console.log('running-work-credit: ok');
