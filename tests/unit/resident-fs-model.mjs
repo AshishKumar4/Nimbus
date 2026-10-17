@@ -611,9 +611,8 @@ const metKnown = [];
  * process made, given back with its grant (its row the view's, so nothing
  * of it is held once its records are answered), renamed under the next
  * grant and back: its descriptors read it at its name, where the view has
- * its row and not yet its bytes. Red before: only a grant's cells moved with
- * a rename the grant decided, and a file's pinned bytes were read only where
- * no name led to it, so a read that could not wait was EAGAIN.
+ * its row and not yet its bytes. Red before: a file's pinned bytes were read
+ * only where no name led to it, so a read that could not wait was EAGAIN.
  */
 const FOUND = [
   { name: 'renamed under a grant, away and back', grants: true, steps: [

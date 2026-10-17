@@ -233,13 +233,8 @@ export interface Provisional {
   cells(): Inode[];
   /** `inode`'s cell goes (its name retired, nothing holds it): the Inode with it, but for what else holds it. */
   dropCell(inode: Inode): void;
-  /**
-   * A rename a grant decided, `from` to `to`: every file reached beneath
-   * `from` (a grant's cell, or one these decisions hold, a descriptor's
-   * included) is reached at its name beneath `to` from now on, the name the
-   * view will have it at too. A cell that no name leads to stays where it is.
-   */
-  moved(from: string, to: string): void;
+  /** A grant's file `inode` is reached by `key` from now on (a rename it decided): the name the view will have it at too. */
+  rekey(inode: Inode, key: string): void;
   /**
    * No grant decides `inode` any more: its cell's bytes are its content
    * from now on, known (Inode.heldAt: the session's once what was decided is
@@ -1094,12 +1089,9 @@ export function provisional(host: ProvisionalHost): Provisional {
       release(inode);
     },
 
-    moved: (from, to) => {
-      for (const inode of everyInode()) {
-        if (inode.cell?.detached !== undefined || !within(inode.key, from)) continue;
-        inode.key = inode.origin = to + inode.key.slice(from.length);
-        fit(inode);
-      }
+    rekey: (inode, key) => {
+      inode.key = inode.origin = key;
+      fit(inode);
     },
 
     unhold: (inode, entry) => {

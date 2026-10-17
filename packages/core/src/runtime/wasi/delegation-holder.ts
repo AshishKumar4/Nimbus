@@ -907,7 +907,9 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         }
       }
       // Its files move with it: the name they are reached by, which the view will have.
-      prov.moved(from, to);
+      for (const inode of prov.cells()) {
+        if (inode.cell!.detached === undefined && within(inode.key, from)) prov.rekey(inode, to + inode.key.slice(from.length));
+      }
       log({ type: 'rename', from, to });
       return true;
     },
