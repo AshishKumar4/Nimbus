@@ -61,9 +61,6 @@ export declare function evalScriptSource(code: string, print: boolean): string;
 /**
  * The entry code for eval code as Node's eval has it (evalScriptSource's,
  * or stdin's): with `print`, a body that returns its completion value.
- * Code Node compiles first (`mode` 'default') and cannot is refused before
- * `--import`'s modules load, where it fails to compile here too (a
- * top-level `return` compiles in the entry's function).
  */
 export declare function evalProgram(code: string, print: boolean, mode: NodeEvalMode): NodeEvalProgram;
 /** What Node's eval runs for `-e` code or stdin, by `--input-type` and its TypeScript (execution.js). */
@@ -76,6 +73,8 @@ export interface NodeEvalInput {
     mode: NodeEvalMode;
     /** Its types were stripped: its frames are the stripper's sourceURL's, `[eval]`, stdin's included. */
     stripped: boolean;
+    /** A script Node compiles before `--import`'s modules load (evalTypeScript) that compiles neither as JavaScript nor as TypeScript: refused before they load. */
+    refusedBeforeImports?: boolean;
     /**
      * amaro's message for code that compiles neither as JavaScript nor as
      * TypeScript, which Node's report of V8's SyntaxError adds: after a

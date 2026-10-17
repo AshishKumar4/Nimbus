@@ -322,7 +322,8 @@ export function buildRuntimeHandler(spec, ctx0) {
             if (input.esModule && !print)
                 return { code: input.code, written: input.code, refusedBeforeImports: false, esModule: true, ...typeScript };
             const prepared = evalProgram(input.code, print, input.mode);
-            return { ...prepared, written: prepared.code, esModule: false, ...typeScript };
+            const refusedBeforeImports = prepared.refusedBeforeImports || input.refusedBeforeImports === true;
+            return { ...prepared, refusedBeforeImports, written: prepared.code, esModule: false, ...typeScript };
         }
         // ── --version ──
         if (line.version) {

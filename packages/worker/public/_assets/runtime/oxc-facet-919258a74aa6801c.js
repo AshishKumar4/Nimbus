@@ -6753,14 +6753,13 @@ error: the Oxc transform crashed (${reason})`);
         const keyword = previous !== types$1.dot && previous !== types$1.questionDot;
         previous = type;
         let syntax = null;
-        const key = (next) => !topLevel && (next.type === types$1.colon || next.type === types$1.parenL);
         if (keyword && type === types$1._export) {
           ahead = topLevel ? null : tokens.getToken();
-          if (ahead === null || !key(ahead)) syntax = "export";
+          if (ahead === null || !namesMember(ahead)) syntax = "export";
         } else if (keyword && type === types$1._import) {
           ahead = tokens.getToken();
           if (ahead.type === types$1.dot) syntax = "import.meta";
-          else if (ahead.type !== types$1.parenL && !key(ahead)) syntax = "import";
+          else if (ahead.type !== types$1.parenL && (topLevel || !namesMember(ahead))) syntax = "import";
         } else if (type === types$1.braceL || type === types$1.dollarBraceL) braces++;
         else if (type === types$1.braceR) braces = Math.max(0, braces - 1);
         else if (type === types$1.parenL) parens++;
@@ -6772,6 +6771,10 @@ error: the Oxc transform crashed (${reason})`);
     } catch {
       return null;
     }
+  }
+  function namesMember(next) {
+    const type = next.type;
+    return type === types$1.colon || type === types$1.parenL || type === types$1.eq || type === types$1.semi || type === types$1.braceR;
   }
   function applySourceEdits(source, edits) {
     const ordered = [...edits].sort((a, b) => a.start - b.start || a.end - b.end);

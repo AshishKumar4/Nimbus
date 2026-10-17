@@ -52,13 +52,10 @@ export function evalScriptSource(code, print) {
 /**
  * The entry code for eval code as Node's eval has it (evalScriptSource's,
  * or stdin's): with `print`, a body that returns its completion value.
- * Code Node compiles first (`mode` 'default') and cannot is refused before
- * `--import`'s modules load, where it fails to compile here too (a
- * top-level `return` compiles in the entry's function).
  */
 export function evalProgram(code, print, mode) {
     if (!print)
-        return { code, refusedBeforeImports: mode === 'default' && parsed(code, { ...SCRIPT, allowReturnOutsideFunction: true }) === null };
+        return { code, refusedBeforeImports: false };
     return mode === 'module' ? ESM_CANNOT_PRINT : printedProgram(code, mode);
 }
 /** Thrown as the program's first act, after its -r preloads, as Node throws it, with no arrow of this code (Node's is its loader's). */
@@ -103,7 +100,7 @@ export async function nodeEvalInput(source, script, inputType, strip) {
         return { code: script, esModule: false, mode: 'default', stripped: false };
     const stripped = await strip(script);
     if ('refusal' in stripped)
-        return { code: script, esModule: false, mode: 'default', stripped: false, hint: stripped.refusal.message };
+        return { code: script, esModule: false, mode: 'default', stripped: false, hint: stripped.refusal.message, refusedBeforeImports: true };
     // An ES module by its syntax once stripped: compiled as one, the source again.
     if (containsModuleSyntax(stripped.code, 'eval'))
         return evalTypeScriptModule(script, strip);

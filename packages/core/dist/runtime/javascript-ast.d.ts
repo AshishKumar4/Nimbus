@@ -96,8 +96,9 @@ export declare function containsModuleSyntax(source: string, scope?: 'file' | 'e
  * sees every token with whether it sits at top level and the module syntax
  * it opens: for an `import` or `export` keyword, the declaration (not
  * `import(`), at top level or not, and `import.meta`; never for a member
- * named so (after `.` or `?.`), nor, nested, a key or method (before `:`
- * or `(`). `visit` returns true to stop the walk.
+ * named so (after `.` or `?.`), nor, nested, a key, a method or a class
+ * field (before `:`, `(`, `=`, `;` or `}`). `visit` returns true to stop
+ * the walk.
  *
  * Returns true when `visit` stopped it, false at the end of the source, and
  * null when the source does not tokenize (as `sourceType` does).

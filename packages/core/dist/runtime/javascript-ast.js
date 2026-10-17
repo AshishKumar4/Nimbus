@@ -418,8 +418,9 @@ function unscopedAwaitScanner(source) {
  * sees every token with whether it sits at top level and the module syntax
  * it opens: for an `import` or `export` keyword, the declaration (not
  * `import(`), at top level or not, and `import.meta`; never for a member
- * named so (after `.` or `?.`), nor, nested, a key or method (before `:`
- * or `(`). `visit` returns true to stop the walk.
+ * named so (after `.` or `?.`), nor, nested, a key, a method or a class
+ * field (before `:`, `(`, `=`, `;` or `}`). `visit` returns true to stop
+ * the walk.
  *
  * Returns true when `visit` stopped it, false at the end of the source, and
  * null when the source does not tokenize (as `sourceType` does).
@@ -443,18 +444,16 @@ export function walkTopLevelModuleTokens(source, visit, sourceType = 'module') {
             const keyword = previous !== tokTypes.dot && previous !== tokTypes.questionDot;
             previous = type;
             let syntax = null;
-            // Nested, a key or a method named so (`{ import: x }`, `export() {}`) is no declaration.
-            const key = (next) => !topLevel && (next.type === tokTypes.colon || next.type === tokTypes.parenL);
             if (keyword && type === tokTypes._export) {
                 ahead = topLevel ? null : tokens.getToken();
-                if (ahead === null || !key(ahead))
+                if (ahead === null || !namesMember(ahead))
                     syntax = 'export';
             }
             else if (keyword && type === tokTypes._import) {
                 ahead = tokens.getToken();
                 if (ahead.type === tokTypes.dot)
                     syntax = 'import.meta';
-                else if (ahead.type !== tokTypes.parenL && !key(ahead))
+                else if (ahead.type !== tokTypes.parenL && (topLevel || !namesMember(ahead)))
                     syntax = 'import';
             }
             else if (type === tokTypes.braceL || type === tokTypes.dollarBraceL)
@@ -476,6 +475,11 @@ export function walkTopLevelModuleTokens(source, visit, sourceType = 'module') {
     catch {
         return null;
     }
+}
+/** Whether the token after a nested `import` or `export` makes it a key, a method or a class field named so (`{ import: x }`, `export() {}`, `export = 1`), not a declaration. */
+function namesMember(next) {
+    const type = next.type;
+    return type === tokTypes.colon || type === tokTypes.parenL || type === tokTypes.eq || type === tokTypes.semi || type === tokTypes.braceR;
 }
 /**
  * `source` with `edits` applied, in source order. Edits may come in any
