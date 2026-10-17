@@ -1,5 +1,5 @@
 import { base64Decode } from '@nimbus-sh/core/_shared/crypto.js';
-import { REPLAY_PREFIX_MAX_BYTES, REPLAY_TAPE_MAX_READINGS, REPLAY_TAPE_MAX_RANDOM_BYTES, REPLAY_TAPE_MAX_WRITES, REPLAY_WRITE_ENTRY_MAX_CHARS, STOP_RECORD_MAX_CHARS, STOP_RECORD_PREFIX } from './stop-replay-contracts.js';
+import { REPLAY_PREFIX_MAX_BYTES, REPLAY_TAPE_MAX_READINGS, REPLAY_TAPE_MAX_RANDOM_BYTES, STOP_RECORD_MAX_CHARS, STOP_RECORD_PREFIX } from './stop-replay-contracts.js';
 /** A tape's bytes from their base64: none for an absent or empty entry. */
 export function decodeBase64(text) {
     return text ? base64Decode(text) : new Uint8Array(0);
@@ -16,9 +16,7 @@ function isTape(value) {
     return Array.isArray(tape.seed) && tape.seed.length === 4 && tape.seed.every((word) => isCount(word, 0xffffffff))
         && isReadings(tape.now) && isReadings(tape.perf)
         && isBase64Within(tape.random, REPLAY_TAPE_MAX_RANDOM_BYTES)
-        && Array.isArray(tape.reads) && tape.reads.length <= REPLAY_TAPE_MAX_READINGS && tape.reads.every((n) => isCount(n, Number.MAX_SAFE_INTEGER))
-        && Array.isArray(tape.writes) && tape.writes.length <= REPLAY_TAPE_MAX_WRITES
-        && tape.writes.every((entry) => typeof entry === 'string' && entry.length <= REPLAY_WRITE_ENTRY_MAX_CHARS);
+        && Array.isArray(tape.reads) && tape.reads.length <= REPLAY_TAPE_MAX_READINGS && tape.reads.every((n) => isCount(n, Number.MAX_SAFE_INTEGER));
 }
 function isOutput(value) {
     if (!Array.isArray(value) || value.length > 4096)

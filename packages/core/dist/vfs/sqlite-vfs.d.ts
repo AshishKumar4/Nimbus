@@ -366,6 +366,8 @@ export interface CredentialedVfs {
     readonly epoch: string;
 }
 export declare const INODE_ROWS_PER_SQL_EXEC: number;
+/** Storage keys a run's changes are kept undoable for (captureRun): past them, it cannot be put back. */
+export declare const RUN_CAPTURE_MAX_KEYS = 4096;
 type TransactionLimit = 'blobBytes' | 'logicalRows' | 'sqlExecs';
 type TransactionSource = 'strict-batch' | 'range-mutation' | 'content-stage' | 'content-publish' | 'content-gc';
 interface TransactionPlanMetrics {
@@ -436,6 +438,12 @@ export interface VfsDiffEntry {
     change: 'added' | 'removed' | 'modified';
     type: VfsInodeKind;
 }
+/** What putting a run's changes back did (SqliteVFS.restoreRun): how many keys, or why it did nothing. */
+export type RunRestore = {
+    restored: number;
+} | {
+    refused: string;
+};
 export interface SqliteVfsOptions {
     /**
      * Inodes held in memory; defaults to INODE_CACHE_MAX_ENTRIES. SQLite holds
@@ -481,6 +489,11 @@ export declare class SqliteVFS {
      */
     private readonly writeObservers;
     private readonly observedRefs;
+    /** Runs whose changes are kept undoable (captureRun), by pid, and the rows they found, held. */
+    private readonly runCaptures;
+    private readonly capturedRefs;
+    /** The process whose wave is committing (waveScope): its run, if one is captured, keeps what it changes. */
+    private activeWriterPid;
     /** Whose call is running: the principal its write events name (a view's, re-entered by work it defers). */
     private activeOrigin;
     /**
@@ -1905,8 +1918,37 @@ export declare class SqliteVFS {
     /** The restore job for (name, subtree): the one a reset or a cold chunk stopped, or a new one. */
     private restoreJob;
     private runRestore;
+    /** `past` as a row written again: its identity, attributes and content by reference; its ctime and generation the writing transaction's. */
+    private restoredRow;
     /** The history row covering generation `g` at `path`, if any. */
     private historyAt;
+    /** Keep what process `pid`'s waves change, from now on, undoable (restoreRun). */
+    captureRun(pid: number): void;
+    /** Stop keeping process `pid`'s changes, and let go of the rows they held. */
+    releaseRun(pid: number): void;
+    /**
+     * Put each storage key process `pid` changed since captureRun back as the
+     * run found it, its row or no row, and stop keeping them. An ordinary write:
+     * new generations, events, before-images for a snapshot. It changes
+     * nothing, and says why, when it cannot put all of them back: they were
+     * not kept, or not all of them (past RUN_CAPTURE_MAX_KEYS), or another
+     * writer changed one since the run last did, or holds it.
+     */
+    restoreRun(pid: number): RunRestore;
+    /** `run` as process `pid`'s wave commit (null: no process's), whose run a capture may keep. */
+    private asWriterPid;
+    /** The committing run's capture has yet to keep `key`: what stands there must outlive the write, never be edited in place. */
+    private capturesFirst;
+    /**
+     * The keys `plan` changes that `capture` does not keep yet, each with the
+     * row there before the transaction (a copy: a resident row is replaced
+     * as it changes), or null. Read inside the transaction, before it writes.
+     */
+    private capturedBefores;
+    /** Once its transaction committed at `gen`: `capture` keeps the rows it found first, held, and each key as the transaction left it. */
+    private captureCommitted;
+    /** Let go of what `capture` held: collectable now, as a closed description's is. */
+    private unpinCapture;
     /**
      * Drop snapshot `name`: its row and pin_gen in one transaction, then the
      * history rows no remaining snapshot covers, a page per transaction, each
@@ -2369,7 +2411,10 @@ export declare class SqliteVFS {
     observeWrites(observer: (event: VfsWriteEvent) => void | Promise<void>): () => void;
     /** The event observers are handed for a committed mutation at `key`, its content held until they are done. */
     private writeEvent;
-    /** Every description holding content: the open ones, and the write events observers have not let go of. */
+    /**
+     * Every description holding content: the open ones, the write events
+     * observers have not let go of, and the rows captured runs found.
+     */
     private pinningNodes;
     private transactionSync;
     /**

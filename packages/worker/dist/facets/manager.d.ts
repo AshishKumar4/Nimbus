@@ -1807,10 +1807,11 @@ export declare class FacetManager {
     };
     /**
      * A one-shot that stopped at its first listen (stop-replay.ts listen) runs
-     * on as a resident, the same process: the resident replays the run up to
-     * that listen, checked against it, then listens and serves. What the
-     * one-shot printed is shown once; the resident prints it again only to be
-     * checked (the prefix).
+     * on as a resident, the same process: the resident starts from what the
+     * run started from (what the run changed put back, SqliteVFS.restoreRun),
+     * replays the run's draws and output up to that listen, then listens and
+     * serves. What the one-shot printed is shown once; the resident prints it
+     * again only to be checked (the prefix).
      */
     /**
      * A file's identity as the process sees it: which file, and its version;
