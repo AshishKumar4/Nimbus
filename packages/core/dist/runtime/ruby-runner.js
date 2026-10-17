@@ -1266,9 +1266,10 @@ async function __rubyRunOnce(args) {
     // RubyGems read its paths when the VM booted, before this env. Where a gem
     // was left off NIMBUS_GEM_LIBS for it to activate (NIMBUS_GEM_ACTIVATE),
     // it reads them again (Gem.clear_paths) whenever they differ from what it
-    // last read; elsewhere it never reads GEM_HOME, which would cost every
-    // default gem's require a search of it.
-    'begin; if defined?(Gem) && ENV["NIMBUS_GEM_ACTIVATE"] == "1"; e = [ENV["GEM_HOME"], ENV["GEM_PATH"]]; (Gem.clear_paths; $__nimbus_gem_env = e) unless $__nimbus_gem_env == e; end; rescue Exception; end',
+    // last read. Elsewhere Gem is not so much as named: naming it loads
+    // RubyGems (~450 ms), and reading GEM_HOME would cost every default gem's
+    // require a search of it.
+    'begin; if ENV["NIMBUS_GEM_ACTIVATE"] == "1"; e = [ENV["GEM_HOME"], ENV["GEM_PATH"]]; (Gem.clear_paths; $__nimbus_gem_env = e) unless $__nimbus_gem_env == e; end; rescue Exception; end',
     // A cwd it cannot enter fails the run before the program starts (the
     // body below), as a shell's cd fails, rather than running it in '/'. A
     // step that continues a VM (a prompt's next line) names no cwd and keeps
