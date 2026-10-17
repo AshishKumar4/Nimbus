@@ -42,7 +42,8 @@ const CONTEXTS = [
   // Reserved words, as the command word and as terminators.
   ...['then', 'fi', 'do', 'done', 'esac', 'in', 'elif', 'else', '}', '!', ']]'].map((word) => ({ line: `@ true; echo "st=$?"`, payloads: [word] })),
   { line: `@ true; then echo T; fi; echo "st=$?"`, payloads: ['if'] },
-  { line: `@ false; do :; done; echo "st=$?"`, payloads: ['while', 'until'] },
+  // The body breaks: `until false` would loop forever.
+  { line: `@ false; do break; done; echo "st=$?"`, payloads: ['while', 'until'] },
   { line: `@ x in a; do echo "[$x]"; done; echo "st=$?"`, payloads: ['for'] },
   { line: `@ a in a) echo A;; esac; echo "st=$?"`, payloads: ['case'] },
   { line: `@ echo G; }; echo "st=$?"`, payloads: ['{'] },
@@ -100,7 +101,8 @@ for (const line of CASES) {
   const dir = mkdtempSync(join(tmpdir(), 'shell-quoting-contexts-'));
   try {
     for (const file of FILES) writeFileSync(join(dir, file), '');
-    const r = spawnSync('bash', ['--norc', '--noprofile', '-O', 'expand_aliases', '-c', line], { cwd: dir, encoding: 'utf8', env: { PATH: process.env.PATH, LC_ALL: 'C.UTF-8' } });
+    const r = spawnSync('bash', ['--norc', '--noprofile', '-O', 'expand_aliases', '-c', line], { cwd: dir, encoding: 'utf8', timeout: 10_000, env: { PATH: process.env.PATH, LC_ALL: 'C.UTF-8' } });
+    assert.equal(r.error, undefined, `bash ran ${JSON.stringify(line)}: ${r.error?.message}`);
     bash.set(line, { stdout: r.stdout, stderr: plainStderr(r.stderr), status: r.status });
   } finally {
     rmSync(dir, { recursive: true, force: true });
