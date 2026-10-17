@@ -899,9 +899,13 @@ export function provisional(host) {
             fit(inode);
             release(inode);
         },
-        rekey: (inode, key) => {
-            inode.key = inode.origin = key;
-            fit(inode);
+        moved: (from, to) => {
+            for (const inode of everyInode()) {
+                if (inode.cell?.detached !== undefined || !within(inode.key, from))
+                    continue;
+                inode.key = inode.origin = to + inode.key.slice(from.length);
+                fit(inode);
+            }
         },
         unhold: (inode, entry) => {
             const cell = inode.cell;
@@ -933,11 +937,6 @@ export function provisional(host) {
                 return undefined;
             const description = desc.description ?? anchorOf(desc.inode);
             return description === undefined ? undefined : sessions.get(description);
-        },
-        unnamed: (handleId) => {
-            const inode = descs.get(handleId)?.inode;
-            // One made here and not yet the session's has no other name there to be found by.
-            return inode !== undefined && inode.cell === undefined && !inode.local && !named(inode);
         },
         anchored: (description, handle) => {
             if (handle !== undefined)

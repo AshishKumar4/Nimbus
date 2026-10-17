@@ -17,7 +17,7 @@ export interface OwnNamesOptions {
 export interface OwnNames {
     /** This process's word on `key`: what it decided, or absent for a name not made in a directory it made. Undefined where it has none. */
     entry(key: string): ResidentEntry | null | undefined;
-    /** What it decided, by name (null: removed): read and changed as the holder decides; deciding a name again makes it the deciding grant's. */
+    /** What it decided, by name (null: removed): read and changed as the holder decides; a name decided again is the deciding grant's. */
     readonly decided: Map<string, ResidentEntry | null>;
     /** Its decision at `key` is no longer its own: the session's answer replaced it. */
     undecide(key: string): void;

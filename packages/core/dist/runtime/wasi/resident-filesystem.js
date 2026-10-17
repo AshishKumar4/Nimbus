@@ -962,7 +962,8 @@ export function residentFilesystem(session, resident, delegation) {
      * wait reads what is here, or is refused (not resident, or ESTALE).
      */
     const readOwn = (handleId, offset, length) => {
-        if (!now && holder.provisional.sessionOf(handleId) !== undefined && holder.provisional.unnamed(handleId))
+        // A caller that may wait reads a file the session has a description of through it, as the session has the file now (a peer's change included).
+        if (!now && holder.provisional.sessionOf(handleId) !== undefined)
             return readByAnchor(handleId, offset, length);
         const read = () => holder.read(handleId, offset, length);
         let done;
@@ -1079,8 +1080,8 @@ export function residentFilesystem(session, resident, delegation) {
             }, () => authority.fstat(handleId));
         if (holder?.owns(handleId))
             return caughtUpFor(() => {
-                // A file no name the view has leads to: as its open description at the session has it (its names, its size), as its reads are.
-                if (!now && holder.provisional.sessionOf(handleId) !== undefined && holder.provisional.unnamed(handleId))
+                // As its open description at the session has it (its names, its size), as its reads are.
+                if (!now && holder.provisional.sessionOf(handleId) !== undefined)
                     return statByAnchor(handleId);
                 counts.local++;
                 return statOf(holder.fstat(handleId));

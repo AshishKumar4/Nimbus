@@ -17,15 +17,14 @@ function within(key, root) {
     return key === root || key.startsWith(`${root}/`);
 }
 export function ownNames(options) {
-    /** The barriers begun when each name's subtree was last given back, everything decided there answered, and not decided again since: one begun after retires it. */
+    const decided = new Map();
+    /**
+     * The barrier begun when each name's subtree was last given back,
+     * everything decided there answered, and the decision it gave back: one
+     * begun after retires it, unless the name was decided again since (a new
+     * decision is a new row).
+     */
     const own = new Map();
-    /** What it decided; a name decided again is the deciding grant's, whatever an earlier one gave back. */
-    const decided = new (class extends Map {
-        set(key, value) {
-            own.delete(key);
-            return super.set(key, value);
-        }
-    })();
     const added = new Map();
     const removed = new Map();
     let barriers = 0;
@@ -124,16 +123,19 @@ export function ownNames(options) {
         },
         released: (root) => {
             // Stamped at every release: one decided under a later grant retires after this release, not an earlier one.
-            for (const key of decided.keys())
+            for (const [key, decision] of decided)
                 if (within(key, root))
-                    own.set(key, barriers);
+                    own.set(key, { barrier: barriers, decision });
         },
         barrierBegun: () => ++barriers,
         // A subtree held again since does not keep it: what the session has there now is what the view read.
         retire: (begun) => {
-            for (const [key, settled] of [...own])
-                if (settled < begun)
+            for (const [key, { barrier, decision }] of [...own]) {
+                if (decided.get(key) !== decision)
+                    own.delete(key);
+                else if (barrier < begun)
                     forget(key);
+            }
         },
     };
 }
