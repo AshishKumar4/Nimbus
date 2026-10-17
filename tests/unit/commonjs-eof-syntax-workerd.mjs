@@ -50,6 +50,14 @@ const sources = {
     "  console.log(name, errors[0] === errors[1], errors[1] instanceof SyntaxError, errors[1].message);",
     "  console.log(errors[1].stack.split('\\n').slice(0, 5).join('\\n'));",
     '}',
+    // What the program does to the first error, or to the global SyntaxError, reaches no later one.
+    'let first;',
+    "try { require('./open-call.js'); } catch (error) { first = error; }",
+    "Object.defineProperty(first, 'message', { get() { throw 123; } });",
+    'const Native = SyntaxError;',
+    'globalThis.SyntaxError = function SyntaxError() { return { fake: true }; };',
+    "try { require('./open-call.js'); } catch (error) { console.log(error instanceof Native, error.fake, error.message); console.log(error.stack.split('\\n').slice(0, 5).join('\\n')); }",
+    'globalThis.SyntaxError = Native;',
     '',
   ].join('\n'),
 };
