@@ -28,62 +28,63 @@ const ran = (result, stdout) => {
   assert.equal(result.stdout, stdout);
 };
 
-await runScenarios(fileURLToPath(import.meta.url), {
-  async runningWorkReclaims() {
-    for (const brokered of [false, true]) {
-      const authority = createAuthority();
-      adoptSessionSupervisor(authority.host, () => {});
-      const { manager, ctx } = session(authority, `reclaimed-${brokered}`);
-      const cwd = '/home/user/reclaimed';
-      authority.kfs.mkdir(cwd);
-      authority.kfs.writeFile(`${cwd}/cell.js`, `module.exports = 7;\n// ${'x'.repeat(256 * 1024)}\n`);
-      const code = 'process.stdout.write(String(require("./cell.js")))';
-      const options = { cwd, filename: `${cwd}/run.js`, captureOutput: true };
-      const holds = [];
-      const other = createFacetCtx(createFacetWorld(() => ({})), `running-${brokered}`);
-      const running = beginLoaderFetch(other, 'running-facet');
-      try {
-        let waiting;
-        if (brokered) {
-          const entry = authority.host.processes.spawn('node run.js', [], cwd);
-          waiting = withLaunchAdmission(ctx, { pid: entry.pid }, undefined, () => {
-            const done = manager.exec(code, { ...options, skipSpawn: true, callerPid: entry.pid });
-            holds.push(...occupy(ctx));
-            return done;
-          });
-        } else {
-          holds.push(...occupy(ctx));
-          waiting = manager.exec(code, options);
-        }
-        for (let attempt = 0; attempt < 2; attempt++) {
-          await until(() => manager.launchState().launches[0]?.stage === 'admission' && loaderLedgerStats(ctx).waiting === 1,
-            'the generated map is parked on its own session ledger', 20_000);
-          assert.ok(readSupervisorAllocationBudget().current > 0, 'the parked map retains its share');
-          let timer;
-          const lease = await Promise.race([
-            acquireSupervisorRunningAllocation(readSupervisorAllocationBudget().capacity),
-            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('running work waited on a parked launch')), 5000); }),
-          ]).finally(() => clearTimeout(timer));
-          try {
-            await until(() => manager.launchState().launches[0]?.stage === 'prepare' && loaderLedgerStats(ctx).waiting === 0,
-              'the reclaimed launch leaves its worker wait and prepares again');
-            assert.equal(readSupervisorAllocationBudget().current, lease.bytes, 'only running work holds credit after reclaim');
-            assert.deepEqual(loaderLedgerStats(other).inFlightWorkers, ['running-facet'], 'the running facet kept its worker');
-          } finally {
-            lease.release();
-          }
-        }
-        await until(() => manager.launchState().launches[0]?.stage === 'admission' && loaderLedgerStats(ctx).waiting === 1,
-          'the map is generated and parked again', 20_000);
-        holds.shift()();
-        ran(await waiting, '7');
-      } finally {
-        for (const release of holds) release();
-        running();
-      }
-      drained();
+async function runningWorkReclaims(brokered) {
+  const authority = createAuthority();
+  adoptSessionSupervisor(authority.host, () => {});
+  const { manager, ctx } = session(authority, `reclaimed-${brokered}`);
+  const cwd = '/home/user/reclaimed';
+  authority.kfs.mkdir(cwd);
+  authority.kfs.writeFile(`${cwd}/cell.js`, `module.exports = 7;\n// ${'x'.repeat(256 * 1024)}\n`);
+  const code = 'process.stdout.write(String(require("./cell.js")))';
+  const options = { cwd, filename: `${cwd}/run.js`, captureOutput: true };
+  const holds = [];
+  const other = createFacetCtx(createFacetWorld(() => ({})), `running-${brokered}`);
+  const running = beginLoaderFetch(other, 'running-facet');
+  try {
+    let waiting;
+    if (brokered) {
+      const entry = authority.host.processes.spawn('node run.js', [], cwd);
+      waiting = withLaunchAdmission(ctx, { pid: entry.pid }, undefined, () => {
+        const done = manager.exec(code, { ...options, skipSpawn: true, callerPid: entry.pid });
+        holds.push(...occupy(ctx));
+        return done;
+      });
+    } else {
+      holds.push(...occupy(ctx));
+      waiting = manager.exec(code, options);
     }
-  },
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await until(() => manager.launchState().launches[0]?.stage === 'admission' && loaderLedgerStats(ctx).waiting === 1,
+        'the generated map is parked on its own session ledger', 20_000);
+      assert.ok(readSupervisorAllocationBudget().current > 0, 'the parked map retains its share');
+      let timer;
+      const lease = await Promise.race([
+        acquireSupervisorRunningAllocation(readSupervisorAllocationBudget().capacity),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('running work waited on a parked launch')), 5000); }),
+      ]).finally(() => clearTimeout(timer));
+      try {
+        await until(() => manager.launchState().launches[0]?.stage === 'prepare' && loaderLedgerStats(ctx).waiting === 0,
+          'the reclaimed launch leaves its worker wait and prepares again');
+        assert.equal(readSupervisorAllocationBudget().current, lease.bytes, 'only running work holds credit after reclaim');
+        assert.deepEqual(loaderLedgerStats(other).inFlightWorkers, ['running-facet'], 'the running facet kept its worker');
+      } finally {
+        lease.release();
+      }
+    }
+    await until(() => manager.launchState().launches[0]?.stage === 'admission' && loaderLedgerStats(ctx).waiting === 1,
+      'the map is generated and parked again', 20_000);
+    holds.shift()();
+    ran(await waiting, '7');
+  } finally {
+    for (const release of holds) release();
+    running();
+  }
+  drained();
+}
+
+await runScenarios(fileURLToPath(import.meta.url), {
+  runningWorkReclaims: () => runningWorkReclaims(false),
+  brokeredReclaims: () => runningWorkReclaims(true),
 
   async entryHelperOwner() {
     const authority = createAuthority();
