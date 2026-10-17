@@ -139,6 +139,29 @@ The 2026-10-14 and 2026-10-15 versions reached production but were never publish
 - Fixed: a resident process fills a file it listed from a synchronously mounted backend (`/mnt/data`, an SDK embedder's mount). Before, the read named the engine's epoch, which a mounted path never matches, and was refused (ESTALE). A read of a mounted file now names the file as its listing's stat did (`RuntimeReadOptions.expectedFile`: device, inode, size, mtime, ctime) and is refused only if it is no longer that file. A mounted read that names the engine's epoch is refused by the asynchronous path too, as by the synchronous one. A filled mounted file is still undated in the store: it vouches for nothing on a relaunch.
 - Fixed: a hosted ES module that statically imports a file the program writes after it starts (a module staged with the launch, its import of `./generated.mjs` written at runtime) finds the file when it is imported, as Node does. Before, the import failed with "Cannot find module", because the file was missing when the launch began. One still missing fails with Node's `ERR_MODULE_NOT_FOUND`, and, as in Node, so do later imports of the modules that failed to link, even once the file is written; a `require()` tries again. A query's or a fragment's import of such a file (`./generated.json?x`) loads as the file's format.
 - Changed: the hosted node's `node:path` posix half is now Node v22.22.3's own `lib/path.js`, ported onto built-ins the launch captures before any program code runs. A program that replaces `String.prototype.charCodeAt`, `slice` and the like gets from `path` what Node's `path` gives, where workerd's `path` used to fail. Its key order, function names and argument errors are Node's, including `path.join` failing, as Node's does, when `Array.prototype.push` is replaced. `win32` and `matchesGlob` remain the platform's.
+- Changed (docs): the docs' sandbox terminal keeps the session it booted
+  per attach endpoint, so two endpoints on one origin no longer share it. A
+  browser that cached a session the old way keeps it: the first visit moves
+  it to the new key and removes the old ones.
+- Fixed (shell): when the Explorer's first listing fails (a lost connection,
+  a refused listing), selecting the Editor again lists the files. Before,
+  the tree counted itself loaded and kept the error until Refresh. A
+  folder's icon now opens and closes with the folder; it kept the state the
+  folder had when first shown. A Markdown preview renders once per open and
+  reload, not twice.
+- Breaking (react): `useNimbusSession` no longer takes `tenant` or `sub`.
+  The hook never read them; identity belongs to the token.
+  `<NimbusTerminal />` keeps both props, to show on its iframe. Drop them
+  from a hook call.
+- Fixed (react): the headless `useNimbusSession` guide (README and the
+  hook's own example) works as written. It mounts the iframe at once and
+  shows its loading state over it until the shell reports ready. Before,
+  it waited for ready before mounting the iframe, and only that iframe
+  could report ready, so it showed "Loading…" forever.
+- Fixed (agent chat): a running tool's timer counts from when the tool
+  started. Before, a chat opened while a tool ran showed it starting from
+  zero, and a tool whose start was unknown showed a timer it could not
+  know.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each

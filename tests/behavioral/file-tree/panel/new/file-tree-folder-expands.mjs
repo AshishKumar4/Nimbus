@@ -2,7 +2,9 @@
 // file-tree/panel/new/file-tree-folder-expands — the lazy fs-list a
 // folder click lists with (a directory at the root, its children, the
 // reqId echoed), and, in a real Chrome, clicking a folder: its children
-// show, a second click hides them, and a child opens in the editor.
+// show, a second click hides them, and a child opens in the editor. Its icon
+// follows its expansion, after a reload that restores it too (red before:
+// the icon was the expansion when the folder was first seen).
 
 import WebSocket from 'ws';
 import { mintSession, deleteSession, BASE, WS_BASE, makeAsserter, sleep, wsHeaders, requestHeaders } from '../../../_driver.mjs';
@@ -65,12 +67,28 @@ try {
   await page.goto(`${BASE}/s/${sid}/`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
   await page.waitForFunction(() => window.__nimbusMonacoEditor, { timeout: 60_000 });
   const row = (path) => `.tree-node[data-path="${path}"]`;
+  // A folder's icon is its expansion's: open while its children show, closed while they do not.
+  const icon = (path) => page.$eval(`${row(path)} .tree-icon`, (el) => el.textContent);
+  await page.waitForSelector(row(folder), { visible: true, timeout: 30_000 });
+  a.check('a closed folder shows a closed icon', await icon(folder) === '📁', await icon(folder));
   await page.locator(row(folder)).click();
   await page.waitForSelector(row(child), { visible: true, timeout: 30_000 });
   a.check('clicking a folder lists its children', true);
+  a.check('an expanded folder shows an open icon', await icon(folder) === '📂', await icon(folder));
   await page.locator(row(folder)).click();
   await page.waitForSelector(row(child), { hidden: true, timeout: 10_000 });
   a.check('clicking it again hides them', true);
+  a.check('collapsed again, it shows a closed icon', await icon(folder) === '📁', await icon(folder));
+  await page.locator(row(folder)).click();
+  await page.waitForSelector(row(child), { visible: true, timeout: 30_000 });
+  // Reloaded with the folder expanded (the tree keeps that), it opens open and collapses closed.
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 });
+  await page.waitForSelector(row(child), { visible: true, timeout: 60_000 });
+  a.check('a folder restored expanded shows an open icon', await icon(folder) === '📂', await icon(folder));
+  await page.locator(row(folder)).click();
+  await page.waitForSelector(row(child), { hidden: true, timeout: 10_000 });
+  a.check('collapsed after a restore, it shows a closed icon', await icon(folder) === '📁', await icon(folder));
+  await page.waitForFunction(() => window.__nimbusMonacoEditor, { timeout: 60_000 });
   await page.locator(row(folder)).click();
   await page.locator(row(child)).click();
   await page.waitForFunction((text) => window.__nimbusMonacoEditor.getValue() === text, { timeout: 30_000 }, 'inside the folder\n');
