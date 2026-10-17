@@ -23,7 +23,9 @@ export const REAL_NOW_SOURCE = '(typeof __nimbusStopReplay !== "undefined" ? __n
  *   write / ackedRun     each streamed chunk of output on its way out, and the ones a call took.
  *   readSome / readAll   how many bytes a synchronous read of stdin returns.
  *   block(until, syscall)  a read cannot complete: stops the run, or says why it cannot.
- *   mutation(op)         a change to the filesystem: recorded, and checked when replayed.
+ *   mutation(op)         a change to the filesystem: recorded, and checked when replayed
+ *                        (each path's in order; those of unrelated paths as
+ *                        the program's concurrent work interleaves them).
  *   listen()             a server's first listen: a promotable run stops there,
  *                        to be run again as a resident that serves.
  *   effect(what) / unreplayable(why)  why a stop could not be replayed.
@@ -41,6 +43,9 @@ const __nimbusStopReplay = (() => {
   const ReflectApply = Reflect.apply;
   const StringCharCodeAt = String.prototype.charCodeAt;
   const StringFromCharCode = String.fromCharCode;
+  const StringIndexOf = String.prototype.indexOf;
+  const StringLastIndexOf = String.prototype.lastIndexOf;
+  const StringSlice = String.prototype.slice;
   const TypedArrayLength = Reflect.getOwnPropertyDescriptor(Reflect.getPrototypeOf(Uint8Array.prototype), "length").get;
   const NumberIsFinite = Number.isFinite;
   const DateNow = Date.now;
@@ -175,6 +180,36 @@ const __nimbusStopReplay = (() => {
     throw new Error("node: this program did not retrace its run before when Nimbus ran it again to wait for stdin: " + text);
   }
   const replaying = () => run !== null && run.replay !== null && !run.boundaryPassed;
+  // Changes of two paths (a tape entry names its first): never retraced out of their order.
+  const TWO_PATHS = { rename: true, copyFile: true, link: true };
+  // A tape entry: "<call> <path> <digest>".
+  const entryName = (entry) => ReflectApply(StringSlice, entry, [0, ReflectApply(StringIndexOf, entry, [" "])]);
+  const entryPath = (entry) => ReflectApply(StringSlice, entry, [ReflectApply(StringIndexOf, entry, [" "]) + 1, ReflectApply(StringLastIndexOf, entry, [" "])]);
+  const within = (path, dir) => ReflectApply(StringSlice, path, [0, dir.length + 1]) === dir + "/";
+  // Whether changes of these two (call, path) find the same filesystem in
+  // either order: other paths, neither within the other, of one path each.
+  function unrelated(name, path, otherName, other) {
+    if (TWO_PATHS[name] === true || TWO_PATHS[otherName] === true || path === "" || other === "") return false;
+    return path !== other && !within(path, other) && !within(other, path);
+  }
+  // Where in the tape a run again's change \`entry\` is: the first change
+  // still to come, or a later one, past changes still to come of unrelated
+  // paths (the program's concurrent work interleaves its changes as it
+  // likes; each path's come in order). -1 where it is none of them.
+  function retraceAt(entry, name, path) {
+    const writes = run.tape.writes;
+    for (let i = run.firstOpen; i < run.replayedWrites; i++) {
+      if (run.retraced[i]) continue;
+      if (writes[i] === entry) return i;
+      if (!unrelated(name, path, entryName(writes[i]), entryPath(writes[i]))) return -1;
+    }
+    return -1;
+  }
+  function retrace(at) {
+    run.retraced[at] = true;
+    run.writesAt++;
+    while (run.firstOpen < run.replayedWrites && run.retraced[run.firstOpen]) run.firstOpen++;
+  }
   // D1: once a run cannot be replayed it records nothing more.
   const recording = () => run !== null && run.recordTape && run.why === null;
   function unreplayable(why) {
@@ -280,6 +315,9 @@ const __nimbusStopReplay = (() => {
     run.tape = { seed, now, perf, drawn, reads: tape ? tape.reads.slice() : [], writes };
     run.replayedReads = tape ? tape.reads.length : 0;
     run.replayedWrites = writes.length;
+    // Which of the tape's changes the run again has made (retrace).
+    run.retraced = [];
+    for (let i = 0; i < writes.length; i++) run.retraced[i] = false;
     run.recordTape = record;
 
     Math.random = seeded(seed);
@@ -398,7 +436,9 @@ const __nimbusStopReplay = (() => {
         // A one-shot: its first listen stops it, to be run again as a resident.
         promote: !!launch.promote,
         listened: false,
+        // How many of the tape's changes the run again has made, and the first it has not.
         writesAt: 0,
+        firstOpen: 0,
         writeBytes: 0,
         replay,
         armed: false,
@@ -518,9 +558,9 @@ const __nimbusStopReplay = (() => {
       const size = data && typeof data.byteLength === "number" ? data.byteLength : 0;
       if (replaying() && run.writesAt < run.replayedWrites) {
         const entry = name + " " + path + " " + digest(op);
-        const recorded = run.tape.writes[run.writesAt];
-        if (recorded !== entry) diverge("it changed the filesystem otherwise than the run before it: " + entry + " where that run made " + recorded);
-        run.writesAt++;
+        const at = retraceAt(entry, name, path);
+        if (at < 0) diverge("it changed the filesystem otherwise than the run before it: " + entry + " where that run made " + run.tape.writes[run.firstOpen]);
+        retrace(at);
         return;
       }
       if (replaying()) diverge("it changed the filesystem more than the run before it had by then (" + name + " " + path + ")");
@@ -543,7 +583,8 @@ const __nimbusStopReplay = (() => {
       const call = op.type === "call" ? op.call : op;
       const name = op.type === "call" ? "" + call.call : "" + op.type;
       const path = typeof call.path === "string" ? call.path : "";
-      if (run.tape.writes[run.writesAt] === name + " " + path + " " + digest(op)) run.writesAt++;
+      const at = retraceAt(name + " " + path + " " + digest(op), name, path);
+      if (at >= 0) retrace(at);
     },
     // A server's first listen, before it binds or reserves anything. A run
     // again of a run that stopped here has reached where it stopped; a
