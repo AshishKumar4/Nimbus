@@ -2688,10 +2688,14 @@ function wasmImageDigest(bytes) {
 return { WASM_IMAGE_HASH_SEED, wasmImageDigest, wasmImageHash, wasmImageKey };
 })();
 
-/** The key of the bytes a compile was handed; null for anything but a Uint8Array or an ArrayBuffer. */
+/**
+ * The key of the bytes a compile was handed: an ArrayBuffer's, or the range
+ * a view of one spans, whatever its kind (DataView, any typed array), as
+ * WebAssembly reads a BufferSource; null for anything else.
+ */
 function __nimbusWasmDigest(bytes) {
-  const view = bytes instanceof Uint8Array
-    ? bytes
+  const view = ArrayBuffer.isView(bytes) && bytes.buffer instanceof ArrayBuffer
+    ? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
     : (bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : null);
   return view === null ? null : wasmImageDigest(view);
 }
