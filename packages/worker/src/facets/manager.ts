@@ -4913,6 +4913,7 @@ async function _buildPrefetchBundle(
       try { return new Map((await vfs.readdir(dir)).map((entry) => [entry.name, entry.type])); } catch { return null; }
     };
     phase('fit');
+    const credit = prefetchReadCredit.getStore();
     // With no module to stage, the map carries no ES module host at all.
     if (cells.size > 0) esm = await stageEsModules({ files: filesOf(vfs), realpath: async (path) => await vfs.realpath(path), entries, held }, cells, {
       conditions,
@@ -4922,17 +4923,13 @@ async function _buildPrefetchBundle(
       typeScript: stripTypes !== 'javascript',
       isCode: (key) => !dataModules.has(key) && (emits.has(key) || (typeof bundle[key] === 'string' && isCodeCellPath(key))),
       gate: true,
+      emitted: credit === undefined ? undefined : (path, text) => credit.charge(path, utf8Length(text), 'emit'),
     });
     // Staging reads and rewrites its modules' text, which the map's
     // serialization spends as it carries each one (buildFacetVfsBundleSource),
     // as it spent each lowered module's emit: each staged byte is spent once.
     // A pass's bundle weight here cost a launch over lodash-es a turn of its own.
     for (const key of esm?.modules.keys() ?? []) emits.delete(key);
-    const credit = prefetchReadCredit.getStore();
-    if (credit !== undefined) {
-      for (const [path, staged] of esm?.modules ?? []) credit.charge(path, utf8Length(staged.text), 'emit');
-      for (const [path, text] of Object.entries(esm?.members ?? {})) credit.charge(path, utf8Length(text), 'emit');
-    }
     phase('stage');
   }
   phase('rest');
