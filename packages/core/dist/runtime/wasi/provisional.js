@@ -1211,8 +1211,9 @@ export function provisional(host) {
                     continue;
                 const seen = viewed(inode);
                 if (seen === undefined) {
-                    // No name leads to it in the view: what it holds is what retired made of it, where its baseline's bytes can say so (else they stay records).
-                    if (inode.base !== null && inode.base.bytes === null && retired.some((record) => payloadOf(record.op) > 0))
+                    // No name leads to it in the view: what it holds is what retired made of it, where its baseline's bytes can say so
+                    // (else they stay records while a descriptor may still read them).
+                    if (inode.descs > 0 && inode.base !== null && inode.base.bytes === null && retired.some((record) => payloadOf(record.op) > 0))
                         continue;
                     inode.records = inode.records.filter((record) => !retired.includes(record));
                     if (inode.base !== null)
