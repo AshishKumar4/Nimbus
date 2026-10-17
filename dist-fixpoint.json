@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "195bec598a6e4aab709f767438ff89b7d40137027f3b9e57634b82e874d7eb36",
+  "fingerprint": "8ab0f20ce7117f70f2ba6eec019bfb307363cb661f706cbb9f0ec6c7de691427",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -551,8 +551,8 @@
     "packages/core/dist/runtime/node-cli.d.ts.map": "f3e396c4fcbd6dc26bad46371e5dcdb9e84574457866cbda09c14cf3a688554e",
     "packages/core/dist/runtime/node-cli.js": "2de1f83103bb8f682085e09a0d93dd30adb21684dc28bbdaabde1ce364dea80b",
     "packages/core/dist/runtime/node-eval.d.ts": "3b920a9e7a434c0ed4c2aef2f41beca4394ea3c954be0aa4c383bff4f1038d3e",
-    "packages/core/dist/runtime/node-eval.d.ts.map": "b3646bf960a7c2e5dd9b6cdc23d4fa9f7f21fbee23f69537d0e0e1110a69f234",
-    "packages/core/dist/runtime/node-eval.js": "4b76a2f3acf1ac6e6088b9daccdf2226bd0836ecb7967f3eb0563e93743e2031",
+    "packages/core/dist/runtime/node-eval.d.ts.map": "2ae8eae532e6f176416f5454e57df5938ee81313ec4e3072931a9767a66f2afd",
+    "packages/core/dist/runtime/node-eval.js": "c3b8d9c9c0d3f5e7b1061e24eaccce12f53b1b3846c580c06c87643b2061072b",
     "packages/core/dist/runtime/npm-bin-map.d.ts": "5eca6d6f203e10f0bc43538b5a5bc7a1f1f65555f2fc3b73e5df70fbcf12a519",
     "packages/core/dist/runtime/npm-bin-map.d.ts.map": "9e59ae78b6cc204a515b1e107f361cd818e3d7f5955a231a5654c16670e32157",
     "packages/core/dist/runtime/npm-bin-map.js": "b235c6c76fc0bf8b0887f052bd1612a4218443e4e60676e0ef543ffa1de0da0c",
@@ -1558,7 +1558,7 @@
     "packages/core/src/runtime/node-builtins.ts": "ace1fcbb8d52fe8aa4db06468e701a964491e6ab71220426c37e2fd6de3a7a1f",
     "packages/core/src/runtime/node-cli-options.generated.ts": "e234a4068794a9d3717994cd0068159fea32024c357075a23913dad91bd6d1ca",
     "packages/core/src/runtime/node-cli.ts": "28cf82d0f8f90a77c27539e1c3d274111241ef4adc472521b9b65bdf4bed2127",
-    "packages/core/src/runtime/node-eval.ts": "d3cf80a0a4deb4f8d42998f784f14933651e2ae0fed9c43feaff4cdc16b50864",
+    "packages/core/src/runtime/node-eval.ts": "68bb12fd105721210261b013c78e79810b3622e1a095847082a75efb663c4183",
     "packages/core/src/runtime/npm-bin-map.ts": "6592d61e54fb2895695f6af8a983277fc206555337689239f96c421daa723508",
     "packages/core/src/runtime/opentui-wasm-backend.ts": "aecca126a34033d81f5487c720260ad53c57ef6051e9a3d47e8f88756e2d9f51",
     "packages/core/src/runtime/os-contracts.ts": "14be4a8d74a6dcc5f30fe310c87defd559ff268e6e7862c8ba8c0c02c6c76b38",
