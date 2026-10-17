@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "38c618b93b91dd78130889b55fc94d564e3358e27b3581693f0ecc38bc558dfe",
+  "fingerprint": "9c356a62587b5e632d550773ea9f4cc6d2ac4c2b6e111822f00a11e333df41a7",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1397,7 +1397,7 @@
     "packages/core/dist/workspace/workspace-fs.d.ts.map": "bdb084d9f099ca3392fedb6cea2cc1d1740f0b57a559d4a26f7e437f0657ff94",
     "packages/core/dist/workspace/workspace-fs.js": "d2db021e8caec4e44977f5c57dada51035d14e82cee71671e9e1c3a7d0ebdb9e",
     "packages/core/package.json": "c6a6342cf0e5f414c187b56e9e0cdb0dfd36dc6a3fde839cbf187d49cf21750b",
-    "packages/core/scripts/check-runtime-packages.mjs": "703e15f4a50f92542bf0b79ac34b15a9cb2d8cc105eb0faae7dc2b645b1a7df7",
+    "packages/core/scripts/check-runtime-packages.mjs": "7a92dc88a64fcfca08516bcba2d142c5a32a0513a7adfc3c331b163de17f4dcf",
     "packages/core/scripts/compile-npm-libs.mjs": "29cc01ad8325c4bba53bb437d49acec07d95e71cc6506b7fed3f5c5214a36bff",
     "packages/core/scripts/gen-node-cli-options.mjs": "6c0b90900818a4cbef82fb639f9875d79c791cdc51887aa14d376dec1b651627",
     "packages/core/scripts/generate-filesystem-mirrors.mjs": "65ccc1af9242765d7293581224802fb49c5e4aa1b23684e566b005108277dd9e",
@@ -3087,7 +3087,7 @@
     "packages/worker/scripts/bundle-plugin-react.mjs": "950ad771c2a436e2936bffd8036f871adb1bf3790f27d2a50b2e647f0dadaaf7",
     "packages/worker/scripts/bundle-preview-isolation.mjs": "7fb9e5e8291df975c35dbe94bab6573ba516414c7590f91a37d99f2da547f066",
     "packages/worker/scripts/bundle-real-vite.mjs": "69089a5cae91d1fbea96982cdf6467bdfcad7d3f961fb966c1162734e4b1b616",
-    "packages/worker/scripts/bundle-runtime.mjs": "748835a301dbf28e7016094b3b44c214e6473aa3fb89c2108f86157b99f653fd",
+    "packages/worker/scripts/bundle-runtime.mjs": "fb45608e7a9e630c2c2e46905f9cd596593b0fad8d17b47905b2a910e29c96da",
     "packages/worker/scripts/bundle-sqlite-wasm.mjs": "4b022a57c81375ad5e03743979dc93f23c955585a78f7f97150f1f1275c96ffd",
     "packages/worker/scripts/bundle-tailwind-play.mjs": "bd59ae32270946f6c3d0624a929ac8e551602a543a3a928ae3e0d40331c8ef3e",
     "packages/worker/scripts/cf-git-patch.mjs": "f4539f526a13bd975e0120c92074597178dcac014f7880a9ed454a07aab98675",
