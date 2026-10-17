@@ -56,29 +56,25 @@ function longUtf8Length(text: string): number {
 }
 
 /**
- * The code point at `index` of `text` as TextEncoder encodes it, with the
- * units it spans: a pair is one code point past U+FFFF, and a lone
- * surrogate is U+FFFD.
+ * The code point at `index` of `text`: a pair is one past U+FFFF, and a lone
+ * surrogate is its own (as WTF-8 writes it, between U+D7FF and U+E000).
  */
 function codePointAt(text: string, index: number): number {
   const unit = text.charCodeAt(index);
-  if (unit < 0xd800 || unit > 0xdfff) return unit;
-  if (unit <= 0xdbff && index + 1 < text.length) {
-    const next = text.charCodeAt(index + 1);
-    if (next >= 0xdc00 && next <= 0xdfff) return 0x10000 + ((unit - 0xd800) << 10) + (next - 0xdc00);
-  }
-  return 0xfffd;
+  if (unit < 0xd800 || unit > 0xdbff || index + 1 >= text.length) return unit;
+  const next = text.charCodeAt(index + 1);
+  return next >= 0xdc00 && next <= 0xdfff ? 0x10000 + ((unit - 0xd800) << 10) + (next - 0xdc00) : unit;
 }
 
 /**
  * `a` against `b` (negative, 0, positive) as their UTF-8 bytes order them,
  * as SQLite's `ORDER BY` of a text column and git's index do: code point
- * order, a lone surrogate being the U+FFFD TextEncoder writes for it. Two
- * different strings of one encoding (lone halves where the other has other
- * lone halves) are still two: the first such pair of units orders them, so
- * a listing's cursor passes neither. Units equal in both are passed as they
- * are; two that differ, neither a surrogate, are their own code points. The
- * rest, rare in a path, is surrogatesFrom's.
+ * order. A string UTF-8 cannot write (a lone surrogate) is ordered as WTF-8
+ * writes it, its surrogate a code point of its own: the order is total, as a
+ * listing's cursor needs, and decided at the first code point that differs,
+ * so a directory's entries follow it together. Units equal in both are
+ * passed as they are; two that differ, neither a surrogate, are their own
+ * code points; the rest, rare in a path, is surrogatesAt's.
  */
 export function compareUtf8(a: string, b: string): number {
   const n = Math.min(a.length, b.length);
@@ -87,30 +83,17 @@ export function compareUtf8(a: string, b: string): number {
     const y = b.charCodeAt(i);
     if (x === y) continue;
     if ((x < 0xd800 || x > 0xdfff) && (y < 0xd800 || y > 0xdfff)) return x - y;
-    return surrogatesFrom(a, b, i);
+    return surrogatesAt(a, b, i);
   }
   return a.length - b.length;
 }
 
-/** compareUtf8 of `a` and `b`, equal before `i`, where one of their units at `i` is a surrogate. */
-function surrogatesFrom(a: string, b: string, i: number): number {
-  // The first lone halves that encode alike but differ: the order if the encodings are one.
-  let tie = 0;
-  for (; i < a.length && i < b.length; i++) {
-    const x = a.charCodeAt(i);
-    const y = b.charCodeAt(i);
-    if (x === y) continue;
-    if ((x < 0xd800 || x > 0xdfff) && (y < 0xd800 || y > 0xdfff)) return x - y;
-    // A low half after a high one the two share (passed as equal units): the
-    // code points begin at the high one. After lone halves that differ, here.
-    const before = i > 0 ? a.charCodeAt(i - 1) : 0;
-    const shared = i > 0 && before === b.charCodeAt(i - 1);
-    const at = shared && before >= 0xd800 && before <= 0xdbff && ((x >= 0xdc00 && x <= 0xdfff) || (y >= 0xdc00 && y <= 0xdfff)) ? i - 1 : i;
-    const p = codePointAt(a, at);
-    const q = codePointAt(b, at);
-    if (p !== q) return p - q;
-    // Two lone halves, each U+FFFD, one unit each.
-    if (tie === 0) tie = x - y;
-  }
-  return a.length !== b.length ? a.length - b.length : tie;
+/** compareUtf8 of `a` and `b`, equal before `i`, where they differ at `i` and one unit there is a surrogate. */
+function surrogatesAt(a: string, b: string, i: number): number {
+  // A low half after a high one the two share: the code points begin at the high one.
+  const before = i > 0 ? a.charCodeAt(i - 1) : 0;
+  const x = a.charCodeAt(i);
+  const y = b.charCodeAt(i);
+  const at = before >= 0xd800 && before <= 0xdbff && ((x >= 0xdc00 && x <= 0xdfff) || (y >= 0xdc00 && y <= 0xdfff)) ? i - 1 : i;
+  return codePointAt(a, at) - codePointAt(b, at);
 }
