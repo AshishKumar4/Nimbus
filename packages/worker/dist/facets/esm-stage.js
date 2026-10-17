@@ -285,7 +285,12 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
             catch (error) {
                 rowTargets.push(-2 - missing.length);
                 targets.push(`${ESM_MISSING_DIR}${missing.length}.js`);
-                missing.push(refusal(error));
+                // A file the launch's files lack, the program may write before the
+                // import: its importer's graph is the interpreter's, which resolves it
+                // then, as Node's loader does, and fails as Node's if it is missing still.
+                const url = Reflect.get(Object(error), 'url');
+                const later = Reflect.get(Object(error), 'code') === 'ERR_MODULE_NOT_FOUND' && typeof url === 'string' && url.startsWith('file:');
+                missing.push(refusal(later ? notStaged(new URL(url).pathname, url) : error));
             }
         }
         targetNames.push(targets);
