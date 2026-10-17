@@ -1177,9 +1177,10 @@ Target:
 - Pure Python wheels from PyPI where compatible.
 - Packages with curated pure source artifacts, including packages whose
   optional extension artifacts can be avoided by installer policy.
-- Binary wasm32/emscripten wheels only when they are shipped as Nimbus
-  startup-loaded runtime modules declared by the installed runtime manifest.
-  Request-time dynamic extension loading is blocked by the Workers Wasm CSP.
+- Compiled packages only when they are linked into the CPython interpreter
+  (numpy and MarkupSafe, in `python-sci`); other extension wheels are refused
+  with an ABI diagnostic. Request-time dynamic extension loading is blocked by
+  the Workers Wasm CSP.
 - `python -m pip install ...`, `pip install -r requirements.txt`, local wheel
   installs, constraints, extras, markers, and deterministic errors for
   unsupported packages.
@@ -1667,7 +1668,8 @@ Existing probes cover:
   `tests/behavioral/wasi-paths/*`
 - Python basics, pure-package support, requirements/local-wheel installs,
   PyPI resolver/constraint coverage, MarkupSafe pure-source fallback,
-  startup-module package artifacts, Flask and `http.server` previews, and
+  numpy and MarkupSafe imports from the `python-sci` interpreter, Flask and
+  `http.server` previews, and
   unsupported native diagnostics:
   `tests/behavioral/python/*`
 - Ruby basics, pure-gem command support, Bundler pure-Gemfile support,
