@@ -45,6 +45,7 @@ const CASES = [
   `printf '%.1s\\uDC80' '😀'${HEX}`,
   `printf '%.1s|%.2s|%5s|%-4s|%.3s|' é é é é aé${HEX}`,
   `printf '%.1b|%4b|' é '\\303\\251'${HEX}`,
+  `printf '📿%s📿\\377%c📿' a 📿${HEX}`,
 ];
 
 const run = (line) => `${line}; echo "status=$?"`;
