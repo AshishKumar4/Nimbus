@@ -17,7 +17,7 @@
  */
 
 import {
-  arrayIncludes, arrayJoin, dataDescriptor, Error, ErrorCaptureStackTrace, JSONStringify, mathAbs, numberIsInteger,
+  arrayIncludes, arrayJoin, captureStackTraceOf, dataDescriptor, Error, JSONStringify, mathAbs, numberIsInteger,
   objectAssign, objectCreate, objectHasOwn, objectIs, objectIsExtensible, objectKeys, ownField, RangeError, reflectApply,
   reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas,
   reflectSet, reflectSetPrototypeOf, regExpExec, SafeList, SafeMap, SafeWeakMap, stringIncludes, stringIndexOf, stringOf,
@@ -502,7 +502,8 @@ function headStack(error: object, name: string, above: Function): void {
   else reflectDefineProperty(error, 'name', own);
 }
 
-/** V8's Error.captureStackTrace, as the launch captured it (core's types are the language's, which have none). */
+/** Error.captureStackTrace as the runtime has it (primordials captureStackTraceOf; core's types are the language's, which have none). */
 export function captureStack(error: object, above: Function): void {
-  if (typeof ErrorCaptureStackTrace === 'function') reflectApply(ErrorCaptureStackTrace, Error, [error, above]);
+  const capture = captureStackTraceOf();
+  if (typeof capture === 'function') reflectApply(capture, Error, [error, above]);
 }
