@@ -97,6 +97,28 @@ export async function installedGemLoadPath(vfs: CredentialedVfs, gemHome: string
   return { libs: libs.sort(), activates: chosen.size > 0 };
 }
 
+/** The wrapper an earlier Nimbus wrote for a gem executable: one version's, loaded whatever RubyGems would choose. */
+const LEGACY_GEM_WRAPPER = /^#!\/usr\/bin\/env ruby\nload "\/(.+)\/gems\/([^/"]+)\/bin\/([^/"]+)"\n$/;
+
+/**
+ * Every gem-bin wrapper in `gemHome` that an earlier Nimbus wrote, written
+ * again as writeGemExecutableWrapper writes one now, so that RubyGems chooses
+ * its executable where it chooses its version. Its gem is named by its
+ * specification (readGemSpec). Run before the bins are registered; a wrapper
+ * already current is read and left alone.
+ */
+export async function reconcileGemBinWrappers(vfs: CredentialedVfs, gemHome: string): Promise<void> {
+  const home = normalizeVfsPath(gemHome);
+  for (const bin of await installedGemBins(vfs, home)) {
+    let text: string;
+    try { text = new TextDecoder('utf-8').decode(await vfs.readFile(bin.path)); } catch { continue; }
+    const [, root, key, executable] = LEGACY_GEM_WRAPPER.exec(text) ?? [];
+    if (root !== home || executable !== bin.name || key === undefined) continue;
+    const spec = await readGemSpec(vfs, `${home}/specifications/${key}.gemspec`);
+    if (spec !== null) await writeGemExecutableWrapper(vfs, home, spec.name, key, bin.name);
+  }
+}
+
 export async function installedGemBins(vfs: CredentialedVfs, gemHome: string): Promise<InstalledRubyGemBin[]> {
   const binRoot = `${normalizeVfsPath(gemHome)}/bin`;
   if (!(await vfs.exists(binRoot)) || !(await vfs.isDirectory(binRoot))) return [];

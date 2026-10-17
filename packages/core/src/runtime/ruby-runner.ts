@@ -63,6 +63,7 @@ import {
   installRubyGems,
   installedGemBins,
   installedGemLoadPath,
+  reconcileGemBinWrappers,
   parseRubyGemRequirements,
   type RubyGemRequest,
 } from './ruby-gems.js';
@@ -107,6 +108,8 @@ export function makeRubyRunnerFactory(deps: {
     const wasm = installedFile(manifest, installRoot, 'share/ruby/ruby+stdlib.wasm');
 
     const registerGemBins = async (vfs: CredentialedVfs, home: string): Promise<void> => {
+      // Wrappers an earlier Nimbus wrote, made to let RubyGems choose their executable as it chooses their version.
+      await reconcileGemBinWrappers(vfs, gemHomeFor(home));
       if (!registry) return;
       for (const bin of (await installedGemBins(vfs, gemHomeFor(home)))) {
         if (RUBY_RUNTIME_BIN_NAMES.has(bin.name)) continue;
