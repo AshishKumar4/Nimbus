@@ -11214,6 +11214,12 @@ function __nimbusFatalReport(error, fromPromise, enhance) {
   }
   return report + "\\nNode.js " + __processMod.version + "\\n";
 }
+// The entry's typeless warning, where its graph did not link
+// (__nimbusEsmImport), issued as the failure is taken: Node issued it while
+// loading, and its next tick delivers it after a listener that takes the
+// failure, before what that listener warns, and never once the failure has
+// ended the process (the program stopped, nothing more it writes is shown).
+let __nimbusHeldEntryWarning = null;
 // An exception nothing caught (\`fromPromise\`: a rejection, or an ES
 // module's evaluation): whether a listener took it.
 function __nimbusUncaughtException(error, fromPromise = false) {
@@ -11221,6 +11227,9 @@ function __nimbusUncaughtException(error, fromPromise = false) {
     __nimbusReportProcessExit(error.code, "");
     return true;
   }
+  const held = __nimbusHeldEntryWarning;
+  __nimbusHeldEntryWarning = null;
+  if (held !== null) held();
   const type = fromPromise ? "unhandledRejection" : "uncaughtException";
   try {
     __processMod.emit("uncaughtExceptionMonitor", error, type);
@@ -11234,11 +11243,14 @@ function __nimbusUncaughtException(error, fromPromise = false) {
       __nimbusReportProcessExit(thrown.code, "");
       return true;
     }
+    // The process ends: Node runs no more ticks, a warning's included.
+    __nimbusWarnings.dropQueued();
     const report = __nimbusFatalReport(thrown, false, false);
     __nimbusWriteFatal(report);
     __nimbusReportProcessExit(7, report);
     return false;
   }
+  __nimbusWarnings.dropQueued();
   try {
     if (!__processMod._exiting) {
       __processMod._exiting = true;
@@ -13033,12 +13045,21 @@ function __nimbusEsmWarnTypeless(id) {
 }
 // The namespace of the staged module (or facade) \`id\`, evaluated by the
 // registry where it can be; the one place Nimbus calls the registry's import().
-async function __nimbusEsmImport(id) {
+async function __nimbusEsmImport(id, entry = false) {
   const record = __nimbusEsmRecord(id);
   if (record.state === __ESM_DONE && record.namespace !== null) return record.namespace;
   const row = __nimbusEsm.table[id];
-  if (row[0] === "module" && record.state === 0) __nimbusEsmWarnTypeless(id);
-  if (row[0] === "module" && __nimbusEsmTainted(id)) return __nimbusEsmInterpret(id, false);
+  // The entry's typeless warning waits for its evaluation to begin: Node's,
+  // a next tick's, never prints where the entry's graph does not link and
+  // its failure ends the process first (__nimbusHeldEntryWarning). An
+  // import()'s failure, which the program may catch, does not wait.
+  let warns = row[0] === "module" && record.state === 0;
+  const tainted = row[0] === "module" && __nimbusEsmTainted(id);
+  if (warns && (!entry || tainted)) {
+    warns = false;
+    __nimbusEsmWarnTypeless(id);
+  }
+  if (tainted) return __nimbusEsmInterpret(id, false);
   let batch = null;
   let since = __nimbusEsmBatches;
   try {
@@ -13051,8 +13072,14 @@ async function __nimbusEsmImport(id) {
     __nimbusTrackOp(new Promise((settle) => { resolve = settle; }));
     // Settled once, by whichever comes first; never left waiting in the
     // list (a cached module's import() enters no meta instance to empty it).
-    const loaded = () => {
+    // \`linked\`: false where it settled without its evaluation beginning.
+    const loaded = (linked = true) => {
       __nimbusEsmLoading.delete(loaded);
+      if (warns) {
+        warns = false;
+        if (linked) __nimbusEsmWarnTypeless(id);
+        else __nimbusHeldEntryWarning = () => __nimbusEsmWarnTypeless(id);
+      }
       resolve();
     };
     __nimbusEsmLoading.add(loaded);
@@ -13060,7 +13087,7 @@ async function __nimbusEsmImport(id) {
     const evaluation = import(__NIMBUS_BUNDLE_URL + __nimbusEsmName(id));
     // The evaluation it began, when it began within the call (workerd's).
     batch = __nimbusEsmOpenBatch;
-    __nimbusReflectApply(__nimbusEsmThen, evaluation, [loaded, loaded]);
+    __nimbusReflectApply(__nimbusEsmThen, evaluation, [() => loaded(), () => loaded(false)]);
     return await evaluation;
   } catch (error) {
     // Its evaluation was cancelled or stopped short of a module (a require()
@@ -13229,7 +13256,7 @@ function __nimbusEsmRunEntry(key) {
   __nimbusEvalStripped(__nimbusModuleAtPath(key));
   const id = __nimbusEsmId("module", key);
   const url = __nimbusEsmUrl("/" + key);
-  return __nimbusEsmImport(id).then(() => undefined, (e) => {
+  return __nimbusEsmImport(id, true).then(() => undefined, (e) => {
     __nimbusExplainCommonJSGlobalLike(e, url, __nimbusEsmSuspends(__nimbusEsmRecord(id)));
     throw e;
   });
