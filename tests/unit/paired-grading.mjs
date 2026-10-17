@@ -98,20 +98,22 @@ for (const [arm, by] of [['a1', 1.15], ['a2', 1.1], ['b1', 1.5], ['b2', 1.5]]) {
 // 1.5x slower one nearly always is. 15 rounds at a 0.25 log-spread.
 {
   const trials = 100;
-  const red = (factor, seedFrom, slowArm) => Array.from({ length: trials }, (_, i) => gradePaired(rounds({
-    count: 15, factor, seed: seedFrom + i, offset: slowArm ? { [['a1', 'a2', 'b1', 'b2'][i % 4]]: 1.5 } : {},
+  const red = (factor, seedFrom, slowArms = []) => Array.from({ length: trials }, (_, i) => gradePaired(rounds({
+    count: 15, factor, seed: seedFrom + i, offset: slowArms.length > 0 ? { [slowArms[i % slowArms.length]]: 1.5 } : {},
   })).slower).filter(Boolean).length;
-  const nullRed = red(1, 1000, false);
-  const slowArmRed = red(1, 3000, true);
-  const slowRed = red(1.5, 5000, false);
-  const shiftRed = red(1.3, 7000, false);
-  const shiftSlowArmRed = red(1.3, 9000, true);
-  console.log(`  rates over ${trials}: A/A/B/B ${nullRed}, one slow Preview ${slowArmRed}, 1.5x ${slowRed}, 1.3x ${shiftRed}, 1.3x with one slow Preview ${shiftSlowArmRed}`);
+  // A baseline Preview 1.5x slow for where it landed is slower than a 1.3x
+  // candidate: that run cannot tell the shift, and is not asked to.
+  const nullRed = red(1, 1000);
+  const slowArmRed = red(1, 3000, ['a1', 'a2', 'b1', 'b2']);
+  const slowRed = red(1.5, 5000);
+  const shiftRed = red(1.3, 7000);
+  const shiftSlowCandidateRed = red(1.3, 9000, ['b1', 'b2']);
+  console.log(`  rates over ${trials}: A/A/B/B ${nullRed}, one slow Preview ${slowArmRed}, 1.5x ${slowRed}, 1.3x ${shiftRed}, 1.3x with one slow candidate Preview ${shiftSlowCandidateRed}`);
   assert.ok(nullRed <= 6, `${nullRed} of ${trials} A/A/B/B runs graded slower`);
   assert.ok(slowArmRed <= 6, `${slowArmRed} of ${trials} runs with one slow Preview graded slower`);
   assert.ok(slowRed >= 80, `${slowRed} of ${trials} 1.5x runs graded slower`);
   assert.ok(shiftRed >= 50, `${shiftRed} of ${trials} 1.3x runs graded slower`);
-  assert.ok(shiftSlowArmRed >= 40, `${shiftSlowArmRed} of ${trials} 1.3x runs with one slow Preview graded slower`);
+  assert.ok(shiftSlowCandidateRed >= shiftRed - 10, `${shiftSlowCandidateRed} of ${trials} 1.3x runs with one slow candidate Preview graded slower (${shiftRed} without)`);
 }
 
 console.log('paired-grading: ok');
