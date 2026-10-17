@@ -45,11 +45,12 @@ export interface DataPlanInput {
     /** Called with the bytes of each listed page, to pace a long walk. */
     spend?: (units: number) => Promise<void>;
     /**
-     * Name the stylesheet sources' roots where the process's listing walks
-     * mounts (NimbusFilesystemAuthority.nameLaunch), as its launch's own
-     * names are, so that its listing at boot holds what is under them.
+     * Name what the stylesheet sources' walk read (planStylesheetSources'
+     * `read`) where the process's listing walks mounts
+     * (NimbusFilesystemAuthority.nameLaunch), as its launch's own names are,
+     * so that its listing at boot holds what the plan holds.
      */
-    nameSources?: (roots: readonly string[]) => void;
+    nameSources?: (read: readonly string[]) => void;
 }
 export type DataPlanRule = 'package-json' | 'project' | 'convention' | 'package-data' | 'home' | 'typescript' | 'static' | 'entries' | 'learned' | 'stylesheet-source';
 export interface DataPlan {
@@ -91,7 +92,8 @@ export declare function carriesOxide(closure: Iterable<string>): boolean;
  * directory at a time with the project rule's exclusions, which are of a path
  * as it is named below its root, whatever a link makes of it. The roots it
  * returns are what the facet's barriers push: those, and wherever a link
- * below one leads.
+ * below one leads; `read` is where it read, which a process's listing of a
+ * mount that walks only what is named must be named.
  */
 export declare function planStylesheetSources(source: Pick<DataPlanSource, 'readText' | 'stat' | 'linkTarget' | 'readdir'>, input: {
     cwd: string;
@@ -101,5 +103,6 @@ export declare function planStylesheetSources(source: Pick<DataPlanSource, 'read
 }): Promise<{
     roots: string[];
     files: DataPlanEntry[];
+    read: string[];
 }>;
 //# sourceMappingURL=data-plan.d.ts.map

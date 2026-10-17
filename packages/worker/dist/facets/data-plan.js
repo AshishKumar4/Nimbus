@@ -380,8 +380,8 @@ export async function planFacetData(source, input) {
     const linkedDirs = [];
     /** The project's stylesheets, for the sources they name (stylesheet-source): its own, and those behind its links. */
     const projectSheets = [];
-    /** Directories the listing did not walk, on a mount whose listing walks what is named. */
-    const unlisted = [];
+    /** The mount points of directories the listing did not walk: mounts whose listing walks what is named. */
+    const unlistedMounts = new Set();
     /**
      * A statically named file is worth holding when the module map does not
      * already hold it, and it is data-sized or the code reads it synchronously
@@ -404,7 +404,7 @@ export async function planFacetData(source, input) {
             const entry = { path: k, kind: raw.kind, size: raw.size };
             if (entry.kind === 'directory') {
                 if (raw.unlisted !== undefined)
-                    unlisted.push(k);
+                    unlistedMounts.add(key(raw.unlisted));
                 if (listed.has(k))
                     expanded.add(k);
                 if (packageRootOf(k + '/x') === k)
@@ -668,14 +668,16 @@ export async function planFacetData(source, input) {
         for (const entry of found.files)
             take(entry, 'stylesheet-source');
         sourceRoots.push(...found.roots);
-        if (found.roots.length > 0 && input.nameSources) {
-            // Named, a root on a mount the listing did not walk adds what is under it to the listing: its names are counted.
-            const roots = found.roots.map(key);
-            const unwalked = roots.filter((r) => unlisted.some((u) => under(u, r) || under(r, u)))
-                .filter((r, _, all) => !all.some((other) => other !== r && under(other, r)));
-            const before = await listedUnder(source, unwalked);
-            input.nameSources(found.roots);
-            names += (await listedUnder(source, unwalked)) - before;
+        if (found.read.length > 0 && input.nameSources) {
+            // Named, what the walk read on a mount the listing did not walk joins
+            // the listing, with the directories above it there: the names it adds
+            // are counted, over each such mount.
+            const read = found.read.map(key);
+            const mounts = [...unlistedMounts].filter((m) => read.some((k) => under(m, k)))
+                .filter((m, _, all) => !all.some((other) => other !== m && under(other, m)));
+            const before = await listedUnder(source, mounts);
+            input.nameSources(found.read);
+            names += (await listedUnder(source, mounts)) - before;
         }
     }
     return { paths, bytes, rules, sourceRoots, names };
@@ -684,19 +686,23 @@ export async function planFacetData(source, input) {
 function under(dir, k) {
     return dir === '' || k === dir || k.startsWith(dir + '/');
 }
-/** How many names the listing has below `dirs`, each listed from where it begins. */
+/** How many names the listing has below `dirs`, each listed from where it begins to where its names end. */
 async function listedUnder(source, dirs) {
     let count = 0;
     for (const dir of dirs) {
         const prefix = dir + '/';
+        let inside = false;
         for (let after = dir; after !== null;) {
             const page = await source.list(after);
             after = page.next;
             for (const raw of page.entries) {
                 const k = key(raw.path);
-                if (k.startsWith(prefix))
+                if (k.startsWith(prefix)) {
                     count++;
-                else if (k > prefix) {
+                    inside = true;
+                    continue;
+                }
+                if (inside || k > prefix) {
                     after = null;
                     break;
                 }
@@ -728,7 +734,8 @@ function below(dir, at) {
  * directory at a time with the project rule's exclusions, which are of a path
  * as it is named below its root, whatever a link makes of it. The roots it
  * returns are what the facet's barriers push: those, and wherever a link
- * below one leads.
+ * below one leads; `read` is where it read, which a process's listing of a
+ * mount that walks only what is named must be named.
  */
 export async function planStylesheetSources(source, input) {
     const cwd = key(input.cwd);
@@ -768,6 +775,8 @@ export async function planStylesheetSources(source, input) {
         }
     }
     const files = new Map();
+    // Where the walk read: each directory it listed, and each file it holds that no such listing named.
+    const read = new Set();
     // What a barrier pushes: the roots, and wherever a link below one leads out of them.
     const pushed = [...roots];
     const pushFrom = (k) => { if (!pushed.some((dir) => under(dir, k)))
@@ -776,6 +785,7 @@ export async function planStylesheetSources(source, input) {
         const at = await source.stat(root);
         if (at?.kind === 'file') {
             files.set(root, { path: root, kind: 'file', size: at.size });
+            read.add(root);
             continue;
         }
         if (at?.kind !== 'directory')
@@ -791,6 +801,7 @@ export async function planStylesheetSources(source, input) {
             const entries = await source.readdir(dir.at);
             if (entries === null)
                 continue;
+            read.add(dir.at);
             if (input.spend)
                 await input.spend(entries.length * 64);
             for (const entry of entries) {
@@ -812,9 +823,11 @@ export async function planStylesheetSources(source, input) {
                 else if (kind === 'file' && !excludedBelow(home, root, named)) {
                     pushFrom(path);
                     files.set(path, { path, kind, size });
+                    if (path !== entry.path)
+                        read.add(path);
                 }
             }
         }
     }
-    return { roots: pushed.map((root) => '/' + root), files: [...files.values()] };
+    return { roots: pushed.map((root) => '/' + root), files: [...files.values()], read: [...read].map((k) => '/' + k) };
 }
