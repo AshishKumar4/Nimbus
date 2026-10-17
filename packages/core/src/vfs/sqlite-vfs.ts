@@ -7673,11 +7673,14 @@ export class SqliteVFS {
       }
       const lastRevived = revived[revivedTaken - 1];
       if (lastRevived !== undefined) revivedAfter = lastRevived.path;
-      // A directory this transaction may stamp whose own restore is still to come.
+      // A directory this transaction may stamp whose own restore is still to
+      // come: one the restore covers (the subtree's root or beneath it); one
+      // outside it is not the restore's to change.
+      const covered = (path: string): boolean => job.subtree === '' || path === job.subtree || path.startsWith(`${job.subtree}/`);
       const awaiting = new Set<string>();
       for (const path of taken) {
         const parent = parentKey(path);
-        if (parent === '' || taken.has(parent) || awaiting.has(parent)) continue;
+        if (parent === '' || !covered(parent) || taken.has(parent) || awaiting.has(parent)) continue;
         const live = this.inodes.get(parent);
         if (live !== undefined && ((live.gen > job.g && live.gen < startGen) || stamped.get(parent) === live.gen)) awaiting.add(parent);
       }

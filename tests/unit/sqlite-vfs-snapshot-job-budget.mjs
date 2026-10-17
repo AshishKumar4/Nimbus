@@ -12,9 +12,14 @@
 //     it (a file the snapshot had, made a directory with an entry since):
 //     the directory, stamped by its entry's removal, is still restored, at
 //     each size about the boundary, and through restoreAsync's slices;
+//   - a subtree restore leaves its root's parent and siblings;
+//   - a restore reset after the transaction that noted such a directory,
+//     finished by the reopened engine; and a write to that directory
+//     before it resumes, which stands;
 //   - a drop interrupted after its first transaction (the store refusing
 //     the next): reopened, the engine finishes it, every dead row dropped
-//     and those a kept snapshot covers kept;
+//     and those an older snapshot covers kept, interleaved with them in the
+//     order the drop pages them;
 //   - dropSnapshotAsync, in slices, the same.
 // The engine's transaction peaks (getStats) stay within the budget.
 //
@@ -113,23 +118,98 @@ await check('a restore that ends between a directory and an entry of it', async 
   for (const files of [80, 82, 84]) await directoryOverFile(files, true);
 });
 
-/** Files a kept snapshot covers too, and twice as many only the dropped one holds: more than one transaction drops. */
-function twoSnapshots() {
+await check('a subtree restore leaves its root\'s parent and siblings', () => {
+  const h = createSqliteVfsTestHarness();
+  const vfs = new SqliteVFS(h.sql, h.ctx);
+  const fs = vfs.as(CRED_KERNEL);
+  fs.writeFile('p', enc.encode('the file p'));
+  vfs.snapshot('s');
+  fs.unlink('p');
+  fs.mkdir('p');
+  fs.writeFile('p/x', enc.encode('x'));
+  fs.writeFile('p/keep', enc.encode('keep'));
+  fs.chmod('p', 0o700);
+  vfs.restore('s', { subtree: 'p/x' });
+  assert.throws(() => fs.stat('p/x'), /ENOENT/, 'p/x, which the snapshot had not, is gone');
+  assert.equal(fs.stat('p')?.type, 'directory', 'p, outside the subtree, stays');
+  assert.equal(fs.stat('p').mode & 0o777, 0o700, 'and keeps its mode');
+  assert.equal(text(fs.readFile('p/keep')), 'keep', 'its sibling stays');
+  h.db.close();
+});
+
+/** directoryOverFile's tree, its restore refused right after the transaction that noted p (the store failing the next). */
+function restoreRefusedAfterNoting(files) {
+  const h = createSqliteVfsTestHarness();
+  const vfs = new SqliteVFS(h.sql, h.ctx);
+  const fs = vfs.as(CRED_KERNEL);
+  for (let i = 0; i < files; i++) fs.writeFile(`f${i}`, enc.encode(`before ${i}`));
+  fs.writeFile('p', enc.encode('the file p'));
+  vfs.snapshot('s');
+  for (let i = 0; i < files; i++) fs.writeFile(`f${i}`, enc.encode(`after ${i}`));
+  fs.unlink('p');
+  fs.mkdir('p');
+  fs.writeFile('p/new', enc.encode('new'));
+  fs.chmod('p', 0o700);
+  // The job row written with p in its note, the next transaction is refused.
+  let noted = false;
+  h.setFaultInjector((statement) => {
+    if (/^\s*UPDATE vfs_jobs SET cursor/.test(statement.sql) && statement.params.some((param) => typeof param === 'string' && param.includes('\0p\0'))) {
+      noted = true;
+      return null;
+    }
+    if (!noted || statement.transaction === null || !/^\s*(INSERT|UPDATE|DELETE)/i.test(statement.sql)) return null;
+    return Object.assign(new Error('the host went away'), { code: 'EIO' });
+  });
+  assert.throws(() => vfs.restore('s'), /went away/);
+  h.clearFault();
+  assert.ok(noted, 'a transaction noted p');
+  return { h, vfs, fs };
+}
+
+await check('a restore reset after a transaction that noted a directory', () => {
+  const { h } = restoreRefusedAfterNoting(82);
+  const reopened = new SqliteVFS(h.sql, h.ctx);
+  const fs = reopened.as(CRED_KERNEL);
+  assert.equal(fs.stat('p')?.type, 'file', 'reopened, the restore finished: p is a file again');
+  assert.equal(text(fs.readFile('p')), 'the file p');
+  for (let i = 0; i < 82; i++) assert.equal(text(fs.readFile(`f${i}`)), `before ${i}`);
+  h.db.close();
+});
+
+await check('a write to a noted directory before the restore resumes wins', () => {
+  const { h, fs } = restoreRefusedAfterNoting(82);
+  fs.chmod('p', 0o750);
+  const reopened = new SqliteVFS(h.sql, h.ctx);
+  const after = reopened.as(CRED_KERNEL);
+  assert.equal(after.stat('p')?.type, 'directory', 'the write after the restore began stands');
+  assert.equal(after.stat('p').mode & 0o777, 0o750);
+  h.db.close();
+});
+
+/**
+ * A snapshot to drop whose rows interleave, in the order a drop pages them
+ * (gen_to, path), with rows an older kept snapshot holds too: odd files
+ * changed between the two snapshots (their versions at the dropped one are
+ * its alone), even ones not (an older snapshot covers theirs). Half the
+ * files' rows are dead, more than one transaction's worth.
+ */
+function interleavedDrop() {
   const h = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(h.sql, h.ctx);
   const fs = vfs.as(CRED_KERNEL);
   for (let i = 0; i < FILES; i++) fs.writeFile(`f${i}`, enc.encode(`first ${i}`));
+  vfs.snapshot('older');
+  for (let i = 1; i < FILES; i += 2) fs.writeFile(`f${i}`, enc.encode(`second ${i}`));
   vfs.snapshot('dropped');
-  // Two files in three change before the kept snapshot: their first versions only the dropped one holds.
-  for (let i = 0; i < FILES; i++) if (i % 3 !== 0) fs.writeFile(`f${i}`, enc.encode(`second ${i}`));
-  vfs.snapshot('kept');
+  // In file order: the rows the dropped snapshot covers end alternately dead and kept.
   for (let i = 0; i < FILES; i++) fs.writeFile(`f${i}`, enc.encode(`live ${i}`));
   const history = () => Number([...h.sql.exec('SELECT COUNT(*) AS n FROM vfs_inode_history')][0].n);
-  return { h, vfs, fs, history, dead: FILES - Math.ceil(FILES / 3) };
+  const keptReads = (view) => { for (let i = 0; i < FILES; i++) assert.equal(text(view.readFile(`f${i}`)), `first ${i}`, `the older snapshot's f${i}`); };
+  return { h, vfs, fs, history, keptReads, dead: Math.floor(FILES / 2) };
 }
 
 await check('a drop interrupted after its first transaction', () => {
-  const { h, vfs, history, dead } = twoSnapshots();
+  const { h, vfs, history, keptReads, dead } = interleavedDrop();
   const before = history();
   // The first transaction's deletes are in, the next one's first is refused.
   let deletes = 0;
@@ -145,19 +225,19 @@ await check('a drop interrupted after its first transaction', () => {
   assert.ok(history() < before && history() > before - dead, `the first transaction's rows are gone, not the rest: ${history()} of ${before}`);
   const reopened = new SqliteVFS(h.sql, h.ctx);
   assert.equal(history(), before - dead, 'reopened, the engine finished the drop: every dead row, no kept one');
-  assert.deepEqual(reopened.snapshots().map((snap) => snap.name), ['kept']);
-  const kept = reopened.at('kept');
-  for (let i = 0; i < FILES; i++) assert.equal(text(kept.readFile(`f${i}`)), i % 3 === 0 ? `first ${i}` : `second ${i}`);
+  assert.deepEqual(reopened.snapshots().map((snap) => snap.name), ['older']);
+  keptReads(reopened.at('older'));
   within(reopened, 'the resumed drop');
   h.db.close();
 });
 
 await check('dropSnapshotAsync', async () => {
-  const { h, vfs, history, dead } = twoSnapshots();
+  const { h, vfs, history, keptReads, dead } = interleavedDrop();
   const before = history();
   const { dropped } = await vfs.dropSnapshotAsync('dropped');
   assert.equal(dropped, dead);
   assert.equal(history(), before - dead);
+  keptReads(vfs.at('older'));
   within(vfs, 'the async drop');
   h.db.close();
 });
