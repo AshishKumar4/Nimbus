@@ -1209,15 +1209,18 @@ export function residentFilesystem(session, resident, delegation) {
     /**
      * fchmod, fchown and futimes of a descriptor of the holder's, on the file
      * it opened, never on a name: decided here where a grant decides that
-     * file, else by the provisional decisions, through its open description
-     * at the session (DelegationHolder.fsetattr).
+     * file; else by the provisional decisions, through its open description at
+     * the session (DelegationHolder.fsetattr), which a caller that may wait
+     * waits for: the change is every process's when the call returns, and its
+     * refusal the call's.
      */
     const holderAttrs = (name, handleId, rest) => {
         const change = name === 'fchmod' ? { mode: Number(rest[0]) }
             : name === 'fchown' ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) }
                 : { atime: rest[0], mtime: rest[1] };
-        holder.fsetattr(handleId, change);
-        return undefined;
+        if (holder.fsetattr(handleId, change) || now)
+            return undefined;
+        return holder.flush();
     };
     /**
      * A change by name no held subtree decides: an op of the process's client

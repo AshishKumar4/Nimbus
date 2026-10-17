@@ -184,9 +184,10 @@ export interface DelegationHolder {
      * An attribute change of the file `handleId` opened (fchmod, fchown,
      * futimes): decided here where the file's grant decides it (or it lost its
      * name: it is this process's alone), its times resolved as it is decided;
-     * else the provisional decisions', through its description.
+     * true then. False where the provisional decisions logged it, through its
+     * description: the session's to apply (a caller that may wait waits for it).
      */
-    fsetattr(handleId: number, change: W7Attrs): void;
+    fsetattr(handleId: number, change: W7Attrs): boolean;
     /**
      * The session changed `key`'s attributes itself, after everything the
      * holder had was sent (one it holds but did not decide): what was decided
