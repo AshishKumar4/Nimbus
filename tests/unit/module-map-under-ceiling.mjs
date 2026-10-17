@@ -18,6 +18,7 @@
 
 import assert from 'node:assert/strict';
 import { ModuleSource } from '../../packages/platform/src/module-source.ts';
+import { registerAllocObserver } from '../../packages/platform/src/heavy-alloc-coord.ts';
 
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from '../../packages/fabric/src/budgets.ts';
@@ -231,7 +232,17 @@ try {
     const first = await run();
     assert.equal(first.result.exitCode, 0, first.result.stderr);
     report({});
-    const second = await run();
+    // A write as map credit is returned makes its retry a real cache miss.
+    let changed = false;
+    const unregister = registerAllocObserver({ onRelease: () => {
+      if (changed) return;
+      changed = true;
+      fs.writeFile('home/user/retry-revision.txt', 'a concurrent filesystem write\n', { mode: 0o644 });
+    } });
+    let second;
+    try { second = await run(); }
+    finally { unregister(); }
+    assert.ok(changed, 'the map credit retry crossed the filesystem write');
     assert.equal(second.result.exitCode, 0, `the trimmed one-shot survives its owned-member credit retry: ${second.result.stderr}`);
     const bytes = mapBytes(second.config.modules);
     assert.ok(bytes <= CEILING, `the retried one-shot map is ${bytes} bytes, under its ceiling`);
