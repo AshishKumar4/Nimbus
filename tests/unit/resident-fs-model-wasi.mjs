@@ -137,6 +137,8 @@ async function run(steps) {
     };
 
     const peerStep = async (step, label) => {
+      // The reference received our earlier calls before the peer's; so must this session.
+      await guest.flush();
       const change = (kernel, root) => {
         const at = `${root}/${step.name}`;
         if (step.kind === 'write') { kernel.writeFile(at, enc.encode(step.data)); kernel.chown(at, USER.uid, USER.gid); }
