@@ -446,14 +446,14 @@ assert.equal(noTs.rules.typescript.files, 0);
   assert.ok(withOxide.sourceRoots.includes("/home/user/quoted's") && withOxide.sourceRoots.includes('/home/user/range/1001.tsx') && withOxide.sourceRoots.includes('/home/user/deep'));
   assert.equal(withOxide.rules['stylesheet-source'].files, 7);
   assert.equal(withOxide.names, listed, 'the namespace is counted once, however many walks');
-  // A one-shot, which lists no namespace, applies the same rule from the sheets its bundle holds.
-  const direct = await planStylesheetSources(ns, { cwd: '/home/user/app', home: '/home/user', sheets: ['home/user/app/src/index.css'] });
-  assert.deepEqual(direct.files.map((f) => f.path).sort(), withOxide.paths.filter((p) => !p.startsWith('home/user/app/') && !p.startsWith('home/user/theme/')).sort(), 'a one-shot holds the same files, from its stylesheets alone');
-  assert.deepEqual(direct.roots, withOxide.sourceRoots);
   const without = await planFacetData(ns, { cwd: '/home/user/app', home: '/home/user', closure: [], refs: [] });
   assert.ok(!new Set(without.paths).has('home/user/shared/Card.tsx'), 'without oxide, the source is not held');
   assert.deepEqual(without.sourceRoots, []);
   assert.deepEqual(reads.filter((p) => p.endsWith('.css')).sort(), ['home/user/app/src/index.css', 'home/user/theme/deeper.css', 'home/user/theme/theme.css'], 'only an oxide process reads the stylesheets, each once');
+  // A one-shot, which lists no namespace, applies the same rule from the sheets its bundle holds.
+  const direct = await planStylesheetSources(ns, { cwd: '/home/user/app', home: '/home/user', sheets: ['home/user/app/src/index.css'] });
+  assert.deepEqual(direct.files.map((f) => f.path).sort(), withOxide.paths.filter((p) => !p.startsWith('home/user/app/') && !p.startsWith('home/user/theme/')).sort(), 'a one-shot holds the same files, from its stylesheets alone');
+  assert.deepEqual(direct.roots, withOxide.sourceRoots);
 }
 
 console.log('data-plan: ok');
