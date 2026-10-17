@@ -8,15 +8,11 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync, copyFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createRequire } from 'node:module';
 import { assertCurrentInputs, digestInputs } from '../../packages/worker/scripts/artifact-inputs.mjs';
 import { OPENCODE_SOURCE, opencodeInputs } from '../../packages/worker/scripts/opencode/inputs.mjs';
+import { modelsCatalogs } from '../../packages/worker/scripts/opencode/models-catalog.mjs';
 import { sha256Hex } from '../../packages/worker/scripts/stage-asset.mjs';
 import { outputPatch } from './lib/output-patch.mjs';
-const workerRequire = createRequire(new URL('../../packages/worker/package.json', import.meta.url));
-const coreRequire = createRequire(new URL('../../packages/core/package.json', import.meta.url));
-const { parse } = workerRequire('acorn');
-const walk = coreRequire('acorn-walk');
 
 const out = process.argv[process.argv.indexOf('--out') + 1];
 if (!out) throw new Error('--out is required');
@@ -37,11 +33,15 @@ run('bun', ['install', '--frozen-lockfile', '--ignore-scripts', '--linker=hoiste
 const recipe = join(repo, 'packages/worker/scripts/opencode');
 for (const patch of ['nimbus-defer-global-io.patch', 'nimbus-tree-sitter-exports.patch']) run('git', ['apply', join(recipe, patch)], upstream);
 const packageRoot = join(upstream, 'packages/opencode');
+// The CLI reports the version build-node.ts reads from this manifest.
+const sourceVersion = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version;
+if (sourceVersion !== OPENCODE_SOURCE.version) throw new Error(`OpenCode's source says it is ${sourceVersion}, the recipe names ${OPENCODE_SOURCE.version}`);
 for (const file of ['build-node.ts', 'bundle-patches.ts']) copyFileSync(join(recipe, file), join(packageRoot, file));
 for (const file of readdirSync(join(recipe, 'stubs'))) copyFileSync(join(recipe, 'stubs', file), join(packageRoot, file));
 
 // Reuse the committed catalog snapshot, not whichever catalog models.dev
-// happens to serve today. Its single literal is inside ModelsDev's sync thunk.
+// happens to serve today: the literal in ModelsDev's sync thunk
+// (opencode/models-catalog.mjs), exactly one in the whole pack.
 const assetRoot = join(repo, 'packages/worker/public/_assets/opencode', OPENCODE_SOURCE.version);
 const pack = JSON.parse(readFileSync(join(assetRoot, 'chunks.json'), 'utf8'));
 const literal = node => {
@@ -52,16 +52,9 @@ const literal = node => {
   if (node.type === 'UnaryExpression' && node.operator === '!') return !literal(node.argument);
   throw new Error(`unsupported models snapshot literal: ${node.type}`);
 };
-let snapshot;
-for (const source of Object.values(pack)) {
-  if (!source.includes('ModelsDev.fetchAndWrite')) continue;
-  const ast = parse(source, { sourceType: 'module', ecmaVersion: 'latest' });
-  walk.simple(ast, { ArrowFunctionExpression(node) {
-    const body = node.body.type === 'ConditionalExpression' ? node.body.alternate : node.body;
-    if (body.type === 'ObjectExpression' && body.end - body.start > 1024 * 1024) snapshot = literal(body);
-  } });
-}
-if (!snapshot) throw new Error('the committed ModelsDev catalog snapshot was not found');
+const catalogs = Object.values(pack).flatMap((source) => modelsCatalogs(source));
+if (catalogs.length !== 1) throw new Error(`the committed ModelsDev catalog snapshot: ${catalogs.length} found, one expected`);
+const snapshot = literal(catalogs[0].catalog);
 const models = join(scratch, 'models.json');
 writeFileSync(models, JSON.stringify(snapshot));
 const dist = join(scratch, 'dist');
