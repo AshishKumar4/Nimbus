@@ -34,7 +34,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { mapOnArmada } from './lib/armada.mjs';
-import { differences, extract, FILES_MARK, keepArchive, keptAs, splitArchive, writeRefusal } from './lib/remote-artifacts.mjs';
+import { compareArtifacts, extract, FILES_MARK, keepArchive, keptAs, splitArchive, writeRefusal } from './lib/remote-artifacts.mjs';
 
 const git = (args) => {
   const done = spawnSync('git', args, { encoding: 'utf8' });
@@ -129,7 +129,7 @@ if (/^STAGE-REFUSED$/m.test(log)) {
 // What bundle-napi-wasm staged; the builds' own out trees (their pruned
 // lockfiles) stay in the archive, out of the Worker's static assets.
 const staged = members.filter((member) => member.startsWith('packages/'));
-const differing = differences(repo, sha, saved, staged, [LOADER, ...dirs]);
+const { differing } = compareArtifacts(repo, sha, saved, staged, [LOADER, ...dirs]);
 if (differing.length === 0) {
   console.log(`remote-napi-binding: ${keys.join(', ')} and the loader rebuild ${sha.slice(0, 12)}'s staged files byte for byte (job ${r.jobId}; archive ${saved})`);
   process.exit(0);
