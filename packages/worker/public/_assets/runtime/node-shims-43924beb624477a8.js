@@ -18882,14 +18882,10 @@ function __fileExists(path) {
 }
 // Resolution is the compiled core generator, over the guest's resident fs.
 // Metadata/refusal handling stays here; selection and probing never do.
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/node-shims-81607570209f917a.js
-var { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, codeOf, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, nativeResolutionError, packageJsonText, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates, urlHash, urlHref, urlPathname, urlProtocol, urlSearch, urlSetHash, urlSetPathname, urlSetSearch } = (() => {
+var { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, codeOf, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, nativeResolutionError, packageJsonText, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates, typescriptLoader, urlHash, urlHref, urlPathname, urlProtocol, urlSearch, urlSetHash, urlSetPathname, urlSetSearch } = (() => {
 const { arrayIsArray, arraySort, dataDescriptor, decodeURIComponentOf, Error: Error2, JSONStringify, newURL, NumberOf, objectGetOwnPropertyNames, objectHasOwn, ownField, reflectDefineProperty, reflectGet, SafeList, SafeSet, safeGenerator, setForEach, stringCharCodeAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, TypeError } = __nimbusPrimordials;
 const { arrayIsArray: arrayIsArray2, dataDescriptor: dataDescriptor2, decodeURIComponentOf: decodeURIComponentOf2, Error: Error3, generatorNext, generatorThrow, JSONParse, newURL: newURL2, objectHasOwn: objectHasOwn2, ownField: ownField2, PromiseConstructor, reflectApply, reflectDefineProperty: reflectDefineProperty2, regExpExec: regExpExec2, SafeList: SafeList2, SafeMap, SafeSet: SafeSet2, safeGenerator: safeGenerator2, stringEndsWith: stringEndsWith3, stringIncludes: stringIncludes2, stringIndexOf: stringIndexOf2, stringLastIndexOf: stringLastIndexOf3, stringSlice: stringSlice3, stringStartsWith: stringStartsWith2, TypeError: TypeError2 } = __nimbusPrimordials;
 const { regExpExec, stringEndsWith: stringEndsWith2, stringLastIndexOf: stringLastIndexOf2, stringSlice: stringSlice2 } = __nimbusPrimordials;
-========
-var { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, nativeResolutionError, packageJsonText, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates, typescriptLoader } = (() => {
->>>>>>>> origin/main:packages/worker/public/_assets/runtime/node-shims-45425d41c5a044bd.js
 var DEFAULT_ESM_CONDITIONS = ["import", "node", "node-addons", "module-sync"];
 var DEFAULT_CJS_CONDITIONS = ["require", "node", "node-addons", "module-sync"];
 var urlHref = (url) => url.href;
@@ -19167,38 +19163,6 @@ function resolvePackageEntry(pkg, subpath = ".", conditions = DEFAULT_BUILD_COND
   return subpath;
 }
 
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/node-shims-81607570209f917a.js
-========
-function rootClampedSegments(path, base = []) {
-  const out = [...base];
-  for (const segment of path.split("/")) {
-    if (segment === "..")
-      out.pop();
-    else if (segment !== "" && segment !== ".")
-      out.push(segment);
-  }
-  return out;
-}
-
-var NOT_NORMAL = /\/$|\/\/|(?:^|\/)\.\.?(?:\/|$)/;
-function plainVfsPath(path) {
-  return NOT_NORMAL.test(path) ? null : path.charCodeAt(0) === 47 ? path.slice(1) : path;
-}
-function normalizeVfsPath(p) {
-  const text = String(p ?? "");
-  const plain = plainVfsPath(text);
-  if (plain !== null) return plain;
-  return rootClampedSegments(text).join("/");
-}
-function stripLeadingSlashes(p) {
-  return p.replace(/^\/+/, "");
-}
-function vfsPathExtension(path) {
-  const base = path.slice(path.lastIndexOf("/") + 1);
-  const dot = base.lastIndexOf(".");
-  return dot > 0 ? base.slice(dot) : "";
-}
->>>>>>>> origin/main:packages/worker/public/_assets/runtime/node-shims-45425d41c5a044bd.js
 
 
 
@@ -19630,11 +19594,7 @@ function presentedCredential(value) {
 function isWebSocketUpgradeRequest(headers) {
   return headers.get("upgrade")?.toLowerCase() === "websocket";
 }
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/node-shims-81607570209f917a.js
-return { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, codeOf, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, nativeResolutionError, packageJsonText, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates, urlHash, urlHref, urlPathname, urlProtocol, urlSearch, urlSetHash, urlSetPathname, urlSetSearch };
-========
-return { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, nativeResolutionError, packageJsonText, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates, typescriptLoader };
->>>>>>>> origin/main:packages/worker/public/_assets/runtime/node-shims-45425d41c5a044bd.js
+return { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, codeOf, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, nativeResolutionError, packageJsonText, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates, typescriptLoader, urlHash, urlHref, urlPathname, urlProtocol, urlSearch, urlSetHash, urlSetPathname, urlSetSearch };
 })();
 
 const __requireResolver = createRequireResolver({
