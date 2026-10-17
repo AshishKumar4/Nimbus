@@ -79,10 +79,33 @@ export function evalScriptSource(code: string, print: boolean): string {
 /**
  * The entry code for eval code as Node's eval has it (evalScriptSource's,
  * or stdin's): with `print`, a body that returns its completion value.
+ * A script with a `return` at its top, which the entry would run as its
+ * function's (illegalReturn).
  */
 export function evalProgram(code: string, print: boolean, mode: NodeEvalMode): NodeEvalProgram {
-  if (!print) return { code, refusedBeforeImports: false };
-  return mode === 'module' ? ESM_CANNOT_PRINT : printedProgram(code, mode);
+  if (mode === 'module') return print ? ESM_CANNOT_PRINT : { code, refusedBeforeImports: false };
+  const illegal = illegalReturn(code, mode);
+  if (illegal !== null) return illegal;
+  return print ? printedProgram(code, mode) : { code, refusedBeforeImports: false };
+}
+
+/**
+ * A script whose first error is a `return` at its top: V8's compile of it
+ * (Node's compileScript) throws "Illegal return statement" there, where
+ * the entry, the code as a function's body, would run it. The program
+ * throws that SyntaxError, its arrow under the `return` (node-shims
+ * __nimbusEvalIllegalReturn), before `--import`'s modules load where Node's
+ * eval compiles first (`mode` 'default'). Null for any other.
+ */
+function illegalReturn(code: string, mode: NodeEvalMode): NodeEvalProgram | null {
+  if (!/\breturn\b/.test(code)) return null;
+  try {
+    parseStatements(code, SCRIPT, {});
+    return null;
+  } catch (e) {
+    if (!(e instanceof SyntaxError) || !e.message.startsWith("'return' outside of function") || !('pos' in e) || typeof e.pos !== 'number') return null;
+    return { code: `throw __nimbusEvalIllegalReturn(${JSON.stringify(code)}, ${e.pos});`, refusedBeforeImports: mode === 'default' };
+  }
 }
 
 /** Thrown as the program's first act, after its -r preloads, as Node throws it, with no arrow of this code (Node's is its loader's). */
@@ -189,15 +212,8 @@ function parsed(source: string, options: Options): Program | null {
 
 function printedProgram(source: string, mode: NodeEvalMode): NodeEvalProgram {
   const program = parsed(source, SCRIPT);
-  if (program === null) {
-    const refusedBeforeImports = mode === 'default';
-    // A return at the top compiles in the entry's function, not in Node's script.
-    if (parsed(source, { ...SCRIPT, allowReturnOutsideFunction: true }) !== null) {
-      return { code: 'throw new SyntaxError("Illegal return statement");', refusedBeforeImports };
-    }
-    // Neither: it fails to compile in the process, as it does in Node.
-    return { code: source, refusedBeforeImports };
-  }
+  // It fails to compile in the process, as it does in Node.
+  if (program === null) return { code: source, refusedBeforeImports: mode === 'default' };
   const rewriter = new CompletionRewriter(source, freshNames(program));
   rewriter.process(program.body, 0);
   return { code: `${rewriter.apply()}\n;var ${rewriter.declared.join(',')};return ${rewriter.result};`, refusedBeforeImports: false };

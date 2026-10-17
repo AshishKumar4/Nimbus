@@ -11141,6 +11141,24 @@ function __nimbusEvalArrow(module, arrow) {
   if (typeof hint !== "string") return named;
   return module.esModule ? named + "\\n" + hint + "\\n" : named + hint + "\\n";
 }
+// -e code or stdin that Node compiles as a script, with a \`return\` at its
+// top (\`at\`, in \`text\`): V8's SyntaxError, its arrow under the \`return\`
+// and the script's name, with amaro's message where Node's eval adds it
+// (__nimbusEvalArrow), and no frame of the code that throws it (node-eval.ts
+// illegalReturn; the entry runs the code as a function's body, where it
+// would compile).
+function __nimbusEvalIllegalReturn(text, at) {
+  const entry = __nimbusEntryModule();
+  const error = new __nimbusSyntaxError("Illegal return statement");
+  if (entry === null) return error;
+  const source = { name: entry.name, path: null, file: __nimbusFrameFile(entry), head: 0, tail: 0, esModule: false, hashbang: false };
+  const arrow = __nimbusEvalArrow(entry, __nimbusArrowOf(source, text, at, at + "return".length));
+  // A program's Error.prepareStackTrace may make the stack anything: only a
+  // string's frames are trimmed, this function's and the code's that throws.
+  if (typeof error.stack === "string") error.stack = arrow + "\\n" + error.stack.replace(/(\\n    at [^\\n]*){1,2}/, "");
+  __nimbusDecorated.add(error);
+  return error;
+}
 // -e code or stdin as Node's eval stripped it: a strip's frames are named
 // by the stripper's sourceURL, [eval], stdin's too (typescript.js
 // processTypeScriptCode), a compile error by the script (__nimbusEvalArrow);

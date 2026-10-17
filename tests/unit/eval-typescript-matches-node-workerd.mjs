@@ -42,6 +42,12 @@ const SOURCES = {
   nestedImport: "{ import { sep } from 'node:path'; }",
   nestedImportDefault: "if (globalThis.x) import x from 'node:path';",
   nestedExport: 'function f() { export const a = 1; }',
+  // A return at a script's top is V8's SyntaxError, under the return (a function's, inside it, is not).
+  topReturn: 'return 1',
+  laterReturn: 'const a = 1;\nif (a) return 2',
+  wideReturn: 'const s = "日本"; return s',
+  innerReturn: 'function f() { return 3 } console.log(f())',
+  cryptoReturn: 'crypto; return 1',
 };
 /** Sources `-p` prints the value of. */
 const PRINTED = {
@@ -49,6 +55,8 @@ const PRINTED = {
   ts: 'const a: number = 3; a',
   invalid: 'const x = ;',
   esmTs: "import { sep } from 'node:path'; const s: string = sep; s",
+  topReturn: 'return 1',
+  cryptoReturn: 'crypto; return 1',
 };
 /** Sources `-p` prints the value of from stdin. */
 const PRINTED_STDIN = ['ts', 'invalid'];
@@ -58,11 +66,11 @@ const PRINTED_STDIN = ['ts', 'invalid'];
  */
 const FLAGS = [
   { flags: '', stdin: true },
-  { flags: '--no-experimental-strip-types', sources: ['ts', 'invalid', 'enum', 'esmTs', 'esmInvalid', 'nestedImport', 'nestedExport', 'jsFrame'], stdin: true },
-  { flags: '--input-type=commonjs', sources: ['ts', 'invalid', 'esmJs', 'esmTs'] },
-  { flags: '--input-type=module', sources: ['ts', 'invalid', 'js', 'esmTs'] },
-  { flags: '--input-type=commonjs-typescript', sources: ['js', 'ts', 'invalid', 'enum', 'esmTs', 'throws', 'frame'], stdin: true },
-  { flags: '--input-type=module-typescript', sources: ['js', 'ts', 'invalid', 'enum', 'esmTs', 'topAwait', 'frame'], stdin: true },
+  { flags: '--no-experimental-strip-types', sources: ['ts', 'invalid', 'enum', 'esmTs', 'esmInvalid', 'nestedImport', 'nestedExport', 'jsFrame', 'topReturn', 'laterReturn'], stdin: true },
+  { flags: '--input-type=commonjs', sources: ['ts', 'invalid', 'esmJs', 'esmTs', 'topReturn'] },
+  { flags: '--input-type=module', sources: ['ts', 'invalid', 'js', 'esmTs', 'topReturn'] },
+  { flags: '--input-type=commonjs-typescript', sources: ['js', 'ts', 'invalid', 'enum', 'esmTs', 'throws', 'frame', 'topReturn'], stdin: true },
+  { flags: '--input-type=module-typescript', sources: ['js', 'ts', 'invalid', 'enum', 'esmTs', 'topAwait', 'frame', 'topReturn'], stdin: true },
   { flags: '--no-experimental-strip-types --input-type=commonjs-typescript', sources: ['ts', 'js'], stdin: true },
   { flags: '--no-experimental-strip-types --input-type=module-typescript', sources: ['ts', 'js'], stdin: true },
   { flags: '--experimental-transform-types', sources: ['enum', 'ts', 'invalid', 'esmInvalid', 'throws', 'frame', 'caught', 'esmThrows'], stdin: true },
@@ -93,8 +101,9 @@ for (const flags of PRINT_FLAGS) {
   for (const source of Object.values(PRINTED)) commands.push(`${node(flags)} -p ${shellWord(source)}`);
 }
 for (const name of PRINTED_STDIN) commands.push(`printf '%s' ${shellWord(PRINTED[name])} | node -p`);
-// Code Node's eval compiles first, it refuses before `--import`'s modules load; code it strips, after.
-for (const name of ['invalid', 'ts']) commands.push(`node --import ./nope.mjs -e ${shellWord(SOURCES[name])}`);
+// Code Node's eval compiles first, it refuses before `--import`'s modules load; code it strips, after; a script's evalScript, after.
+for (const name of ['invalid', 'ts', 'topReturn']) commands.push(`node --import ./nope.mjs -e ${shellWord(SOURCES[name])}`);
+commands.push(`node --no-experimental-strip-types --import ./nope.mjs -e ${shellWord(SOURCES.topReturn)}`);
 
 await matchNodeInWorkerd('eval-typescript', '/home/user/evalts', { 'package.json': '{}\n' }, commands);
 console.log(`ok - eval-typescript-matches-node-workerd (${commands.length} programs, as host Node runs them)`);

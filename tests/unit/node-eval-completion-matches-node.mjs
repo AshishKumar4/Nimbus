@@ -63,6 +63,8 @@ const REFUSED = [
 const RUNNER = `
 ${NODE_ERROR_PREAMBLE}
 globalThis.__nimbusNodeError = nodeError;
+// The runtime's V8 error for a top-level return (node-shims __nimbusEvalIllegalReturn), its arrow aside: eval-typescript-matches-node-workerd compares that.
+globalThis.__nimbusEvalIllegalReturn = () => new SyntaxError('Illegal return statement');
 const { format } = require('node:util');
 const codes = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
 process.stdout.write(JSON.stringify(codes.map((code) => {
