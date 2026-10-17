@@ -168,6 +168,10 @@ const unexpected = [];
 for (const [name, source] of CASES) {
   for (const [path, outcome] of Object.entries(outcomes)) {
     const [before, after] = [await outcome(engines.esbuild, name, source), await outcome(engines.oxc, name, source)];
+    if (name === 'dup-decl.mjs') {
+      assert.deepEqual(before, { refused: true, kind: 'Error', locations: [[1, 15]] });
+      assert.deepEqual(after, { refused: true, kind: 'Error', locations: [[1, 4]] });
+    }
     compared++;
     if (JSON.stringify(before) === JSON.stringify(after)) { equal++; continue; }
     if (DIVERGENT[name]) divergent.add(name);
