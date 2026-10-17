@@ -494,8 +494,12 @@ export declare class SqliteVFS {
     private readonly capturedRefs;
     /** The process whose wave is committing (waveScope): its run, if one is captured, keeps what it changes. */
     private activeWriterPid;
-    /** Inside an embedder transaction (publishedTransaction): what captured runs keep of it, once it commits. */
-    private pendingCaptures;
+    /**
+     * Inside an embedder transaction (publishedTransaction): how to undo what
+     * captured runs kept of it, should it roll back. Kept at once, its rows
+     * held at once, so a later plan of the transaction meets them.
+     */
+    private captureUndo;
     /** Whose call is running: the principal its write events name (a view's, re-entered by work it defers). */
     private activeOrigin;
     /**

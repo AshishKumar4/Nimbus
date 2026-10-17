@@ -1032,6 +1032,8 @@ export interface ResidentSpawnOptions {
     stdin?: string;
     /** Its `< file`, read from the start: a promoted one-shot's, run again from its start unretraced (_promote). */
     stdinFile?: NonNullable<ExecLaunchOpts['stdinFile']>;
+    /** The run its output is tagged with, past one that stopped: a promoted one-shot's, run again from its start unretraced. */
+    run?: number;
     /**
      * Its launcher writes its stdin and ends it, and does not wait for the
      * boot (RuntimeRunOpts.stdinWriter): the boot may stop at a synchronous

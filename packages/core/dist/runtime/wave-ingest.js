@@ -1098,7 +1098,7 @@ export class WaveIngest {
                     return false;
                 at.setPhase('publish');
                 await at.settleBefore();
-                reached(call.call !== 'open' || openAccessRights(call.access).write || call.create === true || call.truncate === true ? placed : null);
+                reached(call.call !== 'open' || openAccessRights(call.access).write || call.create === true || call.truncate === true || call.fchmod !== undefined ? placed : null);
                 // Made under the umask the process made it with, as on this filesystem (W7Call umask).
                 const as = withUmask(cred, 'umask' in call ? call.umask : undefined);
                 if (call.call === 'open') {

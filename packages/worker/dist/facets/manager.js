@@ -1469,6 +1469,7 @@ ${VFS_CURSOR_SEED_SOURCE}
       captured: !!captureOutput || !workerEnv?.SUPERVISOR,
       nonce: __startArgs && __startArgs.stopNonce,
       boundary: () => { const b = __supervisor && __supervisor.replayBoundary; return typeof b === "function" ? Reflect.apply(b, __supervisor, []) : undefined; },
+      run: __startArgs && __startArgs.run,
     });
     const __supervisor = workerEnv?.SUPERVISOR
       ? __nimbusStopReplay.ledger(globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR)) : null;
@@ -6741,8 +6742,9 @@ export class FacetManager {
         const restored = this.vfs?.restoreRun(pid) ?? { refused: 'what it changed was not kept' };
         if ('refused' in restored) {
             await this._deliverOutput(pid, 'stderr', new TextEncoder().encode(`node: this program listens as a server, so Nimbus runs it again as one from its start, over the files as they are: ${restored.refused}. What it printed before it listened is printed again.\n`));
-            // Its run from the start is no run after a stop: all it prints is shown.
-            this.outputGates.delete(pid);
+            // Its run from the start is the next run, unchecked: all it prints is
+            // shown, and the stopped run's late chunks still are not.
+            gate?.restart(stop.run + 1);
         }
         const resume = {
             replay: {
@@ -6773,7 +6775,7 @@ export class FacetManager {
                 ...(opts.stdin !== undefined ? { stdin: opts.stdin } : {}),
                 skipSpawn: true, callerPid: pid,
                 ...('refused' in restored
-                    ? { ...(run.inputChannel > 0 ? { stdinWriter: true } : {}), ...(opts.stdinFile ? { stdinFile: { ...opts.stdinFile, syncRead: true } } : {}) }
+                    ? { run: stop.run + 1, ...(run.inputChannel > 0 ? { stdinWriter: true } : {}), ...(opts.stdinFile ? { stdinFile: { ...opts.stdinFile, syncRead: true } } : {}) }
                     : { resume }),
             });
             // Its \`< file\` changed between the run that read it and the resident
@@ -8294,7 +8296,7 @@ export class FacetManager {
             // process fails, naming how.
             let strayed = null;
             if (stdinWriter) {
-                this.outputGates.set(entry.pid, new ReplayOutputGate());
+                this.outputGates.set(entry.pid, new ReplayOutputGate(opts.run));
                 this.stdinTaken.set(entry.pid, new StdinTaken(heldStdin, STDIN_SYNC_READ_BYTES));
                 this.replay.open(entry.pid, () => {
                     this.outputGates.get(entry.pid)?.close();
@@ -8321,7 +8323,7 @@ export class FacetManager {
                     // Its worker, the launch admission it was started in, before its boot claims it.
                     await admitted();
                     try {
-                        const launchingNonce = stopNonce, launchingRun = rerun?.replay.run ?? 1;
+                        const launchingNonce = stopNonce, launchingRun = rerun?.replay.run ?? opts.run ?? 1;
                         handle = await this._startResidentProcess(entry.pid, {
                             // The attached-TTY runner holds startProcess open for the process's
                             // life; the server/watch runner returns once it is up.
@@ -8349,11 +8351,13 @@ export class FacetManager {
                                 // A boot after a stop: what the stopped boot drew and printed, and
                                 // the stdin it is handed back.
                                 ...(rerun !== null ? { replay: rerun.replay, stdinAtLeast: rerun.stdinAtLeast ?? 0, ...(rerun.stdinWhole ? { stdinWhole: true } : {}) } : {}),
+                                // A run from its start after a run that stopped: its output is that next run's.
+                                ...(rerun === null && opts.run !== undefined ? { run: opts.run } : {}),
                                 ...(rerun?.stdinFile ? { stdinFile: rerun.stdinFile } : opts.stdinFile ? { stdinFile: opts.stdinFile } : {}),
                             },
                             // Each boot after a stop is a fresh isolate: a keyed loader keeps the
                             // stopped one's module state.
-                            ...(rerun !== null ? { run: rerun.replay.run } : {}),
+                            ...(rerun !== null ? { run: rerun.replay.run } : opts.run !== undefined ? { run: opts.run } : {}),
                             storageBytes,
                             // A resident whose declared port is reserved binds the owner's
                             // durable slot — the same store a durable worker spawn takes — so the
