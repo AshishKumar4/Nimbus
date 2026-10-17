@@ -5188,6 +5188,7 @@ export class FacetManager {
             nameSources: (read) => filesystem.nameLaunch?.(entry, () => read),
         });
         trace(`planned ${plan.paths.length}`);
+        trace(`DIAG planned under cwd: ${plan.paths.filter((path) => path.startsWith(cwd.replace(/^\/+/, '') + '/src')).join(' ')}; sourceRoots ${JSON.stringify(plan.sourceRoots)}`);
         // What the facet's store will hold (N18), in the cost its store charges
         // itself (vfs/resident residentCellCost): the planned bytes on
         // overflow pages (1% over), a head and chunk rows per file, a namespace

@@ -4031,6 +4031,8 @@ const __fsMod = (() => {
   // holds, the file the links on it name by that file's own name.
   function _recordResidencyMiss(absPath) {
     const k = _strip(absPath);
+    try { process.stderr.write("[nimbus-debug] DIAG residency miss: " + k + "
+"); } catch {}
     _recordMiss(k);
     const landing = _nsLandingKey(k) ?? k;
     _faultIn(landing);
