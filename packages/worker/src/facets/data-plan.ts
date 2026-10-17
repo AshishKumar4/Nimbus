@@ -630,7 +630,8 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     }
     for (const { path, negated } of sheetSources(parsed)) {
       if (negated) continue;
-      for (const alternative of braces.expand(path)) {
+      // Quotes are filename characters to oxide, and a range of any length is a set of paths.
+      for (const alternative of braces(path, { expand: true, keepQuotes: true, rangeLimit: Infinity })) {
         const names = alternative.split('/');
         const glob = names.findIndex((name) => GLOB_SPECIAL.test(name));
         const named = resolve(glob < 0 ? alternative : names.slice(0, glob).join('/') || (alternative.startsWith('/') ? '/' : '.'));
@@ -651,13 +652,9 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
       for (const raw of page.entries) {
         if (raw.kind !== 'file') continue;
         const k = key(raw.path);
-        for (const { target, rule } of linkedDirs) {
-          if (target === '' || k === target || k.startsWith(target + '/')) {
-            // What the rule that took it would have left out, had it been in place.
-            if (!excludedBelow(target, k)) take({ path: k, kind: 'file', size: raw.size }, rule);
-            break;
-          }
-        }
+        // The first root that holds it, below which it is not what the rule that took the root would have left out.
+        const holder = linkedDirs.find(({ target }) => (target === '' || k === target || k.startsWith(target + '/')) && !excludedBelow(target, k));
+        if (holder) take({ path: k, kind: 'file', size: raw.size }, holder.rule);
       }
       if (page.next === null) break;
       after = page.next;

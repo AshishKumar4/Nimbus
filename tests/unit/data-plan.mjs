@@ -396,7 +396,7 @@ assert.equal(noTs.rules.typescript.files, 0);
   const tree = {
     'home/user/app/package.json': '{"name":"app"}',
     'home/user/app/src/index.css': '@import "tailwindcss";\n@source "./local";\n@source inline("underline");\n@import "../../theme/theme.css";\n@import url("../../unused/unused.css");',
-    'home/user/theme/theme.css': '@source "../shared";\n@source "../{kit,app}/**/*.tsx";\n@source not "../ignored";\n@source "/home/user/app/../linked/**";\n@media screen { @import "./deeper.css"; }',
+    'home/user/theme/theme.css': '@source "../shared";\n@source "../{kit,app}/**/*.tsx";\n@source not "../ignored";\n@source "/home/user/app/../linked/**";\n@source "../shared/.next/templates";\n@source "../quoted\'s/{1..1001}.tsx";\n@media screen { @import "./deeper.css"; }',
     'home/user/theme/deeper.css': '@source "../deep/*.tsx";',
     'home/user/unused/unused.css': '@source "../never";',
     'home/user/deep/Deep.tsx': 'd',
@@ -404,6 +404,8 @@ assert.equal(noTs.rules.typescript.files, 0);
     'home/user/real-linked/L.tsx': 'l',
     'home/user/linked': { kind: 'symlink', size: 0, target: '/home/user/real-linked' },
     'home/user/shared/.next/cache.js': 'c',
+    'home/user/shared/.next/templates/Card.tsx': 't',
+    "home/user/quoted's/1001.tsx": 'q',
     'home/user/app/src/local/a.tsx': 'x',
     'home/user/shared/Card.tsx': '<div class="bg-teal-700" />',
     'home/user/shared/node_modules/dep/index.js': 'x',
@@ -429,8 +431,11 @@ assert.equal(noTs.rules.typescript.files, 0);
   assert.ok(!held.has('home/user/ignored/Thing.tsx'), '`@source not` holds nothing');
   assert.ok(!held.has('home/user/shared/node_modules/dep/index.js'), 'a source\'s dependencies are not held');
   assert.ok(!held.has('home/user/shared/.next/cache.js'), 'nor its caches: the project rule\'s exclusions');
-  assert.deepEqual(withOxide.sourceRoots, ['/home/user/shared', '/home/user/kit', '/home/user/real-linked', '/home/user/deep'], 'the plan names the roots outside the tree, for the barriers to push');
-  assert.equal(withOxide.rules['stylesheet-source'].files, 4);
+  assert.ok(held.has('home/user/shared/.next/templates/Card.tsx'), 'a root named below an excluded directory of another root holds its files');
+  assert.ok(held.has("home/user/quoted's/1001.tsx"), 'a quote is a filename character, and a range of any length expands');
+  assert.deepEqual(withOxide.sourceRoots.slice(0, 4), ['/home/user/shared', '/home/user/kit', '/home/user/real-linked', '/home/user/shared/.next/templates'], 'the plan names the roots outside the tree, for the barriers to push');
+  assert.ok(withOxide.sourceRoots.includes("/home/user/quoted's/1001.tsx") && withOxide.sourceRoots.includes('/home/user/deep'));
+  assert.equal(withOxide.rules['stylesheet-source'].files, 6);
   assert.equal(withOxide.names, listed, 'the namespace is counted once, however many walks');
   const without = await planFacetData(ns, { cwd: '/home/user/app', home: '/home/user', closure: [], refs: [] });
   assert.ok(!new Set(without.paths).has('home/user/shared/Card.tsx'), 'without oxide, the source is not held');
