@@ -3,10 +3,13 @@
  * code that shares a realm with a program and must not reach what the
  * program replaced: the interpreter (interpreter/primordials.ts, loaded at a
  * launch's start), and the guest's module loading (node:path's posix half,
- * posix-path.ts), which the node shims evaluate before the program's first
- * statement. Only captures, and the collections and lists built on them:
- * every process of a launch evaluates it (tests/unit/primordials-audit.mjs
- * checks that its readers call nothing else).
+ * posix-path.ts; the ES module resolver, esm-resolver.ts, its package maps,
+ * package-map.ts, and Node's errors, node-error.ts), which the node shims
+ * evaluate before the program's first statement. Only captures, the
+ * collections and lists built on them, and what makes the runtime's own
+ * generators drive through them (safeGenerator): every process of a launch
+ * evaluates it (tests/unit/primordials-audit.mjs checks that its readers
+ * call nothing else).
  */
 
 export const reflectApply = Reflect.apply;
@@ -83,6 +86,29 @@ export const parseFloatOf = parseFloat;
 export const SymbolConstructor = Symbol;
 export const SymbolPrototypeDescription: unknown = Reflect.getOwnPropertyDescriptor(Symbol.prototype, 'description')?.get;
 export const globalObject: typeof globalThis = globalThis;
+export const JSONParse = JSON.parse;
+export const JSONStringify = JSON.stringify;
+export const decodeURIComponentOf = decodeURIComponent;
+export const encodeURIComponentOf = encodeURIComponent;
+export const NumberOf = Number;
+export const numberIsInteger = Number.isInteger;
+export const objectIs = Object.is;
+export const objectIsExtensible = Object.isExtensible;
+export const mathAbs = Math.abs;
+/**
+ * Error.captureStackTrace as the runtime has it before any program code:
+ * V8's (none where the engine has none), or the one the launch's cell
+ * runtime installs over it, which places interpreted frames
+ * (useCaptureStackTrace). Node's errors capture their stacks through it.
+ */
+let runtimeCaptureStackTrace: unknown = Reflect.get(Error, 'captureStackTrace');
+export function captureStackTraceOf(): unknown {
+  return runtimeCaptureStackTrace;
+}
+/** The runtime's own Error.captureStackTrace, installed before any program code (commonjs-cell). */
+export function useCaptureStackTrace(capture: Function): void {
+  runtimeCaptureStackTrace = capture;
+}
 const BigIntOf = BigInt;
 const ErrorConstructor = Error;
 const RangeErrorConstructor = RangeError;
@@ -90,12 +116,15 @@ const ReferenceErrorConstructor = ReferenceError;
 const RegExpConstructor = RegExp;
 const SyntaxErrorConstructor = SyntaxError;
 const TypeErrorConstructor = TypeError;
+const URIErrorConstructor = URIError;
+// None in a realm with no URL (a test262 realm's), where nothing resolves a module.
+const URLConstructor: typeof URL | undefined = typeof URL === 'function' ? URL : undefined;
 // The interpreter's modules import these under the globals' names, so their
 // `new TypeError(...)` constructs the realm's own.
 export {
   BigIntOf as BigInt, ErrorConstructor as Error, RangeErrorConstructor as RangeError,
   ReferenceErrorConstructor as ReferenceError, RegExpConstructor as RegExp, SyntaxErrorConstructor as SyntaxError,
-  TypeErrorConstructor as TypeError,
+  TypeErrorConstructor as TypeError, URIErrorConstructor as URIError, URLConstructor as URL,
 };
 
 /**
@@ -198,3 +227,46 @@ export const stringCharCodeAt: (text: string, index: number) => number = uncurry
 export const stringSlice: (text: string, start?: number, end?: number) => string = uncurryThis(String.prototype.slice);
 export const stringLastIndexOf: (text: string, search: string, position?: number) => number = uncurryThis(String.prototype.lastIndexOf);
 export const arrayJoin: (list: readonly string[], separator: string) => string = uncurryThis(Array.prototype.join);
+// Uncurried for the module resolver and Node's errors (esm-resolver.ts,
+// package-map.ts, node-error.ts). Not split or replace: a string separator
+// or pattern is asked its Symbol.split or Symbol.replace, which a program
+// can put on String.prototype.
+export const stringStartsWith: (text: string, search: string, position?: number) => boolean = uncurryThis(String.prototype.startsWith);
+export const stringEndsWith: (text: string, search: string) => boolean = uncurryThis(String.prototype.endsWith);
+export const stringIncludes: (text: string, search: string) => boolean = uncurryThis(String.prototype.includes);
+export const stringIndexOf: (text: string, search: string, position?: number) => number = uncurryThis(String.prototype.indexOf);
+export const stringToLowerCase: (text: string) => string = uncurryThis(String.prototype.toLowerCase);
+export const arrayIncludes: <T>(list: readonly T[], value: T) => boolean = uncurryThis(Array.prototype.includes);
+export const arrayIndexOf: <T>(list: readonly T[], value: T) => number = uncurryThis(Array.prototype.indexOf);
+export const setForEach: <T>(set: ReadonlySet<T>, each: (value: T) => void) => void = uncurryThis(Set.prototype.forEach);
+/** Array.prototype.sort of a SafeList, which inherits nothing it could read or write past its end. */
+export const arraySort: <T>(list: SafeList<T>, compare: (a: T, b: T) => number) => SafeList<T> = uncurryThis(Array.prototype.sort);
+/** RegExp.prototype.exec: RegExpBuiltinExec, which reads the regexp's own lastIndex and its flags' internal slots. */
+export const regExpExec: (pattern: RegExp, text: string) => RegExpExecArray | null = uncurryThis(RegExp.prototype.exec);
+const generatorPrototype = reflectGetPrototypeOf(function* () {}.prototype);
+export const generatorNext: <R>(it: Generator<unknown, R, unknown>, value?: unknown) => IteratorResult<unknown, R> = uncurryThis(reflectGet(generatorPrototype ?? {}, 'next'));
+export const generatorThrow: <R>(it: Generator<unknown, R, unknown>, error: unknown) => IteratorResult<unknown, R> = uncurryThis(reflectGet(generatorPrototype ?? {}, 'throw'));
+
+/** `new URL(input, base)` with the realm's URL. */
+export function newURL(input: string, base?: string | URL): URL {
+  if (URLConstructor === undefined) throw new TypeErrorConstructor('URL is not defined');
+  return base === undefined ? new URLConstructor(input) : new URLConstructor(input, base);
+}
+
+/**
+ * `fn`, a generator function of the runtime's own, made to create
+ * generators that inherit SafeGeneratorPrototype: next(), and yield*,
+ * which looks up the inner generator's [Symbol.iterator] and next, reach
+ * no method a program replaced on %GeneratorPrototype%.
+ */
+export function safeGenerator<A extends unknown[], R>(fn: (...args: A) => Generator<unknown, R, unknown>): (...args: A) => Generator<unknown, R, unknown> {
+  if (!reflectDefineProperty(fn, 'prototype', dataDescriptor(SafeGeneratorPrototype, true, false, false))) {
+    throw new TypeErrorConstructor('Cannot redefine property: prototype');
+  }
+  return fn;
+}
+
+/** `object`'s own `key`, or undefined: a parsed package.json's field, which Node's reader takes only as the file has it (no inherited one). */
+export function ownField(object: object, key: string): unknown {
+  return objectHasOwn(object, key) ? reflectGet(object, key) : undefined;
+}

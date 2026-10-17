@@ -43,7 +43,7 @@ import { parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
 import { exactVersion } from '@nimbus-sh/core/_shared/npm-semver.js';
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 import { Fanout } from '@nimbus-sh/fabric/fanout.js';
-import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from '../loaders/generated-workers.js';
+import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from '../loaders/workers.generated.js';
 import { setInstallPhase, recordInstallFacetCounters, recordPreBundleSummary, recordR2RaceCounters, readDiagCounters, } from '@nimbus-sh/platform/diag-counters.js';
 import { recordCacheStatEvents } from '@nimbus-sh/core/_shared/cache-stats.js';
 import { estimateSupervisorHeap } from '@nimbus-sh/platform/heap-estimate.js';

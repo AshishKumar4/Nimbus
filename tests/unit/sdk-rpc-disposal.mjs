@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { disposeRpcResource, useRpcResource } from '../../packages/platform/src/rpc-dispose.ts';
-import { RPC_DISPOSE_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
+import { RPC_DISPOSE_PREAMBLE } from '../../packages/worker/src/loaders/workers.generated.ts';
 import { Nimbus } from '../../packages/sdk/src/sandbox.ts';
 
 const generated = await import(`data:text/javascript;base64,${Buffer.from(RPC_DISPOSE_PREAMBLE + '\nexport { disposeRpcResource, useRpcResource };').toString('base64')}`);

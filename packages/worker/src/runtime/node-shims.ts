@@ -49,7 +49,7 @@ import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
 import {
   ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_ARGUMENTS_PREAMBLE, NODE_ERROR_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE,
   NODE_WARNING_PREAMBLE, POSIX_PATH_PREAMBLE, PRIMORDIALS_PREAMBLE, RELATIVE_WASM_PATHS_PREAMBLE, WASM_IMAGE_KEY_PREAMBLE,
-} from '../loaders/generated-workers.js';
+} from '../loaders/workers.generated.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { EGRESS_TLS_REFUSAL } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { EGRESS_TLS_CLIENT_SOURCE } from './egress-tls-client.js';
@@ -139,17 +139,17 @@ const __nativeBuiltin = ((host) => typeof __nimbusNativeBuiltins === "undefined"
 class __ProcessExit extends Error {
   constructor(code) { super("process.exit(" + code + ")"); this.code = code & 255; }
 }
-// Node's internal errors (core _shared/node-error.ts), first: the shims, the
-// preambles below and the code they load make them by name, and the cell
-// runtime and generated code reach them as __nimbusNodeError and
+// The built-ins the module loading calls, captured before any program code
+// (core _shared/primordials.ts), which Node's errors, node:path's posix half
+// (core _shared/posix-path.ts, Node's lib/path.js) and the module resolvers
+// below call. Then Node's internal errors (core _shared/node-error.ts): the
+// shims, the preambles below and the code they load make them by name, and
+// the cell runtime and generated code reach them as __nimbusNodeError and
 // __nimbusNodeSystemError.
+${PRIMORDIALS_PREAMBLE}
 ${NODE_ERROR_PREAMBLE}
 ${NODE_ARGUMENTS_PREAMBLE}
 ${NODE_WARNING_PREAMBLE}
-// The built-ins the module loading calls, captured now, before any program
-// code (core _shared/primordials.ts), and node:path's posix half on them
-// (core _shared/posix-path.ts, Node's lib/path.js).
-${PRIMORDIALS_PREAMBLE}
 ${POSIX_PATH_PREAMBLE}
 Object.defineProperties(globalThis, {
   __nimbusNodeError: { value: __nimbusGeneratedNodeError, configurable: true },
@@ -13301,6 +13301,11 @@ async function __nimbusEsmInterpret(id, linked) {
 }
 // A refusal staging recorded (EsmStage.missing), as the error Node's loader throws.
 function __nimbusEsmRefusal(missing) {
+  // A specifier that is no URL against its importer's: the resolver's own
+  // error, its cause the URL parser's (the record's own field: one a program
+  // gave Object.prototype is none).
+  const invalidUrl = __nimbusPrimordials.ownField(missing, "invalidUrl");
+  if (invalidUrl !== undefined) return unsupportedResolveRequest(invalidUrl.input, invalidUrl.base);
   const Type = missing.name === "TypeError" ? TypeError : missing.name === "SyntaxError" ? SyntaxError : missing.name === "RangeError" ? RangeError : Error;
   const refused = missing.code ? nodeError(Type, missing.code, missing.message) : new Type(missing.message);
   if (missing.url !== undefined) refused.url = missing.url;

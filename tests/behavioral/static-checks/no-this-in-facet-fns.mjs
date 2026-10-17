@@ -12,7 +12,7 @@ import { assembleLoaderWorkerModuleSource } from '../../../packages/fabric/dist/
 import { WASI_INSTANCE_PREAMBLE_SRC } from '../../../packages/core/dist/runtime/wasi-instance.js';
 import { NPM_RESOLVE_PREAMBLE } from '../../../packages/worker/dist/loaders/npm-resolve-preamble.js';
 import { NPM_INSTALL_PREAMBLE } from '../../../packages/worker/dist/loaders/npm-install-preamble.js';
-import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from '../../../packages/worker/dist/loaders/generated-workers.js';
+import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from '../../../packages/worker/dist/loaders/workers.generated.js';
 import { FACET_GLOBALS, freeNames } from '../../../packages/worker/scripts/free-names.mjs';
 
 const root = new URL('../../../', import.meta.url).pathname;

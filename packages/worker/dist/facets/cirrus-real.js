@@ -58,7 +58,7 @@ import { REAL_VITE_VERSION, VITE_CLIENT_MJS, VITE_ENV_MJS, getRealViteBundle, ge
 import { CIRRUS_PLUGIN_REACT_VERSION, getCirrusPluginReactBundle, } from '../cirrus-plugin-react.generated.js';
 import { CIRRUS_NPM_CJS_VERSIONS, getCirrusNpmCjsBundles } from '../cirrus-npm-cjs.generated.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
-import { RPC_DISPOSE_PREAMBLE } from '../loaders/generated-workers.js';
+import { RPC_DISPOSE_PREAMBLE } from '../loaders/workers.generated.js';
 import { getCtxExports, hostRoute } from '@nimbus-sh/fabric/composition.js';
 import { buildFsSnapshot, generateFsShimModuleCode, generateFsPromisesShimModuleCode, generateSyntheticModuleCode, } from './real-vite-fs-shim.js';
 import { HmrBridge, generateWsShimModuleCode, generateChokidarShimModuleCode, } from './real-vite-hmr.js';

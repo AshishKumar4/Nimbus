@@ -105,11 +105,7 @@ export declare function resume<R>(it: Generator<unknown, R, unknown>, value: unk
 /** Throw into one of the interpreter's own generators. */
 export declare function resumeThrowing<R>(it: Generator<unknown, R, unknown>, error: unknown): IteratorResult<unknown, R>;
 export declare function resumeReturning<R>(it: Generator<unknown, R, unknown>, value: unknown): IteratorResult<unknown, R>;
-/**
- * `fn`, a generator function of the interpreter's own, made to create
- * generators that inherit SafeGeneratorPrototype.
- */
-export declare function safeGenerator<A extends unknown[], R>(fn: (...args: A) => Generator<unknown, R, unknown>): (...args: A) => Generator<unknown, R, unknown>;
+export declare const safeGenerator: typeof primordials.safeGenerator;
 /** Object.defineProperty: define the property, or throw. */
 export declare function defineOrThrow(target: object, key: PropertyKey, descriptor: PropertyDescriptor): void;
 /** A descriptor of an accessor half, that inherits nothing. */

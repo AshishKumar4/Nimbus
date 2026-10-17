@@ -14,6 +14,8 @@ published independently in the `@nimbus-sh` npm scope.
 - Changed: a launch that waits 10 seconds at one stage logs who holds the
   isolate's transient budget and who waits for it, and so does the
   session's launch diagnosis. Dev servers' launches log it too.
+- Fixed: a hosted node program that replaces a built-in its module resolution calls (`String.prototype.startsWith`, `Array.prototype.push`, `JSON.parse`, `Map.prototype.get`, `%GeneratorPrototype%.next` and the like) still resolves `import`, `import()`, `import.meta.resolve`, `require.resolve` and `require` specifiers, and gets Node's errors for them, as Node's loader does on its primordials. A package.json's fields are its own: an `Object.prototype.main` or `.exports` a program adds no longer changes how a package resolves. A URL's members are read as Node reads them, so a replaced `URL.prototype.pathname` breaks resolution as it breaks Node's. Loading itself is the remaining work (design-guest-loader-primordials, heads 3 and 4).
+- Fixed: in the shell, a command word read from an alias's own text is not expanded as that alias again, as in bash. `alias ls='ls -l'`, `alias q=q`, two aliases that name each other, and an alias whose text runs its own name in a list, group, subshell or a function it defines now run that name as a command. A command substitution or a function defined elsewhere still expands it, as bash does. Before, an alias that named itself expanded without end until the session ran out of memory.
 - Fixed: a program that writes files before it listens, as Vite's config
   load does, serves. When its listen makes it a server, Nimbus runs it again
   and checks that run against the first. That check failed for two reasons.

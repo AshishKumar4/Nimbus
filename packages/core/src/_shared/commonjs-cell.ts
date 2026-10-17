@@ -886,12 +886,18 @@ let __nimbusStackFormatter = null;
 // name (an arrow, a module's top level), which Node keeps.
 const __nimbusCaptureStackTrace = Error.captureStackTrace;
 const __nimbusSites = __nimbusProgramSites;
+// Through the launch's captures, not the program's Reflect.apply: Node's
+// errors capture their stacks through it too (useCaptureStackTrace), whatever
+// a program puts on Error or Reflect since.
+const __nimbusCaptureApply = __nimbusLaunchCaptures.reflectApply;
+const __nimbusCaptureError = __nimbusLaunchCaptures.Error;
 Object.defineProperty(Error, "captureStackTrace", {
   value: function captureStackTrace(holder, above) {
-    Reflect.apply(__nimbusCaptureStackTrace, Error, [holder, above ?? captureStackTrace]);
+    __nimbusCaptureApply(__nimbusCaptureStackTrace, __nimbusCaptureError, [holder, above ?? captureStackTrace]);
     if (__nimbusInterpreter !== null) __nimbusInterpreter.captureStack(holder, above);
   }, writable: true, configurable: true,
 });
+__nimbusLaunchCaptures.useCaptureStackTrace(Error.captureStackTrace);
 function __nimbusStackSites(holder, count, above) {
   const set = (name, value) => {
     const descriptor = Object.getOwnPropertyDescriptor(Error, name);

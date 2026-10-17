@@ -123,14 +123,8 @@ export function resumeThrowing(it, error) {
 export function resumeReturning(it, value) {
     return reflectApply(GeneratorPrototypeReturn, it, [value]);
 }
-/**
- * `fn`, a generator function of the interpreter's own, made to create
- * generators that inherit SafeGeneratorPrototype.
- */
-export function safeGenerator(fn) {
-    defineOrThrow(fn, 'prototype', dataDescriptor(SafeGeneratorPrototype, true, false, false));
-    return fn;
-}
+// The runtime's one rule for its own generators (primordials.ts).
+export const safeGenerator = primordials.safeGenerator;
 /** Object.defineProperty: define the property, or throw. */
 export function defineOrThrow(target, key, descriptor) {
     if (!reflectDefineProperty(target, key, descriptor))
