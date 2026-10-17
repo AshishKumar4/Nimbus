@@ -1009,6 +1009,12 @@ interface PreparedOneShotCode {
   digest?: string;
 }
 
+class OneShotAllocationNeeded extends Error {
+  constructor(readonly bytes: number) {
+    super(`Nimbus: the one-shot map needs ${bytes} bytes of supervisor credit`);
+  }
+}
+
 /**
  * The URL an entry's import() resolves against and its `Function` carries:
  * the script's own, as Node names it (`-e` code is `<cwd>/[eval]`, stdin
@@ -2397,7 +2403,7 @@ export function generatedMapTextBytes(generated: GeneratedNodeFacetCode, room: n
 }
 
 /** What the map owns in V8; immutable runtime sources are shared by every launch. */
-function generatedMapRetainedBytes(generated: GeneratedNodeFacetCode, members: Readonly<Record<string, string | { wasm: ArrayBuffer }>>, held: number): number {
+function generatedMapRetainedBytes(generated: GeneratedNodeFacetCode, members: Readonly<Record<string, string | { wasm: ArrayBuffer }>>): number {
   let bytes = 0;
   const texts = [...generated.source.parts.filter((part) => typeof part === 'string'),
     ...Object.values(generated.modules), ...Object.values(generated.codeModules), ...Object.values(generated.esModules)];
@@ -2406,10 +2412,7 @@ function generatedMapRetainedBytes(generated: GeneratedNodeFacetCode, members: R
     else bytes += member.wasm.byteLength;
   }
   for (const text of texts) {
-    bytes += text.length;
-    if (bytes >= held) return held;
-    if (/[^\u0000-\u00ff]/.test(text)) bytes += text.length;
-    if (bytes >= held) return held;
+    bytes += text.length * (/[^\u0000-\u00ff]/.test(text) ? 2 : 1);
   }
   return bytes;
 }
@@ -4364,8 +4367,9 @@ function admissionOf(admitted: ResizableCreditLease, queued: boolean): PrefetchA
       lease.shrinkTo(need);
     },
     retain(bytes) {
-      // Shared source miscounted as owned may exceed the share; it never grows here.
-      if (!released) lease.shrinkTo(Math.max(1, Math.min(lease.bytes, bytes)));
+      const retained = Math.max(1, Math.min(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, bytes));
+      if (retained > lease.bytes) throw new Error('Nimbus: a parked module map exceeds its supervisor credit');
+      if (!released) lease.shrinkTo(retained);
     },
     reclaimable(reclaim) {
       if (released) return () => {};
@@ -6624,7 +6628,8 @@ export class FacetManager {
         ],
         ...(evaluatedModule ? { entryEsModule: entryEsModuleKey(spec.scriptPath, spec.cwd) } : {}),
       }, internalBound);
-      admission.fit(vfsState.rawBytes ?? 0);
+      // A preparation returning for a larger map keeps the share it already sized.
+      if (held === undefined) admission.fit(vfsState.rawBytes ?? 0);
       if (offered.length > 0) {
         const staged: StagedProfileEntry[] = [];
         const unresolved: string[] = [];
@@ -7274,12 +7279,26 @@ export class FacetManager {
       let brokered = suspendLaunchAdmission(this.ctx, entry.pid);
       let vfsState: FacetVfsState;
       const prepare = (): Promise<PreparedOneShotCode> => withLaunchPreparation(this.ctx, { pid: entry.pid }, async () => {
-        try {
-          return await this._prepareOneShotCode(code, launch, entry, vfsState, pacer, diagSink);
-        } catch (error) {
-          if (!(error instanceof ModuleMapOverCeilingError)) throw error;
-          vfsState = await this._rebuildUnderCeiling(entry, bundleSpec, vfsState, error, pacer);
-          return this._prepareOneShotCode(code, launch, entry, vfsState, pacer, diagSink);
+        let resized = false;
+        let rebuilt = false;
+        for (;;) {
+          try {
+            return await this._prepareOneShotCode(code, launch, entry, vfsState, pacer, diagSink);
+          } catch (error) {
+            if (error instanceof OneShotAllocationNeeded) {
+              if (resized) throw new Error('Nimbus: a regenerated one-shot map exceeded its measured supervisor credit');
+              resized = true;
+              if (!vfsState.cacheRetained) releaseGeneratedSources(vfsState);
+              this._releaseBuildAdmission(entry.pid);
+              const admission = await admitPrefetch(() => this._launchEnds(entry.pid), error.bytes, true);
+              this.buildAdmissions.set(entry.pid, admission);
+              vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
+              continue;
+            }
+            if (!(error instanceof ModuleMapOverCeilingError) || rebuilt) throw error;
+            rebuilt = true;
+            vfsState = await this._rebuildUnderCeiling(entry, bundleSpec, vfsState, error, pacer);
+          }
         }
       });
       const prepareAgain = async (): Promise<PreparedOneShotCode> => {
@@ -7868,6 +7887,37 @@ export class FacetManager {
 
   // ── One-shot dynamic Worker entrypoint ────────────────────────────────
 
+  private _ensureOneShotShare(pid: number, bytes: number): void {
+    const need = Math.min(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, Math.max(1, Math.ceil(bytes)));
+    const admission = this.buildAdmissions.get(pid);
+    if (admission === undefined) throw new Error(`Nimbus: the module map for pid ${pid} has no share of the credit`);
+    if (admission.held() >= need) return;
+    const replacement = tryAdmitPrefetch(need, true);
+    if (replacement === null) throw new OneShotAllocationNeeded(need);
+    this.buildAdmissions.set(pid, replacement);
+    admission.release();
+  }
+
+  private async _oneShotMemberBytes(entry: ProcessEntry, images: readonly FacetWasmImport[], bindings: readonly string[]): Promise<{ owned: number; wire: number }> {
+    let bytes = 0;
+    const fs = this.filesystem?.bind({ pid: entry.pid, cred: entry.cred });
+    for (const image of images) {
+      try { bytes += (await fs?.stat(image.vfsPath))?.size ?? 0; } catch { /* an unreadable image is omitted */ }
+    }
+    let wire = bytes;
+    if (bindings.length > 0) {
+      // UTF-8 source is at most twice its wire bytes in V8; the parked map is measured exactly after decoding.
+      bytes += NAPI_WASM_LOADER.bytes * 2 + NAPI_WASM_TRAMPOLINE.bytes;
+      wire += NAPI_WASM_LOADER.bytes + NAPI_WASM_TRAMPOLINE.bytes;
+      for (const name of bindings) {
+        const size = stagedBinding(name).wasm.bytes;
+        bytes += size;
+        wire += size;
+      }
+    }
+    return { owned: bytes, wire };
+  }
+
   private _parkOneShotMap(pid: number, prepared: PreparedOneShotCode, signal: AbortSignal): {
     readonly signal: AbortSignal; readonly reclaimed: boolean; unregister(): void;
   } {
@@ -7894,24 +7944,25 @@ export class FacetManager {
     diagSink?: ExecDiagSink,
   ): Promise<PreparedOneShotCode> {
     const usesSqlite = vfsState.usesNodeSqlite ?? bundleUsesNodeSqlite(code, vfsState.bundle);
+    const wasmImports = facetWasmImports([], vfsState.wasmImages ?? []);
+    const bindingNames = vfsState.stagedBindings ?? [];
+    const memberBytes = await this._oneShotMemberBytes(entry, wasmImports, bindingNames);
     const [sqliteModules, sources] = await Promise.all([
       this.sqliteModuleEntry(usesSqlite),
       fetchNodeFacetSources(this.env),
     ]);
-    const wasmImports = facetWasmImports([], vfsState.wasmImages ?? []);
-    const wasmModules = await this._wasmModulesByValue(entry, wasmImports);
-    const stagedModules = await this._stagedBindingModulesByValue(vfsState.stagedBindings ?? []);
-    const members = { ...sqliteModules, ...wasmModules, ...stagedModules };
     const entryCode = await this._entryDynamicImports(code, opts.filename, opts.cwd || '/home/user', pacer);
     const generated = await this._generateUnderCeiling(
-      entry.pid, vfsState, moduleMemberBytes(members) + ONE_SHOT_HOST_ENTRY_BYTES,
+      entry.pid, vfsState, moduleMemberBytes(sqliteModules) + memberBytes.wire + ONE_SHOT_HOST_ENTRY_BYTES,
       (state) => generateEntrypointCode(entryCode, state, usesSqlite, sources, wasmImports, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, opts.preamble),
       true,
     );
-    const codeModules: Record<string, { cjs: string } | { js: string }> = {};
-    for (const [name, text] of Object.entries(generated.codeModules)) codeModules[name] = { cjs: text };
-    for (const [name, text] of Object.entries(generated.esModules)) codeModules[name] = { js: text };
-    for (const [name, source] of Object.entries(generated.immutableModules)) codeModules[name] = { cjs: source.text };
+    const textBytes = generatedMapRetainedBytes(generated, {});
+    this._ensureOneShotShare(entry.pid, Math.max(prefetchNeed(vfsState.rawBytes ?? 0), textBytes) + memberBytes.owned);
+    const wasmModules = await this._wasmModulesByValue(entry, wasmImports);
+    const stagedModules = await this._stagedBindingModulesByValue(bindingNames);
+    const ownedMembers = { ...wasmModules, ...stagedModules };
+    const members = { ...sqliteModules, ...ownedMembers };
     if (diagSink) {
       diagSink.moduleMapBytes = generated.source.byteLength;
       for (const text of [...Object.values(generated.modules), ...Object.values(generated.codeModules), ...Object.values(generated.esModules)]) {
@@ -7926,15 +7977,12 @@ export class FacetManager {
     }
     const digest = opts.codeDigest ? answerDigest([generated.source.recipe(), generated.modules, generated.codeModules, generated.esModules,
       Object.fromEntries(Object.entries(generated.immutableModules).map(([name, source]) => [name, source.asset]))]) : undefined;
+    const retained = generatedMapRetainedBytes(generated, ownedMembers);
+    this._ensureOneShotShare(entry.pid, retained);
     if (!vfsState.cacheRetained) releaseGeneratedSources(vfsState);
     const admission = this.buildAdmissions.get(entry.pid);
-    if (admission) admission.retain(generatedMapRetainedBytes(generated, members, admission.held()));
-    let map: OneShotCodeSpec | undefined = {
-      compatibilityDate: CF_COMPAT_DATE,
-      compatibilityFlags: [...GUEST_COMPAT_FLAGS],
-      mainModule: 'runner.js',
-      modules: { 'runner.js': generated.code, ...generated.modules, ...codeModules, ...members },
-    };
+    admission?.retain(retained);
+    let map: { generated: GeneratedNodeFacetCode; members: typeof members } | undefined = { generated, members };
     return {
       digest,
       discard: () => { map = undefined; },
@@ -7943,7 +7991,16 @@ export class FacetManager {
         const taken = map;
         map = undefined;
         this._releaseBuildAdmission(entry.pid);
-        return taken;
+        const codeModules: Record<string, { cjs: string } | { js: string }> = {};
+        for (const [name, text] of Object.entries(taken.generated.codeModules)) codeModules[name] = { cjs: text };
+        for (const [name, text] of Object.entries(taken.generated.esModules)) codeModules[name] = { js: text };
+        for (const [name, source] of Object.entries(taken.generated.immutableModules)) codeModules[name] = { cjs: source.text };
+        return {
+          compatibilityDate: CF_COMPAT_DATE,
+          compatibilityFlags: [...GUEST_COMPAT_FLAGS],
+          mainModule: 'runner.js',
+          modules: { 'runner.js': taken.generated.code, ...taken.generated.modules, ...codeModules, ...taken.members },
+        };
       },
     };
   }
