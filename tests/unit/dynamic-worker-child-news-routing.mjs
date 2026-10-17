@@ -35,8 +35,13 @@ await runScenarios(fileURLToPath(import.meta.url), {
     });
     const program = `
 const child = require('child_process').spawn('node', ['child.js']);
+let timer;
 child.on('spawn', () => console.log('spawn:' + child.pid));
-child.stdout.on('data', (data) => console.log('stdout:' + String(data)));
+child.stdout.on('data', (data) => {
+  console.log('stdout:' + String(data));
+  if (String(data) === 'late') timer = setInterval(() => {}, 1000);
+  else clearInterval(timer);
+});
 child.stderr.on('data', (data) => console.log('stderr:' + String(data)));
 child.on('exit', (code, signal) => console.log('exit:' + code + ':' + signal));
 child.on('close', (code, signal) => console.log('close:' + code + ':' + signal));
@@ -56,26 +61,30 @@ child.on('close', (code, signal) => console.log('close:' + code + ':' + signal))
 
     // Output arrives ahead of the start reply; it is applied without acknowledging the gap.
     reads[1][0].resolve({ chunks: [{ seq: 1, data: new TextEncoder().encode('late') }], closed: false, news: [2] });
-    await until(() => reads[1].length === 2 && log.stdout === 'spawn:77\nstdout:late\n', 'the output and its next poll');
+    await until(() => reads[1].length === 2 && reports.some((report) => !report.blocked), 'the output and the timer keeping the parent runnable');
     assert.equal(reads[1][1].sinceSeq, 1);
-    assert.equal(reports.some((report) => report.frontier > 0), false, 'out-of-order news does not advance the reported frontier');
+    assert.equal(reports.at(-1).frontier, 0, 'out-of-order news does not advance the reported frontier');
+    reads[1][1].resolve({ chunks: [{ seq: 2, data: new TextEncoder().encode('resume') }], closed: false, news: [2] });
+    await until(() => reads[1].length === 3 && reports.at(-1).blocked, 'the parent blocked again after clearing its timer');
+    assert.equal(reads[1][2].sinceSeq, 2);
+    assert.equal(reports.at(-1).frontier, 0, 'duplicate news still leaves the earlier gap unacknowledged');
 
     waits[0].resolve({ done: false, started: true, news: [1] });
     await until(() => waits.length === 2 && blockedAt(2), 'start and output news acknowledged together');
     assert.equal(waits[1].knownStarted, true);
-    assert.equal(blockedAt(2).stdout, 'spawn:77\nstdout:late\n', 'the output is observable before its news is acknowledged');
+    assert.equal(blockedAt(2).stdout, 'spawn:77\nstdout:late\nstdout:resume\n', 'the output is observable before its news is acknowledged');
 
     waits[1].resolve({ done: true, started: true, exitCode: 7, signal: null, news: [3, 2] });
     await until(() => blockedAt(3), 'exit news acknowledged while the streams remain open');
-    assert.equal(blockedAt(3).stdout, 'spawn:77\nstdout:late\nexit:7:null\n', 'exit is observable before its news is acknowledged');
+    assert.equal(blockedAt(3).stdout, 'spawn:77\nstdout:late\nstdout:resume\nexit:7:null\n', 'exit is observable before its news is acknowledged');
 
-    reads[1][1].resolve({ chunks: [], closed: true, news: [4] });
+    reads[1][2].resolve({ chunks: [], closed: true, news: [4] });
     await until(() => blockedAt(4), 'stream-end news acknowledged while stderr remains open');
     reads[2][0].resolve({ chunks: [], closed: true, news: [5] });
     const result = await (await running).json();
     assert.equal(result.exitCode, 0, JSON.stringify(result));
     assert.equal(log.stderr, '');
-    assert.equal(log.stdout, 'spawn:77\nstdout:late\nexit:7:null\nclose:7:null\n');
+    assert.equal(log.stdout, 'spawn:77\nstdout:late\nstdout:resume\nexit:7:null\nclose:7:null\n');
     assert.deepEqual(log.exit, { code: 0, reason: '' });
     assert.ok(reports.every((report, i) => report.seq === i + 1), 'blocked reports retain their send order');
   },
