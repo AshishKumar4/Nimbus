@@ -83,6 +83,27 @@ for (const [name, expected] of Object.entries(EXPECTED)) {
   a.check(`a session's ruby activates as host Ruby: ${name}`, line === expected, JSON.stringify({ line, expected }));
 }
 
+// A gem's executable is chosen with its version. thor 1.3.2, then 1.2.2,
+// installed by Nimbus's `gem install`: host Ruby's binstub activates the
+// highest, 1.3.2, and loads its executable, so the executable and the library
+// it requires are one version. Each Kernel#load is printed, and the second is
+// the executable the wrapper chose.
+const THOR_CASE = `module Kernel; alias_method :__probe_load, :load; def load(path, *rest) = (puts "LOAD #{path}"; __probe_load(path, *rest)); end
+ARGV.replace(["version"]); load "${HOME}/bin/thor"`;
+for (const version of ['1.3.2', '1.2.2']) {
+  const installed = await t.run(`gem install thor -v ${version}`, 180_000);
+  a.check(`gem install thor -v ${version}`, installed.exitCode === 0, stripAnsi(installed.output).slice(-300));
+}
+await t.run(heredocCommand('/home/user/thor-case.rb', THOR_CASE), 20_000);
+{
+  const { output } = await t.run('ruby /home/user/thor-case.rb', 120_000);
+  const lines = stripAnsi(output).split(/\r?\n/).map((l) => l.trim());
+  const loads = lines.filter((l) => l.startsWith('LOAD '));
+  console.log(`  ${JSON.stringify(loads)} ${lines.find((l) => l.startsWith('Thor ')) ?? ''}`);
+  a.check('a gem executable runs the version RubyGems activates, as host Ruby\'s binstub does',
+    loads[1] === `LOAD ${HOME}/gems/thor-1.3.2/bin/thor` && lines.includes('Thor 1.3.2'), stripAnsi(output).slice(-500));
+}
+
 await t.close();
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);

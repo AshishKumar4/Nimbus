@@ -492,7 +492,7 @@ async function installOneGem(
 
   (await vfs.writeFile(`${ctx.gemHome}/cache/${installedKey}.gem`, gemBytes));
   for (const executable of executables) {
-    (await writeGemExecutableWrapper(vfs, ctx.gemHome, installedKey, executable));
+    (await writeGemExecutableWrapper(vfs, ctx.gemHome, metadata.name, installedKey, executable));
   }
   (await vfs.writeFile(specPath, buildSyntheticGemspec(metadata, executables, dependencies)));
   ctx.report.installed.push(installedKey);
@@ -645,6 +645,7 @@ function gemExecutableNames(files: Map<string, Uint8Array>): string[] {
 async function writeGemExecutableWrapper(
   vfs: CredentialedVfs,
   gemHome: string,
+  name: string,
   installedKey: string,
   executable: string,
 ): Promise<void> {
@@ -659,9 +660,17 @@ async function writeGemExecutableWrapper(
   } catch (error) {
     if (!isVfsError(error, 'ENOENT')) throw error;
   }
+  // Where RubyGems chooses the gem's version (installedGemLoadPath left its
+  // lib to it), it chooses the executable too, as its own binstubs do; else
+  // this version's runs, with its lib on the load path.
+  const lib = `/${gemHome}/gems/${installedKey}/lib`;
   (await vfs.writeFile(wrapperPath, [
     '#!/usr/bin/env ruby',
-    `load ${JSON.stringify(scriptPath)}`,
+    `if ENV["NIMBUS_GEM_ACTIVATE"] == "1" && !ENV["NIMBUS_GEM_LIBS"].to_s.split(":").include?(${JSON.stringify(lib)})`,
+    `  load Gem.activate_bin_path(${JSON.stringify(name)}, ${JSON.stringify(executable)}, ">= 0.a")`,
+    'else',
+    `  load ${JSON.stringify(scriptPath)}`,
+    'end',
     '',
   ].join('\n'), { mode: 0o755 }));
 }

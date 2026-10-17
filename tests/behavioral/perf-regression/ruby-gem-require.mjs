@@ -5,7 +5,7 @@
 // installer writes them, and `top`, which requires five of them; nothing in
 // it is left to RubyGems' activation, so the load path answers every require.
 
-import { mintSession, Terminal, makeAsserter, deleteSession, stripAnsi, heredocCommand } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, deleteSession, heredocCommand, hasOutputLine } from '../_driver.mjs';
 import { assertCandidateRounds, assertPaired, measurePaired, requirePairedTargets } from '../_paired.mjs';
 
 const a = makeAsserter('perf-regression/ruby-gem-require');
@@ -51,31 +51,36 @@ async function ready(target, arm) {
       const t = new Terminal(sid);
       await t.connect();
       await t.waitForPrompt(30_000);
-      await t.run('nimbus install ruby', 180_000);
-      await t.run(heredocCommand('/home/user/write-home.rb', homeWriter()), 30_000);
-      await t.run('ruby /home/user/write-home.rb', 120_000);
-      await t.run('ruby -e 1', 60_000);
-      const loaded = stripAnsi((await t.run(`ruby -e 'require "top"; puts "TOP=#{defined?(Top)}"'`, 60_000)).output);
-      if (!/TOP=constant/.test(loaded)) throw new Error(`${arm}: require "top" did not load: ${loaded.slice(-300)}`);
+      for (const [command, ms] of [['nimbus install ruby', 180_000], [heredocCommand('/home/user/write-home.rb', homeWriter()), 30_000], ['ruby /home/user/write-home.rb', 120_000]]) {
+        const done = await t.run(command, ms);
+        if (done.exitCode !== 0) throw new Error(`${arm}: ${command.slice(0, 60)} exited ${done.exitCode}: ${done.output.slice(-300)}`);
+      }
+      // Each command once, untimed, as it is then timed.
+      await timed(t, LAUNCH, 'LAUNCHED');
+      await timed(t, REQUIRE, 'TOP=constant');
       return { sid, t };
     })());
   }
   return await sessions.get(arm);
 }
 
-async function timed(t, command, expect) {
+const LAUNCH = 'ruby -e \'puts "LAUN" + "CHED"\'';
+const REQUIRE = `ruby -e 'require "top"; puts "TOP=#{defined?(Top)}"'`;
+
+/** `command`'s wall time, once it exits 0 having printed `line` as a line of its own. */
+async function timed(t, command, line) {
   const t0 = performance.now();
-  const output = stripAnsi((await t.run(command, 60_000)).output);
+  const { output, exitCode } = await t.run(command, 60_000);
   const ms = performance.now() - t0;
-  if (!expect.test(output)) throw new Error(`${command}: ${output.slice(-300)}`);
+  if (exitCode !== 0 || !hasOutputLine(output, line)) throw new Error(`${command}: exit ${exitCode}: ${output.slice(-300)}`);
   return ms;
 }
 
 const result = await measurePaired(arms, ROUNDS, async (target, arm) => {
   const { t } = await ready(target, arm);
   return {
-    'ruby launch': await timed(t, 'ruby -e \'puts "LAUNCHED"\'', /LAUNCHED/),
-    'single-version gem require': await timed(t, `ruby -e 'require "top"; puts "TOP=#{defined?(Top)}"'`, /TOP=constant/),
+    'ruby launch': await timed(t, LAUNCH, 'LAUNCHED'),
+    'single-version gem require': await timed(t, REQUIRE, 'TOP=constant'),
   };
 });
 
