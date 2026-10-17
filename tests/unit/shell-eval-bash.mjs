@@ -56,6 +56,12 @@ const CASES = [
   "eval '-x foo'; echo \"st=$?\"",
   'eval --foo; echo "st=$?"',
   'eval -- -x; echo "st=$?"',
+  // `set -e` in eval's text in a child shell ends that child, and the parent goes on.
+  "true | eval 'set -e; false'; echo \"after ${PIPESTATUS[*]}\"",
+  '( set -e; false; echo no ); echo "after $?"',
+  "( eval 'set -e; false; echo no' ); echo \"after $?\"",
+  "x=$(eval 'set -e; false; echo no'); echo \"after $? [$x]\"",
+  "{ eval 'set -e; false'; echo no; } & wait $!; echo \"bg $?\"",
 ];
 
 /** Run as scripts: a special builtin's own failure ends one, its text's does not. */

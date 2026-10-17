@@ -1432,8 +1432,8 @@ export class Interpreter {
       try {
         exitCode = await run();
       } catch (e) {
-        // An `exit` inside it ends only it; so does a call past the nesting bound.
-        if (!(e instanceof ExitSignal) && !(e instanceof FunctionNestingSignal)) throw e;
+        // An `exit` inside it ends only it; so do `set -e` and a fatal error, and a call past the nesting bound.
+        if (!(e instanceof ExitSignal) && !(e instanceof ErrexitSignal) && !(e instanceof FunctionNestingSignal)) throw e;
         exitCode = e.exitCode;
       }
       return (await this.runExitTrap(exitCode, io, true));
