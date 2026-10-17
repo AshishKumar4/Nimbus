@@ -249,17 +249,30 @@ export function acquireSupervisorCopyAllocation(bytes, signal) {
     return supervisorAllocationBudget.acquireWithoutLifecycle(bytes, signal);
 }
 /**
- * Run `load`, a facet's load holding `bytes` of this isolate while the loader
- * takes its module map (the wasm images read for it; `name` says whose),
- * admitted on the supervisor budget for as long as it runs
+ * `bytes` of this isolate for a facet's load (the wasm images read for it;
+ * `name` says whose), admitted on the supervisor budget
  * (SupervisorAllocationBudget.acquireLoad): FIFO, the whole budget for one
  * larger than it, refused by name after SUPERVISOR_LOAD_WAIT_MS. `signal`
  * ends the wait.
+ *
+ * Lock order: supervisor credit, then a Dynamic Worker. Nothing waits for
+ * credit (SupervisorAllocationBudget acquire or acquireLoad, or growing a
+ * lease) while it holds a worker's fetch hold (beginLoaderFetch,
+ * claimAdmission, readmitRefused). While it holds one, it may give credit
+ * back, shrink it, or take credit without waiting (tryAcquire).
  */
+export function acquireSupervisorLoad(name, bytes, signal) {
+    return supervisorAllocationBudget.acquireLoad(name, bytes, { waitMs: SUPERVISOR_LOAD_WAIT_MS, signal });
+}
+/** acquireSupervisorLoad's credit now, without waiting, or null: all a load may take while it holds a worker. */
+export function tryAcquireSupervisorLoad(bytes) {
+    return supervisorAllocationBudget.tryAcquire(Math.min(bytes, supervisorAllocationBudget.capacity), false);
+}
+/** Run `load` holding acquireSupervisorLoad's credit for `bytes`, given back as it settles; for a load no worker hold waits on. */
 export async function withSupervisorLoadAllocation(name, bytes, signal, load) {
     if (bytes === 0)
         return load();
-    const lease = await supervisorAllocationBudget.acquireLoad(name, bytes, { waitMs: SUPERVISOR_LOAD_WAIT_MS, signal });
+    const lease = await acquireSupervisorLoad(name, bytes, signal);
     try {
         return await load();
     }

@@ -863,6 +863,17 @@ export function beginAdmittedFetch(ctx: object): EndLoaderFetch | undefined {
  * ledger. The hold counts for `pid` too, the process whose state says
  * whether the worker can be given back (see setProcessBlocked).
  */
+/**
+ * suspendLaunchAdmission where the current launch's admission holds its worker
+ * unclaimed, so a wait for credit inside it holds no worker (the lock order:
+ * credit, then a worker); undefined where it holds none to give back.
+ */
+export function suspendHeldAdmission(ctx: object): ((signal?: AbortSignal) => Promise<void>) | undefined {
+  const admission = launchAdmission.getStore();
+  if (admission?.ctx !== ctx || admission.end === undefined || admission.claimed || admission.closed) return undefined;
+  return suspendLaunchAdmission(ctx);
+}
+
 export function claimAdmission(ctx: object, pid?: number): EndLoaderFetch | undefined {
   const admission = launchAdmission.getStore();
   if (admission?.ctx !== ctx || admission.end === undefined || admission.claimed) return undefined;

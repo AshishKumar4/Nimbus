@@ -12,8 +12,9 @@
 //     nothing queued; an abort ends a wait as an abort;
 //   - through IsolatePool: an image is read inside the loader's callback, and
 //     a second load's images are not read until the first's callback has
-//     returned when the two would not fit together; a refusal arrives as
-//     itself, unretried; an abort ends a map's wait.
+//     returned when the two would not fit together; an abort ends a map's
+//     wait; credit is taken before the worker (the lock order), and a warm
+//     worker waits for none.
 
 import assert from 'node:assert/strict';
 import {
@@ -129,31 +130,16 @@ const LONG = 60_000;
   console.log('  ✓ IsolatePool loads take turns on the isolate budget');
 }
 
-// ── through IsolatePool: a refusal arrives as itself; an abort ends the wait ─
+// ── through IsolatePool: an abort ends a map's wait for credit ────────────
 {
-  const ctx = { id: { toString: () => 'load-refusal-do' }, waitUntil() {} };
-  let calls = 0;
+  const ctx = { id: { toString: () => 'load-abort-do' }, waitUntil() {} };
   const env = {
     LOADER: {
       get(_id, load) {
-        return { getEntrypoint: () => ({ async fetch() { calls++; await load(); return new Response('ok'); }, async execute() { calls++; await load(); return 'ok'; } }) };
+        return { getEntrypoint: () => ({ async execute() { await load(); return 'ok'; } }) };
       },
     },
   };
-  const held = { usage: { current: 0, capacity: CAPACITY, peak: 0, queued: 0 } };
-  const refusing = {
-    path: '/refused.wasm', identity: 'refused', size: 8, peak: 8,
-    async read() { throw new SupervisorLoadWaitError("facet 'refused' images", 8, 60_000, held.usage); },
-  };
-  const pool = new IsolatePool(env, ctx, { tag: 'refused', network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0, retries: 2, wasmModules: { 'primary.wasm': refusing } });
-  await assert.rejects(
-    pool.submit(facetTaskSource('() => 1'), null),
-    (error) => error instanceof SupervisorLoadWaitError && error.code === 'EAGAIN',
-    'a load the budget refused is said as the refusal, EAGAIN, not as an execution failure',
-  );
-  assert.equal(calls, 1, 'and it is not retried');
-
-  // An abort ends a map's wait for the budget, rather than its bound.
   const MiB = 1024 * 1024;
   // Held whole, so the map's load must wait.
   const lease = await acquireSupervisorAllocation(CAPACITY);
@@ -167,7 +153,52 @@ const LONG = 60_000;
   await assert.rejects(waiting, /killed/, 'an abort ends the wait');
   assert.ok(Date.now() - started < 10_000, 'at once, not at the bound');
   lease.release();
-  console.log('  ✓ refusals and aborts through IsolatePool');
+  console.log('  ✓ an abort ends a load\'s wait for credit');
+}
+
+// ── through IsolatePool: credit, then a worker ───────────────────────────────
+// A load not made yet takes its images' credit before the loader is asked
+// for its worker; one made before is answered warm without waiting for any;
+// one the loader dropped finds its credit not free, ends its hold, and waits
+// for credit before it asks again.
+{
+  const MiB = 1024 * 1024;
+  const ctx = { id: { toString: () => 'credit-order-do' }, waitUntil() {} };
+  const cache = new Map();
+  let gets = 0;
+  let builds = 0;
+  const env = {
+    LOADER: {
+      get(id, load) {
+        gets++;
+        return { getEntrypoint: () => ({ async fetch() { if (!cache.has(id)) { cache.set(id, await load()); builds++; } return new Response('ok'); } }) };
+      },
+    },
+  };
+  const image = { path: '/order.wasm', identity: 'order', size: 8 * MiB, peak: 8 * MiB, async read() { return new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]); } };
+  const pool = new IsolatePool(env, ctx, { tag: 'order', network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0, wasmModules: { 'primary.wasm': image } });
+  const call = async () => (await pool.submitRequest(facetTaskSource("async () => new Response('ok')"), new Request('https://facet.internal/run'))).text();
+  const whole = await acquireSupervisorAllocation(CAPACITY);
+  const first = call();
+  await settled();
+  assert.equal(gets, 0, 'a load not made yet waits for its credit before it holds a worker');
+  whole.release();
+  assert.equal(await first, 'ok');
+  assert.equal(builds, 1);
+  const full = await acquireSupervisorAllocation(CAPACITY);
+  assert.equal(await call(), 'ok', 'a load made before is answered warm, waiting for no credit');
+  assert.equal(builds, 1, 'and reads nothing');
+  cache.clear();
+  const dropped = call();
+  await settled();
+  assert.equal(gets, 3, 'dropped by the loader, it asked for its worker once');
+  assert.equal(builds, 1, 'found its credit not free, and built nothing');
+  full.release();
+  assert.equal(await dropped, 'ok', 'then waited for credit and asked again');
+  assert.equal(builds, 2);
+  assert.equal(gets, 4);
+  assert.equal(readSupervisorAllocationBudget().current, 0, 'nothing stays admitted');
+  console.log('  ✓ credit, then a worker');
 }
 
 console.log('facet-load-admission: ok');
