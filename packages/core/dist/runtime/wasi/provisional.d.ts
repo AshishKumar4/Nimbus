@@ -150,7 +150,10 @@ export interface Inode {
 interface InodeRecord {
     /** Log order. */
     readonly id: number;
-    readonly op: InodeOp;
+    /** Its change: a write the client folded into the same entry extends it (extended), as the session answers the entry once. */
+    op: InodeOp;
+    /** An extended write's bytes and their room, grown by doubling: op.data is the front of it. */
+    room?: Uint8Array;
     /** The inode it is of: the one its op reached at the session, once an open's answer says which (reconcile). */
     owner: Inode;
     /** The description it was made through, where one was: what an open's answer moves with it. */
@@ -173,6 +176,9 @@ export interface Desc {
     description?: string;
     /** For a caller that waits for it: the session's answer to its open, which rejects with the open's refusal. */
     opening?: Promise<unknown>;
+    /** Its last content change's record and the client's answer for its entry: a change folded into that entry extends the record. */
+    lastRecord: InodeRecord | null;
+    lastAnswer: Promise<unknown> | null;
 }
 export interface Provisional {
     /** What it keeps of the process's budget now, counted afresh from what it holds: what it has taken of it, where its accounting is right. */

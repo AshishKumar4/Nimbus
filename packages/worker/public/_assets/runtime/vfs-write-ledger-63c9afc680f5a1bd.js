@@ -1367,7 +1367,6 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
   }
   var DATA_PIECE_BYTES = WAVE_BYTES;
   var FOLD_BUFFER =   Symbol("process-fs-fold-buffer");
-  var FOLD_WAITERS =   Symbol("process-fs-fold-waiters");
   var MAX_DELEGATIONS_PER_PROCESS = 8;
   var GRANT_AFTER = 8;
   var LINGER_MS = 10;
@@ -1426,21 +1425,6 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
   }
   function descriptionOf(call) {
     return "description" in call ? call.description : void 0;
-  }
-  function startFoldWaiters(entry) {
-    const resolves = [entry.resolve];
-    const rejects = [entry.reject];
-    const waiters = { resolves, rejects };
-    entry[FOLD_WAITERS] = waiters;
-    entry.resolve = (answer) => {
-      for (const resolve of resolves) resolve(answer);
-      resolves.length = rejects.length = 0;
-    };
-    entry.reject = (error) => {
-      for (const reject of rejects) reject(error);
-      resolves.length = rejects.length = 0;
-    };
-    return waiters;
   }
   function extended(call, data, buffer) {
     const size = call.data.byteLength + data.byteLength;
@@ -2088,29 +2072,33 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           if (acknowledged) pendingSyncBytes += grown;
           counters.ops++;
           counters.folded++;
-          const answer2 = new Promise((resolve, reject) => {
-            const waiters = tail[FOLD_WAITERS] ?? startFoldWaiters(tail);
-            waiters.resolves.push(resolve);
-            waiters.rejects.push(reject);
-          });
-          if (acknowledged) answer2.catch(() => {
-          });
-          return answer2;
+          return tail.answer;
         }
-        const answers = parts.map((part) => new Promise((resolve, reject) => {
-          const partBytes = part.type === "call" && "data" in part.call ? part.call.data.byteLength : 0;
-          const jid = journal.append(part);
-          const kept = !journal.durable || heapBytes + partBytes <= PROCESS_FS_HEAP_WINDOW_BYTES;
-          if (kept) heapBytes += partBytes;
-          queue.push({ op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject });
-          pendingBytes += partBytes;
-          if (acknowledged) {
-            pendingSyncBytes += partBytes;
-            pendingSyncOps++;
-          }
-          counters.ops++;
-        }));
+        const answers = parts.map((part) => {
+          let entry;
+          const answer2 = new Promise((resolve, reject) => {
+            const partBytes = part.type === "call" && "data" in part.call ? part.call.data.byteLength : 0;
+            const jid = journal.append(part);
+            const kept = !journal.durable || heapBytes + partBytes <= PROCESS_FS_HEAP_WINDOW_BYTES;
+            if (kept) heapBytes += partBytes;
+            entry = { op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject, answer: null };
+            queue.push(entry);
+            pendingBytes += partBytes;
+            if (acknowledged) {
+              pendingSyncBytes += partBytes;
+              pendingSyncOps++;
+            }
+            counters.ops++;
+          });
+          entry.answer = answer2;
+          return answer2;
+        });
         schedule();
+        if (answers.length === 1) {
+          if (acknowledged) answers[0].catch(() => {
+          });
+          return answers[0];
+        }
         const answer = Promise.all(answers).then((all) => {
           const first = all[0]?.mutation;
           const last = all[all.length - 1];

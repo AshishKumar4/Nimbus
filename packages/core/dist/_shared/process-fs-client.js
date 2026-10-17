@@ -96,7 +96,6 @@ export function unsettledNoteOf(error) {
 /** A data call's bytes per op: a larger one is sent as its first piece, then writes at offsets. */
 const DATA_PIECE_BYTES = WAVE_BYTES;
 const FOLD_BUFFER = Symbol('process-fs-fold-buffer');
-const FOLD_WAITERS = Symbol('process-fs-fold-waiters');
 /** The most subtrees one process holds at once; past it, two are widened to their common ancestor. */
 export const MAX_DELEGATIONS_PER_PROCESS = 8;
 /** Mutations in a subtree before the client takes it. */
@@ -178,23 +177,6 @@ function isProcessGone(error) {
 /** The open description a call writes through (W7Call description), if any. */
 function descriptionOf(call) {
     return 'description' in call ? call.description : undefined;
-}
-function startFoldWaiters(entry) {
-    const resolves = [entry.resolve];
-    const rejects = [entry.reject];
-    const waiters = { resolves, rejects };
-    entry[FOLD_WAITERS] = waiters;
-    entry.resolve = (answer) => {
-        for (const resolve of resolves)
-            resolve(answer);
-        resolves.length = rejects.length = 0;
-    };
-    entry.reject = (error) => {
-        for (const reject of rejects)
-            reject(error);
-        resolves.length = rejects.length = 0;
-    };
-    return waiters;
 }
 function extended(call, data, buffer) {
     const size = call.data.byteLength + data.byteLength;
@@ -1072,32 +1054,37 @@ export function processFsClient(options) {
                     pendingSyncBytes += grown;
                 counters.ops++;
                 counters.folded++;
-                const answer = new Promise((resolve, reject) => {
-                    const waiters = tail[FOLD_WAITERS] ?? startFoldWaiters(tail);
-                    waiters.resolves.push(resolve);
-                    waiters.rejects.push(reject);
-                });
-                if (acknowledged)
-                    answer.catch(() => { });
-                return answer;
+                return tail.answer;
             }
-            const answers = parts.map((part) => new Promise((resolve, reject) => {
-                const partBytes = part.type === 'call' && 'data' in part.call ? part.call.data.byteLength : 0;
-                // Logged where the process's death does not reach, before it is told anything.
-                const jid = journal.append(part);
-                // The heap keeps a window of what is unsent; the rest is read back from the journal.
-                const kept = !journal.durable || heapBytes + partBytes <= PROCESS_FS_HEAP_WINDOW_BYTES;
-                if (kept)
-                    heapBytes += partBytes;
-                queue.push({ op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject });
-                pendingBytes += partBytes;
-                if (acknowledged) {
-                    pendingSyncBytes += partBytes;
-                    pendingSyncOps++;
-                }
-                counters.ops++;
-            }));
+            const answers = parts.map((part) => {
+                let entry;
+                const answer = new Promise((resolve, reject) => {
+                    const partBytes = part.type === 'call' && 'data' in part.call ? part.call.data.byteLength : 0;
+                    // Logged where the process's death does not reach, before it is told anything.
+                    const jid = journal.append(part);
+                    // The heap keeps a window of what is unsent; the rest is read back from the journal.
+                    const kept = !journal.durable || heapBytes + partBytes <= PROCESS_FS_HEAP_WINDOW_BYTES;
+                    if (kept)
+                        heapBytes += partBytes;
+                    entry = { op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject, answer: null };
+                    queue.push(entry);
+                    pendingBytes += partBytes;
+                    if (acknowledged) {
+                        pendingSyncBytes += partBytes;
+                        pendingSyncOps++;
+                    }
+                    counters.ops++;
+                });
+                entry.answer = answer;
+                return answer;
+            });
             schedule();
+            // One piece: its answer is the call's, and the one an op folded into it is given.
+            if (answers.length === 1) {
+                if (acknowledged)
+                    answers[0].catch(() => { });
+                return answers[0];
+            }
             // A piece failed fails the call; its last piece's receipt answers it,
             // and its mutation spans them all.
             const answer = Promise.all(answers).then((all) => {

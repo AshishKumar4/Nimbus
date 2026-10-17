@@ -302,7 +302,8 @@ export function provisional(host) {
             inode.reserved += need;
     };
     /** Fold `op` into `inode` (its baseline taken first): its record, kept until it retires; `description` the one it was made through. */
-    const fold = (inode, op, description) => {
+    /** `inode` ready for a change here: a grant's no longer (what that logs goes first), and its fold begun. */
+    const ready = (inode) => {
         // A grant's file changed here is no grant's from now on: one content, the fold.
         if (inode.cell !== undefined)
             host.unhold(inode);
@@ -312,6 +313,13 @@ export function provisional(host) {
         }
         touched.add(inode);
         activity();
+    };
+    const fold = (inode, op, description) => {
+        ready(inode);
+        return recorded(inode, op, description);
+    };
+    /** `op` recorded for `inode` (ready) and folded into its state. */
+    const recorded = (inode, op, description) => {
         const record = { id: ++ids, op, owner: inode, ...(description === undefined ? {} : { description }), answered: false, answeredAt: 0 };
         if (inode.records === NO_RECORDS)
             inode.records = [record];
@@ -356,8 +364,12 @@ export function provisional(host) {
             void answer.then((answered) => settled(false, answered), () => settled(true, undefined));
             return answer;
         }
-        void host.client.submit(op, { acknowledged: true }).then((answer) => settled(answer.failed?.refused === true, answer), () => settled(false, undefined));
+        settles(host.client.submit(op, { acknowledged: true }), settle);
         return undefined;
+    };
+    /** `settle` told an acknowledged entry's answer once it comes: refused, or not. */
+    const settles = (answer, settle) => {
+        void answer.then((answered) => { settle(answered.failed?.refused === true, answered); host.sent(); }, () => { settle(false, undefined); host.sent(); });
     };
     /** The Inode `inode` is now: itself, or the one it merged into (reconcile). */
     const live = (inode) => {
@@ -409,6 +421,28 @@ export function provisional(host) {
     /** Log the op that made `records`, their fate its. */
     const loggedOn = (records, op) => {
         logged(op, (refused) => settleRecords(records, refused));
+    };
+    /**
+     * `record`, a write or append whose entry `op` was folded into by the client,
+     * extended by it: its bytes after the record's, at the op's time. False where
+     * `op` does not continue it (the client folds only what does).
+     */
+    const extended = (record, op) => {
+        const was = record.op;
+        if (op.kind === 'append' ? was.kind !== 'append' : op.kind !== 'write' || was.kind !== 'write' || op.offset !== was.offset + was.data.byteLength)
+            return false;
+        const before = was.data.byteLength;
+        const length = before + op.data.byteLength;
+        let room = record.room;
+        if (room === undefined || room.byteLength < length) {
+            const grown = new Uint8Array(Math.max(length, before * 2));
+            grown.set(was.data);
+            record.room = room = grown;
+        }
+        room.set(op.data, before);
+        record.op = { ...was, data: room.subarray(0, length), at: op.at };
+        record.owner.recordsCost += op.data.byteLength;
+        return true;
     };
     /** The overlay rebuilt: every name record still pending replayed over the view, in log order. */
     const replay = () => {
@@ -701,7 +735,7 @@ export function provisional(host) {
     const descriptor = (inode, path, flags, description) => {
         const id = host.nextHandle();
         const write = flags.write === true || flags.append === true;
-        descs.set(id, { inode, read: flags.read === true || !write, write, append: flags.append === true, position: 0, path, ...(description === undefined ? {} : { description }) });
+        descs.set(id, { inode, read: flags.read === true || !write, write, append: flags.append === true, position: 0, path, ...(description === undefined ? {} : { description }), lastRecord: null, lastAnswer: null });
         inode.descs++;
         return { id, path };
     };
@@ -776,7 +810,20 @@ export function provisional(host) {
         host.drain();
         host.client.fitsSync(logs, desc.path);
         admitOps(inode, [op], syscall, desc.path);
-        loggedOn([fold(inode, op, desc.description)], call);
+        ready(inode);
+        host.drain();
+        // One record per entry the client keeps, as the session answers each entry once: a change it folds into the entry of this description's last extends that record.
+        const answer = host.client.submit(call, { acknowledged: true });
+        const last = desc.lastRecord;
+        if (answer === desc.lastAnswer && last !== null && !last.answered && last.gone !== true && last.owner === inode && extended(last, op)) {
+            inode.state = applyOp(inode.state, op);
+        }
+        else {
+            const record = recorded(inode, op, desc.description);
+            desc.lastRecord = record;
+            desc.lastAnswer = answer;
+            settles(answer, (refused) => settleRecords([record], refused));
+        }
         fit(inode);
     };
     const judgeAttrs = (row, attrs, syscall, path) => {
@@ -920,7 +967,7 @@ export function provisional(host) {
         },
         heldDescriptor: (inode, path, read, append) => {
             const id = host.nextHandle();
-            descs.set(id, { inode, read, write: true, append, position: 0, path });
+            descs.set(id, { inode, read, write: true, append, position: 0, path, lastRecord: null, lastAnswer: null });
             inode.descs++;
             return { id, path };
         },
