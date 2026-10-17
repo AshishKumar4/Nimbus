@@ -50,7 +50,7 @@ before installing it and the shell prints the install hint.
 
 The terminal below asks for a runtime that is not installed, installs it
 with `nimbus install`, and opens the CPython REPL it just fetched. The
-install pulls the ~11 MiB interpreter and its stdlib from the content-addressed cache, usually
+install pulls both interpreters (11 MiB, and 19 MiB with numpy) and the stdlib, ~34 MiB, from the content-addressed cache, usually
 seconds, up to a minute cold.
 
 <NimbusSandbox

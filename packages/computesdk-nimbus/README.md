@@ -72,7 +72,7 @@ interface NimbusConfig {
   subject?: string;
   /** Sandbox filesystem root. Defaults to `/home/user`. */
   root?: string;
-  /** Default command timeout in milliseconds; a command's own timeout is over it. Defaults to 300000. */
+  /** Default command timeout in milliseconds; a command's own timeout is over it. Unset, a command has no deadline. */
   timeout?: number;
 }
 ```

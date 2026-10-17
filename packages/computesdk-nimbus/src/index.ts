@@ -38,8 +38,6 @@ const MARKER_PATH = '.computesdk/sandbox.json';
 /** The SDK's own fallback when no profile root is configured. */
 const DEFAULT_ROOT = '/home/user';
 
-const DEFAULT_TIMEOUT_MS = 300_000;
-
 export interface NimbusConfig {
   /** Base URL of the Nimbus deployment. Falls back to `NIMBUS_ENDPOINT`. */
   endpoint?: string;
@@ -58,7 +56,7 @@ export interface NimbusConfig {
   subject?: string;
   /** Sandbox filesystem root. Defaults to `/home/user`. */
   root?: string;
-  /** Default command timeout in milliseconds; a command's own timeout is over it. Defaults to 300000. */
+  /** Default command timeout in milliseconds; a command's own timeout is over it. Unset, a command has no deadline. */
   timeout?: number;
 }
 
@@ -73,8 +71,8 @@ export interface NimbusSandboxHandle {
   root: string;
   createdAt: number;
   envs: Record<string, string>;
-  /** The commands' timeout when a call names none (NimbusConfig.timeout), in milliseconds. */
-  timeout: number;
+  /** The commands' timeout when a call names none (NimbusConfig.timeout), in milliseconds; undefined for none. */
+  timeout: number | undefined;
 }
 
 interface SandboxMarker {
@@ -101,10 +99,6 @@ function resolveEndpoint(config: NimbusConfig): string {
     );
   }
   return endpoint;
-}
-
-function resolveTimeout(config: NimbusConfig): number {
-  return config.timeout ?? DEFAULT_TIMEOUT_MS;
 }
 
 function resolveRoot(config: NimbusConfig): string {
@@ -191,7 +185,7 @@ export const nimbus = defineProvider<NimbusSandboxHandle, NimbusConfig>({
           JSON.stringify({ createdAt, envs } satisfies SandboxMarker),
         );
 
-        return { sandbox: { box: sandbox, id, root, createdAt, envs, timeout: resolveTimeout(config) }, sandboxId: id };
+        return { sandbox: { box: sandbox, id, root, createdAt, envs, timeout: config.timeout }, sandboxId: id };
       },
 
       getById: async (config: NimbusConfig, sandboxId: string) => {
@@ -214,7 +208,7 @@ export const nimbus = defineProvider<NimbusSandboxHandle, NimbusConfig>({
             root,
             createdAt: marker.createdAt,
             envs: marker.envs ?? {},
-            timeout: resolveTimeout(config),
+            timeout: config.timeout,
           },
           sandboxId,
         };
@@ -277,7 +271,8 @@ export const nimbus = defineProvider<NimbusSandboxHandle, NimbusConfig>({
         provider: 'nimbus',
         status: 'running',
         createdAt: new Date(handle.createdAt),
-        timeout: handle.timeout,
+        // 0: no deadline.
+        timeout: handle.timeout ?? 0,
         metadata: { root: handle.root },
       }),
 

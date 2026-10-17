@@ -59,9 +59,8 @@ diagnostic.
 
 WASI files are a cache over the session filesystem. The spawn seed is a
 manifest of sizes. Content is fetched on first read, and writes go back
-as they happen, so a process that never exits still persists. bash and
-python are the two runtimes not yet on it. Each still carries a private
-filesystem that copies the subtree in and reports a diff on exit.
+as they happen, so a process that never exits still persists. Every WASI
+runtime is on it: clang's programs, bash, ruby and python.
 
 stdin is EOF, and there are no inbound sockets. The remaining gaps are
 [tracked with designs](/docs/fine-print/research/).

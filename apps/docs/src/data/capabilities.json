@@ -20,7 +20,7 @@
   { "area": "SDK", "status": "works", "description": "Programmatic sandbox SDK — exec/files/runtimes/processes/ports/Proteus-style tools" },
   { "area": "Processes", "status": "works", "description": "JS agent CLI primitives — env/home, npm/npx, child_process.spawn/exec/execFile, piped stdio, streams, logs" },
   { "area": "Processes", "status": "alpha", "description": "Foreground attached npm-bin TTY tabs — stdin, resize, ANSI output, clean exit; Pi official installer and npm path probed" },
-  { "area": "Packages", "status": "alpha", "description": "Python package workflows — pip, PyPI pure wheels, requirements/constraints, curated pure source artifacts, declared Pyodide startup-module packages, Flask, python -m flask run, python -m http.server preview" },
+  { "area": "Packages", "status": "alpha", "description": "Python package workflows — pip, PyPI pure wheels, requirements/constraints, curated pure source artifacts, numpy and MarkupSafe linked into the interpreter, Flask, python -m flask run, python -m http.server preview" },
   { "area": "Packages", "status": "alpha", "description": "Ruby package workflows — gem, bundle, pure gems, Rack/WEBrick preview" },
   { "area": "Agent", "status": "works", "description": "Session Agent — editor-workspace chat with Cloudflare OAuth / Workers AI and sandbox tools" },
   { "area": "Packages", "status": "works", "description": "npx <pkg> — first-class shebang + auto-install fallback" },

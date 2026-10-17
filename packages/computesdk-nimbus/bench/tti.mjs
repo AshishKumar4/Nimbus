@@ -150,23 +150,26 @@ async function runSequential(trials) {
 }
 
 /**
- * `trials` trials, at most `concurrency` at once, trial i starting no sooner
- * than i × `staggerDelayMs` after the first: a pool of `concurrency` lanes,
- * each taking the next trial when its last one ends.
+ * `trials` trials, at most `concurrency` at once, each started at least
+ * `staggerDelayMs` after the one before it started.
  */
 async function runConcurrent(trials, concurrency, staggerDelayMs) {
   const started = performance.now();
   const out = [];
-  let next = 0;
-  const lane = async () => {
-    while (next < trials) {
-      const i = next++;
-      const due = started + i * staggerDelayMs - performance.now();
-      if (due > 0) await new Promise((r) => setTimeout(r, due));
-      out[i] = await runTrial(i);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(concurrency, trials) }, lane));
+  const running = new Set();
+  let lastStart = null;
+  for (let i = 0; i < trials; i += 1) {
+    while (running.size >= concurrency) await Promise.race(running);
+    const wait = lastStart === null ? 0 : lastStart + staggerDelayMs - performance.now();
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    lastStart = performance.now();
+    const trial = runTrial(i).then((result) => {
+      out[i] = result;
+      running.delete(trial);
+    });
+    running.add(trial);
+  }
+  await Promise.all(running);
   return { out, wallClockMs: performance.now() - started };
 }
 

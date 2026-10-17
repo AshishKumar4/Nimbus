@@ -238,6 +238,18 @@ const execResult = (over = {}) => ({
   assert.deepEqual(info.map((i) => i.timeout), [1000, 1000], 'getInfo reports the timeout commands run under');
 }
 
+// Without one configured, a command has no deadline, and getInfo says so (0).
+{
+  const fake = fakeNimbus({ ready: { ok: true, preinstalled: [] }, writeFile: 12, execStream: execResult() });
+  const info = await withFetch(fake.fetchImpl, async () => {
+    const sandbox = await nimbus({ endpoint: ENDPOINT }).sandbox.create();
+    await sandbox.runCommand('sleep 5');
+    return sandbox.getInfo();
+  });
+  assert.equal(fake.calls.find((c) => c.op === 'execStream').args[1].timeoutMs, undefined, 'no deadline is sent');
+  assert.equal(info.timeout, 0);
+}
+
 // Filesystem paths resolve against the sandbox root; a missing file is ENOENT.
 {
   const fake = fakeNimbus({

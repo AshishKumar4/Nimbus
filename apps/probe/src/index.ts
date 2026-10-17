@@ -26,7 +26,6 @@ import {
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { MemoryVFS } from '@nimbus-sh/core/vfs/memory.js';
 import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { processHostMode } from '../../../packages/worker/src/loaders/process-host.js';
 import { disposeRpcResource } from '../../../packages/platform/src/rpc-dispose.js';
 import { peerPlacement } from '@nimbus-sh/fabric/process-host.js';
@@ -264,13 +263,6 @@ export class NimbusSession extends SdkNimbusSession {
     return current;
   }
   /**
-   * The filesystems the embedder mount at /mnt/data was made in: one per
-   * filesystem the session opens, for a DELETE closes one and the instance
-   * outlives it, so the next use opens another that needs its own.
-   */
-  #dataMounted = new WeakSet<ProcessFiles>();
-
-  /**
    * The session's filesystem, with the embedder-mount surface the probes
    * exercise: a MemoryVFS at /mnt/data, as an embedder mounts its own
    * filesystem (CompositeVFS.mount). Its limits are the probe's, not a
@@ -279,9 +271,8 @@ export class NimbusSession extends SdkNimbusSession {
    */
   override getFilesystemAuthority() {
     const files = super.getFilesystemAuthority();
-    if (!this.#dataMounted.has(files)) {
+    if (!files.vfs.mounts().some((mount) => mount.point === '/mnt/data')) {
       files.vfs.mount('/mnt/data', new MemoryVFS({ uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid }));
-      this.#dataMounted.add(files);
     }
     return files;
   }

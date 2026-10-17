@@ -441,8 +441,8 @@ ABI surfaces:
 - Shell scripts and installers run through structured parser/executor semantics,
   not a stack of quote-sensitive rewrites.
 - Package managers install by ABI: pure packages, Nimbus-native Wasm,
-  Pyodide/PyEmscripten startup modules, ruby.wasm-compatible artifacts, or
-  precise unsupported-native diagnostics.
+  compiled Python packages linked into the CPython interpreter,
+  ruby.wasm-compatible artifacts, or precise unsupported-native diagnostics.
 - The hosted demo, programmatic SDK, remote API, React iframe, CLI, and Agent
   use one public product surface with colocated/remote parity.
 
@@ -546,9 +546,8 @@ Runtime rules:
   `dup`, `dup2`) still work.
 - Ruby should converge through the live WASI path because ruby.wasm is
   WASI-backed.
-- Python/Pyodide should use a live mirror strategy: pull deltas before command
-  or request handling, flush dirty changes after command/request handling, and
-  debounce flushes for long-running socket processes.
+- Python is on the live WASI path: CPython for wasm32-wasi answers every file
+  syscall through the session authority, as clang's programs, bash and ruby do.
 
 Scalability requirements:
 
@@ -654,7 +653,8 @@ Required artifact classes:
 - JavaScript/workerd-compatible package.
 - Pure Python wheel.
 - Curated pure Python source artifact.
-- Pyodide/PyEmscripten startup-loaded package artifact.
+- Compiled Python package linked into the CPython interpreter (numpy,
+  MarkupSafe, in `python-sci`).
 - Pure Ruby gem.
 - ruby.wasm-compatible artifact.
 - `wasm32-wasi-nimbus` binary.
@@ -799,7 +799,7 @@ kernel:
 
 - JavaScript or TypeScript command handlers.
 - WASI modules compiled for `wasm32-wasi-nimbus`.
-- Pyodide/PyEmscripten Python wheels and launchers.
+- CPython for wasm32-wasi, with the packages linked into it.
 - ruby.wasm/Ruby WASI command launchers.
 - Shell command shims that map POSIX-style commands to Nimbus primitives.
 
@@ -807,8 +807,8 @@ Package managers may see Linux-like command paths, platform strings, and
 selection metadata where that improves compatibility, but execution must never
 depend on pretending arbitrary Linux ELF objects are runnable. If a package
 needs compiled code, the artifact must target a Nimbus-supported ABI such as
-Pyodide/PyEmscripten startup modules, ruby.wasm/Ruby WASI, or
-`wasm32-wasi-nimbus`.
+the CPython interpreter's own build (a package linked into it), ruby.wasm/Ruby
+WASI, or `wasm32-wasi-nimbus`.
 
 `packages/worker/src/runtime/os-contracts.ts` is the source of truth for the
 current Nimbus ABI descriptor. The public target string is
@@ -823,8 +823,8 @@ The runtime catalog must describe what each package provides:
 ```json
 {
   "name": "python",
-  "version": "3.13.2-pyodide-0.29.4",
-  "abi": "pyodide",
+  "version": "3.13.14-3",
+  "abi": "wasm32-wasi",
   "provides": {
     "commands": ["python", "python3", "pip", "pip3"],
     "libraries": ["python-stdlib"],
@@ -1151,9 +1151,10 @@ Package managers must install by ABI.
 Required registry dimensions:
 
 - runtime name and version
-- ABI name, such as `javascript`, `wasm32-wasi-nimbus`,
-  `pyodide-emscripten-2025_0-wasm32`, `py3-none-any`,
-  `python-source-pure`, `pyodide`, `ruby-wasm`, or `native-unsupported`
+- ABI name, such as `javascript`, `wasm32-wasi-nimbus`, `wasm32-wasi`,
+  `py3-none-any`, `python-source-pure`, `ruby-wasm`, or `native-unsupported`
+  (a Pyodide/Emscripten extension wheel, `pyodide-emscripten-2025_0-wasm32`,
+  among them)
 - provided commands
 - pure package compatibility
 - precompiled startup-loaded wasm modules
@@ -1195,12 +1196,12 @@ Correct engineering path:
 
 1. Keep hardening the ABI-aware `pip` installer for wheel tags, requirements,
    constraints, dependency metadata, extras, markers, and local VFS paths.
-2. Expand the runtime catalog's startup-loadable Pyodide package artifact list
-   by ABI and package demand.
-3. Add a builder path outside the Durable Object for packages that need
-   Emscripten/Pyodide compilation. The DO installs built artifacts; it does not
-   spend constrained session CPU compiling large C/C++ projects.
-4. Add a Python runtime FS bridge instead of relying on per-command snapshots.
+2. Link more compiled packages into the CPython interpreter as demand
+   justifies: wasm32-wasi has no `dlopen` (packages/worker/wasm/python/EXTENSIONS.md).
+3. Build them outside the Durable Object (packages/worker/wasm/python/build-python.sh).
+   The DO installs built interpreters; it does not spend constrained session
+   CPU compiling large C/C++ projects.
+4. (Done) Python's filesystem is the WASI bridge: no per-command snapshot.
 5. Bind Python `socket`, `select`, `selectors`, `socketserver`, WSGI, and ASGI
    to the shared virtual socket kernel.
 6. Keep the existing Flask and `http.server` production probes green, and add
@@ -1703,8 +1704,7 @@ Add black-box probes for:
   - resolver cases not covered by the current pure-wheel, requirements,
     constraints, local-wheel, transitive dependency, and MarkupSafe fallback
     probes, especially broader extras and marker combinations
-  - each newly declared Pyodide startup-module package imports without
-    request-time Wasm instantiation failures
+  - each package newly linked into the interpreter imports and runs
   - simple ASGI app previews on a port
 - Ruby package manager:
   - Bundler lockfile, group, source, and platform behavior beyond the current
@@ -1767,8 +1767,8 @@ Nimbus OS compatibility is ready to market when these are true:
 - Missing installable commands print a matching install hint.
 - Python can install and import pure wheels and curated pure source artifacts
   from normal `pip` workflows.
-- Python can install and import runtime-catalog-declared Pyodide startup-module
-  packages without request-time wasm instantiation.
+- Python imports the compiled packages linked into its interpreter (numpy,
+  MarkupSafe) without request-time wasm instantiation.
 - `pip install flask` and Flask import/run paths work without dynamic wasm
   extension failures.
 - Python web apps can be previewed through real virtual sockets and WSGI/ASGI
@@ -1817,8 +1817,8 @@ matters because each step removes a future source of duplication.
    bundled reads for known immutable module sources.
 8. Move WASI, Ruby, and Python long-running runtime IO to live bridge or live
    mirror semantics.
-9. Expand the Python `pip` ABI planner and runtime catalog with more declared
-   Pyodide wheel/cache/module artifacts as demand and size budgets justify.
+9. Expand the set of compiled packages linked into the CPython interpreter as
+   demand and size budgets justify.
 10. Complete Bundler-compatible dependency resolution for pure Ruby gems.
 11. Promote the virtual socket kernel to the shared OS network service and bind
     Node, Python, Ruby, and WASI adapters to it.
@@ -1852,9 +1852,8 @@ Recommended decisions:
 
 - Keep snapshots only as a short-command optimization. The OS contract should
   be live VFS.
-- Treat Python package compatibility as pure-wheel support plus explicit
-  Nimbus startup-loaded Pyodide/PyEmscripten module support, not Linux pip
-  support.
+- Treat Python package compatibility as pure-wheel support plus the compiled
+  packages linked into the CPython interpreter, not Linux pip support.
 - Treat Ruby package compatibility as ruby.wasm/Ruby WASI support, not Linux
   Ruby support.
 - Build virtual sockets as the primary OS networking substrate. WSGI/ASGI and

@@ -5,11 +5,10 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- Fixed (computesdk-nimbus): `nimbus({ timeout })` is the default timeout
-  of every command, as documented. A `runCommand` without its own
-  `timeout` used to run with no deadline. Without the option the default
-  is 300000 ms, which `getInfo` already reported, so a command with no
-  timeout of its own now ends after five minutes.
+- Fixed (computesdk-nimbus): `nimbus({ timeout })` is now the default
+  timeout of every command, as documented; a `runCommand` without its own
+  `timeout` used to run with no deadline. `getInfo` reports that timeout,
+  or 0 when none is configured, in place of a fixed 300000.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
