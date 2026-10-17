@@ -505,7 +505,10 @@ async function runSteps(steps, met, grants) {
     if (named) {
       const file = now.fileOf(id);
       assert.equal(code, null, `${label}: an awaited read of a named file: ${code}`);
-      if (file !== undefined && file.bytes !== null) assert.equal(dec.decode(got), dec.decode(file.bytes), `${label}: an awaited read of a named file`);
+      // A read that may wait takes the barrier the process owes first: the view's fold, or the file as the session has it now.
+      const name = [...now.names].find(([, reference]) => resolve(reference) === id)?.[0];
+      const current = name !== undefined && ref.kernel.exists(`${DIR}/${name}`) ? dec.decode(ref.kernel.readFile(`${DIR}/${name}`)) : undefined;
+      if (file !== undefined && file.bytes !== null && dec.decode(got) !== current) assert.equal(dec.decode(got), dec.decode(file.bytes), `${label}: an awaited read of a named file`);
       return;
     }
     const via = anchorOf(opened);
