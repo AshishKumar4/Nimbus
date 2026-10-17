@@ -5,6 +5,8 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: bounded launch preparation refuses oversized enrichment reads
+  before reading them, sharing one credit gate across all staging passes.
 - Fixed: launch-credit contention no longer changes which learned reads or
   lazy imports are staged. A tight first try now retries with full credit
   instead of trimming the program's snapshot.
