@@ -785,7 +785,7 @@ function parameterWordParts(word: string, hereDocument: boolean): WordPart[] {
   let i = 0;
   while (i < word.length) {
     const ch = word[i];
-    // In a here-document a backslash quotes only $, `, \\ and a newline; before anything else it is text.
+    // In a here-document a backslash quotes only $, `, itself and a newline; before anything else it is text.
     if (ch === '\\' && i + 1 < word.length && (!hereDocument || '$`\\\n'.includes(word[i + 1]))) {
       flush();
       parts.push({ text: word[i + 1], quoted: 'single' });
