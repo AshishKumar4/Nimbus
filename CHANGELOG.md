@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a program that writes files before it listens, as Vite's config
+  load does, serves. When its listen makes it a server, Nimbus runs it again
+  and checks that run against the first. That check failed for two reasons.
+  A `mkdir -p` of a directory the first run had made made nothing, so the
+  check saw one change fewer. Nimbus's own clock reads (the resident's boot,
+  its startup and event-loop deadlines, a stat's fallback times) took
+  readings meant for the program, so its `Date.now()` named a file
+  otherwise. Now the found directory counts as made again, and Nimbus reads
+  the clock itself. `react-router dev` gets past its relaunch.
+
 - Fixed: Tailwind CSS v4 works again. Its scanner, `@tailwindcss/oxide`
   4.3.3, runs from Nimbus's staged threadless build, so `@tailwindcss/vite`,
   `@tailwindcss/postcss` and `@tailwindcss/cli` install and serve. A Vite
