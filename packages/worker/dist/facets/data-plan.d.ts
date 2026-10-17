@@ -80,7 +80,9 @@ export declare function carriesOxide(closure: Iterable<string>): boolean;
  * package's), each sheet read once, every `@source` outside the working tree
  * `cwd`, each brace alternative's directory prefix taken whole, through its
  * links; and the files under those roots, walked a directory at a time with
- * the project rule's exclusions.
+ * the project rule's exclusions, which are of a path as it is named below its
+ * root, whatever a link makes of it. The roots it returns are what the
+ * facet's barriers push: those, and wherever a link below one leads.
  */
 export declare function planStylesheetSources(source: Pick<DataPlanSource, 'readText' | 'stat' | 'linkTarget' | 'readdir'>, input: {
     cwd: string;
