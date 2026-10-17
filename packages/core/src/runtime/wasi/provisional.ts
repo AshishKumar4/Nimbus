@@ -911,7 +911,8 @@ export function provisional(host: ProvisionalHost): Provisional {
       return { bytes: inode.pin.bytes, size: inode.pin.bytes.byteLength };
     }
     inode.row = seen.row;
-    if (seen.bytes === undefined) return undefined;
+    // The view's name for it has no bytes yet (moved there by a rename): what its descriptors read of it at that revision.
+    if (seen.bytes === undefined) return inode.pin?.revision === seen.row.revision ? { bytes: inode.pin.bytes, size: inode.pin.bytes.byteLength } : undefined;
     // Pinned for its descriptors while the view's name for it may move or go.
     if (inode.descs > 0 && inode.pin?.revision !== seen.row.revision) {
       inode.pin = { revision: seen.row.revision, bytes: seen.bytes };
