@@ -14,6 +14,7 @@ const OCTAL = {
     echo: /0([0-7]{0,3})/y,
     printf: /([0-7]{1,3})/y,
     'printf-b': /(?:0([0-7]{0,3})|([1-7][0-7]{0,2}))/y,
+    'ansi-c': /([0-7]{1,3})/y,
 };
 const HEX = /x([0-9a-fA-F]{1,2})/y;
 const UNICODE = /(?:u([0-9a-fA-F]{1,4})|U([0-9a-fA-F]{1,8}))/y;
@@ -42,9 +43,20 @@ export function expandBackslashEscapes(text, dialect) {
         }
         out += text.slice(i, slash);
         const next = text[slash + 1];
-        if (next === 'c') {
+        if (next === 'c' && dialect !== 'ansi-c') {
             stopped = true;
             break;
+        }
+        if (next === 'c' && slash + 2 < text.length) {
+            // X's control character, from its first UTF-8 byte (the rest follow
+            // it); `\c\\` takes both backslashes, as bash reads it.
+            const target = String.fromCodePoint(text.codePointAt(slash + 2) ?? 0);
+            const [lead, ...rest] = encodeLossless(target);
+            const control = lead === 0x3f ? 0x7f : lead & 0x1f;
+            out += String.fromCharCode(control) + rest.map((byte) => String.fromCharCode(0xdc00 + byte)).join('');
+            bytes ||= rest.length > 0;
+            i = slash + 2 + target.length + (target === '\\' && text[slash + 3] === '\\' ? 1 : 0);
+            continue;
         }
         const numeric = numericEscape(text, slash + 1, dialect);
         const digits = numeric?.[1] ?? numeric?.[2] ?? '';
@@ -70,13 +82,20 @@ export function expandBackslashEscapes(text, dialect) {
         }
         if (SIMPLE[next] !== undefined)
             out += SIMPLE[next];
-        else if (next === 'E' && dialect === 'echo')
+        else if (next === 'E' && (dialect === 'echo' || dialect === 'ansi-c'))
             out += '\x1b';
         else if (next === '"' && dialect !== 'echo')
             out += '"';
+        else if ((next === "'" || next === '?') && dialect === 'ansi-c')
+            out += next;
         else
             out += `\\${next}`;
         i = slash + 2;
+    }
+    if (dialect === 'ansi-c') {
+        const nul = out.indexOf('\0');
+        if (nul !== -1)
+            out = out.slice(0, nul);
     }
     // Escaped bytes that spell a character together (`\303\251`) read as it.
     return { text: bytes ? decodeLossless(encodeLossless(out)) : out, stopped };

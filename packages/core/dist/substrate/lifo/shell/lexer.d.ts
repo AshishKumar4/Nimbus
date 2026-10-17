@@ -35,4 +35,9 @@ export declare function readBalancedCommand(input: string, pos: number, open: st
     end: number;
     closed: boolean;
 };
+/** The `$'...'` at `pos`: its text, escapes decoded (backslash-escapes.ts, `ansi-c`), and where it ends. */
+export declare function readAnsiCQuote(input: string, pos: number): {
+    text: string;
+    end: number;
+};
 //# sourceMappingURL=lexer.d.ts.map

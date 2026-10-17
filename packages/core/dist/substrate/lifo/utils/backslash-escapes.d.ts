@@ -8,15 +8,19 @@
  * one. NUL was the parking spot, so `printf 'a\0b'` came back as `a\b`. One
  * pass consumes `\\` as a unit and needs no parking spot.
  *
- * The dialects differ only in how an octal byte is spelled and in `\"`/`\E`:
+ * The dialects differ only in how an octal byte is spelled, in `\"`/`\E`,
+ * and in `\c`:
  * - `echo`: bash's `echo -e`, `\0NNN` (a zero, then up to three digits);
  *   `\E` is ESC; `\"` is not an escape.
  * - `printf`: a printf FORMAT, `\NNN` (one to three digits); `\"` is `"`.
  * - `printf-b`: printf's `%b` argument, either spelling (coreutils' and
  *   bash's `%b`); `\"` is `"`.
+ * - `ansi-c`: the body of a `$'...'` word, `\NNN`; `\E` is ESC; `\'`, `\"`
+ *   and `\?` are themselves; `\cX` is X's control character (`\c?` DEL), and
+ *   a NUL ends the text there, as bash's C strings have it.
  * Every dialect reads `\\ \a \b \e \f \n \r \t \v`, `\xHH` (one or two hex
- * digits), `\uHHHH` and `\UHHHHHHHH`, and `\c`, which ends the output there.
- * Any other backslash stays as it is.
+ * digits), `\uHHHH` and `\UHHHHHHHH`, and, but in `ansi-c`, `\c`, which ends
+ * the output there. Any other backslash stays as it is.
  *
  * An octal or hex escape names one byte, as bash's and coreutils' putchar
  * write it: `\303\251` is the two bytes of "é", `\377` the byte 0xff. A `\u`
@@ -25,7 +29,7 @@
  * lossless decoding of those bytes (bytes-io.ts), which its writer encodes
  * back to them.
  */
-export type EscapeDialect = 'echo' | 'printf' | 'printf-b';
+export type EscapeDialect = 'echo' | 'printf' | 'printf-b' | 'ansi-c';
 /** `text` with its escapes expanded; `stopped` when a `\c` cut it short there. */
 export declare function expandBackslashEscapes(text: string, dialect: EscapeDialect): {
     text: string;

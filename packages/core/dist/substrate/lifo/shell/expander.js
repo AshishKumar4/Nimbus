@@ -1,7 +1,7 @@
 import { isShellIdentifier } from './names.js';
 import { DEFAULT_HOME } from '../../../constants.js';
 import { expandGlob, globMatch } from '../utils/glob.js';
-import { readBalancedCommand, readBracedExpansion } from './lexer.js';
+import { readAnsiCQuote, readBalancedCommand, readBracedExpansion } from './lexer.js';
 /**
  * A parameter expansion that aborts the command it belongs to: `set -u` on an
  * unset parameter, or an explicit `${var:?message}`.
@@ -660,6 +660,13 @@ function parameterWordParts(word) {
             flush();
             parts.push({ text: word[i + 1], quoted: 'single' });
             i += 2;
+            continue;
+        }
+        if (ch === '$' && word[i + 1] === "'") {
+            flush();
+            const quoted = readAnsiCQuote(word, i);
+            parts.push({ text: quoted.text, quoted: 'single' });
+            i = quoted.end;
             continue;
         }
         if (ch === "'" || ch === '"') {

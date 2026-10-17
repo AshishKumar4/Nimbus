@@ -1,4 +1,5 @@
 import { TokenKind } from './types.js';
+import { expandBackslashEscapes } from '../utils/backslash-escapes.js';
 export function lex(input) {
     const tokens = [];
     const pendingHeredocs = [];
@@ -85,6 +86,13 @@ export function continuationState(input) {
         if (quote === '"') {
             if (ch === '"')
                 quote = null;
+            continue;
+        }
+        if (ch === '$' && input[i + 1] === "'") {
+            const end = ansiCQuoteEnd(input, i);
+            if (end === -1)
+                return 'single';
+            i = end - 1;
             continue;
         }
         if (ch === "'" || ch === '"') {
@@ -441,6 +449,15 @@ function readWord(input, pos) {
             hasContent = true;
             continue;
         }
+        // $'...': ANSI-C quoting, one quoted part whose escapes are decoded
+        if (ch === '$' && input[i + 1] === "'") {
+            flushCurrentText();
+            const quoted = readAnsiCQuote(input, i);
+            parts.push({ text: quoted.text, quoted: 'single' });
+            i = quoted.end;
+            hasContent = true;
+            continue;
+        }
         // $(...) or $((...)) command/arithmetic substitution
         if (ch === '$' && input[i + 1] === '(') {
             const subst = readCommandSubstitution(input, i);
@@ -621,6 +638,13 @@ export function readBalancedCommand(input, pos, open, close) {
             i = quoted.end;
             continue;
         }
+        if (ch === '$' && input[i + 1] === "'") {
+            const end = ansiCQuoteEnd(input, i);
+            const stop = end === -1 ? input.length : end;
+            body += input.slice(i, stop);
+            i = stop;
+            continue;
+        }
         if (ch === '$' && input[i + 1] === '(') {
             const nested = readBalancedCommand(input, i + 2, '(', ')');
             body += input.slice(i, nested.end);
@@ -647,11 +671,40 @@ export function readBalancedCommand(input, pos, open, close) {
     }
     return { body, end: i, closed: false };
 }
+/**
+ * Where the `$'...'` at `pos` ends, just past its closing quote, or -1 when
+ * the input ends first. A backslash takes the character after it, so `\'`
+ * does not close it.
+ */
+function ansiCQuoteEnd(input, pos) {
+    let i = pos + 2;
+    while (i < input.length && input[i] !== "'")
+        i += input[i] === '\\' ? 2 : 1;
+    return i < input.length ? i + 1 : -1;
+}
+/** The `$'...'` at `pos`: its text, escapes decoded (backslash-escapes.ts, `ansi-c`), and where it ends. */
+export function readAnsiCQuote(input, pos) {
+    const end = ansiCQuoteEnd(input, pos);
+    const body = input.slice(pos + 2, end === -1 ? input.length : end - 1);
+    return { text: expandBackslashEscapes(body, 'ansi-c').text, end: end === -1 ? input.length : end };
+}
+/**
+ * The quoted span at `pos`, whole. In double quotes a `$(...)`, `${...}` or
+ * backtick substitution is its own span, so a `"` inside it does not close
+ * the quote (`"$(echo ")")"`).
+ */
 function readQuoted(input, pos, quote) {
     let i = pos + 1;
     let text = quote;
     while (i < input.length) {
         const ch = input[i];
+        if (quote === '"' && ((ch === '$' && (input[i + 1] === '(' || input[i + 1] === '{')) || ch === '`')) {
+            const end = ch === '`' ? readBacktickSubstitution(input, i).end
+                : input[i + 1] === '(' ? readCommandSubstitution(input, i).end : readBracedExpansion(input, i).end;
+            text += input.slice(i, end);
+            i = end;
+            continue;
+        }
         text += ch;
         i++;
         if (quote === '"' && ch === '\\' && i < input.length) {
