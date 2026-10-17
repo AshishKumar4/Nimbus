@@ -844,6 +844,10 @@ ${val.stack}`;
     return settings;
   }
 
+  var enc = new TextEncoder();
+  var dec = new TextDecoder();
+  var nameDec = new TextDecoder("utf-8", { ignoreBOM: true });
+
   function bindExports(instance) {
     const exports = instance.exports;
     const memory = exports.memory;
@@ -959,7 +963,7 @@ ${val.stack}`;
         }
         at2++;
         if (at2 + length > bytes.length) throw new Error("oxc transform: malformed diagnostics");
-        fields.push(decoder.decode(bytes.subarray(at2, at2 + length)));
+        fields.push(nameDec.decode(bytes.subarray(at2, at2 + length)));
         at2 += length;
       }
       if (fields.length % 7 !== 0) throw new Error("oxc transform: malformed diagnostics");
@@ -10142,9 +10146,6 @@ error: the Oxc transform crashed (${reason})`);
     if (type !== null) return type;
     return containsModuleSyntax(stripped()) ? "module" : "commonjs";
   }
-
-  var enc = new TextEncoder();
-  var dec = new TextDecoder();
 
   var HKDF_SALT = enc.encode("nimbus-sh sealed-json v2");
   function base64(bytes) {

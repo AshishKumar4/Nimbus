@@ -55,6 +55,7 @@ import { clockNs, clockResolutionNs, realtimeNs } from '../wasi/clock.js';
 import { unixGroups, unixUsers } from '../../shell/unix-accounts.js';
 import { ARENA_SIZE, CaptureStore, type ModuleLayout } from './capture-store.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+import { nameDec } from '../../_shared/bytes.js';
 
 const PAGE = 65536, te = new TextEncoder(), td = new TextDecoder();
 const E = { ACCES: 2, BADF: 8, EXIST: 20, INVAL: 28, ISDIR: 31, LOOP: 32, NOENT: 44, NOSYS: 52, NOTDIR: 54, NOTEMPTY: 55, PERM: 63, RANGE: 68, SPIPE: 70, SRCH: 71 } satisfies Record<string, BashErrno>;
@@ -694,7 +695,7 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
       if (capacity <= bytes.length) return -37;
       U8().set(bytes, ptr); U8()[ptr + bytes.length] = 0; return bytes.length;
     },
-    capture_cwd: (ptr: number, length: number) => { proc.cwd = td.decode(U8().subarray(ptr, ptr + length)); return 0; },
+    capture_cwd: (ptr: number, length: number) => { proc.cwd = nameDec.decode(U8().subarray(ptr, ptr + length)); return 0; },
     stat_metadata: suspend('stat_metadata', procFs.stat_metadata),
     account: suspend('account', procFs.account),
     // A landing (the capture's own rewind, or a longjmp's) stops the rewind and runs no hook.
@@ -733,11 +734,11 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
       const u8 = U8();
       let e = pathPtr; while (u8[e]) e++;
       c.reason = 'exec';
-      c.execPath = td.decode(u8.subarray(pathPtr, e));
-      c.execArgv = td.decode(u8.subarray(argvFlatPtr, argvFlatPtr + argvLen)).split('\0').filter((x) => x.length);
+      c.execPath = nameDec.decode(u8.subarray(pathPtr, e));
+      c.execArgv = nameDec.decode(u8.subarray(argvFlatPtr, argvFlatPtr + argvLen)).split('\0').filter((x) => x.length);
       // The child's REAL environment (bash's export set at exec time —
       // PWD tracks the shell's cd, unlike the boot-time s.environ).
-      c.execEnv = td.decode(u8.subarray(envFlatPtr, envFlatPtr + envLen)).split('\0').filter((x) => x.length);
+      c.execEnv = nameDec.decode(u8.subarray(envFlatPtr, envFlatPtr + envLen)).split('\0').filter((x) => x.length);
       startUnwind();
       return 0;
     },
@@ -1086,7 +1087,7 @@ function ownerSide(bits: number): number | null {
 }
 
 function metadataImports(s: BashSession, proc: BashProc, DV: () => DataView, U8: () => Uint8Array, fs: RuntimeFsBridge | RuntimeSynchronousFs) {
-  const readPath = (ptr: number, length: number) => td.decode(U8().subarray(ptr, ptr + length));
+  const readPath = (ptr: number, length: number) => nameDec.decode(U8().subarray(ptr, ptr + length));
   const at = (fd: number, path: string): RuntimeFsPath => {
     if (path.startsWith('/')) return path;
     if (fd === -1) return proc.cwd + '/' + path;
@@ -1152,7 +1153,7 @@ function metadataImports(s: BashSession, proc: BashProc, DV: () => DataView, U8:
         // A uid, gid or index is unsigned, and comes as i32: one above 0x7fffffff arrives negative.
         const id = idBits >>> 0, capacity = capacityBits >>> 0;
         const text = bytes === null ? '' : td.decode(bytes);
-        const name = by === 1 ? td.decode(U8().subarray(ptr, ptr + length)) : '';
+        const name = by === 1 ? nameDec.decode(U8().subarray(ptr, ptr + length)) : '';
         let ids: [number, number];
         let strings: string[];
         if (kind === 1) {

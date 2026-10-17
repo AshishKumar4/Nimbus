@@ -34,6 +34,7 @@
  * a removal empties it.
  */
 
+import { nameDec } from '@nimbus-sh/core/_shared/bytes.js';
 import { NewEntries, S_IFGITLINK, S_IFMT, comparePaths, type DirCache, type IndexEdit } from './dircache.js';
 import type { Excludes } from './excludes.js';
 import { diffTrees, type Leaf, type ObjectStore } from './tree.js';
@@ -631,7 +632,7 @@ async function applyOps(ctx: SparsityContext, ops: readonly Op[], sparse: Sparse
     if (op.method !== 'mkdir-index') {
       const { data } = await store.read(op.oid);
       if (op.mode === 0o120000) {
-        await writer.symlink(new TextDecoder().decode(data), file(op.path));
+        await writer.symlink(nameDec.decode(data), file(op.path));
       } else {
         const fileMode = op.mode === 0o100755 ? 0o755 : 0o644;
         await writer.writeFile(file(op.path), data, fileMode);

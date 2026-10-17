@@ -1,6 +1,7 @@
 import { crc32 } from '@nimbus-sh/platform/crc32.js';
 import { resolve } from './path.js';
-import { encode, decode, concatBytes } from './encoding.js';
+import { encode, concatBytes } from './encoding.js';
+import { nameDec } from '../../../_shared/bytes.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 import { streamTarRecords, tarBytes, TarTruncatedError } from '../../../_shared/tarball-stream.js';
 // ─── Gzip (CompressionStream/DecompressionStream) ───
@@ -229,7 +230,7 @@ export function parseZip(data) {
         const commentLen = readU16LE(data, centralOffset + 32);
         const localOffset = readU32LE(data, centralOffset + 42);
         const nameBytes = data.subarray(centralOffset + 46, centralOffset + 46 + nameLen);
-        let path = decode(nameBytes);
+        let path = nameDec.decode(nameBytes);
         const isDirectory = path.endsWith('/');
         if (isDirectory)
             path = path.slice(0, -1);

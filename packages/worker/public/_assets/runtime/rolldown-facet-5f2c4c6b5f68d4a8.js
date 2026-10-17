@@ -13990,6 +13990,7 @@ function longUtf8Length(text) {
 // ../core/src/_shared/bytes.ts
 var enc = new TextEncoder();
 var dec = new TextDecoder();
+var nameDec = new TextDecoder("utf-8", { ignoreBOM: true });
 
 // ../core/src/_shared/crypto.ts
 var HKDF_SALT = enc.encode("nimbus-sh sealed-json v2");

@@ -19,6 +19,13 @@ export const enc = new TextEncoder();
 export const dec = new TextDecoder();
 
 /**
+ * Shared UTF-8 decoder for names: paths, directory and archive entries,
+ * link targets, argv and environment. It keeps a leading U+FEFF, as git, tar
+ * and Linux keep it in a name; `dec` drops it, as a file's text drops it.
+ */
+export const nameDec = new TextDecoder('utf-8', { ignoreBOM: true });
+
+/**
  * A fresh ArrayBuffer holding exactly the bytes `bytes` views — its window,
  * not its whole backing buffer — for APIs that take an ArrayBuffer
  * (WebAssembly modules, structured clone across a facet boundary).

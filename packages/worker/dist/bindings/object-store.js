@@ -13,6 +13,7 @@
  * Cloudflare's local cursor, the last key listed in base64.
  */
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { nameDec } from '@nimbus-sh/core/_shared/bytes.js';
 /** The directory a binding's objects live in, under the project `root`. */
 export function objectStoreDir(root, kind, binding) {
     const project = normalizeVfsPath(root);
@@ -86,5 +87,5 @@ export function cursorAfter(key) {
 }
 /** The key a cursor's page ended at, which the next page starts after. */
 export function cursorKey(cursor) {
-    return new TextDecoder().decode(Uint8Array.from(atob(cursor), (char) => char.charCodeAt(0)));
+    return nameDec.decode(Uint8Array.from(atob(cursor), (char) => char.charCodeAt(0)));
 }

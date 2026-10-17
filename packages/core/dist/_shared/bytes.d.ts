@@ -15,6 +15,12 @@ export declare const enc: TextEncoder;
 /** Shared UTF-8 decoder. Stateless; safe to share across all callers. */
 export declare const dec: TextDecoder;
 /**
+ * Shared UTF-8 decoder for names: paths, directory and archive entries,
+ * link targets, argv and environment. It keeps a leading U+FEFF, as git, tar
+ * and Linux keep it in a name; `dec` drops it, as a file's text drops it.
+ */
+export declare const nameDec: TextDecoder;
+/**
  * A fresh ArrayBuffer holding exactly the bytes `bytes` views — its window,
  * not its whole backing buffer — for APIs that take an ArrayBuffer
  * (WebAssembly modules, structured clone across a facet boundary).

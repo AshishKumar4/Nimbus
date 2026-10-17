@@ -5,6 +5,28 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Breaking (worker): `vendor/git.generated.mjs` no longer exports
+  `gitHttp`, cf-git's own HTTP client (isomorphic-git/http/web), nor
+  declares it (`vendor/git-http.generated.d.ts` is gone). Nimbus's git
+  speaks smart HTTP through its own clients (`git/pack/upload-pack.ts`,
+  `receive-pack.ts`), and nothing used it. The vendor module was never a
+  package export.
+- Changed: the built-in `git push` over HTTP speaks receive-pack through
+  Nimbus's own client (`git/pack/receive-pack.ts`), the one `git fetch`,
+  `git clone` and the git remote helpers already use. It streams its pack
+  as git does past `http.postBuffer`; before, cf-git collected the whole
+  request and sent it with a Content-Length. Push no longer reads the
+  isomorphic-git-only `http.corsProxy` setting, which fetch already
+  ignored and git never had.
+- Fixed: a name that begins with U+FEFF (the UTF-8 BOM, bytes EF BB BF)
+  keeps it, as git, tar and Linux keep it. This covers file and directory
+  names in git's index, trees and checkouts, symlink targets, ZIP member
+  names, paths in the wasm bash and its programs, and the text `$( )`
+  captures. Before, each was decoded with a TextDecoder that drops a
+  leading BOM: a clone of a repository with a directory named by a BOM alone
+  failed with "invalid path", a file `\uFEFFf` was created as `f`, and
+  `readlink` lost the BOM from its link's target. A `.git/commondir` loses
+  only its line's end, as git reads it.
 - Fixed: a hosted ES module, staged or interpreted, can statically import
   a `data:` module (`import x from 'data:text/javascript,…'`). Its imported
   names are checked before any module body runs. It runs once, in a cycle

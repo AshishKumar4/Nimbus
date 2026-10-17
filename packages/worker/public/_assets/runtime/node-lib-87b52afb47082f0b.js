@@ -791,7 +791,7 @@ module.exports = {
     };
     const isDirectory = (path) => status(path, true).stat?.isDirectory() === true;
     // A path the binding is given as Node's native code takes it: a string, or bytes decoded (BufferValue).
-    const pathText = (path) => (typeof path === "string" ? path : path instanceof Uint8Array ? new TextDecoder().decode(path) : String(path));
+    const pathText = (path) => (typeof path === "string" ? path : path instanceof Uint8Array ? new TextDecoder("utf-8", { ignoreBOM: true }).decode(path) : String(path));
     return {
       cpSyncCheckPaths(src, dest, dereference, recursive) {
         [src, dest] = [pathText(src), pathText(dest)];

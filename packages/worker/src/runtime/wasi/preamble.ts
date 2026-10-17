@@ -923,7 +923,8 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
   const envArr: string[] = [];
   if (opts.env) for (const k of Object.keys(opts.env)) envArr.push(k + '=' + opts.env[k]);
   const utf8enc = new TextEncoder();
-  const utf8dec = new TextDecoder();
+  // Paths, and what a write puts out: neither is a document, so a leading U+FEFF stays (_shared/bytes.ts nameDec).
+  const utf8dec = new TextDecoder('utf-8', { ignoreBOM: true });
 
   function view() { return new DataView(opts.getMemory().buffer); }
   function u8()   { return new Uint8Array(opts.getMemory().buffer); }

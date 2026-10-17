@@ -34,6 +34,7 @@
  */
 
 import { resolveTsSettings } from './tsconfig-raw.js';
+import { nameDec } from '../_shared/bytes.js';
 
 export interface OxcTransformOptions {
   loader?: string;
@@ -201,7 +202,7 @@ export function createOxcTransform(
       }
       at++;
       if (at + length > bytes.length) throw new Error('oxc transform: malformed diagnostics');
-      fields.push(decoder.decode(bytes.subarray(at, at + length)));
+      fields.push(nameDec.decode(bytes.subarray(at, at + length)));
       at += length;
     }
     if (fields.length % 7 !== 0) throw new Error('oxc transform: malformed diagnostics');

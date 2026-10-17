@@ -16,6 +16,7 @@
  * A sparse checkout's plan still holds every path (the index lists them
  * all); a path outside its cone is marked skip-worktree and never written.
  */
+import { nameDec } from '@nimbus-sh/core/_shared/bytes.js';
 import { OID_BYTES, PackFormatError, oidFromHex, oidToHex } from './format.js';
 import { TreeEntries } from './tree-object.js';
 import { DEFAULT_PATH_PROTECTION, verifyPath } from '../worktree/verify-path.js';
@@ -24,7 +25,6 @@ export const MODE_FILE = 0o100644;
 export const MODE_EXECUTABLE = 0o100755;
 export const MODE_SYMLINK = 0o120000;
 export const MODE_GITLINK = 0o160000;
-const utf8 = new TextDecoder('utf-8', { fatal: false });
 const utf8Encoder = new TextEncoder();
 /** Growable columns. */
 class Columns {
@@ -107,7 +107,7 @@ export class CheckoutPlan {
                 continue;
             }
             const raw = frame.data.subarray(entry.nameAt, entry.nameEnd);
-            const name = utf8.decode(raw);
+            const name = nameDec.decode(raw);
             // A path's bytes are its name's as decoded: a name not UTF-8 is held as its replacement characters.
             const nameBytes = name.includes('\uFFFD') ? utf8Encoder.encode(name) : raw;
             if (entry.mode === MODE_TREE) {
@@ -143,7 +143,7 @@ export class CheckoutPlan {
         return this.skips[index] === 1;
     }
     path(index) {
-        return utf8.decode(this.pathBytes.subarray(this.pathStarts[index], this.pathStarts[index + 1]));
+        return nameDec.decode(this.pathBytes.subarray(this.pathStarts[index], this.pathStarts[index + 1]));
     }
     pathBytesOf(index) {
         return this.pathBytes.subarray(this.pathStarts[index], this.pathStarts[index + 1]);
@@ -237,7 +237,7 @@ export function decodeBatch(bytes) {
         for (let i = 0; i < count; i++) {
             const mode = view.getUint32(p);
             const length = view.getUint16(p + 4);
-            paths.push({ mode, path: utf8.decode(bytes.subarray(p + 6, p + 6 + length)) });
+            paths.push({ mode, path: nameDec.decode(bytes.subarray(p + 6, p + 6 + length)) });
             p += 6 + length;
         }
         blobs.set(oid, paths);

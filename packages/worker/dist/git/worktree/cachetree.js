@@ -15,9 +15,8 @@
  * for one node's subtrees at a time; a write rewrites the bytes in one pass.
  */
 import { oidFromHex, oidToHex } from '../pack/format.js';
-import { concatBytes } from '@nimbus-sh/core/_shared/bytes.js';
+import { concatBytes, nameDec } from '@nimbus-sh/core/_shared/bytes.js';
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 /** subtree_name_cmp: by length, then bytes. */
 function subtreeOrder(a, b) {
     if (a.length !== b.length)
@@ -164,7 +163,7 @@ export class CacheTree {
     subtrees(node) {
         const out = new Map();
         for (let child = node + 1, i = 0; i < this.subtreeCounts[node]; i++, child = this.ends[child]) {
-            out.set(decoder.decode(this.bytes.subarray(this.nameAt[child], this.nameEnd[child])), child);
+            out.set(nameDec.decode(this.bytes.subarray(this.nameAt[child], this.nameEnd[child])), child);
         }
         return out;
     }
