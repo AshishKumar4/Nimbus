@@ -616,6 +616,29 @@ export function readBracedExpansion(input, pos) {
 }
 /** What a `#` that starts a comment may follow: a blank, or an operator that ends a word. */
 const COMMENT_AFTER = ' \t\n;&|()<>';
+/** A table of the ASCII characters in `chars`, for nextStop. */
+function stopTable(chars) {
+    const table = new Uint8Array(128);
+    for (const c of chars)
+        table[c.charCodeAt(0)] = 1;
+    return table;
+}
+/** Where a balanced span's scan must look, by its brackets: every other character is body as it stands. */
+const SPAN_STOPS = {
+    '(': stopTable('\\\'"$`#()'),
+    '{': stopTable('\\\'"$`#{}'),
+};
+/** Where a double-quoted span's scan must look. */
+const DOUBLE_QUOTED_STOPS = stopTable('"\\$`');
+/** The first index from `i` whose character `stops` marks, or the input's length. */
+function nextStop(input, i, stops) {
+    for (; i < input.length; i++) {
+        const c = input.charCodeAt(i);
+        if (c < 128 && stops[c] === 1)
+            return i;
+    }
+    return i;
+}
 /**
  * The body of a balanced `open`...`close` span whose body starts at `pos`
  * (just past `open`), and where it ends (just past `close`, or the input's
@@ -623,77 +646,59 @@ const COMMENT_AFTER = ' \t\n;&|()<>';
  * skipped whole, so a `close` inside them does not end it.
  */
 export function readBalancedCommand(input, pos, open, close) {
+    const stops = SPAN_STOPS[open];
     let i = pos;
     let depth = 1;
     let body = '';
     while (i < input.length) {
+        // Characters that are no syntax here go into the body as one run.
+        const at = nextStop(input, i, stops);
+        if (at > i) {
+            body += input.slice(i, at);
+            i = at;
+            if (i === input.length)
+                break;
+        }
         const ch = input[i];
         if (ch === '\\' && i + 1 < input.length) {
             body += input.slice(i, i + 2);
             i += 2;
             continue;
         }
-        if (ch === "'") {
-            const quoted = readQuoted(input, i, "'");
+        if (ch === "'" || ch === '"') {
+            const quoted = readQuoted(input, i, ch);
             body += quoted.text;
             i = quoted.end;
             continue;
         }
-        if (ch === '"') {
-            const quoted = readQuoted(input, i, '"');
-            body += quoted.text;
-            i = quoted.end;
-            continue;
-        }
-        if (ch === '$' && input[i + 1] === '$') {
-            body += '$$';
-            i += 2;
-            continue;
-        }
-        if (ch === '$' && input[i + 1] === "'") {
-            const end = ansiCQuoteEnd(input, i);
+        if (ch === '$' || ch === '`') {
+            const next = input[i + 1];
+            // $$ is two dollars; $'...', ${...}, $(...) and a backquoted command
+            // are each one span, so nothing in them closes this one.
+            const end = ch === '`' ? readBacktickSubstitution(input, i).end
+                : next === '$' ? i + 2
+                    : next === "'" ? ansiCQuoteEnd(input, i)
+                        : next === '{' ? readBracedExpansion(input, i).end
+                            : next === '(' ? readBalancedCommand(input, i + 2, '(', ')').end
+                                : i + 1;
             const stop = end === -1 ? input.length : end;
             body += input.slice(i, stop);
             i = stop;
             continue;
         }
-        // A parameter expansion or backquoted command is one span: a # in it is no comment.
-        if ((ch === '$' && input[i + 1] === '{') || ch === '`') {
-            const end = ch === '`' ? readBacktickSubstitution(input, i).end : readBracedExpansion(input, i).end;
-            body += input.slice(i, end);
-            i = end;
-            continue;
-        }
         // A comment, where a word may start in a command's span: its text to
         // the line's end, quotes and all, is no syntax.
-        if (open === '(' && ch === '#' && (i === pos || COMMENT_AFTER.includes(input[i - 1]))) {
+        if (ch === '#' && open === '(' && (i === pos || COMMENT_AFTER.includes(input[i - 1]))) {
             const newline = input.indexOf('\n', i);
             const stop = newline === -1 ? input.length : newline;
             body += input.slice(i, stop);
             i = stop;
             continue;
         }
-        if (ch === '$' && input[i + 1] === '(') {
-            const nested = readBalancedCommand(input, i + 2, '(', ')');
-            body += input.slice(i, nested.end);
-            i = nested.end;
-            continue;
-        }
-        if (ch === open) {
+        if (ch === open)
             depth++;
-            body += ch;
-            i++;
-            continue;
-        }
-        if (ch === close) {
-            depth--;
-            if (depth === 0) {
-                return { body, end: i + 1, closed: true };
-            }
-            body += ch;
-            i++;
-            continue;
-        }
+        else if (ch === close && --depth === 0)
+            return { body, end: i + 1, closed: true };
         body += ch;
         i++;
     }
@@ -722,25 +727,30 @@ export function readAnsiCQuote(input, pos) {
  * the quote (`"$(echo ")")"`).
  */
 function readQuoted(input, pos, quote) {
+    if (quote === "'") {
+        const close = input.indexOf("'", pos + 1);
+        const end = close === -1 ? input.length : close + 1;
+        return { text: input.slice(pos, end), end };
+    }
     let i = pos + 1;
     let text = quote;
     while (i < input.length) {
+        const at = nextStop(input, i, DOUBLE_QUOTED_STOPS);
+        text += input.slice(i, at);
+        i = at;
+        if (i === input.length)
+            break;
         const ch = input[i];
-        if (quote === '"' && ((ch === '$' && (input[i + 1] === '(' || input[i + 1] === '{')) || ch === '`')) {
-            const end = ch === '`' ? readBacktickSubstitution(input, i).end
-                : input[i + 1] === '(' ? readCommandSubstitution(input, i).end : readBracedExpansion(input, i).end;
-            text += input.slice(i, end);
-            i = end;
-            continue;
-        }
-        text += ch;
-        i++;
-        if (quote === '"' && ch === '\\' && i < input.length) {
-            text += input[i];
-            i++;
-            continue;
-        }
-        if (ch === quote)
+        const next = input[i + 1];
+        const end = ch === '"' ? i + 1
+            : ch === '\\' ? Math.min(i + 2, input.length)
+                : ch === '`' ? readBacktickSubstitution(input, i).end
+                    : next === '(' ? readCommandSubstitution(input, i).end
+                        : next === '{' ? readBracedExpansion(input, i).end
+                            : i + 1;
+        text += input.slice(i, end);
+        i = end;
+        if (ch === '"')
             break;
     }
     return { text, end: i };
