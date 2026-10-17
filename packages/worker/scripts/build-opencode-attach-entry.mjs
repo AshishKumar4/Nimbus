@@ -24,6 +24,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { modelsCatalogs } from './opencode/models-catalog.mjs';
 
 const require = createRequire(import.meta.url);
 
@@ -100,39 +101,26 @@ function attachSeedChunks(entry) {
  * thunk body becomes a fail-loud throw, so an unforeseen client-side evaluation
  * surfaces as a clear error, never silent empty data.
  *
- * Two minified shapes are accepted, because upstream writes the value as
- * `typeof OPENCODE_MODELS_DEV === "undefined" ? undefined : OPENCODE_MODELS_DEV`
- * (core/src/models-dev.ts) and bundlers differ on whether they fold that guard
- * away once the define substitutes the literal:
- *   sync(()=>({…}))                     folded — one copy of the catalog
- *   sync(()=>typeof{…}>"u"?void 0:{…})  unfolded — two copies
- * Identifier renaming is tolerated too (the local binding and the Effect
- * namespace alias change whenever the chunk graph changes). If the shape itself
- * changes in a future opencode, the literal is KEPT (correctness over
- * optimization) with a loud build warning.
+ * The thunk is found from the syntax tree (opencode/models-catalog.mjs), folded
+ * guard or not. If no chunk has exactly one, the literal is KEPT (correctness
+ * over optimization) with a loud build warning.
  */
 function stripEmbeddedModelsCatalog(pack) {
-  const ANCHOR_RE = /,[A-Za-z_$][\w$]*=([A-Za-z_$][\w$]*)\.fn\("ModelsDev\.fetchAndWrite"\)/;
   for (const [name, src] of Object.entries(pack)) {
-    const anchor = ANCHOR_RE.exec(src);
-    if (!anchor) continue;
-    const end = anchor.index;
-    const effect = anchor[1];
-    const start = Math.max(
-      src.lastIndexOf(`=${effect}.sync(()=>({`, end),
-      src.lastIndexOf(`=${effect}.sync(()=>typeof{`, end),
-    );
-    if (start < 0 || end - start < 1024 * 1024) {
+    const catalogs = modelsCatalogs(src);
+    if (catalogs.length === 0) continue;
+    if (catalogs.length > 1) {
       console.warn(
-        `[build-opencode-attach-entry] WARNING: ModelsDev anchor found in ${name} but the ` +
-          'embedded-catalog shape did not match — keeping the literal (no size win)',
+        `[build-opencode-attach-entry] WARNING: ${catalogs.length} catalog-sized literals in ${name} — ` +
+          'keeping them (no size win)',
       );
       return pack;
     }
+    const [{ start, end }] = catalogs;
     const replacement =
-      `=${effect}.sync(()=>{throw new Error("Nimbus attach entry: the embedded models.dev catalog ` +
+      '()=>{throw new Error("Nimbus attach entry: the embedded models.dev catalog ' +
       'is stripped from the attach client (models come from the opencode server API); ' +
-      'client-side ModelsDev.populate is not expected to run")})';
+      'client-side ModelsDev.populate is not expected to run")}';
     const stripped = src.slice(0, start) + replacement + src.slice(end);
     console.log(
       `[build-opencode-attach-entry] stripped embedded models catalog from ${name}: ` +
@@ -141,8 +129,8 @@ function stripEmbeddedModelsCatalog(pack) {
     return { ...pack, [name]: stripped };
   }
   console.warn(
-    '[build-opencode-attach-entry] WARNING: no chunk carries the ModelsDev.fetchAndWrite ' +
-      'anchor — embedded-catalog strip skipped (no size win)',
+    '[build-opencode-attach-entry] WARNING: no chunk carries the embedded models catalog ' +
+      '— embedded-catalog strip skipped (no size win)',
   );
   return pack;
 }
