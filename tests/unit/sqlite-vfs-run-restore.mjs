@@ -188,7 +188,8 @@ const truncate = (path, size) => ({ type: 'truncate', path, size });
 // ── rolled back: no change of the run's ─────────────────────────────────
 {
   const s = session();
-  s.kernel.writeFile('home/user/theirs.txt', enc.encode('base'), { mode: 0o666 });
+  s.kernel.writeFile('home/user/theirs.txt', enc.encode('base'));
+  s.kernel.chmod('home/user/theirs.txt', 0o666);
   s.engine.captureRun(RUN);
   // Root's file: the user may empty it, not chmod it, so the open is refused whole.
   const refused = await s.send(RUN, [call({ call: 'open', path: 'home/user/theirs.txt', mode: 0o644, access: 'write', truncate: true, fchmod: 0o600 })]);
