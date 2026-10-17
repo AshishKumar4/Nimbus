@@ -11,16 +11,7 @@ export async function withInternalNimbusAuth(
   sessionId: string,
   scopes: string[] = ['session:attach', 'sandbox:use'],
 ): Promise<Request> {
-  const token = await issueNimbusToken(
-    env,
-    {
-      tn: 'demo',
-      sub: auth.userId,
-      sid: sessionId,
-      scopes,
-    },
-    { ttlMs: nimbusJwtTtlMs(env) },
-  );
+  const token = await issueDemoSandboxToken(env, auth, sessionId, scopes);
   const headers = new Headers(request.headers);
   headers.set('Authorization', `Bearer ${token}`);
   return new Request(request, { headers });

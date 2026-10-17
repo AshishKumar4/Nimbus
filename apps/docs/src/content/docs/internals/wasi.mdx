@@ -33,7 +33,7 @@ request context resumes only the wasm stacks it suspended itself, so a
 program parked in `accept` stays parked when the next request arrives.
 Servers on the virtual-socket kernel run the other way round. The kernel
 queues the connection and asks the runtime to service it on one dedicated
-cooperative pump, the only place a JSPI suspension is legal. Pyodide and
+cooperative pump, the only place a JSPI suspension is legal. CPython and
 ruby.wasm serve loopback ports this way.
 
 JSPI suspends a call, but it cannot snapshot a stack. Programs that need
@@ -52,15 +52,15 @@ a saved exec bit sends `./prog` through the WASI runner with a pid and a
 process tab.
 
 workerd blocks request-time WASM compilation from raw bytes. Modules must
-arrive pre-compiled in the module map. Pyodide extension packages must
-therefore be declared startup modules, while arbitrary dynamic loading
-fails with a clear diagnostic.
+arrive pre-compiled in the module map. A compiled Python package must
+therefore be linked into the CPython interpreter itself (numpy and
+MarkupSafe are), while arbitrary dynamic loading fails with a clear
+diagnostic.
 
 WASI files are a cache over the session filesystem. The spawn seed is a
 manifest of sizes. Content is fetched on first read, and writes go back
-as they happen, so a process that never exits still persists. bash and
-python are the two runtimes not yet on it. Each still carries a private
-filesystem that copies the subtree in and reports a diff on exit.
+as they happen, so a process that never exits still persists. Every WASI
+runtime is on it: clang's programs, bash, ruby and python.
 
 stdin is EOF, and there are no inbound sockets. The remaining gaps are
 [tracked with designs](/docs/fine-print/research/).

@@ -219,7 +219,7 @@ Current runtime substrate:
 
 | Runtime | Bins | Notes |
 |---|---|---|
-| `python` | `python`, `python3`, `pip`, `pip3` | Pyodide / CPython 3.13. `pip` is alpha but ABI-aware: PyPI pure wheels, requirements, constraints, extras, markers, local pure wheels, curated pure source artifacts, and declared Pyodide startup-module package artifacts are supported. Request-time extension-module loading is blocked by Workers and must not be used. |
+| `python` | `python`, `python3`, `pip`, `pip3` | CPython 3.13 for wasm32-wasi. `pip` is alpha but ABI-aware: PyPI pure wheels, requirements, constraints, extras, markers, local pure wheels and curated pure source artifacts are supported. wasm32-wasi has no dlopen, so a compiled package works only linked into the interpreter (numpy and MarkupSafe, in python-sci); other extension wheels are refused with an ABI diagnostic. Request-time extension-module loading is blocked by Workers and must not be used. |
 | `ruby` | `ruby`, `ruby3`, `gem`, `bundle`, `bundler` | ruby.wasm / Ruby 3.3. Pure Ruby gems, simple Bundler Gemfiles, gem bins, Rack/WEBrick-style preview, and native-gem unsupported diagnostics are implemented; full Bundler parity and native Ruby extensions need a Nimbus ABI path. |
 | `clang` | `clang`, `wasm-ld` | LLVM 8 to Nimbus' `wasm32-wasi-nimbus` ABI. |
 | `node`, `bun` | `node`, `bun`, `npm`, `npx` | Cloudflare workerd `nodejs_compat` and Nimbus shims, not upstream native binaries. |

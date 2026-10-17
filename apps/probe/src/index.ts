@@ -263,9 +263,6 @@ export class NimbusSession extends SdkNimbusSession {
     }
     return current;
   }
-  /** The embedder mount at /mnt/data, made once per instance with its filesystem. */
-  #dataMounted = false;
-
   /**
    * The session's filesystem, with the embedder-mount surface the probes
    * exercise: a MemoryVFS at /mnt/data, as an embedder mounts its own
@@ -275,9 +272,8 @@ export class NimbusSession extends SdkNimbusSession {
    */
   override getFilesystemAuthority() {
     const files = super.getFilesystemAuthority();
-    if (!this.#dataMounted) {
+    if (!files.vfs.mounts().some((mount) => mount.point === '/mnt/data')) {
       files.vfs.mount('/mnt/data', new MemoryVFS({ uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid }));
-      this.#dataMounted = true;
     }
     return files;
   }

@@ -236,16 +236,18 @@ Nimbus already has a real base:
 
 These areas exist, but are not yet good enough for Nimbus OS quality:
 
-- Python currently runs through Pyodide and has command execution, script
-  execution, stdlib, VFS-backed imports/file IO, command aliases, REPL
-  support, `pip`/`pip3`, `python -m pip`, requirements-file installs, local
-  pure-wheel installs, constraints, extras, environment markers, PyPI pure
-  wheel resolution, persistent `site-packages`, declared Pyodide startup-module
-  package artifacts, and deterministic native wheel ABI diagnostics. It does
-  not provide build isolation, general compiled extension builds, arbitrary
-  Pyodide/Emscripten package catalogs, or a complete upstream `pip` CLI
-  contract. Nimbus rejects request-time extension module loading because Workers
-  cannot compile arbitrary wasm after startup.
+- Python is CPython 3.13 cross-compiled to `wasm32-wasi` (cpython-runner),
+  with command execution, script execution, stdlib, VFS-backed imports/file
+  IO, command aliases, REPL support, `pip`/`pip3`, `python -m pip`,
+  requirements-file installs, local pure-wheel installs, constraints, extras,
+  environment markers, PyPI pure wheel resolution, persistent
+  `site-packages`, and deterministic native wheel ABI diagnostics.
+  `wasm32-wasi` has no `dlopen`, so a compiled package works only when it is
+  linked into the interpreter: the `python-sci` build carries numpy and
+  MarkupSafe's C speedups, chosen per invocation from what the session
+  installed. It does not provide build isolation, general compiled extension
+  builds, or a complete upstream `pip` CLI contract, and Pyodide/Emscripten
+  extension wheels are refused with an ABI diagnostic.
 - Ruby currently runs through ruby.wasm and has basic command execution,
   script execution, stdlib, VFS-backed require/file IO, command aliases, and
   REPL support. `gem`, `bundle`, and `bundler` install compatible pure Ruby
@@ -253,9 +255,9 @@ These areas exist, but are not yet good enough for Nimbus OS quality:
   generate a Nimbus lockfile, and reject native-extension gems with a precise
   ABI diagnostic. Full Bundler resolution and native-extension builds are not
   implemented.
-- Python and Ruby command runners use bounded VFS snapshots plus diff flushes.
-  That is acceptable for short one-shot commands, but it is not the final
-  live OS model.
+- Python and Ruby run as WASI modules over the session filesystem through the
+  WASI host (runtime/wasi): no per-command snapshot is copied in or diffed
+  back out.
 - Python virtual-socket previews are production-probed for Flask,
   `python -m flask run`, and `python -m http.server`. Ruby virtual-socket
   previews are production-probed for WEBrick and Rack. Broader WSGI/ASGI/Rack
@@ -371,7 +373,7 @@ behavior. They must stay documented until production probes prove otherwise.
 |---|---|---|
 | Durable storage under peer hosting | `NIMBUS_PROCESS_HOST=peer` supports ephemeral residents, not retained application SQLite. An explicit durable worker or a Node relaunch that owns a durable reservation is refused before a pid is allocated or announced, with a facet-host requirement. | Retained application storage requires `NIMBUS_PROCESS_HOST=facet`. Peer durability would need a separate authenticated, stable storage-owner contract; it is not silently emulated or moved between actors. |
 | opencode/Proteus CLIs | Pi's npm CLI path is production-probed. opencode runs as a Nimbus-staged JS bundle through the ESM facet: `--version`, `--help`, and `models` are production-probed working, and `opencode run` drives its full DB-backed pipeline (sqlite via the VFS-backed sql.js shim, in-process server, session, tool registry, model resolution) to the model-dispatch boundary, surfacing opencode's own domain errors cleanly. A real model stream additionally requires opencode account auth, and the full interactive TUI (libopentui Zig FFI) is out of scope. opencode requires Nimbus-specific build flags + deferred-entry source patches (scripts/opencode/); it is not an unmodified upstream binary. The local Proteus CLI is not yet proven in live Nimbus. | JavaScript CLIs launched from the terminal should see TTY=true when attached, TTY=false when piped, and should run unmodified unless they require unsupported native shards. |
-| Python package breadth | Flask and MarkupSafe pure-source artifact paths are production-probed, and declared Pyodide startup-module package artifacts are supported by the runtime catalog. `pip` is not a complete upstream build system. | Nimbus pip must resolve/install only Nimbus-compatible artifacts, preloaded PyEmscripten modules, pure wheels, or curated pure source artifacts. Unsupported extension artifacts fail before import with an ABI diagnostic. |
+| Python package breadth | Flask and MarkupSafe pure-source artifact paths are production-probed, and numpy and MarkupSafe's C speedups are linked into the `python-sci` interpreter. `pip` is not a complete upstream build system. | Nimbus pip must resolve/install only pure wheels, curated pure source artifacts, or packages linked into the interpreter. Unsupported extension artifacts fail before import with an ABI diagnostic. |
 | Shell parser debt | The shell has structured parser/interpreter support for common POSIX-like constructs, but final field splitting, alias/quote handling, heredoc behavior, trap/job-control semantics, and script parity still need hardening. | Shell syntax should be represented in an AST and executed through structured semantics, not regex rewrites in the hot path. |
 | Native platform packages | Native `linux-x64`, `darwin`, `win32`, manylinux wheels, and native gems cannot execute. | Package managers must select Nimbus ABI artifacts, pure packages, or fail early with exact unsupported ABI reasons. |
 | Vite 8 and Astro 7 native bindings | Nimbus stages threadless wasm32-wasip1 builds of rolldown 1.2.11, satteri 0.10.5 and @astrojs/compiler-binding 0.5.1. One recipe (`scripts/napi-wasm/build.mjs`, pins in `specs.mjs`) records source archive digests, toolchains, lockfiles, flags, exact-match seams and output hashes. All three wasm outputs reproduced byte-for-byte in a second work directory. The shared loader uses emnapi's non-threaded N-API, Nimbus's WASI filesystem codec and, for rolldown, an event-loop-driven current-thread executor with JSPI for non-resident reads. Assets remain on the digest-verified ASSETS/VFS path, not in every session's host bundle. The owner and WASI-binding package names use staged-artifact policy entries; lightningcss and rollup select their upstream wasm packages. Native Buffer is shared with crypto/zlib rather than emulated. | Keep source pins and artifact provenance in lockstep. Guest wasm linear memory was measured after a real Vite build; that is not a measurement of total isolate heap or compiled-code memory against the 128 MiB limit. |
@@ -439,8 +441,8 @@ ABI surfaces:
 - Shell scripts and installers run through structured parser/executor semantics,
   not a stack of quote-sensitive rewrites.
 - Package managers install by ABI: pure packages, Nimbus-native Wasm,
-  Pyodide/PyEmscripten startup modules, ruby.wasm-compatible artifacts, or
-  precise unsupported-native diagnostics.
+  compiled Python packages linked into the CPython interpreter,
+  ruby.wasm-compatible artifacts, or precise unsupported-native diagnostics.
 - The hosted demo, programmatic SDK, remote API, React iframe, CLI, and Agent
   use one public product surface with colocated/remote parity.
 
@@ -544,9 +546,8 @@ Runtime rules:
   `dup`, `dup2`) still work.
 - Ruby should converge through the live WASI path because ruby.wasm is
   WASI-backed.
-- Python/Pyodide should use a live mirror strategy: pull deltas before command
-  or request handling, flush dirty changes after command/request handling, and
-  debounce flushes for long-running socket processes.
+- Python is on the live WASI path: CPython for wasm32-wasi answers every file
+  syscall through the session authority, as clang's programs, bash and ruby do.
 
 Scalability requirements:
 
@@ -652,7 +653,8 @@ Required artifact classes:
 - JavaScript/workerd-compatible package.
 - Pure Python wheel.
 - Curated pure Python source artifact.
-- Pyodide/PyEmscripten startup-loaded package artifact.
+- Compiled Python package linked into the CPython interpreter (numpy,
+  MarkupSafe, in `python-sci`).
 - Pure Ruby gem.
 - ruby.wasm-compatible artifact.
 - `wasm32-wasi-nimbus` binary.
@@ -797,7 +799,7 @@ kernel:
 
 - JavaScript or TypeScript command handlers.
 - WASI modules compiled for `wasm32-wasi-nimbus`.
-- Pyodide/PyEmscripten Python wheels and launchers.
+- CPython for wasm32-wasi, with the packages linked into it.
 - ruby.wasm/Ruby WASI command launchers.
 - Shell command shims that map POSIX-style commands to Nimbus primitives.
 
@@ -805,8 +807,8 @@ Package managers may see Linux-like command paths, platform strings, and
 selection metadata where that improves compatibility, but execution must never
 depend on pretending arbitrary Linux ELF objects are runnable. If a package
 needs compiled code, the artifact must target a Nimbus-supported ABI such as
-Pyodide/PyEmscripten startup modules, ruby.wasm/Ruby WASI, or
-`wasm32-wasi-nimbus`.
+the CPython interpreter's own build (a package linked into it), ruby.wasm/Ruby
+WASI, or `wasm32-wasi-nimbus`.
 
 `packages/worker/src/runtime/os-contracts.ts` is the source of truth for the
 current Nimbus ABI descriptor. The public target string is
@@ -821,8 +823,8 @@ The runtime catalog must describe what each package provides:
 ```json
 {
   "name": "python",
-  "version": "3.13.2-pyodide-0.29.4",
-  "abi": "pyodide",
+  "version": "3.13.14-3",
+  "abi": "wasm32-wasi",
   "provides": {
     "commands": ["python", "python3", "pip", "pip3"],
     "libraries": ["python-stdlib"],
@@ -1149,9 +1151,10 @@ Package managers must install by ABI.
 Required registry dimensions:
 
 - runtime name and version
-- ABI name, such as `javascript`, `wasm32-wasi-nimbus`,
-  `pyodide-emscripten-2025_0-wasm32`, `py3-none-any`,
-  `python-source-pure`, `pyodide`, `ruby-wasm`, or `native-unsupported`
+- ABI name, such as `javascript`, `wasm32-wasi-nimbus`, `wasm32-wasi`,
+  `py3-none-any`, `python-source-pure`, `ruby-wasm`, or `native-unsupported`
+  (a Pyodide/Emscripten extension wheel, `pyodide-emscripten-2025_0-wasm32`,
+  among them)
 - provided commands
 - pure package compatibility
 - precompiled startup-loaded wasm modules
@@ -1174,9 +1177,10 @@ Target:
 - Pure Python wheels from PyPI where compatible.
 - Packages with curated pure source artifacts, including packages whose
   optional extension artifacts can be avoided by installer policy.
-- Binary wasm32/emscripten wheels only when they are shipped as Nimbus
-  startup-loaded runtime modules declared by the installed runtime manifest.
-  Request-time dynamic extension loading is blocked by the Workers Wasm CSP.
+- Compiled packages only when they are linked into the CPython interpreter
+  (numpy and MarkupSafe, in `python-sci`); other extension wheels are refused
+  with an ABI diagnostic. Request-time dynamic extension loading is blocked by
+  the Workers Wasm CSP.
 - `python -m pip install ...`, `pip install -r requirements.txt`, local wheel
   installs, constraints, extras, markers, and deterministic errors for
   unsupported packages.
@@ -1193,12 +1197,12 @@ Correct engineering path:
 
 1. Keep hardening the ABI-aware `pip` installer for wheel tags, requirements,
    constraints, dependency metadata, extras, markers, and local VFS paths.
-2. Expand the runtime catalog's startup-loadable Pyodide package artifact list
-   by ABI and package demand.
-3. Add a builder path outside the Durable Object for packages that need
-   Emscripten/Pyodide compilation. The DO installs built artifacts; it does not
-   spend constrained session CPU compiling large C/C++ projects.
-4. Add a Python runtime FS bridge instead of relying on per-command snapshots.
+2. Link more compiled packages into the CPython interpreter as demand
+   justifies: wasm32-wasi has no `dlopen` (packages/worker/wasm/python/EXTENSIONS.md).
+3. Build them outside the Durable Object (packages/worker/wasm/python/build-python.sh).
+   The DO installs built interpreters; it does not spend constrained session
+   CPU compiling large C/C++ projects.
+4. (Done) Python's filesystem is the WASI bridge: no per-command snapshot.
 5. Bind Python `socket`, `select`, `selectors`, `socketserver`, WSGI, and ASGI
    to the shared virtual socket kernel.
 6. Keep the existing Flask and `http.server` production probes green, and add
@@ -1664,7 +1668,8 @@ Existing probes cover:
   `tests/behavioral/wasi-paths/*`
 - Python basics, pure-package support, requirements/local-wheel installs,
   PyPI resolver/constraint coverage, MarkupSafe pure-source fallback,
-  startup-module package artifacts, Flask and `http.server` previews, and
+  numpy and MarkupSafe imports from the `python-sci` interpreter, Flask and
+  `http.server` previews, and
   unsupported native diagnostics:
   `tests/behavioral/python/*`
 - Ruby basics, pure-gem command support, Bundler pure-Gemfile support,
@@ -1701,8 +1706,7 @@ Add black-box probes for:
   - resolver cases not covered by the current pure-wheel, requirements,
     constraints, local-wheel, transitive dependency, and MarkupSafe fallback
     probes, especially broader extras and marker combinations
-  - each newly declared Pyodide startup-module package imports without
-    request-time Wasm instantiation failures
+  - each package newly linked into the interpreter imports and runs
   - simple ASGI app previews on a port
 - Ruby package manager:
   - Bundler lockfile, group, source, and platform behavior beyond the current
@@ -1765,8 +1769,8 @@ Nimbus OS compatibility is ready to market when these are true:
 - Missing installable commands print a matching install hint.
 - Python can install and import pure wheels and curated pure source artifacts
   from normal `pip` workflows.
-- Python can install and import runtime-catalog-declared Pyodide startup-module
-  packages without request-time wasm instantiation.
+- Python imports the compiled packages linked into its interpreter (numpy,
+  MarkupSafe) without request-time wasm instantiation.
 - `pip install flask` and Flask import/run paths work without dynamic wasm
   extension failures.
 - Python web apps can be previewed through real virtual sockets and WSGI/ASGI
@@ -1815,8 +1819,8 @@ matters because each step removes a future source of duplication.
    bundled reads for known immutable module sources.
 8. Move WASI, Ruby, and Python long-running runtime IO to live bridge or live
    mirror semantics.
-9. Expand the Python `pip` ABI planner and runtime catalog with more declared
-   Pyodide wheel/cache/module artifacts as demand and size budgets justify.
+9. Expand the set of compiled packages linked into the CPython interpreter as
+   demand and size budgets justify.
 10. Complete Bundler-compatible dependency resolution for pure Ruby gems.
 11. Promote the virtual socket kernel to the shared OS network service and bind
     Node, Python, Ruby, and WASI adapters to it.
@@ -1850,9 +1854,8 @@ Recommended decisions:
 
 - Keep snapshots only as a short-command optimization. The OS contract should
   be live VFS.
-- Treat Python package compatibility as pure-wheel support plus explicit
-  Nimbus startup-loaded Pyodide/PyEmscripten module support, not Linux pip
-  support.
+- Treat Python package compatibility as pure-wheel support plus the compiled
+  packages linked into the CPython interpreter, not Linux pip support.
 - Treat Ruby package compatibility as ruby.wasm/Ruby WASI support, not Linux
   Ruby support.
 - Build virtual sockets as the primary OS networking substrate. WSGI/ASGI and
