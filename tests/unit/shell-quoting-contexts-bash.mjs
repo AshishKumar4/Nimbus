@@ -62,7 +62,6 @@ const CONTEXTS = [
   { line: `alias p='printf <%s>'\n@ x; echo`, payloads: ['p'] },
   { line: `alias p='printf <%s>'\np @; echo`, payloads: ['a;echo injected', 'a b'], forms: ['single', 'double', 'backslash', 'ansiC'] },
   { line: `alias p='printf <%s>'\nc=p; $c x; echo "st=$?"`, payloads: [''], forms: ['bare'] },
-  { line: `alias echo='echo X'\necho hi`, payloads: [''], forms: ['bare'] },
   { line: `alias p='printf <%s>'\np @ > out; cat out; echo`, payloads: ['x'] },
   // Patterns: a quoted character is itself.
   ...[['abc', '*'], ['abc', 'a*'], ['abc', 'a?c'], ['abc', '[ab]bc'], ['abc', 'abc'], ['*', '*'], ['a*', 'a*']].flatMap(([subject, pattern]) => [
@@ -84,6 +83,8 @@ const CONTEXTS = [
   { line: `printf '<%s>' @; echo`, payloads: ['{a,b}', 'x{a,b}y'] },
   // A here-document's delimiter, quoted anyhow, keeps its body literal.
   { line: `v=1; cat <<@\n$v\nEOF\necho end`, payloads: ['EOF'] },
+  // An alias naming itself expands once (last: the session's expanded without end, until its heap ran out).
+  { line: `alias echo='echo X'\necho hi`, payloads: [''], forms: ['bare'] },
 ];
 
 /** Every case: its line, once per distinct text. */
@@ -118,7 +119,7 @@ try {
     const dir = `/home/user/q${n++}`;
     await ws.exec(`mkdir -p ${dir} && cd ${dir} && touch ${FILES.join(' ')}`, { cwd: '/home/user' });
     // A line the session does not finish in 10 s is a failure of its own (an alias expanding itself, say).
-    process.stderr.write(`case ${n}: ${JSON.stringify(line)}\n`);
+
     let r;
     try {
       r = await ws.exec(line, { cwd: dir, signal: AbortSignal.timeout(10_000) });
@@ -131,7 +132,10 @@ try {
     const agrees = /syntax error/.test(theirs.stderr)
       ? ours.stdout === theirs.stdout && ours.status === theirs.status && ours.stderr !== ''
       : ours.stdout === theirs.stdout && ours.status === theirs.status && ours.stderr === theirs.stderr;
-    if (!agrees) failed.push(`${JSON.stringify(line)}\n  bash: ${JSON.stringify(theirs)}\n  ours: ${JSON.stringify(ours)}`);
+    if (!agrees) {
+      failed.push(`${JSON.stringify(line)}\n  bash: ${JSON.stringify(theirs)}\n  ours: ${JSON.stringify(ours)}`);
+      process.stderr.write(`DIFFERS ${failed.at(-1)}\n`);
+    }
   }
 } finally {
   await ws.close();
