@@ -70,10 +70,23 @@ function holding() {
 // ── (3) both, started behind a snapshot that quiesces ──
 // Another's write over turns keeps the snapshot quiescing while the
 // process's call is made: it waits for it and begins after, outside the
-// call that made it. Red before: it took the holds that were active when
-// it began, which were none.
-/** `call` made by `s`'s process while a snapshot quiesces behind another's write; its answer once the snapshot is taken. */
+// call that made it. The snapshot shares the process's grant (the process
+// answers, as its holder does); a change of the process's own needs no
+// more. Red before: it took the holds that were active when it began,
+// which were none, and so revoked the process's grant.
+/** `call` made by `s`'s process while a snapshot quiesces behind another's write; its answer, and the recalls the process answered. */
 async function behindSnapshot(s, call) {
+  const kinds = [];
+  const answering = (async () => {
+    for (;;) {
+      let kind;
+      try { kind = await s.proc.awaitRecall(s.grant.owner, 20); } catch { return; }
+      if (kind === null) continue;
+      kinds.push(kind);
+      await s.proc.recalled(s.grant.owner, kind);
+      if (kind === 'revoke') return;
+    }
+  })();
   const go = Promise.withResolvers();
   async function* held() { await go.promise; yield new Uint8Array(70_000).fill(1); }
   const blocking = s.kernel.writeFileFrom('tmp-slow.bin', 70_000, held());
@@ -82,7 +95,10 @@ async function behindSnapshot(s, call) {
   go.resolve();
   await blocking;
   await snapshot;
-  return called;
+  const answer = await called;
+  s.proc.releaseExclusiveMutation(s.grant.owner);
+  await answering;
+  return { answer, kinds };
 }
 {
   const s = holding();
@@ -93,10 +109,10 @@ async function behindSnapshot(s, call) {
       yield piece;
     }
   }
-  assert.ok(await behindSnapshot(s, () => s.proc.writeFileFrom('/home/user/proj/late.bin', piece.byteLength * 3, source())) > 0);
-  assert.equal(s.revoked, 0, '(3) a write started behind the snapshot recalled its process\'s own grant');
-  assert.equal(s.files.delegations.size, 1, '(3) the grant is still the process\'s');
-  s.proc.releaseExclusiveMutation(s.grant.owner);
+  const { answer, kinds } = await behindSnapshot(s, () => s.proc.writeFileFrom('/home/user/proj/late.bin', piece.byteLength * 3, source()));
+  assert.ok(answer > 0);
+  assert.deepEqual(kinds, ['share'], '(3) a write started behind the snapshot recalled its process\'s own grant');
+  assert.equal(s.revoked, 0);
   assert.equal(s.kernel.stat('home/user/proj/late.bin').size, piece.byteLength * 3);
 }
 {
@@ -104,10 +120,10 @@ async function behindSnapshot(s, call) {
   s.kernel.mkdir('home/user/small', { recursive: true });
   s.kernel.mkdirBatch(['home/user/small/x', 'home/user/small/y']);
   s.kernel.chown('home/user/small', 1000, 1000);
-  assert.ok(await behindSnapshot(s, () => s.proc.copyTree('/home/user/small', '/home/user/proj/small')) > 0);
-  assert.equal(s.revoked, 0, '(3) a copy started behind the snapshot recalled its process\'s own grant');
-  assert.equal(s.files.delegations.size, 1, '(3) the grant is still the process\'s');
-  s.proc.releaseExclusiveMutation(s.grant.owner);
+  const { answer, kinds } = await behindSnapshot(s, () => s.proc.copyTree('/home/user/small', '/home/user/proj/small'));
+  assert.ok(answer > 0);
+  assert.deepEqual(kinds, ['share'], '(3) a copy started behind the snapshot recalled its process\'s own grant');
+  assert.equal(s.revoked, 0);
   assert.equal(s.kernel.exists('home/user/proj/small/y'), true);
 }
 
