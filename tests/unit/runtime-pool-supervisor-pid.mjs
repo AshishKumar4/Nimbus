@@ -110,6 +110,7 @@ function world() {
   w.env = {
     LOADER: loader,
     NIMBUS_SESSION: {
+      idFromName: (id) => ({ toString: () => id }),
       idFromString: (id) => ({ toString: () => id }),
       get: () => ({ supervisorOp: (sent) => host.supervisorOp(structuredClone(sent)) }),
     },
