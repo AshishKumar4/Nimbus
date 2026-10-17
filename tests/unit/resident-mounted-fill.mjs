@@ -8,7 +8,8 @@
 //     and the store holds neither version as the listed one;
 //   - a file the engine keeps fills as before, by its revision;
 //   - a refill from the resident's namespace (its rows keep a mount's file
-//     at rev 0, without the backend's revision), sync and async mounts;
+//     at rev 0, without the backend's revision), sync and async mounts,
+//     and after the backend is mounted again (a new device);
 //   - through the bridge alone, sync and async mounts alike: a read naming
 //     the file as its stat does reads it; one naming a different file, or
 //     the engine's revisions, is ESTALE.
@@ -121,6 +122,23 @@ for (const async of [false, true]) {
     }
   });
 }
+
+await check('a refill from the namespace after the backend is mounted again', async () => {
+  const { authority, backing, handle, binding, store, reads } = launched();
+  try {
+    await store.sync.synchronize(handle.supervisor);
+    // The same backend unmounted and mounted again at its point: a new device, its files as they were.
+    authority.files.vfs.unmount('/m');
+    authority.files.vfs.mount('/m', backing);
+    await store.sync.synchronize(handle.supervisor);
+    store.cells.delete(store.coherence.tables('test'), 'm/kept/data.txt');
+    reads.length = 0;
+    const report = await store.sync.refillFromNamespace(handle.supervisor, ['m/kept/data.txt']);
+    assert.equal(report.filled, 1, `refilled on the new device: ${JSON.stringify({ report, reads })}`);
+  } finally {
+    await authority.files.releaseProcess(binding.pid);
+  }
+});
 
 for (const async of [false, true]) {
   await check(`the bridge, ${async ? 'asynchronously' : 'synchronously'} mounted`, async () => {
