@@ -50,13 +50,12 @@
 import { WASM_CALL_TASK } from './compiled-bodies.generated.js';
 import { openInvocationStdio } from './runtime-stdio.js';
 import { gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
-import { hostImage, withHostView } from './process-files.js';
-import { isVfsError, syscallError } from '../vfs/vfs-error.js';
+import { hostImage } from './process-files.js';
+import { isVfsError } from '../vfs/vfs-error.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
 import { inspectWasmThreads, wasiThreadsLoadError } from './wasi-threads.js';
 import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES, MEMORY_LIMIT_GROWTH_BYTES } from './wasm-memory.js';
 import { withSupervisorLoadAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
-import { sha256Hex } from '../_shared/crypto.js';
 import { wasmInterface } from './wasm-binary.js';
 import { errorText } from '../_shared/error-text.js';
 import { unsettledNoteOf } from '../_shared/process-fs-client.js';
@@ -151,19 +150,16 @@ export function makeWasmRunner(deps) {
             return { exitCode: 1, stdout: '', stderr: `wasm-runner: ${notHydrated}\n` };
         // The program is read as the invoking credential before a process exists
         // for it, so a host lease carries each read rather than a process binding.
-        // It is read here to be inspected, admitted as a load is (bounded at the
-        // size it was found at), and let go: the facet's load reads it again as
-        // the image of the bytes inspected here (their digest), or not at all.
+        // It is opened (its content key), read here to be inspected, admitted as
+        // a load is, and let go: the facet's load reads it again as the same
+        // image, the bytes inspected here, or not at all.
         let program;
         let inspected;
         try {
-            const found = await withHostView(deps.filesystem, cred, (fs) => fs.stat(wasmPath));
-            if (found === null)
-                throw syscallError('ENOENT', 'open', wasmPath);
-            const read = await withSupervisorLoadAllocation(`wasm-runner '${opts.filename}'`, found.size, opts.signal, async () => {
-                const bytes = await withHostView(deps.filesystem, cred, (fs) => fs.readFileUncached(wasmPath, { maxBytes: found.size }));
+            program = await hostImage(deps.filesystem, cred, wasmPath);
+            inspected = await withSupervisorLoadAllocation(`wasm-runner '${opts.filename}'`, program.peak, opts.signal, async () => {
+                const bytes = await program.read();
                 return {
-                    digest: { sha256: await sha256Hex(bytes), size: bytes.byteLength },
                     // Detect WASI imports BEFORE parsing argv as direct-mode integers.
                     // WASI mode treats every argv token as a string passed to the
                     // program; direct mode treats argv[0] as export name and the rest
@@ -175,8 +171,6 @@ export function makeWasmRunner(deps) {
                     threadsInfo: inspectWasmThreads(bytes),
                 };
             });
-            program = await hostImage(deps.filesystem, cred, wasmPath, read.digest);
-            inspected = read;
         }
         catch (e) {
             // Killed while it waited its turn: it ends as an interrupted run does.

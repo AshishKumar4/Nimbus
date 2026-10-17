@@ -43,6 +43,7 @@ import { formatUptime, uptimeSeconds } from '../substrate/lifo/utils/system-info
 import { isCharacterDevice, isDirectory, fileTypeChar, lstatOrThrow, statOrThrow } from '../vfs/vfs.js';
 import { direntTypeIn } from '../vfs/dirent-type.js';
 import { bytesToHex } from '@nimbus-sh/platform/hex.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 /** stdin as text, read to its end; nothing when there was no stdin. Only a command that reads its stdin waits for its end. */
 async function stdinText(ctx) {
     return await ctx.stdin?.readAll();
@@ -3301,19 +3302,7 @@ function relativePath(path, from) {
  */
 async function canonicalizePath(vfs, absolute, options) {
     const trailingSlash = absolute.length > 1 && absolute.endsWith('/');
-    let pending = absolute.split('/').filter(Boolean);
-    if (options.logical || options.noSymlinks) {
-        const lexical = [];
-        for (const part of pending) {
-            if (part === '.')
-                continue;
-            if (part === '..')
-                lexical.pop();
-            else
-                lexical.push(part);
-        }
-        pending = lexical;
-    }
+    let pending = options.logical || options.noSymlinks ? rootClampedSegments(absolute) : absolute.split('/').filter(Boolean);
     const resolved = [];
     let hops = 0;
     let missing = false;

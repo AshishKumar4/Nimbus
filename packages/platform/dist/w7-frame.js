@@ -15,6 +15,7 @@
 import { crc32 } from './crc32.js';
 import { CHUNK_SIZE } from './limits.js';
 import { utf8Length } from './utf8.js';
+import { rootClampedSegments } from './lexical-path.js';
 function isOpenAccess(value) {
     return value === 'read' || value === 'write' || value === 'readwrite';
 }
@@ -1115,17 +1116,7 @@ class PathOwnership {
     }
 }
 function normalizePath(path) {
-    const out = [];
-    for (const segment of path.split('/')) {
-        if (segment === '..') {
-            if (out.length > 0)
-                out.pop();
-        }
-        else if (segment !== '' && segment !== '.') {
-            out.push(segment);
-        }
-    }
-    return out.join('/');
+    return rootClampedSegments(path).join('/');
 }
 function parentPath(path) {
     const index = path.lastIndexOf('/');

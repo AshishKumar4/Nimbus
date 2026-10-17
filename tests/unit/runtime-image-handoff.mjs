@@ -51,7 +51,7 @@ function assertHandedOff(raw, images, name) {
     'runtime/python/share/cpython/python.wasm': image,
     'runtime/python/lib/python313.zip': new Uint8Array([1]),
   });
-  const manifest = { version: '3.13.14', files: [manifestFile('share/cpython/python.wasm', image), { path: 'lib/python313.zip' }] };
+  const manifest = { version: '3.13.14', files: [manifestFile('share/cpython/python.wasm', image), manifestFile('lib/python313.zip', new Uint8Array([1]))] };
   const facets = recordingFacets();
   const run = makeCPythonRunnerFactory({ facets: facets.host, filesystem, processes: runtimeSupervisor(), network: ISOLATE_NETWORK })(manifest, '/runtime/python', 'python', undefined);
 
@@ -69,7 +69,7 @@ function assertHandedOff(raw, images, name) {
     'runtime/python/share/cpython/python.wasm': image,
     'runtime/python/lib/python313.zip': new Uint8Array([1]),
   });
-  const manifest = { version: '3.13.14', files: [manifestFile('share/cpython/python.wasm', image), { path: 'lib/python313.zip' }] };
+  const manifest = { version: '3.13.14', files: [manifestFile('share/cpython/python.wasm', image), manifestFile('lib/python313.zip', new Uint8Array([1]))] };
   const opened = [];
   let disposed = 0;
   const host = {
@@ -93,7 +93,7 @@ function assertHandedOff(raw, images, name) {
     'runtime/python/share/cpython/python.wasm': image,
     'runtime/python/lib/python313.zip': new Uint8Array([1]),
   });
-  const manifest = { version: '3.13.14', files: [manifestFile('share/cpython/python.wasm', image), { path: 'lib/python313.zip' }] };
+  const manifest = { version: '3.13.14', files: [manifestFile('share/cpython/python.wasm', image), manifestFile('lib/python313.zip', new Uint8Array([1]))] };
   const facets = recordingFacets();
   const started = [];
   const startResident = async (spec) => { started.push(spec.wasmVfsPath); return { exitCode: 0, stdout: '', stderr: '' }; };

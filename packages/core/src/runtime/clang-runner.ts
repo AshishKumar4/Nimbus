@@ -27,7 +27,7 @@
  * catch-and-continue around loader failures.
  */
 
-import { installedFile, type RuntimeManifest } from './runtime-manifest.js';
+import { installedPath, type RuntimeManifest } from './runtime-manifest.js';
 import { CLANG_CALL_TASK } from './compiled-bodies.generated.js';
 import { type ProcessView, withHostView } from './process-files.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
@@ -63,9 +63,9 @@ export function makeClangRunnerFactory(deps: {
     Command {
 
   return function clangRunnerFactory(manifest, installRoot, binName, binKind) {
-    const clangFile      = installedFile(manifest, installRoot, 'bin/clang');
-    const lldFile        = installedFile(manifest, installRoot, 'bin/wasm-ld');
-    const sysrootVfsPath = installedFile(manifest, installRoot, 'share/clang/sysroot.tar')?.path ?? null;
+    const clangVfsPath   = installedPath(manifest, installRoot, 'bin/clang');
+    const lldVfsPath     = installedPath(manifest, installRoot, 'bin/wasm-ld');
+    const sysrootVfsPath = installedPath(manifest, installRoot, 'share/clang/sysroot.tar');
     // Guest-visible: the toolchain is handed this as an absolute path.
     const sysrootDir = `/${normalizeVfsPath(`${installRoot}/${SYSROOT_DIR_REL}`)}`;
     // Made once, by the first run that needs it, and again by the next after
@@ -108,7 +108,7 @@ export function makeClangRunnerFactory(deps: {
         ctx.stderr.write(`${binName}: sysroot.tar missing from install\n`);
         return 127;
       }
-      if (!clangFile || !lldFile) {
+      if (!clangVfsPath || !lldVfsPath) {
         ctx.stderr.write(`${binName}: clang/wasm-ld missing from install\n`);
         return 127;
       }
@@ -176,8 +176,7 @@ export function makeClangRunnerFactory(deps: {
       const openTarget = async (primaryName: 'clang' | 'wasm-ld'): Promise<ClangFacetTarget | null> => {
         let image: FacetImage;
         try {
-          const file = primaryName === 'clang' ? clangFile : lldFile;
-          image = await runtimeVfs.image(file.path, file);
+          image = await runtimeVfs.image(primaryName === 'clang' ? clangVfsPath : lldVfsPath);
         } catch (e: unknown) {
           ctx.stderr.write(`${binName}: ${primaryName} runtime warm-up failed: ${errorText(e)}\n`);
           return null;

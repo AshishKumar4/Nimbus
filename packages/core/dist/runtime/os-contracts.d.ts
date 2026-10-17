@@ -181,6 +181,12 @@ export interface RuntimeReadFileOptions {
      * its reader to open instead.
      */
     maxBytes?: number;
+    /**
+     * Read only the bytes this content key names ({@link RuntimeFsBridge.contentKey}),
+     * checked in the same turn as the read: other bytes there are ESTALE, unread.
+     * SQLite's alone, as maxBytes is; a mount answers ENOTSUP.
+     */
+    contentKey?: string;
 }
 export interface RuntimeReadOptions {
     followSymlinks?: boolean;
@@ -293,7 +299,7 @@ export declare function gateSyncLaunch(gate: {
 export declare function launchNamedPaths(cwd: string, program: string | null, argv: readonly string[]): string[];
 /** A live view sharing namespace, credentials and descriptor state. */
 export type RuntimeSynchronousFs = {
-    [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'writeBatch' | 'writeFileFrom' | 'acquire' | 'copyTree' | 'gateLaunch' | 'awaitRecall'>]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : never;
+    [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'writeBatch' | 'writeFileFrom' | 'acquire' | 'copyTree' | 'gateLaunch' | 'awaitRecall'>]: NonNullable<RuntimeFsBridge[K]> extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : never;
 };
 /**
  * The path's revision immediately before and after one mutation, read in
@@ -421,6 +427,14 @@ export interface RuntimeFsBridge {
      */
     revision(path?: RuntimeFsPath): Awaitable<number>;
     /**
+     * The file's content key (SqliteVFS.contentKey): equal keys mean equal
+     * bytes, in any store, and it is the store's own record, read without
+     * hashing the bytes. Only a filesystem that keeps one answers it (the
+     * session's SQLite store, through a host view): a mount answers ENOTSUP,
+     * and a guest's bridge, which does not carry it across the hop, lacks it.
+     */
+    contentKey?(path: RuntimeFsPath): Awaitable<string>;
+    /**
      * The cache-coherence barrier. A caller holding a resident cache stamped
      * at `(epoch, cursor)` gets back every path mutated since, and re-stamps.
      *
@@ -458,8 +472,10 @@ export interface RuntimeFsBridge {
         keepVanishedAncestors?: boolean;
     }): Awaitable<void | VfsRemoval>;
     /** copyfile, each name followed; \`keepMode\`, its mode as copyfile leaves it (VfsCopyOptions). */
+    /** `keepMode`: copyfile's mode (libuv); `preserve`: cp -p's mode, times, and owner when root copies. */
     copyFile(from: RuntimeFsPath, to: RuntimeFsPath, options?: {
         keepMode?: boolean;
+        preserve?: boolean;
     }): Awaitable<void | number>;
     /**
      * Copy the tree at `from` to the new path `to` (`cp -r`; `preserve` is

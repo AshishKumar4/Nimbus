@@ -23,6 +23,6 @@ export {
 // The ESM resolver's preamble reads a URL's members through these (package-map.ts).
 export { urlHash, urlHref, urlPathname, urlProtocol, urlSearch, urlSetHash, urlSetPathname, urlSetSearch } from './package-map.js';
 export { createRequireResolver, requireNodeModulePaths, NIMBUS_TYPESCRIPT_REQUIRE_POLICY } from './commonjs-resolver.js';
-export { TYPESCRIPT_INDEX_CANDIDATES, stripsTypeScript, typescriptFallbackCandidates } from './typescript-specifiers.js';
+export { TYPESCRIPT_INDEX_CANDIDATES, stripsTypeScript, typescriptFallbackCandidates, typescriptLoader } from './typescript-specifiers.js';
 export { presentedCredential } from './ai-egress.js';
 export { isWebSocketUpgradeRequest } from './websocket-upgrade.js';

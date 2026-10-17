@@ -1007,6 +1007,18 @@ var __nimbusResidentModule = (() => {
     };
   }
 
+  // ../platform/dist/lexical-path.js
+  function rootClampedSegments(path, base = []) {
+    const out = [...base];
+    for (const segment of path.split("/")) {
+      if (segment === "..")
+        out.pop();
+      else if (segment !== "" && segment !== ".")
+        out.push(segment);
+    }
+    return out;
+  }
+
   // src/vfs/resident/namespace.ts
   var NS_MAX_HOPS = 40;
   function nsSplit(k) {
@@ -1043,13 +1055,7 @@ var __nimbusResidentModule = (() => {
   }
   function joinTarget(linkPath, target) {
     const text = String(target);
-    const parts = text.startsWith("/") ? [] : nsSplit(linkPath)[0].split("/").filter(Boolean);
-    for (const seg of text.split("/")) {
-      if (seg === "" || seg === ".") continue;
-      if (seg === "..") parts.pop();
-      else parts.push(seg);
-    }
-    return parts.join("/");
+    return rootClampedSegments(text, text.startsWith("/") ? [] : nsSplit(linkPath)[0].split("/").filter(Boolean)).join("/");
   }
   function createNamespace(coherence, admission) {
     const realNow = Date.now;

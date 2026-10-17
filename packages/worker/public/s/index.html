@@ -2390,6 +2390,8 @@
         e.preventDefault();
         // The handle keeps the pointer's events while it is held, wherever
         // the pointer goes: over the preview's frame they went to the frame.
+        // The drag itself is the window's to follow and its release's to end:
+        // a capture the page loses on the way does not end it.
         e.currentTarget.setPointerCapture(e.pointerId);
         const rect = mainPanel.getBoundingClientRect();
         const stack = document.getElementById('leftStack');
@@ -2418,6 +2420,9 @@
 
       function onMove(e) {
         if (!activeHandle || e.pointerId !== activePointer) return;
+        // Released where this page did not hear it (over the preview's frame,
+        // its capture gone): the drag is over.
+        if (e.buttons === 0) { finishDrag(); return; }
         if (activeHandle === 'tree') {
           const dx = e.clientX - dragStartXY;
           dims.treeWidth = Math.max(160, Math.min(600, dragStartDim + dx));
@@ -2443,7 +2448,11 @@
       }
 
       function endDrag(e) {
-        if (!activeHandle || e.pointerId !== activePointer) return;
+        if (e.pointerId === activePointer) finishDrag();
+      }
+
+      function finishDrag() {
+        if (!activeHandle) return;
         activeHandle = null;
         activePointer = null;
         document.body.style.cursor = '';
@@ -2460,9 +2469,11 @@
         for (const [handle, kind] of [[h1, 'tree'], [h2, 'middle'], [v1, 'editor-terminal']]) {
           if (!handle) continue;
           handle.addEventListener('pointerdown', (e) => startDrag(kind, e));
-          handle.addEventListener('pointermove', onMove);
-          handle.addEventListener('lostpointercapture', endDrag);
         }
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', endDrag);
+        window.addEventListener('pointercancel', endDrag);
+        window.addEventListener('blur', finishDrag);
       }
 
       function restoreDims() {
