@@ -9,10 +9,11 @@
 // ONE RUNNER PER PROCESS. A resident runner makes the shim process the
 // global one, and the shims wrap the realm's timers, console and WebAssembly.
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { CLOUDFLARE_WORKERS_URL } from './cloudflare-workers.mjs';
 
 import {
   generateOpencodeRunnerCode, OPENCODE_BUNDLE_MODULE_NAME, SQLITE_WASM_MODULE_NAME, YOGA_WASM_MODULE_NAME,
@@ -56,8 +57,7 @@ export async function importOpencodeRunner({
     modules['runner.mjs'] = modules['runner.mjs'].replaceAll(from, `from "${name}"`);
     modules[name] = source;
   };
-  member('cloudflare:workers', 'test-cloudflare-workers.mjs',
-    'export class WorkerEntrypoint {}\nexport class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }\n');
+  member('cloudflare:workers', 'test-cloudflare-workers.mjs', readFileSync(new URL(CLOUDFLARE_WORKERS_URL), 'utf8'));
   member(SQLITE_WASM_MODULE_NAME, 'test-sqlite-wasm.mjs', compiledImage(SQLITE_WASM_ASSET_PATH));
   for (const [key, wasm] of Object.entries(OPENCODE_TREE_SITTER_WASMS)) member(wasm, `test-tree-sitter-${key}.mjs`, 'export default {};\n');
   if (mode === 'attached') {

@@ -360,9 +360,11 @@ export function createProcessHost(mode, world, disk, {
   const hostIncarnation = deliveries ? openSupervisorDeliveries(coordinator).incarnation : undefined;
   if (mode === 'facet') return Object.assign(processHostFor(coordinator, hostEnv, () => disk), { hostIncarnation });
   const { ns, peers, calls, stubs } = createPeerNamespace(world, hostEnv, { colocated, peerWithoutFacets, hostBinding });
+  // The coordinator's env is a session's: its own bindings (a one-shot runs
+  // on it), and the namespace its residents' peers are found through.
   const host = processHostFor(
     coordinator,
-    { [hostBinding]: ns, NIMBUS_PROCESS_HOST: 'peer' },
+    { ...hostEnv, [hostBinding]: ns, NIMBUS_PROCESS_HOST: 'peer' },
     () => disk,
   );
   return Object.assign(host, {
