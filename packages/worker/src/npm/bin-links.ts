@@ -63,9 +63,9 @@ type BinTargetFs = Pick<VfsLike, 'exists' | 'isDirectory'>;
 const PackageJsonSchema = z.object({
   name: z.string().min(1),
   version: z.string().optional(),
-  /** Read by npmBinMap, which takes what npm takes (a string, a map, an array) and drops the rest. */
   bin: z.unknown().optional(),
 }).passthrough();
+/** A package.json as bins are read from it: its `bin` is npmBinMap's to read, which takes what npm takes (a string, a map, an array) and drops the rest. */
 type PackageJsonLike = z.output<typeof PackageJsonSchema>;
 
 export function npmBinDirPath(nodeModulesPath: string): string {

@@ -7,6 +7,9 @@ import { isValidSessionId } from '../_shared/session-id.js';
 import { z } from 'zod/v4';
 import { envString, readNimbusCookie, serializeNimbusCookie, isNimbusCloudflareAccountId } from '@nimbus-sh/core/_shared/oauth.js';
 
+// Still answered at this entry point (`@nimbus-sh/worker/oauth`), where it was defined before core's OAuth module owned it.
+export { envString };
+
 export const NIMBUS_AGENT_AUTH_COOKIE = 'nimbus_agent_oauth';
 export const NIMBUS_AGENT_AUTH_COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60;
 export const NIMBUS_AGENT_AUTH_COOKIE_PURPOSE = 'nimbus-agent-oauth-auth';
