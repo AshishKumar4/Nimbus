@@ -29,7 +29,9 @@ export function startGitHttpServer(projectRoot, { plain = false, refuse = null, 
       if (refusal instanceof Response) return refusal;
       if (refusal) return new Response('refused', { status: 403 });
       const forwarded = Object.fromEntries(forward.map((name) => [`HTTP_${name.toUpperCase().replaceAll('-', '_')}`, request.headers.get(name) ?? '']));
+      // Its stderr unread would fill and stall it: nothing reads it.
       const child = spawn('git', [...config, 'http-backend'], {
+        stdio: ['pipe', 'pipe', 'ignore'],
         env: {
           ...env,
           ...forwarded,
