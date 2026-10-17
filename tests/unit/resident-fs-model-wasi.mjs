@@ -143,8 +143,6 @@ async function run(steps) {
         else assert.fail(`unknown peer operation ${step.kind}`);
       };
       await compare(`${label}: peer ${step.kind}`, () => guest.peer((kernel) => change(kernel, DIR)), () => change(guest.kernel, reference));
-      // The peer's completion is input to the process, as a child's wait is.
-      guest.inbound();
     };
 
     await check('the start');
@@ -152,6 +150,7 @@ async function run(steps) {
       const step = steps[i], label = `step ${i} ${JSON.stringify(step)}`;
       if (step.op === 'deliver' || step.op === 'catchUp') {
         await guest.flush();
+        await ok(guest.sleep(0));
         if (step.op === 'catchUp') guest.inbound();
       } else if (step.op === 'peer') await peerStep(step, label);
       else await processStep(step, label);
@@ -199,9 +198,10 @@ const failures = new Map();
 const WRITER = { read: true, write: true, append: false, create: true, exclusive: false, truncate: true };
 const FOUND = [
   { name: '/dev/fd after a rename in a busy subtree', steps: [
-    ...Array.from({ length: 8 }, () => ({ op: 'writeFile', name: 'c', data: 'p' })),
-    { op: 'unlink', name: 'c' },
     { op: 'open', fd: 0, name: 'a', flags: WRITER },
+    { op: 'write', fd: 0, offset: null, data: 'pqr' },
+    { op: 'deliver' },
+    ...Array.from({ length: 8 }, () => [{ op: 'writeFile', name: 'c', data: 'p' }, { op: 'deliver' }]).flat(),
     { op: 'rename', from: 'a', to: 'b' },
     { op: 'reopen', fd: 1, via: 0, flags: { ...WRITER, create: false } },
   ] },
