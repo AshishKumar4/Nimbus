@@ -33,6 +33,11 @@ const files = {
   // Text that closes the wrapper's function, then calls console.log at the cell's top level.
   'close.cjs': '}; }); console.log("ran"); (0, function () { return function () {\n',
   'close-call.cjs': '}(), globalThis.console.log("ran"), function () {\n',
+  // One that parses both as a function's statements and inside a function expression.
+  'close-both.cjs': '} (console.log("ran")) && function () {\n',
+  // What a function body may hold: new.target; what it may not: a wrapper name redeclared.
+  'new-target.cjs': 'console.log(new.target);\n',
+  'require-redeclared.cjs': 'const require = 1;\n',
   // TypeScript whose first error compiling it as CommonJS is not of module syntax: Node's SyntaxError.
   'typed-export.cts': 'const a: number = 1;\nexport {};\n',
 };
@@ -50,5 +55,9 @@ await matchNodeInWorkerd('node-check-matches-node-workerd', ROOT, files, [
   'node throws.js',
   'node -c close.cjs',
   'node -c close-call.cjs',
+  'node -c close-both.cjs',
+  'node -c new-target.cjs',
+  'node -c require-redeclared.cjs',
+  "echo 'const require = 1' | node -c",
   'node -c typed-export.cts',
 ]);

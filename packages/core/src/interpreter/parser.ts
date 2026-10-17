@@ -17,6 +17,7 @@ export { parse };
 
 const MODULE_OPTIONS: Options = own({ ecmaVersion: 'latest', allowHashBang: true, sourceType: 'module' });
 const COMMONJS_OPTIONS: Options = own({ ecmaVersion: 'latest', allowHashBang: true, sourceType: 'script', allowReturnOutsideFunction: true });
+const SCRIPT_OPTIONS: Options = own({ ecmaVersion: 'latest', sourceType: 'script' });
 
 interface BlockParser extends AcornParser {
   strict: boolean;
@@ -110,6 +111,45 @@ class ThrowFinder extends AcornParserClass {
     }
     return finished;
   }
+}
+
+/** A ThrowFinder that counts the top-level statements it parses, and where the first ends. */
+class StatementCounter extends ThrowFinder {
+  statements = 0;
+  firstEnd = -1;
+
+  parseTopLevel(node: Program): Program {
+    const exports = objectCreate(null);
+    while (this.type !== tokTypes.eof) {
+      this.parseStatement(null, true, exports);
+      // Where the statement just parsed ends: its last token's end.
+      if (this.statements++ === 0) this.firstEnd = this.lastTokEnd;
+    }
+    this.next();
+    return this.finishNode(node, 'Program');
+  }
+}
+
+// A CommonJS module's body as Node compiles it (wrapSafe): in a function of the wrapper's names.
+const BODY_HEAD = 'function f(exports, require, module, __filename, __dirname) {';
+
+/**
+ * The brace in `body`, a CommonJS module's, that closes the function it is
+ * the body of before its end (text after it goes on outside), as
+ * [start, end]: null when it is one function body, or does not parse (V8,
+ * which compiled it, is its judge).
+ */
+export function strayClosingBrace(body: string): [number, number] | null {
+  const text = BODY_HEAD + body + '\n}';
+  const counter = new StatementCounter(SCRIPT_OPTIONS, text);
+  try {
+    counter.parse();
+  } catch {
+    return null;
+  }
+  if (counter.statements === 1 && counter.firstEnd === text.length) return null;
+  const at = counter.firstEnd - 1 - BODY_HEAD.length;
+  return [at, at + 1];
 }
 
 /**
