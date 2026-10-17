@@ -308,8 +308,9 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       // The first makes the file when it is not made yet: the creating open, and the bytes written through it.
       const creating = made !== undefined && at === 0;
       const making = creating ? { create: true as const, exclusive: true as const, ino: made, ...(cell.umask === undefined ? {} : { umask: cell.umask }) } : {};
+      const read = desc.read;
       void acknowledged({ type: 'call', call: { call: 'open', path: inode.key, mode: cell.mode, ...making, ...(desc.read ? { read: true as const } : {}), description } })
-        .then((answered) => prov.anchored(description, answered.receipt?.handle), () => {});
+        .then((answered) => prov.anchored(description, answered.receipt?.handle, read), () => {});
       if (creating && cell.length > 0) {
         acknowledged({ type: 'call', call: { call: 'write', path: inode.key, ino: made, description, offset: 0, data: owned(cell.bytes, cell.length) } });
       }

@@ -253,9 +253,10 @@ async function runSteps(steps, met, grants) {
   const retained = [];
   const sameFile = (a, b) => resolve({ opened: a }) === resolve({ opened: b });
   /** What an attribute change by `opened` goes through at the session: its own description, else one of its file's (kept first, then open), else none (by name). */
-  const anchorOf = (opened) => {
-    if (opened.logs) return opened;
-    return retained.find((other) => sameFile(other, opened)) ?? [...fds.values()].find((other) => other !== opened && other.logs && sameFile(other, opened));
+  const anchorOf = (opened, read = false) => {
+    if (opened.logs && (!read || opened.read)) return opened;
+    return retained.find((other) => (!read || other.read) && sameFile(other, opened))
+      ?? [...fds.values()].find((other) => other !== opened && other.logs && (!read || other.read) && sameFile(other, opened));
   };
 
   /** The process's operation `step`, made synchronously: its local refusal, which the model predicts, or its effects. */
@@ -505,9 +506,10 @@ async function runSteps(steps, met, grants) {
     control.opened = Promise.withResolvers();
     // A read that may wait takes the barrier the process owes first (it sent something since the last): it reads the session's file as it is now, and the view is the session's from then on.
     const caught = s.fs.stats().barriers > barriers;
-    // One the session has a description of reads through it: the session's file as it is now.
-    const via = anchorOf(opened);
-    if (via?.refHandle !== undefined) {
+    // Its own session description reads the live file. A read-only open
+    // without one still reads its named view, not a sibling's write-only fd.
+    const via = anchorOf(opened, true);
+    if (via?.refHandle !== undefined && (opened.logs || !named)) {
       assert.equal(code, null, `${label}: an awaited read through the file's anchor: ${code}`);
       assert.equal(dec.decode(got), dec.decode(new Uint8Array(await direct.read(via.refHandle, 0, 1 << 12))), `${label}: an awaited read is the session's, through its anchor`);
       if (caught) await catchUp();
@@ -625,6 +627,13 @@ const metKnown = [];
  * only where no name led to it, so a read that could not wait was EAGAIN.
  */
 const FOUND = [
+  { name: 'a read-only descriptor does not read through a borrowed write-only anchor', grants: false, steps: [
+    { op: 'writeFile', name: 'c', data: 'qq' },
+    { op: 'open', fd: 2, name: 'c', flags: { read: false, write: true, append: false, create: false, exclusive: false, truncate: false } },
+    { op: 'open', fd: 1, name: 'c', flags: { read: true, write: false, append: false, create: true, exclusive: false, truncate: false } },
+    { op: 'catchUp' },
+    { op: 'readAsync', fd: 1 },
+  ] },
   { name: 'write after granted unlink folds over retained pinned bytes', grants: true, steps: [
     { op: 'open', fd: 0, name: 'a', flags: { read: true, write: true, append: true, create: true, exclusive: false, truncate: false } },
     { op: 'open', fd: 2, name: 'a', flags: { read: true, write: true, append: false, create: false, exclusive: false, truncate: false } },

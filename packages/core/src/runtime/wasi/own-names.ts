@@ -97,7 +97,9 @@ export function ownNames(options: OwnNamesOptions): OwnNames {
       return key !== '' && madeHere(dir) && !added.get(dir)?.has(nameOf(key)) ? null : undefined;
     },
     decided,
-    undecide: (key) => { decided.delete(key); },
+    undecide: (key) => {
+      for (const name of [...decided.keys()]) if (within(name, key)) forget(name);
+    },
     note: (dir, name, type) => {
       if (type === null) {
         added.get(dir)?.delete(name);
