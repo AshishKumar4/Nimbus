@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "1f50abd0b30eb2a0f8c8a3f8f49370494a96d640d4215545b3c7a79b617390e4",
+  "fingerprint": "2d97ee8bcbf18d0d0b426c327f576eb00bccf13a7495e3d020809c1940ecd59a",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -3026,7 +3026,7 @@
     "packages/worker/public/_assets/opencode/1.16.2/nope-03-2z8weyjw.mp3": "9832805f84dcdb4a8ccb46a98cc75def72b52509610837938ed8343b2537df0c",
     "packages/worker/public/_assets/opencode/1.16.2/parser.worker.js": "24e596e4183d72c977b1a6a83c8296146736ecc15d932e2465b26e459e10135d",
     "packages/worker/public/_assets/opencode/1.16.2/photon_rs_bg-bq08arze.wasm": "10468181565c56004c867f3a4af96f89a0ef5a63a72f2b5fb12c1f1992a3615c",
-    "packages/worker/public/_assets/opencode/1.16.2/provenance.json": "87dd1546c46ef8267439ce2bd70349b61b10bd5da8bf39c8b0068531a729b1b6",
+    "packages/worker/public/_assets/opencode/1.16.2/provenance.json": "afac162d3c6d41fa9cd2e91edd884cad1347d3ec143c19d2177dcd2e2b461249",
     "packages/worker/public/_assets/opencode/1.16.2/staplebops-06-rz29m246.mp3": "eb87d63312ac11b1ceb1a8b348057dfe4d1166d5a85dc79778fe69d458f4c097",
     "packages/worker/public/_assets/opencode/1.16.2/tree-sitter-3jzf13jk.wasm": "f38dcc4b43b818f9a0785bc1c6d5611a75ac4cdd428ff3f02757c34ca4e46d7f",
     "packages/worker/public/_assets/opencode/1.16.2/tree-sitter-bash-hq5s6fxb.wasm": "364f0a2cd385c792239423026ef442dbd073d34c396b7bc9e5932426b8e4aa5d",
@@ -3111,7 +3111,7 @@
     "packages/worker/scripts/opencode/build-node.ts": "c2954c1f37c40cfbd06bf1b3f4f409513befc791b74c2212e96cddefbbb4d89d",
     "packages/worker/scripts/opencode/bundle-patches.ts": "091e620065cb87a938e238b5a52ebb672721e73434cfbbfc8d4ada8497649aca",
     "packages/worker/scripts/opencode/inputs.mjs": "665d2b30a66b0604109ce5235d593d622ce7b03520549f835e5891738c471930",
-    "packages/worker/scripts/opencode/models-catalog.mjs": "eb6652eb41c33c02a72422edf88cfd3ed69f9cddf08063becc56afe922996a95",
+    "packages/worker/scripts/opencode/models-catalog.mjs": "5598ca3400661284ffde8f4d753ac6ae73b4601f0563c4ed193e66aacf4c75b8",
     "packages/worker/scripts/opencode/nimbus-defer-global-io.patch": "63caa2b2ae778a570b759fb7ec39d3c19ab8fbddbd8491aa34915eb3ae5523da",
     "packages/worker/scripts/opencode/nimbus-tree-sitter-exports.patch": "63a643a0827e88630e88614e354ddcc963937285ed7a256a8174416850841361",
     "packages/worker/scripts/opencode/stubs/bun-ffi-shim.ts": "51c25d480b4050b4291ddaf9a071224b19c1eec8a15a5b587020e4e4be062e55",
