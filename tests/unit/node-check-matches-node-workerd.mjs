@@ -6,11 +6,13 @@
 // warning before its SyntaxError); its preloads run first. Its refusals
 // with -e are Node's. The SyntaxErrors are inside the source: one at its end
 // is reported at the CommonJS cell's wrapper, by a run as by a check
-// (ticket-commonjs-eof-syntax-errors). One fixture tree, on disk for host node and in a
+// (ticket-commonjs-eof-syntax-errors). A shebang script's lines are its
+// own, checked or run (one that throws on its third line). One fixture tree, on disk for host node and in a
 // local workerd session for the shell's `node` (lib/node-differential.mjs):
 // each run's stdout, stderr and exit code must be node's.
 //
-// Red before: the hosted node ran every program -c named.
+// Red before: the hosted node ran every program -c named, and a shebang
+// script's lines were each one less than the file's.
 
 import { matchNodeInWorkerd } from './lib/node-differential.mjs';
 
@@ -21,6 +23,7 @@ const files = {
   'shebang.js': '#!/usr/bin/env node\nconst x = ;\nconsole.log("ran");\n',
   'ok.ts': 'const a: number = 1;\nconsole.log("ran");\n',
   'pre.js': 'console.log("preloaded");\n',
+  'throws.js': '#!/usr/bin/env node\n\nthrow new Error("on line three");\n',
 };
 
 await matchNodeInWorkerd('node-check-matches-node-workerd', ROOT, files, [
@@ -33,4 +36,5 @@ await matchNodeInWorkerd('node-check-matches-node-workerd', ROOT, files, [
   "echo 'const x = ;' | node -c",
   "echo 'export const a = 1' | node -c",
   'node -c -e 1',
+  'node throws.js',
 ]);

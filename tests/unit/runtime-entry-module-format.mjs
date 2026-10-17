@@ -100,7 +100,7 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
     'home/user/node_modules/typescript/bin/tsc': ESM_SOURCE,
   }, '/home/user/node_modules/typescript/bin/tsc');
   assert.equal(r.exitCode, 0, r.stderr);
-  assert.equal(r.code, ESM_SOURCE.slice(ESM_SOURCE.indexOf('\n') + 1), 'the runner gets the original source after the handler\'s shebang strip');
+  assert.equal(r.code, ESM_SOURCE.slice(ESM_SOURCE.indexOf('\n')), 'the runner gets the original source after the handler\'s shebang strip, its line kept empty');
   assert.equal(r.transforms.length, 0, 'native ESM is staged by the launch, not transformed by the handler');
   assert.equal(r.opts.esModule, true);
   assert.equal(r.opts.moduleScope, 'node');
