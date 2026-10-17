@@ -112,7 +112,7 @@ await runScenarios(fileURLToPath(import.meta.url), {
     Object.defineProperty(ModuleSource.prototype, 'text', {
       configurable: true,
       get() {
-        if (h.manager.launchState().launches.some(({ stage }) => stage === 'prepare' || stage === 'admission')) early++;
+        if (!h.manager.launchState().launches.some(({ stage }) => stage === 'load')) early++;
         generated.push(this);
         return sourceText.get.call(this);
       },
@@ -146,8 +146,9 @@ await runScenarios(fileURLToPath(import.meta.url), {
     const bytes = new Uint8Array(4 * 1024 * 1024);
     bytes.set([0, 97, 115, 109, 1, 0, 0, 0]);
     authority.kfs.writeFile(`${cwd}/image.wasm`, bytes);
+    authority.kfs.writeFile(`${cwd}/cell.js`, 'require("fs").readFileSync(require("path").join(__dirname, "image.wasm")); module.exports = "wasm";');
     const holds = occupy(ctx);
-    const waiting = manager.exec('require("fs").readFileSync(require("path").join(__dirname, "image.wasm")); process.stdout.write("wasm")', {
+    const waiting = manager.exec('process.stdout.write(require("./cell.js"))', {
       cwd, dirname: cwd, filename: `${cwd}/run.js`, captureOutput: true,
     });
     try {
