@@ -39,6 +39,7 @@ import {
   beginLoaderFetch,
   readmitRefused,
   claimAdmission,
+  suspendHeldAdmission,
   withDynamicWorkerCapNamed,
   type DynamicWorkerClaim,
   type EndLoaderFetch,
@@ -54,6 +55,7 @@ import {
 } from './vendor/errors.js';
 import type { FacetBindings, FacetImage } from '@nimbus-sh/core/runtime/facet-host.js';
 import { SupervisorLoadWaitError, acquireSupervisorLoad, tryAcquireSupervisorLoad } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import type { ResizableCreditLease } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { memberBuffer } from '@nimbus-sh/platform/worker-code.js';
 import type { ModuleContent, WorkerCode, WorkerLoader } from './vendor/types.js';
 import { hostWasmIdentity } from './host-wasm.js';
@@ -415,11 +417,22 @@ function wasmEntry<W>(name: string, wasm: W, bound: Map<string, string>, scope: 
 }
 
 /**
- * The loader ids whose images each Durable Object's pools have loaded: a
- * dispatch to one takes no credit before its worker, for the loader answers
- * it warm and reads nothing.
+ * The loader ids with images each Durable Object's pools have most recently
+ * loaded, at most LOADED_IDS_KEPT: a dispatch to one takes no credit before
+ * its worker, for the loader answers it warm and reads nothing. One
+ * forgotten only takes credit it gives back unused.
  */
 const loadedByCtx = new WeakMap<object, Set<string>>();
+const LOADED_IDS_KEPT = 256;
+/** `id` as the most recently loaded: insertion order is recency, the oldest dropped past LOADED_IDS_KEPT. */
+function noteLoaded(ids: Set<string>, id: string): void {
+  ids.delete(id);
+  ids.add(id);
+  for (const oldest of ids) {
+    if (ids.size <= LOADED_IDS_KEPT) break;
+    ids.delete(oldest);
+  }
+}
 function loadedIds(ctx: object): Set<string> {
   let ids = loadedByCtx.get(ctx);
   if (ids === undefined) loadedByCtx.set(ctx, ids = new Set());
@@ -807,6 +820,25 @@ export class IsolatePool {
     // call waited on it for room; otherwise the attempt begins its own.
     let admitted: EndLoaderFetch | undefined;
     const loaded = loadedIds(this.ctx);
+    // The images' credit the next attempt runs on, taken holding no worker.
+    let credit: ResizableCreditLease | null = null;
+    /**
+     * The credit a load this Durable Object's pools have not made needs, taken
+     * before any worker hold: an inherited launch admission's worker is given
+     * back for the wait, and taken again once the credit is held. One it has
+     * made is answered warm and reads nothing; should the loader have dropped
+     * it, its callback takes credit without waiting, or the call ends its hold
+     * and comes back here for it.
+     */
+    const takeCredit = async (): Promise<void> => {
+      if (imageBytes === 0 || credit !== null || loaded.has(id)) return;
+      const resume = this.claim ? undefined : suspendHeldAdmission(this.ctx);
+      try {
+        credit = await acquireSupervisorLoad(`facet '${this.tag}' images`, imageBytes, signal);
+      } finally {
+        await resume?.(signal);
+      }
+    };
     // The hold the latest attempt ran on: a refused one is readmitted on its terms.
     let held: EndLoaderFetch | undefined;
     const runOnce = async (): Promise<T> => {
@@ -835,13 +867,11 @@ export class IsolatePool {
       // binding stub once the whole pool is done, which does NOT
       // invalidate any in-flight slot's entrypoint reference.
       //
-      // Lock order (acquireSupervisorLoad): credit, then a worker. A load this
-      // isolate has not made takes its images' credit before the hold below,
-      // waiting its turn; one it has made is answered warm and reads nothing,
-      // and should the loader have dropped it, takes credit without waiting
-      // or ends its hold and comes back for it.
-      let credit = imageBytes > 0 && !loaded.has(id) ? await acquireSupervisorLoad(`facet '${this.tag}' images`, imageBytes, signal) : null;
+      // Lock order (acquireSupervisorLoad): credit, then a worker. A retry's
+      // credit was taken before its readmission.
+      await takeCredit();
       let lacking = false;
+      try {
       // The hold comes first among what remains, so it ends whatever setup
       // throws: a retry's was taken when the ledger let it in.
       // Inside an admitted launch (a child's python, ruby or wasm runtime
@@ -858,7 +888,7 @@ export class IsolatePool {
           }
           try {
             const code = applyFacetLimits(this.facetKind, await this.#loadCode(source, entries));
-            loaded.add(id);
+            if (imageBytes > 0) noteLoaded(loaded, id);
             return code;
           } finally {
             lease?.release();
@@ -883,7 +913,10 @@ export class IsolatePool {
         throw new ExecutionError(String(err));
       } finally {
         endFetch();
+      }
+      } finally {
         credit?.release();
+        credit = null;
       }
     };
 
@@ -978,6 +1011,8 @@ export class IsolatePool {
           // The platform refused to start this call: nothing ran, so it is
           // sent again, without spending an attempt, once the ledger lets it in.
           firstRefusal ??= Date.now();
+          // Credit before the worker the readmission holds.
+          await takeCredit();
           admitted = await readmitRefused(held, { since: firstRefusal, signal });
           if (admitted) continue;
           // The caller aborted while waiting: surface its abort as above.
