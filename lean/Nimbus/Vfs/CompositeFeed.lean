@@ -708,6 +708,17 @@ theorem owner_first_routing_is_not_a_tree :
 
 def sameTable (T0 T1 : Table) : Prop := T0.pts = T1.pts ∧ ∀ m ∈ T0.pts, T0.ch m = T1.ch m
 
+/-- SQLite-only bound listings record the declaration generation. Composite
+    listings retain the feed signature and its subtree-poison rule. -/
+def listingPoison (sqliteOnly : Bool) (listed now : Nat) (signatureChanged subtreePoison : Bool) : Bool :=
+  if sqliteOnly then listed != now else signatureChanged || subtreePoison
+
+theorem sqlite_generation_change_poisons (listed now : Nat) (h : listed ≠ now)
+    (signatureChanged subtreePoison : Bool) : listingPoison true listed now signatureChanged subtreePoison = true := by
+  simp [listingPoison, h]
+
+theorem sqlite_only_aba_relists : listingPoison true 0 2 false false = true := by decide
+
 /-- The facet's step: a table change poisons and relists; otherwise the feed applies. -/
 def step (T0 T1 : Table) (changed : Bool) (W0 W1 : World) (rlog : List Path) (mlog : Path → List Path) : Tree :=
   if changed then view T1 W1 else applyDelta (view T0 W0) (feed T1 rlog mlog W1)

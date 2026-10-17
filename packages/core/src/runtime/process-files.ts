@@ -422,7 +422,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   private createListing(pid: number): MountListing {
     let listing = this.listings.get(pid);
     if (listing === undefined) {
-      listing = { named: new Set<string>(), table: null, sqliteOnly: false, held: null };
+      listing = { named: new Set<string>(), table: null, sqliteGeneration: null, held: null };
       this.listings.set(pid, listing);
     }
     return listing;
@@ -752,8 +752,8 @@ interface MountListing {
    * appearing or going is in no backend's feed.
    */
   table: string | null;
-  /** The saved listing used SQLite's own page, so an unchanged SQLite-only view keeps its direct acquire. */
-  sqliteOnly: boolean;
+  /** The table generation when no embedder mount was declared; null for a composite listing. */
+  sqliteGeneration: number | null;
   /** The walk its listing in progress took, which only the page continuing it (`next`) reuses. */
   held: { walk: MountWalk; next: string } | null;
 }
@@ -772,9 +772,9 @@ function underKernelMount(path: string): boolean {
   return KERNEL_MOUNT_POINTS[end === -1 ? path : path.slice(0, end)] === true;
 }
 
-/** Whether `view` shows a mount an embedder made: only then is a process's listing more than SQLite's. */
+/** Whether the table declares an embedder mount, including one whose source is absent. */
 function mountsBeyondSqlite(view: CompositeVFS): boolean {
-  return view.someMount(isEmbedderMount);
+  return view.someMountPoint(isEmbedderMount);
 }
 
 /**
@@ -866,8 +866,8 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       // A later mount must invalidate this SQLite-only listing too.
       const listing = after === null || after === undefined ? this.listing(true) : undefined;
       if (listing) {
-        listing.table = this.namespace.feed.signature();
-        listing.sqliteOnly = true;
+        listing.table = null;
+        listing.sqliteGeneration = this.namespace.mountGeneration();
       }
       return this.bridge.list(after, limit);
     }
@@ -889,7 +889,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     const root = position.feeds['/'];
     if (after === null && listing) {
       listing.table = position.table;
-      listing.sqliteOnly = false;
+      listing.sqliteGeneration = null;
     }
     const page = feed.list(after === null ? null : `/${after}`, want, walk);
     // SQLite measured its own entries when it listed them; each is measured
@@ -916,7 +916,11 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
    */
   acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult {
     const listing = this.listing(false);
-    if (!mountsBeyondSqlite(this.namespace) && (listing?.sqliteOnly === true || (listing?.table ?? null) === null)) return this.bridge.acquire(epoch, cursor, options);
+    if (listing && listing.sqliteGeneration !== null) {
+      // Even a mount/unmount ABA relists once: a generation change is conservative.
+      return this.bridge.acquire(listing.sqliteGeneration === this.namespace.mountGeneration() ? epoch : null, cursor, options);
+    }
+    if (!mountsBeyondSqlite(this.namespace) && (listing?.table ?? null) === null) return this.bridge.acquire(epoch, cursor, options);
     this.authority();
     const feed = this.namespace.feed;
     const table = listing?.table ?? feed.position().table;

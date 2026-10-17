@@ -217,7 +217,8 @@ for (const [index, testCase] of fixture.cases.entries()) {
     }
     // ProcessFiles' session cursor dates SQLite, not independent fed backends.
     // Keep the general composite-feed cases on their multi-feed position.
-    const independentFeeds = testCase.mounts.some((mount) => mount.changes) || testCase.window.some((op) => op.op === 'mount' && op.changes);
+    const independentFeeds = testCase.cursor === 'feeds' || (testCase.cursor === undefined &&
+      (testCase.mounts.some((mount) => mount.changes) || testCase.window.some((op) => op.op === 'mount' && op.changes)));
     const answer = independentFeeds
       ? vfs.feed.since(position, { namespace: true })
       : bridge.acquire(listed.cursor.epoch, listed.cursor.rev, { namespace: true });

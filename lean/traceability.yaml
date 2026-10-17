@@ -803,12 +803,14 @@ requirements:
       - With a capability present the model asserts support only; revision semantics are Coherence's
       - Main's rulings: the copy primitive answers ENOTSUP for / or an ancestor of a live mount (cp -r falls back to a crossing walk, a command-level test); a directory onto anything existing is EEXIST; lookup precedes the capability check (ENOENT before ENOTSUP), except a writeFileIfRevision expecting revision 0, create-if-absent, which only the backend can make atomic (2026-10-11)
   VFS-COMP-004:
-    statement: ProcessFs's staged namespace is a tree combining the routed feed view with bounded partial launch-walk observations installed at boot/relist and retained between them; an unfed mount contributes no incremental records, walked entries have revision 0, and only a fully listed directory certifies absence; filtered feeds repair the fed view, structural subtree entries or table/source changes poison and relist, an ABA window does not; epoch-qualified CAS revisions identify one write across incarnations.
+    statement: ProcessFs's staged namespace is a tree combining the routed feed view with bounded partial launch-walk observations installed at boot/relist and retained between them; an unfed mount contributes no incremental records, walked entries have revision 0, and only a fully listed directory certifies absence; filtered feeds repair the fed view, structural subtree entries or table/source changes poison and relist, a composite-feed ABA window needs no poison but a SQLite-only bound listing conservatively relists after any mount-generation change; epoch-qualified CAS revisions identify one write across incarnations.
     status: proved-and-refined
     theorems:
       - Nimbus.Vfs.CompositeFeed.feed_exact
       - Nimbus.Vfs.CompositeFeed.feed_values
       - Nimbus.Vfs.CompositeFeed.step_exact
+      - Nimbus.Vfs.CompositeFeed.sqlite_generation_change_poisons
+      - Nimbus.Vfs.CompositeFeed.sqlite_only_aba_relists
       - Nimbus.Vfs.CompositeFeed.no_changes_no_incremental
       - Nimbus.Vfs.CompositeFeed.unfed_view_is_walk
       - Nimbus.Vfs.CompositeFeed.unlisted_does_not_mean_absent
@@ -847,6 +849,8 @@ requirements:
     tsRefs:
       - packages/core/src/vfs/composite.ts#CompositeVFS.feed
       - packages/core/src/vfs/composite.ts#CompositeVFS.feedSignature
+      - packages/core/src/vfs/composite.ts#CompositeVFS.mountGeneration
+      - packages/core/src/vfs/composite.ts#CompositeVFS.someMountPoint
       - packages/core/src/vfs/composite.ts#CompositeVFS.feedSince
       - packages/core/src/vfs/composite.ts#CompositeVFS.feedList
       - packages/core/src/vfs/composite.ts#CompositeVFS.walkUnfed
@@ -862,6 +866,7 @@ requirements:
       - One principal's table; per-principal source switches are table changes for that principal
       - The walk model abstracts traversal order to bounded parent-closed observations and whole-directory completion certificates, not a promise to discover every name; concurrent backend mutation during the walk is not modeled; the fixture exercises the implemented 8192-name bound, unlisted directories and retention across listing pages
       - Bound ProcessFiles listing is used for every fixture; root/unfed-only cases also use its acquire, while independent fed backends retain CompositeFeed's multi-feed cursor, which the SQLite-only process cursor does not encode
+      - The generation-only route requires zero declared non-kernel mount points; a declared but absent source stays on the signature route, so null-to-live changes are detected without a mount operation
       - Resident mounted-byte refinement covers async-only unfed mounts; a synchronous unfed mount currently refuses the resident fill with ESTALE when fsReadBatch carries the SQLite expectedEpoch, so that runtime path is not claimed here
       - Unfed own-write overlays are not modeled by FsStep.own, which preserves the held walk; the cache model treats own bytes as separate reconciliation evidence
       - The CAS model identifies writes by (epoch, gen); the epoch is assumed fresh per incarnation

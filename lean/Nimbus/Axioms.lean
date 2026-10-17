@@ -639,6 +639,8 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.CompositeFeed.owner_first_routing_is_not_a_tree
 #print axioms Nimbus.Vfs.CompositeFeed.view_table_congr
 #print axioms Nimbus.Vfs.CompositeFeed.step_exact
+#print axioms Nimbus.Vfs.CompositeFeed.sqlite_generation_change_poisons
+#print axioms Nimbus.Vfs.CompositeFeed.sqlite_only_aba_relists
 #print axioms Nimbus.Vfs.CompositeFeed.a_mount_appearing_is_not_in_any_feed
 #print axioms Nimbus.Vfs.CompositeFeed.no_changes_no_incremental
 #print axioms Nimbus.Vfs.CompositeFeed.unfed_view_is_walk

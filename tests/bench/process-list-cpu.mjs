@@ -56,7 +56,7 @@ async function make({ SqliteVFS, ProcessFiles }, size) {
   const bridge = files.bind({ pid: 71, cred: CRED_KERNEL });
   const page = bridge.list(null, 256);
   assert.equal(page instanceof Promise, false);
-  return { engine, root, files, bridge, writes: 0 };
+  return { engine, root, files, bridge, writes: 0, nextPid: 72 };
 }
 
 try {
@@ -69,10 +69,17 @@ try {
     const cpu = async (arm, kind) => {
       const cursor = { epoch: arm.engine.epoch, rev: arm.engine.revision() };
       if (kind === 'acquire-one') arm.root.writeFile('tree/mutated', `write-${++arm.writes}`);
-      return cpuMs(() => {
-        const count = kind === 'first-list' ? 80 : 2000;
+      return cpuMs(async () => {
+        const count = kind === 'cold-first-list' ? 20 : kind === 'first-list' ? 80 : 2000;
         for (let i = 0; i < count; i++) {
-          if (kind === 'first-list') {
+          if (kind === 'cold-first-list') {
+            const pid = arm.nextPid++;
+            const bridge = arm.files.bind({ pid, cred: CRED_KERNEL });
+            const page = bridge.list(null, 256);
+            assert.equal(page instanceof Promise, false);
+            checksum += page.entries.length;
+            await arm.files.releaseProcess(pid);
+          } else if (kind === 'first-list') {
             const page = arm.bridge.list(null, 256);
             assert.equal(page instanceof Promise, false);
             checksum += page.entries.length;
@@ -85,8 +92,9 @@ try {
         }
       });
     };
-    for (const kind of ['acquire-none', 'acquire-one', 'first-list']) {
-      const result = await pairedKind(kind, arms, cpu, { pairs: 30, warm: 8, iterations: kind === 'first-list' ? 80 : 2000 });
+    for (const kind of ['acquire-none', 'acquire-one', 'first-list', 'cold-first-list']) {
+      const iterations = kind === 'cold-first-list' ? 20 : kind === 'first-list' ? 80 : 2000;
+      const result = await pairedKind(kind, arms, cpu, { pairs: 30, warm: 8, iterations });
       result.kind = `${label}/${kind}`;
       results.push(result);
       writeFileSync(output, `${JSON.stringify(results, null, 2)}\n`);
