@@ -6,9 +6,10 @@
     "url": "https://github.com/rolldown/rolldown/archive/refs/tags/v1.2.11.tar.gz",
     "sha256": "fb6def184441b75eaf4f5ac24f99d46a29686f61e29af1bc137705f4da018403",
     "inputs": {
+      "packages/core/src/runtime/wasm-binary.ts": "4d24b153aef3861cceaa39b6991b36fcdb98eaa849950f5beb1bb67bfb80a2c5",
       "packages/worker/scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
       "packages/worker/scripts/napi-wasm/build.mjs": "5f1d124e26a906bfef4ba0faccf0a0d9e36164f1ae370b6c4f2d40f873c0b645",
-      "packages/worker/scripts/napi-wasm/inputs.mjs": "e86a9a177da181eedb7f6bf45b747cf015479a7f57ba431fcff1c2973896f983",
+      "packages/worker/scripts/napi-wasm/inputs.mjs": "a06c519ffee5e2637688e25ca527bf885f99d2f2fa4b5fe34a81ba5afda94dc4",
       "packages/worker/scripts/napi-wasm/link-wasm.sh": "3ead1668bb4b234f95892a7da9698a2f901d6fa460ed204594dfe9a6d8fa46f5",
       "packages/worker/scripts/napi-wasm/rolldown/Cargo.lock": "2e0f37b366cc59702cca940f424e4c184804cc4040b4d6050315842b9f34f229",
       "packages/worker/scripts/napi-wasm/rolldown/Cargo.toml": "0e892672b585cf1afd0bb2ec5a8b4d7d4814530ff2aea6a7f14a2dc4da9702f6",

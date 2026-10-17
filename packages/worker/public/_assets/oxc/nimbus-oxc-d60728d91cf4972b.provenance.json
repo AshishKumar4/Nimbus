@@ -6,6 +6,7 @@
     "crate": "packages/worker/scripts/oxc-wasm",
     "manifestVersion": "0.1.0",
     "inputs": {
+      "../../../core/src/runtime/wasm-binary.ts": "4d24b153aef3861cceaa39b6991b36fcdb98eaa849950f5beb1bb67bfb80a2c5",
       "../artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
       "../napi-wasm/rustc-remap.sh": "c0ad0342c9fa9832c80a780f0828f49f759d9d50274aef1ded89216bfb3dd07b",
       "../rust-build-env.mjs": "bee2b7ee81ac5975df573df583b6b67dc176e4491fadcb43c4f3bbc2e81f73d4",
@@ -13,7 +14,7 @@
       "Cargo.lock": "d31688c6583e5c1403139c6b26e379442f4a6e41d45897bc608c00316cc82b89",
       "Cargo.toml": "12e02dd3f9ae9ba0aa7f710ff58d77c1df8ada5454694f5c3e3c0b3ce6752b25",
       "build.mjs": "8fc0ec2e2d0dc963e73cef13d3b067a5e9b4461befa03ed27183b45f1c061e4d",
-      "inputs.mjs": "5befe3ae0036430f2803229e12241b991f93ff21596872decaa67192043bed69",
+      "inputs.mjs": "3c7f1351c322afb21ee0b8371abfc8eecd98915e4f83f400033315da79157ee4",
       "rust-toolchain.toml": "1f65896ce423e463d3278c0a9fbf946892f9e7c95ca680f27b7a337dd5065736",
       "src/abi.rs": "45ce28d133daf01f8664e3c8d2eff54fc078df205d6487e21647115c381687dd",
       "src/diagnostics.rs": "d4b7330faedd3c439b62912c2a6f256d389773170dd3c553806167a5d472fdd3",
