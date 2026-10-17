@@ -1,6 +1,5 @@
 import {
   STOP_RECORD_PREFIX, REPLAY_PREFIX_MAX_BYTES, REPLAY_TAPE_MAX_READINGS, REPLAY_TAPE_MAX_RANDOM_BYTES,
-  REPLAY_TAPE_MAX_WRITES, REPLAY_TAPE_MAX_WRITE_BYTES, REPLAY_WRITE_ENTRY_MAX_CHARS,
 } from './stop-replay-contracts.js';
 import { SUPERVISOR_CALLS_WITHOUT_EFFECTS, REPLAY_OBSERVATION_CALLS } from './stop-replay-policy.js';
 
@@ -28,7 +27,7 @@ export const REAL_NOW_SOURCE = '(typeof __nimbusStopReplay !== "undefined" ? __n
  *   write / ackedRun     each streamed chunk of output on its way out, and the ones a call took.
  *   readSome / readAll   how many bytes a synchronous read of stdin returns.
  *   block(until, syscall)  a read cannot complete: stops the run, or says why it cannot.
- *   mutation(op)         a change to the filesystem: recorded, and checked when replayed.
+ *   mutation(op)         a change to the filesystem: keeps the run from waiting for stdin.
  *   listen()             a server's first listen: a promotable run stops there,
  *                        to be run again as a resident that serves.
  *   effect(what) / unreplayable(why)  why a stop could not be replayed.
@@ -60,12 +59,6 @@ const __nimbusStopReplay = (() => {
   const PREFIX_MAX = ${REPLAY_PREFIX_MAX_BYTES};
   const READINGS_MAX = ${REPLAY_TAPE_MAX_READINGS};
   const RANDOM_MAX = ${REPLAY_TAPE_MAX_RANDOM_BYTES};
-  const WRITES_MAX = ${REPLAY_TAPE_MAX_WRITES};
-  const WRITE_BYTES_MAX = ${REPLAY_TAPE_MAX_WRITE_BYTES};
-  const WRITE_ENTRY_MAX = ${REPLAY_WRITE_ENTRY_MAX_CHARS};
-  const ObjectKeys = Object.keys;
-  const ArraySort = Array.prototype.sort;
-  const ArrayBufferIsView = ArrayBuffer.isView;
   const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   const lengthOf = (bytes) => ReflectApply(TypedArrayLength, bytes, []);
 
@@ -110,41 +103,6 @@ const __nimbusStopReplay = (() => {
     return out + "]";
   }
   function pairs(items) { return list(items, (p) => "[" + num(p[0]) + "," + num(p[1]) + "]"); }
-  // A change to the filesystem, as its call carries it: every field, bytes
-  // as bytes, in two FNV-1a lanes (64 bits). It is to notice a run again
-  // that changed something otherwise, not to resist a chosen collision.
-  function digest(op) {
-    let a = 0x811c9dc5, b = 0x050c5d1f;
-    const mix = (code) => { a = Math.imul(a ^ code, 16777619) >>> 0; b = Math.imul(b ^ (code + 0x9e), 2246822519) >>> 0; };
-    const walk = (v, depth) => {
-      if (depth > 8 || v === null || typeof v !== "object") {
-        const text = typeof v + ":" + (typeof v === "symbol" ? "" : v);
-        for (let i = 0; i < text.length; i++) mix(ReflectApply(StringCharCodeAt, text, [i]));
-        mix(0xffff);
-        return;
-      }
-      if (ReflectApply(ArrayBufferIsView, ArrayBuffer, [v])) {
-        const bytes = new U8(v.buffer, v.byteOffset, v.byteLength);
-        const n = lengthOf(bytes);
-        mix(0x1fe);
-        for (let i = 0; i < n; i++) mix(bytes[i]);
-        mix(0x1ff);
-        return;
-      }
-      const keys = ReflectApply(ArraySort, ObjectKeys(v), []);
-      for (let i = 0; i < keys.length; i++) {
-        walk(keys[i], depth + 1);
-        walk(v[keys[i]], depth + 1);
-      }
-      mix(0x1fd);
-    };
-    walk(op, 0);
-    const h = "0123456789abcdef";
-    let out = "";
-    for (let shift = 28; shift >= 0; shift -= 4) out += h[(a >>> shift) & 15];
-    for (let shift = 28; shift >= 0; shift -= 4) out += h[(b >>> shift) & 15];
-    return out;
-  }
   function pendingOut() {
     if (run.captured) return "[]";
     return list(run.pending, (c) => "{\\"s\\":" + str(c.s) + ",\\"at\\":" + num(c.at) + ",\\"b\\":" + str(b64([c.b])) + "}");
@@ -163,7 +121,7 @@ const __nimbusStopReplay = (() => {
   function tapeOut() {
     const t = run.tape;
     return ",\\"tape\\":{\\"seed\\":" + list(t.seed, num) + ",\\"now\\":" + pairs(t.now) + ",\\"perf\\":" + pairs(t.perf)
-      + ",\\"random\\":" + str(b64(t.drawn)) + ",\\"reads\\":" + list(t.reads, num) + ",\\"writes\\":" + list(t.writes, str) + "}";
+      + ",\\"random\\":" + str(b64(t.drawn)) + ",\\"reads\\":" + list(t.reads, num) + "}";
   }
   // The stop: never returns when it stops.
   function stop(body) {
@@ -281,10 +239,8 @@ const __nimbusStopReplay = (() => {
     const drawn = given.byteLength > 0 ? [given] : [];
     let drawnBytes = given.byteLength;
     let givenAt = 0;
-    const writes = tape && tape.writes ? tape.writes.slice() : [];
-    run.tape = { seed, now, perf, drawn, reads: tape ? tape.reads.slice() : [], writes };
+    run.tape = { seed, now, perf, drawn, reads: tape ? tape.reads.slice() : [] };
     run.replayedReads = tape ? tape.reads.length : 0;
-    run.replayedWrites = writes.length;
     run.recordTape = record;
 
     Math.random = seeded(seed);
@@ -403,8 +359,6 @@ const __nimbusStopReplay = (() => {
         // A one-shot: its first listen stops it, to be run again as a resident.
         promote: !!launch.promote,
         listened: false,
-        writesAt: 0,
-        writeBytes: 0,
         replay,
         armed: false,
         canStop: false,
@@ -412,7 +366,7 @@ const __nimbusStopReplay = (() => {
         why: null,
         // Why a change to the filesystem keeps it from waiting for stdin: a
         // run that waits is run again over what it changed. One that listens
-        // is run again checked change by change (listen).
+        // is run again from what it started from (listen).
         changedWhy: null,
         boundaryPassed: replay === null,
         boundaryNotice: null,
@@ -508,9 +462,12 @@ const __nimbusStopReplay = (() => {
       run.readAt++;
       if (recording() && run.tape.reads.length < run.readAt) run.tape.reads[run.tape.reads.length] = length;
     },
-    // A change the program made to the filesystem (the process client's op):
-    // recorded while the run can be run again, which makes it again, as it
-    // made it; a run again checks each against the run before it.
+    // A change the program made to the filesystem (the process client's op).
+    // A run that waits is run again over what it changed, so it cannot wait.
+    // One that listens is run again from what it started from: the session
+    // puts back what it changed (SqliteVFS.restoreRun), and its run again's
+    // changes are its own. One that appended is not run again: putting back
+    // an append the session held (SqliteVFS appendThrough) is not covered.
     mutation(op) {
       if (!run || !run.armed) return;
       const call = op.type === "call" ? op.call : op;
@@ -518,37 +475,7 @@ const __nimbusStopReplay = (() => {
       const path = typeof call.path === "string" ? call.path : typeof call.from === "string" ? call.from : "";
       if (replaying() && run.replay.listen !== true) return effect(name + (path ? " " + path : ""));
       if (run.changedWhy === null) run.changedWhy = "did something outside itself first (" + name + (path ? " " + path : "") + "), which a second run would do again";
-      if (!run.tape) return;
-      const data = call.data;
-      const size = data && typeof data.byteLength === "number" ? data.byteLength : 0;
-      if (replaying() && run.writesAt < run.replayedWrites) {
-        const entry = name + " " + path + " " + digest(op);
-        const recorded = run.tape.writes[run.writesAt];
-        if (recorded !== entry) diverge("it changed the filesystem otherwise than the run before it: " + entry + " where that run made " + recorded);
-        run.writesAt++;
-        return;
-      }
-      if (replaying()) diverge("it changed the filesystem more than the run before it had by then (" + name + " " + path + ")");
-      // Made again, an append lands twice: its bytes check, and are wrong.
-      if (name === "appendFile" || name === "append") unreplayable("appended to " + path + ", which a second run would append again");
-      if (!recording()) return;
-      run.writeBytes += size;
-      if (run.tape.writes.length >= WRITES_MAX) unreplayable("changed the filesystem more than " + WRITES_MAX + " times first");
-      else if (run.writeBytes > WRITE_BYTES_MAX) unreplayable("wrote more than " + WRITE_BYTES_MAX + " bytes first, more than a second run is checked against");
-      else if (path.length > WRITE_ENTRY_MAX - 64) unreplayable("changed a file whose path is longer than " + (WRITE_ENTRY_MAX - 64) + " characters first");
-      else run.tape.writes[run.tape.writes.length] = name + " " + path + " " + digest(op);
-    },
-    // A change the program asked for and found made already, so made
-    // nothing and is no mutation: mkdir -p of a directory there. A run again
-    // finds what the run before it made, so the change of the tape it would
-    // have made next is made again by being there.
-    found(op) {
-      if (!run || !run.armed || !run.tape || !replaying() || run.replay.listen !== true) return;
-      if (run.writesAt >= run.replayedWrites) return;
-      const call = op.type === "call" ? op.call : op;
-      const name = op.type === "call" ? "" + call.call : "" + op.type;
-      const path = typeof call.path === "string" ? call.path : "";
-      if (run.tape.writes[run.writesAt] === name + " " + path + " " + digest(op)) run.writesAt++;
+      if (!replaying() && (name === "appendFile" || name === "append")) unreplayable("appended to " + path + ", which a second run would append again");
     },
     // A server's first listen, before it binds or reserves anything. A run
     // again of a run that stopped here has reached where it stopped; a
@@ -557,9 +484,6 @@ const __nimbusStopReplay = (() => {
     listen() {
       if (!run || !run.armed || run.listened) return;
       if (run.replay !== null && run.replay.listen === true && !run.boundaryPassed) {
-        if (run.writesAt !== run.replayedWrites) {
-          diverge("by its listen it had changed the filesystem " + run.writesAt + " times, where the run before it had " + run.replayedWrites);
-        }
         boundary();
         run.listened = true;
         return;

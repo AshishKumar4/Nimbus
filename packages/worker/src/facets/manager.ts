@@ -7487,6 +7487,9 @@ export class FacetManager {
         // it is not a kill: the process fails, naming how it strayed.
         const divergence = new AbortController();
         if (stoppable || promotable) this.outputGates.set(entry.pid, new ReplayOutputGate());
+        // A promoted run is run again from what it started from: what it
+        // changes is kept, to be put back then (_promote).
+        if (promotable) this.vfs?.captureRun(entry.pid);
         if (stoppable) {
           const { journal } = this.replay.open(entry.pid, () => {
             this.outputGates.get(entry.pid)?.close();
@@ -7627,6 +7630,7 @@ export class FacetManager {
           held.give();
           this.outputGates.delete(entry.pid);
           if (stoppable) this.replay.close(entry.pid);
+          this.vfs?.releaseRun(entry.pid);
         }
       });
     } catch (err: unknown) {
@@ -7692,10 +7696,11 @@ export class FacetManager {
 
   /**
    * A one-shot that stopped at its first listen (stop-replay.ts listen) runs
-   * on as a resident, the same process: the resident replays the run up to
-   * that listen, checked against it, then listens and serves. What the
-   * one-shot printed is shown once; the resident prints it again only to be
-   * checked (the prefix).
+   * on as a resident, the same process: the resident starts from what the
+   * run started from (what the run changed put back, SqliteVFS.restoreRun),
+   * replays the run's draws and output up to that listen, then listens and
+   * serves. What the one-shot printed is shown once; the resident prints it
+   * again only to be checked (the prefix).
    */
   /**
    * A file's identity as the process sees it: which file, and its version;
@@ -7754,6 +7759,18 @@ export class FacetManager {
     await this.hooks.rewindProcessFiles?.(pid);
     // Every long-running process has an input channel on its pid.
     this.processes.openInput(pid);
+    // The resident starts from what the run started from: each file the run
+    // changed is put back as the run found it, and the resident's changes are
+    // its own. When they cannot all be put back, it starts from its start
+    // over the files as they are, unretraced, as a server known to be one is
+    // started (server-hints.ts): what it printed is printed again, and it
+    // says why.
+    const restored = this.vfs?.restoreRun(pid) ?? { refused: 'what it changed was not kept' };
+    if ('refused' in restored) {
+      await this._deliverOutput(pid, 'stderr', new TextEncoder().encode(
+        `node: this program listens as a server, so Nimbus runs it again as one from its start, over the files as they are: ${restored.refused}. What it printed before it listened is printed again.\n`,
+      ));
+    }
     const resume: StoppedRunNext = {
       replay: {
         run: stop.run + 1,
@@ -7780,11 +7797,12 @@ export class FacetManager {
         esModule: opts.esModule, moduleScope: opts.moduleScope, preamble: opts.preamble,
         command: opts.command, invokerPid: opts.invokerPid, bundleProfile: opts.bundleProfile, node: opts.node,
         ...(opts.stdin !== undefined ? { stdin: opts.stdin } : {}),
-        skipSpawn: true, callerPid: pid, resume,
+        skipSpawn: true, callerPid: pid,
+        ...('refused' in restored ? (run.inputChannel > 0 ? { stdinWriter: true } : {}) : { resume }),
       });
       // Its \`< file\` changed between the run that read it and the resident
       // that read it again: they did not read the same input.
-      changed = this.processExitCode(pid) === null && run.stdinFile !== undefined
+      changed = this.processExitCode(pid) === null && !('refused' in restored) && run.stdinFile !== undefined
         && await this._stdinFileIdentity(entry, opts.stdinFile!.path) !== run.stdinFile;
       run.signal.throwIfAborted();
     } finally {
