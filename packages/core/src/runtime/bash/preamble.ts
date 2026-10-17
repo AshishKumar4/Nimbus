@@ -1443,6 +1443,8 @@ function waitChild(proc: BashProc, register: (complete: () => void) => void): Pr
 
 function signalDisposition(proc: BashProc, signal: number): number {
   if (signal === 9) return 0;
+  // Bash uses its live export. An active exec'd coreutil exposes no disposition
+  // export, so only its inherited mask is known; guest-side changes are not visible.
   return proc.execIgnoredSignals === undefined
     ? proc.inst.exports.__nimbus_signal_disposition(signal)
     : (proc.execIgnoredSignals & (1n << BigInt(signal))) !== 0n ? 1 : 0;
@@ -1487,6 +1489,7 @@ function finishProc(s: BashSession, proc: BashProc, code: number, signal = 0): v
   // A terminated JSPI child may unwind after its signal exit was published.
   // Never overwrite that status or wake a later wait with a second exit.
   if (!s.procs.has(proc.pid)) return;
+  delete proc.execIgnoredSignals;
   // A wait status: the exit code in the second byte, or the killing signal in
   // the low seven bits (WIFSIGNALED), which bash reports as 128 + signal.
   const st = signal ? signal & 0x7f : (code & 0xff) << 8;

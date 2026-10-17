@@ -1163,6 +1163,7 @@ requirements:
     remainingEvidence:
       - Traces are scaled down (capacity 4, small budgets), including oversized local writes and JSPI writes with a budget of zero; the rules do not depend on the sizes
       - The refinement replays pipe decisions with modeled signal dispositions; tests/unit/bash-pipe-sigpipe.mjs additionally compares native bash against the staged wasm's write errors, stderr and statuses on local and JSPI hosts
+      - Bash's own writes query its live signal-disposition export. Exec'd coreutils (the staged BusyBox) expose no such export; the host knows only SIG_IGN inherited at exec, not disposition changes inside that guest. The inherited mask is cleared when the guest ends and never describes later bash writes
       - A fork is synchronous here; a fork as a pending task on a local host is covered by the rule that a reader with nothing to run stops the command
       - The held status equals Linux's for a pipe with one writer; with several writers another writer's later bytes count against a held one, as the runtime does (real bash is timing-dependent there). A wait on a held pid is not modeled (the runtime waits until it settles)
       - The model discards a readerless pipe's bytes, so the runtime's readers > 0 guard on holding is not distinguished by the fixture; the runtime keeps the guard
