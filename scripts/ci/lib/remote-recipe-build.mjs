@@ -11,12 +11,10 @@
 // 1, the build or verify failed, or an artifact differs (written or left,
 // for review); 2, not graded.
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { mapOnArmada } from './armada.mjs';
-import { extract, FILES_MARK, keepArchive, keptAs, splitArchive, writeRefusal } from './remote-artifacts.mjs';
+import { compareArtifacts, extract, FILES_MARK, keepArchive, keptAs, splitArchive, writeRefusal } from './remote-artifacts.mjs';
 
 /**
  * @typedef {object} Recipe
@@ -34,7 +32,6 @@ const git = (args) => {
   if (done.status !== 0) throw new Error(`git ${args[0]} failed: ${(done.stderr || '').toString().trim()}`);
   return done.stdout;
 };
-const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 /** Builds `recipe` for the commit `argv` names (HEAD by default), and exits with the verdict. */
 export async function remoteRecipeBuild(recipe, argv) {
@@ -110,20 +107,13 @@ export async function remoteRecipeBuild(recipe, argv) {
   if (archive === null) notGraded(`built and verified, but no artifacts came back (job ${run.jobId})`);
 
   verdict.archive = `${stem}.tar.xz`;
-  const unpacked = mkdtempSync(join(tmpdir(), `${tool}-`));
+  let differing;
   try {
     keepArchive(verdict.archive, archive);
-    extract(unpacked, verdict.archive, returned);
-    verdict.artifacts = Object.fromEntries(returned.map((path) => {
-      const shown = spawnSync('git', ['-C', repo, 'show', `${sha}:${path}`], { maxBuffer: 256 * 1024 * 1024 });
-      return [path, { built: digest(readFileSync(join(unpacked, path))), committed: shown.status === 0 ? digest(shown.stdout) : null }];
-    }));
+    ({ artifacts: verdict.artifacts, differing } = compareArtifacts(repo, sha, verdict.archive, returned));
   } catch (error) {
     notGraded(`the artifacts that came back cannot be read (job ${run.jobId}): ${error.message}`);
-  } finally {
-    rmSync(unpacked, { recursive: true, force: true });
   }
-  const differing = returned.filter((path) => verdict.artifacts[path].built !== verdict.artifacts[path].committed);
   for (const path of returned) {
     const { built, committed } = verdict.artifacts[path];
     console.log(`${built === committed ? 'same     ' : 'different'} ${path} ${built}${built === committed ? '' : ` (the commit's: ${committed ?? 'none'})`}`);

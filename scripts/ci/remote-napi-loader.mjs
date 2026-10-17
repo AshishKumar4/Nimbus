@@ -23,7 +23,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { mapOnArmada } from './lib/armada.mjs';
-import { differences, extract, FILES_MARK, keepArchive, keptAs, splitArchive, writeRefusal } from './lib/remote-artifacts.mjs';
+import { compareArtifacts, extract, FILES_MARK, keepArchive, keptAs, splitArchive, writeRefusal } from './lib/remote-artifacts.mjs';
 
 const git = (args) => {
   const done = spawnSync('git', args, { encoding: 'utf8' });
@@ -74,7 +74,7 @@ if (archive === null) {
 console.log(provenance.trim());
 const saved = `${keptAs('remote-napi-loader', sha.slice(0, 12))}.tar.xz`;
 const members = keepArchive(saved, archive);
-const differing = differences(repo, sha, saved, members, [STAGED[0]]);
+const { differing } = compareArtifacts(repo, sha, saved, members, [STAGED[0]]);
 if (differing.length === 0) {
   console.log(`remote-napi-loader: the loader rebuilds ${sha.slice(0, 12)}'s staged files byte for byte (archive ${saved})`);
   process.exit(0);
