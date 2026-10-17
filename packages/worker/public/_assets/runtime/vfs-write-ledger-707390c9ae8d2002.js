@@ -1181,10 +1181,32 @@ var __nimbusProcessFsModule = (() => {
   function sqlJournal(sql) {
     sql.exec(`CREATE TABLE IF NOT EXISTS nimbus_fs_journal (jid INTEGER PRIMARY KEY, op TEXT NOT NULL, data BLOB)`);
     sql.exec(`CREATE TABLE IF NOT EXISTS nimbus_fs_numbering (jid INTEGER PRIMARY KEY, writer TEXT, seq INTEGER NOT NULL)`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS nimbus_fs_journal_parts (part INTEGER PRIMARY KEY, jid INTEGER NOT NULL, data BLOB NOT NULL)`);
+    sql.exec(`CREATE INDEX IF NOT EXISTS nimbus_fs_journal_parts_jid ON nimbus_fs_journal_parts (jid, part)`);
+    sql.exec(`CREATE TRIGGER IF NOT EXISTS nimbus_fs_journal_replace AFTER UPDATE ON nimbus_fs_journal BEGIN DELETE FROM nimbus_fs_journal_parts WHERE jid = OLD.jid; END`);
+    sql.exec(`CREATE TRIGGER IF NOT EXISTS nimbus_fs_journal_drop AFTER DELETE ON nimbus_fs_journal BEGIN DELETE FROM nimbus_fs_journal_parts WHERE jid = OLD.jid; END`);
     const last = [...sql.exec("SELECT MAX(jid) AS jid FROM nimbus_fs_journal")][0];
     let next = Number(last?.jid ?? 0) + 1;
-    const held = [...sql.exec("SELECT COALESCE(SUM(LENGTH(data)), 0) AS bytes FROM nimbus_fs_journal")][0];
+    const held = [...sql.exec("SELECT (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nimbus_fs_journal) + (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nimbus_fs_journal_parts) AS bytes")][0];
     let bytes = Number(held?.bytes ?? 0);
+    const withParts = new Set([...sql.exec("SELECT DISTINCT jid FROM nimbus_fs_journal_parts")].map((row) => Number(row.jid)));
+    const readRow = (row) => {
+      const op = opOf(String(row.op), row.data);
+      if (!withParts.has(Number(row.jid))) return op;
+      const extra = [...sql.exec("SELECT COALESCE(SUM(LENGTH(data)), 0) AS bytes FROM nimbus_fs_journal_parts WHERE jid = ?", row.jid)][0];
+      const size = Number(extra?.bytes ?? 0);
+      if (size === 0) return op;
+      const first = dataOf(op);
+      const data = new Uint8Array(first.byteLength + size);
+      data.set(first);
+      let at = first.byteLength;
+      for (const part of sql.exec("SELECT data FROM nimbus_fs_journal_parts WHERE jid = ? ORDER BY part", row.jid)) {
+        const piece = part.data instanceof Uint8Array ? part.data : new Uint8Array(part.data);
+        data.set(piece, at);
+        at += piece.byteLength;
+      }
+      return { type: "call", call: { ...op.call, data } };
+    };
     return {
       durable: true,
       append(op) {
@@ -1195,34 +1217,37 @@ var __nimbusProcessFsModule = (() => {
         return jid;
       },
       read(jid) {
-        const row = [...sql.exec("SELECT op, data FROM nimbus_fs_journal WHERE jid = ?", jid)][0];
+        const row = [...sql.exec("SELECT jid, op, data FROM nimbus_fs_journal WHERE jid = ?", jid)][0];
         if (row === void 0) throw new Error(`process-fs journal: entry ${jid} is not held`);
-        return opOf(String(row.op), row.data);
+        return readRow(row);
       },
       replace(jid, op) {
-        const before = [...sql.exec("SELECT LENGTH(data) AS bytes FROM nimbus_fs_journal WHERE jid = ?", jid)][0];
+        const before = withParts.has(jid) ? [...sql.exec("SELECT COALESCE(LENGTH(data), 0) + (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nimbus_fs_journal_parts WHERE jid = ?) AS bytes FROM nimbus_fs_journal WHERE jid = ?", jid, jid)][0] : [...sql.exec("SELECT LENGTH(data) AS bytes FROM nimbus_fs_journal WHERE jid = ?", jid)][0];
         const row = rowOf(op);
         sql.exec("UPDATE nimbus_fs_journal SET op = ?, data = ? WHERE jid = ?", row.json, row.data, jid);
+        withParts.delete(jid);
         bytes += (row.data?.byteLength ?? 0) - Number(before?.bytes ?? 0);
       },
       entries() {
-        return [...sql.exec("SELECT jid, op, data FROM nimbus_fs_journal ORDER BY jid")].map((row) => ({ jid: Number(row.jid), op: opOf(String(row.op), row.data) }));
+        return [...sql.exec("SELECT jid, op, data FROM nimbus_fs_journal ORDER BY jid")].map((row) => ({ jid: Number(row.jid), op: readRow(row) }));
       },
       readAfter(after, maxBytes) {
         const out = [];
         let taken = 0;
         for (const row of sql.exec("SELECT jid, op, data FROM nimbus_fs_journal WHERE jid > ? ORDER BY jid", after)) {
-          const size = row.data === null || row.data === void 0 ? 0 : row.data.byteLength;
+          const op = readRow(row);
+          const size = dataOf(op)?.byteLength ?? 0;
           if (out.length > 0 && taken + size > maxBytes) break;
-          out.push({ jid: Number(row.jid), op: opOf(String(row.op), row.data) });
+          out.push({ jid: Number(row.jid), op });
           taken += size;
         }
         return out;
       },
       dropThrough(jid) {
-        const freed = [...sql.exec("SELECT COALESCE(SUM(LENGTH(data)), 0) AS bytes FROM nimbus_fs_journal WHERE jid <= ?", jid)][0];
+        const freed = [...sql.exec("SELECT (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nimbus_fs_journal WHERE jid <= ?) + (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nimbus_fs_journal_parts WHERE jid <= ?) AS bytes", jid, jid)][0];
         bytes -= Number(freed?.bytes ?? 0);
         sql.exec("DELETE FROM nimbus_fs_journal WHERE jid <= ?", jid);
+        for (const at of withParts) if (at <= jid) withParts.delete(at);
         sql.exec(
           "DELETE FROM nimbus_fs_numbering WHERE jid < (SELECT COALESCE(MAX(jid), 0) FROM nimbus_fs_numbering WHERE jid <= ?)",
           jid + 1
@@ -1329,6 +1354,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
 ` : "";
   }
   var DATA_PIECE_BYTES = WAVE_BYTES;
+  var FOLD_BUFFER =   Symbol("process-fs-fold-buffer");
   var MAX_DELEGATIONS_PER_PROCESS = 8;
   var GRANT_AFTER = 8;
   var LINGER_MS = 10;
@@ -1388,29 +1414,33 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
   function descriptionOf(call) {
     return "description" in call ? call.description : void 0;
   }
-  function folded(last, next) {
+  function extended(call, data, buffer) {
+    const size = call.data.byteLength + data.byteLength;
+    if (buffer === null || buffer.byteLength < size) {
+      buffer = new Uint8Array(Math.min(DATA_PIECE_BYTES, Math.max(size, (buffer?.byteLength ?? call.data.byteLength) * 2)));
+      buffer.set(call.data);
+    }
+    buffer.set(data, call.data.byteLength);
+    const joined = buffer.subarray(0, size);
+    return { op: { type: "call", call: { ...call, data: joined } }, buffer, append: joined.subarray(call.data.byteLength) };
+  }
+  function folded(last, next, buffer) {
     if (last.type !== "call" || next.type !== "call" || !("data" in last.call) || !("data" in next.call)) return null;
     const a = last.call;
     const b = next.call;
     if (a.path !== b.path || descriptionOf(a) !== descriptionOf(b) || a.data.byteLength + b.data.byteLength > DATA_PIECE_BYTES) return null;
     const inoOf = (call) => "ino" in call ? call.ino : void 0;
-    const join = (left, right) => {
-      const out = new Uint8Array(left.byteLength + right.byteLength);
-      out.set(left, 0);
-      out.set(right, left.byteLength);
-      return out;
-    };
     if (b.call === "writeFile" && inoOf(b) === void 0 && (a.call === "writeFile" || a.call === "appendFile")) {
-      return { type: "call", call: { ...a, call: "writeFile", data: b.data } };
+      return { op: { type: "call", call: { ...a, call: "writeFile", data: b.data } }, buffer: null };
     }
     if (b.call === "appendFile" && inoOf(b) === void 0 && (a.call === "writeFile" || a.call === "appendFile")) {
-      return { type: "call", call: { ...a, data: join(a.data, b.data) } };
+      return extended(a, b.data, buffer);
     }
     if (b.call === "append" && a.call === "append" && inoOf(a) === inoOf(b)) {
-      return { type: "call", call: { ...a, data: join(a.data, b.data) } };
+      return extended(a, b.data, buffer);
     }
     if (b.call === "write" && a.call === "write" && inoOf(a) === inoOf(b) && a.offset + a.data.byteLength === b.offset) {
-      return { type: "call", call: { ...a, data: join(a.data, b.data) } };
+      return extended(a, b.data, buffer);
     }
     return null;
   }
@@ -1594,6 +1624,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         for (const entry of entries) if (entry.op !== null) {
           heapBytes -= entry.bytes;
           entry.op = null;
+          if (entry[FOLD_BUFFER] !== void 0) entry[FOLD_BUFFER] = void 0;
         }
         bytes = await encodeWriteBatch({ inodes: [], chunks: [], ops });
         numberEntries(entries);
@@ -1705,6 +1736,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         if (entry.op !== null) {
           heapBytes -= entry.bytes;
           entry.op = null;
+          if (entry[FOLD_BUFFER] !== void 0) entry[FOLD_BUFFER] = void 0;
         }
         fail(entry, "ESRCH", processGone.message);
       }
@@ -1720,6 +1752,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         if (entry.op !== null) {
           heapBytes -= entry.bytes;
           entry.op = null;
+          if (entry[FOLD_BUFFER] !== void 0) entry[FOLD_BUFFER] = void 0;
         }
         fail(entry, "EIO", refusal.message);
       }
@@ -2008,12 +2041,13 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           throw fsError("ENOMEM", `ENOMEM: ${pendingSyncBytes} bytes of synchronous writes are waiting for the session, and this one (${bytes}) would pass the ${syncCap}-byte cap; let the program yield (an await) for them to be sent`, pathsOf(op)[0] ?? "");
         }
         const tail = queue[queue.length - 1];
-        const merged = parts.length === 1 && tail !== void 0 && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged ? folded(tail.op, parts[0]) : null;
+        const merged = parts.length === 1 && tail !== void 0 && tail.paths[0] === named[0] && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged ? folded(tail.op, parts[0], tail[FOLD_BUFFER] ?? null) : null;
         if (merged !== null && tail !== void 0) {
-          const mergedBytes = merged.type === "call" && "data" in merged.call ? merged.call.data.byteLength : 0;
-          journal.replace(tail.jid, merged);
+          const mergedBytes = merged.op.type === "call" && "data" in merged.op.call ? merged.op.call.data.byteLength : 0;
+          journal.replace(tail.jid, merged.op, merged.append);
           const grown = mergedBytes - tail.bytes;
-          tail.op = merged;
+          tail.op = merged.op;
+          if (merged.buffer !== null || tail[FOLD_BUFFER] !== void 0) tail[FOLD_BUFFER] = merged.buffer ?? void 0;
           tail.bytes = mergedBytes;
           if (tail.lingers && !lingers) {
             tail.lingers = false;
