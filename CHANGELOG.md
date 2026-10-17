@@ -5,7 +5,7 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- Fixed: in the shell, an alias is no longer expanded again inside its own expansion, as in bash. `alias ls='ls -l'`, `alias q=q`, two aliases that name each other, and an alias whose value runs its own name in a list, group, subshell or function now run that name as a command once. Before, an alias that named itself expanded without end until the session ran out of memory.
+- Fixed: in the shell, a command word read from an alias's own text is not expanded as that alias again, as in bash. `alias ls='ls -l'`, `alias q=q`, two aliases that name each other, and an alias whose text runs its own name in a list, group, subshell or a function it defines now run that name as a command. A command substitution or a function defined elsewhere still expands it, as bash does. Before, an alias that named itself expanded without end until the session ran out of memory.
 - Fixed: a program that writes files before it listens, as Vite's config
   load does, serves. When its listen makes it a server, Nimbus runs it again
   and checks that run against the first. That check failed for two reasons.
