@@ -115,16 +115,8 @@ interface LateNode extends ModuleFacts {
 interface LateGraph {
   readonly modules: Map<string, LateNode>;
   readonly rows: number[];
-  /** The require()s staging hoisted that the link reached, by row and target: linked after the static graph (linkRequired). */
-  readonly required: RequiredEdge[];
   /** An import()'s link: a module it fails in keeps the failure (linkFailures); a require()'s retries, as Node's does. */
   readonly kept: boolean;
-}
-
-/** A require() staging hoisted: staged row `row`'s target `index`, past its static imports. */
-interface RequiredEdge {
-  readonly row: number;
-  readonly index: number;
 }
 
 /** The facades' export names, by row, read once. */
@@ -252,15 +244,9 @@ export function commonJsNames(host: LateLinkHost, key: string): readonly string[
  */
 export function linkLateGraph(host: LateLinkHost, key: string, url: string, kept: boolean): number[] {
   const order: number[] = [];
-  const late: LateGraph = { modules: new Map(), rows: [], required: [], kept };
-  const seen = new Set<string>();
-  const checked = new Set<number>();
-  plan(host, key, url, seen, order, checked, late);
+  const late: LateGraph = { modules: new Map(), rows: [], kept };
+  plan(host, key, url, new Set(), order, new Set(), late);
   checkBindings(host, late, url);
-  if (late.required.length > 0) {
-    linkRequired(host, seen, checked, late, late.required);
-    checkBindings(host, late, url);
-  }
   for (const row of late.rows) checkedRows.add(row);
   return order;
 }
@@ -282,7 +268,7 @@ export function linkAdopted(host: LateLinkHost, id: number, key: string, url: st
 
 /** The names the `export *`s of the interpreted module at `url` reach two different bindings of, which its namespace omits. */
 export function starConflicts(host: LateLinkHost, url: string): string[] {
-  const late: LateGraph = { modules: lateModules, rows: [], required: [], kept: false };
+  const late: LateGraph = { modules: lateModules, rows: [], kept: false };
   // A staged module the interpreter evaluates, by its file; not a query's or a fragment's instance.
   const { protocol, search, hash, pathname } = new URL(url);
   const row = protocol === 'file:' && search === '' && hash === '' ? host.row('module', decodeURIComponent(pathname).replace(/^\/+/, '')) : -1;
@@ -300,7 +286,7 @@ export function starConflicts(host: LateLinkHost, url: string): string[] {
  * namespace taken in a cycle has them all.
  */
 export function namespaceNames(host: LateLinkHost, url: string): string[] | null {
-  const late: LateGraph = { modules: lateModules, rows: [], required: [], kept: false };
+  const late: LateGraph = { modules: lateModules, rows: [], kept: false };
   if (!lateModules.has(url)) return null;
   const target: LateTarget = { url };
   const names = exportedNames(host, late, target, new Set());
@@ -390,8 +376,6 @@ function planModule(host: LateLinkHost, key: string, url: string, seen: Set<stri
     checkLinks(host, id, seen, checked, late);
     if (!order.includes(id)) order.push(id);
   }
-  // A staged module's require()s staging hoisted (its own instance's, not a query's or a fragment's), linked after its static graph.
-  if (staged !== -1 && !url.includes('?') && !url.includes('#')) for (let index = statics; index < host.rowTargets(staged).length; index++) late.required.push({ row: staged, index });
 }
 
 /**
@@ -446,9 +430,10 @@ function lateTarget(host: LateLinkHost, resolution: LateResolution): LateTarget 
  * makes that staging refused for good. A staging handed on (a query's or a
  * fragment's instance, which the interpreter evaluates where it is
  * imported) is planned as the late graph's own. The graph's unevaluated
- * rows go to `late`; the require()s staging hoisted (a row's targets past
- * its static imports), which run when the row evaluates, to
- * `late.required`, linked after the static graph (linkRequired).
+ * rows go to `late`. A require() staging hoisted (a target past the row's
+ * static imports) is not followed: the interpreter evaluates the row's own
+ * text, whose require() links its module where it runs, as Node's does,
+ * after the row's static imports evaluate (which may write its files).
  */
 function checkLinks(host: LateLinkHost, id: number, seen: Set<string>, checked: Set<number>, late: LateGraph): void {
   if (checked.has(id)) return;
@@ -458,12 +443,10 @@ function checkLinks(host: LateLinkHost, id: number, seen: Set<string>, checked: 
   if (failure !== undefined) throw failure;
   try {
     late.rows.push(id);
-    const statics = rowRead(host, id).specifiers.length;
-    const targets = host.rowTargets(id);
-    for (let index = 0; index < targets.length; index++) {
-      if (index < statics) checkTarget(host, id, index, seen, checked, late);
-      else late.required.push({ row: id, index });
-    }
+    const { analysis, specifiers } = rowRead(host, id);
+    const targets = host.rowTargets(id).length;
+    const statics = analysis === null ? targets : Math.min(specifiers.length, targets);
+    for (let index = 0; index < statics; index++) checkTarget(host, id, index, seen, checked, late);
   } catch (e) {
     if (late.kept && e instanceof Error) linkFailures.set(host.rowKey(id), e);
     throw e;
@@ -494,28 +477,6 @@ function checkTarget(host: LateLinkHost, row: number, index: number, seen: Set<s
   const handed = new URL(missing.handedOn);
   const key = handed.protocol === 'data:' ? missing.handedOn : decodeURIComponent(handed.pathname).replace(/^\/+/, '');
   plan(host, key, missing.handedOn, seen, [], checked, late);
-}
-
-/**
- * Links the require()s staging hoisted that the late graph reached, once
- * its static graph is linked, as Node's require() links each where its row
- * evaluates (require(esm)), and in that order: each required graph's own
- * hoisted require()s before the next. A failure in a required graph is not
- * kept, as a require()'s link is not; its requiring row's is, whatever
- * link reached the row: the row's evaluation fails in Node, and a module
- * keeps the error its evaluation threw.
- */
-function linkRequired(host: LateLinkHost, seen: Set<string>, checked: Set<number>, late: LateGraph, required: readonly RequiredEdge[]): void {
-  for (const { row, index } of required) {
-    const nested: RequiredEdge[] = [];
-    try {
-      checkTarget(host, row, index, seen, checked, { modules: late.modules, rows: late.rows, required: nested, kept: false });
-      linkRequired(host, seen, checked, late, nested);
-    } catch (e) {
-      if (e instanceof Error) linkFailures.set(host.rowKey(row), e);
-      throw e;
-    }
-  }
 }
 
 /**
