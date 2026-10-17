@@ -214,6 +214,18 @@ export function utf8SequenceLength(bytes, i) {
     }
     return 0;
 }
+/**
+ * `head` then `tail`, lossless text joined as their bytes join. A high
+ * surrogate ending `head` is half a character (the shell can cut one), and
+ * a byte (U+DC80..U+DCFF) starting `tail` would read as its other half: that
+ * half goes as what it encodes to alone, U+FFFD, and the byte stays a byte.
+ */
+export function joinLossless(head, tail) {
+    const first = tail.charCodeAt(0);
+    if (first >= 0xdc80 && first <= 0xdcff && isHigh(head.charCodeAt(head.length - 1)))
+        return head.slice(0, -1) + '\ufffd' + tail;
+    return head + tail;
+}
 /** Where the first byte decodeLossless kept as U+DC80 + byte is in `text`, or -1. */
 function firstLosslessByte(text) {
     for (let i = 0; i < text.length; i++) {

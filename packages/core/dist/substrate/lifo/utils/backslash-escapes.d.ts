@@ -20,7 +20,8 @@
  *
  * An octal or hex escape names one byte, as bash's and coreutils' putchar
  * write it: `\303\251` is the two bytes of "é", `\377` the byte 0xff. A `\u`
- * or `\U` escape names a character, its UTF-8 bytes. The result is the
+ * or `\U` escape names a character, its UTF-8 bytes (a surrogate its own
+ * three). The result is the
  * lossless decoding of those bytes (bytes-io.ts), which its writer encodes
  * back to them.
  */
