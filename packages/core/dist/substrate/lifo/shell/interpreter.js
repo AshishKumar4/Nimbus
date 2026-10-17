@@ -1111,8 +1111,6 @@ export class Interpreter {
                 if (!(e instanceof ExitSignal) && !(e instanceof FunctionNestingSignal))
                     throw e;
                 exitCode = e.exitCode;
-                if (e instanceof FunctionNestingSignal)
-                    this.setPipestatus([exitCode]);
             }
             return (await this.runExitTrap(exitCode, io, true));
         }
