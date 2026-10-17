@@ -5,7 +5,7 @@ import { generateEntrypointCode } from '../../packages/worker/src/facets/manager
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { generatedModuleSet, importModuleSet } from './lib/module-map-bundle.mjs';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
-import { createAuthority, facetSupervisor, runScenarios, until } from './lib/resident-body.mjs';
+import { CRED, createAuthority, facetSupervisor, runScenarios, until } from './lib/resident-body.mjs';
 
 await runScenarios(fileURLToPath(import.meta.url), {
   async childReplies() {
@@ -13,7 +13,18 @@ await runScenarios(fileURLToPath(import.meta.url), {
     const reads = { 1: [], 2: [] };
     const waits = [];
     const reports = [];
-    const { supervisor, log } = facetSupervisor(authority, {
+    let acquireGate = null;
+    const { supervisor, log, forward } = facetSupervisor(authority, {
+      fsAcquire: async (epoch, cursor, options) => {
+        const gate = acquireGate;
+        acquireGate = null;
+        if (gate) {
+          gate.entered = true;
+          await gate.promise;
+        }
+        // Keep the acquisition gate observable instead of granting a read lease.
+        return forward('fsAcquire', [epoch, cursor, { ...options, lease: false }]);
+      },
       cpSpawn: async (request) => {
         assert.equal(request.command, 'node');
         assert.deepEqual(request.args, ['child.js']);
@@ -52,7 +63,7 @@ child.on('close', (code, signal) => console.log('close:' + code + ':' + signal))
       method: 'POST',
       body: JSON.stringify({
         argv: [], env: {}, cwd: '/home/user', filename: '/home/user/main.js', dirname: '/home/user',
-        stdin: '', cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, pid: log.pid,
+        stdin: '', cred: CRED, pid: log.pid,
       }),
     }), { SUPERVISOR: supervisor });
     const blockedAt = (frontier) => reports.find((report) => report.blocked && report.frontier === frontier);
@@ -76,17 +87,31 @@ child.on('close', (code, signal) => console.log('close:' + code + ':' + signal))
     assert.equal(waits[1].knownStarted, true);
     assert.equal(blockedAt(2).stdout, 'spawn:77\nstdout:late\nstdout:resume\n', 'the output is observable before its news is acknowledged');
 
-    waits[1].resolve({ done: true, started: true, exitCode: 7, signal: null, news: [3, 2] });
-    await until(() => blockedAt(3), 'exit news acknowledged while the streams remain open');
-    assert.equal(blockedAt(3).stdout, 'spawn:77\nstdout:late\nstdout:resume\nexit:7:null\n', 'exit is observable before its news is acknowledged');
+    const acquire = { ...Promise.withResolvers(), entered: false };
+    acquireGate = acquire;
+    const beforeAcquire = reports.length;
+    reads[1][2].resolve({ chunks: [{ seq: 3, data: new TextEncoder().encode('gated') }], closed: false, news: [3] });
+    await until(() => acquire.entered && reports.length > beforeAcquire && !reports.at(-1).blocked, 'the output suspended at its acquire barrier');
+    assert.equal(reports.at(-1).frontier, 2, 'a suspended output does not acknowledge contiguous news');
+    assert.equal(reports.at(-1).stdout, 'spawn:77\nstdout:late\nstdout:resume\n', 'the data effect has not landed behind its barrier');
+    const beforeRelease = reports.length;
+    acquire.resolve();
+    await until(() => reads[1].length === 4 && reports.length > beforeRelease && reports.at(-1).blocked, 'the output applied and the parent blocked again');
+    assert.equal(reads[1][3].sinceSeq, 3);
+    assert.equal(reports.at(-1).frontier, 3, 'the applied output advances the blocked frontier');
+    assert.equal(reports.at(-1).stdout, 'spawn:77\nstdout:late\nstdout:resume\nstdout:gated\n', 'the data effect precedes its acknowledgement');
 
-    reads[1][2].resolve({ chunks: [], closed: true, news: [4] });
-    await until(() => blockedAt(4), 'stream-end news acknowledged while stderr remains open');
-    reads[2][0].resolve({ chunks: [], closed: true, news: [5] });
+    waits[1].resolve({ done: true, started: true, exitCode: 7, signal: null, news: [4, 2] });
+    await until(() => blockedAt(4), 'exit news acknowledged while the streams remain open');
+    assert.equal(blockedAt(4).stdout, 'spawn:77\nstdout:late\nstdout:resume\nstdout:gated\nexit:7:null\n', 'exit is observable before its news is acknowledged');
+
+    reads[1][3].resolve({ chunks: [], closed: true, news: [5] });
+    await until(() => blockedAt(5), 'stream-end news acknowledged while stderr remains open');
+    reads[2][0].resolve({ chunks: [], closed: true, news: [6] });
     const result = await (await running).json();
     assert.equal(result.exitCode, 0, JSON.stringify(result));
     assert.equal(log.stderr, '');
-    assert.equal(log.stdout, 'spawn:77\nstdout:late\nstdout:resume\nexit:7:null\nclose:7:null\n');
+    assert.equal(log.stdout, 'spawn:77\nstdout:late\nstdout:resume\nstdout:gated\nexit:7:null\nclose:7:null\n');
     assert.deepEqual(log.exit, { code: 0, reason: '' });
     assert.ok(reports.every((report, i) => report.seq === i + 1), 'blocked reports retain their send order');
   },
