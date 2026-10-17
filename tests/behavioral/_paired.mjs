@@ -6,29 +6,38 @@
 // inside the suite and 1087 ms alone on a fresh deploy, so a bound either
 // failed a good commit or let a slow one through by luck.
 //
-// remote-probes stands up three fresh Previews for a run that selects one of
-// these probes: a1 and a2 of the baseline commit, b of the candidate, and
-// hands them over in NIMBUS_PAIRED_TARGETS. Fresh and alike, so neither side
-// is warmer than the other; two of the baseline, so the A/A spread carries
-// the variance between deployments as well as between samples. Each round
-// measures the three at once, one per Preview, so they share that moment's
-// conditions.
+// remote-probes stands up four fresh Previews for a run that selects one of
+// these probes: a1 and a2 of the baseline commit, b1 and b2 of the
+// candidate, and hands them over in NIMBUS_PAIRED_TARGETS. Fresh and alike,
+// so neither side is warmer than the other. Each round measures the four at
+// once, one per Preview, so they share that moment's conditions.
 //
-// On a log scale, a round's d = ln b - (ln a1 + ln a2) / 2 and its null
-// n = ln a1 - ln a2. The candidate is slower when the 95% bootstrap interval
-// of the median d lies above 0 and the median d lies above the A/A interval
-// (the median n's). The bootstrap is seeded, so the same samples always
-// grade the same.
+// Two of each side, because a Preview can be slower than another of the
+// same code for a whole run: where it landed, not what it runs.
+// ruby-gem-require's three arms had one 300-500 ms behind the other two in
+// 9 of 14 runs, a1, a2 or b at random, and graded the candidate slower each
+// time it was b. Slower means the code, so it must hold for both candidate
+// Previews against both baseline ones.
+//
+// On a log scale, for each pair of a candidate arm bi and a baseline arm aj,
+// a round's d_ij = ln bi - ln aj. The A/A null is ln a1 - ln a2 and the B/B
+// null ln b1 - ln b2; their spread is the larger magnitude either median's
+// interval reaches. The candidate is slower when every d_ij's 95% bootstrap
+// interval lies above 0 and its median above that spread. The reported
+// shift is the candidates' mean over the baselines' mean. The bootstrap is
+// seeded, so the same samples always grade the same.
 import { median, medianInterval } from '../../scripts/lib/statistics.mjs';
 import { createProbeTarget } from './_session-transport.mjs';
 
 /** The probes graded this way, as a selection names them. */
 export const PAIRED_PROBES = ['perf-regression/cold-start', 'perf-regression/first-paint', 'perf-regression/install-warm', 'perf-regression/clone-fast'];
 
-/** The baseline twice and the candidate once. */
-export const ARMS = ['a1', 'a2', 'b'];
+/** The baseline's arms and the candidate's. */
+export const BASELINE_ARMS = ['a1', 'a2'];
+export const CANDIDATE_ARMS = ['b1', 'b2'];
+export const ARMS = [...BASELINE_ARMS, ...CANDIDATE_ARMS];
 
-/** Where remote-probes hands over the arms: JSON { a1|a2|b: { base, token } }. */
+/** Where remote-probes hands over the arms: JSON { a1|a2|b1|b2: { base, token } }. */
 export const PAIRED_ENV = 'NIMBUS_PAIRED_TARGETS';
 
 /** Below this share of planned rounds measured on every arm, the run does not grade. */
@@ -48,9 +57,9 @@ export function requirePairedTargets(label, env = process.env) {
 }
 
 /**
- * `rounds` rounds of `measure(target, arm)`, the three arms at once in each.
+ * `rounds` rounds of `measure(target, arm)`, the four arms at once in each.
  * `measure` resolves to its metrics (`{ name: ms }`) or throws why the arm
- * could not be measured. A round counts only if all three arms measured. A
+ * could not be measured. A round counts only if every arm measured. A
  * candidate's throw is the candidate failing; a baseline's loses its round.
  */
 export async function measurePaired(arms, rounds, measure) {
@@ -61,11 +70,11 @@ export async function measurePaired(arms, rounds, measure) {
     const settled = await Promise.allSettled(ARMS.map((arm) => measure(arms[arm], arm)));
     const failed = settled.flatMap((outcome, i) => outcome.status === 'rejected'
       ? [{ round, arm: ARMS[i], error: outcome.reason?.message ?? String(outcome.reason) }] : []);
-    for (const failure of failed) (failure.arm === 'b' ? candidateFailures : baselineFailures).push(failure);
+    for (const failure of failed) (CANDIDATE_ARMS.includes(failure.arm) ? candidateFailures : baselineFailures).push(failure);
     if (failed.length === 0) {
       const sample = Object.fromEntries(ARMS.map((arm, i) => [arm, settled[i].value]));
       measured.push(sample);
-      console.log(`  round ${round}: ${Object.keys(sample.b).map((metric) => `${metric} ${ARMS.map((arm) => `${arm}=${sample[arm][metric].toFixed(0)}`).join(' ')} ms`).join('; ')}`);
+      console.log(`  round ${round}: ${Object.keys(sample.b1).map((metric) => `${metric} ${ARMS.map((arm) => `${arm}=${sample[arm][metric].toFixed(0)}`).join(' ')} ms`).join('; ')}`);
     } else {
       console.log(`  round ${round}: not measured — ${failed.map((failure) => `${failure.arm}: ${failure.error}`).join('; ')}`);
     }
@@ -74,23 +83,31 @@ export async function measurePaired(arms, rounds, measure) {
 }
 
 /**
- * Grade one metric over measured rounds ({ a1, a2, b } of positive ms).
- * `ratio` is b over the baseline at the median round, with its interval;
- * `aa` is a1 over a2's interval; `slower` is the verdict.
+ * Grade one metric over measured rounds ({ a1, a2, b1, b2 } of positive ms).
+ * `ratio` is the candidates over the baselines at the median round, with its
+ * interval; `aa` and `bb` are a1 over a2's and b1 over b2's intervals;
+ * `slower` is the verdict.
  */
 export function gradePaired(rounds) {
-  const d = rounds.map(({ a1, a2, b }) => Math.log(b) - (Math.log(a1) + Math.log(a2)) / 2);
-  const n = rounds.map(({ a1, a2 }) => Math.log(a1) - Math.log(a2));
-  const shift = median(d);
-  const [low, high] = medianInterval(d);
-  const [aaLow, aaHigh] = medianInterval(n);
+  const ln = (round, arm) => Math.log(round[arm]);
+  const mean = (round, arms) => arms.reduce((sum, arm) => sum + ln(round, arm), 0) / arms.length;
+  const shift = rounds.map((round) => mean(round, CANDIDATE_ARMS) - mean(round, BASELINE_ARMS));
+  const [low, high] = medianInterval(shift);
+  const aa = medianInterval(rounds.map((round) => ln(round, 'a1') - ln(round, 'a2')));
+  const bb = medianInterval(rounds.map((round) => ln(round, 'b1') - ln(round, 'b2')));
+  const spread = Math.max(...[...aa, ...bb].map(Math.abs));
+  const slower = CANDIDATE_ARMS.every((b) => BASELINE_ARMS.every((a) => {
+    const d = rounds.map((round) => ln(round, b) - ln(round, a));
+    return medianInterval(d)[0] > 0 && median(d) > spread;
+  }));
   return {
     rounds: rounds.length,
     medians: Object.fromEntries(ARMS.map((arm) => [arm, median(rounds.map((round) => round[arm]))])),
-    ratio: Math.exp(shift),
+    ratio: Math.exp(median(shift)),
     interval: [Math.exp(low), Math.exp(high)],
-    aa: [Math.exp(aaLow), Math.exp(aaHigh)],
-    slower: low > 0 && shift > aaHigh,
+    aa: aa.map(Math.exp),
+    bb: bb.map(Math.exp),
+    slower,
   };
 }
 
@@ -117,9 +134,9 @@ export function assertPaired(a, metric, result) {
   }
   const grade = gradePaired(result.measured.map((round) => Object.fromEntries(ARMS.map((arm) => [arm, round[arm][metric]]))));
   const range = ([low, high]) => `${low.toFixed(3)}-${high.toFixed(3)}`;
-  const detail = `candidate/baseline ${grade.ratio.toFixed(3)} (95% CI ${range(grade.interval)}); A/A ${range(grade.aa)}; `
-    + `medians a1 ${grade.medians.a1.toFixed(0)} a2 ${grade.medians.a2.toFixed(0)} b ${grade.medians.b.toFixed(0)} ms over ${grade.rounds} rounds`;
+  const detail = `candidate/baseline ${grade.ratio.toFixed(3)} (95% CI ${range(grade.interval)}); A/A ${range(grade.aa)}; B/B ${range(grade.bb)}; `
+    + `medians ${ARMS.map((arm) => `${arm} ${grade.medians[arm].toFixed(0)}`).join(' ')} ms over ${grade.rounds} rounds`;
   console.log(`  ${metric}: ${detail}`);
-  a.check(`${metric}: the candidate is not slower than the baseline beyond the A/A spread`, !grade.slower, detail);
+  a.check(`${metric}: the candidate is not slower than the baseline on both of its arms beyond the A/A and B/B spread`, !grade.slower, detail);
   return true;
 }

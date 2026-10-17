@@ -42,7 +42,7 @@
 // graded against a baseline measured in the same run, not a fixed bound.
 // When the selection has one, this builds the baseline (--baseline, default
 // the commit's merge-base with origin/main) beside the candidate, stands up
-// three fresh throwaways (lib/paired-previews.mjs: two of the baseline, one
+// four fresh throwaways (lib/paired-previews.mjs: two of the baseline, two
 // of the candidate), runs those probes in a task of their own beside the
 // parts, and deletes the throwaways when the run ends.
 //
@@ -167,7 +167,7 @@ try {
   const baseline = paired.length === 0 ? null
     : flags.baseline ? git(repo, ['rev-parse', '--verify', `${flags.baseline}^{commit}`]) : defaultBaseline(repo, sha);
   // Every release this run uploads, built at once and settled together: the
-  // candidate's for --deploy or the paired arm b, the baseline's for a1 and a2.
+  // candidate's for --deploy or the paired arms b1 and b2, the baseline's for a1 and a2.
   const commits = [...new Set([...(flags.deploy || baseline ? [sha] : []), ...(baseline ? [baseline] : [])])];
   const { fetchRelease } = await import('./lib/release.mjs');
   const built = await Promise.allSettled(commits.map((commit) => fetchRelease({ repo, sha: commit, targets: ['apps/probe'] })));

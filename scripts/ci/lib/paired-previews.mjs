@@ -1,6 +1,6 @@
-// The three Previews a run's paired perf probes measure
-// (tests/behavioral/_paired.mjs): a1 and a2 of the baseline commit, b of the
-// candidate, each a fresh throwaway built on CI and uploaded from here as
+// The four Previews a run's paired perf probes measure
+// (tests/behavioral/_paired.mjs): a1 and a2 of the baseline commit, b1 and b2
+// of the candidate, each a fresh throwaway built on CI and uploaded from here as
 // remote-probes --deploy uploads one. An upload reads its app's config from
 // a checkout at the release's own commit (uploadConfig), so a commit this
 // worktree is not at is uploaded from a detached worktree of it, made for
@@ -9,7 +9,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { ARMS } from '../../../tests/behavioral/_paired.mjs';
+import { ARMS, BASELINE_ARMS } from '../../../tests/behavioral/_paired.mjs';
 import { INSTALL } from '../../install-deps.mjs';
 import { NIMBUS_STATE } from './state-dir.mjs';
 
@@ -83,7 +83,7 @@ export function pairedPreviews({ repo, log = (line) => console.error(line) }) {
   const upload = async ({ baseline, candidate, releases }) => {
     // Imported once remote-probes has checked the install: the record path lives beside the deploy code.
     const { readState, throwawayStatePath } = await import('../../../tests/behavioral/_deploy-target.mjs');
-    const commit = { a1: baseline, a2: baseline, b: candidate };
+    const commit = Object.fromEntries(ARMS.map((arm) => [arm, BASELINE_ARMS.includes(arm) ? baseline : candidate]));
     const groups = new Map();
     for (const arm of ARMS) {
       const checkout = await checkoutAt(commit[arm]);
@@ -104,7 +104,7 @@ export function pairedPreviews({ repo, log = (line) => console.error(line) }) {
 
   return {
     /**
-     * Upload `releases[baseline]` as a1 and a2 and `releases[candidate]` as b.
+     * Upload `releases[baseline]` as a1 and a2 and `releases[candidate]` as b1 and b2.
      * One upload at a time per checkout (they share its .wrangler state), the
      * two checkouts at once; every upload settles before a failure is thrown.
      */

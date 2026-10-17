@@ -21,7 +21,7 @@ import { assertCandidateRounds, assertPaired, measurePaired, requirePairedTarget
 
 const a = makeAsserter('perf-regression/clone-fast');
 const arms = requirePairedTargets('perf-regression/clone-fast');
-console.log(`perf-regression/clone-fast — baseline ${arms.a1.base}, ${arms.a2.base}; candidate ${arms.b.base}`);
+console.log(`perf-regression/clone-fast — baseline ${arms.a1.base}, ${arms.a2.base}; candidate ${arms.b1.base}, ${arms.b2.base}`);
 
 // Three runs of the unchanged code against itself (2026-10-17), cut into
 // disjoint blocks and graded with each arm in turn as the candidate: at 40

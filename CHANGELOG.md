@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: the paired perf probes measure the candidate on two Previews
+  beside the baseline's two, and grade it slower only when both of its
+  Previews are slower than both of the baseline's. One Preview can run
+  slower than another of the same code for a whole run (ruby launch had
+  one of three 300-500 ms behind in 9 of 14 runs), and with one candidate
+  Preview that read as a regression whenever it was the candidate's.
 - Changed: a program whose launch waits 10 seconds at one stage (its
   preparation, its admission for a worker, or its load) logs one line to
   Workers Logs: `[facet-manager] launch stalled:` with its pid, command,
