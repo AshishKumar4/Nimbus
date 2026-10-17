@@ -84,19 +84,31 @@ const ref = useRef<NimbusTerminalRef>(null);
 For embedders that want their own UI:
 
 ```tsx
+import { useRef } from 'react';
 import { useNimbusSession } from '@nimbus-sh/react';
 
 function MyTerm({ token }: { token: string }) {
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const { ready, attachUrl, error } = useNimbusSession({
     endpoint: 'https://my-nimbus.workers.dev',
     token,
-    tenant: 'acme',
+    iframeRef,
   });
-  if (error)              return <div>Error: {error.message}</div>;
-  if (!ready || !attachUrl) return <div>Loading…</div>;
-  return <iframe src={attachUrl} style={{ width: '100%', height: 400 }} />;
+  if (error) return <div>Error: {error.message}</div>;
+  if (!attachUrl) return null;
+  // The iframe mounts at once: the shell inside it is what reports ready.
+  return (
+    <div style={{ position: 'relative', height: 400 }}>
+      <iframe ref={iframeRef} src={attachUrl} style={{ width: '100%', height: '100%', border: 'none' }} />
+      {!ready && <div style={{ position: 'absolute', inset: 0 }}>Loading…</div>}
+    </div>
+  );
 }
 ```
+
+`iframeRef` scopes the hook to its own iframe's events. Identity (`tenant`,
+`sub`) belongs to the token; only `<NimbusTerminal />` takes it, to show on
+its iframe.
 
 ## Why an iframe
 

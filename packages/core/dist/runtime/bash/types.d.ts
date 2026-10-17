@@ -219,7 +219,7 @@ export interface BashProc {
     ppid: number;
     /** Default-action signal delivered by the virtual kill syscall. */
     killedBy?: number;
-    /** After exec, caught handlers reset; only inherited SIG_IGN survives. */
+    /** While an exec'd coreutil runs, its inherited SIG_IGN; cleared at exit. */
     execIgnoredSignals?: bigint;
     /** Wake a JSPI child parked on input/output when it is terminated. */
     cancelWaits?: Set<() => void>;
@@ -365,12 +365,10 @@ export interface BashSession {
  */
 export type BashIo = {
     read(fd: number, iov: BashIovs, nread: number): SyscallResult;
-    /**
-     * Byte count, or null when the descriptor cannot be written to — currently
-     * only the read end of a pipe. It used to be "a write here cannot fail",
-     * which is how writing to a read end came to succeed silently.
-     */
-    write(fd: number, bytes: Uint8Array): number | null;
+    /** Byte count, or the errno of a refused write. */
+    write(fd: number, bytes: Uint8Array): number | {
+        errno: BashErrno;
+    };
     /**
      * Called once at the start of every fd_write, before any byte is written.
      * `undefined`: go ahead. A promise: the write waits for it (a JSPI child at

@@ -166,9 +166,9 @@ export declare function transformParser(service: {
  * reachability graph and OOMs the WASM facet on icon-libraries
  * that ship 1500+ exports).
  *
- * Instead we PARSE the barrel-index file, build a map of
- * `<exportedName> → <relative path inside the package>`, and emit
- * direct file imports:
+ * Instead we PARSE the barrel-index file (acorn, one statement at a time),
+ * build a map of `<exportedName> → <relative path inside the package>`,
+ * and emit direct file imports:
  *
  *   export { default as Home } from 'lucide-react/dist/esm/icons/house.js';
  *   export { default as FileText } from 'lucide-react/dist/esm/icons/file-text.js';
@@ -177,22 +177,21 @@ export declare function transformParser(service: {
  * reference (plus their transitive dependencies). The unused 1499
  * icons never enter the build graph at all.
  *
- * Supported re-export forms in the barrel index:
+ * Re-export forms read from the barrel index:
  *   export { default as Name } from './icons/x.js';
- *   export { default as Name1, default as Name2 } from './icons/x.js';
- *   export { Name } from './icons/x.js';
- *   export { Name as Alias } from './icons/x.js';
+ *   export { Name, Other as Alias } from './icons/x.js';
+ *   export * as ns from './ns.js';
+ *   export * from './foo.js';   (the names foo.js itself exports)
  *
- * NOT supported (rare in barrels — caller falls back if encountered):
- *   export * from './foo.js';
- *   export * as ns from './foo.js';
- *   import { X } from './foo.js'; export { X };  (split form)
+ * NOT followed: a nested `export *` inside an `export *` module, and the
+ * split form `import { X } from './foo.js'; export { X };`.
  *
  * Returns null if:
  *   - input set empty, OR
  *   - the barrel index file isn't found, OR
+ *   - the barrel index, or a module it `export *`s, does not parse, OR
  *   - none of the user's requested names appear in the parsed map.
- *     (Caller should then hard-error, NOT fall back to a CDN.)
+ *     (The caller then refuses the import; there is no CDN fallback.)
  *
  * `vfs` + `nmDir` (project's node_modules path) are required so we
  * can read the barrel index. `pkgName` is the top-level package; the

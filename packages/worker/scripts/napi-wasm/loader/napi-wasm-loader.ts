@@ -358,7 +358,8 @@ function nodeFsBridge(fs: NodeFs, handles: Map<number, BridgeHandle>, nextHandle
     | (flags.create ? C.O_CREAT : 0)
     | (flags.exclusive ? C.O_EXCL : 0)
     | (flags.truncate ? C.O_TRUNC : 0)
-    | (flags.append ? C.O_APPEND : 0);
+    | (flags.append ? C.O_APPEND : 0)
+    | (flags.followSymlinks === false ? C.O_NOFOLLOW : 0);
   const register = (path: string, flags: RuntimeOpenFlags, io: { fd?: number; file?: FileHandle }): BridgeHandle => {
     const h: BridgeHandle = {
       id: nextHandle.value++,
@@ -411,8 +412,9 @@ function nodeFsBridge(fs: NodeFs, handles: Map<number, BridgeHandle>, nextHandle
     open: (p: RuntimeFsPath, flags: RuntimeOpenFlags): Awaitable<RuntimeOpenedFile> => {
       const path = resolve(p);
       if (flags.directory) {
-        // A directory's metadata is always answerable without waiting.
-        const st = fs.statSync(path);
+        // A directory's metadata is always answerable without waiting. Not
+        // followed, a final link is no directory: ENOTDIR, as open(2) answers.
+        const st = flags.followSymlinks === false ? fs.lstatSync(path) : fs.statSync(path);
         if (!st.isDirectory()) fail('ENOTDIR');
         return { ...register(path, flags, {}), stat: toStat(st, path) };
       }
@@ -481,8 +483,10 @@ function nodeFsBridge(fs: NodeFs, handles: Map<number, BridgeHandle>, nextHandle
       else h.position = Number((h.fd !== undefined ? fs.fstatSync(h.fd) : fs.statSync(h.path)).size) + offset;
       return h.position;
     },
+    // The host's descriptor keeps the APPEND it was opened with: Node has no
+    // fcntl(F_SETFL), so a change of it is refused rather than claimed.
     setStatus: (id: number, status: { append?: boolean }) => {
-      handle(id).flags.append = !!status.append;
+      if (!!status.append !== handle(id).flags.append) fail('ENOTSUP');
     },
     ftruncate: (id: number, size: number): Awaitable<void> => {
       const h = handle(id);

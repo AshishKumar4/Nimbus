@@ -23,7 +23,7 @@ export interface PipeCounts {
 }
 
 /**
- * - `sigpipe`: no read end is open, now or ever; the write kills the writer.
+ * - `sigpipe`: no read end is open; deliver SIGPIPE, or EPIPE if it is ignored.
  * - `write`: append the bytes.
  * - `park`: wait (JSPI host) until the pipe drains below capacity or its
  *   readers leave, then decide again.
@@ -48,7 +48,8 @@ export function decideWrite(
   if (pipe.readers === 0) return 'sigpipe';
   if (host === 'jspi') return pipe.queued >= capacity ? 'park' : 'write';
   // Without JSPI nothing parks on a write (a synchronous reader could not wait
-  // for the writer it would hand control to); a pipe grows to its budget.
+  // for the writer it would hand control to). An empty pipe accepts one whole
+  // write even when it exceeds the budget; a nonempty pipe checks the budget.
   return pipe.queued > 0 && pipe.queued + bytes > budget ? 'nest' : 'write';
 }
 

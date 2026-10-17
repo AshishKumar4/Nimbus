@@ -41,10 +41,11 @@
  *   - stdout, stderr, exitCode: capture variables
  */
 import { generateSqliteShimCode } from './sqlite-shim.js';
+import { REAL_NOW_SOURCE } from './stop-replay.js';
 import { DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE } from './javascript-string-literal.js';
 import { CHILD_NEWS_SOURCE } from '@nimbus-sh/core/runtime/child-news.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
-import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_ARGUMENTS_PREAMBLE, NODE_ERROR_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE, NODE_WARNING_PREAMBLE, RELATIVE_WASM_PATHS_PREAMBLE, WASM_IMAGE_KEY_PREAMBLE, } from '../loaders/generated-workers.js';
+import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_ARGUMENTS_PREAMBLE, NODE_ERROR_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE, NODE_WARNING_PREAMBLE, POSIX_PATH_PREAMBLE, PRIMORDIALS_PREAMBLE, RELATIVE_WASM_PATHS_PREAMBLE, WASM_IMAGE_KEY_PREAMBLE, } from '../loaders/generated-workers.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { EGRESS_TLS_REFUSAL } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { EGRESS_TLS_CLIENT_SOURCE } from './egress-tls-client.js';
@@ -128,6 +129,11 @@ class __ProcessExit extends Error {
 ${NODE_ERROR_PREAMBLE}
 ${NODE_ARGUMENTS_PREAMBLE}
 ${NODE_WARNING_PREAMBLE}
+// The built-ins the module loading calls, captured now, before any program
+// code (core _shared/primordials.ts), and node:path's posix half on them
+// (core _shared/posix-path.ts, Node's lib/path.js).
+${PRIMORDIALS_PREAMBLE}
+${POSIX_PATH_PREAMBLE}
 Object.defineProperties(globalThis, {
   __nimbusNodeError: { value: __nimbusGeneratedNodeError, configurable: true },
   __nimbusNodeSystemError: { value: nodeSystemError, configurable: true },
@@ -149,6 +155,9 @@ const __nimbusReflectApply = Reflect.apply;
 // The runner's stop and replay (runtime/stop-replay.ts), private to its
 // module: null in a runner without one.
 const __nimbusReplay = typeof __nimbusStopReplay !== "undefined" ? __nimbusStopReplay : null;
+// The clock for the shims' own reads (REAL_NOW_SOURCE): a program's reads
+// are its tape, and these are not the program's.
+const __nimbusOwnNow = ${REAL_NOW_SOURCE};
 // A connection opened through workerd's own socket class, which a program
 // reaches past every export of node:net and node:tls (it is the prototype of
 // tls.TLSSocket), is something a second run would do again: counted where
@@ -838,17 +847,15 @@ function __vfsNormalizePath(p) {
 // \`join("", "hello.txt")\` was "/hello.txt" and sirv mapped every file under
 // "//name" and answered 404. Only resolution is the process's: resolve and
 // relative start from its cwd, not the Worker's.
+// Its posix half is Node's own (createPosixPath), on built-ins captured
+// before the program ran, as Node's path is: a program that replaces
+// String.prototype.charCodeAt has its own path, and the loader's, answer as
+// Node's do. matchesGlob is minimatch's, the platform's; win32 the platform's.
 const __pathMod = (() => {
   const native = __nativeBuiltin("path");
-  const posix = native.posix ?? native;
-  const resolve = (...p) => posix.resolve(cwd || "/home/user", ...p);
-  const mod = {
-    ...posix,
-    resolve,
-    relative: (from, to) => posix.relative(resolve(from), resolve(to)),
-    win32: native.win32,
-  };
-  mod.posix = mod;
+  const mod = createPosixPath(() => cwd || "/home/user");
+  mod.matchesGlob = (native.posix ?? native).matchesGlob;
+  mod.win32 = native.win32;
   return mod;
 })();
 
@@ -2011,7 +2018,7 @@ const __fsMod = (() => {
   // for itself, so only an entry keeps it). Reading the clock at each stat
   // instead gave a file a new mtime on every stat, which a watcher polling
   // mtimeMs reads as an edit.
-  function _ownWritten(k, at = Date.now()) {
+  function _ownWritten(k, at = __nimbusOwnNow()) {
     const entry = _nsOwnGet(k);
     if (entry !== undefined) entry.written = at;
     return at;
@@ -3412,7 +3419,7 @@ const __fsMod = (() => {
     const type = meta?.type || (meta?.isDir || meta?.isDirectory ? "directory" : "file");
     const isDir = type === "directory";
     const isSymlink = type === "symlink";
-    const now = Date.now();
+    const now = __nimbusOwnNow();
     // This process's own utimes, until it is reported back, ahead of the
     // namespace's (_recordLocalTimes).
     const own = key === undefined ? undefined : _localAttr("times", key)?.value;
@@ -4094,7 +4101,7 @@ const __fsMod = (() => {
     // the session unguarded, whichever wave a death stops at, and a replay
     // lands those bytes whatever has become of the source.
     const description = crypto.randomUUID().replaceAll("-", "");
-    const opened = __nimbusLogDecided(() => _vfsCall({ call: "open", path: destK, mode, create: true, truncate: true, fchmod: mode, description }));
+    const opened = __nimbusLogDecided(() => _vfsCall({ call: "open", path: destK, mode, access: "write", create: true, truncate: true, fchmod: mode, description }));
     const logged = _logParked(destAbs, { type: "call", call: { call: "write", path: destK, description, offset: 0, data: __nimbusVfsCellBytes(cell) } }, { acknowledged: true });
     const closed = __nimbusLogDecided(() => _vfsCall({ call: "close", path: destK, description }));
     const settle = () => _settleLocalAttr(own);
@@ -4898,7 +4905,9 @@ const __fsMod = (() => {
       else if (was.type === "directory") known.add(dir);
     }
     // Each directory this call makes, shallowest first, as mkdir -p takes
-    // them: one already there (or made by another) answers success.
+    // them: one already there (or made by another) answers success, and is
+    // what a run again finds of its run before (stop-replay found).
+    if (__nimbusReplay && opts?.recursive) for (const [dir, at] of created) if (known.has(at)) __nimbusReplay.found({ type: "call", call: { call: "mkdir", path: dir, mode, existing: "ok" } });
     const made = created.filter(([, dir]) => !known.has(dir)).map(([dir]) => ({ dir, mode }));
     const queued = _queueStructuralMutation(sent, "mkdir", p, () => Promise.all(
       made.map(({ dir, mode }) => _vfsCall({ call: "mkdir", path: dir, mode, existing: "ok" })),
@@ -5392,7 +5401,77 @@ const __fsMod = (() => {
       truncate: (bits & O_TRUNC) !== 0,
       exclusive: (bits & O_EXCL) !== 0,
       directory: (bits & O_DIRECTORY) !== 0,
+      // O_NOFOLLOW: a final symbolic link is not opened (ELOOP).
+      followSymlinks: (bits & O_NOFOLLOW) === 0,
+      // O_SYNC (O_DSYNC's bit among its own): each write is followed by what fsync does for it.
+      sync: (bits & O_SYNC) !== 0,
     };
+  }
+
+  /**
+   * open(2)'s refusals in open(2)'s order, from \`name\` (the name itself,
+   * not followed, where it was looked at: { link, directory, size }) and
+   * \`opened\` (what the open reaches): O_CREAT with O_DIRECTORY (EINVAL, as
+   * Linux since 6.4 answers), O_EXCL of a name there (EEXIST),
+   * O_NOFOLLOW of a final link (ELOOP, or ENOTDIR under O_DIRECTORY), then
+   * what is opened. Answers whether something is opened.
+   */
+  function _openRefusal(path, fl, name, opened) {
+    if (fl.create && fl.directory) throw _fsErr("EINVAL", "open", path);
+    if (fl.create && fl.exclusive && (name !== undefined || opened !== undefined)) throw _fsErr("EEXIST", "open", path);
+    if (!fl.followSymlinks && name?.link) throw _fsErr(fl.directory ? "ENOTDIR" : "ELOOP", "open", path);
+    if (opened?.directory) throw _fsErr("EISDIR", "open", path);
+    if (opened !== undefined && fl.directory) throw _fsErr("ENOTDIR", "open", path);
+    if (opened === undefined && !fl.create) throw _fsErr("ENOENT", "open", path);
+    return opened !== undefined;
+  }
+  function _openedAs(stats) {
+    return stats === undefined ? undefined : { link: stats.isSymbolicLink(), directory: stats.isDirectory(), size: stats.size };
+  }
+  /**
+   * Whether this view knows nothing is at \`absPath\` (the name itself when
+   * \`noFollow\`): a judgment of nothing else, refusing nothing. A namespace
+   * that cannot answer (a relist failed) knows nothing.
+   */
+  function _knownAbsent(absPath, noFollow) {
+    return _nsActive() && _statLadder(absPath, noFollow) === undefined && _nsUnlisted(absPath, !noFollow, false) === null;
+  }
+
+  /**
+   * An open that creates or truncates as the session judges and makes it, in
+   * one call (W7 open): O_EXCL, O_NOFOLLOW, what is there, the access asked,
+   * the umask, and the create or the truncate. A name a peer changed since this view looked is
+   * refused there, never followed. Stage 3's holder handles log the same call.
+   */
+  function _openCall(k, fl, mode) {
+    return {
+      call: "open", path: k, mode: mode & 0o7777, umask: __processUmask,
+      access: fl.read && fl.write ? "readwrite" : fl.write ? "write" : "read",
+      ...(fl.create ? { create: true } : {}),
+      ...(fl.truncate ? { truncate: true } : {}),
+      ...(fl.exclusive ? { exclusive: true } : {}),
+      ...(fl.followSymlinks ? {} : { nofollow: true }),
+    };
+  }
+
+  /**
+   * An open that empties the file or may make it, as this view keeps it:
+   * the file empty and parked, the open logged (_openCall) for the session
+   * to judge as it lands. The cell is the file's whole content
+   * when the open empties it or makes it new (O_TRUNC, O_EXCL), or when the
+   * session's answer is an empty file; a create that finds a file with
+   * bytes keeps them, which the session then answers. \`absent\`: this view
+   * knows nothing is there.
+   */
+  function _parkOpen(absPath, fl, mode, absent, acknowledged) {
+    const k = _strip(absPath);
+    _parkWrite(k, new Uint8Array(0), mode, absent);
+    const whole = fl.truncate || fl.exclusive;
+    if (whole) _parkedPartial.delete(k);
+    else _parkedPartial.set(k, __vfsWriteGenerations[k]);
+    // A create that may have found a file: the empty cell is its whole content when the file it opened is empty.
+    const partial = whole ? false : (answered) => answered.receipt === undefined || Number(answered.receipt.size) !== 0;
+    return _logParked(absPath, { type: "call", call: _openCall(k, fl, mode) }, { acknowledged, partial });
   }
 
   // ── FileHandle — returned from fs.promises.open ──
@@ -5454,7 +5533,7 @@ const __fsMod = (() => {
   class __FileHandle {
     constructor(path, flagInfo, size) {
       this._path = path;
-      this._abs = _target(path, true, "open");
+      this._abs = _target(path, flagInfo.followSymlinks, "open");
       this._flags = flagInfo;
       this._position = 0;
       this._size = size;
@@ -5485,18 +5564,12 @@ const __fsMod = (() => {
     async write(buffer, offset, length, position) {
       this._assertOpen("write");
       if (!this._flags.write) throw _fsErr("EBADF", "write", this._path);
-      let bytes;
-      let pos;
-      if (typeof buffer === "string") {
-        // write(string[, position[, encoding]])
-        bytes = _enc.encode(buffer);
-        pos = (offset === undefined || offset === null) ? null : Math.max(0, Number(offset));
-      } else {
-        const o = offset || 0;
-        const l = (length === undefined || length === null) ? buffer.length - o : Number(length);
-        bytes = buffer.subarray(o, o + l);
-        pos = (position === undefined || position === null) ? null : Math.max(0, Number(position));
-      }
+      // As writeSync and callback write read them: (string[, position[,
+      // encoding]]), (buffer[, offset[, length[, position]]]) or (buffer, {
+      // offset, length, position }).
+      const norm = _normWriteArgs(buffer, offset, length, position);
+      const bytes = norm.bytes;
+      const pos = _isCurrentPos(norm.pos) ? null : Math.max(0, Number(norm.pos));
       const at = this._flags.append ? this._size : (pos === null ? this._position : pos);
       if (bytes.byteLength === 0) {
         return { bytesWritten: 0, buffer };
@@ -5554,6 +5627,7 @@ const __fsMod = (() => {
       }
       this._size = Math.max(this._size, writeAt + bytes.byteLength);
       if (pos === null || this._flags.append) this._position = writeAt + bytes.byteLength;
+      if (this._flags.sync) await this.sync();
       return { bytesWritten: bytes.byteLength, buffer };
     }
     async readFile(opts) { return _readFileAsync(this._path, opts); }
@@ -5645,6 +5719,7 @@ const __fsMod = (() => {
         ? { type: "call", call: { call: "append", path: key, data: _ownedCell(bytes) } }
         : { type: "call", call: { call: "write", path: key, offset: at, data: _ownedCell(bytes) } });
       if (pos === null || this._flags.append) this._position = at + bytes.byteLength;
+      if (this._flags.sync) fsyncSync(this.fd);
       return bytes.byteLength;
     }
     _truncateSync(len) {
@@ -5698,54 +5773,87 @@ const __fsMod = (() => {
 
   async function _openAsync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
-    const createMode = _coerceMode(mode, 0o666);
-    const absPath = _target(path, true, "open");
     const supervisor = _supervisor();
-    let liveMeta = null;
-    if (supervisor && typeof supervisor.stat === "function") {
-      await _flushLocalPathToSupervisor(absPath, supervisor);
-      liveMeta = await _fsRpc(supervisor.stat(absPath), "stat", path, (result) => result);
+    // Without a session this view is all there is, as the sync open's.
+    if (!supervisor) return _fdHandle(openSync(path, flags, mode), "open");
+    const absPath = _target(path, fl.followSymlinks, "open");
+    if ((fl.create || fl.truncate) && !fl.directory) return _openWriteLive(path, absPath, fl, _coerceMode(mode, 0o666), supervisor);
+    // Any other open changes nothing and looks once, at the session: the
+    // name itself under O_NOFOLLOW, else what it reaches.
+    let there;
+    if (typeof supervisor.stat === "function") {
+      await _flushLocalPathToSupervisor(absPath, supervisor, fl.followSymlinks);
+      const meta = await _fsRpc(fl.followSymlinks ? supervisor.stat(absPath) : supervisor.lstat(absPath), "open", path, (result) => result);
+      there = meta ? { link: meta.type === "symlink", directory: meta.type === "directory", size: Number(meta.size) || 0 } : undefined;
+    } else {
+      there = _openedAs(fl.followSymlinks ? statSync(path, { throwIfNoEntry: false }) : lstatSync(path, { throwIfNoEntry: false }));
     }
-    if (liveMeta && liveMeta.type === "directory") throw _fsErr("EISDIR", "open", path);
-    let localStat = null;
-    if (!liveMeta) {
-      try { localStat = statSync(path); } catch {}
-      if (localStat && localStat.isDirectory()) throw _fsErr("EISDIR", "open", path);
-    }
-    const exists = !!liveMeta || !!localStat;
-    if (exists && fl.directory) throw _fsErr("ENOTDIR", "open", path);
-    if (!exists && !fl.create) throw _fsErr("ENOENT", "open", path);
-    if (exists && fl.create && fl.exclusive) throw _fsErr("EEXIST", "open", path);
-    let size = liveMeta ? (Number(liveMeta.size) || 0) : (localStat ? localStat.size : 0);
-    // The authority answered, so what it said is what the sync view keeps:
-    // its stat when something is there, and when nothing is, the file this
-    // open creates is the process's own.
-    if (!liveMeta && supervisor && !localStat && typeof __resident !== "undefined") _nsOwnSet(_strip(absPath), "file", { mode: createMode, settled: true });
-    if (!exists) {
-      await _writeFileAsync(path, new Uint8Array(0), { mode: createMode });
-      size = 0;
+    _openRefusal(path, fl, fl.followSymlinks ? undefined : there, there);
+    return new __FileHandle(path, fl, there.size);
+  }
+
+  /**
+   * An open that creates or truncates, at the session (_openCall), every
+   * errno the session's, answered before it returns. A file this view knows
+   * is not there is
+   * parked empty as the sync open's is (_parkOpen), and the answer kept as a
+   * write's (_writeFileAsync); one it holds that O_TRUNC empties is trimmed
+   * when the open lands, as a truncate's (_truncateAsync); a create that
+   * finds a file keeps nothing.
+   */
+  async function _openWriteLive(path, absPath, fl, mode, supervisor) {
+    await _flushLocalPathToSupervisor(absPath, supervisor, fl.followSymlinks);
+    const k = _strip(absPath);
+    const call = _openCall(k, fl, mode);
+    let answer;
+    if (fl.create && _knownAbsent(absPath, !fl.followSymlinks)) {
+      const logged = _parkOpen(absPath, fl, mode, true, false);
+      let kept = false;
+      const ticket = _beginFill(k);
+      try {
+        answer = await _fsRpc(logged.answer, "open", path, (result) => result);
+        await logged.claimed;
+        _markVfsStale();
+        const receipt = answer.receipt;
+        if (receipt !== undefined) kept = _noteLearnedStat(absPath, _receiptStat(receipt), ticket, typeof receipt.revision === "number" ? receipt.revision : undefined);
+      } finally {
+        _endFill(ticket);
+      }
+      if (!kept) await _learnLive(absPath, supervisor);
     } else if (fl.truncate) {
-      await _truncateAsync(path, 0);
-      size = 0;
+      const generation = __vfsWriteGenerations[k];
+      const localCell = _bundleLookup(absPath);
+      const sent = _ownMutation(
+        absPath,
+        () => _fsRpc(_vfsCall(call), "open", path, (result) => { answer = result; return _receiptOf(result); }),
+        () => {
+          if (__vfsWriteGenerations[k] === generation && localCell !== undefined) _truncateLocalCell(absPath, 0);
+        },
+      );
+      sent.catch(() => {});
+      await __nimbusQueueVfsMutation(absPath, () => sent);
+      _markVfsStale();
+    } else {
+      answer = await _fsRpc(_vfsCall(call), "open", path, (result) => result);
     }
+    const receipt = answer?.receipt;
+    const size = receipt !== undefined ? Number(receipt.size) || 0
+      : Number((fl.followSymlinks ? statSync : lstatSync)(path, { throwIfNoEntry: false })?.size ?? 0);
     return new __FileHandle(path, fl, size);
   }
 
   function openSync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
     const createMode = _coerceMode(mode, 0o666);
-    const absPath = _target(path, true, "open");
-    const st = statSync(path, { throwIfNoEntry: false });
-    if (st && st.isDirectory()) throw _fsErr("EISDIR", "open", path);
-    const exists = st !== undefined;
-    if (exists && fl.directory) throw _fsErr("ENOTDIR", "open", path);
-    if (!exists && !fl.create) throw _fsErr("ENOENT", "open", path);
-    // O_EXCL does not follow a final symlink: a dangling link is there.
-    if (fl.create && fl.exclusive && (exists || lstatSync(path, { throwIfNoEntry: false }) !== undefined)) throw _fsErr("EEXIST", "open", path);
+    const absPath = _target(path, fl.followSymlinks, "open");
+    // The name itself where O_NOFOLLOW or O_EXCL asks about it (O_EXCL: a dangling link is there).
+    const name = !fl.followSymlinks || (fl.create && fl.exclusive) ? _openedAs(lstatSync(path, { throwIfNoEntry: false })) : undefined;
+    const st = fl.followSymlinks ? statSync(path, { throwIfNoEntry: false }) : undefined;
+    const exists = _openRefusal(path, fl, name, fl.followSymlinks ? _openedAs(st) : name);
     if (fl.read && exists) _ensureReadable(absPath, "open", path);
-    if (fl.write || !exists) _ensureWritable(absPath, "open", path);
+    if (fl.write || fl.truncate || !exists) _ensureWritable(absPath, "open", path);
     if (!exists) _noteCreation(_strip(absPath), createMode);
-    let size = exists ? st.size : 0;
+    let size = exists ? (st ?? lstatSync(path)).size : 0;
     // O_TRUNC means "make it empty", so zeroing is the requested semantic,
     // and creating a genuinely absent file is too. O_APPEND must NEVER
     // pre-create: "exists" is only as good as the sync view, so a file
@@ -5753,8 +5861,9 @@ const __fsMod = (() => {
     // time would destroy exactly the content the caller asked to preserve.
     if (fl.truncate || (!exists && !fl.append)) {
       // Creating or truncating also makes the file resident, which is what
-      // lets the sync read/write path serve it without blocking.
-      writeFileSync(path, new Uint8Array(0), { mode: createMode });
+      // lets the sync read/write path serve it without blocking; the open
+      // itself is the session's to judge again as it lands (_parkOpen).
+      _parkOpen(absPath, fl, createMode, !exists, true);
       size = 0;
     }
     return new __FileHandle(path, fl, size).fd;
@@ -5777,7 +5886,9 @@ const __fsMod = (() => {
   }
   function _isStdioFd(fd) { const n = Number(fd); return n === 0 || n === 1 || n === 2; }
   // stdio descriptors are character devices, not VFS files.
-  // A terminal's: a character device, crw--w----.
+  // A terminal's: a character device, crw--w----. Its times are read as
+  // the program reads the clock: only the program asks for them, as many
+  // times in a run again as in its run, so a run again is handed the same.
   function _stdioStat() {
     const now = Date.now();
     return _newStats(0o020620, cred.uid, cred.gid, undefined, 0, now, now, now, 1);
@@ -12176,7 +12287,9 @@ const __nimbusCallbackWork = {
 // Those whose functions throw workerd's NodeError (node-builtin-errors-match-node-workerd).
 for (const name of ["zlib", "crypto"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name], { callbacks: true, prototypes: true, held: __nimbusCallbackWork[name] });
 builtins.string_decoder = __nimbusNodeErrorsAt(builtins.string_decoder, { prototypes: true });
-for (const name of ["url", "path", "vm"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name]);
+for (const name of ["url", "vm"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name]);
+// node:path's posix half throws Node's errors itself (core _shared/posix-path.ts); matchesGlob is workerd's.
+builtins.path.matchesGlob = __nimbusNodeErrorsOf(builtins.path.matchesGlob, false, null);
 __nimbusNodeErrorsAt(builtins.events, { inPlace: true });
 __nimbusNodeErrorsAt(__BufferMod, { inPlace: true });
 // Node's argument checks in front of them (node-builtin-fronts.ts).
@@ -12874,6 +12987,9 @@ function __nimbusEsmRequire(id, required, parent = undefined) {
   }
   // It threw: what it threw, once its evaluation's rejection said.
   if (record.state === __ESM_FAILED && record.error !== undefined) throw record.error.value;
+  // An import()'s link failed in it: that failure, as Node's loader keeps the ModuleJob (esm-late-link keptFailure).
+  const kept = __nimbusLateModule?.keptFailure(__nimbusEsm.table[id][1]);
+  if (kept !== undefined) throw kept;
   const filename = "/" + __nimbusEsm.table[id][1];
   // Evaluating, for an import: Node's ESM loader's refusal, naming the requirer.
   if (record.state === __ESM_BEGAN || (record.state === __ESM_ADOPTED && record.namespace === null && record.requirer === undefined)) {
@@ -13012,16 +13128,23 @@ async function __nimbusEsmImport(id) {
 // one the interpreter took) is checked first as a late graph is (core
 // esm-late-link.ts linkAdopted): every imported name, before any of it
 // runs, unless a link checked it already.
+// A module an import() of failed to link (its late link, or its record),
+// by its record's key: the failure stays, as Node's loader keeps a
+// ModuleJob that did not link, and a later import of it rejects with it,
+// whatever the program wrote since. import()'s alone: require() retries.
+const __nimbusImportFailures = new Map();
 async function __nimbusEsmInterpret(id, linked) {
   const key = __nimbusEsm.table[id][1];
   const url = __nimbusEsmUrl("/" + key);
   let record = __nimbusGraphRecords.get("/" + key);
   if (record === undefined) {
+    if (__nimbusImportFailures.has("/" + key)) throw __nimbusImportFailures.get("/" + key);
     try {
       if (!linked) __nimbusLateOf().linkAdopted(__nimbusLateLinkHost, id, key, url);
       record = __nimbusAdoptedRecord(id, key);
     } catch (e) {
       __nimbusExplainCommonJSGlobalLike(e, url, false);
+      __nimbusImportFailures.set("/" + key, e);
       throw e;
     }
   }
@@ -13547,14 +13670,16 @@ async function __nimbusImportGraph(resolution) {
   const key = resolution.format === "data" ? resolution.url : resolution.path.replace(/^\\/+/, "");
   const recordKey = resolution.format === "data" || resolution.url.includes("?") || resolution.url.includes("#") ? resolution.url : "/" + key;
   let record = __nimbusGraphRecords.get(recordKey);
-  try {
-    if (record === undefined || record.status === "unlinked") {
-      if (resolution.format !== "data" || __nimbusDataModuleOf(resolution.url).format === "module") __nimbusLateLink(key, resolution.url);
+  if (record === undefined || record.status === "unlinked") {
+    if (__nimbusImportFailures.has(recordKey)) throw __nimbusImportFailures.get(recordKey);
+    try {
+      if (resolution.format !== "data" || __nimbusDataModuleOf(resolution.url).format === "module") __nimbusLateLink(key, resolution.url, true);
+      record ??= __nimbusGraphRecord(resolution, undefined);
+    } catch (e) {
+      __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
+      __nimbusImportFailures.set(recordKey, e);
+      throw e;
     }
-    record ??= __nimbusGraphRecord(resolution, undefined);
-  } catch (e) {
-    __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
-    throw e;
   }
   const namespace = await __nimbusImportRecord(record, resolution.url);
   __esmNamespaces.set(resolution.url, namespace);
@@ -13578,7 +13703,7 @@ function __nimbusRequireRecord(record, parent) {
     __nimbusGraphSync = true;
     try {
       // Its late graph's names, as its import() checks them: a runtime module's.
-      if (record.status === "unlinked" && !state.adopted && !state.data) __nimbusLateLink(state.resolvedPath.replace(/^\\/+/, ""), state.moduleUrl);
+      if (record.status === "unlinked" && !state.adopted && !state.data) __nimbusLateLink(state.resolvedPath.replace(/^\\/+/, ""), state.moduleUrl, false);
       __nimbusPlanGraph(record, true);
       if (__nimbusGraphAwaits(record, new Set())) throw __nimbusRequireAsync(parent, state.filename);
       __nimbusGraph.link(record);
@@ -13659,9 +13784,11 @@ const __nimbusLateLinkHost = {
   },
   requests: (path, text, javaScript, goal) => __nimbusModuleRequests(path, text, javaScript, goal),
 };
-// Links the late graph of the module at \`key\` (\`url\`); the staged rows it imports, in order.
-function __nimbusLateLink(key, url) {
-  return __nimbusRegistryRequire("./${RUNTIME_ESM_LATE_MODULE}").linkLateGraph(__nimbusLateLinkHost, key, url);
+// Links the late graph of the module at \`key\` (\`url\`), an import()'s
+// (\`kept\`: a module it fails in keeps the failure) or a require()'s; the
+// staged rows it imports, in order.
+function __nimbusLateLink(key, url, kept) {
+  return __nimbusLateOf().linkLateGraph(__nimbusLateLinkHost, key, url, kept);
 }
 // A bundled copy of a package the runtime provides, bound to the runtime's
 // (provided-packages.ts rewriteProvidedCommonJsModules, PROVIDED_PACKAGE_HOOK):

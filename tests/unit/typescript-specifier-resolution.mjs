@@ -22,20 +22,20 @@
  *
  * Prefetch and the runtime require() must agree on every one of these, or a
  * file is shipped that the facet then cannot find (or vice versa), so the
- * mapping has ONE definition and this test evaluates the copy that is
- * actually emitted into the shim.
+ * mapping has ONE definition and this test runs the emitted shim's require
+ * and require.resolve over the bundle prefetch actually stages.
  */
 
 import assert from 'node:assert/strict';
 import { prefetchForRequire } from '../../packages/core/src/runtime/require-resolver.ts';
 import { typescriptFallbackCandidates } from '../../packages/core/src/_shared/typescript-specifiers.ts';
-import { NODE_SHIM_RESOLUTION_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import {
   bundleCompiledLoader,
   isBundleModuleCandidate,
 } from '../../packages/core/src/runtime/bundle-cell-transform.ts';
 import { FakeVfs } from './lib/fake-require-fs.mjs';
+import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
 
 /** What the entry's specifiers resolved to — the entry itself is always shipped. */
 const bundleOf = async (files, entryFile) =>
@@ -141,16 +141,47 @@ for (const [base, expected] of TABLE) {
 }
 
 // ── Prefetch and the emitted runtime cannot disagree ──────────────────────
-// The shim carries the same definition, not a copy of it. Evaluating the one
-// that is actually emitted is the only way to know they still agree — a
-// "keep in sync" comment has never caught a drift.
 {
-  const shim = generateShimsCode();
-  assert.ok(shim.includes(NODE_SHIM_RESOLUTION_PREAMBLE), 'the emitted shim carries the compiled resolution preamble');
-  // eslint-disable-next-line no-new-func
-  const emitted = new Function(`${NODE_SHIM_RESOLUTION_PREAMBLE}\nreturn typescriptFallbackCandidates;`)();
-  for (const [base, expected] of TABLE) {
-    assert.deepEqual(emitted(base), expected, `the emitted mapping agrees for ${base}`);
+  const entry = 'app/bin/cli.ts';
+  const cases = [
+    ['../src/program.js', 'app/src/program.ts'],
+    ['../src/view.js', 'app/src/view.tsx'],
+    ['../src/helper', 'app/src/helper.ts'],
+    ['../src/component', 'app/src/component.tsx'],
+    ['../src/mod', 'app/src/mod/index.ts'],
+    ['../src/a.mjs', 'app/src/a.mts'],
+    ['../src/literal.js', 'app/src/literal.js'],
+    ['../src/b.cts', 'app/src/b.cts'],
+  ];
+  const files = {
+    [entry]: cases.map(([specifier]) => `require(${JSON.stringify(specifier)});`).join('\n'),
+    ...Object.fromEntries(cases.map(([, path]) => [path, 'module.exports = __filename;\n'])),
+    'app/src/literal.ts': 'throw new Error("the literal .js must win");\n',
+  };
+  const { bundle } = await prefetchForRequire(new FakeVfs(files), files[entry], 'app/bin', entry);
+  const globals = Object.getOwnPropertyDescriptors(globalThis);
+  try {
+    const factory = new Function(
+      '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+      '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return builtins.module.createRequire(filename);',
+    );
+    const require = factory(bundle, {}, {}, null,
+      { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/app/bin', [], {}, '/' + entry, '/app/bin');
+    for (const [specifier, path] of cases) {
+      assert.ok(Object.hasOwn(bundle, path), `${specifier} is staged`);
+      assert.equal(require.resolve(specifier), '/' + path, `${specifier} resolves to the staged file`);
+      assert.equal(require(specifier), '/' + path, `${specifier} executes that file's module cell`);
+    }
+    assert.equal(Object.hasOwn(bundle, 'app/src/literal.ts'), false, 'the displaced sibling is not staged');
+    for (const load of [require, require.resolve]) {
+      assert.throws(() => load('../src/b.cjs'), (error) => error.code === 'MODULE_NOT_FOUND',
+        '.cjs does not reach .cts even when the .cts file is staged');
+    }
+  } finally {
+    for (const key of Reflect.ownKeys(globalThis)) {
+      if (!Object.hasOwn(globals, key)) delete globalThis[key];
+    }
+    Object.defineProperties(globalThis, globals);
   }
 }
 

@@ -176,12 +176,14 @@ export function createTransport(coherence, admission, namespace, cells) {
         const ranges = [];
         for (const file of files) {
             const parts = Math.max(1, Math.ceil(file.size / RESIDENT_CHUNK_BYTES));
+            const version = file.rev === 0 ? file.version ?? file.stat ?? null : null;
             for (let part = 0; part < parts; part++) {
                 const offset = part * RESIDENT_CHUNK_BYTES;
                 ranges.push({
                     path: file.path,
                     rev: file.rev,
                     epoch: file.epoch,
+                    version,
                     part,
                     parts,
                     offset,
@@ -217,7 +219,11 @@ export function createTransport(coherence, admission, namespace, cells) {
             }
             let results;
             try {
-                results = await supervisor.fsReadBatch(batch.map((r) => ({ path: r.path, offset: r.offset, length: r.length, expectedEpoch: r.epoch, expectedRevision: r.rev })));
+                results = await supervisor.fsReadBatch(
+                // A dated file at its revision; an undated one as its listing's stat named it.
+                batch.map((r) => (r.version === null
+                    ? { path: r.path, offset: r.offset, length: r.length, expectedEpoch: r.epoch, expectedRevision: r.rev }
+                    : { path: r.path, offset: r.offset, length: r.length, expectedFile: fileVersionOf(r.version) })));
             }
             catch {
                 for (const r of batch)
@@ -562,4 +568,8 @@ export function createTransport(coherence, admission, namespace, cells) {
         return true;
     };
     return { relist, fetchFiles, enumerate, lookupKeys, listDirectory, listSubtree };
+}
+/** The fields of a stat that name a file's version, alone, as the request carries them. */
+function fileVersionOf(stat) {
+    return { dev: stat.dev, ino: stat.ino, size: stat.size, mtime: stat.mtime, ctime: stat.ctime, revision: stat.revision };
 }

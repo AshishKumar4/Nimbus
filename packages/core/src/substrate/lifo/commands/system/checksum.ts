@@ -5,6 +5,7 @@ import { getopt, type GetoptSpec, type LongArgument } from '../../utils/args.js'
 import { decodeLossless, encodeLossless, inputChunks, readAllInput, writeBytes } from '../../utils/bytes-io.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
 import { shellEscape } from '../../../../_shared/shell-quote.js';
+import { bytesToHex } from '@nimbus-sh/platform/hex.js';
 
 // GNU coreutils 9.7's checksum tools on one engine: md5sum, sha1sum,
 // sha224sum, sha256sum, sha384sum, sha512sum, b2sum, cksum and sum. Input is
@@ -242,7 +243,7 @@ function unescapeName(name: string): string | null {
 }
 
 const toBase64 = (bytes: Uint8Array) => btoa(Array.from(bytes, (b) => String.fromCharCode(b)).join(''));
-const hex = (bytes: Uint8Array) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+const hex = bytesToHex;
 
 type Mode = 'normal' | 'status' | 'quiet' | 'warn';
 

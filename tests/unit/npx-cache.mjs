@@ -19,18 +19,9 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { resolveNpxBinary } from '../../packages/worker/src/npm/npx-install.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
+import { npmRegistry } from './lib/npm-registry.mjs';
 
 const VERSIONS = { p: ['1.0.0', '2.0.0'], tool: ['3.1.0'] };
-
-function resolved(name, version) {
-  return {
-    pkg: {
-      name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
-      dependencies: {}, main: 'index.js', bin: { [name]: 'cli.js' },
-    },
-    cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-  };
-}
 
 /** A session whose registry has `VERSIONS` (each bin `cli.js`), its project at /home/user/app holding `local`. */
 function session(local = {}) {
@@ -43,13 +34,9 @@ function session(local = {}) {
     root.writeFile(`home/user/app/node_modules/${name}/package.json`, JSON.stringify({ name, version, bin: { [name]: 'cli.js' } }));
     root.writeFile(`home/user/app/node_modules/${name}/cli.js`, '');
   }
-  const resultFor = (name, spec) => {
-    const versions = VERSIONS[name];
-    if (!versions) return { error: { kind: 'not-found', message: `Package '${name}' not found in registry` } };
-    const range = String(spec?.range ?? '');
-    const version = [...versions].reverse().find((v) => range === '' || range === 'latest' || range === '*' || v === range || v.startsWith(range.replace(/^\^/, '').split('.')[0] + '.')) ?? versions.at(-1);
-    return resolved(name, version);
-  };
+  const { resultFor } = npmRegistry(Object.fromEntries(Object.entries(VERSIONS).map(([name, versions]) => [
+    name, Object.fromEntries(versions.map((version) => [version, { bin: { [name]: 'cli.js' } }])),
+  ])));
   const env = makeFanoutEnv({ root, NM: 'tmp/.npx-cache/node_modules', resultFor, manifestFor: (p) => ({ name: p.name, version: p.version, bin: { [p.name]: 'cli.js' } }), filesFor: () => ({ 'cli.js': '' }) });
   const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
   const installer = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: () => {} });

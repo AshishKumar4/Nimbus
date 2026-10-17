@@ -44,11 +44,6 @@ export declare class ManifestDigest {
 }
 /** Content key of the empty file. */
 export declare const EMPTY_CONTENT_KEY: Uint8Array<ArrayBufferLike>;
-/**
- * Lowercase hex. A listing encodes one key per file, so this is on the
- * enumeration's hot path: the native encoder where the runtime has one, else
- * a table (measured 0.03 and 0.17 µs per 32-byte key, against 0.82 for a
- * toString/padStart loop).
- */
-export declare function hex(bytes: Uint8Array): string;
+/** Lowercase hex: the platform's (bytesToHex), the one spelling of a content key. */
+export { bytesToHex as hex } from '@nimbus-sh/platform/hex.js';
 //# sourceMappingURL=content-chunking.d.ts.map

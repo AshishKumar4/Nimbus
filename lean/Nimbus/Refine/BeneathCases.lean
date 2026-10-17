@@ -48,23 +48,8 @@ def genRaw (ms : List Mnt) : Gen (List String) := do
   return raw
 
 def genCase : Gen (Option Json) := do
-  let mut ms : List Mnt := []
-  let mut bid := 1
-  for pt in points do
-    if (← below 2) == 0 then
-      ms := ms ++ [⟨pt, bid⟩]
-      bid := bid + 1
-  if ms.isEmpty then return none
-  let mut root ← genBackend true ((← below 6) + 3) 1
-  for m in ms do
-    for i in [1:m.point.length] do
-      if (← below 2) == 0 then root ← addEnt root (m.point.take i) .dir
-  let mut bks : List (Nat × Backend) := [(0, root)]
-  for m in ms do
-    bks := bks ++ [(m.bk, ← genBackend ((← below 3) != 0) ((← below 5) + 1) 20)]
-  let get (l : List (Nat × Backend)) (k : Nat) : Backend :=
-    ((l.find? (·.1 == k)).map (·.2)).getD (memory [])
-  let S : St := { mounts := ms, bks := get bks }
+  let some (S, ks) ← genWorld | return none
+  let ms := S.mounts
   let cands : List Path := [[]] ++ ms.flatMap (fun m => (List.range (m.point.length + 1)).map m.point.take) ++
     ((S.bks 0).ents.map (·.1)) ++ ms.flatMap (fun m => (S.bks m.bk).ents.map (m.point ++ ·.1))
   let roots := cands.eraseDups.filter (isDirB S)
@@ -78,7 +63,6 @@ def genCase : Gen (Option Json) := do
     let abs := (← below 12) == 0
     let f := (← below 4) != 0
     steps := steps.push (stepJson S c R f abs raw)
-  let ks := bks.map (·.1)
   return some (.obj [("mounts", mountsJson ms),
     ("backends", .obj (ks.map fun k => (s!"b{k}", backendJson (S.bks k)))), ("steps", .arr steps.toList)])
 

@@ -16,8 +16,8 @@
 //   ended before the facet did); the unit test process-fs-journal drains a
 //   process that died mid-linger.
 
-import { BASE, AUTH_TOKEN, makeAsserter, mintSession, deleteSession, Terminal, heredocCommand, requestHeaders, sleep } from '../_driver.mjs';
-import { afterReset } from './_reset-window.mjs';
+import { BASE, AUTH_TOKEN, makeAsserter, mintSession, deleteSession, Terminal, heredocCommand, sleep } from '../_driver.mjs';
+import { afterReset, resetInstance } from './_reset-window.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -58,8 +58,8 @@ async function resetDuring(read) {
   t.cmd('node lr.js');
   await t.waitFor((buf) => /LR_READY held=\w+/.test(buf), 60_000, 'LR_READY');
   a.check('the process holds the subtree', /LR_READY held=true/.test(t.buf), t.buf.slice(-200));
-  const abort = await fetch(`${BASE}/s/${sid}/api/_diag/abort`, { method: 'POST', headers: requestHeaders({}, sid) });
-  a.check('_diag/abort answers the reset', abort.status === 204, `status=${abort.status}`);
+  const reset = await resetInstance(sid);
+  a.check('the abort reset the instance: the session answers from a new incarnation', reset.ok, reset.detail);
   const deadline = Date.now() + 15_000;
   while (!t.closed && Date.now() < deadline) await sleep(50);
   a.check('the reset ended the instance', t.closed, `closed=${t.closed} detail=${t.closeDetail}`);

@@ -16,12 +16,6 @@
  */
 import { type NimbusTerminalProps, type NimbusTerminalRef } from './types.js';
 /**
- * The URL the iframe attaches through: the session's shell, or `/new` for a
- * fresh session, at the endpoint's origin root, carrying the token for the
- * attach exchange.
- */
-export declare function nimbusAttachUrl(endpoint: string, token: string, sessionId: string | undefined): string;
-/**
  * The iframe's default `sandbox`, exported so an embedder that needs more can
  * extend it rather than restate it.
  *

@@ -1,5 +1,5 @@
 import { resolve, basename } from '../../utils/path.js';
-import { VFS_STRERROR } from '../../../../vfs/vfs-error.js';
+import { isVfsError, VFS_STRERROR } from '../../../../vfs/vfs-error.js';
 /**
  * cp's and mv's operands, as GNU's read them: `-t DIR SOURCE...` or
  * `SOURCE... DEST`. -t, or more than one source, needs a directory, and
@@ -13,7 +13,16 @@ export async function resolveCopyTargets(ctx, positional, targetDirectory) {
     if (sources.length === 0 || rawDest === undefined)
         return null;
     const dest = resolve(ctx.cwd, rawDest);
-    const stat = await ctx.vfs.stat(dest);
+    let stat;
+    try {
+        stat = await ctx.vfs.stat(dest);
+    }
+    catch (error) {
+        // A destination it cannot stat (one below a regular file: ENOTDIR), said as GNU's cp and mv say it.
+        if (!isVfsError(error))
+            throw error;
+        return `cannot stat '${rawDest}': ${VFS_STRERROR[error.code]}`;
+    }
     const destIsDir = stat?.type === 'directory';
     if ((sources.length > 1 || targetDirectory) && !destIsDir) {
         return `target ${targetDirectory ? 'directory ' : ''}'${rawDest}': ${VFS_STRERROR[stat === null ? 'ENOENT' : 'ENOTDIR']}`;

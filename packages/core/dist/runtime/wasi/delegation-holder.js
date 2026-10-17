@@ -102,7 +102,7 @@ export function delegationHolder(options) {
             // The first makes the file when it is not made yet: the creating open, and the bytes written through it.
             const creating = made !== undefined && at === 0;
             const making = creating ? { create: true, exclusive: true, ino: made, ...(file.umask === undefined ? {} : { umask: file.umask }) } : {};
-            const answer = client.submit({ type: 'call', call: { call: 'open', path: file.key, mode: file.mode, ...making, ...(handle.readable ? { read: true } : {}), description } }, { acknowledged: true });
+            const answer = client.submit({ type: 'call', call: { call: 'open', path: file.key, mode: file.mode, access: handle.readable ? 'readwrite' : 'write', ...making, description } }, { acknowledged: true });
             handle.session = answer.then((answered) => answered.receipt?.handle, () => undefined);
             if (creating && bytes.byteLength > 0) {
                 client.submit({ type: 'call', call: { call: 'write', path: file.key, ino, description, offset: 0, data: bytes.slice() } }, { acknowledged: true });
@@ -431,7 +431,7 @@ export function delegationHolder(options) {
             files.set(entry.ino, file);
             const description = descriptionId();
             changes++;
-            client.submit({ type: 'call', call: { call: 'open', path: to, mode: asked, ...(made === undefined ? {} : { ino: made, umask }), create: true, truncate: true, ...(keepMode ? { fchmod: mode } : {}), description } }, { acknowledged: true });
+            client.submit({ type: 'call', call: { call: 'open', path: to, mode: asked, access: 'write', ...(made === undefined ? {} : { ino: made, umask }), create: true, truncate: true, ...(keepMode ? { fchmod: mode } : {}), description } }, { acknowledged: true });
             client.submit({ type: 'call', call: { call: 'write', path: to, ...(made === undefined ? {} : { ino: made }), description, offset: 0, data: bytes.slice() } }, { acknowledged: true });
             client.submit({ type: 'call', call: { call: 'close', path: to, description } }, { acknowledged: true });
             return true;
@@ -525,13 +525,12 @@ export function delegationHolder(options) {
             const call = {
                 type: 'call',
                 call: {
-                    call: 'open', path: key, mode: (flags.mode ?? 0o666) & 0o7777,
+                    call: 'open', path: key, mode: (flags.mode ?? 0o666) & 0o7777, access: flags.read ? 'readwrite' : 'write',
                     ...(flags.umask === undefined ? {} : { umask: flags.umask }),
                     ...(flags.create ? { create: true } : {}),
                     ...(flags.truncate ? { truncate: true } : {}),
                     ...(flags.exclusive ? { exclusive: true } : {}),
                     ...(flags.followSymlinks === false ? { nofollow: true } : {}),
-                    ...(flags.read ? { read: true } : {}),
                     description,
                 },
             };

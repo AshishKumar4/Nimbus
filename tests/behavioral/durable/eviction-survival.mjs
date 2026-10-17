@@ -22,8 +22,8 @@
 //   when the deployment carries NIMBUS_PREVIEW_HOST_SUFFIX; a path-form
 //   deployment still proves the reservation + re-drive contract.
 
-import { BASE, AUTH_TOKEN, makeAsserter, mintSession, deleteSession, Terminal, heredocCommand, requestHeaders, fetchPort, sleep } from '../_driver.mjs';
-import { afterReset } from './_reset-window.mjs';
+import { BASE, AUTH_TOKEN, makeAsserter, mintSession, deleteSession, Terminal, heredocCommand, fetchPort, sleep } from '../_driver.mjs';
+import { afterReset, resetInstance } from './_reset-window.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 // The public host form is exercised only when the deployment carries
@@ -120,13 +120,8 @@ const bootBefore = started.output.match(/boot=([^\s]+)/)?.[1] ?? '';
 
 // ── 2. a real isolate reset; the app is re-driven, capability unchanged ─────
 {
-  // A request sent right after the 204 can still reach the pre-reset instance.
-  const abort = await fetch(`${BASE}/s/${sid}/api/_diag/abort`, {
-    method: 'POST',
-    headers: requestHeaders({}, sid),
-  });
-  a.check('_diag/abort answers the reset', abort.status === 204,
-    `status=${abort.status}`);
+  const reset = await resetInstance(sid);
+  a.check('the abort reset the instance: the session answers from a new incarnation', reset.ok, reset.detail);
 
   // The reset ends every WebSocket of the instance: this terminal's close marks it.
   const resetDeadline = Date.now() + 10_000;

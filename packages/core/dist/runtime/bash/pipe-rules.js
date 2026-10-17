@@ -17,7 +17,8 @@ export function decideWrite(pipe, bytes, host, capacity, budget) {
     if (host === 'jspi')
         return pipe.queued >= capacity ? 'park' : 'write';
     // Without JSPI nothing parks on a write (a synchronous reader could not wait
-    // for the writer it would hand control to); a pipe grows to its budget.
+    // for the writer it would hand control to). An empty pipe accepts one whole
+    // write even when it exceeds the budget; a nonempty pipe checks the budget.
     return pipe.queued > 0 && pipe.queued + bytes > budget ? 'nest' : 'write';
 }
 export function decideRead(pipe, host, kind) {

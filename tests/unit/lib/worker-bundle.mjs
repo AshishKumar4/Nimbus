@@ -5,11 +5,10 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { CLOUDFLARE_WORKERS_URL } from './cloudflare-workers.mjs';
 
 const root = new URL('../../../', import.meta.url).pathname;
-
-const CLOUDFLARE_WORKERS = 'export class DurableObject {}; export class WorkerEntrypoint {}; export class RpcTarget {};';
 
 /**
  * Bundle and import `exports` (repo-relative module path → the names to take
@@ -35,12 +34,12 @@ export async function importWorkerBundle(exports, { stubs = [] } = {}) {
       plugins: [{
         name: 'worker-bundle-stubs',
         setup(builder) {
-          builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'cloudflare:workers', namespace: 'stub' }));
+          builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: fileURLToPath(CLOUDFLARE_WORKERS_URL) }));
           stubs.forEach(({ filter }, i) => {
             builder.onResolve({ filter }, () => ({ path: String(i), namespace: 'stub' }));
           });
           builder.onLoad({ filter: /.*/, namespace: 'stub' }, ({ path }) => ({
-            contents: path === 'cloudflare:workers' ? CLOUDFLARE_WORKERS : stubs[Number(path)].contents,
+            contents: stubs[Number(path)].contents,
             loader: 'js',
           }));
         },

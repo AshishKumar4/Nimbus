@@ -1,9 +1,9 @@
 /**
  * session/agent-contract.ts - Wire contract between the session agent
  * endpoints (src/session/agent.ts) and the built chat island
- * (frontend/agent-chat). Pure types, no runtime imports, so the frontend
- * tsconfig (DOM lib) and the worker tsconfig (workers-types) can both
- * typecheck against the same source of truth.
+ * (frontend/agent-chat): types and pure functions, no runtime imports, so
+ * the frontend tsconfig (DOM lib) and the worker tsconfig (workers-types)
+ * can both typecheck against the same source of truth.
  */
 /**
  * Append a text/reasoning delta, coalescing into the trailing part of the
@@ -59,6 +59,42 @@ export function interruptRunningTools(parts, reason) {
         if (part.output === undefined)
             part.output = { error: reason };
     }
+}
+/**
+ * An assistant message's parts as stored: its object-valued parts, or, for
+ * an answer written before parts, its content as one text part. What each
+ * reader makes of them (the model's messages, the chat's cards) is its own.
+ */
+export function storedMessageParts(message) {
+    if (Array.isArray(message.parts)) {
+        return message.parts.filter((part) => !!part && typeof part === 'object');
+    }
+    return message.content ? [{ type: 'text', text: message.content }] : [];
+}
+function isJsonObject(value) {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+/**
+ * A tool result written before parts, as its own `tool`-role row: the
+ * tool's name (the payload's, else the row's, else 'tool'), its input, and
+ * its output (the payload's, else the row's whole content).
+ */
+export function legacyToolResult(message) {
+    let payload = {};
+    try {
+        const parsed = JSON.parse(message.content || '{}');
+        if (isJsonObject(parsed))
+            payload = parsed;
+    }
+    catch {
+        payload = { output: message.content };
+    }
+    const tool = payload.tool;
+    return {
+        toolName: (typeof tool === 'string' && tool) || message.name || 'tool',
+        input: payload.input,
+        output: payload.output ?? message.content,
+    };
 }
 export function isInterruptedMessage(message) {
     return message.status === 'interrupted' || message.aborted === true || typeof message.error === 'string';

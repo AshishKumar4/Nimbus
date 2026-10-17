@@ -1,6 +1,6 @@
 import type { RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from '../../../runtime/os-contracts.js';
 import type { VfsEvent } from '../../../vfs/events.js';
-import { syscallError } from '../../../vfs/vfs-error.js';
+import { errnoCodeOf, syscallError } from '../../../vfs/vfs-error.js';
 
 export interface NodeWatch {
   close(): void;
@@ -90,7 +90,15 @@ function bridgeFilesystem(bridge: RuntimeFsBridge, umask: () => number): NodeFil
         }
       } finally { fs.close(handle.id); }
     },
-    exists: path => fs.stat(path) !== null,
+    // As Node's existsSync: a stat it cannot make (ENOTDIR below a file, EACCES) is a no.
+    exists: path => {
+      try {
+        return fs.stat(path) !== null;
+      } catch (error) {
+        if (errnoCodeOf(error) !== undefined) return false;
+        throw error;
+      }
+    },
     isFile: path => fs.stat(path)?.type === 'file',
     isDirectory: path => fs.stat(path)?.type === 'directory',
     stat(path) {

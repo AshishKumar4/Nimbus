@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — 120 npm comparisons; about 60 s wall and 75 s CPU on armada.
 // npm-install-placement-invariant — seeded random registries, each installed
 // by npm 10 itself and by the worker's NpmInstaller (the one engine, core
 // _shared/npm-arborist, through the real installer over a fake fanout):
@@ -22,9 +23,9 @@ import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { pickPackumentVersion, satisfiesRange } from '../../packages/core/src/_shared/npm-semver.ts';
+import { satisfiesRange } from '../../packages/core/src/_shared/npm-semver.ts';
 import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
-import { registryRecord } from '../../packages/worker/src/npm/registry-record.ts';
+import { npmRegistry } from './lib/npm-registry.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { packageTarball, sriOf } from './lib/tarball-fixture.mjs';
 
@@ -50,14 +51,16 @@ function genRegistry() {
   }
   for (const name of NAMES) {
     for (const version of Object.keys(registry[name])) {
-      for (const dep of NAMES) if (dep !== name && rnd() < 0.3) registry[name][version][dep] = pickRange(registry, dep);
+      const dependencies = {};
+      for (const dep of NAMES) if (dep !== name && rnd() < 0.3) dependencies[dep] = pickRange(registry, dep);
+      registry[name][version] = { dependencies, dist: { tarball: `${base}/${name}-${version}.tgz`, integrity: integrity.get(`${name}-${version}.tgz`) } };
     }
   }
   return registry;
 }
 
 // The registry npm reads: the run's packuments, and every tarball any run can name.
-let current = {};
+let current = npmRegistry({});
 const tarballs = new Map();
 const integrity = new Map();
 const server = createServer((request, response) => {
@@ -68,22 +71,14 @@ const server = createServer((request, response) => {
     response.end(tarballs.get(path));
     return;
   }
-  const versions = current[path];
-  if (!versions) {
+  const packument = current.packumentFor(path);
+  if (!packument) {
     response.writeHead(404, { 'content-type': 'application/json' });
     response.end('{"error":"not found"}');
     return;
   }
-  const names = Object.keys(versions);
   response.writeHead(200, { 'content-type': 'application/json' });
-  response.end(JSON.stringify({
-    name: path,
-    'dist-tags': { latest: names.at(-1) },
-    versions: Object.fromEntries(names.map((version) => [version, {
-      name: path, version, dependencies: versions[version],
-      dist: { tarball: `${base}/${path}-${version}.tgz`, integrity: integrity.get(`${path}-${version}.tgz`) },
-    }])),
-  }));
+  response.end(JSON.stringify(packument));
 });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
@@ -97,7 +92,7 @@ for (const name of NAMES) {
 
 /** npm's tree for `deps` over `registry`: placement → version, or null where npm makes a link; and whether it succeeded. */
 async function npmTree(registry, deps) {
-  current = registry;
+  current = npmRegistry(registry);
   const dir = mkdtempSync(join(tmpdir(), 'npm-fuzz-'));
   try {
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'fuzz', version: '1.0.0', dependencies: deps }));
@@ -119,17 +114,7 @@ async function npmTree(registry, deps) {
 
 /** The worker's tree for `deps` over `registry`, as its lockfile records it. */
 async function workerTree(registry, deps) {
-  const resultFor = (name, spec) => {
-    const versions = registry[name] ?? {};
-    const version = pickPackumentVersion(versions, { latest: Object.keys(versions).at(-1) }, spec?.range ?? 'latest');
-    const empty = { cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
-    if (!version) return { ...empty, pkg: null, error: { type: 'unresolved', reason: `no version of ${name} satisfies ${spec?.range}` } };
-    const pkg = {
-      name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: `sha512-${name}-${version}`,
-      dependencies: versions[version], main: 'index.js', bin: {},
-    };
-    return { ...empty, pkg, cacheWrites: [registryRecord(pkg, Date.now())] };
-  };
+  const { resultFor } = npmRegistry(registry);
   const harness = createSqliteVfsTestHarness(new Database(':memory:'));
   try {
     const vfs = new SqliteVFS(harness.sql, harness.ctx);

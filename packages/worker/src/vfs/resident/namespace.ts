@@ -191,6 +191,10 @@ function joinTarget(linkPath: string, target: unknown): string {
 }
 
 export function createNamespace(coherence: Coherence, admission: Admission): Namespace {
+  // The clock, taken as the store is made, before a run that can stop tapes
+  // Date (stop-replay.ts): an own file's time is stamped when its write is
+  // answered, which a run and its run again do at other moments.
+  const realNow = Date.now;
   /** Paths of every symlink in the table: resolution walks only past these. */
   let links = new Set<string>();
   /**
@@ -515,7 +519,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
           && held.mode === Number(s.mode) && held.uid === Number(s.uid)
           && held.gid === Number(s.gid) && held.mtime === Number(s.mtime)
           && held.ctime === Number(s.ctime) && held.ino === Number(s.ino)
-          && held.rev === Number(entry.rev)
+          && held.dev === (Number(s.dev) || 0) && held.rev === Number(entry.rev)
           && (held.target ?? null) === (entry.linkTarget ?? entry.unlisted ?? null)) continue;
         put(t, k, s, entry.rev, entry.linkTarget, entry.unlisted ?? null);
       }
@@ -532,7 +536,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
       const t = coherence.require();
       const held = nsRowAt(t, k);
       if (held !== undefined && held.rev >= rev) return;
-      const now = Date.now();
+      const now = realNow();
       // A file the process created: its umask's mode, on the device of the
       // directory it is in, with one link, until the delta reports the
       // authority's own stat for it. A file it rewrote keeps its identity.

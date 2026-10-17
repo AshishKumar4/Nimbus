@@ -1,4 +1,4 @@
-import { syscallError } from '../../../vfs/vfs-error.js';
+import { errnoCodeOf, syscallError } from '../../../vfs/vfs-error.js';
 /**
  * The in-process Node interpreter runs `require` synchronously, so it demands
  * the authority's synchronous capability. The demand is made on first use:
@@ -42,7 +42,17 @@ function bridgeFilesystem(bridge, umask) {
                 fs.close(handle.id);
             }
         },
-        exists: path => fs.stat(path) !== null,
+        // As Node's existsSync: a stat it cannot make (ENOTDIR below a file, EACCES) is a no.
+        exists: path => {
+            try {
+                return fs.stat(path) !== null;
+            }
+            catch (error) {
+                if (errnoCodeOf(error) !== undefined)
+                    return false;
+                throw error;
+            }
+        },
         isFile: path => fs.stat(path)?.type === 'file',
         isDirectory: path => fs.stat(path)?.type === 'directory',
         stat(path) {

@@ -15,8 +15,8 @@
 // Red before: the runner was registered only under cpython-runner@2, so the
 // install of -1 was refused by its runner.
 
-import { BASE, makeAsserter, mintSession, deleteSession, Terminal, requestHeaders, stripAnsi, sleep } from '../_driver.mjs';
-import { afterReset } from '../durable/_reset-window.mjs';
+import { BASE, makeAsserter, mintSession, deleteSession, Terminal, stripAnsi, sleep } from '../_driver.mjs';
+import { afterReset, resetInstance } from '../durable/_reset-window.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('python/installed-build-survives-reset');
@@ -42,8 +42,8 @@ try {
   };
   await runs('after the install');
 
-  const abort = await fetch(`${BASE}/s/${sid}/api/_diag/abort`, { method: 'POST', headers: requestHeaders({}, sid) });
-  a.check('_diag/abort answers the reset', abort.status === 204, `status=${abort.status}`);
+  const reset = await resetInstance(sid);
+  a.check('the abort reset the instance: the session answers from a new incarnation', reset.ok, reset.detail);
   await t.close();
   await sleep(500);
   t = new Terminal(sid);

@@ -15,10 +15,12 @@
  *
  *   Bun.serve(opts)          — stub that throws "not implemented"; use
  *                               node:http or a Worker fetch handler.
- *   Bun.file(path)           — VFS-backed BunFile {text, json, exists,
- *                               arrayBuffer, size, type}.
- *   Bun.write(dst, data)     — VFS write, accepts string|Uint8Array|
- *                               Response|BunFile|Blob.
+ *   Bun.file(path)           — VFS-backed BunFile {text, json, bytes,
+ *                               arrayBuffer, stream, exists, size, type}
+ *                               (bun-file.ts, shared with opencode).
+ *   Bun.write(dst, data)     — VFS write of the bytes of a string (UTF-8),
+ *                               view, ArrayBuffer, Blob, Response or BunFile;
+ *                               answers the byte count.
  *   Bun.spawn(cmd, opts)     — node:child_process.spawn under the hood
  *                               (via the supervisor's child_process broker).
  *   Bun.password.hash/verify — Web Crypto SHA-256 + PBKDF2-style

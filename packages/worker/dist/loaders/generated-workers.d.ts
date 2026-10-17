@@ -22,7 +22,7 @@
  *   W7_MAGIC, W7_MAX_RECORD_BYTES.
  *
  * Tar size: 5.81 KiB
- * W7 size:  50.93 KiB
+ * W7 size:  51.48 KiB
  */
 export declare const TAR_STREAM_PREAMBLE: string;
 export declare const W7_FRAME_PREAMBLE: string;
@@ -39,6 +39,13 @@ export declare const RPC_DISPOSE_PREAMBLE: string;
  * first, for themselves and the preambles below, which use them by name.
  */
 export declare const NODE_ERROR_PREAMBLE: string;
+/**
+ * Declares `__nimbusPrimordials`, the built-ins core _shared/primordials.ts
+ * captures: the launch's (__nimbusLaunchCaptures), else its own; the preambles that read them are bound to it.
+ */
+export declare const PRIMORDIALS_PREAMBLE: string;
+/** Declares `function createPosixPath(cwd)`, node:path's posix half; the node shims call it. */
+export declare const POSIX_PATH_PREAMBLE: string;
 /**
  * Declares Node's argument validators, `function parseFileMode(value, name, def)`,
  * `function stringToFlags(flags, name)`, `function validateInt32(value, name, min, max)`
