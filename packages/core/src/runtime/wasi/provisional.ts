@@ -269,10 +269,10 @@ export function provisional(host: ProvisionalHost): Provisional {
     return !inode.unnamed;
   };
 
-  /** What an inode's first record takes as its baseline: its row, and its bytes where the view holds them. */
+  /** What an inode's first record takes as its baseline: its row, and its bytes where the view holds them (by the name the view has it at). */
   const baseline = (inode: Inode): InodeState => {
     const row = inode.row;
-    const held = inode.type === 'file' ? host.content(inode.key, row.revision) : undefined;
+    const held = inode.type === 'file' ? host.content(inode.origin, row.revision) : undefined;
     const bytes = held !== undefined && held.byteLength === row.size ? held.slice() : null;
     return { bytes, size: row.size, mode: row.mode, uid: row.uid, gid: row.gid, atime: row.atime, mtime: row.mtime, ctime: row.ctime };
   };
@@ -525,7 +525,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     if (inode.state !== null) {
       if (inode.state.bytes === null) {
         // Its baseline's bytes not held when it took its first record: held now, the records fold over them.
-        const held = !inode.unnamed && named(inode) ? host.content(inode.key, inode.row.revision) : undefined;
+        const held = !inode.unnamed && named(inode) ? host.content(inode.origin, inode.row.revision) : undefined;
         if (held === undefined || held.byteLength !== inode.row.size) return undefined;
         inode.base = { ...inode.base!, bytes: held.slice() };
         inode.state = foldOps(inode.base, inode.records.map((record) => record.op));
@@ -533,7 +533,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       return { bytes: inode.state.bytes!, size: inode.state.size };
     }
     if (!named(inode)) throw fsError('ESTALE', syscall, path);
-    const held = host.content(inode.key, inode.row.revision);
+    const held = host.content(inode.origin, inode.row.revision);
     return held !== undefined && held.byteLength === inode.row.size ? { bytes: held, size: held.byteLength } : undefined;
   };
 
@@ -791,8 +791,8 @@ export function provisional(host: ProvisionalHost): Provisional {
     inodeOf: (handleId) => {
       const desc = descs.get(handleId);
       if (desc === undefined || !named(desc.inode)) return undefined;
-      // The view's row: the bytes its records fold over.
-      return { key: desc.inode.key, entry: desc.inode.row };
+      // The view's name and row: the bytes its records fold over.
+      return { key: desc.inode.origin, entry: desc.inode.row };
     },
 
     keyOf: (handleId) => descOf(handleId).inode.key,
