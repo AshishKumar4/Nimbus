@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // The staged opencode chunk pack expands, a chunk at a time from its byte
 // range (OPENCODE_CHUNK_RANGES), to exactly the sources the pack holds: every
-// chunk, each to its own source, none more. The ranges are of the committed,
+// chunk, each to its own source, none more, and each ASCII. The ranges are of the committed,
 // pinned bytes, read through the same fetch a facet's load uses.
 
 import assert from 'node:assert/strict';
@@ -37,5 +37,9 @@ const sources = await fetchOpencodeChunkSources(env, OPENCODE_CHUNKS_PACK, OPENC
 const pack = JSON.parse(bytes.toString('utf8'));
 assert.deepEqual(Object.keys(sources).sort(), Object.keys(pack).sort(), 'every chunk, none more');
 for (const [name, source] of Object.entries(pack)) assert.equal(sources[name], source, `${name} decodes to its own source`);
+// One character above U+00FF makes V8 hold a whole source two-byte, twice its
+// size, in the session that assembles the module map and in the facet.
+const wide = Object.entries(sources).filter(([, source]) => /[^\x00-\x7f]/.test(source)).map(([name]) => name);
+assert.deepEqual(wide, [], `every chunk source is ASCII (${wide.length} are not)`);
 
 console.log(`opencode-chunk-ranges OK: ${Object.keys(sources).length} chunks decoded from their ranges`);

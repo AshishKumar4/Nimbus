@@ -22,48 +22,23 @@ import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { resolveVersion } from '../../packages/core/src/_shared/npm-semver.ts';
 import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
-import { registryRecord } from '../../packages/worker/src/npm/registry-record.ts';
+import { npmRegistry } from './lib/npm-registry.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const PROJ = 'app';
 const NM = `${PROJ}/node_modules`;
 
-/** The synthetic registry: name → version → dependencies (or { dependencies, peerDependencies }). */
+/** The synthetic registry: name → version → manifest fields. */
 const REGISTRY = {
-  a: { '1.0.0': { c: '^1.0.0', d: '^2.0.0', e: '^1.0.0' } },
-  b: { '1.0.0': { c: '^2.0.0' } },
-  c: { '1.0.0': {}, '2.0.0': { d: '^1.0.0', e: '^1.0.0' } },
+  a: { '1.0.0': { dependencies: { c: '^1.0.0', d: '^2.0.0', e: '^1.0.0' } } },
+  b: { '1.0.0': { dependencies: { c: '^2.0.0' } } },
+  c: { '1.0.0': {}, '2.0.0': { dependencies: { d: '^1.0.0', e: '^1.0.0' } } },
   d: { '1.0.0': {}, '2.0.0': {} },
   e: { '1.0.0': {} },
 };
 
-/** Answer a resolve task the way the packument facet would: max satisfying version. */
-function resolveFromRegistry(name, spec) {
-  const versions = REGISTRY[name] ?? {};
-  const version = resolveVersion(Object.keys(versions), spec?.range ?? 'latest');
-  if (!version) {
-    return {
-      pkg: null,
-      cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-      error: { type: 'unresolved', reason: `no version of ${name} satisfies ${spec?.range}` },
-    };
-  }
-  const entry = versions[version];
-  const dependencies = entry.dependencies ?? entry;
-  const peerDependencies = entry.peerDependencies;
-  const pkg = {
-    name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: `sha512-${name}-${version}`,
-    dependencies, peerDependencies, main: 'index.js', bin: {},
-  };
-  return {
-    pkg,
-    // The registry cache is what the next install's lock-check reads edges from.
-    cacheWrites: [registryRecord(pkg, Date.now())],
-    messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-  };
-}
+const { resultFor } = npmRegistry(REGISTRY);
 
 function makeInstaller(dependencies = { a: '^1.0.0', b: '^1.0.0' }) {
   const harness = createSqliteVfsTestHarness(new Database(':memory:'));
@@ -73,7 +48,7 @@ function makeInstaller(dependencies = { a: '^1.0.0', b: '^1.0.0' }) {
   root.writeFile(`${PROJ}/package.json`, JSON.stringify({ name: 'fixture', dependencies }));
   const log = [];
   const shardsSeen = [];
-  const env = makeFanoutEnv({ root, NM, resultFor: resolveFromRegistry, shardsSeen });
+  const env = makeFanoutEnv({ root, NM, resultFor, shardsSeen });
   const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
   const installer = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: (msg) => log.push(msg) });
   return { installer, log, root, shardsSeen };
@@ -166,8 +141,8 @@ assert.deepEqual(first.failed, [], `nothing fails: ${log.join('\n')}`);
 // its own c@1 beneath it.
 {
   Object.assign(REGISTRY, {
-    sa: { '1.0.0': { c: '^2.0.0', sb: '^1.0.0' } },
-    sb: { '1.0.0': { c: '^1.0.0' }, '2.0.0': {} },
+    sa: { '1.0.0': { dependencies: { c: '^2.0.0', sb: '^1.0.0' } } },
+    sb: { '1.0.0': { dependencies: { c: '^1.0.0' } }, '2.0.0': {} },
   });
   const sh = makeInstaller({ c: '^1.0.0', sa: '^1.0.0', sb: '^2.0.0' });
   const result = await sh.installer.install(PROJ, { pid: 1 });
@@ -187,8 +162,8 @@ assert.deepEqual(first.failed, [], `nothing fails: ${log.join('\n')}`);
 // stop at its depth cap and fail the install with a reason, not spin.
 {
   Object.assign(REGISTRY, {
-    x: { '1.0.0': { y: '^2.0.0' }, '2.0.0': { y: '^1.0.0' } },
-    y: { '1.0.0': { x: '^1.0.0' }, '2.0.0': { x: '^2.0.0' } },
+    x: { '1.0.0': { dependencies: { y: '^2.0.0' } }, '2.0.0': { dependencies: { y: '^1.0.0' } } },
+    y: { '1.0.0': { dependencies: { x: '^1.0.0' } }, '2.0.0': { dependencies: { x: '^2.0.0' } } },
   });
   const harness = createSqliteVfsTestHarness(new Database(':memory:'));
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -196,7 +171,7 @@ assert.deepEqual(first.failed, [], `nothing fails: ${log.join('\n')}`);
   cycleRoot.mkdir(NM, { recursive: true });
   cycleRoot.writeFile(`${PROJ}/package.json`, JSON.stringify({ name: 'cycle', dependencies: { x: '1.0.0' } }));
   const cycleLog = [];
-  const env = makeFanoutEnv({ root: cycleRoot, NM, resultFor: resolveFromRegistry });
+  const env = makeFanoutEnv({ root: cycleRoot, NM, resultFor });
   const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
   const cycleInstaller = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: (msg) => cycleLog.push(msg) });
   const result = await cycleInstaller.install(PROJ, { pid: 1 });

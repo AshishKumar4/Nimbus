@@ -506,7 +506,9 @@ import Nimbus.Refine
 #print axioms Nimbus.Runtime.Pipes.step_B
 #print axioms Nimbus.Runtime.Pipes.books
 #print axioms Nimbus.Runtime.Pipes.accounting
-#print axioms Nimbus.Runtime.Pipes.budget
+#print axioms Nimbus.Runtime.Pipes.local_write_budget
+#print axioms Nimbus.Runtime.Pipes.local_empty_write
+#print axioms Nimbus.Runtime.Pipes.jspi_write_capacity
 #print axioms Nimbus.Runtime.Pipes.drop_only_readerless
 #print axioms Nimbus.Runtime.Pipes.abort_named
 #print axioms Nimbus.Runtime.Pipes.meas_setProc
@@ -546,6 +548,11 @@ import Nimbus.Refine
 #print axioms Nimbus.Runtime.PipesTraces.bash_middle_global_budget_fails
 #print axioms Nimbus.Runtime.PipesTraces.ignored_sigpipe_is_epipe
 #print axioms Nimbus.Runtime.PipesTraces.ignored_sigpipe_killed_by_5bdfec12
+
+/-! ## Nimbus/Vfs/MountSelection.lean -/
+
+#print axioms Nimbus.Vfs.MountSelection.fold_spec
+#print axioms Nimbus.Vfs.MountSelection.optional_spec
 
 /-! ## Nimbus/Vfs/Composite.lean -/
 
@@ -597,19 +604,27 @@ import Nimbus.Refine
 /-! ## Nimbus/Vfs/CompositeCache.lean -/
 
 #print axioms Nimbus.Vfs.CompositeCache.sync_read_fresh
-#print axioms Nimbus.Vfs.CompositeCache.never_cached
+#print axioms Nimbus.Vfs.CompositeCache.unfed_entries_undated
+#print axioms Nimbus.Vfs.CompositeCache.revision_zero_never_vouches
+#print axioms Nimbus.Vfs.CompositeCache.undated_reconcile_drops
+#print axioms Nimbus.Vfs.CompositeCache.reconcile_preserves_other_evidence
+#print axioms Nimbus.Vfs.CompositeCache.sync_read_installed
+#print axioms Nimbus.Vfs.CompositeCache.undated_can_be_stale
 #print axioms Nimbus.Vfs.CompositeCache.a_path_keyed_cache_serves_the_old_backend
 
 /-! ## Nimbus/Vfs/CompositeFeed.lean -/
 
 #print axioms Nimbus.Vfs.CompositeFeed.ownerPt_mem
-#print axioms Nimbus.Vfs.CompositeFeed.ownerPt_fold_max
-#print axioms Nimbus.Vfs.CompositeFeed.ownerPt_fold_none
 #print axioms Nimbus.Vfs.CompositeFeed.ownerPt_max
 #print axioms Nimbus.Vfs.CompositeFeed.ownerPt_none
 #print axioms Nimbus.Vfs.CompositeFeed.ownerPt_between
 #print axioms Nimbus.Vfs.CompositeFeed.synthAnc_iff
 #print axioms Nimbus.Vfs.CompositeFeed.dropLast_length_lt
+#print axioms Nimbus.Vfs.CompositeFeed.walk_inv
+#print axioms Nimbus.Vfs.CompositeFeed.walk_entries_undated
+#print axioms Nimbus.Vfs.CompositeFeed.listed_absence
+#print axioms Nimbus.Vfs.CompositeFeed.installed_walks_closed
+#print axioms Nimbus.Vfs.CompositeFeed.walks_closed_of_retained
 #print axioms Nimbus.Vfs.CompositeFeed.structural_dropLast
 #print axioms Nimbus.Vfs.CompositeFeed.view_closed
 #print axioms Nimbus.Vfs.CompositeFeed.feed_values
@@ -626,10 +641,16 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.CompositeFeed.owner_first_routing_is_not_a_tree
 #print axioms Nimbus.Vfs.CompositeFeed.view_table_congr
 #print axioms Nimbus.Vfs.CompositeFeed.step_exact
+#print axioms Nimbus.Vfs.CompositeFeed.sqlite_generation_change_poisons
+#print axioms Nimbus.Vfs.CompositeFeed.sqlite_only_aba_relists
 #print axioms Nimbus.Vfs.CompositeFeed.a_mount_appearing_is_not_in_any_feed
-#print axioms Nimbus.Vfs.CompositeFeed.no_changes_never_staged
+#print axioms Nimbus.Vfs.CompositeFeed.no_changes_no_incremental
+#print axioms Nimbus.Vfs.CompositeFeed.unfed_view_is_walk
+#print axioms Nimbus.Vfs.CompositeFeed.unlisted_does_not_mean_absent
 #print axioms Nimbus.Vfs.CompositeFeed.fs_inv
 #print axioms Nimbus.Vfs.CompositeFeed.staged_closed
+#print axioms Nimbus.Vfs.CompositeFeed.staged_walk_bounded
+#print axioms Nimbus.Vfs.CompositeFeed.a_walk_can_hold_an_old_unfed_value
 #print axioms Nimbus.Vfs.CompositeFeed.cas_inv
 #print axioms Nimbus.Vfs.CompositeFeed.revision_unique
 #print axioms Nimbus.Vfs.CompositeFeed.gen_only_revisions_collide

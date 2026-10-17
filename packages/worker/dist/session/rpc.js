@@ -365,6 +365,10 @@ const FsReadBatchRangeSchema = z.object({
     length: FsRangeOffsetSchema.max(FS_READ_BATCH_REQUEST_BYTES),
     expectedEpoch: z.string().optional(),
     expectedRevision: FsRangeOffsetSchema.optional(),
+    // The file as a listing's stat named it (RuntimeReadOptions.expectedFile).
+    expectedFile: z.object({
+        dev: z.number(), ino: z.number(), size: z.number(), mtime: z.number(), ctime: z.number(), revision: z.number(),
+    }).optional(),
 });
 /**
  * A path's own metadata, not followed through a symlink: what `lstat`
@@ -682,7 +686,7 @@ export async function _rpcFsReadBatch(self, requests, pid) {
                 // read awaits, and a name looked up after it is no receipt for it.
                 entries.push(await readHydrating(hydrated, async () => {
                     const read = fs.readRange(request.path, request.offset, request.length, {
-                        expectedEpoch: request.expectedEpoch, expectedRevision: request.expectedRevision,
+                        expectedEpoch: request.expectedEpoch, expectedRevision: request.expectedRevision, expectedFile: request.expectedFile,
                     });
                     if (read instanceof Promise || read === null)
                         return { bytes: await read };

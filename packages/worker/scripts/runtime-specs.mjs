@@ -119,11 +119,9 @@ export const SPECS = {
     npm: {
       name: '@nimbus-sh/runtime-bash',
       summary: 'GNU bash 5.2.37 and BusyBox 1.37.0, cross-compiled to wasm32-wasi',
-      // The release that registers bash-runner@6, which gives bash's own
-      // instance nimbus_proc.stat_metadata: this tree's core (0.22.0, as
-      // published, registers @5 alone; the release that publishes -7 names
-      // its own version here).
-      core: '>=0.22.0',
+      // The first core that registers bash-runner@6, which gives bash's own
+      // instance nimbus_proc.stat_metadata (core 0.22.0 registers @5 alone).
+      core: '>=0.23.0',
     },
     files: [
       { src: 'bash.async.wasm',           vfs: 'share/bash/bash.async.wasm' },
@@ -252,8 +250,9 @@ export const SPECS = {
     npm: {
       name: '@nimbus-sh/runtime-cpython',
       summary: 'CPython 3.13.14, cross-compiled to wasm32-wasi, with its stdlib',
-      // The first core whose cpython-runner gives the module nimbus_fs and nimbus_proc.
-      core: '>=0.22.0',
+      // The first core that registers cpython-runner@3, which restarts a
+      // wait its host gave up on (core 0.22.0 registers @2 alone).
+      core: '>=0.23.0',
     },
     files: [
       { src: 'python.wasm',   vfs: 'share/cpython/python.wasm' },

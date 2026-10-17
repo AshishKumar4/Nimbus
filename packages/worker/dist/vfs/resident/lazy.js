@@ -132,7 +132,7 @@ export function createLazy(coherence, admission, namespace, cells, transport, sy
                     const cursor = coherence.cursor();
                     if (cursor === null)
                         return null;
-                    await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null }]);
+                    await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null, version: entry }]);
                     const bytes = view.content(k, entry.revision);
                     return bytes === undefined ? null : bytes;
                 },
@@ -142,7 +142,7 @@ export function createLazy(coherence, admission, namespace, cells, transport, sy
                     const cursor = coherence.cursor();
                     if (cursor === null || files.length === 0)
                         return;
-                    await transport.fetchFiles(supervisor, files.map(([k, entry]) => ({ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null })));
+                    await transport.fetchFiles(supervisor, files.map(([k, entry]) => ({ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null, version: entry })));
                 },
                 barrier: () => lazyBarrier(supervisor),
                 cursor: () => coherence.cursor(),

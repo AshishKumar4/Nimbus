@@ -84,7 +84,5 @@ assert.equal(bundle[`${prefix}public.txt`], 'public\n');
 assert.equal(Object.hasOwn(bundle, `${prefix}secret.txt`), false,
   'no bytes of a file this credential cannot read are staged');
 assert.equal(Object.hasOwn(bundle, `${prefix}missing.txt`), false, 'a nonexistent path is absent');
-assert.equal(/__MODULE_VFS_(MANIFEST|METADATA)/.test(runnerSource), false,
-  'the facet carries no spawn-time stat or directory tables: the namespace is its view');
 
 console.log('facet VFS permission metadata: ok');

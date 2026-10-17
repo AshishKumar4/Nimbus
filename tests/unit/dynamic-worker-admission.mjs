@@ -35,6 +35,9 @@ import {
   DO_DYNAMIC_WORKER_LIMIT,
   dynamicWorkerHeadroom,
   loaderLedgerStats,
+  launchWorkerKey,
+  suspendLaunchAdmission,
+  withLaunchAdmission,
 } from '../../packages/fabric/src/budgets.ts';
 import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
@@ -177,6 +180,36 @@ function wait(ctx, key, options, log) {
   assert.ok(!loaderLedgerStats(ctx).inFlightWorkers.includes('pre'));
   next.end();
   for (const e of ends.slice(1)) e();
+}
+
+// An aborted readmission can be retried; concurrent callers still join one wait.
+{
+  const ctx = freshCtx();
+  await withLaunchAdmission(ctx, { pid: 71 }, undefined, async () => {
+    const resume = suspendLaunchAdmission(ctx);
+    assert.ok(resume);
+    const ends = fill(ctx, DO_DYNAMIC_WORKER_LIMIT);
+    try {
+      const controller = new AbortController();
+      const first = resume(controller.signal);
+      assert.equal(resume(controller.signal), first, 'concurrent resumes join the same pending wait');
+      assert.equal(loaderLedgerStats(ctx).waiting, 1);
+      const reason = new Error('parked map reclaimed');
+      controller.abort(reason);
+      await assert.rejects(first, (error) => error === reason);
+      assert.equal(loaderLedgerStats(ctx).waiting, 0, 'the aborted readmission left the ledger');
+      const retry = resume();
+      assert.equal(resume(), retry, 'the retry also has only one pending wait');
+      assert.equal(loaderLedgerStats(ctx).waiting, 1);
+      ends.shift()();
+      await retry;
+      assert.deepEqual(loaderLedgerStats(ctx).holders[launchWorkerKey(71)], [71], 'the retry takes exactly one hold');
+      assert.equal(resume(), retry, 'a successful resume never takes another hold');
+    } finally {
+      for (const end of ends) end();
+    }
+  });
+  assert.equal(dynamicWorkerHeadroom(ctx), DO_DYNAMIC_WORKER_LIMIT);
 }
 
 // ── (5) a claim's own dispatches count inside it ────────────────────────────

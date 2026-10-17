@@ -11,7 +11,7 @@ import {
   FS_READ_BATCH_PATH_LIMIT,
   FS_READ_BATCH_REQUEST_BYTES,
 } from '@nimbus-sh/core/constants.js';
-import type { RuntimeVfsStat, VfsListEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { RuntimeFileVersion, RuntimeVfsStat, VfsListEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { FsReadBatchRequest } from '../../session/rpc.js';
 import type { Admission } from './admission.js';
 import type { Cells } from './cells.js';
@@ -44,7 +44,13 @@ const BATCH_BYTES = FS_READ_BATCH_REQUEST_BYTES;
 const MAX_LIST_PAGES = 4096;
 
 /** A file to fetch: its listed size and revision, the epoch they are on, and its content key. */
-export interface WantedFile { path: string; size: number; rev: number; epoch: string; ckey?: string | null; stat?: RuntimeVfsStat | null }
+/**
+ * A file to fetch, as a listing named it. An undated one (rev 0: a mounted
+ * backend's, which keeps no revision the session's) is read as the file its
+ * `version` (or its `stat`) names, or not at all; held, it still vouches for
+ * nothing (sync.ts).
+ */
+export interface WantedFile { path: string; size: number; rev: number; epoch: string; ckey?: string | null; stat?: RuntimeVfsStat | null; version?: RuntimeFileVersion | null }
 
 export interface FillReport { requested: number; filled: number; failed: number; bytes?: number; ranges?: number; copied?: number }
 
@@ -187,15 +193,17 @@ export function createTransport(coherence: Coherence, admission: Admission, name
     }
     // One flat list of ranges across all files, so packing is a single pass and
     // a 25 MiB file and a 40-byte one are the same shape.
-    const ranges: { path: string; rev: number; epoch: string; part: number; parts: number; offset: number; length: number; size: number; ckey: string | null }[] = [];
+    const ranges: { path: string; rev: number; epoch: string; version: RuntimeFileVersion | null; part: number; parts: number; offset: number; length: number; size: number; ckey: string | null }[] = [];
     for (const file of files) {
       const parts = Math.max(1, Math.ceil(file.size / RESIDENT_CHUNK_BYTES));
+      const version = file.rev === 0 ? file.version ?? file.stat ?? null : null;
       for (let part = 0; part < parts; part++) {
         const offset = part * RESIDENT_CHUNK_BYTES;
         ranges.push({
           path: file.path,
           rev: file.rev,
           epoch: file.epoch,
+          version,
           part,
           parts,
           offset,
@@ -235,7 +243,10 @@ export function createTransport(coherence: Coherence, admission: Admission, name
       let results;
       try {
         results = await supervisor.fsReadBatch!(
-          batch.map((r) => ({ path: r.path, offset: r.offset, length: r.length, expectedEpoch: r.epoch, expectedRevision: r.rev })),
+          // A dated file at its revision; an undated one as its listing's stat named it.
+          batch.map((r) => (r.version === null
+            ? { path: r.path, offset: r.offset, length: r.length, expectedEpoch: r.epoch, expectedRevision: r.rev }
+            : { path: r.path, offset: r.offset, length: r.length, expectedFile: fileVersionOf(r.version) })),
         );
       } catch {
         for (const r of batch) failedPaths.add(r.path);
@@ -515,4 +526,9 @@ export function createTransport(coherence: Coherence, admission: Admission, name
   };
 
   return { relist, fetchFiles, enumerate, lookupKeys, listDirectory, listSubtree };
+}
+
+/** The fields of a stat that name a file's version, alone, as the request carries them. */
+function fileVersionOf(stat: RuntimeFileVersion): RuntimeFileVersion {
+  return { dev: stat.dev, ino: stat.ino, size: stat.size, mtime: stat.mtime, ctime: stat.ctime, revision: stat.revision };
 }

@@ -675,7 +675,10 @@ export function suspendLaunchAdmission(ctx, pid) {
             throw new Error('Nimbus: a finished launch cannot regain its admission');
         }
         admission.end = hold;
-    })();
+    })().catch((error) => {
+        resumed = undefined;
+        throw error;
+    });
 }
 /**
  * Within an admitted launch on `ctx`'s ledger, a hold on that launch's own
@@ -699,6 +702,17 @@ export function beginAdmittedFetch(ctx) {
  * ledger. The hold counts for `pid` too, the process whose state says
  * whether the worker can be given back (see setProcessBlocked).
  */
+/**
+ * suspendLaunchAdmission where the current launch's admission holds its worker
+ * unclaimed, so a wait for credit inside it holds no worker (the lock order:
+ * credit, then a worker); undefined where it holds none to give back.
+ */
+export function suspendHeldAdmission(ctx) {
+    const admission = launchAdmission.getStore();
+    if (admission?.ctx !== ctx || admission.end === undefined || admission.claimed || admission.closed)
+        return undefined;
+    return suspendLaunchAdmission(ctx);
+}
 export function claimAdmission(ctx, pid) {
     const admission = launchAdmission.getStore();
     if (admission?.ctx !== ctx || admission.end === undefined || admission.claimed)

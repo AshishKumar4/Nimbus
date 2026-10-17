@@ -35,52 +35,68 @@ interface CreditWaiter {
   readonly onAbort?: () => void;
 }
 
-/** One FIFO queue over one byte capacity. */
+/**
+ * One byte capacity and its queues: FIFO, but for asks `ahead` of it (a
+ * running program's), which are served first, FIFO among themselves.
+ */
 class CreditLane {
   private current = 0;
   private peak = 0;
   private readonly waiters: CreditWaiter[] = [];
+  private readonly ahead: CreditWaiter[] = [];
 
   constructor(readonly capacity: number) {}
 
   get stats(): WeightedCreditPoolStats {
-    return { current: this.current, peak: this.peak, queued: this.waiters.length };
+    return { current: this.current, peak: this.peak, queued: this.waiters.length + this.ahead.length };
   }
 
-  tryAcquire(bytes: number): ResizableCreditLease | null {
-    if (this.waiters.length > 0 || this.current + bytes > this.capacity) return null;
+  /** Whether an ask ahead is queued. */
+  get aheadQueued(): boolean {
+    return this.ahead.length > 0;
+  }
+
+  /** Granted now, or null: an ask ahead waits only for asks ahead of it, any other for every ask queued. */
+  tryAcquire(bytes: number, ahead = false): ResizableCreditLease | null {
+    if (this.ahead.length > 0 || (!ahead && this.waiters.length > 0) || this.current + bytes > this.capacity) return null;
     return this.grant(bytes);
   }
 
-  /** The pool has refused an aborted `signal` already (WeightedCreditPool.acquire). */
   acquire(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease> {
-    const immediate = this.tryAcquire(bytes);
-    if (immediate) return Promise.resolve(immediate);
+    return this.wait(bytes, signal, false);
+  }
 
+  /** acquire, ahead of every ordinary ask: granted as soon as it fits, after only the asks ahead before it. */
+  acquireAhead(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease> {
+    return this.wait(bytes, signal, true);
+  }
+
+  private wait(bytes: number, signal: AbortSignal | undefined, ahead: boolean): Promise<ResizableCreditLease> {
+    if (signal?.aborted) return Promise.reject(abortError(signal));
+    const immediate = this.tryAcquire(bytes, ahead);
+    if (immediate) return Promise.resolve(immediate);
+    const queue = ahead ? this.ahead : this.waiters;
     return new Promise<ResizableCreditLease>((resolve, reject) => {
-      const waiter: CreditWaiter = {
+      const queued: CreditWaiter = {
         bytes,
         resolve,
         reject,
         signal,
         onAbort: signal
           ? () => {
-              const index = this.waiters.indexOf(waiter);
+              const index = queue.indexOf(queued);
               if (index < 0) return;
-              this.waiters.splice(index, 1);
-              signal.removeEventListener('abort', waiter.onAbort!);
+              queue.splice(index, 1);
+              signal.removeEventListener('abort', queued.onAbort!);
               reject(abortError(signal));
               this.drain();
             }
           : undefined,
       };
-      this.waiters.push(waiter);
-      signal?.addEventListener('abort', waiter.onAbort!, { once: true });
-      if (signal?.aborted) {
-        waiter.onAbort!();
-        return;
-      }
-      this.drain();
+      queue.push(queued);
+      signal?.addEventListener('abort', queued.onAbort!, { once: true });
+      if (signal?.aborted) queued.onAbort!();
+      else this.drain();
     });
   }
 
@@ -123,18 +139,20 @@ class CreditLane {
   }
 
   private drain(): void {
-    while (this.waiters.length > 0) {
-      const waiter = this.waiters[0];
-      if (waiter.signal?.aborted) {
-        this.waiters.shift();
-        waiter.signal.removeEventListener('abort', waiter.onAbort!);
-        waiter.reject(abortError(waiter.signal));
-        continue;
+    // Asks ahead first; the ordinary queue only once none is waiting.
+    for (const queue of [this.ahead, this.waiters]) {
+      for (let waiter = queue[0]; waiter !== undefined; waiter = queue[0]) {
+        if (waiter.signal?.aborted) {
+          queue.shift();
+          waiter.signal.removeEventListener('abort', waiter.onAbort!);
+          waiter.reject(abortError(waiter.signal));
+          continue;
+        }
+        if (this.current + waiter.bytes > this.capacity) return;
+        queue.shift();
+        waiter.signal?.removeEventListener('abort', waiter.onAbort!);
+        waiter.resolve(this.grant(waiter.bytes));
       }
-      if (this.current + waiter.bytes > this.capacity) return;
-      this.waiters.shift();
-      waiter.signal?.removeEventListener('abort', waiter.onAbort!);
-      waiter.resolve(this.grant(waiter.bytes));
     }
   }
 }
@@ -207,6 +225,32 @@ export class WeightedCreditPool {
     const shared = this.general.tryAcquire(bytes);
     if (shared || !this.isSmall(bytes)) return shared;
     return this.small!.tryAcquire(bytes);
+  }
+
+  /**
+   * A running program's ask (SupervisorAllocationBudget.acquireRunning),
+   * ahead of every ordinary ask: granted now if it fits beside what is held,
+   * whatever is queued (a small one in its reserve too), or else as soon as
+   * it fits in the shared capacity, the credit running work and reclaims
+   * free. It never waits on the reserve, which neither frees.
+   */
+  acquireAhead(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease> {
+    this.validateRequest(bytes);
+    const now = signal?.aborted ? null : this.tryAcquireAhead(bytes);
+    return now ? Promise.resolve(now) : this.general.acquireAhead(bytes, signal);
+  }
+
+  /** Whether a running program's ask (acquireAhead) waits. */
+  get aheadQueued(): boolean {
+    return this.general.aheadQueued;
+  }
+
+  /** acquireAhead's credit now, or null. */
+  tryAcquireAhead(bytes: number): ResizableCreditLease | null {
+    this.validateRequest(bytes);
+    const shared = this.general.tryAcquire(bytes, true);
+    const small = this.isSmall(bytes) ? this.small : null;
+    return shared ?? small?.tryAcquire(bytes, true) ?? null;
   }
 
   acquire(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease> {

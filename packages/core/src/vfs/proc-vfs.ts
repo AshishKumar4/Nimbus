@@ -29,7 +29,7 @@ export class ProcVFS implements VFS {
 
   constructor(files?: Map<string, ProcGenerator>, private readonly cred: VfsCred | null = null) {
     this.files = files ?? new Map();
-    this.sync = this as unknown as SyncVFS;
+    this.sync = this;
   }
 
   /** Add or replace `/proc/<name>`. */
