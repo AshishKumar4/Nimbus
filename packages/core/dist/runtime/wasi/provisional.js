@@ -179,8 +179,6 @@ export function provisional(host) {
             + (inode.pin?.bytes.byteLength ?? 0) + inode.credit;
         for (const record of inode.records)
             total += RECORD_COST + payloadOf(record.op);
-        for (const description of inode.retained)
-            total += stringCost(description);
         return total;
     };
     /**
@@ -959,9 +957,13 @@ export function provisional(host) {
                     return;
             const inode = desc.inode;
             inode.descs--;
-            // Its description outlives it while another descriptor of the file stays open (an anchor); the last closes them all.
-            if (desc.description !== undefined)
-                inode.retained.push(desc.description);
+            // Its description outlives it while another descriptor of the file stays open with none of its own (the file's anchor); the last closes it.
+            if (desc.description !== undefined) {
+                if (inode.descs > 0 && inode.retained.length === 0 && anchorOf(inode) === undefined)
+                    inode.retained.push(desc.description);
+                else
+                    logged({ type: 'call', call: { call: 'close', path: inode.key, description: desc.description } }, () => { });
+            }
             if (inode.descs === 0) {
                 for (const description of inode.retained.splice(0))
                     logged({ type: 'call', call: { call: 'close', path: inode.key, description } }, () => { });
