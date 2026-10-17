@@ -22,7 +22,7 @@ import {
   EAST_ASIAN_WIDE_RANGES, NODE_BUILTIN_OBJECTS, NODE_LIB_SHA256, NODE_LIB_SOURCES, NODE_PRIMORDIALS_SHA256, NODE_PRIMORDIALS_SOURCE,
 } from '../../packages/worker/src/runtime/node-lib-source.ts';
 import { NODE_LIB_HOST_SOURCE } from '../../packages/worker/src/runtime/node-lib-host.ts';
-import { NODE_ERROR_PREAMBLE, PRIMORDIALS_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
+import { NODE_ERROR_PREAMBLE, PRIMORDIALS_PREAMBLE } from '../../packages/worker/src/loaders/workers.generated.ts';
 
 const sha256 = (text) => createHash('sha256').update(text).digest('hex');
 assert.equal(NODE_LIB_SHA256['internal/util/inspect'], '2f2f01d7077800f8565d1be2bd1e6800f8ac02759482dc080eb6bc6005d67dd1', 'inspect.js is v22.22.3\'s, byte for byte');

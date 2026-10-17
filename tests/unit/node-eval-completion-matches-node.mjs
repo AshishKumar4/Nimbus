@@ -15,7 +15,7 @@ import { spawnSync } from 'node:child_process';
 
 import { nodeEvalProgram, nodeStdinPrintProgram } from '../../packages/core/src/runtime/node-eval.ts';
 import { isEsModuleInput } from '../../packages/core/src/runtime/module-format.ts';
-import { NODE_ERROR_PREAMBLE, PRIMORDIALS_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
+import { NODE_ERROR_PREAMBLE, PRIMORDIALS_PREAMBLE } from '../../packages/worker/src/loaders/workers.generated.ts';
 
 // Whether the code is a module is the runtime's decision (module-format.ts), as Node's is its syntax detection's.
 const nodeEvalCode = (code, print) => nodeEvalProgram(code, print, isEsModuleInput(code, undefined) ? 'module' : 'default').code;

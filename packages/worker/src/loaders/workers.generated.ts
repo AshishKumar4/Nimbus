@@ -1,5 +1,5 @@
 /**
- * generated-workers.ts — AUTO-GENERATED. DO NOT EDIT.
+ * workers.generated.ts — AUTO-GENERATED. DO NOT EDIT.
  *
  * Produced by scripts/bundle-facet-workers.mjs from:
  *   - @nimbus-sh/core src/_shared/tarball-stream.ts (streaming tar primitives)

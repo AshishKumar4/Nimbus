@@ -48,7 +48,7 @@ import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
 import {
   ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_ARGUMENTS_PREAMBLE, NODE_ERROR_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE,
   NODE_WARNING_PREAMBLE, POSIX_PATH_PREAMBLE, PRIMORDIALS_PREAMBLE, RELATIVE_WASM_PATHS_PREAMBLE, WASM_IMAGE_KEY_PREAMBLE,
-} from '../loaders/generated-workers.js';
+} from '../loaders/workers.generated.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { EGRESS_TLS_REFUSAL } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { EGRESS_TLS_CLIENT_SOURCE } from './egress-tls-client.js';

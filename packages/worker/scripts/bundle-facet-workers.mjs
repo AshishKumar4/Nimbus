@@ -35,7 +35,7 @@
  *   `requiredTopLevel` below asserts exactly that.
  *
  * Output:
- *   src/loaders/generated-workers.ts — exports
+ *   src/loaders/workers.generated.ts — exports
  *       TAR_STREAM_PREAMBLE: string
  *       W7_FRAME_PREAMBLE: string         (W7 — streaming bulk-write encoder)
  *   @nimbus-sh/core src/runtime/virtual-socket-kernel.generated.ts — exports
@@ -943,11 +943,11 @@ async function main() {
 
   const tarEncoded = JSON.stringify(tarStripped);
   const w7Encoded = JSON.stringify(w7Stripped);
-  const outPath = join(root, 'src', 'loaders', 'generated-workers.ts');
+  const outPath = join(root, 'src', 'loaders', 'workers.generated.ts');
 
   const tsWrapper = [
     '/**',
-    ' * generated-workers.ts — AUTO-GENERATED. DO NOT EDIT.',
+    ' * workers.generated.ts — AUTO-GENERATED. DO NOT EDIT.',
     ' *',
     ' * Produced by scripts/bundle-facet-workers.mjs from:',
     ' *   - @nimbus-sh/core src/_shared/tarball-stream.ts (streaming tar primitives)',

@@ -25,7 +25,7 @@ import {
   MAX_FILE_BYTES, parseTarHeader, streamTarEntries, streamTarRecords, tarBytes, TarTruncatedError,
 } from '../../packages/core/src/_shared/tarball-stream.ts';
 import { createTar, parseTar } from '../../packages/core/src/substrate/lifo/utils/archive.ts';
-import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
+import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../../packages/worker/src/loaders/workers.generated.ts';
 import { ustarArchive, ustarHeader } from './lib/ustar.mjs';
 
 const enc = new TextEncoder();

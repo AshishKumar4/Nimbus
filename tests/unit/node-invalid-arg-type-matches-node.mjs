@@ -11,7 +11,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 
-import { NODE_ERROR_PREAMBLE, PRIMORDIALS_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
+import { NODE_ERROR_PREAMBLE, PRIMORDIALS_PREAMBLE } from '../../packages/worker/src/loaders/workers.generated.ts';
 
 const PROGRAM = `
 ${PRIMORDIALS_PREAMBLE}

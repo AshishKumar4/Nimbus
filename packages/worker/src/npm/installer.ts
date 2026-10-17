@@ -65,7 +65,7 @@ import type { NpmInstallSpec } from '@nimbus-sh/core/substrate/lifo/commands/sys
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 import type { BundlePoolProvider } from '../facets/prebundle-pool.js';
 import { Fanout, type FanoutRoute } from '@nimbus-sh/fabric/fanout.js';
-import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from '../loaders/generated-workers.js';
+import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from '../loaders/workers.generated.js';
 import type { FacetPackageSpec } from './install-facet.js';
 import {
   type InstallBatchSpec,
