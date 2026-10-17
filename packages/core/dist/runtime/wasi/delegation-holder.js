@@ -146,8 +146,13 @@ export function delegationHolder(options) {
     /** `inode`'s decided row, while its name leads to it, at `size` and changed now. */
     const resized = (inode, size) => {
         const entry = decided.get(inode.key);
-        if (entry && entry.ino === inode.ino)
-            decided.set(inode.key, { ...entry, size, mtime: now(), ctime: now() });
+        if (!entry || entry.ino !== inode.ino)
+            return;
+        // The decided row is the holder's own object: changed where it is, not copied per write.
+        const at = now();
+        entry.size = size;
+        entry.mtime = at;
+        entry.ctime = at;
     };
     /** Whether `inode`'s mode, as decided here, refuses one of its open descriptions what it was opened to do: only its creating open could have. */
     const refusedByMode = (inode) => {
@@ -452,7 +457,7 @@ export function delegationHolder(options) {
                 entry = { ...target, size: bytes.byteLength, mode: (target.mode & ~0o7777) | mode, mtime: now(), ctime: now() };
             }
             // Its Inode: the file's, or one made for it where the budget has room; else the session copies.
-            const inode = known ?? prov.inodeFor(to, entry);
+            const inode = known ?? prov.inodeFor(to, { ...entry });
             if (inode === undefined)
                 return false;
             // After everything decided before it, the destination's own bytes among them.
@@ -526,7 +531,7 @@ export function delegationHolder(options) {
                 // Room for what it is opened to be written with, before anything is decided (its number unused if not).
                 if (initial > 0 && !room(file, key, initial))
                     return undefined;
-                inode = prov.inodeFor(key, entry);
+                inode = prov.inodeFor(key, { ...entry });
                 if (inode === undefined)
                     return undefined;
                 inode.cell = file;
@@ -820,6 +825,12 @@ export function delegationHolder(options) {
             const handle = heldDesc(handleId);
             if (handle === undefined) {
                 prov.fsetattr(handleId, change);
+                // A name a grant decided for the file shows the change made through its description, as the session will.
+                const inode = prov.descriptor(handleId).inode;
+                const named = decided.get(inode.key);
+                if (named && named.ino === inode.ino) {
+                    decided.set(inode.key, changedBy(named, 'atime' in change ? { atime: timeAt(change.atime, named.atime, now()), mtime: timeAt(change.mtime, named.mtime, now()) } : change));
+                }
                 return false;
             }
             const inode = handle.inode;
