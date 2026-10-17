@@ -47,7 +47,7 @@ import { prefetchForRequire, requireFsOverBridge, resolveDeferredImport, Closure
 import { typeScriptStripOptions } from '@nimbus-sh/core/runtime/node-cli.js';
 import { findStaticFsReferences } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 import { fileCell, fileText, packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
-import { isManifestKey, linkTargetOf, packageRootOf, planFacetData } from './data-plan.js';
+import { carriesOxide, isManifestKey, linkTargetOf, packageRootOf, planFacetData, planStylesheetSources } from './data-plan.js';
 import { principalTag, profilePrincipal, ReadProfile, verifiedEvidence, } from './read-profile.js';
 /** What the shared read profile may add to one launch: an eighth of its module map's bytes. */
 const READ_PROFILE_LAUNCH_BYTES = Math.floor(VFS_BUNDLE_MAX_BYTES / 8);
@@ -121,6 +121,43 @@ function declaredBindingFs(fs) {
         catch {
             return null;
         } },
+    };
+}
+/**
+ * A launch's fs as a data plan reads it (DataPlanSource, but its listing):
+ * keys without a leading slash, what a path holds following links, and a
+ * directory's entries, a symlink's unfollowed.
+ */
+function planSourceOf(vfs) {
+    return {
+        readText: async (path) => {
+            try {
+                return await filesOf(vfs).readFileString(path);
+            }
+            catch {
+                return null;
+            }
+        },
+        linkTarget: (path) => linkTargetOf(vfs, path),
+        stat: async (path) => {
+            const st = await filesOf(vfs).stat(path).catch(() => null);
+            return st && { kind: st.type, size: st.size };
+        },
+        readdir: async (dir) => {
+            const entries = await Promise.resolve(vfs.readdir('/' + dir)).catch(() => null);
+            if (entries === null)
+                return null;
+            const typed = [];
+            for (const entry of entries) {
+                const path = dir === '' ? entry.name : `${dir}/${entry.name}`;
+                const kind = await launchEntryType(vfs, '/' + dir, entry);
+                if (kind === null)
+                    continue;
+                const size = kind === 'file' ? (await filesOf(vfs).stat(path).catch(() => null))?.size ?? 0 : 0;
+                typed.push({ path, kind, size });
+            }
+            return typed;
+        },
     };
 }
 function filesOf(fs) {
@@ -5184,19 +5221,7 @@ export class FacetManager {
                 trace(`page ${++pages}: ${page.entries.length} entries`);
                 return { entries: page.entries, next: page.next };
             },
-            readText: async (path) => {
-                try {
-                    return await filesOf(vfs).readFileString(path);
-                }
-                catch {
-                    return null;
-                }
-            },
-            linkTarget: (path) => linkTargetOf(vfs, path),
-            stat: async (path) => {
-                const st = await filesOf(vfs).stat(path).catch(() => null);
-                return st && { kind: st.type, size: st.size };
-            },
+            ...planSourceOf(vfs),
         }, {
             cwd,
             home: home || '/home/user',
@@ -5230,7 +5255,7 @@ export class FacetManager {
      * URL('lightningcss_node.wasm', import.meta.url)), which as a map cell
      * left the closure no room under the map's bound.
      */
-    async _staticReadPlan(entry, vfsState, cwd, pacer) {
+    async _staticReadPlan(entry, vfsState, cwd, home, pacer) {
         if (!this.filesystem)
             return [];
         const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
@@ -5261,6 +5286,15 @@ export class FacetManager {
             const stat = await filesOf(vfs).stat(target).catch(() => null);
             if (stat?.type === 'file')
                 plan.add(target);
+        }
+        // And, for Tailwind's oxide, what its stylesheets name (data-plan.ts
+        // stylesheet-source), from the stylesheets its bundle holds.
+        if (carriesOxide(vfsState.bundlePaths ?? [])) {
+            const sheets = (vfsState.bundlePaths ?? []).filter((path) => path.endsWith('.css') && packageRootOf(path) === null);
+            const found = await planStylesheetSources(planSourceOf(vfs), { cwd, home: home || '/home/user', sheets, spend: (units) => pacer.spend(units) });
+            for (const file of found.files)
+                if (!held.has(file.path))
+                    plan.add(file.path);
         }
         return [...plan];
     }
@@ -6248,7 +6282,7 @@ export class FacetManager {
                     // principal's image is where that comes from). What its closure reads
                     // synchronously by a path its code spells out needs no listing, and is
                     // its data plan.
-                    let dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+                    let dataPlan = await this._staticReadPlan(entry, vfsState, cwd, opts.env?.HOME, pacer);
                     // And every manifest it can see, from what the session read once per install.
                     const manifests = await this._installedManifests(entry, pacer);
                     // A stoppable run's network goes through the session (SupervisorRPC's
@@ -6273,7 +6307,7 @@ export class FacetManager {
                                 if (!(error instanceof ModuleMapOverCeilingError))
                                     throw error;
                                 vfsState = await this._rebuildUnderCeiling(entry, bundleSpec, vfsState, error, pacer);
-                                dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+                                dataPlan = await this._staticReadPlan(entry, vfsState, cwd, opts.env?.HOME, pacer);
                                 return this._execViaLoader(code, launch, entry, vfsState, dataPlan, manifests, runSignal, pacer, diagSink);
                             });
                         }
@@ -6321,7 +6355,7 @@ export class FacetManager {
                         // lock order); its helpers wait as its process meanwhile.
                         if (vfsState.generatedSourcesReleased) {
                             vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
-                            dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+                            dataPlan = await this._staticReadPlan(entry, vfsState, cwd, opts.env?.HOME, pacer);
                         }
                         else {
                             await this._holdMapShare(entry, vfsState);

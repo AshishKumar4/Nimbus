@@ -99,6 +99,26 @@ export function packageRootOf(k) {
         return null;
     return k.slice(0, at) + 'node_modules/' + rest.slice(0, take).join('/');
 }
+/**
+ * Whether directory `d`, at or below `dir`, is a dependency, VCS or cache
+ * directory below `dir` or inside one, or a cache of the home directory it is
+ * in ($HOME, or /home/<user>).
+ */
+function excludedDir(home, dir, d) {
+    if (d !== dir && d.slice(dir === '' ? 0 : dir.length + 1).split('/').some((seg) => PROJECT_EXCLUDED.has(seg)))
+        return true;
+    const segs = d.split('/');
+    const userHome = home !== '' && (d === home || d.startsWith(home + '/')) ? home
+        : segs[0] === 'home' && segs.length > 1 ? 'home/' + segs[1] : null;
+    if (userHome === null)
+        return false;
+    const inHome = d.slice(userHome.length + 1) + '/';
+    return HOME_EXCLUDED.some((prefix) => inHome.startsWith(prefix));
+}
+/** Whether file `k`, below `dir`, lies in a directory excludedDir leaves out. */
+function excludedBelow(home, dir, k) {
+    return excludedDir(home, dir, parentOf(k));
+}
 function joinKey(base, rel) {
     const out = base ? base.split('/') : [];
     for (const seg of rel.split('/')) {
@@ -246,7 +266,6 @@ export async function planFacetData(source, input) {
     const homeDot = home ? home + '/.' : '.';
     const closureRoots = new Set();
     let typescriptRoot = null;
-    let carriesOxide = false;
     for (const path of input.closure) {
         const root = packageRootOf(key(path));
         if (root === null)
@@ -254,9 +273,8 @@ export async function planFacetData(source, input) {
         closureRoots.add(root);
         if (typescriptRoot === null && root.endsWith('node_modules/typescript'))
             typescriptRoot = root;
-        if (root.endsWith(OXIDE_PACKAGE))
-            carriesOxide = true;
     }
+    const oxide = carriesOxide(input.closure);
     // Each link question once per plan: the paths it resolves share prefixes.
     const linkAnswers = new Map();
     const links = {
@@ -329,22 +347,6 @@ export async function planFacetData(source, input) {
         return !HOME_EXCLUDED.some((prefix) => rel.startsWith(prefix));
     };
     /**
-     * Whether a file lies in a dependency, VCS or cache directory below `dir`,
-     * or in a cache of the home directory it is in ($HOME, or /home/<user>).
-     */
-    const excludedBelow = (dir, k) => {
-        const rel = k.slice(dir === '' ? 0 : dir.length + 1).split('/');
-        if (rel.slice(0, -1).some((seg) => PROJECT_EXCLUDED.has(seg)))
-            return true;
-        const segs = k.split('/');
-        const userHome = home !== '' && k.startsWith(home + '/') ? home
-            : segs[0] === 'home' && segs.length > 2 ? 'home/' + segs[1] : null;
-        if (userHome === null)
-            return false;
-        const inHome = k.slice(userHome.length + 1) + '/';
-        return HOME_EXCLUDED.some((prefix) => inHome.startsWith(prefix));
-    };
-    /**
      * Whether a file is one a pattern `dir/prefix*suffix` can name. A hole with
      * a known prefix or suffix fills one name in `dir`: a file there, or the
      * files directly in a directory there. A bare hole under a
@@ -358,7 +360,7 @@ export async function planFacetData(source, input) {
         const name = baseOf(k);
         for (const p of patterns) {
             if (p.prefix === '' && p.suffix === '') {
-                if (p.dir !== '' && k.startsWith(p.dir + '/') && !excludedBelow(p.dir, k))
+                if (p.dir !== '' && k.startsWith(p.dir + '/') && !excludedBelow(home, p.dir, k))
                     return true;
                 continue;
             }
@@ -366,7 +368,7 @@ export async function planFacetData(source, input) {
             if (p.dir === dir && named(name))
                 return true;
             // A matched name may be a directory the code lists: its own files, one level.
-            if (dir !== '' && p.dir === parentOf(dir) && named(baseOf(dir)) && !excludedBelow(p.dir, k))
+            if (dir !== '' && p.dir === parentOf(dir) && named(baseOf(dir)) && !excludedBelow(home, p.dir, k))
                 return true;
         }
         return false;
@@ -374,8 +376,7 @@ export async function planFacetData(source, input) {
     const declarations = [];
     const packageRoots = new Set();
     // Directories a home or project symlink points at, whose files the rule
-    // that took the link would have taken had they been in place, and the
-    // stylesheet sources outside the working tree.
+    // that took the link would have taken had they been in place.
     const linkedDirs = [];
     /** The project's stylesheets, for the sources they name (stylesheet-source). */
     const projectSheets = [];
@@ -435,7 +436,7 @@ export async function planFacetData(source, input) {
                 const rel = cwdPrefix === '' ? segs : k.slice(cwdPrefix.length).split('/');
                 if (!rel.slice(0, -1).some((s) => PROJECT_EXCLUDED.has(s))) {
                     take(entry, 'project');
-                    if (carriesOxide && name.endsWith('.css'))
+                    if (oxide && name.endsWith('.css'))
                         projectSheets.push(k);
                     continue;
                 }
@@ -633,10 +634,56 @@ export async function planFacetData(source, input) {
                 take({ path: k, kind: 'file', size: found.size }, 'entries');
         }
     }
-    // The sources the project's stylesheets name, through the `@import`s
-    // Tailwind inlines (a path's, not a package's), each sheet read once.
     const sourceRoots = [];
-    const sheets = new Set(projectSheets);
+    if (oxide) {
+        const found = await planStylesheetSources({ ...source, linkTarget: links.linkTarget }, { cwd, home, sheets: projectSheets, spend: input.spend });
+        for (const entry of found.files)
+            take(entry, 'stylesheet-source');
+        sourceRoots.push(...found.roots);
+    }
+    // The files behind symlinked directories the project or home rule reached.
+    if (linkedDirs.length > 0) {
+        after = null;
+        for (;;) {
+            const page = await source.list(after);
+            if (input.spend)
+                await input.spend(page.entries.length * 64);
+            for (const raw of page.entries) {
+                if (raw.kind !== 'file')
+                    continue;
+                const k = key(raw.path);
+                // The first root that holds it, below which it is not what the rule that took the root would have left out.
+                const holder = linkedDirs.find(({ target }) => (k === target || k.startsWith(target + '/')) && !excludedBelow(home, target, k));
+                if (holder)
+                    take({ path: k, kind: 'file', size: raw.size }, holder.rule);
+            }
+            if (page.next === null)
+                break;
+            after = page.next;
+        }
+    }
+    return { paths, bytes, rules, sourceRoots, names };
+}
+/** Whether a closure carries Tailwind's oxide scanner, whose reads cannot wait (the stylesheet-source rule). */
+export function carriesOxide(closure) {
+    for (const path of closure)
+        if (packageRootOf(key(path))?.endsWith(OXIDE_PACKAGE))
+            return true;
+    return false;
+}
+/**
+ * The stylesheet-source rule, for a resident's plan and a one-shot's alike:
+ * from `sheets`, through the `@import`s Tailwind inlines (a path's, not a
+ * package's), each sheet read once, every `@source` outside the working tree
+ * `cwd`, each brace alternative's directory prefix taken whole, through its
+ * links; and the files under those roots, walked a directory at a time with
+ * the project rule's exclusions.
+ */
+export async function planStylesheetSources(source, input) {
+    const cwd = key(input.cwd);
+    const home = key(input.home);
+    const roots = [];
+    const sheets = new Set([...input.sheets].map(key));
     for (const sheet of sheets) {
         const text = await source.readText(sheet);
         if (text === null)
@@ -658,34 +705,56 @@ export async function planFacetData(source, input) {
                 const names = alternative.split('/');
                 const glob = names.findIndex((name) => GLOB_SPECIAL.test(name));
                 const named = resolve(glob < 0 ? alternative : names.slice(0, glob).join('/') || (alternative.startsWith('/') ? '/' : '.'));
-                const root = (await throughLinks(links, named)) ?? named;
-                if (root === cwd || root.startsWith(cwdPrefix) || sourceRoots.includes('/' + root))
+                const root = (await throughLinks(source, named)) ?? named;
+                if (cwd === '' || root === cwd || root.startsWith(cwd + '/') || roots.includes(root))
                     continue;
-                sourceRoots.push('/' + root);
-                linkedDirs.push({ target: root, rule: 'stylesheet-source' });
+                roots.push(root);
             }
         }
     }
-    // The files behind symlinked directories the project or home rule reached, and the stylesheet sources.
-    if (linkedDirs.length > 0) {
-        after = null;
-        for (;;) {
-            const page = await source.list(after);
-            if (input.spend)
-                await input.spend(page.entries.length * 64);
-            for (const raw of page.entries) {
-                if (raw.kind !== 'file')
-                    continue;
-                const k = key(raw.path);
-                // The first root that holds it, below which it is not what the rule that took the root would have left out.
-                const holder = linkedDirs.find(({ target }) => (target === '' || k === target || k.startsWith(target + '/')) && !excludedBelow(target, k));
-                if (holder)
-                    take({ path: k, kind: 'file', size: raw.size }, holder.rule);
-            }
-            if (page.next === null)
+    const files = new Map();
+    const walked = new Set();
+    for (const root of roots) {
+        const at = await source.stat(root);
+        if (at?.kind === 'file') {
+            files.set(root, { path: root, kind: 'file', size: at.size });
+            continue;
+        }
+        if (at?.kind !== 'directory')
+            continue;
+        const queue = [root];
+        walked.add(root);
+        for (let i = 0; i < queue.length; i++) {
+            const dir = queue[i];
+            if (dir === undefined)
                 break;
-            after = page.next;
+            const entries = await source.readdir(dir);
+            if (entries === null)
+                continue;
+            if (input.spend)
+                await input.spend(entries.length * 64);
+            for (const entry of entries) {
+                let { path, kind, size } = entry;
+                if (kind === 'symlink') {
+                    const target = await throughLinks(source, path);
+                    const found = target === null ? null : await source.stat(target);
+                    if (target === null || found === null)
+                        continue;
+                    [path, kind, size] = [target, found.kind, found.size];
+                }
+                // Relative to its root, or to itself where a link led out of it.
+                const base = path === root || path.startsWith(root + '/') ? root : parentOf(path);
+                if (kind === 'directory') {
+                    if (!walked.has(path) && !excludedDir(home, base, path)) {
+                        walked.add(path);
+                        queue.push(path);
+                    }
+                }
+                else if (kind === 'file' && !excludedBelow(home, base, path)) {
+                    files.set(path, { path, kind, size });
+                }
+            }
         }
     }
-    return { paths, bytes, rules, sourceRoots, names };
+    return { roots: roots.map((root) => '/' + root), files: [...files.values()] };
 }

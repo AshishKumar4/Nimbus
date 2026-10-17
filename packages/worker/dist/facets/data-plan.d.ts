@@ -25,6 +25,8 @@ export interface DataPlanSource {
         kind: string;
         size: number;
     } | null>;
+    /** The entries directly in a directory, a symlink's kind 'symlink' and unfollowed, or null when it is none. */
+    readdir(dir: string): Promise<DataPlanEntry[] | null>;
 }
 export interface DataPlanInput {
     cwd: string;
@@ -70,4 +72,23 @@ export declare function linkTargetOf(fs: Pick<RuntimeFsBridge, 'readlink' | 'lin
  * The plan for one launch. Walks the namespace once, in pages.
  */
 export declare function planFacetData(source: DataPlanSource, input: DataPlanInput): Promise<DataPlan>;
+/** Whether a closure carries Tailwind's oxide scanner, whose reads cannot wait (the stylesheet-source rule). */
+export declare function carriesOxide(closure: Iterable<string>): boolean;
+/**
+ * The stylesheet-source rule, for a resident's plan and a one-shot's alike:
+ * from `sheets`, through the `@import`s Tailwind inlines (a path's, not a
+ * package's), each sheet read once, every `@source` outside the working tree
+ * `cwd`, each brace alternative's directory prefix taken whole, through its
+ * links; and the files under those roots, walked a directory at a time with
+ * the project rule's exclusions.
+ */
+export declare function planStylesheetSources(source: Pick<DataPlanSource, 'readText' | 'stat' | 'linkTarget' | 'readdir'>, input: {
+    cwd: string;
+    home: string;
+    sheets: Iterable<string>;
+    spend?: (units: number) => Promise<void> | void;
+}): Promise<{
+    roots: string[];
+    files: DataPlanEntry[];
+}>;
 //# sourceMappingURL=data-plan.d.ts.map
