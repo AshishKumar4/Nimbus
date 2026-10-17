@@ -6,11 +6,13 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Added (platform): `compareUtf8(a, b)` in `@nimbus-sh/platform/utf8.js`,
-  the order of two strings by their UTF-8 bytes (code point order, a lone
-  surrogate as the U+FFFD UTF-8 writes for it) without encoding them. The
-  engine's keyset cursors, a mounted namespace's listings and git's index
-  order through it. Before, the namespace's and git's string comparators
-  ordered a lone surrogate by its own value.
+  the order of two strings by their UTF-8 bytes (code point order) without
+  encoding them. A string with a lone surrogate, which UTF-8 cannot write,
+  orders by its WTF-8 bytes, so the order is total and a directory's
+  entries sort together after it. The engine's keyset cursors, a mounted
+  namespace's listings and git's index order through it. Before, the three
+  disagreed about lone surrogates, and the engine took two different ones
+  as the same name.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
