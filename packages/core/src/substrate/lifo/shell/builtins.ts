@@ -77,6 +77,7 @@ const BUILTINS: Record<string, (call: BuiltinCall) => Promise<number>> = {
   history: builtinHistory,
   source: builtinSource,
   '.': builtinSource,
+  eval: builtinEval,
   alias: builtinAlias,
   unalias: builtinUnalias,
   test: ({ args, stderr, context }) => evaluateTest(args, context.vfs, stderr, context),
@@ -682,6 +683,15 @@ async function builtinSource({ args, stderr, state, host, context }: BuiltinCall
     content,
     sourceArgs.length > 0 ? { positionals: sourceArgs } : undefined,
   ));
+}
+
+/**
+ * eval: its arguments, joined by spaces, run in this shell, as `source` runs
+ * a file's (its `return`, `break` and `exit` are this shell's); its status
+ * the last command's, 0 where there is none.
+ */
+async function builtinEval({ args, context }: BuiltinCall): Promise<number> {
+  return (await context.executeInline(args.join(' ')));
 }
 
 async function builtinAlias({ args, stdout, state }: BuiltinCall): Promise<number> {
