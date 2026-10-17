@@ -1,52 +1,68 @@
-/** One FIFO queue over one byte capacity. */
+/**
+ * One byte capacity and its queues: FIFO, but for asks `ahead` of it (a
+ * running program's), which are served first, FIFO among themselves.
+ */
 class CreditLane {
     capacity;
     current = 0;
     peak = 0;
     waiters = [];
+    ahead = [];
     constructor(capacity) {
         this.capacity = capacity;
     }
     get stats() {
-        return { current: this.current, peak: this.peak, queued: this.waiters.length };
+        return { current: this.current, peak: this.peak, queued: this.waiters.length + this.ahead.length };
     }
-    tryAcquire(bytes) {
-        if (this.waiters.length > 0 || this.current + bytes > this.capacity)
+    /** Granted now, or null: an ask ahead waits only for asks ahead of it, any other for every ask queued. */
+    tryAcquire(bytes, ahead = false) {
+        if (this.ahead.length > 0 || (!ahead && this.waiters.length > 0) || this.current + bytes > this.capacity)
             return null;
         return this.grant(bytes);
     }
     acquire(bytes, signal) {
+        return this.wait(bytes, signal, false).lease;
+    }
+    /** acquire, ahead of every ordinary ask: granted as soon as it fits, after only the asks ahead before it. */
+    acquireAhead(bytes, signal) {
+        return this.wait(bytes, signal, true);
+    }
+    wait(bytes, signal, ahead) {
         if (signal?.aborted)
-            return Promise.reject(abortError(signal));
-        const immediate = this.tryAcquire(bytes);
+            return { lease: Promise.reject(abortError(signal)), granted: () => false };
+        const immediate = this.tryAcquire(bytes, ahead);
         if (immediate)
-            return Promise.resolve(immediate);
-        return new Promise((resolve, reject) => {
-            const waiter = {
+            return { lease: Promise.resolve(immediate), granted: () => true };
+        const queue = ahead ? this.ahead : this.waiters;
+        let waiter;
+        const lease = new Promise((resolve, reject) => {
+            const queued = {
                 bytes,
                 resolve,
                 reject,
                 signal,
+                granted: false,
                 onAbort: signal
                     ? () => {
-                        const index = this.waiters.indexOf(waiter);
+                        const index = queue.indexOf(queued);
                         if (index < 0)
                             return;
-                        this.waiters.splice(index, 1);
-                        signal.removeEventListener('abort', waiter.onAbort);
+                        queue.splice(index, 1);
+                        signal.removeEventListener('abort', queued.onAbort);
                         reject(abortError(signal));
                         this.drain();
                     }
                     : undefined,
             };
-            this.waiters.push(waiter);
-            signal?.addEventListener('abort', waiter.onAbort, { once: true });
-            if (signal?.aborted) {
-                waiter.onAbort();
-                return;
-            }
-            this.drain();
+            waiter = queued;
+            queue.push(queued);
+            signal?.addEventListener('abort', queued.onAbort, { once: true });
+            if (signal?.aborted)
+                queued.onAbort();
+            else
+                this.drain();
         });
+        return { lease, granted: () => waiter?.granted === true };
     }
     grant(bytes) {
         this.current += bytes;
@@ -83,19 +99,22 @@ class CreditLane {
         };
     }
     drain() {
-        while (this.waiters.length > 0) {
-            const waiter = this.waiters[0];
-            if (waiter.signal?.aborted) {
-                this.waiters.shift();
-                waiter.signal.removeEventListener('abort', waiter.onAbort);
-                waiter.reject(abortError(waiter.signal));
-                continue;
+        // Asks ahead first; the ordinary queue only once none is waiting.
+        for (const queue of [this.ahead, this.waiters]) {
+            for (let waiter = queue[0]; waiter !== undefined; waiter = queue[0]) {
+                if (waiter.signal?.aborted) {
+                    queue.shift();
+                    waiter.signal.removeEventListener('abort', waiter.onAbort);
+                    waiter.reject(abortError(waiter.signal));
+                    continue;
+                }
+                if (this.current + waiter.bytes > this.capacity)
+                    return;
+                queue.shift();
+                waiter.signal?.removeEventListener('abort', waiter.onAbort);
+                waiter.granted = true;
+                waiter.resolve(this.grant(waiter.bytes));
             }
-            if (this.current + waiter.bytes > this.capacity)
-                return;
-            this.waiters.shift();
-            waiter.signal?.removeEventListener('abort', waiter.onAbort);
-            waiter.resolve(this.grant(waiter.bytes));
         }
     }
 }
@@ -165,6 +184,20 @@ export class WeightedCreditPool {
         if (shared || !this.isSmall(bytes))
             return shared;
         return this.small.tryAcquire(bytes);
+    }
+    /**
+     * A running program's ask (SupervisorAllocationBudget.acquireRunning), on
+     * the shared capacity ahead of every ordinary ask: granted now if it fits
+     * beside what is held, whatever is queued, or else as soon as it does.
+     */
+    acquireAhead(bytes, signal) {
+        this.validateRequest(bytes);
+        return this.general.acquireAhead(bytes, signal);
+    }
+    /** acquireAhead's credit now, or null. */
+    tryAcquireAhead(bytes) {
+        this.validateRequest(bytes);
+        return this.general.tryAcquire(bytes, true);
     }
     acquire(bytes, signal) {
         try {

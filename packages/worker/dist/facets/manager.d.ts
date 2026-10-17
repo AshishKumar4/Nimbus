@@ -1859,6 +1859,7 @@ export declare class FacetManager {
      * always maps to rpc_timeout regardless of message.
      */
     private _w5RecordTermination;
+    private _parkOneShotMap;
     /** Generate before waiting for a worker, keeping only the map's retained share until the load takes it. */
     private _prepareOneShotCode;
     private _execViaLoader;

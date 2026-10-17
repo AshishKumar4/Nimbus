@@ -78,6 +78,26 @@ export declare class SupervisorAllocationBudget {
         waitMs: number;
         signal?: AbortSignal;
     }): Promise<ResizableCreditLease>;
+    /** Reclaimers of parked launches' retained credit, oldest registered first (reclaimable). */
+    private readonly reclaimers;
+    /**
+     * Register `reclaim`, which gives a parked launch's retained credit back
+     * before it returns (its map dropped, its lease released, the launch sent
+     * back to prepare), for running work to call when nothing else frees what
+     * it needs (acquireRunning). Unregistered just before it is called; the
+     * returned function unregisters it.
+     */
+    reclaimable(reclaim: () => void): () => void;
+    /**
+     * Running work's credit, the lock order's one exception
+     * (acquireSupervisorLoad): granted at once where it fits, ahead of every
+     * queued ask; else, queued ahead of them all, it reclaims parked launches'
+     * retained credit, the oldest first, until it is granted; else it waits
+     * only for credit other running work holds.
+     */
+    acquireRunning(bytes: number, signal?: AbortSignal, drivesLifecycle?: boolean): Promise<ResizableCreditLease>;
+    /** acquireRunning's credit now, ahead of every queued ask, without reclaiming, or null. */
+    tryAcquireRunning(bytes: number): ResizableCreditLease | null;
     /** Reserve bytes now or not at all, driving the lifecycle as acquire does (or not, `drivesLifecycle` false). */
     tryAcquire(bytes: number, drivesLifecycle?: boolean): ResizableCreditLease | null;
     private _acquire;
@@ -110,9 +130,9 @@ export declare function acquireSupervisorAllocation(bytes: number, signal?: Abor
 /** Reserve bytes now if they can be granted without waiting, else null. */
 export declare function tryAcquireSupervisorAllocation(bytes: number): ResizableCreditLease | null;
 /**
- * Reserve bytes for a filesystem READ. Takes the same byte credit as any
- * other owner but does not shrink the disposable VFS cache, which reads are
- * there to fill.
+ * Reserve bytes for a running process's filesystem READ (its read RPCs):
+ * running work (acquireRunning), which does not shrink the disposable VFS
+ * cache, which reads are there to fill.
  */
 export declare function acquireSupervisorReadAllocation(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
 /**
@@ -137,11 +157,28 @@ export declare function acquireSupervisorCopyAllocation(bytes: number, signal?: 
  * credit (SupervisorAllocationBudget acquire or acquireLoad, or growing a
  * lease) while it holds a worker's fetch hold (beginLoaderFetch,
  * claimAdmission, readmitRefused). While it holds one, it may give credit
- * back, shrink it, or take credit without waiting (tryAcquire).
+ * back, shrink it, or take credit without waiting (tryAcquire). Running work
+ * is the one exception, and comes first. Credit a running process needs (its
+ * write waves and the session RPCs it makes, through acquireRunning)
+ * overtakes every queued ask. When nothing else frees it, it reclaims parked
+ * launches' retained maps, oldest parked first: each is dropped, its launch
+ * is sent back to prepare, and the map is rebuilt at that launch's turn.
+ * Otherwise it waits only for credit other running work holds. A facet's load
+ * is not running work.
  */
 export declare function acquireSupervisorLoad(name: string, bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
 /** acquireSupervisorLoad's credit now, without waiting, or null: all a load may take while it holds a worker. */
 export declare function tryAcquireSupervisorLoad(bytes: number): ResizableCreditLease | null;
+/**
+ * Running work's credit (SupervisorAllocationBudget.acquireRunning): what a
+ * running process needs to go on (its write waves, the session RPCs it
+ * makes), never held up by a launch that is not running.
+ */
+export declare function acquireSupervisorRunningAllocation(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
+/** acquireSupervisorRunningAllocation's credit now, ahead of every queued ask, without reclaiming, or null. */
+export declare function tryAcquireSupervisorRunningAllocation(bytes: number): ResizableCreditLease | null;
+/** Register a parked launch's reclaimer on the isolate's budget (SupervisorAllocationBudget.reclaimable). */
+export declare function reclaimableSupervisorAllocation(reclaim: () => void): () => void;
 /** Run `load` holding acquireSupervisorLoad's credit for `bytes`, given back as it settles; for a load no worker hold waits on. */
 export declare function withSupervisorLoadAllocation<T>(name: string, bytes: number, signal: AbortSignal | undefined, load: () => Promise<T>): Promise<T>;
 /**

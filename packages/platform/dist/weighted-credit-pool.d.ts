@@ -23,6 +23,11 @@ export interface WeightedCreditPoolOptions {
      */
     readonly reserve?: number;
 }
+/** A wait for credit: its lease once granted, and whether it has been, known at once. */
+export interface CreditWait {
+    readonly lease: Promise<ResizableCreditLease>;
+    granted(): boolean;
+}
 /**
  * FIFO byte-credit pool shared by concurrent allocation owners.
  * Capacity is measured in retained bytes, not operation count.
@@ -55,6 +60,14 @@ export declare class WeightedCreditPool {
     get stats(): WeightedCreditPoolStats;
     private isSmall;
     tryAcquire(bytes: number): ResizableCreditLease | null;
+    /**
+     * A running program's ask (SupervisorAllocationBudget.acquireRunning), on
+     * the shared capacity ahead of every ordinary ask: granted now if it fits
+     * beside what is held, whatever is queued, or else as soon as it does.
+     */
+    acquireAhead(bytes: number, signal?: AbortSignal): CreditWait;
+    /** acquireAhead's credit now, or null. */
+    tryAcquireAhead(bytes: number): ResizableCreditLease | null;
     acquire(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
     private validateRequest;
 }
