@@ -10975,7 +10975,7 @@ function __nimbusEmittedColumn(module, line, column) {
 // GetErrorSource: \`file:line\`, the line, and under it the place, \`^\` from
 // start to end. As Node does, the columns, which are V8's (UTF-16), count
 // the line's UTF-8 bytes.
-function __nimbusArrowOf(module, text, start, end) {
+function __nimbusArrowOf(module, text, start, end, empty = false) {
   let lineStart = 0;
   let line = 1;
   for (;;) {
@@ -10998,7 +10998,8 @@ function __nimbusArrowOf(module, text, start, end) {
   // A staged ES module's line and places as its source has them.
   if (to > from) to = __nimbusSourceColumn(module, line, to);
   from = __nimbusSourceColumn(module, line, from + 1) - 1;
-  if (to <= from) to = from + 1;
+  // At the end of the input V8 underlines nothing (\`empty\`); anywhere else, a character at least.
+  if (to <= from) to = empty ? from : from + 1;
   source = __nimbusSourceLine(module, line, source);
   let arrow = __nimbusFrameFile(module) + ":" + line + "\\n" + source + "\\n";
   const bytes = new TextEncoder().encode(source);
@@ -11063,10 +11064,37 @@ function __nimbusFatalArrow(error, fromPromise) {
 }
 // Where a module that does not compile stops, for its stack (commonjs-cell.ts
 // __nimbusDecorateSyntaxError), or null.
-globalThis.__nimbusSyntaxErrorArrow = function __nimbusSyntaxErrorArrow(module) {
+globalThis.__nimbusSyntaxErrorArrow = function __nimbusSyntaxErrorArrow(module, error) {
   const text = module === null ? null : __nimbusFrameModuleText(module);
   const place = text === null ? null : __nimbusFatalLocation(text, module.esModule ? "module" : "script", -1);
-  return place === null ? null : __nimbusArrowOf(module, text, place[0], place[1]);
+  if (place === null) return null;
+  if (module.esModule) return __nimbusArrowOf(module, text, place[0], place[1]);
+  // A CommonJS cell's source is followed by its wrapper's tail, which V8
+  // reads where Node's compile (wrapSafe, the source alone) meets the end of
+  // the input: an error found there is the end of input's, as Node reports it.
+  const end = text.length - module.tail;
+  // V8's end of input is the source's end, nothing underlined.
+  if (error?.message === "Unexpected end of input") return __nimbusArrowOf(module, text, end, end, true);
+  if (place[0] >= end) {
+    // An argument list left open is placed at its last token, as V8 places it whatever follows.
+    if (error?.message === "missing ) after argument list") {
+      const last = __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}").lastTokenBefore(text, end);
+      if (last !== null) return __nimbusArrowOf(module, text, last[0], last[1]);
+    } else if (error instanceof SyntaxError && /^Unexpected token '/.test(error.message)) {
+      // The tail's token where the source alone ends.
+      const was = error.message;
+      error.message = "Unexpected end of input";
+      if (typeof error.stack === "string") error.stack = error.stack.replace(was, error.message);
+    }
+    return __nimbusArrowOf(module, text, end, end, true);
+  }
+  // A comment left open runs to the end of the input: V8 underlines it from
+  // its start to the end of its line.
+  if (text.startsWith("/*", place[0]) && text.indexOf("*/", place[0] + 2) === -1) {
+    const line = text.slice(place[0], end).search(/[\\n\\r\\u2028\\u2029]/);
+    return __nimbusArrowOf(module, text, place[0], line === -1 ? end : place[0] + line);
+  }
+  return __nimbusArrowOf(module, text, place[0], place[1]);
 };
 // ReportFatalException: the text Node prints for \`error\`. \`enhance\`: the
 // error as inspect shows it (an 'uncaughtException' listener's error is its

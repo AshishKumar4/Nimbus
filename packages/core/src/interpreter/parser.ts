@@ -205,6 +205,24 @@ export function tokenizer(code: string, options: Options): Tokens {
  *   - `offset` -1: the syntax error that stops the parse, as [start, end]
  *     of the token it stops at; null when the text parses.
  */
+/**
+ * The last token of `text` (as CommonJS reads it) that ends at or before
+ * `offset`, as [start, end]: where V8 places an argument list's missing `)`
+ * at the end of the input. Null for none.
+ */
+export function lastTokenBefore(text: string, offset: number): [number, number] | null {
+  let last: [number, number] | null = null;
+  try {
+    for (const token of Parser.tokenizer(text, COMMONJS_OPTIONS)) {
+      if (token.end > offset) break;
+      last = [token.start, token.end];
+    }
+  } catch {
+    // A token that does not end (an unterminated string) is past the last one.
+  }
+  return last;
+}
+
 export function fatalLocation(text: string, goal: 'script' | 'module', offset: number): [number, number] | null {
   const finder = new ThrowFinder(goal === 'module' ? MODULE_OPTIONS : COMMONJS_OPTIONS, text);
   finder.offset = offset;

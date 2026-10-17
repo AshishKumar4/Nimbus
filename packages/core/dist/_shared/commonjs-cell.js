@@ -957,7 +957,7 @@ function __nimbusFatalLocation(text, goal, offset) {
 const __nimbusDecorated = new WeakSet();
 function __nimbusDecorateSyntaxError(e, name) {
   if (!(e instanceof SyntaxError) || typeof e.stack !== "string" || __nimbusDecorated.has(e)) return;
-  const arrow = typeof globalThis.__nimbusSyntaxErrorArrow === "function" ? globalThis.__nimbusSyntaxErrorArrow(__nimbusModuleNamed(name)) : null;
+  const arrow = typeof globalThis.__nimbusSyntaxErrorArrow === "function" ? globalThis.__nimbusSyntaxErrorArrow(__nimbusModuleNamed(name), e) : null;
   if (arrow === null) return;
   e.stack = arrow + "\\n" + e.stack;
   __nimbusDecorated.add(e);

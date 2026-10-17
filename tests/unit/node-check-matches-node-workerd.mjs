@@ -8,9 +8,9 @@
 //   - text that would close the CommonJS wrapper's function (and run what
 //     follows it there) is the SyntaxError Node reports, and runs nothing.
 // A shebang script's lines are its own, checked or run (one that throws on
-// its third line). The SyntaxErrors are inside the source: one at its end is
-// reported at the CommonJS cell's wrapper, by a run as by a check
-// (ticket-commonjs-eof-syntax-errors). One fixture tree, on disk for host
+// its third line). A SyntaxError at the end of the source is reported as
+// Node compiles the source alone (commonjs-eof-syntax-workerd runs them).
+// One fixture tree, on disk for host
 // node and in a local workerd session for the shell's `node`
 // (lib/node-differential.mjs): each run's stdout, stderr and exit code must
 // be node's. What is refused where Node checks an ES module is
@@ -27,6 +27,9 @@ const files = {
   'ok.js': 'console.log("ran");\n',
   'bad.js': 'const x = ;\nconsole.log("ran");\n',
   'shebang.js': '#!/usr/bin/env node\nconst x = ;\nconsole.log("ran");\n',
+  // At the end of the input, as Node compiles the source alone.
+  'eof-call.js': 'console.log("ran"\n',
+  'eof-block.js': '#!/usr/bin/env node\nfunction f() {\n',
   'ok.ts': 'const a: number = 1;\nconsole.log("ran");\n',
   'pre.js': 'console.log("preloaded");\n',
   'throws.js': '#!/usr/bin/env node\n\nthrow new Error("on line three");\n',
@@ -60,6 +63,9 @@ await matchNodeInWorkerd('node-check-matches-node-workerd', ROOT, files, [
   'node -r ./pre.js -c ok.js',
   "echo 'console.log(\"ran\")' | node -c",
   "echo 'const x = ;' | node -c",
+  'node -c eof-call.js',
+  'node -c eof-block.js',
+  "echo 'syntax(' | node -c",
   "echo 'export const a = 1' | node -c",
   'node -c -e 1',
   'node throws.js',

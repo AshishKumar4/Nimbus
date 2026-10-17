@@ -190,6 +190,25 @@ export function tokenizer(code, options) {
  *   - `offset` -1: the syntax error that stops the parse, as [start, end]
  *     of the token it stops at; null when the text parses.
  */
+/**
+ * The last token of `text` (as CommonJS reads it) that ends at or before
+ * `offset`, as [start, end]: where V8 places an argument list's missing `)`
+ * at the end of the input. Null for none.
+ */
+export function lastTokenBefore(text, offset) {
+    let last = null;
+    try {
+        for (const token of Parser.tokenizer(text, COMMONJS_OPTIONS)) {
+            if (token.end > offset)
+                break;
+            last = [token.start, token.end];
+        }
+    }
+    catch {
+        // A token that does not end (an unterminated string) is past the last one.
+    }
+    return last;
+}
 export function fatalLocation(text, goal, offset) {
     const finder = new ThrowFinder(goal === 'module' ? MODULE_OPTIONS : COMMONJS_OPTIONS, text);
     finder.offset = offset;

@@ -41,5 +41,11 @@ export declare function tokenizer(code: string, options: Options): Tokens;
  *   - `offset` -1: the syntax error that stops the parse, as [start, end]
  *     of the token it stops at; null when the text parses.
  */
+/**
+ * The last token of `text` (as CommonJS reads it) that ends at or before
+ * `offset`, as [start, end]: where V8 places an argument list's missing `)`
+ * at the end of the input. Null for none.
+ */
+export declare function lastTokenBefore(text: string, offset: number): [number, number] | null;
 export declare function fatalLocation(text: string, goal: 'script' | 'module', offset: number): [number, number] | null;
 //# sourceMappingURL=parser.d.ts.map
