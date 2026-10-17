@@ -121,6 +121,11 @@ published independently in the `@nimbus-sh` npm scope.
   hosted terminal's `node_modules` check and Next.js refusal use it, so
   they also check pre and post scripts. `npmInstallGlobal` no longer takes
   a command registry, and `createNpmCommand` no longer reads its own.
+- Changed: the perf probe `perf-regression/clone-fast` is graded like
+  `cold-start`: against the baseline measured in the same run, one clone on
+  each of the three throwaways per round, 40 rounds. Its fixed 5600 ms
+  bound failed 5 of 591 full runs of unchanged main code, and passed a
+  clone 600 ms slower than main's.
 - Changed: the perf probes `perf-regression/cold-start`, `first-paint` and
   `install-warm` grade the candidate against a baseline measured in the
   same run, not against a fixed bound. `remote-probes` stands up three
