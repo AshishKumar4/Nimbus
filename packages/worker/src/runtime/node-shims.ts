@@ -891,7 +891,7 @@ const __BufferMod = __bufferModule.Buffer;
 // decoder per stream, so a multibyte character split across two writes
 // still reads as one character.
 const __nimbusOutEnc = new TextEncoder();
-const __nimbusOutDec = { stdout: new TextDecoder("utf-8"), stderr: new TextDecoder("utf-8") };
+const __nimbusOutDec = { stdout: new TextDecoder("utf-8", { ignoreBOM: true }), stderr: new TextDecoder("utf-8", { ignoreBOM: true }) };
 /** \`process.stdout.write(d, enc)\` payload as bytes. */
 function __nimbusOutBytes(d, enc) {
   if (d instanceof Uint8Array) return d;
