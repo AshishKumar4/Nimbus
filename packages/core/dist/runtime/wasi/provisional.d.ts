@@ -50,6 +50,8 @@ export interface ProvisionalHost {
     drain(): void;
     /** What was logged here was answered: the view owes the session's version of it (a barrier). */
     sent(): void;
+    /** Whether the process sees anything of its provisional decisions now: what reads by name and by number consult them only while it does. */
+    active(on: boolean): void;
     /** Whether a held subtree holds `key`: its grant decides there, and its names wait for it. */
     held(key: string): boolean;
     /** Count a change at `key` toward taking a subtree there, as a decided one is: once it is made. */

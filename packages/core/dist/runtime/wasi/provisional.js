@@ -58,6 +58,15 @@ export function provisional(host) {
     let ids = 0;
     let barriers = 0;
     let localIno = LOCAL_INOS;
+    let wasActive = false;
+    /** Told the host when the process starts or stops seeing anything of its decisions here. */
+    const activity = () => {
+        const on = layer.size > 0 || touched.size > 0;
+        if (on === wasActive)
+            return;
+        wasActive = on;
+        host.active(on);
+    };
     const identity = (dev, ino) => `${dev}:${ino}`;
     /** `bytes` of the budget, before anything is published: ENOSPC where it has no room. */
     const admit = (bytes, syscall, path) => {
@@ -169,6 +178,7 @@ export function provisional(host) {
             inode.state = copyState(inode.base);
         }
         touched.set(inode.key, inode);
+        activity();
         const record = { id: ++ids, op, answered: false };
         inode.records.push(record);
         inode.state = applyOp(inode.state, op);
@@ -191,6 +201,7 @@ export function provisional(host) {
         host.release(inode.reserved);
         inode.reserved = 0;
         inodes.delete(identity(inode.dev, inode.ino));
+        activity();
     };
     /**
      * Log `op` acknowledged, after what a held subtree decided before it, its
@@ -245,6 +256,7 @@ export function provisional(host) {
         for (const inode of inodes.values())
             if (inode.state !== null)
                 touched.set(inode.key, inode);
+        activity();
     };
     /**
      * Log a name record: replayed now, stamped by its answer, replayed away by
@@ -303,6 +315,7 @@ export function provisional(host) {
             if (inode.state !== null)
                 touched.set(key, inode);
         }
+        activity();
     };
     /** The parent of `key`, when the process may make a name in it: a known, writable, searchable directory of the session's filesystem. */
     const writableParent = (key, path, syscall) => {
@@ -332,6 +345,7 @@ export function provisional(host) {
             inode.base = { bytes: new Uint8Array(0), size: 0, mode, uid, gid, atime: at, mtime: at, ctime: at };
             inode.state = copyState(inode.base);
             touched.set(key, inode);
+            activity();
         }
         inodes.set(identity(row.dev, row.ino), inode);
         return inode;
@@ -886,6 +900,7 @@ export function provisional(host) {
                 }
                 release(inode);
             }
+            activity();
         },
     };
     return provisional;
