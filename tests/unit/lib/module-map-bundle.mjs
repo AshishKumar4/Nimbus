@@ -124,7 +124,7 @@ const REGISTRY_STAND_IN = 'const __nimbusCreateRequire = globalThis.__nimbusTest
  * members are written byte-for-byte: the runtime's offsets read their source
  * back, and staging already uses relative specifiers the host resolves.
  */
-export function writeModuleSet(dir, modules, entry, rewrite = (_name, source) => source, { onWasmEvaluate = () => {} } = {}) {
+export function writeModuleSet(dir, modules, entry, rewrite = (_name, source) => source, { onWasmEvaluate = (_name, _compiled) => {} } = {}) {
   mkdirSync(dir, { recursive: true });
   // The loader resolves a bare specifier to the module of that name; a file
   // import here needs it relative.
