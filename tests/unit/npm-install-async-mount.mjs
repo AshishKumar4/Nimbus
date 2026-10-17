@@ -205,12 +205,10 @@ for (const [when, landed] of [['after', true], ['partial', false]]) {
   const nestedCrash = { at: null };
   const nestedEnv = makeFanoutEnv({
     root: vfs.as(CRED_SESSION_USER), NM: 'unused',
-    resultFor: (name, spec) => {
-      const answer = resolved(name, name === 'a' ? '1.0.0' : spec.range);
-      answer.pkg.integrity = `sha512-${name}-${answer.pkg.version}`;
-      if (name === 'a') answer.pkg.dependencies = { x: '2.0.0' };
-      return answer;
-    },
+    resultFor: npmRegistry({
+      a: { '1.0.0': { dependencies: { x: '2.0.0' }, bin: { a: 'cli.js' } } },
+      x: { '1.0.0': { bin: { x: 'cli.js' } }, '2.0.0': { bin: { x: 'cli.js' } } },
+    }).resultFor,
     crashFor: (p) => (p.name === nestedCrash.at ? 'partial' : null),
   });
   const nested = new NpmInstaller(files, harness.sql, { env: nestedEnv, ctx, onProgress: (msg) => log.push(msg) });

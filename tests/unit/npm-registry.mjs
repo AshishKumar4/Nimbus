@@ -57,6 +57,7 @@ const graph = npmRegistry({
   a: { '2.0.0': {}, '1.0.0': { dependencies: { shared: '^1.0.0', helper: '1.0.0' }, bin: { a: 'cli.js' } } },
   b: { '1.0.0': { dependencies: { shared: '^2.0.0' } } },
   c: { '1.0.0': {} }, d: { '1.0.0': {} }, e: { '1.0.0': {} }, f: { '1.0.0': {} },
+  g: { '1.0.0': {} }, h: { '1.0.0': {} }, i: { '1.0.0': {} }, j: { '1.0.0': {} },
   shared: { '1.0.0': {}, '2.0.0': {} }, helper: { '1.0.0': {} },
 });
 const harness = createSqliteVfsTestHarness();
@@ -66,9 +67,13 @@ try {
   const NM = 'app/node_modules';
   root.mkdir(NM, { recursive: true });
   root.writeFile('app/package.json', JSON.stringify({
-    name: 'app', dependencies: { a: '^1.0.0', b: '1.0.0', c: '1.0.0', d: '1.0.0', e: '1.0.0', f: '1.0.0', slot: 'npm:shared@1.0.0' },
+    name: 'app', dependencies: {
+      a: '^1.0.0', b: '1.0.0', c: '1.0.0', d: '1.0.0', e: '1.0.0', f: '1.0.0',
+      g: '1.0.0', h: '1.0.0', i: '1.0.0', j: '1.0.0', slot: 'npm:shared@1.0.0',
+    },
   }));
-  const env = makeFanoutEnv({ root, NM, resultFor: graph.resultFor });
+  let resolved = 0;
+  const env = makeFanoutEnv({ root, NM, resultFor: (name, spec) => { resolved++; return graph.resultFor(name, spec); } });
   const calls = { facet: 0, peer: 0 };
   const loaderGet = env.LOADER.get;
   env.LOADER.get = (...args) => { calls.facet++; return loaderGet(...args); };
@@ -81,7 +86,8 @@ try {
   const expected = [
     ['a', '1.0.0'], ['b', '1.0.0'], ['b/node_modules/shared', '2.0.0'],
     ['c', '1.0.0'], ['d', '1.0.0'], ['e', '1.0.0'], ['f', '1.0.0'],
-    ['helper', '1.0.0'], ['shared', '1.0.0'], ['slot', '1.0.0'],
+    ['g', '1.0.0'], ['h', '1.0.0'], ['helper', '1.0.0'], ['i', '1.0.0'], ['j', '1.0.0'],
+    ['shared', '1.0.0'], ['slot', '1.0.0'],
   ];
   const lock = installer.npmCache.readLockfile('app');
   assert.deepEqual([...lock].map(([at, entry]) => [at, entry.resolvedVer]).sort(), expected);
@@ -90,7 +96,9 @@ try {
   assert.ok(root.exists(`${NM}/.bin/a`), 'the resolved manifest links its bin');
   assert.ok(calls.peer > 0 && calls.facet > 0, 'wide and narrow layers use both fanout topologies');
   const before = graph.asked.length;
+  const beforeResolve = resolved;
   assert.deepEqual((await installer.install('app')).failed, []);
+  assert.equal(resolved, beforeResolve, 'the lockfile answers every edge without a resolver task');
   assert.equal(graph.asked.length, before, 'the installer replays the records and lockfile without resolution');
 } finally {
   harness.db.close();

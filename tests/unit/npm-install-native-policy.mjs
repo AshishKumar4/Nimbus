@@ -97,7 +97,7 @@ function makeInstaller(pkgJson, resultFor) {
       if (name === 'sharp') {
         return resolvePackage('sharp', '0.34.0', {}, spec);
       }
-      return resolvePackage(name, name === 'sharp' ? '0.34.0' : '1.0.0', {}, spec);
+      return resolvePackage(name, '1.0.0', {}, spec);
     },
   );
   const result = await installer.install(PROJ);
@@ -194,7 +194,7 @@ function makeInstaller(pkgJson, resultFor) {
         assert.equal(spec.range, '^0.26.0', 'the sibling keeps its own range');
         return resolvePackage('esbuild-wasm', '0.26.0', {}, spec);
       }
-      return resolvePackage(name, name === 'sharp' ? '0.34.0' : '1.0.0', {}, spec);
+      return resolvePackage(name, '1.0.0', {}, spec);
     },
   );
   const result = await installer.install(PROJ);
@@ -245,7 +245,7 @@ function makeInstaller(pkgJson, resultFor) {
   const resultFor = (name, spec) => {
     if (name === '@tailwindcss/vite') return resolvePackage(name, '4.1.0', { dependencies: pluginDeps }, spec);
     if (name === '@tailwindcss/oxide') return resolvePackage('@tailwindcss/oxide', '4.1.0', {}, spec);
-    return resolvePackage(name, name === 'sharp' ? '0.34.0' : '1.0.0', {}, spec);
+    return resolvePackage(name, '1.0.0', {}, spec);
   };
   const pkgJson = { name: 'vite-app', dependencies: ok, devDependencies: { '@tailwindcss/vite': '^4.1.0' } };
 
@@ -280,7 +280,7 @@ function makeInstaller(pkgJson, resultFor) {
     (name, spec) => {
       if (name === 'some-app-dep') return resolvePackage(name, '1.0.0', { dependencies: appDeps }, spec);
       if (name === '@tailwindcss/oxide') return resolvePackage('@tailwindcss/oxide', '4.1.0', {}, spec);
-      return resolvePackage(name, name === 'sharp' ? '0.34.0' : '1.0.0', {}, spec);
+      return resolvePackage(name, '1.0.0', {}, spec);
     },
   );
   const result = await installer.install(PROJ);
@@ -319,7 +319,7 @@ function makeInstaller(pkgJson, resultFor) {
       if (name === 'b') return resolvePackage(name, '1.0.0', { dependencies: bDeps }, spec);
       if (name === 'c') return resolvePackage(name, '1.0.0', { dependencies: cDeps }, spec);
       if (name === 'native-gate') return resolvePackage('native-gate', '1.0.0', { os: ['linux'], cpu: ['x64'] }, spec);
-      return resolvePackage(name, name === 'sharp' ? '0.34.0' : '1.0.0', {}, spec);
+      return resolvePackage(name, '1.0.0', {}, spec);
     },
   );
   const result = await installer.install(PROJ);
@@ -352,7 +352,7 @@ function makeInstaller(pkgJson, resultFor) {
       if (name === 'sharp') {
         return resolvePackage('sharp', '0.34.0', {}, spec);
       }
-      return resolvePackage(name, name === 'sharp' ? '0.34.0' : '1.0.0', {}, spec);
+      return resolvePackage(name, '1.0.0', {}, spec);
     },
   );
   const result = await installer.install(PROJ);
@@ -429,7 +429,7 @@ function makeInstaller(pkgJson, resultFor) {
       if (name === 'c') return resolvePackage(name, '1.0.0', { dependencies: cDeps }, spec);
       if (name === 'b') return resolvePackage(name, '1.0.0', { dependencies: bDeps }, spec);
       if (name === 'native-gate') return resolvePackage('native-gate', '1.0.0', { os: ['linux'], cpu: ['x64'] }, spec);
-      return resolvePackage(name, name === 'sharp' ? '0.34.0' : '1.0.0', {}, spec);
+      return resolvePackage(name, '1.0.0', {}, spec);
     },
   );
   const result = await installer.install(PROJ);
@@ -449,7 +449,7 @@ function makeInstaller(pkgJson, resultFor) {
     (name, spec) => {
       if (name === 'a') return resolvePackage(name, '1.0.0', { dependencies: { b: '1.0.0', 'ac-1': '1.0.0', 'ac-2': '1.0.0', 'ac-3': '1.0.0', 'ac-4': '1.0.0' } }, spec);
       if (name === 'b') return resolvePackage(name, '1.0.0', { dependencies: { a: '1.0.0', 'bc-1': '1.0.0', 'bc-2': '1.0.0', 'bc-3': '1.0.0', 'bc-4': '1.0.0', 'bc-5': '1.0.0' } }, spec);
-      return resolvePackage(name, name === 'sharp' ? '0.34.0' : '1.0.0', {}, spec);
+      return resolvePackage(name, '1.0.0', {}, spec);
     },
   );
   const result = await installer.install(PROJ);
@@ -476,7 +476,7 @@ function makeInstaller(pkgJson, resultFor) {
       }
       if (name === 'y') return resolvePackage(name, '1.0.0', { dependencies: reqDeps }, spec);
       if (name === 'native-gate') return resolvePackage('native-gate', '1.0.0', { os: ['linux'], cpu: ['x64'] }, spec);
-      return resolvePackage(name, name === 'sharp' ? '0.34.0' : '1.0.0', {}, spec);
+      return resolvePackage(name, '1.0.0', {}, spec);
     },
   );
   const result = await installer.install(PROJ);
@@ -503,7 +503,7 @@ function makeInstaller(pkgJson, resultFor) {
         return resolvePackage(name, '1.0.0', { dependencies: appDeps }, spec);
       }
       if (name === 'native-gate') return resolvePackage('native-gate', '1.0.0', { os: ['linux'], cpu: ['x64'] }, spec);
-      return resolvePackage(name, name === 'sharp' ? '0.34.0' : '1.0.0', {}, spec);
+      return resolvePackage(name, '1.0.0', {}, spec);
     },
   );
   const first = await installer.install(PROJ);
@@ -525,7 +525,7 @@ function makeInstaller(pkgJson, resultFor) {
   const { installer, log } = makeInstaller(
     { name: 'complete', dependencies: ok },
     (name, spec) => {
-      return resolvePackage(name, name === 'sharp' ? '0.34.0' : '1.0.0', {}, spec);
+      return resolvePackage(name, '1.0.0', {}, spec);
     },
   );
   const first = await installer.install(PROJ);
@@ -569,7 +569,7 @@ function makeInstaller(pkgJson, resultFor) {
         // lives without them.
         return resolvePackage(name, '1.0.0', { os: ['linux'], cpu: ['x64'] }, spec);
       }
-      return resolvePackage(name, name === 'sharp' ? '0.34.0' : '1.0.0', {}, spec);
+      return resolvePackage(name, '1.0.0', {}, spec);
     },
   );
   const result = await installer.install(PROJ);
@@ -673,7 +673,7 @@ function makeInstaller(pkgJson, resultFor) {
     const asked = [];
     const { installer, log, harness } = makeInstaller(
       { name: 'git-app', dependencies: { ...ok, gitpkg: 'github:user/repo#v1' } },
-      (name, spec) => { asked.push(name); return resolvePackage(name, name === 'sharp' ? '0.34.0' : '1.0.0', {}, spec); },
+      (name, spec) => { asked.push(name); return resolvePackage(name, '1.0.0', {}, spec); },
     );
     // A git spec is not installed here, and never reaches the resolver:
     // a registry package of its name installed before does not meet it.

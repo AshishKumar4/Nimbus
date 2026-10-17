@@ -159,6 +159,7 @@ assert.match(lines, /Pre-bundle complete: 0\/0 succeeded, 5 stopped/, lines);
     },
   });
   const said = [];
+  const resolved = await resultFor('pkg', { range: '1.0.0' });
   await installer.prebundleUsedModules('app', new Map([['pkg', resolved.pkg]]), user, (msg) => said.push(msg));
   const lines = said.join('\n');
   assert.ok(!/stopped|is gone/.test(lines), `a node_modules that cannot be listed is not gone:\n${lines}`);

@@ -22,7 +22,9 @@ const REGISTRY = {
   'real-b': { '1.0.0': {} },
   d: { '1.0.0': {}, '2.0.0': {} },
 };
-const { resultFor, asked } = npmRegistry(REGISTRY);
+const registry = npmRegistry(REGISTRY);
+const asked = [];
+const resultFor = (name, spec) => { asked.push(`${name}@${spec.range}`); return registry.resultFor(name, spec); };
 
 const harness = createSqliteVfsTestHarness(new Database(':memory:'));
 const vfs = new SqliteVFS(harness.sql, harness.ctx);

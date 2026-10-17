@@ -18,7 +18,9 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const PROJ = 'app';
 const NM = `${PROJ}/node_modules`;
-const { resultFor, asked } = npmRegistry({ a: { '1.0.0': {} }, b: { '1.0.0': { dependencies: { c: '1.0.0' } } }, c: { '1.0.0': {} } });
+const registry = npmRegistry({ a: { '1.0.0': {} }, b: { '1.0.0': { dependencies: { c: '1.0.0' } } }, c: { '1.0.0': {} } });
+const asked = [];
+const resultFor = (name, spec) => { asked.push(name); return registry.resultFor(name, spec); };
 const harness = createSqliteVfsTestHarness(new Database(':memory:'));
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
 const root = vfs.as(CRED_KERNEL);
