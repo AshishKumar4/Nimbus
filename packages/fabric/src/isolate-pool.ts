@@ -53,7 +53,7 @@ import {
   TimeoutError,
 } from './vendor/errors.js';
 import type { FacetBindings, FacetImage } from '@nimbus-sh/core/runtime/facet-host.js';
-import { SupervisorLoadWaitError, withSupervisorLoadAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import { SupervisorLoadWaitError, acquireSupervisorLoad, tryAcquireSupervisorLoad } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { memberBuffer } from '@nimbus-sh/platform/worker-code.js';
 import type { ModuleContent, WorkerCode, WorkerLoader } from './vendor/types.js';
 import { hostWasmIdentity } from './host-wasm.js';
@@ -415,6 +415,18 @@ function wasmEntry<W>(name: string, wasm: W, bound: Map<string, string>, scope: 
 }
 
 /**
+ * The loader ids whose images each Durable Object's pools have loaded: a
+ * dispatch to one takes no credit before its worker, for the loader answers
+ * it warm and reads nothing.
+ */
+const loadedByCtx = new WeakMap<object, Set<string>>();
+function loadedIds(ctx: object): Set<string> {
+  let ids = loadedByCtx.get(ctx);
+  if (ids === undefined) loadedByCtx.set(ctx, ids = new Set());
+  return ids;
+}
+
+/**
  * The images' part of a loader cache key: '0' for none, so a pool without
  * wasm keeps one stable key, else the SHA-256 of every image's name and
  * identity. An image's identity is equal only for equal bytes
@@ -672,28 +684,21 @@ export class IsolatePool {
    * size, both let go as the callback returns. A warm worker never calls
    * back, so it costs no read and no admission.
    */
-  async #loadCode(
-    source: string,
-    entries: ReadonlyArray<WasmEntry<FacetImage | WebAssembly.Module>>,
-    imageBytes: number,
-    signal: AbortSignal | undefined,
-  ): Promise<WorkerCode> {
-    return withSupervisorLoadAllocation(`facet '${this.tag}' images`, imageBytes, signal, async () => {
-      const modules: Record<string, ModuleContent> = { 'worker.js': source };
-      for (const entry of entries) {
-        modules[entry.name] = { wasm: entry.wasm instanceof WebAssembly.Module ? entry.wasm : memberBuffer(await entry.wasm.read()) };
-      }
-      return {
-        compatibilityDate: CF_COMPAT_DATE,
-        compatibilityFlags: [...GUEST_COMPAT_FLAGS],
-        mainModule: 'worker.js',
-        modules,
-        env: this.bindings,
-        // The workspace's egress when the pool works for one; else the key is
-        // absent and the facet inherits the parent's network.
-        ...loaderOutbound(this.network),
-      };
-    });
+  async #loadCode(source: string, entries: ReadonlyArray<WasmEntry<FacetImage | WebAssembly.Module>>): Promise<WorkerCode> {
+    const modules: Record<string, ModuleContent> = { 'worker.js': source };
+    for (const entry of entries) {
+      modules[entry.name] = { wasm: entry.wasm instanceof WebAssembly.Module ? entry.wasm : memberBuffer(await entry.wasm.read()) };
+    }
+    return {
+      compatibilityDate: CF_COMPAT_DATE,
+      compatibilityFlags: [...GUEST_COMPAT_FLAGS],
+      mainModule: 'worker.js',
+      modules,
+      env: this.bindings,
+      // The workspace's egress when the pool works for one; else the key is
+      // absent and the facet inherits the parent's network.
+      ...loaderOutbound(this.network),
+    };
   }
 
   /**
@@ -801,8 +806,7 @@ export class IsolatePool {
     // A hold the ledger already took for the next attempt, when a refused
     // call waited on it for room; otherwise the attempt begins its own.
     let admitted: EndLoaderFetch | undefined;
-    // The isolate budget's refusal of this dispatch's load (SupervisorLoadWaitError), when it refused it.
-    let refused: SupervisorLoadWaitError | undefined;
+    const loaded = loadedIds(this.ctx);
     // The hold the latest attempt ran on: a refused one is readmitted on its terms.
     let held: EndLoaderFetch | undefined;
     const runOnce = async (): Promise<T> => {
@@ -831,8 +835,15 @@ export class IsolatePool {
       // binding stub once the whole pool is done, which does NOT
       // invalidate any in-flight slot's entrypoint reference.
       //
-      // The hold comes first, so it ends whatever setup throws: a retry's
-      // was taken when the ledger let it in.
+      // Lock order (acquireSupervisorLoad): credit, then a worker. A load this
+      // isolate has not made takes its images' credit before the hold below,
+      // waiting its turn; one it has made is answered warm and reads nothing,
+      // and should the loader have dropped it, takes credit without waiting
+      // or ends its hold and comes back for it.
+      let credit = imageBytes > 0 && !loaded.has(id) ? await acquireSupervisorLoad(`facet '${this.tag}' images`, imageBytes, signal) : null;
+      let lacking = false;
+      // The hold comes first among what remains, so it ends whatever setup
+      // throws: a retry's was taken when the ledger let it in.
       // Inside an admitted launch (a child's python, ruby or wasm runtime
       // dispatching here), the first dispatch is the launch's own worker.
       const endFetch = admitted ?? (this.claim ? undefined : claimAdmission(this.ctx)) ?? beginLoaderFetch(this.ctx, id, this.claim);
@@ -840,12 +851,18 @@ export class IsolatePool {
       held = endFetch;
       try {
         const stub = this.loader.get(id, async () => {
+          const lease = imageBytes === 0 ? null : credit ?? tryAcquireSupervisorLoad(imageBytes);
+          if (imageBytes > 0 && lease === null) {
+            lacking = true;
+            throw new Error(`IsolatePool(${this.tag}): its images' credit is not free while it holds a worker`);
+          }
           try {
-            return applyFacetLimits(this.facetKind, await this.#loadCode(source, entries, imageBytes, signal));
-          } catch (error) {
-            // Kept as itself: what reaches the call from the loader is the platform's account of it.
-            if (error instanceof SupervisorLoadWaitError) refused = error;
-            throw error;
+            const code = applyFacetLimits(this.facetKind, await this.#loadCode(source, entries));
+            loaded.add(id);
+            return code;
+          } finally {
+            lease?.release();
+            credit = null;
           }
         });
         const entrypoint = stub.getEntrypoint(undefined, { limits: facetLimits(this.facetKind) });
@@ -855,14 +872,18 @@ export class IsolatePool {
       } catch (err) {
         // The ledger learns a limit refusal from the hold it ends.
         endFetch(err);
-        // A load the isolate's budget refused ran nothing: said as itself, never retried.
-        if (refused) throw refused;
+        // A load the loader dropped, whose credit was not free: its hold ended, it waits for credit as a new load does.
+        if (lacking) {
+          loaded.delete(id);
+          return await runOnce();
+        }
         if (err instanceof Error) {
           throw new ExecutionError(err.message, err.stack);
         }
         throw new ExecutionError(String(err));
       } finally {
         endFetch();
+        credit?.release();
       }
     };
 
