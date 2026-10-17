@@ -239,6 +239,7 @@ console.log(`  ok  ${CASES.length} modules x ${Object.keys(outcomes).length} tra
     { label: 'named-tag', receiver: undefined, strings: ['named', 'end'], raw: ['named', 'end'], substitutions: [{ value: 4 }] },
     { label: 'method', receiver: object, args: ['method', 5] },
   ]);
+  assert.equal(calls[4].receiver, object, 'the method receives the imported object itself');
   console.log('  ok  imported calls and tags have no receiver; an imported object keeps its method receiver');
 }
 
