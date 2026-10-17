@@ -11241,11 +11241,14 @@ function __nimbusUncaughtException(error, fromPromise = false) {
       __nimbusReportProcessExit(thrown.code, "");
       return true;
     }
+    // The process ends: Node runs no more ticks, a warning's included.
+    __nimbusWarnings.dropQueued();
     const report = __nimbusFatalReport(thrown, false, false);
     __nimbusWriteFatal(report);
     __nimbusReportProcessExit(7, report);
     return false;
   }
+  __nimbusWarnings.dropQueued();
   try {
     if (!__processMod._exiting) {
       __processMod._exiting = true;

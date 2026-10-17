@@ -133,6 +133,8 @@ import('./typed/module-exports.js').catch((e) => { report.push(['import', e.name
   'imports-unhandled.mjs': "setTimeout(() => {}, 10);\nimport('./unhandled/broken.js');\n",
   // A preload's listener takes the entry's failure: the process goes on, and the warning prints.
   'handles-uncaught.mjs': "process.on('uncaughtException', (e) => console.log('handled', e.name));\nprocess.on('warning', (w) => console.log('warning', w.code));\n",
+  // A warning listener that exits: never run where the entry's failure ends the process.
+  'exits-on-warning.mjs': "process.on('warning', () => process.exit(0));\n",
   // ... and replaces emitWarning, then warns: the loader's warning, issued before, comes first.
   'handles-and-warns.mjs': "process.on('uncaughtException', (e) => { console.log('handled', e.name); const emit = process.emitWarning; process.emitWarning = () => { throw new Error('late replacement'); }; emit.call(process, 'later'); });\nprocess.on('warning', (w) => console.log('warning', w.code ?? w.message));\n",
   // Keys and methods named import or export are no module syntax.
@@ -189,6 +191,7 @@ const RUNS = [
   ['imports-unhandled.mjs'],
   ['--import', './handles-uncaught.mjs', 'late-error.js'],
   ['--import', './handles-and-warns.mjs', 'late-error.js'],
+  ['--import', './exits-on-warning.mjs', 'late-error.js'],
 ];
 // Each run as a command line, its stdin from a file of the tree.
 const stdins = {};
