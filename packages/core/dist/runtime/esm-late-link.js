@@ -135,15 +135,9 @@ export function commonJsNames(host, key) {
  */
 export function linkLateGraph(host, key, url, kept) {
     const order = [];
-    const late = { modules: new Map(), rows: [], required: [], kept };
-    const seen = new Set();
-    const checked = new Set();
-    plan(host, key, url, seen, order, checked, late);
+    const late = { modules: new Map(), rows: [], kept };
+    plan(host, key, url, new Set(), order, new Set(), late);
     checkBindings(host, late, url);
-    if (late.required.length > 0) {
-        linkRequired(host, seen, checked, late, late.required);
-        checkBindings(host, late, url);
-    }
     for (const row of late.rows)
         checkedRows.add(row);
     return order;
@@ -164,7 +158,7 @@ export function linkAdopted(host, id, key, url) {
 }
 /** The names the `export *`s of the interpreted module at `url` reach two different bindings of, which its namespace omits. */
 export function starConflicts(host, url) {
-    const late = { modules: lateModules, rows: [], required: [], kept: false };
+    const late = { modules: lateModules, rows: [], kept: false };
     // A staged module the interpreter evaluates, by its file; not a query's or a fragment's instance.
     const { protocol, search, hash, pathname } = new URL(url);
     const row = protocol === 'file:' && search === '' && hash === '' ? host.row('module', decodeURIComponent(pathname).replace(/^\/+/, '')) : -1;
@@ -182,7 +176,7 @@ export function starConflicts(host, url) {
  * namespace taken in a cycle has them all.
  */
 export function namespaceNames(host, url) {
-    const late = { modules: lateModules, rows: [], required: [], kept: false };
+    const late = { modules: lateModules, rows: [], kept: false };
     if (!lateModules.has(url))
         return null;
     const target = { url };
@@ -291,10 +285,6 @@ function planModule(host, key, url, seen, order, checked, late) {
         if (!order.includes(id))
             order.push(id);
     }
-    // A staged module's require()s staging hoisted (its own instance's, not a query's or a fragment's), linked after its static graph.
-    if (staged !== -1 && !url.includes('?') && !url.includes('#'))
-        for (let index = statics; index < host.rowTargets(staged).length; index++)
-            late.required.push({ row: staged, index });
 }
 /**
  * A file staging handed on (one the launch lacked, did not stage as the
@@ -354,9 +344,10 @@ function lateTarget(host, resolution) {
  * makes that staging refused for good. A staging handed on (a query's or a
  * fragment's instance, which the interpreter evaluates where it is
  * imported) is planned as the late graph's own. The graph's unevaluated
- * rows go to `late`; the require()s staging hoisted (a row's targets past
- * its static imports), which run when the row evaluates, to
- * `late.required`, linked after the static graph (linkRequired).
+ * rows go to `late`. A require() staging hoisted (a target past the row's
+ * static imports) is not followed: the interpreter evaluates the row's own
+ * text, whose require() links its module where it runs, as Node's does,
+ * after the row's static imports evaluate (which may write its files).
  */
 function checkLinks(host, id, seen, checked, late) {
     if (checked.has(id))
@@ -369,14 +360,11 @@ function checkLinks(host, id, seen, checked, late) {
         throw failure;
     try {
         late.rows.push(id);
-        const statics = rowRead(host, id).specifiers.length;
-        const targets = host.rowTargets(id);
-        for (let index = 0; index < targets.length; index++) {
-            if (index < statics)
-                checkTarget(host, id, index, seen, checked, late);
-            else
-                late.required.push({ row: id, index });
-        }
+        const { analysis, specifiers } = rowRead(host, id);
+        const targets = host.rowTargets(id).length;
+        const statics = analysis === null ? targets : Math.min(specifiers.length, targets);
+        for (let index = 0; index < statics; index++)
+            checkTarget(host, id, index, seen, checked, late);
     }
     catch (e) {
         if (late.kept && e instanceof Error)
@@ -411,29 +399,6 @@ function checkTarget(host, row, index, seen, checked, late) {
     const handed = new URL(missing.handedOn);
     const key = handed.protocol === 'data:' ? missing.handedOn : decodeURIComponent(handed.pathname).replace(/^\/+/, '');
     plan(host, key, missing.handedOn, seen, [], checked, late);
-}
-/**
- * Links the require()s staging hoisted that the late graph reached, once
- * its static graph is linked, as Node's require() links each where its row
- * evaluates (require(esm)), and in that order: each required graph's own
- * hoisted require()s before the next. A failure in a required graph is not
- * kept, as a require()'s link is not; its requiring row's is, whatever
- * link reached the row: the row's evaluation fails in Node, and a module
- * keeps the error its evaluation threw.
- */
-function linkRequired(host, seen, checked, late, required) {
-    for (const { row, index } of required) {
-        const nested = [];
-        try {
-            checkTarget(host, row, index, seen, checked, { modules: late.modules, rows: late.rows, required: nested, kept: false });
-            linkRequired(host, seen, checked, late, nested);
-        }
-        catch (e) {
-            if (e instanceof Error)
-                linkFailures.set(host.rowKey(row), e);
-            throw e;
-        }
-    }
 }
 /**
  * Each name a module of the late graph imports is one its module exports,
