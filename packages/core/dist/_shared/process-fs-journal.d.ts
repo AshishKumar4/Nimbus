@@ -33,8 +33,8 @@ export interface ProcessFsJournal {
     append(op: ProcessFsOp): number;
     /** The entry `jid`, still held. */
     read(jid: number): ProcessFsOp;
-    /** The entry `jid` (not yet sent) is now `op`: a later change folded into it. */
-    replace(jid: number, op: ProcessFsOp): void;
+    /** The entry `jid` (not yet sent) is now `op`; `append`, when given, only extends its data, leaving its other fields unchanged. */
+    replace(jid: number, op: ProcessFsOp, append?: Uint8Array): void;
     /** Every entry held, in order. */
     entries(): {
         jid: number;
@@ -59,10 +59,9 @@ export interface JournalSql {
     exec(query: string, ...bindings: unknown[]): Iterable<Record<string, unknown>>;
 }
 /**
- * The journal in a process's own SQLite. Two tables: the entries (one row
- * each, deleted once answered) and the numberings (one row per writer
- * epoch). A facet that restarts after a crash opens the same tables, and the
- * entries it finds are what its process left unanswered.
+ * The journal in a process's own SQLite: entries, their appended data
+ * pieces (joined only when read), and numberings (one row per writer epoch).
+ * A facet that restarts opens the same tables: everything left unanswered.
  */
 export declare function sqlJournal(sql: JournalSql): ProcessFsJournal;
 /** The journal in the process's heap: for a process with no storage of its own, it dies with it. */

@@ -185,7 +185,7 @@ function descriptionOf(call) {
  * page cache folds them; null when it is not such a change, or the folded
  * bytes would pass a piece.
  */
-function folded(last, next) {
+function folded(last, next, buffer) {
     if (last.type !== 'call' || next.type !== 'call' || !('data' in last.call) || !('data' in next.call))
         return null;
     const a = last.call;
@@ -194,24 +194,27 @@ function folded(last, next) {
     if (a.path !== b.path || descriptionOf(a) !== descriptionOf(b) || a.data.byteLength + b.data.byteLength > DATA_PIECE_BYTES)
         return null;
     const inoOf = (call) => ('ino' in call ? call.ino : undefined);
-    const join = (left, right) => {
-        const out = new Uint8Array(left.byteLength + right.byteLength);
-        out.set(left, 0);
-        out.set(right, left.byteLength);
-        return out;
+    const join = () => {
+        const size = a.data.byteLength + b.data.byteLength;
+        if (buffer === null || buffer.byteLength < size) {
+            buffer = new Uint8Array(Math.min(DATA_PIECE_BYTES, Math.max(size, (buffer?.byteLength ?? a.data.byteLength) * 2)));
+            buffer.set(a.data);
+        }
+        buffer.set(b.data, a.data.byteLength);
+        return { op: { type: 'call', call: { ...a, data: buffer.subarray(0, size) } }, buffer, append: b.data };
     };
     if (b.call === 'writeFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) {
         // The last write's file is made (or kept) by the first: its make wins, the bytes are the last's.
-        return { type: 'call', call: { ...a, call: 'writeFile', data: b.data } };
+        return { op: { type: 'call', call: { ...a, call: 'writeFile', data: b.data } }, buffer: null };
     }
     if (b.call === 'appendFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) {
-        return { type: 'call', call: { ...a, data: join(a.data, b.data) } };
+        return join();
     }
     if (b.call === 'append' && a.call === 'append' && inoOf(a) === inoOf(b)) {
-        return { type: 'call', call: { ...a, data: join(a.data, b.data) } };
+        return join();
     }
     if (b.call === 'write' && a.call === 'write' && inoOf(a) === inoOf(b) && a.offset + a.data.byteLength === b.offset) {
-        return { type: 'call', call: { ...a, data: join(a.data, b.data) } };
+        return join();
     }
     return null;
 }
@@ -451,6 +454,7 @@ export function processFsClient(options) {
                 if (entry.op !== null) {
                     heapBytes -= entry.bytes;
                     entry.op = null;
+                    entry.buffer = null;
                 }
             bytes = await encodeWriteBatch({ inodes: [], chunks: [], ops });
             // Numbered once, under the epoch they are first sent under; a re-send keeps them.
@@ -602,6 +606,7 @@ export function processFsClient(options) {
             if (entry.op !== null) {
                 heapBytes -= entry.bytes;
                 entry.op = null;
+                entry.buffer = null;
             }
             fail(entry, 'ESRCH', processGone.message);
         }
@@ -618,6 +623,7 @@ export function processFsClient(options) {
             if (entry.op !== null) {
                 heapBytes -= entry.bytes;
                 entry.op = null;
+                entry.buffer = null;
             }
             fail(entry, 'EIO', refusal.message);
         }
@@ -1017,12 +1023,13 @@ export function processFsClient(options) {
             const tail = queue[queue.length - 1];
             // (The queue holds only unsent changes; one sent and back for a re-send is numbered.)
             const merged = parts.length === 1 && tail !== undefined && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged
-                ? folded(tail.op, parts[0]) : null;
+                ? folded(tail.op, parts[0], tail.buffer) : null;
             if (merged !== null && tail !== undefined) {
-                const mergedBytes = merged.type === 'call' && 'data' in merged.call ? merged.call.data.byteLength : 0;
-                journal.replace(tail.jid, merged);
+                const mergedBytes = merged.op.type === 'call' && 'data' in merged.op.call ? merged.op.call.data.byteLength : 0;
+                journal.replace(tail.jid, merged.op, merged.append);
                 const grown = mergedBytes - tail.bytes;
-                tail.op = merged;
+                tail.op = merged.op;
+                tail.buffer = merged.buffer;
                 tail.bytes = mergedBytes;
                 // Someone waits on the fold now: what lingered goes.
                 if (tail.lingers && !lingers) {
@@ -1053,7 +1060,7 @@ export function processFsClient(options) {
                 const kept = !journal.durable || heapBytes + partBytes <= PROCESS_FS_HEAP_WINDOW_BYTES;
                 if (kept)
                     heapBytes += partBytes;
-                queue.push({ op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject });
+                queue.push({ op: kept ? part : null, buffer: null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject });
                 pendingBytes += partBytes;
                 if (acknowledged) {
                     pendingSyncBytes += partBytes;
