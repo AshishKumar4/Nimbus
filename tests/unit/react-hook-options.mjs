@@ -29,10 +29,14 @@ void useNimbusSession({ endpoint: 'https://nimbus.test' });
   const configPath = join(repo, 'packages/react/tsconfig.json');
   const config = ts.readConfigFile(configPath, ts.sys.readFile);
   assert.equal(config.error, undefined);
-  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, join(repo, 'packages/react'));
+  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, join(repo, 'packages/react'), undefined, configPath);
+  assert.deepEqual(parsed.errors.map((error) => ts.flattenDiagnosticMessageText(error.messageText, '\n')), []);
   const program = ts.createProgram([entry], { ...parsed.options, noEmit: true, allowImportingTsExtensions: true });
   const source = program.getSourceFile(entry);
-  const errors = [...program.getSyntacticDiagnostics(source), ...program.getSemanticDiagnostics(source)];
+  const errors = [
+    ...program.getOptionsDiagnostics(), ...program.getGlobalDiagnostics(),
+    ...program.getSyntacticDiagnostics(source), ...program.getSemanticDiagnostics(source),
+  ];
   assert.deepEqual(errors.map((error) => ts.flattenDiagnosticMessageText(error.messageText, '\n')), [],
     'the headless hook takes its options without an identity, and refuses one');
 } finally {
