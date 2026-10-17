@@ -5192,6 +5192,8 @@ export interface ResidentSpawnOptions {
   resume?: StoppedRunNext;
   /** Its stdin, given whole (exec's `stdin`): a promoted one-shot's, given again. */
   stdin?: string;
+  /** Its `< file`, read from the start: a promoted one-shot's, run again from its start unretraced (_promote). */
+  stdinFile?: NonNullable<ExecLaunchOpts['stdinFile']>;
   /**
    * Its launcher writes its stdin and ends it, and does not wait for the
    * boot (RuntimeRunOpts.stdinWriter): the boot may stop at a synchronous
@@ -7772,6 +7774,8 @@ export class FacetManager {
       await this._deliverOutput(pid, 'stderr', new TextEncoder().encode(
         `node: this program listens as a server, so Nimbus runs it again as one from its start, over the files as they are: ${restored.refused}. What it printed before it listened is printed again.\n`,
       ));
+      // Its run from the start is no run after a stop: all it prints is shown.
+      this.outputGates.delete(pid);
     }
     const resume: StoppedRunNext = {
       replay: {
@@ -7800,7 +7804,9 @@ export class FacetManager {
         command: opts.command, invokerPid: opts.invokerPid, bundleProfile: opts.bundleProfile, node: opts.node,
         ...(opts.stdin !== undefined ? { stdin: opts.stdin } : {}),
         skipSpawn: true, callerPid: pid,
-        ...('refused' in restored ? (run.inputChannel > 0 ? { stdinWriter: true } : {}) : { resume }),
+        ...('refused' in restored
+          ? { ...(run.inputChannel > 0 ? { stdinWriter: true } : {}), ...(opts.stdinFile ? { stdinFile: { ...opts.stdinFile, syncRead: true } } : {}) }
+          : { resume }),
       });
       // Its \`< file\` changed between the run that read it and the resident
       // that read it again: they did not read the same input.
@@ -9442,7 +9448,7 @@ export class FacetManager {
           // A boot after a stop: what the stopped boot drew and printed, and
           // the stdin it is handed back.
           ...(rerun !== null ? { replay: rerun.replay, stdinAtLeast: rerun.stdinAtLeast ?? 0, ...(rerun.stdinWhole ? { stdinWhole: true } : {}) } : {}),
-          ...(rerun?.stdinFile ? { stdinFile: rerun.stdinFile } : {}),
+          ...(rerun?.stdinFile ? { stdinFile: rerun.stdinFile } : opts.stdinFile ? { stdinFile: opts.stdinFile } : {}),
         },
         // Each boot after a stop is a fresh isolate: a keyed loader keeps the
         // stopped one's module state.

@@ -13,10 +13,15 @@
  *     maintenance collects meanwhile.
  *   settled: the waves of its epochs still being applied land before it
  *     is put back, and none is admitted after.
- *   refused: another writer changed a key after the run last did, or wrote
- *     into a directory the run made; the run's changes are then left as
- *     they are, and the key is named. So are a capture let go and one past
- *     RUN_CAPTURE_MAX_KEYS.
+ *   refused: another writer changed a key after the run last did (made it,
+ *     changed it, or made and removed it again), or wrote into a directory
+ *     the run made, even before the run's own last entry there; the run's
+ *     changes are then left as they are, and the key is named. So are a
+ *     capture let go, one past RUN_CAPTURE_MAX_KEYS, and a change on a
+ *     mount (/dev), which is not put back.
+ *   rolled back: a call refused after part of it committed (an open's
+ *     truncate, its fchmod refused) is no change of the run's: a peer's
+ *     write after it stays.
  *
  * Before: no capture existed. The run again ran over what its first run had
  * changed, and was checked change by change against it, so two tasks that
@@ -45,20 +50,25 @@ function session() {
   const files = new ProcessFiles(engine);
   const user = engine.as(CRED_SESSION_USER);
   const next = new Map();
-  /** A wave of `ops` by process `pid`, numbered on from its last. */
-  const wave = async (pid, ops) => {
+  /** A wave of `ops` by process `pid`, numbered on from its last: its answer. */
+  const send = async (pid, ops) => {
     const first = next.get(pid) ?? 1;
     next.set(pid, first + ops.length);
-    const answer = await files.waves.writeStream(user, encodeWriteBatchStream({ inodes: [], chunks: [], ops }), {
+    return files.waves.writeStream(user, encodeWriteBatchStream({ inodes: [], chunks: [], ops }), {
       sequence: { writer: `w${pid}`, first, ack: first - 1, pid },
     });
+  };
+  /** The same, every op committed. */
+  const wave = async (pid, ops) => {
+    const answer = await send(pid, ops);
     assert.equal(answer.ok, true, JSON.stringify(answer.error));
+    assert.equal(answer.sequence?.refused, undefined, JSON.stringify(answer.sequence));
     return answer;
   };
   const text = (key) => { try { return dec.decode(kernel.readFile(key)); } catch { return null; } };
   const ino = (key) => kernel.stat(key).ino;
   const seed = (key, content) => user.writeFile(key, enc.encode(content), { mode: 0o644 });
-  return { engine, kernel, user, wave, text, ino, seed };
+  return { engine, kernel, user, send, wave, text, ino, seed };
 }
 
 const call = (c) => ({ type: 'call', call: c });
@@ -134,6 +144,28 @@ const truncate = (path, size) => ({ type: 'truncate', path, size });
   assert.match(refused.refused, /^\/home\/user\/made was changed since it changed it$/);
   assert.equal(s.text('home/user/made/peer.txt'), 'p');
 }
+// … or wrote into it before the run's last entry there.
+{
+  const s = session();
+  s.engine.captureRun(RUN);
+  await s.wave(RUN, [mkdir('home/user/made'), write('home/user/made/a', 'a')]);
+  await s.wave(PEER, [write('home/user/made/peer', 'p')]);
+  await s.wave(RUN, [write('home/user/made/b', 'b')]);
+  assert.match(s.engine.restoreRun(RUN).refused, /^\/home\/user\/made\/peer was made in \/home\/user\/made, which it made$/);
+  assert.equal(s.text('home/user/made/peer'), 'p');
+  assert.equal(s.text('home/user/made/a'), 'a', 'nothing is put back');
+}
+// … or made again, and removed again, a file the run removed.
+{
+  const s = session();
+  s.seed('home/user/gone.txt', 'bye');
+  s.engine.captureRun(RUN);
+  await s.wave(RUN, [unlink('home/user/gone.txt')]);
+  await s.wave(PEER, [write('home/user/gone.txt', 'p')]);
+  await s.wave(PEER, [unlink('home/user/gone.txt')]);
+  assert.match(s.engine.restoreRun(RUN).refused, /^\/home\/user\/gone\.txt was changed since it changed it$/);
+  assert.equal(s.text('home/user/gone.txt'), null);
+}
 // … or removed a file the run wrote.
 {
   const s = session();
@@ -153,7 +185,34 @@ const truncate = (path, size) => ({ type: 'truncate', path, size });
   assert.deepEqual([s.text('home/user/a.txt'), s.text('home/user/b.txt'), s.text('home/user/c.txt')], [null, 'b', null]);
 }
 
-// ── refused: let go, or past the bound ──────────────────────────────────
+// ── rolled back: no change of the run's ─────────────────────────────────
+{
+  const s = session();
+  s.kernel.writeFile('home/user/theirs.txt', enc.encode('base'), { mode: 0o666 });
+  s.engine.captureRun(RUN);
+  // Root's file: the user may empty it, not chmod it, so the open is refused whole.
+  const refused = await s.send(RUN, [call({ call: 'open', path: 'home/user/theirs.txt', mode: 0o644, access: 'write', truncate: true, fchmod: 0o600 })]);
+  assert.equal(refused.sequence?.refused?.errno, 'EPERM', JSON.stringify(refused));
+  assert.equal(s.text('home/user/theirs.txt'), 'base');
+  await s.wave(PEER, [write('home/user/theirs.txt', 'peer')]);
+  assert.ok('restored' in s.engine.restoreRun(RUN));
+  assert.equal(s.text('home/user/theirs.txt'), 'peer', "the peer's write stays: the refused open changed nothing of the run's");
+}
+
+// ── a tree back over several transactions keeps its directories' times ──
+{
+  const s = session();
+  s.user.mkdir('home/user/big', { mode: 0o755 });
+  for (let i = 0; i < 3000; i++) s.seed(`home/user/big/${i}`, '');
+  const mtime = s.kernel.stat('home/user/big').mtimeMs;
+  s.engine.captureRun(RUN);
+  await s.wave(RUN, [rmTree('home/user/big')]);
+  assert.ok('restored' in s.engine.restoreRun(RUN));
+  assert.equal(s.text('home/user/big/2999'), '');
+  assert.equal(s.kernel.stat('home/user/big').mtimeMs, mtime, 'the directory has the times it had');
+}
+
+// ── refused: let go, past the bound, or a change on a mount ─────────────
 {
   const s = session();
   s.engine.captureRun(RUN);
@@ -192,6 +251,14 @@ const truncate = (path, size) => ({ type: 'truncate', path, size });
   landing[1].reject(new Error('cut'));
   await retiring;
   assert.equal(retired, true);
+}
+
+{
+  const s = session();
+  s.engine.captureRun(RUN);
+  await s.wave(RUN, [write('home/user/x.txt', 'r'), write('dev/null', 'gone')]);
+  assert.match(s.engine.restoreRun(RUN).refused, /^it changed \/dev\/null, on a mounted filesystem, which is not put back$/);
+  assert.equal(s.text('home/user/x.txt'), 'r');
 }
 
 console.log('sqlite-vfs-run-restore: a run\'s changes are put back as it found them, or refused, naming why, and none is');
