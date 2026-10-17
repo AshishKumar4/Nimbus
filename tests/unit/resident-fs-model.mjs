@@ -332,15 +332,15 @@ async function run(steps) {
     if (step.op === 'deliver') await deliver();
     else if (step.op === 'catchUp') {
       await catchUp();
+      // A file a descriptor holds that no name leads to now keeps what the view had of it, by its session identity.
       const before = view();
+      const held = [...fds.values()].map((open) => [alias.get(open.id) ?? open.id, before.files.get(key(open.id))]);
       admitted = await snapshot();
       pending = [];
-      // A file a descriptor holds that no name leads to now keeps what the view had of it.
-      for (const open of fds.values()) {
-        const at = key(open.id);
-        if (admitted.files.has(at) || !before.files.has(at)) continue;
-        admitted.files.set(at, before.files.get(at));
-        unnamed.add(at);
+      for (const [id, file] of held) {
+        if (admitted.files.has(id) || file === undefined) continue;
+        admitted.files.set(id, file);
+        unnamed.add(id);
       }
     } else if (step.op === 'peer') {
       // Between deliveries: the session has it before what the process sends next, and so does the reference.
