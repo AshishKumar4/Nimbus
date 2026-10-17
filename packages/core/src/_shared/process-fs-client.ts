@@ -44,7 +44,7 @@
  * session refused is not asked for again.
  */
 
-import { encodeWriteBatch, type W7Attrs, type W7Call, type W7DataCall } from '@nimbus-sh/platform/w7-frame.js';
+import { encodeWriteBatch, type W7Attrs, type W7Call } from '@nimbus-sh/platform/w7-frame.js';
 import type { ExclusiveMutationGrant, GrantCertificate, RecallKind } from '../runtime/os-contracts.js';
 import { WAVE_BYTES, WAVE_PATHS, WAVE_PATH_BYTES, openWaveEpoch, sendWaveAttempts, waveAttemptsOf, type WaveFence, type WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
@@ -543,7 +543,7 @@ function descriptionOf(call: W7Call): string | undefined {
   return 'description' in call ? call.description : undefined;
 }
 
-function extended(call: W7DataCall, data: Uint8Array, buffer: Uint8Array | null): { op: ProcessFsOp; buffer: Uint8Array; append: Uint8Array } {
+function extended(call: Extract<W7Call, { data: Uint8Array }>, data: Uint8Array, buffer: Uint8Array | null): { op: ProcessFsOp; buffer: Uint8Array; append: Uint8Array } {
   const size = call.data.byteLength + data.byteLength;
   if (buffer === null || buffer.byteLength < size) {
     buffer = new Uint8Array(Math.min(DATA_PIECE_BYTES, Math.max(size, (buffer?.byteLength ?? call.data.byteLength) * 2)));
