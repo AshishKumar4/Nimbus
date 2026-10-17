@@ -167,6 +167,8 @@ export interface Desc {
     path: string;
     /** Its open description at the session, where it may write: opened there as it was here. */
     description?: string;
+    /** For a caller that waits for it: the session's answer to its open, which rejects with the open's refusal. */
+    opening?: Promise<unknown>;
 }
 export interface Provisional {
     /** What it keeps of the process's budget now, counted afresh from what it holds: what it has taken of it, where its accounting is right. */
@@ -215,7 +217,9 @@ export interface Provisional {
     entry(key: string): ResidentEntry | null | undefined;
     children(key: string, base: RuntimeVfsDirEntry[] | undefined): RuntimeVfsDirEntry[] | undefined;
     /** An open of `key` (resolved; `row` what it names, null for nothing): a descriptor, undefined where it is not made here. */
-    open(key: string, path: string, flags: RuntimeOpenFlags, row: ResidentEntry | null): RuntimeFileHandle | undefined;
+    open(key: string, path: string, flags: RuntimeOpenFlags, row: ResidentEntry | null, awaited?: boolean): RuntimeFileHandle | undefined;
+    /** A descriptor whose open the session refused (Desc.opening): gone, nothing of it logged. */
+    abandon(handleId: number): void;
     /** A whole file written by name: its open, write and close, judged together. False where it is not made here. */
     writeFile(key: string, path: string, bytes: Uint8Array, row: ResidentEntry | null, umask: number | undefined): boolean;
     /** Undefined where its bytes are the store's and it does not hold them: inodeOf says what to fetch. */

@@ -605,7 +605,9 @@ export function residentFilesystem(session, resident, delegation) {
     const caughtUpFor = (then, caughtUps = 0) => {
         if (now || !owes() || caughtUps >= MAX_CATCH_UPS_PER_CALL)
             return then();
-        return catchUp().then((ok) => (ok ? caughtUpFor(then, caughtUps + 1) : then()));
+        return new Promise((resolve, reject) => {
+            catchUp().then((ok) => resolve(ok ? caughtUpFor(then, caughtUps + 1) : then()), reject);
+        });
     };
     /**
      * A mutation the holder may decide (a subtree it holds, or one it takes
@@ -1014,11 +1016,18 @@ export function residentFilesystem(session, resident, delegation) {
                     const there = entryAt(walk.key);
                     if (there === undefined || there?.type === 'directory')
                         return DELEGATE;
-                    const opened = holder.provisional.open(walk.key, pathOf(path), flags, there);
+                    const opened = holder.provisional.open(walk.key, pathOf(path), flags, there, true);
                     if (opened === undefined)
                         return DELEGATE;
                     counts.local++;
-                    return heldOpen(opened);
+                    // Its access is the session's to judge at the open, as open(2) judges it: answered before it returns.
+                    const opening = holder.provisional.descriptor(opened.id)?.opening;
+                    if (opening === undefined)
+                        return heldOpen(opened);
+                    return opening.then(() => heldOpen(opened), (error) => {
+                        holder.provisional.abandon(opened.id);
+                        throw error;
+                    });
                 });
             };
             return after(through(), (handle) => {
