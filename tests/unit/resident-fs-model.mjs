@@ -315,15 +315,23 @@ async function run(steps) {
     undelivered = [];
   };
 
+  /** The view brought to the session's: what the process sent delivered, a barrier, every name read (the view holds what it read until a barrier reads it again). */
+  const catchUp = async () => {
+    await deliver();
+    s.fs.inbound();
+    await s.fs.stat(`/${DIR}`);
+    for (const name of NAMES) {
+      await errnoOf(() => s.fs.stat(path(name)));
+      await errnoOf(() => s.fs.readFile(path(name)));
+    }
+  };
+  await catchUp();
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
     const label = `step ${i} ${JSON.stringify(step)}`;
     if (step.op === 'deliver') await deliver();
     else if (step.op === 'catchUp') {
-      await deliver();
-      s.fs.inbound();
-      await s.fs.stat(`/${DIR}`);
-      for (const name of NAMES) await errnoOf(() => s.fs.readFile(path(name)));
+      await catchUp();
       const before = view();
       admitted = await snapshot();
       pending = [];
