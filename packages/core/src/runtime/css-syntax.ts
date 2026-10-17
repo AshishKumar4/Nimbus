@@ -18,8 +18,9 @@
  * selector, a no-break space stays a name character); conditions print as
  * esbuild 0.24 prints them, since a bundle writes them back.
  *
- * Used by css-bundle.ts (the built-in `vite build`'s stylesheets) and by the
- * Vite dev server's stylesheet serving.
+ * Used by css-bundle.ts (the built-in `vite build`'s stylesheets), by the
+ * Vite dev server's stylesheet serving, and by a facet's data plan for the
+ * sources a stylesheet names (sheetSources).
  */
 
 import parse from 'css-tree/parser';
@@ -399,6 +400,29 @@ function printedNodes(sheet: ParsedSheet): CssNode[] {
  */
 export function sheetRules(sheet: ParsedSheet, rewriteUrl?: (url: string) => { url: string; written: boolean }): string[] {
   return printedNodes(sheet).map((node) => print(sheet.source, node, rewriteUrl));
+}
+
+/**
+ * A `@source` a sheet names (Tailwind v4): its path as written, relative to
+ * the sheet, and whether it excludes what it names (`@source not`). An
+ * `@source inline(...)` names no files and is none.
+ */
+export interface SheetSource {
+  path: string;
+  negated: boolean;
+}
+
+/** Every `@source` in a sheet, at any depth, in order, read from its prelude's tokens. */
+export function sheetSources(sheet: ParsedSheet): SheetSource[] {
+  const sources: SheetSource[] = [];
+  walk(sheet.ast, (node: CssNode) => {
+    if (node.type !== 'Atrule' || atRuleName(node) !== 'source' || !node.prelude?.loc) return;
+    const [first, second, ...rest] = componentsOf(sourceOf(sheet.source, node.prelude)).filter((c) => !insignificant(c));
+    const negated = first?.type === T.Ident && valueOf(first).toLowerCase() === 'not';
+    const path = negated ? second : first;
+    if (path?.type === T.String && (negated ? rest.length === 0 : second === undefined)) sources.push({ path: valueOf(path), negated });
+  });
+  return sources;
 }
 
 /** A url() in a sheet's rules: its URL, where its token is, and where the URL is inside it (for diagnostics). */

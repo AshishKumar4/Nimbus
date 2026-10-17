@@ -30,6 +30,13 @@
  *                  (Vite's optimizer reads each with readFileSync), and the
  *                  process never loads them
  *   learned        paths earlier launches of the same package versions missed
+ *   stylesheet-source  for a process that carries Tailwind's oxide scanner,
+ *                  whose reads cannot wait: the files under each `@source`
+ *                  outside the working tree that the project's stylesheets
+ *                  name, through their relative `@import`s (sheetSources),
+ *                  a glob's directory prefix taken whole; the plan names
+ *                  these roots, for the facet's barriers to push as they
+ *                  push the working tree
  *
  * Code the closure loads is in the module map already; the store adopts a
  * file that is its own module, so it is readable as data too. A file whose
@@ -41,6 +48,7 @@ import { resolveFile, type RequireFs } from '@nimbus-sh/core/runtime/require-res
 import { resolveDeferredImport } from '@nimbus-sh/core/runtime/require-resolver.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
+import { parseSheet, sheetSources } from '@nimbus-sh/core/runtime/css-syntax.js';
 
 export interface DataPlanEntry { path: string; kind: string; size: number; linkTarget?: string }
 
@@ -76,13 +84,21 @@ export interface DataPlanInput {
 }
 
 export type DataPlanRule =
-  | 'package-json' | 'project' | 'convention' | 'package-data' | 'home' | 'typescript' | 'static' | 'entries' | 'learned';
+  | 'package-json' | 'project' | 'convention' | 'package-data' | 'home' | 'typescript' | 'static' | 'entries' | 'learned'
+  | 'stylesheet-source';
 
 export interface DataPlan {
   paths: string[];
   bytes: number;
   rules: Record<DataPlanRule, { files: number; bytes: number }>;
+  /** The stylesheet sources outside the working tree it planned (stylesheet-source), as absolute paths. */
+  sourceRoots: string[];
 }
+
+/** The package whose scanner reads a stylesheet's sources synchronously (Tailwind v4). */
+const OXIDE_PACKAGE = 'node_modules/@tailwindcss/oxide';
+/** A glob's first special character: its directory prefix ends before the name holding one. */
+const GLOB_SPECIAL = /[*?[\]{}!]/;
 
 /** Package data this size or larger is a bundle or a binary, not configuration. */
 export const PACKAGE_DATA_MAX_BYTES = 256 * 1024;
@@ -266,11 +282,13 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
 
   const closureRoots = new Set<string>();
   let typescriptRoot: string | null = null;
+  let carriesOxide = false;
   for (const path of input.closure) {
     const root = packageRootOf(key(path));
     if (root === null) continue;
     closureRoots.add(root);
     if (typescriptRoot === null && root.endsWith('node_modules/typescript')) typescriptRoot = root;
+    if (root.endsWith(OXIDE_PACKAGE)) carriesOxide = true;
   }
   // Each link question once per plan: the paths it resolves share prefixes.
   const linkAnswers = new Map<string, Promise<string | null>>();
@@ -305,7 +323,7 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
   for (const p of input.learned ?? []) learned.add(key(p));
 
   const rules = Object.fromEntries(
-    (['package-json', 'project', 'convention', 'package-data', 'home', 'typescript', 'static', 'entries', 'learned'] as DataPlanRule[])
+    (['package-json', 'project', 'convention', 'package-data', 'home', 'typescript', 'static', 'entries', 'learned', 'stylesheet-source'] as DataPlanRule[])
       .map((r) => [r, { files: 0, bytes: 0 }]),
   ) as DataPlan['rules'];
   const paths: string[] = [];
@@ -374,8 +392,11 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
   const declarations: DataPlanEntry[] = [];
   const packageRoots = new Set<string>();
   // Directories a home or project symlink points at, whose files the rule
-  // that took the link would have taken had they been in place.
+  // that took the link would have taken had they been in place, and the
+  // stylesheet sources outside the working tree.
   const linkedDirs: { target: string; rule: DataPlanRule }[] = [];
+  /** The project's stylesheets, for the sources they name (stylesheet-source). */
+  const projectSheets: string[] = [];
   /**
    * A statically named file is worth holding when the module map does not
    * already hold it, and it is data-sized or the code reads it synchronously
@@ -419,7 +440,11 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
       if (isManifestKey(k)) { take(entry, 'package-json'); continue; }
       if (cwdPrefix === '' || k.startsWith(cwdPrefix)) {
         const rel = cwdPrefix === '' ? segs : k.slice(cwdPrefix.length).split('/');
-        if (!rel.slice(0, -1).some((s) => PROJECT_EXCLUDED.has(s))) { take(entry, 'project'); continue; }
+        if (!rel.slice(0, -1).some((s) => PROJECT_EXCLUDED.has(s))) {
+          take(entry, 'project');
+          if (carriesOxide && name.endsWith('.css')) projectSheets.push(k);
+          continue;
+        }
       }
       if (conventionDirs.has(parentOf(k)) && CONVENTION.some((re) => re.test(name))) { take(entry, 'convention'); continue; }
       const root = packageRootOf(k);
@@ -582,7 +607,32 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     }
   }
 
-  // The files behind symlinked directories the project or home rule reached.
+  // The sources the project's stylesheets name, through their relative
+  // `@import`s, each sheet read once.
+  const sourceRoots: string[] = [];
+  const sheets = new Set(projectSheets);
+  for (const sheet of sheets) {
+    const text = await source.readText(sheet);
+    if (text === null) continue;
+    const parsed = parseSheet(text);
+    const relative = (path: string) => path.startsWith('/') ? key(path) : joinKey(parentOf(sheet), path);
+    for (const { path } of parsed.imports) {
+      if (!/^\.{0,2}\//.test(path)) continue;
+      const imported = relative(path);
+      if ((await source.stat(imported))?.kind === 'file') sheets.add(imported);
+    }
+    for (const { path, negated } of sheetSources(parsed)) {
+      if (negated) continue;
+      const names = path.split('/');
+      const glob = names.findIndex((name) => GLOB_SPECIAL.test(name));
+      const root = relative(glob < 0 ? path : names.slice(0, glob).join('/'));
+      if (root === cwd || root.startsWith(cwdPrefix) || sourceRoots.includes('/' + root)) continue;
+      sourceRoots.push('/' + root);
+      linkedDirs.push({ target: root, rule: 'stylesheet-source' });
+    }
+  }
+
+  // The files behind symlinked directories the project or home rule reached, and the stylesheet sources.
   if (linkedDirs.length > 0) {
     after = null;
     for (;;) {
@@ -605,5 +655,5 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     }
   }
 
-  return { paths, bytes, rules };
+  return { paths, bytes, rules, sourceRoots };
 }
