@@ -462,4 +462,113 @@ assert.equal(noTs.rules.typescript.files, 0);
   assert.deepEqual(direct.roots, withOxide.sourceRoots);
 }
 
+// The project's stylesheets behind its links are its stylesheets: a sheet
+// is where its links lead, which what it names is relative to, as Tailwind
+// resolves it, and it is read once however many names lead to it.
+{
+  const tree = {
+    'home/user/app/package.json': '{"name":"app"}',
+    'home/user/app/src/index.css': { kind: 'symlink', size: 0, target: '/srv/theme/index.css' },
+    'srv/theme/index.css': '@source "../components";',
+    'srv/components/A.tsx': 'a',
+    'home/user/app/styles': { kind: 'symlink', size: 0, target: '/srv/kit' },
+    'srv/kit/kit.css': '@source "../kit-src";',
+    'srv/kit-src/B.tsx': 'b',
+    'home/user/app/src/main.css': '@import "../../theme/alias.css";\n@import "/srv/design/theme.css";',
+    'home/user/theme/alias.css': { kind: 'symlink', size: 0, target: '/srv/design/theme.css' },
+    'srv/design/theme.css': '@source "./components";',
+    'srv/design/components/C.tsx': 'c',
+    'home/user/theme/components/Wrong.tsx': 'w',
+    'home/user/app/node_modules/@tailwindcss/oxide/package.json': '{"name":"@tailwindcss/oxide"}',
+    'home/user/app/node_modules/@tailwindcss/oxide/index.js': 'module.exports = {}',
+  };
+  const ns = namespace(tree);
+  const reads = [];
+  const readText = ns.readText;
+  ns.readText = async (p) => { reads.push(p); return readText(p); };
+  const plan = await planFacetData(ns, { cwd: '/home/user/app', home: '/home/user', closure: ['home/user/app/node_modules/@tailwindcss/oxide/index.js'], refs: [] });
+  const held = new Set(plan.paths);
+  assert.ok(held.has('srv/components/A.tsx'), 'a project stylesheet that is a link names its sources from where it leads');
+  assert.ok(held.has('srv/kit-src/B.tsx'), 'and one in a linked project directory');
+  assert.ok(held.has('srv/design/components/C.tsx'), 'an imported sheet behind a link names its sources from where it is');
+  assert.ok(!held.has('home/user/theme/components/Wrong.tsx'), 'not from where the link is');
+  assert.equal(reads.filter((p) => p === 'srv/design/theme.css').length, 1, 'a sheet two names lead to is read once');
+}
+
+// A directory's exclusions are of the name it is walked under: the order of
+// the @source directives does not change what is held.
+{
+  const tree = {
+    'home/user/.cache/widgets/Card.tsx': 'c',
+    'home/user/shared/widgets': { kind: 'symlink', size: 0, target: '/home/user/.cache/widgets' },
+    'home/user/shared/S.tsx': 's',
+    'home/user/app/a.css': '@source "/home/user/.cache/widgets";\n@source "/home/user/shared";',
+    'home/user/app/b.css': '@source "/home/user/shared";\n@source "/home/user/.cache/widgets";',
+  };
+  const ns = namespace(tree);
+  for (const sheet of ['home/user/app/a.css', 'home/user/app/b.css']) {
+    const found = await planStylesheetSources(ns, { cwd: '/home/user/app', home: '/home/user', sheets: [sheet] });
+    assert.deepEqual(found.files.map((f) => f.path).sort(), ['home/user/.cache/widgets/Card.tsx', 'home/user/shared/S.tsx'],
+      `${sheet}: a directory a root leaves out is walked under another root's name for it`);
+  }
+}
+
+// A source on a mount the process's listing walks only where its launch
+// names: the plan names its root there, so the listing the process boots
+// from holds what the plan holds, and counts those names.
+{
+  const harness = createSqliteVfsTestHarness();
+  const files = new ProcessFiles(new SqliteVFS(harness.sql, harness.ctx));
+  const device = new MemoryVFS();
+  device.mkdir('/ui', { recursive: true });
+  device.writeFile('/ui/Card.tsx', new TextEncoder().encode('<div class="bg-teal-700" />'));
+  files.vfs.mount('/shared-ui', device);
+  const kernel = files.bind({ pid: 8, cred: CRED_KERNEL });
+  const text = (value) => new TextEncoder().encode(value);
+  await kernel.mkdir('/home/user/app/src', { recursive: true });
+  await kernel.writeFile('/home/user/app/src/index.css', text('@source "/shared-ui";'));
+  await kernel.mkdir('/home/user/app/node_modules/@tailwindcss/oxide', { recursive: true });
+  await kernel.writeFile('/home/user/app/node_modules/@tailwindcss/oxide/index.js', text('module.exports = {}'));
+  const binding = { pid: 7, cred: CRED_KERNEL };
+  const bridge = files.bind(binding);
+  const view = new ProcessView(bridge);
+  files.nameLaunch(binding, () => ['/home/user/app']);
+  const listing = async () => {
+    const out = [];
+    for (let after = null; ;) {
+      const page = await bridge.list(after, 500);
+      out.push(...page.entries.map((entry) => entry.path));
+      if (page.next === null) return out;
+      after = page.next;
+    }
+  };
+  assert.ok(!(await listing()).includes('shared-ui/ui/Card.tsx'), 'the launch named nothing on the mount');
+  const plan = await planFacetData({
+    list: async (after) => bridge.list(after, 500),
+    readText: async (path) => view.readFileString(path).catch(() => null),
+    linkTarget: (path) => linkTargetOf(bridge, path),
+    stat: async (path) => { const st = await view.stat(path).catch(() => null); return st && { kind: st.type, size: st.size }; },
+    readdir: async (dir) => {
+      const entries = await Promise.resolve(bridge.readdir('/' + dir)).catch(() => null);
+      if (entries === null) return null;
+      return Promise.all(entries.map(async ({ name, type }) => {
+        const path = dir === '' ? name : `${dir}/${name}`;
+        const st = type === 'file' ? await view.stat(path).catch(() => null) : null;
+        return { path, kind: type, size: st?.size ?? 0 };
+      }));
+    },
+  }, {
+    cwd: '/home/user/app', home: '/home/user', refs: [],
+    closure: ['home/user/app/node_modules/@tailwindcss/oxide/index.js'],
+    nameSources: (roots) => files.nameLaunch(binding, () => roots),
+  });
+  assert.ok(plan.paths.includes('shared-ui/ui/Card.tsx'), `the mount's source is held: ${JSON.stringify(plan.paths)}`);
+  const booted = await listing();
+  assert.ok(booted.includes('shared-ui/ui/Card.tsx'), 'and the listing the process boots from holds it');
+  assert.equal(plan.names, booted.length, 'the plan counts the names that listing holds');
+  await files.releaseProcess(7);
+  await files.releaseProcess(8);
+  harness.db.close();
+}
+
 console.log('data-plan: ok');
