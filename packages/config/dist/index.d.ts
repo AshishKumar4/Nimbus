@@ -138,9 +138,11 @@ export interface WranglerConfig {
     }[];
 }
 /**
- * The bundler aliases that every Nimbus embedder needs.
- * Exposed as a named constant so embedders building their own configs
- * by hand can drop them in without copy-paste drift.
+ * The bundler aliases that every Nimbus embedder needs: the packages the
+ * worker's dist imports by bare name (jsdiff, for Git's unified diffs). Git's
+ * own dependencies are bundled into its vendor module, so they need none.
+ * Exposed as a named constant so embedders building their own configs by
+ * hand can drop them in without copy-paste drift.
  */
 export declare const NIMBUS_REQUIRED_ALIASES: Readonly<Record<string, string>>;
 /**

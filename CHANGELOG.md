@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed (config): `NIMBUS_REQUIRED_ALIASES`, and so the alias map
+  `buildNimbusWranglerConfig` writes, is `{ diff: 'diff' }`. The other 11
+  entries (clean-git-ref, is-git-ref-name-valid, crc-32, sha.js, pako,
+  pify, diff3, ignore, readable-stream, simple-get, minimisted) were for
+  Git's dependencies, which are bundled into its vendor module, so they
+  are no longer needed. `extraAliases` still merges over the map. A
+  hand-written config may drop those entries.
+- Changed (worker): `@nimbus-sh/worker` no longer declares
+  `@renovatebot/pep440` or `pip-requirements-js`. `@nimbus-sh/core`,
+  which is the one that imports them, still does.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
