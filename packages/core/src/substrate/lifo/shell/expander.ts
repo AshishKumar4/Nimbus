@@ -29,7 +29,7 @@ export interface ExpandContext {
   lastSubstitutionExitCode?: number;
   /**
    * Expanding a here-document's body, where `'` and `$'...'` are literal
-   * text, inside a parameter's operand word too.
+   * text, inside a parameter's `-`, `+`, `=` and `?` words too.
    */
   hereDocument?: boolean;
 }
@@ -579,11 +579,11 @@ async function applyDefault(
     : parameter.value !== undefined && (!colon || parameter.value !== '');
 
   if (operator === '+') {
-    return [valuePiece(set ? await expandParameterWord(word, ctx) : '', quoted)];
+    return [valuePiece(set ? await expandParameterWord(word, ctx, true) : '', quoted)];
   }
   if (set) return parameterPieces(parameter, ctx, quoted);
 
-  const value = await expandParameterWord(word, ctx);
+  const value = await expandParameterWord(word, ctx, true);
   if (operator === '?') {
     throw new ExpansionError(`${ref.name}: ${value || 'parameter null or not set'}`);
   }
@@ -762,11 +762,13 @@ function scalarOf(parameter: Parameter, ctx: ExpandContext): string {
 
 /**
  * The word inside `${p:-word}`, `${p#pattern}` and friends is itself expanded,
- * with quote removal, before it is used.
+ * with quote removal, before it is used. `operand`: a `-`, `+`, `=` or `?`
+ * word, which a here-document's body quotes as it quotes itself.
  */
-async function expandParameterWord(word: string, ctx: ExpandContext): Promise<string> {
+async function expandParameterWord(word: string, ctx: ExpandContext, operand = false): Promise<string> {
   if (word === '') return '';
-  return joinPieces(await expandParts(parameterWordParts(word, ctx.hereDocument === true), ctx));
+  // A here-document's quoting reaches the -, +, = and ? words; its patterns read quotes as anywhere.
+  return joinPieces(await expandParts(parameterWordParts(word, operand && ctx.hereDocument === true), ctx));
 }
 
 /**
