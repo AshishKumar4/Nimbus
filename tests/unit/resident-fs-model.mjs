@@ -623,6 +623,40 @@ const metKnown = [];
  * only where no name led to it, so a read that could not wait was EAGAIN.
  */
 const FOUND = [
+  { name: 'write after granted unlink folds over retained pinned bytes', grants: true, steps: [
+    { op: 'open', fd: 0, name: 'a', flags: { read: true, write: true, append: true, create: true, exclusive: false, truncate: false } },
+    { op: 'open', fd: 2, name: 'a', flags: { read: true, write: true, append: false, create: false, exclusive: false, truncate: false } },
+    { op: 'write', fd: 0, offset: 4, data: 'qp' },
+    { op: 'rename', from: 'a', to: 'b' },
+    { op: 'catchUp' },
+    { op: 'unlink', name: 'b' },
+    { op: 'write', fd: 2, offset: null, data: 'q' },
+  ] },
+  { name: 'fchmod after unlink and granted recreate changes the provisional fold', grants: true, steps: [
+    { op: 'writeFile', name: 'c', data: 'r' },
+    { op: 'catchUp' },
+    { op: 'unlink', name: 'c' },
+    { op: 'open', fd: 0, name: 'c', flags: { read: false, write: true, append: false, create: true, exclusive: true, truncate: false } },
+    { op: 'fchmod', fd: 0, mode: 292 },
+  ] },
+  { name: 'retired descriptor content follows a peer-renamed inode found in the view', grants: true, steps: [
+    { op: 'open', fd: 1, name: 'b', flags: { read: true, write: true, append: false, create: true, exclusive: false, truncate: true } },
+    { op: 'peer', kind: 'rename', name: 'b', to: 'c', data: 'pr', mode: 420 },
+    { op: 'write', fd: 1, offset: null, data: 's' },
+    { op: 'peer', kind: 'write', name: 'c', to: 'a', data: 'r', mode: 420 },
+    { op: 'catchUp' },
+  ] },
+  { name: 'anchor read does not report another descriptions refused write', grants: false, steps: [
+    { op: 'open', fd: 2, name: 'b', flags: { read: true, write: true, append: false, create: true, exclusive: true, truncate: true } },
+    { op: 'open', fd: 1, name: 'c', flags: { read: true, write: false, append: false, create: true, exclusive: false, truncate: false } },
+    { op: 'rename', from: 'c', to: 'b' },
+    { op: 'rename', from: 'b', to: 'c' },
+    { op: 'deliver' },
+    { op: 'rename', from: 'c', to: 'b' },
+    { op: 'peer', kind: 'chmod', name: 'c', to: 'a', data: 'sq', mode: 292 },
+    { op: 'writeFile', name: 'b', data: 'sq' },
+    { op: 'readAsync', fd: 2 },
+  ] },
   { name: 'renamed under a grant, away and back', grants: true, steps: [
     { op: 'open', fd: 2, name: 'a', flags: { read: true, write: true, append: true, create: true, exclusive: true, truncate: false } },
     { op: 'rename', from: 'a', to: 'b' },
