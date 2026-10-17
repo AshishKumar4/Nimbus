@@ -78,15 +78,24 @@ async function launch(kind, mode = 'use') {
   };
   const onWasmEvaluate = (name, compiled) => evaluations.push({ name, compiled });
   globalThis.observeWasmFirstUse = (phase, compiled, value) => observations.push({ phase, compiled, value, evaluations: evaluations.length });
-  requestTimeWasm();
   const program = mode === 'empty' ? 'globalThis.observeWasmFirstUse("no images", undefined, 42);'
     : mode === 'read' ? `require('fs').readFileSync(${JSON.stringify(PATHS[0])}); globalThis.observeWasmFirstUse('read only');`
       : PROGRAM;
+  kfs.writeFile('home/user/app/main.js', program);
+  requestTimeWasm();
   let output = '';
   try {
     if (kind === 'one-shot') {
       adoptSessionSupervisor(host, (text) => { output += text; });
-      const loader = runnerLoader(`wasm-first-use-${mode}`, { onImported, onWasmEvaluate });
+      const loader = runnerLoader(`wasm-first-use-${mode}`, {
+        onImported(config) {
+          const members = Object.values(config.modules).filter((member) => member?.wasm !== undefined);
+          if (mode === 'empty') assert.equal(members.length, 0);
+          else assert.ok(members.length >= (mode === 'use' ? 2 : 1), 'the real launch carries its referenced wasm images');
+          onImported();
+        },
+        onWasmEvaluate,
+      });
       const manager = oneShotManager(`wasm-first-use-${mode}`, { host, rawVfs, loader });
       const result = await manager.exec(program, { filename: '/home/user/app/main.js', cwd: '/home/user/app' });
       assert.equal(result.exitCode, 0, result.stderr + output);

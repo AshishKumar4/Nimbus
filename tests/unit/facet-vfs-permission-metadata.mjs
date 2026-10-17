@@ -85,5 +85,4 @@ assert.equal(Object.hasOwn(bundle, `${prefix}secret.txt`), false,
   'no bytes of a file this credential cannot read are staged');
 assert.equal(Object.hasOwn(bundle, `${prefix}missing.txt`), false, 'a nonexistent path is absent');
 
-
 console.log('facet VFS permission metadata: ok');

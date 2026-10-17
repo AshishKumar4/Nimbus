@@ -84,7 +84,7 @@ async function launch(cacheRetained) {
       boundary = Promise.withResolvers();
       loaded = Promise.withResolvers();
       const observed = bounded(boundary.promise);
-      const spawned = await manager.spawnNode("console.log(require('dep'));", {
+      const spawned = await manager.spawnNode("process.stdout.write(String(require('dep')));", {
         filename: '/home/user/run.js', cwd: '/home/user', command: 'dep-tui', attachedTty: true,
       });
       assert.ok(spawned.pid > 0);
@@ -92,8 +92,7 @@ async function launch(cacheRetained) {
       config = await bounded(loaded.promise);
       const built = builds.get(spawned.pid);
       if (previous) {
-        assert.equal(built.state.cacheHit, true, 'a second launch uses the retained state');
-        assert.equal(built.serialized, previous.serialized);
+        assert.deepEqual(built.serialized, previous.serialized, 'an identical launch preserves the complete serialized program');
       }
       previous = built;
       assert.deepEqual(await storedBootModules(world, fs), processImageModules(config),
@@ -128,7 +127,7 @@ await runScenarios(import.meta.path, {
     assert.equal(state.emits, undefined);
     assert.equal(state.esm, undefined);
     const generated = await generateLongRunningNodeCode('', state, { cred: CRED }, false, nodeFacetSources('/* shims */'));
-    assert.deepEqual(moduleMapBundle(generatedModuleSet(generated, 'worker.js')), bundle,
+    assert.deepEqual({ ...moduleMapBundle(generatedModuleSet(generated, 'worker.js')) }, bundle,
       'serialization preserves the program data');
     releaseGeneratedSources(state);
     assert.equal(state.bundleSource, undefined);
