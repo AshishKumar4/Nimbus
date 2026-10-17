@@ -10,6 +10,13 @@
 import { parse, type Options, type Token } from 'acorn';
 export { parse };
 /**
+ * The brace in `body`, a CommonJS module's, that closes the function it is
+ * the body of before its end (text after it goes on outside), as
+ * [start, end]: null when it is one function body, or does not parse (V8,
+ * which compiled it, is its judge).
+ */
+export declare function strayClosingBrace(body: string): [number, number] | null;
+/**
  * Where module `text` imports `name` from the specifier `requested` (an
  * import's imported name, a default import's binding, an export-from's local
  * name), and that specifier's string literal, as [nameStart, nameEnd,

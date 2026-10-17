@@ -14141,18 +14141,16 @@ function __nimbusEnrichCommonJsError(e, source, filename) {
   Error.captureStackTrace(warning, __nimbusEnrichCommonJsError);
   __processMod.emit("warning", warning);
 }
-// -c of a cell that compiled: its body alone must parse as a function body,
-// or it compiled only by closing the wrapper's, and is the SyntaxError Node
-// reports, at the token that does (V8 names a stray one so), its arrow as a
-// compile's (__nimbusDecorateSyntaxError).
+// -c of a cell that compiled: its body must be one function body, or it
+// compiled only by closing the wrapper's, and is the SyntaxError Node reports
+// at the brace that does, its arrow as a compile's (__nimbusDecorateSyntaxError).
 function __nimbusCheckedAlone() {
   const module = __nimbusEntryModule();
   const text = module === null ? null : __nimbusFrameModuleText(module);
   if (text === null) return undefined;
-  const body = text.slice(module.head, text.length - module.tail);
-  const at = __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}").fatalLocation(body, "script", -1);
+  const at = __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}").strayClosingBrace(text.slice(module.head, text.length - module.tail));
   if (at === null) return undefined;
-  const error = new SyntaxError("Unexpected token '" + body.slice(at[0], at[1]) + "'");
+  const error = new SyntaxError("Unexpected token '}'");
   error.stack = __nimbusArrowOf(module, text, module.head + at[0], module.head + at[1]) + "\\n" + error.stack;
   __nimbusDecorated.add(error);
   throw error;

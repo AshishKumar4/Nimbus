@@ -748,7 +748,8 @@ function programEntry(userCode, filename, cwd, esModule, bundleSource, check) {
     const code = rewriteProvidedCommonJsModules(userCode);
     const name = commonJsEntryModuleName(filename || '[eval]');
     const path = 'filename || "/home/user/script.js"';
-    const body = wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function');
+    // -c compiles a function body, as Node's wrapSafe does, whatever it declares.
+    const body = wrapCommonJsCell(code, !check && declaresWrapperBinding(code) ? 'block' : 'function');
     // -c: the cell stops at its first statement, so not even text of the
     // program's that closes the wrapper runs (node-shims __nimbusEvaluateEntry).
     const wrapped = check ? { ...body, text: CHECKED_HEAD + body.text, head: CHECKED_HEAD.length + body.head } : body;
