@@ -86,7 +86,8 @@ function packageNames(key) {
 export async function bindingInputs(key, root = REPO) {
   const spec = SPECS[key];
   if (!spec) throw new Error(`napi-wasm: no binding spec ${key}`);
-  const names = [...RECIPE, 'packages/worker/scripts/rust-build-env.mjs', `${HERE}/link-wasm.sh`, `${HERE}/rustc-remap.sh`];
+  // The wasm reader decides the ABI checks and the memory and imports provenance records.
+  const names = [...RECIPE, 'packages/worker/scripts/rust-build-env.mjs', 'packages/core/src/runtime/wasm-binary.ts', `${HERE}/link-wasm.sh`, `${HERE}/rustc-remap.sh`];
   if (spec.build.mode === 'wrapper') {
     names.push(`${HERE}/${spec.build.wrapper}/Cargo.toml`, `${HERE}/${spec.build.wrapper}/binding`);
   }

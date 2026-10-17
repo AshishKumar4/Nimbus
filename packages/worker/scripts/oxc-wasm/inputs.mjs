@@ -12,8 +12,12 @@ export { changedInputs } from '../artifact-inputs.mjs';
 
 const CRATE = path.dirname(fileURLToPath(import.meta.url));
 
-/** Files outside src/ that decide the output, relative to the crate. */
-const FILES = ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'build.mjs', 'inputs.mjs', '../artifact-inputs.mjs', '../stage-asset.mjs', '../rust-build-env.mjs', '../napi-wasm/rustc-remap.sh'];
+/**
+ * Files outside src/ that decide the output, relative to the crate: the wasm
+ * reader among them, which decides the ABI checks and the memory provenance
+ * records.
+ */
+const FILES = ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'build.mjs', 'inputs.mjs', '../artifact-inputs.mjs', '../stage-asset.mjs', '../rust-build-env.mjs', '../napi-wasm/rustc-remap.sh', '../../../core/src/runtime/wasm-binary.ts'];
 
 /** `{ <path>: <sha256> }` for every input, src/ file by file, sorted by path. */
 export async function oxcWasmInputs(crate = CRATE) {
