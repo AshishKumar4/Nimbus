@@ -12,14 +12,14 @@
 //   - a write past the end (a hole), then a chmod of another file the
 //     refusal did not reach, sent again (resident-fs-model seed 190);
 //   - a write of a file larger than a chunk (its manifest);
-//   - an ftruncate that grows it, and one that shrinks it;
 //   - an append;
+//   - an ftruncate that grows it, and one that shrinks it (a path call, it
+//     commits alone, before the refused one: never retried);
 //   - a write to a file still named.
 //
 // Red before: the rollback restored a detached file's description to the
 // same object the rolled-back write had edited in place, so the retry read
-// a chunk the rollback had removed (EIO "missing chunk", nothing committed),
-// or took the truncate as done.
+// a chunk or manifest the rollback had removed (EIO, nothing committed).
 
 import assert from 'node:assert/strict';
 
