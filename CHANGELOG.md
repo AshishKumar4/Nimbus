@@ -69,6 +69,10 @@ The 2026-10-14 and 2026-10-15 versions reached production but were never publish
 - Fixed: a running process now notices an embedder filesystem mounted after
   its first filesystem listing. Before, a process that started with SQLite
   alone could keep a staged namespace that omitted the new mount.
+- Fixed: dragging the handle between the editor and the preview keeps the
+  handle under the pointer. It fell behind by a fifth of the drag, and a
+  fast drag to the right could end on the preview's frame and stop short.
+  The workspace's resize handles now keep the pointer while they are held.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each

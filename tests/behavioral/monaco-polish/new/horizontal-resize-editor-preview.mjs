@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
 // monaco-polish/new/horizontal-resize-editor-preview — the editor↔preview
 // handle, dragged in a real Chrome: it offers a column-resize cursor, the
-// center column and the preview trade width while it is held, and the
-// center keeps between 20% and 80% of the pair however far it is dragged.
+// center column and the preview trade width while it is held, the handle
+// stays under the pointer, and the center keeps between 20% and 80% of the
+// pair however far it is dragged.
 
 import { BASE, mintSession, deleteSession, makeAsserter, readUntil } from '../../_driver.mjs';
 import { grabHandle, launchBrowser, openPage } from '../../_runtime-behavioral-template.mjs';
@@ -38,6 +39,10 @@ try {
   const traded = start.center - held.center;
   a.check('the center narrows and the preview widens by as much while it is held',
     traded > 100 && Math.abs((held.preview - start.preview) - traded) <= 4, JSON.stringify({ start, held }));
+  // Behind the pointer, the pointer would cross onto the preview's frame mid-drag.
+  const handleCenter = await page.$eval('#resizeHandle', (element) => { const box = element.getBoundingClientRect(); return box.x + box.width / 2; });
+  a.check('the handle stays under the pointer', Math.abs(handleCenter - (handle.x - 150)) <= 2,
+    JSON.stringify({ pointer: handle.x - 150, handle: handleCenter }));
   // To the viewport's edges (1280 px wide), the drag's farthest reach each way.
   await handle.move(1 - handle.x, 0);
   const leftmost = await readUntil(widths, (now) => Math.abs(now.centerPct - 20) < 0.5 && Math.abs(now.renderedPct - 20) < 1);
