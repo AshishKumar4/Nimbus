@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (agent chat): a running tool's timer counts from when the tool
+  started. Before, a chat opened while a tool ran showed it starting from
+  zero, and a tool whose start was unknown showed a timer it could not
+  know.
+
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
