@@ -33,8 +33,10 @@
  *   stylesheet-source  for a process that carries Tailwind's oxide scanner,
  *                  whose reads cannot wait: the files under each `@source`
  *                  outside the working tree that the project's stylesheets
- *                  name, through their relative `@import`s (sheetSources),
- *                  a glob's directory prefix taken whole; the plan names
+ *                  name, through the `@import`s Tailwind inlines
+ *                  (sheetSources, sheetStringImports), each brace
+ *                  alternative's directory prefix taken whole, through its
+ *                  links, with the project rule's exclusions; the plan names
  *                  these roots, for the facet's barriers to push as they
  *                  push the working tree
  *
@@ -46,11 +48,12 @@
 import { packageJsonText, parseResolvablePackageJson, resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { resolveFile } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { resolveDeferredImport } from '@nimbus-sh/core/runtime/require-resolver.js';
-import { parseSheet, sheetSources } from '@nimbus-sh/core/runtime/css-syntax.js';
+import { parseSheet, sheetSources, sheetStringImports } from '@nimbus-sh/core/runtime/css-syntax.js';
+import braces from 'braces';
 /** The package whose scanner reads a stylesheet's sources synchronously (Tailwind v4). */
 const OXIDE_PACKAGE = 'node_modules/@tailwindcss/oxide';
-/** A glob's first special character: its directory prefix ends before the name holding one. */
-const GLOB_SPECIAL = /[*?[\]{}!]/;
+/** A glob character, once braces are expanded: a pattern's directory prefix ends before the name holding one. */
+const GLOB_SPECIAL = /[*?[\]{}]/;
 /** Package data this size or larger is a bundle or a binary, not configuration. */
 export const PACKAGE_DATA_MAX_BYTES = 256 * 1024;
 const CODE_FILE = /\.(?:c|m)?(?:j|t)sx?$|\.map$|\.d\.(?:c|m)?ts$|\.node$|\.wasm$/;
@@ -387,8 +390,10 @@ export async function planFacetData(source, input) {
     const staticWorthy = (entry) => !closure.has(entry.path)
         && (entry.size < PACKAGE_DATA_MAX_BYTES || exact.get(entry.path) === true);
     let after = null;
+    let names = 0;
     for (;;) {
         const page = await source.list(after);
+        names += page.entries.length;
         if (input.spend)
             await input.spend(page.entries.length * 64);
         for (const raw of page.entries) {
@@ -628,8 +633,8 @@ export async function planFacetData(source, input) {
                 take({ path: k, kind: 'file', size: found.size }, 'entries');
         }
     }
-    // The sources the project's stylesheets name, through their relative
-    // `@import`s, each sheet read once.
+    // The sources the project's stylesheets name, through the `@import`s
+    // Tailwind inlines (a path's, not a package's), each sheet read once.
     const sourceRoots = [];
     const sheets = new Set(projectSheets);
     for (const sheet of sheets) {
@@ -637,24 +642,27 @@ export async function planFacetData(source, input) {
         if (text === null)
             continue;
         const parsed = parseSheet(text);
-        const relative = (path) => path.startsWith('/') ? key(path) : joinKey(parentOf(sheet), path);
-        for (const { path } of parsed.imports) {
+        const resolve = (path) => joinKey(path.startsWith('/') ? '' : parentOf(sheet), path);
+        for (const path of sheetStringImports(parsed)) {
             if (!/^\.{0,2}\//.test(path))
                 continue;
-            const imported = relative(path);
+            const imported = resolve(path);
             if ((await source.stat(imported))?.kind === 'file')
                 sheets.add(imported);
         }
         for (const { path, negated } of sheetSources(parsed)) {
             if (negated)
                 continue;
-            const names = path.split('/');
-            const glob = names.findIndex((name) => GLOB_SPECIAL.test(name));
-            const root = relative(glob < 0 ? path : names.slice(0, glob).join('/'));
-            if (root === cwd || root.startsWith(cwdPrefix) || sourceRoots.includes('/' + root))
-                continue;
-            sourceRoots.push('/' + root);
-            linkedDirs.push({ target: root, rule: 'stylesheet-source' });
+            for (const alternative of braces.expand(path)) {
+                const names = alternative.split('/');
+                const glob = names.findIndex((name) => GLOB_SPECIAL.test(name));
+                const named = resolve(glob < 0 ? alternative : names.slice(0, glob).join('/') || (alternative.startsWith('/') ? '/' : '.'));
+                const root = (await throughLinks(links, named)) ?? named;
+                if (root === cwd || root.startsWith(cwdPrefix) || sourceRoots.includes('/' + root))
+                    continue;
+                sourceRoots.push('/' + root);
+                linkedDirs.push({ target: root, rule: 'stylesheet-source' });
+            }
         }
     }
     // The files behind symlinked directories the project or home rule reached, and the stylesheet sources.
@@ -669,10 +677,10 @@ export async function planFacetData(source, input) {
                     continue;
                 const k = key(raw.path);
                 for (const { target, rule } of linkedDirs) {
-                    if (k === target || k.startsWith(target + '/')) {
-                        if (!k.slice(target.length).split('/').some((x) => x === 'node_modules' || x === '.git')) {
+                    if (target === '' || k === target || k.startsWith(target + '/')) {
+                        // What the rule that took it would have left out, had it been in place.
+                        if (!excludedBelow(target, k))
                             take({ path: k, kind: 'file', size: raw.size }, rule);
-                        }
                         break;
                     }
                 }
@@ -682,5 +690,5 @@ export async function planFacetData(source, input) {
             after = page.next;
         }
     }
-    return { paths, bytes, rules, sourceRoots };
+    return { paths, bytes, rules, sourceRoots, names };
 }

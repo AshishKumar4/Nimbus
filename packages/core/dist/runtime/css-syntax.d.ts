@@ -20,7 +20,7 @@
  *
  * Used by css-bundle.ts (the built-in `vite build`'s stylesheets), by the
  * Vite dev server's stylesheet serving, and by a facet's data plan for the
- * sources a stylesheet names (sheetSources).
+ * sources a stylesheet names (sheetSources, sheetStringImports).
  */
 import type { CssNode } from 'css-tree/types';
 /**
@@ -116,6 +116,12 @@ export interface SheetSource {
     path: string;
     negated: boolean;
 }
+/**
+ * Every `@import "<path>"` in a sheet, at any depth and position, in order,
+ * as Tailwind v4 inlines them (substituteAtImports): a string's path; an
+ * `@import url(...)` is left to the browser, and is none.
+ */
+export declare function sheetStringImports(sheet: ParsedSheet): string[];
 /** Every `@source` in a sheet, at any depth, in order, read from its prelude's tokens. */
 export declare function sheetSources(sheet: ParsedSheet): SheetSource[];
 /** A url() in a sheet's rules: its URL, where its token is, and where the URL is inside it (for diagnostics). */

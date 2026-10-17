@@ -51,6 +51,8 @@ export interface DataPlan {
     }>;
     /** The stylesheet sources outside the working tree it planned (stylesheet-source), as absolute paths. */
     sourceRoots: string[];
+    /** The names the namespace listed, once however many walks the plan took: what a store holding it holds a row for. */
+    names: number;
 }
 /** Package data this size or larger is a bundle or a binary, not configuration. */
 export declare const PACKAGE_DATA_MAX_BYTES: number;
