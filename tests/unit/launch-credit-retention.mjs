@@ -86,6 +86,52 @@ await runScenarios(fileURLToPath(import.meta.url), {
   runningWorkReclaims: () => runningWorkReclaims(false),
   brokeredReclaims: () => runningWorkReclaims(true),
 
+  async runningRequestBeforeParking() {
+    const authority = createAuthority();
+    adoptSessionSupervisor(authority.host, () => {});
+    const { manager, ctx } = session(authority, 'running-before-parking');
+    const { oxcTransforms } = await import('./lib/oxc-engine.mjs');
+    const native = new EsbuildService(undefined, oxcTransforms);
+    const entered = Promise.withResolvers();
+    const proceed = Promise.withResolvers();
+    manager.setEsbuildService(new EsbuildService(undefined, {
+      transformHost: async (requests) => {
+        entered.resolve();
+        await proceed.promise;
+        return native.transformMany(requests);
+      },
+    }));
+    const holds = occupy(ctx);
+    const waiting = manager.exec('import("node:path").then(path => process.stdout.write(path.default.basename("/home/user/entry")))', {
+      cwd: '/home/user', captureOutput: true,
+    });
+    try {
+      await entered.promise;
+      let timer;
+      const running = Promise.race([
+        acquireSupervisorRunningAllocation(readSupervisorAllocationBudget().capacity),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('running work was not woken by a map becoming reclaimable')), 5000); }),
+      ]).finally(() => clearTimeout(timer));
+      await until(() => readSupervisorAllocationBudget().queued === 1, 'running work queues while the map is still being generated');
+      proceed.resolve();
+      const lease = await running;
+      try {
+        await until(() => manager.launchState().launches[0]?.stage === 'prepare' && loaderLedgerStats(ctx).waiting === 0,
+          'the newly reclaimable map is dropped for the already-waiting running request');
+      } finally {
+        lease.release();
+      }
+      await until(() => manager.launchState().launches[0]?.stage === 'admission' && loaderLedgerStats(ctx).waiting === 1,
+        'the reclaimed launch prepares its map again');
+      holds.shift()();
+      ran(await waiting, 'entry');
+    } finally {
+      proceed.resolve();
+      for (const release of holds) release();
+    }
+    drained();
+  },
+
   async entryHelperOwner() {
     const authority = createAuthority();
     adoptSessionSupervisor(authority.host, () => {});
