@@ -153,31 +153,40 @@ function escapeRegexLiteral(literal) {
   return out;
 }
 
+/** A comment with every non-ASCII code unit written as `\uXXXX`: text, so any spelling of it is the same comment. */
+const escapeComment = (comment) => comment.replace(/[^\x00-\x7f]/g, (c) => unicodeEscape(c.charCodeAt(0)));
+
 /**
  * Make esbuild output pure ASCII. esbuild's ASCII charset escapes every
- * literal except regular expressions, so opencode's typographic-quote regexes
- * (`/[‘’‚‛]/g`, `/…/g`) survive, and one character above U+00FF makes V8 hold
- * the whole source as a two-byte string, twice its size, in the session that
- * assembles the facet's module map and again in the facet that runs it.
+ * literal except regular expressions, and keeps legal comments as written,
+ * so opencode's typographic-quote regexes (`/[‘’‚‛]/g`, `/…/g`) and its
+ * dependencies' license lines survive; one character above U+00FF makes V8
+ * hold the whole source as a two-byte string, twice its size, in the session
+ * that assembles the facet's module map and again in the facet that runs it.
  * Fails loud if non-ASCII remains anywhere else; `what` names the source.
  */
 function asciiOnlyEsbuildOutput(src, what) {
   const acorn = require('acorn');
+  const spans = [];
+  const onComment = (_block, _text, start, end) => {
+    if (/[^\x00-\x7f]/.test(src.slice(start, end))) spans.push({ start, end, escape: escapeComment });
+  };
+  for (const token of acorn.tokenizer(src, { ecmaVersion: 'latest', sourceType: 'module', onComment })) {
+    if (token.type !== acorn.tokTypes.regexp) continue;
+    if (/[^\x00-\x7f]/.test(src.slice(token.start, token.end))) spans.push({ start: token.start, end: token.end, escape: escapeRegexLiteral });
+  }
   const parts = [];
   let last = 0;
-  for (const token of acorn.tokenizer(src, { ecmaVersion: 'latest', sourceType: 'module' })) {
-    if (token.type !== acorn.tokTypes.regexp) continue;
-    const literal = src.slice(token.start, token.end);
-    if (!/[^\x00-\x7f]/.test(literal)) continue;
-    parts.push(src.slice(last, token.start), escapeRegexLiteral(literal));
-    last = token.end;
+  for (const { start, end, escape } of spans.sort((a, b) => a.start - b.start)) {
+    parts.push(src.slice(last, start), escape(src.slice(start, end)));
+    last = end;
   }
   parts.push(src.slice(last));
   const out = parts.join('');
   const residual = out.search(/[^\x00-\x7f]/);
   if (residual >= 0) {
     throw new Error(
-      `[build-opencode-attach-entry] ${what}: non-ASCII outside a regex literal at offset ` +
+      `[build-opencode-attach-entry] ${what}: non-ASCII outside a regex literal or a comment at offset ` +
         `${residual} (${JSON.stringify(out.slice(Math.max(0, residual - 40), residual + 10))}) — ` +
         'escape it here, or the source is held as a two-byte string',
     );
