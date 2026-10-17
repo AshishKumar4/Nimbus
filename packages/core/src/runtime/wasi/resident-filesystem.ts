@@ -1412,10 +1412,10 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       // while their grant remains held. Its rename moves the one registry's
       // inodes too, as a rename decided under the grant does.
       if (op.type === 'rename') {
-        holder!.undecided(op.from);
-        holder!.undecided(op.to);
+        holder!.superseded(op.from);
+        holder!.superseded(op.to);
         holder!.provisional.moved(op.from, op.to);
-      } else if (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir')) holder!.undecided(op.call.path);
+      } else if (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir')) holder!.superseded(op.call.path);
       owed++;
     }, (error: unknown) => { owed++; throw error; });
   };
