@@ -98,6 +98,23 @@ export type W7Attrs =
  * nothing makes a missing parent. The program-order counterpart of the
  * syscall, where `file` and `directory` are a checkout's upserts.
  */
+/** What a W7 open asks of its file, as open(2)'s O_ACCMODE: to read it, to write it, or both. */
+export type W7OpenAccess = 'read' | 'write' | 'readwrite';
+function isOpenAccess(value: unknown): value is W7OpenAccess {
+  return value === 'read' || value === 'write' || value === 'readwrite';
+}
+
+/** The rights an open's access grants its description: what a call through it may do. */
+export function openAccessRights(access: W7OpenAccess): { read: boolean; write: boolean } {
+  return { read: access !== 'write', write: access !== 'read' };
+}
+
+/** The permission bits an open asks of the file it reaches (4 read, 2 write): its access's, and write under `truncate`, as open(2)'s. */
+export function openAccessMask(call: { access: W7OpenAccess; truncate?: true }): number {
+  const rights = openAccessRights(call.access);
+  return (rights.read ? 4 : 0) | (rights.write || call.truncate === true ? 2 : 0);
+}
+
 export type W7Call =
   /**
    * `ino`, on a call that makes a name (writeFile, appendFile, mkdir,
@@ -148,22 +165,23 @@ export type W7Call =
   /** utimes of the link itself (lutimes). */
   | { call: 'lutimes'; path: string; atime: number; mtime: number }
   /**
-   * open(2) of a file to write it (and to read it when `read`), as the
-   * session's own open decides it: a name made (`create`, `mode` less
-   * `umask`) or refused (EEXIST when `exclusive`, ENOENT without `create`,
-   * EISDIR, EACCES for any access asked that the file's mode refuses),
+   * open(2) of a file with the access `access` asks, as O_ACCMODE does
+   * (W7OpenAccess), as the session's own open decides it: a name made
+   * (`create`, `mode` less `umask`) or refused (EEXIST when `exclusive`,
+   * ENOENT without `create`, EISDIR, EACCES for any access asked that the
+   * file's mode refuses, write too under `truncate`: openAccessMask),
    * emptied when `truncate`, a link at the name followed unless `nofollow`
    * (ELOOP). Its answer is the file's stat. With `description` (an id the
    * process chose), the session keeps the open description under it, its
-   * access fixed now; the description's write, append and ftruncate calls
-   * name it, and its `close` ends it. `ino`: the number a name it makes is
-   * given (a delegation's, as a mkdir's). `fchmod`: the file it opened then
-   * given exactly this mode (fchmod(2), as libuv's copyfile narrows its
-   * destination before a byte reaches it), part of the open: refused
-   * (EPERM: another's file), the open is refused and keeps no description,
-   * so a write through it is EBADF.
+   * rights the access's (openAccessRights); the description's write, append
+   * and ftruncate calls name it, and its `close` ends it. `ino`: the number
+   * a name it makes is given (a delegation's, as a mkdir's). `fchmod`: the
+   * file it opened then given exactly this mode (fchmod(2), as libuv's
+   * copyfile narrows its destination before a byte reaches it), part of the
+   * open: refused (EPERM: another's file), the open is refused and keeps no
+   * description, so a write through it is EBADF.
    */
-  | { call: 'open'; path: string; mode: number; ino?: number; umask?: number; read?: true; create?: true; truncate?: true; exclusive?: true; nofollow?: true; description?: string; fchmod?: number }
+  | { call: 'open'; path: string; mode: number; access: W7OpenAccess; ino?: number; umask?: number; create?: true; truncate?: true; exclusive?: true; nofollow?: true; description?: string; fchmod?: number }
   /** close(2) of the session's open description `description` (an `open` call's). */
   | { call: 'close'; path: string; description: string };
 
@@ -693,7 +711,7 @@ async function* decodeRecords(
           if (v3) throw new Error(`w7-frame: unknown record tag ${envelope.tag}`);
           summary.pathCount++;
           summary.opCount++;
-          const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'from', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask', 'read', 'create', 'truncate', 'exclusive', 'nofollow', 'description', 'fchmod']);
+          const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'from', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask', 'access', 'create', 'truncate', 'exclusive', 'nofollow', 'description', 'fchmod']);
           yield { type: 'call', call: parsePathCall(value, (path, label) => ownedPaths.claim(canonicalPath(path, label))) };
           break;
         }
@@ -1156,22 +1174,23 @@ function parsePathCall(value: Record<string, unknown>, path: (value: unknown, la
       if (keys !== 'call,gid,path,uid') break;
       return { call: 'lchown', path: path(value.path, 'lchown path'), uid: ownerId(value.uid, 'lchown uid'), gid: ownerId(value.gid, 'lchown gid') };
     case 'open': {
-      const flags = ['create', 'exclusive', 'nofollow', 'read', 'truncate'] as const;
+      const flags = ['create', 'exclusive', 'nofollow', 'truncate'] as const;
       let required = keys;
-      for (const flag of ['create', 'description', 'exclusive', 'fchmod', 'ino', 'nofollow', 'read', 'truncate', 'umask']) required = required.replace(`,${flag}`, '');
-      if (required !== 'call,mode,path') break;
+      for (const flag of ['create', 'description', 'exclusive', 'fchmod', 'ino', 'nofollow', 'truncate', 'umask']) required = required.replace(`,${flag}`, '');
+      if (required !== 'access,call,mode,path') break;
       for (const flag of flags) {
         if (value[flag] !== undefined && value[flag] !== true) throw new Error(`w7-frame: open ${flag} is true or absent`);
       }
+      const access = value.access;
+      if (!isOpenAccess(access)) throw new Error(`w7-frame: open access is 'read', 'write' or 'readwrite': got ${String(access)}`);
       return {
-        call: 'open', path: path(value.path, 'open path'), mode: u32(value.mode, 'open mode'),
+        call: 'open', path: path(value.path, 'open path'), mode: u32(value.mode, 'open mode'), access,
         ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'open ino') }),
         ...(value.umask === undefined ? {} : { umask: umaskOf(value.umask, 'open umask') }),
         ...(value.create === true ? { create: true as const } : {}),
         ...(value.truncate === true ? { truncate: true as const } : {}),
         ...(value.exclusive === true ? { exclusive: true as const } : {}),
         ...(value.nofollow === true ? { nofollow: true as const } : {}),
-        ...(value.read === true ? { read: true as const } : {}),
         ...(value.description === undefined ? {} : { description: descriptionId(value.description, 'open description') }),
         ...(value.fchmod === undefined ? {} : { fchmod: u32(value.fchmod, 'open fchmod') }),
       };

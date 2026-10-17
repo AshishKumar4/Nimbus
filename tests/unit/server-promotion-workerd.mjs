@@ -9,6 +9,15 @@
 //     the static server check cannot follow: it serves on its port.
 //   wrote: it writes a file before it listens: the resident makes the same
 //     write again, checked against the first, and serves.
+//   awaited: as Vite loads its config, it awaits a mkdir -p of a directory
+//     that is not there, then a write into it of a file named for the clock
+//     and a random draw, imports the file, removes it, and listens. Run again,
+//     the directory its first run made is there and nothing is made of it,
+//     as mkdir -p of a directory there makes nothing: the run again retraces
+//     its run all the same, and serves.
+//   stamped: it writes the times fstat gives its stdout to a file before it
+//     listens: a run again is handed the same times, makes the same write,
+//     and serves.
 //   appended: it appends to a file before it listens. Made again, the append
 //     would land twice: it cannot be run again, and its listen says why.
 //   child: a child_process child that listens: its parent reaches it.
@@ -41,6 +50,23 @@ const FILES = {
     "fs.mkdirSync('state', { recursive: true });",
     "fs.writeFileSync('state/wrote.txt', 'written ' + process.argv.length);",
     SERVE(4102, 'wrote'),
+  ].join('\n'),
+  'awaited.js': [
+    "const fs = require('fs');",
+    "const path = require('path');",
+    '(async () => {',
+    "  await fs.promises.mkdir('node_modules/.vite-temp/', { recursive: true });",
+    "  const name = path.resolve('node_modules/.vite-temp/config.timestamp-' + Date.now() + '-' + Math.random().toString(16).slice(2) + '.mjs');",
+    "  await fs.promises.writeFile(name, 'export default 4109;');",
+    "  const port = (await import(require('url').pathToFileURL(name).href)).default;",
+    '  fs.unlink(name, () => {});',
+    '  ' + SERVE(4109, 'awaited').split('\n').join('\n  ').replace('4109,', 'port,'),
+    '})();',
+  ].join('\n'),
+  'stamped.js': [
+    "const fs = require('fs');",
+    "fs.writeFileSync('stamped.txt', String(fs.fstatSync(1).mtimeMs));",
+    SERVE(4110, 'stamped'),
   ].join('\n'),
   'appended.js': [
     "require('fs').appendFileSync('appended.log', 'once\\n');",
@@ -106,6 +132,16 @@ try {
     check(/GOT 200 wrote/.test(wroteGot), `wrote: it serves\n  ${JSON.stringify(wroteGot)}`);
     const written = await run(`cat ${W}/state/wrote.txt`);
     check(written.stdout === 'written 2', `wrote: what it wrote before its listen is there\n  ${JSON.stringify(written.stdout)}`);
+
+    const awaited = await run(`cd ${W} && node awaited.js`, 120_000);
+    check(awaited.status === 0 && /LISTENING 4109/.test(awaited.stdout), `awaited: started and listened\n  ${JSON.stringify(awaited.stdout.slice(-600))}`);
+    const awaitedGot = await curl(4109);
+    check(/GOT 200 awaited/.test(awaitedGot), `awaited: it serves\n  ${JSON.stringify(awaitedGot)}`);
+
+    const stamped = await run(`cd ${W} && node stamped.js`, 120_000);
+    check(stamped.status === 0 && /LISTENING 4110/.test(stamped.stdout), `stamped: started and listened\n  ${JSON.stringify(stamped.stdout.slice(-600))}`);
+    const stampedGot = await curl(4110);
+    check(/GOT 200 stamped/.test(stampedGot), `stamped: it serves\n  ${JSON.stringify(stampedGot)}`);
 
     const appended = await run(`cd ${W} && node appended.js`, 120_000);
     check(appended.status !== 0 && /before it listened it appended to .*appended\.log, which a second run would append again/.test(appended.stdout),

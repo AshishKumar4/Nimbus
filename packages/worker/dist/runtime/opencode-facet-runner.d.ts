@@ -18,7 +18,7 @@
  *      live SQLite VFS via the supervisor bridge instead of hitting workerd's
  *      empty, read-only nodejs_compat filesystem (EPERM on mkdir).
  *   2. Installs the Bun-global polyfill (Bun.stdin.text, Bun.stringWidth,
- *      Bun.file, Bun.hash) — opencode references `Bun.*` even on node target.
+ *      Bun.file, Bun.write, Bun.hash) — opencode references `Bun.*` even on node target.
  *   3. Seeds process.argv / env / cwd from the per-invocation constants.
  *   4. Captures stdout/stderr and process.exit.
  *   5. Imports the opencode bundle and invokes its exported nimbusMain()

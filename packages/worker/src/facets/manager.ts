@@ -81,7 +81,7 @@ import type { NodeTypeScript } from '@nimbus-sh/core/runtime/typescript-strip.js
 import { findStaticFsReferences, type StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 import { fileCell, fileText, packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
 import type { ModuleScope, PackageType } from '@nimbus-sh/core/runtime/module-format.js';
-import { isManifestKey, linkTargetOf, packageRootOf, planFacetData } from './data-plan.js';
+import { carriesOxide, isManifestKey, linkTargetOf, packageRootOf, planFacetData, planStylesheetSources, type DataPlanEntry, type DataPlanSource } from './data-plan.js';
 import {
   principalTag, profilePrincipal, ReadProfile, verifiedEvidence, type ReadProfileBucket, type StagedProfileEntry,
 } from './read-profile.js';
@@ -134,7 +134,7 @@ import { LearnedServers } from './server-hints.js';
 import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
-import { STOP_REPLAY_SOURCE } from '../runtime/stop-replay.js';
+import { REAL_NOW_SOURCE, STOP_REPLAY_SOURCE } from '../runtime/stop-replay.js';
 import { PENDING_IO_SOURCE } from '../runtime/pending-io.js';
 import { OwnedPieces, ReplayOutputGate, StdinTaken, stopRecordOf } from '../runtime/stop-replay-host.js';
 import { answerDigest } from '../runtime/stop-replay-journal.js';
@@ -247,6 +247,36 @@ function declaredBindingFs(fs: LaunchFs): DeclaredBindingFs {
     readText: async (path) => { const bytes = await files.readBytes(path); return bytes === null ? null : fileText(bytes); },
     exists: async (path) => await files.exists(path),
     realpath: async (path) => { try { return await fs.realpath(path); } catch { return null; } },
+  };
+}
+/**
+ * A launch's fs as a data plan reads it (DataPlanSource, but its listing):
+ * keys without a leading slash, what a path holds following links, and a
+ * directory's entries, a symlink's unfollowed.
+ */
+function planSourceOf(vfs: LaunchFs): Omit<DataPlanSource, 'list'> {
+  return {
+    readText: async (path) => {
+      try { return await filesOf(vfs).readFileString(path); } catch { return null; }
+    },
+    linkTarget: (path) => linkTargetOf(vfs, path),
+    stat: async (path) => {
+      const st = await filesOf(vfs).stat(path).catch(() => null);
+      return st && { kind: st.type, size: st.size };
+    },
+    readdir: async (dir) => {
+      const entries = await Promise.resolve(vfs.readdir('/' + dir)).catch(() => null);
+      if (entries === null) return null;
+      const typed: DataPlanEntry[] = [];
+      for (const entry of entries) {
+        const path = dir === '' ? entry.name : `${dir}/${entry.name}`;
+        const kind = await launchEntryType(vfs, '/' + dir, entry);
+        if (kind === null) continue;
+        const size = kind === 'file' ? (await filesOf(vfs).stat(path).catch(() => null))?.size ?? 0 : 0;
+        typed.push({ path, kind, size });
+      }
+      return typed;
+    },
   };
 }
 function filesOf(fs: LaunchFs): BridgeRequireFs {
@@ -525,6 +555,8 @@ export const RESIDENT_BOOT_SETTLE_MS = 1000;
  * it watches.
  */
 export const ENTRYPOINT_EVENT_LOOP = `
+// Its deadlines are Nimbus's own reads of the clock (REAL_NOW_SOURCE).
+const __nimbusLoopNow = ${REAL_NOW_SOURCE};
 function __nimbusHandleCount(__name) {
   const __value = globalThis[__name];
   return typeof __value === "number" ? __value : 0;
@@ -627,9 +659,9 @@ async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs, __before
   };
   if (!__beforeExit) return await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __deadlineMs, 4, __nimbusReportBlockedState);
   const __limited = Number.isFinite(__deadlineMs);
-  const __startedAt = __limited ? Date.now() : 0;
+  const __startedAt = __limited ? __nimbusLoopNow() : 0;
   for (;;) {
-    const __remaining = __limited ? Math.max(0, __deadlineMs - (Date.now() - __startedAt)) : __deadlineMs;
+    const __remaining = __limited ? Math.max(0, __deadlineMs - (__nimbusLoopNow() - __startedAt)) : __deadlineMs;
     const __drained = await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __remaining, 4, __nimbusReportBlockedState);
     if (__drained.pending || !await __beforeExit()) return __drained;
   }
@@ -708,7 +740,7 @@ function __nimbusNaturalExit(__beforeExit) {
 // and every request routed to the facet, which waits for boot — hung
 // forever. A rejection after the budget fails the process as Node's does.
 async function __nimbusSettleEntrypointStartup(__entryResult, __deadlineMs) {
-  const __startedAt = Date.now();
+  const __startedAt = __nimbusLoopNow();
   if (__entryResult && typeof __entryResult.then === "function") {
     const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === "function")
       ? globalThis.__nimbusRawSetTimeout
@@ -733,7 +765,7 @@ async function __nimbusSettleEntrypointStartup(__entryResult, __deadlineMs) {
   }
   return await __nimbusRunEventLoop(
     __nimbusPendingStartupWork, __nimbusProcessExitPromise,
-    Math.max(0, __deadlineMs - (Date.now() - __startedAt)), 4,
+    Math.max(0, __deadlineMs - (__nimbusLoopNow() - __startedAt)), 4,
   );
 }
 `;
@@ -1809,7 +1841,9 @@ ${VFS_CURSOR_SEED_SOURCE}
     // __nimbusStageImport; the planner's lazyReadsByTarget).
     globalThis.__nimbusLazyReads = new Map(Object.entries((__startArgs && __startArgs.lazyReads) || {}));
     __nimbusProfileStaged = new Set((__startArgs && __startArgs.profileStaged) || []);
-    __resident.sync.setPushRoots([_cwd || "/home/user", "/tmp"]);
+    // What a barrier pushes: the working tree, /tmp, and the stylesheet
+    // sources outside the tree the plan held (data-plan.ts stylesheet-source).
+    __resident.sync.setPushRoots([_cwd || "/home/user", "/tmp", ...((__startArgs && __startArgs.sourceRoots) || [])]);
     // Bring the store to the authority's current state before the program's
     // first instruction. This is what makes a first synchronous read of an
     // untouched file succeed, and it is the ONLY blocking step: the waiting is
@@ -1826,7 +1860,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     // The thunk hands the parsed bundle over and drops this scope's reference,
     // so a cold boot frees it the moment it is adopted rather than holding it
     // through the fill. A kept store that reconciles never takes it.
-    const __residentBootStarted = Date.now();
+    const __residentBootStarted = ${REAL_NOW_SOURCE}();
     const __residentBooted = await __resident.sync.boot(
       () => { const __bundle = __MODULE_VFS_BUNDLE; __MODULE_VFS_BUNDLE = null; return __bundle; },
       __MODULE_VFS_CURSOR,
@@ -1838,7 +1872,7 @@ ${VFS_CURSOR_SEED_SOURCE}
       try {
         const __stats = __resident.cells.stats();
         await __supervisor.stderr(new TextEncoder().encode("[nimbus-debug] resident boot " + JSON.stringify({
-          ms: Date.now() - __residentBootStarted, ...__stats, failure: __residentBooted.failure || null,
+          ms: ${REAL_NOW_SOURCE}() - __residentBootStarted, ...__stats, failure: __residentBooted.failure || null,
         }) + "\\n"));
       } catch {}
     }
@@ -6122,9 +6156,10 @@ export class FacetManager {
     program?: string,
     /** The program's own conditions, which its code's resolutions use. */
     conditions: readonly string[] = [],
-  ): Promise<{ paths: string[]; storageBytes: number; lazyReads: Record<string, string[]> }> {
-    if (!this.vfs || !this.filesystem) return { paths: [], storageBytes: 0, lazyReads: {} };
-    const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
+  ): Promise<{ paths: string[]; storageBytes: number; lazyReads: Record<string, string[]>; sourceRoots: string[] }> {
+    const filesystem = this.filesystem;
+    if (!this.vfs || !filesystem) return { paths: [], storageBytes: 0, lazyReads: {}, sourceRoots: [] };
+    const vfs = filesystem.bind({ pid: entry.pid, cred: entry.cred });
     const started = Date.now();
     const trace = (what: string) => {
       if (!this.debugEnabled) return;
@@ -6153,26 +6188,17 @@ export class FacetManager {
     trace(`${refs.length} modules name paths (${syncReadsOf.size} lazy ones' synchronous reads deferred to their import()); learned reads`);
     // Where this process's listing walks mounts, the plan's below and its own
     // at boot: what its launch names.
-    this.filesystem.nameLaunch?.(entry, () => launchNames(cwd, program, entry.argv, vfsState.bundlePaths ?? [], refs));
+    filesystem.nameLaunch?.(entry, () => launchNames(cwd, program, entry.argv, vfsState.bundlePaths ?? [], refs));
     const learned = await this._learnedReads(vfsState, entry.cred);
     trace(`${learned.length} learned; listing`);
     let pages = 0;
-    let names = 0;
     const plan = await planFacetData({
       list: async (after) => {
         const page = await vfs.list(after, FS_LIST_PAGE_LIMIT);
-        names += page.entries.length;
         trace(`page ${++pages}: ${page.entries.length} entries`);
         return { entries: page.entries, next: page.next };
       },
-      readText: async (path) => {
-        try { return await filesOf(vfs).readFileString(path); } catch { return null; }
-      },
-      linkTarget: (path) => linkTargetOf(vfs, path),
-      stat: async (path) => {
-        const st = await filesOf(vfs).stat(path).catch(() => null);
-        return st && { kind: st.type, size: st.size };
-      },
+      ...planSourceOf(vfs),
     }, {
       cwd,
       home: home || '/home/user',
@@ -6182,18 +6208,19 @@ export class FacetManager {
       learned,
       conditions,
       spend: (units) => pacer.spend(units),
+      nameSources: (read) => filesystem.nameLaunch?.(entry, () => read),
     });
     trace(`planned ${plan.paths.length}`);
     // What the facet's store will hold (N18), in the cost its store charges
     // itself (vfs/resident residentCellCost): the planned bytes on
     // overflow pages (1% over), a head and chunk rows per file, a namespace
     // row per name, and slack for the last write's page.
-    const rows = plan.paths.length * 2 + Math.ceil(plan.bytes / RESIDENT_CHUNK_BYTES) + names;
+    const rows = plan.paths.length * 2 + Math.ceil(plan.bytes / RESIDENT_CHUNK_BYTES) + plan.names;
     // And the module map, which the store adopts at boot: the process's code,
     // costed when the map was built (its cells are released once serialized).
     const moduleBytes = vfsState.moduleStorageBytes ?? moduleMapStorageBytes(vfsState.bundle, vfsState.codeOnly);
     const storageBytes = Math.ceil(plan.bytes * 1.01) + rows * LEDGER_ROW_BYTES + moduleBytes + 65_536;
-    return { paths: plan.paths, storageBytes, lazyReads };
+    return { paths: plan.paths, storageBytes, lazyReads, sourceRoots: plan.sourceRoots };
   }
 
   /**
@@ -6207,7 +6234,7 @@ export class FacetManager {
    * URL('lightningcss_node.wasm', import.meta.url)), which as a map cell
    * left the closure no room under the map's bound.
    */
-  private async _staticReadPlan(entry: ProcessEntry, vfsState: FacetVfsState, cwd: string, pacer: TurnBudget): Promise<string[]> {
+  private async _staticReadPlan(entry: ProcessEntry, vfsState: FacetVfsState, cwd: string, home: string | undefined, pacer: TurnBudget): Promise<string[]> {
     if (!this.filesystem) return [];
     const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
     const held = new Set(vfsState.bundlePaths ?? []);
@@ -6225,6 +6252,15 @@ export class FacetManager {
       if (held.has(target)) continue;
       const stat = await filesOf(vfs).stat(target).catch(() => null);
       if (stat?.type === 'file') plan.add(target);
+    }
+    // And, for Tailwind's oxide, what its stylesheets name (data-plan.ts
+    // stylesheet-source), from the stylesheets its bundle holds.
+    if (carriesOxide(vfsState.bundlePaths ?? [])) {
+      const sheets = (vfsState.bundlePaths ?? []).filter((path) => path.endsWith('.css') && packageRootOf(path) === null);
+      const found = await planStylesheetSources(planSourceOf(vfs), { cwd, home: home || '/home/user', sheets, spend: (units) => pacer.spend(units) });
+      for (const file of found.files) if (!held.has(file.path)) plan.add(file.path);
+      // Where its listing walks mounts, as its launch's names are.
+      this.filesystem.nameLaunch?.(entry, () => found.read);
     }
     return [...plan];
   }
@@ -7254,7 +7290,7 @@ export class FacetManager {
           // principal's image is where that comes from). What its closure reads
           // synchronously by a path its code spells out needs no listing, and is
           // its data plan.
-          let dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+          let dataPlan = await this._staticReadPlan(entry, vfsState, cwd, opts.env?.HOME, pacer);
           // And every manifest it can see, from what the session read once per install.
           const manifests = await this._installedManifests(entry, pacer);
           // A stoppable run's network goes through the session (SupervisorRPC's
@@ -7278,7 +7314,7 @@ export class FacetManager {
                 // Over the ceiling with none of its learned code: built again, once, with fewer walked modules.
                 if (!(error instanceof ModuleMapOverCeilingError)) throw error;
                 vfsState = await this._rebuildUnderCeiling(entry, bundleSpec, vfsState, error, pacer);
-                dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+                dataPlan = await this._staticReadPlan(entry, vfsState, cwd, opts.env?.HOME, pacer);
                 return this._execViaLoader(code, launch, entry, vfsState, dataPlan, manifests, runSignal, pacer, diagSink);
               });
             } catch (error) {
@@ -7317,7 +7353,7 @@ export class FacetManager {
             // lock order); its helpers wait as its process meanwhile.
             if (vfsState.generatedSourcesReleased) {
               vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
-              dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+              dataPlan = await this._staticReadPlan(entry, vfsState, cwd, opts.env?.HOME, pacer);
             } else {
               await this._holdMapShare(entry, vfsState);
             }
@@ -8910,7 +8946,7 @@ export class FacetManager {
       }
       return planned;
     };
-    let { paths: dataPlan, storageBytes, lazyReads } = await plan();
+    let { paths: dataPlan, storageBytes, lazyReads, sourceRoots } = await plan();
     const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
     // The launch-time overlay (`$PORT`, `$NIMBUS_APP` under a reservation)
     // rides on top of the recipe's env and is never journalled: it is
@@ -8964,7 +9000,7 @@ export class FacetManager {
       } catch (error) {
         if (!(error instanceof ModuleMapOverCeilingError) || rebuilt) throw error;
         vfsState = await this._rebuildUnderCeiling(entry, spec, vfsState, error, pacer);
-        ({ paths: dataPlan, storageBytes, lazyReads } = await plan());
+        ({ paths: dataPlan, storageBytes, lazyReads, sourceRoots } = await plan());
       }
     }
 
@@ -9063,6 +9099,7 @@ export class FacetManager {
         startArgs: {
           pid: entry.pid, vfsCursor, dataPlan,
           ...(Object.keys(lazyReads).length > 0 ? { lazyReads } : {}),
+          ...(sourceRoots.length > 0 ? { sourceRoots } : {}),
           ...(profileOffer !== undefined && profileOffer.staged.length > 0 ? { profileStaged: profileOffer.staged.map((e) => e.path) } : {}),
           ...(this.debugEnabled ? { diag: true } : {}),
           ...(stdinWriter ? { stdinWriter: true } : {}),
