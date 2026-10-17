@@ -105,7 +105,7 @@ theorem route_fold (p : Path) : ∀ (ms : List Mount) (best : Mount), best.point
     let r := ms.foldl (pick p) best
     r.point <+: p ∧ (r = best ∨ r ∈ ms) ∧ best.point.length ≤ r.point.length ∧
       ∀ m ∈ ms, m.point <+: p → m.point.length ≤ r.point.length :=
-  MountSelection.fold_spec (·.point) p
+  MountSelection.fold_spec Mount.point p
 
 /-- Routing picks a mount whose point is a prefix of the path, and no longer one. -/
 theorem route_spec (ms : List Mount) (p : Path) :
