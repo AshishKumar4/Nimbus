@@ -66,6 +66,8 @@ export interface LateLinkHost {
     /** A module's requests and bindings, as the interpreter reads it with the loader's parse goal (interpreter/index.ts moduleRequests). */
     requests(path: string, text: string, javaScript: boolean, goal: 'module' | 'commonjs' | 'detect'): ModuleRequests;
 }
+/** The failure an import()'s link kept for the staged module at `key` (linkFailures): what a later load of it throws. */
+export declare function keptFailure(key: string): Error | undefined;
 /**
  * The names Node's loader finds in the CommonJS module at `key` before it
  * runs: a staged facade's, else Node's lexer's over its source and the

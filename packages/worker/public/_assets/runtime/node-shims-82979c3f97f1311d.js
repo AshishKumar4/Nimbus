@@ -19608,6 +19608,9 @@ function __nimbusEsmRequire(id, required, parent = undefined) {
   }
   // It threw: what it threw, once its evaluation's rejection said.
   if (record.state === __ESM_FAILED && record.error !== undefined) throw record.error.value;
+  // An import()'s link failed in it: that failure, as Node's loader keeps the ModuleJob (esm-late-link keptFailure).
+  const kept = __nimbusLateModule?.keptFailure(__nimbusEsm.table[id][1]);
+  if (kept !== undefined) throw kept;
   const filename = "/" + __nimbusEsm.table[id][1];
   // Evaluating, for an import: Node's ESM loader's refusal, naming the requirer.
   if (record.state === __ESM_BEGAN || (record.state === __ESM_ADOPTED && record.namespace === null && record.requirer === undefined)) {
@@ -20412,7 +20415,7 @@ const __nimbusLateLinkHost = {
 // (`kept`: a module it fails in keeps the failure) or a require()'s; the
 // staged rows it imports, in order.
 function __nimbusLateLink(key, url, kept) {
-  return __nimbusRegistryRequire("./nimbus/esm-late.js").linkLateGraph(__nimbusLateLinkHost, key, url, kept);
+  return __nimbusLateOf().linkLateGraph(__nimbusLateLinkHost, key, url, kept);
 }
 // A bundled copy of a package the runtime provides, bound to the runtime's
 // (provided-packages.ts rewriteProvidedCommonJsModules, PROVIDED_PACKAGE_HOOK):

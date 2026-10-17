@@ -10,9 +10,9 @@
  */
 
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-7f0c776afa4cd987.js";
-export const NODE_SHIMS_BUILD_ID: string = "7f0c776afa4cd987";
-export const NODE_SHIMS_SHA256: string = "7f0c776afa4cd987288bb3802a2e74da0a4812ff31858e1c517a79ff68c01d73";
+export const NODE_SHIMS_ENTRY: string = "/_assets/runtime/node-shims-82979c3f97f1311d.js";
+export const NODE_SHIMS_BUILD_ID: string = "82979c3f97f1311d";
+export const NODE_SHIMS_SHA256: string = "82979c3f97f1311d9fcaeb8d1a081a763d978aa3ccfe03325989a85d6c126283";
 
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
 export const VFS_WRITE_LEDGER_ENTRY: string = "/_assets/runtime/vfs-write-ledger-a116c3562b00e745.js";
@@ -65,9 +65,9 @@ export const NODE_CP_BUILD_ID: string = "c2a0830c818ad019";
 export const NODE_CP_SHA256: string = "c2a0830c818ad019134064a2bfef1f5bdc0a0b6018d9d515135176239cf56966";
 
 /** @nimbus-sh/core src/runtime/esm-late-link.ts, bundled by scripts/interpreter-bundle.mjs */
-export const ESM_LATE_ENTRY: string = "/_assets/runtime/esm-late-d8e896b863bda566.js";
-export const ESM_LATE_BUILD_ID: string = "d8e896b863bda566";
-export const ESM_LATE_SHA256: string = "d8e896b863bda566b8ad561b9339539e311e2b3d20be6c46c02b280fd9be4207";
+export const ESM_LATE_ENTRY: string = "/_assets/runtime/esm-late-d1d3ac8875d79123.js";
+export const ESM_LATE_BUILD_ID: string = "d1d3ac8875d79123";
+export const ESM_LATE_SHA256: string = "d1d3ac8875d7912363bbce1d261521804a68538d4ba559c5d135952760ea7f57";
 
 /** core src/_shared/commonjs-cell.ts through interpreter-bundle.mjs */
 export const NODE_REGISTRY_ENTRY: string = "/_assets/runtime/node-registry-0fc2326fdfb4daeb.js";

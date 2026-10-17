@@ -106,6 +106,10 @@ function moduleFacts(host, row) {
  * whatever the program wrote since.
  */
 const linkFailures = new Map();
+/** The failure an import()'s link kept for the staged module at `key` (linkFailures): what a later load of it throws. */
+export function keptFailure(key) {
+    return linkFailures.get(key);
+}
 /** Every late module a link has read, by URL: what an interpreted module's `export *` asks of (starConflicts). */
 const lateModules = new Map();
 /** The CommonJS modules' names Node's lexer found, by path. */
