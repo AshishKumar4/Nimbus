@@ -888,7 +888,7 @@ async function writeBinary(stream: OutputStream, bin: string): Promise<void> {
   if (!bin) return;
   const bytes = bytesFromBinary(bin);
   if (stream.writeBytes) await stream.writeBytes(bytes);
-  else await stream.write(dec.decode(bytes));
+  else await stream.write(nameDec.decode(bytes));
 }
 
 // ── Staging ──────────────────────────────────────────────────────────────

@@ -6,11 +6,14 @@
 // a file that begins with them. And a child's command is its name, every
 // character its own: node's spawn(' node') and spawn('\uFEFFnode') find no
 // program (ENOENT), as host Node's do. Host bash and host node run
-// the same lines; the BOM must lead each output.
+// the same lines; the BOM must lead each output. A node program reading the
+// bytes as text (setEncoding, readline) has them, and grep matches the
+// line's bytes, the BOM's before its text.
 //
 // Red before: the output streams' decoders dropped a leading BOM (one per
-// process, and one per chunk where output was decoded piece by piece), and
-// the child process manager trimmed a command, the BOM with the spaces.
+// process, and one per chunk where output was decoded piece by piece), so
+// did stdin's setEncoding, readline and grep's records, and the child
+// process manager trimmed a command, the BOM with the spaces.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -33,9 +36,16 @@ const lines = [
   ["bash -c 'printf \"\\357\\273\\277x\\n\"'", `${BOM}x`],
   ['node -e "process.stdout.write(Buffer.from([0xef, 0xbb, 0xbf, 0x79, 0x0a]))"', `${BOM}y`],
   ['cat bom.txt', `${BOM}z`],
+  // Read back as text by a program: setEncoding's data, and readline's lines.
+  ["cat bom.txt | node -e \"process.stdin.setEncoding('utf8'); process.stdin.on('data', (d) => process.stdout.write(JSON.stringify(d)))\"", `"${BOM}z\\n"`],
+  ["cat bom.txt | node -e \"require('readline').createInterface({ input: process.stdin }).on('line', (l) => console.log(JSON.stringify(l)))\"", `"${BOM}z"`],
+  // GNU grep matches bytes: the BOM's are before the z.
+  ["grep -c '^z' bom.txt; echo \"rc=$?\"", '0\nrc=1'],
 ];
 
-// The oracle: host bash and host node, in a directory holding the same file.
+// The oracle: host bash and host node, in a directory holding the same file; its grep GNU grep.
+const grepVersion = spawnSync('grep', ['--version'], { encoding: 'utf8' }).stdout;
+assert.match(grepVersion, /GNU grep/, `the host's grep is GNU grep: ${grepVersion.split('\n')[0]}`);
 const host = mkdtempSync(join(tmpdir(), 'nimbus-bom-out-'));
 const hostOut = (line) => {
   const ran = spawnSync('bash', ['-c', line], { cwd: host, env: { PATH: process.env.PATH, LC_ALL: 'C.UTF-8' } });
