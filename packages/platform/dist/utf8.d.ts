@@ -12,7 +12,10 @@ export declare function utf8Length(text: string): number;
 /**
  * `a` against `b` (negative, 0, positive) as their UTF-8 bytes order them,
  * as SQLite's `ORDER BY` of a text column and git's index do: code point
- * order, a lone surrogate being the U+FFFD TextEncoder writes for it.
+ * order, a lone surrogate being the U+FFFD TextEncoder writes for it. Units
+ * equal in both are passed as they are (a pair or a lone half is the same
+ * code point in each); two that differ, neither a surrogate, are their own
+ * code points. The rest, rare in a path, is surrogatesFrom's.
  */
 export declare function compareUtf8(a: string, b: string): number;
 //# sourceMappingURL=utf8.d.ts.map
