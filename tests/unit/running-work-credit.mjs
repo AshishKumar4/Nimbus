@@ -5,6 +5,9 @@
 //   - It overtakes every queued ask, however large.
 //   - Where only parked launches' retained maps hold the credit, it reclaims
 //     them, the oldest parked first, and no more than it needs.
+//   - A launch that parks while a running ask waits is reclaimed for it.
+//   - A small running ask may take the read reserve, but never waits on it,
+//     so it never reclaims for credit no reclaim frees.
 //   - An ordinary ask reclaims nothing.
 //   - The full cycle: every worker held by a running facet whose next write
 //     needs credit, and the budget full of parked launches each waiting for
@@ -51,6 +54,46 @@ function park(budget, bytes) {
   (await queued).release();
   assert.equal(budget.stats.current, 0);
   console.log('  ✓ running work overtakes the queue and reclaims the oldest parked map');
+}
+
+// ── a launch that parks while a running ask waits is reclaimed for it ───────
+{
+  const budget = new SupervisorAllocationBudget(100);
+  // A launch generating its map holds the credit, not yet reclaimable.
+  const generating = await budget.acquire(100);
+  let granted = false;
+  const running = budget.acquireRunning(100).then((lease) => { granted = true; return lease; });
+  await settled();
+  assert.equal(granted, false, 'nothing is reclaimable yet');
+  // Its map made, it parks: its credit becomes reclaimable.
+  let reclaimed = false;
+  budget.reclaimable(() => { reclaimed = true; generating.release(); });
+  const lease = await Promise.race([
+    running,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('running work was not woken by a map becoming reclaimable')), 5_000)),
+  ]);
+  assert.equal(reclaimed, true, 'the parked map is reclaimed for the running ask');
+  lease.release();
+  assert.equal(budget.stats.current, 0);
+  console.log('  ✓ a launch that parks while a running ask waits is reclaimed for it');
+}
+
+// ── a small running ask takes the reserve, and reclaims nothing for it ──────
+{
+  const budget = new SupervisorAllocationBudget(100, {}, { smallRequestBytes: 10, reserve: 20 });
+  const parked = await park(budget, 100);
+  const first = await budget.acquireRunning(10);
+  const second = await budget.acquireRunning(10);
+  assert.equal(parked.reclaimed, false, 'the reserve grants them; no map is reclaimed');
+  // The reserve full too, it waits on the shared capacity: the parked map is reclaimed for it.
+  const third = await Promise.race([
+    budget.acquireRunning(10),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('a small running ask waited on the reserve')), 5_000)),
+  ]);
+  assert.equal(parked.reclaimed, true, 'past the reserve, a parked map is reclaimed');
+  for (const lease of [first, second, third]) lease.release();
+  assert.equal(budget.stats.current, 0);
+  console.log('  ✓ a small running ask takes the reserve, and waits only on what a reclaim frees');
 }
 
 // ── an ordinary ask reclaims nothing ─────────────────────────────────────────
