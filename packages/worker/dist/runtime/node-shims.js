@@ -155,8 +155,10 @@ function __nimbusGeneratedNodeError(Base, code, message, props, decoration) {
 // What the shims call a program's functions with, captured before any
 // program runs: a program may replace Reflect's.
 const __nimbusReflectApply = Reflect.apply;
-// The realm's SyntaxError, which a program may replace as a global.
-const __nimbusSyntaxError = SyntaxError;
+// The realm's SyntaxError, which a program may replace as a global: the
+// launch's capture (a runner that shares one scope with the cell runtime has
+// its __nimbusSyntaxError too).
+const __nimbusRealmSyntaxError = __nimbusPrimordials.SyntaxError;
 // The runner's stop and replay (runtime/stop-replay.ts), private to its
 // module: null in a runner without one.
 const __nimbusReplay = typeof __nimbusStopReplay !== "undefined" ? __nimbusStopReplay : null;
@@ -11088,7 +11090,7 @@ function __nimbusCompileArrow(module, error) {
   if (error?.message === "Unexpected end of input") return __nimbusArrowOf(module, text, end, end, true);
   if (place[0] >= end) {
     const parser = __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}");
-    const named = error instanceof __nimbusSyntaxError ? /^Unexpected token '(.+)'$/.exec(error.message) : null;
+    const named = error instanceof __nimbusRealmSyntaxError ? /^Unexpected token '(.+)'$/.exec(error.message) : null;
     // An argument list left open is placed at its last token, as V8 places it whatever follows.
     if (error?.message === "missing ) after argument list") {
       const last = parser.lastTokenBefore(text, end);
@@ -11136,7 +11138,7 @@ function __nimbusEvalArrow(module, arrow) {
 // would compile).
 function __nimbusEvalIllegalReturn(text, at) {
   const entry = __nimbusEntryModule();
-  const error = new __nimbusSyntaxError("Illegal return statement");
+  const error = new __nimbusRealmSyntaxError("Illegal return statement");
   if (entry === null) return error;
   const source = { name: entry.name, path: null, file: __nimbusFrameFile(entry), head: 0, tail: 0, esModule: false, hashbang: false };
   const arrow = __nimbusEvalArrow(entry, __nimbusArrowOf(source, text, at, at + "return".length));
