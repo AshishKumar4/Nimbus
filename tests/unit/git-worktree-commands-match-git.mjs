@@ -29,6 +29,7 @@ import { GIT_BUNDLE_ENTRY } from '../../packages/worker/src/git-bundle.generated
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { startGitHttpServer } from './lib/git-http-server.mjs';
 
 // The facet's git module is the staged asset the Worker fetches (runtime/git-bundle-artifact.ts).
 const GIT_BUNDLE_CODE = readFileSync(new URL(`../../packages/worker/public${GIT_BUNDLE_ENTRY}`, import.meta.url), 'utf8');
@@ -553,44 +554,7 @@ try {
   const servedTypes = join(served, 'types.git');
   const commitOf = (rev) => realGit(types, ['rev-parse', rev]).stdout.toString().trim();
   sh(servedTypes, ['update-ref', 'refs/heads/main', commitOf('b~1')]);
-  server = Bun.serve({
-    hostname: '127.0.0.1',
-    port: 0,
-    async fetch(request) {
-      const url = new URL(request.url);
-      const body = request.method === 'POST' ? new Uint8Array(await request.arrayBuffer()) : null;
-      const child = Bun.spawn(['git', 'http-backend'], {
-        env: {
-          ...GIT_ENV,
-          GIT_PROJECT_ROOT: served,
-          GIT_HTTP_EXPORT_ALL: '1',
-          PATH_INFO: url.pathname,
-          QUERY_STRING: url.search.slice(1),
-          REQUEST_METHOD: request.method,
-          CONTENT_TYPE: request.headers.get('content-type') ?? '',
-          CONTENT_LENGTH: body ? String(body.length) : '',
-          HTTP_CONTENT_ENCODING: request.headers.get('content-encoding') ?? '',
-          GIT_PROTOCOL: request.headers.get('git-protocol') ?? '',
-        },
-        stdin: body ? new Blob([body]) : 'ignore',
-        stdout: 'pipe',
-        stderr: 'ignore',
-      });
-      const out = new Uint8Array(await new Response(child.stdout).arrayBuffer());
-      await child.exited;
-      const split = Buffer.from(out).indexOf('\r\n\r\n');
-      const headers = new Headers();
-      let status = 200;
-      for (const line of new TextDecoder().decode(out.subarray(0, split)).split('\r\n')) {
-        const colon = line.indexOf(':');
-        const name = line.slice(0, colon).trim();
-        const value = line.slice(colon + 1).trim();
-        if (name.toLowerCase() === 'status') status = parseInt(value, 10);
-        else headers.set(name, value);
-      }
-      return new Response(out.subarray(split + 4), { status, headers });
-    },
-  });
+  server = startGitHttpServer(served, { plain: true, env: GIT_ENV, forward: ['git-protocol', 'content-encoding'] });
   /** Real git as a child the event loop keeps serving: it fetches from this process's server. */
   const realGitAsync = async (cwd, args) => {
     const child = Bun.spawn(['git', ...args], { cwd, env: GIT_ENV, stdout: 'pipe', stderr: 'pipe' });
@@ -622,7 +586,7 @@ try {
     },
   };
   const pulled = { disk: join(diskRoot, 'pulled'), virtual: `${vfsRoot}/pulled` };
-  await realGitAsync(diskRoot, ['clone', '-q', `http://127.0.0.1:${server.port}/types.git`, pulled.disk]);
+  await realGitAsync(diskRoot, ['clone', '-q', `${server.url}/types.git`, pulled.disk]);
   mirror(pulled.disk, pulled.virtual);
   await sameWorktree('a clone at the links', pulled);
   /**
@@ -1404,6 +1368,6 @@ try {
 
   console.log(`git-worktree-commands-match-git: ${checks} commands byte-identical to ${realGit(scratch, ['--version']).stdout.toString().trim()}`);
 } finally {
-  server?.stop(true);
+  server?.stop();
   rmSync(scratch, { recursive: true, force: true });
 }
