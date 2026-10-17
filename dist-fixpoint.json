@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "13524775693c5b58e7f0f518621e798ee3611cb72ca5a87d7eba821d0601310b",
+  "fingerprint": "572bf41ed5e1bb47bd4b8e0df4062fc8bfccf4029d8a00e77943e8b7d7e1e197",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2271,8 +2271,8 @@
     "packages/worker/dist/facets/compose.d.ts.map": "f8d041ebe01ce47a4467bed41d25c063a26e5008f67b99d95ca46e934773ca8d",
     "packages/worker/dist/facets/compose.js": "6e5d4ec4e3ff0dafe425c4cf7e2d36b54c53b560818886d89fc9a3dc7a82b4e7",
     "packages/worker/dist/facets/data-plan.d.ts": "d5ce90c0400c0de81a70074b851c9c1fb71e07c6b2e0ee927b682facb921b620",
-    "packages/worker/dist/facets/data-plan.d.ts.map": "858b1f8382507e9cd7d2f39029a87c65d821add220712d1cd0e63d2ae3eba373",
-    "packages/worker/dist/facets/data-plan.js": "22c92d6e4bcffe2a4ec02a6464438f304541de035762ad7373fcd219b71da9ca",
+    "packages/worker/dist/facets/data-plan.d.ts.map": "fb222ebeab16fb1ef7bbb7029c9071631c1f359f8516a8d86f042498f263f9c7",
+    "packages/worker/dist/facets/data-plan.js": "86d0e920e0642532692f3b8d9cb516ed96ba308e8f001e5b0d016e2ddfa75973",
     "packages/worker/dist/facets/dev-stylesheet.d.ts": "9f9bdd5d4d22b80132ef13dd95754e14286fd3a1a1b4646d07fa49e2a1435a61",
     "packages/worker/dist/facets/dev-stylesheet.d.ts.map": "e1dc9830b986ee726cb4c881c06f1f34748264bff982c9bd3a1162136d322a08",
     "packages/worker/dist/facets/dev-stylesheet.js": "b1a4433dc2eab74565d5a07896cefaa0ca937c3fb5926a9c0eee8d2da5dd7042",
@@ -3168,7 +3168,7 @@
     "packages/worker/src/facets/build-facet.ts": "2714e64301b4cbfb138b5cd6a03ab877323ef44f9e38ab93160c74da899d8ad0",
     "packages/worker/src/facets/cirrus-real.ts": "db70cfb7d2a85fd4bbd24ea71554073d53e83a30612a7ee77a852cf8273b0ffd",
     "packages/worker/src/facets/compose.ts": "247f9265997fd043a4f61a043dfd8d66905ef4abd31bdf382c1e48b8dd17db33",
-    "packages/worker/src/facets/data-plan.ts": "f8fdfcb07f900a520be19990b88ce063cb144fe222fc984c076f551c2c38dd95",
+    "packages/worker/src/facets/data-plan.ts": "77e4c32918343c6887b81553c04f871a9c559765744e8cb05d8557068afc93c6",
     "packages/worker/src/facets/dev-stylesheet.ts": "031200a664d0d85443723d881773df350745f64f0b1d520c3f66056360d2dc37",
     "packages/worker/src/facets/durable-images.ts": "ab5e47caf349ad91f5b694a8b476ca30f0dae051fe55abbae1c597cdef7ec9c8",
     "packages/worker/src/facets/durable-slots.ts": "bdbe2a56483a438c3b9ad5394f8c2719ab3b9f254c16452ab520a6cf1ce7839d",
