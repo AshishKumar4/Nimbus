@@ -52,7 +52,7 @@
 
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, openSync, closeSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, openSync, closeSync } from 'node:fs';
 import { execFileSync, execSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -203,10 +203,8 @@ if (NPM_OUT_DIR) {
   }
 }
 
-const workDir = join(tmpdir(), `bundle-runtime-${RUNTIME}-${VERSION}`);
-rmSync(workDir, { recursive: true, force: true });
-mkdirSync(workDir, { recursive: true });
-// Scratch for this run only (every run starts it empty): removed however the run ends.
+// Scratch for this run only, whatever else runs beside it: removed however the run ends.
+const workDir = mkdtempSync(join(tmpdir(), `bundle-runtime-${RUNTIME}-${VERSION}-`));
 process.on('exit', () => rmSync(workDir, { recursive: true, force: true }));
 
 console.log(`[bundle-runtime] ${RUNTIME} ${VERSION}`);
