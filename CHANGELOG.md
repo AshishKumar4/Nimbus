@@ -8,6 +8,7 @@ published independently in the `@nimbus-sh` npm scope.
 ## 2026-10-17: platform 0.12.0, core 0.23.0, fabric 0.18.0, worker 0.21.0, sdk 0.17.0, cli 0.2.8, loom 0.3.1, react 0.3.3, create-nimbus-app 0.2.4, runtime-bash 5.2.37-7, runtime-cpython 3.13.14-3, runtime-git 2.53.0-1 (config 0.3.1 unchanged)
 
 The 2026-10-14 and 2026-10-15 versions reached production but were never published to npm; these carry their changes too. The runtimes need core 0.23.0: it is the first core that registers bash-runner@6, cpython-runner@3 and git-runner@2.
+
 - Fixed: a WASI process that makes a directory and then a file in it,
   as `pip install` does for each package, no longer fails ENOENT about
   once in a hundred runs. That happened when the process's hold on the
