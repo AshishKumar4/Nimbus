@@ -8,8 +8,14 @@
  * ASSETS binding and dynamic-imported by public/s/index.html, so the query
  * name and the rules cannot drift between the router and the page.
  *
+ * It also builds the shell's other small classic-script globals from core's
+ * shared sources: NimbusSessionId (id-component.ts) and NimbusTerminalPolicy
+ * (terminal-policy.ts, the look its terminals share with the docs').
+ *
  * Output (committed, like the sibling _assets bundles):
  *   public/_assets/preview-isolation/preview-isolation.js
+ *   public/_assets/session-id/session-id.js
+ *   public/_assets/terminal-policy/terminal-policy.js
  */
 
 import { build } from 'esbuild';
@@ -23,6 +29,7 @@ const ROOT = path.resolve(__dirname, '..');
 const bundles = [
   { entry: path.join(ROOT, 'frontend', 'preview-isolation', 'index.ts'), name: 'preview-isolation', format: 'esm' },
   { entry: path.resolve(ROOT, '..', 'core', 'src', '_shared', 'id-component.ts'), name: 'session-id', format: 'iife', globalName: 'NimbusSessionId' },
+  { entry: path.resolve(ROOT, '..', 'core', 'src', '_shared', 'terminal-policy.ts'), name: 'terminal-policy', format: 'iife', globalName: 'NimbusTerminalPolicy' },
 ];
 for (const { entry, name, format, globalName } of bundles) {
   const result = await build({
