@@ -30,6 +30,13 @@
  *                  (Vite's optimizer reads each with readFileSync), and the
  *                  process never loads them
  *   learned        paths earlier launches of the same package versions missed
+ *   stylesheet-source  for a process that carries Tailwind's oxide scanner,
+ *                  whose reads cannot wait: the files under each `@source`
+ *                  outside the working tree that the project's stylesheets
+ *                  name, through their relative `@import`s (sheetSources),
+ *                  a glob's directory prefix taken whole; the plan names
+ *                  these roots, for the facet's barriers to push as they
+ *                  push the working tree
  *
  * Code the closure loads is in the module map already; the store adopts a
  * file that is its own module, so it is readable as data too. A file whose
@@ -39,6 +46,11 @@
 import { packageJsonText, parseResolvablePackageJson, resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { resolveFile } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { resolveDeferredImport } from '@nimbus-sh/core/runtime/require-resolver.js';
+import { parseSheet, sheetSources } from '@nimbus-sh/core/runtime/css-syntax.js';
+/** The package whose scanner reads a stylesheet's sources synchronously (Tailwind v4). */
+const OXIDE_PACKAGE = 'node_modules/@tailwindcss/oxide';
+/** A glob's first special character: its directory prefix ends before the name holding one. */
+const GLOB_SPECIAL = /[*?[\]{}!]/;
 /** Package data this size or larger is a bundle or a binary, not configuration. */
 export const PACKAGE_DATA_MAX_BYTES = 256 * 1024;
 const CODE_FILE = /\.(?:c|m)?(?:j|t)sx?$|\.map$|\.d\.(?:c|m)?ts$|\.node$|\.wasm$/;
@@ -231,6 +243,7 @@ export async function planFacetData(source, input) {
     const homeDot = home ? home + '/.' : '.';
     const closureRoots = new Set();
     let typescriptRoot = null;
+    let carriesOxide = false;
     for (const path of input.closure) {
         const root = packageRootOf(key(path));
         if (root === null)
@@ -238,6 +251,8 @@ export async function planFacetData(source, input) {
         closureRoots.add(root);
         if (typescriptRoot === null && root.endsWith('node_modules/typescript'))
             typescriptRoot = root;
+        if (root.endsWith(OXIDE_PACKAGE))
+            carriesOxide = true;
     }
     // Each link question once per plan: the paths it resolves share prefixes.
     const linkAnswers = new Map();
@@ -281,7 +296,7 @@ export async function planFacetData(source, input) {
     const learned = new Set();
     for (const p of input.learned ?? [])
         learned.add(key(p));
-    const rules = Object.fromEntries(['package-json', 'project', 'convention', 'package-data', 'home', 'typescript', 'static', 'entries', 'learned']
+    const rules = Object.fromEntries(['package-json', 'project', 'convention', 'package-data', 'home', 'typescript', 'static', 'entries', 'learned', 'stylesheet-source']
         .map((r) => [r, { files: 0, bytes: 0 }]));
     const paths = [];
     const planned = new Set();
@@ -356,8 +371,11 @@ export async function planFacetData(source, input) {
     const declarations = [];
     const packageRoots = new Set();
     // Directories a home or project symlink points at, whose files the rule
-    // that took the link would have taken had they been in place.
+    // that took the link would have taken had they been in place, and the
+    // stylesheet sources outside the working tree.
     const linkedDirs = [];
+    /** The project's stylesheets, for the sources they name (stylesheet-source). */
+    const projectSheets = [];
     /**
      * A statically named file is worth holding when the module map does not
      * already hold it, and it is data-sized or the code reads it synchronously
@@ -412,6 +430,8 @@ export async function planFacetData(source, input) {
                 const rel = cwdPrefix === '' ? segs : k.slice(cwdPrefix.length).split('/');
                 if (!rel.slice(0, -1).some((s) => PROJECT_EXCLUDED.has(s))) {
                     take(entry, 'project');
+                    if (carriesOxide && name.endsWith('.css'))
+                        projectSheets.push(k);
                     continue;
                 }
             }
@@ -608,7 +628,36 @@ export async function planFacetData(source, input) {
                 take({ path: k, kind: 'file', size: found.size }, 'entries');
         }
     }
-    // The files behind symlinked directories the project or home rule reached.
+    // The sources the project's stylesheets name, through their relative
+    // `@import`s, each sheet read once.
+    const sourceRoots = [];
+    const sheets = new Set(projectSheets);
+    for (const sheet of sheets) {
+        const text = await source.readText(sheet);
+        if (text === null)
+            continue;
+        const parsed = parseSheet(text);
+        const relative = (path) => path.startsWith('/') ? key(path) : joinKey(parentOf(sheet), path);
+        for (const { path } of parsed.imports) {
+            if (!/^\.{0,2}\//.test(path))
+                continue;
+            const imported = relative(path);
+            if ((await source.stat(imported))?.kind === 'file')
+                sheets.add(imported);
+        }
+        for (const { path, negated } of sheetSources(parsed)) {
+            if (negated)
+                continue;
+            const names = path.split('/');
+            const glob = names.findIndex((name) => GLOB_SPECIAL.test(name));
+            const root = relative(glob < 0 ? path : names.slice(0, glob).join('/'));
+            if (root === cwd || root.startsWith(cwdPrefix) || sourceRoots.includes('/' + root))
+                continue;
+            sourceRoots.push('/' + root);
+            linkedDirs.push({ target: root, rule: 'stylesheet-source' });
+        }
+    }
+    // The files behind symlinked directories the project or home rule reached, and the stylesheet sources.
     if (linkedDirs.length > 0) {
         after = null;
         for (;;) {
@@ -633,5 +682,5 @@ export async function planFacetData(source, input) {
             after = page.next;
         }
     }
-    return { paths, bytes, rules };
+    return { paths, bytes, rules, sourceRoots };
 }

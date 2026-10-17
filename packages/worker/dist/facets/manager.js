@@ -1427,7 +1427,9 @@ ${VFS_CURSOR_SEED_SOURCE}
     // __nimbusStageImport; the planner's lazyReadsByTarget).
     globalThis.__nimbusLazyReads = new Map(Object.entries((__startArgs && __startArgs.lazyReads) || {}));
     __nimbusProfileStaged = new Set((__startArgs && __startArgs.profileStaged) || []);
-    __resident.sync.setPushRoots([_cwd || "/home/user", "/tmp"]);
+    // What a barrier pushes: the working tree, /tmp, and the stylesheet
+    // sources outside the tree the plan held (data-plan.ts stylesheet-source).
+    __resident.sync.setPushRoots([_cwd || "/home/user", "/tmp", ...((__startArgs && __startArgs.sourceRoots) || [])]);
     // Bring the store to the authority's current state before the program's
     // first instruction. This is what makes a first synchronous read of an
     // untouched file succeed, and it is the ONLY blocking step: the waiting is
@@ -5137,7 +5139,7 @@ export class FacetManager {
     /** The program's own conditions, which its code's resolutions use. */
     conditions = []) {
         if (!this.vfs || !this.filesystem)
-            return { paths: [], storageBytes: 0, lazyReads: {} };
+            return { paths: [], storageBytes: 0, lazyReads: {}, sourceRoots: [] };
         const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
         const started = Date.now();
         const trace = (what) => {
@@ -5217,7 +5219,7 @@ export class FacetManager {
         // costed when the map was built (its cells are released once serialized).
         const moduleBytes = vfsState.moduleStorageBytes ?? moduleMapStorageBytes(vfsState.bundle, vfsState.codeOnly);
         const storageBytes = Math.ceil(plan.bytes * 1.01) + rows * LEDGER_ROW_BYTES + moduleBytes + 65_536;
-        return { paths: plan.paths, storageBytes, lazyReads };
+        return { paths: plan.paths, storageBytes, lazyReads, sourceRoots: plan.sourceRoots };
     }
     /**
      * A one-shot's data plan: what its closure reads synchronously by a path its
@@ -7864,7 +7866,7 @@ export class FacetManager {
             }
             return planned;
         };
-        let { paths: dataPlan, storageBytes, lazyReads } = await plan();
+        let { paths: dataPlan, storageBytes, lazyReads, sourceRoots } = await plan();
         const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
         // The launch-time overlay (`$PORT`, `$NIMBUS_APP` under a reservation)
         // rides on top of the recipe's env and is never journalled: it is
@@ -7917,7 +7919,7 @@ export class FacetManager {
                 if (!(error instanceof ModuleMapOverCeilingError) || rebuilt)
                     throw error;
                 vfsState = await this._rebuildUnderCeiling(entry, spec, vfsState, error, pacer);
-                ({ paths: dataPlan, storageBytes, lazyReads } = await plan());
+                ({ paths: dataPlan, storageBytes, lazyReads, sourceRoots } = await plan());
             }
         }
         // Sized here, while the map is still in hand. Reading these after the load
@@ -8013,6 +8015,7 @@ export class FacetManager {
                             startArgs: {
                                 pid: entry.pid, vfsCursor, dataPlan,
                                 ...(Object.keys(lazyReads).length > 0 ? { lazyReads } : {}),
+                                ...(sourceRoots.length > 0 ? { sourceRoots } : {}),
                                 ...(profileOffer !== undefined && profileOffer.staged.length > 0 ? { profileStaged: profileOffer.staged.map((e) => e.path) } : {}),
                                 ...(this.debugEnabled ? { diag: true } : {}),
                                 ...(stdinWriter ? { stdinWriter: true } : {}),

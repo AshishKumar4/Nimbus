@@ -41,7 +41,7 @@ export interface DataPlanInput {
     /** Called with the bytes of each listed page, to pace a long walk. */
     spend?: (units: number) => Promise<void>;
 }
-export type DataPlanRule = 'package-json' | 'project' | 'convention' | 'package-data' | 'home' | 'typescript' | 'static' | 'entries' | 'learned';
+export type DataPlanRule = 'package-json' | 'project' | 'convention' | 'package-data' | 'home' | 'typescript' | 'static' | 'entries' | 'learned' | 'stylesheet-source';
 export interface DataPlan {
     paths: string[];
     bytes: number;
@@ -49,6 +49,8 @@ export interface DataPlan {
         files: number;
         bytes: number;
     }>;
+    /** The stylesheet sources outside the working tree it planned (stylesheet-source), as absolute paths. */
+    sourceRoots: string[];
 }
 /** Package data this size or larger is a bundle or a binary, not configuration. */
 export declare const PACKAGE_DATA_MAX_BYTES: number;

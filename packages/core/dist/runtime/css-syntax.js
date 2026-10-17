@@ -18,8 +18,9 @@
  * selector, a no-break space stays a name character); conditions print as
  * esbuild 0.24 prints them, since a bundle writes them back.
  *
- * Used by css-bundle.ts (the built-in `vite build`'s stylesheets) and by the
- * Vite dev server's stylesheet serving.
+ * Used by css-bundle.ts (the built-in `vite build`'s stylesheets), by the
+ * Vite dev server's stylesheet serving, and by a facet's data plan for the
+ * sources a stylesheet names (sheetSources).
  */
 import parse from 'css-tree/parser';
 import generate from 'css-tree/generator';
@@ -362,6 +363,20 @@ function printedNodes(sheet) {
  */
 export function sheetRules(sheet, rewriteUrl) {
     return printedNodes(sheet).map((node) => print(sheet.source, node, rewriteUrl));
+}
+/** Every `@source` in a sheet, at any depth, in order, read from its prelude's tokens. */
+export function sheetSources(sheet) {
+    const sources = [];
+    walk(sheet.ast, (node) => {
+        if (node.type !== 'Atrule' || atRuleName(node) !== 'source' || !node.prelude?.loc)
+            return;
+        const [first, second, ...rest] = componentsOf(sourceOf(sheet.source, node.prelude)).filter((c) => !insignificant(c));
+        const negated = first?.type === T.Ident && valueOf(first).toLowerCase() === 'not';
+        const path = negated ? second : first;
+        if (path?.type === T.String && (negated ? rest.length === 0 : second === undefined))
+            sources.push({ path: valueOf(path), negated });
+    });
+    return sources;
 }
 /** Every url() a sheet's rules print, in order: what sheetRules rewrites. */
 export function sheetUrls(sheet) {
