@@ -34,8 +34,14 @@ console.warn = (...args) => {
   else warn(...args);
 };
 const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+/** Within 30 s: a test that fails says where, it does not hang. */
+const within = (promise, what) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what} did not settle in 30 s`)), 30_000))]);
 const waitingAt = async ({ manager }, stage, count) => {
-  while (manager.launchState().launches.filter((launch) => launch.stage === stage).length < count) await settle();
+  const deadline = Date.now() + 30_000;
+  while (manager.launchState().launches.filter((launch) => launch.stage === stage).length < count) {
+    if (Date.now() > deadline) throw new Error(`no launch reached ${stage}: ${JSON.stringify(manager.launchState())}`);
+    await settle();
+  }
   return manager.launchState().launches.map(({ pid }) => pid);
 };
 const run = ({ manager }, opts = {}) => manager.exec('process.stdout.write("ran\\n")', { cwd: '/home/user', captureOutput: true, ...opts });
@@ -47,7 +53,7 @@ try {
   const killedAdmitting = run(admission, { signal: killAdmitting.signal });
   const [killedAdmittingPid] = await waitingAt(admission, 'admission', 1);
   killAdmitting.abort();
-  await killedAdmitting.catch(() => {});
+  await within(killedAdmitting.catch(() => {}), 'the run killed at admission');
   const held = run(admission, { command: longCommand });
   const [heldPid] = await waitingAt(admission, 'admission', 1);
 
@@ -55,7 +61,7 @@ try {
   const killedLoading = run(load, { signal: killLoading.signal });
   const [killedLoadingPid] = await waitingAt(load, 'load', 1);
   killLoading.abort();
-  await killedLoading.catch(() => {});
+  await within(killedLoading.catch(() => {}), 'the run killed at load');
   const stuckLoading = new AbortController();
   const stuck = run(load, { signal: stuckLoading.signal });
   const [stuckPid] = await waitingAt(load, 'load', 1);
@@ -76,12 +82,12 @@ try {
 
   // Let in, the held one runs.
   holds[0]();
-  const result = await held;
+  const result = await within(held, 'the held run');
   assert.equal(result.exitCode, 0, result.stderr);
   assert.equal(result.stdout, 'ran\n');
   for (const end of holds.slice(1)) end();
   stuckLoading.abort();
-  await stuck.catch(() => {});
+  await within(stuck.catch(() => {}), 'the stuck run, killed');
 } finally {
   console.warn = warn;
 }

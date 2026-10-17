@@ -39,7 +39,11 @@ export function runnerLoader(name, { rewrite = (config) => config, get } = {}) {
       const loaded = import(pathToFileURL(file).href);
       return {
         getEntrypoint: () => ({
-          async run(request, supervisor) { return (await loaded).default.fetch(request, { SUPERVISOR: supervisor }); },
+          // Entered as the real entry is (one-shot-entry.ts): it asks how its run ends first.
+          async run(request, supervisor, ended) {
+            ended?.().catch(() => {});
+            return (await loaded).default.fetch(request, { SUPERVISOR: supervisor });
+          },
           [Symbol.dispose]() {},
         }),
         [Symbol.dispose]() {},

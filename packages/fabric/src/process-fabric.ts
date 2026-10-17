@@ -696,9 +696,9 @@ export interface OneShotParams {
   onLoaded?(): void;
   /**
    * Called once the program's run is entered: its first call back to its
-   * host (the run's `ended`), or, for a staged run, entered through its
-   * stateless hop, when the hop answers. Between onLoaded and this, the
-   * platform is starting its worker.
+   * host (the run's `ended`). A staged run, started in its stateless hop,
+   * which tells its host nothing more, is entered as its fetch is sent.
+   * Between onLoaded and this, the platform is starting its worker.
    */
   onEntered?(): void;
   /**

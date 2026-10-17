@@ -816,7 +816,11 @@ async function runOneShot<T>(
       if (typeof staged.fetch !== 'function') throw new Error('Nimbus: staged one-shot entrypoint has no fetch method');
       // A fetch is cancelled as a fetch is: the run's end reaches the program
       // through the hop as its request's (NimbusLoadedEntrypoint.fetch).
-      enter = (request) => staged.fetch!(new Request(request, { signal: params.request.signal }));
+      // It is started in its hop, which tells this host nothing more: entered as it is sent.
+      enter = (request) => {
+        entered();
+        return staged.fetch!(new Request(request, { signal: params.request.signal }));
+      };
     } else {
       capability = supervise(supervisor);
       // A network the session answers (SupervisorRPC.fetch/connect) is the
