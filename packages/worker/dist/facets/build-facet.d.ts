@@ -1,7 +1,8 @@
 import type { EsbuildBuildHost } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
 import { type StagedSourceEnv } from '../runtime/staged-source.js';
-import type { PrebundleResult, PrebundleSpec } from '@nimbus-sh/core/runtime/prebundle-slice.js';
+import type { PrebundleResult } from '@nimbus-sh/core/runtime/prebundle-slice.js';
+import type { PrebundleDispatch } from './prebundle-pool.js';
 export declare const BUILD_FACET_WORKER_ID: string;
 /** The staged parts of the build facet, each verified against its pinned digest. */
 export interface BuildFacetParts {
@@ -53,7 +54,7 @@ export declare class BuildFacetResetError extends Error {
  * BuildFacetResetError naming the package and why; a facet that never
  * loaded is the load's own error, not retried.
  */
-export declare function buildFacetPrebundler(ctx: DurableObjectState, env: unknown): (spec: PrebundleSpec) => Promise<PrebundleResult>;
+export declare function buildFacetPrebundler(ctx: DurableObjectState, env: unknown, signal?: AbortSignal): Promise<(task: PrebundleDispatch) => Promise<PrebundleResult>>;
 /**
  * Loads the Durable Object's build facet and waits for it: the staged parts
  * fetched and verified, the binding instantiated. What prewarmBuildFacet

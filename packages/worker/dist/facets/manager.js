@@ -3806,8 +3806,8 @@ function admissionOf(admitted, queued) {
     };
 }
 /** `work` under an admission of its own (admitPrefetch's `wait` and `bytes`), given back as it ends. */
-async function withPrefetchAllocation(work, wait, bytes) {
-    const admission = await admitPrefetch(wait, bytes);
+async function withPrefetchAllocation(work, wait, bytes, owner = PREFETCH_ALLOCATION_OWNER) {
+    const admission = await admitPrefetch(wait, bytes, false, owner);
     try {
         return await work(admission);
     }
@@ -7329,7 +7329,7 @@ export class FacetManager {
             const serialized = _serializeBundleForFacet(gathered.bundle);
             assertStagedBundleFitsRpcPayload(serialized, gathered.bundle);
             return { vfsState: gathered, vfsBundle: serialized };
-        }, () => this._launchEnds(entry.pid));
+        }, () => this._launchEnds(entry.pid), undefined, this._allocationOwner(entry.pid));
         return {
             mode,
             argv: opts.argv,

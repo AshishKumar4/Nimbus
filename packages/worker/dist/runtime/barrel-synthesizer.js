@@ -271,7 +271,9 @@ function lexedImportView(source, path) {
  */
 async function parsedImportView(source, path, parse) {
     // The transform's output holds no JSX: read it as a `.ts` file is read.
-    return maskSourceForImports(await parse(path, source), path.replace(/\.[^./]*$/, '') + '.ts');
+    const parsed = parse(path, source);
+    source = '';
+    return maskSourceForImports(await parsed, path.replace(/\.[^./]*$/, '') + '.ts');
 }
 export function buildSyntheticEntry(vfs, nmDir, pkgName, names) {
     if (names.size === 0)
@@ -488,8 +490,24 @@ export function buildSyntheticEntry(vfs, nmDir, pkgName, names) {
  * icons (each pulling 1-2 transitive shared utility files).
  */
 export async function buildScopedSliceForSynthetic(vfs, nmDir, pkgName, referencedFiles, parse, transitiveCap = 800) {
+    const paths = await discoverScopedSliceForSynthetic(vfs, nmDir, pkgName, referencedFiles, parse, transitiveCap);
     const entries = [];
     let totalBytes = 0;
+    for (const entry of paths) {
+        const path = '/' + entry.path.replace(/^\/+/, '');
+        if (entry.isDir)
+            entries.push({ path, isDir: true });
+        else {
+            const bytes = vfs.readFile(entry.path);
+            entries.push({ path, isDir: false, bytes });
+            totalBytes += bytes.byteLength + entry.path.length;
+        }
+    }
+    return { entries, totalBytes };
+}
+/** Discovery retains paths, not a partial slice, while the parser owns its current source. */
+export async function discoverScopedSliceForSynthetic(vfs, nmDir, pkgName, referencedFiles, parse, transitiveCap = 800) {
+    const entries = [];
     const visited = new Set();
     const dirSet = new Set();
     const pkgRoot = nmDir + '/' + pkgName;
@@ -497,7 +515,7 @@ export async function buildScopedSliceForSynthetic(vfs, nmDir, pkgName, referenc
         if (dirSet.has(d) || !d)
             return;
         dirSet.add(d);
-        entries.push({ path: '/' + d.replace(/^\/+/, ''), isDir: true });
+        entries.push({ path: d, isDir: true });
     };
     // Always include the package root + its package.json. esbuild's
     // resolver reads package.json for sideEffects, exports, main, etc.
@@ -505,9 +523,8 @@ export async function buildScopedSliceForSynthetic(vfs, nmDir, pkgName, referenc
     const pkgJsonPath = pkgRoot + '/package.json';
     if (vfs.exists(pkgJsonPath) && !vfs.isDirectory(pkgJsonPath)) {
         try {
-            const bytes = vfs.readFile(pkgJsonPath);
-            entries.push({ path: '/' + pkgJsonPath.replace(/^\/+/, ''), bytes, isDir: false });
-            totalBytes += bytes.length + pkgJsonPath.length;
+            vfs.access(pkgJsonPath, 4);
+            entries.push({ path: pkgJsonPath, isDir: false });
             visited.add(pkgJsonPath);
         }
         catch { }
@@ -521,9 +538,9 @@ export async function buildScopedSliceForSynthetic(vfs, nmDir, pkgName, referenc
         visited.add(filePath);
         if (!vfs.exists(filePath) || vfs.isDirectory(filePath))
             continue;
-        let bytes;
+        let source;
         try {
-            bytes = vfs.readFile(filePath);
+            source = vfs.readFileString(filePath);
         }
         catch {
             continue;
@@ -532,11 +549,15 @@ export async function buildScopedSliceForSynthetic(vfs, nmDir, pkgName, referenc
         const slash = filePath.lastIndexOf('/');
         if (slash > 0)
             addDir(filePath.substring(0, slash));
-        entries.push({ path: '/' + filePath.replace(/^\/+/, ''), bytes, isDir: false });
-        totalBytes += bytes.length + filePath.length;
+        entries.push({ path: filePath, isDir: false });
         // Queue the relative imports, read by the project scan's grammar.
-        const source = new TextDecoder().decode(bytes);
-        const view = lexedImportView(source, filePath) ?? await parsedImportView(source, filePath, parse);
+        let view = lexedImportView(source, filePath);
+        if (view === null) {
+            const parsed = parsedImportView(source, filePath, parse);
+            source = '';
+            view = await parsed;
+        }
+        source = '';
         for (const rel of importedSpecifiers(view)) {
             if (!rel.startsWith('./') && !rel.startsWith('../'))
                 continue;
@@ -557,7 +578,7 @@ export async function buildScopedSliceForSynthetic(vfs, nmDir, pkgName, referenc
             }
         }
     }
-    return { entries, totalBytes };
+    return entries;
 }
 /**
  * Resolve the package's root ESM entry file path: its `exports` under the

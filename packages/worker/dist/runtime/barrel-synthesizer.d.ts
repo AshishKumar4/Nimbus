@@ -238,6 +238,11 @@ export declare function buildScopedSliceForSynthetic(vfs: CredentialedVfs, nmDir
     entries: SliceEntry[];
     totalBytes: number;
 }>;
+/** Discovery retains paths, not a partial slice, while the parser owns its current source. */
+export declare function discoverScopedSliceForSynthetic(vfs: CredentialedVfs, nmDir: string, pkgName: string, referencedFiles: string[], parse: SourceParser, transitiveCap?: number): Promise<Array<{
+    path: string;
+    isDir: boolean;
+}>>;
 /**
  * VFS path where synthetic entries are written. Lives under the
  * project's node_modules in a Nimbus-private namespace so package

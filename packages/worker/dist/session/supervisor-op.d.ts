@@ -59,7 +59,7 @@ export interface SessionSupervisorOps {
     /** Close a live pid's descriptors for a run that starts in place of another. */
     rewind(pid: number): Promise<void>;
 }
-export declare function buildSessionSupervisorOps(host: SessionSupervisorHost, store?: SupervisorOpBridgeStore, methods?: SupervisorOpHost): SessionSupervisorOps;
+export declare function buildSessionSupervisorOps(host: SessionSupervisorHost, store?: SupervisorOpBridgeStore, methods?: SupervisorOpHost, session?: string): SessionSupervisorOps;
 /**
  * Answer `envelope` to a caller outside the session (NimbusSession's
  * `supervisorOp`, which host stubs call): `serve` answers it, and the file

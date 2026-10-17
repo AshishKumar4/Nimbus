@@ -16,6 +16,7 @@
  */
 import { type EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { SupervisorAllocationOwner } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import type { BundlePoolProvider } from '../facets/prebundle-pool.js';
 import { type ProjectImports, type SourceParser } from '../runtime/barrel-synthesizer.js';
 import type { NpmCache } from './cache.js';
@@ -35,6 +36,10 @@ export interface PrebundleContext {
      * builds only in the facet.
      */
     serviceFallback: boolean;
+    signal?: AbortSignal;
+    owner?: Omit<SupervisorAllocationOwner, 'owner' | 'attribution'>;
+    /** On-demand requests of an already running server use running-work credit. */
+    running?: boolean;
 }
 /** A barrel package imported whole: bundled from an entry of the names the project imports. */
 export interface BarrelInput {
@@ -116,8 +121,7 @@ export type PrebundleOutcome<T> =
 /**
  * Build `specifier`'s bundle for a request with `barrel`, store it when the
  * manifests it was built from are still current, and give it to `serve`
- * while the slice's allocation is still held (the response is made beside
- * nothing else that claimed the same headroom).
+ * after its input slice has been handed to the facet and dropped here.
  */
 export declare function buildPrebundle<T>(ctx: PrebundleContext, specifier: string, barrel: BarrelInput | null, serve: (esmCode: string) => T): Promise<PrebundleOutcome<T>>;
 /** Packages that run in Vite's server, never in a browser: the installer does not warm them. */

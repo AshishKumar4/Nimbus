@@ -200,6 +200,8 @@ export class SupervisorAllocationBudget {
         }
     }
     wrap(credit, drivesLifecycle, owner) {
+        const holder = { owner: { ...owner }, credit, since: Date.now() };
+        this.holders.add(holder);
         if (drivesLifecycle) {
             this.lifecycleHolders++;
             if (!this.active) {
@@ -208,8 +210,6 @@ export class SupervisorAllocationBudget {
             }
         }
         let released = false;
-        const holder = { owner: { ...owner }, credit, since: Date.now() };
-        this.holders.add(holder);
         return {
             get bytes() {
                 return credit.bytes;

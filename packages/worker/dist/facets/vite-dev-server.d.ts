@@ -244,6 +244,7 @@ export declare class ViteDevServer {
     private readonly bundlePool;
     /** What this server's pre-bundles are built and served as (npm/browser-prebundle.ts). */
     private readonly prebundle;
+    private prebundleAbort;
     /**
      * In-flight on-demand-bundle coalescing map. When the browser fires
      * multiple parallel requests for the same /preview/@modules/<spec>
