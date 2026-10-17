@@ -5242,11 +5242,12 @@ export class SqliteVFS {
       return hex(this.blobToUint8Array(row.hash));
     }
     if (ref.contentId === null) return hex(EMPTY_CONTENT_KEY);
+    // Held only for a content whose stored digest an edit cleared: it answers before the row is read.
+    const memo = this.contentKeyMemo.get(ref.contentId);
+    if (memo !== undefined) return memo;
     const content = [...this.sql.exec('SELECT digest FROM vfs_contents WHERE id = ?', ref.contentId)][0];
     if (!content) throw vfsError('EIO', ref.path, `missing content ${ref.contentId}`);
     if (content.digest !== null && content.digest !== undefined) return hex(this.blobToUint8Array(content.digest));
-    const memo = this.contentKeyMemo.get(ref.contentId);
-    if (memo !== undefined) return memo;
     const key = hex(this.manifestDigest(ref.contentId).digest(ref.size));
     this.contentKeyMemo.set(ref.contentId, key);
     return key;
@@ -11248,6 +11249,8 @@ export class SqliteVFS {
             `UPDATE vfs_contents SET state = ${CONTENT_DYING}, digest = NULL WHERE id IN (${deadList}) AND state != ${CONTENT_DYING}`,
             ...dead,
           );
+          // Their keys go with them, before an id is ever reused.
+          for (const id of dead) this.contentKeyMemo.delete(id);
           const rows = [...this.sql.exec(
             `SELECT content_id, off, chunk_id FROM vfs_content_chunks WHERE content_id IN (${deadList})
              ORDER BY content_id, off LIMIT ?`,
