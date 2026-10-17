@@ -156,7 +156,8 @@ Object.defineProperties(globalThis, {
 function __nimbusGeneratedNodeError(Base, code, message, props, decoration) {
   const error = nodeError(Base, code, message, props, __nimbusGeneratedNodeError);
   if (decoration !== undefined) {
-    error.stack = error.stack.replace(/\\n    at [^\\n]*/, "");
+    // A program's Error.prepareStackTrace may make the stack anything: only a string's frame is trimmed.
+    if (typeof error.stack === "string") error.stack = error.stack.replace(/\\n    at [^\\n]*/, "");
     if (decoration !== null) error.stack = decoration + "\\n" + error.stack;
     __nimbusDecorated.add(error);
   }
@@ -14193,7 +14194,7 @@ function __nimbusEvaluateEntry(load, mod, filename, dirname) {
   } catch (e) {
     if (check && e === ${JSON.stringify(ENTRY_CHECKED)}) return __nimbusCheckedAlone();
     // TypeScript's module syntax Node retries as an ES module (wrapSafe), which cannot be checked here without running it.
-    if (check && /\\.[cm]?ts$/.test(filename) && __nimbusModuleSyntaxError(e, source)) {
+    if (check && typescriptLoader(filename) === "ts" && __nimbusModuleSyntaxError(e, source)) {
       __processMod.stderr.write("node: -c cannot check an ES module entry in Nimbus without running it\\n");
       __processMod.exit(9);
     }

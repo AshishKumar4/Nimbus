@@ -47,6 +47,9 @@ const files = {
   // A declaration file is TypeScript to the check too; with stripping off, Node refuses the extension.
   'plain.d.ts': 'const value = 1;\n',
   'plain.ts': 'const value = 1;\n',
+  // Run: Node's refusal of TypeScript under node_modules, caught, under a formatter whose stack is no string.
+  'node_modules/x/index.ts': 'export const a: number = 1;\n',
+  'nm-ts.js': 'Error.prepareStackTrace = () => [];\ntry { require("./node_modules/x/index.ts"); } catch (e) { console.log(e.code, Array.isArray(e.stack)); }\n',
 };
 
 await matchNodeInWorkerd('node-check-matches-node-workerd', ROOT, files, [
@@ -71,4 +74,5 @@ await matchNodeInWorkerd('node-check-matches-node-workerd', ROOT, files, [
   'node -c typed-export.cts',
   'node -c plain.d.ts',
   'node --no-experimental-strip-types -c plain.ts',
+  'node nm-ts.js',
 ]);
