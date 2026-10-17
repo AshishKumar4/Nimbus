@@ -621,6 +621,7 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.CompositeFeed.walk_inv
 #print axioms Nimbus.Vfs.CompositeFeed.walk_entries_undated
 #print axioms Nimbus.Vfs.CompositeFeed.listed_absence
+#print axioms Nimbus.Vfs.CompositeFeed.installed_walks_closed
 #print axioms Nimbus.Vfs.CompositeFeed.structural_dropLast
 #print axioms Nimbus.Vfs.CompositeFeed.view_closed
 #print axioms Nimbus.Vfs.CompositeFeed.feed_values
@@ -644,6 +645,7 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.CompositeFeed.fs_inv
 #print axioms Nimbus.Vfs.CompositeFeed.staged_closed
 #print axioms Nimbus.Vfs.CompositeFeed.staged_walk_bounded
+#print axioms Nimbus.Vfs.CompositeFeed.a_walk_can_hold_an_old_unfed_value
 #print axioms Nimbus.Vfs.CompositeFeed.cas_inv
 #print axioms Nimbus.Vfs.CompositeFeed.revision_unique
 #print axioms Nimbus.Vfs.CompositeFeed.gen_only_revisions_collide
