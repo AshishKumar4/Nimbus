@@ -1008,8 +1008,8 @@ var __nimbusResidentModule = (() => {
   }
 
   // ../platform/dist/lexical-path.js
-  function rootClampedSegments(path) {
-    const out = [];
+  function rootClampedSegments(path, base = []) {
+    const out = [...base];
     for (const segment of path.split("/")) {
       if (segment === "..")
         out.pop();
@@ -1055,7 +1055,7 @@ var __nimbusResidentModule = (() => {
   }
   function joinTarget(linkPath, target) {
     const text = String(target);
-    return rootClampedSegments(text.startsWith("/") ? text : `${nsSplit(linkPath)[0]}/${text}`).join("/");
+    return rootClampedSegments(text, text.startsWith("/") ? [] : nsSplit(linkPath)[0].split("/").filter(Boolean)).join("/");
   }
   function createNamespace(coherence, admission) {
     let links = /* @__PURE__ */ new Set();

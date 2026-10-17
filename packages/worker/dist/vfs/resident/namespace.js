@@ -89,7 +89,7 @@ export function nsRowAt(t, k) {
 }
 function joinTarget(linkPath, target) {
     const text = String(target);
-    return rootClampedSegments(text.startsWith('/') ? text : `${nsSplit(linkPath)[0]}/${text}`).join('/');
+    return rootClampedSegments(text, text.startsWith('/') ? [] : nsSplit(linkPath)[0].split('/').filter(Boolean)).join('/');
 }
 export function createNamespace(coherence, admission) {
     /** Paths of every symlink in the table: resolution walks only past these. */

@@ -18281,8 +18281,8 @@ function packageSelfReferenceSubpath(pkg, specifier) {
   return `.${specifier.slice(pkg.name.length)}`;
 }
 
-function rootClampedSegments(path) {
-  const out = [];
+function rootClampedSegments(path, base = []) {
+  const out = [...base];
   for (const segment of path.split("/")) {
     if (segment === "..")
       out.pop();
@@ -20541,8 +20541,8 @@ function __nimbusRequestTarget(kind, specifier, importer) {
 // core/_shared/relative-wasm-paths.ts, compiled once by the build (a
 // function's own text differs between compilers, so it is never spliced).
 var { relativeWasmPaths } = (() => {
-function rootClampedSegments(path) {
-  const out = [];
+function rootClampedSegments(path, base = []) {
+  const out = [...base];
   for (const segment of path.split("/")) {
     if (segment === "..")
       out.pop();
@@ -20554,9 +20554,9 @@ function rootClampedSegments(path) {
 
 function relativeWasmPaths(source, filename) {
   const literals = /["'`]((?:\.{1,2}\/)*[\w@.-]+(?:\/[\w@.-]+)*\.wasm)["'`]/g;
-  const dir = filename.slice(0, filename.lastIndexOf("/") + 1);
+  const dir = filename.replace(/^\/+/, "").split("/").slice(0, -1);
   const paths =   new Set();
-  for (const match of source.matchAll(literals)) paths.add(rootClampedSegments(dir + match[1]).join("/"));
+  for (const match of source.matchAll(literals)) paths.add(rootClampedSegments(match[1], dir).join("/"));
   return [...paths];
 }
 return { relativeWasmPaths };

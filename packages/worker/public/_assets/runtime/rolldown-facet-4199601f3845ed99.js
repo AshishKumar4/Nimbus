@@ -16039,8 +16039,8 @@ function resolvePackageEntry(pkg, subpath = ".", conditions = DEFAULT_BUILD_COND
 }
 
 // ../platform/dist/lexical-path.js
-function rootClampedSegments(path3) {
-  const out = [];
+function rootClampedSegments(path3, base = []) {
+  const out = [...base];
   for (const segment of path3.split("/")) {
     if (segment === "..")
       out.pop();

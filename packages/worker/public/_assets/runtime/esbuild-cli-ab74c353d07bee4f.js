@@ -785,8 +785,8 @@ return globalThis.Go;
     });
   }
 
-  function rootClampedSegments(path) {
-    const out = [];
+  function rootClampedSegments(path, base = []) {
+    const out = [...base];
     for (const segment of path.split("/")) {
       if (segment === "..")
         out.pop();
