@@ -588,6 +588,26 @@ interface DescribedBy {
   readonly pid: number | null;
 }
 
+/**
+ * `descriptions`, each id it adopts noted in `adopted`: an attempt that rolls
+ * back closes what it adopted (waveScope.commitCalls), as the rollback closes
+ * the files it opened, so the attempt after it adopts them again.
+ */
+function notingAdoptions(descriptions: WaveDescriptions, adopted: string[]): WaveDescriptions {
+  return {
+    adopt: (id, ino, rights, path, cred) => {
+      const handle = descriptions.adopt(id, ino, rights, path, cred);
+      if (handle !== null) adopted.push(id);
+      return handle;
+    },
+    describe: (id, file, ino, rights) => descriptions.describe(id, file, ino, rights),
+    node: (id) => descriptions.node(id),
+    mounted: (id) => descriptions.mounted(id),
+    handle: (id) => descriptions.handle(id),
+    close: (id) => descriptions.close(id),
+  };
+}
+
 const INODE_ROW_COLUMNS = 15;
 const CHUNK_ROW_COLUMNS = 4;
 const MANIFEST_ROW_COLUMNS = 4;
@@ -9444,12 +9464,15 @@ export class SqliteVFS {
         const befores: number[] = [];
         const results: (VfsStat | null | void)[] = [];
         let failed: { at: number; error: unknown } | null = null;
+        const adopted: string[] = [];
+        const attempt: DescribedBy = described.descriptions === undefined ? described
+          : { pid: described.pid, descriptions: notingAdoptions(described.descriptions, adopted) };
         try {
           asWriter(() => this.publishedTransaction(() => {
             for (const [at, call] of calls.entries()) {
               befores.push(this.revision(call.path, cred));
               try {
-                results.push(asCaller(() => this.applyWaveOp(call.op, cred, described)));
+                results.push(asCaller(() => this.applyWaveOp(call.op, cred, attempt)));
               } catch (error) {
                 failed = { at, error };
                 throw error;
@@ -9458,6 +9481,7 @@ export class SqliteVFS {
             }
           }, (error) => error));
         } catch (error) {
+          for (const id of adopted) described.descriptions?.close(id);
           return failed ?? { at: 0, error };
         }
         return { befores, results, after: this._revision };
@@ -10158,8 +10182,9 @@ export class SqliteVFS {
    *
    * Rollback discards the cached chunks and inodes and unloads the counters,
    * so every later read answers from SQLite, which is back at the committed
-   * state; open descriptions return to the rows they described before.
-   * No inode snapshot or undo log is retained. Recovery failure is surfaced
+   * state; open descriptions return to the rows they described before (a
+   * detached file's, which has none, to its fields as they were), and the
+   * shared roots to those registered before. No undo log is retained. Recovery failure is surfaced
    * with both errors; the embedder must discard this VFS in that case.
    */
   withTransaction<T>(callback: () => T): T {
@@ -10189,6 +10214,8 @@ export class SqliteVFS {
       inode: opened.inode,
       fields: opened.path === null ? { ...opened.inode } : null,
     }]));
+    // The shared roots registered: a change it made that revoked one is undone with it.
+    const sharedBefore = this.sharedDirectories.size === 0 ? null : new Map(this.sharedDirectories);
     this.transactionPublication = publication;
     let result: T;
     try {
@@ -10205,6 +10232,10 @@ export class SqliteVFS {
       for (const event of publication.events) event.write?.release();
       this.evictAll();
       this.maintenancePending = maintenancePending;
+      if (sharedBefore !== null || this.sharedDirectories.size > 0) {
+        this.sharedDirectories.clear();
+        for (const [root, registration] of sharedBefore ?? []) this.sharedDirectories.set(root, registration);
+      }
       try {
         this.inodes.clear();
         this._countersLoaded = false;
