@@ -21,40 +21,15 @@
 //     so the share of TTI that is simply network from this machine is
 //     visible instead of buried.
 //
-// Workloads exist because `node -v` does not boot Node on Nimbus — it is
-// answered by an argv fast path in runtime-registry.ts. Upstream uses it
-// as proof that "the Node.js runtime is available and functional", which
-// on Nimbus it is not. So the same TTI is also measured with commands
-// that genuinely execute.
+// The same TTI is measured for each readiness workload (workloads.mjs),
+// `node -v` among them, which on Nimbus does not boot Node.
 //
 //   BASE=<url> NIMBUS_PROBE_TOKEN=<jwt> bun tti.mjs --trials 30 --workload node-version
 
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { nimbus } from '../src/index.ts';
-
-const WORKLOADS = {
-  // Upstream's readiness command, verbatim. On Nimbus this is a constant
-  // written by an argv fast path — it does NOT prove Node started.
-  'node-version': {
-    command: 'node -v',
-    proves: 'sandbox reachable and dispatching commands (NOT that Node booted)',
-    verify: (r) => /^v\d+\.\d+\.\d+/.test(r.stdout),
-  },
-  // A real process whose output cannot be predicted by the caller, so a
-  // pass proves the sandbox actually ran something.
-  shell: {
-    command: 'echo $((6*7))-$$',
-    proves: 'a real process ran in the sandbox and returned computed output',
-    verify: (r) => /^42-\d+/.test(r.stdout.trim()),
-  },
-  // Proof the Node runtime itself booted and executed JavaScript.
-  'node-exec': {
-    command: 'node -e "console.log(6*7)"',
-    proves: 'the Node.js runtime booted and executed JavaScript',
-    verify: (r) => r.stdout.trim() === '42',
-  },
-};
+import { WORKLOADS } from './workloads.mjs';
 
 function parseArgs(argv) {
   const args = {
@@ -174,16 +149,24 @@ async function runSequential(trials) {
   return out;
 }
 
-async function runConcurrent(trials, staggerDelayMs) {
+/**
+ * `trials` trials, at most `concurrency` at once, trial i starting no sooner
+ * than i × `staggerDelayMs` after the first: a pool of `concurrency` lanes,
+ * each taking the next trial when its last one ends.
+ */
+async function runConcurrent(trials, concurrency, staggerDelayMs) {
   const started = performance.now();
-  const pending = [];
-  for (let i = 0; i < trials; i += 1) {
-    if (staggerDelayMs > 0 && i > 0) {
-      await new Promise((r) => setTimeout(r, staggerDelayMs));
+  const out = [];
+  let next = 0;
+  const lane = async () => {
+    while (next < trials) {
+      const i = next++;
+      const due = started + i * staggerDelayMs - performance.now();
+      if (due > 0) await new Promise((r) => setTimeout(r, due));
+      out[i] = await runTrial(i);
     }
-    pending.push(runTrial(i));
-  }
-  const out = await Promise.all(pending);
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, trials) }, lane));
   return { out, wallClockMs: performance.now() - started };
 }
 
@@ -207,7 +190,7 @@ let wallClockMs = null;
 if (args.shape === 'sequential') {
   trials = await runSequential(args.trials);
 } else {
-  const result = await runConcurrent(args.trials, args.staggerDelayMs);
+  const result = await runConcurrent(args.trials, args.concurrency, args.staggerDelayMs);
   trials = result.out;
   wallClockMs = result.wallClockMs;
   for (const t of trials) {
