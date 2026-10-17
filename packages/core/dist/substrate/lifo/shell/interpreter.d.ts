@@ -268,6 +268,8 @@ export declare class Interpreter {
      * Returns false when the name is readonly, which the caller reports.
      */
     private applyAssignment;
+    /** Bash's PIPESTATUS: `statuses`, its array alone. */
+    private setPipestatus;
     /**
      * How many function calls may be running at once: FUNCNEST where it is a
      * number above 0, as bash reads it at each call (a `local FUNCNEST` included),

@@ -186,6 +186,7 @@ export class Interpreter {
                         throw error;
                     exitCode = error.exitCode;
                     this.lastExitCode = exitCode;
+                    this.setPipestatus([exitCode]);
                     while (i < script.lists.length - 1 && script.lists[i].endsLine !== true)
                         i++;
                 }
@@ -355,8 +356,7 @@ export class Interpreter {
             ({ exitCode, statuses } = await this.executePipelineCommands(commands, io));
         }
         // Every element's status, as bash's PIPESTATUS (before `!` negates the pipeline's).
-        this.config.arrays.set('PIPESTATUS', statuses.map(String));
-        delete this.config.env.PIPESTATUS;
+        this.setPipestatus(statuses);
         if (pipeline.negated) {
             exitCode = exitCode === 0 ? 1 : 0;
         }
@@ -753,10 +753,9 @@ export class Interpreter {
                 // Check functions
                 const funcBody = replacesShell || viaCommand ? undefined : this.functions.get(name);
                 if (funcBody) {
-                    const limit = this.functionNestingLimit();
-                    if (this.localFrames.length >= limit) {
-                        // On the call's own stderr, its redirections applied, as bash writes it.
-                        (await stderr.write(`${name}: maximum function nesting level exceeded (${limit})\n`));
+                    if (this.localFrames.length >= this.functionNestingLimit()) {
+                        // On the call's own stderr, its redirections applied, with the depth reached, as bash writes it.
+                        (await stderr.write(`${name}: maximum function nesting level exceeded (${this.localFrames.length})\n`));
                         throw new FunctionNestingSignal();
                     }
                     exitCode = await this.executeFunction(funcBody, args, this.createIoFromFds(io, fds));
@@ -1010,6 +1009,11 @@ export class Interpreter {
         // On an array name, `arr=x` and `arr+=x` land on its first element.
         return assignVariable(this.config, name, value, assign.append);
     }
+    /** Bash's PIPESTATUS: `statuses`, its array alone. */
+    setPipestatus(statuses) {
+        this.config.arrays.set('PIPESTATUS', statuses.map(String));
+        delete this.config.env.PIPESTATUS;
+    }
     /**
      * How many function calls may be running at once: FUNCNEST where it is a
      * number above 0, as bash reads it at each call (a `local FUNCNEST` included),
@@ -1107,6 +1111,8 @@ export class Interpreter {
                 if (!(e instanceof ExitSignal) && !(e instanceof FunctionNestingSignal))
                     throw e;
                 exitCode = e.exitCode;
+                if (e instanceof FunctionNestingSignal)
+                    this.setPipestatus([exitCode]);
             }
             return (await this.runExitTrap(exitCode, io, true));
         }
