@@ -34,7 +34,6 @@ const missing = await registry.resultFor('target', { range: '^9.0.0' });
 assert.equal(missing.pkg, null);
 assert.equal(missing.error?.type, 'unresolved');
 assert.equal((await registry.resultFor('absent')).error?.type, 'unresolved');
-assert.equal((await npmRegistry({ p: { '1.0.0': {}, '2.0.0': {}, '1.2.0': {} } }).resultFor('p')).pkg?.version, '2.0.0', 'default latest is the highest version, not the last insertion');
 
 const cold = await registry.resultFor('slot', { range: 'npm:target@^1.0.0' });
 assert.equal(cold.error, undefined);

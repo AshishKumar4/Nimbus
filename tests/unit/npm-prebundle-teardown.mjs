@@ -27,7 +27,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { kernelInstaller } from './lib/npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { npmRegistry } from './lib/npm-registry.mjs';
 
@@ -49,14 +49,7 @@ root.writeFile('app/src/main.js', [
 ].join('\n') + '\n');
 
 const { resultFor } = npmRegistry({ 'pkg': { '1.0.0': {} } });
-const env = {
-  LOADER: { get() { return { getEntrypoint: () => ({ execute: (spec) => resultFor(spec.name, spec) }) }; } },
-  NIMBUS_SESSION: {
-    idFromName: (name) => ({ toString: () => name, name }),
-    idFromString: (id) => ({ toString: () => id, name: id }),
-    get: () => ({ supervisorOp: async (envelope) => ({ results: await Promise.all(envelope.args[1].map(async (spec) => ({ ok: true, value: await resultFor(spec.name, spec) }))) }) }),
-  },
-};
+const env = makeFanoutEnv({ root, NM: 'app/node_modules', resultFor });
 
 /** ctx.storage.deleteAll, as the session's destroy calls it: every table goes. */
 const deleteAll = () => {
