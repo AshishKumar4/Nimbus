@@ -5,6 +5,9 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: Bun's file-URL helpers preserve spaces, `#`, `%` and other escaped
+  filename characters, and resolve relative paths from the process's current
+  directory, including after `process.chdir`, as its `node:url` helpers do.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
