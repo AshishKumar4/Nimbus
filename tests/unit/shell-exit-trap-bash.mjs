@@ -29,6 +29,11 @@ const SCRIPTS = [
   "trap 'echo in; exit 7; echo no' EXIT; exit 2",
   "x=$(trap 'exit 9' EXIT; echo out); echo \"cs $? $x\"",
   "trap 'echo \"st $?\"' EXIT; (exit 3)",
+  // A bare `exit` in a substitution or a pipeline's element is still in the action; in ( … ) or a job, not.
+  "trap 'x=$(false; exit); exit $?' EXIT; exit 3",
+  "trap 'false | exit; exit $?' EXIT; exit 3",
+  "trap '(false; exit); exit $?' EXIT; exit 3",
+  "trap '{ false; exit; } & wait $!; exit $?' EXIT; exit 3",
 ];
 
 const plainStderr = (text) => text.replace(/^(?:bash|\.\/s\.sh): (?:line \d+: )?/gm, '');
