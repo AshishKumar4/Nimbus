@@ -1331,9 +1331,9 @@ export declare class FacetManager {
     private _watchLifetime;
     /**
      * The platform reset the host of a running process (ProcessHostLost): the
-     * process is over, as if killed (137), and says why. Its ports answer with
-     * the cause at once, and its restart policy decides what follows, as for
-     * any process that ends on its own (_onResidentTerminal).
+     * process is over, as if killed (137), and says why, on its stderr. Its
+     * ports answer with the cause at once, and its restart policy decides what
+     * follows, as for any process that ends on its own (_onResidentTerminal).
      */
     private _endByHostLoss;
     /**
@@ -2016,6 +2016,11 @@ export declare class FacetManager {
      * decides anything about where a program runs.
      */
     private _startResidentProcess;
+    /**
+     * A stop that ends process `pid` (one `resumed`, a promoted server's run
+     * again), unless it has ended: it exits 1, why on its stderr.
+     */
+    private _endByStop;
     /** A booted resident died without anyone ending it: it exits 1, its reason on its stderr. */
     private _residentDied;
     private _activateProcessVfsWriter;
