@@ -203,7 +203,9 @@ function asciiOnlyEsbuildOutput(src, what) {
  */
 export async function asciiChunkSource(src, name) {
   if (!/[^\x00-\x7f]/.test(src)) return src;
-  const { code } = await require('esbuild').transform(src, { loader: 'js', charset: 'ascii', sourcefile: name, logLevel: 'error' });
+  // Whitespace minified as the build left it, names and syntax untouched: the
+  // pack stays under the Workers asset limit with the escapes it gains.
+  const { code } = await require('esbuild').transform(src, { loader: 'js', charset: 'ascii', minifyWhitespace: true, sourcefile: name, logLevel: 'error' });
   return asciiOnlyEsbuildOutput(code, name);
 }
 
