@@ -191,7 +191,7 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
   assert.equal(r.exitCode, 0, r.stderr);
   assert.equal(r.transforms.length, 0, 'the shim is no package\'s: CommonJS, untransformed');
   assert.equal(r.opts.esModule, undefined);
-  assert.equal(r.code, shim);
+  assert.equal(r.code, `\n${shim}`, 'the shebang strip keeps its line, empty');
 }
 
 // ── a dotfile entry has no extension; its package type decides ──
