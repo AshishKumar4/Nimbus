@@ -16,27 +16,12 @@
 
 import assert from 'node:assert/strict';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { mock } from 'bun:test';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSupervisorBridgeStore } from '../../packages/core/src/workspace/supervisor-op.ts';
-import {
-  openSupervisorDeliveries,
-  supervisorDeliveryProps,
-} from '../../packages/core/src/workspace/supervisor-delivery.ts';
+import { supervisorDeliveryProps } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { adoptTracing } from '../../packages/platform/src/tracing.ts';
-import { buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
-
-mock.module('cloudflare:workers', () => ({
-  WorkerEntrypoint: class {
-    constructor(ctx, env) { this.ctx = ctx; this.env = env; }
-  },
-}));
-const { SupervisorRPC } = await import('../../packages/worker/src/session/supervisor-rpc.ts');
+import { SupervisorRPC, createRpcSession, supervisorRpcEnv } from './lib/supervisor-rpc-session.mjs';
 
 Math.random = () => 0;
 
@@ -78,31 +63,15 @@ function world() {
   const kernel = new SqliteVFS(harness.sql, harness.ctx).as(CRED_KERNEL);
   kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
   kernel.chown('home/user', 1000, 1000);
-  const open = () => {
-    const ctx = {};
-    const vfs = new SqliteVFS(harness.sql, harness.ctx);
-    const processes = new SessionProcessSupervisor();
-    const host = { sqliteFs: vfs, processes, ensureSqliteFs() {}, supervisorDeliveries: openSupervisorDeliveries(ctx) };
-    attachSupervisorOps(host, buildSessionSupervisorOps(host, createSupervisorBridgeStore({ vfs, processes, filesystem: new ProcessFiles(vfs) })));
-    return { ctx, host, processes };
-  };
+  const open = () => createRpcSession(new SqliteVFS(harness.sql, harness.ctx));
   const w = { session: open(), faults: [], restart() { w.session = open(); } };
-  const env = {
-    NIMBUS_SESSION: {
-      idFromName: (id) => ({ toString: () => id }),
-      idFromString: (id) => ({ toString: () => id }),
-      get: () => ({
-        async supervisorOp(sent) {
-          const envelope = structuredClone(sent);
-          const fault = w.faults.shift();
-          if (fault === 'lost-request') throw dropped();
-          const answer = await w.session.host.supervisorOp(envelope);
-          if (fault === 'lost-reply') throw dropped();
-          return structuredClone(answer);
-        },
-      }),
-    },
-  };
+  const env = supervisorRpcEnv(async (envelope) => {
+    const fault = w.faults.shift();
+    if (fault === 'lost-request') throw dropped();
+    const answer = await w.session.host.supervisorOp(envelope);
+    if (fault === 'lost-reply') throw dropped();
+    return answer;
+  });
   const pid = w.session.processes.spawn('python3', ['python3'], '/home/user').pid;
   const { hostIncarnation } = supervisorDeliveryProps(w.session.ctx);
   w.pid = pid;

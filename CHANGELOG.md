@@ -42,6 +42,21 @@ The 2026-10-14 and 2026-10-15 versions reached production but were never publish
   isolate budget; new builds use the remaining room within a checked bound.
   Running programs can reclaim parked maps for their writes and reads; the
   waiting commands prepare their maps again before taking a worker.
+- Changed: a process that can be stopped and replayed records its input
+  and output replies at almost no CPU cost. Each reply was hashed byte by
+  byte and the hash kept, though nothing read it: about 0.9 ms of CPU for
+  each 64 KiB of piped input. The replay keeps only their count, which is
+  all its limit needs.
+- Fixed: Bun's file-URL helpers preserve spaces, `#`, `%` and other escaped
+  filename characters, and resolve relative paths from the process's current
+  directory, including after `process.chdir`, as its `node:url` helpers do.
+- Fixed: bash and its commands receive a broken-pipe write error when
+  `trap '' PIPE` ignores SIGPIPE, including commands that inherit it across
+  exec. Before, a write after the pipe's reader closed killed the writer
+  with SIGPIPE even when the signal was ignored.
+- Fixed: a running process now notices an embedder filesystem mounted after
+  its first filesystem listing. Before, a process that started with SQLite
+  alone could keep a staged namespace that omitted the new mount.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each

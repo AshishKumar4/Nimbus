@@ -393,7 +393,7 @@ export class ProcessFiles {
     createListing(pid) {
         let listing = this.listings.get(pid);
         if (listing === undefined) {
-            listing = { named: new Set(), table: null, held: null };
+            listing = { named: new Set(), table: null, sqliteGeneration: null, held: null };
             this.listings.set(pid, listing);
         }
         return listing;
@@ -729,9 +729,9 @@ function underKernelMount(path) {
     const end = path.indexOf('/', 1);
     return KERNEL_MOUNT_POINTS[end === -1 ? path : path.slice(0, end)] === true;
 }
-/** Whether `view` shows a mount an embedder made: only then is a process's listing more than SQLite's. */
+/** Whether the table declares an embedder mount, including one whose source is absent. */
 function mountsBeyondSqlite(view) {
-    return view.mounts().some((mount) => isEmbedderMount(mount.point));
+    return view.someMountPoint(isEmbedderMount);
 }
 class AwaitingProcessBridge {
     parts;
@@ -810,10 +810,12 @@ class AwaitingProcessBridge {
      */
     list(after, limit) {
         if (!mountsBeyondSqlite(this.namespace)) {
-            // A listing of SQLite alone from the start begins at no mount table.
-            const listing = after === null || after === undefined ? this.listing(false) : undefined;
-            if (listing)
+            // A later mount must invalidate this SQLite-only listing too.
+            const listing = after === null || after === undefined ? this.listing(true) : undefined;
+            if (listing) {
                 listing.table = null;
+                listing.sqliteGeneration = this.namespace.mountGeneration();
+            }
             return this.bridge.list(after, limit);
         }
         this.authority();
@@ -831,8 +833,10 @@ class AwaitingProcessBridge {
         // Read before the page, as SqliteVFS.list reads its cursor (VfsListPage).
         const position = feed.position();
         const root = position.feeds['/'];
-        if (after === null && listing)
+        if (after === null && listing) {
             listing.table = position.table;
+            listing.sqliteGeneration = null;
+        }
         const page = feed.list(after === null ? null : `/${after}`, want, walk);
         // SQLite measured its own entries when it listed them; each is measured
         // here under the path the process sees, which only re-encodes that path.
@@ -862,6 +866,10 @@ class AwaitingProcessBridge {
      */
     acquire(epoch, cursor, options) {
         const listing = this.listing(false);
+        if (listing && listing.sqliteGeneration !== null) {
+            // Even a mount/unmount ABA relists once: a generation change is conservative.
+            return this.bridge.acquire(listing.sqliteGeneration === this.namespace.mountGeneration() ? epoch : null, cursor, options);
+        }
         if (!mountsBeyondSqlite(this.namespace) && (listing?.table ?? null) === null)
             return this.bridge.acquire(epoch, cursor, options);
         this.authority();
