@@ -70,6 +70,7 @@ import {
 } from '../tailwind-play.generated.js';
 import { recallOf, withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { staticExtension, staticMimeType, staticMimeTypes } from '@nimbus-sh/fabric/static-mime.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -1788,13 +1789,8 @@ export class ViteDevServer {
   }
 
   /** Normalize and sanitize a preview pathname to prevent traversal. */
-  private sanitizePath(pathname: string): string | null {
-    const segments = pathname.split('/').reduce((acc: string[], seg) => {
-      if (seg === '..') acc.pop();
-      else if (seg !== '.' && seg !== '') acc.push(seg);
-      return acc;
-    }, []);
-    return '/' + segments.join('/');
+  private sanitizePath(pathname: string): string {
+    return '/' + rootClampedSegments(pathname).join('/');
   }
 
   /**
@@ -1835,11 +1831,7 @@ export class ViteDevServer {
   }
 
   private async _handleRequestInner(request: Request, pathname: string, base: string): Promise<Response> {
-    const safePath = this.sanitizePath(pathname);
-    if (!safePath) {
-      return new Response('400 Bad Request', { status: 400 });
-    }
-    pathname = safePath;
+    pathname = this.sanitizePath(pathname);
 
     // Strip query parameters for path resolution, keep for logic
     const queryIdx = pathname.indexOf('?');

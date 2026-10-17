@@ -21,18 +21,7 @@
     ]
   },
   "alias": {
-    "clean-git-ref": "./node_modules/@nimbus-sh/worker/node_modules/clean-git-ref/lib/index.js",
-    "is-git-ref-name-valid": "./node_modules/@nimbus-sh/worker/node_modules/is-git-ref-name-valid/index.js",
-    "crc-32": "./node_modules/@nimbus-sh/worker/node_modules/crc-32",
-    "sha.js": "./node_modules/@nimbus-sh/worker/node_modules/sha.js",
-    "pako": "./node_modules/@nimbus-sh/worker/node_modules/pako",
-    "pify": "./node_modules/@nimbus-sh/worker/node_modules/pify",
-    "diff": "./node_modules/@nimbus-sh/worker/node_modules/diff",
-    "diff3": "./node_modules/@nimbus-sh/worker/node_modules/diff3",
-    "ignore": "./node_modules/@nimbus-sh/worker/node_modules/ignore",
-    "readable-stream": "./node_modules/@nimbus-sh/worker/node_modules/readable-stream",
-    "simple-get": "./node_modules/@nimbus-sh/worker/node_modules/simple-get",
-    "minimisted": "./node_modules/@nimbus-sh/worker/node_modules/minimisted"
+    "diff": "./node_modules/@nimbus-sh/worker/node_modules/diff"
   },
   "durable_objects": {
     "bindings": [

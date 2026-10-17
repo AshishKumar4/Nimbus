@@ -42,6 +42,7 @@
  *   - stdout, stderr, exitCode: capture variables
  */
 import { generateSqliteShimCode } from './sqlite-shim.js';
+import { REAL_NOW_SOURCE } from './stop-replay.js';
 import { DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE } from './javascript-string-literal.js';
 import { CHILD_NEWS_SOURCE } from '@nimbus-sh/core/runtime/child-news.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
@@ -78,7 +79,7 @@ import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
 import { NODE_SOURCE_MAPS_SOURCE } from './node-source-maps.js';
 import { NODE_BUILTIN_FRONTS_SOURCE } from './node-builtin-fronts.js';
 import { NODE_MINIMATCH_SOURCE } from './node-minimatch-source.js';
-import { RUNTIME_ESM_LATE_MODULE, RUNTIME_INTERPRETER_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_PARSER_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { ENTRY_CHECKED, RUNTIME_ESM_LATE_MODULE, RUNTIME_INTERPRETER_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_PARSER_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { STAGED_BINDING_ARTIFACTS } from '../napi-wasm-artifacts.generated.js';
 
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
@@ -153,13 +154,17 @@ ${POSIX_PATH_PREAMBLE}
 Object.defineProperties(globalThis, {
   __nimbusNodeError: { value: __nimbusGeneratedNodeError, configurable: true },
   __nimbusNodeSystemError: { value: nodeSystemError, configurable: true },
+  __nimbusEvalIllegalReturn: { value: __nimbusEvalIllegalReturn, configurable: true },
 });
 // Generated code's: a \`decoration\` (null for none) marks the error as one whose
-// report has no arrow of the generated code, the decoration before its stack
+// report has no arrow of the generated code, nor its frame (Node's comes from
+// its loader, with none of the file's), the decoration before its stack
 // where Node shows the source there (decorateErrorStack).
 function __nimbusGeneratedNodeError(Base, code, message, props, decoration) {
   const error = nodeError(Base, code, message, props, __nimbusGeneratedNodeError);
   if (decoration !== undefined) {
+    // A program's Error.prepareStackTrace may make the stack anything: only a string's frame is trimmed.
+    if (typeof error.stack === "string") error.stack = error.stack.replace(/\\n    at [^\\n]*/, "");
     if (decoration !== null) error.stack = decoration + "\\n" + error.stack;
     __nimbusDecorated.add(error);
   }
@@ -168,9 +173,16 @@ function __nimbusGeneratedNodeError(Base, code, message, props, decoration) {
 // What the shims call a program's functions with, captured before any
 // program runs: a program may replace Reflect's.
 const __nimbusReflectApply = Reflect.apply;
+// The realm's SyntaxError, which a program may replace as a global: the
+// launch's capture (a runner that shares one scope with the cell runtime has
+// its __nimbusSyntaxError too).
+const __nimbusRealmSyntaxError = __nimbusPrimordials.SyntaxError;
 // The runner's stop and replay (runtime/stop-replay.ts), private to its
 // module: null in a runner without one.
 const __nimbusReplay = typeof __nimbusStopReplay !== "undefined" ? __nimbusStopReplay : null;
+// The clock for the shims' own reads (REAL_NOW_SOURCE): a program's reads
+// are its tape, and these are not the program's.
+const __nimbusOwnNow = ${REAL_NOW_SOURCE};
 // A connection opened through workerd's own socket class, which a program
 // reaches past every export of node:net and node:tls (it is the prototype of
 // tls.TLSSocket), is something a second run would do again: counted where
@@ -409,11 +421,20 @@ const __nimbusPrecompiledWasmByDigest = globalThis.__nimbusPrecompiledWasmByDige
 // The key a launch registers each image under: its own code
 // (facets/wasm-image-key.ts wasmImageDigest), not a copy of it.
 ${WASM_IMAGE_KEY_PREAMBLE}
-/** The key of the bytes a compile was handed; null for anything but a Uint8Array or an ArrayBuffer. */
+/**
+ * The key of the bytes a compile was handed: an ArrayBuffer's, or the range
+ * a view spans, whatever its kind (DataView, any typed array) and whatever
+ * buffer it views, as WebAssembly reads a BufferSource; null for anything
+ * else, a detached buffer's included, which the real compile then refuses
+ * as it would.
+ */
 function __nimbusWasmDigest(bytes) {
-  const view = bytes instanceof Uint8Array
-    ? bytes
-    : (bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : null);
+  let view = null;
+  try {
+    view = ArrayBuffer.isView(bytes)
+      ? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+      : (bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : null);
+  } catch {}
   return view === null ? null : wasmImageDigest(view);
 }
 (() => {
@@ -2031,7 +2052,7 @@ const __fsMod = (() => {
   // for itself, so only an entry keeps it). Reading the clock at each stat
   // instead gave a file a new mtime on every stat, which a watcher polling
   // mtimeMs reads as an edit.
-  function _ownWritten(k, at = Date.now()) {
+  function _ownWritten(k, at = __nimbusOwnNow()) {
     const entry = _nsOwnGet(k);
     if (entry !== undefined) entry.written = at;
     return at;
@@ -3432,7 +3453,7 @@ const __fsMod = (() => {
     const type = meta?.type || (meta?.isDir || meta?.isDirectory ? "directory" : "file");
     const isDir = type === "directory";
     const isSymlink = type === "symlink";
-    const now = Date.now();
+    const now = __nimbusOwnNow();
     // This process's own utimes, until it is reported back, ahead of the
     // namespace's (_recordLocalTimes).
     const own = key === undefined ? undefined : _localAttr("times", key)?.value;
@@ -4114,7 +4135,7 @@ const __fsMod = (() => {
     // the session unguarded, whichever wave a death stops at, and a replay
     // lands those bytes whatever has become of the source.
     const description = crypto.randomUUID().replaceAll("-", "");
-    const opened = __nimbusLogDecided(() => _vfsCall({ call: "open", path: destK, mode, create: true, truncate: true, fchmod: mode, description }));
+    const opened = __nimbusLogDecided(() => _vfsCall({ call: "open", path: destK, mode, access: "write", create: true, truncate: true, fchmod: mode, description }));
     const logged = _logParked(destAbs, { type: "call", call: { call: "write", path: destK, description, offset: 0, data: __nimbusVfsCellBytes(cell) } }, { acknowledged: true });
     const closed = __nimbusLogDecided(() => _vfsCall({ call: "close", path: destK, description }));
     const settle = () => _settleLocalAttr(own);
@@ -4918,7 +4939,9 @@ const __fsMod = (() => {
       else if (was.type === "directory") known.add(dir);
     }
     // Each directory this call makes, shallowest first, as mkdir -p takes
-    // them: one already there (or made by another) answers success.
+    // them: one already there (or made by another) answers success, and is
+    // what a run again finds of its run before (stop-replay found).
+    if (__nimbusReplay && opts?.recursive) for (const [dir, at] of created) if (known.has(at)) __nimbusReplay.found({ type: "call", call: { call: "mkdir", path: dir, mode, existing: "ok" } });
     const made = created.filter(([, dir]) => !known.has(dir)).map(([dir]) => ({ dir, mode }));
     const queued = _queueStructuralMutation(sent, "mkdir", p, () => Promise.all(
       made.map(({ dir, mode }) => _vfsCall({ call: "mkdir", path: dir, mode, existing: "ok" })),
@@ -5412,7 +5435,77 @@ const __fsMod = (() => {
       truncate: (bits & O_TRUNC) !== 0,
       exclusive: (bits & O_EXCL) !== 0,
       directory: (bits & O_DIRECTORY) !== 0,
+      // O_NOFOLLOW: a final symbolic link is not opened (ELOOP).
+      followSymlinks: (bits & O_NOFOLLOW) === 0,
+      // O_SYNC (O_DSYNC's bit among its own): each write is followed by what fsync does for it.
+      sync: (bits & O_SYNC) !== 0,
     };
+  }
+
+  /**
+   * open(2)'s refusals in open(2)'s order, from \`name\` (the name itself,
+   * not followed, where it was looked at: { link, directory, size }) and
+   * \`opened\` (what the open reaches): O_CREAT with O_DIRECTORY (EINVAL, as
+   * Linux since 6.4 answers), O_EXCL of a name there (EEXIST),
+   * O_NOFOLLOW of a final link (ELOOP, or ENOTDIR under O_DIRECTORY), then
+   * what is opened. Answers whether something is opened.
+   */
+  function _openRefusal(path, fl, name, opened) {
+    if (fl.create && fl.directory) throw _fsErr("EINVAL", "open", path);
+    if (fl.create && fl.exclusive && (name !== undefined || opened !== undefined)) throw _fsErr("EEXIST", "open", path);
+    if (!fl.followSymlinks && name?.link) throw _fsErr(fl.directory ? "ENOTDIR" : "ELOOP", "open", path);
+    if (opened?.directory) throw _fsErr("EISDIR", "open", path);
+    if (opened !== undefined && fl.directory) throw _fsErr("ENOTDIR", "open", path);
+    if (opened === undefined && !fl.create) throw _fsErr("ENOENT", "open", path);
+    return opened !== undefined;
+  }
+  function _openedAs(stats) {
+    return stats === undefined ? undefined : { link: stats.isSymbolicLink(), directory: stats.isDirectory(), size: stats.size };
+  }
+  /**
+   * Whether this view knows nothing is at \`absPath\` (the name itself when
+   * \`noFollow\`): a judgment of nothing else, refusing nothing. A namespace
+   * that cannot answer (a relist failed) knows nothing.
+   */
+  function _knownAbsent(absPath, noFollow) {
+    return _nsActive() && _statLadder(absPath, noFollow) === undefined && _nsUnlisted(absPath, !noFollow, false) === null;
+  }
+
+  /**
+   * An open that creates or truncates as the session judges and makes it, in
+   * one call (W7 open): O_EXCL, O_NOFOLLOW, what is there, the access asked,
+   * the umask, and the create or the truncate. A name a peer changed since this view looked is
+   * refused there, never followed. Stage 3's holder handles log the same call.
+   */
+  function _openCall(k, fl, mode) {
+    return {
+      call: "open", path: k, mode: mode & 0o7777, umask: __processUmask,
+      access: fl.read && fl.write ? "readwrite" : fl.write ? "write" : "read",
+      ...(fl.create ? { create: true } : {}),
+      ...(fl.truncate ? { truncate: true } : {}),
+      ...(fl.exclusive ? { exclusive: true } : {}),
+      ...(fl.followSymlinks ? {} : { nofollow: true }),
+    };
+  }
+
+  /**
+   * An open that empties the file or may make it, as this view keeps it:
+   * the file empty and parked, the open logged (_openCall) for the session
+   * to judge as it lands. The cell is the file's whole content
+   * when the open empties it or makes it new (O_TRUNC, O_EXCL), or when the
+   * session's answer is an empty file; a create that finds a file with
+   * bytes keeps them, which the session then answers. \`absent\`: this view
+   * knows nothing is there.
+   */
+  function _parkOpen(absPath, fl, mode, absent, acknowledged) {
+    const k = _strip(absPath);
+    _parkWrite(k, new Uint8Array(0), mode, absent);
+    const whole = fl.truncate || fl.exclusive;
+    if (whole) _parkedPartial.delete(k);
+    else _parkedPartial.set(k, __vfsWriteGenerations[k]);
+    // A create that may have found a file: the empty cell is its whole content when the file it opened is empty.
+    const partial = whole ? false : (answered) => answered.receipt === undefined || Number(answered.receipt.size) !== 0;
+    return _logParked(absPath, { type: "call", call: _openCall(k, fl, mode) }, { acknowledged, partial });
   }
 
   // ── FileHandle — returned from fs.promises.open ──
@@ -5474,7 +5567,7 @@ const __fsMod = (() => {
   class __FileHandle {
     constructor(path, flagInfo, size) {
       this._path = path;
-      this._abs = _target(path, true, "open");
+      this._abs = _target(path, flagInfo.followSymlinks, "open");
       this._flags = flagInfo;
       this._position = 0;
       this._size = size;
@@ -5505,18 +5598,12 @@ const __fsMod = (() => {
     async write(buffer, offset, length, position) {
       this._assertOpen("write");
       if (!this._flags.write) throw _fsErr("EBADF", "write", this._path);
-      let bytes;
-      let pos;
-      if (typeof buffer === "string") {
-        // write(string[, position[, encoding]])
-        bytes = _enc.encode(buffer);
-        pos = (offset === undefined || offset === null) ? null : Math.max(0, Number(offset));
-      } else {
-        const o = offset || 0;
-        const l = (length === undefined || length === null) ? buffer.length - o : Number(length);
-        bytes = buffer.subarray(o, o + l);
-        pos = (position === undefined || position === null) ? null : Math.max(0, Number(position));
-      }
+      // As writeSync and callback write read them: (string[, position[,
+      // encoding]]), (buffer[, offset[, length[, position]]]) or (buffer, {
+      // offset, length, position }).
+      const norm = _normWriteArgs(buffer, offset, length, position);
+      const bytes = norm.bytes;
+      const pos = _isCurrentPos(norm.pos) ? null : Math.max(0, Number(norm.pos));
       const at = this._flags.append ? this._size : (pos === null ? this._position : pos);
       if (bytes.byteLength === 0) {
         return { bytesWritten: 0, buffer };
@@ -5574,6 +5661,7 @@ const __fsMod = (() => {
       }
       this._size = Math.max(this._size, writeAt + bytes.byteLength);
       if (pos === null || this._flags.append) this._position = writeAt + bytes.byteLength;
+      if (this._flags.sync) await this.sync();
       return { bytesWritten: bytes.byteLength, buffer };
     }
     async readFile(opts) { return _readFileAsync(this._path, opts); }
@@ -5665,6 +5753,7 @@ const __fsMod = (() => {
         ? { type: "call", call: { call: "append", path: key, data: _ownedCell(bytes) } }
         : { type: "call", call: { call: "write", path: key, offset: at, data: _ownedCell(bytes) } });
       if (pos === null || this._flags.append) this._position = at + bytes.byteLength;
+      if (this._flags.sync) fsyncSync(this.fd);
       return bytes.byteLength;
     }
     _truncateSync(len) {
@@ -5718,54 +5807,87 @@ const __fsMod = (() => {
 
   async function _openAsync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
-    const createMode = _coerceMode(mode, 0o666);
-    const absPath = _target(path, true, "open");
     const supervisor = _supervisor();
-    let liveMeta = null;
-    if (supervisor && typeof supervisor.stat === "function") {
-      await _flushLocalPathToSupervisor(absPath, supervisor);
-      liveMeta = await _fsRpc(supervisor.stat(absPath), "stat", path, (result) => result);
+    // Without a session this view is all there is, as the sync open's.
+    if (!supervisor) return _fdHandle(openSync(path, flags, mode), "open");
+    const absPath = _target(path, fl.followSymlinks, "open");
+    if ((fl.create || fl.truncate) && !fl.directory) return _openWriteLive(path, absPath, fl, _coerceMode(mode, 0o666), supervisor);
+    // Any other open changes nothing and looks once, at the session: the
+    // name itself under O_NOFOLLOW, else what it reaches.
+    let there;
+    if (typeof supervisor.stat === "function") {
+      await _flushLocalPathToSupervisor(absPath, supervisor, fl.followSymlinks);
+      const meta = await _fsRpc(fl.followSymlinks ? supervisor.stat(absPath) : supervisor.lstat(absPath), "open", path, (result) => result);
+      there = meta ? { link: meta.type === "symlink", directory: meta.type === "directory", size: Number(meta.size) || 0 } : undefined;
+    } else {
+      there = _openedAs(fl.followSymlinks ? statSync(path, { throwIfNoEntry: false }) : lstatSync(path, { throwIfNoEntry: false }));
     }
-    if (liveMeta && liveMeta.type === "directory") throw _fsErr("EISDIR", "open", path);
-    let localStat = null;
-    if (!liveMeta) {
-      try { localStat = statSync(path); } catch {}
-      if (localStat && localStat.isDirectory()) throw _fsErr("EISDIR", "open", path);
-    }
-    const exists = !!liveMeta || !!localStat;
-    if (exists && fl.directory) throw _fsErr("ENOTDIR", "open", path);
-    if (!exists && !fl.create) throw _fsErr("ENOENT", "open", path);
-    if (exists && fl.create && fl.exclusive) throw _fsErr("EEXIST", "open", path);
-    let size = liveMeta ? (Number(liveMeta.size) || 0) : (localStat ? localStat.size : 0);
-    // The authority answered, so what it said is what the sync view keeps:
-    // its stat when something is there, and when nothing is, the file this
-    // open creates is the process's own.
-    if (!liveMeta && supervisor && !localStat && typeof __resident !== "undefined") _nsOwnSet(_strip(absPath), "file", { mode: createMode, settled: true });
-    if (!exists) {
-      await _writeFileAsync(path, new Uint8Array(0), { mode: createMode });
-      size = 0;
+    _openRefusal(path, fl, fl.followSymlinks ? undefined : there, there);
+    return new __FileHandle(path, fl, there.size);
+  }
+
+  /**
+   * An open that creates or truncates, at the session (_openCall), every
+   * errno the session's, answered before it returns. A file this view knows
+   * is not there is
+   * parked empty as the sync open's is (_parkOpen), and the answer kept as a
+   * write's (_writeFileAsync); one it holds that O_TRUNC empties is trimmed
+   * when the open lands, as a truncate's (_truncateAsync); a create that
+   * finds a file keeps nothing.
+   */
+  async function _openWriteLive(path, absPath, fl, mode, supervisor) {
+    await _flushLocalPathToSupervisor(absPath, supervisor, fl.followSymlinks);
+    const k = _strip(absPath);
+    const call = _openCall(k, fl, mode);
+    let answer;
+    if (fl.create && _knownAbsent(absPath, !fl.followSymlinks)) {
+      const logged = _parkOpen(absPath, fl, mode, true, false);
+      let kept = false;
+      const ticket = _beginFill(k);
+      try {
+        answer = await _fsRpc(logged.answer, "open", path, (result) => result);
+        await logged.claimed;
+        _markVfsStale();
+        const receipt = answer.receipt;
+        if (receipt !== undefined) kept = _noteLearnedStat(absPath, _receiptStat(receipt), ticket, typeof receipt.revision === "number" ? receipt.revision : undefined);
+      } finally {
+        _endFill(ticket);
+      }
+      if (!kept) await _learnLive(absPath, supervisor);
     } else if (fl.truncate) {
-      await _truncateAsync(path, 0);
-      size = 0;
+      const generation = __vfsWriteGenerations[k];
+      const localCell = _bundleLookup(absPath);
+      const sent = _ownMutation(
+        absPath,
+        () => _fsRpc(_vfsCall(call), "open", path, (result) => { answer = result; return _receiptOf(result); }),
+        () => {
+          if (__vfsWriteGenerations[k] === generation && localCell !== undefined) _truncateLocalCell(absPath, 0);
+        },
+      );
+      sent.catch(() => {});
+      await __nimbusQueueVfsMutation(absPath, () => sent);
+      _markVfsStale();
+    } else {
+      answer = await _fsRpc(_vfsCall(call), "open", path, (result) => result);
     }
+    const receipt = answer?.receipt;
+    const size = receipt !== undefined ? Number(receipt.size) || 0
+      : Number((fl.followSymlinks ? statSync : lstatSync)(path, { throwIfNoEntry: false })?.size ?? 0);
     return new __FileHandle(path, fl, size);
   }
 
   function openSync(path, flags, mode) {
     const fl = _parseOpenFlags(flags);
     const createMode = _coerceMode(mode, 0o666);
-    const absPath = _target(path, true, "open");
-    const st = statSync(path, { throwIfNoEntry: false });
-    if (st && st.isDirectory()) throw _fsErr("EISDIR", "open", path);
-    const exists = st !== undefined;
-    if (exists && fl.directory) throw _fsErr("ENOTDIR", "open", path);
-    if (!exists && !fl.create) throw _fsErr("ENOENT", "open", path);
-    // O_EXCL does not follow a final symlink: a dangling link is there.
-    if (fl.create && fl.exclusive && (exists || lstatSync(path, { throwIfNoEntry: false }) !== undefined)) throw _fsErr("EEXIST", "open", path);
+    const absPath = _target(path, fl.followSymlinks, "open");
+    // The name itself where O_NOFOLLOW or O_EXCL asks about it (O_EXCL: a dangling link is there).
+    const name = !fl.followSymlinks || (fl.create && fl.exclusive) ? _openedAs(lstatSync(path, { throwIfNoEntry: false })) : undefined;
+    const st = fl.followSymlinks ? statSync(path, { throwIfNoEntry: false }) : undefined;
+    const exists = _openRefusal(path, fl, name, fl.followSymlinks ? _openedAs(st) : name);
     if (fl.read && exists) _ensureReadable(absPath, "open", path);
-    if (fl.write || !exists) _ensureWritable(absPath, "open", path);
+    if (fl.write || fl.truncate || !exists) _ensureWritable(absPath, "open", path);
     if (!exists) _noteCreation(_strip(absPath), createMode);
-    let size = exists ? st.size : 0;
+    let size = exists ? (st ?? lstatSync(path)).size : 0;
     // O_TRUNC means "make it empty", so zeroing is the requested semantic,
     // and creating a genuinely absent file is too. O_APPEND must NEVER
     // pre-create: "exists" is only as good as the sync view, so a file
@@ -5773,8 +5895,9 @@ const __fsMod = (() => {
     // time would destroy exactly the content the caller asked to preserve.
     if (fl.truncate || (!exists && !fl.append)) {
       // Creating or truncating also makes the file resident, which is what
-      // lets the sync read/write path serve it without blocking.
-      writeFileSync(path, new Uint8Array(0), { mode: createMode });
+      // lets the sync read/write path serve it without blocking; the open
+      // itself is the session's to judge again as it lands (_parkOpen).
+      _parkOpen(absPath, fl, createMode, !exists, true);
       size = 0;
     }
     return new __FileHandle(path, fl, size).fd;
@@ -5797,7 +5920,9 @@ const __fsMod = (() => {
   }
   function _isStdioFd(fd) { const n = Number(fd); return n === 0 || n === 1 || n === 2; }
   // stdio descriptors are character devices, not VFS files.
-  // A terminal's: a character device, crw--w----.
+  // A terminal's: a character device, crw--w----. Its times are read as
+  // the program reads the clock: only the program asks for them, as many
+  // times in a run again as in its run, so a run again is handed the same.
   function _stdioStat() {
     const now = Date.now();
     return _newStats(0o020620, cred.uid, cred.gid, undefined, 0, now, now, now, 1);
@@ -10992,7 +11117,7 @@ function __nimbusEmittedColumn(module, line, column) {
 // GetErrorSource: \`file:line\`, the line, and under it the place, \`^\` from
 // start to end. As Node does, the columns, which are V8's (UTF-16), count
 // the line's UTF-8 bytes.
-function __nimbusArrowOf(module, text, start, end) {
+function __nimbusArrowOf(module, text, start, end, empty = false) {
   let lineStart = 0;
   let line = 1;
   for (;;) {
@@ -11015,7 +11140,8 @@ function __nimbusArrowOf(module, text, start, end) {
   // A staged ES module's line and places as its source has them.
   if (to > from) to = __nimbusSourceColumn(module, line, to);
   from = __nimbusSourceColumn(module, line, from + 1) - 1;
-  if (to <= from) to = from + 1;
+  // At the end of the input V8 underlines nothing (\`empty\`); anywhere else, a character at least.
+  if (to <= from) to = empty ? from : from + 1;
   source = __nimbusSourceLine(module, line, source);
   let arrow = __nimbusFrameFile(module) + ":" + line + "\\n" + source + "\\n";
   const bytes = new TextEncoder().encode(source);
@@ -11079,12 +11205,99 @@ function __nimbusFatalArrow(error, fromPromise) {
   return offset < 0 ? null : __nimbusSourceMappedArrow(top, text, offset) ?? __nimbusArrowOf(top, text, offset, offset + 1);
 }
 // Where a module that does not compile stops, for its stack (commonjs-cell.ts
-// __nimbusDecorateSyntaxError), or null.
-globalThis.__nimbusSyntaxErrorArrow = function __nimbusSyntaxErrorArrow(module) {
+// __nimbusDecorateSyntaxError), or null: -e code or stdin as Node reports it
+// (__nimbusEvalArrow).
+globalThis.__nimbusSyntaxErrorArrow = function __nimbusSyntaxErrorArrow(module, error) {
+  const arrow = __nimbusCompileArrow(module, error);
+  return arrow === null ? null : __nimbusEvalArrow(module, arrow);
+};
+function __nimbusCompileArrow(module, error) {
   const text = module === null ? null : __nimbusFrameModuleText(module);
   const place = text === null ? null : __nimbusFatalLocation(text, module.esModule ? "module" : "script", -1);
-  return place === null ? null : __nimbusArrowOf(module, text, place[0], place[1]);
-};
+  if (place === null) return null;
+  if (module.esModule) return __nimbusArrowOf(module, text, place[0], place[1]);
+  // A CommonJS cell's source is followed by its wrapper's tail, which V8
+  // reads where Node's compile (wrapSafe, the source alone) meets the end of
+  // the input: an error found there is the end of input's, as Node reports it.
+  const end = text.length - module.tail;
+  // V8's end of input is the source's end, nothing underlined.
+  if (error?.message === "Unexpected end of input") return __nimbusArrowOf(module, text, end, end, true);
+  if (place[0] >= end) {
+    const parser = __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}");
+    const named = error instanceof __nimbusRealmSyntaxError ? /^Unexpected token '(.+)'$/.exec(error.message) : null;
+    // An argument list left open is placed at its last token, as V8 places it whatever follows.
+    if (error?.message === "missing ) after argument list") {
+      const last = parser.lastTokenBefore(text, end);
+      if (last !== null) return __nimbusArrowOf(module, text, last[0], last[1]);
+    } else if (named?.[1] === "...") {
+      // A parenthesized rest no arrow follows: V8 names its ellipsis.
+      const rest = parser.openParenRest(text, end);
+      if (rest !== null) return __nimbusArrowOf(module, text, rest[0], rest[1]);
+    } else if (named !== null && text.slice(end).includes(named[1])) {
+      // The tail's token, where the source alone ends: the header of a
+      // stack formatted before is renamed, a formatter's own text kept.
+      const header = "SyntaxError: " + error.message;
+      error.message = "Unexpected end of input";
+      if (typeof error.stack === "string" && error.stack.startsWith(header)) error.stack = "SyntaxError: " + error.message + error.stack.slice(header.length);
+    }
+    return __nimbusArrowOf(module, text, end, end, true);
+  }
+  // A comment left open runs to the end of the input: V8 underlines it from
+  // its start to the end of its line.
+  if (text.startsWith("/*", place[0]) && text.indexOf("*/", place[0] + 2) === -1) {
+    const line = text.slice(place[0], end).search(/[\\n\\r\\u2028\\u2029]/);
+    return __nimbusArrowOf(module, text, place[0], line === -1 ? end : place[0] + line);
+  }
+  return __nimbusArrowOf(module, text, place[0], place[1]);
+}
+// -e code or stdin that Node's eval compiled as it was given or stripped
+// (NodeLaunch.evalTypeScript): a compile error names the script, not the
+// stripper's sourceURL its frames have (__nimbusEvalStripped); code that
+// compiles neither as JavaScript nor as TypeScript has amaro's message after
+// a script's arrow, a module's a line apart (execution.js evalTypeScript,
+// evalTypeScriptModuleEntryPoint).
+function __nimbusEvalArrow(module, arrow) {
+  const entry = module.path === null || (module.esModule && module.path === "/" + __nimbusEsmEntryKey);
+  if (!entry) return arrow;
+  const named = module.compileFile === undefined ? arrow : module.compileFile + arrow.slice(__nimbusFrameFile(module).length);
+  const hint = __nimbusNodeCommandLine?.evalTypeScript?.hint;
+  if (typeof hint !== "string") return named;
+  return module.esModule ? named + "\\n" + hint + "\\n" : named + hint + "\\n";
+}
+// -e code or stdin that Node compiles as a script, with a \`return\` at its
+// top (\`at\`, in \`text\`): V8's SyntaxError, its arrow under the \`return\`
+// and the script's name, with amaro's message where Node's eval adds it
+// (__nimbusEvalArrow), and no frame of the code that throws it (node-eval.ts
+// illegalReturn; the entry runs the code as a function's body, where it
+// would compile).
+function __nimbusEvalIllegalReturn(text, at) {
+  const entry = __nimbusEntryModule();
+  const error = new __nimbusRealmSyntaxError("Illegal return statement");
+  if (entry === null) return error;
+  const source = { name: entry.name, path: null, file: __nimbusFrameFile(entry), head: 0, tail: 0, esModule: false, hashbang: false };
+  const arrow = __nimbusEvalArrow(entry, __nimbusArrowOf(source, text, at, at + "return".length));
+  // A program's Error.prepareStackTrace may make the stack anything: only a
+  // string's frames are trimmed, this function's and the code's that throws.
+  if (typeof error.stack === "string") error.stack = arrow + "\\n" + error.stack.replace(/(\\n    at [^\\n]*){1,2}/, "");
+  __nimbusDecorated.add(error);
+  return error;
+}
+// -e code or stdin as Node's eval stripped it: a strip's frames are named
+// by the stripper's sourceURL, [eval], stdin's too (typescript.js
+// processTypeScriptCode), a compile error by the script (__nimbusEvalArrow);
+// a transform warned of Transform Types, where Node's warning prints.
+function __nimbusEvalStripped(module) {
+  const typeScript = __nimbusNodeCommandLine?.evalTypeScript;
+  if (typeScript?.transformWarning === true && !__nimbusTransformTypesWarned) {
+    __nimbusTransformTypesWarned = true;
+    __processMod.emitWarning("Transform Types is an experimental feature and might change at any time", "ExperimentalWarning");
+  }
+  if (typeScript?.sourceUrl !== true || module === null) return;
+  module.compileFile = __nimbusFrameFile(module);
+  if (module.path === null) module.file = "[eval]";
+  else module.frameFile = "[eval]";
+  __nimbusModulesByFile?.set("[eval]", module);
+}
 // ReportFatalException: the text Node prints for \`error\`. \`enhance\`: the
 // error as inspect shows it (an 'uncaughtException' listener's error is its
 // stack).
@@ -11140,6 +11353,12 @@ function __nimbusFatalReport(error, fromPromise, enhance) {
   }
   return report + "\\nNode.js " + __processMod.version + "\\n";
 }
+// The entry's typeless warning, where its graph did not link
+// (__nimbusEsmImport), issued as the failure is taken: Node issued it while
+// loading, and its next tick delivers it after a listener that takes the
+// failure, before what that listener warns, and never once the failure has
+// ended the process (the program stopped, nothing more it writes is shown).
+let __nimbusHeldEntryWarning = null;
 // An exception nothing caught (\`fromPromise\`: a rejection, or an ES
 // module's evaluation): whether a listener took it.
 function __nimbusUncaughtException(error, fromPromise = false) {
@@ -11147,6 +11366,9 @@ function __nimbusUncaughtException(error, fromPromise = false) {
     __nimbusReportProcessExit(error.code, "");
     return true;
   }
+  const held = __nimbusHeldEntryWarning;
+  __nimbusHeldEntryWarning = null;
+  if (held !== null) held();
   const type = fromPromise ? "unhandledRejection" : "uncaughtException";
   try {
     __processMod.emit("uncaughtExceptionMonitor", error, type);
@@ -11160,11 +11382,14 @@ function __nimbusUncaughtException(error, fromPromise = false) {
       __nimbusReportProcessExit(thrown.code, "");
       return true;
     }
+    // The process ends: Node runs no more ticks, a warning's included.
+    __nimbusWarnings.dropQueued();
     const report = __nimbusFatalReport(thrown, false, false);
     __nimbusWriteFatal(report);
     __nimbusReportProcessExit(7, report);
     return false;
   }
+  __nimbusWarnings.dropQueued();
   try {
     if (!__processMod._exiting) {
       __processMod._exiting = true;
@@ -12964,12 +13189,21 @@ function __nimbusEsmWarnTypeless(id) {
 }
 // The namespace of the staged module (or facade) \`id\`, evaluated by the
 // registry where it can be; the one place Nimbus calls the registry's import().
-async function __nimbusEsmImport(id) {
+async function __nimbusEsmImport(id, entry = false) {
   const record = __nimbusEsmRecord(id);
   if (record.state === __ESM_DONE && record.namespace !== null) return record.namespace;
   const row = __nimbusEsm.table[id];
-  if (row[0] === "module" && record.state === 0) __nimbusEsmWarnTypeless(id);
-  if (row[0] === "module" && __nimbusEsmTainted(id)) return __nimbusEsmInterpret(id, false);
+  // The entry's typeless warning waits for its evaluation to begin: Node's,
+  // a next tick's, never prints where the entry's graph does not link and
+  // its failure ends the process first (__nimbusHeldEntryWarning). An
+  // import()'s failure, which the program may catch, does not wait.
+  let warns = row[0] === "module" && record.state === 0;
+  const tainted = row[0] === "module" && __nimbusEsmTainted(id);
+  if (warns && (!entry || tainted)) {
+    warns = false;
+    __nimbusEsmWarnTypeless(id);
+  }
+  if (tainted) return __nimbusEsmInterpret(id, false);
   let batch = null;
   let since = __nimbusEsmBatches;
   try {
@@ -12982,8 +13216,14 @@ async function __nimbusEsmImport(id) {
     __nimbusTrackOp(new Promise((settle) => { resolve = settle; }));
     // Settled once, by whichever comes first; never left waiting in the
     // list (a cached module's import() enters no meta instance to empty it).
-    const loaded = () => {
+    // \`linked\`: false where it settled without its evaluation beginning.
+    const loaded = (linked = true) => {
       __nimbusEsmLoading.delete(loaded);
+      if (warns) {
+        warns = false;
+        if (linked) __nimbusEsmWarnTypeless(id);
+        else __nimbusHeldEntryWarning = () => __nimbusEsmWarnTypeless(id);
+      }
       resolve();
     };
     __nimbusEsmLoading.add(loaded);
@@ -12991,7 +13231,7 @@ async function __nimbusEsmImport(id) {
     const evaluation = import(__NIMBUS_BUNDLE_URL + __nimbusEsmName(id));
     // The evaluation it began, when it began within the call (workerd's).
     batch = __nimbusEsmOpenBatch;
-    __nimbusReflectApply(__nimbusEsmThen, evaluation, [loaded, loaded]);
+    __nimbusReflectApply(__nimbusEsmThen, evaluation, [() => loaded(), () => loaded(false)]);
     return await evaluation;
   } catch (error) {
     // Its evaluation was cancelled or stopped short of a module (a require()
@@ -13164,9 +13404,10 @@ function __nimbusEsmExportMessage(specifier, name, commonjs) {
 let __nimbusEsmEntryKey = null;
 function __nimbusEsmRunEntry(key) {
   __nimbusEsmEntryKey = key;
+  __nimbusEvalStripped(__nimbusModuleAtPath(key));
   const id = __nimbusEsmId("module", key);
   const url = __nimbusEsmUrl("/" + key);
-  return __nimbusEsmImport(id).then(() => undefined, (e) => {
+  return __nimbusEsmImport(id, true).then(() => undefined, (e) => {
     __nimbusExplainCommonJSGlobalLike(e, url, __nimbusEsmSuspends(__nimbusEsmRecord(id)));
     throw e;
   });
@@ -14134,35 +14375,63 @@ const __NIMBUS_COMMONJS_ONLY_ERRORS = [
 // Node's enrichCJSError, for the main module (CJS loader wrapSafe): a
 // SyntaxError compiling it, whose source has module syntax, is preceded by a
 // warning, emitted at once, as the process is about to end.
+// Whether \`e\`, compiling \`source\` as CommonJS, is the error of module syntax, which Node's loader retries as an ES module.
+function __nimbusModuleSyntaxError(e, source) {
+  if (!(e instanceof SyntaxError)) return false;
+  if (__NIMBUS_ESM_SYNTAX_ERRORS.includes(e.message)) return true;
+  if (!__NIMBUS_COMMONJS_ONLY_ERRORS.includes(e.message)) return false;
+  const text = source();
+  return text !== null && __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}").fatalLocation(text, "module", -1) === null;
+}
 function __nimbusEnrichCommonJsError(e, source, filename) {
-  if (!(e instanceof SyntaxError)) return;
-  let moduleSyntax = __NIMBUS_ESM_SYNTAX_ERRORS.includes(e.message);
-  if (!moduleSyntax && __NIMBUS_COMMONJS_ONLY_ERRORS.includes(e.message)) {
-    const text = source();
-    moduleSyntax = text !== null && __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}").fatalLocation(text, "module", -1) === null;
-  }
-  if (!moduleSyntax) return;
+  if (!__nimbusModuleSyntaxError(e, source)) return;
   const warning = new Error("Failed to load the ES module: " + filename + ". Make sure to set \\"type\\": \\"module\\" in the nearest package.json file or use the .mjs extension.");
   warning.name = "Warning";
   Error.captureStackTrace(warning, __nimbusEnrichCommonJsError);
   __processMod.emit("warning", warning);
 }
+// -c of a cell that compiled: its body must be one function body, or it
+// compiled only by closing the wrapper's, and is the SyntaxError Node reports
+// at the brace that does, its arrow as a compile's (__nimbusDecorateSyntaxError).
+function __nimbusCheckedAlone() {
+  const module = __nimbusEntryModule();
+  const text = module === null ? null : __nimbusFrameModuleText(module);
+  if (text === null) return undefined;
+  const at = __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}").strayClosingBrace(text.slice(module.head, text.length - module.tail));
+  if (at === null) return undefined;
+  const error = new SyntaxError("Unexpected token '}'");
+  error.stack = __nimbusArrowOf(module, text, module.head + at[0], module.head + at[1]) + "\\n" + error.stack;
+  __nimbusDecorated.add(error);
+  throw error;
+}
 // A CommonJS entry evaluated as Node's loader runs it (manager.ts
 // entryModule; an ES entry is the registry's, __nimbusEsmRunEntry).
 function __nimbusEvaluateEntry(load, mod, filename, dirname) {
   __nimbusLoadsTypeScript(filename);
+  __nimbusEvalStripped(__nimbusEntryModule());
   const source = () => __nimbusModuleSourceText(__nimbusEntryModule() ?? __nimbusModuleAtPath(String(filename).replace(/^\\/+/, "")));
   __nimbusCompiling(filename, source);
   // A file's \`this\` is its exports, as Node's wrapper is called; -e and
   // stdin code is a script, whose \`this\` is the global object.
   const evaluated = filename === "<eval>" || filename === "[stdin]";
+  // -c: compiled as Node's check compiles it (check_syntax.js wrapSafe, stdin's
+  // too). Its cell stops at its first statement (manager.ts programEntry), so
+  // a compile that succeeds runs nothing of it.
+  const check = __nimbusNodeCommandLine?.check === true;
   let wrapper;
   try {
     wrapper = load();
   } catch (e) {
-    if (!evaluated) __nimbusEnrichCommonJsError(e, source, filename);
+    if (check && e === ${JSON.stringify(ENTRY_CHECKED)}) return __nimbusCheckedAlone();
+    // TypeScript's module syntax Node retries as an ES module (wrapSafe), which cannot be checked here without running it.
+    if (check && typescriptLoader(filename) === "ts" && __nimbusModuleSyntaxError(e, source)) {
+      __processMod.stderr.write("node: -c cannot check an ES module entry in Nimbus without running it\\n");
+      __processMod.exit(9);
+    }
+    if (!evaluated || check) __nimbusEnrichCommonJsError(e, source, filename);
     throw e;
   }
+  if (check) return undefined;
   // A file entry is process.mainModule and require.main (Module._load's
   // isMain), after the preloads, whose are undefined; -e's and stdin's are too.
   if (!evaluated) {

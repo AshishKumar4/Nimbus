@@ -61,6 +61,9 @@ import { importedSpecifiers, maskSourceForImports, UndecidableSourceError } from
 import { BUNDLER_IMPORT_CONDITIONS } from '@nimbus-sh/core/runtime/bundler-resolution.js';
 import { resolvePackageEntry, type ResolvablePackageJson } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { MODULE_PARSE_OPTIONS, parseStatements, type AstNode } from '@nimbus-sh/core/runtime/javascript-ast.js';
+import { bindingIdentifiers } from '@nimbus-sh/core/runtime/binding-pattern.js';
+import type { ExportNamedDeclaration, Identifier, Literal } from 'acorn';
 
 /**
  * Map of package name → set of named imports observed across the
@@ -315,9 +318,9 @@ async function parsedImportView(source: string, path: string, parse: SourceParse
  * reachability graph and OOMs the WASM facet on icon-libraries
  * that ship 1500+ exports).
  *
- * Instead we PARSE the barrel-index file, build a map of
- * `<exportedName> → <relative path inside the package>`, and emit
- * direct file imports:
+ * Instead we PARSE the barrel-index file (acorn, one statement at a time),
+ * build a map of `<exportedName> → <relative path inside the package>`,
+ * and emit direct file imports:
  *
  *   export { default as Home } from 'lucide-react/dist/esm/icons/house.js';
  *   export { default as FileText } from 'lucide-react/dist/esm/icons/file-text.js';
@@ -326,22 +329,21 @@ async function parsedImportView(source: string, path: string, parse: SourceParse
  * reference (plus their transitive dependencies). The unused 1499
  * icons never enter the build graph at all.
  *
- * Supported re-export forms in the barrel index:
+ * Re-export forms read from the barrel index:
  *   export { default as Name } from './icons/x.js';
- *   export { default as Name1, default as Name2 } from './icons/x.js';
- *   export { Name } from './icons/x.js';
- *   export { Name as Alias } from './icons/x.js';
+ *   export { Name, Other as Alias } from './icons/x.js';
+ *   export * as ns from './ns.js';
+ *   export * from './foo.js';   (the names foo.js itself exports)
  *
- * NOT supported (rare in barrels — caller falls back if encountered):
- *   export * from './foo.js';
- *   export * as ns from './foo.js';
- *   import { X } from './foo.js'; export { X };  (split form)
+ * NOT followed: a nested `export *` inside an `export *` module, and the
+ * split form `import { X } from './foo.js'; export { X };`.
  *
  * Returns null if:
  *   - input set empty, OR
  *   - the barrel index file isn't found, OR
+ *   - the barrel index, or a module it `export *`s, does not parse, OR
  *   - none of the user's requested names appear in the parsed map.
- *     (Caller should then hard-error, NOT fall back to a CDN.)
+ *     (The caller then refuses the import; there is no CDN fallback.)
  *
  * `vfs` + `nmDir` (project's node_modules path) are required so we
  * can read the barrel index. `pkgName` is the top-level package; the
@@ -371,120 +373,53 @@ export function buildSyntheticEntry(
   if (names.size === 0) return null;
   const indexPath = findPackageEsmEntry(vfs, nmDir, pkgName);
   if (!indexPath) return null;
-  const indexCode = (() => {
-    try { return vfs.readFileString(indexPath); } catch { return null; }
-  })();
-  if (!indexCode) return null;
+  let indexCode: string;
+  try { indexCode = vfs.readFileString(indexPath); } catch { return null; }
 
-  // Build name → { path, isDefault, sourceName }.
-  // sourceName = the name ON THE SOURCE FILE'S export. For
-  //   `export { default as X } from './x.js'` → sourceName='default', isDefault=true.
-  //   `export { Foo as Bar } from './foo.js'` → sourceName='Foo', isDefault=false.
-  //   `export { Foo } from './foo.js'`        → sourceName='Foo', isDefault=false.
-  type ExportRef = { path: string; sourceName: string; isDefault: boolean };
+  // Each name the barrel re-exports from a module of its own package: the
+  // module's path as written, and the name it has there (null: the module's
+  // namespace, `export * as ns`). A name the barrel declares itself is no
+  // re-export, but hides a name an `export *` module exports.
   const exportMap = new Map<string, ExportRef>();
-  // Match an entire `export { ... } from '...';` block.
-  const reExport = /export\s*\{([^}]+)\}\s*from\s*["']([^"']+)["']\s*;?/g;
-  let m: RegExpExecArray | null;
-  while ((m = reExport.exec(indexCode)) !== null) {
-    const body = m[1];
-    const path = m[2];
-    if (!path.startsWith('.')) continue; // only relative re-exports
-    for (const partRaw of body.split(',')) {
-      const part = partRaw.trim();
-      if (!part) continue;
-      // `default as X`
-      const defAs = part.match(/^default\s+as\s+([A-Za-z_$][\w$]*)$/);
-      if (defAs) {
-        exportMap.set(defAs[1], { path, sourceName: 'default', isDefault: true });
-        continue;
+  const own = new Set<string>();
+  const stars: string[] = [];
+  const indexRead = eachStatement(indexCode, (statement) => {
+    if (statement.type === 'ExportNamedDeclaration') {
+      const path = relativeSource(statement.source);
+      if (path === null) {
+        for (const name of namedExports(statement)) own.add(name);
+        return;
       }
-      // `X as Y`
-      const renamed = part.match(/^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/);
-      if (renamed) {
-        exportMap.set(renamed[2], { path, sourceName: renamed[1], isDefault: false });
-        continue;
+      for (const specifier of statement.specifiers) {
+        exportMap.set(moduleExportName(specifier.exported), { path, sourceName: moduleExportName(specifier.local) });
       }
-      // `X`
-      if (/^[A-Za-z_$][\w$]*$/.test(part)) {
-        exportMap.set(part, { path, sourceName: part, isDefault: false });
-        continue;
-      }
-      // `default` (default re-export with no rename) is rare; skip.
+    } else if (statement.type === 'ExportAllDeclaration') {
+      const path = relativeSource(statement.source);
+      if (path === null) return;
+      if (statement.exported) exportMap.set(moduleExportName(statement.exported), { path, sourceName: null });
+      else stars.push(path);
     }
-  }
+  });
+  if (!indexRead) return null;
 
-  // barrel fallback support — `export * from './x.js'` support.
-  //
-  // Many barrel packages (date-fns, several utility libraries, some
-  // icon kits) use `export *` aggregation instead of per-name
-  // re-exports. The original synthesizer ignored these → exportMap
-  // stayed empty → /preview/@modules/<pkg> 500'd with "synthetic
-  // entry generation returned null".
-  //
-  // Strategy: harvest each `export *` source's own top-level export
-  // declarations once, and inject them into the same exportMap with
-  // `sourceName === exportedName`. This is not a full ESM resolver
-  // (we don't follow nested `export *` chains), but it covers the
-  // common case where the file at the end of the chain has explicit
-  // `export function X` / `export const X` / `export class X` /
-  // `export { X }` declarations — which matches every barrel
-  // observed in the wild.
-  //
-  // Cap on the number of `export *` sources we walk so a pathological
-  // barrel-of-barrels can't blow the synthesizer's budget.
-  const indexDirForStar = indexPath.substring(0, indexPath.lastIndexOf('/'));
-  const reExportStar = /export\s*\*\s*from\s*["']([^"']+)["']\s*;?/g;
-  const STAR_SOURCE_CAP = 1500; // date-fns has ~290; well within cap
-  let starSourcesWalked = 0;
-  let s: RegExpExecArray | null;
-  while ((s = reExportStar.exec(indexCode)) !== null && starSourcesWalked < STAR_SOURCE_CAP) {
-    const path = s[1];
-    if (!path.startsWith('.')) continue;
-    starSourcesWalked++;
-    const fullPath = normalizeJoin(indexDirForStar, path);
-    let starCode: string | null;
-    try { starCode = vfs.readFileString(fullPath); } catch { starCode = null; }
-    if (!starCode) continue;
-    // Harvest top-level exports from the source file. Order of patterns:
-    //   1. `export { X, Y as Z } from "..."` (re-export from elsewhere)
-    //   2. `export { X, Y as Z };` (re-export of locally-bound names)
-    //   3. `export function|class|const|let|var X` (declaration)
-    // We do NOT walk transitive `export *` chains; that's the
-    // budget cap in exchange for simplicity. esbuild handles the
-    // actual resolution at bundle time anyway — we only need enough
-    // entries in the map to MATCH the user's named imports.
-    const reInnerNamed = /export\s*\{([^}]+)\}\s*(?:from\s*["'][^"']+["'])?\s*;?/g;
-    let im: RegExpExecArray | null;
-    while ((im = reInnerNamed.exec(starCode)) !== null) {
-      for (const partRaw of im[1].split(',')) {
-        const part = partRaw.trim();
-        if (!part) continue;
-        const renamed = part.match(/^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/);
-        if (renamed) {
-          if (!exportMap.has(renamed[2])) {
-            exportMap.set(renamed[2], { path, sourceName: renamed[2], isDefault: false });
-          }
-          continue;
-        }
-        if (/^[A-Za-z_$][\w$]*$/.test(part)) {
-          if (!exportMap.has(part)) {
-            exportMap.set(part, { path, sourceName: part, isDefault: false });
-          }
-        }
+  // `export * from './x.js'`: each name the module itself exports but
+  // `default`, unless the barrel exports it otherwise. Nested `export *` is
+  // not followed, and the walk is capped so a barrel-of-barrels cannot blow
+  // the synthesizer's budget (date-fns has ~290 sources).
+  const indexDir = indexPath.substring(0, indexPath.lastIndexOf('/'));
+  const STAR_SOURCE_CAP = 1500;
+  for (const path of stars.slice(0, STAR_SOURCE_CAP)) {
+    let starCode: string;
+    try { starCode = vfs.readFileString(normalizeJoin(indexDir, path)); } catch { continue; }
+    const starRead = eachStatement(starCode, (statement) => {
+      const exported = statement.type === 'ExportNamedDeclaration'
+        ? namedExports(statement)
+        : statement.type === 'ExportAllDeclaration' && statement.exported ? [moduleExportName(statement.exported)] : [];
+      for (const name of exported) {
+        if (name !== 'default' && !own.has(name) && !exportMap.has(name)) exportMap.set(name, { path, sourceName: name });
       }
-    }
-    // Top-level declarations — `export function X`, `export class X`,
-    // `export const X`, `export let X`, `export var X`. Async, generator
-    // and TS modifiers (default, abstract) handled by the prefix opt-out.
-    const reDecl = /export\s+(?:async\s+)?(?:function\*?|class|const|let|var)\s+([A-Za-z_$][\w$]*)/g;
-    let dm: RegExpExecArray | null;
-    while ((dm = reDecl.exec(starCode)) !== null) {
-      const name = dm[1];
-      if (!exportMap.has(name)) {
-        exportMap.set(name, { path, sourceName: name, isDefault: false });
-      }
-    }
+    });
+    if (!starRead) return null;
   }
 
   if (exportMap.size === 0) return null;
@@ -492,10 +427,7 @@ export function buildSyntheticEntry(
   // Match user's requested names against the map. Build per-file
   // groupings so the synthetic entry has one re-export per source
   // file (smaller text, cleaner tree-shake graph).
-  const indexDir = indexPath.substring(0, indexPath.lastIndexOf('/'));
-  // grouped: full-source-path → array of { exportedName, sourceName, isDefault }
-  type Item = { exportedName: string; sourceName: string; isDefault: boolean };
-  const grouped = new Map<string, Item[]>();
+  const grouped = new Map<string, { exportedName: string; sourceName: string | null }[]>();
   let matched = 0;
   for (const name of names) {
     const ref = exportMap.get(name);
@@ -506,7 +438,7 @@ export function buildSyntheticEntry(
     const fullPath = normalizeJoin(indexDir, ref.path);
     let arr = grouped.get(fullPath);
     if (!arr) { arr = []; grouped.set(fullPath, arr); }
-    arr.push({ exportedName: name, sourceName: ref.sourceName, isDefault: ref.isDefault });
+    arr.push({ exportedName: name, sourceName: ref.sourceName });
   }
   if (matched === 0) return null;
 
@@ -534,12 +466,12 @@ export function buildSyntheticEntry(
     const items = grouped.get(filePath)!;
     // Sort items for determinism.
     items.sort((a, b) => a.exportedName.localeCompare(b.exportedName));
-    const memberLines = items.map(i => {
-      if (i.isDefault) return `default as ${i.exportedName}`;
-      if (i.sourceName === i.exportedName) return i.exportedName;
-      return `${i.sourceName} as ${i.exportedName}`;
-    });
-    lines.push(`export { ${memberLines.join(', ')} } from ${JSON.stringify(importSpec)};`);
+    const members: string[] = [];
+    for (const { exportedName, sourceName } of items) {
+      if (sourceName === null) lines.push(`export * as ${exportName(exportedName)} from ${JSON.stringify(importSpec)};`);
+      else members.push(sourceName === exportedName ? exportName(exportedName) : `${exportName(sourceName)} as ${exportName(exportedName)}`);
+    }
+    if (members.length > 0) lines.push(`export { ${members.join(', ')} } from ${JSON.stringify(importSpec)};`);
     referencedFiles.push(filePath);
   }
   return {
@@ -668,6 +600,57 @@ export async function discoverScopedSliceForSynthetic(
     }
   }
   return entries;
+}
+
+/** A name a barrel re-exports: where from (a path relative to the barrel) and its name there, null for the module's namespace. */
+interface ExportRef {
+  path: string;
+  sourceName: string | null;
+}
+
+/**
+ * Each top-level statement of the module `source`, as it is parsed, none of
+ * them kept (core javascript-ast.ts parseStatements): a module's whole tree
+ * is 17 to 24 times its source, on the path that exists to bound memory.
+ * False when it does not parse.
+ */
+function eachStatement(source: string, onStatement: (statement: AstNode) => void): boolean {
+  try {
+    parseStatements(source, MODULE_PARSE_OPTIONS, { onStatement });
+    return true;
+  } catch (error) {
+    if (error instanceof SyntaxError) return false;
+    throw error;
+  }
+}
+
+/** The specifier of `export … from` when it is relative (a module of the package itself), else null. */
+function relativeSource(source: Literal | null | undefined): string | null {
+  return source && typeof source.value === 'string' && source.value.startsWith('.') ? source.value : null;
+}
+
+/** An export name as written, `"a-b"` or `ab`. */
+function moduleExportName(node: Identifier | Literal): string {
+  return node.type === 'Identifier' ? node.name : String(node.value);
+}
+
+/** An export name as source text: quoted unless it is a plain identifier. */
+function exportName(name: string): string {
+  return /^[A-Za-z_$][\w$]*$/.test(name) ? name : JSON.stringify(name);
+}
+
+/** The names `export const a = 1, { b } = o`, `export function f`, `export class C` or `export { x as y }` exports. */
+function namedExports(statement: ExportNamedDeclaration): string[] {
+  const names = statement.specifiers.map((specifier) => moduleExportName(specifier.exported));
+  const declaration = statement.declaration;
+  if (declaration?.type === 'VariableDeclaration') {
+    const identifiers: Identifier[] = [];
+    for (const declarator of declaration.declarations) bindingIdentifiers(declarator.id, identifiers);
+    for (const identifier of identifiers) names.push(identifier.name);
+  } else if (declaration) {
+    names.push(declaration.id.name);
+  }
+  return names;
 }
 
 /**

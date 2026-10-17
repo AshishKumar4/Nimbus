@@ -1,9 +1,9 @@
-import type { Command } from '../types.js';
+import type { Command, CommandContext } from '../types.js';
 import { resolve, basename } from '../../utils/path.js';
 import { parseArgs } from '../../utils/args.js';
 import { resolveCopyTargets } from './copy-targets.js';
 import { move } from '../../../../vfs/move.js';
-import { isVfsError, strerror } from '../../../../vfs/vfs-error.js';
+import { isVfsError, strerror, syscallError, type VfsError } from '../../../../vfs/vfs-error.js';
 
 const spec = {
   force: { type: 'boolean' as const, short: 'f' },
@@ -50,12 +50,13 @@ const command: Command = async (ctx) => {
       if (flags.verbose) await ctx.stdout.write(`renamed '${source}' -> '${rawDest}'\n`);
     } catch (e) {
       if (isVfsError(e)) {
-        // GNU's words: a source that is not there cannot be stat'ed; any
+        // GNU's order (copy.c): a refused rename, then lstat of the source.
+        // A source lstat cannot reach is reported with lstat's error; any
         // other refusal is a move that failed.
-        const missing = isVfsError(e, 'ENOENT') && (await ctx.vfs.stat(src, { follow: false })) === null;
+        const unstatable = isVfsError(e, 'ENOENT') || isVfsError(e, 'ENOTDIR') ? await lstatRefusal(ctx, src) : null;
         const named = destIsDir ? `${rawDest.replace(/\/+$/, '')}/${basename(src)}` : rawDest;
-        await ctx.stderr.write(missing
-          ? `mv: cannot stat '${source}': ${strerror(e)}\n`
+        await ctx.stderr.write(unstatable
+          ? `mv: cannot stat '${source}': ${strerror(unstatable)}\n`
           : target.startsWith(`${src}/`)
             ? `mv: cannot move '${source}' to a subdirectory of itself, '${named}'\n`
             : `mv: cannot move '${source}' to '${named}': ${strerror(e)}\n`);
@@ -67,5 +68,15 @@ const command: Command = async (ctx) => {
   }
   return exitCode;
 };
+
+/** lstat's refusal of `path`, or null when it reaches a name. */
+async function lstatRefusal(ctx: CommandContext, path: string): Promise<VfsError | null> {
+  try {
+    return (await ctx.vfs.stat(path, { follow: false })) === null ? syscallError('ENOENT', 'lstat', path) : null;
+  } catch (error) {
+    if (isVfsError(error)) return error;
+    throw error;
+  }
+}
 
 export default command;

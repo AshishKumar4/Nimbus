@@ -151,6 +151,48 @@ export const SPECS = {
     output: 'astro_napi.wasm',
     npm: { owner: '@astrojs/compiler-binding', requiredAs: ['@astrojs/compiler-binding-wasm32-wasi'] },
   },
+
+  // Tailwind v4's oxide engine (@tailwindcss/vite -> @tailwindcss/oxide).
+  // Its napi API is fully synchronous: no async fn, no tokio, so it builds
+  // in upstream's workspace like satteri and the Astro compiler. Upstream
+  // commits its Cargo.lock: the committed tailwindcss-oxide/Cargo.lock is
+  // this build's pin (upstream's, with napi-build 2.3.1 raised to =2.5.0,
+  // generated at v4.3.3). Incremental scans use the existing serial walker
+  // on wasm32, whose one thread cannot run ignore's WalkParallel. rayon then
+  // has no pool to schedule on and runs each iterator on the calling thread.
+  'oxide@4.3.3': {
+    name: 'oxide',
+    version: '4.3.3',
+    source: {
+      url: 'https://github.com/tailwindlabs/tailwindcss/archive/refs/tags/v4.3.3.tar.gz',
+      sha256: 'e702ce2493505287e8f6cab2dd1e0c14f154e57c296854d4ded38bde5da2be6e',
+      dir: 'tailwindcss-4.3.3',
+    },
+    toolchain: '1.95.0',
+    build: { mode: 'workspace', package: 'tailwind-oxide', lockfile: 'tailwindcss-oxide/Cargo.lock' },
+    rustflags: ['-C', 'target-feature=+simd128'],
+    seams: [
+      {
+        file: 'crates/node/Cargo.toml',
+        from: 'napi-build = "2.3.1"',
+        to: 'napi-build = "=2.5.0"',
+        reason: 'napi-build 2.3.1 only knows wasm32-wasip1-threads: it links the threaded emnapi archive '
+          + '(emnapi-basic-mt, absent for wasm32-wasip1) and exports its thread-pool symbols. 2.5.0 links the '
+          + 'non-threaded emnapi-basic-napi-rs for wasm32-wasip1 and is the version the rolldown build uses. '
+          + 'napi-build only writes the link line; napi and napi-derive stay at upstream\'s pins.',
+      },
+      {
+        file: 'crates/oxide/src/scanner/mod.rs',
+        from: '        let all_entries = if self.has_scanned_once {',
+        to: '        let all_entries = if self.has_scanned_once && !cfg!(target_arch = "wasm32") {',
+        reason: 'the single-threaded target uses oxide\'s serial walker for incremental scans too; '
+          + 'the parallel walker requires scoped threads, which wasm32-wasip1 cannot spawn. '
+          + 'Both walkers produce the same entries and mtimes; extraction and incremental invalidation are unchanged.',
+      },
+    ],
+    output: 'tailwind_oxide.wasm',
+    npm: { owner: '@tailwindcss/oxide', requiredAs: ['@tailwindcss/oxide-wasm32-wasi'] },
+  },
 };
 
 /** npm tarballs the loader bundles and the build links, by lockfile integrity. */

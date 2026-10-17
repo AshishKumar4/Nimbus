@@ -60,8 +60,8 @@ async function opened({ named = false } = {}) {
   const proc = processFiles(engine).bind({ pid: 7, cred: user });
   const wave = (ops) => proc.writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops }));
   const opens = await wave([
-    call({ call: 'open', path: C, mode: 0o644, create: true, read: true, description: 'D1' }),
-    call({ call: 'open', path: C, mode: 0o644, read: true, description: 'D2' }),
+    call({ call: 'open', path: C, mode: 0o644, access: 'readwrite', create: true, description: 'D1' }),
+    call({ call: 'open', path: C, mode: 0o644, access: 'readwrite', description: 'D2' }),
   ]);
   assert.equal(opens.ok, true, JSON.stringify(opens));
   const [first, handle] = opens.receipts.map((receipt) => receipt.handle);
@@ -92,7 +92,7 @@ async function check(name, run) {
 
 await check('a write past the end, then a chmod the refusal did not reach', async () => {
   const { kernel, wave, contents } = await opened();
-  const made = await wave([call({ call: 'open', path: 'home/user/other/a', mode: 0o644, create: true, exclusive: true, description: 'D3' })]);
+  const made = await wave([call({ call: 'open', path: 'home/user/other/a', mode: 0o644, access: 'write', create: true, exclusive: true, description: 'D3' })]);
   assert.equal(made.ok, true, JSON.stringify(made));
   const chmod = { type: 'setattr', path: 'home/user/other/a', attrs: { mode: 0o600 } };
   const result = await wave([
@@ -197,7 +197,7 @@ await check('after a restart, an append through a description the session kept',
   kernel.chown('home/user/other', 1000, 1000);
   const sequenced = (proc, first, ack, ops) => proc.writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops }), { sequence: { writer: '7:w', first, ack, pid: 7 } });
   const before = processFiles(first).bind({ pid: 7, cred: user });
-  const open = await sequenced(before, 1, 0, [call({ call: 'open', path: C, mode: 0o644, create: true, read: true, description: 'K' })]);
+  const open = await sequenced(before, 1, 0, [call({ call: 'open', path: C, mode: 0o644, access: 'readwrite', create: true, description: 'K' })]);
   assert.equal(open.ok, true, JSON.stringify(open));
   // The session restarts: a new engine and binding over the same store, the description kept for process 7.
   const engine = new SqliteVFS(harness.sql, harness.ctx);

@@ -16,14 +16,9 @@
 import { z } from 'zod/v4';
 import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
 export const HexSha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
-/**
- * `rel` as `manifest` installs it under `installRoot`: its path, with the
- * digest and size the manifest vouches for (an image's, ImageDigest); null
- * when the manifest has no such file.
- */
-export function installedFile(manifest, installRoot, rel) {
-    const entry = manifest.files.find((f) => f.path === rel);
-    return entry ? { path: `${installRoot}/${entry.path}`, sha256: entry.sha256, size: entry.size } : null;
+/** Where `manifest` installs `rel` under `installRoot`; null when the manifest has no such file. */
+export function installedPath(manifest, installRoot, rel) {
+    return manifest.files.some((f) => f.path === rel) ? `${installRoot}/${rel}` : null;
 }
 /**
  * One name of a path (a runtime's name or version, which name its directory
@@ -46,14 +41,21 @@ const ManifestEntrypointSchema = z.object({
     args: z.array(z.string()),
     kind: z.string().optional(),
 });
-const RuntimeArtifactMetadataSchema = z.object({
+/** The fields every runtime artifact names; an artifact parsed keeps any others it carries. */
+const RuntimeArtifactMetadataFields = z.object({
     path: z.string().min(1),
     kind: z.string().min(1),
     id: z.string().min(1),
     source_sha256: HexSha256Schema.optional(),
     sha256: HexSha256Schema,
-}).passthrough();
-export const RuntimePythonPackageArtifactMetadataSchema = RuntimeArtifactMetadataSchema.and(z.object({
+});
+const RuntimeArtifactMetadataSchema = RuntimeArtifactMetadataFields.passthrough();
+const RuntimePythonExtensionModuleMetadataSchema = z.object({
+    path: z.string().min(1),
+    runtimePath: z.string().min(1),
+    sha256: HexSha256Schema,
+});
+const RuntimePythonPackageArtifactFields = z.object({
     kind: z.literal('python-package'),
     language: z.literal('python'),
     packageName: z.string().min(1),
@@ -66,12 +68,9 @@ export const RuntimePythonPackageArtifactMetadataSchema = RuntimeArtifactMetadat
     loadMode: z.literal('startup-module'),
     imports: z.array(z.string()),
     dependencies: z.array(z.string()),
-    extensionModules: z.array(z.object({
-        path: z.string().min(1),
-        runtimePath: z.string().min(1),
-        sha256: HexSha256Schema,
-    })),
-}));
+    extensionModules: z.array(RuntimePythonExtensionModuleMetadataSchema),
+});
+export const RuntimePythonPackageArtifactMetadataSchema = RuntimeArtifactMetadataSchema.and(RuntimePythonPackageArtifactFields);
 const RuntimeManifestSchema = z.object({
     name: PathNameSchema,
     version: PathNameSchema,

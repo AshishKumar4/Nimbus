@@ -13,19 +13,11 @@
  * for the browser to fetch and report.
  */
 import { bundleCss, CssError } from '@nimbus-sh/core/runtime/css-bundle.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 const dirOf = (path) => path.slice(0, path.lastIndexOf('/')) || '/';
 /** `path` with `.` and `..` segments resolved, leading slash as given. */
 function normalize(path) {
-    const out = [];
-    for (const segment of path.split('/')) {
-        if (segment === '' || segment === '.')
-            continue;
-        if (segment === '..')
-            out.pop();
-        else
-            out.push(segment);
-    }
-    return (path.startsWith('/') ? '/' : '') + out.join('/');
+    return (path.startsWith('/') ? '/' : '') + rootClampedSegments(path).join('/');
 }
 /**
  * The stylesheet at `vfsPath` (under the project's `root`), its imports

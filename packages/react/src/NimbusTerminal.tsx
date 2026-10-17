@@ -17,21 +17,11 @@
 
 import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
-import { sessionAttachUrl } from '@nimbus-sh/sdk/session';
 import { useNimbusSession } from './useNimbusSession.js';
 import {
   type NimbusTerminalProps,
   type NimbusTerminalRef,
 } from './types.js';
-
-/**
- * The URL the iframe attaches through: the session's shell, or `/new` for a
- * fresh session, at the endpoint's origin root, carrying the token for the
- * attach exchange.
- */
-export function nimbusAttachUrl(endpoint: string, token: string, sessionId: string | undefined): string {
-  return sessionAttachUrl(endpoint, sessionId, token);
-}
 
 /**
  * The iframe's default `sandbox`, exported so an embedder that needs more can
@@ -63,7 +53,7 @@ export const NimbusTerminal = forwardRef<NimbusTerminalRef, NimbusTerminalProps>
     const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
     const { attachUrl } = useNimbusSession({
-      endpoint, token, tenant, sub, sessionId, onReady, onError,
+      endpoint, token, sessionId, onReady, onError,
       iframeRef, reloadKey: renderKey,
     });
 

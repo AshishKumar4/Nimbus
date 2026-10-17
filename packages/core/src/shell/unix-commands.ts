@@ -30,7 +30,7 @@ import sortCommand from '../substrate/lifo/commands/text/sort.js';
 import uniqCommand from '../substrate/lifo/commands/text/uniq.js';
 import catCommand from '../substrate/lifo/commands/fs/cat.js';
 import * as checksum from '../substrate/lifo/commands/system/checksum.js';
-import { isBrokenPipe, readAllInput, writeBytes } from '../substrate/lifo/utils/bytes-io.js';
+import { decodeLossless, encodeLossless, isBrokenPipe, joinLossless, readAllInput, writeBytes, writeLossless } from '../substrate/lifo/utils/bytes-io.js';
 import headCommand from '../substrate/lifo/commands/text/head.js';
 import tacCommand from '../substrate/lifo/commands/text/tac.js';
 import teeCommand from '../substrate/lifo/commands/io/tee.js';
@@ -52,6 +52,7 @@ import { formatUptime, uptimeSeconds } from '../substrate/lifo/utils/system-info
 import { isCharacterDevice, isDirectory, fileTypeChar, lstatOrThrow, statOrThrow } from '../vfs/vfs.js';
 import { direntTypeIn } from '../vfs/dirent-type.js';
 import { bytesToHex } from '@nimbus-sh/platform/hex.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 
 /** stdin as text, read to its end; nothing when there was no stdin. Only a command that reads its stdin waits for its end. */
 async function stdinText(ctx: CommandContext): Promise<string | undefined> {
@@ -1974,7 +1975,7 @@ function mkPwd(): Command {
  * `find -exec echo`): the builtin's own output, from the one echoOutput.
  */
 function mkEcho(): Command {
-  return async (ctx) => { (await ctx.stdout.write(echoOutput(ctx.args))); return 0; };
+  return async (ctx) => { await writeLossless(ctx.stdout, echoOutput(ctx.args)); return 0; };
 }
 
 /**
@@ -2139,7 +2140,8 @@ function mkLs(): Command {
         }
       } catch (e) {
         (await ctx.stderr.write(`ls: cannot access '${arg}': ${strerror(e)}\n`));
-        exit = 1;
+        // GNU's "serious trouble": an operand it cannot reach.
+        exit = 2;
       }
     }
 
@@ -2203,7 +2205,8 @@ function mkRm(): Command {
           code = 1;
         }
       } catch (error) {
-        if (force && isVfsError(error, 'ENOENT')) continue;
+        // -f ignores a name not there, or one below a regular file, as coreutils' ignorable_missing does.
+        if (force && (isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR'))) continue;
         await ctx.stderr.write(`rm: cannot remove '${target}': ${strerror(error)}\n`);
         code = 1;
       }
@@ -2918,15 +2921,7 @@ async function canonicalizePath(
   options: { mode: 'e' | 'E' | 'm'; logical: boolean; noSymlinks: boolean },
 ): Promise<string> {
   const trailingSlash = absolute.length > 1 && absolute.endsWith('/');
-  let pending = absolute.split('/').filter(Boolean);
-  if (options.logical || options.noSymlinks) {
-    const lexical: string[] = [];
-    for (const part of pending) {
-      if (part === '.') continue;
-      if (part === '..') lexical.pop(); else lexical.push(part);
-    }
-    pending = lexical;
-  }
+  let pending = options.logical || options.noSymlinks ? rootClampedSegments(absolute) : absolute.split('/').filter(Boolean);
   const resolved: string[] = [];
   let hops = 0;
   let missing = false;
@@ -3013,8 +3008,14 @@ function mkPrintf(): Command {
       let i = 0;
       const startArg = argIdx;
       while (i < fmt.length && !stopped) {
-        const ch = fmt[i];
-        if (ch !== '%') { out += ch; i++; continue; }
+        if (fmt[i] !== '%') {
+          // The literal run to the next %, whole, so a character's two halves stay together.
+          const next = fmt.indexOf('%', i);
+          const run = fmt.slice(i, next === -1 ? fmt.length : next);
+          out = joinLossless(out, run);
+          i += run.length;
+          continue;
+        }
         if (fmt[i + 1] === '%') { out += '%'; i += 2; continue; }
         // Parse format spec: %[flags][width][.prec]conversion
         let spec = '%';
@@ -3031,10 +3032,10 @@ function mkPrintf(): Command {
         if (conv === 'b') {
           // %b: the argument's escapes expanded, then laid out as %s would be.
           const expanded = expandBackslashEscapes(arg ?? '', 'printf-b');
-          out += formatOneArg(`${spec}s`, expanded.text);
+          out = joinLossless(out, formatOneArg(`${spec}s`, expanded.text));
           stopped = expanded.stopped;
         } else {
-          out += formatOneArg(spec + conv, arg);
+          out = joinLossless(out, formatOneArg(spec + conv, arg));
         }
       }
       return argIdx > startArg;
@@ -3049,7 +3050,8 @@ function mkPrintf(): Command {
         if (!applyFormat()) break;
       }
     }
-    (await ctx.stdout.write(out));
+    // Lossless text: an escape's byte, or an argument's, is written as that byte.
+    await writeLossless(ctx.stdout, out);
     return 0;
   };
 }
@@ -3071,8 +3073,10 @@ function formatOneArg(spec: string, arg: string | undefined): string {
   let body: string;
   switch (conv) {
     case 's': {
+      // Precision counts bytes, as printf's does: a cut through a character
+      // leaves its first bytes, never half a surrogate pair.
       body = String(arg ?? '');
-      if (prec >= 0) body = body.slice(0, prec);
+      if (prec >= 0) body = decodeLossless(encodeLossless(body).subarray(0, prec));
       break;
     }
     case 'd': case 'i': {
@@ -3126,8 +3130,8 @@ function formatOneArg(spec: string, arg: string | undefined): string {
       break;
     }
     case 'c': {
-      if (typeof arg === 'number') body = String.fromCharCode(arg);
-      else body = String(arg ?? '').charAt(0);
+      // The argument's first byte, as printf's putchar writes it.
+      body = typeof arg === 'number' ? String.fromCharCode(arg) : decodeLossless(encodeLossless(String(arg ?? '')).subarray(0, 1));
       break;
     }
     case 'q':
@@ -3136,17 +3140,20 @@ function formatOneArg(spec: string, arg: string | undefined): string {
       break;
     default: body = '%' + conv;
   }
-  // Apply width padding.
-  if (width > body.length) {
+  // Apply width padding, in bytes as printf counts them (a string's length
+  // in UTF-16 units is never more).
+  const size = width > body.length ? encodeLossless(body).length : body.length;
+  if (width > size) {
     const zeroPad = flags.includes('0') && /[diouxXfFeEgG]/.test(conv) && !flags.includes('-');
     const padCh = zeroPad ? '0' : ' ';
-    if (flags.includes('-')) body = body.padEnd(width, ' ');
+    const pad = width - size;
+    if (flags.includes('-')) body += ' '.repeat(pad);
     else {
       // For zero-pad on negative numbers, keep the sign at the front.
       if (zeroPad && (body.startsWith('-') || body.startsWith('+') || body.startsWith(' '))) {
-        body = body[0] + body.slice(1).padStart(width - 1, padCh);
+        body = body[0] + padCh.repeat(pad) + body.slice(1);
       } else {
-        body = body.padStart(width, padCh);
+        body = padCh.repeat(pad) + body;
       }
     }
   }

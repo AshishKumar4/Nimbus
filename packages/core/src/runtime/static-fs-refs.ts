@@ -23,6 +23,7 @@
  */
 import { parse, tokenizer, tokTypes } from 'acorn';
 import { full } from 'acorn-walk';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 
 import { calleeName, type AstNode } from './javascript-ast.js';
 
@@ -113,12 +114,7 @@ function parseAny(source: string): AstNode | null {
 }
 
 function normalize(path: string): string {
-  const out: string[] = [];
-  for (const seg of path.split('/')) {
-    if (seg === '' || seg === '.') continue;
-    if (seg === '..') out.pop(); else out.push(seg);
-  }
-  return '/' + out.join('/');
+  return '/' + rootClampedSegments(path).join('/');
 }
 
 function dirnameOf(path: string): string {

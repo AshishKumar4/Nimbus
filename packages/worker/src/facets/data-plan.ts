@@ -41,6 +41,7 @@ import { resolveFile, type RequireFs } from '@nimbus-sh/core/runtime/require-res
 import { resolveDeferredImport } from '@nimbus-sh/core/runtime/require-resolver.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 
 export interface DataPlanEntry { path: string; kind: string; size: number; linkTarget?: string }
 
@@ -134,13 +135,9 @@ export function packageRootOf(k: string): string | null {
   return k.slice(0, at) + 'node_modules/' + rest.slice(0, take).join('/');
 }
 
+/** `rel` under the key `base`, taken as it is; a leading slash in `rel` does not reset it. */
 function joinKey(base: string, rel: string): string {
-  const out = base ? base.split('/') : [];
-  for (const seg of rel.split('/')) {
-    if (seg === '' || seg === '.') continue;
-    if (seg === '..') out.pop(); else out.push(seg);
-  }
-  return out.join('/');
+  return rootClampedSegments(rel, base ? base.split('/') : []).join('/');
 }
 
 /**

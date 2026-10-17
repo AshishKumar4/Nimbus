@@ -198,7 +198,7 @@ function synthesizeEntry(ctx, specifier, barrel) {
             kind: 'refused',
             status: 'synth-null',
             message: `synthetic entry generation failed for ${specifier} (barrel: ${fileCount} files; ${names.size} static imports). `
-                + `The package's index does not match any pattern Nimbus's barrel synthesizer understands (export {…} from, export * from, top-level decls). File a bug.`,
+                + `The package's index does not parse as JavaScript, or re-exports none of the imported names from its own modules (export {…} from, export * from, export * as). File a bug.`,
             names,
         };
     }

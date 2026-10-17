@@ -15,7 +15,6 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { sha256Hex } from '../../packages/core/src/_shared/crypto.ts';
 
 const ctx = {
   id: { toString: () => 'wasm-identity-test-do' },
@@ -71,8 +70,7 @@ const a = program(7572, 651, 1);
 const b = program(7572, 651, 2);
 await view.writeFile('/a.wasm', a);
 await view.writeFile('/b.wasm', b);
-const digests = { '/a.wasm': { sha256: await sha256Hex(a), size: a.length }, '/b.wasm': { sha256: await sha256Hex(b), size: b.length } };
-const image = (path) => view.image(path, digests[path]);
+const image = (path) => view.image(path);
 
 for (const [where, open] of [
   ['at construction', (image) => [{ 'interp.wasm': image }, undefined]],

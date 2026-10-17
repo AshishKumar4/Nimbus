@@ -37,14 +37,14 @@ import { recordFailure } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { compareUtf8, utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { concatBytes, dec, enc, nameDec } from '../_shared/bytes.js';
-import { w7ChunkCount, w7Chunks, } from '@nimbus-sh/platform/w7-frame.js';
+import { openAccessMask, openAccessRights, w7ChunkCount, w7Chunks, } from '@nimbus-sh/platform/w7-frame.js';
 import { WeightedCreditPool, } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { createHash } from 'node:crypto';
 import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, explicitTimes, posixAccess, timeAt, utimesRefusal } from './posix-access.js';
 import { RecallRequired, recallOf, withRecall } from './recall.js';
 import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../_shared/read-lease-cover.js';
 export { RecallRequired, recallOf, withRecall } from './recall.js';
-import { copiedPermissions, copyfileMode, readDeclaredSource, syncValue } from './vfs.js';
+import { copiedPermissions, copySetsMode, readDeclaredSource, syncValue } from './vfs.js';
 import { DIRENT_TYPES } from './dirent-type.js';
 import { errnoCodeOf, toVfsError, vfsError } from './vfs-error.js';
 import { walkRemoval } from './removal-walk.js';
@@ -2382,7 +2382,7 @@ export class SqliteVFS {
             readFileString: (path) => this.readFileString(path, bound),
             stat: (path) => this.stat(path, bound, true),
             lstat: (path) => this.stat(path, bound, false),
-            statIfPresent: (path, followLeaf = true) => this.statIfPresent(path, bound, followLeaf),
+            statIfPresent: (path, followLeaf = true, belowFile = 'absent') => this.statIfPresent(path, bound, followLeaf, this.inodes, belowFile),
             landedAt: (path) => this.landedAt(path, bound),
             utimes: (path, atimeMs, mtimeMs, options) => this.utimes(path, atimeMs, mtimeMs, bound, options?.followSymlinks !== false),
             chmod: (path, mode) => this.chmod(path, mode, bound),
@@ -4354,8 +4354,9 @@ export class SqliteVFS {
     /**
      * The content key of an inode's bytes: sha256 of them up to CHUNK_SIZE,
      * else the digest of the manifest's ordered chunk hashes. An in-place edit
-     * clears a manifest's digest; it is recomputed here and stored unless
-     * another content already holds it.
+     * clears a manifest's digest; it is recomputed here once per edit and
+     * remembered (contentKeyMemo, dropped by the next edit), never written: a
+     * lookup is a read, and the store may be open read-only.
      */
     contentKeyOf(ref) {
         if (ref.chunkId !== null) {
@@ -4366,22 +4367,18 @@ export class SqliteVFS {
         }
         if (ref.contentId === null)
             return hex(EMPTY_CONTENT_KEY);
+        // Held only for a content whose stored digest an edit cleared: it answers before the row is read.
+        const memo = this.contentKeyMemo.get(ref.contentId);
+        if (memo !== undefined)
+            return memo;
         const content = [...this.sql.exec('SELECT digest FROM vfs_contents WHERE id = ?', ref.contentId)][0];
         if (!content)
             throw vfsError('EIO', ref.path, `missing content ${ref.contentId}`);
         if (content.digest !== null && content.digest !== undefined)
             return hex(this.blobToUint8Array(content.digest));
-        const memo = this.contentKeyMemo.get(ref.contentId);
-        if (memo !== undefined)
-            return memo;
-        const digest = this.manifestDigest(ref.contentId);
-        const key = digest.digest(ref.size);
-        const taken = [...this.sql.exec('SELECT 1 FROM vfs_contents WHERE digest = ?', key)].length > 0;
-        if (taken)
-            this.contentKeyMemo.set(ref.contentId, hex(key));
-        else
-            this.transactionSync(() => { this.sql.exec('UPDATE vfs_contents SET digest = ? WHERE id = ?', key, ref.contentId); });
-        return hex(key);
+        const key = hex(this.manifestDigest(ref.contentId).digest(ref.size));
+        this.contentKeyMemo.set(ref.contentId, key);
+        return key;
     }
     manifestDigest(content) {
         const digest = new ManifestDigest();
@@ -4792,15 +4789,19 @@ export class SqliteVFS {
             throw vfsKeyError('ENOENT', path);
         return this.statOf(inode);
     }
-    /** stat, with a name that is not there (or a directory on its way that is not) answered null: an answer, not an error. */
-    statIfPresent(path, cred, followLeaf, tree = this.inodes) {
+    /**
+     * stat, with a name that is not there answered null: an answer, not an
+     * error. A file on its way (ENOTDIR) is not there either, unless
+     * `belowFile` is 'ENOTDIR' (stat(2)'s answer).
+     */
+    statIfPresent(path, cred, followLeaf, tree = this.inodes, belowFile = 'absent') {
         try {
             const inode = this.checkAccess(path, 0, cred, { followLeaf, allowMissingLeaf: true, tree }).inode;
             return inode === undefined ? null : this.statOf(inode);
         }
         catch (error) {
             const code = errnoCodeOf(error);
-            if (code === 'ENOENT' || code === 'ENOTDIR')
+            if (code === 'ENOENT' || (code === 'ENOTDIR' && belowFile === 'absent'))
                 return null;
             throw error;
         }
@@ -5759,10 +5760,13 @@ export class SqliteVFS {
      * source's permission bits less the copier's umask, as cp(1) makes it; a
      * file there keeps its own mode. With \`keepMode\` (copyfile), the copy has
      * copyfileMode's bits, a file there too, set in this one write as chmod
-     * judges it (modeChange). Answers the copy's stat, the key it wrote
-     * (\`landed\`, the destination's links followed), and the file copied: its
-     * key and the revision of the version this write read (its row's
-     * generation then), which nothing after the read moves.
+     * judges it (modeChange). With \`preserve\` (cp -p), as a tree copy's
+     * entries (planCopyTree): the source's permission bits, a file there too,
+     * set as chmod judges it, its times, and its owner when root copies.
+     * Answers the copy's stat, the key it wrote (\`landed\`, the destination's
+     * links followed), and the file copied: its key and the revision of the
+     * version this write read (its row's generation then), which nothing
+     * after the read moves.
      */
     copyFile(src, dest, cred, options) {
         const source = this.checkAccess(src, 0o4, cred);
@@ -5788,10 +5792,18 @@ export class SqliteVFS {
         const made = prior ? undefined : this.creationAttrs(target.path, copiedPermissions(inode.mode, false), cred, false);
         let mode = prior ? prior.mode : made.mode;
         let gid = prior?.gid ?? made.gid;
-        if (options?.keepMode) {
-            // libuv's fchmod of what open left: the file there, or the one made.
+        let uid = prior?.uid ?? cred.uid;
+        const wanted = copySetsMode(inode.mode, inode.size, cred.uid, options ?? {});
+        if (wanted !== null) {
+            // libuv's fchmod (cp -p's) of what open left: the file there, or the one made.
             const opened = prior ?? { mode, uid: cred.uid, gid, kind: 'file' };
-            ({ mode, gid } = this.modeChange(opened, copyfileMode(inode.mode, inode.size, cred.uid), cred, target.path));
+            ({ mode, gid } = this.modeChange(opened, wanted, cred, target.path));
+        }
+        // cp -p's owner, which only root may give; a shared directory's group stands.
+        if (options?.preserve && cred.uid === 0) {
+            uid = inode.uid;
+            if (this.sharedDirectory(target.path) === undefined)
+                gid = inode.gid;
         }
         const builder = this.newPlan();
         builder.addInode({
@@ -5799,10 +5811,10 @@ export class SqliteVFS {
             parentPath: parentKey(target.path),
             kind: 'file',
             size: inode.size,
-            atime: now,
-            mtime: now,
+            atime: options?.preserve ? inode.atime : now,
+            mtime: options?.preserve ? inode.mtime : now,
             mode,
-            uid: prior?.uid ?? cred.uid,
+            uid,
             gid,
             content: { type: 'ref', chunkId: inode.chunkId, contentId: inode.contentId },
         });
@@ -6454,9 +6466,9 @@ export class SqliteVFS {
             readFileString: (path) => dec.decode(this.readWhole(file(path))),
             stat: (path) => this.statOf(resolve(path, 0).inode),
             lstat: (path) => this.statOf(resolve(path, 0, false).inode),
-            statIfPresent: (path, followLeaf = true) => {
+            statIfPresent: (path, followLeaf = true, belowFile = 'absent') => {
                 pinned();
-                return this.statIfPresent(path, bound, followLeaf, tree);
+                return this.statIfPresent(path, bound, followLeaf, tree, belowFile);
             },
             landedAt: (path) => probe(path) !== undefined,
             utimes: readOnly,
@@ -9102,7 +9114,7 @@ export class SqliteVFS {
      * (SqliteRuntimeFsBridge.open): EEXIST for an exclusive create of a name
      * there (a link included, followed or not), ENOENT without `create`,
      * ELOOP for a link when `nofollow`, EISDIR for a directory, EACCES without
-     * write permission; a name made empty with `mode` less the call's umask, or
+     * the access asked (openAccessMask); a name made empty with `mode` less the call's umask, or
      * an existing file emptied when `truncate`; then, with `fchmod`, that file
      * given the mode (chmod's rule, EPERM for another's), all of it refused
      * together. Its answer is the file's stat.
@@ -9110,12 +9122,15 @@ export class SqliteVFS {
     openToWrite(call, caller, described) {
         const cred = withUmask(caller, call.umask);
         const follow = call.nofollow !== true;
-        const name = this.checkAccess(call.path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode;
+        const named = this.checkAccess(call.path, 0, cred, { followLeaf: false, allowMissingLeaf: true });
+        const name = named.inode;
         if (name !== undefined && call.create === true && call.exclusive === true)
             throw vfsError('EEXIST', call.path);
         if (!follow && name?.kind === 'symlink')
             throw vfsError('ELOOP', call.path);
-        const there = follow ? this.checkAccess(call.path, 0, cred, { allowMissingLeaf: true }).inode : name;
+        // A name that is no link is what a followed open reaches: one walk answers both.
+        const reached = follow && name?.kind === 'symlink' ? this.checkAccess(call.path, 0, cred, { allowMissingLeaf: true }) : named;
+        const there = reached.inode;
         if (there === undefined && call.create !== true)
             throw vfsError('ENOENT', call.path);
         if (there?.kind === 'directory')
@@ -9125,7 +9140,8 @@ export class SqliteVFS {
         }
         else {
             // Every access asked, decided now: an O_RDWR of a write-only file is EACCES here, not at its first read.
-            this.checkAccess(call.path, (call.read === true ? 4 : 0) | 2, cred);
+            if (!this.accessInode(there, openAccessMask(call), cred))
+                throw vfsKeyError('EACCES', reached.path);
             if (call.truncate === true)
                 this.truncate(call.path, 0, cred);
         }
@@ -9141,13 +9157,13 @@ export class SqliteVFS {
         if (described.descriptions === undefined)
             throw vfsError('ENOTSUP', call.path, 'no binding keeps open descriptions for this wave');
         // Its access, decided above: the open that made the file writes it whatever its mode, as creat(2) does.
-        const rights = { read: call.read === true, write: true };
+        const rights = openAccessRights(call.access);
         const handle = described.descriptions.adopt(call.description, stat.ino, rights, call.path, cred);
         if (handle === null)
             throw vfsError('ENOENT', call.path);
         // Kept with the op's cursor, in its transaction: a re-sent open, or a drain of the process's log, finds it.
         if (described.pid !== null) {
-            this.sql.exec('INSERT OR REPLACE INTO vfs_wave_descriptions (pid, id, ino, rights) VALUES (?, ?, ?, ?)', described.pid, call.description, stat.ino, (rights.read ? 4 : 0) | 2);
+            this.sql.exec('INSERT OR REPLACE INTO vfs_wave_descriptions (pid, id, ino, rights) VALUES (?, ?, ?, ?)', described.pid, call.description, stat.ino, (rights.read ? 4 : 0) | (rights.write ? 2 : 0));
         }
         return Object.assign(stat, { handle });
     }
@@ -10372,6 +10388,9 @@ export class SqliteVFS {
             if (dead.length > 0) {
                 const deadList = dead.map(() => '?').join(',');
                 this.sql.exec(`UPDATE vfs_contents SET state = ${CONTENT_DYING}, digest = NULL WHERE id IN (${deadList}) AND state != ${CONTENT_DYING}`, ...dead);
+                // Their keys go with them, before an id is ever reused.
+                for (const id of dead)
+                    this.contentKeyMemo.delete(id);
                 const rows = [...this.sql.exec(`SELECT content_id, off, chunk_id FROM vfs_content_chunks WHERE content_id IN (${deadList})
              ORDER BY content_id, off LIMIT ?`, ...dead, GC_MANIFEST_ROWS)];
                 // A full page may have stopped inside its last content: that one

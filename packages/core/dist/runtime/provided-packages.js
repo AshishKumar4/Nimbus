@@ -16,7 +16,7 @@ function topLevelModuleDeclarationRanges(source) {
                 active = null;
             }
         }
-        else if (syntax === 'import' || syntax === 'export') {
+        else if (topLevel && (syntax === 'import' || syntax === 'export')) {
             active = { start: token.start, kind: syntax };
         }
         return false;

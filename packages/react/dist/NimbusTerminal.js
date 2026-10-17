@@ -16,16 +16,7 @@ import { jsx as _jsx } from "react/jsx-runtime";
  * format; that's the shell's job.
  */
 import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
-import { sessionAttachUrl } from '@nimbus-sh/sdk/session';
 import { useNimbusSession } from './useNimbusSession.js';
-/**
- * The URL the iframe attaches through: the session's shell, or `/new` for a
- * fresh session, at the endpoint's origin root, carrying the token for the
- * attach exchange.
- */
-export function nimbusAttachUrl(endpoint, token, sessionId) {
-    return sessionAttachUrl(endpoint, sessionId, token);
-}
 /**
  * The iframe's default `sandbox`, exported so an embedder that needs more can
  * extend it rather than restate it.
@@ -48,7 +39,7 @@ export const NimbusTerminal = forwardRef(function NimbusTerminal(props, ref) {
     const [renderKey, setRenderKey] = useState(0);
     const iframeRef = useRef(null);
     const { attachUrl } = useNimbusSession({
-        endpoint, token, tenant, sub, sessionId, onReady, onError,
+        endpoint, token, sessionId, onReady, onError,
         iframeRef, reloadKey: renderKey,
     });
     useImperativeHandle(ref, () => ({

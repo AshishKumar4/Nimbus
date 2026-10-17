@@ -2,6 +2,8 @@ import { memo } from 'preact/compat';
 import { useState } from 'preact/hooks';
 import {
   isInterruptedMessage,
+  legacyToolResult,
+  storedMessageParts,
   type AgentTurnUsage,
   type StoredMessage,
   type StoredToolPart,
@@ -40,31 +42,9 @@ function usageLabel(usage: AgentTurnUsage | null | undefined): string | null {
   return total > 0 ? `${formatTokens(total)} tokens` : null;
 }
 
-function messageParts(message: StoredMessage): StoredTurnPart[] {
-  if (Array.isArray(message.parts)) {
-    return message.parts.filter((part): part is StoredTurnPart => !!part && typeof part === 'object');
-  }
-  return message.content ? [{ type: 'text', text: message.content }] : [];
-}
-
 /** Pre-parts era: tool results were stored as their own `tool`-role rows. */
 function legacyToolPart(message: StoredMessage): StoredToolPart {
-  let payload: { tool?: string; input?: unknown; output?: unknown } = {};
-  try {
-    const parsed: unknown = JSON.parse(message.content || '{}');
-    if (parsed && typeof parsed === 'object') payload = parsed;
-  } catch {
-    payload = { output: message.content };
-  }
-  const output = payload.output ?? message.content;
-  return {
-    type: 'tool',
-    toolCallId: message.id,
-    toolName: payload.tool || message.name || 'tool',
-    input: payload.input,
-    output,
-    status: 'done',
-  };
+  return { type: 'tool', toolCallId: message.id, ...legacyToolResult(message), status: 'done' };
 }
 
 function hasVisibleContent(parts: StoredTurnPart[]): boolean {
@@ -89,7 +69,7 @@ export const Message = memo(function Message({ message, live, usage, onRetry }: 
     );
   }
 
-  const parts = message.role === 'tool' ? [legacyToolPart(message)] : messageParts(message);
+  const parts = message.role === 'tool' ? [legacyToolPart(message)] : storedMessageParts(message);
 
   if (live && !hasVisibleContent(parts)) {
     return (

@@ -99,39 +99,31 @@ export interface RuntimeCatalogEnv {
 
 // ── Schemas ──────────────────────────────────────────────────────────
 
-export interface CatalogVersionEntry {
-  manifest: string;       // R2 key, e.g. "manifests/clang-binji-2020.json"
-  /** Hex sha256 of the manifest bytes. Absent on catalogs published
-   *  before the digest was recorded — those manifests stay out of L2. */
-  manifest_sha256?: string;
-  size_bytes: number;
-  license: string;
-}
-
-export interface CatalogRuntimeEntry {
-  default: string;
-  versions: Record<string, CatalogVersionEntry>;
-}
-
-export interface RuntimeCatalog {
-  version: 1;
-  runtimes: Record<string, CatalogRuntimeEntry>;
-}
-
 const CatalogVersionEntrySchema = z.object({
   manifest: z.string().min(1),
   manifest_sha256: HexSha256Schema.optional(),
   size_bytes: z.number().int().nonnegative(),
   license: z.string(),
 });
+/**
+ * One version of a runtime in the catalog: `manifest`, its R2 key (e.g.
+ * "manifests/clang-binji-2020.json"); `manifest_sha256`, the hex sha256 of the
+ * manifest's bytes, absent on catalogs published before the digest was
+ * recorded (those manifests stay out of L2).
+ */
+export type CatalogVersionEntry = z.output<typeof CatalogVersionEntrySchema>;
 
-const RuntimeCatalogSchema: z.ZodType<RuntimeCatalog> = z.object({
-  version: z.literal(1),
-  runtimes: z.record(z.string(), z.object({
-    default: z.string().min(1),
-    versions: z.record(z.string(), CatalogVersionEntrySchema),
-  })),
+const CatalogRuntimeEntrySchema = z.object({
+  default: z.string().min(1),
+  versions: z.record(z.string(), CatalogVersionEntrySchema),
 });
+export type CatalogRuntimeEntry = z.output<typeof CatalogRuntimeEntrySchema>;
+
+const RuntimeCatalogSchema = z.object({
+  version: z.literal(1),
+  runtimes: z.record(z.string(), CatalogRuntimeEntrySchema),
+});
+export type RuntimeCatalog = z.output<typeof RuntimeCatalogSchema>;
 
 export function parseRuntimeCatalog(value: unknown): RuntimeCatalog {
   return RuntimeCatalogSchema.parse(value);
