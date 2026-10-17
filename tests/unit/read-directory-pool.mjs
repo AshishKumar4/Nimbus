@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { processFsClient } from '../../packages/core/src/_shared/process-fs-client.ts';
 import { readDirectoryPool } from '../../packages/core/src/runtime/wasi/read-directory-pool.ts';
+import { DIRECTORY_PREFETCH_LIMIT } from '../../packages/core/src/constants.ts';
 
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 function fixture(options = {}) {
@@ -240,8 +241,14 @@ function fixture(options = {}) {
 {
   const s = fixture();
   for (let i = 100; i < 140; i++) s.nodes.set(`d${i}`, { ...s.nodes.get('d0'), ino: i + 1 });
+  // Every description the pool may hold, open: closed, they fill its retirement queue.
   const ids = [];
-  for (let i = 0; i < 128; i++) ids.push((await s.pool.open(`/d${i}`, `d${i}`, async () => [])).id);
+  for (let i = 0; i < 140; i++) {
+    const opened = await s.pool.open(`/d${i}`, `d${i}`, async () => []);
+    if (opened === null) break;
+    ids.push(opened.id);
+  }
+  assert.equal(ids.length, DIRECTORY_PREFETCH_LIMIT);
   const sent = s.calls.length;
   for (const id of ids) assert.equal(s.pool.close(id, false), undefined, 'a close that cannot wait began a retirement exchange');
   assert.equal(s.calls.length, sent);
