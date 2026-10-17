@@ -63,8 +63,8 @@ export interface JournalSql {
     exec(query: string, ...bindings: unknown[]): Iterable<Record<string, unknown>>;
 }
 /**
- * The journal in a process's own SQLite: entries, their appended data
- * pieces (joined only when read), and numberings (one row per writer epoch).
+ * The journal in a process's own SQLite. Reads also accept appended pieces;
+ * writes keep complete rows until that reader has shipped for one release.
  * A facet that restarts opens the same tables: everything left unanswered.
  */
 export declare function sqlJournal(sql: JournalSql): ProcessFsJournal;
