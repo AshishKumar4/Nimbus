@@ -1652,6 +1652,15 @@ export declare class SqliteVFS {
     private list;
     private acquire;
     private readdir;
+    /**
+     * readdir(2) as the live tree and a snapshot answer it (`tree`, and
+     * `entries` of a directory's key there): the entries of the directory the
+     * name resolves to, the one the permission is checked on (through a link,
+     * its target's), sorted by UTF-16 code unit. Callers that walk a listing
+     * (the prefetch closure walk among them) rely on a stable order; SQLite's
+     * byte order differs from it for names outside the Basic Multilingual Plane.
+     */
+    private readdirIn;
     private unlink;
     private rmdir;
     /** What unlink(2) of `path` by `cred` removes, once it may: it refuses as unlink does. */
