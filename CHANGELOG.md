@@ -5,6 +5,7 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: a probe run's baseline checkouts and the releases it uploads to its throwaways live in one directory beside the checkout that runs it, and go when the run ends. A run that was killed left them behind (each baseline checkout about 1 GB, and 600 releases had piled up); the next run now deletes them, and nothing of a run still going.
 - Fixed: a program that writes files before it listens, as Vite's config
   load does, serves. When its listen makes it a server, Nimbus runs it again
   and checks that run against the first. That check failed for two reasons.

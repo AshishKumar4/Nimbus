@@ -5,8 +5,10 @@
 // production (promote.mjs), so each uploads exactly the bytes CI built, and
 // production the bytes staging verified.
 //
-// A release is a directory under ~/.local/state/nimbus/releases/, named by
-// commit and job, holding each target's module, the docs build of an app
+// A release is a directory named by commit and job: under
+// ~/.local/state/nimbus/releases/ when a later step uploads it (staging's,
+// which production promotes), else in the run's own directory
+// (lib/run-dir.mjs), deleted with it. It holds each target's module, the docs build of an app
 // that has assets, and release.json: { commit, job, bundles: { "<app>[:<env>]":
 // { main, sha256, file } }, assets: { "<app>": { manifest, docs: { sha256,
 // file } } } }. release.mjs adds staged.json when staging verified it.
@@ -31,12 +33,14 @@ const git = (cwd, args) => {
 
 /**
  * Build `targets` ("<app>[:<env>]") of `sha` on armada and keep them as a
- * release. Resolves to { dir, release }; throws, with the red rows, when
+ * release under `into`: RELEASES for one a later step uploads (staging's,
+ * which production promotes), a run's own directory for one only that run
+ * uploads. Resolves to { dir, release }; throws, with the red rows, when
  * nothing usable was built.
  *
- * @param {{ repo: string, sha: string, targets: string[], log?: (line: string) => void }} options
+ * @param {{ repo: string, sha: string, targets: string[], into?: string, log?: (line: string) => void }} options
  */
-export async function fetchRelease({ repo, sha, targets, log = (line) => console.error(line) }) {
+export async function fetchRelease({ repo, sha, targets, into = RELEASES, log = (line) => console.error(line) }) {
   const mapped = await mapOnArmada({
     repo, sha, files: ['scripts/ci/bundle.mjs', 'scripts/ci/lib/step.mjs'], items: [1], label: `bundle ${sha.slice(0, 12)} ${targets.join(' ')}`, log,
     command: ['bun', 'scripts/ci/bundle.mjs', '--out', '{out}', ...targets.flatMap((target) => ['--target', target])],
@@ -49,7 +53,7 @@ export async function fetchRelease({ repo, sha, targets, log = (line) => console
   if (red.length > 0 || targets.some((target) => !verdict.bundles[target])) {
     throw new Error(`no release (job ${mapped.jobId}):\n${red.map((row) => `${row.name} exit ${row.exitCode}\n${row.output.trimEnd().split('\n').slice(-40).join('\n')}`).join('\n')}`);
   }
-  const dir = join(RELEASES, `${sha.slice(0, 12)}-${mapped.jobId}`);
+  const dir = join(into, `${sha.slice(0, 12)}-${mapped.jobId}`);
   mkdirSync(dir, { recursive: true });
   const release = { commit: sha, job: mapped.jobId, bundles: {}, assets: {} };
   for (const [target, bundle] of Object.entries(verdict.bundles)) {

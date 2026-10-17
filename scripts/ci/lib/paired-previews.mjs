@@ -3,15 +3,13 @@
 // candidate, each a fresh throwaway built on CI and uploaded from here as
 // remote-probes --deploy uploads one. An upload reads its app's config from
 // a checkout at the release's own commit (uploadConfig), so a commit this
-// worktree is not at is uploaded from a detached worktree of it, made for
-// this run and removed after it.
+// worktree is not at is uploaded from a detached worktree of it, made in the
+// run's own directory (lib/run-dir.mjs) and removed with it.
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { ARMS } from '../../../tests/behavioral/_paired.mjs';
 import { INSTALL } from '../../install-deps.mjs';
-import { NIMBUS_STATE } from './state-dir.mjs';
 
 const git = (cwd, args) => {
   const done = spawnSync('git', args, { cwd, encoding: 'utf8' });
@@ -50,11 +48,12 @@ export function defaultBaseline(repo, sha) {
 }
 
 /**
- * The arms of one run in `repo`. Everything `standUp` makes is recorded as
- * it is made, so `teardown` (synchronous, for an 'exit' listener as well as
- * the run's end) deletes it whatever ended the run.
+ * The arms of one run in `repo`, its checkouts made in `dir` (the run's
+ * own). Everything `standUp` makes is recorded as it is made, so `teardown`
+ * (synchronous, for an 'exit' listener as well as the run's end) deletes it
+ * whatever ended the run.
  */
-export function pairedPreviews({ repo, log = (line) => console.error(line) }) {
+export function pairedPreviews({ repo, dir, log = (line) => console.error(line) }) {
   const runId = randomBytes(3).toString('hex');
   const worktrees = [];
   const previews = [];
@@ -65,11 +64,10 @@ export function pairedPreviews({ repo, log = (line) => console.error(line) }) {
   const checkoutAt = (commit) => {
     if (git(repo, ['rev-parse', 'HEAD']) === commit) return Promise.resolve(repo);
     if (!checkouts.has(commit)) {
-      const dir = join(NIMBUS_STATE, 'paired', `${runId}-${commit.slice(0, 12)}`);
-      mkdirSync(join(NIMBUS_STATE, 'paired'), { recursive: true });
-      git(repo, ['worktree', 'add', '--detach', dir, commit]);
-      worktrees.push(dir);
-      checkouts.set(commit, run(dir, 'bun', INSTALL.split(' ').slice(1)).then(() => dir));
+      const checkout = join(dir, `checkout-${commit.slice(0, 12)}`);
+      git(repo, ['worktree', 'add', '--detach', checkout, commit]);
+      worktrees.push(checkout);
+      checkouts.set(commit, run(checkout, 'bun', INSTALL.split(' ').slice(1)).then(() => checkout));
     }
     return checkouts.get(commit);
   };
