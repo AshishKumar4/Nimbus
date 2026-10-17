@@ -96,8 +96,6 @@
     .logs-view.active { display: block; }
     .logs-view.terminal-view { padding: 0; white-space: normal; overflow: hidden; }
     .logs-view.terminal-view .xterm { height: 100%; padding: 6px 8px; }
-    .logs-view .stderr { color: #ff7b72; }
-    .logs-view .binary { color: #8b949e; font-style: italic; }
     .logs-view .banner { display: block; color: #d29922; background: #221a00; border-left: 2px solid #d29922; padding: 4px 8px; margin: 6px 0; font-family: inherit; }
     .logs-view .banner.ok { color: #3fb950; background: #0f2416; border-left-color: #3fb950; }
     .logs-view .banner.failed { color: #ff7b72; background: #2d0d0c; border-left-color: #ff7b72; }
@@ -687,7 +685,6 @@
     const viteStatus = document.getElementById('viteStatus');
     let ws = null, rd = 1000, statsTimer = null;
     // The app has one workspace layout. Only the top center surface switches.
-    let layout = 'editor';
     let workSurface = 'editor';
     const phoneLayout = matchMedia('(max-width: 760px)');
 
@@ -731,7 +728,6 @@
 
     function setLayout(mode) {
       if (mode === 'agent' || mode === 'editor') workSurface = mode;
-      layout = 'editor';
       mainPanel.className = 'main editor';
       mainPanel.dataset.pane = mode;
       const leftStack = document.getElementById('leftStack');
@@ -1201,9 +1197,7 @@
 
       let flashTimer = null;
       function setStatusFlash(text) {
-        const el = tabEl();
-        const prior = el.textContent;
-        el.textContent = text;
+        tabEl().textContent = text;
         if (flashTimer) clearTimeout(flashTimer);
         flashTimer = setTimeout(() => setTabFile(openPath, false), 1400);
       }
@@ -1376,9 +1370,9 @@
 
       // node: { path, name, type:'file'|'directory', depth, parent, children?:Set<path>, loaded:bool, selected:bool, hidden:bool }
       const nodes = new Map();
-      // Insertion-ordered list of paths for stable render.
-      const renderOrder = [];
-      let loaded = false;
+      // The in-flight load, shared by its callers. The tree is loaded once
+      // its root is (rootLoaded): a load that failed leaves it unloaded, so
+      // the next ensureLoaded asks again.
       let pending = null;
       let selectedPath = null;
 
@@ -1395,8 +1389,12 @@
       const expanded = loadExpandedSet();
       expanded.add(ROOT);
 
+      function rootLoaded() {
+        return nodes.get(ROOT)?.loaded === true;
+      }
+
       function iconFor(node) {
-        if (node.type === 'directory') return node.expanded ? '📂' : '📁';
+        if (node.type === 'directory') return expanded.has(node.path) ? '📂' : '📁';
         // Light extension-based icons.
         const dot = node.name.lastIndexOf('.');
         const ext = dot >= 0 ? node.name.slice(dot + 1).toLowerCase() : '';
@@ -1440,7 +1438,7 @@
           path, name: relativeName(path) || path,
           type: type || 'file',
           depth: depthOf(path),
-          loaded: false, expanded: expanded.has(path),
+          loaded: false,
           dirty: false,
         };
         nodes.set(path, n);
@@ -1453,7 +1451,7 @@
         // ws.onopen drains it). Without this hint, users staring at
         // an empty tree-body would see no feedback. Cleared on
         // success / error path below.
-        if (path === ROOT && !loaded && !SessionTransport.isOpen()) {
+        if (path === ROOT && !rootLoaded() && !SessionTransport.isOpen()) {
           body.innerHTML = '<div class="tree-empty">Waiting for connection…</div>';
         }
         let result;
@@ -1487,7 +1485,7 @@
       // search time.
       function computeOrder() {
         const out = [];
-        function walk(parentPath, depth) {
+        function walk(parentPath) {
           // Collect direct children of parentPath in the nodes map.
           const children = [];
           for (const n of nodes.values()) {
@@ -1500,11 +1498,11 @@
           for (const c of children) {
             out.push(c);
             if (c.type === 'directory' && expanded.has(c.path)) {
-              walk(c.path, depth + 1);
+              walk(c.path);
             }
           }
         }
-        walk(ROOT, 1);
+        walk(ROOT);
         return out;
       }
 
@@ -1572,7 +1570,7 @@
       }
 
       async function ensureLoaded() {
-        if (loaded) return;
+        if (rootLoaded()) return;
         if (pending) return pending;
         panel.classList.add('loading');
         pending = (async () => {
@@ -1588,7 +1586,6 @@
               await loadFolder(path);
             }
           }
-          loaded = true;
         })();
         try { await pending; } finally { pending = null; panel.classList.remove('loading'); }
       }
@@ -1597,7 +1594,6 @@
       async function refreshTree() {
         // Drop all cached children of root + re-fetch.
         nodes.clear();
-        loaded = false;
         await ensureLoaded();
       }
       async function newFile() {
@@ -1938,12 +1934,7 @@
 
     function ensurePreviewTab(tab, options = {}) {
       const existing = previewTabs.get(tab.id);
-      const merged = {
-        ...(existing || {}),
-        ...tab,
-        createdAt: existing?.createdAt || Date.now(),
-        updatedAt: Date.now(),
-      };
+      const merged = { ...(existing || {}), ...tab };
       previewTabs.set(tab.id, merged);
       if (!existing && options.focusNew) {
         activatePreviewTab(tab.id);
@@ -2006,8 +1997,10 @@
         if (previewFrame) previewFrame.style.display = 'none';
         if (markdownPreview) markdownPreview.classList.add('active');
         setPreviewUrlBar('Markdown Preview · ' + tab.path);
-        paintMarkdownPreview(tab.markdown || '').catch(() => {});
-        return;
+        // Its one paint, for a caller that waits on it (showMarkdownPreview).
+        const painted = paintMarkdownPreview(tab.markdown || '');
+        painted.catch(() => {});
+        return painted;
       }
 
       previewPanel.classList.remove('markdown-mode');
@@ -2151,9 +2144,9 @@
       // A deferred boot declines it when something live already holds the
       // panel, and the tab stays one click away with its content ready.
       if (options.focus === false) return;
-      activatePreviewTab(id);
+      const painted = activatePreviewTab(id);
       if (activePreviewTabId !== id) return;
-      await paintMarkdownPreview(markdown || '');
+      await painted;
     }
 
     async function paintMarkdownPreview(markdown) {
@@ -2367,7 +2360,6 @@
       }
 
       function applyEditorTerminalFlex() {
-        if (layout !== 'editor') return;
         const topSurface = workSurface === 'agent'
           ? document.getElementById('agentPanel')
           : document.getElementById('editorPanel');
@@ -2877,12 +2869,6 @@
       // carry the signal instead.
       let userWantsVisible = true;
 
-      // Minimal ANSI CSI stripper — non-terminal fallback views pass ANSI through;
-      // we keep stderr coloring via a CSS class rather than trying to
-      // faithfully render xterm sequences inside a <pre>.
-      const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[=>()][^\s]?/g;
-      function stripAnsi(s) { return s.replace(ANSI_RE, ''); }
-
       // Derive a short label from the command: strip argv[0] path prefix,
       // drop anything after the first flag-looking token, cap at ~28 chars.
       function labelFor(command) {
@@ -2982,21 +2968,15 @@
         if (atBottom) body.scrollTop = body.scrollHeight;
       }
 
+      // Output reaches a tab only once its log socket is open, which
+      // ensureAttachedTerminal has given a terminal.
       function renderChunk(tab, chunk) {
-        if (tab.term) {
-          const data = String(chunk.data || '');
-          const buffer = tab.term.buffer.active;
-          const follow = phoneLayout.matches && tab.attachedTty && activePid === tab.pid
-            && mainPanel.dataset.pane === 'terminal' && buffer.viewportY === buffer.baseY;
-          tab.term.write(tab.attachedTty ? data : data.replace(/\n/g, '\r\n'),
-            follow ? () => tab.term.scrollToBottom() : undefined);
-          return;
-        }
-        const span = document.createElement('span');
-        span.textContent = stripAnsi(chunk.data);
-        if (chunk.binary) span.className = 'binary';
-        else if (chunk.stream === 'stderr') span.className = 'stderr';
-        appendToView(tab, span);
+        const data = String(chunk.data || '');
+        const buffer = tab.term.buffer.active;
+        const follow = phoneLayout.matches && tab.attachedTty && activePid === tab.pid
+          && mainPanel.dataset.pane === 'terminal' && buffer.viewportY === buffer.baseY;
+        tab.term.write(tab.attachedTty ? data : data.replace(/\n/g, '\r\n'),
+          follow ? () => tab.term.scrollToBottom() : undefined);
       }
 
       function renderBanner(tab, text, cls) {
