@@ -28,6 +28,7 @@ export declare class PrebundleInputs {
     private readonly vfs;
     readonly fs: PrebundleReadFs;
     private readonly checks;
+    private readonly stats;
     private checkedRevision;
     constructor(vfs: PrebundleReadFs);
     private remember;

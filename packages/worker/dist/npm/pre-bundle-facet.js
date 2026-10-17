@@ -38,6 +38,7 @@ export class PrebundleInputs {
     vfs;
     fs;
     checks = new Map();
+    stats = new Map();
     checkedRevision;
     constructor(vfs) {
         this.vfs = vfs;
@@ -69,7 +70,8 @@ export class PrebundleInputs {
             stat: (path) => {
                 try {
                     const stat = vfs.stat(path);
-                    this.remember(`stat:${path}`, () => sameStat(vfs.stat(path), stat));
+                    if (!this.stats.has(path))
+                        this.stats.set(path, stat);
                     return stat;
                 }
                 catch (error) {
@@ -110,6 +112,9 @@ export class PrebundleInputs {
         if (revision === this.checkedRevision)
             return true;
         try {
+            for (const [path, stat] of this.stats)
+                if (!sameStat(this.vfs.stat(path), stat))
+                    return false;
             for (const check of this.checks.values())
                 if (!check())
                     return false;
