@@ -3815,7 +3815,7 @@ async function gatherPrefetchBundle(vfs, options, creditLimit) {
 }
 async function gatherPrefetchWithin(vfs, options, creditLimit) {
     try {
-        const state = await _buildPrefetchBundle(vfs, options, creditLimit);
+        const state = await _buildPrefetchBundle(vfs, options);
         prefetchReadCredit.getStore()?.check();
         return state;
     }
@@ -3833,12 +3833,12 @@ async function gatherPrefetchWithin(vfs, options, creditLimit) {
             throw error;
         console.warn(`[facet-manager] the modules earlier runs executed take ${options.scriptPath ?? 'the entry code'}'s map past `
             + `its ${options.maxBundleBytes ?? VFS_BUNDLE_MAX_BYTES}-byte bound (${error.outcome.lastPath}); they are staged as optional roots, as far as the bound allows`);
-        const state = await _buildPrefetchBundle(vfs, { ...options, executedModules: learned.map((root) => ({ ...root, optional: true })) }, creditLimit);
+        const state = await _buildPrefetchBundle(vfs, { ...options, executedModules: learned.map((root) => ({ ...root, optional: true })) });
         prefetchReadCredit.getStore()?.check();
         return state;
     }
 }
-async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, moduleScope = 'node', observedReads, pacer, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, learnedFor, executedModules, transformStore, conditions = [], stripTypes = null, preloads = [], entryEsModule, staticRefs, dataOnly = false, }, creditLimit) {
+async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, moduleScope = 'node', observedReads, pacer, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, learnedFor, executedModules, transformStore, conditions = [], stripTypes = null, preloads = [], entryEsModule, staticRefs, dataOnly = false, }) {
     // Read the cursor BEFORE the walk: a mutation that lands while the bundle
     // is being assembled must be reported as invalidated, not silently missed.
     const admitted = await vfs.acquire(null, 0);
@@ -3856,7 +3856,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     // extension (Tailwind scans .js/.ts content files as text). The tool's
     // configs ride along, as optional roots (RequiredModuleRoot.config).
     const configRoots = [...preloads, ...await toolConfigRoots(vfs, cwd, scriptPath)];
-    const walkRoots = (roots) => prefetchForRequire(filesOf(vfs), entryCode || '', cwd, scriptPath, maxBundleBytes, pacer?.spend.bind(pacer), undefined, roots.length > 0 ? roots : undefined, conditions, creditLimit);
+    const walkRoots = (roots) => prefetchForRequire(filesOf(vfs), entryCode || '', cwd, scriptPath, maxBundleBytes, pacer?.spend.bind(pacer), undefined, roots.length > 0 ? roots : undefined, conditions);
     // A launch they take past the bound is built again with them optional (buildPrefetchBundle).
     const prefetch = await walkRoots([...configRoots, ...executedModules ?? []]);
     prefetchReadCredit.getStore()?.check();
@@ -3890,16 +3890,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     // while a small one never reaches a chunk bound and runs exactly as it
     // always did, with no suspension at all.
     const paceAfterPass = () => {
-        const credit = prefetchReadCredit.getStore();
-        if (credit !== undefined) {
-            credit.check();
-            for (const [path, cell] of Object.entries(bundle)) {
-                if (!codeOnly.has(path))
-                    credit.charge(path, _bundleCellRawBytes(cell));
-            }
-            for (const [path, emit] of emits)
-                credit.charge(path, utf8Length(emit), 'emit');
-        }
+        prefetchReadCredit.getStore()?.check();
         return pacer ? pacer.spend(_bundleWeight(bundle)) : Promise.resolve();
     };
     // 1.5 Observed reads. Every pass below this line guesses what a program
