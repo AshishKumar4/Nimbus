@@ -290,7 +290,7 @@ async function run(steps) {
   const deliver = async () => {
     control.held = false;
     control.opened.resolve();
-    await s.fs.flush().catch(() => {});
+    await errnoOf(() => s.fs.flush());
     control.held = true;
     control.opened = Promise.withResolvers();
     for (const { record, logged } of undelivered) {
@@ -323,7 +323,7 @@ async function run(steps) {
       await deliver();
       s.fs.inbound();
       await s.fs.stat(`/${DIR}`);
-      for (const name of NAMES) await s.fs.readFile(path(name)).catch(() => {});
+      for (const name of NAMES) await errnoOf(() => s.fs.readFile(path(name)));
       const before = view();
       admitted = await snapshot();
       pending = [];
