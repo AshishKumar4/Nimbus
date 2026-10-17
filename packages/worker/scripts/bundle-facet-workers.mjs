@@ -75,7 +75,7 @@ import { parse } from 'acorn';
 
 import { amaroFacetDriver } from './amaro-driver.mjs';
 import { compileFacetBodies } from '../../../scripts/compile-facet-bodies.mjs';
-import { compiledBodies } from '../../../scripts/lib/compiled-bodies.mjs';
+import { compiledBodies, moduleBody } from '../../../scripts/lib/compiled-bodies.mjs';
 import { FACET_GLOBALS, freeNames } from './free-names.mjs';
 import { resolvePackageDir } from './resolve-package-dir.mjs';
 import { stageRuntimeAsset } from './stage-asset.mjs';
@@ -155,25 +155,17 @@ async function bundleAsPreamble(entryPath, label, { shared = [] } = {}) {
   if (!result.outputFiles || result.outputFiles.length === 0) {
     throw new Error(`[bundle-facet-workers/${label}] esbuild produced no output`);
   }
-  let stripped = withoutComments(result.outputFiles[0].text);
+  // Its exports become the scope's names; the only imports it may keep are
+  // the shared modules', whose names the shims declare.
+  const { body, imports, exported } = moduleBody(withoutComments(result.outputFiles[0].text));
   for (const name of shared) {
-    const before = stripped;
-    stripped = stripped.replace(new RegExp(`^import \\{[^}]*\\} from "\\./${name}\\.js";\\n`, 'm'), '');
-    if (stripped === before) throw new Error(`[bundle-facet-workers/${label}] expected an import of ./${name}.js to leave to the shims`);
+    if (!imports.some((entry) => entry.source === `./${name}.js`)) throw new Error(`[bundle-facet-workers/${label}] expected an import of ./${name}.js to leave to the shims`);
   }
-  // Its exports, exported name to local: declared exported, and listed in the closing clause.
-  const exported = new Map();
-  for (const match of stripped.matchAll(/^export\s+(?:async\s+)?(?:function\*?|const|let|class)\s+([A-Za-z_$][\w$]*)/gm)) exported.set(match[1], match[1]);
-  const clause = /\n?export\s*\{([^}]*)\}\s*;\s*$/.exec(stripped);
-  for (const specifier of clause ? clause[1].split(',') : []) {
-    const [local, name = local] = specifier.trim().split(/\s+as\s+/);
-    if (local) exported.set(name, local);
-  }
-  stripped = stripped.replace(/^export\s+(async\s+function|function|const|let|class)\b/gm, '$1');
-  stripped = stripped.replace(/\n?export\s*\{[^}]*\}\s*;\s*$/g, '');
-  const names = [...exported.keys()];
-  const returned = [...exported].map(([name, local]) => (name === local ? name : `${name}: ${local}`));
-  return `var { ${names.join(', ')} } = (() => {\n${stripped}\nreturn { ${returned.join(', ')} };\n})();\n`;
+  const unshared = imports.find((entry) => !shared.some((name) => entry.source === `./${name}.js`));
+  if (unshared) throw new Error(`[bundle-facet-workers/${label}] an import the shims do not declare: ${unshared.text}`);
+  const names = exported.map(([name]) => name);
+  const returned = exported.map(([name, local]) => (name === local ? name : `${name}: ${local}`));
+  return `var { ${names.join(', ')} } = (() => {\n${body.trim()}\nreturn { ${returned.join(', ')} };\n})();\n`;
 }
 
 /**
@@ -453,11 +445,11 @@ async function bundleWasiInstance() {
   if (!result.outputFiles || result.outputFiles.length === 0) {
     throw new Error('[bundle-facet-workers/wasi-instance] esbuild produced no output');
   }
-  let src = withoutComments(result.outputFiles[0].text);
-  // The body is spliced into another module; a re-export block there is a
-  // syntax error, and callers append their own `export { … }`.
-  src = src.replace(/^export\s+(async\s+function|function|const|let|var|class)\b/gm, '$1');
-  src = src.replace(/\n?export\s*\{[^}]*\}\s*;\s*$/g, '');
+  // The body is spliced flat into another module, its imports kept at the
+  // top; an export there is a syntax error, and callers append their own
+  // `export { … }`.
+  const flat = moduleBody(withoutComments(result.outputFiles[0].text));
+  let src = [...flat.imports.map((entry) => entry.text), flat.body.trim()].join('\n');
   const { CHILD_NEWS_SOURCE } = await import(pathToFileURL(join(root, '..', 'core', 'dist', 'runtime', 'child-news.js')).href);
   src = `const __wasiCreateChildNews = (${CHILD_NEWS_SOURCE});\n${src}`;
 
