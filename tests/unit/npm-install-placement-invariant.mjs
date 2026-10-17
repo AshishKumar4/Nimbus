@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// @tier slow — compares 120 seeded registries with real npm installations.
+// @tier slow — 120 npm comparisons; about 60 s wall and 75 s CPU on armada.
 // npm-install-placement-invariant — seeded random registries, each installed
 // by npm 10 itself and by the worker's NpmInstaller (the one engine, core
 // _shared/npm-arborist, through the real installer over a fake fanout):

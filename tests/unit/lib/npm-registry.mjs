@@ -80,4 +80,3 @@ export function resolvePackage(name, version, fields = {}, spec = {}) {
   const { registryName } = parseRegistryRequest(name, spec.range ?? 'latest');
   return npmRegistry({ [registryName]: { [version]: fields } }).resultFor(name, spec);
 }
-
