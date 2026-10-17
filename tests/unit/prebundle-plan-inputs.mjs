@@ -147,7 +147,7 @@ await runScenarios(fileURLToPath(import.meta.url), {
     const slice = materializePrebundleSlice(fs, plan);
     assert.deepEqual(slice.map((entry) => entry.path), plan.entries.map((entry) => entry.slicePath));
     assert.ok(slice.every((entry) => entry.path.startsWith('/') && !entry.path.startsWith('//')));
-    assert.equal(prebundleSliceBytes(slice), plan.allocationBytes, 'canonical paths have one UTF-8/V8 byte-size calculation');
+    assert.equal(prebundleSliceBytes(slice), plan.allocationBytes, 'canonical paths and content use the same payload byte sizer');
   },
   equivalentInputNames() {
     const { fs, dir } = inputFixture();

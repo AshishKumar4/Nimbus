@@ -49,6 +49,7 @@ export type PrebundleReadFs = Pick<CredentialedVfs, 'exists' | 'isDirectory' | '
 export class PrebundleInputs {
   readonly fs: PrebundleReadFs;
   private readonly checks = new Map<string, () => boolean>();
+  private readonly stats = new Map<string, Readonly<VfsStat>>();
   private checkedRevision: number;
 
   constructor(private readonly vfs: PrebundleReadFs) {
@@ -77,7 +78,7 @@ export class PrebundleInputs {
       stat: (path) => {
         try {
           const stat = vfs.stat(path);
-          this.remember(`stat:${path}`, () => sameStat(vfs.stat(path), stat));
+          if (!this.stats.has(path)) this.stats.set(path, stat);
           return stat;
         } catch (error) {
           this.remember(`stat:${path}`, () => unavailable(() => { vfs.stat(path); }));
@@ -116,6 +117,7 @@ export class PrebundleInputs {
     const revision = this.vfs.revision();
     if (revision === this.checkedRevision) return true;
     try {
+      for (const [path, stat] of this.stats) if (!sameStat(this.vfs.stat(path), stat)) return false;
       for (const check of this.checks.values()) if (!check()) return false;
     } catch (error) {
       if (recallOf(error) !== null) throw error;
