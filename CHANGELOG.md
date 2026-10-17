@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a write batch keeps the writes it committed before a refused
+  operation (an unlink answering ENOENT, say), including writes through an
+  open file another process has unlinked. Before, retrying those writes
+  after the refusal could fail with EIO and lose them, along with
+  everything else the batch committed before the refusal. Writes through
+  an open description the session kept across a restart are kept too
+  (they were refused EBADF), and a shared directory stays shared after a
+  refused rename of it.
 - Fixed: output that begins with U+FEFF (the UTF-8 BOM) keeps it, as a
   Linux terminal receives every byte a program writes. This covers a
   program's output in the terminal, process logs and `exec` results, a
