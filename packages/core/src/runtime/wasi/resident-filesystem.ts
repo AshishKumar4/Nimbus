@@ -784,6 +784,16 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   /**
+   * `then`, the only answer for a descriptor of the holder's, once the store
+   * has what is owed now (as answer() takes it) for a caller that may wait;
+   * past the bound, or for one that cannot wait, over the view as it stands.
+   */
+  const caughtUpFor = <T>(then: () => T, caughtUps = 0): T | Promise<Awaited<T>> => {
+    if (now || !owes() || caughtUps >= MAX_CATCH_UPS_PER_CALL) return then();
+    return catchUp().then((ok) => (ok ? caughtUpFor(then, caughtUps + 1) : then()));
+  };
+
+  /**
    * A mutation the holder may decide (a subtree it holds, or one it takes
    * for this): `local`, whose walks take the barrier when owed, its answer
    * counted as local; DELEGATE (or false/undefined from the holder) hands it on.
@@ -1175,19 +1185,19 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       const current = directoryPool!.local(handleId);
       return current ? statOf(current.entry) : DELEGATE;
     }, () => authority.fstat(handleId));
-    if (holder?.owns(handleId)) {
+    if (holder?.owns(handleId)) return caughtUpFor(() => {
       counts.local++;
-      return statOf(holder.fstat(handleId));
-    }
+      return statOf(holder!.fstat(handleId));
+    });
     delegated('fstat');
     return authority.fstat(handleId);
   };
 
   fs.read = (handleId, offset, length) => {
-    if (holder?.owns(handleId)) {
+    if (holder?.owns(handleId)) return caughtUpFor(() => {
       counts.local++;
       return readOwn(handleId, offset, length);
-    }
+    });
     const file = paged.get(handleId);
     // Positional reads only: a read at the descriptor's offset is the descriptor's to advance.
     if (file !== undefined && offset !== null && length > 0) {
