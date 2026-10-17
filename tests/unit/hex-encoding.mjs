@@ -50,6 +50,8 @@ const sha256 = (data) => createHash('sha256').update(data).digest('hex');
 assert.equal(await sha256Hex(text), sha256(text), 'sha256Hex');
 assert.equal(await facetImageDigest(text), sha256(text), 'facetImageDigest of a string');
 assert.equal(await facetImageDigest(new TextEncoder().encode(text)), sha256(text), 'facetImageDigest of its bytes');
+const framed = new TextEncoder().encode(`[${text}]`);
+assert.equal(await facetImageDigest(framed.subarray(1, framed.length - 1)), sha256(text), 'facetImageDigest of a view into larger bytes');
 const entry = { kind: 'expression', code: '1 + 1' };
 assert.equal(runtimeCodeKey(entry), sha256(new TextEncoder().encode(runtimeCodeKeySource(entry))), 'runtimeCodeKey');
 const pack = new Uint8Array(randomBytes(70));

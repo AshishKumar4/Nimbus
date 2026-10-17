@@ -250,7 +250,7 @@ export const FACET_IMAGE_DIR = '.nimbus/facet-images';
  */
 export async function facetImageDigest(image: string | Uint8Array): Promise<string> {
   // An image is its UTF-8 bytes; a caller holding them is not made to encode a second copy.
-  return sha256Hex(typeof image === 'string' ? new TextEncoder().encode(image) : image);
+  return sha256Hex(image);
 }
 
 export function facetImagePath(digest: string): string {
