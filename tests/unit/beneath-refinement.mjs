@@ -8,6 +8,7 @@
 // model's, through both faces: the synchronous bridge over the mounts as they
 // are, and a process's awaiting face with every mount asynchronous only.
 
+import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
@@ -103,6 +104,21 @@ for (const face of ['synchronous', 'awaiting']) for (const [index, testCase] of 
   const bind = (binding) => (face === 'synchronous' ? files.bind(binding).synchronous : files.bind(binding));
   const kernel = bind({ pid: 1, cred: CRED_KERNEL });
   let pid = 2;
+  if (index === 0) {
+    const proc = bind({ pid: pid++, cred: creds.get(2) });
+    const step = { root: '/a', path: 'm/gone', follow: true, expect: { path: '/a/none' } };
+    const wrong = { ...step, expect: { path: '/a/other-absent-leaf' } };
+    const beneath = { root: step.root, path: step.path, beneath: true };
+    assert.equal(await proc.stat(beneath), null, `${face}: the dangling link starts absent`);
+    for (const probe of [step, wrong]) {
+      assert.equal(await kernel.stat(probe.expect.path, { followSymlinks: false }), null);
+      const got = await answer(proc, kernel, probe);
+      if (probe === step) assert.deepEqual(got, probe.expect, `${face}: the correct absent leaf agrees`);
+      else assert.notDeepEqual(got, probe.expect, `${face}: a wrong absent leaf must be rejected`);
+      assert.equal(await kernel.stat(probe.expect.path, { followSymlinks: false }), null, `${face}: the marker is removed`);
+      assert.equal(await proc.stat(beneath), null, `${face}: probing leaves the dangling link absent`);
+    }
+  }
   for (const [at, step] of testCase.steps.entries()) {
     steps++;
     const proc = bind({ pid: pid++, cred: creds.get(step.as) });
