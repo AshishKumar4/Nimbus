@@ -45,6 +45,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
+import { wranglerNodeBuiltins } from './lib/wrangler-node-builtins.mjs';
 
 const REPO = resolve(import.meta.dirname, '../..');
 const DEADLINE_MS = 30_000;
@@ -62,6 +63,7 @@ const bundled = await build({
   nodePaths: [join(REPO, 'packages/worker/node_modules')],
   write: false,
   logLevel: 'error',
+  plugins: [wranglerNodeBuiltins],
 });
 writeFileSync(join(dir, 'main.js'), bundled.outputFiles[0].text);
 

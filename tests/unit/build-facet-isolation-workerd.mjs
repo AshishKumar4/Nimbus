@@ -43,6 +43,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
+import { wranglerNodeBuiltins } from './lib/wrangler-node-builtins.mjs';
 
 const REPO = resolve(import.meta.dirname, '../..');
 const DEADLINE_MS = 120_000;
@@ -65,7 +66,7 @@ const bundled = await build({
   nodePaths: [join(REPO, 'packages/worker/node_modules')],
   write: false,
   logLevel: 'error',
-  plugins: [{
+  plugins: [wranglerNodeBuiltins, {
     name: 'facet-stats',
     setup(on) {
       on.onLoad({ filter: /facets[\\/]build-facet\.ts$/ }, (args) => {
