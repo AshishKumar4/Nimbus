@@ -9,7 +9,7 @@
       "packages/worker/scripts/opencode/build-node.ts": "c2954c1f37c40cfbd06bf1b3f4f409513befc791b74c2212e96cddefbbb4d89d",
       "packages/worker/scripts/opencode/bundle-patches.ts": "091e620065cb87a938e238b5a52ebb672721e73434cfbbfc8d4ada8497649aca",
       "packages/worker/scripts/opencode/inputs.mjs": "665d2b30a66b0604109ce5235d593d622ce7b03520549f835e5891738c471930",
-      "packages/worker/scripts/opencode/models-catalog.mjs": "eb6652eb41c33c02a72422edf88cfd3ed69f9cddf08063becc56afe922996a95",
+      "packages/worker/scripts/opencode/models-catalog.mjs": "5598ca3400661284ffde8f4d753ac6ae73b4601f0563c4ed193e66aacf4c75b8",
       "packages/worker/scripts/opencode/nimbus-defer-global-io.patch": "63caa2b2ae778a570b759fb7ec39d3c19ab8fbddbd8491aa34915eb3ae5523da",
       "packages/worker/scripts/opencode/nimbus-tree-sitter-exports.patch": "63a643a0827e88630e88614e354ddcc963937285ed7a256a8174416850841361",
       "packages/worker/scripts/opencode/stubs/bun-ffi-shim.ts": "51c25d480b4050b4291ddaf9a071224b19c1eec8a15a5b587020e4e4be062e55",
