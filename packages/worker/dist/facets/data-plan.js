@@ -39,6 +39,7 @@
 import { packageJsonText, parseResolvablePackageJson, resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { resolveFile } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { resolveDeferredImport } from '@nimbus-sh/core/runtime/require-resolver.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 /** Package data this size or larger is a bundle or a binary, not configuration. */
 export const PACKAGE_DATA_MAX_BYTES = 256 * 1024;
 const CODE_FILE = /\.(?:c|m)?(?:j|t)sx?$|\.map$|\.d\.(?:c|m)?ts$|\.node$|\.wasm$/;
@@ -84,17 +85,9 @@ export function packageRootOf(k) {
         return null;
     return k.slice(0, at) + 'node_modules/' + rest.slice(0, take).join('/');
 }
+/** `rel` under the canonical key `base`, a leading slash in `rel` not resetting it. */
 function joinKey(base, rel) {
-    const out = base ? base.split('/') : [];
-    for (const seg of rel.split('/')) {
-        if (seg === '' || seg === '.')
-            continue;
-        if (seg === '..')
-            out.pop();
-        else
-            out.push(seg);
-    }
-    return out.join('/');
+    return rootClampedSegments(`${base}/${rel}`).join('/');
 }
 /**
  * Every file a package.json names as an entry, relative to its package:

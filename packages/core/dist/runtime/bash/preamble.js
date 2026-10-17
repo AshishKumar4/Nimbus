@@ -4,6 +4,7 @@ import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { PIPE_CAPACITY, decideRead, decideWrite, heldExitSettles, holdsExit, pipeBudget, pipeLimitMessage, readerStops } from './pipe-rules.js';
 import { wasiOutputRelay } from '../wasi/stdio.js';
 import { outputControlReader } from '../wasi/output-control.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 import { clockNs, clockResolutionNs, realtimeNs } from '../wasi/clock.js';
 import { unixGroups, unixUsers } from '../../shell/unix-accounts.js';
 import { ARENA_SIZE, CaptureStore } from './capture-store.js';
@@ -32,17 +33,7 @@ let filesystem = null;
 let outputSupervisor = null;
 let inputSupervisor = null;
 function norm(p) {
-    const parts = [];
-    for (const seg of String(p).split('/')) {
-        if (!seg || seg === '.')
-            continue;
-        if (seg === '..') {
-            parts.pop();
-            continue;
-        }
-        parts.push(seg);
-    }
-    return parts.join('/');
+    return rootClampedSegments(String(p)).join('/');
 }
 function newSession(args) {
     const wasmTable = globalThis.__NIMBUS_WASM || {};

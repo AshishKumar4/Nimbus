@@ -145,6 +145,17 @@ var __nimbusProcessFsModule = (() => {
     return bytes;
   }
 
+  function rootClampedSegments(path) {
+    const out = [];
+    for (const segment of path.split("/")) {
+      if (segment === "..")
+        out.pop();
+      else if (segment !== "" && segment !== ".")
+        out.push(segment);
+    }
+    return out;
+  }
+
   var W7_MAGIC = new Uint8Array([78, 87, 55, 4]);
   var W7_MAGIC_V3 = new Uint8Array([78, 87, 55, 3]);
   var ENCODER_PULL_BYTES = 256 * 1024;
@@ -704,16 +715,7 @@ var __nimbusProcessFsModule = (() => {
     }
   };
   function normalizePath(path) {
-    const out = [];
-    for (const segment of path.split("/")) {
-      if (segment === "..") {
-        if (out.length > 0)
-          out.pop();
-      } else if (segment !== "" && segment !== ".") {
-        out.push(segment);
-      }
-    }
-    return out.join("/");
+    return rootClampedSegments(path).join("/");
   }
   function parentPath(path) {
     const index = path.lastIndexOf("/");

@@ -16038,6 +16038,18 @@ function resolvePackageEntry(pkg, subpath = ".", conditions = DEFAULT_BUILD_COND
   return subpath;
 }
 
+// ../platform/dist/lexical-path.js
+function rootClampedSegments(path3) {
+  const out = [];
+  for (const segment of path3.split("/")) {
+    if (segment === "..")
+      out.pop();
+    else if (segment !== "" && segment !== ".")
+      out.push(segment);
+  }
+  return out;
+}
+
 // ../core/src/vfs/path.ts
 var NOT_NORMAL = /\/$|\/\/|(?:^|\/)\.\.?(?:\/|$)/;
 function plainVfsPath(path3) {
@@ -16047,20 +16059,7 @@ function normalizeVfsPath(p) {
   const text = String(p ?? "");
   const plain = plainVfsPath(text);
   if (plain !== null) return plain;
-  return normalizedSegments(text, false);
-}
-function normalizedSegments(path3, lookup) {
-  const segments = path3.split("/");
-  const leaf = segments[segments.length - 1];
-  if (lookup && (leaf === "" || leaf === ".")) return null;
-  const out = [];
-  for (const seg of segments) {
-    if (seg === "..") {
-      if (lookup) return null;
-      out.pop();
-    } else if (seg !== "." && seg !== "") out.push(seg);
-  }
-  return out.join("/");
+  return rootClampedSegments(text).join("/");
 }
 
 // ../core/src/runtime/barrel-detect.ts

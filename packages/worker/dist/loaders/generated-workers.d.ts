@@ -10,6 +10,7 @@
  *   - @nimbus-sh/core src/_shared/http2-module.ts (node:http2, for the node shims)
  *   - @nimbus-sh/core src/_shared/node-shim-resolution.ts (resolution, credential and upgrade rules, for the node shims)
  *   - src/facets/wasm-image-key.ts (the wasm image content key, for the node shims)
+ *   - @nimbus-sh/platform src/lexical-path.ts (the root-clamped path reduction, for generated guest code)
  *
  * Consumed by fabric/isolate-pool.ts callers via the `preamble`
  * option. The preamble is injected at the top of every generated
@@ -22,7 +23,7 @@
  *   W7_MAGIC, W7_MAX_RECORD_BYTES.
  *
  * Tar size: 5.81 KiB
- * W7 size:  50.93 KiB
+ * W7 size:  50.96 KiB
  */
 export declare const TAR_STREAM_PREAMBLE: string;
 export declare const W7_FRAME_PREAMBLE: string;
@@ -62,4 +63,6 @@ export declare const NODE_SHIM_RESOLUTION_PREAMBLE: string;
 export declare const RELATIVE_WASM_PATHS_PREAMBLE: string;
 /** Declares `function wasmImageDigest(bytes)`, the key a launch registers a wasm image under; the node shims call it. */
 export declare const WASM_IMAGE_KEY_PREAMBLE: string;
+/** Declares `function rootClampedSegments(path)`, the root-clamped lexical path reduction; generated guest code calls it. */
+export declare const LEXICAL_PATH_PREAMBLE: string;
 //# sourceMappingURL=generated-workers.d.ts.map

@@ -785,6 +785,17 @@ return globalThis.Go;
     });
   }
 
+  function rootClampedSegments(path) {
+    const out = [];
+    for (const segment of path.split("/")) {
+      if (segment === "..")
+        out.pop();
+      else if (segment !== "" && segment !== ".")
+        out.push(segment);
+    }
+    return out;
+  }
+
   var O_WRONLY = 1;
   var O_RDWR = 2;
   var O_CREAT = 64;
@@ -836,13 +847,7 @@ return globalThis.Go;
     });
   }
   function resolvePath(cwd, path) {
-    const parts = [];
-    for (const part of (path.startsWith("/") ? path : `${cwd}/${path}`).split("/")) {
-      if (part === "" || part === ".") continue;
-      if (part === "..") parts.pop();
-      else parts.push(part);
-    }
-    return `/${parts.join("/")}`;
+    return `/${rootClampedSegments(path.startsWith("/") ? path : `${cwd}/${path}`).join("/")}`;
   }
   function goStats(stat, size = stat.size) {
     const type = stat.type === "directory" ? S_IFDIR : stat.type === "symlink" ? S_IFLNK : S_IFREG;

@@ -1,3 +1,4 @@
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 export const CRED_KERNEL = Object.freeze({
     uid: 0,
     gid: 0,
@@ -61,19 +62,7 @@ export async function gateSyncLaunch(gate, cwd, program, argv) {
 }
 /** The paths a synchronous-reading launch names (see {@link gateSyncLaunch}). */
 export function launchNamedPaths(cwd, program, argv) {
-    const anchor = (path) => {
-        const joined = path.startsWith('/') ? path : `${cwd.replace(/\/+$/, '')}/${path}`;
-        const out = [];
-        for (const part of joined.split('/')) {
-            if (part === '' || part === '.')
-                continue;
-            if (part === '..')
-                out.pop();
-            else
-                out.push(part);
-        }
-        return `/${out.join('/')}`;
-    };
+    const anchor = (path) => `/${rootClampedSegments(path.startsWith('/') ? path : `${cwd}/${path}`).join('/')}`;
     const named = program === null ? [] : [anchor(program)];
     for (const arg of argv)
         if (arg !== '' && !arg.startsWith('-'))
