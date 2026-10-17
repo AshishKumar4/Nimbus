@@ -42,6 +42,23 @@ export function flockHolder(file) {
   }
 }
 
+/** flock(1) on `fd` with `args` (-n, or -w <seconds>): its exit status is TAKEN while another holds the lock. */
+function flockFd(fd, args) {
+  return spawnSync('/usr/bin/flock', ['-x', '-E', String(TAKEN), ...args, '3'], { stdio: ['ignore', 'ignore', 'pipe', fd], encoding: 'utf8' });
+}
+
+/**
+ * Take the exclusive lock on the open descriptor `fd` if nobody holds it:
+ * true when taken, false when another holds it. Throws FlockError('flock')
+ * when flock(1) fails otherwise. Writes nothing into the file.
+ */
+export function tryFlock(fd) {
+  const taken = flockFd(fd, ['-n']);
+  if (taken.status === TAKEN) return false;
+  if (taken.status !== 0) throw new FlockError('flock', `could not take a lock: ${taken.error?.message ?? (taken.stderr.trim() || `flock exited ${taken.status}`)}`);
+  return true;
+}
+
 /**
  * Take the exclusive lock on `file` (created, with its directory, when
  * absent), waiting up to `waitMs` while another holds it (`onWait` is told
@@ -60,9 +77,7 @@ export function holdFlock(file, { waitMs, describe = {}, onWait = () => {} }) {
   } catch (error) {
     throw new FlockError('open', `could not open the lock ${file}: ${error.message}`);
   }
-  const flock = (...args) => spawnSync('/usr/bin/flock', ['-x', '-E', String(TAKEN), ...args, '3'], {
-    stdio: ['ignore', 'ignore', 'pipe', fd], encoding: 'utf8',
-  });
+  const flock = (...args) => flockFd(fd, args);
   let taken = flock('-n');
   if (taken.status === TAKEN) {
     onWait(flockHolder(file));

@@ -34,7 +34,7 @@ import { assertCandidateRounds, assertPaired, measurePaired, requirePairedTarget
 
 const a = makeAsserter('perf-regression/first-paint');
 const arms = requirePairedTargets('perf-regression/first-paint');
-console.log(`perf-regression/first-paint — baseline ${arms.a1.base}, ${arms.a2.base}; candidate ${arms.b.base}`);
+console.log(`perf-regression/first-paint — baseline ${arms.a1.base}, ${arms.a2.base}; candidate ${arms.b1.base}, ${arms.b2.base}`);
 
 const ROUNDS = 16;
 // Small enough that the round-trip, not this sleep, sets the resolution.
