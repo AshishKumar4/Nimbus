@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed (docs): the docs' sandbox terminal keeps the session it booted
+  per attach endpoint, so two endpoints on one origin no longer share it. A
+  browser that cached a session the old way keeps it: the first visit moves
+  it to the new key and removes the old ones.
+
 - Fixed (shell): when the Explorer's first listing fails (a lost connection,
   a refused listing), selecting the Editor again lists the files. Before,
   the tree counted itself loaded and kept the error until Refresh. A

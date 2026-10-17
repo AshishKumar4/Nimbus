@@ -23,30 +23,44 @@ export function sessionCacheKey(attachUrl: string): string {
 
 /**
  * Once per browser that cached its session under the per-browser id the docs
- * once made (nimbus:client-id): that session moves to `key`, unless one is
- * there, and the old keys are removed, so later boots find none.
+ * once made (nimbus:client-id): the old keys are removed first, so the move
+ * needs no room for two copies, and that session moves to `key` unless one is
+ * there. Answers it when it could not be stored, for this boot to use.
  */
-export function adoptLegacyCachedSession(key: string): void {
+export function adoptLegacyCachedSession(key: string): AnonymousSession | null {
+  let legacy: string | null = null;
   try {
     const id = localStorage.getItem('nimbus:client-id');
-    if (id === null) return;
-    const legacyKey = SESSION_KEY_PREFIX + id;
-    const legacy = localStorage.getItem(legacyKey);
-    if (legacy !== null && localStorage.getItem(key) === null) localStorage.setItem(key, legacy);
-    localStorage.removeItem(legacyKey);
+    if (id === null) return null;
+    legacy = localStorage.getItem(SESSION_KEY_PREFIX + id);
+    localStorage.removeItem(SESSION_KEY_PREFIX + id);
     localStorage.removeItem('nimbus:client-id');
-  } catch {}
+    if (legacy !== null && localStorage.getItem(key) === null) localStorage.setItem(key, legacy);
+    return null;
+  } catch {
+    return legacy === null ? null : parseCachedSession(legacy);
+  }
 }
 
 export function readCachedSession(key: string): AnonymousSession | null {
   try {
     const raw = localStorage.getItem(key);
-    if (!raw) return null;
-    const cached = JSON.parse(raw) as AnonymousSession;
-    if (typeof cached.wsUrl !== 'string') return null;
-    if (typeof cached.expiresAt !== 'number' || !Number.isFinite(cached.expiresAt)) return null;
-    if (Date.now() + ATTACH_MARGIN_MS >= cached.expiresAt) return null;
-    return cached;
+    return raw ? parseCachedSession(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A cached session's record, if it is one still worth attaching to. */
+function parseCachedSession(raw: string): AnonymousSession | null {
+  try {
+    const cached: { wsUrl?: string | number | null; expiresAt?: string | number | null } | null = JSON.parse(raw);
+    if (cached === null || typeof cached !== 'object') return null;
+    const { wsUrl, expiresAt } = cached;
+    if (typeof wsUrl !== 'string') return null;
+    if (typeof expiresAt !== 'number' || !Number.isFinite(expiresAt)) return null;
+    if (Date.now() + ATTACH_MARGIN_MS >= expiresAt) return null;
+    return { wsUrl, expiresAt };
   } catch {
     return null;
   }
