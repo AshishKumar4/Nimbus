@@ -5,6 +5,17 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a running program no longer stalls waiting on launches that are not
+  running. A Durable Object runs at most ten Dynamic Workers. When every one
+  ran a program whose next write needed supervisor credit, and parked
+  launches or loads waiting for a worker held that credit, neither side could
+  go on. Credit is now taken before a worker, never while holding one, and a
+  running program's writes and session calls come first. When only parked
+  launches' module maps, or credit a load took and has not used, stand in
+  the way, that credit is reclaimed: the launch prepares again at its turn,
+  and the load takes its credit once it has a worker. A load refused its
+  credit fails at once with EAGAIN.
+
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
