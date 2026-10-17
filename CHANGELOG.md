@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a snapshot view (`SqliteVFS.at(name)`) reads as the live tree
+  does. Its `readdir` of a link to a directory lists that directory (it
+  listed nothing), its `list` pages are bounded by their encoded bytes (a
+  page could exceed the RPC frame), and once the snapshot is dropped its
+  `acquire`, `invalidatedSince`, `revision` and `storageKey` throw ESTALE,
+  as its other calls do (they answered as if it were still pinned).
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
