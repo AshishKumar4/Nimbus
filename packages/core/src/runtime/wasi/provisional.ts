@@ -1056,6 +1056,39 @@ export function provisional(host: ProvisionalHost): Provisional {
     fit(inode);
   };
 
+  /**
+   * A write `desc`'s last change continues: the client folds it into that
+   * change's entry (copying its bytes, so the caller's are not kept) and its
+   * record extends. Admitted for what it adds: its bytes, and its state's room.
+   * False, nothing done, where it is a change of its own.
+   */
+  const continued = (desc: Desc, start: number | undefined, bytes: Uint8Array, at: number): boolean => {
+    const inode = desc.inode;
+    const last = desc.lastRecord;
+    if (last === null || last.answered || last.gone === true || last.owner !== inode || inode.cell !== undefined || inode.state === null) return false;
+    const was = last.op;
+    if (start === undefined ? was.kind !== 'append' : was.kind !== 'write' || start !== was.offset + was.data.byteLength) return false;
+    host.drain();
+    const call: ProcessFsOp = { type: 'call', call: start === undefined
+      ? { call: 'append', path: inode.key, ...by(desc), data: bytes }
+      : { call: 'write', path: inode.key, ...by(desc), offset: start, data: bytes } };
+    if (!host.client.continues(call, { acknowledged: true })) return false;
+    host.client.fitsSync(bytes.byteLength, desc.path);
+    const op: InodeOp = start === undefined ? { kind: 'append', data: bytes, at } : { kind: 'write', offset: start, data: bytes, at };
+    const state = inode.state;
+    const capacity = state.bytes?.byteLength ?? 0;
+    const end = start === undefined ? state.size + bytes.byteLength : start + bytes.byteLength;
+    const room = state.bytes !== null && end > capacity ? Math.max(end, capacity * 2, 4096) - capacity : 0;
+    const need = cost(inode) + bytes.byteLength + room - inode.reserved;
+    admit(need, 'write', desc.path);
+    if (need > 0) inode.reserved += need;
+    void host.client.submit(call, { acknowledged: true });
+    extended(last, op);
+    inode.state = applyOp(state, op);
+    fit(inode);
+    return true;
+  };
+
   const judgeAttrs = (row: ResidentEntry, attrs: W7Attrs, syscall: string, path: string): void => {
     const refused = 'mode' in attrs ? chmodRefusal(row, host.cred)
       : 'uid' in attrs ? chownRefusal(row, attrs.uid, attrs.gid, host.cred)
@@ -1324,6 +1357,11 @@ export function provisional(host: ProvisionalHost): Provisional {
       const desc = descOf(handleId);
       if (!desc.write) throw fsError('EBADF', 'write', desc.path);
       const at = host.now();
+      const start = desc.append ? undefined : offset ?? desc.position;
+      if (continued(desc, start, bytes, at)) {
+        desc.position = start === undefined ? desc.inode.state!.size : offset === null ? start + bytes.byteLength : desc.position;
+        return bytes.byteLength;
+      }
       // One private copy: what is folded and what is logged, whatever the caller does with its buffer after.
       const data = owned(bytes);
       if (desc.append) {

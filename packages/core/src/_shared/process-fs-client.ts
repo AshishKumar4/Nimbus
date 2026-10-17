@@ -220,6 +220,13 @@ export interface ProcessFsClient {
    * not, for a caller that has changed nothing yet.
    */
   fitsSync(bytes: number, path: string): void;
+  /**
+   * Whether submit (with these options) would fold `op` into the last
+   * unsent change, the same file's next bytes through the same description,
+   * now: then it copies `op`'s bytes into that change's (the caller's
+   * buffer is not kept) and answers it with that change's answer.
+   */
+  continues(op: ProcessFsOp, submitOptions?: { acknowledged?: boolean }): boolean;
   /** Send what lingers now: someone waits on one of the process's own changes. */
   hurry(): void;
   /**
@@ -580,27 +587,29 @@ function extended(call: DataCall, data: Uint8Array, buffer: Uint8Array | null): 
  * page cache folds them; null when it is not such a change, or the folded
  * bytes would pass a piece.
  */
-function folded(last: ProcessFsOp, next: ProcessFsOp, buffer: Uint8Array | null): { op: ProcessFsOp; buffer: Uint8Array | null; append?: Uint8Array } | null {
+/** How `next` folds into `last`: its bytes replace last's, extend them, or (null) it does not fold. */
+function foldOf(last: ProcessFsOp, next: ProcessFsOp): 'replaces' | 'extends' | null {
   if (last.type !== 'call' || next.type !== 'call' || !('data' in last.call) || !('data' in next.call)) return null;
   const a = last.call;
   const b = next.call;
   // Through one description only: another's access, or its file, may differ.
   if (a.path !== b.path || descriptionOf(a) !== descriptionOf(b) || a.data.byteLength + b.data.byteLength > DATA_PIECE_BYTES) return null;
   const inoOf = (call: W7Call): number | undefined => ('ino' in call ? call.ino : undefined);
-  if (b.call === 'writeFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) {
-    // The last write's file is made (or kept) by the first: its make wins, the bytes are the last's.
-    return { op: { type: 'call', call: { ...a, call: 'writeFile', data: b.data } as W7Call }, buffer: null };
-  }
-  if (b.call === 'appendFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) {
-    return extended(a, b.data, buffer);
-  }
-  if (b.call === 'append' && a.call === 'append' && inoOf(a) === inoOf(b)) {
-    return extended(a, b.data, buffer);
-  }
-  if (b.call === 'write' && a.call === 'write' && inoOf(a) === inoOf(b) && a.offset + a.data.byteLength === b.offset) {
-    return extended(a, b.data, buffer);
-  }
+  // The last write's file is made (or kept) by the first: its make wins, the bytes are the last's.
+  if (b.call === 'writeFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) return 'replaces';
+  if (b.call === 'appendFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) return 'extends';
+  if (b.call === 'append' && a.call === 'append' && inoOf(a) === inoOf(b)) return 'extends';
+  if (b.call === 'write' && a.call === 'write' && inoOf(a) === inoOf(b) && a.offset + a.data.byteLength === b.offset) return 'extends';
   return null;
+}
+
+function folded(last: ProcessFsOp, next: ProcessFsOp, buffer: Uint8Array | null): { op: ProcessFsOp; buffer: Uint8Array | null; append?: Uint8Array } | null {
+  const fold = foldOf(last, next);
+  if (fold === null) return null;
+  const a = (last as Extract<ProcessFsOp, { type: 'call' }>).call as DataCall;
+  const b = (next as Extract<ProcessFsOp, { type: 'call' }>).call as DataCall;
+  if (fold === 'replaces') return { op: { type: 'call', call: { ...a, call: 'writeFile', data: b.data } as W7Call }, buffer: null };
+  return extended(a, b.data, buffer);
 }
 
 /**
@@ -1013,6 +1022,12 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     });
   };
 
+  /** The last unsent change `parts` (one op's) may fold into: one piece, its file's, sent never (one back for a re-send is numbered), logged alike. */
+  const foldTail = (parts: readonly ProcessFsOp[], named: readonly string[], acknowledged: boolean): Entry | undefined => {
+    const tail = queue[queue.length - 1];
+    return parts.length === 1 && tail !== undefined && tail.paths[0] === named[0] && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged ? tail : undefined;
+  };
+
   const schedule = (): void => {
     if (scheduled || inFlight !== null || paused || sealed) return;
     scheduled = true;
@@ -1332,6 +1347,12 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     pending() {
       return queue.length > 0 || inFlight !== null;
     },
+    continues(op, submitOptions) {
+      const given = withUmaskOf(op, options.umask);
+      const parts = pieces(given);
+      const tail = foldTail(parts, pathsOf(given), submitOptions?.acknowledged === true);
+      return tail !== undefined && foldOf(tail.op!, parts[0]!) !== null;
+    },
     fitsSync(bytes, path) {
       if (!sealed && pendingSyncBytes + bytes > syncCap) throw syncCapRefusal(bytes, path);
     },
@@ -1350,10 +1371,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       const bytes = parts.reduce((sum, part) => sum + (part.type === 'call' && 'data' in part.call ? part.call.data.byteLength : 0), 0);
       if (acknowledged && !sealed && pendingSyncBytes + bytes > syncCap) throw syncCapRefusal(bytes, pathsOf(op)[0] ?? '');
       // The same file's next bytes, right after its last unsent change: folded into it.
-      const tail = queue[queue.length - 1];
-      // (The queue holds only unsent changes; one sent and back for a re-send is numbered.)
-      const merged = parts.length === 1 && tail !== undefined && tail.paths[0] === named[0] && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged
-        ? folded(tail.op, parts[0]!, tail[FOLD_BUFFER] ?? null) : null;
+      const tail = foldTail(parts, named, acknowledged);
+      const merged = tail !== undefined ? folded(tail.op!, parts[0]!, tail[FOLD_BUFFER] ?? null) : null;
       if (merged !== null && tail !== undefined) {
         const mergedBytes = merged.op.type === 'call' && 'data' in merged.op.call ? merged.op.call.data.byteLength : 0;
         journal.replace(tail.jid, merged.op, merged.append);
