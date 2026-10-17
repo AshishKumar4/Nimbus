@@ -135,6 +135,21 @@ assert.deepEqual(imports, [
     assert.equal(await scope.WebAssembly.compile(view), compiled, `WebAssembly.compile(${kind}) too`);
     assert.equal((await scope.WebAssembly.instantiate(view, {})).module, compiled, `WebAssembly.instantiate(${kind}) too`);
   }
+  // So is a view over shared memory, as WebAssembly takes one.
+  const shared = new SharedArrayBuffer(big.byteLength + 64);
+  new Uint8Array(shared, 16, big.byteLength).set(big);
+  for (const [kind, view] of Object.entries({ 'Uint8Array over a SharedArrayBuffer': new Uint8Array(shared, 16, big.byteLength), 'DataView over a SharedArrayBuffer': new DataView(shared, 16, big.byteLength) })) {
+    assert.equal(scope.WebAssembly.Module(view), compiled, `new WebAssembly.Module(${kind}) is the loader's module`);
+    assert.equal(await scope.WebAssembly.compile(view), compiled, `WebAssembly.compile(${kind}) too`);
+    assert.equal((await scope.WebAssembly.instantiate(view, {})).module, compiled, `WebAssembly.instantiate(${kind}) too`);
+  }
+  // A detached view is no image: compile and instantiate reject it, as the real
+  // ones do, rather than throw from looking it up.
+  const gone = new Uint8Array(big);
+  const detached = new Uint8Array(gone.buffer, 8, 64);
+  gone.buffer.transfer();
+  await assert.rejects(scope.WebAssembly.compile(detached), /WebAssembly cannot be compiled from bytes here/, 'a detached view goes to the real compile, which refuses it');
+  await assert.rejects(scope.WebAssembly.instantiate(detached, {}), /WebAssembly cannot be compiled from bytes here/, 'and to the real instantiate');
   let shifted;
   try { scope.WebAssembly.Module(new DataView(padded, 31, big.byteLength)); } catch (e) { shifted = e; }
   assert.match(shifted?.message ?? '', /WebAssembly cannot be compiled from bytes here/, 'a view one byte off is not the image');
