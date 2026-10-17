@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a WASI process that makes a directory and then a file in it,
+  as `pip install` does for each package, no longer fails ENOENT about
+  once in a hundred runs. That happened when the process's hold on the
+  subtree was renewed or given back while the new file's name was being
+  looked up: the lookup carried on over a listing from before the
+  directory reached the session. Each step of a lookup now catches up
+  with the session first when the process has sent it anything.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
