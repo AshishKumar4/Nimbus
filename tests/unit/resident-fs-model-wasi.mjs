@@ -21,7 +21,7 @@ const ok = async (work) => { const errno = await work; if (errno !== 0) throw Ob
 const outcome = async (work) => {
   try { return { errno: 0, value: await work() }; }
   catch (error) {
-    const errno = error.errno ?? ERRNO[error.code];
+    const errno = ERRNO[error.code] ?? error.errno;
     if (errno === undefined) throw error;
     return { errno };
   }
