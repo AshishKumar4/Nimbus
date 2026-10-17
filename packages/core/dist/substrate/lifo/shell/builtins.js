@@ -650,10 +650,16 @@ async function builtinSource({ args, stderr, state, host, context }) {
 /**
  * eval: its arguments, joined by spaces, run in this shell, as `source` runs
  * a file's (its `return`, `break` and `exit` are this shell's); its status
- * the last command's, 0 where there is none.
+ * the last command's, 0 where there is none. It takes no options: a leading
+ * `--` ends them, and any other is refused.
  */
-async function builtinEval({ args, context }) {
-    return (await context.executeInline(args.join(' ')));
+async function builtinEval({ args, stderr, context }) {
+    const [first] = args;
+    if (first !== undefined && first.startsWith('-') && first !== '-' && first !== '--') {
+        (await stderr.write(`eval: ${first.slice(0, 2)}: invalid option\neval: usage: eval [arg ...]\n`));
+        return 2;
+    }
+    return (await context.executeInline((first === '--' ? args.slice(1) : args).join(' ')));
 }
 async function builtinAlias({ args, stdout, state }) {
     if (args.length === 0) {
