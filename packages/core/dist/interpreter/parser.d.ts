@@ -32,6 +32,19 @@ export type Tokens = Iterable<Token> & {
 /** acorn's tokenizer, which Node's error_source.js reads an assert.ok() call's expression with. */
 export declare function tokenizer(code: string, options: Options): Tokens;
 /**
+ * The last token of `text` (as CommonJS reads it) that ends at or before
+ * `offset`, as [start, end]: where V8 places an argument list's missing `)`
+ * at the end of the input. Null for none.
+ */
+export declare function lastTokenBefore(text: string, offset: number): [number, number] | null;
+/**
+ * The rest element (`...`) directly inside the innermost parenthesis still
+ * open at `offset` in `text` (as CommonJS reads it), as [start, end]: where
+ * V8 reports a parenthesized rest no arrow follows
+ * (ParseArrowParametersWithRest) at the end of the input. Null for none.
+ */
+export declare function openParenRest(text: string, offset: number): [number, number] | null;
+/**
  * Where V8 would place a fatal error's report in `text`, a module's whole
  * text (a `{ cjs }` cell's wrapper included) as `goal` parses it, for the
  * process's fatal report (node-shims.ts __nimbusFatalArrow), which has a
@@ -41,11 +54,5 @@ export declare function tokenizer(code: string, options: Options): Tokens;
  *   - `offset` -1: the syntax error that stops the parse, as [start, end]
  *     of the token it stops at; null when the text parses.
  */
-/**
- * The last token of `text` (as CommonJS reads it) that ends at or before
- * `offset`, as [start, end]: where V8 places an argument list's missing `)`
- * at the end of the input. Null for none.
- */
-export declare function lastTokenBefore(text: string, offset: number): [number, number] | null;
 export declare function fatalLocation(text: string, goal: 'script' | 'module', offset: number): [number, number] | null;
 //# sourceMappingURL=parser.d.ts.map

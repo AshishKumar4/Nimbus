@@ -181,16 +181,6 @@ export function tokenizer(code, options) {
     return Parser.tokenizer(code, options);
 }
 /**
- * Where V8 would place a fatal error's report in `text`, a module's whole
- * text (a `{ cjs }` cell's wrapper included) as `goal` parses it, for the
- * process's fatal report (node-shims.ts __nimbusFatalArrow), which has a
- * frame's offset and not V8's message:
- *   - `offset` given: the innermost `throw` statement whose argument holds
- *     it, as [start, start + 1], V8's location of a throw; null for none;
- *   - `offset` -1: the syntax error that stops the parse, as [start, end]
- *     of the token it stops at; null when the text parses.
- */
-/**
  * The last token of `text` (as CommonJS reads it) that ends at or before
  * `offset`, as [start, end]: where V8 places an argument list's missing `)`
  * at the end of the input. Null for none.
@@ -209,6 +199,48 @@ export function lastTokenBefore(text, offset) {
     }
     return last;
 }
+/**
+ * The rest element (`...`) directly inside the innermost parenthesis still
+ * open at `offset` in `text` (as CommonJS reads it), as [start, end]: where
+ * V8 reports a parenthesized rest no arrow follows
+ * (ParseArrowParametersWithRest) at the end of the input. Null for none.
+ */
+export function openParenRest(text, offset) {
+    const open = [];
+    try {
+        for (const token of Parser.tokenizer(text, COMMONJS_OPTIONS)) {
+            if (token.end > offset)
+                break;
+            const label = token.type.label;
+            if (label === '(' || label === '[' || label === '{' || label === '${')
+                open.push({ paren: label === '(', rest: null });
+            else if (label === ')' || label === ']' || label === '}')
+                open.pop();
+            else if (label === '...') {
+                const inner = open.at(-1);
+                if (inner !== undefined)
+                    inner.rest ??= [token.start, token.end];
+            }
+        }
+    }
+    catch {
+        // A token that does not end (an unterminated string) is past the last one.
+    }
+    for (let i = open.length - 1; i >= 0; i--)
+        if (open[i].paren)
+            return open[i].rest;
+    return null;
+}
+/**
+ * Where V8 would place a fatal error's report in `text`, a module's whole
+ * text (a `{ cjs }` cell's wrapper included) as `goal` parses it, for the
+ * process's fatal report (node-shims.ts __nimbusFatalArrow), which has a
+ * frame's offset and not V8's message:
+ *   - `offset` given: the innermost `throw` statement whose argument holds
+ *     it, as [start, start + 1], V8's location of a throw; null for none;
+ *   - `offset` -1: the syntax error that stops the parse, as [start, end]
+ *     of the token it stops at; null when the text parses.
+ */
 export function fatalLocation(text, goal, offset) {
     const finder = new ThrowFinder(goal === 'module' ? MODULE_OPTIONS : COMMONJS_OPTIONS, text);
     finder.offset = offset;
