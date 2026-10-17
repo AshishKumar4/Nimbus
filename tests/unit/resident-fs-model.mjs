@@ -119,7 +119,8 @@ async function run(steps) {
   const resolve = (reference) => {
     if (reference.fixed !== undefined) return reference.fixed;
     const opened = reference.opened;
-    if (opened.session === undefined) return opened.view;
+    // Not delivered: the file the view had at its name (one it made, `L<n>`), as that reference resolves now.
+    if (opened.session === undefined) return opened.view ?? resolve(opened.base);
     return admitted.files.has(opened.session) ? opened.session : `S${opened.session}`;
   };
   /** What the view has of a file it has not admitted, before the process's operations on it: its open's receipt, its bytes unknown but none. */
@@ -215,7 +216,7 @@ async function run(steps) {
       assert.equal(code, expected, `${label}: open ${step.name} ${JSON.stringify(step.flags)}`);
       if (code !== null) return;
       const made = reference === undefined;
-      const opened = { handle, view: made ? `L${++local}` : resolve(reference), read: step.flags.read || !writes, write: writes, append: step.flags.append, name: step.name, position: 0 };
+      const opened = { handle, ...(made ? { view: `L${++local}` } : { base: reference }), read: step.flags.read || !writes, write: writes, append: step.flags.append, name: step.name, position: 0 };
       fds.set(step.fd, opened);
       // Logged where it makes, empties or may write its file: the session's open, as the caller asked it; its refusal is all of its effects'.
       const logs = writes || step.flags.truncate || made;
@@ -297,7 +298,7 @@ async function run(steps) {
       assert.equal(code, expected, `${label}: writeFile ${step.name}`);
       if (code !== null) return;
       const made = reference === undefined;
-      const opened = { view: made ? `L${++local}` : resolve(reference), write: true, name: step.name };
+      const opened = { ...(made ? { view: `L${++local}` } : { base: reference }), write: true, name: step.name };
       const records = [];
       if (made) {
         records.push(add({ kind: 'create', ref: { opened }, mode: 0o644 & ~0o022 }));

@@ -33,7 +33,7 @@ export function session({ grantInos, journal, gate, refuse, view, acquired, gran
     kernel.chown(`home/user/proj/d${index}`, 1000, 1000);
   }
   const filesystem = new ProcessFiles(engine);
-  const bridge = filesystem.bind({ pid: 7, cred: user });
+  const bridge = /** @type {any} */ (filesystem.bind({ pid: 7, cred: user }));
   // The process's store, coherent with the session at every call: reads as the process does.
   const entryOf = (stat, target = null) => ({
     type: stat.type, dev: stat.dev, ino: stat.ino, nlink: stat.nlink, size: stat.size, atime: stat.atime, mtime: stat.mtime,
@@ -110,7 +110,7 @@ export function session({ grantInos, journal, gate, refuse, view, acquired, gran
     },
   };
   // A subtree is taken at its first mutation here, as P4a did.
-  const fs = residentFilesystem(bridge, store, {
+  const fs = residentFilesystem(bridge, /** @type {any} */ (store), {
     session: processSession,
     grantAfter: 1,
     ...(grantInos === undefined ? {} : { grantInos }),

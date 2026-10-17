@@ -205,8 +205,8 @@ export function provisional(host: ProvisionalHost): Provisional {
   const added = new Map<string, Map<string, RuntimeVfsDirEntry['type']>>();
   const removed = new Map<string, Set<string>>();
   const nameRecords: NameRecord[] = [];
-  /** The inodes whose own content or attributes the process sees (a fold), by the name that reaches them. */
-  const touched = new Map<string, Inode>();
+  /** The inodes whose own content or attributes the process sees (a fold): every name the view has them at shows them. */
+  const touched = new Set<Inode>();
   let ids = 0;
   let barriers = 0;
   let localIno = LOCAL_INOS;
@@ -248,11 +248,11 @@ export function provisional(host: ProvisionalHost): Provisional {
       const inode = layer.get(key)!;
       return inode === null ? null : entryOf(inode);
     }
-    // A file whose content this process changed, while its name still leads to it in the view.
-    const changed = touched.get(key);
-    if (changed !== undefined) {
+    // A file whose content this process changed, at any name the view has it at.
+    if (touched.size > 0) {
       const row = host.row(key);
-      if (row && row.dev === changed.dev && row.ino === changed.ino) return entryOf(changed);
+      const changed = row ? inodes.get(identity(row.dev, row.ino)) : undefined;
+      if (changed !== undefined && changed.state !== null) return entryOf(changed);
     }
     if (layer.size === 0) return undefined;
     // A directory made here has no names but the ones made in it.
@@ -345,7 +345,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       inode.base = baseline(inode);
       inode.state = copyState(inode.base);
     }
-    touched.set(inode.key, inode);
+    touched.add(inode);
     activity();
     const record: InodeRecord = { id: ++ids, op, owner: inode, ...(description === undefined ? {} : { description }), answered: false, answeredAt: 0 };
     inode.records.push(record);
@@ -359,7 +359,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     for (const value of layer.values()) if (value === inode) return;
     // What the process sees of a file it changed stays until the view has it (retire), but where no name leads to it.
     if (inode.state !== null && named(inode)) return;
-    if (touched.get(inode.key) === inode) touched.delete(inode.key);
+    touched.delete(inode);
     inode.base = null;
     inode.state = null;
     host.release(inode.reserved);
@@ -437,7 +437,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     removed.clear();
     for (const record of nameRecords) record.replay();
     touched.clear();
-    for (const inode of inodes.values()) if (inode.state !== null) touched.set(inode.key, inode);
+    for (const inode of inodes.values()) if (inode.state !== null) touched.add(inode);
     activity();
   };
 
@@ -485,10 +485,10 @@ export function provisional(host: ProvisionalHost): Provisional {
     layer.set(key, inode);
     note(parentKey(key), nameOf(key), inode === null ? null : inode.type);
     if (inode !== null) {
-      if (touched.get(inode.key) === inode) touched.delete(inode.key);
+      touched.delete(inode);
       inode.key = key;
       inode.unnamed = false;
-      if (inode.state !== null) touched.set(key, inode);
+      if (inode.state !== null) touched.add(inode);
     }
     activity();
   };
@@ -519,7 +519,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     if (type === 'file') {
       inode.base = { bytes: new Uint8Array(0), size: 0, mode, uid, gid, atime: at, mtime: at, ctime: at };
       inode.state = copyState(inode.base);
-      touched.set(key, inode);
+      touched.add(inode);
       activity();
     }
     inodes.set(identity(row.dev, row.ino), inode);
@@ -542,7 +542,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     target.records = [...target.records, ...records].sort((a, b) => a.id - b.id);
     if (target.base === null) {
       target.base = baseline(target);
-      touched.set(target.key, target);
+      touched.add(target);
     }
     refold(target);
     for (const inode of left) {
@@ -597,7 +597,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       known.descs += inode.descs;
       inode.descs = 0;
       for (const [key, value] of layer) if (value === inode) layer.set(key, known);
-      if (touched.get(inode.key) === inode) touched.delete(inode.key);
+      touched.delete(inode);
       known.reserved += inode.reserved - RECORD_COST * inode.records.length;
       inode.reserved = RECORD_COST * inode.records.length;
       moveRecords([...inode.records], known);
@@ -759,7 +759,12 @@ export function provisional(host: ProvisionalHost): Provisional {
   const provisional: Provisional = {
     owns: (handleId) => descs.size > 0 && descs.has(handleId),
 
-    touches: (key) => (layer.size > 0 || touched.size > 0) && (layer.has(key) || layer.has(parentKey(key)) || touched.has(key)),
+    touches: (key) => {
+      if (layer.size === 0 && touched.size === 0) return false;
+      if (layer.has(key) || layer.has(parentKey(key))) return true;
+      const row = host.row(key);
+      return row ? inodes.get(identity(row.dev, row.ino))?.state != null : false;
+    },
 
     setStatus: (handleId, status) => {
       const desc = descOf(handleId);
@@ -1091,7 +1096,7 @@ export function provisional(host: ProvisionalHost): Provisional {
           inode.base = baseline(inode);
         }
         if (inode.state === null) {
-          if (touched.get(inode.key) === inode) touched.delete(inode.key);
+          touched.delete(inode);
         } else {
           refold(inode);
         }
