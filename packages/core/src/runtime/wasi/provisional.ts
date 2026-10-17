@@ -640,7 +640,7 @@ export function provisional(host: ProvisionalHost): Provisional {
   };
 
   const provisional: Provisional = {
-    owns: (handleId) => descs.has(handleId),
+    owns: (handleId) => descs.size > 0 && descs.has(handleId),
 
     touches: (key) => (layer.size > 0 || touched.size > 0) && (layer.has(key) || layer.has(parentKey(key)) || touched.has(key)),
 
@@ -652,6 +652,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     entry: provisionalEntry,
 
     children: (key, base) => {
+      if (layer.size === 0) return base;
       const made = added.get(key);
       const gone = removed.get(key);
       if (made === undefined && gone === undefined) return base;
@@ -927,6 +928,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     },
 
     content: (entry) => {
+      if (touched.size === 0) return undefined;
       const inode = inodes.get(identity(entry.dev, entry.ino));
       if (inode === undefined || inode.state === null || inode.state.bytes === null) return undefined;
       return inode.state.bytes.slice(0, inode.state.size);

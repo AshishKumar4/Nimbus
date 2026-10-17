@@ -565,6 +565,35 @@ async function caughtUp(s) {
   sync.close(fd);
 }
 
+// A descriptor's rights are the open's: one that made its file 0444 writes
+// it (creat(2)); a reopen that empties a file it may not write is refused,
+// no descriptor made and nothing emptied; and a write by a descriptor lands
+// in its file under the name a rename since gave it.
+{
+  const { s, sync } = provisionalSession();
+  await s.fs.readdir(OTHER);
+  const made = sync.open(other('ro-made.txt'), { write: true, create: true, mode: 0o444 }).id;
+  assert.equal(sync.write(made, null, enc.encode('MINE')), 4);
+  sync.close(made);
+  assert.equal(dec.decode(sync.readFile(other('ro-made.txt'))), 'MINE');
+  await resident(s, 'locked.txt', 'KEEP');
+  s.kernel.chmod('home/user/other/locked.txt', 0o444);
+  await caughtUp(s);
+  const reader = sync.open(other('locked.txt'), { read: true }).id;
+  assert.throws(() => sync.reopen({ handle: reader }, { write: true, truncate: true }), { code: 'EACCES' });
+  assert.equal(dec.decode(sync.readFile(other('locked.txt'))), 'KEEP');
+  sync.close(reader);
+  await resident(s, 'from.txt', 'abc');
+  const fd = sync.open(other('from.txt'), { read: true, write: true }).id;
+  sync.rename(other('from.txt'), other('to.txt'));
+  sync.write(fd, 0, enc.encode('X'));
+  assert.equal(dec.decode(sync.readFile(other('to.txt'))), 'Xbc');
+  assert.equal(sync.stat(other('from.txt')), null);
+  sync.close(fd);
+  await s.fs.flush();
+  assert.equal(dec.decode(s.kernel.readFile('home/user/other/to.txt')), 'Xbc');
+}
+
 // What a decision kept goes back once the view has it, whatever became of
 // its name since. Red before: a renamed file's cell was never given back.
 {
