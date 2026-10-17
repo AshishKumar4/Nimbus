@@ -39,7 +39,7 @@ import { applyOp, copyState, foldOps, type InodeOp, type InodeState } from './in
 const LOCAL_INOS = 2 ** 50;
 
 /** What one record of a name or an inode costs the process's budget, besides the bytes it keeps. */
-export const RECORD_COST = 160;
+const RECORD_COST = 160;
 
 function parentKey(key: string): string {
   const at = key.lastIndexOf('/');
@@ -227,6 +227,7 @@ export function provisional(host: ProvisionalHost): Provisional {
   };
 
   const provisionalEntry = (key: string): ResidentEntry | null | undefined => {
+    if (layer.size === 0 && touched.size === 0) return undefined;
     if (layer.has(key)) {
       const inode = layer.get(key)!;
       return inode === null ? null : entryOf(inode);
@@ -788,7 +789,8 @@ export function provisional(host: ProvisionalHost): Provisional {
     inodeOf: (handleId) => {
       const desc = descs.get(handleId);
       if (desc === undefined || !named(desc.inode)) return undefined;
-      return { key: desc.inode.key, entry: entryOf(desc.inode) };
+      // The view's row: the bytes its records fold over.
+      return { key: desc.inode.key, entry: desc.inode.row };
     },
 
     keyOf: (handleId) => descOf(handleId).inode.key,
