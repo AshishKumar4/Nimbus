@@ -14174,7 +14174,7 @@ function __nimbusEvaluateEntry(load, mod, filename, dirname) {
   } catch (e) {
     if (check && e === ${JSON.stringify(ENTRY_CHECKED)}) return __nimbusCheckedAlone();
     // TypeScript's module syntax Node retries as an ES module (wrapSafe), which cannot be checked here without running it.
-    if (check && stripsTypeScript(filename) && __nimbusModuleSyntaxError(e, source)) {
+    if (check && /\\.[cm]?ts$/.test(filename) && __nimbusModuleSyntaxError(e, source)) {
       __processMod.stderr.write("node: -c cannot check an ES module entry in Nimbus without running it\\n");
       __processMod.exit(9);
     }
