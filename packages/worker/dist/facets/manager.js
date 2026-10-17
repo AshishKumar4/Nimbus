@@ -4004,6 +4004,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
         rawTotal += bytes;
     }
     if (rawTotal > maxBundleBytes) {
+        // Eager manifests are counted here: a bounded try can overrun its share by their size before it bounces.
         // Only the walk's closure can fail a launch, and the path it names is the
         // one whose bytes (with its emit) crossed the bound, in walk order.
         let closureBytes = 0;
@@ -6145,6 +6146,25 @@ export class FacetManager {
         // the program ran, so a child it launched and waited on, needing a turn
         // of its own, never got one.
         const pacer = this._launchPacer(entry.pid);
+        const failed = async (error) => {
+            // A generation or run failure has the same result, wherever the worker wait falls.
+            const unsettled = `${UNSETTLED_END_NOTE}\n`;
+            if (abortController.signal.aborted) {
+                this._end(entry.pid, { code: 137, killed: true });
+                if (!opts.captureOutput)
+                    await this._deliverOutput(entry.pid, 'stderr', new TextEncoder().encode(unsettled));
+                return { exitCode: 130, stdout: '', stderr: opts.captureOutput ? unsettled : '' };
+            }
+            // A ledger refusal is still the spawn failing: a pid the caller allocated is theirs to mark.
+            if (isDynamicWorkerDeadlock(error)) {
+                if (!opts.skipSpawn)
+                    this._end(entry.pid, { code: 1 });
+                throw error;
+            }
+            const refused = residencyMissReport([...(this.launchBundles.get(entry.pid)?.refused ?? [])]);
+            this._end(entry.pid, { code: 1, cause: `runtime worker error: ${errorMessage(error)}` });
+            return { exitCode: 1, stdout: '', stderr: `${errorMessage(error)}\n${unsettled}${refused}` };
+        };
         try {
             const diagOn = isExecDiagEnabled();
             const __bundleStart = diagOn ? Date.now() : 0;
@@ -6181,7 +6201,6 @@ export class FacetManager {
             let prepared;
             try {
                 vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
-                prepared = await prepare();
             }
             catch (err) {
                 // Its failure ends the process here (below), not in the catch further down.
@@ -6210,6 +6229,16 @@ export class FacetManager {
                 // reports nothing twice.
                 this._end(entry.pid, { code: 1, cause: `assembling the filesystem bundle for \`${command}\` failed: ${errorMessage(err)}` });
                 throw err;
+            }
+            try {
+                prepared = await prepare();
+            }
+            catch (error) {
+                prepareFailed = true;
+                pacer.settle();
+                stdinPump?.stop();
+                foreground?.release();
+                return await failed(error);
             }
             this.launching.set(entry.pid, { stage: 'admission', since: Date.now() });
             await brokered?.(abortController.signal);
@@ -6363,36 +6392,8 @@ export class FacetManager {
                     }
                     return result;
                 }
-                catch (err) {
-                    // The abort controller firing means this run ended BY a kill — the
-                    // shell's Ctrl+C or `kill <pid>`. The process was not a crash and the
-                    // abort text is not its stderr: mark it killed and hand back 130 (the
-                    // shell's signalled status) with nothing for the terminal to print.
-                    // A one-shot that ended abnormally may have lost writes it
-                    // acknowledged and never sent: said, with the bound, every time (the
-                    // session cannot know whether there were any: they never left).
-                    const unsettled = `${UNSETTLED_END_NOTE}\n`;
-                    if (abortController.signal.aborted) {
-                        this._end(entry.pid, { code: 137, killed: true });
-                        if (!opts.captureOutput)
-                            await this._deliverOutput(entry.pid, 'stderr', new TextEncoder().encode(unsettled));
-                        return { exitCode: 130, stdout: '', stderr: opts.captureOutput ? unsettled : '' };
-                    }
-                    // The ledger refused to start it (EAGAIN): it never ran. That is its
-                    // spawn failing, for whoever spawned it to report: a child_process
-                    // parent as an 'error' event. A pid the caller allocated is the
-                    // caller's to mark; one spawned here ends with status 1.
-                    if (isDynamicWorkerDeadlock(err)) {
-                        if (!opts.skipSpawn)
-                            this._end(entry.pid, { code: 1 });
-                        throw err;
-                    }
-                    // The run ended without its exit report (the platform killed it), so it
-                    // is failed here naming what it reported refused as it ran: a cause the
-                    // next launch removes, and one the platform's error does not name.
-                    const refused = residencyMissReport([...(this.launchBundles.get(entry.pid)?.refused ?? [])]);
-                    this._end(entry.pid, { code: 1, cause: `runtime worker error: ${errorMessage(err)}` });
-                    return { exitCode: 1, stdout: '', stderr: `${errorMessage(err)}\n${unsettled}${refused}` };
+                catch (error) {
+                    return await failed(error);
                 }
                 finally {
                     pacer.settle();
