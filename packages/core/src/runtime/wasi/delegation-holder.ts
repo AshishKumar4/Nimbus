@@ -191,9 +191,10 @@ export interface DelegationHolder {
    * An attribute change of the file `handleId` opened (fchmod, fchown,
    * futimes): decided here where the file's grant decides it (or it lost its
    * name: it is this process's alone), its times resolved as it is decided;
-   * else the provisional decisions', through its description.
+   * true then. False where the provisional decisions logged it, through its
+   * description: the session's to apply (a caller that may wait waits for it).
    */
-  fsetattr(handleId: number, change: W7Attrs): void;
+  fsetattr(handleId: number, change: W7Attrs): boolean;
   /**
    * The session changed `key`'s attributes itself, after everything the
    * holder had was sent (one it holds but did not decide): what was decided
@@ -923,7 +924,10 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
 
     fsetattr: (handleId, change) => {
       const handle = heldDesc(handleId);
-      if (handle === undefined) return prov.fsetattr(handleId, change);
+      if (handle === undefined) {
+        prov.fsetattr(handleId, change);
+        return false;
+      }
       const inode = handle.inode;
       const file = inode.cell;
       const entry = file.detached ?? decided.get(inode.key) ?? store.entry(inode.key);
@@ -932,10 +936,11 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const attrs: W7Attrs = entry && 'atime' in change ? { atime: timeAt(change.atime, entry.atime, at), mtime: timeAt(change.mtime, entry.mtime, at) } : change;
       if (file.detached === undefined) {
         // By its name where its grant decides it; else no grant decides the file from now on: the provisional decisions', through its description.
-        if (entry && holder.setattr(inode.key, attrs)) return;
+        if (entry && holder.setattr(inode.key, attrs)) return true;
         drain();
         unhold(inode);
-        return prov.fsetattr(handleId, change);
+        prov.fsetattr(handleId, change);
+        return false;
       }
       // Its name gone, the file is this process's alone: judged and changed
       // here, as the session judges a description, its confinement of the
@@ -948,6 +953,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       if (refused !== null) throw fsError(refused, 'mode' in attrs ? 'fchmod' : 'uid' in attrs ? 'fchown' : 'futimes', '/' + inode.key);
       file.detached = changedBy(detached, attrs);
       file.mode = file.detached.mode & 0o7777;
+      return true;
     },
     undecided: (key) => { names.undecide(key); },
 

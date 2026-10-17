@@ -1320,15 +1320,17 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   /**
    * fchmod, fchown and futimes of a descriptor of the holder's, on the file
    * it opened, never on a name: decided here where a grant decides that
-   * file, else by the provisional decisions, through its open description
-   * at the session (DelegationHolder.fsetattr).
+   * file; else by the provisional decisions, through its open description at
+   * the session (DelegationHolder.fsetattr), which a caller that may wait
+   * waits for: the change is every process's when the call returns, and its
+   * refusal the call's.
    */
-  const holderAttrs = (name: 'fchmod' | 'fchown' | 'futimes', handleId: number, rest: unknown[]): undefined => {
+  const holderAttrs = (name: 'fchmod' | 'fchown' | 'futimes', handleId: number, rest: unknown[]): undefined | Promise<void> => {
     const change: W7Attrs = name === 'fchmod' ? { mode: Number(rest[0]) }
       : name === 'fchown' ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) }
       : { atime: rest[0] as FsTime, mtime: rest[1] as FsTime };
-    holder!.fsetattr(handleId, change);
-    return undefined;
+    if (holder!.fsetattr(handleId, change) || now) return undefined;
+    return holder!.flush();
   };
 
   /**

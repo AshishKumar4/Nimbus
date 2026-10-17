@@ -17,7 +17,7 @@
 
 import assert from 'node:assert/strict';
 import { session, user } from './lib/holder-session.mjs';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { withRecall } from '../../packages/core/src/vfs/recall.ts';
 
 const DIR = 'home/user/other';
 const NAMES = ['a', 'b', 'c'];
@@ -149,8 +149,6 @@ async function runSteps(steps, met, grants) {
   met.waves = s.waves;
   const ref = session();
   const sync = s.fs.synchronous;
-  // A peer process of the session's: its change in a subtree the process holds recalls the grant first.
-  const peerProcess = /** @type {any} */ (s.filesystem.bind({ pid: 9, cred: CRED_KERNEL }));
   const direct = ref.filesystem.bind({ pid: 8, cred: user });
   const path = (name) => `/${DIR}/${name}`;
 
@@ -441,11 +439,12 @@ async function runSteps(steps, met, grants) {
   };
 
   /**
-   * A peer's change. Without grants, between deliveries: the session has it
-   * before what the process sends next, and so does the reference. With
-   * them, once what the process sent is delivered, through a process of the
-   * session's own: it recalls the grant, and waits for what the process
-   * held to be sent.
+   * A peer's change, as the session's own (its kernel). Without grants,
+   * between deliveries: the session has it before what the process sends
+   * next, and so does the reference. With them, once what the process sent
+   * is delivered: it recalls the grant (withRecall), and waits for what the
+   * process held to be sent. Only a change the session refuses as it would
+   * the reference's (nothing there) is let pass.
    */
   const peerStep = async (step) => {
     // A peer's write stamps its own mtime, at each session's own clock: not one the process set.
@@ -453,30 +452,24 @@ async function runSteps(steps, met, grants) {
     const key = `${DIR}/${step.name}`;
     const change = async (target) => {
       try {
-        if (step.kind === 'write') { await target.writeFile(key, enc.encode(step.data)); await target.chown(key, 1000, 1000); }
-        else if (step.kind === 'unlink') await target.unlink(key);
-        else if (step.kind === 'rename') await target.rename(key, `${DIR}/${step.to}`);
-        else await target.chmod(key, step.mode);
-      } catch { /* nothing there */ }
+        if (step.kind === 'write') { target.writeFile(key, enc.encode(step.data)); target.chown(key, 1000, 1000); }
+        else if (step.kind === 'unlink') target.unlink(key);
+        else if (step.kind === 'rename') target.rename(key, `${DIR}/${step.to}`);
+        else target.chmod(key, step.mode);
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
     };
-    if (!grants) {
-      await change(s.kernel);
-      await change(ref.kernel);
-      return;
+    if (grants) {
+      await deliver();
+      control.held = false;
+      control.opened.resolve();
     }
-    await deliver();
-    control.held = false;
-    control.opened.resolve();
-    const slash = (target) => ({
-      writeFile: (at, data) => target.writeFile('/' + at, data),
-      chown: (at, uid, gid) => target.chown('/' + at, uid, gid),
-      unlink: (at) => target.unlink('/' + at),
-      rename: (from, to) => target.rename('/' + from, '/' + to),
-      chmod: (at, mode) => target.chmod('/' + at, mode),
-    });
-    await change(slash(peerProcess));
-    control.held = true;
-    control.opened = Promise.withResolvers();
+    await withRecall(() => change(s.kernel));
+    if (grants) {
+      control.held = true;
+      control.opened = Promise.withResolvers();
+    }
     await change(ref.kernel);
   };
 

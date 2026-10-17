@@ -104,7 +104,7 @@ async function create(fs, path, text) {
 {
   const s = session();
   await create(s.fs, '/home/user/proj/d1/notes.txt', 'decided');
-  assert.equal(s.filesystem.delegations.size, 1);
+  await until(() => s.filesystem.delegations.size === 1, 'the grant');
   const read = await withRecall(() => s.kernel.readFileString('home/user/proj/d1/notes.txt'));
   assert.equal(read, 'decided', "a reader did not wait for the holder's send");
   await withRecall(() => s.kernel.writeFile('home/user/proj/d1/notes.txt', 'theirs'));

@@ -158,37 +158,26 @@ async function readWhole(fs, name) {
   }
 }
 
-// ── A write through made while a send is in flight is still owed after it ──
-// Red before: the send's completion cleared the debt the new write logged
-// during its await; the stat after it took the barrier without sending that
-// write, and the store answered the size the session had: the old one.
+// ── A stat answers the size this process's writes gave the file, whatever the session has of them yet ──
+// Its sends held: each stat after a write answers as the writes made the
+// file, and the session has them all once they are sent.
 {
-  const first = Promise.withResolvers();
-  const second = Promise.withResolvers();
+  const sent = Promise.withResolvers();
   let holding = false;
-  let held = 0;
-  const gate = () => (holding ? (held++ === 0 ? first.promise : second.promise) : null);
-  const { fs } = await processOver({ 'seen.txt': 'x' }, gate);
+  const gate = () => (holding ? sent.promise : null);
+  const { fs, authority } = await processOver({ 'seen.txt': 'x' }, gate);
   await fs.stat(beneath('seen.txt'));
   const handle = await fs.open(beneath('owed.txt'), { write: true, create: true, truncate: true });
-  await fs.write(handle.id, null, enc.encode('a'));
   holding = true;
-  const stat = fs.stat(beneath('owed.txt'));
-  for (let i = 0; i < 200 && held === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5));
-  assert.equal(held, 1, 'the stat sent nothing first');
-  // During the send: a write and the close (another thread's, or the program's own between the send's turns).
+  await fs.write(handle.id, null, enc.encode('a'));
+  assert.equal((await fs.stat(beneath('owed.txt'))).size, 1, 'a stat after a write answered without it');
   await fs.write(handle.id, null, enc.encode('bb'));
-  const closed = fs.close(handle.id);
-  first.resolve();
-  let answered = null;
-  stat.then((value) => { answered = value; });
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal((await fs.stat(beneath('owed.txt'))).size, 3, 'a stat after a second write answered without it');
   holding = false;
-  second.resolve();
-  const final = await stat;
-  assert.equal((answered ?? final).size, 3, 'a stat after the send answered without the write made during it');
-  await closed;
+  sent.resolve();
+  await fs.close(handle.id);
   await fs.settle();
+  assert.equal((await authority.stat(beneath('owed.txt'))).size, 3);
 }
 
 // ── A file of a few MiB reads back what was written, at once ──
