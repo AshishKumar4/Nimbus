@@ -5175,9 +5175,10 @@ export class FacetManager {
     program, 
     /** The program's own conditions, which its code's resolutions use. */
     conditions = []) {
-        if (!this.vfs || !this.filesystem)
+        const filesystem = this.filesystem;
+        if (!this.vfs || !filesystem)
             return { paths: [], storageBytes: 0, lazyReads: {}, sourceRoots: [] };
-        const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
+        const vfs = filesystem.bind({ pid: entry.pid, cred: entry.cred });
         const started = Date.now();
         const trace = (what) => {
             if (!this.debugEnabled)
@@ -5211,7 +5212,7 @@ export class FacetManager {
         trace(`${refs.length} modules name paths (${syncReadsOf.size} lazy ones' synchronous reads deferred to their import()); learned reads`);
         // Where this process's listing walks mounts, the plan's below and its own
         // at boot: what its launch names.
-        this.filesystem.nameLaunch?.(entry, () => launchNames(cwd, program, entry.argv, vfsState.bundlePaths ?? [], refs));
+        filesystem.nameLaunch?.(entry, () => launchNames(cwd, program, entry.argv, vfsState.bundlePaths ?? [], refs));
         const learned = await this._learnedReads(vfsState, entry.cred);
         trace(`${learned.length} learned; listing`);
         let pages = 0;
@@ -5231,6 +5232,7 @@ export class FacetManager {
             learned,
             conditions,
             spend: (units) => pacer.spend(units),
+            nameSources: (roots) => filesystem.nameLaunch?.(entry, () => roots),
         });
         trace(`planned ${plan.paths.length}`);
         // What the facet's store will hold (N18), in the cost its store charges
@@ -5295,6 +5297,8 @@ export class FacetManager {
             for (const file of found.files)
                 if (!held.has(file.path))
                     plan.add(file.path);
+            // Where its listing walks mounts, as its launch's names are.
+            this.filesystem.nameLaunch?.(entry, () => found.roots);
         }
         return [...plan];
     }

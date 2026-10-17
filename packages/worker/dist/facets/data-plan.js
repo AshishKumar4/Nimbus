@@ -378,8 +378,10 @@ export async function planFacetData(source, input) {
     // Directories a home or project symlink points at, whose files the rule
     // that took the link would have taken had they been in place.
     const linkedDirs = [];
-    /** The project's stylesheets, for the sources they name (stylesheet-source). */
+    /** The project's stylesheets, for the sources they name (stylesheet-source): its own, and those behind its links. */
     const projectSheets = [];
+    /** Directories the listing did not walk, on a mount whose listing walks what is named. */
+    const unlisted = [];
     /**
      * A statically named file is worth holding when the module map does not
      * already hold it, and it is data-sized or the code reads it synchronously
@@ -401,6 +403,8 @@ export async function planFacetData(source, input) {
             const k = key(raw.path);
             const entry = { path: k, kind: raw.kind, size: raw.size };
             if (entry.kind === 'directory') {
+                if (raw.unlisted !== undefined)
+                    unlisted.push(k);
                 if (listed.has(k))
                     expanded.add(k);
                 if (packageRootOf(k + '/x') === k)
@@ -634,13 +638,6 @@ export async function planFacetData(source, input) {
                 take({ path: k, kind: 'file', size: found.size }, 'entries');
         }
     }
-    const sourceRoots = [];
-    if (oxide) {
-        const found = await planStylesheetSources({ ...source, linkTarget: links.linkTarget }, { cwd, home, sheets: projectSheets, spend: input.spend });
-        for (const entry of found.files)
-            take(entry, 'stylesheet-source');
-        sourceRoots.push(...found.roots);
-    }
     // The files behind symlinked directories the project or home rule reached.
     if (linkedDirs.length > 0) {
         after = null;
@@ -654,15 +651,59 @@ export async function planFacetData(source, input) {
                 const k = key(raw.path);
                 // The first root that holds it, below which it is not what the rule that took the root would have left out.
                 const holder = linkedDirs.find(({ target }) => (k === target || k.startsWith(target + '/')) && !excludedBelow(home, target, k));
-                if (holder)
-                    take({ path: k, kind: 'file', size: raw.size }, holder.rule);
+                if (!holder)
+                    continue;
+                take({ path: k, kind: 'file', size: raw.size }, holder.rule);
+                if (oxide && holder.rule === 'project' && k.endsWith('.css'))
+                    projectSheets.push(k);
             }
             if (page.next === null)
                 break;
             after = page.next;
         }
     }
+    const sourceRoots = [];
+    if (oxide) {
+        const found = await planStylesheetSources({ ...source, linkTarget: links.linkTarget }, { cwd, home, sheets: projectSheets, spend: input.spend });
+        for (const entry of found.files)
+            take(entry, 'stylesheet-source');
+        sourceRoots.push(...found.roots);
+        if (found.roots.length > 0 && input.nameSources) {
+            // Named, a root on a mount the listing did not walk adds what is under it to the listing: its names are counted.
+            const roots = found.roots.map(key);
+            const unwalked = roots.filter((r) => unlisted.some((u) => under(u, r) || under(r, u)))
+                .filter((r, _, all) => !all.some((other) => other !== r && under(other, r)));
+            const before = await listedUnder(source, unwalked);
+            input.nameSources(found.roots);
+            names += (await listedUnder(source, unwalked)) - before;
+        }
+    }
     return { paths, bytes, rules, sourceRoots, names };
+}
+/** Whether key `k` is `dir` or below it. */
+function under(dir, k) {
+    return dir === '' || k === dir || k.startsWith(dir + '/');
+}
+/** How many names the listing has below `dirs`, each listed from where it begins. */
+async function listedUnder(source, dirs) {
+    let count = 0;
+    for (const dir of dirs) {
+        const prefix = dir + '/';
+        for (let after = dir; after !== null;) {
+            const page = await source.list(after);
+            after = page.next;
+            for (const raw of page.entries) {
+                const k = key(raw.path);
+                if (k.startsWith(prefix))
+                    count++;
+                else if (k > prefix) {
+                    after = null;
+                    break;
+                }
+            }
+        }
+    }
+    return count;
 }
 /** Whether a closure carries Tailwind's oxide scanner, whose reads cannot wait (the stylesheet-source rule). */
 export function carriesOxide(closure) {
@@ -671,21 +712,33 @@ export function carriesOxide(closure) {
             return true;
     return false;
 }
+/** Whether `at` is where `dir` or a directory it is below is. */
+function below(dir, at) {
+    for (let d = dir; d !== null; d = d.up)
+        if (d.at === at)
+            return true;
+    return false;
+}
 /**
  * The stylesheet-source rule, for a resident's plan and a one-shot's alike:
  * from `sheets`, through the `@import`s Tailwind inlines (a path's, not a
- * package's), each sheet read once, every `@source` outside the working tree
- * `cwd`, each brace alternative's directory prefix taken whole, through its
- * links; and the files under those roots, walked a directory at a time with
- * the project rule's exclusions, which are of a path as it is named below its
- * root, whatever a link makes of it. The roots it returns are what the
- * facet's barriers push: those, and wherever a link below one leads.
+ * package's), each sheet where its links lead and read once, every `@source`
+ * outside the working tree `cwd`, each brace alternative's directory prefix
+ * taken whole, through its links; and the files under those roots, walked a
+ * directory at a time with the project rule's exclusions, which are of a path
+ * as it is named below its root, whatever a link makes of it. The roots it
+ * returns are what the facet's barriers push: those, and wherever a link
+ * below one leads.
  */
 export async function planStylesheetSources(source, input) {
     const cwd = key(input.cwd);
     const home = key(input.home);
     const roots = [];
-    const sheets = new Set([...input.sheets].map(key));
+    // A sheet is where its links lead, as Tailwind resolves it: what it names is relative to that, and it is read once.
+    const located = async (k) => (await throughLinks(source, k)) ?? k;
+    const sheets = new Set();
+    for (const sheet of input.sheets)
+        sheets.add(await located(key(sheet)));
     for (const sheet of sheets) {
         const text = await source.readText(sheet);
         if (text === null)
@@ -695,7 +748,7 @@ export async function planStylesheetSources(source, input) {
         for (const path of sheetStringImports(parsed)) {
             if (!/^\.{0,2}\//.test(path))
                 continue;
-            const imported = resolve(path);
+            const imported = await located(resolve(path));
             if ((await source.stat(imported))?.kind === 'file')
                 sheets.add(imported);
         }
@@ -715,10 +768,8 @@ export async function planStylesheetSources(source, input) {
         }
     }
     const files = new Map();
-    const walked = new Set();
     // What a barrier pushes: the roots, and wherever a link below one leads out of them.
     const pushed = [...roots];
-    const under = (dir, k) => dir === '' || k === dir || k.startsWith(dir + '/');
     const pushFrom = (k) => { if (!pushed.some((dir) => under(dir, k)))
         pushed.push(k); };
     for (const root of roots) {
@@ -730,9 +781,9 @@ export async function planStylesheetSources(source, input) {
         if (at?.kind !== 'directory')
             continue;
         // Each directory as it is named below the root, which its exclusions are
-        // of, and where it is, which is what is read.
-        const queue = [{ named: root, at: root }];
-        walked.add(root);
+        // of, where it is, which is what is read, and what it is below: a name is
+        // walked once each, unless a link loops it back to where it is below.
+        const queue = [{ named: root, at: root, up: null }];
         for (let i = 0; i < queue.length; i++) {
             const dir = queue[i];
             if (dir === undefined)
@@ -753,11 +804,10 @@ export async function planStylesheetSources(source, input) {
                     [path, kind, size] = [target, found.kind, found.size];
                 }
                 if (kind === 'directory') {
-                    if (excludedDir(home, root, named) || walked.has(path))
+                    if (excludedDir(home, root, named) || below(dir, path))
                         continue;
-                    walked.add(path);
                     pushFrom(path);
-                    queue.push({ named, at: path });
+                    queue.push({ named, at: path, up: dir });
                 }
                 else if (kind === 'file' && !excludedBelow(home, root, named)) {
                     pushFrom(path);

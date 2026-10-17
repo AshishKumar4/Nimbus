@@ -5,6 +5,8 @@ export interface DataPlanEntry {
     kind: string;
     size: number;
     linkTarget?: string;
+    /** A directory on a mount whose entries the listing does not name (RuntimeVfsListEntry.unlisted): its mount point. */
+    unlisted?: string;
 }
 export interface DataPlanSource {
     /** One page of the namespace in path order; `next === null` ends it. */
@@ -42,6 +44,12 @@ export interface DataPlanInput {
     conditions?: readonly string[];
     /** Called with the bytes of each listed page, to pace a long walk. */
     spend?: (units: number) => Promise<void>;
+    /**
+     * Name the stylesheet sources' roots where the process's listing walks
+     * mounts (NimbusFilesystemAuthority.nameLaunch), as its launch's own
+     * names are, so that its listing at boot holds what is under them.
+     */
+    nameSources?: (roots: readonly string[]) => void;
 }
 export type DataPlanRule = 'package-json' | 'project' | 'convention' | 'package-data' | 'home' | 'typescript' | 'static' | 'entries' | 'learned' | 'stylesheet-source';
 export interface DataPlan {
@@ -77,12 +85,13 @@ export declare function carriesOxide(closure: Iterable<string>): boolean;
 /**
  * The stylesheet-source rule, for a resident's plan and a one-shot's alike:
  * from `sheets`, through the `@import`s Tailwind inlines (a path's, not a
- * package's), each sheet read once, every `@source` outside the working tree
- * `cwd`, each brace alternative's directory prefix taken whole, through its
- * links; and the files under those roots, walked a directory at a time with
- * the project rule's exclusions, which are of a path as it is named below its
- * root, whatever a link makes of it. The roots it returns are what the
- * facet's barriers push: those, and wherever a link below one leads.
+ * package's), each sheet where its links lead and read once, every `@source`
+ * outside the working tree `cwd`, each brace alternative's directory prefix
+ * taken whole, through its links; and the files under those roots, walked a
+ * directory at a time with the project rule's exclusions, which are of a path
+ * as it is named below its root, whatever a link makes of it. The roots it
+ * returns are what the facet's barriers push: those, and wherever a link
+ * below one leads.
  */
 export declare function planStylesheetSources(source: Pick<DataPlanSource, 'readText' | 'stat' | 'linkTarget' | 'readdir'>, input: {
     cwd: string;
