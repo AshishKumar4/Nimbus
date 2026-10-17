@@ -486,6 +486,26 @@ class TransactionPlanBuilder {
 function groupedSqlExecs(rows, rowsPerExec) {
     return rows === 0 ? 0 : Math.ceil(rows / rowsPerExec);
 }
+/**
+ * A restore job's cursor: the last revived path taken, then each directory
+ * the restore's own write stamped before its turn, with the generation it
+ * left; NUL-separated, which no name holds. A cursor of an older restore
+ * is its revived path alone.
+ */
+function restoreCursorOf(text) {
+    const [revivedAfter, ...rest] = text.split('\0');
+    const stamped = new Map();
+    for (let i = 0; i + 1 < rest.length; i += 2) {
+        const path = rest[i];
+        const gen = Number(rest[i + 1]);
+        if (path !== undefined && Number.isSafeInteger(gen))
+            stamped.set(path, gen);
+    }
+    return { revivedAfter: revivedAfter ?? '', stamped };
+}
+function restoreCursorText(revivedAfter, stamped) {
+    return [revivedAfter, ...[...stamped].flatMap(([path, gen]) => [path, String(gen)])].join('\0');
+}
 /** A drop transaction's cost: its history deletes, the references it queues, and its job row. */
 function dropMetrics(deletes, queued) {
     return {
@@ -6610,14 +6630,32 @@ export class SqliteVFS {
         let restored = 0;
         // Revived paths go in path order, so the next page starts past the last:
         // what it skipped already has a live row, and a write after the restore
-        // began wins over it. Kept in the job row across slices.
-        let revivedAfter = String([...this.sql.exec('SELECT cursor FROM vfs_jobs WHERE id = ?', id)][0]?.cursor ?? '');
+        // began wins over it. A directory the restore's own write stamped before
+        // its turn (an entry of it restored first) left the generations it
+        // restores; it is kept, with the generation it was left at, until it is
+        // restored, or a write since wins. Both are kept in the job row,
+        // written with each transaction.
+        const cursor = restoreCursorOf(String([...this.sql.exec('SELECT cursor FROM vfs_jobs WHERE id = ?', id)][0]?.cursor ?? ''));
+        let revivedAfter = cursor.revivedAfter;
+        const stamped = cursor.stamped;
+        const saveCursor = () => {
+            this.sql.exec('UPDATE vfs_jobs SET cursor = ? WHERE id = ?', restoreCursorText(revivedAfter, stamped), id);
+        };
         for (let pages = 0;; pages++) {
             if (pages >= maxPages) {
-                this.transactionSync(() => { this.sql.exec('UPDATE vfs_jobs SET cursor = ? WHERE id = ?', revivedAfter, id); });
+                this.transactionSync(saveCursor);
                 return { restored, done: false };
             }
-            const changed = [...this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE gen > ? AND gen < ?${within.sql} ORDER BY gen LIMIT ?`, job.g, startGen, ...within.params, RESTORE_PAGE_ROWS)].map((row) => this.inodeFromRow(row));
+            // The stamped directories still as the restore left them first, then those changed since the snapshot.
+            const waiting = [];
+            for (const [path, gen] of stamped) {
+                const live = this.inodes.get(path);
+                if (live?.gen === gen)
+                    waiting.push(live);
+                else
+                    stamped.delete(path);
+            }
+            const changed = [...waiting, ...[...this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE gen > ? AND gen < ?${within.sql} ORDER BY gen LIMIT ?`, job.g, startGen, ...within.params, RESTORE_PAGE_ROWS)].map((row) => this.inodeFromRow(row))];
             const revived = changed.length < RESTORE_PAGE_ROWS
                 ? [...this.sql.exec(`SELECT ${HISTORY_SELECT_COLUMNS} FROM vfs_inode_history AS h
            WHERE path > ? AND gen_to > ? AND gen_from <= ?${within.sql}
@@ -6628,7 +6666,8 @@ export class SqliteVFS {
                 this.transactionSync(() => { this.sql.exec('DELETE FROM vfs_jobs WHERE id = ?', id); });
                 return { restored, done: true };
             }
-            const builder = this.newPlan();
+            // Its checkpoint (the job row) is the transaction's last write.
+            const builder = this.newPlan(true);
             const deletedInodes = [];
             const restoredRow = (past) => {
                 const entry = {
@@ -6652,7 +6691,7 @@ export class SqliteVFS {
             // As many as one transaction admits (the builder's measure, history and
             // superseded references with the rows): a changed path not taken stays
             // changed for the next page, and a revived one past the cursor.
-            let taken = 0;
+            const taken = new Set();
             for (const live of changed) {
                 const past = this.historyAt(live.path, job.g);
                 if (!builder.empty && (past === undefined ? builder.wouldExceedDeletion() : builder.wouldExceedInode()) !== null)
@@ -6663,23 +6702,41 @@ export class SqliteVFS {
                 }
                 else
                     builder.addInode(restoredRow(past));
-                taken++;
+                taken.add(live.path);
+                stamped.delete(live.path);
             }
             let revivedTaken = 0;
-            if (taken === changed.length) {
+            if (taken.size === changed.length) {
                 for (const past of revived) {
                     if (!builder.empty && builder.wouldExceedInode() !== null)
                         break;
                     builder.addInode(restoredRow(past));
+                    taken.add(past.path);
                     revivedTaken++;
                 }
             }
-            if (revivedTaken > 0)
-                revivedAfter = revived[revivedTaken - 1].path;
+            const lastRevived = revived[revivedTaken - 1];
+            if (lastRevived !== undefined)
+                revivedAfter = lastRevived.path;
+            // A directory this transaction may stamp whose own restore is still to come.
+            const awaiting = new Set();
+            for (const path of taken) {
+                const parent = parentKey(path);
+                if (parent === '' || taken.has(parent) || awaiting.has(parent))
+                    continue;
+                const live = this.inodes.get(parent);
+                if (live !== undefined && ((live.gen > job.g && live.gen < startGen) || stamped.get(parent) === live.gen))
+                    awaiting.add(parent);
+            }
             const plan = builder.build();
             this.assertTransactionFits(plan.metrics);
-            this._writeBatchOnce({ plan, deletedInodes }, { source: 'content-publish' });
-            restored += taken + revivedTaken;
+            this._writeBatchOnce({ plan, deletedInodes }, { source: 'content-publish' }, (gen) => {
+                // Stamped or not, it is restored by the generation this one commits at.
+                for (const parent of awaiting)
+                    stamped.set(parent, gen);
+                saveCursor();
+            });
+            restored += taken.size;
         }
     }
     /** The history row covering generation `g` at `path`, if any. */
@@ -9595,6 +9652,7 @@ export class SqliteVFS {
                 this.committedRows.set(path, { gen, file: false });
         }
     }
+    /** `onCommit` runs in the transaction, as its last write, given the generation it commits. */
     executeTransactionPlan(plan, execution, onCommit, priors) {
         const committedAt = this.now();
         const deletedPaths = new Set();
@@ -9661,7 +9719,7 @@ export class SqliteVFS {
                 this.insertRows('vfs_gc_queue (kind, id)', GC_ROW_COLUMNS, queued, 'INSERT OR IGNORE');
                 if (queued.length > 0)
                     this.maintenancePending = true;
-                onCommit?.();
+                onCommit?.(gen);
                 if (x.next.ino > limits.ino || x.next.chunk > limits.chunk || x.next.content > limits.content) {
                     throw new Error('[sqlite-vfs] a transaction allocated more ids than it reserved');
                 }

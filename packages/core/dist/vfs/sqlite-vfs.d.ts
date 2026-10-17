@@ -2378,6 +2378,7 @@ export declare class SqliteVFS {
     private touchDirectoryRows;
     /** The cache and the publication learn what touchDirectoryRows committed. */
     private touchedDirectoriesCommitted;
+    /** `onCommit` runs in the transaction, as its last write, given the generation it commits. */
     private executeTransactionPlan;
     /** A plan's deletions: rows, tombstones, and the content a dereferencing delete lets go of. */
     private applyPlanDeletes;
