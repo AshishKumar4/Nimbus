@@ -33,8 +33,7 @@
 // generated artifacts before testing a runner change.
 
 import assert from 'node:assert/strict';
-import { matchNodeInWorkerd, placed } from './lib/node-differential.mjs';
-import { withoutInternalArrow } from './lib/node-report.mjs';
+import { matchNodeInWorkerd, nodeShown } from './lib/node-differential.mjs';
 
 const W = '/home/user/typescript';
 const FILES = {
@@ -133,16 +132,16 @@ const COMMANDS = [
 ];
 
 // A command's frames are left out, or, when it is FRAMED, only the program's are kept.
-const shown = (text, { stream, side, from, root, command }) => {
+const shown = (text, printed) => {
+  const { stream, side, command } = printed;
   if (stream === 'out' && command.includes('--require ./report-refusal.cjs')) {
     const expected = command.endsWith(' enum.ts')
       ? ['SyntaxError', 'ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX']
       : ['Error', 'ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING'];
     assert.deepEqual(JSON.parse(text), expected, `${side}: the direct entry throws before its body runs`);
   }
-  const kept = placed(text, from, root).replace(/^\(node:\d+\)/gm, '(node:PID)')
-    .split('\n').filter((line) => !/^\s+at /.test(line) || (FRAMED.includes(command) && line.includes(`${root}/`))).join('\n');
-  return stream === 'err' && side === 'node' ? withoutInternalArrow(kept) : kept;
+  const kept = nodeShown(text, printed);
+  return FRAMED.includes(command) ? kept : kept.split('\n').filter((line) => !/^\s+at /.test(line)).join('\n');
 };
 await matchNodeInWorkerd('typescript-matches-node-workerd', W, FILES, COMMANDS, { shown });
 console.log(`typescript-matches-node-workerd: ${COMMANDS.length} programs as Node runs them`);

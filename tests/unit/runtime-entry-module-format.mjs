@@ -112,7 +112,7 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
   assert.equal(r.exitCode, 0, r.stderr);
   assert.equal(r.transforms.length, 0, 'a CommonJS bin must not be rewritten');
   assert.equal(r.opts.esModule, undefined);
-  assert.match(r.code, /require\('\.\.\/lib\/tsc\.js'\)/);
+  assert.equal(r.code, CJS_SOURCE.slice(CJS_SOURCE.indexOf('\n') + 1));
 }
 
 // ── the nearest package.json wins, not an ancestor ──
@@ -191,7 +191,7 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
   assert.equal(r.exitCode, 0, r.stderr);
   assert.equal(r.transforms.length, 0, 'the shim is no package\'s: CommonJS, untransformed');
   assert.equal(r.opts.esModule, undefined);
-  assert.match(r.code, /require\("\/home\/user\/node_modules\/genpkg\/bin\/genpkg"\)/);
+  assert.equal(r.code, shim);
 }
 
 // ── a dotfile entry has no extension; its package type decides ──
@@ -253,6 +253,8 @@ for (const [entry, source] of [
   assert.equal(cjs.transforms.length, 1, 'only the strip');
   assert.equal(cjs.code, `const x${' '.repeat(': number'.length)} = 1;\nmodule.exports = x;\n`, 'CommonJS runs as stripped');
   assert.equal(cjs.opts.esModule, undefined);
+  const vendored = await runScript({ 'home/user/node_modules/x/main.ts': 'const x: number = 1;\n' }, '/home/user/node_modules/x/main.ts', node);
+  assert.equal(vendored.transforms.length, 0, 'TypeScript under node_modules is refused before requesting a transform');
 }
 
 // ── ES eval and stdin programs reach the runner exactly as written ──

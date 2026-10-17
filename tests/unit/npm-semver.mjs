@@ -131,7 +131,7 @@ const embedded = await importResolvePreamble(['PARSE_SEMVER', 'COMPARE_SEMVER', 
   assert.deepEqual(stray, [], 'the assembled resolver module reads nothing a facet lacks');
   const { default: Resolver } = await importModuleSet({ 'worker.js': module }, 'worker.js');
   const requests = [];
-  const versions = Object.fromEntries(['1.9.0', '2.0.0', '1.2.0', '1.5.0'].map((version) => [version, {
+  const versions = Object.fromEntries(['1.2.0', '2.0.0', '1.9.0', '1.5.0'].map((version) => [version, {
     name: '@scope/pkg', version,
     dist: { tarball: `https://registry.example.test/pkg-${version}.tgz`, integrity: `integrity-${version}` },
     dependencies: { child: version },
