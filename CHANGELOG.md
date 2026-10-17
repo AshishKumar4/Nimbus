@@ -5,6 +5,10 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: bash and its commands receive a broken-pipe write error when
+  `trap '' PIPE` ignores SIGPIPE, including commands that inherit it across
+  exec. Before, a write after the pipe's reader closed killed the writer
+  with SIGPIPE even when the signal was ignored.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each

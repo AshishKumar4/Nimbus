@@ -58,7 +58,7 @@ import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { nameDec } from '../../_shared/bytes.js';
 
 const PAGE = 65536, te = new TextEncoder(), td = new TextDecoder();
-const E = { ACCES: 2, BADF: 8, EXIST: 20, INVAL: 28, ISDIR: 31, LOOP: 32, NOENT: 44, NOSYS: 52, NOTDIR: 54, NOTEMPTY: 55, PERM: 63, RANGE: 68, SPIPE: 70, SRCH: 71 } satisfies Record<string, BashErrno>;
+const E = { ACCES: 2, BADF: 8, EXIST: 20, INVAL: 28, ISDIR: 31, LOOP: 32, NOENT: 44, NOSYS: 52, NOTDIR: 54, NOTEMPTY: 55, PERM: 63, PIPE: 64, RANGE: 68, SPIPE: 70, SRCH: 71 } satisfies Record<string, BashErrno>;
 class Exit { declare code: number; constructor(c: number) { this.code = c; } }
 /** A process killed by a signal's default action: SIGPIPE, a write to a pipe no one can read. */
 class Signalled { declare signal: number; constructor(signal: number) { this.signal = signal; } }
@@ -355,7 +355,19 @@ function makeWasiFs(s: BashSession, proc: BashProc, DV: () => DataView, U8: () =
     fd_read: (fd: number, p: number, n: number, out: number) => io.read(fd, readIovs(DV(),p,n),out),
     fd_write(fd: number, p: number, n: number, out: number) {
       if (!proc.fds.has(fd)) return E.BADF;
-      const write = () => { let written = 0; for (const v of readIovs(DV(),p,n).list) { const count=io.write(fd,U8().subarray(v.ptr,v.ptr+v.len)); if (count === null) return E.BADF; written+=count; } DV().setUint32(out,written,true); return 0; };
+      const write = (): BashErrno => {
+        let written = 0;
+        for (const v of readIovs(DV(), p, n).list) {
+          const result = io.write(fd, U8().subarray(v.ptr, v.ptr + v.len));
+          if (typeof result !== 'number') {
+            if (written === 0) return result.errno;
+            break;
+          }
+          written += result;
+        }
+        DV().setUint32(out, written, true);
+        return 0;
+      };
       // A pipe at capacity makes the writer wait before any byte of this call
       // is written, so a call re-entered after the wait never writes twice.
       const gate = io.writeGate?.(fd);
@@ -378,7 +390,7 @@ function makeWasiFs(s: BashSession, proc: BashProc, DV: () => DataView, U8: () =
 // Route a write through the process fd table. The caller has already rejected
 // an fd the table does not hold, so every branch here answers a real entry —
 // an unknown fd must never land in the user's terminal.
-function writeThroughFd(s: BashSession, proc: BashProc, fd: number, bytes: Uint8Array): number | null {
+function writeThroughFd(s: BashSession, proc: BashProc, fd: number, bytes: Uint8Array): ReturnType<BashIo['write']> {
   const e = proc.fds.get(fd);
   if (e && e.kind === 'pipe') {
     // A pipe descriptor has a direction, and it was recorded and never read.
@@ -386,7 +398,7 @@ function writeThroughFd(s: BashSession, proc: BashProc, fd: number, bytes: Uint8
     // written, so `exec 3< …; echo x >&3` fed the reader its own output — data
     // appearing from nowhere, attributed to the wrong writer, with no error
     // anywhere. POSIX makes the direction part of the descriptor: EBADF.
-    if (e.end === 'r') return null;
+    if (e.end === 'r') return { errno: E.BADF };
     const pp = s.pipes.get(e.pipeId) as BashPipe;
     // Without JSPI nothing parks on a write: past the pipe's budget the
     // writer runs the pipe's readers nested until they bring it back under,
@@ -397,9 +409,10 @@ function writeThroughFd(s: BashSession, proc: BashProc, fd: number, bytes: Uint8
     for (;;) {
       const decision = decideWrite(pp, bytes.length, pipeHost(s), PIPE_CAPACITY, s.pipeBudget);
       if (decision !== 'nest') {
-        // No one can read it, now or ever: SIGPIPE, whose default action ends
-        // the writer; bash reports it as 128 + 13 = 141. What stops `yes | head`.
-        if (decision === 'sigpipe') throw new Signalled(SIGPIPE);
+        if (decision === 'sigpipe') {
+          if (signalDisposition(proc, SIGPIPE) === 1) return { errno: E.PIPE };
+          throw new Signalled(SIGPIPE);
+        }
         break;
       }
       if (!pumpSuspended(s, proc)) throw pipeLimitExceeded(s);
@@ -408,7 +421,7 @@ function writeThroughFd(s: BashSession, proc: BashProc, fd: number, bytes: Uint8
     wakePipe(s, pp);
     return bytes.length;
   }
-  if (!e || (e.kind !== 'stdout' && e.kind !== 'stderr')) return null;
+  if (!e || (e.kind !== 'stdout' && e.kind !== 'stderr')) return { errno: E.BADF };
   const owned = bytes.slice();
   const delivered = e.kind === 'stderr' ? s.output.stderrBytes(owned) : s.output.stdoutBytes(owned);
   if (delivered && typeof delivered.then === 'function') queueSessionTask(s, Promise.resolve(delivered));
@@ -1428,6 +1441,13 @@ function waitChild(proc: BashProc, register: (complete: () => void) => void): Pr
   });
 }
 
+function signalDisposition(proc: BashProc, signal: number): number {
+  if (signal === 9) return 0;
+  return proc.execIgnoredSignals === undefined
+    ? proc.inst.exports.__nimbus_signal_disposition(signal)
+    : (proc.execIgnoredSignals & (1n << BigInt(signal))) !== 0n ? 1 : 0;
+}
+
 /** Default terminating signals for virtual children, never host OS pids. */
 function signalProc(s: BashSession, caller: BashProc, pid: number, signal: number): number {
   if (!Number.isInteger(signal) || signal < 0 || signal >= 65) return -E.INVAL;
@@ -1439,10 +1459,7 @@ function signalProc(s: BashSession, caller: BashProc, pid: number, signal: numbe
   // Every virtual Bash process owns its instance/memory. Query the VICTIM,
   // not the caller currently executing kill. An exec'd child has reset its
   // caught handlers; consulting its old shell image would be incorrect.
-  const disposition = signal === 9 ? 0
-    : victim.execIgnoredSignals === undefined
-      ? victim.inst.exports.__nimbus_signal_disposition(signal)
-      : (victim.execIgnoredSignals & (1n << BigInt(signal))) !== 0n ? 1 : 0;
+  const disposition = signalDisposition(victim, signal);
   if (disposition === 1) return 0;
   if (disposition !== 0) return -E.NOSYS;
   switch (signal) {
