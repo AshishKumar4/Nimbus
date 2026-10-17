@@ -10,16 +10,13 @@
 // the facet must still get the installed bytes, exactly.
 
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { makeCPythonRunnerFactory } from '../../packages/core/src/runtime/cpython-runner.ts';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runner.ts';
-import { installedRuntime, runtimeContext, runtimeSupervisor } from './lib/runtime-session.mjs';
+import { installedRuntime, manifestFile, runtimeContext, runtimeSupervisor } from './lib/runtime-session.mjs';
 
 const IMAGE_BYTES = 3 * 1024 * 1024 + 11;
 const image = Uint8Array.from({ length: IMAGE_BYTES }, (_, i) => (i * 7 + (i >> 12)) & 0xff);
-/** The image as a manifest vouches for it at `path`. */
-const imageFile = (path) => ({ path, sha256: createHash('sha256').update(image).digest('hex'), size: image.byteLength });
 
 /** A facet host that records every wasm image it loads, read as a host reads it: when the facet is built, at its call. */
 function recordingFacets() {
@@ -54,7 +51,7 @@ function assertHandedOff(raw, images, name) {
     'runtime/python/share/cpython/python.wasm': image,
     'runtime/python/lib/python313.zip': new Uint8Array([1]),
   });
-  const manifest = { version: '3.13.14', files: [imageFile('share/cpython/python.wasm'), { path: 'lib/python313.zip' }] };
+  const manifest = { version: '3.13.14', files: [manifestFile('share/cpython/python.wasm', image), { path: 'lib/python313.zip' }] };
   const facets = recordingFacets();
   const run = makeCPythonRunnerFactory({ facets: facets.host, filesystem, processes: runtimeSupervisor(), network: ISOLATE_NETWORK })(manifest, '/runtime/python', 'python', undefined);
 
@@ -72,7 +69,7 @@ function assertHandedOff(raw, images, name) {
     'runtime/python/share/cpython/python.wasm': image,
     'runtime/python/lib/python313.zip': new Uint8Array([1]),
   });
-  const manifest = { version: '3.13.14', files: [imageFile('share/cpython/python.wasm'), { path: 'lib/python313.zip' }] };
+  const manifest = { version: '3.13.14', files: [manifestFile('share/cpython/python.wasm', image), { path: 'lib/python313.zip' }] };
   const opened = [];
   let disposed = 0;
   const host = {
@@ -96,7 +93,7 @@ function assertHandedOff(raw, images, name) {
     'runtime/python/share/cpython/python.wasm': image,
     'runtime/python/lib/python313.zip': new Uint8Array([1]),
   });
-  const manifest = { version: '3.13.14', files: [imageFile('share/cpython/python.wasm'), { path: 'lib/python313.zip' }] };
+  const manifest = { version: '3.13.14', files: [manifestFile('share/cpython/python.wasm', image), { path: 'lib/python313.zip' }] };
   const facets = recordingFacets();
   const started = [];
   const startResident = async (spec) => { started.push(spec.wasmVfsPath); return { exitCode: 0, stdout: '', stderr: '' }; };
@@ -111,7 +108,7 @@ function assertHandedOff(raw, images, name) {
 
 {
   const { raw, filesystem } = installedRuntime({ 'runtime/ruby/share/ruby/ruby+stdlib.wasm': image });
-  const manifest = { files: [imageFile('share/ruby/ruby+stdlib.wasm')] };
+  const manifest = { files: [manifestFile('share/ruby/ruby+stdlib.wasm', image)] };
   const facets = recordingFacets();
   const run = await makeRubyRunnerFactory({ facets: facets.host, filesystem, processes: runtimeSupervisor(), getHome: () => '/home/user', network: ISOLATE_NETWORK })(manifest, '/runtime/ruby', 'ruby', undefined);
 

@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { mock } from 'bun:test';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { manifestFile } from './lib/runtime-session.mjs';
 
 // Only the Cloudflare facet transport is stood in for. Startup still goes
 // through the real adapter, its artifact reads, and the REPL session.
@@ -41,7 +41,7 @@ const authority = new ProcessFiles(raw);
 const deps = {
   facetMgr: { loaderHost: () => ({ env: {}, ctx: { id: {}, waitUntil() {} }, network: ISOLATE_NETWORK }) },
   authority, installRoot: 'py', home: '/home/user',
-  manifest: { version: '3.13.14-3', files: [{ path: 'share/cpython/python.wasm', sha256: createHash('sha256').update('compiled interpreter asset').digest('hex'), size: 26 }] },
+  manifest: { version: '3.13.14-3', files: [manifestFile('share/cpython/python.wasm', 'compiled interpreter asset')] },
 };
 try {
   await warmPythonRepl(deps);
