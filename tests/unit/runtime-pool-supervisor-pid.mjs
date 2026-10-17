@@ -1,28 +1,12 @@
 #!/usr/bin/env bun
 // Runtime pools carry the invoking process's credential and a fresh run.
 import assert from 'node:assert/strict';
-import { mock } from 'bun:test';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
-import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
-import { createSupervisorBridgeStore } from '../../packages/core/src/workspace/supervisor-op.ts';
-import { openSupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 import { adoptCtxExports, composeFabric } from '../../packages/fabric/src/composition.ts';
-import { buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
-import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
-import { manifestFile } from './lib/runtime-session.mjs';
+import { installedRuntime, manifestFile } from './lib/runtime-session.mjs';
+import { SupervisorRPC, createRpcSession, supervisorRpcEnv } from './lib/supervisor-rpc-session.mjs';
 
-mock.module('cloudflare:workers', () => ({
-  DurableObject: class {},
-  WorkerEntrypoint: class {
-    constructor(ctx, env) { this.ctx = ctx; this.env = env; }
-  },
-}));
-const { SupervisorRPC } = await import('../../packages/worker/src/session/supervisor-rpc.ts');
 const { runPythonRepl, warmPythonRepl } = await import('../../packages/worker/src/runtime/python-repl.ts');
 const { runRubyRepl } = await import('../../packages/worker/src/runtime/ruby-repl.ts');
 const { loaderFacetHost } = await import('../../packages/worker/src/runtime/facet-loader-host.ts');
@@ -52,22 +36,15 @@ async function settles(promise) {
 }
 
 function world() {
-  const harness = createSqliteVfsTestHarness();
-  const vfs = new SqliteVFS(harness.sql, harness.ctx);
-  const root = vfs.as(CRED_KERNEL);
-  const processes = new SessionProcessSupervisor();
-  const ctx = { id: { toString: () => 'runtime-credential-session' }, waitUntil() {} };
-  const deliveries = openSupervisorDeliveries(ctx);
-  const filesystem = new ProcessFiles(vfs);
-  const host = {
-    sqliteFs: vfs, processes, supervisorDeliveries: deliveries, ensureSqliteFs() {},
-    _rpcStdout: (pid, bytes) => processes.appendOutputBytes(pid, 'stdout', bytes),
+  const assets = {
+    'py/share/cpython/python.wasm': 'interpreter image',
+    'py/lib/python313.zip': 'stdlib image',
+    'rb/share/ruby/ruby+stdlib.wasm': 'ruby image',
   };
-  const ops = buildSessionSupervisorOps(host, createSupervisorBridgeStore({ vfs, processes, filesystem }));
-  attachSupervisorOps(host, ops);
-  root.mkdir('/home', { mode: 0o755 });
-  root.mkdir('/home/user', { mode: 0o755 });
-  root.chown('/home/user', 1000, 1000);
+  const runtime = installedRuntime(assets);
+  const { raw, root, filesystem, processes } = runtime;
+  const ctx = { id: { toString: () => 'runtime-credential-session' }, waitUntil() {} };
+  const { host, deliveries, dispose } = createRpcSession(raw, { ctx, filesystem, processes });
   const users = [1101, 2202].map((uid) => {
     const home = `/home/u${uid}`;
     root.mkdir(home, { recursive: true, mode: 0o700 });
@@ -76,17 +53,8 @@ function world() {
     const { pid } = processes.spawn('runtime', ['runtime'], home, { cred });
     return { home, cred, pid };
   });
-  const assets = {
-    'py/share/cpython/python.wasm': 'interpreter image',
-    'py/lib/python313.zip': 'stdlib image',
-    'rb/share/ruby/ruby+stdlib.wasm': 'ruby image',
-  };
-  for (const [path, bytes] of Object.entries(assets)) {
-    root.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true });
-    root.writeFile(path, bytes);
-  }
   const cached = new Map();
-  const w = { harness, root, ctx, deliveries, users, calls: 0, scenario: null };
+  const w = { root, ctx, deliveries, users, calls: 0, scenario: null };
   // Only the platform transport/interpreter is stood in for: the real pool
   // builds WorkerCode, caches it, and hands its actual SUPERVISOR to the guest.
   const loader = {
@@ -108,11 +76,7 @@ function world() {
   };
   w.env = {
     LOADER: loader,
-    NIMBUS_SESSION: {
-      idFromName: (id) => ({ toString: () => id }),
-      idFromString: (id) => ({ toString: () => id }),
-      get: () => ({ supervisorOp: (sent) => host.supervisorOp(structuredClone(sent)) }),
-    },
+    ...supervisorRpcEnv((envelope) => host.supervisorOp(envelope)),
   };
   w.deps = {
     facetMgr: { loaderHost: () => ({ env: w.env, ctx, network: ISOLATE_NETWORK }) },
@@ -126,25 +90,19 @@ function world() {
     installRoot: 'rb',
     manifest: { version: '3.3.4', files: [manifestFile('share/ruby/ruby+stdlib.wasm', assets['rb/share/ruby/ruby+stdlib.wasm'])] },
   };
-  w.close = async () => { await ops.dispose(); harness.db.close(); };
+  w.close = async () => { await dispose(); runtime.close(); };
   return w;
 }
 
 const task = facetTaskSource('async function credentialScenario() {}');
 
 async function prompt(w, kind, user) {
-  const ready = Promise.withResolvers();
   let output = '';
-  const terminal = new WebSocketTerminal(null, (chunk) => {
-    output += chunk;
-    if (output.includes(kind === 'python' ? '>>> ' : 'irb> ')) ready.resolve();
-  });
+  const terminal = new WebSocketTerminal(null, (chunk) => { output += chunk; });
   const deps = { ...w.deps, ...w[kind], ...user, terminal, cwd: user.home, binName: 'ruby', start: { cwd: user.home, binName: 'python3' } };
   const running = kind === 'python' ? runPythonRepl(deps) : runRubyRepl(deps);
   try {
-    await settles(Promise.race([ready.promise, running.then(() => assert.fail(output))]));
-    // Ruby creates its pool on the first submitted line; Python boots before
-    // publishing its prompt. A queued Ctrl-D closes only after that line.
+    // The REPL hook queues input during startup, then handles Ctrl-D after the line.
     terminal.sendData('1\r\x04');
     assert.equal(await settles(running), 0, output);
   } finally {
