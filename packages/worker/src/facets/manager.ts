@@ -135,7 +135,7 @@ import { LearnedServers } from './server-hints.js';
 import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
-import { STOP_REPLAY_SOURCE } from '../runtime/stop-replay.js';
+import { REAL_NOW_SOURCE, STOP_REPLAY_SOURCE } from '../runtime/stop-replay.js';
 import { PENDING_IO_SOURCE } from '../runtime/pending-io.js';
 import { OwnedPieces, ReplayOutputGate, StdinTaken, stopRecordOf } from '../runtime/stop-replay-host.js';
 import { answerDigest } from '../runtime/stop-replay-journal.js';
@@ -578,6 +578,8 @@ export const RESIDENT_BOOT_SETTLE_MS = 1000;
  * it watches.
  */
 export const ENTRYPOINT_EVENT_LOOP = `
+// Its deadlines are Nimbus's own reads of the clock (REAL_NOW_SOURCE).
+const __nimbusLoopNow = ${REAL_NOW_SOURCE};
 function __nimbusHandleCount(__name) {
   const __value = globalThis[__name];
   return typeof __value === "number" ? __value : 0;
@@ -680,9 +682,9 @@ async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs, __before
   };
   if (!__beforeExit) return await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __deadlineMs, 4, __nimbusReportBlockedState);
   const __limited = Number.isFinite(__deadlineMs);
-  const __startedAt = __limited ? Date.now() : 0;
+  const __startedAt = __limited ? __nimbusLoopNow() : 0;
   for (;;) {
-    const __remaining = __limited ? Math.max(0, __deadlineMs - (Date.now() - __startedAt)) : __deadlineMs;
+    const __remaining = __limited ? Math.max(0, __deadlineMs - (__nimbusLoopNow() - __startedAt)) : __deadlineMs;
     const __drained = await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __remaining, 4, __nimbusReportBlockedState);
     if (__drained.pending || !await __beforeExit()) return __drained;
   }
@@ -761,7 +763,7 @@ function __nimbusNaturalExit(__beforeExit) {
 // and every request routed to the facet, which waits for boot — hung
 // forever. A rejection after the budget fails the process as Node's does.
 async function __nimbusSettleEntrypointStartup(__entryResult, __deadlineMs) {
-  const __startedAt = Date.now();
+  const __startedAt = __nimbusLoopNow();
   if (__entryResult && typeof __entryResult.then === "function") {
     const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === "function")
       ? globalThis.__nimbusRawSetTimeout
@@ -786,7 +788,7 @@ async function __nimbusSettleEntrypointStartup(__entryResult, __deadlineMs) {
   }
   return await __nimbusRunEventLoop(
     __nimbusPendingStartupWork, __nimbusProcessExitPromise,
-    Math.max(0, __deadlineMs - (Date.now() - __startedAt)), 4,
+    Math.max(0, __deadlineMs - (__nimbusLoopNow() - __startedAt)), 4,
   );
 }
 `;
@@ -1891,7 +1893,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     // The thunk hands the parsed bundle over and drops this scope's reference,
     // so a cold boot frees it the moment it is adopted rather than holding it
     // through the fill. A kept store that reconciles never takes it.
-    const __residentBootStarted = Date.now();
+    const __residentBootStarted = ${REAL_NOW_SOURCE}();
     const __residentBooted = await __resident.sync.boot(
       () => { const __bundle = __MODULE_VFS_BUNDLE; __MODULE_VFS_BUNDLE = null; return __bundle; },
       __MODULE_VFS_CURSOR,
@@ -1903,7 +1905,7 @@ ${VFS_CURSOR_SEED_SOURCE}
       try {
         const __stats = __resident.cells.stats();
         await __supervisor.stderr(new TextEncoder().encode("[nimbus-debug] resident boot " + JSON.stringify({
-          ms: Date.now() - __residentBootStarted, ...__stats, failure: __residentBooted.failure || null,
+          ms: ${REAL_NOW_SOURCE}() - __residentBootStarted, ...__stats, failure: __residentBooted.failure || null,
         }) + "\\n"));
       } catch {}
     }

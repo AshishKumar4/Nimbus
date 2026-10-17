@@ -139,6 +139,21 @@ const NM = `${APP}/node_modules`;
   assert.deepEqual(await stagedBindingsDeclaredBy(fs, `/${NM}/astro/index.js`), [RD, `satteri@${version('satteri')}`, `astro-compiler@${version('astro-compiler')}`]);
 }
 
+// ── the Tailwind plugin carries oxide at its installed version ──
+{
+  const { fs } = tree({
+    [`${NM}/vite`]: pkg('vite', '8.3.4', { rolldown: `~${ROLLDOWN}` }),
+    [`${NM}/rolldown`]: pkg('rolldown', ROLLDOWN),
+    [`${NM}/@tailwindcss/vite`]: pkg('@tailwindcss/vite', '4.3.3', { vite: '^8', tailwindcss: '4.3.3', '@tailwindcss/node': '4.3.3', '@tailwindcss/oxide': '4.3.3' }),
+    [`${NM}/@tailwindcss/oxide`]: pkg('@tailwindcss/oxide', version('oxide')),
+  });
+  assert.deepEqual(
+    await stagedBindingsDeclaredBy(fs, `/${NM}/@tailwindcss/vite/index.js`),
+    [RD, `oxide@${version('oxide')}`],
+    'the plugin declares oxide and Vite: the launch carries their exact staged builds',
+  );
+}
+
 // ── a program of the user's own declares nothing, whatever the project installs ──
 {
   const { fs } = tree({

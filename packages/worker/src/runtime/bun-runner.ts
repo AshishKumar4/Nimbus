@@ -15,10 +15,12 @@
  *
  *   Bun.serve(opts)          — stub that throws "not implemented"; use
  *                               node:http or a Worker fetch handler.
- *   Bun.file(path)           — VFS-backed BunFile {text, json, exists,
- *                               arrayBuffer, size, type}.
- *   Bun.write(dst, data)     — VFS write, accepts string|Uint8Array|
- *                               Response|BunFile|Blob.
+ *   Bun.file(path)           — VFS-backed BunFile {text, json, bytes,
+ *                               arrayBuffer, stream, exists, size, type}
+ *                               (bun-file.ts, shared with opencode).
+ *   Bun.write(dst, data)     — VFS write of the bytes of a string (UTF-8),
+ *                               view, ArrayBuffer, Blob, Response or BunFile;
+ *                               answers the byte count.
  *   Bun.spawn(cmd, opts)     — node:child_process.spawn under the hood
  *                               (via the supervisor's child_process broker).
  *   Bun.password.hash/verify — Web Crypto SHA-256 + PBKDF2-style
@@ -39,6 +41,7 @@
  */
 
 import type { FacetManager } from '../facets/manager.js';
+import { BUN_FILE_API_SOURCE } from '../loaders/compiled-bodies.generated.js';
 import { runFresh, type RunFreshResult, type RunFreshOpts } from './node-runner.js';
 
 /** Bun version string surfaced via `bun --version` and `Bun.version`. */
@@ -60,58 +63,11 @@ export const BUN_SHIM_PREAMBLE = `
 (function installBunShim() {
   if (typeof globalThis.Bun !== 'undefined' && globalThis.Bun.__nimbus) return;
   const fs = (() => { try { return require('fs'); } catch { return null; } })();
-  const path = (() => { try { return require('path'); } catch { return null; } })();
   const cp = (() => { try { return require('child_process'); } catch { return null; } })();
   const url = require('node:url');
   const BUN_VERSION = ${JSON.stringify(BUN_VERSION)};
 
-  function makeBunFile(p) {
-    const resolved = (path && path.resolve) ? path.resolve(p) : p;
-    return {
-      name: resolved,
-      get size() {
-        try { return fs.statSync(resolved).size; } catch { return 0; }
-      },
-      get type() {
-        // Best-effort MIME by extension. Workers-native — no mime-db.
-        const ext = (resolved.split('.').pop() || '').toLowerCase();
-        const map = { html: 'text/html', css: 'text/css', js: 'application/javascript',
-          json: 'application/json', txt: 'text/plain', md: 'text/markdown',
-          png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', svg: 'image/svg+xml' };
-        return map[ext] || 'application/octet-stream';
-      },
-      async text() { try { return fs.readFileSync(resolved, 'utf8'); } catch { return ''; } },
-      async json() { try { return JSON.parse(fs.readFileSync(resolved, 'utf8')); } catch (e) { throw e; } },
-      async arrayBuffer() {
-        try { const b = fs.readFileSync(resolved); return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); }
-        catch { return new ArrayBuffer(0); }
-      },
-      async exists() { try { return fs.existsSync(resolved); } catch { return false; } },
-      stream() {
-        const text = fs.readFileSync(resolved);
-        return new ReadableStream({
-          start(controller) { controller.enqueue(text); controller.close(); },
-        });
-      },
-    };
-  }
-
-  async function bunWrite(dst, data) {
-    let target;
-    if (typeof dst === 'string') target = dst;
-    else if (dst && dst.name) target = dst.name;
-    else throw new Error('Bun.write: dst must be a path or BunFile');
-    let bytes;
-    if (typeof data === 'string') bytes = data;
-    else if (data instanceof Uint8Array) bytes = Buffer.from(data);
-    else if (data instanceof ArrayBuffer) bytes = Buffer.from(data);
-    else if (data && typeof data.text === 'function') bytes = await data.text();
-    else if (data && typeof data.arrayBuffer === 'function') {
-      const ab = await data.arrayBuffer(); bytes = Buffer.from(ab);
-    } else throw new Error('Bun.write: unsupported data type');
-    fs.writeFileSync(target, bytes);
-    return typeof bytes === 'string' ? bytes.length : bytes.byteLength;
-  }
+  const { file: bunFile, write: bunWrite } = ${BUN_FILE_API_SOURCE}.bunFileApi(fs);
 
   function bunSpawn(cmd, opts) {
     if (!cp) throw new Error('Bun.spawn: child_process unavailable');
@@ -160,7 +116,7 @@ export const BUN_SHIM_PREAMBLE = `
     revision: 'nimbus-' + BUN_VERSION,
     argv: (typeof process !== 'undefined') ? process.argv : [],
     env: (typeof process !== 'undefined') ? process.env : {},
-    file: makeBunFile,
+    file: bunFile,
     write: bunWrite,
     spawn: bunSpawn,
     spawnSync(cmd, opts) {

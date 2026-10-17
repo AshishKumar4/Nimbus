@@ -5,6 +5,24 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a program that writes files before it listens, as Vite's config
+  load does, serves. When its listen makes it a server, Nimbus runs it again
+  and checks that run against the first. That check failed for two reasons.
+  A `mkdir -p` of a directory the first run had made made nothing, so the
+  check saw one change fewer. Nimbus's own clock reads (the resident's boot,
+  its startup and event-loop deadlines, a stat's fallback times) took
+  readings meant for the program, so its `Date.now()` named a file
+  otherwise. Now the found directory counts as made again, and Nimbus reads
+  the clock itself. `react-router dev` gets past its relaunch.
+
+- Fixed: Tailwind CSS v4 works again. Its scanner, `@tailwindcss/oxide`
+  4.3.3, runs from Nimbus's staged threadless build, so `@tailwindcss/vite`,
+  `@tailwindcss/postcss` and `@tailwindcss/cli` install and serve. A Vite
+  dev server's stylesheet carries the utilities the project's files use,
+  including files edited or added while it runs, and `vite build` writes
+  them too. Before, the install noted that oxide had no Workers-compatible
+  build, and Tailwind v4 could not load.
+
 - Changed: a program whose launch waits 10 seconds at one stage (its
   preparation, its admission for a worker, or its load) logs one line to
   Workers Logs: `[facet-manager] launch stalled:` with its pid, command,
@@ -574,6 +592,52 @@ The 2026-10-14 and 2026-10-15 versions reached production but were never publish
   file but did not own it was refused (`EPERM`). A time left as it is
   (`UTIME_OMIT`) is the one the file has when the change lands; before, a
   change to it made in between could be undone.
+- Fixed: a napi binding's WASI opens (rolldown, the Astro compiler,
+  satteri) no longer follow a final symlink when the binding asks not to.
+  Such an open is refused with `ELOOP`, or `ENOTDIR` for a directory, as
+  `open(2)` with `O_NOFOLLOW` refuses it. Before, the loader dropped the
+  flag and opened the link's target. `fd_fdstat_set_flags` that changes
+  `APPEND` is now refused with `ENOTSUP`, because the host's descriptor
+  cannot change it. Before, it answered success and the descriptor kept its
+  old mode.
+
+- Fixed: in Node programs, `fs.open` honours `O_NOFOLLOW`: a final symbolic
+  link is `ELOOP`, or `ENOTDIR` with `O_DIRECTORY`, as on Linux, and
+  `EEXIST` under `O_CREAT|O_EXCL`. An open that creates or truncates is one
+  call the session judges with its flags and the access it asks, so a file
+  a peer replaces with a link after the program looked is refused, not
+  followed and emptied, and `O_RDONLY|O_CREAT` opens a file its owner may
+  only read. `O_CREAT|O_DIRECTORY` is `EINVAL`. `O_SYNC` follows each write
+  with an fsync. `FileHandle.write` reads its arguments
+  as `fs.write` does: `handle.write('ff', 0, 'hex')` writes the byte `ff`
+  (it wrote `66 66`), and `handle.write(buffer, { offset, length,
+  position })` writes that part there.
+- Fixed: a name below a regular file is `Not a directory` (ENOTDIR), as on
+  Linux, to `lstat`, `unlink` and `rmdir`, and to a mounted file system's
+  `stat` and `open`. It was `No such file or directory`. `rm`, `mkdir -p`,
+  `cp`, `mv`, Node's `lstatSync` and git now see the right error, and
+  `existsSync` stays false. `ls` exits 2 for an operand it cannot reach, as
+  GNU's does. `rename` from, or into, a name below a regular file is
+  ENOTDIR too. `mv f/x a d` with `f` a file reports `cannot stat 'f/x'` and
+  still moves `a`, as GNU's does; it ended the whole command.
+- Fixed: `Bun.file` and `Bun.write` in `bun` answer as Bun's do. `text`,
+  `json`, `arrayBuffer`, `bytes` and `stream` read through the session, so
+  a file the process does not hold reads its bytes; before, `text()` and
+  `arrayBuffer()` answered empty. A missing file rejects with `ENOENT`,
+  `text()` drops a byte order mark, a directory does not `exists()`, and
+  `name` is the path as given. `Bun.write` writes the bytes of a `Blob`,
+  `Response`, `BunFile` or view, encodes a string as UTF-8 and anything
+  else as its string, and answers the byte count. Before, a `Blob` was
+  written as text (0xff became U+FFFD) and a string's count was its UTF-16
+  length. opencode's `Bun` uses the same `file` and gains `write`.
+- Fixed: a barrel package's synthetic entry reads the barrel with the
+  JavaScript parser. A re-export in a comment or a string no longer wins
+  over the real one, every name of `export const a = 1, b = 2` and of a
+  destructuring export counts, and `export * as ns` is one name. A barrel
+  that does not parse is refused rather than read in part. The barrel and
+  each module it re-exports with `export *` are read one statement at a
+  time, so no module's whole syntax tree is held in memory.
+
 - Fixed (CLI): `nimbus runtime sync` with no runtime named, and so `nimbus
   setup cloudflare`, now publishes `cpython@3.13.14-3` as the bucket's Python.
   It used to publish `python@0.29.4`, Pyodide, whose `python-runner` no host

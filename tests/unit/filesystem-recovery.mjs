@@ -154,7 +154,7 @@ function session() {
     return through.writeStream(new ReadableStream({ type: 'bytes', start(controller) { controller.enqueue(bytes); controller.close(); } }));
   };
   const written = (offset, data) => ({ type: 'call', call: { call: 'write', path: 'home/user/m/f.txt', description: 'd1', offset, data: new TextEncoder().encode(data) } });
-  const opened = await wave(fs, [{ type: 'call', call: { call: 'open', path: 'home/user/m/f.txt', mode: 0o644, create: true, description: 'd1' } }, written(0, 'A')]);
+  const opened = await wave(fs, [{ type: 'call', call: { call: 'open', path: 'home/user/m/f.txt', mode: 0o644, access: 'write', create: true, description: 'd1' } }, written(0, 'A')]);
   assert.equal(opened.ok, true, JSON.stringify(opened.error));
   s.processes.kill(pid, 137);
   // The drain: what the process logged after, never answered.

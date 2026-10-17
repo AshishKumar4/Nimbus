@@ -112,8 +112,9 @@ export const DEFERRED = validateDeferrals([
   {
     probe: 'frameworks/remix-real',
     excluded: true,
-    reason: 'React Router dev under Vite 8 needs ~87 MiB of wasm (rolldown 55 MiB) plus ~44 MiB of JS heap even in Node, '
-      + "past a facet's sustained memory",
+    reason: "React Router dev gets past its relaunch (run again as a server, retraced) and listens; on its first pages "
+      + "its isolate exceeds its memory limit and is reset (2026-10-17, with the Tailwind oxide build staged): "
+      + "~87 MiB of wasm (rolldown 55 MiB) plus ~44 MiB of JS heap even in Node, past a facet's sustained memory",
     approved: 'user, 2026-10-12',
     owner: 'Main',
     tracking: 'unsupported: the per-bundle engine split was measured and not shipped (user decision 2026-10-12)',

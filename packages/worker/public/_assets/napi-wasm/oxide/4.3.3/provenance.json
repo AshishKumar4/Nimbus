@@ -1,0 +1,88 @@
+{
+  "artifact": "oxide",
+  "version": "4.3.3",
+  "target": "wasm32-wasip1",
+  "source": {
+    "url": "https://github.com/tailwindlabs/tailwindcss/archive/refs/tags/v4.3.3.tar.gz",
+    "sha256": "e702ce2493505287e8f6cab2dd1e0c14f154e57c296854d4ded38bde5da2be6e",
+    "inputs": {
+      "packages/core/src/runtime/wasm-binary.ts": "4d24b153aef3861cceaa39b6991b36fcdb98eaa849950f5beb1bb67bfb80a2c5",
+      "packages/worker/scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
+      "packages/worker/scripts/napi-wasm/build.mjs": "5f1d124e26a906bfef4ba0faccf0a0d9e36164f1ae370b6c4f2d40f873c0b645",
+      "packages/worker/scripts/napi-wasm/inputs.mjs": "a06c519ffee5e2637688e25ca527bf885f99d2f2fa4b5fe34a81ba5afda94dc4",
+      "packages/worker/scripts/napi-wasm/link-wasm.sh": "3ead1668bb4b234f95892a7da9698a2f901d6fa460ed204594dfe9a6d8fa46f5",
+      "packages/worker/scripts/napi-wasm/rustc-remap.sh": "c0ad0342c9fa9832c80a780f0828f49f759d9d50274aef1ded89216bfb3dd07b",
+      "packages/worker/scripts/napi-wasm/tailwindcss-oxide/Cargo.lock": "c8b7917ce616824bc0b9dcd9edbb1af0e39639590f68bdb1ee066ff0df954503",
+      "packages/worker/scripts/rust-build-env.mjs": "bee2b7ee81ac5975df573df583b6b67dc176e4491fadcb43c4f3bbc2e81f73d4",
+      "packages/worker/scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",
+      "packages/worker/scripts/napi-wasm/specs.mjs#oxide@4.3.3": "8f3e625252b100252b1cf2f9e944065b3fe6de3a678fbf7edd0190b09021eadf",
+      "packages/worker/scripts/napi-wasm/specs.mjs#emnapi-link": "08bdc8cef180f63a612f6d138d9dc271fd4ce9bf7dd8a32d096a6f640a8bb2be"
+    }
+  },
+  "toolchain": "rustc 1.95.0 (59807616e 2026-04-14)\nbinary: rustc\ncommit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860\ncommit-date: 2026-04-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.95.0\nLLVM version: 22.1.2",
+  "cargo": {
+    "command": "cargo build --release --locked --target wasm32-wasip1 -p tailwind-oxide",
+    "mode": "workspace",
+    "rustflags": [
+      "-C",
+      "target-feature=+simd128"
+    ],
+    "rustcWrapper": "napi-wasm/rustc-remap.sh (--remap-path-prefix <work>=/build <CARGO_HOME>=/cargo)",
+    "linker": "napi-wasm/link-wasm.sh (rust-lld; -zstack-size=64000000 -> 4194304)",
+    "lockfile": {
+      "origin": "scripts/napi-wasm/tailwindcss-oxide/Cargo.lock (committed pin)",
+      "sha256": "c8b7917ce616824bc0b9dcd9edbb1af0e39639590f68bdb1ee066ff0df954503",
+      "packages": 105
+    }
+  },
+  "seams": [
+    {
+      "file": "crates/node/Cargo.toml",
+      "from": "napi-build = \"2.3.1\"",
+      "to": "napi-build = \"=2.5.0\"",
+      "reason": "napi-build 2.3.1 only knows wasm32-wasip1-threads: it links the threaded emnapi archive (emnapi-basic-mt, absent for wasm32-wasip1) and exports its thread-pool symbols. 2.5.0 links the non-threaded emnapi-basic-napi-rs for wasm32-wasip1 and is the version the rolldown build uses. napi-build only writes the link line; napi and napi-derive stay at upstream's pins."
+    },
+    {
+      "file": "crates/oxide/src/scanner/mod.rs",
+      "from": "        let all_entries = if self.has_scanned_once {",
+      "to": "        let all_entries = if self.has_scanned_once && !cfg!(target_arch = \"wasm32\") {",
+      "reason": "the single-threaded target uses oxide's serial walker for incremental scans too; the parallel walker requires scoped threads, which wasm32-wasip1 cannot spawn. Both walkers produce the same entries and mtimes; extraction and incremental invalidation are unchanged."
+    }
+  ],
+  "npm": {
+    "owner": "@tailwindcss/oxide",
+    "requiredAs": [
+      "@tailwindcss/oxide-wasm32-wasi"
+    ]
+  },
+  "wasm": {
+    "memoryMinPages": 70,
+    "sharedMemory": false,
+    "pumped": false,
+    "wasiImports": [
+      "random_get",
+      "environ_get",
+      "environ_sizes_get",
+      "fd_close",
+      "fd_fdstat_get",
+      "fd_filestat_get",
+      "fd_prestat_get",
+      "fd_prestat_dir_name",
+      "fd_read",
+      "fd_readdir",
+      "fd_seek",
+      "fd_write",
+      "path_filestat_get",
+      "path_open",
+      "path_readlink",
+      "proc_exit",
+      "sched_yield"
+    ]
+  },
+  "outputs": {
+    "oxide.wasm": {
+      "bytes": 1906658,
+      "sha256": "161dc7f93bbedaf0989074ec099d498fa7ed399bf17294a0eb118f07762a1ea8"
+    }
+  }
+}
