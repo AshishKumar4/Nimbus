@@ -24,10 +24,15 @@ import { runScenarios } from './lib/resident-body.mjs';
 const CAP = 1024 * 1024;
 const TAIL = 64 * 1024;
 const LIVE = `console.log("L".repeat(${256 * 1024})); console.error("error");`;
-// A line, then, once the test has looked at the heap, 64 writes of 1 MiB,
-// each distinct, then a second for the test to look at it again.
-const FLOOD = 'process.stdout.write("START\\n"); setTimeout(() => { for (let i = 0; i < 64; i++) process.stdout.write(String(i).padStart(4, "0") + "x".repeat(1024 * 1024 - 4)); setTimeout(() => {}, 1000); }, 200);';
-const FLOODED = 64 * 1024 * 1024 + 'START\n'.length;
+// A program that, when the test asks (after it has looked at the heap),
+// writes 64 MiB in distinct 1 MiB writes, and runs on until the test ends it.
+const FLOOD = `
+const running = setInterval(() => {}, 1000);
+globalThis.__flood = {
+  start() { for (let i = 0; i < 64; i++) process.stdout.write(String(i).padStart(4, "0") + "x".repeat(1024 * 1024 - 4)); },
+  end() { clearInterval(running); },
+};`;
+const FLOODED = 64 * 1024 * 1024;
 
 // An opencode bundle's program: it reaches the runner's node builtins as opencode's own imports do.
 const opencodeProgram = (body) => `
@@ -43,12 +48,32 @@ const overflows = (which) => opencodeProgram(`
   builtins.fs.writeFileSync("/home/user/caught.txt", caught);
 `);
 
-/** The bytes between the first `begin` and the `end` after it, in `bytes`; null when they are not there. */
+/**
+ * The bytes between `begin` and `end` in `bytes`, when each appears exactly
+ * once and in that order; null otherwise (a frame missing, or sent twice).
+ */
 function framed(bytes, begin, end) {
   const text = Buffer.from(bytes).toString('latin1');
+  const once = (mark) => text.split(mark).length === 2;
   const from = text.indexOf(begin);
-  const to = from < 0 ? -1 : text.indexOf(end, from + begin.length);
-  return to < 0 ? null : [...Buffer.from(text.slice(from + begin.length, to), 'latin1')];
+  const to = text.indexOf(end);
+  return once(begin) && once(end) && from + begin.length <= to ? [...Buffer.from(text.slice(from + begin.length, to), 'latin1')] : null;
+}
+
+/**
+ * How far the heap grows while the running FLOOD program writes 64 MiB:
+ * measured, after a full collection, from just before the test starts the
+ * flood to when every byte has been delivered. `delivered()` counts them.
+ */
+async function floodGrowth(delivered) {
+  const { until } = await import('./lib/resident-body.mjs');
+  await until(() => globalThis.__flood !== undefined, 'the program to start', 30_000);
+  const before = heap();
+  globalThis.__flood.start();
+  await until(() => delivered() === FLOODED, '64 MiB delivered', 30_000);
+  const grown = heap() - before;
+  globalThis.__flood.end();
+  return grown;
 }
 
 // The test process's own, taken before a runner replaces the realm's process.
@@ -164,19 +189,10 @@ await runScenarios(import.meta.path, {
   },
   async 'node one-shot: a running program holds no copy of what it sent live'() {
     let delivered = 0;
-    const started = Promise.withResolvers();
-    const reached = Promise.withResolvers();
-    const { run } = await nodeOneShot(FLOOD, (stream, bytes) => {
-      if (stream !== 'stdout') return;
-      delivered += bytes.byteLength;
-      started.resolve();
-      if (delivered === FLOODED) reached.resolve();
-    });
-    await started.promise;
-    const before = heap();
-    await reached.promise;
-    const grown = heap() - before;
-    await run;
+    // Counted, not kept: what the test holds is not the program's.
+    const { run } = await nodeOneShot(FLOOD, (stream, bytes) => { if (stream === 'stdout') delivered += bytes.byteLength; });
+    const grown = await floodGrowth(() => delivered);
+    assert.equal((await run).exitCode, 0);
     assert.ok(grown < 16 * 1024 * 1024, `64 MiB sent live grew the heap by ${(grown / 2 ** 20).toFixed(1)} MiB`);
   },
   async 'node resident: live output reaches SUPERVISOR exactly, once'() {
@@ -188,16 +204,13 @@ await runScenarios(import.meta.path, {
     assert.deepEqual([log.stdout, log.stderr], [`${'L'.repeat(256 * 1024)}\n`, 'error\n']);
   },
   async 'node resident: a running program holds no copy of what it sent live'() {
-    const { createAuthority, facetSupervisor, launchResident, until } = await import('./lib/resident-body.mjs');
+    const { createAuthority, facetSupervisor, launchResident } = await import('./lib/resident-body.mjs');
     const authority = createAuthority();
     let delivered = 0;
     // Counted, not kept: what the test holds is not the program's.
     const { supervisor } = facetSupervisor(authority, { stdout: async (bytes) => { delivered += bytes.byteLength; } });
     await launchResident({ program: FLOOD, env: { SUPERVISOR: supervisor }, authority });
-    await until(() => delivered > 0, 'the program\'s first line', 10_000);
-    const before = heap();
-    await until(() => delivered === FLOODED, '64 MiB delivered', 30_000);
-    const grown = heap() - before;
+    const grown = await floodGrowth(() => delivered);
     assert.ok(grown < 16 * 1024 * 1024, `64 MiB sent live grew the heap by ${(grown / 2 ** 20).toFixed(1)} MiB`);
   },
 });
