@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "51847cbfea66a8ce11eca38bd1c00feff443c180ff6ef881d9347f5f7825e28c",
+  "fingerprint": "58baf497ec34ebc8ab83c67cbc88b05fa45dc21bcb2d83e66af5853e02e41d4a",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2085,8 +2085,8 @@
     "packages/platform/dist/heap-estimate.d.ts.map": "fe3634c5b9221edd861e4f43070ce7dd4eebdceee1bc780e5bb0644ecbb20887",
     "packages/platform/dist/heap-estimate.js": "4b35910c1402a56e944de43606d5f0e8637c9e3fe09c99af149684657f21da57",
     "packages/platform/dist/heavy-alloc-coord.d.ts": "1ecbb1351c9dc8d8dc2d909186e98e97129f7f9effce81fa0db8790318e2a0b0",
-    "packages/platform/dist/heavy-alloc-coord.d.ts.map": "70de150bca691b75628d60e82292dbb3208131277e1e2dfabd7edc40c3b0ac79",
-    "packages/platform/dist/heavy-alloc-coord.js": "5cd78ddc10db423536ed49807ac8d6e9b8cda1ca5f8c6f6e96a7edad4a49da86",
+    "packages/platform/dist/heavy-alloc-coord.d.ts.map": "6406fc7c8b4e5b0591fea044d302576a39ea49b192e1a8537eb63f783bfb3e6b",
+    "packages/platform/dist/heavy-alloc-coord.js": "867a1ba6dbdf8b60fc463ae630e9d80d38d2f77dc298e7b19087edcf1785c805",
     "packages/platform/dist/hex.d.ts": "f6ddbe116333ccdb5226c7984f9b86f764ad2b0a4b8ea82fb2a7cffa8d226695",
     "packages/platform/dist/hex.d.ts.map": "332da8aa351a2edb1212b20d4e931c55a3956a9cbada2a032d8185f0a4f05182",
     "packages/platform/dist/hex.js": "2cb539f03850cb3b38701819d7e58f2cdef8906f7a30b4ad23915d3f70afb595",
@@ -2143,7 +2143,7 @@
     "packages/platform/src/crc32.ts": "128546da998a6cafd8d75c9f1db8134e3b4e14c4b053e3e0a99111864318d015",
     "packages/platform/src/diag-counters.ts": "68910316f60f988cf6d18e49d68ea181aebdd4cd5728f382e0ae7ab242732ce2",
     "packages/platform/src/heap-estimate.ts": "33c96e8fde1949608eb6c2760393fdd511559f775e799a7413451d2703fcf0cf",
-    "packages/platform/src/heavy-alloc-coord.ts": "59b20ed83df195fb44cf2f17d9fff1b18c9af5fe782f0eb851296d65cd0bfc9f",
+    "packages/platform/src/heavy-alloc-coord.ts": "8529c93d463d283be290c3016874862087a2c98506c9a76109e2d374a47481b0",
     "packages/platform/src/hex.ts": "7362c542a43d575aa0723f58c34dc2975e5b4154cc2fa375dedd7b59092e057f",
     "packages/platform/src/index.ts": "c75c1531b0ca14b744500564d8c66e4562391b1ced80c0e3a411a0dde7d81fae",
     "packages/platform/src/install-phase.ts": "32cddeb03cace1fc2f1fad69e6648d6ae1676e447be7b910373f42ba0f993fec",
