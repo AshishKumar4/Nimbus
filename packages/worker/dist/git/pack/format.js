@@ -10,6 +10,7 @@
  * that cannot be a real object, and past it a JS number silently loses bits.
  */
 import { createHash } from 'node:crypto';
+import { HEX_BYTE } from '@nimbus-sh/platform/hex.js';
 export const PACK_HEADER_BYTES = 12;
 export const PACK_TRAILER_BYTES = 20;
 export const OID_BYTES = 20;
@@ -228,11 +229,11 @@ export function objectIdPrefix(type, size) {
 export function objectHash(type, data) {
     return createHash('sha1').update(objectIdPrefix(type, data.byteLength)).update(data).digest();
 }
-const HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));
+/** The object id at `at` in `oid` (an id alone, or one inside a tree, an index or a pack), as hex. */
 export function oidToHex(oid, at = 0) {
     let hex = '';
     for (let i = at; i < at + OID_BYTES; i++)
-        hex += HEX[oid[i]];
+        hex += HEX_BYTE[oid[i]];
     return hex;
 }
 const OID_HEX_PATTERN = /^[0-9a-f]{40}$/;

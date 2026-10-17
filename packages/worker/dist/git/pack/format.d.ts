@@ -81,6 +81,7 @@ export declare function applyDelta(base: Uint8Array, delta: Uint8Array): Uint8Ar
 export declare function objectIdPrefix(type: GitObjectType, size: number): Uint8Array;
 /** An object's id: SHA-1 of its prefix and its bytes. */
 export declare function objectHash(type: GitObjectType, data: Uint8Array): Uint8Array;
+/** The object id at `at` in `oid` (an id alone, or one inside a tree, an index or a pack), as hex. */
 export declare function oidToHex(oid: Uint8Array, at?: number): string;
 export declare function oidFromHex(hex: string): Uint8Array;
 /** The bytes of `hex`, an object id known to be 40 lowercase hex digits (oidFromHex checks one). */
