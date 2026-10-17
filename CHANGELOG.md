@@ -5,6 +5,15 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a program's launch could wait minutes (a `vite build` sat 5
+  minutes before it ran) while a dependency pre-bundle in another session
+  of the same isolate waited for a compiler. The pre-bundle reserved 28 MiB
+  of the isolate's transient budget before it read anything and kept it
+  while it waited. It now reserves what its files take, once a compiler is
+  ready for them, and gives it back as the compiler takes them.
+- Changed: a launch that waits 10 seconds at one stage logs who holds the
+  isolate's transient budget and who waits for it, and so does the
+  session's launch diagnosis. Dev servers' launches log it too.
 - Fixed: shell function nesting is bounded. A call past the bound is refused with `f: maximum function nesting level exceeded (N)`, and the rest of its line is discarded, as bash 5.2 does with FUNCNEST set. The shell goes on with the next line, its own or a sourced file's, with `$?` 1; a subshell, command substitution, pipeline element or background job ends with 1; a trap's action ends. The bound is FUNCNEST when it is a number above 0, otherwise 1000, and never more than 1000. Before, a function that called itself ran until the session's heap was gone (bash with no FUNCNEST segfaults).
 - Fixed: a process that ends now says why on its stderr. A run again that stops after it has booted (it did not retrace its run, say) ends with status 1 and its reason. Before, its facet was released while the session showed it running, with no exit and no output. A process whose host the platform reset says so too.
 - Changed: the paired perf probes measure the candidate on two Previews

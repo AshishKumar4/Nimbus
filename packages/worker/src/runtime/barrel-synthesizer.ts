@@ -53,8 +53,8 @@
  * dynamically-referenced icon."
  */
 
-import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { SliceEntry } from '../npm/pre-bundle-facet.js';
+import { recallOf } from '@nimbus-sh/core/vfs/recall.js';
+import type { PrebundleReadFs } from '../npm/pre-bundle-facet.js';
 import { packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 import { importedSpecifiers, maskSourceForImports, UndecidableSourceError } from '@nimbus-sh/core/runtime/comment-strip.js';
 import { BUNDLER_IMPORT_CONDITIONS } from '@nimbus-sh/core/runtime/bundler-resolution.js';
@@ -138,7 +138,7 @@ export interface ProjectImports {
  * `files`. What it left unread is reported (`unread`), never dropped
  * silently.
  */
-export async function scanProjectImports(vfs: CredentialedVfs, projDir: string, parse: SourceParser, budget?: ScanBudget): Promise<ProjectImports> {
+export async function scanProjectImports(vfs: PrebundleReadFs, projDir: string, parse: SourceParser, budget?: ScanBudget): Promise<ProjectImports> {
   const bare = new Set<string>();
   const namedImports: NamedImportMap = new Map();
   const scanExts = new Set(['.ts', '.tsx', '.jsx', '.js', '.mjs']);
@@ -303,7 +303,9 @@ function lexedImportView(source: string, path: string): string | null {
  */
 async function parsedImportView(source: string, path: string, parse: SourceParser): Promise<string> {
   // The transform's output holds no JSX: read it as a `.ts` file is read.
-  return maskSourceForImports(await parse(path, source), path.replace(/\.[^./]*$/, '') + '.ts');
+  const parsed = parse(path, source);
+  source = '';
+  return maskSourceForImports(await parsed, path.replace(/\.[^./]*$/, '') + '.ts');
 }
 
 /**
@@ -362,7 +364,7 @@ export interface SyntheticEntryResult {
 }
 
 export function buildSyntheticEntry(
-  vfs: CredentialedVfs,
+  vfs: PrebundleReadFs,
   nmDir: string,
   pkgName: string,
   names: ReadonlySet<string>,
@@ -477,37 +479,16 @@ export function buildSyntheticEntry(
   };
 }
 
-/**
- * Build a SCOPED slice for a synthetic-entry bundle: include only
- * the files the synthetic entry directly references (+ their
- * transitive imports walked via static analysis), plus the package
- * root's `package.json` (esbuild's resolver reads it for exports/main
- * fields). This bypasses the standard `walkDir` over the whole
- * package, which for icon-libraries with thousands of files can
- * exceed the 28 MiB slice cap.
- *
- * Caller still appends the synthetic entry file itself to the slice
- * (we don't include it here because it lives in a synthetic
- * directory the caller already manages).
- *
- * Returns the list of `SliceEntry`-shaped objects to push into the
- * existing slice, plus the total bytes added (for cap-tracking).
- *
- * `transitiveCap`: how many files we'll walk in total. Bounded so a
- * pathological barrel-of-barrels can't blow the cap. Default 800,
- * which empirically covers icon-libraries with up to ~400 imported
- * icons (each pulling 1-2 transitive shared utility files).
- */
-export async function buildScopedSliceForSynthetic(
-  vfs: CredentialedVfs,
+/** Discovery retains paths, not a partial slice, while the parser owns its current source. */
+export async function discoverScopedSliceForSynthetic(
+  vfs: PrebundleReadFs,
   nmDir: string,
   pkgName: string,
   referencedFiles: string[],
   parse: SourceParser,
   transitiveCap = 800,
-): Promise<{ entries: SliceEntry[]; totalBytes: number }> {
-  const entries: SliceEntry[] = [];
-  let totalBytes = 0;
+): Promise<Array<{ path: string; isDir: boolean }>> {
+  const entries: Array<{ path: string; isDir: boolean }> = [];
   const visited = new Set<string>();
   const dirSet = new Set<string>();
   const pkgRoot = nmDir + '/' + pkgName;
@@ -515,7 +496,7 @@ export async function buildScopedSliceForSynthetic(
   const addDir = (d: string) => {
     if (dirSet.has(d) || !d) return;
     dirSet.add(d);
-    entries.push({ path: '/' + d.replace(/^\/+/, ''), isDir: true });
+    entries.push({ path: d, isDir: true });
   };
 
   // Always include the package root + its package.json. esbuild's
@@ -524,11 +505,10 @@ export async function buildScopedSliceForSynthetic(
   const pkgJsonPath = pkgRoot + '/package.json';
   if (vfs.exists(pkgJsonPath) && !vfs.isDirectory(pkgJsonPath)) {
     try {
-      const bytes = vfs.readFile(pkgJsonPath);
-      entries.push({ path: '/' + pkgJsonPath.replace(/^\/+/, ''), bytes, isDir: false });
-      totalBytes += bytes.length + pkgJsonPath.length;
+      vfs.access(pkgJsonPath, 4);
+      entries.push({ path: pkgJsonPath, isDir: false });
       visited.add(pkgJsonPath);
-    } catch {}
+    } catch (error) { if (recallOf(error) !== null) throw error; }
   }
 
   // Walker: BFS over referenced files + their relative imports.
@@ -538,16 +518,23 @@ export async function buildScopedSliceForSynthetic(
     if (visited.has(filePath)) continue;
     visited.add(filePath);
     if (!vfs.exists(filePath) || vfs.isDirectory(filePath)) continue;
-    let bytes: Uint8Array;
-    try { bytes = vfs.readFile(filePath); } catch { continue; }
+    let source: string;
+    try { source = vfs.readFileString(filePath); } catch (error) {
+      if (recallOf(error) !== null) throw error;
+      continue;
+    }
     // Track parent dirs so esbuild's plugin's dirSet has them.
     const slash = filePath.lastIndexOf('/');
     if (slash > 0) addDir(filePath.substring(0, slash));
-    entries.push({ path: '/' + filePath.replace(/^\/+/, ''), bytes, isDir: false });
-    totalBytes += bytes.length + filePath.length;
+    entries.push({ path: filePath, isDir: false });
     // Queue the relative imports, read by the project scan's grammar.
-    const source = new TextDecoder().decode(bytes);
-    const view = lexedImportView(source, filePath) ?? await parsedImportView(source, filePath, parse);
+    let view = lexedImportView(source, filePath);
+    if (view === null) {
+      const parsed = parsedImportView(source, filePath, parse);
+      source = '';
+      view = await parsed;
+    }
+    source = '';
     for (const rel of importedSpecifiers(view)) {
       if (!rel.startsWith('./') && !rel.startsWith('../')) continue;
       const dir = filePath.substring(0, slash > 0 ? slash : 0);
@@ -567,7 +554,7 @@ export async function buildScopedSliceForSynthetic(
       }
     }
   }
-  return { entries, totalBytes };
+  return entries;
 }
 
 /** A name a barrel re-exports: where from (a path relative to the barrel) and its name there, null for the module's namespace. */
@@ -628,7 +615,7 @@ function namedExports(statement: ExportNamedDeclaration): string[] {
  * isn't installed or doesn't expose a JS entry.
  */
 function findPackageEsmEntry(
-  vfs: CredentialedVfs,
+  vfs: PrebundleReadFs,
   nmDir: string,
   pkgName: string,
 ): string | null {

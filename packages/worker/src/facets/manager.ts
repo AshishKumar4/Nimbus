@@ -226,7 +226,7 @@ import {
   acquireSupervisorAllocation, acquireSupervisorCopyAllocation, readSupervisorAllocationBudget, tryAcquireSupervisorAllocation, tryAcquireSupervisorCopyAllocation,
   reclaimableSupervisorAllocation,
 } from '@nimbus-sh/platform/heavy-alloc-coord.js';
-import type { ResizableCreditLease } from '@nimbus-sh/platform/weighted-credit-pool.js';
+import type { SupervisorAllocationLease, SupervisorAllocationOwner } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { streamedWasmImageDigest, type WasmImageRecord } from './wasm-image-digest.js';
 import { wasmImageDigest } from './wasm-image-key.js';
@@ -4356,6 +4356,7 @@ export async function buildPrefetchBundle(vfs: LaunchFs, options: PrefetchBundle
 const PREFETCH_PEAK_PER_BYTE = 3;
 // A speculative admission must fit a small module before paying for a bounced walk.
 const PREFETCH_MIN_CLOSURE_BYTES = 4096;
+const PREFETCH_ALLOCATION_OWNER: SupervisorAllocationOwner = { owner: 'prefetch bundle/map', attribution: 'prefetchBundleBytes' };
 
 /** An admission to the supervisor's admitted transient budget (Kinu #29). */
 interface PrefetchAdmission {
@@ -4398,12 +4399,12 @@ type LaunchWait = () => { readonly signal: AbortSignal; dispose(): void };
  * build joined, before a worker). One that has to wait for room waits under
  * `wait`: a launch whose process ends meanwhile is never admitted.
  */
-async function admitPrefetch(wait?: LaunchWait, bytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, copy = false): Promise<PrefetchAdmission> {
-  const now = tryAdmitPrefetch(bytes, copy);
+async function admitPrefetch(wait?: LaunchWait, bytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, copy = false, owner = PREFETCH_ALLOCATION_OWNER): Promise<PrefetchAdmission> {
+  const now = tryAdmitPrefetch(bytes, copy, owner);
   if (now !== null) return now;
   const waiting = wait?.();
   try {
-    const lease = await (copy ? acquireSupervisorCopyAllocation : acquireSupervisorAllocation)(bytes, waiting?.signal);
+    const lease = await (copy ? acquireSupervisorCopyAllocation : acquireSupervisorAllocation)(bytes, waiting?.signal, owner);
     // Room came as its launch ended: given back, not used.
     if (waiting?.signal.aborted) {
       lease.release();
@@ -4420,18 +4421,18 @@ async function admitPrefetch(wait?: LaunchWait, bytes = SUPERVISOR_IN_FLIGHT_ALL
  * null where it would wait. A `copy` (a map made from a state already
  * staged) takes the credit without shrinking the VFS cache.
  */
-function tryAdmitPrefetch(bytes: number, copy = false): PrefetchAdmission | null {
-  const lease = copy ? tryAcquireSupervisorCopyAllocation(bytes) : tryAcquireSupervisorAllocation(bytes);
+function tryAdmitPrefetch(bytes: number, copy = false, owner = PREFETCH_ALLOCATION_OWNER): PrefetchAdmission | null {
+  const lease = (copy ? tryAcquireSupervisorCopyAllocation : tryAcquireSupervisorAllocation)(bytes, owner);
   return lease === null ? null : admissionOf(lease, false);
 }
 
-function tryAdmitPrefetchBuild(): PrefetchAdmission | null {
+function tryAdmitPrefetchBuild(owner: SupervisorAllocationOwner): PrefetchAdmission | null {
   const budget = readSupervisorAllocationBudget();
   const free = budget.capacity - budget.current;
-  return free / PREFETCH_PEAK_PER_BYTE < PREFETCH_MIN_CLOSURE_BYTES ? null : tryAdmitPrefetch(free);
+  return free / PREFETCH_PEAK_PER_BYTE < PREFETCH_MIN_CLOSURE_BYTES ? null : tryAdmitPrefetch(free, false, owner);
 }
 
-function admissionOf(admitted: ResizableCreditLease, queued: boolean): PrefetchAdmission {
+function admissionOf(admitted: SupervisorAllocationLease, queued: boolean): PrefetchAdmission {
   // Attributed so it lands under `prefetchBundleBytes`, not the unattributed remainder.
   const lease = attributeAllocation('prefetchBundleBytes', admitted);
   let released = false;
@@ -4469,8 +4470,8 @@ function admissionOf(admitted: ResizableCreditLease, queued: boolean): PrefetchA
 }
 
 /** `work` under an admission of its own (admitPrefetch's `wait` and `bytes`), given back as it ends. */
-async function withPrefetchAllocation<T>(work: (admission: PrefetchAdmission) => Promise<T>, wait?: LaunchWait, bytes?: number): Promise<T> {
-  const admission = await admitPrefetch(wait, bytes);
+async function withPrefetchAllocation<T>(work: (admission: PrefetchAdmission) => Promise<T>, wait?: LaunchWait, bytes?: number, owner = PREFETCH_ALLOCATION_OWNER): Promise<T> {
+  const admission = await admitPrefetch(wait, bytes, false, owner);
   try {
     return await work(admission);
   } finally {
@@ -6804,7 +6805,8 @@ export class FacetManager {
     // Its helpers wait for a worker as its process (withLaunchPreparation): a wait nothing can satisfy is one the ledger tells.
     const building = withLaunchPreparation(this.ctx, { pid: entry.pid }, async () => {
       // Held from the moment it is taken: the detector names its holders (_creditHolders).
-      let admission = held ?? tryAdmitPrefetchBuild() ?? await admitPrefetch(() => this._launchEnds(entry.pid));
+      const owner = this._allocationOwner(entry.pid);
+      let admission = held ?? tryAdmitPrefetchBuild(owner) ?? await admitPrefetch(() => this._launchEnds(entry.pid), undefined, false, owner);
       for (;;) {
         this.buildAdmissions.set(entry.pid, admission);
         const fullBound = spec.maxBundleBytes ?? VFS_BUNDLE_MAX_BYTES;
@@ -6817,7 +6819,7 @@ export class FacetManager {
           // The failed gather has unwound before its credit is returned; no partial cells survive the bounce.
           this._releaseBuildAdmission(entry.pid);
           if (creditLimit === undefined || !(error instanceof ClosureBoundExceededError) || error.outcome.bound !== creditLimit) throw error;
-          admission = await admitPrefetch(() => this._launchEnds(entry.pid));
+          admission = await admitPrefetch(() => this._launchEnds(entry.pid), undefined, false, owner);
         }
       }
     });
@@ -7389,7 +7391,7 @@ export class FacetManager {
               resized = true;
               if (!vfsState.cacheRetained) releaseGeneratedSources(vfsState);
               this._releaseBuildAdmission(entry.pid);
-              const admission = await admitPrefetch(() => this._launchEnds(entry.pid), error.bytes, true);
+              const admission = await admitPrefetch(() => this._launchEnds(entry.pid), error.bytes, true, this._allocationOwner(entry.pid));
               this.buildAdmissions.set(entry.pid, admission);
               vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
               continue;
@@ -7682,7 +7684,7 @@ export class FacetManager {
     this.launching.delete(pid);
   }
 
-  /** The one-shot launches not yet running (their stage and its age) and the launches waiting for a turn. */
+  /** Launches not yet running (their stage and its age) and the launches waiting for a turn. */
   launchState(now = Date.now()): { launches: Array<{ pid: number; stage: string; ms: number }>; pacer: { waiting: number; oldestMs: number | null } } {
     return {
       launches: [...this.launching].map(([pid, { stage, since }]) => ({ pid, stage, ms: now - since })),
@@ -8025,7 +8027,7 @@ export class FacetManager {
     const admission = this.buildAdmissions.get(pid);
     if (admission === undefined) throw new Error(`Nimbus: the module map for pid ${pid} has no share of the credit`);
     if (admission.held() >= need) return;
-    const replacement = tryAdmitPrefetch(need, true);
+    const replacement = tryAdmitPrefetch(need, true, this._allocationOwner(pid));
     if (replacement === null) throw new OneShotAllocationNeeded(need);
     this.buildAdmissions.set(pid, replacement);
     admission.release();
@@ -8377,7 +8379,7 @@ export class FacetManager {
       const serialized = _serializeBundleForFacet(gathered.bundle);
       assertStagedBundleFitsRpcPayload(serialized, gathered.bundle);
       return { vfsState: gathered, vfsBundle: serialized };
-    }, () => this._launchEnds(entry.pid));
+    }, () => this._launchEnds(entry.pid), undefined, this._allocationOwner(entry.pid));
 
     return {
       mode,
@@ -8629,6 +8631,10 @@ export class FacetManager {
     return readSupervisorAllocationBudget().current > own ? null : [...this.buildAdmissions.keys()];
   }
 
+  private _allocationOwner(pid: number): SupervisorAllocationOwner {
+    return { owner: 'launch bundle/map', pid, session: this.ctx?.id?.toString(), attribution: 'prefetchBundleBytes' };
+  }
+
   /**
    * A launch's share of the credit for the module map it makes from `state`
    * (another launch's build, the cache's), taken before it holds a worker:
@@ -8639,12 +8645,12 @@ export class FacetManager {
     if (this.buildAdmissions.has(entry.pid)) return state;
     const need = Math.min(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES,
       Math.max(prefetchNeed(state.rawBytes ?? 0), state.oneShotMapBytes ?? 0));
-    const now = tryAdmitPrefetch(need, true);
+    const now = tryAdmitPrefetch(need, true, this._allocationOwner(entry.pid));
     if (now !== null) {
       this.buildAdmissions.set(entry.pid, now);
       return state;
     }
-    return admitPrefetch(() => this._launchEnds(entry.pid), need, true).then((admission) => {
+    return admitPrefetch(() => this._launchEnds(entry.pid), need, true, this._allocationOwner(entry.pid)).then((admission) => {
       this.buildAdmissions.set(entry.pid, admission);
       return state;
     });
@@ -9070,17 +9076,21 @@ export class FacetManager {
     // gives it back for good, and its boot takes a slot of its own, as a
     // resident started in none does (_startResidentProcess).
     const inherited = suspendLaunchAdmission(this.ctx);
-    let admitted: () => Promise<void> = async () => {};
-    let stopWaiting = () => {};
-    if (inherited !== undefined && !opts.attachedTty) {
-      const ended = new AbortController();
-      stopWaiting = this.processes.subscribeTerminal(entry.pid, () => {
-        ended.abort(new Error(`Nimbus: the launch for pid ${entry.pid} was cancelled while it waited for a worker`));
-      });
-      admitted = () => inherited(ended.signal);
-    }
+    const ended = new AbortController();
+    const stopWaiting = this.processes.subscribeTerminal(entry.pid, () => {
+      ended.abort(new Error(`Nimbus: the launch for pid ${entry.pid} ended`));
+      this._launchEnded(entry.pid);
+    });
+    this._launchStage(entry, 'prepare', ended.signal);
+    const admitted = async () => {
+      if (inherited !== undefined && !opts.attachedTty) {
+        this._launchStage(entry, 'admission', ended.signal);
+        await inherited(ended.signal);
+      }
+      this._launchStage(entry, 'load', ended.signal);
+    };
     const launch = withLaunchPreparation(this.ctx, { pid: entry.pid }, () => this._runResidentLaunchBody(entry, code, command, opts, attempt, admitted));
-    return this.trackLaunchTask(launch.finally(() => { stopWaiting(); preparing(); }));
+    return this.trackLaunchTask(launch.finally(() => { this._launchEnded(entry.pid); stopWaiting(); preparing(); }));
   }
 
   private async _runResidentLaunchBody(
@@ -9505,6 +9515,7 @@ export class FacetManager {
       } else {
         await handle.booted();
       }
+      this._launchEnded(entry.pid);
       launching = false;
       break;
       } catch (e: unknown) {

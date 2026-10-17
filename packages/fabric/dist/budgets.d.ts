@@ -288,6 +288,8 @@ export declare function beginAdmittedFetch(ctx: object): EndLoaderFetch | undefi
  * credit, then a worker); undefined where it holds none to give back.
  */
 export declare function suspendHeldAdmission(ctx: object): ((signal?: AbortSignal) => Promise<void>) | undefined;
+/** Whether this frame is a running, claimed launch, not a preparation's reserved worker. */
+export declare function runningLaunchAdmission(ctx: object): boolean;
 export declare function claimAdmission(ctx: object, pid?: number): EndLoaderFetch | undefined;
 /**
  * The Dynamic Worker `workerKey` in flight for a helper's call (the
@@ -298,7 +300,7 @@ export declare function claimAdmission(ctx: object, pid?: number): EndLoaderFetc
  * a launch whose admission is given back while it prepares again).
  * End the hold from the caller's own `finally`, as beginLoaderFetch's.
  */
-export declare function beginHelperFetch(ctx: object, workerKey: string): Promise<EndLoaderFetch>;
+export declare function beginHelperFetch(ctx: object, workerKey: string, signal?: AbortSignal): Promise<EndLoaderFetch>;
 /**
  * Distinct Dynamic Workers this actor may still put in flight: the limit
  * less what is held and claimed right now, and none while a limit refusal's
