@@ -27,6 +27,11 @@ export interface ExpandContext {
    * what makes `out="$(cmd)" || die` and `set -e` see a failing `cmd`.
    */
   lastSubstitutionExitCode?: number;
+  /**
+   * Expanding a here-document's body, where a `$'...'` is literal text,
+   * inside a parameter's default word too (bash quotes nothing there).
+   */
+  hereDocument?: boolean;
 }
 
 export interface CapturedCommand {
@@ -761,10 +766,10 @@ function scalarOf(parameter: Parameter, ctx: ExpandContext): string {
  */
 async function expandParameterWord(word: string, ctx: ExpandContext): Promise<string> {
   if (word === '') return '';
-  return joinPieces(await expandParts(parameterWordParts(word), ctx));
+  return joinPieces(await expandParts(parameterWordParts(word, ctx.hereDocument !== true), ctx));
 }
 
-function parameterWordParts(word: string): WordPart[] {
+function parameterWordParts(word: string, ansiC: boolean): WordPart[] {
   const parts: WordPart[] = [];
   let text = '';
   const flush = (): void => {
@@ -782,7 +787,12 @@ function parameterWordParts(word: string): WordPart[] {
       i += 2;
       continue;
     }
-    if (ch === '$' && word[i + 1] === "'") {
+    if (ch === '$' && word[i + 1] === '$') {
+      text += '$$';
+      i += 2;
+      continue;
+    }
+    if (ansiC && ch === '$' && word[i + 1] === "'") {
       flush();
       const quoted = readAnsiCQuote(word, i);
       parts.push({ text: quoted.text, quoted: 'single' });
