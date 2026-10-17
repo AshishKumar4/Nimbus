@@ -428,25 +428,29 @@ function lateTarget(host: LateLinkHost, resolution: LateResolution): LateTarget 
  * rows go to `late`.
  */
 function checkLinks(host: LateLinkHost, id: number, seen: Set<string>, checked: Set<number>, late: LateGraph): void {
-  const visit = (at: number): void => {
+  // A require() staging hoisted (a target past the row's static imports) is
+  // linked as require(esm) links: a failure in its graph is not kept.
+  const required: LateGraph = { modules: late.modules, rows: late.rows, kept: false };
+  const visit = (at: number, graph: LateGraph): void => {
     if (checked.has(at)) return;
     checked.add(at);
     if (host.rowKind(at) !== 'module' || host.rowSettled(at)) return;
     const failure = linkFailures.get(host.rowKey(at));
     if (failure !== undefined) throw failure;
     try {
-      visitRow(at);
+      visitRow(at, graph);
     } catch (e) {
-      if (late.kept && e instanceof Error) linkFailures.set(host.rowKey(at), e);
+      if (graph.kept && e instanceof Error) linkFailures.set(host.rowKey(at), e);
       throw e;
     }
   };
-  const visitRow = (at: number): void => {
-    late.rows.push(at);
+  const visitRow = (at: number, graph: LateGraph): void => {
+    graph.rows.push(at);
     const { analysis, specifiers } = rowRead(host, at);
     for (const [index, target] of host.rowTargets(at).entries()) {
+      const edge = index < specifiers.length ? graph : required;
       if (target >= 0) {
-        visit(target);
+        visit(target, edge);
         continue;
       }
       const missing = host.missing(-2 - target);
@@ -458,16 +462,16 @@ function checkLinks(host: LateLinkHost, id: number, seen: Set<string>, checked: 
       const specifier = specifiers[index];
       const file = specifier === undefined ? null : handedOnFile(host, host.rowKey(at), missing.handedOn, specifier, analysis?.bindings?.types[index]);
       if (file !== null) {
-        if (file.path !== undefined && (file.format === 'module' || file.format === 'detect')) plan(host, file.path.replace(/^\/+/, ''), file.url, seen, [], checked, late);
+        if (file.path !== undefined && (file.format === 'module' || file.format === 'detect')) plan(host, file.path.replace(/^\/+/, ''), file.url, seen, [], checked, edge);
         continue;
       }
       // A query's or a fragment's file by its path; a data: module by its URL.
       const handed = new URL(missing.handedOn);
       const key = handed.protocol === 'data:' ? missing.handedOn : decodeURIComponent(handed.pathname).replace(/^\/+/, '');
-      plan(host, key, missing.handedOn, seen, [], checked, late);
+      plan(host, key, missing.handedOn, seen, [], checked, edge);
     }
   };
-  visit(id);
+  visit(id, late);
 }
 
 /**
