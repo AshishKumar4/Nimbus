@@ -53,6 +53,8 @@ const CASES = [
   String.raw`printf '<%s>' $$'x' $$$'\x41' "$(printf %s $$'y')" | tr -d 0-9`,
   // A comment inside $(...) is comment text, quotes and all, to its line's end.
   `printf '<%s>' "$(printf x # $'a\\'\n)" "$(printf y # it's\n)"${HEX}`,
+  // ...but a # inside a parameter expansion or backquotes there is theirs.
+  "unset x; printf '<%s>' \"$(printf '%s' ${x:-a #b})\" \"$(printf '%s' `echo c #d`)\" \"$(printf '%s' ${#HOME})\" | tr -d 0-9",
   // \\U past U+10FFFF is bash's wider UTF-8, to U+7FFFFFFF; past that, nothing.
   show(String.raw`$'\U00110000' $'\U7FFFFFFF' $'\U80000000' x`),
   String.raw`{ printf '\U00110000|'; echo -e '\U001FFFFF|\U80000000|'; }` + HEX,
@@ -60,6 +62,8 @@ const CASES = [
   show(String.raw`$'\x{41}' $'\x{141}' $'\x{}z' $'\x{41' $'\x{4}b'`),
   // A here-document's body is literal text, inside a parameter's default word too.
   "unset x; cat <<EOF" + HEX + "\n${x:-$'\\t'} ${x-$'\\n'} ${x:-'a'} ${x:-\"b\"}\nEOF",
+  // ...while a pattern there reads quotes and $'...' as anywhere.
+  "v=abc; cat <<EOF" + HEX + "\n${v#'a'} ${v#$'\\x61'} ${v/$'\\x61'/X} ${v^^$'\\x61'} ${v%$'c'}\nEOF",
 ];
 
 // A line of its own for the status, so a here-document's delimiter ends its line.
