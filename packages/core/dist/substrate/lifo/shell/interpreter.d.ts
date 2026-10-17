@@ -190,6 +190,7 @@ export declare class Interpreter {
     getLastExitCode(): number;
     setLastExitCode(exitCode: number): void;
     executeScript(script: ScriptNode, terminalStdin?: TerminalInputStream): Promise<number>;
+    /** Runs `script`'s lists; one run `inline` (eval's, a sourced file's, an alias's text) leaves an `exit` to the shell that runs it. */
     private executeScriptWithIo;
     executeLine(input: string, terminalStdin?: TerminalInputStream, options?: {
         runExitTrap?: boolean;

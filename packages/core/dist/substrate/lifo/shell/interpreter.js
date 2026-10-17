@@ -188,7 +188,8 @@ export class Interpreter {
     async executeScript(script, terminalStdin) {
         return (await this.executeScriptWithIo(script, this.createTerminalIo(terminalStdin)));
     }
-    async executeScriptWithIo(script, io) {
+    /** Runs `script`'s lists; one run `inline` (eval's, a sourced file's, an alias's text) leaves an `exit` to the shell that runs it. */
+    async executeScriptWithIo(script, io, inline = false) {
         let exitCode = 0;
         try {
             for (const list of script.lists) {
@@ -199,7 +200,7 @@ export class Interpreter {
             if (error instanceof ErrexitSignal) {
                 exitCode = error.exitCode;
             }
-            else if (error instanceof ExitSignal) {
+            else if (error instanceof ExitSignal && !inline) {
                 exitCode = error.exitCode;
             }
             else {
@@ -701,7 +702,7 @@ export class Interpreter {
                 aliasesExpanding.add(name);
                 const script = parse(lex(expandedLine));
                 markAliasText(script.lists, aliasesExpanding);
-                return (await this.executeScriptWithIo(script, io));
+                return (await this.executeScriptWithIo(script, io, true));
             }
         }
         // Apply per-command assignments (temporary env)
@@ -1073,12 +1074,12 @@ export class Interpreter {
         if (options.positionals !== undefined) {
             inlineIo.positionals = { args: [...options.positionals] };
         }
-        return (await this.executeLineWithIo(input, inlineIo));
+        return (await this.executeLineWithIo(input, inlineIo, true));
     }
-    async executeLineWithIo(input, io) {
+    async executeLineWithIo(input, io, inline = false) {
         const tokens = lex(input);
         const script = parse(tokens);
-        return (await this.executeScriptWithIo(script, io));
+        return (await this.executeScriptWithIo(script, io, inline));
     }
     /**
      * A child shell's run and end: it holds the files its io inherited while it
