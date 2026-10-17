@@ -3,9 +3,10 @@
 // answers. Independent budget/diag copies include owner-accounting cost.
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync, rmSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, normalize, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { heapStats } from 'bun:jsc';
+import ts from 'typescript';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -28,17 +29,7 @@ const measured = new Set(['worker/src/npm/browser-prebundle.ts', 'worker/src/npm
   'worker/src/runtime/barrel-synthesizer.ts', 'worker/src/facets/prebundle-pool.ts',
   'worker/src/facets/build-facet.ts', 'worker/src/facets/manager.ts',
   'platform/src/heavy-alloc-coord.ts', 'platform/src/diag-counters.ts', 'core/src/runtime/prebundle-slice.ts']);
-const roots = [];
 const fixtureRoots = [];
-Bun.plugin({ name: 'prebundle-credit-arms', setup(build) {
-  build.onResolve({ filter: /^@nimbus-sh\/(core|platform|fabric)\/(.+)\.js$/ }, (args) => {
-    const root = roots.find((path) => args.importer.startsWith(path + '/'));
-    if (!root) return;
-    const match = /^@nimbus-sh\/(core|platform|fabric)\/(.+)\.js$/.exec(args.path);
-    const file = `${match[1]}/src/${match[2]}.ts`;
-    return { path: join(measured.has(file) ? root : packages, file) };
-  });
-} });
 adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
 const live = () => { Bun.gc(true); const stats = heapStats(); return stats.heapSize + stats.extraMemorySize; };
 const results = [];
@@ -50,7 +41,27 @@ const warm = process.argv.includes('--short') ? 1 : 8;
 try {
   const load = async (from, label) => {
     const fixture = mkdtempSync(join(packages, '.prebundle-cpu-'));
-    roots.push(fixture); fixtureRoots.push(fixture);
+    fixtureRoots.push(fixture);
+    const armSource = (text, file) => {
+      const tree = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const edits = [];
+      const visit = (node) => {
+        const literal = ts.isImportDeclaration(node) || ts.isExportDeclaration(node) ? node.moduleSpecifier
+          : ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword ? node.arguments[0] : undefined;
+        if (literal && ts.isStringLiteral(literal)) {
+          const specifier = literal.text;
+          const alias = /^@nimbus-sh\/(core|platform|fabric)\/(.+)\.js$/.exec(specifier);
+          const target = alias ? `${alias[1]}/src/${alias[2]}.ts`
+            : specifier.startsWith('.') ? normalize(join(dirname(file), specifier)).replace(/\.js$/, '.ts') : null;
+          if (target !== null) edits.push({ start: literal.getStart(tree), end: literal.getEnd(),
+            value: JSON.stringify(pathToFileURL(join(measured.has(target) ? fixture : packages, target)).href) });
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(tree);
+      for (const edit of edits.sort((a, b) => b.start - a.start)) text = text.slice(0, edit.start) + edit.value + text.slice(edit.end);
+      return text;
+    };
     const mirror = (relative) => {
       const destination = join(fixture, relative);
       mkdirSync(destination, { recursive: true });
@@ -58,7 +69,7 @@ try {
         const path = `${relative}/${entry.name}`;
         const target = join(fixture, path);
         if (entry.isDirectory() && [...measured].some((file) => file.startsWith(path + '/'))) mirror(path);
-        else if (measured.has(path)) writeFileSync(target, readFileSync(join(from, path)));
+        else if (measured.has(path)) writeFileSync(target, armSource(readFileSync(join(from, path), 'utf8'), path));
         else symlinkSync(join(packages, path), target);
       }
     };

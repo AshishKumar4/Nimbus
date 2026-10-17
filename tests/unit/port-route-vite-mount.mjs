@@ -57,6 +57,13 @@ function makeVfs({ faults = new Map(), extraFiles = new Map(), reads = null } = 
   }
   const encoder = new TextEncoder();
   const view = {
+    revision: () => 0,
+    stat: (p) => {
+      if (dirs.has(p)) return { type: 'directory', size: 0 };
+      if (!files.has(p)) throw Object.assign(new Error(`ENOENT: ${p}`), { code: 'ENOENT' });
+      const body = files.get(p);
+      return { type: 'file', size: typeof body === 'string' ? Buffer.byteLength(body) : body.byteLength };
+    },
     exists: (p) => {
       const remaining = faults.get(p) ?? 0;
       if (remaining > 0) {
@@ -100,12 +107,17 @@ function makeVfs({ faults = new Map(), extraFiles = new Map(), reads = null } = 
  */
 function makeParkedBundlePool() {
   const submits = [];
+  let tail = Promise.resolve();
   const pool = {
     prebundle: (task) => {
-      const spec = task.prepare();
-      return new Promise((resolve, reject) => {
-        submits.push({ specifier: spec.specifier, sliceBytes: spec.slice.reduce((n, e) => n + (e.bytes?.length ?? 0), 0), resolve, reject });
+      const call = tail.then(() => {
+        const spec = task.prepare();
+        return new Promise((resolve, reject) => {
+          submits.push({ specifier: spec.specifier, sliceBytes: spec.slice.reduce((n, e) => n + (e.bytes?.length ?? 0), 0), resolve, reject });
+        });
       });
+      tail = call.catch(() => {});
+      return call;
     },
   };
   return { provider: { acquire: async () => pool }, submits };
@@ -239,11 +251,8 @@ function runningSession({ faults, extraFiles, reads, bundlePool = null } = {}) {
   console.log('  [6] a failed cold build is shared by its waiters and cleared for the next request');
 }
 
-// 7. Two cold builds for DIFFERENT modules never hold their slices at the
-//    same time when together they exceed the supervisor allocation budget.
-//    The lease is taken before the slice is built, so the second build's
-//    package files are not even read while the first build's facet RPC is
-//    outstanding; they are read only after the first Response exists.
+// 7. Different modules materialize only when their shared consumer is
+//    ready. The queued request holds no slice while the first RPC runs.
 {
   const MiB = 1024 * 1024;
   const bigBody = new Uint8Array(20 * MiB);
@@ -276,8 +285,8 @@ function runningSession({ faults, extraFiles, reads, bundlePool = null } = {}) {
   const small = handleFetch(self, hostRequest(`/port/${VITE_PORT}/@modules/small-pkg`))
     .then((response) => { timeline.push('small:response'); return response; });
   for (let i = 0; i < 20; i++) await settle();
-  assert.equal(submits.length, 1, 'the small build must not reach the facet while the big slice is held');
-  assert.ok(!reads.includes(smallEntry), 'the small slice must not be built while the big slice is held');
+  assert.equal(submits.length, 1, 'the small build waits for the busy compiler slot');
+  assert.ok(!reads.includes(smallEntry), 'a queued slice is not materialized before its consumer is ready');
 
   submits[0].resolve({ ok: true, esmCode: 'export default "big";' });
   const bigResponse = await big;
@@ -286,15 +295,15 @@ function runningSession({ faults, extraFiles, reads, bundlePool = null } = {}) {
 
   await until(() => submits.length === 2, 'the small build to reach its facet submit after the big one released');
   assert.equal(submits[1].specifier, 'small-pkg');
-  assert.ok(reads.includes(smallEntry), 'the small slice is built once the budget frees');
-  assert.deepEqual(timeline, ['big:response'], 'the small build started only after the big Response existed');
+  assert.ok(reads.includes(smallEntry), 'the small slice is built once its consumer is ready');
+  assert.deepEqual(timeline, ['big:response'], 'the first response completed before this observation');
 
   submits[1].resolve({ ok: true, esmCode: 'export default "small";' });
   const smallResponse = await small;
   assert.equal(smallResponse.status, 200);
   assert.match(await smallResponse.text(), /"small"/);
   assert.deepEqual(timeline, ['big:response', 'small:response']);
-  console.log('  [7] two cold builds never hold slices beside each other under the supervisor budget');
+  console.log('  [7] queued modules materialize only after their pool consumer is ready');
 }
 
 // 8. A subdirectory's index.html (a multi-page app's /about/) gets the same

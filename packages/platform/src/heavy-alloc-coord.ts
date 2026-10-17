@@ -214,7 +214,9 @@ export class SupervisorAllocationBudget {
     try {
       const lease = this.credits.acquireAhead(wanted, signal);
       this.reclaimForRunning();
-      return this.wrap(await lease, drivesLifecycle, owner);
+      const credit = await lease;
+      this.waiting.delete(waiter);
+      return this.wrap(credit, drivesLifecycle, waiter.owner);
     } finally { this.waiting.delete(waiter); }
   }
 
@@ -247,7 +249,11 @@ export class SupervisorAllocationBudget {
   ): Promise<SupervisorAllocationLease> {
     const waiter = { owner: { ...owner }, bytes, since: Date.now() };
     this.waiting.add(waiter);
-    try { return this.wrap(await this.credits.acquire(bytes, signal), drivesLifecycle, owner); }
+    try {
+      const credit = await this.credits.acquire(bytes, signal);
+      this.waiting.delete(waiter);
+      return this.wrap(credit, drivesLifecycle, waiter.owner);
+    }
     finally { this.waiting.delete(waiter); }
   }
 
