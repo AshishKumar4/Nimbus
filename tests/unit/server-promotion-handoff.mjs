@@ -35,6 +35,7 @@ function handoff({ took = null, resident = async () => {}, signal, stdin, stdinF
     learnedServers: { learn: async (server) => { learned.push(server); } },
     _launchPacer: () => ({ settle() {}, chunks: 0 }),
     _buildProcessBundle: async () => ({ generatedSourcesReleased: false, bundleKey: 'test' }),
+    _prepareOneShotCode: async () => ({ code: async () => { throw new Error('the Worker call is replaced'); } }),
     _staticReadPlan: async () => ({}),
     _installedManifests: async () => '{"files":{}}',
     _recordLaunchLearning: async () => {},

@@ -78,7 +78,7 @@ import type { SupervisorBindingProps } from './supervisor-props.js';
 import { z } from 'zod/v4';
 import type { ResponseScope, RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
-import type { ServiceStub, WorkerCode } from './vendor/types.js';
+import type { CjsModule, JsModule, ServiceStub, WorkerCode } from './vendor/types.js';
 /**
  * The class every generated resident runner exports. One name for every
  * runtime: the fabric names it unconditionally, so nothing about which program
@@ -483,9 +483,7 @@ export interface OneShotCodeSpec {
     mainModule: string;
     modules: Record<string, string | {
         wasm: ArrayBuffer;
-    } | {
-        cjs: string;
-    }>;
+    } | CjsModule | JsModule>;
 }
 /**
  * A one-shot's program: its module map, or a stage the composed assembler
