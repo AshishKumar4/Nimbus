@@ -5813,7 +5813,9 @@ export class SqliteVFS {
     }
     async copyTreeInSlices(job, owner, origin = null) {
         const reservation = this.reserveCopy(job);
-        const run = (id) => this.asOrigin(origin, () => this.withMutationOwner(owner, () => this.withReservation(reservation, () => this.runCopyTree(job, id, JOB_SLICE_PAGES))));
+        // Each slice is its caller's, the delegations its process holds included, whichever turn runs it.
+        const holds = this.activeHolds;
+        const run = (id) => this.withHolds(holds, () => this.asOrigin(origin, () => this.withMutationOwner(owner, () => this.withReservation(reservation, () => this.runCopyTree(job, id, JOB_SLICE_PAGES)))));
         try {
             let slice = run(null);
             let copied = slice.copied;
@@ -8237,12 +8239,14 @@ export class SqliteVFS {
         const atMost = options?.atMost === true;
         // uid 0 may use the ledger's kernel reserve (callerView), but that view
         // only covers a call's synchronous part, and this one awaits its source:
-        // each transaction below is run with the caller's own privilege, as its call.
+        // each transaction below is run with the caller's own privilege and the
+        // delegations its process holds, as its call.
+        const holds = this.activeHolds;
         const asCaller = (fn) => {
             const prior = this.privileged;
             this.privileged = cred.uid === 0;
             try {
-                return this.asOrigin(origin, () => this.withMutationOwner(mutationOwner, fn));
+                return this.withHolds(holds, () => this.asOrigin(origin, () => this.withMutationOwner(mutationOwner, fn)));
             }
             finally {
                 this.privileged = prior;
