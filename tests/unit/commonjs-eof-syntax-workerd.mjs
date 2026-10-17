@@ -18,7 +18,7 @@ const sources = {
   'call.js': 'console.log("ran"',
   'call-nl.js': 'console.log("ran"\n',
   'open-call.js': 'syntax(',
-  'open-call-again.js': 'syntax(',
+  'mid.js': 'const x = ;\nconsole.log("ran");\n',
   'block.js': 'function f() {',
   'if.js': 'if (x',
   'array.js': 'const a = [1, 2',
@@ -39,8 +39,17 @@ const sources = {
     'Error.prepareStackTrace = (error) => `formatted ${error.message}`;',
     "try { require('./open-call.js'); } catch (error) { console.log(error.message); console.log(error.stack); }",
     `Error.prepareStackTrace = () => "literal Unexpected token '}'";`,
-    // Another file: a second require of one that does not compile rethrows its first error (ticket-cell-compile-error-identity).
-    "try { require('./open-call-again.js'); } catch (error) { console.log(error.message); console.log(error.stack); }",
+    "try { require('./open-call.js'); } catch (error) { console.log(error.message); console.log(error.stack); }",
+    '',
+  ].join('\n'),
+  // Each require() compiles the module again: a new SyntaxError, where it is (ticket-cell-compile-error-identity).
+  'again.js': [
+    "for (const name of ['./open-call.js', './mid.js']) {",
+    '  const errors = [];',
+    '  for (let i = 0; i < 2; i++) try { require(name); } catch (error) { errors.push(error); }',
+    "  console.log(name, errors[0] === errors[1], errors[1] instanceof SyntaxError, errors[1].message);",
+    "  console.log(errors[1].stack.split('\\n').slice(0, 5).join('\\n'));",
+    '}',
     '',
   ].join('\n'),
 };

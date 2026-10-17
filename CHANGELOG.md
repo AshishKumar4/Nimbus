@@ -5,6 +5,7 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a hosted `require()` of a CommonJS module that does not compile throws a new SyntaxError each time, as Node, which compiles the module again, does: before, every require after the first rethrew the first error, the same object with its stack as first formatted (a stack formatter installed since never saw it).
 - Fixed: a hosted CommonJS program whose SyntaxError is at the end of its source (an unclosed call, block, bracket, template or comment) is reported as Node reports it, by `node` and `node -c` alike: its line, its arrow (an argument list's last token, or nothing underlined at the end), and `Unexpected end of input` where Node says so. Before, the report showed the module wrapper's closing `}; });` a line past the source, and could say `Unexpected token '}'`.
 - Fixed: `node -c` (`--check`) in a hosted session checks a CommonJS
   program's syntax and does not run it, as Node does: a script, stdin, or a
