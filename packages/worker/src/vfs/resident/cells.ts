@@ -257,13 +257,18 @@ export function createCells(
         // row there may be stale, or no longer this facet's to be served.
         if (entry.subtree || entry.structural) {
           const end = prefixEnd(path + '/');
+          let diagDropped = 0;
           for (const row of t.fileRevsIn(path + '/', end)) {
             const stamped = row.rev;
             if (stamped === RK_OWN_WRITE || stamped >= Number(entry.rev)) continue;
             t.chunkDelete(row.path);
             t.fileDelete(row.path);
             dropped.push(row.path);
+            diagDropped++;
           }
+          const diag: string[] = Reflect.get(globalThis, '__nimbusDiagDrops') ?? [];
+          diag.push(JSON.stringify({ path, subtree: entry.subtree ?? null, structural: entry.structural ?? null, rev: entry.rev, dropped: diagDropped }));
+          Reflect.set(globalThis, '__nimbusDiagDrops', diag);
           for (const [heldPath, heldCell] of [...held]) {
             if (!heldPath.startsWith(path + '/') || heldCell.rev === RK_OWN_WRITE || heldCell.rev >= Number(entry.rev)) continue;
             forgetHeld(heldPath);
