@@ -46,14 +46,21 @@ const ManifestEntrypointSchema = z.object({
     args: z.array(z.string()),
     kind: z.string().optional(),
 });
-const RuntimeArtifactMetadataSchema = z.object({
+/** The fields every runtime artifact names; an artifact parsed keeps any others it carries. */
+const RuntimeArtifactMetadataFields = z.object({
     path: z.string().min(1),
     kind: z.string().min(1),
     id: z.string().min(1),
     source_sha256: HexSha256Schema.optional(),
     sha256: HexSha256Schema,
-}).passthrough();
-export const RuntimePythonPackageArtifactMetadataSchema = RuntimeArtifactMetadataSchema.and(z.object({
+});
+const RuntimeArtifactMetadataSchema = RuntimeArtifactMetadataFields.passthrough();
+const RuntimePythonExtensionModuleMetadataSchema = z.object({
+    path: z.string().min(1),
+    runtimePath: z.string().min(1),
+    sha256: HexSha256Schema,
+});
+const RuntimePythonPackageArtifactFields = z.object({
     kind: z.literal('python-package'),
     language: z.literal('python'),
     packageName: z.string().min(1),
@@ -66,12 +73,9 @@ export const RuntimePythonPackageArtifactMetadataSchema = RuntimeArtifactMetadat
     loadMode: z.literal('startup-module'),
     imports: z.array(z.string()),
     dependencies: z.array(z.string()),
-    extensionModules: z.array(z.object({
-        path: z.string().min(1),
-        runtimePath: z.string().min(1),
-        sha256: HexSha256Schema,
-    })),
-}));
+    extensionModules: z.array(RuntimePythonExtensionModuleMetadataSchema),
+});
+export const RuntimePythonPackageArtifactMetadataSchema = RuntimeArtifactMetadataSchema.and(RuntimePythonPackageArtifactFields);
 const RuntimeManifestSchema = z.object({
     name: PathNameSchema,
     version: PathNameSchema,

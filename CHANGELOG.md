@@ -42,6 +42,21 @@ published independently in the `@nimbus-sh` npm scope.
   Before, those views were refused as bytes the launch did not carry. A
   view that spans other bytes is still another image, and a detached one
   is refused by the real compile.
+- Changed (core, worker): the validated record types are derived from
+  their schemas, under the names they had: `ManifestFile`,
+  `ManifestEntrypoint`, `RuntimeArtifactMetadata`,
+  `RuntimePythonExtensionModuleMetadata`,
+  `RuntimePythonPackageArtifactMetadata` and `RuntimeManifest` (core
+  `runtime/runtime-manifest.js`); `CatalogVersionEntry`,
+  `CatalogRuntimeEntry` and `RuntimeCatalog` (worker `./runtime/catalog`);
+  and `NimbusAgentOAuthCookie` (worker `./oauth`). They are type aliases
+  now, not interfaces, so declaration merging no longer extends them. A
+  `RuntimeManifest`'s `runtime_artifacts` elements are typed as parsed:
+  they keep unknown keys (`[key: string]: unknown`), so a value typed by an
+  interface of your own no longer assigns to them. Each was checked both
+  ways against the interface it replaces, and that was the only
+  difference. `envString` (an env var, trimmed, or `''`) moves to core's
+  OAuth module and `@nimbus-sh/sdk/oauth`.
 - Fixed: output that begins with U+FEFF (the UTF-8 BOM) keeps it, as a
   Linux terminal receives every byte a program writes. This covers a
   program's output in the terminal, process logs and `exec` results, a
