@@ -78,9 +78,12 @@ class Parser {
         this.skipSeparators();
         while (!this.isAtEnd()) {
             const prevPos = this.pos;
-            lists.push(this.parseList());
+            const list = this.parseList();
+            lists.push(list);
+            const listEnd = this.pos;
             this.consumeHeredocBodies();
             this.skipSeparators();
+            list.endsLine = this.isAtEnd() || this.tokens.slice(listEnd, this.pos).some((token) => token.kind === TokenKind.Newline);
             // Guard against infinite loop: if no progress was made, the current token
             // is unexpected (e.g. a stray '(' from pasted JS code). Throw so the
             // caller can display an error instead of hanging the browser.

@@ -35,7 +35,7 @@
  *   `requiredTopLevel` below asserts exactly that.
  *
  * Output:
- *   src/loaders/generated-workers.ts — exports
+ *   src/loaders/workers.generated.ts — exports
  *       TAR_STREAM_PREAMBLE: string
  *       W7_FRAME_PREAMBLE: string         (W7 — streaming bulk-write encoder)
  *   @nimbus-sh/core src/runtime/virtual-socket-kernel.generated.ts — exports
@@ -67,7 +67,7 @@
 import { build } from 'esbuild';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 // core's own parser dependency, reached through the workspace hoist; the
 // script runs under plain node, so nothing here is TypeScript.
@@ -150,11 +150,18 @@ async function bundleAsPreamble(entryPath, label, { shared = [], bound = {}, as,
     // left out, its import removed below, its names the shims' own.
     // A module bound to a value the shims hold (`bound`: the module's name to
     // the shims' name for its namespace) is left out too, its import made a
-    // destructuring of that value.
+    // destructuring of that value. Each is core's _shared module of that name,
+    // however a bundled module spells its path: one instance for the shims.
     plugins: shared.length === 0 && boundNames.length === 0 ? [] : [{
       name: 'shims-shared-modules',
       setup(pluginBuild) {
-        pluginBuild.onResolve({ filter: /.*/ }, (args) => ([...shared, ...boundNames].some((name) => args.path === `./${name}.js`) ? { path: args.path, external: true } : undefined));
+        const sharedDir = join(coreRoot, 'src', '_shared');
+        pluginBuild.onResolve({ filter: /.*/ }, (args) => {
+          if (!args.path.startsWith('.')) return undefined;
+          const target = resolvePath(args.resolveDir, args.path).replace(/\.js$/, '');
+          const name = [...shared, ...boundNames].find((candidate) => target === join(sharedDir, candidate));
+          return name === undefined ? undefined : { path: `./${name}.js`, external: true };
+        });
       },
     }],
     // Strip TypeScript-only imports (e.g. `import type {…}`) — esbuild
@@ -808,12 +815,25 @@ async function main() {
     'w7-frame',
   );
 
-  // 3. Node's internal errors (nodeError, nodeSystemError, invalidArgType),
-  //    which the node shims declare first, for themselves and the modules
-  //    below, which leave them out of their own bundles.
+  // 3. The built-ins the guest's module loading calls (core
+  //    _shared/primordials.ts): the launch's capture, made before any program
+  //    code (commonjs-cell's __nimbusLaunchCaptures), which the preambles
+  //    below that read them are bound to; a capture of their own where the
+  //    shims run without the launch's runtime (a test's factory). The node
+  //    shims declare it first.
+  const primordials = await bundleAsPreamble(
+    join(coreRoot, 'src', '_shared', 'primordials.ts'),
+    'primordials',
+    { as: '__nimbusPrimordials', from: '__nimbusLaunchCaptures' },
+  );
+
+  // 3a. Node's internal errors (nodeError, nodeSystemError, invalidArgType),
+  //     which the node shims declare next, for themselves and the modules
+  //     below, which leave them out of their own bundles.
   const nodeErrors = await bundleAsPreamble(
     join(coreRoot, 'src', '_shared', 'node-error.ts'),
     'node-error',
+    { bound: { primordials: '__nimbusPrimordials' } },
   );
   for (const name of ['nodeError', 'nodeSystemError', 'invalidArgType', 'useNodeErrorInspect', 'hideStackFrames', 'isErrorStackTraceLimitWritable']) {
     if (!new RegExp(`^function ${name}\\(`, 'm').test(nodeErrors)) {
@@ -821,19 +841,8 @@ async function main() {
     }
   }
 
-  // 3a. The built-ins the guest's module loading calls (core
-  //     _shared/primordials.ts): the launch's capture, made before any program
-  //     code (commonjs-cell's __nimbusLaunchCaptures), which the preambles
-  //     below that read them are bound to; a capture of their own where the
-  //     shims run without the launch's runtime (a test's factory).
-  const primordials = await bundleAsPreamble(
-    join(coreRoot, 'src', '_shared', 'primordials.ts'),
-    'primordials',
-    { as: '__nimbusPrimordials', from: '__nimbusLaunchCaptures' },
-  );
-
   // 3b. node:path's posix half (core _shared/posix-path.ts, Node's lib/path.js
-  //     on those captures), the shims' node:path.
+  //     on the captures), the shims' node:path.
   const posixPath = await bundleAsPreamble(
     join(coreRoot, 'src', '_shared', 'posix-path.ts'),
     'posix-path',
@@ -843,7 +852,7 @@ async function main() {
     throw new Error('[bundle-facet-workers/posix-path] the bundle no longer declares function createPosixPath');
   }
 
-  // 3a. Node's argument validators (parseFileMode, stringToFlags, …), which
+  // 3c. Node's argument validators (parseFileMode, stringToFlags, …), which
   //     the node shims' process and fs take, as lifo's node's do: one module.
   const nodeArguments = await bundleAsPreamble(
     join(coreRoot, 'src', '_shared', 'node-arguments.ts'),
@@ -856,7 +865,7 @@ async function main() {
     }
   }
 
-  // 3b. Node's process warnings (emitWarning and the listener it installs),
+  // 3d. Node's process warnings (emitWarning and the listener it installs),
   //     which the node shims' process has, as lifo's node's has: one module.
   const nodeWarnings = await bundleAsPreamble(
     join(coreRoot, 'src', '_shared', 'node-warning.ts'),
@@ -873,7 +882,7 @@ async function main() {
   const esmResolver = await bundleAsPreamble(
     join(coreRoot, 'src', '_shared', 'esm-resolver.ts'),
     'esm-resolver',
-    { shared: ['node-error', 'exports-resolver'] },
+    { shared: ['node-error', 'package-map'], bound: { primordials: '__nimbusPrimordials' } },
   );
   if (!/^function createEsmResolver\(/m.test(esmResolver)) {
     throw new Error('[bundle-facet-workers/esm-resolver] the bundle no longer declares function createEsmResolver');
@@ -897,7 +906,7 @@ async function main() {
   const shimResolution = await bundleAsPreamble(
     join(coreRoot, 'src', '_shared', 'node-shim-resolution.ts'),
     'node-shim-resolution',
-    { shared: ['node-error'] },
+    { shared: ['node-error'], bound: { primordials: '__nimbusPrimordials' } },
   );
   for (const name of ['createRequireResolver', 'requireNodeModulePaths', 'createNodePackageMapPolicy', 'nativeResolutionError', 'resolveExports', 'resolvePackageEntry', 'packageSelfReferenceSubpath', 'typescriptFallbackCandidates', 'stripsTypeScript', 'typescriptLoader', 'presentedCredential', 'isWebSocketUpgradeRequest']) {
     if (!new RegExp(`^function ${name}\\(`, 'm').test(shimResolution)) {
@@ -942,11 +951,11 @@ async function main() {
 
   const tarEncoded = JSON.stringify(tarStripped);
   const w7Encoded = JSON.stringify(w7Stripped);
-  const outPath = join(root, 'src', 'loaders', 'generated-workers.ts');
+  const outPath = join(root, 'src', 'loaders', 'workers.generated.ts');
 
   const tsWrapper = [
     '/**',
-    ' * generated-workers.ts — AUTO-GENERATED. DO NOT EDIT.',
+    ' * workers.generated.ts — AUTO-GENERATED. DO NOT EDIT.',
     ' *',
     ' * Produced by scripts/bundle-facet-workers.mjs from:',
     ' *   - @nimbus-sh/core src/_shared/tarball-stream.ts (streaming tar primitives)',

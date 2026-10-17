@@ -1,5 +1,5 @@
 /**
- * generated-workers.ts — AUTO-GENERATED. DO NOT EDIT.
+ * workers.generated.ts — AUTO-GENERATED. DO NOT EDIT.
  *
  * Produced by scripts/bundle-facet-workers.mjs from:
  *   - @nimbus-sh/core src/_shared/tarball-stream.ts (streaming tar primitives)
@@ -72,4 +72,4 @@ export declare const RELATIVE_WASM_PATHS_PREAMBLE: string;
 export declare const WASM_IMAGE_KEY_PREAMBLE: string;
 /** Declares `function rootClampedSegments(path)`, the root-clamped lexical path reduction; generated guest code calls it. */
 export declare const LEXICAL_PATH_PREAMBLE: string;
-//# sourceMappingURL=generated-workers.d.ts.map
+//# sourceMappingURL=workers.generated.d.ts.map

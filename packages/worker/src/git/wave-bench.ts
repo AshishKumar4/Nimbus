@@ -18,7 +18,7 @@ import { applyFacetLimits, facetLimits, type FacetResourceLimits } from '@nimbus
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { WAVE_WRITER_PREAMBLE } from '../loaders/generated-workers.js';
+import { WAVE_WRITER_PREAMBLE } from '../loaders/workers.generated.js';
 
 /**
  * Where a producer's waves go, to tell the costs on the way apart:

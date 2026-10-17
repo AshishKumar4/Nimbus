@@ -5,7 +5,7 @@ import { assembleLoaderWorkerModuleSource } from '../../packages/fabric/src/isol
 import {
   TAR_STREAM_PREAMBLE,
   W7_FRAME_PREAMBLE,
-} from '../../packages/worker/src/loaders/generated-workers.ts';
+} from '../../packages/worker/src/loaders/workers.generated.ts';
 import { NPM_INSTALL_BATCH_TASK } from '../../packages/worker/src/loaders/compiled-bodies.generated.ts';
 import { parseJavaScriptModule } from '../../packages/core/src/runtime/javascript-ast.ts';
 import { buildCPythonPreamble } from '../../packages/core/src/runtime/cpython-runner.ts';

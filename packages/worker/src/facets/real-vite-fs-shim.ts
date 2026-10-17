@@ -51,7 +51,7 @@
  */
 
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { LEXICAL_PATH_PREAMBLE } from '../loaders/generated-workers.js';
+import { LEXICAL_PATH_PREAMBLE } from '../loaders/workers.generated.js';
 
 /**
  * Walk the VFS and produce a snapshot suitable for seeding the facet's
