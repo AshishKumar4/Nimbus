@@ -27,7 +27,7 @@
  *
  */
 import type { InstallPhase } from './install-phase.js';
-import type { ResizableCreditLease } from './weighted-credit-pool.js';
+import { type AllocationAttribution, type SupervisorAllocationLease } from './heavy-alloc-coord.js';
 export interface DiagCounters {
     /** Top-level install phase. */
     installPhase: InstallPhase;
@@ -183,13 +183,12 @@ export declare function rpcPayloadStart(bytes: number): void;
  */
 export declare function rpcPayloadEnd(bytes: number): void;
 /** The counters that name the live allocation leases of one owner. */
-export type AllocationOwner = 'prefetchBundleBytes' | 'preBundleSliceBytes';
+export type AllocationOwner = AllocationAttribution;
 /**
- * `lease`, its bytes counted under `owner` for as long as it holds them: a
- * shrink takes what it gives back off at once, and the release the rest.
- * The count is the lease's own, so it is right however its holder ends.
+ * Attribution belongs to the budget's actual lease. The public gauges are
+ * derived from its holders, never maintained in a second counter registry.
  */
-export declare function attributeAllocation(owner: AllocationOwner, lease: ResizableCreditLease): ResizableCreditLease;
+export declare function attributeAllocation(owner: AllocationOwner, lease: SupervisorAllocationLease): SupervisorAllocationLease;
 /**
  * Publish the prefetch-bundle LRU's live retained total. A gauge: the cache
  * owns the number and reports it whenever it admits or evicts an entry.

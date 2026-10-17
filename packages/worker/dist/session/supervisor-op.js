@@ -58,7 +58,7 @@ export function buildSessionSupervisorOps(host, store, methods) {
         ])),
         bridge: store,
         // Every native read holds a lease for the payload it can answer with.
-        readLease: withReadAllocation,
+        readLease: (bytes, read, pid) => withReadAllocation(bytes, read, pid, host.ctx?.id.toString()),
         extend,
         deliveries: host.supervisorDeliveries,
         ...(host.waveTurn === undefined ? {} : { turn: () => host.waveTurn() }),

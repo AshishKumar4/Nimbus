@@ -2003,6 +2003,7 @@ export declare class FacetManager {
     private _launchEnds;
     /** The launches holding the supervisor's credit, or null where some of it is held by other work (another session's, a write wave). */
     private _creditHolders;
+    private _allocationOwner;
     /**
      * A launch's share of the credit for the module map it makes from `state`
      * (another launch's build, the cache's), taken before it holds a worker:
