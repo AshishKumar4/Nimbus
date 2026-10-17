@@ -445,14 +445,12 @@ export class SupervisorDeliveries {
      */
     async retireWaveWriters(pid) {
         const prefix = `${pid}:`;
-        for (const key of this.waveEpochs.keys())
+        // An epoch retired already may still be applying a wave: waited for too.
+        const writers = new Set();
+        for (const key of [...this.waveEpochs.keys(), ...this.activeWaves.keys()])
             if (key.startsWith(prefix))
-                this.waveEpochs.delete(key);
-        const active = [];
-        for (const [key, waves] of this.activeWaves)
-            if (key.startsWith(prefix))
-                active.push(...waves);
-        await Promise.allSettled(active);
+                writers.add(key.slice(prefix.length));
+        await Promise.all([...writers].map((writer) => this.retireWaveWriter(pid, writer)));
     }
     /** `applying` is a wave of process `pid`'s epoch `writer` being applied: a retirement of the epoch waits for it. */
     applyingWave(pid, writer, applying) {

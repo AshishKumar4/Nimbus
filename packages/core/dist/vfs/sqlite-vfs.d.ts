@@ -494,6 +494,8 @@ export declare class SqliteVFS {
     private readonly capturedRefs;
     /** The process whose wave is committing (waveScope): its run, if one is captured, keeps what it changes. */
     private activeWriterPid;
+    /** Inside an embedder transaction (publishedTransaction): what captured runs keep of it, once it commits. */
+    private pendingCaptures;
     /** Whose call is running: the principal its write events name (a view's, re-entered by work it defers). */
     private activeOrigin;
     /**
@@ -1935,6 +1937,8 @@ export declare class SqliteVFS {
      * writer changed one since the run last did, or holds it.
      */
     restoreRun(pid: number): RunRestore;
+    /** The generation of `key`'s tombstone, the removal that left it absent; undefined once pruned. */
+    private tombstoneGen;
     /** `run` as process `pid`'s wave commit (null: no process's), whose run a capture may keep. */
     private asWriterPid;
     /** The committing run's capture has yet to keep `key`: what stands there must outlive the write, never be edited in place. */
@@ -1947,6 +1951,8 @@ export declare class SqliteVFS {
     private capturedBefores;
     /** Once its transaction committed at `gen`: `capture` keeps the rows it found first, held, and each key as the transaction left it. */
     private captureCommitted;
+    /** `capture` can no longer be put back, for `why`: it keeps nothing more, and lets go of what it held. */
+    private unrestorable;
     /** Let go of what `capture` held: collectable now, as a closed description's is. */
     private unpinCapture;
     /**

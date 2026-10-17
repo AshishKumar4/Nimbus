@@ -827,6 +827,8 @@ export class SqliteVFS {
     capturedRefs = new Set();
     /** The process whose wave is committing (waveScope): its run, if one is captured, keeps what it changes. */
     activeWriterPid = null;
+    /** Inside an embedder transaction (publishedTransaction): what captured runs keep of it, once it commits. */
+    pendingCaptures = null;
     /** Whose call is running: the principal its write events name (a view's, re-entered by work it defers). */
     activeOrigin = null;
     /**
@@ -3622,6 +3624,9 @@ export class SqliteVFS {
      */
     promote(paths) {
         let builder = this.newPlan();
+        // A restamp changes nothing: a captured run whose last change of a key it
+        // was keeps the key as its own (restoreRun), at the new generation.
+        let carried = [];
         const commit = () => {
             if (builder.empty)
                 return;
@@ -3633,6 +3638,9 @@ export class SqliteVFS {
                 if (inode !== undefined)
                     inode.gen = entry.gen;
             }
+            for (const kept of carried)
+                kept.gen = this._gen;
+            carried = [];
             builder = this.newPlan();
         };
         for (const path of paths) {
@@ -3642,6 +3650,11 @@ export class SqliteVFS {
             const inode = this.inodes.get(key);
             if ((inode === undefined ? builder.wouldExceedDeletion() : builder.wouldExceedInode()) !== null)
                 commit();
+            for (const capture of this.runCaptures.values()) {
+                const kept = capture.keys.get(key);
+                if (kept !== undefined && kept.present === (inode !== undefined) && kept.gen === (inode === undefined ? this.tombstoneGen(key) : inode.gen))
+                    carried.push(kept);
+            }
             builder.restamp(key, inode);
         }
         commit();
@@ -6796,7 +6809,7 @@ export class SqliteVFS {
     /** Keep what process `pid`'s waves change, from now on, undoable (restoreRun). */
     captureRun(pid) {
         this.releaseRun(pid);
-        this.runCaptures.set(pid, { keys: new Map(), overflowed: false });
+        this.runCaptures.set(pid, { keys: new Map(), unrestorable: null });
     }
     /** Stop keeping process `pid`'s changes, and let go of the rows they held. */
     releaseRun(pid) {
@@ -6822,8 +6835,9 @@ export class SqliteVFS {
             return { refused: 'what it changed was not kept' };
         this.runCaptures.delete(pid);
         try {
-            if (capture.overflowed)
-                return { refused: `it changed more than ${RUN_CAPTURE_MAX_KEYS} files and directories` };
+            if (capture.unrestorable !== null)
+                return { refused: capture.unrestorable };
+            const named = (key) => `/${normalizeVfsPath(this.logicalPath(key, CRED_KERNEL) ?? key)}`;
             const changed = [];
             const removals = [];
             const revivals = [];
@@ -6831,14 +6845,28 @@ export class SqliteVFS {
                 if (!kept.written)
                     continue;
                 const live = this.inodes.get(key);
-                if (kept.present ? live?.gen !== kept.gen : live !== undefined) {
-                    return { refused: `/${normalizeVfsPath(this.logicalPath(key, CRED_KERNEL) ?? key)} was changed since it changed it` };
-                }
+                // As the run left it: its row, or its removal (the tombstone of that
+                // generation); a later writer's row or removal is not the run's to undo.
+                const left = kept.present
+                    ? live?.gen === kept.gen
+                    : live === undefined && (kept.before === null || this.tombstoneGen(key) === kept.gen);
+                if (!left)
+                    return { refused: `${named(key)} was changed since it changed it` };
                 changed.push(key);
                 if (kept.before !== null)
                     revivals.push(kept.before.inode);
                 else if (live !== undefined)
                     removals.push(live);
+            }
+            // A directory it made goes only with every entry in it: an entry another writer made is not the run's.
+            const removed = new Set(removals.map((inode) => inode.path));
+            for (const inode of removals) {
+                if (inode.kind !== 'directory')
+                    continue;
+                for (const row of this.sql.exec('SELECT path FROM vfs_inodes WHERE parent_path = ?', inode.path)) {
+                    if (!removed.has(String(row.path)))
+                        return { refused: `${named(String(row.path))} was made in ${named(inode.path)}, which it made` };
+                }
             }
             try {
                 this.assertMutationsAllowed(changed);
@@ -6846,37 +6874,62 @@ export class SqliteVFS {
             catch (error) {
                 return { refused: this.errorMessage(error) };
             }
-            // Entries go before their directory, and come back after it.
+            // Entries go before their directory, and come back after it. One
+            // transaction: all of them, or (refused, the store full, say) none.
             removals.sort((a, b) => (a.path < b.path ? 1 : a.path > b.path ? -1 : 0));
             revivals.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-            let builder = this.newPlan();
-            let deletedInodes = [];
-            const flush = () => {
-                if (builder.empty)
-                    return;
-                const plan = builder.build();
-                this.assertTransactionFits(plan.metrics);
-                this._writeBatchOnce({ plan, deletedInodes }, { source: 'content-publish' });
-                builder = this.newPlan();
-                deletedInodes = [];
-            };
-            for (const live of removals) {
-                if (!builder.empty && builder.wouldExceedDeletion() !== null)
+            try {
+                this.publishedTransaction(() => {
+                    let builder = this.newPlan();
+                    let deletedInodes = [];
+                    const flush = () => {
+                        if (builder.empty)
+                            return;
+                        const plan = builder.build();
+                        this.assertTransactionFits(plan.metrics);
+                        this._writeBatchOnce({ plan, deletedInodes }, { source: 'content-publish' });
+                        builder = this.newPlan();
+                        deletedInodes = [];
+                    };
+                    for (const live of removals) {
+                        if (!builder.empty && builder.wouldExceedDeletion() !== null)
+                            flush();
+                        builder.addDeletedPath(live.path, live);
+                        deletedInodes.push(live);
+                    }
+                    for (const past of revivals) {
+                        if (!builder.empty && builder.wouldExceedInode() !== null)
+                            flush();
+                        builder.addInode(this.restoredRow(past));
+                    }
                     flush();
-                builder.addDeletedPath(live.path, live);
-                deletedInodes.push(live);
-            }
-            for (const past of revivals) {
-                if (!builder.empty && builder.wouldExceedInode() !== null)
+                    // A directory an entry came back into after it did was dated by that entry: its own times again.
+                    for (const past of revivals) {
+                        if (past.kind !== 'directory' || this.inodes.get(past.path)?.mtime === past.mtime)
+                            continue;
+                        if (!builder.empty && builder.wouldExceedInode() !== null)
+                            flush();
+                        builder.addInode(this.restoredRow(past));
+                    }
                     flush();
-                builder.addInode(this.restoredRow(past));
+                }, (error) => error);
             }
-            flush();
+            catch (error) {
+                // A rollback that could not reload the store leaves it unusable: that is no refusal.
+                if (error instanceof AggregateError)
+                    throw error;
+                return { refused: `putting back what it changed failed: ${this.errorMessage(error)}` };
+            }
             return { restored: removals.length + revivals.length };
         }
         finally {
             this.unpinCapture(capture);
         }
+    }
+    /** The generation of `key`'s tombstone, the removal that left it absent; undefined once pruned. */
+    tombstoneGen(key) {
+        const row = [...this.sql.exec('SELECT gen FROM vfs_tombstones WHERE path = ?', key)][0];
+        return row === undefined ? undefined : Number(row.gen);
     }
     /** `run` as process `pid`'s wave commit (null: no process's), whose run a capture may keep. */
     asWriterPid(pid, run) {
@@ -6894,7 +6947,7 @@ export class SqliteVFS {
         if (this.activeWriterPid === null)
             return false;
         const capture = this.runCaptures.get(this.activeWriterPid);
-        return capture !== undefined && !capture.overflowed && !capture.keys.has(key);
+        return capture !== undefined && capture.unrestorable === null && !capture.keys.has(key);
     }
     /**
      * The keys `plan` changes that `capture` does not keep yet, each with the
@@ -6920,12 +6973,18 @@ export class SqliteVFS {
     }
     /** Once its transaction committed at `gen`: `capture` keeps the rows it found first, held, and each key as the transaction left it. */
     captureCommitted(capture, taken, plan, touched, gen) {
-        if (capture.keys.size + taken.size > RUN_CAPTURE_MAX_KEYS) {
-            capture.overflowed = true;
-            this.unpinCapture(capture);
+        // Read again by a later plan of the same embedder transaction: the first read is what the run found.
+        let fresh = 0;
+        for (const key of taken.keys())
+            if (!capture.keys.has(key))
+                fresh++;
+        if (capture.keys.size + fresh > RUN_CAPTURE_MAX_KEYS) {
+            this.unrestorable(capture, `it changed more than ${RUN_CAPTURE_MAX_KEYS} files and directories`);
             return;
         }
         for (const [key, row] of taken) {
+            if (capture.keys.has(key))
+                continue;
             const before = row === null ? null : { inode: row, path: null, closed: false };
             if (before !== null)
                 this.capturedRefs.add(before);
@@ -6947,6 +7006,13 @@ export class SqliteVFS {
         for (const entry of plan.inodes)
             if (!entry.detached)
                 left(entry.path, true, true);
+    }
+    /** `capture` can no longer be put back, for `why`: it keeps nothing more, and lets go of what it held. */
+    unrestorable(capture, why) {
+        if (capture.unrestorable !== null)
+            return;
+        capture.unrestorable = why;
+        this.unpinCapture(capture);
     }
     /** Let go of what `capture` held: collectable now, as a closed description's is. */
     unpinCapture(capture) {
@@ -8718,6 +8784,11 @@ export class SqliteVFS {
             mutationOwner: owner,
             deviceId: this.deviceId,
             asWriter,
+            landsElsewhere: (path) => {
+                const capture = described.pid === null ? undefined : this.runCaptures.get(described.pid);
+                if (capture !== undefined)
+                    this.unrestorable(capture, `it changed /${normalizeVfsPath(path)}, on a mounted filesystem, which is not put back`);
+            },
             revision: () => this._revision,
             pathRevision: (path) => this.revision(path, cred),
             leased: () => this.exclusiveMutationLeases.size > 0 || this.readLeases.size > 0,
@@ -9573,7 +9644,9 @@ export class SqliteVFS {
             }]));
         // The shared roots registered: a change it made that revoked one is undone with it.
         const sharedBefore = this.sharedDirectories.size === 0 ? null : new Map(this.sharedDirectories);
+        const captures = [];
         this.transactionPublication = publication;
+        this.pendingCaptures = captures;
         let result;
         try {
             result = storage.transactionSync(() => {
@@ -9630,7 +9703,10 @@ export class SqliteVFS {
         }
         finally {
             this.transactionPublication = null;
+            this.pendingCaptures = null;
         }
+        for (const committed of captures)
+            committed();
         if (publication.paths.size > 0)
             this.bumpRevision([...publication.paths], publication.structural);
         const holding = this.holding();
@@ -9955,7 +10031,7 @@ export class SqliteVFS {
                     this.recordBeforeImages([...plan.inodes.filter((entry) => !entry.detached).map((entry) => entry.path), ...deletedPaths, ...touched], gen, pinGen);
                 }
                 // What a captured run changes here first, as it stands before this transaction.
-                if (capture !== undefined && !capture.overflowed)
+                if (capture !== undefined && capture.unrestorable === null)
                     taken = this.capturedBefores(capture, plan, prior, deletedPrior, touched);
                 const x = {
                     plan, gen, committedAt, queue,
@@ -9982,8 +10058,15 @@ export class SqliteVFS {
             throw error;
         }
         this._gen = gen;
-        if (capture !== undefined && taken !== null)
-            this.captureCommitted(capture, taken, plan, touched, gen);
+        if (capture !== undefined && taken !== null) {
+            const kept = taken;
+            const committed = () => this.captureCommitted(capture, kept, plan, touched, gen);
+            // Inside an embedder transaction, kept once that commits: its rollback undoes this one too.
+            if (this.pendingCaptures !== null)
+                this.pendingCaptures.push(committed);
+            else
+                committed();
+        }
         // Deletions first, as the transaction ran them: a path it removed and
         // wrote again holds the row.
         for (const entry of plan.deletes)

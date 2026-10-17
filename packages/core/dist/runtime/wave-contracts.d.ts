@@ -423,6 +423,8 @@ export interface WaveScope {
     readonly deviceId: number;
     /** `fn` as the wave's writer: the delegations it holds, which its lookups recall none of. */
     asWriter<T>(fn: () => T): T;
+    /** A record of the wave changes `path` on a mounted backend: a captured run of its process cannot put that back (SqliteVFS.captureRun). */
+    landsElsewhere(path: string): void;
     /** The store's revision now. */
     revision(): number;
     /** `path`'s revision, as its caller names it. */
