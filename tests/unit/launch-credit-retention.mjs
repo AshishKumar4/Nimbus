@@ -5,10 +5,14 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { beginHelperFetch, beginLoaderFetch, DO_DYNAMIC_WORKER_LIMIT, loaderLedgerStats, withLaunchAdmission } from '../../packages/fabric/src/budgets.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
+import { ModuleSource } from '../../packages/platform/src/module-source.ts';
+import { fetchNodeFacetSources } from '../../packages/worker/src/runtime/node-shims-artifact.ts';
 import { acquireSupervisorAllocation, acquireSupervisorRunningAllocation, readSupervisorAllocationBudget } from '../../packages/platform/src/heavy-alloc-coord.ts';
 import { createFacetCtx, createFacetWorld } from './lib/facet-host-harness.mjs';
 import { adoptSessionSupervisor, oneShotManager, runnerLoader } from './lib/one-shot-runner.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
+import { launchManager } from './lib/facet-launch-harness.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 import { createAuthority, runScenarios, until } from './lib/resident-body.mjs';
 
 function session(authority, name) {
@@ -83,6 +87,81 @@ async function runningWorkReclaims(brokered) {
 }
 
 await runScenarios(fileURLToPath(import.meta.url), {
+  async parkedMapOwnership() {
+    const shared = await fetchNodeFacetSources({ ASSETS: stagedAssets });
+    const sharedTexts = new Set(Object.values(shared.immutable).map((source) => source.text));
+    const ownBytes = (text) => text.length * (/[^\u0000-\u00ff]/.test(text) ? 2 : 1);
+    const sourceText = Object.getOwnPropertyDescriptor(ModuleSource.prototype, 'text');
+    const generated = [];
+    let early = 0;
+    let owned = 0;
+    const h = launchManager('parked-map-ownership', { env: { LOADER: {
+      load(config) {
+        const main = generated.shift();
+        assert.ok(main, 'the main source is materialized for its loader handoff');
+        for (const part of main.parts) if (typeof part === 'string') owned += ownBytes(part);
+        for (const [name, member] of Object.entries(config.modules)) {
+          if (name === 'runner.js' || typeof member === 'string') continue;
+          const text = member.cjs ?? member.js;
+          if (typeof text === 'string' && !sharedTexts.has(text)) owned += ownBytes(text);
+        }
+        return { getEntrypoint: () => ({ async run() { return Response.json({ exitCode: 0, stdout: '', stderr: '' }); } }) };
+      },
+      get() { throw new Error('one-shots use the unkeyed loader'); },
+    } } });
+    Object.defineProperty(ModuleSource.prototype, 'text', {
+      configurable: true,
+      get() {
+        if (h.manager.launchState().launches.some(({ stage }) => stage === 'prepare' || stage === 'admission')) early++;
+        generated.push(this);
+        return sourceText.get.call(this);
+      },
+    });
+    const holds = occupy(h.ctx);
+    try {
+      const launches = [];
+      for (let i = 0; i < 3; i++) {
+        launches.push(h.manager.exec('2 + 2', { cwd: '/home/user', captureOutput: true }));
+        await until(() => h.manager.launchState().launches.filter(({ stage }) => stage === 'admission').length === i + 1,
+          'each map is generated and parked');
+      }
+      const retained = readSupervisorAllocationBudget().current;
+      assert.equal(early, 0, 'parking never flattens immutable runtime sources into per-launch strings');
+      holds.shift()();
+      for (const result of await Promise.all(launches)) ran(result, '');
+      assert.equal(retained, owned, 'the parked maps hold exactly the sum of their owned strings, not shared runtime text');
+    } finally {
+      Object.defineProperty(ModuleSource.prototype, 'text', sourceText);
+      for (const release of holds) release();
+    }
+    drained();
+  },
+
+  async ownedWasmMember() {
+    const authority = createAuthority();
+    adoptSessionSupervisor(authority.host, () => {});
+    const { manager, ctx } = session(authority, 'owned-wasm-member');
+    const cwd = '/home/user/owned-wasm';
+    authority.kfs.mkdir(cwd);
+    const bytes = new Uint8Array(4 * 1024 * 1024);
+    bytes.set([0, 97, 115, 109, 1, 0, 0, 0]);
+    authority.kfs.writeFile(`${cwd}/image.wasm`, bytes);
+    const holds = occupy(ctx);
+    const waiting = manager.exec('require("fs").readFileSync(require("path").join(__dirname, "image.wasm")); process.stdout.write("wasm")', {
+      cwd, dirname: cwd, filename: `${cwd}/run.js`, captureOutput: true,
+    });
+    try {
+      await until(() => manager.launchState().launches[0]?.stage === 'admission', 'the map with its wasm member parks', 20_000);
+      const budget = readSupervisorAllocationBudget();
+      assert.ok(budget.current >= bytes.byteLength, `the owned wasm is covered beside the tiny closure (${JSON.stringify(budget)})`);
+      holds.shift()();
+      ran(await waiting, 'wasm');
+    } finally {
+      for (const release of holds) release();
+    }
+    drained();
+  },
+
   runningWorkReclaims: () => runningWorkReclaims(false),
   brokeredReclaims: () => runningWorkReclaims(true),
 
