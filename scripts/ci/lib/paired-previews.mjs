@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { ARMS } from '../../../tests/behavioral/_paired.mjs';
 import { INSTALL } from '../../install-deps.mjs';
 
+/** @param {string} cwd @param {string[]} args @param {import('node:child_process').StdioOptions} [stdio] */
 const git = (cwd, args, stdio = ['ignore', 'pipe', 'pipe']) => {
   const done = spawnSync('git', args, { cwd, encoding: 'utf8', stdio });
   if (done.status !== 0) throw new Error(`git ${args[0]} failed: ${(done.stderr || done.error?.message || '').trim()}`);

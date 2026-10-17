@@ -89,7 +89,10 @@ export function openRunDir(repo, log = (line) => console.error(line)) {
   let left = null;
   return {
     dir,
-    /** @param {Array<'ignore' | 'pipe' | 'inherit'>} stdio */
+    /**
+     * @param {Array<'ignore' | 'pipe' | 'inherit'>} stdio
+     * @returns {import('node:child_process').StdioOptions}
+     */
     stdio: (stdio) => [...stdio, fd],
     close() {
       if (left) return left;
