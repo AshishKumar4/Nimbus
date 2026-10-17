@@ -1509,7 +1509,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       const attrs: W7Attrs | null = name === 'chmod' ? { mode: Number(rest[0]) }
         : options?.followSymlinks === false ? null
         : name === 'chown' ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) }
-        : typeof rest[0] === 'number' && typeof rest[1] === 'number' ? { atime: rest[0], mtime: rest[1] } : null;
+        : { atime: rest[0] as FsTime, mtime: rest[1] as FsTime };
       if (holder === null || attrs === null) return passed.call(fs, path, ...rest);
       let named: string | undefined;
       const local = decide<void>(name, () => after(walkFor(path, true), (walk) => {

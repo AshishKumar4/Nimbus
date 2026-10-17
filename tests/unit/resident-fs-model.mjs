@@ -283,9 +283,14 @@ async function runSteps(steps, met) {
       if (step.op === 'close') {
         sync.close(opened.handle);
         fds.delete(step.fd);
-        if (opened.logs) retained.push(opened);
-        // The file's last descriptor: every description kept for it closes.
-        if (![...fds.values()].some((other) => sameFile(other, opened))) {
+        // Its description kept while another descriptor of the file stays open with none of its own, and none kept yet (the file's anchor); else closed.
+        const others = [...fds.values()].filter((other) => sameFile(other, opened));
+        if (opened.logs) {
+          if (others.length > 0 && !others.some((other) => other.logs) && !retained.some((other) => sameFile(other, opened))) retained.push(opened);
+          else undelivered.push({ record: { effect: { kind: 'none' }, refused: false }, logged: { close: opened } });
+        }
+        // The file's last descriptor: the description kept for it closes.
+        if (others.length === 0) {
           for (const kept of retained.filter((other) => sameFile(other, opened))) {
             retained.splice(retained.indexOf(kept), 1);
             undelivered.push({ record: { effect: { kind: 'none' }, refused: false }, logged: { close: kept } });
