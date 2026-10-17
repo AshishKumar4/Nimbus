@@ -9,7 +9,7 @@
 import type { SyncVFS, VFS, VfsDirent, VfsFileType, VfsStat } from './vfs.js';
 import { syscallError, type VfsError, type VfsErrorCode } from './vfs-error.js';
 import { timeAt } from './posix-access.js';
-import type { FsTime } from '../runtime/os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 
 type Entry = {

@@ -10,7 +10,7 @@
  * or a clock.
  */
 
-import type { FsTime } from '../os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import { chownedMode, timeAt } from '../../vfs/posix-access.js';
 
 /** What an inode is, as far as its own operations change it. */

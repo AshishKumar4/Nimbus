@@ -19,7 +19,7 @@ import { move, type MoveOptions } from '../vfs/move.js';
 import { syscallError, VfsError } from '../vfs/vfs-error.js';
 import type { VFS, VfsCopyOptions, VfsDirent, VfsRemoval } from '../vfs/vfs.js';
 import type { ProcessStat, ProcessView } from '../runtime/process-files.js';
-import type { FsTime } from '../runtime/os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 
 export class WorkspaceFs implements VFS {
   constructor(

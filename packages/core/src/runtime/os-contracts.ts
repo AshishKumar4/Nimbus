@@ -1,16 +1,7 @@
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import type { VfsEvent } from '../vfs/events.js';
 import type { VfsRemoval } from '../vfs/vfs.js';
 
-/**
- * A time utimes and futimes set, as utimensat(2) takes it: ms since the
- * epoch (explicit: only the owner may set it), 'now' (UTIME_NOW: the
- * clock of the filesystem that commits the change, as it commits it) or
- * 'omit' (UTIME_OMIT: left as it is then). 'now' and 'omit' need only write
- * permission. Carried as it is to the filesystem that commits the change,
- * which alone resolves it (posix-access.ts, timeAt) and judges it
- * (utimesRefusal, explicitTimes).
- */
-export type FsTime = number | 'now' | 'omit';
 
 /**
  * A value SQLite can return in a row.

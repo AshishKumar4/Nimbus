@@ -109,21 +109,8 @@ import {
   hex,
 } from './content-chunking.js';
 import { inflateChunk } from './chunk-codec.js';
-import {
-  CRED_KERNEL,
-  sameCred,
-  type FsTime,
-  type GrantCertificate,
-  type VfsAcquireOptions,
-  type VfsAcquireResult,
-  type VfsCred,
-  type VfsInvalidatedPath,
-  type VfsListEntry,
-  type VfsListPage,
-  type SqlDatabase,
-  type SqlRow,
-  type TransactionHost,
-} from '../runtime/os-contracts.js';
+import { CRED_KERNEL, sameCred, type GrantCertificate, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsInvalidatedPath, type VfsListEntry, type VfsListPage, type SqlDatabase, type SqlRow, type TransactionHost } from '../runtime/os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 
 /**
  * Schema version of the content store. 3: `/` is inode 1 and the allocator

@@ -36,38 +36,8 @@ import { normalizeVfsPath } from '../vfs/path.js';
 import { abandon, andThen, readDeclaredSource, readRangeOrWhole, readText, type Awaitable } from '../vfs/vfs.js';
 import type { VFS, VfsCopyOptions, VfsDirent, VfsRemoval, VfsRemovalFailure, VfsStat } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
-import {
-  CRED_KERNEL,
-  isVfsCred,
-  requireVfsCred,
-  type NimbusFilesystemAuthority,
-  type NimbusFilesystemBinding,
-  type NimbusHostFilesystemLease,
-  type NimbusMountEntry,
-  type RuntimeFileHandle,
-  type RuntimeFsBridge,
-  type RuntimeFsPath,
-  type ExclusiveMutationGrant,
-  type ExclusiveMutationRequest,
-  type FsTime,
-  type RecallKind,
-  type RuntimeOpenFlags,
-  type RuntimeReadFileOptions,
-  type RuntimeReadOptions,
-  type RuntimeOpenedFile,
-  type RuntimeReopenTarget,
-  type RuntimeSynchronousFs,
-  type RuntimeVfsDirEntry,
-  type RuntimeVfsStat,
-  type VfsAcquireOptions,
-  type VfsAcquireResult,
-  type VfsCred,
-  type VfsInvalidatedPath,
-  type VfsListEntry,
-  type VfsListPage,
-  type VfsMutationReceipt,
-  type RuntimeMutationOwner,
-} from './os-contracts.js';
+import { CRED_KERNEL, isVfsCred, requireVfsCred, type NimbusFilesystemAuthority, type NimbusFilesystemBinding, type NimbusHostFilesystemLease, type NimbusMountEntry, type RuntimeFileHandle, type RuntimeFsBridge, type RuntimeFsPath, type ExclusiveMutationGrant, type ExclusiveMutationRequest, type RecallKind, type RuntimeOpenFlags, type RuntimeReadFileOptions, type RuntimeReadOptions, type RuntimeOpenedFile, type RuntimeReopenTarget, type RuntimeSynchronousFs, type RuntimeVfsDirEntry, type RuntimeVfsStat, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsInvalidatedPath, type VfsListEntry, type VfsListPage, type VfsMutationReceipt, type RuntimeMutationOwner } from './os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import { fsError, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
 import { modeAllows } from '../vfs/posix-access.js';
 import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, scopeSignal, settleHeldAt, type Authority, type DescriptorScope } from './descriptors.js';

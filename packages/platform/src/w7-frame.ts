@@ -84,10 +84,21 @@ export interface BatchWritePayload {
  * chmod, chown and utimes each make. An owner side that is null keeps what
  * the file has when the change lands (chown's -1).
  */
+/**
+ * A time utimes and futimes set, as utimensat(2) takes it: ms since the
+ * epoch (explicit: only the owner may set it), 'now' (UTIME_NOW: the
+ * clock of the filesystem that commits the change, as it commits it) or
+ * 'omit' (UTIME_OMIT: left as it is then). 'now' and 'omit' need only write
+ * permission. Carried as it is to the filesystem that commits the change,
+ * which alone resolves it (posix-access.ts, timeAt) and judges it
+ * (utimesRefusal, explicitTimes).
+ */
+export type FsTime = number | 'now' | 'omit';
+
 export type W7Attrs =
   | { mode: number }
   | { uid: number | null; gid: number | null }
-  | { atime: number; mtime: number };
+  | { atime: FsTime; mtime: FsTime };
 
 /**
  * A process's filesystem call as a record (v4), applied by the session's own
@@ -1045,8 +1056,15 @@ function parseAttrs(value: Record<string, unknown>, label: string): W7Attrs {
   const keys = Object.keys(value).sort().join(',');
   if (keys === 'mode') return { mode: u32(value.mode, `${label} mode`) };
   if (keys === 'gid,uid') return { uid: ownerId(value.uid, `${label} uid`), gid: ownerId(value.gid, `${label} gid`) };
-  if (keys === 'atime,mtime') return { atime: safeInteger(value.atime, `${label} atime`), mtime: safeInteger(value.mtime, `${label} mtime`) };
+  if (keys === 'atime,mtime') return { atime: parseFsTime(value.atime, `w7-frame: ${label} atime`), mtime: parseFsTime(value.mtime, `w7-frame: ${label} mtime`) };
   throw new Error(`w7-frame: ${label} changes the mode, the owner or the times, one of them: got ${keys || 'nothing'}`);
+}
+
+/** `value` as an FsTime (a finite number of milliseconds, 'now' or 'omit'); else an error naming `label`. */
+export function parseFsTime(value: unknown, label: string): FsTime {
+  if (value === 'now' || value === 'omit') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  throw new Error(`${label} must be a time: milliseconds, 'now' or 'omit'`);
 }
 
 function parseDelete(bytes: Uint8Array): DeleteMetadata {

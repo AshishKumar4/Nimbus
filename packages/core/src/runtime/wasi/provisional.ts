@@ -26,7 +26,8 @@
  * nothing. What is admitted is given back by the object that holds it.
  */
 
-import type { FsTime, RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '../os-contracts.js';
+import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '../os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import type { ResidentEntry } from './resident-filesystem.js';
 import { fsError } from '../beneath-walk.js';
 import { chmodRefusal, chownRefusal, explicitTimes, modeAllows, utimesRefusal } from '../../vfs/posix-access.js';
@@ -169,10 +170,10 @@ interface Desc {
   description?: string;
 }
 
-/** An attribute change by a descriptor: a mode, an owner (null or -1 kept), or times. */
-export type DescriptorAttrs = { mode: number } | { uid: number | null; gid: number | null } | { atime: FsTime; mtime: FsTime };
 
 export interface Provisional {
+  /** What it keeps of the process's budget now, counted afresh from what it holds: what it has taken of it, where its accounting is right. */
+  kept(): number;
   owns(handleId: number): boolean;
   /** Whether a decision of this process's at `key`, or at the directory it is in, is not yet the view's: a held subtree decides nothing there until it is. */
   touches(key: string): boolean;
@@ -192,7 +193,7 @@ export interface Provisional {
   ftruncate(handleId: number, size: number): void;
   seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number;
   fstat(handleId: number): ResidentEntry;
-  fsetattr(handleId: number, attrs: DescriptorAttrs): void;
+  fsetattr(handleId: number, attrs: W7Attrs): void;
   close(handleId: number): void;
   dup(handleId: number): RuntimeFileHandle;
   reopen(handleId: number, flags: RuntimeOpenFlags): RuntimeFileHandle | undefined;
@@ -832,13 +833,13 @@ export function provisional(host: ProvisionalHost): Provisional {
   const judgeAttrs = (row: ResidentEntry, attrs: W7Attrs, syscall: string, path: string): void => {
     const refused = 'mode' in attrs ? chmodRefusal(row, host.cred)
       : 'uid' in attrs ? chownRefusal(row, attrs.uid, attrs.gid, host.cred)
-      : utimesRefusal(row, explicitTimes(attrs.atime as FsTime, attrs.mtime as FsTime), host.cred);
+      : utimesRefusal(row, explicitTimes(attrs.atime, attrs.mtime), host.cred);
     if (refused !== null) throw fsError(refused, syscall, path);
   };
 
   const attrOp = (attrs: W7Attrs, at: number): InodeOp => ('mode' in attrs ? { kind: 'chmod', mode: attrs.mode, at }
     : 'uid' in attrs ? { kind: 'chown', uid: attrs.uid, gid: attrs.gid, by: host.cred.uid, at }
-    : { kind: 'utimes', atime: attrs.atime as FsTime, mtime: attrs.mtime as FsTime, at });
+    : { kind: 'utimes', atime: attrs.atime, mtime: attrs.mtime, at });
 
   /**
    * A file opened to write here, planned and judged whole: made (O_CREAT on
@@ -936,6 +937,12 @@ export function provisional(host: ProvisionalHost): Provisional {
   };
 
   const provisional: Provisional = {
+    kept: () => {
+      let total = 0;
+      for (const inode of inodes.values()) total += cost(inode);
+      for (const record of nameRecords) total += record.cost;
+      return total;
+    },
     owns: (handleId) => descs.size > 0 && descs.has(handleId),
 
     touches: (key) => {
@@ -1043,8 +1050,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     fsetattr: (handleId, change) => {
       const desc = descOf(handleId);
       const inode = desc.inode;
-      // An owner kept is null here, as fchown(2)'s -1.
-      const attrs = ('uid' in change ? { uid: change.uid === -1 ? null : change.uid, gid: change.gid === -1 ? null : change.gid } : change) as W7Attrs;
+      const attrs = change;
       const syscall = 'mode' in attrs ? 'fchmod' : 'uid' in attrs ? 'fchown' : 'futimes';
       // The file it opened: through its description, wherever or whether a name leads to it; without one, by the name that still does.
       const described = desc.description ?? anchorOf(inode);

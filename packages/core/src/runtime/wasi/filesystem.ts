@@ -1,4 +1,5 @@
-import type { Awaitable, FsTime, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenedFile, RuntimeOpenFlags, RuntimeSynchronousFs, RuntimeVfsStat } from '../os-contracts.js';
+import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenedFile, RuntimeOpenFlags, RuntimeSynchronousFs, RuntimeVfsStat } from '../os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import type { SyscallResult, Errno, NimbusFsImports, WasiImports } from './types.js';
 import { DIRENT_TYPES, direntTypeOfStat } from '../../vfs/dirent-type.js';
 import type { PinnedContent, ResidentFilesystem } from './resident-filesystem.js';

@@ -35,27 +35,14 @@
  *     absent: the adapter lists the directory and walks again.
  */
 
-import type {
-  Awaitable,
-  FsTime,
-  RuntimeFileHandle,
-  RuntimeFsBridge,
-  RuntimeOpenedFile,
-  RuntimeFsPath,
-  RuntimeMutationOwner,
-  RuntimeOpenFlags,
-  RuntimeReopenTarget,
-  RuntimeSynchronousFs,
-  RuntimeVfsDirEntry,
-  RuntimeVfsStat,
-} from '../os-contracts.js';
+import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeOpenedFile, RuntimeFsPath, RuntimeMutationOwner, RuntimeOpenFlags, RuntimeReopenTarget, RuntimeSynchronousFs, RuntimeVfsDirEntry, RuntimeVfsStat } from '../os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import { fsError, walkBeneath } from '../beneath-walk.js';
 import { modeAllows } from '../../vfs/posix-access.js';
 import { openIdentified } from './filesystem.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES } from '../../constants.js';
 import { RESIDENT_PAGE_BYTES } from '@nimbus-sh/platform/limits.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
-import type { HolderAttrChange } from './delegation-holder.js';
 import { delegationHolder, type DelegationHolder } from './delegation-holder.js';
 import { readDirectoryPool, type ReadDirectoryPool } from './read-directory-pool.js';
 import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
@@ -222,6 +209,8 @@ export interface ResidentFilesystemStats {
   /** File bytes pinned for descriptors now, and how many buffers hold them. */
   pinnedBytes: number;
   pins: number;
+  /** What its provisional decisions keep of the store's budget now, as they cost it (Provisional.kept): with pinnedBytes, all it has taken. */
+  provisionalBytes: number;
   /** Its filesystem client's waves, grants and recalls, when it holds delegations. */
   client?: ProcessFsStats;
 }
@@ -376,7 +365,7 @@ export interface ResidentDelegation {
 
 export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace, delegation?: ResidentDelegation): ResidentFilesystem {
   let directoryPool: ReadDirectoryPool | null = null;
-  const counts: ResidentFilesystemStats = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, readAhead: 0, barriers: 0, waitMs: 0, sessionCalls: 0, notResident: 0, pinnedBytes: 0, pins: 0, pagedReads: 0, pagesFetched: 0 };
+  const counts: ResidentFilesystemStats = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, readAhead: 0, barriers: 0, waitMs: 0, sessionCalls: 0, notResident: 0, pinnedBytes: 0, pins: 0, provisionalBytes: 0, pagedReads: 0, pagesFetched: 0 };
   /** A call of `synchronous` is running: it answers now or not at all (NOT_NOW). */
   let now = false;
   // Every session interaction begins here, given as what would begin it: the
@@ -879,6 +868,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     delegated: { ...counts.delegated },
     pins: pins.size,
     pinnedBytes: [...pins.values()].reduce((total, pin) => total + pin.bytes.byteLength, 0),
+    provisionalBytes: holder?.provisional.kept() ?? 0,
     ...(holder === null ? {} : { client: holder.client.stats() }),
   });
 
@@ -1357,7 +1347,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   }
 
   /** An fchown side as the guest sent it: a uid or gid, or null (keep the file's). */
-  const ownerSide = (value: unknown): number | null => typeof value === 'number' ? value : null;
+  /** An owner as chown(2) and fchown(2) take it: -1 (or none) keeps it, null on the wire. */
+  const ownerSide = (value: unknown): number | null => (typeof value === 'number' && value !== -1 ? value : null);
   /**
    * fchmod, fchown and futimes of a descriptor of the holder's, on the file
    * it opened, never on a name: decided here where the holder decides that
@@ -1365,7 +1356,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * written through first), and its stat as the session then says.
    */
   const holderAttrs = (name: 'fchmod' | 'fchown' | 'futimes', passed: (handleId: number, ...rest: unknown[]) => unknown, handleId: number, rest: unknown[]): unknown => {
-    const change: HolderAttrChange = name === 'fchmod' ? { mode: Number(rest[0]) }
+    const change: W7Attrs = name === 'fchmod' ? { mode: Number(rest[0]) }
       : name === 'fchown' ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) }
       : { atime: rest[0] as FsTime, mtime: rest[1] as FsTime };
     if (holder!.fsetattr(handleId, change)) return undefined;

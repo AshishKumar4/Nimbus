@@ -11,7 +11,8 @@
 import { andThen, isPromise, type Awaitable } from '../vfs/vfs.js';
 import type { VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import { fsError } from '../vfs/vfs-error.js';
-import type { FsTime, RuntimeFileHandle, RuntimeOpenedFile, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from './os-contracts.js';
+import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from './os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 
 /** The engine's description of a file on SQLite (SqliteVFS.openDescription): every answer at once. */
 export type EngineDescription = VfsOpenDescription & { readonly mounted?: undefined; readonly awaits?: undefined };
