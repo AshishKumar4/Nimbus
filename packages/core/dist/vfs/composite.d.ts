@@ -25,6 +25,7 @@ import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntr
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import { type VfsEvent } from './events.js';
 import { type VfsErrorCode } from './vfs-error.js';
+import { compareUtf8 as comparePaths } from '@nimbus-sh/platform/utf8.js';
 /**
  * Where a reader of a namespace's feed stands: the mount table as its
  * principal saw it, and each change feed's epoch and cursor.
@@ -80,8 +81,8 @@ export interface CompositeFeed {
      */
     walk(named: Iterable<string>, limit: number): Promise<MountWalk>;
 }
-/** Path order as SQLite's index keeps it: by UTF-8 bytes, which is code point order. */
-export declare function comparePaths(a: string, b: string): number;
+/** Path order as SQLite's index keeps it: by UTF-8 bytes (platform utf8.ts compareUtf8). */
+export { comparePaths };
 /**
  * A namespace entry's stat in the runtime contract's shape: its identity
  * (dev, ino) is the namespace's, and a mounted backend's entries carry no
@@ -317,6 +318,8 @@ interface Table {
     mounts: Map<string, Mount>;
     /** Bumped by every mount and unmount: a placement made under an older table may be stale (mountGeneration). */
     generation: number;
+    /** The last st_dev a mount was given, through any view: two mounts are never one device. */
+    lastDev: number;
     /** observeWrites: who is told, and the mounts whose backends report their own writes, subscribed. */
     writes?: WriteWatches;
     /** watchChanges: who is told. */
@@ -367,8 +370,6 @@ interface ViewShare {
 }
 export declare class CompositeVFS implements VFS {
     private readonly table;
-    /** The last st_dev a mount was given. */
-    private nextDev;
     private readonly viewer;
     /** Backends seen as this view's principal (a backend's `as` view is made once per view). */
     private readonly viewed;

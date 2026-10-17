@@ -57,7 +57,7 @@ const host = {
 };
 
 // A late module's link checks the staged bridge's graph with its own.
-linkLateGraph(host, 'late.mjs', 'file:///late.mjs');
+linkLateGraph(host, 'late.mjs', 'file:///late.mjs', true);
 assert.ok(reads.includes('bridge.mjs'), `the late graph's link reads the bridge (${reads.join(', ')})`);
 const afterLate = reads.length;
 linkAdopted(host, 0, 'bridge.mjs', 'file:///bridge.mjs');

@@ -51,7 +51,7 @@ export class MemoryVFS implements VFS {
   private readonly root: Entry;
   private clock = 0;
   private inos = 0;
-  readonly sync: SyncVFS = this as unknown as SyncVFS;
+  readonly sync: SyncVFS = this;
 
   constructor(private readonly owner: { uid: number; gid: number } = { uid: 0, gid: 0 }) {
     this.root = this.entry('directory', 0o755);

@@ -47,7 +47,7 @@ import { CHILD_NEWS_SOURCE } from '@nimbus-sh/core/runtime/child-news.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
 import {
   ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_ARGUMENTS_PREAMBLE, NODE_ERROR_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE,
-  NODE_WARNING_PREAMBLE, RELATIVE_WASM_PATHS_PREAMBLE, WASM_IMAGE_KEY_PREAMBLE,
+  NODE_WARNING_PREAMBLE, POSIX_PATH_PREAMBLE, PRIMORDIALS_PREAMBLE, RELATIVE_WASM_PATHS_PREAMBLE, WASM_IMAGE_KEY_PREAMBLE,
 } from '../loaders/generated-workers.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { EGRESS_TLS_REFUSAL } from '@nimbus-sh/core/_shared/workspace-network.js';
@@ -145,6 +145,11 @@ class __ProcessExit extends Error {
 ${NODE_ERROR_PREAMBLE}
 ${NODE_ARGUMENTS_PREAMBLE}
 ${NODE_WARNING_PREAMBLE}
+// The built-ins the module loading calls, captured now, before any program
+// code (core _shared/primordials.ts), and node:path's posix half on them
+// (core _shared/posix-path.ts, Node's lib/path.js).
+${PRIMORDIALS_PREAMBLE}
+${POSIX_PATH_PREAMBLE}
 Object.defineProperties(globalThis, {
   __nimbusNodeError: { value: __nimbusGeneratedNodeError, configurable: true },
   __nimbusNodeSystemError: { value: nodeSystemError, configurable: true },
@@ -855,17 +860,15 @@ function __vfsNormalizePath(p) {
 // \`join("", "hello.txt")\` was "/hello.txt" and sirv mapped every file under
 // "//name" and answered 404. Only resolution is the process's: resolve and
 // relative start from its cwd, not the Worker's.
+// Its posix half is Node's own (createPosixPath), on built-ins captured
+// before the program ran, as Node's path is: a program that replaces
+// String.prototype.charCodeAt has its own path, and the loader's, answer as
+// Node's do. matchesGlob is minimatch's, the platform's; win32 the platform's.
 const __pathMod = (() => {
   const native = __nativeBuiltin("path");
-  const posix = native.posix ?? native;
-  const resolve = (...p) => posix.resolve(cwd || "/home/user", ...p);
-  const mod = {
-    ...posix,
-    resolve,
-    relative: (from, to) => posix.relative(resolve(from), resolve(to)),
-    win32: native.win32,
-  };
-  mod.posix = mod;
+  const mod = createPosixPath(() => cwd || "/home/user");
+  mod.matchesGlob = (native.posix ?? native).matchesGlob;
+  mod.win32 = native.win32;
   return mod;
 })();
 
@@ -12193,7 +12196,9 @@ const __nimbusCallbackWork = {
 // Those whose functions throw workerd's NodeError (node-builtin-errors-match-node-workerd).
 for (const name of ["zlib", "crypto"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name], { callbacks: true, prototypes: true, held: __nimbusCallbackWork[name] });
 builtins.string_decoder = __nimbusNodeErrorsAt(builtins.string_decoder, { prototypes: true });
-for (const name of ["url", "path", "vm"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name]);
+for (const name of ["url", "vm"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name]);
+// node:path's posix half throws Node's errors itself (core _shared/posix-path.ts); matchesGlob is workerd's.
+builtins.path.matchesGlob = __nimbusNodeErrorsOf(builtins.path.matchesGlob, false, null);
 __nimbusNodeErrorsAt(builtins.events, { inPlace: true });
 __nimbusNodeErrorsAt(__BufferMod, { inPlace: true });
 // Node's argument checks in front of them (node-builtin-fronts.ts).
@@ -12891,6 +12896,9 @@ function __nimbusEsmRequire(id, required, parent = undefined) {
   }
   // It threw: what it threw, once its evaluation's rejection said.
   if (record.state === __ESM_FAILED && record.error !== undefined) throw record.error.value;
+  // An import()'s link failed in it: that failure, as Node's loader keeps the ModuleJob (esm-late-link keptFailure).
+  const kept = __nimbusLateModule?.keptFailure(__nimbusEsm.table[id][1]);
+  if (kept !== undefined) throw kept;
   const filename = "/" + __nimbusEsm.table[id][1];
   // Evaluating, for an import: Node's ESM loader's refusal, naming the requirer.
   if (record.state === __ESM_BEGAN || (record.state === __ESM_ADOPTED && record.namespace === null && record.requirer === undefined)) {
@@ -13029,16 +13037,23 @@ async function __nimbusEsmImport(id) {
 // one the interpreter took) is checked first as a late graph is (core
 // esm-late-link.ts linkAdopted): every imported name, before any of it
 // runs, unless a link checked it already.
+// A module an import() of failed to link (its late link, or its record),
+// by its record's key: the failure stays, as Node's loader keeps a
+// ModuleJob that did not link, and a later import of it rejects with it,
+// whatever the program wrote since. import()'s alone: require() retries.
+const __nimbusImportFailures = new Map();
 async function __nimbusEsmInterpret(id, linked) {
   const key = __nimbusEsm.table[id][1];
   const url = __nimbusEsmUrl("/" + key);
   let record = __nimbusGraphRecords.get("/" + key);
   if (record === undefined) {
+    if (__nimbusImportFailures.has("/" + key)) throw __nimbusImportFailures.get("/" + key);
     try {
       if (!linked) __nimbusLateOf().linkAdopted(__nimbusLateLinkHost, id, key, url);
       record = __nimbusAdoptedRecord(id, key);
     } catch (e) {
       __nimbusExplainCommonJSGlobalLike(e, url, false);
+      __nimbusImportFailures.set("/" + key, e);
       throw e;
     }
   }
@@ -13564,14 +13579,16 @@ async function __nimbusImportGraph(resolution) {
   const key = resolution.format === "data" ? resolution.url : resolution.path.replace(/^\\/+/, "");
   const recordKey = resolution.format === "data" || resolution.url.includes("?") || resolution.url.includes("#") ? resolution.url : "/" + key;
   let record = __nimbusGraphRecords.get(recordKey);
-  try {
-    if (record === undefined || record.status === "unlinked") {
-      if (resolution.format !== "data" || __nimbusDataModuleOf(resolution.url).format === "module") __nimbusLateLink(key, resolution.url);
+  if (record === undefined || record.status === "unlinked") {
+    if (__nimbusImportFailures.has(recordKey)) throw __nimbusImportFailures.get(recordKey);
+    try {
+      if (resolution.format !== "data" || __nimbusDataModuleOf(resolution.url).format === "module") __nimbusLateLink(key, resolution.url, true);
+      record ??= __nimbusGraphRecord(resolution, undefined);
+    } catch (e) {
+      __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
+      __nimbusImportFailures.set(recordKey, e);
+      throw e;
     }
-    record ??= __nimbusGraphRecord(resolution, undefined);
-  } catch (e) {
-    __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
-    throw e;
   }
   const namespace = await __nimbusImportRecord(record, resolution.url);
   __esmNamespaces.set(resolution.url, namespace);
@@ -13595,7 +13612,7 @@ function __nimbusRequireRecord(record, parent) {
     __nimbusGraphSync = true;
     try {
       // Its late graph's names, as its import() checks them: a runtime module's.
-      if (record.status === "unlinked" && !state.adopted && !state.data) __nimbusLateLink(state.resolvedPath.replace(/^\\/+/, ""), state.moduleUrl);
+      if (record.status === "unlinked" && !state.adopted && !state.data) __nimbusLateLink(state.resolvedPath.replace(/^\\/+/, ""), state.moduleUrl, false);
       __nimbusPlanGraph(record, true);
       if (__nimbusGraphAwaits(record, new Set())) throw __nimbusRequireAsync(parent, state.filename);
       __nimbusGraph.link(record);
@@ -13676,9 +13693,11 @@ const __nimbusLateLinkHost = {
   },
   requests: (path, text, javaScript, goal) => __nimbusModuleRequests(path, text, javaScript, goal),
 };
-// Links the late graph of the module at \`key\` (\`url\`); the staged rows it imports, in order.
-function __nimbusLateLink(key, url) {
-  return __nimbusRegistryRequire("./${RUNTIME_ESM_LATE_MODULE}").linkLateGraph(__nimbusLateLinkHost, key, url);
+// Links the late graph of the module at \`key\` (\`url\`), an import()'s
+// (\`kept\`: a module it fails in keeps the failure) or a require()'s; the
+// staged rows it imports, in order.
+function __nimbusLateLink(key, url, kept) {
+  return __nimbusLateOf().linkLateGraph(__nimbusLateLinkHost, key, url, kept);
 }
 // A bundled copy of a package the runtime provides, bound to the runtime's
 // (provided-packages.ts rewriteProvidedCommonJsModules, PROVIDED_PACKAGE_HOOK):

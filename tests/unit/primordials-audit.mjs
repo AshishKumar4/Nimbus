@@ -1,4 +1,5 @@
-// The interpreter reaches nothing a program can replace.
+// The interpreter, and the guest's module loading, reach nothing a program
+// can replace.
 //
 // The interpreter shares its realm with the program it runs, and the program
 // may replace any built-in it can reach: a global (`Array`, `TypeError`), a
@@ -9,10 +10,16 @@
 // argument lists), which no native code can reach. So every built-in the
 // interpreter uses is captured before any program code runs
 // (primordials.ts, loaded at the launch's start), and the rest of the
-// interpreter calls only those captures.
+// interpreter calls only those captures. The guest's module loading (node:path,
+// the resolver, the filesystem reads it makes) must answer as Node's loader
+// does after a program replaced a built-in, so the sources of it that are
+// typed (GUEST_LOADING) call only the captures too
+// (design-guest-loader-primordials.md); it runs with the unit tests, on every
+// change to them.
 //
-// This checks the interpreter's sources with the type checker, outside
-// primordials.ts, for what would go through the program's realm instead:
+// This checks those sources with the type checker, outside the captures
+// (interpreter/primordials.ts, _shared/primordials.ts), for what would go
+// through the program's realm instead:
 //   - a global value (Array, Object, TypeError, Promise, globalThis, ...);
 //   - a method or accessor declared by the built-in library (`.push`,
 //     `.slice`, `.then`, `.call`, `.description`), except on the Safe*
@@ -50,12 +57,17 @@ const DIR = join(CORE, 'src/interpreter');
  * (which takes its built-ins from the runtime it is bound to).
  */
 const UNCHECKED = new Set(['primordials.ts', 'host-ops.ts']);
+/** The mark of a line that reaches the program's realm because Node's own code does (posix-path.ts: lib/path.js join's push). */
+const LIVE_AS_NODE = /\/\/ as Node's, live:/;
+/** The guest's module loading, as it is converted: node:path's posix half. */
+const GUEST_LOADING = [join(CORE, 'src/_shared/posix-path.ts')];
 const FILES = [
   ...readdirSync(DIR).filter((f) => f.endsWith('.ts') && !UNCHECKED.has(f)).map((f) => join(DIR, f)),
   join(CORE, 'src/_shared/runtime-function-source.ts'),
   join(CORE, 'src/_shared/importer-url.ts'),
   join(CORE, 'src/runtime/binding-pattern.ts'),
   join(CORE, 'src/runtime/esm-interop.ts'),
+  ...GUEST_LOADING,
 ];
 /** Globals that are not writable or configurable, so nothing can replace them. */
 const FIXED_GLOBALS = new Set(['undefined', 'NaN', 'Infinity']);
@@ -83,7 +95,8 @@ const library = (declaration) => {
   return program.isSourceFileDefaultLibrary(file) || /[\\/]@types[\\/]node[\\/]/.test(file.fileName);
 };
 const fromLibrary = (symbol) => !!symbol && !!symbol.declarations && symbol.declarations.length > 0 && symbol.declarations.every(library);
-const ours = (symbol) => !!symbol && !!symbol.declarations && symbol.declarations.some((d) => d.getSourceFile().fileName.startsWith(DIR));
+const ours = (symbol) => !!symbol && !!symbol.declarations
+  && symbol.declarations.some((d) => d.getSourceFile().fileName.startsWith(DIR) || GUEST_LOADING.includes(d.getSourceFile().fileName));
 
 function isValueName(node) {
   const p = node.parent;
@@ -110,6 +123,8 @@ for (const file of FILES) {
   assert.ok(source, `${file} is part of the program`);
   const at = (node, what) => {
     const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+    // A call Node's own code makes through the program's realm, which a port of it must make too: marked on its line.
+    if (LIVE_AS_NODE.test(source.text.split('\n')[line - 1])) return;
     violations.push(`${file.slice(CORE.length)}:${line} ${what}`);
   };
   const visit = (node) => {
@@ -163,8 +178,8 @@ for (const file of FILES) {
 }
 
 console.log(violations.join('\n'));
-assert.deepEqual(violations, [], `the interpreter goes through ${violations.length} built-ins a program can replace`);
-console.log(`${FILES.length} files: the interpreter calls only the built-ins primordials.ts captured`);
+assert.deepEqual(violations, [], `the interpreter and the guest's module loading go through ${violations.length} built-ins a program can replace`);
+console.log(`${FILES.length} files: the interpreter and the guest's module loading call only the built-ins the launch captured`);
 
 const { bundleInterpreter } = await import('../../packages/worker/scripts/interpreter-bundle.mjs');
 const { primordialAcorn } = await import('../../packages/worker/scripts/acorn-primordials.mjs');

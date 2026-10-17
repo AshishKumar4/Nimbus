@@ -12,6 +12,7 @@
  */
 import { type GitObjectType } from '../pack/format.js';
 import { CacheTree } from './cachetree.js';
+import { compareUtf8 as comparePaths } from '@nimbus-sh/platform/utf8.js';
 export declare const S_IFMT = 61440;
 export declare const S_IFREG = 32768;
 export declare const S_IFLNK = 40960;
@@ -69,8 +70,8 @@ export interface IndexExtension {
 export declare function compareBytes(a: Uint8Array, b: Uint8Array): number;
 /** A path's bytes as a string: ASCII without the decoder's cost. */
 export declare function decodePath(bytes: Uint8Array): string;
-/** git's order of two paths as strings: their UTF-8 bytes, which is code point order rather than UTF-16's. */
-export declare function comparePaths(a: string, b: string): number;
+/** git's order of two paths as strings: their UTF-8 bytes (platform utf8.ts compareUtf8). */
+export { comparePaths };
 /** An object's id, in hex: SHA-1 of `<type> <size>\0` and the bytes. */
 export declare function objectId(type: GitObjectType, data: Uint8Array): string;
 export declare class IndexFormatError extends Error {

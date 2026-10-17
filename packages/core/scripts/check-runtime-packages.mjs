@@ -177,31 +177,55 @@ export async function runThroughCore(dir) {
   }
 }
 
+/**
+ * The verdict on every runtime package of `specs` (npmRuntimeSpecs): each
+ * built into a directory under `root` by `build(spec, dir)` (an error's
+ * text when it fails) and checked (checkRuntimePackage). `prepared`: a
+ * runtime the caller built already, at `dir`, and packed into `tarball`
+ * (publish-pack's signing artifact): its directory is that build, and the
+ * tarball is what is checked, its manifest against the directory's.
+ */
+export async function checkRuntimePackages({ specs, registry, root, build, prepared }) {
+  const verdicts = [];
+  for (const spec of specs) {
+    const { runtime, version, name, npmVersion } = spec;
+    const own = prepared?.runtime === runtime ? prepared : null;
+    const dir = own?.dir ?? join(root, name.split('/').pop());
+    const failure = own ? null : build(spec, dir);
+    const problems = failure === null
+      ? await checkRuntimePackage({ name, version: npmVersion, dir, registry, runThroughCore, tarball: own?.tarball })
+      : [{ problem: `building it failed:\n${failure}`, fix: `cd ${WORKER} && node ${buildArgs(runtime, version, dir).join(' ')}` }];
+    verdicts.push({ name, npmVersion, dir, prepared: own !== null, problems });
+  }
+  return verdicts;
+}
+
+const buildArgs = (runtime, version, dir) => ['scripts/bundle-runtime.mjs', runtime, version, '--npm-package', dir];
+
+/** `bundle-runtime.mjs --npm-package` of `spec` into `dir`: null, or what it printed when it failed. */
+function buildRuntimePackage({ runtime, version }, dir) {
+  const run = spawnSync('node', buildArgs(runtime, version, dir), { cwd: WORKER, encoding: 'utf8', maxBuffer: 1 << 26 });
+  return run.status === 0 ? null : `${run.stdout}${run.stderr}`;
+}
+
 async function main() {
   const args = process.argv.slice(2);
-  if (args.length !== 0 && (args.length !== 2 || args[0] !== '--runtime-tarball')) throw new Error('usage: check-runtime-packages.mjs [--runtime-tarball <CPython tgz>]');
-  const tarball = args[1];
+  const usage = 'usage: check-runtime-packages.mjs [--runtime-tarball <CPython tgz> --runtime-dir <its package directory>]';
+  if (args.length !== 0 && (args.length !== 4 || args[0] !== '--runtime-tarball' || args[2] !== '--runtime-dir')) throw new Error(usage);
+  const prepared = args.length === 0 ? undefined : { runtime: 'cpython', tarball: args[1], dir: args[3] };
   const { npmRuntimeSpecs } = await import('../../worker/scripts/runtime-specs.mjs');
-  const registry = npmRegistry();
   const root = mkdtempSync(join(tmpdir(), 'nimbus-runtime-release-'));
-  let failed = 0;
   // A check that throws is a failure too: say where its packages were kept, as a FAIL does.
   process.once('exit', (code) => {
     if (code && existsSync(root)) console.error(`Built packages kept under ${root}.`);
   });
-  for (const { runtime, version, name, npmVersion } of npmRuntimeSpecs()) {
-    const dir = join(root, name.split('/').pop());
-    const args = ['scripts/bundle-runtime.mjs', runtime, version, '--npm-package', dir];
-    const build = spawnSync('node', args, { cwd: WORKER, encoding: 'utf8', maxBuffer: 1 << 26 });
-    const problems = build.status === 0
-      ? await checkRuntimePackage({ name, version: npmVersion, dir, registry, runThroughCore, tarball: runtime === 'cpython' ? tarball : undefined })
-      : [{
-        problem: `building it failed:\n${build.stdout}${build.stderr}`,
-        fix: `cd ${WORKER} && node ${args.join(' ')}`,
-      }];
+  const verdicts = await checkRuntimePackages({ specs: npmRuntimeSpecs(), registry: npmRegistry(), root, build: buildRuntimePackage, prepared });
+  let failed = 0;
+  for (const { name, npmVersion, dir, prepared: theirs, problems } of verdicts) {
     if (problems.length === 0) {
       console.log(`ok    ${name}@${npmVersion}`);
-      rmSync(dir, { recursive: true, force: true });
+      // The caller's build is the caller's to remove.
+      if (!theirs) rmSync(dir, { recursive: true, force: true });
       continue;
     }
     failed++;
