@@ -6,12 +6,14 @@
     "url": "https://github.com/tailwindlabs/tailwindcss/archive/refs/tags/v4.3.3.tar.gz",
     "sha256": "e702ce2493505287e8f6cab2dd1e0c14f154e57c296854d4ded38bde5da2be6e",
     "inputs": {
+      "packages/core/src/runtime/wasm-binary.ts": "4d24b153aef3861cceaa39b6991b36fcdb98eaa849950f5beb1bb67bfb80a2c5",
       "packages/worker/scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
-      "packages/worker/scripts/napi-wasm/build.mjs": "45b17dfa68a17b6582d61eab755aff6b4d6c1e734d180e0aa8eff73ef1697387",
-      "packages/worker/scripts/napi-wasm/inputs.mjs": "5bac3fae82b6bc1bf7f23fc75ff8cb81098d53cbd4325ae0ccb495362348dbd6",
+      "packages/worker/scripts/napi-wasm/build.mjs": "5f1d124e26a906bfef4ba0faccf0a0d9e36164f1ae370b6c4f2d40f873c0b645",
+      "packages/worker/scripts/napi-wasm/inputs.mjs": "a06c519ffee5e2637688e25ca527bf885f99d2f2fa4b5fe34a81ba5afda94dc4",
       "packages/worker/scripts/napi-wasm/link-wasm.sh": "3ead1668bb4b234f95892a7da9698a2f901d6fa460ed204594dfe9a6d8fa46f5",
       "packages/worker/scripts/napi-wasm/rustc-remap.sh": "c0ad0342c9fa9832c80a780f0828f49f759d9d50274aef1ded89216bfb3dd07b",
       "packages/worker/scripts/napi-wasm/tailwindcss-oxide/Cargo.lock": "c8b7917ce616824bc0b9dcd9edbb1af0e39639590f68bdb1ee066ff0df954503",
+      "packages/worker/scripts/rust-build-env.mjs": "bee2b7ee81ac5975df573df583b6b67dc176e4491fadcb43c4f3bbc2e81f73d4",
       "packages/worker/scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",
       "packages/worker/scripts/napi-wasm/specs.mjs#oxide@4.3.3": "8f3e625252b100252b1cf2f9e944065b3fe6de3a678fbf7edd0190b09021eadf",
       "packages/worker/scripts/napi-wasm/specs.mjs#emnapi-link": "08bdc8cef180f63a612f6d138d9dc271fd4ce9bf7dd8a32d096a6f640a8bb2be"
