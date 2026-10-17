@@ -3722,7 +3722,6 @@ export async function buildPrefetchBundle(vfs, options) {
 const PREFETCH_PEAK_PER_BYTE = 3;
 // A speculative admission must fit a small module before paying for a bounced walk.
 const PREFETCH_MIN_CLOSURE_BYTES = 4096;
-const PREFETCH_ALLOCATION_OWNER = { owner: 'prefetch bundle/map', attribution: 'prefetchBundleBytes' };
 /** What work made from a closure of `closureBytes` holds at its peak, within the budget. */
 function prefetchNeed(closureBytes) {
     return Math.min(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, Math.max(1, Math.ceil(closureBytes * PREFETCH_PEAK_PER_BYTE)));
@@ -3741,13 +3740,13 @@ function prefetchNeed(closureBytes) {
  * build joined, before a worker). One that has to wait for room waits under
  * `wait`: a launch whose process ends meanwhile is never admitted.
  */
-async function admitPrefetch(wait, bytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, copy = false, owner = PREFETCH_ALLOCATION_OWNER) {
-    const now = tryAdmitPrefetch(bytes, copy, owner);
+async function admitPrefetch(wait, bytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, copy = false) {
+    const now = tryAdmitPrefetch(bytes, copy);
     if (now !== null)
         return now;
     const waiting = wait?.();
     try {
-        const lease = await (copy ? acquireSupervisorCopyAllocation : acquireSupervisorAllocation)(bytes, waiting?.signal, owner);
+        const lease = await (copy ? acquireSupervisorCopyAllocation : acquireSupervisorAllocation)(bytes, waiting?.signal);
         // Room came as its launch ended: given back, not used.
         if (waiting?.signal.aborted) {
             lease.release();
@@ -3764,14 +3763,14 @@ async function admitPrefetch(wait, bytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGE
  * null where it would wait. A `copy` (a map made from a state already
  * staged) takes the credit without shrinking the VFS cache.
  */
-function tryAdmitPrefetch(bytes, copy = false, owner = PREFETCH_ALLOCATION_OWNER) {
-    const lease = (copy ? tryAcquireSupervisorCopyAllocation : tryAcquireSupervisorAllocation)(bytes, owner);
+function tryAdmitPrefetch(bytes, copy = false) {
+    const lease = copy ? tryAcquireSupervisorCopyAllocation(bytes) : tryAcquireSupervisorAllocation(bytes);
     return lease === null ? null : admissionOf(lease, false);
 }
-function tryAdmitPrefetchBuild(owner) {
+function tryAdmitPrefetchBuild() {
     const budget = readSupervisorAllocationBudget();
     const free = budget.capacity - budget.current;
-    return free / PREFETCH_PEAK_PER_BYTE < PREFETCH_MIN_CLOSURE_BYTES ? null : tryAdmitPrefetch(free, false, owner);
+    return free / PREFETCH_PEAK_PER_BYTE < PREFETCH_MIN_CLOSURE_BYTES ? null : tryAdmitPrefetch(free);
 }
 function admissionOf(admitted, queued) {
     // Attributed so it lands under `prefetchBundleBytes`, not the unattributed remainder.
@@ -3815,8 +3814,8 @@ function admissionOf(admitted, queued) {
     };
 }
 /** `work` under an admission of its own (admitPrefetch's `wait` and `bytes`), given back as it ends. */
-async function withPrefetchAllocation(work, wait, bytes, owner = PREFETCH_ALLOCATION_OWNER) {
-    const admission = await admitPrefetch(wait, bytes, false, owner);
+async function withPrefetchAllocation(work, wait, bytes) {
+    const admission = await admitPrefetch(wait, bytes);
     try {
         return await work(admission);
     }
@@ -4769,15 +4768,16 @@ export class FacetManager {
     }
     /**
      * The platform reset the host of a running process (ProcessHostLost): the
-     * process is over, as if killed (137), and says why. Its ports answer with
-     * the cause at once, and its restart policy decides what follows, as for
-     * any process that ends on its own (_onResidentTerminal).
+     * process is over, as if killed (137), and says why, on its stderr. Its
+     * ports answer with the cause at once, and its restart policy decides what
+     * follows, as for any process that ends on its own (_onResidentTerminal).
      */
     _endByHostLoss(pid, lost) {
         const entry = this.processes.get(pid);
         if (entry?.state !== 'running')
             return;
         console.warn(`[facet-manager] pid ${pid} ("${entry.command}") ended: ${lost.message}`);
+        this.processes.appendOutput(pid, 'stderr', `[nimbus] process ${pid} ended: ${lost.message}\n`);
         this.hostLosses.set(pid, lost);
         this._end(pid, { code: HOST_LOST_EXIT_CODE, cause: lost.message, portEnding: `"${entry.command}" (pid ${pid}) ended: ${lost.message}` });
     }
@@ -5809,8 +5809,7 @@ export class FacetManager {
         // Its helpers wait for a worker as its process (withLaunchPreparation): a wait nothing can satisfy is one the ledger tells.
         const building = withLaunchPreparation(this.ctx, { pid: entry.pid }, async () => {
             // Held from the moment it is taken: the detector names its holders (_creditHolders).
-            const owner = this._allocationOwner(entry.pid);
-            let admission = held ?? tryAdmitPrefetchBuild(owner) ?? await admitPrefetch(() => this._launchEnds(entry.pid), undefined, false, owner);
+            let admission = held ?? tryAdmitPrefetchBuild() ?? await admitPrefetch(() => this._launchEnds(entry.pid));
             for (;;) {
                 this.buildAdmissions.set(entry.pid, admission);
                 const fullBound = spec.maxBundleBytes ?? VFS_BUNDLE_MAX_BYTES;
@@ -5825,7 +5824,7 @@ export class FacetManager {
                     this._releaseBuildAdmission(entry.pid);
                     if (creditLimit === undefined || !(error instanceof ClosureBoundExceededError) || error.outcome.bound !== creditLimit)
                         throw error;
-                    admission = await admitPrefetch(() => this._launchEnds(entry.pid), undefined, false, owner);
+                    admission = await admitPrefetch(() => this._launchEnds(entry.pid));
                 }
             }
         });
@@ -6323,7 +6322,7 @@ export class FacetManager {
                             if (!vfsState.cacheRetained)
                                 releaseGeneratedSources(vfsState);
                             this._releaseBuildAdmission(entry.pid);
-                            const admission = await admitPrefetch(() => this._launchEnds(entry.pid), error.bytes, true, this._allocationOwner(entry.pid));
+                            const admission = await admitPrefetch(() => this._launchEnds(entry.pid), error.bytes, true);
                             this.buildAdmissions.set(entry.pid, admission);
                             vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
                             continue;
@@ -6655,7 +6654,7 @@ export class FacetManager {
             clearTimeout(launch.stall);
         this.launching.delete(pid);
     }
-    /** Launches not yet running (their stage and its age) and the launches waiting for a turn. */
+    /** The one-shot launches not yet running (their stage and its age) and the launches waiting for a turn. */
     launchState(now = Date.now()) {
         return {
             launches: [...this.launching].map(([pid, { stage, since }]) => ({ pid, stage, ms: now - since })),
@@ -7008,7 +7007,7 @@ export class FacetManager {
             throw new Error(`Nimbus: the module map for pid ${pid} has no share of the credit`);
         if (admission.held() >= need)
             return;
-        const replacement = tryAdmitPrefetch(need, true, this._allocationOwner(pid));
+        const replacement = tryAdmitPrefetch(need, true);
         if (replacement === null)
             throw new OneShotAllocationNeeded(need);
         this.buildAdmissions.set(pid, replacement);
@@ -7335,7 +7334,7 @@ export class FacetManager {
             const serialized = _serializeBundleForFacet(gathered.bundle);
             assertStagedBundleFitsRpcPayload(serialized, gathered.bundle);
             return { vfsState: gathered, vfsBundle: serialized };
-        }, () => this._launchEnds(entry.pid), undefined, this._allocationOwner(entry.pid));
+        }, () => this._launchEnds(entry.pid));
         return {
             mode,
             argv: opts.argv,
@@ -7583,9 +7582,6 @@ export class FacetManager {
             own += admission.held();
         return readSupervisorAllocationBudget().current > own ? null : [...this.buildAdmissions.keys()];
     }
-    _allocationOwner(pid) {
-        return { owner: 'launch bundle/map', pid, session: this.ctx?.id?.toString(), attribution: 'prefetchBundleBytes' };
-    }
     /**
      * A launch's share of the credit for the module map it makes from `state`
      * (another launch's build, the cache's), taken before it holds a worker:
@@ -7596,12 +7592,12 @@ export class FacetManager {
         if (this.buildAdmissions.has(entry.pid))
             return state;
         const need = Math.min(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, Math.max(prefetchNeed(state.rawBytes ?? 0), state.oneShotMapBytes ?? 0));
-        const now = tryAdmitPrefetch(need, true, this._allocationOwner(entry.pid));
+        const now = tryAdmitPrefetch(need, true);
         if (now !== null) {
             this.buildAdmissions.set(entry.pid, now);
             return state;
         }
-        return admitPrefetch(() => this._launchEnds(entry.pid), need, true, this._allocationOwner(entry.pid)).then((admission) => {
+        return admitPrefetch(() => this._launchEnds(entry.pid), need, true).then((admission) => {
             this.buildAdmissions.set(entry.pid, admission);
             return state;
         });
@@ -7626,6 +7622,31 @@ export class FacetManager {
         });
         this._watchHost(pid, handle, spec.startContract === 'boot' && spec.journaled === true, controlFailure);
         return handle;
+    }
+    /**
+     * A stop that ends process `pid` (one `resumed`, a promoted server's run
+     * again), unless it has ended: it exits 1, why on its stderr.
+     */
+    async _endByStop(pid, stop, resumed) {
+        if (this.processes.get(pid)?.state !== 'running')
+            return;
+        const message = stop.kind === 'diverged'
+            ? (resumed
+                ? 'node: this program listens as a server, so Nimbus ran it again as one, and it did not retrace '
+                    + `its run before up to its listen (${stop.why}), so it was ended.`
+                : `node: Nimbus ran this program again, and it did not retrace its run before (${stop.why}), so it was ended.`)
+            : `node: this program stopped (${stop.kind === 'stdin' ? 'at a synchronous read of stdin' : `at its ${stop.kind}`}) `
+                + 'after it had started, where Nimbus cannot run it again, so it was ended.';
+        try {
+            await this._deliverOutput(pid, 'stderr', new TextEncoder().encode(`${message}\n`));
+        }
+        catch {
+            // Its stderr refused it (a parent that closed the reader): its own log keeps why.
+            this.processes.appendOutput(pid, 'stderr', `${message}\n`);
+        }
+        finally {
+            this._end(pid, { code: 1, cause: message });
+        }
     }
     /** A booted resident died without anyone ending it: it exits 1, its reason on its stderr. */
     _residentDied(pid, error) {
@@ -7971,21 +7992,17 @@ export class FacetManager {
         // gives it back for good, and its boot takes a slot of its own, as a
         // resident started in none does (_startResidentProcess).
         const inherited = suspendLaunchAdmission(this.ctx);
-        const ended = new AbortController();
-        const stopWaiting = this.processes.subscribeTerminal(entry.pid, () => {
-            ended.abort(new Error(`Nimbus: the launch for pid ${entry.pid} ended`));
-            this._launchEnded(entry.pid);
-        });
-        this._launchStage(entry, 'prepare', ended.signal);
-        const admitted = async () => {
-            if (inherited !== undefined && !opts.attachedTty) {
-                this._launchStage(entry, 'admission', ended.signal);
-                await inherited(ended.signal);
-            }
-            this._launchStage(entry, 'load', ended.signal);
-        };
+        let admitted = async () => { };
+        let stopWaiting = () => { };
+        if (inherited !== undefined && !opts.attachedTty) {
+            const ended = new AbortController();
+            stopWaiting = this.processes.subscribeTerminal(entry.pid, () => {
+                ended.abort(new Error(`Nimbus: the launch for pid ${entry.pid} was cancelled while it waited for a worker`));
+            });
+            admitted = () => inherited(ended.signal);
+        }
         const launch = withLaunchPreparation(this.ctx, { pid: entry.pid }, () => this._runResidentLaunchBody(entry, code, command, opts, attempt, admitted));
-        return this.trackLaunchTask(launch.finally(() => { this._launchEnded(entry.pid); stopWaiting(); preparing(); }));
+        return this.trackLaunchTask(launch.finally(() => { stopWaiting(); preparing(); }));
     }
     async _runResidentLaunchBody(entry, code, command, opts, attempt, admitted) {
         const cwd = opts.cwd || '/home/user';
@@ -8267,6 +8284,10 @@ export class FacetManager {
             let rerun = opts.resume ?? null;
             const stoppable = stdinWriter || opts.resume !== undefined;
             let stopNonce = crypto.randomUUID();
+            // Until it has booted, a stop is this launch's to answer (below); after,
+            // nothing runs it again, and a stop ends it, saying why: never a
+            // failure the launch and its host's watch both pass over.
+            let launching = true;
             try {
                 for (let stops = 0;; stops++) {
                     // Last gate before the facet exists. A launch now spans many turns, so
@@ -8283,7 +8304,18 @@ export class FacetManager {
                             // life; the server/watch runner returns once it is up.
                             startContract: opts.attachedTty ? 'lifetime' : 'boot',
                             journaled: true,
-                            ...(stoppable ? { controlFailure: (error) => stopRecordOf(error, launchingNonce, launchingRun) !== null } : {}),
+                            ...(stoppable ? {
+                                controlFailure: (error) => {
+                                    const stop = stopRecordOf(error, launchingNonce, launchingRun);
+                                    if (stop === null)
+                                        return false;
+                                    // Booted: a promoted server retraces on past its boot (stop-replay
+                                    // booted), where its launch waits on it no longer.
+                                    if (!launching)
+                                        this.ctx.waitUntil(this._endByStop(entry.pid, stop, opts.resume !== undefined));
+                                    return true;
+                                },
+                            } : {}),
                             startArgs: {
                                 pid: entry.pid, vfsCursor, dataPlan,
                                 ...(Object.keys(lazyReads).length > 0 ? { lazyReads } : {}),
@@ -8373,7 +8405,7 @@ export class FacetManager {
                         else {
                             await handle.booted();
                         }
-                        this._launchEnded(entry.pid);
+                        launching = false;
                         break;
                     }
                     catch (e) {
@@ -8396,10 +8428,7 @@ export class FacetManager {
                         handle = undefined;
                         this.portRegistry.unregisterByPid(entry.pid);
                         if (opts.resume && stop.kind === 'diverged') {
-                            const message = `node: this program listens as a server, so Nimbus ran it again as one, and it did not retrace `
-                                + `its run before up to its listen (${stop.why}), so it was ended.\n`;
-                            await this._deliverOutput(entry.pid, 'stderr', new TextEncoder().encode(message));
-                            this._end(entry.pid, { code: 1, cause: message.trimEnd() });
+                            await this._endByStop(entry.pid, stop, true);
                             return;
                         }
                         const waiting = new AbortController();
