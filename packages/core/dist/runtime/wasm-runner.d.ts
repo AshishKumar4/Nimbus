@@ -16,11 +16,11 @@
  *   wasm-runner <file.wasm> <exportName> [int args...]
  *
  * Each invocation:
- *   1. Reads bytes from VFS (or any caller-supplied source).
+ *   1. Opens the program in the VFS as a facet image and inspects its bytes.
  *   2. Allocates a PID via the process supervisor (Process tab integration).
- *   3. Facet.submit() with wasmModules: { 'user.wasm': bytes } — the
- *      host compiles the image and publishes it on the facet's
- *      `globalThis.__NIMBUS_WASM`.
+ *   3. Facet.submit() with wasmModules: { 'user.wasm': image } — the
+ *      host reads the image for the facet's load, compiles it and
+ *      publishes it on the facet's `globalThis.__NIMBUS_WASM`.
  *   4. The submitted fn runs inside the inner facet:
  *      - reads globalThis.__NIMBUS_WASM['user.wasm'] (the precompiled
  *        Module the facet host registered)

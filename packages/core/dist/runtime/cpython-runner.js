@@ -50,6 +50,7 @@ import { PYTHON_SERVER_ADAPTER } from './python-server-adapter.js';
 import { CPYTHON_RUNNER, gateSyncLaunch, requireVfsCred } from './os-contracts.js';
 import { buildPipInvocation, pythonSitePackages, sessionUsesSciVariant, } from './python-pip.js';
 import { DEFAULT_HOME } from '../constants.js';
+import { installedFile } from './runtime-manifest.js';
 import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.generated.js';
 import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import { openRuntimeStdio, runtimeOutput } from './runtime-stdio.js';
@@ -188,12 +189,9 @@ async function buildPythonModulePipInvocation(argv, cwd, vfs, runtimeContext) {
 }
 export function makeCPythonRunnerFactory(deps) {
     return function cpythonRunnerFactory(manifest, installRoot, binName, _binKind) {
-        const findFile = (rel) => {
-            const entry = manifest.files.find((f) => f.path === rel);
-            return entry ? `${installRoot}/${entry.path}` : null;
-        };
-        const baseWasmVfs = findFile(CPYTHON_WASM_REL);
-        const sciWasmVfs = findFile(CPYTHON_SCI_WASM_REL);
+        const findFile = (rel) => installedFile(manifest, installRoot, rel)?.path ?? null;
+        const baseWasm = installedFile(manifest, installRoot, CPYTHON_WASM_REL);
+        const sciWasm = installedFile(manifest, installRoot, CPYTHON_SCI_WASM_REL);
         const sciPackagesVfs = findFile(CPYTHON_SCI_PACKAGES_REL);
         const stdlibVfs = findFile(CPYTHON_STDLIB_REL);
         return async function cpythonBinHandler(ctx) {
@@ -239,15 +237,16 @@ export function makeCPythonRunnerFactory(deps) {
             // when the variant is absent keeps a session installed before the variant
             // shipped working, on the base interpreter, rather than failing to start.
             const wantsSci = await sessionUsesSciVariant(vfs, home)
-                && sciWasmVfs !== null && (await vfs.exists(sciWasmVfs));
-            const wasmVfs = wantsSci ? sciWasmVfs : baseWasmVfs;
+                && sciWasm !== null && (await vfs.exists(sciWasm.path));
+            const wasm = wantsSci ? sciWasm : baseWasm;
             const sciPackagesPath = wantsSci && sciPackagesVfs && (await vfs.exists(sciPackagesVfs))
                 ? sciPackagesVfs
                 : null;
-            if (!wasmVfs || !(await vfs.exists(wasmVfs))) {
+            if (!wasm || !(await vfs.exists(wasm.path))) {
                 ctx.stderr.write(`${binName}: python.wasm missing (re-run 'nimbus install python')\n`);
                 return 127;
             }
+            const wasmVfs = wasm.path;
             if (!stdlibVfs || !(await vfs.exists(stdlibVfs))) {
                 ctx.stderr.write(`${binName}: python313.zip missing (re-run 'nimbus install python')\n`);
                 return 127;
@@ -378,7 +377,8 @@ export function makeCPythonRunnerFactory(deps) {
                     // never reaches the session.
                     syscalls: stdio.syscalls,
                     preamble: buildCPythonPreamble(),
-                    wasmModules: { 'python.wasm': await vfs.readArrayBufferUncached(wasmVfs) },
+                    // Opened, not read: the host reads it for the facet's load alone (FacetImage).
+                    wasmModules: { 'python.wasm': await vfs.image(wasmVfs, wasm) },
                 });
                 const result = await facet.submit(CPYTHON_RUN_TASK, facetArgs, {
                     signal: stdio.signal,

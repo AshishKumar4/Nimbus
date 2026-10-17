@@ -44,6 +44,7 @@ import { parseProcessSignalName } from '@nimbus-sh/core/runtime/process-io-proto
 import { createNodeFacetRuntime, fetchNodeFacetSources, nodeFacetSource, type NodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { moduleSource, type ModuleSource, type ImmutableModuleSource } from '@nimbus-sh/platform/module-source.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+import { memberBuffer } from '@nimbus-sh/platform/worker-code.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { NODE_SHIMS_IMPORTS } from '../runtime/node-shims-imports.js';
 import {
@@ -5990,9 +5991,7 @@ export class FacetManager {
       // One another launch staged moments ago is read once it is published (a read lease's recall held it).
       const bytes = await withRecall(() => filesOf(vfs).readBytes(stripLeadingSlashes(image.vfsPath))).catch(() => null);
       if (bytes === null) continue;
-      modules[image.moduleName] = {
-        wasm: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
-      };
+      modules[image.moduleName] = { wasm: memberBuffer(bytes) };
     }
     return modules;
   }

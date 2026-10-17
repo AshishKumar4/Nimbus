@@ -44,7 +44,7 @@
  *     canonical_abi_drop_rb-abi-value, memory.
  */
 import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
-import type { RuntimeManifest } from './runtime-manifest.js';
+import { type RuntimeManifest } from './runtime-manifest.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import type { FacetHost } from './facet-host.js';
 import { type NimbusFilesystemAuthority, type VfsCred } from './os-contracts.js';

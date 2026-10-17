@@ -2,8 +2,7 @@ import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { formatShellPrompt } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
-import { CRED_KERNEL, type VfsCred, type RuntimeFsBridge, type NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { withHostView } from '@nimbus-sh/core/runtime/process-files.js';
+import type { VfsCred, RuntimeFsBridge, NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
 import { createBashFacetSession, type BashFacetSession } from '@nimbus-sh/core/runtime/bash-runner.js';
 import { facetHostForManager } from './facet-loader-host.js';
@@ -108,9 +107,9 @@ class BashReplAdapter implements ReplAdapter {
 
   private async ensureSession(signal: AbortSignal): Promise<ReplPushResult | null> {
     if (this.session) return null;
-    this.session = await withHostView(this.deps.authority, CRED_KERNEL, (artifacts) => createBashFacetSession({
+    this.session = await createBashFacetSession({
       facets: facetHostForManager(this.deps.facetMgr),
-      artifacts,
+      authority: this.deps.authority,
       filesystem: this.deps.filesystem,
       pid: this.deps.pid,
       processes: this.deps.processes,
@@ -129,7 +128,7 @@ class BashReplAdapter implements ReplAdapter {
       stdinTty: true,
       outputControls: [{ key: 'ps1', prefix: this.ps1Sentinel }, { key: 'ps2', prefix: this.ps2Sentinel }],
       signal,
-    }));
+    });
 
     const initial = this.session.initial;
     if (initial.state !== 'need-input') return this.consumeSlice(initial, '');

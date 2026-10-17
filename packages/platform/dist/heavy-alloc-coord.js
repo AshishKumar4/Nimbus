@@ -7,8 +7,30 @@
  * budget. Full-budget owners are exclusive; weighted owners may overlap only
  * while their retained-byte claims fit together.
  */
-import { CHUNK_SIZE, SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, SUPERVISOR_READ_RESERVE_BYTES, } from './limits.js';
+import { CHUNK_SIZE, SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, SUPERVISOR_LOAD_WAIT_MS, SUPERVISOR_READ_RESERVE_BYTES, } from './limits.js';
 import { WeightedCreditPool, } from './weighted-credit-pool.js';
+/**
+ * A facet's load the budget did not admit within its bound
+ * (SUPERVISOR_LOAD_WAIT_MS): nothing of it was read, and the facet is not
+ * started. Resource temporarily unavailable, as the ledger's refusal of a
+ * wait no release can satisfy is.
+ */
+export class SupervisorLoadWaitError extends Error {
+    load;
+    bytes;
+    waitedMs;
+    code = 'EAGAIN';
+    errno = -11;
+    constructor(load, bytes, waitedMs, held) {
+        super(`Resource temporarily unavailable: ${load} (${bytes.toLocaleString('en-US')} bytes) waited ${waitedMs} ms `
+            + `for this isolate's transient allocation budget and was not admitted (${held.current.toLocaleString('en-US')} `
+            + `of ${held.capacity.toLocaleString('en-US')} bytes held, ${held.queued} owners queued)`);
+        this.load = load;
+        this.bytes = bytes;
+        this.waitedMs = waitedMs;
+        this.name = 'SupervisorLoadWaitError';
+    }
+}
 /**
  * Reusable contract behind the supervisor singleton. A separate instance is
  * useful in tests and keeps the invariant independent of Nimbus internals.
@@ -54,6 +76,38 @@ export class SupervisorAllocationBudget {
      */
     acquireWithoutLifecycle(bytes, signal) {
         return this._acquire(bytes, signal, false);
+    }
+    /**
+     * Reserve what a facet's load holds while the loader takes its module map:
+     * `bytes`, or for a load larger than the whole budget the whole budget, so
+     * that it holds it alone and every owner after it waits. Granted in the
+     * budget's one FIFO order, so no owner queued after a load overtakes it,
+     * however small, and refused with SupervisorLoadWaitError when not granted
+     * within `waitMs`. Like a copy it holds bytes the session already has, for
+     * as long as the load takes, so the disposable VFS cache is not shrunk.
+     */
+    async acquireLoad(load, bytes, options) {
+        options.signal?.throwIfAborted();
+        const wanted = Math.min(bytes, this.capacity);
+        // Granted at once when nothing is queued and it fits, with no bound to arm.
+        const now = this.tryAcquire(wanted, false);
+        if (now)
+            return now;
+        const started = Date.now();
+        const bound = new AbortController();
+        // Cleared as the wait settles: a pending timer keeps the hosting object from hibernating.
+        const timer = setTimeout(() => bound.abort(), options.waitMs);
+        try {
+            return await this._acquire(wanted, options.signal ? AbortSignal.any([bound.signal, options.signal]) : bound.signal, false);
+        }
+        catch (error) {
+            if (bound.signal.aborted && options.signal?.aborted !== true)
+                throw new SupervisorLoadWaitError(load, bytes, Date.now() - started, this.stats);
+            throw error;
+        }
+        finally {
+            clearTimeout(timer);
+        }
     }
     /** Reserve bytes now or not at all, driving the lifecycle as acquire does (or not, `drivesLifecycle` false). */
     tryAcquire(bytes, drivesLifecycle = true) {
@@ -193,6 +247,25 @@ export function tryAcquireSupervisorCopyAllocation(bytes) {
 /** {@link tryAcquireSupervisorCopyAllocation}, waiting for room. */
 export function acquireSupervisorCopyAllocation(bytes, signal) {
     return supervisorAllocationBudget.acquireWithoutLifecycle(bytes, signal);
+}
+/**
+ * Run `load`, a facet's load holding `bytes` of this isolate while the loader
+ * takes its module map (the wasm images read for it; `name` says whose),
+ * admitted on the supervisor budget for as long as it runs
+ * (SupervisorAllocationBudget.acquireLoad): FIFO, the whole budget for one
+ * larger than it, refused by name after SUPERVISOR_LOAD_WAIT_MS. `signal`
+ * ends the wait.
+ */
+export async function withSupervisorLoadAllocation(name, bytes, signal, load) {
+    if (bytes === 0)
+        return load();
+    const lease = await supervisorAllocationBudget.acquireLoad(name, bytes, { waitMs: SUPERVISOR_LOAD_WAIT_MS, signal });
+    try {
+        return await load();
+    }
+    finally {
+        lease.release();
+    }
 }
 /**
  * Reserve the full budget for an allocation whose retained size is not known

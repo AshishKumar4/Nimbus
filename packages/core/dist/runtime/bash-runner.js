@@ -23,7 +23,8 @@
  */
 import { exitCodeForAbortSignal } from '../substrate/lifo/shell/signals.js';
 import { BASH_STEP_TASK, BASH_REQUEST_TASK } from './compiled-bodies.generated.js';
-import { withHostView } from './process-files.js';
+import { installedFile } from './runtime-manifest.js';
+import { hostImage, withHostView } from './process-files.js';
 import { z } from 'zod';
 import { BASH_RUNNER_BODY_SRC } from './bash-runner.generated.js';
 import { BASH_RUNNER, CRED_KERNEL, gateSyncLaunch, requireVfsCred } from './os-contracts.js';
@@ -53,16 +54,37 @@ function normalizeSlice(raw) {
         control: parsed.data.control,
     };
 }
-export async function createBashFacetSession(deps) {
-    deps.signal?.throwIfAborted();
-    const findFile = (relativePath) => {
-        const entry = deps.manifest.files.find((file) => file.path === relativePath);
-        return entry ? `${deps.installRoot}/${entry.path}` : null;
-    };
-    const bashWasmPath = findFile('share/bash/bash.async.wasm');
-    if (!bashWasmPath || !(await deps.artifacts.exists(bashWasmPath))) {
+/**
+ * The installed bash as `artifacts` sees it: its wasm images by module name
+ * (bash, then each coreutils image the install has), each with the digest
+ * its manifest vouches for, and its busybox applets.
+ */
+async function installedBash(artifacts, manifest, installRoot) {
+    const bash = installedFile(manifest, installRoot, 'share/bash/bash.async.wasm');
+    if (!bash || !(await artifacts.exists(bash.path))) {
         throw new Error("bash.async.wasm missing (re-run 'nimbus install bash')");
     }
+    const images = { 'bash.async.wasm': bash };
+    const prefix = 'share/bash/coreutils/';
+    for (const file of manifest.files) {
+        if (!file.path.startsWith(prefix) || !file.path.endsWith('.wasm'))
+            continue;
+        const path = `${installRoot}/${file.path}`;
+        if (await artifacts.exists(path))
+            images[`cu_${file.path.slice(prefix.length, -'.wasm'.length)}.wasm`] = { path, sha256: file.sha256, size: file.size };
+    }
+    const appletsPath = installedFile(manifest, installRoot, 'share/bash/coreutils/busybox.applets')?.path ?? null;
+    const applets = appletsPath && (await artifacts.exists(appletsPath))
+        ? new TextDecoder().decode(await artifacts.readFile(appletsPath))
+            .split('\n')
+            .map((line) => line.trim())
+            .filter(Boolean)
+        : [];
+    return { images, applets };
+}
+export async function createBashFacetSession(deps) {
+    deps.signal?.throwIfAborted();
+    const installed = await withHostView(deps.authority, CRED_KERNEL, (artifacts) => installedBash(artifacts, deps.manifest, deps.installRoot));
     const userEnv = { ...deps.env };
     userEnv.HOME ||= '/home/user';
     userEnv.PATH ||= '/bin:/usr/bin';
@@ -71,26 +93,13 @@ export async function createBashFacetSession(deps) {
     userEnv.NIMBUS_PWD = deps.cwd;
     userEnv.BASH_ENV ||= '/etc/nimbus.bashrc';
     userEnv.PWD = deps.cwd;
-    const wasmModules = {
-        'bash.async.wasm': await deps.artifacts.readArrayBufferUncached(bashWasmPath),
-    };
-    for (const file of deps.manifest.files) {
-        const prefix = 'share/bash/coreutils/';
-        if (!file.path.startsWith(prefix) || !file.path.endsWith('.wasm'))
-            continue;
-        const name = file.path.slice(prefix.length, -'.wasm'.length);
-        const vfsPath = `${deps.installRoot}/${file.path}`;
-        if (await deps.artifacts.exists(vfsPath)) {
-            wasmModules[`cu_${name}.wasm`] = await deps.artifacts.readArrayBufferUncached(vfsPath);
-        }
-    }
-    const appletsPath = findFile('share/bash/coreutils/busybox.applets');
-    const busyboxApplets = appletsPath && (await deps.artifacts.exists(appletsPath))
-        ? new TextDecoder().decode(await deps.artifacts.readFile(appletsPath))
-            .split('\n')
-            .map((line) => line.trim())
-            .filter(Boolean)
-        : [];
+    // Opened, not read: the host reads each for the facet's load alone
+    // (FacetImage), through a lease of its own, for a session outlives the one
+    // that opened them.
+    const wasmModules = {};
+    for (const [name, file] of Object.entries(installed.images))
+        wasmModules[name] = await hostImage(deps.authority, CRED_KERNEL, file.path, file);
+    const busyboxApplets = installed.applets;
     const facet = deps.facets.open({
         tag: BASH_RUNNER,
         concurrency: 1,
@@ -282,9 +291,9 @@ export function makeBashRunnerFactory(deps) {
             let exitCode = 1;
             let session = null;
             try {
-                session = await withHostView(deps.filesystem, CRED_KERNEL, (artifacts) => createBashFacetSession({
+                session = await createBashFacetSession({
                     facets: deps.facets,
-                    artifacts,
+                    authority: deps.filesystem,
                     filesystem: stdio.syscalls.vfs,
                     pid: stdio.pid,
                     processes: deps.processes,
@@ -299,7 +308,7 @@ export function makeBashRunnerFactory(deps) {
                     sharedInput: true,
                     // A kill or Ctrl-C ends the step running, and the program with it.
                     signal: stdio.signal,
-                }));
+                });
                 let slice = session.initial;
                 for (;;) {
                     if (slice.state === 'exited') {

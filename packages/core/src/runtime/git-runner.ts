@@ -19,20 +19,21 @@
  * through the session's child-process route (wasi/processes.ts, the
  * nimbus_proc imports git-wasi-compat.c calls), git's process its parent.
  *
- * The image is read once per session, uncached (3.7 MB of runtime blob that
- * would otherwise displace the user's working set). A git that ran to its
- * end leaves its facet warm (FacetSpec.warm) for the next one: the image
- * compiled, and the resident store of what it read, which the next process
+ * The image is opened, not read (FacetImage): the host reads it, uncached,
+ * only when it builds a facet, so the session holds none of its 3.7 MB
+ * between gits. A git that ran to its end leaves its facet warm
+ * (FacetSpec.warm) for the next one: the image compiled, and the resident
+ * store of what it read, which the next process
  * of the same credential brings forward by one barrier instead of reading it
  * all again. One git at a time runs in a warm facet; a git started while
  * another runs (its child, or one beside it) takes another.
  */
 
-import type { RuntimeManifest } from './runtime-manifest.js';
-import { withHostView } from './process-files.js';
+import { installedFile, type RuntimeManifest } from './runtime-manifest.js';
+import { hostImage } from './process-files.js';
 import { nameDec } from '../_shared/bytes.js';
 import type { Command, CommandContext, CommandOutputStream } from '../substrate/lifo/commands/types.js';
-import type { FacetHost } from './facet-host.js';
+import type { FacetHost, FacetImage } from './facet-host.js';
 import { GIT_CALL_TASK } from './compiled-bodies.generated.js';
 import type { GitFacetArgs, GitFacetResult } from './git-facet-task.js';
 import { CRED_KERNEL, GIT_WASI_ENV, gateSyncLaunch, requireVfsCred, type NimbusFilesystemAuthority } from './os-contracts.js';
@@ -89,11 +90,8 @@ export function makeGitRunnerFactory(deps: {
         return 1;
       }
     };
-    const installed = (rel: string): string | null =>
-      manifest.files.some((f) => f.path === rel) ? `${installRoot}/${rel}` : null;
-    const wasmPath = installed(GIT_WASM);
-    const systemConfig = installed(GIT_SYSTEM_CONFIG);
-    let image: Promise<ArrayBuffer> | null = null;
+    const wasm = installedFile(manifest, installRoot, GIT_WASM);
+    const systemConfig = installedFile(manifest, installRoot, GIT_SYSTEM_CONFIG)?.path ?? null;
 
     return async function gitBinHandler(ctx: CommandContext): Promise<number> {
       const started = Date.now();
@@ -101,18 +99,17 @@ export function makeGitRunnerFactory(deps: {
       const cwd: string = ctx.cwd || '/home/user';
       const notHydrated = await gateSyncLaunch(ctx.vfs.process, cwd, null, argv);
       if (notHydrated !== null) { ctx.stderr.write(`${binName}: ${notHydrated}\n`); return 1; }
-      if (wasmPath === null || systemConfig === null) {
+      if (wasm === null || systemConfig === null) {
         ctx.stderr.write(`${binName}: ${GIT_WASM} or ${GIT_SYSTEM_CONFIG} missing from the install\n`);
         return 127;
       }
       const cred = requireVfsCred(ctx.cred, binName);
 
+      let image: FacetImage;
       try {
-        image ??= withHostView(deps.filesystem, CRED_KERNEL, (runtimeVfs) => runtimeVfs.readArrayBufferUncached(wasmPath));
-        await image;
+        image = await hostImage(deps.filesystem, CRED_KERNEL, wasm.path, wasm);
       } catch (error) {
-        image = null;
-        ctx.stderr.write(`${binName}: reading ${wasmPath}: ${errorMessage(error)}\n`);
+        ctx.stderr.write(`${binName}: opening ${wasm.path}: ${errorMessage(error)}\n`);
         return 1;
       }
 
@@ -137,7 +134,7 @@ export function makeGitRunnerFactory(deps: {
         concurrency: 1,
         syscalls: stdio.syscalls,
         preamble: GIT_RUNNER_PREAMBLE,
-        wasmModules: { 'git.wasm': await image },
+        wasmModules: { 'git.wasm': image },
         warm,
       });
       const args: GitFacetArgs = {

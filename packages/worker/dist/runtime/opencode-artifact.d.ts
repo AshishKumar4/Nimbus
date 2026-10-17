@@ -53,6 +53,12 @@ export declare function fetchOpencodeWorkerSource(env: OpencodeAssetEnv, file: s
  * mapping every `chunk-<hash>.js` module name to its ESM source. index.js
  * imports these chunks from its lazy command handlers; the facet module map
  * carries each as its own module.
+ *
+ * Each chunk is decoded from its own byte range of the pack (`ranges`, its
+ * JSON string literal, found when the pack was staged), never the pack as
+ * one text first: the pack is 22.6 MB of UTF-8 whose non-ASCII bytes make
+ * that text a two-byte string of about 45 MB, held beside the sources parsed
+ * out of it. The ranges are of the pinned bytes, which fetchAsset verifies.
  */
-export declare function fetchOpencodeChunkSources(env: OpencodeAssetEnv, packFile: string): Promise<Record<string, string>>;
+export declare function fetchOpencodeChunkSources(env: OpencodeAssetEnv, packFile: string, ranges: Readonly<Record<string, readonly [number, number]>>): Promise<Record<string, string>>;
 //# sourceMappingURL=opencode-artifact.d.ts.map
