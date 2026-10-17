@@ -5,6 +5,9 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: launch-credit contention no longer changes which learned reads or
+  lazy imports are staged. A tight first try now retries with full credit
+  instead of trimming the program's snapshot.
 - Fixed: a command waiting for its session's busy workers no longer stalls
   commands in other sessions sharing its isolate. One-shot commands prepare
   their module maps before waiting and keep only their retained share of the
