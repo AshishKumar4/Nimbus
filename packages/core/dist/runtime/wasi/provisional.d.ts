@@ -29,8 +29,6 @@ import type { FsTime, RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } 
 import type { ResidentEntry } from './resident-filesystem.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import type { ProcessFsClient } from '../../_shared/process-fs-client.js';
-/** What one record of a name or an inode costs the process's budget, besides the bytes it keeps. */
-export declare const RECORD_COST = 160;
 /** What the provisional decisions read and log through: the holder's. */
 export interface ProvisionalHost {
     readonly device: number;

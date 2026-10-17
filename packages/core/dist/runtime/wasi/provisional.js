@@ -32,7 +32,7 @@ import { applyOp, copyState, foldOps } from './inode-fold.js';
 /** Where a provisional file's own numbers start: past any the session gives. */
 const LOCAL_INOS = 2 ** 50;
 /** What one record of a name or an inode costs the process's budget, besides the bytes it keeps. */
-export const RECORD_COST = 160;
+const RECORD_COST = 160;
 function parentKey(key) {
     const at = key.lastIndexOf('/');
     return at < 0 ? '' : key.slice(0, at);
@@ -79,6 +79,8 @@ export function provisional(host) {
             : { ...row, size: s.size, mode: s.mode, uid: s.uid, gid: s.gid, atime: s.atime, mtime: s.mtime, ctime: s.ctime, nlink };
     };
     const provisionalEntry = (key) => {
+        if (layer.size === 0 && touched.size === 0)
+            return undefined;
         if (layer.has(key)) {
             const inode = layer.get(key);
             return inode === null ? null : entryOf(inode);
@@ -681,7 +683,8 @@ export function provisional(host) {
             const desc = descs.get(handleId);
             if (desc === undefined || !named(desc.inode))
                 return undefined;
-            return { key: desc.inode.key, entry: entryOf(desc.inode) };
+            // The view's row: the bytes its records fold over.
+            return { key: desc.inode.key, entry: desc.inode.row };
         },
         keyOf: (handleId) => descOf(handleId).inode.key,
         mkdir: (key, path, mode, row, mask) => {
