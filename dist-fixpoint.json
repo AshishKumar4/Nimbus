@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "80407aada778af3369e900f14c20a4c0d5afa16f722c37a3719dacb42fb2a983",
+  "fingerprint": "052fe504606fe9c8cec17406eb576e9d9bf16ecd5b02e2d555baf1776577f158",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1942,7 +1942,7 @@
     "packages/fabric/dist/peer-host.js": "a9ca031e9529f5500649b50f8c160b2c626c517e72c29aa96024b0804b620682",
     "packages/fabric/dist/process-fabric.d.ts": "0270091c3decf4406aa20664713dbbe088b52c09cdb3825900f7110fbe9d599d",
     "packages/fabric/dist/process-fabric.d.ts.map": "c887e01d4a3ca6cb1c572cc629f4d11d63178af98dbd24a8fca69062df78ea67",
-    "packages/fabric/dist/process-fabric.js": "73f9b02ce2264f0bf07a25bcf9112276f19a9ccefaddbd241bd4e86e134819d6",
+    "packages/fabric/dist/process-fabric.js": "e978c5d756d5b3b744aec8e647ddc6b315f60430ffd8a0c238477daef912dff2",
     "packages/fabric/dist/process-host.d.ts": "a87a85a49ace78de8aa51effd35329694db030ad208ba2d8cb1dd39f35484f08",
     "packages/fabric/dist/process-host.d.ts.map": "c1f28dd6b87b931e40755a5728c428b17055029f911a45a5c294760c884a55c2",
     "packages/fabric/dist/process-host.js": "3aee6b1b1c65cd0ad5653c72e29171847a1f1e3ebe0b44c0d612f13002b1a657",
@@ -2012,7 +2012,7 @@
     "packages/fabric/src/one-shot-entry.ts": "bec081d683b6f082f5014dee506acb63e620d374ad501537c1c8b4cadba8d70c",
     "packages/fabric/src/outbox.ts": "1846ad24a607a2a3808da682a2f2e96f24e5e4bf04f58d26e99612266f624384",
     "packages/fabric/src/peer-host.ts": "c4ea656eec441fb0b67c60b7cb2e4fc21d4f24f71fd5953a2e7a8f39ea9cec88",
-    "packages/fabric/src/process-fabric.ts": "5fb0b62c5fa09e472df06c47d7caf3236fb35d78648375cf588c1f317311d6a6",
+    "packages/fabric/src/process-fabric.ts": "79497b7bfdd0c951db50981885d6bd3d26ab3251d8adfda93a7e904ac6e211af",
     "packages/fabric/src/process-host.ts": "d4eb13f085bccb5ce20b25bb2ee60376cad68486c158ba89002688766235c5e9",
     "packages/fabric/src/sealed.ts": "4a7c5b7b26979c136273dc6f29b8a4c8762462c4cdf7e989ba72cf54152a8154",
     "packages/fabric/src/static-mime.ts": "84a66c8536588a708587b6afe39c7d4f07d935dbeb2d2c4651ebb24cdafcc66a",
