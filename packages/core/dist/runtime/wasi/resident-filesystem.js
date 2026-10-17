@@ -256,8 +256,6 @@ export function residentFilesystem(session, resident, delegation) {
     const paged = new Map();
     /** Bytes pinned for the codec's own descriptors (pinContent). */
     const pins = new Map();
-    /** A write-through description's reader: the session's read-only descriptor of its file, opened at its first read. */
-    const throughReaders = new Map();
     /**
      * One walk over what the store knows: the resolved key, ELOOP (null), a
      * directory to list first, or DELEGATE when the walk reaches what this
@@ -397,8 +395,8 @@ export function residentFilesystem(session, resident, delegation) {
             const found = entryAt(sibling);
             if (!found || found.type !== 'file' || found.size > READ_AHEAD_FILE_BYTES || store.content(sibling, found.revision) !== undefined)
                 continue;
-            // What this process decided or writes through is its own to read.
-            if (holder?.content(found) !== undefined || holder?.writing(found.ino) !== undefined)
+            // What this process decided or changes is its own to read.
+            if (holder?.content(found) !== undefined || holder?.provisional.pending(found.dev, found.ino))
                 continue;
             if (bytes + found.size > FS_READ_BATCH_REQUEST_BYTES || readAheadBytes + bytes + found.size > READ_AHEAD_PROCESS_BYTES)
                 break;
@@ -502,22 +500,19 @@ export function residentFilesystem(session, resident, delegation) {
             return undefined;
         if (entry !== null && entry.dev !== store.device)
             return undefined;
-        // A file this process writes through has the size its writes gave it.
-        if (entry === null || entry.type !== 'file')
-            return entry;
-        const size = holder?.writing(entry.ino);
-        return size === undefined ? entry : { ...entry, size };
+        return entry;
     };
     /**
      * A file's bytes: what this process decided for it, else the store's,
      * fetched into it. Undefined when only the authority can read them (a file
-     * this process writes through: the authority has its writes first).
+     * this process changed whose bytes are not known here: the authority has
+     * its changes first).
      */
     const contentOf = (key, entry) => {
         const decided = holder?.content(entry);
         if (decided !== undefined)
             return decided;
-        if (holder?.writing(entry.ino) !== undefined)
+        if (holder?.provisional.pending(entry.dev, entry.ino))
             return undefined;
         const keep = (bytes) => (bytes === null || bytes === undefined || bytes.byteLength !== entry.size ? undefined : bytes);
         const held = store.content(key, entry.revision);
@@ -544,12 +539,6 @@ export function residentFilesystem(session, resident, delegation) {
      * first when one is owed, then `local`, whose DELEGATE hands the call on.
      */
     const answer = (name, local, remote) => {
-        // What this process wrote through is the session's before the store
-        // answers for it: sent first (and the barrier owed), so it reads its own
-        // writes. A call that answers now answers from this view as it stands,
-        // where a file written through is the session's to read.
-        if (holder !== null && holder.throughPending() && !now)
-            return holder.send().then(() => answer(name, local, remote));
         const settle = (value) => {
             if (value !== DELEGATE) {
                 counts.local++;
@@ -723,8 +712,8 @@ export function residentFilesystem(session, resident, delegation) {
             return null;
         if (!modeAllows(entry, 4, store.cred))
             return null;
-        // A file this process writes through is the session's to read (its writes are answered there first).
-        if (holder?.writing(entry.ino) !== undefined || entry.revision !== stat.revision)
+        // A file this process changed is the session's to read where its bytes are not known here (its changes are answered there first).
+        if (holder?.provisional.pending(entry.dev, entry.ino) || entry.revision !== stat.revision)
             return null;
         const pinKey = `${identity(entry.dev, entry.ino)}:${entry.revision}`;
         const pinned = (pin) => {
@@ -928,43 +917,71 @@ export function residentFilesystem(session, resident, delegation) {
         return heldOpen(provisionally(path, flags.followSymlinks !== false, (key, row) => holder.provisional.open(key, pathOf(path), flags, row)));
     };
     /**
-     * A read of a provisional descriptor that needs its file's bytes the
-     * store does not hold (Provisional.inodeOf): fetched by its name while
-     * that still leads to the file, and the read made again; ESTALE once none
-     * does. A call that must answer now cannot wait for them.
+     * A read by a descriptor of the holder's: its file's bytes here (a grant's
+     * cell, the provisional fold, the view's). Where they are not, a caller
+     * that may wait fetches them by the name that still leads to the file and
+     * reads again; where no name does, it reads through the file's open
+     * description at the session (its anchor), once what this process wrote is
+     * there. A caller that cannot wait is refused (not resident, or ESTALE).
      */
-    const byNumber = (syscall, handleId, call) => {
-        const done = call();
+    const readOwn = (handleId, offset, length) => {
+        const read = () => holder.read(handleId, offset, length);
+        let done;
+        try {
+            done = read();
+        }
+        catch (error) {
+            if (now || error.code !== 'ESTALE')
+                throw error;
+            return readByAnchor(handleId, offset, length);
+        }
         if (done !== undefined)
             return done;
         if (now)
             throw NOT_NOW;
-        const stale = () => { throw fsError('ESTALE', syscall, '/' + holder.keyOf(handleId)); };
         const at = holder.provisional.inodeOf(handleId);
         if (at === undefined)
-            return stale();
-        return Promise.resolve(contentOf(at.key, at.entry)).then(() => call() ?? stale());
+            return readByAnchor(handleId, offset, length);
+        return Promise.resolve(contentOf(at.key, at.entry)).then(() => read() ?? readByAnchor(handleId, offset, length));
+    };
+    /** A read through the session's open description of `handleId`'s file (Provisional.sessionOf), at `offset` or the descriptor's position. */
+    const readByAnchor = async (handleId, offset, length) => {
+        const key = holder.keyOf(handleId);
+        await holder.flush();
+        const session = holder.provisional.sessionOf(handleId);
+        if (session === undefined)
+            throw fsError('ESTALE', 'read', '/' + key);
+        const start = offset ?? holder.seek(handleId, 0, 'current');
+        delegated('read');
+        const chunk = await authority.read(session, start, length);
+        if (offset === null)
+            holder.seek(handleId, start + chunk.byteLength, 'set');
+        return chunk;
     };
     const openOnSession = (path, flags) => {
         if (now)
             return openByNumber(path, flags);
         const readOnly = !flags.write && !flags.create && !flags.truncate && !flags.append && !flags.exclusive;
         if (!readOnly) {
-            // A file of the session's own filesystem is opened to write through
-            // the process's client (an open call, answered with its stat), and
-            // written through by its number; a directory, a file the store cannot
-            // place, or one on a mount is the session's descriptor.
+            // A file of the session's own filesystem no held subtree decides is
+            // opened by the provisional decisions (Provisional.open), as a caller
+            // that cannot wait opens it: its open logged, its writes through its
+            // description; a directory, a file the store cannot place, or one on
+            // a mount is the session's descriptor.
             const through = () => {
                 if (holder === null || !store.ready() || flags.directory)
                     return DELEGATE;
-                return after(walkFor(path, false), (walk) => {
+                return after(walkFor(path, flags.followSymlinks !== false), (walk) => {
                     if (walk === DELEGATE)
                         return DELEGATE;
                     const there = entryAt(walk.key);
                     if (there === undefined || there?.type === 'directory')
                         return DELEGATE;
-                    delegated('open');
-                    return after(holder.openThrough(walk.key, typeof path === 'string' ? path : path.path, flags), (handle) => { owed = true; return heldOpen(handle); });
+                    const opened = holder.provisional.open(walk.key, pathOf(path), flags, there);
+                    if (opened === undefined)
+                        return DELEGATE;
+                    counts.local++;
+                    return heldOpen(opened);
                 });
             };
             return after(through(), (handle) => {
@@ -1000,62 +1017,16 @@ export function residentFilesystem(session, resident, delegation) {
                 return current ? statOf(current.entry) : DELEGATE;
             }, () => authority.fstat(handleId));
         if (holder?.owns(handleId)) {
-            // Written through: the session's live stat of its file, once what it
-            // wrote is there; a name that no longer leads to its file is gone (nlink 0).
-            if (holder.through(handleId)) {
-                if (now)
-                    throw NOT_NOW;
-                return liveThrough(handleId);
-            }
             counts.local++;
             return statOf(holder.fstat(handleId));
         }
         delegated('fstat');
         return authority.fstat(handleId);
     };
-    /**
-     * A write-through description's stat: the session's, of its description's
-     * own file (renamed, unlinked or replaced, it is still that file), once
-     * what the process logged before it is answered. A mount's file keeps no
-     * description: its stat is its name's.
-     */
-    const liveThrough = async (handleId) => {
-        await holder.send();
-        const session = await holder.sessionOf(handleId);
-        if (session !== undefined) {
-            delegated('fstat');
-            return authority.fstat(session);
-        }
-        delegated('stat');
-        const own = holder.fstat(handleId);
-        const live = await authority.stat('/' + holder.keyOf(handleId), { followSymlinks: false });
-        return live !== null && live.ino === own.ino ? live : statOf({ ...own, nlink: 0 });
-    };
-    /**
-     * The session's bytes for write-through description `handleId`: through
-     * its description's own descriptor (its file, wherever it is named, with
-     * the access it was opened with). A mount's file, which keeps none, is
-     * read by a read-only descriptor of its name.
-     */
-    const readThrough = (handleId) => async (key, at, length) => {
-        let reader = await holder.sessionOf(handleId) ?? throughReaders.get(handleId);
-        if (reader === undefined) {
-            delegated('open');
-            reader = (await authority.open('/' + key, { read: true })).id;
-            throughReaders.set(handleId, reader);
-        }
-        delegated('read');
-        return authority.read(reader, at, length);
-    };
     fs.read = (handleId, offset, length) => {
         if (holder?.owns(handleId)) {
-            if (holder.through(handleId)) {
-                if (now)
-                    throw NOT_NOW;
-                return holder.readThrough(handleId, offset, length, readThrough(handleId));
-            }
             counts.local++;
-            return holder.read(handleId, offset, length) ?? byNumber('read', handleId, () => holder.read(handleId, offset, length));
+            return readOwn(handleId, offset, length);
         }
         const file = paged.get(handleId);
         // Positional reads only: a read at the descriptor's offset is the descriptor's to advance.
@@ -1132,19 +1103,11 @@ export function residentFilesystem(session, resident, delegation) {
         }
         // A descriptor of the holder's closes here: what it wrote is in the log.
         if (holder?.owns(handleId)) {
-            if (now && throughReaders.has(handleId))
-                throw NOT_NOW;
             counts.local++;
             holder.close(handleId);
             // A refusal already recorded is the close's to report, as a write-back
             // error is; nothing is waited for, and the descriptor is closed anyway.
-            const report = () => holder.reportRecorded();
-            const reader = throughReaders.get(handleId);
-            if (reader === undefined)
-                return report();
-            throughReaders.delete(handleId);
-            delegated('close');
-            return after(authority.close(reader), report);
+            return holder.reportRecorded();
         }
         if (now)
             throw NOT_NOW;
@@ -1203,8 +1166,8 @@ export function residentFilesystem(session, resident, delegation) {
         });
     }
     // A descriptor of the holder's is reopened here where the holder decides it,
-    // else once what was decided is sent: a description written through by its
-    // session descriptor, any other by its file's name while that name has it.
+    // else once what was decided is sent: through the session's open
+    // description of its file, any other by its file's name while that name has it.
     const bySessionReopen = Reflect.get(fs, 'reopen');
     if (typeof bySessionReopen === 'function') {
         Reflect.set(fs, 'reopen', (target, flags, options) => {
@@ -1220,7 +1183,7 @@ export function residentFilesystem(session, resident, delegation) {
                 throw NOT_NOW;
             const identity = held.fstat(target.handle);
             const name = '/' + held.keyOf(target.handle);
-            return held.flush().then(() => held.sessionOf(target.handle)).then((session) => (session === undefined
+            return held.flush().then(() => held.provisional.sessionOf(target.handle)).then((session) => (session === undefined
                 ? openIdentified(fs, name, false, flags, identity)
                 : Reflect.apply(bySessionReopen, fs, [{ handle: session }, flags, options])));
         });
@@ -1234,33 +1197,23 @@ export function residentFilesystem(session, resident, delegation) {
                 return Reflect.apply(passed, fs, [handleId, ...rest]);
             if (name === 'dup')
                 return holder.dup(handleId);
-            return holderAttrs(name, passed, handleId, rest);
+            return holderAttrs(name, handleId, rest);
         });
     }
-    /** An fchown side as the guest sent it: a uid or gid, or null (keep the file's). */
     /** An owner as chown(2) and fchown(2) take it: -1 (or none) keeps it, null on the wire. */
     const ownerSide = (value) => (typeof value === 'number' && value !== -1 ? value : null);
     /**
      * fchmod, fchown and futimes of a descriptor of the holder's, on the file
-     * it opened, never on a name: decided here where the holder decides that
-     * file, else through the description the session holds of it (the file
-     * written through first), and its stat as the session then says.
+     * it opened, never on a name: decided here where a grant decides that
+     * file, else by the provisional decisions, through its open description
+     * at the session (DelegationHolder.fsetattr).
      */
-    const holderAttrs = (name, passed, handleId, rest) => {
+    const holderAttrs = (name, handleId, rest) => {
         const change = name === 'fchmod' ? { mode: Number(rest[0]) }
             : name === 'fchown' ? { uid: ownerSide(rest[0]), gid: ownerSide(rest[1]) }
                 : { atime: rest[0], mtime: rest[1] };
-        if (holder.fsetattr(handleId, change))
-            return undefined;
-        if (now)
-            throw NOT_NOW;
-        holder.changing([holder.keyOf(handleId)]);
-        return holder.flush().then(() => holder.sessionOf(handleId)).then(async (session) => {
-            if (session === undefined)
-                throw fsError('EBADF', name, '/' + holder.keyOf(handleId));
-            await passed.call(fs, session, ...rest);
-            holder.restat(handleId, await fs.fstat(session));
-        });
+        holder.fsetattr(handleId, change);
+        return undefined;
     };
     /**
      * A change by name no held subtree decides: an op of the process's client

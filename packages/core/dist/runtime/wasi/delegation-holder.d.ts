@@ -97,13 +97,6 @@ export interface DelegationHolder {
     /** Whether `handleId` is one of the holder's own descriptors. */
     owns(handleId: number): boolean;
     /**
-     * Open `key` to write it at the session, as a write description outside
-     * any subtree this process holds: one `open` call (W7Call open), ordered
-     * with everything the process logged before it and answered with the
-     * file's stat; the description it returns writes through (LocalFile.through).
-     */
-    openThrough(key: string, path: string, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle>;
-    /**
      * Everything logged so far answered, what the session refused kept for the
      * next sync (flush) to report: what goes before a call to the session.
      */
@@ -111,35 +104,17 @@ export interface DelegationHolder {
     /** A refusal the session has made of what this process logged, thrown now (with its errno), not waiting for anything: what a close reports. */
     reportRecorded(): void;
     /**
-     * Whether a change written through (no subtree held decides it: its bytes
-     * are the session's, not held here) was logged since the store last
-     * caught up: what the store answers waits for it to be sent (send), so the
-     * process reads its own writes.
-     */
-    throughPending(): boolean;
-    /**
      * The process is about to change a name or an access at or above `keys`
      * (anywhere, when absent) by a route not decided here (a call of the
-     * session's, or a change by name the client logs): each file it holds
-     * open there writes through from now on, its descriptions opened first.
+     * session's, or a change by name the client logs): no grant decides a
+     * file it holds open there from now on (Provisional.unhold), its
+     * descriptions opened at the session first.
      */
     changing(keys?: readonly string[]): void;
-    /** Whether `handleId` writes through: its reads are the session's (readThrough). */
-    through(handleId: number): boolean;
-    /** A write-through description's session descriptor (its open answered), or undefined (a mount's file keeps none). */
-    sessionOf(handleId: number): Promise<number | undefined>;
     /** fcntl(F_SETFL) of one of the holder's descriptors: O_APPEND is its writes' to keep. */
     setStatus(handleId: number, status: {
         append?: boolean;
     }): void;
-    /** The size this process gave file `ino` through a description of it still open, or undefined: what a stat of it by name reports here. */
-    writing(ino: number): number | undefined;
-    /**
-     * A read through a write-through description, at `offset` or its
-     * position: `read` reads the session's bytes of `key` (what this process
-     * sent before it is answered first).
-     */
-    readThrough(handleId: number, offset: number | null, length: number, read: (key: string, at: number, length: number) => Promise<Uint8Array>): Promise<Uint8Array>;
     /**
      * Decide an open that creates or empties a file at `key` (resolved, its
      * parent known): a descriptor of the holder's, or undefined when the
@@ -206,15 +181,12 @@ export interface DelegationHolder {
     /** Decide an attribute change of `key`: true when decided here. */
     setattr(key: string, attrs: W7Attrs): boolean;
     /**
-     * Decide an attribute change of the file `handleId` opened (fchmod,
-     * fchown, futimes): true when decided here, for a file of the holder's
-     * that lost its name, or one it decides under its name, its times
-     * resolved here as it is decided; false when it is the session's, through
-     * the description it holds of the file (restat after).
+     * An attribute change of the file `handleId` opened (fchmod, fchown,
+     * futimes): decided here where the file's grant decides it (or it lost its
+     * name: it is this process's alone), its times resolved as it is decided;
+     * else the provisional decisions', through its description.
      */
-    fsetattr(handleId: number, change: W7Attrs): boolean;
-    /** The session's stat of the file a through description opened, after a change through it: what fstat answers from now on. */
-    restat(handleId: number, stat: Omit<ResidentEntry, 'target'>): void;
+    fsetattr(handleId: number, change: W7Attrs): void;
     /**
      * The session changed `key`'s attributes itself, after everything the
      * holder had was sent (one it holds but did not decide): what was decided

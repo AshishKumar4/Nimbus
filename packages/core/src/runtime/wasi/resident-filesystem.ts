@@ -1068,13 +1068,16 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
 
   /**
    * A read by a descriptor of the holder's: its file's bytes here (a grant's
-   * cell, the provisional fold, the view's). Where they are not, a caller
-   * that may wait fetches them by the name that still leads to the file and
-   * reads again; where no name does, it reads through the file's open
-   * description at the session (its anchor), once what this process wrote is
-   * there. A caller that cannot wait is refused (not resident, or ESTALE).
+   * cell, the provisional fold over the view, the view's) while a name the
+   * view has leads to the file. Where no name does, a caller that may wait
+   * reads through the file's open description at the session (its anchor),
+   * once what this process wrote is there: the file as every process that
+   * holds it open has made it. Where the bytes are not here, a caller that
+   * may wait fetches them by the name and reads again. A caller that cannot
+   * wait reads what is here, or is refused (not resident, or ESTALE).
    */
   const readOwn = (handleId: number, offset: number | null, length: number): Uint8Array | Promise<Uint8Array> => {
+    if (!now && holder!.provisional.sessionOf(handleId) !== undefined && holder!.provisional.unnamed(handleId)) return readByAnchor(handleId, offset, length);
     const read = (): Uint8Array | undefined => holder!.read(handleId, offset, length);
     let done: Uint8Array | undefined;
     try {

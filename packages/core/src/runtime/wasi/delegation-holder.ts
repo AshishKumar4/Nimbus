@@ -940,12 +940,13 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       // Its name gone, the file is this process's alone: judged and changed
       // here, as the session judges a description, its confinement of the
       // principal too (judged confined once no grant there says).
+      const detached = file.detached;
       const confined = client.held(inode.key)?.confined ?? true;
-      const refused = 'mode' in attrs ? chmodRefusal(entry, store.cred) ?? (confined ? confinedModeRefusal(entry.mode, attrs.mode) : null)
-        : 'uid' in attrs ? chownRefusal(entry, attrs.uid, attrs.gid, store.cred)
-        : utimesRefusal(entry, 'atime' in change && explicitTimes(change.atime, change.mtime), store.cred);
+      const refused = 'mode' in attrs ? chmodRefusal(detached, store.cred) ?? (confined ? confinedModeRefusal(detached.mode, attrs.mode) : null)
+        : 'uid' in attrs ? chownRefusal(detached, attrs.uid, attrs.gid, store.cred)
+        : utimesRefusal(detached, 'atime' in change && explicitTimes(change.atime, change.mtime), store.cred);
       if (refused !== null) throw fsError(refused, 'mode' in attrs ? 'fchmod' : 'uid' in attrs ? 'fchown' : 'futimes', '/' + inode.key);
-      file.detached = changedBy(entry!, attrs);
+      file.detached = changedBy(detached, attrs);
       file.mode = file.detached.mode & 0o7777;
     },
     undecided: (key) => { names.undecide(key); },

@@ -17,6 +17,7 @@
 
 import assert from 'node:assert/strict';
 import { session, user } from './lib/holder-session.mjs';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 
 const DIR = 'home/user/other';
 const NAMES = ['a', 'b', 'c'];
@@ -60,7 +61,8 @@ function program(seed, length = 40) {
     else if (roll < 0.665) steps.push({ op: 'utimes', name: pick(NAMES), atime: time(), mtime: time() });
     else if (roll < 0.685) steps.push({ op: 'fchmod', fd: Math.floor(random() * MAX_FDS), mode: pick([0o644, 0o444, 0o600]) });
     else if (roll < 0.70) steps.push({ op: 'futimes', fd: Math.floor(random() * MAX_FDS), atime: time(), mtime: time() });
-    else if (roll < 0.75) steps.push({ op: 'writeFile', name: pick(NAMES), data: word() });
+    else if (roll < 0.73) steps.push({ op: 'writeFile', name: pick(NAMES), data: word() });
+    else if (roll < 0.75) steps.push({ op: 'readAsync', fd: Math.floor(random() * MAX_FDS) });
     else if (roll < 0.82) steps.push({ op: 'peer', kind: pick(['write', 'write', 'unlink', 'rename', 'chmod']), name: pick(NAMES), to: pick(NAMES), data: word(), mode: pick([0o644, 0o444]) });
     else if (roll < 0.92) steps.push({ op: 'deliver' });
     else steps.push({ op: 'catchUp' });
@@ -115,10 +117,10 @@ async function errnoOf(work) {
 const KNOWN_ENGINE_BUG = /missing chunk \d+/;
 
 /** Run `steps`; throws the first divergence from the model, naming its step. */
-async function run(steps) {
+async function run(steps, grants = false) {
   const met = { waves: [] };
   try {
-    await runSteps(steps, met);
+    await runSteps(steps, met, grants);
   } catch (error) {
     const wave = met.waves.find((answer) => KNOWN_ENGINE_BUG.test(answer?.error?.message ?? ''));
     if (wave !== undefined) throw Object.assign(new Error(`known engine bug (wave EIO "${wave.error.message}", ToughWallaby P1): ${error.message}`), { known: true });
@@ -126,7 +128,14 @@ async function run(steps) {
   }
 }
 
-async function runSteps(steps, met) {
+/**
+ * `grants`: the session grants the process the subtree it changes (taken at
+ * its first change there, as a resident's is): what it decides then is the
+ * grant's (its cells), and a peer's change there recalls it, after which it
+ * decides provisionally. A peer then acts through a process of its own, once
+ * what the process sent is delivered.
+ */
+async function runSteps(steps, met, grants) {
   // The process's session: its waves wait for `deliver`; no grant is held.
   const control = { held: true, opened: Promise.withResolvers() };
   // What the process's provisional decisions take of its budget: always what they keep, and nothing once all is drained.
@@ -134,12 +143,14 @@ async function runSteps(steps, met) {
   const s = session({
     budget,
     view: {},
-    acquired: { then: (_resolve, reject) => reject(Object.assign(new Error('EBUSY'), { code: 'EBUSY' })) },
+    ...(grants ? {} : { acquired: { then: (_resolve, reject) => reject(Object.assign(new Error('EBUSY'), { code: 'EBUSY' })) } }),
     gate: { then: (resolve, reject) => (control.held ? control.opened.promise : Promise.resolve()).then(resolve, reject) },
   });
   met.waves = s.waves;
   const ref = session();
   const sync = s.fs.synchronous;
+  // A peer process of the session's: its change in a subtree the process holds recalls the grant first.
+  const peerProcess = /** @type {any} */ (s.filesystem.bind({ pid: 9, cred: CRED_KERNEL }));
   const direct = ref.filesystem.bind({ pid: 8, cred: user });
   const path = (name) => `/${DIR}/${name}`;
 
@@ -429,6 +440,82 @@ async function runSteps(steps, met) {
     undelivered = [];
   };
 
+  /**
+   * A peer's change. Without grants, between deliveries: the session has it
+   * before what the process sends next, and so does the reference. With
+   * them, once what the process sent is delivered, through a process of the
+   * session's own: it recalls the grant, and waits for what the process
+   * held to be sent.
+   */
+  const peerStep = async (step) => {
+    // A peer's write stamps its own mtime, at each session's own clock: not one the process set.
+    if (step.kind === 'write' || step.kind === 'rename') peerWritten.add(step.kind === 'rename' ? step.to : step.name);
+    const key = `${DIR}/${step.name}`;
+    const change = async (target) => {
+      try {
+        if (step.kind === 'write') { await target.writeFile(key, enc.encode(step.data)); await target.chown(key, 1000, 1000); }
+        else if (step.kind === 'unlink') await target.unlink(key);
+        else if (step.kind === 'rename') await target.rename(key, `${DIR}/${step.to}`);
+        else await target.chmod(key, step.mode);
+      } catch { /* nothing there */ }
+    };
+    if (!grants) {
+      await change(s.kernel);
+      await change(ref.kernel);
+      return;
+    }
+    await deliver();
+    control.held = false;
+    control.opened.resolve();
+    const slash = (target) => ({
+      writeFile: (at, data) => target.writeFile('/' + at, data),
+      chown: (at, uid, gid) => target.chown('/' + at, uid, gid),
+      unlink: (at) => target.unlink('/' + at),
+      rename: (from, to) => target.rename('/' + from, '/' + to),
+      chmod: (at, mode) => target.chmod('/' + at, mode),
+    });
+    await change(slash(peerProcess));
+    control.held = true;
+    control.opened = Promise.withResolvers();
+    await change(ref.kernel);
+  };
+
+  /**
+   * A read that may wait, by descriptor: while a name the view has leads to
+   * its file, what the model has of it; once none does, the session's file
+   * as every process holding it open made it, through the open description
+   * of it the session keeps (anchorOf), as the reference reads it.
+   */
+  const readAsync = async (step, label) => {
+    const opened = fds.get(step.fd);
+    if (opened === undefined || !opened.read) return;
+    const now = viewOf();
+    const id = resolve({ opened });
+    const named = [...now.names.values()].some((reference) => resolve(reference) === id);
+    const reading = Promise.resolve().then(() => s.fs.read(opened.handle, 0, 1 << 12));
+    reading.catch(() => {});
+    await deliver();
+    control.held = false;
+    control.opened.resolve();
+    let got;
+    const code = await errnoOf(async () => { got = await reading; });
+    control.held = true;
+    control.opened = Promise.withResolvers();
+    if (named) {
+      const file = now.fileOf(id);
+      assert.equal(code, null, `${label}: an awaited read of a named file: ${code}`);
+      if (file !== undefined && file.bytes !== null) assert.equal(dec.decode(got), dec.decode(file.bytes), `${label}: an awaited read of a named file`);
+      return;
+    }
+    const via = anchorOf(opened);
+    if (via?.refHandle === undefined) {
+      assert.ok(code === null || code === 'ESTALE', `${label}: an awaited read of a file no name leads to: ${code}`);
+      return;
+    }
+    assert.equal(code, null, `${label}: an awaited read through the file's anchor: ${code}`);
+    assert.equal(dec.decode(got), dec.decode(new Uint8Array(await direct.read(via.refHandle, 0, 1 << 12))), `${label}: an awaited read of a file no name leads to is the session's, through its anchor`);
+  };
+
   /** The view brought to the session's: what the process sent delivered, a barrier, every name read (the view holds what it read until a barrier reads it again). */
   const catchUp = async () => {
     await deliver();
@@ -457,20 +544,9 @@ async function runSteps(steps, met) {
     const label = `step ${i} ${JSON.stringify(step)}`;
     if (step.op === 'deliver') await deliver();
     else if (step.op === 'catchUp') await catchUp();
-    else if (step.op === 'peer') {
-      // A peer's write stamps its own mtime, at each session's own clock: not one the process set.
-      if (step.kind === 'write' || step.kind === 'rename') peerWritten.add(step.kind === 'rename' ? step.to : step.name);
-      // Between deliveries: the session has it before what the process sends next, and so does the reference.
-      for (const target of [s.kernel, ref.kernel]) {
-        const key = `${DIR}/${step.name}`;
-        try {
-          if (step.kind === 'write') { target.writeFile(key, enc.encode(step.data)); target.chown(key, 1000, 1000); }
-          else if (step.kind === 'unlink') target.unlink(key);
-          else if (step.kind === 'rename') target.rename(key, `${DIR}/${step.to}`);
-          else target.chmod(key, step.mode);
-        } catch { /* nothing there */ }
-      }
-    } else await processStep(step, label);
+    else if (step.op === 'peer') await peerStep(step);
+    else if (step.op === 'readAsync') await readAsync(step, label);
+    else await processStep(step, label);
     await check(label);
   }
   // The end: every descriptor closed, everything delivered, the session holds what the reference holds.
@@ -492,7 +568,11 @@ async function runSteps(steps, met) {
     }
   }
   assert.equal(ours.join(' '), theirs.join(' '), 'the end: the session differs from the reference');
-  // All drained, the view has it all: nothing of the budget is taken.
+  // All drained, the view has it all: nothing of the budget is taken. A grant the process holds given back first (a peer's change recalls it).
+  if (grants) {
+    await peerStep({ kind: 'write', name: 'z' });
+    await peerStep({ kind: 'unlink', name: 'z' });
+  }
   await catchUp();
   await catchUp();
   await check('the end, drained');
@@ -500,14 +580,14 @@ async function runSteps(steps, met) {
 }
 
 /** The shortest program, made by deleting steps, that still fails. */
-async function shrink(steps, kind) {
+async function shrink(steps, kind, grants) {
   let current = steps;
   // Shorter only where it fails the same way, and not by the known engine bug.
   const same = (error) => error.known !== true && kindOf(error) === kind;
   for (let chunk = Math.ceil(current.length / 2); chunk >= 1; chunk = Math.floor(chunk / 2)) {
     for (let at = 0; at < current.length;) {
       const candidate = [...current.slice(0, at), ...current.slice(at + chunk)];
-      if (await run(candidate).then(() => false, same)) current = candidate;
+      if (await run(candidate, grants).then(() => false, same)) current = candidate;
       else at += chunk;
     }
   }
@@ -526,7 +606,9 @@ const failures = new Map();
 const metKnown = [];
 for (const seed of seeds) {
   const steps = program(seed);
-  const failure = await run(steps).then(() => null, (error) => error);
+  // A third of the programs run with the session granting the subtree the process changes.
+  const grants = seed % 3 === 0;
+  const failure = await run(steps, grants).then(() => null, (error) => error);
   if (failure === null) continue;
   if (failure.known === true) {
     metKnown.push(seed);
@@ -534,13 +616,13 @@ for (const seed of seeds) {
   }
   const kind = kindOf(failure);
   if (failures.has(kind)) { failures.get(kind).seeds.push(seed); continue; }
-  const minimal = await shrink(steps, kind);
-  const reason = await run(minimal).then(() => failure, (error) => error);
-  failures.set(kind, { seeds: [seed], reason, minimal });
+  const minimal = await shrink(steps, kind, grants);
+  const reason = await run(minimal, grants).then(() => failure, (error) => error);
+  failures.set(kind, { seeds: [seed], reason, minimal, grants });
   if (failures.size >= 12) break;
 }
-for (const [kind, { seeds: failing, reason, minimal }] of failures) {
-  console.error(`FAILURE ${kind} (seeds ${failing.slice(0, 8).join(', ')}${failing.length > 8 ? ', ...' : ''}): ${reason.message}\nminimal program (${minimal.length} steps):\n${minimal.map((step) => `  ${JSON.stringify(step)}`).join('\n')}\n`);
+for (const [kind, { seeds: failing, reason, minimal, grants }] of failures) {
+  console.error(`FAILURE ${kind} (seeds ${failing.slice(0, 8).join(', ')}${failing.length > 8 ? ', ...' : ''}${grants ? ', granted' : ''}): ${reason.message}\nminimal program (${minimal.length} steps):\n${minimal.map((step) => `  ${JSON.stringify(step)}`).join('\n')}\n`);
 }
 if (metKnown.length > 0) console.log(`resident-fs-model: seeds ${metKnown.join(', ')} met the known engine bug (wave EIO "missing chunk", ToughWallaby P1)`);
 if (failures.size > 0) process.exit(1);

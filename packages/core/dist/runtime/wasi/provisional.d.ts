@@ -29,6 +29,7 @@ import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '..
 import type { ResidentEntry } from './resident-filesystem.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import type { ProcessFsClient } from '../../_shared/process-fs-client.js';
+import { type InodeOp, type InodeState } from './inode-fold.js';
 /** What the provisional decisions read and log through: the holder's. */
 export interface ProvisionalHost {
     readonly device: number;
@@ -61,10 +62,146 @@ export interface ProvisionalHost {
     now(): number;
     /** The next descriptor id, from the holder's own range. */
     nextHandle(): number;
+    /** A grant's file a provisional decision is about to change: no grant decides it from now on (Provisional.unhold, after what it decided is logged). */
+    unhold(inode: Inode): void;
+}
+/**
+ * A file's content while a grant decides it (the holder's): its bytes here,
+ * each change logged at the next decision, the flush or LINGER_MS, not
+ * refused here. What the process's descriptors of the file read and write
+ * while it is (Inode.cell).
+ */
+export interface HeldCell {
+    bytes: Uint8Array;
+    length: number;
+    mode: number;
+    /** Made here and not yet logged: its number, which its first logged write carries. */
+    made?: number;
+    /** The umask its mode was decided under, which its logged writeFile carries. */
+    umask?: number;
+    /**
+     * How many of its bytes the log holds as they are now (a logged decision
+     * of it), and the lowest offset written since: a file that only changed
+     * past what was logged is logged from there, not whole.
+     */
+    logged?: number;
+    changedFrom?: number;
+    /**
+     * Its name is gone (unlinked, or replaced by a rename) while descriptions
+     * of it are open: they read and write its bytes, and no name is written
+     * with them (POSIX: the file outlives its last name until its last close).
+     * `detached` is its stat when it lost the name (nlink 0): what fstat of
+     * those descriptions answers, never what a name leads to now.
+     */
+    detached?: ResidentEntry;
+}
+/** A file this process has open or changed: one per device and number, whatever decides its changes. */
+export interface Inode {
+    dev: number;
+    ino: number;
+    type: ResidentEntry['type'];
+    /** The name it is reached by here (a rename here moves it). */
+    key: string;
+    /** The name it is reached by in the view, its retired renames included: where a replay of the pending ones starts it. */
+    origin: string;
+    /** The name the session last opened it by (an open's answer): where the view will have it, a peer's rename since included. */
+    opened?: string;
+    /** Merged into another (reconcile): every reference to it is to that one. */
+    mergedInto?: Inode;
+    /** Its row: the view's as last read while nothing of the process's is pending on it, or what this process made it. */
+    row: ResidentEntry;
+    /**
+     * Its admitted baseline while records are pending on it: the view's row,
+     * and its bytes where the view held them (null: not held), as they were
+     * when the first was made, advanced over each answered in order.
+     */
+    base: InodeState | null;
+    /** `base` with `records` folded over it: what the process sees. */
+    state: InodeState | null;
+    records: InodeRecord[];
+    /** No name leads to it any more: its descriptors keep what it holds until the last closes. */
+    unnamed: boolean;
+    /** Made by this process and not yet numbered by the session (reconcile). */
+    local: boolean;
+    descs: number;
+    /** An open description at the session whose descriptor closed while others of the file stay open, none of them with one: kept until the last closes (at most one), its anchor. */
+    retained: string[];
+    /** What it holds back of the budget for its pending opens' answers: an Inode another file may need (reconcile). */
+    credit: number;
+    /** The view's bytes of it at `revision` its descriptors last read: what they read once the view no longer has a name for it. */
+    pin?: {
+        readonly revision: number;
+        readonly bytes: Uint8Array;
+    };
+    /** What it holds of the process's budget: cost(inode), its credit included, and never more but transiently. */
+    reserved: number;
+    /** While a grant decides it: its content, which every descriptor of it reads and writes. Its bytes are the grant's, not the budget's. */
+    cell?: HeldCell;
+    /**
+     * Its content was decided under a grant now given back (Provisional.unhold):
+     * the barriers begun when that grant's decisions were answered, Infinity
+     * until they are. Its own content stands until a barrier begun after (retire).
+     */
+    heldAt?: number;
+}
+/** One of the process's operations on an inode, kept until the view has its outcome (retire). */
+interface InodeRecord {
+    /** Log order. */
+    readonly id: number;
+    readonly op: InodeOp;
+    /** The inode it is of: the one its op reached at the session, once an open's answer says which (reconcile). */
+    owner: Inode;
+    /** The description it was made through, where one was: what an open's answer moves with it. */
+    readonly description?: string;
+    answered: boolean;
+    /** Barriers begun when it was answered: one begun after retires it. */
+    answeredAt: number;
+}
+/** A descriptor: of an Inode, with the rights, offset and session description of its open. */
+export interface Desc {
+    inode: Inode;
+    read: boolean;
+    write: boolean;
+    append: boolean;
+    position: number;
+    path: string;
+    /** Its open description at the session, where it may write: opened there as it was here. */
+    description?: string;
 }
 export interface Provisional {
     /** What it keeps of the process's budget now, counted afresh from what it holds: what it has taken of it, where its accounting is right. */
     kept(): number;
+    /** The Inode of file (dev, ino), where this process has one. */
+    inode(dev: number, ino: number): Inode | undefined;
+    /** Its Inode, made where none is (`key` the name it is reached by, `row` what it is): undefined where the budget has no room for one. */
+    inodeFor(key: string, row: ResidentEntry): Inode | undefined;
+    /** A descriptor of `inode` an open decided under its grant made (Inode.cell): no session description, its rights the open's. */
+    heldDescriptor(inode: Inode, path: string, read: boolean, append: boolean): RuntimeFileHandle;
+    /** The descriptor `handleId`, where it is one of this process's. */
+    descriptor(handleId: number): Desc | undefined;
+    /** Every descriptor of `inode`, each open once (a dup shares its open). */
+    descriptorsOf(inode: Inode): Desc[];
+    /** The Inodes a grant decides now (their cells). */
+    cells(): Inode[];
+    /** `inode`'s cell goes (its name retired, nothing holds it): the Inode with it, but for what else holds it. */
+    dropCell(inode: Inode): void;
+    /** A grant's file `inode` is reached by `key` from now on (a rename it decided): the name the view will have it at too. */
+    rekey(inode: Inode, key: string): void;
+    /**
+     * No grant decides `inode` any more: its cell's bytes are its content
+     * from now on, known (Inode.heldAt: the session's once what was decided is
+     * answered and a barrier begun after lands), `entry` what it is; its
+     * descriptors read it here and write through their descriptions.
+     */
+    unhold(inode: Inode, entry: ResidentEntry): void;
+    /** What was decided under `root` is answered (its grant given back): its files are the session's after the next barrier. */
+    answeredHeld(root: string): void;
+    /** Whether file (dev, ino)'s content and size are this process's here (a cell, or its fold), not the view's. */
+    pending(dev: number, ino: number): boolean;
+    /** The session descriptor of the open description `handleId`'s file is reached by (its own, else its file's anchor), once that open is answered. */
+    sessionOf(handleId: number): number | undefined;
+    /** Open description `description` was answered: `handle` is the session's descriptor of it. */
+    anchored(description: string, handle: number | undefined): void;
     owns(handleId: number): boolean;
     /** Whether a decision of this process's at `key`, or at the directory it is in, is not yet the view's: a held subtree decides nothing there until it is. */
     touches(key: string): boolean;
@@ -110,4 +247,5 @@ export interface Provisional {
     retire(begun: number): void;
 }
 export declare function provisional(host: ProvisionalHost): Provisional;
+export {};
 //# sourceMappingURL=provisional.d.ts.map
