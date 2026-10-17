@@ -2379,12 +2379,16 @@
 
       // Drag wiring.
       let activeHandle = null;
+      // The pointer that holds it: one drag at a time, and only its pointer moves or ends it.
+      let activePointer = null;
       let dragStartXY = 0;
       let dragStartDim = 0;
       let dragStartTotal = 0;
 
       function startDrag(kind, e) {
+        if (activeHandle) return;
         activeHandle = kind;
+        activePointer = e.pointerId;
         e.preventDefault();
         // The handle keeps the pointer's events while it is held, wherever
         // the pointer goes: over the preview's frame they went to the frame.
@@ -2415,7 +2419,7 @@
       }
 
       function onMove(e) {
-        if (!activeHandle) return;
+        if (!activeHandle || e.pointerId !== activePointer) return;
         if (activeHandle === 'tree') {
           const dx = e.clientX - dragStartXY;
           dims.treeWidth = Math.max(160, Math.min(600, dragStartDim + dx));
@@ -2440,9 +2444,10 @@
         }
       }
 
-      function endDrag() {
-        if (!activeHandle) return;
+      function endDrag(e) {
+        if (!activeHandle || e.pointerId !== activePointer) return;
         activeHandle = null;
+        activePointer = null;
         document.body.style.cursor = '';
         saveDims();
         applyTerminalFit();
