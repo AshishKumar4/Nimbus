@@ -188,10 +188,10 @@ await check('a write to a noted directory before the restore resumes wins', () =
 
 /**
  * A snapshot to drop whose rows interleave, in the order a drop pages them
- * (gen_to, path), with rows an older kept snapshot holds too: odd files
- * changed between the two snapshots (their versions at the dropped one are
- * its alone), even ones not (an older snapshot covers theirs). Half the
- * files' rows are dead, more than one transaction's worth.
+ * (gen_to, path), with rows an older kept snapshot holds too: two files in
+ * three changed between the two snapshots (their versions at the dropped
+ * one are its alone), the third not (an older snapshot covers its). A read
+ * page's dead rows are more than one transaction admits, so a page splits.
  */
 function interleavedDrop() {
   const h = createSqliteVfsTestHarness();
@@ -199,13 +199,13 @@ function interleavedDrop() {
   const fs = vfs.as(CRED_KERNEL);
   for (let i = 0; i < FILES; i++) fs.writeFile(`f${i}`, enc.encode(`first ${i}`));
   vfs.snapshot('older');
-  for (let i = 1; i < FILES; i += 2) fs.writeFile(`f${i}`, enc.encode(`second ${i}`));
+  for (let i = 0; i < FILES; i++) if (i % 3 !== 0) fs.writeFile(`f${i}`, enc.encode(`second ${i}`));
   vfs.snapshot('dropped');
   // In file order: the rows the dropped snapshot covers end alternately dead and kept.
   for (let i = 0; i < FILES; i++) fs.writeFile(`f${i}`, enc.encode(`live ${i}`));
   const history = () => Number([...h.sql.exec('SELECT COUNT(*) AS n FROM vfs_inode_history')][0].n);
   const keptReads = (view) => { for (let i = 0; i < FILES; i++) assert.equal(text(view.readFile(`f${i}`)), `first ${i}`, `the older snapshot's f${i}`); };
-  return { h, vfs, fs, history, keptReads, dead: Math.floor(FILES / 2) };
+  return { h, vfs, fs, history, keptReads, dead: FILES - Math.ceil(FILES / 3) };
 }
 
 await check('a drop interrupted after its first transaction', () => {
@@ -223,6 +223,10 @@ await check('a drop interrupted after its first transaction', () => {
   assert.throws(() => vfs.dropSnapshot('dropped'), /went away/);
   h.clearFault();
   assert.ok(history() < before && history() > before - dead, `the first transaction's rows are gone, not the rest: ${history()} of ${before}`);
+  // The first transaction ended inside the first read page: its cursor is a row of that page.
+  const [job] = [...h.sql.exec("SELECT cursor FROM vfs_jobs WHERE kind = 'drop'")];
+  assert.ok(job, 'the drop is still a job');
+  assert.ok(before - history() < 200, `fewer rows than a read page are gone: ${before - history()}`);
   const reopened = new SqliteVFS(h.sql, h.ctx);
   assert.equal(history(), before - dead, 'reopened, the engine finished the drop: every dead row, no kept one');
   assert.deepEqual(reopened.snapshots().map((snap) => snap.name), ['older']);
