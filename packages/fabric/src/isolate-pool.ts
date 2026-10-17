@@ -444,32 +444,38 @@ function loadedIds(ctx: object): Set<string> {
   return ids;
 }
 
-/** The hold a refused call's readmission took for its next attempt, and the credit taken before it (null if none, or reclaimed). */
-interface Readmission {
-  readonly admitted: EndLoaderFetch;
-  readonly credit: ResizableCreditLease | null;
+/**
+ * A load's images' credit, taken before its worker and not yet used: running
+ * work may reclaim it (the lock order) until the loader's callback takes it,
+ * for the load may wait for a worker, and a worker the loader answers warm
+ * never calls back.
+ */
+interface LoadCredit {
+  /** The lease, no longer reclaimable, or null if it was reclaimed or taken. */
+  take(): ResizableCreditLease | null;
+  /** Give back what is not taken. */
+  release(): void;
 }
 
-/**
- * `wait` for a worker holding `lease`, which running work may reclaim the
- * while (the lock order): the lease after it, or null once reclaimed. It is
- * released if `wait` throws.
- */
-async function waitHoldingCredit<R>(lease: ResizableCreditLease | null, wait: () => Promise<R>): Promise<[R, ResizableCreditLease | null]> {
-  if (lease === null) return [await wait(), null];
+function loadCredit(lease: ResizableCreditLease): LoadCredit {
   let held: ResizableCreditLease | null = lease;
   const unregister = reclaimableSupervisorAllocation(() => {
     held = null;
     lease.release();
   });
-  try {
-    return [await wait(), held];
-  } catch (error) {
-    lease.release();
-    throw error;
-  } finally {
+  const take = (): ResizableCreditLease | null => {
     unregister();
-  }
+    const taken = held;
+    held = null;
+    return taken;
+  };
+  return { take, release: () => take()?.release() };
+}
+
+/** The hold a refused call's readmission took for its next attempt, and the credit taken before it. */
+interface Readmission {
+  readonly admitted: EndLoaderFetch;
+  readonly credit: LoadCredit | null;
 }
 
 /**
@@ -852,25 +858,25 @@ export class IsolatePool {
     const loaded = loadedIds(this.ctx);
     /**
      * The credit a load this Durable Object's pools have not made needs, taken
-     * before any worker hold: an inherited launch admission's worker is given
-     * back for the wait, and taken again once the credit is held, the credit
-     * reclaimable meanwhile. One it has made is answered warm and reads
-     * nothing; should the loader have dropped it, or running work reclaimed
-     * its credit, its callback takes credit without waiting, or the call ends
-     * its hold and comes back here for it.
+     * before any worker hold (LoadCredit): an inherited launch admission's
+     * worker is given back for the wait, and taken again once the credit is
+     * held. One it has made is answered warm and reads nothing; should the
+     * loader have dropped it, or running work reclaimed its credit, its
+     * callback takes credit without waiting, or the call ends its hold and
+     * comes back here for it.
      */
-    const takeCredit = async (): Promise<ResizableCreditLease | null> => {
+    const takeCredit = async (): Promise<LoadCredit | null> => {
       if (imageBytes === 0 || loaded.has(id)) return null;
       const resume = this.claim ? undefined : suspendHeldAdmission(this.ctx);
-      if (resume === undefined) return acquireSupervisorLoad(`facet '${this.tag}' images`, imageBytes, signal);
-      let lease: ResizableCreditLease;
+      // Refused or aborted, it ends at once: the launch, its admission given back, holds no worker for it.
+      const credit = loadCredit(await acquireSupervisorLoad(`facet '${this.tag}' images`, imageBytes, signal));
       try {
-        lease = await acquireSupervisorLoad(`facet '${this.tag}' images`, imageBytes, signal);
+        await resume?.(signal);
       } catch (error) {
-        await resume(signal);
+        credit.release();
         throw error;
       }
-      return (await waitHoldingCredit(lease, () => resume(signal)))[1];
+      return credit;
     };
     // The hold the latest attempt ran on: a refused one is readmitted on its terms.
     let held: EndLoaderFetch | undefined;
@@ -906,7 +912,7 @@ export class IsolatePool {
       // invalidate any in-flight slot's entrypoint reference.
       //
       // Lock order (acquireSupervisorLoad): credit, then a worker.
-      let credit = readmitted ? readmitted.credit : await takeCredit();
+      const credit = readmitted ? readmitted.credit : await takeCredit();
       let lacking = false;
       try {
       // The hold comes first among what remains, so it ends whatever setup
@@ -917,8 +923,7 @@ export class IsolatePool {
       held = endFetch;
       try {
         const stub = this.loader.get(id, async () => {
-          const lease = imageBytes === 0 ? null : credit ?? tryAcquireSupervisorLoad(imageBytes);
-          credit = null;
+          const lease = imageBytes === 0 ? null : credit?.take() ?? tryAcquireSupervisorLoad(imageBytes);
           if (imageBytes > 0 && lease === null) {
             lacking = true;
             throw new Error(`IsolatePool(${this.tag}): its images' credit is not free while it holds a worker`);
@@ -1049,15 +1054,19 @@ export class IsolatePool {
         if (cause === 'dynamic_worker_cap' && held) {
           // The platform refused to start this call: nothing ran, so it is
           // sent again, without spending an attempt, once the ledger lets it in.
-          const since = (firstRefusal ??= Date.now());
-          // Credit before the worker the readmission holds, reclaimable while it waits.
-          const refused = held;
-          const [admitted, credit] = await waitHoldingCredit(await takeCredit(), () => readmitRefused(refused, { since, signal }));
+          firstRefusal ??= Date.now();
+          // Credit before the worker the readmission holds.
+          const credit = await takeCredit();
+          let admitted: EndLoaderFetch | undefined;
+          try {
+            admitted = await readmitRefused(held, { since: firstRefusal, signal });
+          } finally {
+            if (!admitted) credit?.release();
+          }
           if (admitted) {
             readmitted = { admitted, credit };
             continue;
           }
-          credit?.release();
           // The caller aborted while waiting: surface its abort as above.
           if (signal?.aborted) throw lastError;
         }
