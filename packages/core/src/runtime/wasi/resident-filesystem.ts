@@ -1122,7 +1122,11 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     if (now) throw NOT_NOW;
     const at = holder!.provisional.inodeOf(handleId);
     if (at === undefined) return readByAnchor(handleId, offset, length);
-    return Promise.resolve(contentOf(at.key, at.entry)).then(() => read() ?? readByAnchor(handleId, offset, length));
+    // Fetched by the name, while its access lets the process read it; else through its anchor, whose access was its open's.
+    return Promise.resolve(contentOf(at.key, at.entry)).then(() => read() ?? readByAnchor(handleId, offset, length), (error: unknown) => {
+      if (holder!.provisional.sessionOf(handleId) === undefined) throw error;
+      return readByAnchor(handleId, offset, length);
+    });
   };
 
   /** `handleId`'s file as the session's open description of it has it (Provisional.sessionOf), once what this process logged is there. */
