@@ -162,6 +162,20 @@ The 2026-10-14 and 2026-10-15 versions reached production but were never publish
   started. Before, a chat opened while a tool ran showed it starting from
   zero, and a tool whose start was unknown showed a timer it could not
   know.
+- Fixed (shell): the built-in shell reads `$'...'` (ANSI-C quoting) as bash
+  does. `echo $'\303\251'` prints "é", `$'\cA'` is the control character,
+  `$'\u00e9'` a character, `$'it\'s'` keeps its apostrophe, and a NUL ends
+  the quoted part. Nothing inside expands, and inside double quotes it stays
+  literal. Before, the `$` stayed and the body was read as a plain
+  single-quoted string, so `\'` ended it early. A `"` inside a substitution
+  nested in double quotes within `$(...)` no longer ends the outer
+  substitution.
+- Fixed (shell): in the built-in shell, an octal or hex escape in `printf`
+  (its format and `%b`) and `echo -e` writes one byte, as bash does.
+  `printf '\303\251'` writes "é" and `printf '\377'` writes the byte 0xff.
+  Before, each escape became a character written as UTF-8, so
+  `printf '\357\273\277'` gave six bytes instead of a byte order mark.
+  `printf %c` writes its argument's first byte.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
