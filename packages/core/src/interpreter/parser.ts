@@ -118,20 +118,19 @@ class ThrowFinder extends AcornParserClass {
   }
 }
 
-/** A ThrowFinder that counts the top-level statements it parses, and where the first ends. */
-class StatementCounter extends ThrowFinder {
-  statements = 0;
-  firstEnd = -1;
+/**
+ * A ThrowFinder that notes where the braces it reads first close all they
+ * opened: as the parser moves past that `}`, before the lexer reads on (what
+ * follows may not lex in a declaration's place).
+ */
+class ClosingBrace extends ThrowFinder {
+  depth = 0;
+  closedAt = -1;
 
-  parseTopLevel(node: Program): Program {
-    const exports = objectCreate(null);
-    while (this.type !== tokTypes.eof) {
-      this.parseStatement(null, true, exports);
-      // Where the statement just parsed ends: its last token's end.
-      if (this.statements++ === 0) this.firstEnd = this.lastTokEnd;
-    }
-    this.next();
-    return this.finishNode(node, 'Program');
+  next(): void {
+    if (this.type === tokTypes.braceL || this.type === tokTypes.dollarBraceL) this.depth++;
+    else if (this.type === tokTypes.braceR && --this.depth === 0 && this.closedAt === -1) this.closedAt = this.start;
+    super.next();
   }
 }
 
@@ -146,11 +145,10 @@ const BODY_HEAD = 'function f(exports, require, module, __filename, __dirname) {
  */
 export function strayClosingBrace(body: string): [number, number] | null {
   const text = BODY_HEAD + body + '\n}';
-  const counter = new StatementCounter(SCRIPT_OPTIONS, text);
-  // Whether the parse ends or stops at a syntax error after it, the function closed where its first statement ended.
-  try { counter.parse(); } catch { /* where it closed is known, or V8 is the judge */ }
-  if (counter.statements === 0 || counter.firstEnd === text.length) return null;
-  const at = counter.firstEnd - 1 - BODY_HEAD.length;
+  const finder = new ClosingBrace(SCRIPT_OPTIONS, text);
+  try { finder.parse(); } catch { /* where the function closed is known, or V8 is the judge */ }
+  if (finder.closedAt === -1 || finder.closedAt === text.length - 1) return null;
+  const at = finder.closedAt - BODY_HEAD.length;
   return [at, at + 1];
 }
 

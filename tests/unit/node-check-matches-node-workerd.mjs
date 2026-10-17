@@ -35,6 +35,8 @@ const files = {
   'close-call.cjs': '}(), globalThis.console.log("ran"), function () {\n',
   // One that parses both as a function's statements and inside a function expression.
   'close-both.cjs': '} (console.log("ran")) && function () {\n',
+  // One whose next token, in a declaration's place, would be a regular expression.
+  'close-divide.cjs': '} / 0; return function () {\n',
   // What a function body may hold: new.target; what it may not: a wrapper name redeclared.
   'new-target.cjs': 'console.log(new.target);\n',
   'require-redeclared.cjs': 'const require = 1;\n',
@@ -58,6 +60,7 @@ await matchNodeInWorkerd('node-check-matches-node-workerd', ROOT, files, [
   'node -c close.cjs',
   'node -c close-call.cjs',
   'node -c close-both.cjs',
+  'node -c close-divide.cjs',
   'node -c new-target.cjs',
   'node -c require-redeclared.cjs',
   "echo 'const require = 1' | node -c",
