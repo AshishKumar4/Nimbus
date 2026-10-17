@@ -639,7 +639,7 @@ export function provisional(host: ProvisionalHost): Provisional {
         record.answered = true;
         record.answeredAt = barriers;
       }
-"      settled?.(refused, answer);
+      settled?.(refused, answer);
     }, awaited);
   };
 
