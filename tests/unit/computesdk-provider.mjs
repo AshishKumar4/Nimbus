@@ -213,6 +213,31 @@ const execResult = (over = {}) => ({
   assert.deepEqual(exec.args[1].env, { TOKEN: 'abc', EXTRA: '1' });
 }
 
+// The configured timeout is the commands' default and what getInfo reports;
+// a call's own timeout is over it. On a sandbox restored by id, too.
+{
+  const fake = fakeNimbus({
+    ready: { ok: true, preinstalled: [] },
+    writeFile: 12,
+    readFile: JSON.stringify({ createdAt: 1, envs: {} }),
+    execStream: execResult(),
+  });
+  const provider = nimbus({ endpoint: ENDPOINT, timeout: 1000 });
+
+  const info = await withFetch(fake.fetchImpl, async () => {
+    const sandbox = await provider.sandbox.create();
+    await sandbox.runCommand('sleep 5');
+    await sandbox.runCommand('sleep 5', { timeout: 50 });
+    const restored = await provider.sandbox.getById(sandbox.sandboxId);
+    await restored.runCommand('sleep 5');
+    return [await sandbox.getInfo(), await restored.getInfo()];
+  });
+
+  const timeouts = fake.calls.filter((c) => c.op === 'execStream').map((c) => c.args[1].timeoutMs);
+  assert.deepEqual(timeouts, [1000, 50, 1000], 'a command without its own timeout gets the configured one');
+  assert.deepEqual(info.map((i) => i.timeout), [1000, 1000], 'getInfo reports the timeout commands run under');
+}
+
 // Filesystem paths resolve against the sandbox root; a missing file is ENOENT.
 {
   const fake = fakeNimbus({
