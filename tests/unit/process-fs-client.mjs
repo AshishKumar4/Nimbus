@@ -818,10 +818,14 @@ for (const durable of [false, true]) {
   const c = client(s, durable ? { journal: sqlJournal(createSqliteVfsTestHarness().sql) } : {});
   c.submit(writeFile('home/user/capacity-a', 'a'), { acknowledged: true });
   c.submit(appendFile('home/user/capacity-a', 'x'.repeat(100)), { acknowledged: true });
+  c.submit({ type: 'call', call: { call: 'write', path: 'home/user/capacity-a', offset: 500, data: enc.encode('new') } }, { acknowledged: true });
+  c.submit({ type: 'call', call: { call: 'write', path: 'home/user/capacity-a', offset: 503, data: enc.encode('!') } }, { acknowledged: true });
   c.submit(writeFile('home/user/capacity-b', 'b'), { acknowledged: true });
   c.submit(appendFile('home/user/capacity-b', 'y'), { acknowledged: true });
   await c.flush();
-  assert.equal(s.text('home/user/capacity-a'), 'a' + 'x'.repeat(100));
+  const a = s.kernel.readFile('home/user/capacity-a');
+  assert.equal(dec.decode(a.subarray(0, 101)), 'a' + 'x'.repeat(100));
+  assert.equal(dec.decode(a.subarray(500)), 'new!', 'a new entry reused an older entry\'s buffer for the same path');
   assert.equal(s.text('home/user/capacity-b'), 'by');
   c.submit(writeFile('home/user/capacity-c', 'c'), { acknowledged: true });
   c.submit(appendFile('home/user/capacity-c', 'z'), { acknowledged: true });
