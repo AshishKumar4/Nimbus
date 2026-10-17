@@ -29,12 +29,16 @@
 //   (9) O_SYNC (`sync`) holds nothing, on SQLite and on a mount that cannot
 //       write in place, so each write is in the store when it returns;
 //  (10) only the held append's own publication carries its time: a watcher
-//       its event reaches writes, and holds, at its own time.
+//       its event reaches writes, and holds, at its own time;
+//  (11) a held append in a subtree its writer holds is stored as that writer,
+//       whenever it is stored.
 
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const text = (bytes) => new TextDecoder().decode(bytes);
@@ -314,6 +318,30 @@ const giveRoom = () => vfs.ledger.deleteFacet('room-taker');
   }
   writerA.close();
   writerC.close();
+}
+
+// ── (11) a held append in a subtree its writer holds is stored as that writer ──
+// A process that holds a subtree (a WASI process's delegation) writes a file
+// there through the session's descriptor, and closes it after the run's
+// 100 ms. Red before (pip's stress, the first file of a new directory): the
+// timer stored the run outside the writer's holds, as another's change; it
+// was refused, the bytes were lost, and only close said so (EBADF).
+{
+  const owned = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(owned.sql, owned.ctx);
+  const kernel = engine.as(CRED_KERNEL);
+  kernel.mkdir('home/user/proj', { recursive: true });
+  kernel.chown('home/user', 1000, 1000);
+  kernel.chown('home/user/proj', 1000, 1000);
+  const proc = new ProcessFiles(engine).bind({ pid: 7, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
+  const grant = proc.acquireExclusiveMutation('/home/user/proj', { delegate: { reads: true, inos: 64, bytes: 1 << 20 } });
+  const handle = await proc.open('/home/user/proj/held.txt', { write: true, create: true, truncate: true, mode: 0o644 });
+  await proc.write(handle.id, null, bytesOf('held '));
+  await proc.write(handle.id, null, bytesOf('appends'));
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  await proc.close(handle.id);
+  proc.releaseExclusiveMutation(grant.owner);
+  assert.equal(text(kernel.readFile('home/user/proj/held.txt')), 'held appends', '(11) the run stored after its 100 ms is the writer\'s');
 }
 
 await ws.close();
