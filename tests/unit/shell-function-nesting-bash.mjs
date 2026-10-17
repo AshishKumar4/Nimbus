@@ -36,6 +36,11 @@ const BASH_CASES = [
   `FUNCNEST=2; f() { echo "in $1"; x=$(f $(( $1 + 1 ))); echo "cs st=$? [$x]"; }; f 1`,
   'FUNCNEST=2; f() { g; echo "f st=$?"; }; g() { h; echo "g st=$?"; }; h() { echo h; }; f',
   'FUNCNEST=2; f() { local FUNCNEST=5; g; }; g() { h; }; h() { i; }; i() { echo i; }; f; echo "st=$?"',
+  // FUNCNEST lowered below the depth reached: the refusal names the depth.
+  'FUNCNEST=10; f() { g; }; g() { local FUNCNEST=1; h; }; h() { echo reached; }; f; echo "st=$?"',
+  // A discarded line's status is PIPESTATUS's too, at the next line and in a subshell's EXIT trap.
+  `FUNCNEST=1\n${runaway}\nfalse | true\nf\necho "$? \${PIPESTATUS[*]}"`,
+  `( FUNCNEST=1; ${runaway}; trap 'echo "trap $? \${PIPESTATUS[*]}"' EXIT; false | true; f ); echo "st=$?"`,
   'FUNCNEST=1; f() { echo f; }; g() { f; }; g; echo "st=$?"',
   'f() { echo f; }; g() { f; }; FUNCNEST=1 g; echo "st=$?"',
   `( FUNCNEST=2; trap 'echo trapped' EXIT; ${runaway}; f; echo after ); echo "st=$?"`,
