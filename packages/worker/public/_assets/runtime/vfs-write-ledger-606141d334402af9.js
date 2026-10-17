@@ -243,7 +243,7 @@ var __nimbusProcessFsModule = (() => {
         case "setattr":
           state.summary.pathCount++;
           state.summary.opCount++;
-          yield encodeMetadataRecord(RecordTag.SetAttr, { path: op.path, ...op.attrs }, state);
+          yield encodeMetadataRecord(RecordTag.SetAttr, { path: op.path, ...op.attrs, ...op.description === void 0 ? {} : { description: op.description } }, state);
           break;
         case "call":
           state.summary.pathCount++;
@@ -441,7 +441,12 @@ var __nimbusProcessFsModule = (() => {
         case "truncate":
           return { kind: "truncate", path: ownedPaths.claim(canonicalPath(op.path, "truncate path")), size: safeInteger(op.size, "truncate size") };
         case "setattr":
-          return { kind: "setattr", path: ownedPaths.claim(canonicalPath(op.path, "setattr path")), attrs: parseAttrs(op.attrs, "setattr") };
+          return {
+            kind: "setattr",
+            path: ownedPaths.claim(canonicalPath(op.path, "setattr path")),
+            attrs: parseAttrs(op.attrs, "setattr"),
+            ...op.description === void 0 ? {} : { description: descriptionId(op.description, "setattr description") }
+          };
         case "call": {
           const call = op.call;
           if ("data" in call) {

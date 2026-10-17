@@ -270,10 +270,13 @@ export type W7Op = {
     type: 'truncate';
     path: string;
     size: number;
-} | {
+}
+/** `description`: through the session's open description of that id (fchmod, fchown, futimens): its file, whatever names it now. */
+ | {
     type: 'setattr';
     path: string;
     attrs: W7Attrs;
+    description?: string;
 } | {
     type: 'call';
     call: W7Call;
@@ -364,6 +367,7 @@ export type W7DecodedRecord = {
     type: 'setattr';
     path: string;
     attrs: W7Attrs;
+    description?: string;
 } | {
     type: 'call';
     call: W7PathCall;

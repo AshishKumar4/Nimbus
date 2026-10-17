@@ -113,7 +113,7 @@ export function provisional(host) {
         const id = identity(row.dev, row.ino);
         let inode = inodes.get(id);
         if (inode === undefined) {
-            inode = { dev: row.dev, ino: row.ino, type: row.type, key, origin: key, row, base: null, state: null, records: [], unnamed: false, local: false, descs: 0, reserved: 0 };
+            inode = { dev: row.dev, ino: row.ino, type: row.type, key, origin: key, row, base: null, state: null, records: [], unnamed: false, local: false, descs: 0, retained: [], reserved: 0 };
             inodes.set(id, inode);
         }
         return inode;
@@ -128,6 +128,14 @@ export function provisional(host) {
         if (row === undefined)
             return !inode.unnamed;
         inode.unnamed = row === null || row.dev !== inode.dev || row.ino !== inode.ino;
+        // The name the session opened it by, where the view has it there since (a peer moved it).
+        if (inode.unnamed && inode.opened !== undefined && inode.opened !== inode.key) {
+            const there = rowAt(inode.opened);
+            if (there && there.dev === inode.dev && there.ino === inode.ino) {
+                inode.key = inode.origin = inode.opened;
+                inode.unnamed = false;
+            }
+        }
         if (!inode.unnamed && inode.state === null && !inode.local)
             inode.row = row;
         return !inode.unnamed;
@@ -138,11 +146,16 @@ export function provisional(host) {
      * a name came to lead to since. Its row refreshed from there.
      */
     const viewed = (inode) => {
-        const row = host.row(inode.origin);
-        if (!row || row.dev !== inode.dev || row.ino !== inode.ino)
-            return undefined;
-        const held = inode.type === 'file' ? host.content(inode.origin, row.revision) : undefined;
-        return { row, bytes: held !== undefined && held.byteLength === row.size ? held : undefined };
+        for (const name of [inode.origin, inode.opened, inode.key]) {
+            if (name === undefined)
+                continue;
+            const row = host.row(name);
+            if (!row || row.dev !== inode.dev || row.ino !== inode.ino)
+                continue;
+            const held = inode.type === 'file' ? host.content(name, row.revision) : undefined;
+            return { row, bytes: held !== undefined && held.byteLength === row.size ? held : undefined };
+        }
+        return undefined;
     };
     /** What an inode's records fold over: the view's version of it where the view still has it, else its row as last known, its bytes not held. */
     const baseline = (inode) => {
@@ -367,7 +380,7 @@ export function provisional(host) {
             type, dev: host.device, ino: localIno++, nlink: type === 'directory' ? 2 : 1, size: target === null ? 0 : new TextEncoder().encode(target).byteLength,
             atime: at, mtime: at, ctime: at, mode, uid, gid, revision: 0, target,
         };
-        const inode = { dev: row.dev, ino: row.ino, type, key, origin: key, row, base: null, state: null, records: [], unnamed: false, local: true, descs: 0, reserved: RECORD_COST };
+        const inode = { dev: row.dev, ino: row.ino, type, key, origin: key, row, base: null, state: null, records: [], unnamed: false, local: true, descs: 0, retained: [], reserved: RECORD_COST };
         if (type === 'file') {
             inode.base = { bytes: new Uint8Array(0), size: 0, mode, uid, gid, atime: at, mtime: at, ctime: at };
             inode.state = copyState(inode.base);
@@ -413,7 +426,7 @@ export function provisional(host) {
             atime: receipt.mtimeMs, mtime: receipt.mtimeMs, ctime: receipt.ctimeMs, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid,
             revision: receipt.revision ?? 0, target: null,
         };
-        const inode = { dev: row.dev, ino: row.ino, type: 'file', key: like.key, origin: like.origin, row, base: null, state: null, records: [], unnamed: true, local: false, descs: 0, reserved: 0 };
+        const inode = { dev: row.dev, ino: row.ino, type: 'file', key: like.key, origin: like.origin, row, base: null, state: null, records: [], unnamed: true, local: false, descs: 0, retained: [], reserved: 0 };
         inodes.set(identity(row.dev, row.ino), inode);
         return inode;
     };
@@ -427,15 +440,20 @@ export function provisional(host) {
      * name no longer led to gives up to the one the session opened only what
      * was made through this description.
      */
-    const reconcile = (inode, description, answer) => {
+    const reconcile = (inode, key, description, answer, creating) => {
         const receipt = answer?.receipt;
-        if (receipt === undefined || (!inode.local && inode.dev === receipt.dev && inode.ino === receipt.ino))
+        if (receipt === undefined)
             return;
+        if (!inode.local && inode.dev === receipt.dev && inode.ino === receipt.ino) {
+            inode.opened = key;
+            return;
+        }
         const known = inodes.get(identity(receipt.dev, receipt.ino));
-        if (inode.local) {
+        if (creating && inode.local) {
             inodes.delete(identity(inode.dev, inode.ino));
             inode.local = false;
             if (known === undefined) {
+                inode.opened = key;
                 inode.dev = receipt.dev;
                 inode.ino = receipt.ino;
                 inode.row = { ...inode.row, dev: receipt.dev, ino: receipt.ino, size: receipt.size, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid };
@@ -446,11 +464,13 @@ export function provisional(host) {
                 return;
             }
             inode.mergedInto = known;
+            known.opened = key;
             for (const desc of descs.values())
                 if (desc.inode === inode)
                     desc.inode = known;
             known.descs += inode.descs;
             inode.descs = 0;
+            known.retained.push(...inode.retained.splice(0));
             for (const [key, value] of layer)
                 if (value === inode)
                     layer.set(key, known);
@@ -461,7 +481,13 @@ export function provisional(host) {
             return;
         }
         const target = known ?? adopted(receipt, inode);
+        target.opened = key;
         moveRecords(inode.records.filter((record) => record.description === description), target);
+        const kept = inode.retained.indexOf(description);
+        if (kept >= 0) {
+            inode.retained.splice(kept, 1);
+            target.retained.push(description);
+        }
         for (const desc of descs.values()) {
             if (desc.description !== description || desc.inode !== inode)
                 continue;
@@ -502,6 +528,17 @@ export function provisional(host) {
             throw fsError('ESTALE', syscall, path);
         const held = host.content(inode.origin, inode.row.revision);
         return held !== undefined && held.byteLength === inode.row.size ? { bytes: held, size: held.byteLength } : undefined;
+    };
+    /** An open description of `inode` at the session, any of its descriptors': what reaches it whatever names it (its anchor). */
+    const anchorOf = (inode) => {
+        if (inode.descs === 0)
+            return undefined;
+        if (inode.retained.length > 0)
+            return inode.retained[0];
+        for (const desc of descs.values())
+            if (desc.inode === inode && desc.description !== undefined)
+                return desc.description;
+        return undefined;
     };
     /** What a descriptor's call names its file by: its description, else its number. */
     const by = (desc) => (desc.description !== undefined ? { description: desc.description } : { ino: desc.inode.ino });
@@ -607,7 +644,7 @@ export function provisional(host) {
         // Its answer says which file the session opened first: what was made through it is that file's before any is settled.
         const answered = (refused, answer) => {
             if (!refused)
-                reconcile(target, description, answer);
+                reconcile(target, key, description, answer, row === null);
             settleRecords(opened, refused);
         };
         if (row === null) {
@@ -742,14 +779,15 @@ export function provisional(host) {
             // An owner kept is null here, as fchown(2)'s -1.
             const attrs = ('uid' in change ? { uid: change.uid === -1 ? null : change.uid, gid: change.gid === -1 ? null : change.gid } : change);
             const syscall = 'mode' in attrs ? 'fchmod' : 'uid' in attrs ? 'fchown' : 'futimes';
-            // The file it opened, by the name that still leads to it: no op reaches a file by a description, so one without a name is out of reach.
-            if (!named(inode))
+            // The file it opened: through its description, wherever or whether a name leads to it; without one, by the name that still does.
+            const described = desc.description ?? anchorOf(inode);
+            if (described === undefined && !named(inode))
                 throw fsError('ESTALE', syscall, desc.path);
             judgeAttrs(entryOf(inode), attrs, syscall, desc.path);
             const op = attrOp(attrs, host.now());
             admitOps(inode, [op], syscall, desc.path);
             host.count(inode.key);
-            loggedOn([fold(inode, op)], { type: 'setattr', path: inode.key, attrs });
+            loggedOn([fold(inode, op, described)], { type: 'setattr', path: inode.key, attrs, ...(described === undefined ? {} : { description: described }) });
         },
         close: (handleId) => {
             const desc = descOf(handleId);
@@ -757,10 +795,16 @@ export function provisional(host) {
             for (const other of descs.values())
                 if (other === desc)
                     return;
-            desc.inode.descs--;
+            const inode = desc.inode;
+            inode.descs--;
+            // Its description outlives it while another descriptor of the file stays open (an anchor); the last closes them all.
             if (desc.description !== undefined)
-                logged({ type: 'call', call: { call: 'close', path: desc.inode.key, description: desc.description } }, () => { });
-            release(desc.inode);
+                inode.retained.push(desc.description);
+            if (inode.descs === 0) {
+                for (const description of inode.retained.splice(0))
+                    logged({ type: 'call', call: { call: 'close', path: inode.key, description } }, () => { });
+            }
+            release(inode);
         },
         dup: (handleId) => {
             const desc = descOf(handleId);
@@ -794,7 +838,7 @@ export function provisional(host) {
                 const made = records.map((op) => fold(inode, op, reopened));
                 logged(open, (refused, answer) => {
                     if (!refused)
-                        reconcile(inode, reopened, answer);
+                        reconcile(inode, inode.key, reopened, answer, false);
                     settleRecords(made, refused);
                 });
             }

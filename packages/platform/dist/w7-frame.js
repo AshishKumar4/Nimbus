@@ -394,10 +394,10 @@ v3) {
                         yield { type: 'truncate', path: ownedPaths.claim(canonicalPath(value.path, 'truncate path')), size: safeInteger(value.size, 'truncate size') };
                     }
                     else {
-                        const value = parseObject(payload, 'setattr', ['path'], ['mode', 'uid', 'gid', 'atime', 'mtime']);
+                        const value = parseObject(payload, 'setattr', ['path'], ['mode', 'uid', 'gid', 'atime', 'mtime', 'description']);
                         const path = ownedPaths.claim(canonicalPath(value.path, 'setattr path'));
-                        const { path: _path, ...attrs } = value;
-                        yield { type: 'setattr', path, attrs: parseAttrs(attrs, 'setattr') };
+                        const { path: _path, description, ...attrs } = value;
+                        yield { type: 'setattr', path, attrs: parseAttrs(attrs, 'setattr'), ...(description === undefined ? {} : { description: descriptionId(description, 'setattr description') }) };
                     }
                     break;
                 }
@@ -480,7 +480,7 @@ async function* encodeRecords(batchId, ops) {
             case 'setattr':
                 state.summary.pathCount++;
                 state.summary.opCount++;
-                yield encodeMetadataRecord(RecordTag.SetAttr, { path: op.path, ...op.attrs }, state);
+                yield encodeMetadataRecord(RecordTag.SetAttr, { path: op.path, ...op.attrs, ...(op.description === undefined ? {} : { description: op.description }) }, state);
                 break;
             case 'call':
                 state.summary.pathCount++;
@@ -693,7 +693,10 @@ function prepareOps(payload, batchId) {
             case 'truncate':
                 return { kind: 'truncate', path: ownedPaths.claim(canonicalPath(op.path, 'truncate path')), size: safeInteger(op.size, 'truncate size') };
             case 'setattr':
-                return { kind: 'setattr', path: ownedPaths.claim(canonicalPath(op.path, 'setattr path')), attrs: parseAttrs(op.attrs, 'setattr') };
+                return {
+                    kind: 'setattr', path: ownedPaths.claim(canonicalPath(op.path, 'setattr path')), attrs: parseAttrs(op.attrs, 'setattr'),
+                    ...(op.description === undefined ? {} : { description: descriptionId(op.description, 'setattr description') }),
+                };
             case 'call': {
                 const call = op.call;
                 if ('data' in call) {

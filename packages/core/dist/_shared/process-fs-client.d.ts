@@ -64,10 +64,13 @@ export type ProcessFsOp = {
     type: 'truncate';
     path: string;
     size: number;
-} | {
+}
+/** `description`: fchmod, fchown or futimens through the process's open description of that id. */
+ | {
     type: 'setattr';
     path: string;
     attrs: W7Attrs;
+    description?: string;
 };
 /** What the client asks of the session. */
 export interface ProcessFsSession {
