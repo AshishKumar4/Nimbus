@@ -32,7 +32,7 @@ const ran = (result, stdout) => {
   assert.equal(result.stdout, stdout);
 };
 
-async function runningWorkReclaims(brokered) {
+async function runningWorkReclaims(brokered, race) {
   const authority = createAuthority();
   adoptSessionSupervisor(authority.host, () => {});
   const { manager, ctx } = session(authority, `reclaimed-${brokered}`);
@@ -61,11 +61,21 @@ async function runningWorkReclaims(brokered) {
       await until(() => manager.launchState().launches[0]?.stage === 'admission' && loaderLedgerStats(ctx).waiting === 1,
         'the generated map is parked on its own session ledger', 20_000);
       assert.ok(readSupervisorAllocationBudget().current > 0, 'the parked map retains its share');
+      if (race === 'grant') holds.shift()();
       let timer;
+      const acquiring = acquireSupervisorRunningAllocation(readSupervisorAllocationBudget().capacity);
+      if (race === 'kill') manager.kill(manager.launchState().launches[0].pid);
       const lease = await Promise.race([
-        acquireSupervisorRunningAllocation(readSupervisorAllocationBudget().capacity),
+        acquiring,
         new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('running work waited on a parked launch')), 5000); }),
       ]).finally(() => clearTimeout(timer));
+      if (race === 'kill') {
+        lease.release();
+        const result = await waiting;
+        assert.equal(result.exitCode, 130, result.stderr);
+        assert.equal(loaderLedgerStats(ctx).waiting, 0, 'a kill during reclaim leaves no worker wait');
+        return;
+      }
       try {
         await until(() => manager.launchState().launches[0]?.stage === 'prepare' && loaderLedgerStats(ctx).waiting === 0,
           'the reclaimed launch leaves its worker wait and prepares again');
@@ -73,6 +83,11 @@ async function runningWorkReclaims(brokered) {
         assert.deepEqual(loaderLedgerStats(other).inFlightWorkers, ['running-facet'], 'the running facet kept its worker');
       } finally {
         lease.release();
+      }
+      if (race === 'grant') {
+        ran(await waiting, '7');
+        assert.equal(loaderLedgerStats(ctx).waiting, 0, 'the grant/reclaim race leaves no duplicate readmission');
+        return;
       }
     }
     await until(() => manager.launchState().launches[0]?.stage === 'admission' && loaderLedgerStats(ctx).waiting === 1,
@@ -165,6 +180,8 @@ await runScenarios(fileURLToPath(import.meta.url), {
 
   runningWorkReclaims: () => runningWorkReclaims(false),
   brokeredReclaims: () => runningWorkReclaims(true),
+  workerGrantRacesReclaim: () => runningWorkReclaims(false, 'grant'),
+  killDuringReclaim: () => runningWorkReclaims(false, 'kill'),
 
   async runningRequestBeforeParking() {
     const authority = createAuthority();
