@@ -12,7 +12,9 @@ published independently in the `@nimbus-sh` npm scope.
   version could be loaded, and conflicts loaded anyway. Only gems whose
   version RubyGems must choose are activated: two versions installed, or
   a dependency, at any depth, that has two. Every other require loads from
-  the load path as before, at no added cost.
+  the load path as before, at no added cost. A gem's executable runs the
+  version RubyGems activates, as host Ruby's binstub does, including the
+  wrappers an earlier Nimbus wrote into a persisted home.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
