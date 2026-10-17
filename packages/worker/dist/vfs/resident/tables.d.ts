@@ -17,11 +17,6 @@
  * { kind, size, chunks }, chunks { txt, bin } (bin as the backing holds it;
  * callers normalise with residentBytes), ns rows with every stat column.
  */
-/**
- * Cell kinds. A cell is one of the three things __vfsBundle has always held,
- * and the kind is stored rather than inferred so a text file whose bytes happen
- * to be valid UTF-8 does not change shape between a write and a read.
- */
 export declare const RESIDENT_SCHEMA = "4";
 export declare const RK_TEXT = 0;
 export declare const RK_BINARY = 1;

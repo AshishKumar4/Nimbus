@@ -4520,6 +4520,10 @@ const __fsMod = (() => {
   // holds, the file the links on it name by that file's own name.
   function _recordResidencyMiss(absPath) {
     const k = _strip(absPath);
+    try {
+      const log = globalThis.__nimbusDiagDel || [];
+      process.stderr.write("[nimbus-debug] DIAG miss " + Date.now() % 1000000 + " " + k + " held=" + (typeof __resident !== "undefined" ? __resident.cells.has(k) : "no-store") + " log=" + JSON.stringify(log.filter((l) => !/ fileDelete /.test(l) || l.includes(k)).slice(-12)) + "\n");
+    } catch {}
     _recordMiss(k);
     const landing = _nsLandingKey(k) ?? k;
     _faultIn(landing);

@@ -23,6 +23,14 @@ import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes, utf8Length } from
  * and the kind is stored rather than inferred so a text file whose bytes happen
  * to be valid UTF-8 does not change shape between a write and a read.
  */
+const __diagDel = (op, path) => {
+    if (path !== null && !/tw4-probe\/app\/(src|node_modules\/(react|react-dom|@vitejs))/.test(path))
+        return;
+    const log = Reflect.get(globalThis, '__nimbusDiagDel') ?? [];
+    if (log.length < 400)
+        log.push(`${Date.now() % 1_000_000} ${op} ${path ?? ''} @ ${(new Error().stack ?? '').split('\n').slice(2, 6).map((l) => l.trim().replace(/^at /, '').replace(/ \(.*$/, '')).join(' < ')}`);
+    Reflect.set(globalThis, '__nimbusDiagDel', log);
+};
 export const RESIDENT_SCHEMA = '4';
 export const RK_TEXT = 0;
 export const RK_BINARY = 1;
@@ -135,7 +143,7 @@ export function sqlTables(sql) {
         },
         fileSetRev(path, rev) { sql.exec('UPDATE file SET rev = ? WHERE path = ?', rev, path); },
         fileStampOwn(path, rev) { sql.exec('UPDATE file SET rev = ? WHERE path = ? AND rev = ?', rev, path, RK_OWN_WRITE); },
-        fileDelete(path) { sql.exec('DELETE FROM file WHERE path = ?', path); },
+        fileDelete(path) { __diagDel('fileDelete', path); sql.exec('DELETE FROM file WHERE path = ?', path); },
         fileByKey(ckey, notPath) {
             return rowOf(sql.exec('SELECT path, kind, size, chunks FROM file WHERE ckey = ? AND rev >= 0 AND path <> ? LIMIT 1', ckey, notPath));
         },
@@ -156,18 +164,22 @@ export function sqlTables(sql) {
         chunkCopy(to, from) { sql.exec('INSERT INTO chunk (path, part, txt, bin) SELECT ?, part, txt, bin FROM chunk WHERE path = ?', to, from); },
         chunkDelete(path) { sql.exec('DELETE FROM chunk WHERE path = ?', path); },
         dropOwn() {
+            __diagDel('dropOwn', null);
             sql.exec('DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev = ?)', RK_OWN_WRITE);
             sql.exec('DELETE FROM file WHERE rev = ?', RK_OWN_WRITE);
         },
         dropDated() {
+            __diagDel('dropDated', null);
             sql.exec('DELETE FROM chunk WHERE path NOT IN (SELECT path FROM file WHERE rev = ?)', RK_OWN_WRITE);
             sql.exec('DELETE FROM file WHERE rev <> ?', RK_OWN_WRITE);
         },
         dropDatedFiles() {
+            __diagDel('dropDatedFiles', null);
             sql.exec('DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev <> ?)', RK_OWN_WRITE);
             sql.exec('DELETE FROM file WHERE rev <> ?', RK_OWN_WRITE);
         },
         clear() {
+            __diagDel('clear', null);
             sql.exec('DELETE FROM chunk');
             sql.exec('DELETE FROM file');
             sql.exec('DELETE FROM ns');

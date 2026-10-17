@@ -383,6 +383,12 @@ var __nimbusResidentModule = (() => {
   }
 
   // src/vfs/resident/tables.ts
+  var __diagDel = (op, path) => {
+    if (path !== null && !/tw4-probe\/app\/(src|node_modules\/(react|react-dom|@vitejs))/.test(path)) return;
+    const log = Reflect.get(globalThis, "__nimbusDiagDel") ?? [];
+    if (log.length < 400) log.push(`${Date.now() % 1e6} ${op} ${path ?? ""} @ ${(new Error().stack ?? "").split("\n").slice(2, 6).map((l) => l.trim().replace(/^at /, "").replace(/ \(.*$/, "")).join(" < ")}`);
+    Reflect.set(globalThis, "__nimbusDiagDel", log);
+  };
   var RESIDENT_SCHEMA = "4";
   var RK_TEXT = 0;
   var RK_BINARY = 1;
@@ -466,6 +472,7 @@ var __nimbusResidentModule = (() => {
         sql.exec("UPDATE file SET rev = ? WHERE path = ? AND rev = ?", rev, path, RK_OWN_WRITE);
       },
       fileDelete(path) {
+        __diagDel("fileDelete", path);
         sql.exec("DELETE FROM file WHERE path = ?", path);
       },
       fileByKey(ckey, notPath) {
@@ -516,18 +523,22 @@ var __nimbusResidentModule = (() => {
         sql.exec("DELETE FROM chunk WHERE path = ?", path);
       },
       dropOwn() {
+        __diagDel("dropOwn", null);
         sql.exec("DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev = ?)", RK_OWN_WRITE);
         sql.exec("DELETE FROM file WHERE rev = ?", RK_OWN_WRITE);
       },
       dropDated() {
+        __diagDel("dropDated", null);
         sql.exec("DELETE FROM chunk WHERE path NOT IN (SELECT path FROM file WHERE rev = ?)", RK_OWN_WRITE);
         sql.exec("DELETE FROM file WHERE rev <> ?", RK_OWN_WRITE);
       },
       dropDatedFiles() {
+        __diagDel("dropDatedFiles", null);
         sql.exec("DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev <> ?)", RK_OWN_WRITE);
         sql.exec("DELETE FROM file WHERE rev <> ?", RK_OWN_WRITE);
       },
       clear() {
+        __diagDel("clear", null);
         sql.exec("DELETE FROM chunk");
         sql.exec("DELETE FROM file");
         sql.exec("DELETE FROM ns");
@@ -2608,6 +2619,11 @@ var __nimbusResidentModule = (() => {
         return { requested: 0, filled: 0, failed: 0, skipped: "fsList reported no authority cursor" };
       }
       const held = coherence.cursor();
+      {
+        const log = Reflect.get(globalThis, "__nimbusDiagDel") ?? [];
+        log.push(`${Date.now() % 1e6} synchronize complete=${listing.complete} heldEpoch=${held?.epoch ?? null} listedEpoch=${listing.cursor.epoch} entries=${listing.entries.length}`);
+        Reflect.set(globalThis, "__nimbusDiagDel", log);
+      }
       const judgeable = listing.complete;
       const describable = judgeable && listing.names.every((entry) => nsDescribes(entry.stat));
       const comparable = judgeable && !!held && held.epoch === listing.cursor.epoch;

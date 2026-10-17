@@ -209,6 +209,11 @@ export function createSync(coherence, admission, namespace, cells, transport) {
             return { requested: 0, filled: 0, failed: 0, skipped: 'fsList reported no authority cursor' };
         }
         const held = coherence.cursor();
+        {
+            const log = Reflect.get(globalThis, '__nimbusDiagDel') ?? [];
+            log.push(`${Date.now() % 1_000_000} synchronize complete=${listing.complete} heldEpoch=${held?.epoch ?? null} listedEpoch=${listing.cursor.epoch} entries=${listing.entries.length}`);
+            Reflect.set(globalThis, '__nimbusDiagDel', log);
+        }
         // May a row this pass cannot prove current be DROPPED? Only against a
         // complete enumeration: a truncated one cannot tell a path that was removed
         // from one that was never walked.
