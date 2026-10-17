@@ -9,7 +9,7 @@
 // the user's later `cd /tmp/x` hit ENOENT, and the repo was orphaned.
 //
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine, outputLines } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('git-clone-absolute-path');
@@ -51,7 +51,7 @@ const ABS_TARGET = '/tmp/gcap-target';
 {
   const { output, exitCode } = await t.run(`cd ${ABS_TARGET} && git status 2>&1`, 30_000);
   const stripped = stripAnsi(output);
-  const ok = exitCode === 0 && !/ENOENT/.test(stripped) && outputLines(stripped).some((line) => line.startsWith('On branch '));
+  const ok = exitCode === 0 && !/ENOENT/.test(stripped) && hasOutputLine(stripped, 'nothing to commit, working tree clean');
   a.check('cd <abs> && git status works (no ENOENT)', ok,
     ok ? '' : JSON.stringify(stripped.slice(-300)));
 }
