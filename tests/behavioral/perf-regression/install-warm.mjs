@@ -102,8 +102,9 @@ const result = await measurePaired(arms, ROUNDS, async (target, arm) => {
       await t.run('rm -rf node_modules', 10_000);
       const before = await cacheCounters(target.base, sid);
       const t0 = performance.now();
-      const { output } = await t.run('npm install left-pad@1.3.0', 60_000);
+      const { output, exitCode } = await t.run('npm install left-pad@1.3.0', 60_000);
       wall.push(performance.now() - t0);
+      if (exitCode !== 0) throw new Error(`${sid} run ${run}: npm install exited ${exitCode}; tail=${JSON.stringify(output.slice(-300))}`);
       // Which tier served it (L2, the colo cache; L3, R2), and whether the
       // isolate saw other sessions' npm work meanwhile (more than our one op).
       console.log(`[install-warm] ${arm} ${sid} run ${run}: cache ${cacheDelta(before, await cacheCounters(target.base, sid))}`);

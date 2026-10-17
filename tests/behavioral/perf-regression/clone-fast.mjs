@@ -37,9 +37,9 @@ const result = await measurePaired(arms, ROUNDS, async (target) => {
     await t.connect();
     await t.waitForPrompt(30_000);
     const t0 = performance.now();
-    const { output } = await t.run('git clone https://github.com/AshishKumar4/markflow.git mf', 60_000);
+    const { output, exitCode } = await t.run('git clone https://github.com/AshishKumar4/markflow.git mf', 60_000);
     const ms = performance.now() - t0;
-    if (!/Cloning into|cloned/.test(output) || /clone failed/.test(output)) throw new Error(`${sid}: git clone did not report success; tail=${JSON.stringify(output.slice(-300))}`);
+    if (exitCode !== 0) throw new Error(`${sid}: git clone exited ${exitCode}; tail=${JSON.stringify(output.slice(-300))}`);
     return { clone: ms };
   } finally {
     await t.close();
@@ -47,7 +47,7 @@ const result = await measurePaired(arms, ROUNDS, async (target) => {
   }
 });
 
-assertCandidateRounds(a, 'git clone reports success', result);
+assertCandidateRounds(a, 'git clone exits 0', result);
 const graded = assertPaired(a, 'clone', result);
 
 const sum = a.summary();
