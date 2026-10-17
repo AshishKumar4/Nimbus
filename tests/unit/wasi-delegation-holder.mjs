@@ -109,8 +109,9 @@ async function create(fs, path, text) {
   assert.equal(read, 'decided', "a reader did not wait for the holder's send");
   await withRecall(() => s.kernel.writeFile('home/user/proj/d1/notes.txt', 'theirs'));
   assert.equal(dec.decode(s.kernel.readFile('home/user/proj/d1/notes.txt')), 'theirs');
-  // Given up; the holder may take it again for its next write, and a reader waits for that one too.
+  // Given up; the holder takes it again for its next write, and a reader waits for that one too.
   await create(s.fs, '/home/user/proj/d1/after.txt', 'after the revoke');
+  await until(() => s.filesystem.delegations.size === 1, 'the grant again');
   assert.equal(await withRecall(() => s.kernel.readFileString('home/user/proj/d1/after.txt')), 'after the revoke');
   await s.fs.settle();
 }

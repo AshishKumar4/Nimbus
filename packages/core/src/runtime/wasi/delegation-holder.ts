@@ -296,9 +296,10 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     if (cell === undefined || cell.detached !== undefined) return;
     dirty.delete(inode);
     delete cell.logged;
-    const entry = decided.get(inode.key) ?? store.entry(inode.key) ?? {
+    // A made file's cell keeps the mode its open asked, its umask beside it.
+    const entry = atName(inode) ?? {
       type: 'file' as const, dev: store.device, ino: inode.ino, nlink: 1, size: cell.length, atime: now(), mtime: now(), ctime: now(),
-      mode: 0o100000 | cell.mode, uid: store.cred.uid, gid: store.cred.gid, revision: 0, target: null,
+      mode: 0o100000 | (cell.umask === undefined ? cell.mode : cell.mode & ~cell.umask), uid: store.cred.uid, gid: store.cred.gid, revision: 0, target: null,
     };
     // Each that may write: one opened only to read reads the content here, and needs none.
     const opened = prov.descriptorsOf(inode).filter((desc) => desc.description === undefined && desc.write);
@@ -313,13 +314,25 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         acknowledged({ type: 'call', call: { call: 'write', path: inode.key, ino: made, description, offset: 0, data: owned(cell.bytes, cell.length) } });
       }
     });
-    prov.unhold(inode, { ...entry, dev: inode.dev, ino: inode.ino, mode: (entry.mode & ~0o7777) | cell.mode });
+    prov.unhold(inode, { ...entry, dev: inode.dev, ino: inode.ino });
+  };
+
+  /** What is decided here, else what the view has, at `inode`'s name while that name leads to the file. */
+  const atName = (inode: Inode): ResidentEntry | undefined => {
+    const entry = decided.get(inode.key) ?? store.entry(inode.key);
+    return entry && entry.ino === inode.ino ? entry : undefined;
+  };
+
+  /** `inode`'s decided row, while its name leads to it, at `size` and changed now. */
+  const resized = (inode: Inode, size: number): void => {
+    const entry = decided.get(inode.key);
+    if (entry && entry.ino === inode.ino) decided.set(inode.key, { ...entry, size, mtime: now(), ctime: now() });
   };
 
   /** Whether `inode`'s mode, as decided here, refuses one of its open descriptions what it was opened to do: only its creating open could have. */
   const refusedByMode = (inode: Inode): boolean => {
     const entry = decided.get(inode.key);
-    if (entry === undefined || entry === null) return false;
+    if (entry === undefined || entry === null || entry.ino !== inode.ino) return false;
     for (const desc of prov.descriptorsOf(inode)) {
       if (!modeAllows(entry, (desc.read ? 4 : 0) | (desc.write ? 2 : 0), store.cred)) return true;
     }
@@ -749,8 +762,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       file.bytes.set(bytes, start);
       file.length = Math.max(file.length, end);
       if (offset === null || handle.append) handle.position = end;
-      const entry = decided.get(inode.key);
-      if (entry) decided.set(inode.key, { ...entry, size: file.length, mtime: now(), ctime: now() });
+      resized(inode, file.length);
       written(inode, from);
       return bytes.byteLength;
     },
@@ -774,8 +786,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const from = Math.min(size, file.length);
       if (size > file.length) file.bytes.fill(0, file.length, size);
       file.length = size;
-      const entry = decided.get(inode.key);
-      if (entry) decided.set(inode.key, { ...entry, size, mtime: now(), ctime: now() });
+      resized(inode, size);
       written(inode, from);
     },
 
@@ -786,7 +797,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const file = inode.cell;
       // Its name gone: the description's own file, as it was then.
       if (file.detached !== undefined) return { ...file.detached, size: file.length };
-      const entry = decided.get(inode.key) ?? store.entry(inode.key);
+      const entry = atName(inode);
       if (!entry) throw fsError('EBADF', 'fstat', handle.path);
       return { ...entry, size: file.length };
     },
@@ -803,7 +814,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const inode = handle.inode;
       const file = inode.cell;
       if (flags.append) return undefined;
-      const entry = file.detached ?? decided.get(inode.key) ?? store.entry(inode.key);
+      const entry = file.detached ?? atName(inode);
       if (!entry) throw fsError('EBADF', 'open', handle.path);
       if (flags.create && flags.exclusive) throw fsError('EEXIST', 'open', handle.path);
       if (!modeAllows(entry, (flags.read ? 4 : 0) | (flags.write || flags.truncate ? 2 : 0), store.cred)) throw fsError('EACCES', 'open', handle.path);
@@ -813,8 +824,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       prov.descriptor(opened.id)!.write = !!flags.write;
       if (flags.truncate) {
         file.length = 0;
-        const emptied = decided.get(inode.key);
-        if (emptied) decided.set(inode.key, { ...emptied, size: 0, mtime: now(), ctime: now() });
+        resized(inode, 0);
         written(inode, 0);
       }
       return {
@@ -930,7 +940,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       }
       const inode = handle.inode;
       const file = inode.cell;
-      const entry = file.detached ?? decided.get(inode.key) ?? store.entry(inode.key);
+      const entry = file.detached ?? atName(inode);
       // Its times as it is decided (timeAt): now, explicit, or as they are.
       const at = now();
       const attrs: W7Attrs = entry && 'atime' in change ? { atime: timeAt(change.atime, entry.atime, at), mtime: timeAt(change.mtime, entry.mtime, at) } : change;

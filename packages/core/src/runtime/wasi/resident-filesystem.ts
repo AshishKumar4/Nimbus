@@ -1096,7 +1096,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   /** A read through the session's open description of `handleId`'s file (Provisional.sessionOf), at `offset` or the descriptor's position. */
   const readByAnchor = async (handleId: number, offset: number | null, length: number): Promise<Uint8Array> => {
     const key = holder!.keyOf(handleId);
-    await holder!.flush();
+    // What this process logged reaches the session first; a refusal among it is the next sync's to report, not this read's.
+    await holder!.send();
     const session = holder!.provisional.sessionOf(handleId);
     if (session === undefined) throw fsError('ESTALE', 'read', '/' + key);
     const start = offset ?? holder!.seek(handleId, 0, 'current');
@@ -1156,11 +1157,23 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       return current ? statOf(current.entry) : DELEGATE;
     }, () => authority.fstat(handleId));
     if (holder?.owns(handleId)) {
+      // A file no name leads to: as its open description at the session has it, as its reads are.
+      if (!now && holder.provisional.sessionOf(handleId) !== undefined && holder.provisional.unnamed(handleId)) return statByAnchor(handleId);
       counts.local++;
       return statOf(holder.fstat(handleId));
     }
     delegated('fstat');
     return authority.fstat(handleId);
+  };
+
+  /** `handleId`'s file as the session's open description of it has it (Provisional.sessionOf), once what this process logged is there. */
+  const statByAnchor = async (handleId: number): Promise<RuntimeVfsStat> => {
+    const key = holder!.keyOf(handleId);
+    await holder!.send();
+    const session = holder!.provisional.sessionOf(handleId);
+    if (session === undefined) throw fsError('ESTALE', 'fstat', '/' + key);
+    delegated('fstat');
+    return authority.fstat(session);
   };
 
   fs.read = (handleId, offset, length) => {
