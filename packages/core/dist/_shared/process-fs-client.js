@@ -196,7 +196,8 @@ function extended(call, data, buffer) {
  * page cache folds them; null when it is not such a change, or the folded
  * bytes would pass a piece.
  */
-function folded(last, next, buffer) {
+/** How `next` folds into `last`: its bytes replace last's, extend them, or (null) it does not fold. */
+function foldOf(last, next) {
     if (last.type !== 'call' || next.type !== 'call' || !('data' in last.call) || !('data' in next.call))
         return null;
     const a = last.call;
@@ -205,20 +206,26 @@ function folded(last, next, buffer) {
     if (a.path !== b.path || descriptionOf(a) !== descriptionOf(b) || a.data.byteLength + b.data.byteLength > DATA_PIECE_BYTES)
         return null;
     const inoOf = (call) => ('ino' in call ? call.ino : undefined);
-    if (b.call === 'writeFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) {
-        // The last write's file is made (or kept) by the first: its make wins, the bytes are the last's.
-        return { op: { type: 'call', call: { ...a, call: 'writeFile', data: b.data } }, buffer: null };
-    }
-    if (b.call === 'appendFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) {
-        return extended(a, b.data, buffer);
-    }
-    if (b.call === 'append' && a.call === 'append' && inoOf(a) === inoOf(b)) {
-        return extended(a, b.data, buffer);
-    }
-    if (b.call === 'write' && a.call === 'write' && inoOf(a) === inoOf(b) && a.offset + a.data.byteLength === b.offset) {
-        return extended(a, b.data, buffer);
-    }
+    // The last write's file is made (or kept) by the first: its make wins, the bytes are the last's.
+    if (b.call === 'writeFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile'))
+        return 'replaces';
+    if (b.call === 'appendFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile'))
+        return 'extends';
+    if (b.call === 'append' && a.call === 'append' && inoOf(a) === inoOf(b))
+        return 'extends';
+    if (b.call === 'write' && a.call === 'write' && inoOf(a) === inoOf(b) && a.offset + a.data.byteLength === b.offset)
+        return 'extends';
     return null;
+}
+function folded(last, next, buffer) {
+    const fold = foldOf(last, next);
+    if (fold === null)
+        return null;
+    const a = last.call;
+    const b = next.call;
+    if (fold === 'replaces')
+        return { op: { type: 'call', call: { ...a, call: 'writeFile', data: b.data } }, buffer: null };
+    return extended(a, b.data, buffer);
 }
 /**
  * A data call larger than a piece: its first piece as the call, the rest as
@@ -662,6 +669,11 @@ export function processFsClient(options) {
             pump();
         });
     };
+    /** The last unsent change `parts` (one op's) may fold into: one piece, its file's, sent never (one back for a re-send is numbered), logged alike. */
+    const foldTail = (parts, named, acknowledged) => {
+        const tail = queue[queue.length - 1];
+        return parts.length === 1 && tail !== undefined && tail.paths[0] === named[0] && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged ? tail : undefined;
+    };
     const schedule = () => {
         if (scheduled || inFlight !== null || paused || sealed)
             return;
@@ -1008,6 +1020,12 @@ export function processFsClient(options) {
         pending() {
             return queue.length > 0 || inFlight !== null;
         },
+        continues(op, submitOptions) {
+            const given = withUmaskOf(op, options.umask);
+            const parts = pieces(given);
+            const tail = foldTail(parts, pathsOf(given), submitOptions?.acknowledged === true);
+            return tail !== undefined && foldOf(tail.op, parts[0]) !== null;
+        },
         fitsSync(bytes, path) {
             if (!sealed && pendingSyncBytes + bytes > syncCap)
                 throw syncCapRefusal(bytes, path);
@@ -1031,10 +1049,8 @@ export function processFsClient(options) {
             if (acknowledged && !sealed && pendingSyncBytes + bytes > syncCap)
                 throw syncCapRefusal(bytes, pathsOf(op)[0] ?? '');
             // The same file's next bytes, right after its last unsent change: folded into it.
-            const tail = queue[queue.length - 1];
-            // (The queue holds only unsent changes; one sent and back for a re-send is numbered.)
-            const merged = parts.length === 1 && tail !== undefined && tail.paths[0] === named[0] && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged
-                ? folded(tail.op, parts[0], tail[FOLD_BUFFER] ?? null) : null;
+            const tail = foldTail(parts, named, acknowledged);
+            const merged = tail !== undefined ? folded(tail.op, parts[0], tail[FOLD_BUFFER] ?? null) : null;
             if (merged !== null && tail !== undefined) {
                 const mergedBytes = merged.op.type === 'call' && 'data' in merged.op.call ? merged.op.call.data.byteLength : 0;
                 journal.replace(tail.jid, merged.op, merged.append);

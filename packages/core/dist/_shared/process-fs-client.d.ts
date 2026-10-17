@@ -236,6 +236,15 @@ export interface ProcessFsClient {
      * not, for a caller that has changed nothing yet.
      */
     fitsSync(bytes: number, path: string): void;
+    /**
+     * Whether submit (with these options) would fold `op` into the last
+     * unsent change, the same file's next bytes through the same description,
+     * now: then it copies `op`'s bytes into that change's (the caller's
+     * buffer is not kept) and answers it with that change's answer.
+     */
+    continues(op: ProcessFsOp, submitOptions?: {
+        acknowledged?: boolean;
+    }): boolean;
     /** Send what lingers now: someone waits on one of the process's own changes. */
     hurry(): void;
     /**

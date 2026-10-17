@@ -1436,25 +1436,25 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     const joined = buffer.subarray(0, size);
     return { op: { type: "call", call: { ...call, data: joined } }, buffer, append: joined.subarray(call.data.byteLength) };
   }
-  function folded(last, next, buffer) {
+  function foldOf(last, next) {
     if (last.type !== "call" || next.type !== "call" || !("data" in last.call) || !("data" in next.call)) return null;
     const a = last.call;
     const b = next.call;
     if (a.path !== b.path || descriptionOf(a) !== descriptionOf(b) || a.data.byteLength + b.data.byteLength > DATA_PIECE_BYTES) return null;
     const inoOf = (call) => "ino" in call ? call.ino : void 0;
-    if (b.call === "writeFile" && inoOf(b) === void 0 && (a.call === "writeFile" || a.call === "appendFile")) {
-      return { op: { type: "call", call: { ...a, call: "writeFile", data: b.data } }, buffer: null };
-    }
-    if (b.call === "appendFile" && inoOf(b) === void 0 && (a.call === "writeFile" || a.call === "appendFile")) {
-      return extended(a, b.data, buffer);
-    }
-    if (b.call === "append" && a.call === "append" && inoOf(a) === inoOf(b)) {
-      return extended(a, b.data, buffer);
-    }
-    if (b.call === "write" && a.call === "write" && inoOf(a) === inoOf(b) && a.offset + a.data.byteLength === b.offset) {
-      return extended(a, b.data, buffer);
-    }
+    if (b.call === "writeFile" && inoOf(b) === void 0 && (a.call === "writeFile" || a.call === "appendFile")) return "replaces";
+    if (b.call === "appendFile" && inoOf(b) === void 0 && (a.call === "writeFile" || a.call === "appendFile")) return "extends";
+    if (b.call === "append" && a.call === "append" && inoOf(a) === inoOf(b)) return "extends";
+    if (b.call === "write" && a.call === "write" && inoOf(a) === inoOf(b) && a.offset + a.data.byteLength === b.offset) return "extends";
     return null;
+  }
+  function folded(last, next, buffer) {
+    const fold = foldOf(last, next);
+    if (fold === null) return null;
+    const a = last.call;
+    const b = next.call;
+    if (fold === "replaces") return { op: { type: "call", call: { ...a, call: "writeFile", data: b.data } }, buffer: null };
+    return extended(a, b.data, buffer);
   }
   function pieces(op) {
     if (op.type !== "call" || !("data" in op.call) || op.call.data.byteLength <= DATA_PIECE_BYTES) return [op];
@@ -1795,6 +1795,10 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         pump();
       });
     };
+    const foldTail = (parts, named, acknowledged) => {
+      const tail = queue[queue.length - 1];
+      return parts.length === 1 && tail !== void 0 && tail.paths[0] === named[0] && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged ? tail : void 0;
+    };
     const schedule = () => {
       if (scheduled || inFlight !== null || paused || sealed) return;
       scheduled = true;
@@ -2038,6 +2042,12 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       pending() {
         return queue.length > 0 || inFlight !== null;
       },
+      continues(op, submitOptions) {
+        const given = withUmaskOf(op, options.umask);
+        const parts = pieces(given);
+        const tail = foldTail(parts, pathsOf(given), submitOptions?.acknowledged === true);
+        return tail !== void 0 && foldOf(tail.op, parts[0]) !== null;
+      },
       fitsSync(bytes, path) {
         if (!sealed && pendingSyncBytes + bytes > syncCap) throw syncCapRefusal(bytes, path);
       },
@@ -2054,8 +2064,8 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         const parts = pieces(op);
         const bytes = parts.reduce((sum, part) => sum + (part.type === "call" && "data" in part.call ? part.call.data.byteLength : 0), 0);
         if (acknowledged && !sealed && pendingSyncBytes + bytes > syncCap) throw syncCapRefusal(bytes, pathsOf(op)[0] ?? "");
-        const tail = queue[queue.length - 1];
-        const merged = parts.length === 1 && tail !== void 0 && tail.paths[0] === named[0] && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged ? folded(tail.op, parts[0], tail[FOLD_BUFFER] ?? null) : null;
+        const tail = foldTail(parts, named, acknowledged);
+        const merged = tail !== void 0 ? folded(tail.op, parts[0], tail[FOLD_BUFFER] ?? null) : null;
         if (merged !== null && tail !== void 0) {
           const mergedBytes = merged.op.type === "call" && "data" in merged.op.call ? merged.op.call.data.byteLength : 0;
           journal.replace(tail.jid, merged.op, merged.append);
