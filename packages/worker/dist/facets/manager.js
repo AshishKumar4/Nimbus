@@ -8322,8 +8322,10 @@ export class FacetManager {
                     this._assertLaunchStillOwned(entry.pid);
                     // Its worker, the launch admission it was started in, before its boot claims it.
                     await admitted();
+                    // The run this boot is: past a stop, the one its replay names; a run from its start past one that stopped, its own.
+                    const launchingRun = rerun?.replay.run ?? opts.run ?? 1;
                     try {
-                        const launchingNonce = stopNonce, launchingRun = rerun?.replay.run ?? opts.run ?? 1;
+                        const launchingNonce = stopNonce;
                         handle = await this._startResidentProcess(entry.pid, {
                             // The attached-TTY runner holds startProcess open for the process's
                             // life; the server/watch runner returns once it is up.
@@ -8439,9 +8441,9 @@ export class FacetManager {
                         // The boot stopped itself at a synchronous read of stdin that has to
                         // wait: wait for the input, then boot it again.
                         const journal = this.replay.get(entry.pid)?.journal;
-                        let stop = stoppable ? stopRecordOf(e, stopNonce, rerun?.replay.run ?? 1) : null;
+                        let stop = stoppable ? stopRecordOf(e, stopNonce, launchingRun) : null;
                         if (stop === null && journal?.diverged)
-                            stop = { v: 3, kind: 'diverged', run: rerun?.replay.run ?? 1, out: [], why: journal.diverged };
+                            stop = { v: 3, kind: 'diverged', run: launchingRun, out: [], why: journal.diverged };
                         if (stop === null)
                             throw e;
                         this.stdinTaken.get(entry.pid)?.retire();
