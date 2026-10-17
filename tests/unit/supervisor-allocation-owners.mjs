@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
-import { SupervisorAllocationBudget, SupervisorLoadWaitError } from '../../packages/platform/src/heavy-alloc-coord.ts';
+import { acquireSupervisorAllocation, SupervisorAllocationBudget, SupervisorLoadWaitError } from '../../packages/platform/src/heavy-alloc-coord.ts';
+import { attributeAllocation, readDiagCounters } from '../../packages/platform/src/diag-counters.ts';
 
 const budget = new SupervisorAllocationBudget(100);
 const first = await budget.acquire(30, undefined, { owner: 'first slice', pid: 7, session: 'one' });
@@ -29,4 +30,12 @@ try {
 }
 assert.deepEqual(budget.stats.holders, []);
 assert.deepEqual(budget.stats.waiting, []);
+const baseline = readDiagCounters().prefetchBundleBytes;
+const owned = await acquireSupervisorAllocation(100, undefined, { owner: 'canonical owner' });
+attributeAllocation('prefetchBundleBytes', owned);
+assert.equal(readDiagCounters().prefetchBundleBytes, baseline + 100);
+owned.shrinkTo(40);
+assert.equal(readDiagCounters().prefetchBundleBytes, baseline + 40, 'shrinking through the real lease updates derived attribution without a wrapper ledger');
+owned.release();
+assert.equal(readDiagCounters().prefetchBundleBytes, baseline);
 console.log('supervisor-allocation-owners: holders and waiters name the real leases');

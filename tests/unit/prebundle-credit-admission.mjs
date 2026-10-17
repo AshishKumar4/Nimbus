@@ -20,6 +20,7 @@ function bundleFixture(name, bytes = 128 * 1024) {
   authority.kfs.writeFile(`${root}/node_modules/pkg/index.js`, `export const x=1;\n// ${'x'.repeat(bytes)}\n`);
   const entered = Promise.withResolvers();
   const finish = Promise.withResolvers();
+  let sliceRef;
   class Bundler {
     async warm() {}
     async prebundle(spec) {
@@ -30,14 +31,16 @@ function bundleFixture(name, bytes = 128 * 1024) {
   }
   const platform = namedFacetPlatform({ id: name, classFor: () => Bundler,
     invoke(_name, method, args, instance) {
+      if (method === 'prebundle') sliceRef = new WeakRef(args[0].slice);
       const transferred = structuredClone(args);
+      args.length = 0;
       return instance.then((target) => target[method](...transferred));
     },
   });
   const provider = new PrebundlePool(platform.env, platform.ctx);
   const context = { vfs: authority.kfs, root, cache: null, pool: provider,
     parse: async (_path, source) => source, esbuild: new EsbuildService(undefined, {}), serviceFallback: false };
-  return { ...platform, provider, context, authority, entered: entered.promise, finish: () => finish.resolve(),
+  return { ...platform, provider, context, authority, entered: entered.promise, finish: () => finish.resolve(), sliceRef: () => sliceRef,
     build: () => buildPrebundle(context, 'pkg', null, (code) => code) };
 }
 
@@ -119,7 +122,11 @@ await runScenarios(fileURLToPath(import.meta.url), {
     held.release();
     await until(() => loaderLedgerStats(parked.ctx).waiting > 0 && readSupervisorAllocationBudget().current > 0,
       'the fallback payload parks for its worker');
-    const ordinary = acquireSupervisorAllocation(capacity, undefined, { owner: 'ordinary full-budget build' });
+    const abortOrdinary = new AbortController();
+    let ordinaryLease;
+    const ordinary = acquireSupervisorAllocation(capacity, abortOrdinary.signal, { owner: 'ordinary full-budget build' })
+      .then((lease) => { ordinaryLease = lease; return lease; });
+    ordinary.catch(() => {});
     const second = withLaunchAdmission(caller.ctx, { pid: 71 }, undefined, async () => {
       const end = claimAdmission(caller.ctx, 71);
       try { return await caller.build(); } finally { end(); }
@@ -134,23 +141,27 @@ await runScenarios(fileURLToPath(import.meta.url), {
       caller.finish();
       assert.equal((await second).kind, 'built');
     } finally {
+      abortOrdinary.abort(new Error('test complete'));
+      ordinaryLease?.release();
       for (const release of holds) release();
       caller.finish(); parked.finish();
-      await first;
+      await Promise.allSettled([first, second]);
     }
     assert.equal(readSupervisorAllocationBudget().current, 0);
   },
   async delegatedDiscoveryHoldsNoSlice() {
     const h = bundleFixture('delegated-prebundle');
     const root = h.context.root + '/node_modules/pkg';
-    h.authority.kfs.writeFile(`${root}/index.js`, 'export { X } from "./component.jsx";');
-    h.authority.kfs.writeFile(`${root}/component.jsx`, 'export const X = () => <div/>;');
+    h.authority.kfs.writeFile(`${root}/index.js`, 'export { X } from "./component.tsx";');
+    const parameter = 'T' + 'x'.repeat(600);
+    h.authority.kfs.writeFile(`${root}/component.tsx`, `type Identity = <${parameter}>(value: ${parameter}) => ${parameter}; export const X: Identity = value => value;`);
     const entered = Promise.withResolvers();
     const finish = Promise.withResolvers();
     h.context.parse = async () => { entered.resolve(); await finish.promise; return 'export const X = () => null;'; };
     const building = buildPrebundle(h.context, 'pkg', { pkgName: 'pkg', fileCount: 1000, names: new Set(['X']), inputHash: 'x' }, (code) => code);
     try {
-      await entered.promise;
+      await Promise.race([entered.promise, h.entered.then(() => { throw new Error('the fixture did not need delegated parsing'); }),
+        building.then((result) => { throw new Error(`the fixture completed before delegated parsing: ${JSON.stringify(result)}`); })]);
       assert.equal(readSupervisorAllocationBudget().current, 0, 'delegated discovery holds no retained slice credit');
     } finally { finish.resolve(); h.finish(); await building; }
   },
@@ -169,6 +180,21 @@ await runScenarios(fileURLToPath(import.meta.url), {
       assert.equal(loaderLedgerStats(h.ctx).waiting, 0);
       assert.equal(readSupervisorAllocationBudget().current, 0);
     } finally { for (const release of holds) release(); h.finish(); }
+  },
+  async handoffDropsSupervisorSlice() {
+    const h = bundleFixture('drop-prebundle-slice');
+    const building = h.build();
+    try {
+      await h.entered;
+      let live = true;
+      for (let i = 0; i < 12 && live; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        Bun.gc(true);
+        live = h.sliceRef().deref() !== undefined;
+      }
+      assert.equal(live, false, 'the supervisor keeps no slice vector while the RPC answer is pending');
+      assert.equal(readSupervisorAllocationBudget().current, 0, 'the transferred slice keeps no supervisor credit');
+    } finally { h.finish(); await building; }
   },
   async abortPoolSlot() {
     const h = bundleFixture('abort-prebundle-slot');

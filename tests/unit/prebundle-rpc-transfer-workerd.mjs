@@ -3,7 +3,7 @@
 // the bundler eventually answers. Check the actual workerd serialization boundary.
 import assert from 'node:assert/strict';
 import { servePlainWorkerd } from './lib/plain-workerd.mjs';
-import { CF_COMPAT_DATE } from '../../packages/platform/src/limits.ts';
+import { CF_COMPAT_DATE } from '../../packages/core/src/constants.ts';
 
 const source = `import { WorkerEntrypoint } from 'cloudflare:workers';
 export class Receiver extends WorkerEntrypoint {
