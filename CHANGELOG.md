@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `WeightedCreditPool.acquire` (and the supervisor allocation
+  budget over it) refuses a request whose signal is already aborted, with
+  an AbortError and no credit taken, whatever its size. Before, a request
+  at or below `smallRequestBytes` was granted from free shared capacity
+  before its signal was looked at.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
