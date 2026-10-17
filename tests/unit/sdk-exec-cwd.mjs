@@ -81,6 +81,27 @@ async function cwdSentToWire({ calls, box }, options) {
     'omitted still defaults to the sandbox root');
 }
 
+// Every spelling of a relative cwd normalizes as one POSIX path under the
+// root (empty and dot segments dropped, '..' stopping at '/'), and an
+// absolute one, however it is spelled, passes through as the caller wrote it.
+{
+  const spy = connectSpy();
+  for (const [cwd, expected] of [
+    ['', '/home/user'],
+    ['.', '/home/user'],
+    ['..', '/home'],
+    ['../../../x', '/x'],
+    ['../../../../', '/'],
+    ['rel/', '/home/user/rel'],
+    ['rel//child///', '/home/user/rel/child'],
+    ['/a//b/./c/../', '/a//b/./c/../'],
+    ['//', '//'],
+    ['/../x/', '/../x/'],
+  ]) {
+    assert.equal(await cwdSentToWire(spy, { cwd }), expected, `cwd ${JSON.stringify(cwd)}`);
+  }
+}
+
 // The sandbox `root` option is the base a relative cwd resolves against.
 {
   const spy = connectSpy({ root: '/work' });
