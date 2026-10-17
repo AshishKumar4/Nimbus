@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd
 // The errors of the builtins a session's node takes from workerd (zlib,
 // crypto, buffer, events, url, path, util, vm, repl, diagnostics_channel,
 // tls, net, async_hooks, inspector, string_decoder) against host Node's, on the same

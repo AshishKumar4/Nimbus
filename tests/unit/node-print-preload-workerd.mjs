@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd
 // `node -p` and node's preloads in a session, as Node runs them (host Node
 // the oracle, on the same files and command lines):
 //   - `-p` is `-e` that prints the code's completion value with console.log
