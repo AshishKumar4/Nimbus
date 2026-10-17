@@ -16,7 +16,7 @@ import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { BUILD_FACET_WORKER_ID, loadBuildFacet, rolldownBuildHost } from '../../../packages/worker/src/facets/build-facet.ts';
 import { PrebundlePool } from '../../../packages/worker/src/facets/prebundle-pool.ts';
 import { prebundleEntryBytes, type SliceEntry } from '@nimbus-sh/core/runtime/prebundle-slice.js';
-import { utf8Length } from '@nimbus-sh/platform/module-source.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { esbuildBuildFallbackHost, esbuildStackFallbackHost } from '../../../packages/worker/src/facets/esbuild-transform.ts';
 import { NAPI_WASM_LOADER, fetchStagedBindingAsset } from '../../../packages/worker/src/runtime/staged-bindings.ts';
 
