@@ -442,7 +442,10 @@ export function provisional(host) {
             record.room = room = grown;
         }
         room.set(op.data, before);
-        record.op = { ...was, data: room.subarray(0, length), at: op.at };
+        // The record's own op: changed where it is.
+        const own = was;
+        own.data = room.subarray(0, length);
+        own.at = op.at;
         record.owner.recordsCost += op.data.byteLength;
         return true;
     };
