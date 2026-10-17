@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "d3fdf79b2537b9978155fd288911b35b73ed308be43053510a255171b81c3177",
+  "fingerprint": "7e8ae1b2da235db7a02055e3e63f102bd7aa3b66207699e13d2e145235f96e1a",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2364,7 +2364,7 @@
     "packages/worker/dist/facets/read-profile.js": "9ad0c784d4d47a471bf3f87dc2cfa29d85856361ce7ae2670005d1456aa5d799",
     "packages/worker/dist/facets/real-vite-fs-shim.d.ts": "dc6acb33f9ddff79e729b667c40e8cd303383aee71850f94bd3b795f22cf9f8a",
     "packages/worker/dist/facets/real-vite-fs-shim.d.ts.map": "75b997f4e0742d2722aa883080de1e29897cc6ac29478d92069276dc6a7e3a82",
-    "packages/worker/dist/facets/real-vite-fs-shim.js": "05c8e11c22d3b5eedc67fc958dd072b71075dd1987f59e565a2182d82af68a46",
+    "packages/worker/dist/facets/real-vite-fs-shim.js": "9b37a2798648f65a06269456c76d5fa1bee41a3b61ac54d84578a7fd67e20175",
     "packages/worker/dist/facets/real-vite-hmr.d.ts": "1a00d43d63f776883fb122cefbb898f044e88120717d2565b38d9a2597bcd874",
     "packages/worker/dist/facets/real-vite-hmr.d.ts.map": "f4887f5b9179bd91084ce18f296b8c2804e3420976f3540edc9221565c03936b",
     "packages/worker/dist/facets/real-vite-hmr.js": "381b45910a832711bbf04767ea5004ed85593eaa6b0fc601b7483a335dcba263",
@@ -3232,7 +3232,7 @@
     "packages/worker/src/facets/oxc-transform.ts": "d843cf9eefc0c7352177c50d7c3afe18478f1f4d51988c9a7db9997f06c01b97",
     "packages/worker/src/facets/prebundle-pool.ts": "543fd016de8fe51e6c60eec26154a5079ce1a1a6e891e681fe2f95185faf7286",
     "packages/worker/src/facets/read-profile.ts": "e8c7e9e3a9692907decedd8fea472633196f190f3565b9b36d6077d36c3946da",
-    "packages/worker/src/facets/real-vite-fs-shim.ts": "a31bd0f2c02abfd36f59c63b994564870f85fe3fd5420a835cd1eaac782c2630",
+    "packages/worker/src/facets/real-vite-fs-shim.ts": "12bb8d23eb2e72b1f6532a2607177a4b93d34161b5bf287d8b3d3f5be55648ff",
     "packages/worker/src/facets/real-vite-hmr.ts": "98c12b4754db7b0c2c68f5ba1ed9db0327829f7eaf90c5b7c9826dec3769dae1",
     "packages/worker/src/facets/resident-identity.ts": "05075ecf8d7ce9eef8c353148f221acc461afb47ff01472fe4492c0c686ecd9a",
     "packages/worker/src/facets/server-hints.ts": "987e9eab10bf51803f49409f9ef15fa00ed23f03428677ca2475b0652a2c70e4",
