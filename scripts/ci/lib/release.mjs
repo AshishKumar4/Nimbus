@@ -8,10 +8,11 @@
 // A release is a directory named by commit and job: under
 // ~/.local/state/nimbus/releases/ when a later step uploads it (staging's,
 // which production promotes), else in the run's own directory
-// (lib/run-dir.mjs), deleted with it. It holds each target's module, the docs build of an app
-// that has assets, and release.json: { commit, job, bundles: { "<app>[:<env>]":
-// { main, sha256, file } }, assets: { "<app>": { manifest, docs: { sha256,
-// file } } } }. release.mjs adds staged.json when staging verified it.
+// (lib/run-dir.mjs), deleted with it. It holds each target's module, the
+// docs build of an app that has assets, and release.json: { commit, job,
+// bundles: { "<app>[:<env>]": { main, sha256, file } }, assets: { "<app>":
+// { manifest, docs: { sha256, file } } } }. release.mjs adds staged.json when
+// staging verified it.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
