@@ -31,7 +31,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld } from './lib/facet-host-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
 import { hostedLifecycle } from './lib/hosted-lifecycle.mjs';

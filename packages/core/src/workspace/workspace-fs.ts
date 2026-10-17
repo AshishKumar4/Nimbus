@@ -118,7 +118,6 @@ export class WorkspaceFs implements VFS {
   /** Create the file if absent, and set its times to now (touch). */
   async touch(path: string): Promise<void> { return await this.view.touch(this.resolve(path)); }
   async readFileUncached(path: string): Promise<Uint8Array> { return await this.view.readFileUncached(this.resolve(path)); }
-  async readArrayBufferUncached(path: string): Promise<ArrayBuffer> { return await this.view.readArrayBufferUncached(this.resolve(path)); }
   /** rm: a file, or with `recursive` a tree, whole or not at all; `force` makes a missing path no error. */
   async remove(path: string, options?: { recursive?: boolean; force?: boolean }): Promise<void> { return await this.view.remove(this.entry(path, 'rm'), options); }
   /** Each entry of a directory with its own stat (links not followed). */

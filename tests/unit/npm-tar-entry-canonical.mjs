@@ -10,6 +10,7 @@
 
 import assert from 'node:assert/strict';
 import { canonicalTarName, streamPackageEntries, streamTarEntries, parseTarHeader } from '../../packages/core/src/_shared/tarball-stream.ts';
+import { ustarArchive, ustarHeader } from './lib/ustar.mjs';
 
 // ── canonicalTarName: collapse ./ and .. ; reject root escapes ──────────
 assert.equal(canonicalTarName('dist/index.js'), 'dist/index.js');
@@ -24,48 +25,9 @@ assert.equal(canonicalTarName('../../etc/passwd'), '');
 assert.equal(canonicalTarName('dist/../../escape.js'), '');
 
 // ── streamTarEntries: a "./dist/…" entry yields a canonical name ────────
-// Build a minimal ustar archive with two regular-file entries.
-function tarHeader(name, size) {
-  const buf = new Uint8Array(512);
-  const enc = new TextEncoder();
-  buf.set(enc.encode(name).slice(0, 100), 0);
-  buf.set(enc.encode('0000644\0'), 100); // mode
-  buf.set(enc.encode('0000000\0'), 108); // uid
-  buf.set(enc.encode('0000000\0'), 116); // gid
-  const sizeOctal = size.toString(8).padStart(11, '0') + '\0';
-  buf.set(enc.encode(sizeOctal), 124);
-  buf.set(enc.encode('00000000000\0'), 136); // mtime
-  buf[156] = 48; // typeflag '0' — regular file
-  buf.set(enc.encode('ustar\0'), 257);
-  buf.set(enc.encode('00'), 263);
-  // checksum: spaces during compute, then written octal
-  for (let i = 148; i < 156; i++) buf[i] = 0x20;
-  let sum = 0;
-  for (let i = 0; i < 512; i++) sum += buf[i];
-  buf.set(enc.encode(sum.toString(8).padStart(6, '0') + '\0 '), 148);
-  return buf;
-}
-function fileBlock(data) {
-  const padded = new Uint8Array(Math.ceil(data.length / 512) * 512);
-  padded.set(data);
-  return padded;
-}
-function buildTar(entries) {
-  const enc = new TextEncoder();
-  const parts = [];
-  for (const [name, content] of entries) {
-    const data = enc.encode(content);
-    parts.push(tarHeader(name, data.length));
-    parts.push(fileBlock(data));
-  }
-  parts.push(new Uint8Array(1024)); // two zero blocks = end
-  let total = 0;
-  for (const p of parts) total += p.length;
-  const out = new Uint8Array(total);
-  let off = 0;
-  for (const p of parts) { out.set(p, off); off += p.length; }
-  return out;
-}
+// Minimal ustar archives of regular-file entries.
+const tarHeader = (name, size) => ustarHeader({ name, size });
+const buildTar = (entries) => ustarArchive(entries.map(([name, content]) => ({ name, data: new TextEncoder().encode(content) })));
 
 // Sanity: parseTarHeader canonicalizes on its own — the top-level directory
 // stays on the name here; package-relative stripping is streamPackageEntries'

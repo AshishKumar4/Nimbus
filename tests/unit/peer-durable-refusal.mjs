@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createFacetWorld, createPeerNamespace } from './facet-host-harness.mjs';
+import { createFacetWorld, createPeerNamespace } from './lib/facet-host-harness.mjs';
 import { launchManager } from './lib/facet-launch-harness.mjs';
 import { deriveResidentOwner } from '../../packages/worker/src/facets/resident-identity.ts';
 import { reservePort } from '../../packages/worker/src/session/port-capability.ts';

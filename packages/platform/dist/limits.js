@@ -197,6 +197,14 @@ export const RESIDENT_PAGE_CACHE_FREE_SHARE = 0.25;
 // with 7 MiB left for metadata, structured-clone overhead, and runtime state.
 // This is 31.25% of the platform's 128 MiB hard isolate ceiling.
 export const SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES = 40 * 1024 * 1024;
+// The longest a facet's load waits for that allowance before it is refused
+// (acquireSupervisorLoadAllocation). The wait is FIFO, so a load waits only
+// for the holds ahead of it, each of which ends when its own work does. A
+// load is the one owner that waits while it holds a Dynamic Worker (the
+// loader asks for its code then), so a launch that holds credit while it
+// waits for a worker of the same Durable Object can close a cycle nothing
+// ends: the bound refuses the load, by name, instead of leaving both to hang.
+export const SUPERVISOR_LOAD_WAIT_MS = 60_000;
 // Reserved slice of that allowance for chunk-sized filesystem reads, so a
 // read is never queued behind a multi-megabyte owner for a wait that has
 // nothing to do with its own cost. A read only draws on this when the shared

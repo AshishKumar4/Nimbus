@@ -873,18 +873,23 @@ export const DYNAMIC_WORKER_CODE_LIMIT_BYTES = 67_108_864;
  * text the generators emit and undercount otherwise; the platform's own
  * refusal still backstops the exotic case, because this check exists to name
  * members, not to be the ceiling. Over it: exact UTF-8 sizes, computed only
- * then, sorted so the biggest lever is first.
+ * then, sorted so the biggest lever is first. `unread` are members not read
+ * yet (a facet's wasm images, by the size they were opened at), so a map that
+ * can never load is refused before its images are read.
  */
-export function assertModuleMapWithinCodeLimit(modules) {
+export function assertModuleMapWithinCodeLimit(modules, unread = {}) {
     let estimate = 0;
     for (const content of Object.values(modules)) {
         estimate += memberBytes(content, false);
     }
+    for (const bytes of Object.values(unread))
+        estimate += bytes;
     if (estimate <= DYNAMIC_WORKER_CODE_LIMIT_BYTES)
         return;
-    const sized = Object.entries(modules)
-        .map(([name, content]) => ({ name, bytes: memberBytes(content, true) }))
-        .sort((a, b) => b.bytes - a.bytes);
+    const sized = [
+        ...Object.entries(modules).map(([name, content]) => ({ name, bytes: memberBytes(content, true) })),
+        ...Object.entries(unread).map(([name, bytes]) => ({ name, bytes })),
+    ].sort((a, b) => b.bytes - a.bytes);
     const total = sized.reduce((sum, member) => sum + member.bytes, 0);
     const top = sized.slice(0, 5)
         .map(({ name, bytes }) => `'${name}' (${bytes.toLocaleString('en-US')} bytes)`)

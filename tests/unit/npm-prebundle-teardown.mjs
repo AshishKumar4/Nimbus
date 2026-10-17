@@ -27,7 +27,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { kernelInstaller } from './npm-fanout-test-env.mjs';
+import { kernelInstaller } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness(new Database(':memory:'));

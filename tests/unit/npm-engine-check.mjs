@@ -28,7 +28,7 @@ import { npmEngineLines } from '../../packages/core/src/substrate/lifo/commands/
 import { createNpmCommand } from '../../packages/core/src/substrate/lifo/commands/system/npm.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 
 const PROJ = 'app';
 const NM = `${PROJ}/node_modules`;

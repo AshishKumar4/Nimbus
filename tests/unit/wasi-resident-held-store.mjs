@@ -7,7 +7,9 @@
  * Red before (live, wasi-fs-load, python):
  *   - a second run that rewrote files a first run had written listed its
  *     directory as empty and stat'd the files it had just written as missing;
- *   - a 2 to 5 MiB file read back right after it was written had no bytes.
+ *   - a 2 to 5 MiB file read back right after it was written had no bytes;
+ *   - pip's first file in a package directory it had just made failed
+ *     ENOENT when the grant was renewed while the open's walk waited.
  */
 
 import assert from 'node:assert/strict';
@@ -42,13 +44,22 @@ async function sessionWith(seed = {}) {
   return { files, kernel, next: 2 };
 }
 
-/** A process of `session` (its own pid) over its own real store, holding what it writes. `gate`: each wave waits for it. */
-async function processOf(session, gate = () => null) {
+/**
+ * A process of `session` (its own pid) over its own real store, holding what
+ * it writes. `gate`: each wave waits for it. `grantInos`: a first grant's
+ * range. `looked`, `caught`: each lookup's and each barrier's answer waits
+ * for it, taken as the session had it when asked.
+ */
+async function processOf(session, gate = () => null, { grantInos, looked, caught } = {}) {
   const authority = session.files.bind({ pid: session.next++, cred: USER });
   const storeSource = createResidentStore();
   storeSource.bindInMemory(WASI_RESIDENT_STORE_BYTES);
   const supervisor = {
-    fsAcquire: (...args) => authority.acquire(...args),
+    async fsAcquire(...args) {
+      const answer = await authority.acquire(...args);
+      await caught?.();
+      return answer;
+    },
     fsList: (...args) => authority.list(...args),
     readdir: (path) => authority.readdir(path),
     readlink: (path) => authority.readlink(path),
@@ -61,6 +72,7 @@ async function processOf(session, gate = () => null) {
           else out.push({ bytes: await authority.readRange(request.path, request.offset, request.length) });
         } catch (error) { out.push({ error }); }
       }
+      await looked?.(requests);
       return out;
     },
   };
@@ -85,13 +97,23 @@ async function processOf(session, gate = () => null) {
   const fs = residentFilesystem(authority, view, {
     session: port,
     isHomeRoot: (key) => key.startsWith('home/') && !key.slice(5).includes('/'),
+    ...(grantInos === undefined ? {} : { grantInos }),
   });
   return { fs, kernel: session.kernel, authority };
 }
 
 /** A session with `seed`, and one process of it. */
-async function processOver(seed = {}, gate) {
-  return processOf(await sessionWith(seed), gate);
+async function processOver(seed = {}, gate, options) {
+  return processOf(await sessionWith(seed), gate, options);
+}
+
+/** Resolves once `ready()` answers, polling. */
+async function until(ready, what) {
+  for (let i = 0; i < 400; i++) {
+    if (ready()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`never: ${what}`);
 }
 
 /** Python's open(name, 'w') and one write of `bytes`. */
@@ -178,6 +200,115 @@ async function readWhole(fs, name) {
   await fs.close(handle.id);
   await fs.settle();
   assert.equal((await authority.stat(beneath('owed.txt'))).size, 3);
+}
+
+// ── A grant given back while a walk waits on the session: the walk reads what the process made ──
+// pip's wheel install (python/numpy-flask-startup-modules, staging): a
+// package's directory is made under the grant, the last of its range, so the
+// grant is renewed; the first file's open walks the session for its name
+// (the directory is not sent yet), and while that lookup waits, the renewal
+// sends the log, gives the grant back and drops what was decided under it.
+// Red before: the walk went on over the store's listing from before the
+// directory was sent, and the open failed ENOENT.
+{
+  let holding = false;
+  const sent = Promise.withResolvers();
+  let proc;
+  let lookups = 0;
+  const looked = async (requests) => {
+    if (!requests.some((request) => request.path.endsWith('/site/b/f0.py')) || ++lookups !== 2) return;
+    holding = false;
+    sent.resolve();
+    await until(() => proc.fs.stats().client.released > 0, 'the grant given back');
+  };
+  proc = await processOver({ 'site/seen.txt': 'x' }, () => (holding ? sent.promise : null), { grantInos: 4, looked });
+  const { fs, authority } = proc;
+  await fs.readdir(beneath('site'));
+  for (let i = 0; i < 8; i++) await fs.mkdir(beneath(`site/w${i}`));
+  await until(() => fs.stats().client.grants > 0, 'the subtree taken');
+  await fs.mkdir(beneath('site/a'));
+  // The range's numbers: the directory and the files decided in it (the first is the session's, its directory not sent yet).
+  for (let i = 0; i < 3; i++) await rewrite(fs, `site/a/f${i}.py`, enc.encode(`a${i}`));
+  holding = true;
+  await fs.mkdir(beneath('site/b'));
+  await rewrite(fs, 'site/b/f0.py', enc.encode('b0'));
+  assert.equal(fs.stats().client.renewed, 1, 'the grant was not renewed while the walk waited');
+  await fs.settle();
+  assert.equal(dec.decode(await authority.readFile(beneath('site/b/f0.py'))), 'b0');
+}
+
+// ── A grant given back while the walk's barrier waits: the walk catches up again ──
+// As above, but the walk owes a barrier already (input arrived), and the
+// renewal gives the grant back while that barrier waits on the session, so
+// the barrier answers from before the directory was sent. Red before: its
+// landing cleared the debt the give-back made too, and the walk read the
+// old listing (ENOENT).
+{
+  let holding = false;
+  const sent = Promise.withResolvers();
+  let proc;
+  let armed = false;
+  const caught = async () => {
+    if (!armed) return;
+    armed = false;
+    holding = false;
+    sent.resolve();
+    await until(() => proc.fs.stats().client.released > 0, 'the grant given back');
+  };
+  proc = await processOver({ 'site/seen.txt': 'x' }, () => (holding ? sent.promise : null), { grantInos: 4, caught });
+  const { fs, authority } = proc;
+  await fs.readdir(beneath('site'));
+  for (let i = 0; i < 8; i++) await fs.mkdir(beneath(`site/w${i}`));
+  await until(() => fs.stats().client.grants > 0, 'the subtree taken');
+  await fs.mkdir(beneath('site/a'));
+  for (let i = 0; i < 3; i++) await rewrite(fs, `site/a/f${i}.py`, enc.encode(`a${i}`));
+  holding = true;
+  await fs.mkdir(beneath('site/b'));
+  fs.inbound();
+  armed = true;
+  await rewrite(fs, 'site/b/f0.py', enc.encode('b0'));
+  assert.equal(armed, false, 'the walk took no barrier');
+  assert.equal(fs.stats().client.renewed, 1, 'the grant was not renewed while the barrier waited');
+  await fs.settle();
+  assert.equal(dec.decode(await authority.readFile(beneath('site/b/f0.py'))), 'b0');
+}
+
+// ── A directory's descriptor lists it after a grant given back during its barrier ──
+// A directory opened by descriptor (the session's, no pool), a directory
+// made in it under the grant; input owes a barrier, and the renewal gives the
+// grant back while that barrier waits, which answers from before the new
+// directory was sent. Red before: its landing let the listing be served,
+// over the old one, without the new directory.
+{
+  let holding = false;
+  const sent = Promise.withResolvers();
+  let proc;
+  let armed = false;
+  const caught = async () => {
+    if (!armed) return;
+    armed = false;
+    holding = false;
+    sent.resolve();
+    await until(() => proc.fs.stats().client.released > 0, 'the grant given back');
+  };
+  proc = await processOver({ 'site/seen.txt': 'x' }, () => (holding ? sent.promise : null), { grantInos: 4, caught });
+  const { fs } = proc;
+  await fs.readdir(beneath('site'));
+  for (let i = 0; i < 8; i++) await fs.mkdir(beneath(`site/w${i}`));
+  await until(() => fs.stats().client.grants > 0, 'the subtree taken');
+  await fs.mkdir(beneath('site/a'));
+  for (let i = 0; i < 3; i++) await rewrite(fs, `site/a/f${i}.py`, enc.encode(`a${i}`));
+  const dir = await fs.open(beneath('site'), { read: true, directory: true });
+  holding = true;
+  await fs.mkdir(beneath('site/b'));
+  fs.inbound();
+  armed = true;
+  const names = (await fs.readdirHandle(dir.id)).map((entry) => entry.name);
+  assert.equal(armed, false, 'the listing took no barrier');
+  assert.equal(fs.stats().client.renewed, 1, 'the grant was not renewed while the barrier waited');
+  assert.ok(names.includes('b'), `the directory made under the grant is not listed: ${names.join(' ')}`);
+  await fs.close(dir.id);
+  await fs.settle();
 }
 
 // ── A file of a few MiB reads back what was written, at once ──

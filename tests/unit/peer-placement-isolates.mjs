@@ -3,7 +3,7 @@
 // the same time, is passed over for the next (audit FAB-3). Best effort: once
 // every attempt co-locates, the last one is used.
 import assert from 'node:assert/strict';
-import { createFacetCtx, createFacetWorld, createPeerNamespace } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld, createPeerNamespace } from './lib/facet-host-harness.mjs';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 

@@ -6,6 +6,17 @@ export interface DataModule { data: ArrayBuffer }
 export interface JsonModule { json: unknown }
 export interface WasmModule { wasm: ArrayBuffer | WebAssembly.Module }
 
+/**
+ * `bytes` as the ArrayBuffer a `{ wasm }` or `{ data }` member carries: their
+ * own buffer when they span all of it, and only otherwise a copy of them, so
+ * an image read whole for a load is never held twice.
+ */
+export function memberBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength && bytes.buffer instanceof ArrayBuffer
+    ? bytes.buffer
+    : bytes.slice().buffer;
+}
+
 /** Plain strings use the module name's extension. */
 export type ModuleContent = string | JsModule | CjsModule | PyModule | TextModule | DataModule | JsonModule | WasmModule;
 

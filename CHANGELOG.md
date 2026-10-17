@@ -5,6 +5,50 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a WASI process that makes a directory and then a file in it,
+  as `pip install` does for each package, no longer fails ENOENT about
+  once in a hundred runs. That happened when the process's hold on the
+  subtree was renewed or given back while the new file's name was being
+  looked up: the lookup carried on over a listing from before the
+  directory reached the session. Each step of a lookup now catches up
+  with the session first when the process has sent it anything.
+- Fixed: one session's compiles no longer reset the other sessions that
+  share its isolate. The platform runs several sessions in one isolate
+  with one memory limit, and resets all of them when it is crossed. Each
+  `clang` compile read its 31 MiB compiler into that isolate, copied it,
+  and held it through the link, so three compiles at once, in one session
+  or across co-tenants, reset every session there. A runtime's wasm image
+  (clang, wasm-ld, CPython, Ruby, bash, git, a `wasm-runner` program) is
+  now read by path when its facet loads, without a copy, and each load is
+  admitted on the isolate's transient budget: loads that would overlap
+  take turns, and one larger than the budget runs alone. Staged opencode
+  decodes its chunk pack one chunk at a time and assembles under the same
+  admission. A load not admitted within 60 s fails with EAGAIN, naming
+  what it waited for.
+- Changed (core): `FacetSpec.wasmModules` and a call's `wasmModules` take
+  `FacetImage`s instead of ArrayBuffers. Open one with
+  `ProcessView.image(path, { sha256, size })` or `hostImage(authority,
+  cred, path, { sha256, size })`, naming the bytes it must be: for an
+  installed runtime file, `installedFile(manifest, installRoot, rel)`
+  gives its path and the manifest's digest. The host reads the image when
+  it builds the facet, bounded at `size`, and refuses it (ESTALE) unless
+  the file holds those bytes. An image on a mount, which cannot bound the
+  read, is refused (EFBIG). `ws.fs.readArrayBufferUncached` is removed;
+  `readFileUncached` returns the read's own bytes without copying them.
+- Added: `/api/_diag/memory` names the isolate the session runs in
+  (`isolate.id`). Sessions that report one id share its memory limit.
+- Fixed: output that begins with U+FEFF (the UTF-8 BOM) keeps it, as a
+  Linux terminal receives every byte a program writes. This covers a
+  program's output in the terminal, process logs and `exec` results, a
+  program's stdin read as text (`process.stdin.setEncoding`, `readline`),
+  `curl`'s body, and the text-only output of `cut`, `find` and git. `grep`
+  matches a line's bytes, BOM included, as GNU grep does. Before, each
+  decoded with a TextDecoder that drops a leading BOM, per process or per
+  chunk; `setEncoding` and `readline` also split a character whose bytes
+  arrived in two chunks.
+- Fixed: `child_process.spawn(' node')` (a command with spaces or a BOM
+  around its name) finds no program (ENOENT), as in Node. Before, the name
+  was trimmed and `node` ran.
 - Fixed: `utimes`/`futimes` with `'now'` (or an omitted time) by a file's
   owner now succeeds when the owner lacks write permission, as
   utimensat(2) allows. Before, it was refused `EACCES`.
@@ -113,6 +157,11 @@ published independently in the `@nimbus-sh` npm scope.
   hosted terminal's `node_modules` check and Next.js refusal use it, so
   they also check pre and post scripts. `npmInstallGlobal` no longer takes
   a command registry, and `createNpmCommand` no longer reads its own.
+- Changed: the perf probe `perf-regression/clone-fast` is graded like
+  `cold-start`: against the baseline measured in the same run, one clone on
+  each of the three throwaways per round, 40 rounds. Its fixed 5600 ms
+  bound failed 5 of 591 full runs of unchanged main code, and passed a
+  clone 600 ms slower than main's.
 - Changed: the perf probes `perf-regression/cold-start`, `first-paint` and
   `install-warm` grade the candidate against a baseline measured in the
   same run, not against a fixed bound. `remote-probes` stands up three

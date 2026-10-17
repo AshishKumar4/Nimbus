@@ -19,7 +19,7 @@ import { resolvedFromRecord } from '../../packages/worker/src/npm/registry-recor
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 
 // Records as the installer keeps them: read from npm's registry through the isolate's network.
 const SOURCE = { registry: 'https://registry.npmjs.org', network: '' };

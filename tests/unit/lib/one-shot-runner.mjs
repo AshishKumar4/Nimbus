@@ -12,7 +12,7 @@ import { FacetManager } from '../../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../../packages/core/src/runtime/port-registry.ts';
 import { adoptCtxExports, supervisorEntrypoint } from '../../../packages/fabric/src/composition.ts';
-import { createFacetCtx, createFacetWorld } from '../facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { writeModuleSet } from './module-map-bundle.mjs';
 import { processFiles } from './process-bridge.mjs';
 import { stagedAssets } from './staged-assets.mjs';
@@ -52,7 +52,8 @@ export function runnerLoader(name, { rewrite = (config) => config, get } = {}) {
 /**
  * SUPERVISOR as the session serves it, as binding and capability alike:
  * every op for the process's own pid through `host`'s supervisor-op handler;
- * stdout and stderr go to `onOutput` as text, and reportExit is dropped.
+ * each stdout and stderr write goes to `onOutput(text, stream, bytes)`, and
+ * reportExit is dropped.
  */
 export function adoptSessionSupervisor(host, onOutput) {
   const dec = new TextDecoder();
@@ -61,7 +62,11 @@ export function adoptSessionSupervisor(host, onOutput) {
     SupervisorRPC: /** @type {any} */ (({ props }) => {
       const send = opSender((envelope) => host.supervisorOp({ ...envelope, pid: props?.pid }));
       return supervisorDouble(async (op, args) => {
-        if (op === 'stdout' || op === 'stderr') { onOutput(dec.decode(/** @type {Uint8Array} */ (args[0]))); return; }
+        if (op === 'stdout' || op === 'stderr') {
+          const bytes = /** @type {Uint8Array} */ (args[0]);
+          onOutput(dec.decode(bytes), op, bytes);
+          return;
+        }
         if (op === 'reportExit') return;
         return send(op, args);
       });

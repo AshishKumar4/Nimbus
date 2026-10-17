@@ -158,7 +158,7 @@ const sharedConfig = {
   splitting: false,
   outdir,
   define: {
-    OPENCODE_VERSION: `'1.16.2'`,
+    OPENCODE_VERSION: JSON.stringify(JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")).version),
     OPENCODE_MODELS_DEV: generated.modelsData,
     OTUI_TREE_SITTER_WORKER_PATH: `'./parser.worker.js'`,
     OPENCODE_CHANNEL: `'stable'`,

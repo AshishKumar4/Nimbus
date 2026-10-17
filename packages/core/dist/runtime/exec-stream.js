@@ -126,7 +126,8 @@ export function createExecStream(onCancel) {
 export async function collectExecStream(stream) {
     const stdout = [];
     const stderr = [];
-    const decoders = { stdout: new TextDecoder(), stderr: new TextDecoder() };
+    // Each stream's text keeps a leading U+FEFF, as its bytes do.
+    const decoders = { stdout: new TextDecoder('utf-8', { ignoreBOM: true }), stderr: new TextDecoder('utf-8', { ignoreBOM: true }) };
     for await (const chunk of stream.output) {
         const text = decoders[chunk.stream].decode(chunk.data, { stream: true });
         if (text)

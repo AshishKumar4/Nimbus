@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
 // What a remote artifact build returns, against the commit it built
-// (scripts/ci/lib/remote-artifacts.mjs differences): the CI scripts exit 0
-// only when it is the commit's, byte for byte, and 1 when there is anything
-// to commit.
+// (scripts/ci/lib/remote-artifacts.mjs compareArtifacts): the CI scripts
+// exit 0 only when it is the commit's, byte for byte, and 1 when there is
+// anything to commit; each file's digests, built and committed, are the
+// receipt the recipe builds keep.
 //   - identical files: nothing differs;
 //   - a changed byte, a file the commit lacks: each differs;
 //   - a file the commit has under a directory the build replaces whole, and
@@ -13,7 +14,11 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { differences } from '../../scripts/ci/lib/remote-artifacts.mjs';
+import { createHash } from 'node:crypto';
+import { compareArtifacts } from '../../scripts/ci/lib/remote-artifacts.mjs';
+
+const differences = (...args) => compareArtifacts(...args).differing;
+const sha256 = (text) => createHash('sha256').update(text).digest('hex');
 
 const repo = mkdtempSync(join(tmpdir(), 'remote-artifacts-repo-'));
 const built = mkdtempSync(join(tmpdir(), 'remote-artifacts-built-'));
@@ -47,13 +52,17 @@ try {
   assert.deepEqual(differences(repo, sha, archive(files), files, ['assets/loader']), [], 'the same bytes: nothing to commit');
 
   put(built, 'src/generated.ts', 'export const A = 2;\n');
-  assert.deepEqual(differences(repo, sha, archive(files), files, ['assets/loader']), ['src/generated.ts'], 'a changed byte');
+  const changed = compareArtifacts(repo, sha, archive(files), files, ['assets/loader']);
+  assert.deepEqual(changed.differing, ['src/generated.ts'], 'a changed byte');
+  assert.deepEqual(changed.artifacts['src/generated.ts'], { built: sha256('export const A = 2;\n'), committed: sha256('export const A = 1;\n') }, 'its receipt: both digests');
+  assert.deepEqual(changed.artifacts['assets/loader/a1/loader.mjs'], { built: sha256('loader'), committed: sha256('loader') });
   put(built, 'src/generated.ts', 'export const A = 1;\n');
 
   // A new loader build: its directory is new, the old one goes.
   put(built, 'assets/loader/b2/loader.mjs', 'loader');
   put(built, 'assets/loader/b2/provenance.json', '{"a":1}');
   const moved = ['assets/loader/b2/loader.mjs', 'assets/loader/b2/provenance.json', 'src/generated.ts'];
+  assert.equal(compareArtifacts(repo, sha, archive(moved), moved, ['assets/loader']).artifacts['assets/loader/b2/loader.mjs'].committed, null, 'a file the commit lacks: no committed digest');
   assert.deepEqual(differences(repo, sha, archive(moved), moved, ['assets/loader']), [
     'assets/loader/a1/loader.mjs', 'assets/loader/a1/provenance.json', 'assets/loader/b2/loader.mjs', 'assets/loader/b2/provenance.json',
   ], 'files the commit lacks, and the replaced directory\'s files the build no longer makes');

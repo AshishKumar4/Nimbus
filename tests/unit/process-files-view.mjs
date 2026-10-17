@@ -5,6 +5,7 @@
 // the syscall's code, and a mount answers through the same view.
 
 import assert from 'node:assert/strict';
+import { sha256Hex } from '../../packages/core/src/_shared/crypto.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { isVfsError } from '../../packages/core/src/vfs/vfs-error.ts';
@@ -131,35 +132,53 @@ assert.deepEqual((await vfs.readdir('/mnt/s')).map((e) => e.name), ['f']);
   files.vfs.unmount('/mnt/own');
 }
 
-// A whole image read is one whole-file read: no ranges to mix, and a backend
-// with no ranged read costs the same single read as SQLite.
+// A wasm image a facet loads (ProcessView.image): opened without being read,
+// named by the digest its opener expects (a runtime manifest's), read later
+// as one bounded whole-file read (the read's own bytes, never a copy), and
+// only ever the bytes its digest names: a file that no longer holds them is
+// refused, whatever happened to it, as is one on a backend that cannot bound
+// the read.
 {
   const image = Uint8Array.from({ length: 200_000 }, (_, i) => (i * 13) & 0xff);
+  const digest = { sha256: await sha256Hex(image), size: image.byteLength };
   await vfs.writeFile('/home/user/image.wasm', image);
-  const seen = await vfs.readArrayBufferUncached('/home/user/image.wasm');
-  assert.deepEqual(new Uint8Array(seen), image, 'a quiet image reads whole');
+  const opened = await vfs.image('/home/user/image.wasm', digest);
+  assert.equal(opened.identity, `sha256:${digest.sha256}`, 'an image is named by its digest');
+  assert.equal(opened.size, image.byteLength, 'and admitted at its size');
+  const seen = await opened.read();
+  assert.deepEqual(seen, image, 'its bytes read whole');
+  assert.ok(seen.byteOffset === 0 && seen.byteLength === seen.buffer.byteLength, 'the read hands back a buffer of its own, uncopied');
+  seen.fill(0);
+  assert.deepEqual(await vfs.readFile('/home/user/image.wasm'), image, 'mutating it disturbs no later read');
 
-  // A backend with no ranged read costs one whole-file read, like SQLite.
+  await vfs.writeFile('/home/user/image.wasm', image);
+  assert.deepEqual(await opened.read(), image, 'a file rewritten with the same bytes is still the image');
+  const other = image.slice();
+  other[651] ^= 1;
+  await vfs.writeFile('/home/user/image.wasm', other);
+  assert.equal(await code(() => opened.read()), 'ESTALE', 'a file holding other bytes of the same length is refused');
+  await vfs.writeFile('/home/user/image.wasm', new Uint8Array(image.byteLength + 1));
+  assert.equal(await code(() => opened.read()), 'EFBIG', 'a file grown past the image is refused unread');
+  await vfs.symlink('/home/user/image.wasm', '/home/user/link.wasm');
+  assert.equal(await code(() => (vfs.image('/home/user/link.wasm', digest)).then((linked) => linked.read())), 'EFBIG', 'through a link, the file it leads to is what is read');
+  assert.equal(await code(() => vfs.image('/home/user/none.wasm', digest)), 'ENOENT');
+  assert.equal(await code(() => vfs.image('/home/user', digest)), 'EISDIR');
+
+  // A backend that cannot bound a whole read (a mount) is refused, unread.
   const held = new Map([['/big.wasm', image]]);
   let wholeReads = 0;
   const flat = {
-    stat: (p) => (held.has(p) ? { type: 'file', size: held.get(p).byteLength, mtimeMs: 1, revision: 7, mode: 0o100644, uid: 1000, gid: 1000, ino: 99, nlink: 1, dev: 5 } : null),
+    stat: (p) => (held.has(p) ? { type: 'file', size: held.get(p).byteLength, mtimeMs: 1, mode: 0o100644, uid: 1000, gid: 1000, ino: 99, nlink: 1, dev: 5 } : null),
     readFile: (p) => { wholeReads++; return held.get(p) ?? null; },
     writeFile: (p, bytes) => { held.set(p, bytes); },
     readdir: () => [...held.keys()].map((k) => ({ name: k.slice(1), type: 'file' })),
   };
   flat.sync = flat;
   files.vfs.mount('/mnt/flat', flat);
-  const flatView = files.view({ pid: 61, cred: USER });
-  const flatBytes = await flatView.readArrayBufferUncached('/mnt/flat/big.wasm');
-  assert.deepEqual(new Uint8Array(flatBytes), image, 'a non-ranged backend still reads whole');
-  assert.equal(wholeReads, 1, `one whole-file read on any backend (got ${wholeReads})`);
+  const flatImage = await files.view({ pid: 61, cred: USER }).image('/mnt/flat/big.wasm', digest);
+  assert.equal(await code(() => flatImage.read()), 'EFBIG', 'a mounted image is refused');
+  assert.equal(wholeReads, 0, 'without being read');
   files.vfs.unmount('/mnt/flat');
-
-  // The returned buffer is the caller's: mutating it disturbs no later read.
-  const mutable = new Uint8Array(await vfs.readArrayBufferUncached('/home/user/image.wasm'));
-  mutable.fill(0);
-  assert.deepEqual(await vfs.readFile('/home/user/image.wasm'), image, 'a mutated return disturbs no later read');
 }
 
 // writeFileFrom publishes a file whole once its bytes have arrived, on SQLite

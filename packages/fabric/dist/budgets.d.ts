@@ -383,7 +383,9 @@ export declare const DYNAMIC_WORKER_CODE_LIMIT_BYTES = 67108864;
  * text the generators emit and undercount otherwise; the platform's own
  * refusal still backstops the exotic case, because this check exists to name
  * members, not to be the ceiling. Over it: exact UTF-8 sizes, computed only
- * then, sorted so the biggest lever is first.
+ * then, sorted so the biggest lever is first. `unread` are members not read
+ * yet (a facet's wasm images, by the size they were opened at), so a map that
+ * can never load is refused before its images are read.
  */
-export declare function assertModuleMapWithinCodeLimit(modules: Record<string, unknown>): void;
+export declare function assertModuleMapWithinCodeLimit(modules: Record<string, unknown>, unread?: Record<string, number>): void;
 //# sourceMappingURL=budgets.d.ts.map

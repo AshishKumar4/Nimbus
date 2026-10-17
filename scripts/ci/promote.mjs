@@ -36,7 +36,7 @@ import { describeReleaseException } from './lib/matrix.mjs';
 import { HOSTED_DEMO_CHECKS, PRODUCTION_ONLY_CHECKS } from '../../tests/behavioral/_probe-target-skips.mjs';
 import { assertInstalled } from './lib/installed.mjs';
 
-const PRODUCTION = { name: 'nimbus', env: 'production', app: 'apps/hosted-demo', origin: 'https://nimbus-os.dev' };
+const PRODUCTION = { env: 'production', app: 'apps/hosted-demo', origin: 'https://nimbus-os.dev' };
 
 const argv = process.argv.slice(2);
 const flags = {};
@@ -72,6 +72,8 @@ assertInstalled(repo, 'promote');
 const { RELEASES, readRelease, releaseDigest, uploadConfig } = await import('./lib/release.mjs');
 const { holdLease } = await import('./lib/lease.mjs');
 const { activeVersionId, deployAndVerify, requireAccountPin, waitForVersion } = await import('../../tests/behavioral/_deploy-target.mjs');
+// The Worker production deploys as, from the deployment policy (apps/nimbus-deployments.json).
+const productionName = (await import('../deploy-isolation.mjs')).hostedWorkerName(repo, PRODUCTION.env);
 const account = requireAccountPin();
 
 // 1. The release staging verified.
@@ -122,12 +124,12 @@ if (!flags['dry-run']) {
   }
 }
 const cwd = join(repo, PRODUCTION.app);
-const before = activeVersionId(PRODUCTION.name, { cwd, account });
-if (!before) notGraded(`cannot read the version ${PRODUCTION.name} serves now`);
-const rollback = `bun run --cwd ${PRODUCTION.app} wrangler versions deploy --name ${PRODUCTION.name} ${before}@100% -e ${PRODUCTION.env}`;
-log(`${PRODUCTION.name} serves ${before} (rollback: ${rollback})`);
+const before = activeVersionId(productionName, { cwd, account });
+if (!before) notGraded(`cannot read the version ${productionName} serves now`);
+const rollback = `bun run --cwd ${PRODUCTION.app} wrangler versions deploy --name ${productionName} ${before}@100% -e ${PRODUCTION.env}`;
+log(`${productionName} serves ${before} (rollback: ${rollback})`);
 if (flags['dry-run']) {
-  console.log(`promote: dry run — would upload ${config} as ${PRODUCTION.name} (env.${PRODUCTION.env}) over ${before}`);
+  console.log(`promote: dry run — would upload ${config} as ${productionName} (env.${PRODUCTION.env}) over ${before}`);
   process.exit(0);
 }
 
@@ -135,12 +137,12 @@ if (flags['dry-run']) {
 let versionId;
 try {
   // wrangler holds the lease too (its fd 3): killed, this process frees nothing while the upload still writes.
-  ({ versionId } = deployAndVerify({ cwd, account, name: PRODUCTION.name, envName: PRODUCTION.env, args: ['--config', config], leaseFd }));
+  ({ versionId } = deployAndVerify({ cwd, account, name: productionName, envName: PRODUCTION.env, args: ['--config', config], leaseFd }));
 } catch (error) {
   console.log(`promote: the upload failed — ${error.message}\n  production may still serve ${before}; to be sure: ${rollback}`);
   process.exit(1);
 }
-log(`${PRODUCTION.name} → version ${versionId}, verified served`);
+log(`${productionName} → version ${versionId}, verified served`);
 
 // 4. Readiness: graded only once the edge answers with the upload alone.
 try {
@@ -160,17 +162,17 @@ const live = spawnSync('bun', ['scripts/ci/remote-probes.mjs', '--target', `host
 process.stdout.write(live.stdout);
 const promoted = { commit: sha, at: new Date().toISOString(), release: sealed, before, versionId, live: { exitCode: live.status, verdict: /verdict (\S+\.json)/.exec(live.stdout)?.[1] ?? null } };
 // The checks graded this upload only if production served it throughout.
-const after = activeVersionId(PRODUCTION.name, { cwd, account });
+const after = activeVersionId(productionName, { cwd, account });
 if (after !== versionId) {
   promoted.live.exitCode = 2;
   promoted.live.moved = after;
   writeFileSync(join(dir, 'promoted.json'), `${JSON.stringify(promoted, null, 2)}\n`);
-  console.log(`promote: NOT GRADED — ${PRODUCTION.name} now serves ${after}, not the promoted ${versionId}: something else deployed during the live checks. Find out what before anything else; the version before this promotion was ${before}.`);
+  console.log(`promote: NOT GRADED — ${productionName} now serves ${after}, not the promoted ${versionId}: something else deployed during the live checks. Find out what before anything else; the version before this promotion was ${before}.`);
   process.exit(2);
 }
 writeFileSync(join(dir, 'promoted.json'), `${JSON.stringify(promoted, null, 2)}\n`);
 if (live.status !== 0) {
-  console.log(`promote: ${PRODUCTION.name} serves ${versionId}, and the live checks are not green (exit ${live.status}). Roll back: ${rollback}`);
+  console.log(`promote: ${productionName} serves ${versionId}, and the live checks are not green (exit ${live.status}). Roll back: ${rollback}`);
   process.exit(1);
 }
 console.log(`promote: ${sha.slice(0, 12)} is live as ${versionId}, every check green; ${join(dir, 'promoted.json')}`);

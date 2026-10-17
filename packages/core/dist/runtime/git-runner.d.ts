@@ -19,15 +19,16 @@
  * through the session's child-process route (wasi/processes.ts, the
  * nimbus_proc imports git-wasi-compat.c calls), git's process its parent.
  *
- * The image is read once per session, uncached (3.7 MB of runtime blob that
- * would otherwise displace the user's working set). A git that ran to its
- * end leaves its facet warm (FacetSpec.warm) for the next one: the image
- * compiled, and the resident store of what it read, which the next process
+ * The image is opened, not read (FacetImage): the host reads it, uncached,
+ * only when it builds a facet, so the session holds none of its 3.7 MB
+ * between gits. A git that ran to its end leaves its facet warm
+ * (FacetSpec.warm) for the next one: the image compiled, and the resident
+ * store of what it read, which the next process
  * of the same credential brings forward by one barrier instead of reading it
  * all again. One git at a time runs in a warm facet; a git started while
  * another runs (its child, or one beside it) takes another.
  */
-import type { RuntimeManifest } from './runtime-manifest.js';
+import { type RuntimeManifest } from './runtime-manifest.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import type { FacetHost } from './facet-host.js';
 import { type NimbusFilesystemAuthority } from './os-contracts.js';

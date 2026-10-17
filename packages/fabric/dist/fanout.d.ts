@@ -123,11 +123,6 @@ export interface FanoutOptions {
      */
     preamble?: string;
     /**
-     * Wasm modules forwarded to every facet. Same semantics as
-     * IsolatePool's wasmModules option.
-     */
-    wasmModules?: Record<string, ArrayBuffer>;
-    /**
      * Extra bindings forwarded to every facet. Same semantics as
      * IsolatePool's extraBindings option.
      */
@@ -236,7 +231,6 @@ export interface FanoutShardOptions {
     tag?: string;
     timeoutMs?: number;
     preamble?: string;
-    wasmModules?: Record<string, ArrayBuffer>;
     extraBindings?: Record<string, unknown>;
     omitSupervisor?: boolean;
     /**

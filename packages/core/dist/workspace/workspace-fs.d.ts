@@ -97,7 +97,6 @@ export declare class WorkspaceFs implements VFS {
     /** Create the file if absent, and set its times to now (touch). */
     touch(path: string): Promise<void>;
     readFileUncached(path: string): Promise<Uint8Array>;
-    readArrayBufferUncached(path: string): Promise<ArrayBuffer>;
     /** rm: a file, or with `recursive` a tree, whole or not at all; `force` makes a missing path no error. */
     remove(path: string, options?: {
         recursive?: boolean;

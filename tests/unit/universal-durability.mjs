@@ -47,7 +47,7 @@ import {
   readPortReservationByName,
   reservePort,
 } from '../../packages/worker/src/session/port-capability.ts';
-import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
+import { createFacetWorld, createFacetCtx } from './lib/facet-host-harness.mjs';
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
 import {
   buildPreviewHost,

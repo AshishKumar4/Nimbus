@@ -45,7 +45,7 @@ import {
   createFacetWorld,
   createFacetCtx,
   createProcessHost,
-} from './facet-host-harness.mjs';
+} from './lib/facet-host-harness.mjs';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import {
   _rpcCancelHostProcess,

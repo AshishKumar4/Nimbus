@@ -9,7 +9,7 @@ import { PortRegistry } from '../../../packages/core/src/runtime/port-registry.t
 import { PID_GEN_STRIDE } from '../../../packages/core/src/runtime/process-table.ts';
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
-import { atTestEnd, createFacetCtx, createFacetWorld, captureProcessBoots, residentRunner } from '../facet-host-harness.mjs';
+import { atTestEnd, createFacetCtx, createFacetWorld, captureProcessBoots, residentRunner } from './facet-host-harness.mjs';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { processFiles } from './process-bridge.mjs';
 import { stagedAssets } from './staged-assets.mjs';

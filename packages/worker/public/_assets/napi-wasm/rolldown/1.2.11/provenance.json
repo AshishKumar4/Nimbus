@@ -6,9 +6,10 @@
     "url": "https://github.com/rolldown/rolldown/archive/refs/tags/v1.2.11.tar.gz",
     "sha256": "fb6def184441b75eaf4f5ac24f99d46a29686f61e29af1bc137705f4da018403",
     "inputs": {
+      "packages/core/src/runtime/wasm-binary.ts": "4d24b153aef3861cceaa39b6991b36fcdb98eaa849950f5beb1bb67bfb80a2c5",
       "packages/worker/scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
-      "packages/worker/scripts/napi-wasm/build.mjs": "45b17dfa68a17b6582d61eab755aff6b4d6c1e734d180e0aa8eff73ef1697387",
-      "packages/worker/scripts/napi-wasm/inputs.mjs": "5bac3fae82b6bc1bf7f23fc75ff8cb81098d53cbd4325ae0ccb495362348dbd6",
+      "packages/worker/scripts/napi-wasm/build.mjs": "5f1d124e26a906bfef4ba0faccf0a0d9e36164f1ae370b6c4f2d40f873c0b645",
+      "packages/worker/scripts/napi-wasm/inputs.mjs": "a06c519ffee5e2637688e25ca527bf885f99d2f2fa4b5fe34a81ba5afda94dc4",
       "packages/worker/scripts/napi-wasm/link-wasm.sh": "3ead1668bb4b234f95892a7da9698a2f901d6fa460ed204594dfe9a6d8fa46f5",
       "packages/worker/scripts/napi-wasm/rolldown/Cargo.lock": "2e0f37b366cc59702cca940f424e4c184804cc4040b4d6050315842b9f34f229",
       "packages/worker/scripts/napi-wasm/rolldown/Cargo.toml": "0e892672b585cf1afd0bb2ec5a8b4d7d4814530ff2aea6a7f14a2dc4da9702f6",
@@ -16,6 +17,7 @@
       "packages/worker/scripts/napi-wasm/rolldown/binding/build.rs": "7a3642d370470ba2f8801fa6a4f39f25fceb16a23df6eca1339fcd1ca401d3c9",
       "packages/worker/scripts/napi-wasm/rolldown/binding/src/lib.rs": "aaca3b726e2e150581c604cc545fb2db5496370fe8427a7a1cfd8ea8a2270037",
       "packages/worker/scripts/napi-wasm/rustc-remap.sh": "c0ad0342c9fa9832c80a780f0828f49f759d9d50274aef1ded89216bfb3dd07b",
+      "packages/worker/scripts/rust-build-env.mjs": "bee2b7ee81ac5975df573df583b6b67dc176e4491fadcb43c4f3bbc2e81f73d4",
       "packages/worker/scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",
       "packages/worker/scripts/napi-wasm/specs.mjs#rolldown@1.2.11": "00bcb39796a5b1e044410392bb78e36ccb5d4123040f1a95762324045a97d20c",
       "packages/worker/scripts/napi-wasm/specs.mjs#emnapi-link": "08bdc8cef180f63a612f6d138d9dc271fd4ce9bf7dd8a32d096a6f640a8bb2be"

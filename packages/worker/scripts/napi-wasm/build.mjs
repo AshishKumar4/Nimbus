@@ -50,8 +50,10 @@ import { fileURLToPath } from 'node:url';
 import { build as esbuild } from 'esbuild';
 import { buildWasiTrampoline, DISPATCHED_WASI_IMPORTS } from './loader/wasi-trampoline.mjs';
 import { EMNAPI, SPECS } from './specs.mjs';
-import { bindingInputs, loaderGraph, loaderInputs, REPO } from './inputs.mjs';
+import { bindingInputs, loaderGraph, loaderInputs, pinnedEmnapi, REPO } from './inputs.mjs';
 import { assertCurrentInputs, changedInputs } from '../artifact-inputs.mjs';
+import { rustBuildEnv } from '../rust-build-env.mjs';
+import { WASM_EXTERN, wasmInterface } from '@nimbus-sh/core/runtime/wasm-binary.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TARGET = 'wasm32-wasip1';
@@ -136,7 +138,8 @@ function toolchainFor(spec, sourceDir) {
   // PATH must be the pinned one.
   const which = spawnSync('rustup', ['which', '--toolchain', spec.toolchain, 'rustc'], { encoding: 'utf8' });
   const binDir = which.status === 0 ? path.dirname(which.stdout.trim()) : null;
-  const env = { ...process.env, PATH: binDir ? `${binDir}:${process.env.PATH}` : process.env.PATH };
+  // Every rustc and cargo this build runs sees no ambient Cargo or rustc setting (rust-build-env.mjs).
+  const env = rustBuildEnv(process.env, { PATH: binDir ? `${binDir}:${process.env.PATH}` : process.env.PATH });
   const rustc = run('rustc', ['-vV'], { capture: true, env });
   const release = rustc.match(/^release: (.+)$/m)?.[1];
   if (release !== spec.toolchain) {
@@ -279,7 +282,6 @@ async function buildSpec(spec, npmDir) {
     NIMBUS_REMAP_CARGO_HOME: cargoHome,
     SOURCE_DATE_EPOCH: '0',
   };
-  delete env.RUSTFLAGS;
   const jobs = Number(process.env.NIMBUS_CARGO_JOBS ?? '12');
   if (!Number.isInteger(jobs) || jobs < 1 || jobs > 12) throw new Error('napi-wasm: NIMBUS_CARGO_JOBS must be an integer from 1 to 12');
   cargoArgs.push('-j', String(jobs));
@@ -289,12 +291,13 @@ async function buildSpec(spec, npmDir) {
   } else run('cargo', cargoArgs, { cwd, env });
   const wasm = new Uint8Array(await fs.readFile(path.join(targetDir, TARGET, 'release', spec.output)));
 
-  const imports = wasmImports(wasm);
-  const memory = imports.find((i) => i.kind === 2);
+  if (!WebAssembly.validate(wasm)) throw new Error(`napi-wasm: ${spec.name} is not a valid wasm module`);
+  const { imports, exports } = wasmInterface(wasm);
+  const memory = imports.find((i) => i.kind === WASM_EXTERN.memory);
   if (!memory || memory.module !== 'env' || memory.name !== 'memory') throw new Error(`napi-wasm: ${spec.name} does not import env.memory`);
-  if (memory.flags & 2) throw new Error(`napi-wasm: ${spec.name} imports a SHARED memory: this is the threaded ABI`);
+  if (memory.memory.flags & 2) throw new Error(`napi-wasm: ${spec.name} imports a SHARED memory: this is the threaded ABI`);
   if (imports.some((i) => i.module === 'wasi')) throw new Error(`napi-wasm: ${spec.name} imports wasi thread-spawn: this is the threaded ABI`);
-  const pumped = wasmExports(wasm).includes('nimbus_napi_pump');
+  const pumped = exports.some((entry) => entry.name === 'nimbus_napi_pump');
   if (pumped !== (spec.build.mode === 'wrapper')) {
     throw new Error(`napi-wasm: ${spec.name} ${pumped ? 'exports' : 'lacks'} nimbus_napi_pump, but its build mode is ${spec.build.mode}`);
   }
@@ -321,7 +324,7 @@ async function buildSpec(spec, npmDir) {
     seams,
     npm: spec.npm,
     wasm: {
-      memoryMinPages: memory.minPages,
+      memoryMinPages: memory.memory.min,
       sharedMemory: false,
       pumped,
       wasiImports: imports.filter((i) => i.module === 'wasi_snapshot_preview1').map((i) => i.name),
@@ -401,6 +404,7 @@ async function buildLoader(emnapi) {
     conditions: ['import', 'default'],
     external: ['node:*'],
     define: { __NIMBUS_NAPI_WASM_DISPATCHED__: JSON.stringify(Object.keys(DISPATCHED_WASI_IMPORTS).sort()) },
+    plugins: [pinnedEmnapi(emnapi.npmDir)],
     outfile: loaderPath,
     logLevel: 'warning',
   });
@@ -438,44 +442,6 @@ async function buildLoader(emnapi) {
   await fs.writeFile(path.join(outDir, 'provenance.json'), JSON.stringify(provenance, null, 2) + '\n');
   return provenance;
 }
-
-// ── Wasm facts ──────────────────────────────────────────────────────────
-function sections(bytes) {
-  let at = 8;
-  const u = () => {
-    let result = 0, shift = 0, byte;
-    do { byte = bytes[at++]; result |= (byte & 0x7f) << shift; shift += 7; } while (byte & 0x80);
-    return result >>> 0;
-  };
-  const str = () => { const n = u(); const s = new TextDecoder().decode(bytes.subarray(at, at + n)); at += n; return s; };
-  const found = {};
-  while (at < bytes.length) {
-    const id = bytes[at++];
-    const size = u();
-    const end = at + size;
-    if (id === 2) {
-      const imports = [];
-      for (let i = u(); i > 0; i--) {
-        const module = str(), name = str(), kind = bytes[at++];
-        const entry = { module, name, kind };
-        if (kind === 0) u();
-        else if (kind === 1) { at++; const f = bytes[at++]; u(); if (f & 1) u(); }
-        else if (kind === 2) { const f = bytes[at++]; entry.flags = f; entry.minPages = u(); if (f & 1) entry.maxPages = u(); }
-        else if (kind === 3) { at += 2; }
-        imports.push(entry);
-      }
-      found.imports = imports;
-    } else if (id === 7) {
-      const exports = [];
-      for (let i = u(); i > 0; i--) { exports.push(str()); at++; u(); }
-      found.exports = exports;
-    }
-    at = end;
-  }
-  return found;
-}
-const wasmImports = (bytes) => sections(bytes).imports ?? [];
-const wasmExports = (bytes) => sections(bytes).exports ?? [];
 
 // ── Main ────────────────────────────────────────────────────────────────
 await fs.mkdir(WORK, { recursive: true });

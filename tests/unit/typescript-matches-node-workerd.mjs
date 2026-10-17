@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd
 // TypeScript as Node 22.22.3 runs it (core runtime/typescript-strip.ts,
 // amaro, Node's own stripper): each program's stdout, its stderr byte for
 // byte (but the stack frames, which are the runtime's own beside the
@@ -31,12 +32,7 @@
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
 
-import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { localTerminal, splitScenarioOutput, startLocalProbe } from './lib/workerd-probe.mjs';
+import { matchNodeInWorkerd, placed } from './lib/node-differential.mjs';
 import { withoutInternalArrow } from './lib/node-report.mjs';
 
 const W = '/home/user/typescript';
@@ -132,49 +128,11 @@ const COMMANDS = [
   'node --import ./rv/pre.mjs --no-experimental-strip-types rv/plain.mts',
 ];
 
-const host = realpathSync(mkdtempSync(join(tmpdir(), 'typescript-')));
-process.on('exit', () => rmSync(host, { recursive: true, force: true }));
-for (const [path, text] of Object.entries(FILES)) {
-  mkdirSync(dirname(join(host, path)), { recursive: true });
-  writeFileSync(join(host, path), text);
-}
-// What a command printed, with the place it ran named W, a warning's pid left
-// out, and the frames left out, or only the program's left.
-const shown = (text, from, framed) => text.split(from).join(W).replace(/^\(node:\d+\)/gm, '(node:PID)')
-  .split('\n').filter((line) => !/^\s+at /.test(line) || (framed && line.includes(`${W}/`))).join('\n');
-const run = (command) => `${command} > out.txt 2> err.txt; echo $? > code.txt`;
-const read = `node -e "const fs = require('fs'); process.stdout.write(JSON.stringify({ out: fs.readFileSync('out.txt').toString('base64'), err: fs.readFileSync('err.txt').toString('base64'), code: fs.readFileSync('code.txt', 'utf8') }))"`;
-const hostRead = (name) => spawnSync('cat', [name], { cwd: host, encoding: 'utf8' }).stdout;
-
-console.log('typescript-matches-node-workerd: starting local workerd');
-const probe = await startLocalProbe({ runtimes: [] });
-try {
-  const session = await localTerminal(probe, { install: [] });
-  try {
-    for (const [path, text] of Object.entries(FILES)) {
-      const at = `${W}/${path}`;
-      await session.run(`mkdir -p '${at.slice(0, at.lastIndexOf('/'))}'`, 30_000);
-      await session.writeFile(at, text);
-    }
-    for (const command of COMMANDS) {
-      assert.equal(spawnSync('sh', ['-c', run(command)], { cwd: host, env: { PATH: process.env.PATH, HOME: host } }).status, 0);
-      const framed = FRAMED.includes(command);
-      const want = { out: shown(hostRead('out.txt'), host, framed), err: withoutInternalArrow(shown(hostRead('err.txt'), host, framed)), code: hostRead('code.txt').trim() };
-      await session.run(`cd ${W} && ${run(command)}`, 120_000);
-      const r = await session.run(`cd ${W} && ${read}`, 60_000);
-      const line = splitScenarioOutput(r.stdout).lines.find((l) => l.startsWith('{'));
-      assert.ok(line, `${command}: read its output: ${r.stdout.slice(-1500)}`);
-      const got = JSON.parse(line);
-      const decode = (b64) => shown(Buffer.from(b64, 'base64').toString('utf8'), W, framed);
-      assert.equal(decode(got.out), want.out, `${command}: stdout is Node's`);
-      assert.equal(decode(got.err), want.err, `${command}: stderr is Node's`);
-      assert.equal(got.code.trim(), want.code, `${command}: exits as Node does`);
-      console.log(`  ok  ${command}: exit ${want.code}`);
-    }
-  } finally {
-    await session.close().catch(() => {});
-  }
-} finally {
-  await probe.stop();
-}
+// A command's frames are left out, or, when it is FRAMED, only the program's are kept.
+const shown = (text, { stream, side, from, root, command }) => {
+  const kept = placed(text, from, root).replace(/^\(node:\d+\)/gm, '(node:PID)')
+    .split('\n').filter((line) => !/^\s+at /.test(line) || (FRAMED.includes(command) && line.includes(`${root}/`))).join('\n');
+  return stream === 'err' && side === 'node' ? withoutInternalArrow(kept) : kept;
+};
+await matchNodeInWorkerd('typescript-matches-node-workerd', W, FILES, COMMANDS, { shown });
 console.log(`typescript-matches-node-workerd: ${COMMANDS.length} programs as Node runs them`);

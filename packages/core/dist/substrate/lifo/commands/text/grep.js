@@ -7,7 +7,8 @@ import { getopt } from '../../utils/args.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 class GrepUsage extends Error {
 }
-const utf8 = new TextDecoder('utf-8');
+// A record's bytes as GNU grep matches them, a leading U+FEFF among them.
+const utf8 = new TextDecoder('utf-8', { ignoreBOM: true });
 const utf8Strict = new TextDecoder('utf-8', { fatal: true });
 /** GNU's read size: a NUL anywhere in what one read brings makes that read binary. */
 const BUFFER = 98304;

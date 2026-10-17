@@ -16,7 +16,7 @@
 // composes them.
 
 import assert from 'node:assert/strict';
-import { makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
 

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import './facet-host-harness.mjs';
+import './lib/facet-host-harness.mjs';
 import { observeResidentConfig, HOST_WATCH_HEADER, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER as REQUEST_GUARD } from '../../packages/fabric/src/host-activity.ts';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
 

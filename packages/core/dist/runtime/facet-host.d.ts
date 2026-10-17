@@ -21,6 +21,29 @@
  */
 import type { WasiParking } from './wasi/types.js';
 import type { FacetTaskSource } from './facet-task.js';
+/** The bytes an image is: their SHA-256 (lowercase hex) and length, as a runtime manifest records each file's. */
+export interface ImageDigest {
+    readonly sha256: string;
+    readonly size: number;
+}
+/**
+ * A wasm image a facet loads, by path. Its identity and size are known when
+ * it is opened; its bytes only when the host builds the facet (on workerd,
+ * inside the loader's cache-miss callback), so the session holds them for
+ * that load alone, and not at all when a warm facet answers.
+ */
+export interface FacetImage {
+    /** The file, as the opener named it: what a failure to read it names. */
+    readonly path: string;
+    /** Equal only for equal bytes (their digest), in every session: the warm facets an image keys. */
+    readonly identity: string;
+    /** The most bytes the module it reads is: what the facet's code ceiling counts. */
+    readonly size: number;
+    /** The most bytes its read holds at once: what its load is admitted for. */
+    readonly peak: number;
+    /** The bytes its identity names, or refused (ESTALE) when the file no longer holds them. */
+    read(): Promise<Uint8Array>;
+}
 /** Capabilities handed to the facet's function as its second argument. */
 export interface FacetBindings {
     /** The session's syscall capability, bound to {@link FacetSpec.supervisorPid}. */
@@ -39,10 +62,10 @@ export interface FacetSpec {
     preamble?: string;
     /**
      * Wasm images the facet's scope exposes as compiled `WebAssembly.Module`s on
-     * `globalThis.__NIMBUS_WASM[<key>]`. Compiled by the host, because on workerd
-     * the caller is not allowed to.
+     * `globalThis.__NIMBUS_WASM[<key>]`. Read and compiled by the host when it
+     * builds the facet, because on workerd the caller is not allowed to compile.
      */
-    wasmModules?: Record<string, ArrayBuffer>;
+    wasmModules?: Record<string, FacetImage>;
     /**
      * The session filesystem this facet's syscalls act on, and the process they
      * act as. Absent for a facet that makes no syscall back into the session.
@@ -107,12 +130,13 @@ export interface FacetSubmitOptions {
     /**
      * The caller's abort (a kill, Ctrl-C): when it fires, the call rejects with
      * its reason and the facet is ended, as at the deadline. The local host
-     * honours it; the Worker Loader host does not for `submit`, and ends a call
-     * through the request's own signal instead ({@link Facet.submitRequest}).
+     * honours it; the Worker Loader host ends with it only the call's wait for
+     * its load to be admitted, and ends a running call through the request's
+     * own signal instead ({@link Facet.submitRequest}).
      */
     signal?: AbortSignal;
     /** Wasm images for this call alone, merged over {@link FacetSpec.wasmModules}. */
-    wasmModules?: Record<string, ArrayBuffer>;
+    wasmModules?: Record<string, FacetImage>;
 }
 /**
  * One facet's scope, for as long as a runtime needs it.

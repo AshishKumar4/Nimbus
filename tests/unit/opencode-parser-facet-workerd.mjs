@@ -16,12 +16,8 @@
 // Red before: the staged parser read workerd's isMainThread (true) and never
 // answered.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import net from 'node:net';
-import { createRequire } from 'node:module';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { servePlainWorkerd } from './lib/plain-workerd.mjs';
 import { WORKER_POLYFILL_SRC } from '../../packages/worker/src/runtime/opencode-facet-runner.ts';
 import { OPENCODE_ARTIFACT_VERSION, OPENCODE_TUI_PARSER_WORKER } from '../../packages/worker/src/opencode-artifact.generated.ts';
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '../../packages/core/src/constants.ts';
@@ -79,20 +75,11 @@ export default {
 };
 `;
 
-async function freePort() {
-  const free = net.createServer();
-  await new Promise((r) => free.listen(0, '127.0.0.1', r));
-  const port = free.address().port;
-  await new Promise((r) => free.close(r));
-  return port;
-}
-
-const require = createRequire(import.meta.url);
-const workerd = createRequire(require.resolve('wrangler/package.json'))('workerd').default;
-const dir = mkdtempSync(join(tmpdir(), 'opencode-parser-facet-'));
-writeFileSync(join(dir, 'main.js'), MAIN);
-const port = await freePort();
-writeFileSync(join(dir, 'config.capnp'), `using Workerd = import "/workerd/workerd.capnp";
+const served = await servePlainWorkerd({
+  name: 'opencode-parser-facet',
+  files: { 'main.js': MAIN },
+  readyPath: '/ready',
+  config: ({ port }) => `using Workerd = import "/workerd/workerd.capnp";
 const config :Workerd.Config = (
   services = [
     (name = "main", worker = (
@@ -107,26 +94,18 @@ const config :Workerd.Config = (
     )),
   ],
   sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")],
-);`);
-const child = spawn(workerd, ['serve', 'config.capnp', '--experimental'], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
-let logs = '';
-child.stdout.on('data', (d) => { logs += d; });
-child.stderr.on('data', (d) => { logs += d; });
+);`,
+});
+const logs = served.logs;
 try {
-  for (const until = Date.now() + 30_000; ;) {
-    try { await fetch(`http://127.0.0.1:${port}/ready`); break; } catch {}
-    if (child.exitCode !== null || Date.now() > until) throw new Error(`workerd did not start:\n${logs}`);
-    await new Promise((r) => setTimeout(r, 50));
-  }
-  const result = await (await fetch(`http://127.0.0.1:${port}/run`)).json();
-  assert.equal(result.failed, undefined, `the facet runs: ${result.failed}\n${logs.slice(-2000)}`);
+  const result = await (await fetch(`${served.base}/run`, { signal: AbortSignal.timeout(60_000) })).json();
+  assert.equal(result.failed, undefined, `the facet runs: ${result.failed}\n${logs().slice(-2000)}`);
   assert.equal(result.isMainThread, true, "the facet's own thread is workerd's main thread");
-  assert.equal(result.answers[0]?.type, 'PERFORMANCE_RESPONSE', `the parser answers GET_PERFORMANCE within 5 s (answers: ${JSON.stringify(result.answers)})\n${logs.slice(-2000)}`);
+  assert.equal(result.answers[0]?.type, 'PERFORMANCE_RESPONSE', `the parser answers GET_PERFORMANCE within 5 s (answers: ${JSON.stringify(result.answers)})\n${logs().slice(-2000)}`);
   assert.equal(result.answers[0].messageId, 1);
   assert.equal(result.bridged, true, 'a bare "fs/promises" is the map\'s node:fs/promises');
   assert.equal(result.consoleKept, true, "the parser's console is its own: the facet's console keeps its methods");
   console.log('opencode-parser-facet-workerd: ok');
 } finally {
-  child.kill('SIGKILL');
-  rmSync(dir, { recursive: true, force: true });
+  await served.stop();
 }

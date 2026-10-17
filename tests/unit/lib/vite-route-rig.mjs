@@ -7,6 +7,7 @@ import { PortRegistry } from '../../../packages/core/src/runtime/port-registry.t
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
 import { ProcessFiles } from '../../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
+import { memoryStorage } from './do-storage.mjs';
 
 export const SID = 'nimble-otter-4271';
 export const BASE_PATH = `/s/${SID}`;
@@ -62,16 +63,7 @@ export function makeSession(storage, { vfs, routes, bundlePool = null, pidBase =
     portRegistry: new PortRegistry(),
     processes,
     ctx: {
-      storage: {
-        async get(key) { return store.get(key); },
-        async put(key, value) { store.set(key, value); },
-        async delete(key) { store.delete(key); },
-        async list({ prefix = '' } = {}) { return new Map([...store].filter(([key]) => key.startsWith(prefix))); },
-        async sync() {},
-        // The reservation paths run read-modify-write inside one unit; the
-        // stub serializes them the way the DO storage does.
-        async transaction(body) { return body(this); },
-      },
+      storage: memoryStorage({ rows: store }),
       acceptWebSocket() {},
     },
     get nimbusDebug() { return false; },
