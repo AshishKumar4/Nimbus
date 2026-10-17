@@ -382,7 +382,7 @@ again.
   graded. No output contains the token. The suite runs in 4 parts of 4
   probes at a time, with Chromium, and checks the session ledger.
 - The perf probes in `PAIRED_PROBES` (`tests/behavioral/_paired.mjs`:
-  cold-start, first-paint, install-warm) grade the candidate against a
+  cold-start, first-paint, install-warm, clone-fast) grade the candidate against a
   baseline measured in the same run. When the selection has one,
   `remote-probes` builds the baseline (`--baseline <commit>`, default the
   merge-base with origin/main; `release.mjs staging` passes the commit
