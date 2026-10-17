@@ -485,7 +485,7 @@ export function buildRuntimeHandler(spec, ctx0) {
             : null;
         // -c of TypeScript, a declaration file's too: Node compiles its own text as CommonJS
         // (check_syntax.js: its format is never 'module'), or, stripping off, refuses its extension.
-        const checksTypeScript = launch.check && /\.[cm]?ts$/.test(resolvedPath);
+        const checksTypeScript = launch.check && typescriptLoader(resolvedPath) === 'ts';
         // Node's own TypeScript is stripped, then JavaScript of Node's format for it.
         const stripTypes = spec.nodeCommandLine && moduleScope === 'node' && stripsTypeScript(resolvedPath) && !launch.check ? typeScriptStripOptions(launch) : null;
         let stripped = null;

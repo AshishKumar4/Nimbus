@@ -54,7 +54,7 @@ export declare const ESM_RESOLVER_PREAMBLE: string;
 export declare const HTTP2_MODULE_PREAMBLE: string;
 /**
  * Declares resolveExports, resolvePackageEntry, packageSelfReferenceSubpath,
- * DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS, typescriptFallbackCandidates, stripsTypeScript,
+ * DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS, typescriptFallbackCandidates, stripsTypeScript, typescriptLoader,
  * TYPESCRIPT_INDEX_CANDIDATES, presentedCredential and isWebSocketUpgradeRequest; the node shims call them.
  */
 export declare const NODE_SHIM_RESOLUTION_PREAMBLE: string;
