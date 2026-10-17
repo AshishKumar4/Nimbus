@@ -19,6 +19,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { adaptHttpImports } from './node-http-platform.mjs';
 import { HOST_WATCH_MODULE } from '../../../packages/fabric/src/host-activity.ts';
+import { CLOUDFLARE_WORKERS_URL } from './cloudflare-workers.mjs';
 
 /** The program's image excludes the host's fixed observation adapter. */
 export function processImageModules(config) {
@@ -157,24 +158,20 @@ export function generatedModuleSet(generated, entry) {
   return set;
 }
 
-const DO_SHIM = 'class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }';
-const ENTRYPOINT_SHIM = 'class WorkerEntrypoint { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }';
 let loadDir = null;
 let loadN = 0;
 
 /**
  * Import a Worker Loader config's entry, its side modules beside it, from a
- * directory of this test's own (removed when the process exits). The entry's
- * `cloudflare:workers` import is replaced with its base class (DurableObject
- * or WorkerEntrypoint), which keeps ctx and env as the platform's does.
+ * directory of this test's own (removed when the process exits). A module's
+ * `cloudflare:workers` is the stand-in (cloudflare-workers.mjs).
  */
 export async function importModuleSet(modules, entry) {
   if (loadDir === null) {
     loadDir = mkdtempSync(join(tmpdir(), 'nimbus-module-set-'));
     process.on('exit', () => rmSync(loadDir, { recursive: true, force: true }));
   }
-  const file = writeModuleSet(join(loadDir, String(loadN++)), modules, entry, (_name, source) => source
-    .replace('import { DurableObject } from "cloudflare:workers";', DO_SHIM)
-    .replace('import { WorkerEntrypoint } from "cloudflare:workers";', ENTRYPOINT_SHIM));
+  const file = writeModuleSet(join(loadDir, String(loadN++)), modules, entry, (_name, source) =>
+    source.replaceAll(/(["'])cloudflare:workers\1/g, JSON.stringify(CLOUDFLARE_WORKERS_URL)));
   return import(pathToFileURL(file).href);
 }

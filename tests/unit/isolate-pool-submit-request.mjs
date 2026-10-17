@@ -206,6 +206,16 @@ function runningLoader() {
   await assert.rejects(pool.submit(facetTaskSource("async () => { throw new Error('rpc-thrown-token'); }"), null), /rpc-thrown-token/);
   await pool.dispose();
 }
+{
+  // A pool with bindings hands its env to the task, after the request or the argument.
+  const loader = runningLoader();
+  const pool = new IsolatePool(loader.env, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0, extraBindings: { MARK: 'bound-mark' } });
+  const fetched = await pool.submitRequest(facetTaskSource('async (request, env) => ({ mark: env.MARK, body: await request.json() })'),
+    new Request('https://facet.internal/step', { method: 'POST', body: '{"n":2}' }));
+  assert.deepEqual(await fetched.json(), { mark: 'bound-mark', body: { n: 2 } });
+  assert.deepEqual(await pool.submit(facetTaskSource('async (arg, env) => ({ arg, mark: env.MARK })'), 5), { arg: 5, mark: 'bound-mark' });
+  await pool.dispose();
+}
 
 // ── A failed run of a process that writes says what it may have lost ──
 // (unsettledEnd.) A one-shot facet acknowledges writes before the session
