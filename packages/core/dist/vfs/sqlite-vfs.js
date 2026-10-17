@@ -486,6 +486,42 @@ class TransactionPlanBuilder {
 function groupedSqlExecs(rows, rowsPerExec) {
     return rows === 0 ? 0 : Math.ceil(rows / rowsPerExec);
 }
+/** A drop transaction's cost: its history deletes, the references it queues, and its job row. */
+function dropMetrics(deletes, queued) {
+    return {
+        blobBytes: 0,
+        logicalRows: deletes + queued + 1,
+        sqlExecs: Math.ceil(deletes / (KEYS_PER_SQL_EXEC / 2)) + Math.ceil(queued / Math.floor(SQL_MAX_BOUND_PARAMETERS / GC_ROW_COLUMNS)) + 1,
+        affectedPaths: 0,
+    };
+}
+/** The references `rows` (history rows) queue for collection, at most: a chunk's and a manifest's each. */
+function queuedFor(rows) {
+    let queued = 0;
+    for (const row of rows)
+        queued += (row.chunk_id !== null ? 1 : 0) + (row.content_id !== null ? 1 : 0);
+    return queued;
+}
+/**
+ * `dead` (one drop page's history rows) as transactions the shared budget
+ * admits (dropMetrics), in order; one empty slice for none, which still
+ * moves the job's cursor.
+ */
+function dropSlices(dead) {
+    const slices = [[]];
+    let queued = 0;
+    for (const row of dead) {
+        let slice = slices[slices.length - 1];
+        const adds = queuedFor([row]);
+        if (slice.length > 0 && exceededTransactionLimit(dropMetrics(slice.length + 1, queued + adds)) !== null) {
+            slices.push(slice = []);
+            queued = 0;
+        }
+        slice.push(row);
+        queued += adds;
+    }
+    return slices;
+}
 function exceededTransactionLimit(metrics) {
     if (metrics.blobBytes > MAX_TX_BLOB_BYTES)
         return 'blobBytes';
@@ -1007,12 +1043,7 @@ export class SqliteVFS {
     _transactionPeakLogicalRows = 0;
     _transactionPeakSqlExecs = 0;
     _transactionPeakAffectedPaths = 0;
-    _boundedTransactionPeakBlobBytes = 0;
-    _boundedTransactionPeakLogicalRows = 0;
-    _boundedTransactionPeakSqlExecs = 0;
     _lastTransaction = null;
-    _overLimitFileCount = 0;
-    _lastOverLimitFile = null;
     // ── Stats ─────────────────────────────────────────────────────────────
     _cacheHits = 0;
     _cacheMisses = 0;
@@ -3538,7 +3569,7 @@ export class SqliteVFS {
             if (builder.empty)
                 return;
             const plan = builder.build();
-            this.executeTransactionPlan(plan, { source: 'range-mutation', limitMode: 'bounded' });
+            this.executeTransactionPlan(plan, { source: 'range-mutation' });
             // Rewritten as it stood: the inode a description or the cache holds takes its new generation.
             for (const entry of plan.inodes) {
                 const inode = this.inodes.peek(entry.path);
@@ -3925,7 +3956,7 @@ export class SqliteVFS {
             defaultAcl: made.defaultAcl,
             ...(ino === undefined ? {} : { ino: this.askedIno({ path, ino }) }),
         });
-        this._writeBatchOnce({ plan: builder.build(), deletedInodes: [] }, { source: 'strict-batch', limitMode: 'bounded' });
+        this._writeBatchOnce({ plan: builder.build(), deletedInodes: [] }, { source: 'strict-batch' });
     }
     /**
      * The inode `writeFile` publishes for `size` bytes at `path`, once it is
@@ -4453,7 +4484,7 @@ export class SqliteVFS {
         const held = [];
         let heldBytes = 0;
         let staging = null;
-        const { stage, flush } = this.stagingWriter(() => staging, path ?? node.path, (plan) => this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }));
+        const { stage, flush } = this.stagingWriter(() => staging, path ?? node.path, (plan) => this.executeTransactionPlan(plan, { source: 'content-stage' }));
         const startStaging = () => {
             staging = this.beginStaging();
             if (node.contentId !== null && from > 0)
@@ -4570,11 +4601,11 @@ export class SqliteVFS {
     }
     commitRewrite(node, path, plan, onCommit) {
         if (path !== null) {
-            this._writeBatchOnce({ plan, deletedInodes: [] }, { source: 'range-mutation', limitMode: 'bounded' }, onCommit);
+            this._writeBatchOnce({ plan, deletedInodes: [] }, { source: 'range-mutation' }, onCommit);
             this.runContentMaintenanceSafely(1);
             return;
         }
-        this.executeTransactionPlan(plan, { source: 'range-mutation', limitMode: 'bounded' }, onCommit, [node]);
+        this.executeTransactionPlan(plan, { source: 'range-mutation' }, onCommit, [node]);
         const entry = plan.inodes[0];
         node.size = entry.size;
         node.chunkId = entry.chunkId ?? null;
@@ -4669,7 +4700,7 @@ export class SqliteVFS {
         const staging = { id: 0, size: 0, count: 0, hashed: true, digest: new ManifestDigest() };
         const builder = this.newPlan();
         builder.addStaging(staging);
-        this.executeTransactionPlan(builder.build(), { source: 'content-stage', limitMode: 'bounded' });
+        this.executeTransactionPlan(builder.build(), { source: 'content-stage' });
         return staging;
     }
     /**
@@ -4686,7 +4717,7 @@ export class SqliteVFS {
                 break;
             const last = page[page.length - 1];
             const next = Number(last.off) + Number(last.len);
-            this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: 0, logicalRows: page.length, sqlExecs: 1, affectedPaths: 0 }), { source: 'content-stage', limitMode: 'bounded' }, () => {
+            this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: 0, logicalRows: page.length, sqlExecs: 1, affectedPaths: 0 }), { source: 'content-stage' }, () => {
                 this.sql.exec(`INSERT INTO vfs_content_chunks (content_id, off, len, chunk_id)
              SELECT ?, off, len, chunk_id FROM vfs_content_chunks WHERE content_id = ? AND off >= ? AND off < ?`, staging.id, source, cursor, next);
             });
@@ -4766,7 +4797,7 @@ export class SqliteVFS {
             content: { type: 'ref', chunkId: inode.chunkId, contentId: inode.contentId },
             defaultAcl: fields.defaultAcl,
         });
-        this._writeBatchOnce({ plan: builder.build(), deletedInodes: [] }, { source: 'range-mutation', limitMode: 'bounded' });
+        this._writeBatchOnce({ plan: builder.build(), deletedInodes: [] }, { source: 'range-mutation' });
     }
     utimes(path, atime, mtime, cred, followLeaf = true) {
         const resolved = this.checkAccess(path, 0, cred, { followLeaf });
@@ -5400,7 +5431,7 @@ export class SqliteVFS {
             // Before executing: a commit that throws after it is durable is reported too.
             for (const path of plan.affectedPaths)
                 touchedPaths.add(path);
-            this.executeTransactionPlan(plan, { source: 'content-publish', limitMode: 'bounded' });
+            this.executeTransactionPlan(plan, { source: 'content-publish' });
             const rows = plan.inodes.length + plan.deletes.length;
             this._sqlWrites += rows;
             this._batchWrites++;
@@ -5608,7 +5639,7 @@ export class SqliteVFS {
             const plan = builder.build();
             builder = this.newPlan();
             this.assertTransactionFits(plan.metrics);
-            this.executeTransactionPlan(plan, { source: 'content-publish', limitMode: 'bounded' });
+            this.executeTransactionPlan(plan, { source: 'content-publish' });
         };
         try {
             for (const stored of deepestFirst) {
@@ -5726,7 +5757,7 @@ export class SqliteVFS {
             gid,
             content: { type: 'ref', chunkId: inode.chunkId, contentId: inode.contentId },
         });
-        this._writeBatchOnce({ plan: builder.build(), deletedInodes: [] }, { source: 'strict-batch', limitMode: 'bounded' });
+        this._writeBatchOnce({ plan: builder.build(), deletedInodes: [] }, { source: 'strict-batch' });
         this.runContentMaintenanceSafely(1);
         return { ...this.stat(dest, cred, true), from: { path: source.path, revision: inode.gen }, landed: target.path };
     }
@@ -5889,7 +5920,7 @@ export class SqliteVFS {
                 logicalRows: page.length + 2 + touched.length * 2,
                 sqlExecs: 4 + touched.length * 2,
                 affectedPaths: page.length,
-            }), { source: 'content-publish', limitMode: 'bounded' }, () => {
+            }), { source: 'content-publish' }, () => {
                 const state = [...this.sql.exec('UPDATE vfs_state SET gen = gen + 1 WHERE slot = 1 RETURNING gen, next_ino, pin_gen')][0];
                 gen = Number(state.gen);
                 if (touched.length > 0) {
@@ -6487,8 +6518,9 @@ export class SqliteVFS {
         };
     }
     /**
-     * Restore the live tree (or `subtree`) to snapshot `name`, in bounded
-     * transactions of RESTORE_PAGE_ROWS paths. Every path changed since the
+     * Restore the live tree (or `subtree`) to snapshot `name`, in pages of
+     * RESTORE_PAGE_ROWS paths read, each written in the transactions the shared
+     * budget admits. Every path changed since the
      * snapshot is replaced by the row the snapshot saw, or removed if the
      * snapshot did not have it; every path the snapshot had and the live tree
      * lost comes back. It is an ordinary write: new generations, revisions,
@@ -6617,21 +6649,37 @@ export class SqliteVFS {
                 this.normalizeSharedEntry(entry, CRED_KERNEL);
                 return entry;
             };
+            // As many as one transaction admits (the builder's measure, history and
+            // superseded references with the rows): a changed path not taken stays
+            // changed for the next page, and a revived one past the cursor.
+            let taken = 0;
             for (const live of changed) {
                 const past = this.historyAt(live.path, job.g);
+                if (!builder.empty && (past === undefined ? builder.wouldExceedDeletion() : builder.wouldExceedInode()) !== null)
+                    break;
                 if (past === undefined) {
                     builder.addDeletedPath(live.path, live);
                     deletedInodes.push(live);
                 }
                 else
                     builder.addInode(restoredRow(past));
+                taken++;
             }
-            for (const past of revived)
-                builder.addInode(restoredRow(past));
-            if (revived.length > 0)
-                revivedAfter = revived[revived.length - 1].path;
-            this._writeBatchOnce({ plan: builder.build(), deletedInodes }, { source: 'content-publish', limitMode: 'bounded' });
-            restored += changed.length + revived.length;
+            let revivedTaken = 0;
+            if (taken === changed.length) {
+                for (const past of revived) {
+                    if (!builder.empty && builder.wouldExceedInode() !== null)
+                        break;
+                    builder.addInode(restoredRow(past));
+                    revivedTaken++;
+                }
+            }
+            if (revivedTaken > 0)
+                revivedAfter = revived[revivedTaken - 1].path;
+            const plan = builder.build();
+            this.assertTransactionFits(plan.metrics);
+            this._writeBatchOnce({ plan, deletedInodes }, { source: 'content-publish' });
+            restored += taken + revivedTaken;
         }
     }
     /** The history row covering generation `g` at `path`, if any. */
@@ -6702,29 +6750,37 @@ export class SqliteVFS {
                 const to = Number(row.gen_to);
                 return from <= g && !kept.some((s) => from <= s && s < to);
             });
-            if (page.length > 0) {
-                const last = page[page.length - 1];
-                afterGen = Number(last.gen_to);
-                afterPath = String(last.path);
+            // The page's dead rows in transactions the shared budget admits, each
+            // ending at its last row's cursor, the page's last at the page's end.
+            const slices = dropSlices(dead);
+            for (const [index, slice] of slices.entries()) {
+                const final = index === slices.length - 1;
+                const last = final ? page[page.length - 1] : slice[slice.length - 1];
+                if (last !== undefined) {
+                    afterGen = Number(last.gen_to);
+                    afterPath = String(last.path);
+                }
+                const metrics = dropMetrics(slice.length, queuedFor(slice));
+                this.assertTransactionFits(metrics);
+                this.executeMeasuredTransaction(this.metricsOnlyPlan(metrics), { source: 'content-gc' }, () => {
+                    for (let i = 0; i < slice.length; i += KEYS_PER_SQL_EXEC / 2) {
+                        const batch = slice.slice(i, i + KEYS_PER_SQL_EXEC / 2);
+                        this.sql.exec(`DELETE FROM vfs_inode_history WHERE (path, gen_to) IN (VALUES ${batch.map(() => '(?, ?)').join(',')})`, ...batch.flatMap((row) => [row.path, row.gen_to]));
+                    }
+                    const queue = new GcQueue();
+                    for (const row of slice) {
+                        if (row.chunk_id !== null)
+                            queue.add(GC_CHUNK, Number(row.chunk_id));
+                        if (row.content_id !== null)
+                            queue.add(GC_CONTENT, Number(row.content_id));
+                    }
+                    this.insertRows('vfs_gc_queue (kind, id)', GC_ROW_COLUMNS, queue.rows(), 'INSERT OR IGNORE');
+                    if (done && final)
+                        this.sql.exec('DELETE FROM vfs_jobs WHERE id = ?', id);
+                    else
+                        this.sql.exec('UPDATE vfs_jobs SET cursor = ? WHERE id = ?', JSON.stringify([afterGen, afterPath]), id);
+                });
             }
-            this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: 0, logicalRows: dead.length * 2 + 1, sqlExecs: 8, affectedPaths: 0 }), { source: 'content-gc', limitMode: 'bounded' }, () => {
-                for (let i = 0; i < dead.length; i += KEYS_PER_SQL_EXEC / 2) {
-                    const batch = dead.slice(i, i + KEYS_PER_SQL_EXEC / 2);
-                    this.sql.exec(`DELETE FROM vfs_inode_history WHERE (path, gen_to) IN (VALUES ${batch.map(() => '(?, ?)').join(',')})`, ...batch.flatMap((row) => [row.path, row.gen_to]));
-                }
-                const queue = new GcQueue();
-                for (const row of dead) {
-                    if (row.chunk_id !== null)
-                        queue.add(GC_CHUNK, Number(row.chunk_id));
-                    if (row.content_id !== null)
-                        queue.add(GC_CONTENT, Number(row.content_id));
-                }
-                this.insertRows('vfs_gc_queue (kind, id)', GC_ROW_COLUMNS, queue.rows(), 'INSERT OR IGNORE');
-                if (done)
-                    this.sql.exec('DELETE FROM vfs_jobs WHERE id = ?', id);
-                else
-                    this.sql.exec('UPDATE vfs_jobs SET cursor = ? WHERE id = ?', JSON.stringify([afterGen, afterPath]), id);
-            });
             dropped += dead.length;
             if (dead.length > 0)
                 this.maintenancePending = true;
@@ -7247,9 +7303,9 @@ export class SqliteVFS {
         const commit = (plan) => {
             this.assertTransactionFits(plan.metrics);
             if (plan.inodes.length)
-                this._writeBatchOnce({ plan, deletedInodes: [] }, { source: 'content-publish', limitMode: 'bounded' }, save);
+                this._writeBatchOnce({ plan, deletedInodes: [] }, { source: 'content-publish' }, save);
             else
-                this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }, save);
+                this.executeTransactionPlan(plan, { source: 'content-stage' }, save);
         };
         if (target !== '' && this.inodes.get(target) === undefined && !rows.some((row) => row.path === '')) {
             const root = this.newPlan(true);
@@ -7288,7 +7344,7 @@ export class SqliteVFS {
                     part = this.newPlan(true);
                     const prior = state.pending;
                     this.assertTransactionFits(plan.metrics);
-                    this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }, () => {
+                    this.executeTransactionPlan(plan, { source: 'content-stage' }, () => {
                         state.pending = { path: row.path, meta: importRowMeta(row), content: staging.id, offset: staging.size, count: staging.count };
                         progress = exportCursor(row.path, staging.size);
                         save();
@@ -7426,7 +7482,7 @@ export class SqliteVFS {
     insertPendingChunks(chunks) {
         for (let i = 0; i < chunks.length; i += KEYS_PER_SQL_EXEC) {
             const batch = chunks.slice(i, i + KEYS_PER_SQL_EXEC);
-            this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: 0, logicalRows: batch.length * 2 + 1, sqlExecs: batch.length * 2 + 1, affectedPaths: 0 }), { source: 'content-stage', limitMode: 'bounded' }, () => {
+            this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: 0, logicalRows: batch.length * 2 + 1, sqlExecs: batch.length * 2 + 1, affectedPaths: 0 }), { source: 'content-stage' }, () => {
                 const state = [...this.sql.exec('UPDATE vfs_state SET next_chunk = next_chunk + ? WHERE slot = 1 RETURNING next_chunk', batch.length)][0];
                 let id = Number(state.next_chunk) - batch.length;
                 for (const chunk of batch) {
@@ -7452,7 +7508,7 @@ export class SqliteVFS {
             if (group.length === 0)
                 return;
             const rows = group;
-            this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: groupBytes, logicalRows: rows.length, sqlExecs: rows.length, affectedPaths: 0 }), { source: 'content-stage', limitMode: 'bounded' }, () => {
+            this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: groupBytes, logicalRows: rows.length, sqlExecs: rows.length, affectedPaths: 0 }), { source: 'content-stage' }, () => {
                 for (const row of rows) {
                     const done = [...this.sql.exec(`UPDATE vfs_chunks SET data = ?, state = ${CHUNK_LOCAL} WHERE hash = ? AND state = ${CHUNK_PENDING} RETURNING 1`, row.data, unhex(row.hash))].length > 0;
                     if (done)
@@ -7532,7 +7588,7 @@ export class SqliteVFS {
         }
         // The job names the staging in the transaction that makes it.
         const { stage, flush } = this.stagingWriter(() => staging, target, (plan) => {
-            this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }, () => {
+            this.executeTransactionPlan(plan, { source: 'content-stage' }, () => {
                 this.sql.exec("UPDATE vfs_jobs SET args = json_set(args, '$.ahead', ?) WHERE id = ?", staging.id, id);
             });
         }, true);
@@ -7641,7 +7697,7 @@ export class SqliteVFS {
             this.executeMeasuredTransaction(this.metricsOnlyPlan({
                 blobBytes: 0, logicalRows: batch.length + queued.length / 2,
                 sqlExecs: 1 + groupedSqlExecs(queued.length / 2, GC_ROWS_PER_SQL_EXEC), affectedPaths: 0,
-            }), { source: 'content-gc', limitMode: 'bounded' }, () => {
+            }), { source: 'content-gc' }, () => {
                 this.sql.exec(`DELETE FROM vfs_jobs WHERE id IN (${batch.map(() => '?').join(',')})`, ...batch.map((job) => job.id));
                 this.insertRows('vfs_gc_queue (kind, id)', GC_ROW_COLUMNS, queued, 'INSERT OR IGNORE');
             });
@@ -7767,7 +7823,7 @@ export class SqliteVFS {
         let tiered = 0;
         for (let i = 0; i < uploaded.length; i += KEYS_PER_SQL_EXEC) {
             const batch = uploaded.slice(i, i + KEYS_PER_SQL_EXEC);
-            this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: 0, logicalRows: batch.length, sqlExecs: 1, affectedPaths: 0 }), { source: 'content-gc', limitMode: 'bounded' }, () => {
+            this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: 0, logicalRows: batch.length, sqlExecs: 1, affectedPaths: 0 }), { source: 'content-gc' }, () => {
                 // The probes again, inside the transaction: across the awaits a
                 // write may have named one of these chunks, or a prepareSnapshot
                 // claimed its snapshot.
@@ -7860,7 +7916,7 @@ export class SqliteVFS {
             if (group.length === 0)
                 return;
             const rows = group;
-            this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: groupBytes, logicalRows: rows.length, sqlExecs: rows.length, affectedPaths: 0 }), { source: 'content-stage', limitMode: 'bounded' }, () => {
+            this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: groupBytes, logicalRows: rows.length, sqlExecs: rows.length, affectedPaths: 0 }), { source: 'content-stage' }, () => {
                 for (const row of rows) {
                     hydrated += [...this.sql.exec(`UPDATE vfs_chunks SET data = ?, state = ${CHUNK_LOCAL} WHERE hash = ? AND state = ${CHUNK_COLD} RETURNING 1`, row.data, row.hash)].length;
                 }
@@ -8148,7 +8204,7 @@ export class SqliteVFS {
         this.assertMutationsAllowed(Array.from(batchMutationPaths(payload), (path) => this.lexicalKey(path, cred).value));
         const normalized = this.authorizeBatch(payload, cred);
         this.assertMutationsAllowed(batchMutationPaths(normalized));
-        return this._writeBatchWithRetry(normalized, cred, { source: 'strict-batch', limitMode: 'bounded' }, true, onCommit);
+        return this._writeBatchWithRetry(normalized, cred, { source: 'strict-batch' }, onCommit);
     }
     /**
      * Write a file too large for one transaction: its FastCDC chunks stage into
@@ -8161,7 +8217,7 @@ export class SqliteVFS {
             throw vfsError('EINVAL', inode.path, `${data.byteLength} bytes for size ${inode.size}`);
         }
         const staging = { id: 0, size: 0, count: 0, hashed: true, digest: new ManifestDigest() };
-        const { stage, flush } = this.stagingWriter(() => staging, inode.path, (plan) => this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }));
+        const { stage, flush } = this.stagingWriter(() => staging, inode.path, (plan) => this.executeTransactionPlan(plan, { source: 'content-stage' }));
         try {
             let start = 0;
             for (const end of cutContent(data)) {
@@ -8211,7 +8267,7 @@ export class SqliteVFS {
         builder.addInode(this.fileEntry(inode, { type: 'staged', content: staging }));
         const plan = builder.build();
         this.assertTransactionFits(plan.metrics);
-        const result = this._writeBatchOnce({ plan, deletedInodes: [] }, { source: 'content-publish', limitMode: 'bounded' }, onCommit);
+        const result = this._writeBatchOnce({ plan, deletedInodes: [] }, { source: 'content-publish' }, onCommit);
         return { inodes: result.inodes, chunks: inode.chunkCount };
     }
     /**
@@ -8259,7 +8315,7 @@ export class SqliteVFS {
             }));
         }
         const staging = { id: 0, size: 0, count: 0, hashed: true, digest: new ManifestDigest() };
-        const writer = this.stagingWriter(() => staging, target, (plan) => asCaller(() => this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' })));
+        const writer = this.stagingWriter(() => staging, target, (plan) => asCaller(() => this.executeTransactionPlan(plan, { source: 'content-stage' })));
         const flush = writer.flush;
         const stage = (data) => writer.stage({ data, hash: chunkHash(data) });
         const cutter = new ContentCutter();
@@ -8690,7 +8746,7 @@ export class SqliteVFS {
                     // the staged chunks of a file still in flight, and the bytes stay
                     // charged to it until its publication commits.
                     this.assertTransactionFits(plan.metrics);
-                    ownFiles(() => this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }));
+                    ownFiles(() => this.executeTransactionPlan(plan, { source: 'content-stage' }));
                     this._stagedStreamBytes += plan.metrics.blobBytes;
                     this._peakStagedStreamBytes = Math.max(this._peakStagedStreamBytes, this._stagedStreamBytes);
                     if (activeFile)
@@ -8703,7 +8759,7 @@ export class SqliteVFS {
                 // this is the check that is contemporaneous with the write.
                 const result = ownFiles(() => asCaller(() => {
                     this.assertMutationsAllowed(inodes);
-                    return this._writeBatchOnce({ plan, deletedInodes: [] }, { source: 'content-publish', limitMode: 'bounded' });
+                    return this._writeBatchOnce({ plan, deletedInodes: [] }, { source: 'content-publish' });
                 }));
                 let activeStaged = 0;
                 for (const staged of plan.staged) {
@@ -9127,12 +9183,11 @@ export class SqliteVFS {
             this.activeHolds = prior;
         }
     }
-    _writeBatchWithRetry(payload, cred, execution, enforceLimits, onCommit) {
+    _writeBatchWithRetry(payload, cred, execution, onCommit) {
         const prepared = this.prepareBatchTransaction(payload, cred, onCommit !== undefined);
         if (prepared.plan.inodes.length === 0 && prepared.plan.deletes.length === 0)
             return { inodes: 0, chunks: 0 };
-        if (enforceLimits)
-            this.assertTransactionFits(prepared.plan.metrics);
+        this.assertTransactionFits(prepared.plan.metrics);
         const chunks = payload.chunks.length;
         try {
             return { inodes: this._writeBatchOnce(prepared, execution, onCommit).inodes, chunks };
@@ -10062,11 +10117,6 @@ export class SqliteVFS {
             this._transactionPeakLogicalRows = Math.max(this._transactionPeakLogicalRows, plan.metrics.logicalRows);
             this._transactionPeakSqlExecs = Math.max(this._transactionPeakSqlExecs, plan.metrics.sqlExecs);
             this._transactionPeakAffectedPaths = Math.max(this._transactionPeakAffectedPaths, plan.metrics.affectedPaths);
-            if (execution.limitMode === 'bounded') {
-                this._boundedTransactionPeakBlobBytes = Math.max(this._boundedTransactionPeakBlobBytes, plan.metrics.blobBytes);
-                this._boundedTransactionPeakLogicalRows = Math.max(this._boundedTransactionPeakLogicalRows, plan.metrics.logicalRows);
-                this._boundedTransactionPeakSqlExecs = Math.max(this._boundedTransactionPeakSqlExecs, plan.metrics.sqlExecs);
-            }
             this._lastTransaction = { metrics: plan.metrics, execution };
             this._activeTransaction = null;
         }
@@ -10180,7 +10230,7 @@ export class SqliteVFS {
         if (floor > this._revision)
             throw new Error(`[sqlite-vfs] a tombstone prune reached ${floor}, past the published clock ${this._revision}`);
         let removed = 0;
-        this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: 0, logicalRows: TOMBSTONE_PRUNE_PAGE_ROWS * 2 + 1, sqlExecs: 3, affectedPaths: 0 }), { source: 'content-gc', limitMode: 'bounded' }, () => {
+        this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: 0, logicalRows: TOMBSTONE_PRUNE_PAGE_ROWS * 2 + 1, sqlExecs: 3, affectedPaths: 0 }), { source: 'content-gc' }, () => {
             removed = [...this.sql.exec('DELETE FROM vfs_tombstones WHERE gen <= ? RETURNING 1', floor)].length;
             this.sql.exec('UPDATE vfs_state SET tomb_floor = MAX(tomb_floor, ?) WHERE slot = 1', floor);
         });
@@ -10218,7 +10268,7 @@ export class SqliteVFS {
     collectContents(ids, pinnedChunks) {
         const list = ids.map(() => '?').join(',');
         const freed = [];
-        this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: 0, logicalRows: GC_MANIFEST_ROWS * 2 + ids.length, sqlExecs: 13, affectedPaths: 0 }), { source: 'content-gc', limitMode: 'bounded' }, () => {
+        this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: 0, logicalRows: GC_MANIFEST_ROWS * 2 + ids.length, sqlExecs: 13, affectedPaths: 0 }), { source: 'content-gc' }, () => {
             const dead = [...this.sql.exec(`SELECT id FROM vfs_contents AS c WHERE id IN (${list})
              AND NOT EXISTS (SELECT 1 FROM vfs_inodes WHERE content_id = c.id)
              AND NOT EXISTS (SELECT 1 FROM vfs_inode_history WHERE content_id = c.id)`, ...ids)].map((row) => Number(row.id));
@@ -10280,7 +10330,7 @@ export class SqliteVFS {
     collectChunks(ids) {
         const list = ids.map(() => '?').join(',');
         const freed = [];
-        this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: 0, logicalRows: ids.length * 2, sqlExecs: 2, affectedPaths: 0 }), { source: 'content-gc', limitMode: 'bounded' }, () => {
+        this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: 0, logicalRows: ids.length * 2, sqlExecs: 2, affectedPaths: 0 }), { source: 'content-gc' }, () => {
             for (const row of this.sql.exec(`DELETE FROM vfs_chunks AS c WHERE id IN (${list})
              AND NOT EXISTS (SELECT 1 FROM vfs_inodes WHERE chunk_id = c.id)
              AND NOT EXISTS (SELECT 1 FROM vfs_content_chunks WHERE chunk_id = c.id)
@@ -10383,7 +10433,7 @@ export class SqliteVFS {
     legacyJanitorPage() {
         const table = this.legacyTables[0];
         const rows = [...this.sql.exec(`SELECT rowid AS r FROM ${table} LIMIT ?`, MAX_TX_LOGICAL_ROWS)];
-        this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: 0, logicalRows: rows.length, sqlExecs: 1, affectedPaths: 0 }), { source: 'content-gc', limitMode: 'bounded' }, () => {
+        this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: 0, logicalRows: rows.length, sqlExecs: 1, affectedPaths: 0 }), { source: 'content-gc' }, () => {
             if (rows.length === 0)
                 this.sql.exec(`DROP TABLE ${table}`);
             else {
@@ -10421,10 +10471,6 @@ export class SqliteVFS {
             metrics,
             inPlace: false,
         };
-    }
-    recordOverLimitFile(path, limit, metrics) {
-        this._overLimitFileCount++;
-        this._lastOverLimitFile = { path, limit, ...metrics };
     }
     recordDuration(summary, durationMs) {
         summary.count++;
@@ -10943,21 +10989,21 @@ export class SqliteVFS {
                         last: this._lastTransaction?.metrics.affectedPaths ?? 0,
                         peak: this._transactionPeakAffectedPaths,
                     },
+                    // Every transaction is bounded (one limit mode, no over-limit
+                    // path): these keep their published names, read from the peaks.
                     boundedPeak: {
-                        blobBytes: this._boundedTransactionPeakBlobBytes,
-                        logicalRows: this._boundedTransactionPeakLogicalRows,
-                        sqlExecs: this._boundedTransactionPeakSqlExecs,
+                        blobBytes: this._transactionPeakBlobBytes,
+                        logicalRows: this._transactionPeakLogicalRows,
+                        sqlExecs: this._transactionPeakSqlExecs,
                     },
                     last: this._lastTransaction === null
                         ? null
                         : {
                             ...this._lastTransaction.metrics,
                             ...this._lastTransaction.execution,
+                            limitMode: 'bounded',
                         },
-                    overLimitFiles: {
-                        count: this._overLimitFileCount,
-                        last: this._lastOverLimitFile,
-                    },
+                    overLimitFiles: { count: 0, last: null },
                 },
             },
             // Event stats

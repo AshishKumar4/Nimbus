@@ -362,7 +362,6 @@ export interface CredentialedVfs {
 export declare const INODE_ROWS_PER_SQL_EXEC: number;
 type TransactionLimit = 'blobBytes' | 'logicalRows' | 'sqlExecs';
 type TransactionSource = 'strict-batch' | 'range-mutation' | 'content-stage' | 'content-publish' | 'content-gc';
-type TransactionLimitMode = 'bounded';
 interface TransactionPlanMetrics {
     blobBytes: number;
     logicalRows: number;
@@ -649,12 +648,7 @@ export declare class SqliteVFS {
     private _transactionPeakLogicalRows;
     private _transactionPeakSqlExecs;
     private _transactionPeakAffectedPaths;
-    private _boundedTransactionPeakBlobBytes;
-    private _boundedTransactionPeakLogicalRows;
-    private _boundedTransactionPeakSqlExecs;
     private _lastTransaction;
-    private _overLimitFileCount;
-    private _lastOverLimitFile;
     private _cacheHits;
     private _cacheMisses;
     private _evictions;
@@ -1859,8 +1853,9 @@ export declare class SqliteVFS {
      */
     at(name: string, cred?: VfsCred): CredentialedVfs;
     /**
-     * Restore the live tree (or `subtree`) to snapshot `name`, in bounded
-     * transactions of RESTORE_PAGE_ROWS paths. Every path changed since the
+     * Restore the live tree (or `subtree`) to snapshot `name`, in pages of
+     * RESTORE_PAGE_ROWS paths read, each written in the transactions the shared
+     * budget admits. Every path changed since the
      * snapshot is replaced by the row the snapshot saw, or removed if the
      * snapshot did not have it; every path the snapshot had and the live tree
      * lost comes back. It is an ordinary write: new generations, revisions,
@@ -2496,7 +2491,6 @@ export declare class SqliteVFS {
     private legacyJanitorPage;
     private runContentMaintenanceSafely;
     private metricsOnlyPlan;
-    private recordOverLimitFile;
     private recordDuration;
     private currentRetainedWriteBytes;
     /** Best-effort process.memoryUsage().heapUsed; 0 in DO contexts. */
@@ -2702,8 +2696,8 @@ export declare class SqliteVFS {
                     sqlExecs: number;
                 };
                 last: {
+                    limitMode: "bounded";
                     source: TransactionSource;
-                    limitMode: TransactionLimitMode;
                     blobBytes: number;
                     logicalRows: number;
                     sqlExecs: number;
@@ -2711,10 +2705,7 @@ export declare class SqliteVFS {
                 } | null;
                 overLimitFiles: {
                     count: number;
-                    last: (TransactionPlanMetrics & {
-                        path: string;
-                        limit: TransactionLimit;
-                    }) | null;
+                    last: null;
                 };
             };
         };
