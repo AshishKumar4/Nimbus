@@ -23,15 +23,10 @@ import { makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { asyncMemoryVfs } from './lib/async-memory-vfs.mjs';
 import { VfsError } from '../../packages/core/src/vfs/vfs-error.ts';
+import { npmRegistry } from './lib/npm-registry.mjs';
 
 const PID = 7;
-const resolved = (name, version) => ({
-  pkg: {
-    name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
-    dependencies: {}, main: 'index.js', bin: { [name]: 'cli.js' },
-  },
-  cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-});
+const { resultFor } = npmRegistry({ 'is-number': { '7.0.0': { bin: { 'is-number': 'cli.js' } } } });
 
 const harness = createSqliteVfsTestHarness(new Database(':memory:'));
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -63,7 +58,7 @@ const shardsSeen = [];
 // The shards' batch writes are authorized as the invoking process, so they write as the user.
 // A shard that fails at the package `crash.at` names, as `crash.when` says (npm-fanout-test-env crashFor).
 const crash = { at: null, when: null };
-const env = makeFanoutEnv({ root: vfs.as(CRED_SESSION_USER), NM: 'unused', resultFor: (name) => resolved(name, '7.0.0'), shardsSeen, crashFor: (p) => (p.name === crash.at ? crash.when : null) });
+const env = makeFanoutEnv({ root: vfs.as(CRED_SESSION_USER), NM: 'unused', resultFor, shardsSeen, crashFor: (p) => (p.name === crash.at ? crash.when : null) });
 const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
 const installer = new NpmInstaller(files, harness.sql, { env, ctx, onProgress: (msg) => log.push(msg) });
 const install = (dir) => installer.install(dir, { pid: PID, cred: CRED_SESSION_USER });

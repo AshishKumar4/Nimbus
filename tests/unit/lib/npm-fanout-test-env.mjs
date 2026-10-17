@@ -41,7 +41,7 @@ export function kernelInstaller(vfs, sql, opts) {
  * @param {{
  *   root: { mkdir(path: string, options?: { recursive?: boolean }): void, writeFile(path: string, content: string): void, utimes(path: string, atime: number, mtime: number): void },
  *   NM: string,
- *   resultFor: (name: string, spec: { name: string, range?: string }) => object,
+ *   resultFor: (name: string, spec: import('../../../packages/worker/src/npm/resolve-one-facet.ts').ResolveOneSpec) => import('../../../packages/worker/src/npm/resolve-one-facet.ts').ResolveOneResult | Promise<import('../../../packages/worker/src/npm/resolve-one-facet.ts').ResolveOneResult>,
  *   shardsSeen?: string[],
  *   failFor?: (p: ShardPackage) => string | null,
  *   crashFor?: (p: ShardPackage) => 'before' | 'partial' | 'after' | null,
@@ -107,13 +107,13 @@ export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], failFor = 
           async supervisorOp(envelope) {
             const [_fnSource, args] = envelope.args;
             return {
-              results: args.map((arg) => {
+              results: await Promise.all(args.map(async (arg) => {
                 try {
-                  return { ok: true, value: fanoutReply([arg]).results[0] };
+                  return { ok: true, value: await fanoutReply([arg]).results[0] };
                 } catch (error) {
                   return { ok: false, message: error.message };
                 }
-              }),
+              })),
             };
           },
         };

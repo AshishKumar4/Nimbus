@@ -29,6 +29,7 @@ import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { kernelInstaller } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { npmRegistry } from './lib/npm-registry.mjs';
 
 const harness = createSqliteVfsTestHarness(new Database(':memory:'));
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -47,20 +48,13 @@ root.writeFile('app/src/main.js', [
   `console.log(x, ${subpaths.join(', ')});`,
 ].join('\n') + '\n');
 
-const resolved = {
-  pkg: {
-    name: 'pkg', version: '1.0.0', tarballUrl: 'https://registry.invalid/pkg-1.0.0.tgz', integrity: 'sha512-fixture',
-    dependencies: {}, main: 'index.js', bin: {},
-  },
-  cacheWrites: [], messages: [], events: [],
-  packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-};
+const { resultFor } = npmRegistry({ 'pkg': { '1.0.0': {} } });
 const env = {
-  LOADER: { get() { return { getEntrypoint: () => ({ execute: async () => resolved }) }; } },
+  LOADER: { get() { return { getEntrypoint: () => ({ execute: (spec) => resultFor(spec.name, spec) }) }; } },
   NIMBUS_SESSION: {
     idFromName: (name) => ({ toString: () => name, name }),
     idFromString: (id) => ({ toString: () => id, name: id }),
-    get: () => ({ supervisorOp: async (envelope) => ({ results: envelope.args[1].map(() => ({ ok: true, value: resolved })) }) }),
+    get: () => ({ supervisorOp: async (envelope) => ({ results: await Promise.all(envelope.args[1].map(async (spec) => ({ ok: true, value: await resultFor(spec.name, spec) }))) }) }),
   },
 };
 
