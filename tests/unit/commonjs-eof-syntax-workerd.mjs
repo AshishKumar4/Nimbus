@@ -18,6 +18,7 @@ const sources = {
   'call.js': 'console.log("ran"',
   'call-nl.js': 'console.log("ran"\n',
   'open-call.js': 'syntax(',
+  'open-call-again.js': 'syntax(',
   'block.js': 'function f() {',
   'if.js': 'if (x',
   'array.js': 'const a = [1, 2',
@@ -38,7 +39,8 @@ const sources = {
     'Error.prepareStackTrace = (error) => `formatted ${error.message}`;',
     "try { require('./open-call.js'); } catch (error) { console.log(error.message); console.log(error.stack); }",
     `Error.prepareStackTrace = () => "literal Unexpected token '}'";`,
-    "try { require('./open-call.js'); } catch (error) { console.log(error.message); console.log(error.stack); }",
+    // Another file: a second require of one that does not compile rethrows its first error (ticket-cell-compile-error-identity).
+    "try { require('./open-call-again.js'); } catch (error) { console.log(error.message); console.log(error.stack); }",
     '',
   ].join('\n'),
 };
