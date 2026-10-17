@@ -43,6 +43,8 @@ export interface NodeLaunch {
   eval?: string;
   /** `-p`/`--print`: the eval's completion value is printed when the process exits. */
   print: boolean;
+  /** `-c`/`--check`: the program's syntax is checked, and it does not run (check_syntax.js). */
+  check: boolean;
   /** `--experimental-eventsource`: the EventSource global exists (NODE_OPTIONS' or the command line's, the latter's last). */
   experimentalEventSource?: boolean;
   /** `--no-experimental-strip-types`: TypeScript is JavaScript to the loaders, unless transformTypes. */
@@ -59,8 +61,6 @@ export interface NodeCommandLine extends NodeLaunch {
   programIndex: number;
   /** `--input-type`: what `-e` code and stdin are (`module`, `commonjs`), the command line's over NODE_OPTIONS'. */
   inputType?: string;
-  /** `-c`/`--check`: the script's syntax is checked, and it does not run. */
-  check: boolean;
   /** `--experimental-default-type`: the format of a file with no other, the command line's over NODE_OPTIONS'. */
   defaultType?: string;
   version: boolean;
@@ -242,7 +242,7 @@ export function parseNodeCommandLine(args: readonly string[], nodeOptions = ''):
   if ('error' in fromArgs) return fromArgs;
   // The options before the program, but the `--` that ended them.
   const options = args.slice(0, fromArgs.end);
-  return {
+  const line: NodeCommandLine = {
     execArgv: options.at(-1) === '--' ? options.slice(0, -1) : options,
     programIndex: fromArgs.end,
     conditions: [...fromEnv.conditions, ...fromArgs.conditions],
@@ -260,4 +260,12 @@ export function parseNodeCommandLine(args: readonly string[], nodeOptions = ''):
     version: fromArgs.version,
     help: fromArgs.help,
   };
+  // What Node refuses of the options once read (EnvironmentOptions::CheckOptions), each on its line.
+  const refused: string[] = [];
+  if (line.defaultType !== undefined && line.defaultType !== 'module' && line.defaultType !== 'commonjs') {
+    refused.push('--experimental-default-type must be "module" or "commonjs"');
+  }
+  if (line.check && line.eval !== undefined) refused.push('either --check or --eval can be used, not both');
+  if (refused.length > 0) return { error: refused.map((message) => `node: ${message}\n`).join(''), exitCode: 9 };
+  return line;
 }

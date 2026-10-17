@@ -14165,13 +14165,16 @@ function __nimbusEvaluateEntry(load, mod, filename, dirname) {
   // A file's \`this\` is its exports, as Node's wrapper is called; -e and
   // stdin code is a script, whose \`this\` is the global object.
   const evaluated = filename === "<eval>" || filename === "[stdin]";
+  // -c: compiled as Node's check compiles it (check_syntax.js wrapSafe, stdin's too), and not run.
+  const check = __nimbusNodeCommandLine?.check === true;
   let wrapper;
   try {
     wrapper = load();
   } catch (e) {
-    if (!evaluated) __nimbusEnrichCommonJsError(e, source, filename);
+    if (!evaluated || check) __nimbusEnrichCommonJsError(e, source, filename);
     throw e;
   }
+  if (check) return undefined;
   // A file entry is process.mainModule and require.main (Module._load's
   // isMain), after the preloads, whose are undefined; -e's and stdin's are too.
   if (!evaluated) {
