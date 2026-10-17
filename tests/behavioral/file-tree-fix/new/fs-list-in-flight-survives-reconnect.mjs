@@ -13,6 +13,8 @@ const a = makeAsserter('file-tree-fix/new/fs-list-in-flight-survives-reconnect')
 const sid = await mintSession();
 const box = Nimbus.connect({ endpoint: BASE, headers: () => requestHeaders({}, sid) }).sandbox(sid);
 const path = '/home/user/listed-across-reconnect.txt';
+// Written while the listing's answer is lost: only a listing sent again can show it.
+const marker = '/home/user/written-during-reconnect.txt';
 const browser = await launchBrowser();
 try {
   await box.files.write(path, 'listed\n');
@@ -29,9 +31,11 @@ try {
   await page.waitForFunction((before) => window.__probeHeld.sent > before, { timeout: 15_000 }, before);
   await page.evaluate(() => { window.__probeHoldNextWs(); ws.close(4000, 'drop with a listing in flight'); });
   await page.waitForFunction(() => window.__probeHeld.sockets === 2 && ws.readyState === WebSocket.CONNECTING, { timeout: 15_000 });
+  await box.files.write(marker, 'written while the socket was down\n');
   await page.evaluate(() => { window.__probeDropReplies(false); window.__probeReleaseWs(); });
 
-  const loaded = await page.waitForSelector(`.tree-node[data-path="${path}"]`, { visible: true, timeout: 30_000 }).then(() => true, () => false);
+  // Well inside the request's 15 s deadline: the listing's own answer, not a later refresh.
+  const loaded = await page.waitForSelector(`.tree-node[data-path="${marker}"]`, { visible: true, timeout: 10_000 }).then(() => true, () => false);
   a.check('the tree lists the folder on the replacement socket', loaded);
   const failed = await page.evaluate(() => window.__probeHeld.treeTexts.filter((text) => /failed|not connected/i.test(text)));
   a.check('the tree never says the listing failed', failed.length === 0, JSON.stringify(failed));
