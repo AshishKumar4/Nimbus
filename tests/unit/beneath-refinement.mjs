@@ -58,11 +58,9 @@ function backend(spec) {
   return modelessBackend(memory);
 }
 
-// What the process observes of the resolution: the stat it reaches (a
-// missing last component reaches nothing, yet resolves), or the errno. A
-// model path must be the same entry, by identity, as the kernel's own stat of
-// that path; where it exists and the last link is followed, realpath beneath
-// must also name it.
+// A model path must reach the same identity as the kernel's stat. A missing
+// leaf is distinguished by briefly creating it through the kernel, then
+// repeating the original principal's lookup before removing the marker.
 const identity = (stat) => (stat === null ? null : `${stat.dev}:${stat.ino}:${stat.type}`);
 async function answer(proc, kernel, step) {
   const beneath = { root: step.root, path: step.path, beneath: true };
@@ -82,6 +80,17 @@ async function answer(proc, kernel, step) {
   // backend follows; anywhere else a followed model path is no link.
   const expected = await kernel.stat(step.expect.path, { followSymlinks: step.follow });
   if (identity(reached) !== identity(expected)) return { reached: identity(reached), model: identity(expected) };
+  if (reached === null) {
+    assert.equal(await kernel.stat(step.expect.path, { followSymlinks: false }), null, 'the marker must not replace a leaf');
+    const marker = await kernel.open(step.expect.path, { write: true, create: true, exclusive: true });
+    try {
+      const observed = await proc.stat(beneath, { followSymlinks: step.follow });
+      if (identity(observed) !== identity(marker.stat)) return { reached: identity(observed), marker: identity(marker.stat) };
+    } finally {
+      try { await kernel.close(marker.id); }
+      finally { await kernel.unlink(step.expect.path); }
+    }
+  }
   if (reached !== null && step.follow && reached.type !== 'symlink') {
     const path = await proc.realpath(beneath);
     if (path !== step.expect.path) return { realpath: path };
