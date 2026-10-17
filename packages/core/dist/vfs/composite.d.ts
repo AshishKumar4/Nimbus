@@ -316,6 +316,8 @@ interface Table {
     mounts: Map<string, Mount>;
     /** Bumped by every mount and unmount: a placement made under an older table may be stale (mountGeneration). */
     generation: number;
+    /** The last st_dev a mount was given, through any view: two mounts are never one device. */
+    lastDev: number;
     /** observeWrites: who is told, and the mounts whose backends report their own writes, subscribed. */
     writes?: WriteWatches;
     /** watchChanges: who is told. */
@@ -366,8 +368,6 @@ interface ViewShare {
 }
 export declare class CompositeVFS implements VFS {
     private readonly table;
-    /** The last st_dev a mount was given. */
-    private nextDev;
     private readonly viewer;
     /** Backends seen as this view's principal (a backend's `as` view is made once per view). */
     private readonly viewed;
