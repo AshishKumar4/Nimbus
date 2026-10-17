@@ -660,7 +660,9 @@ export function carriesOxide(closure: Iterable<string>): boolean {
  * package's), each sheet read once, every `@source` outside the working tree
  * `cwd`, each brace alternative's directory prefix taken whole, through its
  * links; and the files under those roots, walked a directory at a time with
- * the project rule's exclusions.
+ * the project rule's exclusions, which are of a path as it is named below its
+ * root, whatever a link makes of it. The roots it returns are what the
+ * facet's barriers push: those, and wherever a link below one leads.
  */
 export async function planStylesheetSources(
   source: Pick<DataPlanSource, 'readText' | 'stat' | 'linkTarget' | 'readdir'>,
@@ -695,19 +697,26 @@ export async function planStylesheetSources(
   }
   const files = new Map<string, DataPlanEntry>();
   const walked = new Set<string>();
+  // What a barrier pushes: the roots, and wherever a link below one leads out of them.
+  const pushed = [...roots];
+  const under = (dir: string, k: string) => dir === '' || k === dir || k.startsWith(dir + '/');
+  const pushFrom = (k: string) => { if (!pushed.some((dir) => under(dir, k))) pushed.push(k); };
   for (const root of roots) {
     const at = await source.stat(root);
     if (at?.kind === 'file') { files.set(root, { path: root, kind: 'file', size: at.size }); continue; }
     if (at?.kind !== 'directory') continue;
-    const queue = [root];
+    // Each directory as it is named below the root, which its exclusions are
+    // of, and where it is, which is what is read.
+    const queue = [{ named: root, at: root }];
     walked.add(root);
     for (let i = 0; i < queue.length; i++) {
       const dir = queue[i];
       if (dir === undefined) break;
-      const entries = await source.readdir(dir);
+      const entries = await source.readdir(dir.at);
       if (entries === null) continue;
       if (input.spend) await input.spend(entries.length * 64);
       for (const entry of entries) {
+        const named = dir.named === '' ? baseOf(entry.path) : `${dir.named}/${baseOf(entry.path)}`;
         let { path, kind, size } = entry;
         if (kind === 'symlink') {
           const target = await throughLinks(source, path);
@@ -715,15 +724,17 @@ export async function planStylesheetSources(
           if (target === null || found === null) continue;
           [path, kind, size] = [target, found.kind, found.size];
         }
-        // Relative to its root, or to itself where a link led out of it.
-        const base = path === root || path.startsWith(root + '/') ? root : parentOf(path);
         if (kind === 'directory') {
-          if (!walked.has(path) && !excludedDir(home, base, path)) { walked.add(path); queue.push(path); }
-        } else if (kind === 'file' && !excludedBelow(home, base, path)) {
+          if (excludedDir(home, root, named) || walked.has(path)) continue;
+          walked.add(path);
+          pushFrom(path);
+          queue.push({ named, at: path });
+        } else if (kind === 'file' && !excludedBelow(home, root, named)) {
+          pushFrom(path);
           files.set(path, { path, kind, size });
         }
       }
     }
   }
-  return { roots: roots.map((root) => '/' + root), files: [...files.values()] };
+  return { roots: pushed.map((root) => '/' + root), files: [...files.values()] };
 }

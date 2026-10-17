@@ -411,6 +411,10 @@ assert.equal(noTs.rules.typescript.files, 0);
     'home/user/linked': { kind: 'symlink', size: 0, target: '/home/user/real-linked' },
     'home/user/shared/.next/cache.js': 'c',
     'home/user/shared/.next/templates/Card.tsx': 't',
+    'home/user/shared/.cache': { kind: 'symlink', size: 0, target: '/home/user/srv-cache' },
+    'home/user/srv-cache/c.js': 'c',
+    'home/user/shared/widgets': { kind: 'symlink', size: 0, target: '/home/user/srv-widgets' },
+    'home/user/srv-widgets/Old.tsx': 'w',
     "home/user/quoted's/Q.tsx": 'q',
     'home/user/range/1001.tsx': 'r',
     'home/user/range/1002.tsx': 'r',
@@ -440,11 +444,13 @@ assert.equal(noTs.rules.typescript.files, 0);
   assert.ok(!held.has('home/user/shared/node_modules/dep/index.js'), 'a source\'s dependencies are not held');
   assert.ok(!held.has('home/user/shared/.next/cache.js'), 'nor its caches: the project rule\'s exclusions');
   assert.ok(held.has('home/user/shared/.next/templates/Card.tsx'), 'a root named below an excluded directory of another root holds its files');
+  assert.ok(!held.has('home/user/srv-cache/c.js'), 'an excluded name is excluded through a link, by its name below the root');
+  assert.ok(held.has('home/user/srv-widgets/Old.tsx') && withOxide.sourceRoots.includes('/home/user/srv-widgets'), 'a directory a link leads to out of the roots is held, and pushed');
   assert.ok(held.has("home/user/quoted's/Q.tsx"), 'a quote is a filename character');
   assert.ok(held.has('home/user/range/1001.tsx') && !held.has('home/user/range/1002.tsx'), 'a range of any length expands, to the files it names');
   assert.deepEqual(withOxide.sourceRoots.slice(0, 4), ['/home/user/shared', '/home/user/kit', '/home/user/real-linked', '/home/user/shared/.next/templates'], 'the plan names the roots outside the tree, for the barriers to push');
   assert.ok(withOxide.sourceRoots.includes("/home/user/quoted's") && withOxide.sourceRoots.includes('/home/user/range/1001.tsx') && withOxide.sourceRoots.includes('/home/user/deep'));
-  assert.equal(withOxide.rules['stylesheet-source'].files, 7);
+  assert.equal(withOxide.rules['stylesheet-source'].files, 8);
   assert.equal(withOxide.names, listed, 'the namespace is counted once, however many walks');
   const without = await planFacetData(ns, { cwd: '/home/user/app', home: '/home/user', closure: [], refs: [] });
   assert.ok(!new Set(without.paths).has('home/user/shared/Card.tsx'), 'without oxide, the source is not held');
