@@ -370,7 +370,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
    * from there (cut to its length first, where it shrank).
    */
   const drain = (): void => {
-    if (dirty.size > 0) changes++;
+    if (dirty.size === 0) return;
+    changes++;
     for (const inode of [...dirty]) {
       const file = inode.cell!;
       const from = Math.min(file.changedFrom ?? 0, file.logged ?? 0);
