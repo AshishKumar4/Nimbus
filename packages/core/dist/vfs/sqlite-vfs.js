@@ -6832,7 +6832,7 @@ export class SqliteVFS {
                     continue;
                 const live = this.inodes.get(key);
                 if (kept.present ? live?.gen !== kept.gen : live !== undefined) {
-                    return { refused: `${this.logicalPath(key, CRED_KERNEL) ?? key} was changed since it changed it` };
+                    return { refused: `/${normalizeVfsPath(this.logicalPath(key, CRED_KERNEL) ?? key)} was changed since it changed it` };
                 }
                 changed.push(key);
                 if (kept.before !== null)

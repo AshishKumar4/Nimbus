@@ -6736,6 +6736,8 @@ export class FacetManager {
         // over the files as they are, unretraced, as a server known to be one is
         // started (server-hints.ts): what it printed is printed again, and it
         // says why.
+        // Its waves still being applied land first: none lands after.
+        await openSupervisorDeliveries(this.ctx).retireWaveWriters(pid);
         const restored = this.vfs?.restoreRun(pid) ?? { refused: 'what it changed was not kept' };
         if ('refused' in restored) {
             await this._deliverOutput(pid, 'stderr', new TextEncoder().encode(`node: this program listens as a server, so Nimbus runs it again as one from its start, over the files as they are: ${restored.refused}. What it printed before it listened is printed again.\n`));
