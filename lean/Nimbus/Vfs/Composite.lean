@@ -56,6 +56,8 @@
   influences nor receives any of the principal's operations).
 -/
 
+import Nimbus.Vfs.MountSelection
+
 namespace Nimbus.Vfs.Composite
 
 abbrev Path := List String
@@ -94,48 +96,16 @@ def pfx (a p : Path) : Bool := a.isPrefixOf p
 
 theorem pfx_iff {a p : Path} : pfx a p = true ↔ a <+: p := List.isPrefixOf_iff_prefix
 
-def pick (p : Path) (best m : Mount) : Mount :=
-  if pfx m.point p && decide (best.point.length < m.point.length) then m else best
+def pick (p : Path) (best m : Mount) : Mount := MountSelection.pick (·.point) p best m
 
 /-- The longest mount point that is a prefix of `p`; the root when none is. -/
-def route (ms : List Mount) (p : Path) : Mount := ms.foldl (pick p) rootMount
+def route (ms : List Mount) (p : Path) : Mount := MountSelection.select (·.point) ms p rootMount
 
 theorem route_fold (p : Path) : ∀ (ms : List Mount) (best : Mount), best.point <+: p →
     let r := ms.foldl (pick p) best
     r.point <+: p ∧ (r = best ∨ r ∈ ms) ∧ best.point.length ≤ r.point.length ∧
-      ∀ m ∈ ms, m.point <+: p → m.point.length ≤ r.point.length := by
-  intro ms
-  induction ms with
-  | nil => intro best h; exact ⟨h, Or.inl rfl, Nat.le_refl _, fun _ h => by cases h⟩
-  | cons m ms ih =>
-    intro best hb
-    simp only [List.foldl_cons]
-    have hp : (pick p best m).point <+: p := by
-      unfold pick; split
-      · rename_i h; simp only [Bool.and_eq_true, decide_eq_true_eq] at h; exact pfx_iff.mp h.1
-      · exact hb
-    obtain ⟨h1, h2, h3, h4⟩ := ih (pick p best m) hp
-    refine ⟨h1, ?_, ?_, ?_⟩
-    · rcases h2 with h2 | h2
-      · rw [h2]; unfold pick; split
-        · exact Or.inr (List.mem_cons_self _ _)
-        · exact Or.inl rfl
-      · exact Or.inr (List.mem_cons_of_mem _ h2)
-    · have : best.point.length ≤ (pick p best m).point.length := by
-        unfold pick; split
-        · rename_i h; simp only [Bool.and_eq_true, decide_eq_true_eq] at h; omega
-        · exact Nat.le_refl _
-      omega
-    · intro m' hm' hpm
-      rcases List.mem_cons.mp hm' with rfl | hm'
-      · have : m'.point.length ≤ (pick p best m').point.length := by
-          unfold pick; split
-          · exact Nat.le_refl _
-          · rename_i h
-            simp only [Bool.and_eq_true, decide_eq_true_eq, not_and, pfx_iff.mpr hpm, true_implies] at h
-            omega
-        omega
-      · exact h4 m' hm' hpm
+      ∀ m ∈ ms, m.point <+: p → m.point.length ≤ r.point.length :=
+  MountSelection.fold_spec (·.point) p
 
 /-- Routing picks a mount whose point is a prefix of the path, and no longer one. -/
 theorem route_spec (ms : List Mount) (p : Path) :

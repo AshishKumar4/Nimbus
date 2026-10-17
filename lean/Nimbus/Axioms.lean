@@ -547,6 +547,11 @@ import Nimbus.Refine
 #print axioms Nimbus.Runtime.PipesTraces.ignored_sigpipe_is_epipe
 #print axioms Nimbus.Runtime.PipesTraces.ignored_sigpipe_killed_by_5bdfec12
 
+/-! ## Nimbus/Vfs/MountSelection.lean -/
+
+#print axioms Nimbus.Vfs.MountSelection.fold_spec
+#print axioms Nimbus.Vfs.MountSelection.optional_spec
+
 /-! ## Nimbus/Vfs/Composite.lean -/
 
 #print axioms Nimbus.Vfs.Composite.pfx_iff
@@ -603,8 +608,6 @@ import Nimbus.Refine
 /-! ## Nimbus/Vfs/CompositeFeed.lean -/
 
 #print axioms Nimbus.Vfs.CompositeFeed.ownerPt_mem
-#print axioms Nimbus.Vfs.CompositeFeed.ownerPt_fold_max
-#print axioms Nimbus.Vfs.CompositeFeed.ownerPt_fold_none
 #print axioms Nimbus.Vfs.CompositeFeed.ownerPt_max
 #print axioms Nimbus.Vfs.CompositeFeed.ownerPt_none
 #print axioms Nimbus.Vfs.CompositeFeed.ownerPt_between

@@ -43,6 +43,7 @@
 -/
 
 import Nimbus.Coherence.Namespace
+import Nimbus.Vfs.MountSelection
 
 namespace Nimbus.Vfs.CompositeFeed
 
@@ -58,36 +59,14 @@ structure Table where
 
 /-- The longest live mount point that is a prefix of `p`. -/
 def ownerPt (pts : List Path) (p : Path) : Option Path :=
-  (pts.filter (·.isPrefixOf p)).foldl
-    (fun acc m => match acc with
-      | none => some m
-      | some a => if a.length < m.length then some m else some a) none
+  MountSelection.select? id pts p
 
 theorem ownerPt_mem (pts : List Path) (p : Path) {m : Path} (h : ownerPt pts p = some m) :
     m ∈ pts ∧ m <+: p := by
-  unfold ownerPt at h
-  suffices ∀ (l : List Path) (acc : Option Path), (∀ a, acc = some a → a ∈ pts ∧ a <+: p) →
-      (∀ x ∈ l, x ∈ pts ∧ x <+: p) →
-      ∀ m, l.foldl (fun acc m => match acc with
-        | none => some m
-        | some a => if a.length < m.length then some m else some a) acc = some m → m ∈ pts ∧ m <+: p from
-    this _ none (fun _ h => by cases h)
-      (fun x hx => ⟨(List.mem_filter.mp hx).1, List.isPrefixOf_iff_prefix.mp (by simpa using (List.mem_filter.mp hx).2)⟩) m h
-  intro l
-  induction l with
-  | nil => intro acc ha _ m h; exact ha m h
-  | cons x xs ih =>
-    intro acc ha hl m h
-    simp only [List.foldl_cons] at h
-    apply ih _ _ (fun y hy => hl y (List.mem_cons_of_mem _ hy)) m h
-    intro a ha'
-    cases acc with
-    | none => simp at ha'; subst ha'; exact hl x (List.mem_cons_self _ _)
-    | some b =>
-      simp only at ha'
-      split at ha'
-      · injection ha' with e; subst e; exact hl x (List.mem_cons_self _ _)
-      · injection ha' with e; subst e; exact ha _ rfl
+  have hs := MountSelection.optional_spec id pts p
+  change MountSelection.select? id pts p = some m at h
+  rw [h] at hs
+  exact ⟨hs.1, hs.2.1⟩
 
 /-- `p` is a proper ancestor of a live mount point (a synthesized directory). -/
 def synthAnc (pts : List Path) (p : Path) : Bool := p != [] && pts.any fun m => p.isPrefixOf m && p != m
@@ -113,62 +92,19 @@ def BackendsClosed (T : Table) (W : World) : Prop :=
 
 /-! ### Routing facts -/
 
-theorem ownerPt_fold_max : ∀ (l : List Path) (acc : Option Path) (m : Path),
-    l.foldl (fun acc m => match acc with
-      | none => some m
-      | some a => if a.length < m.length then some m else some a) acc = some m →
-    (∀ x ∈ l, x.length ≤ m.length) ∧ (∀ a, acc = some a → a.length ≤ m.length) := by
-  intro l
-  induction l with
-  | nil => intro acc m h; exact ⟨fun _ hx => (by cases hx), fun a ha => (by rw [ha] at h; cases h; exact Nat.le_refl _)⟩
-  | cons x xs ih =>
-    intro acc m h
-    simp only [List.foldl_cons] at h
-    obtain ⟨h1, h2⟩ := ih _ m h
-    cases acc with
-    | none =>
-      have := h2 x rfl
-      exact ⟨fun y hy => by rcases List.mem_cons.mp hy with rfl | hy; exact this; exact h1 y hy, fun _ h => by cases h⟩
-    | some a =>
-      simp only at h2
-      by_cases hl : a.length < x.length
-      · rw [if_pos hl] at h2
-        have := h2 x rfl
-        exact ⟨fun y hy => by rcases List.mem_cons.mp hy with rfl | hy; exact this; exact h1 y hy,
-          fun b hb => by cases hb; omega⟩
-      · rw [if_neg hl] at h2
-        have := h2 a rfl
-        exact ⟨fun y hy => by rcases List.mem_cons.mp hy with rfl | hy; exact (by omega); exact h1 y hy,
-          fun b hb => by cases hb; exact this⟩
-
-theorem ownerPt_fold_none : ∀ (l : List Path) (acc : Option Path),
-    l.foldl (fun acc m => match acc with
-      | none => some m
-      | some a => if a.length < m.length then some m else some a) acc = none → acc = none ∧ l = [] := by
-  intro l
-  induction l with
-  | nil => intro acc h; exact ⟨h, rfl⟩
-  | cons x xs ih =>
-    intro acc h
-    simp only [List.foldl_cons] at h
-    have := (ih _ h).1
-    cases acc with
-    | none => simp at this
-    | some a => simp only at this; split at this <;> cases this
-
 theorem ownerPt_max {pts : List Path} {p m : Path} (h : ownerPt pts p = some m) :
     ∀ x ∈ pts, x <+: p → x.length ≤ m.length := by
-  intro x hx hxp
-  unfold ownerPt at h
-  exact (ownerPt_fold_max _ none m h).1 x
-    (List.mem_filter.mpr ⟨hx, List.isPrefixOf_iff_prefix.mpr hxp⟩)
+  have hs := MountSelection.optional_spec id pts p
+  change MountSelection.select? id pts p = some m at h
+  rw [h] at hs
+  exact hs.2.2
 
 theorem ownerPt_none {pts : List Path} {p : Path} (h : ownerPt pts p = none) :
     ∀ x ∈ pts, ¬ x <+: p := by
-  intro x hx hxp
-  unfold ownerPt at h
-  have := (ownerPt_fold_none _ none h).2
-  exact List.filter_eq_nil_iff.mp this x hx (List.isPrefixOf_iff_prefix.mpr hxp)
+  have hs := MountSelection.optional_spec id pts p
+  change MountSelection.select? id pts p = none at h
+  rw [h] at hs
+  exact hs
 
 /-- The owner of a path owns every path between its point and the path. -/
 theorem ownerPt_between {pts : List Path} {p p' m : Path} (h : ownerPt pts p = some m)
