@@ -18,6 +18,7 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 const dir = new URL('../fixtures/gnu/', import.meta.url);
 const failures = [];
 let cases = 0;
+const matches = ({ stdout, exitCode }, reference) => stdout === reference.stdout && exitCode === reference.exit;
 for (const name of readdirSync(dir).filter((file) => file.endsWith('.json')).sort()) {
   const fixture = JSON.parse(readFileSync(new URL(name, dir), 'utf8'));
   const harness = createSqliteVfsTestHarness();
@@ -29,6 +30,22 @@ for (const name of readdirSync(dir).filter((file) => file.endsWith('.json')).sor
     }
   };
   await writeInputs();
+  const run = async (args) => {
+    const line = args.includes('%T') ? args.replaceAll('%T', fixture.tool) : `${fixture.tool} ${args}`;
+    // Grouped, so a case's own 2>&1 folds stderr into what is compared.
+    const r = await ws.exec(`cd /home/user && { ${line}
+} > /tmp/.gnu-out`);
+    const stdout = Buffer.from(await ws.fs.readFile('/tmp/.gnu-out')).toString('latin1');
+    return { stdout, exitCode: r.exitCode, stderr: r.stderr };
+  };
+  if (fixture.tool === 'sed') {
+    const reference = fixture.cases.find(({ exit }) => exit === 5);
+    assert.ok(reference, 'sed records a case that exits 5');
+    const differentStatus = await run("'3q2' seq");
+    assert.equal(differentStatus.stdout, reference.stdout, 'the status control prints the same bytes');
+    assert.equal(differentStatus.exitCode, 2);
+    assert.equal(matches(differentStatus, reference), false, 'the same stdout with status 2 must not match status 5');
+  }
   for (const { args, stdout, exit, after } of fixture.cases) {
     cases++;
     if (after) {
@@ -37,12 +54,9 @@ for (const name of readdirSync(dir).filter((file) => file.endsWith('.json')).sor
         if (!(file in fixture.inputs)) await ws.fs.unlink(`/home/user/${file}`).catch(() => {});
       }
     }
-    const line = args.includes('%T') ? args.replaceAll('%T', fixture.tool) : `${fixture.tool} ${args}`;
-    // Grouped, so a case's own 2>&1 folds stderr into what is compared.
-    const r = await ws.exec(`cd /home/user && { ${line}
-} > /tmp/.gnu-out`);
-    const got = Buffer.from(await ws.fs.readFile('/tmp/.gnu-out')).toString('latin1');
-    if (got !== stdout || (r.exitCode === 0) !== (exit === 0) || (exit === 1) !== (r.exitCode === 1)) {
+    const r = await run(args);
+    const got = r.stdout;
+    if (!matches(r, { stdout, exit })) {
       failures.push(`${fixture.tool} ${args}\n    reference (${exit}): ${JSON.stringify(stdout).slice(0, 200)}\n    ours (${r.exitCode}): ${JSON.stringify(got).slice(0, 200)} ${JSON.stringify(r.stderr).slice(0, 120)}`);
     }
     for (const [file, want] of Object.entries(after ?? {})) {
