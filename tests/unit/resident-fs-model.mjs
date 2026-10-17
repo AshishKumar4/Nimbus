@@ -505,11 +505,12 @@ async function runSteps(steps, met, grants) {
     control.opened = Promise.withResolvers();
     // A read that may wait takes the barrier the process owes first (it sent something since the last): it reads the session's file as it is now, and the view is the session's from then on.
     const caught = s.fs.stats().barriers > barriers;
-    if (named) {
+    const name = [...now.names].find(([, reference]) => resolve(reference) === id)?.[0];
+    // Caught up, the name the view had for it may have gone at the session: then no name leads to it.
+    if (named && !(caught && (name === undefined || !ref.kernel.exists(`${DIR}/${name}`)))) {
       const file = now.fileOf(id);
       assert.equal(code, null, `${label}: an awaited read of a named file: ${code}`);
-      const name = [...now.names].find(([, reference]) => resolve(reference) === id)?.[0];
-      if (caught && name !== undefined) assert.equal(dec.decode(got), dec.decode(ref.kernel.readFile(`${DIR}/${name}`)), `${label}: an awaited read of a named file, caught up`);
+      if (caught) assert.equal(dec.decode(got), dec.decode(ref.kernel.readFile(`${DIR}/${name}`)), `${label}: an awaited read of a named file, caught up`);
       else if (file !== undefined && file.bytes !== null) assert.equal(dec.decode(got), dec.decode(file.bytes), `${label}: an awaited read of a named file`);
       if (caught) await catchUp();
       return;
