@@ -468,6 +468,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     if (type === 'file') {
       inode.base = { bytes: new Uint8Array(0), size: 0, mode, uid, gid, atime: at, mtime: at, ctime: at };
       inode.state = copyState(inode.base);
+      touched.set(key, inode);
     }
     inodes.set(identity(row.dev, row.ino), inode);
     return inode;
