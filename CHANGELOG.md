@@ -5,6 +5,15 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (shell): the built-in shell reads `$'...'` (ANSI-C quoting) as bash
+  does. `echo $'\303\251'` prints "é", `$'\cA'` is the control character,
+  `$'\u00e9'` a character, `$'it\'s'` keeps its apostrophe, and a NUL ends
+  the quoted part. Nothing inside expands, and inside double quotes it stays
+  literal. Before, the `$` stayed and the body was read as a plain
+  single-quoted string, so `\'` ended it early. A `"` inside a substitution
+  nested in double quotes within `$(...)` no longer ends the outer
+  substitution.
+
 - Fixed (shell): in the built-in shell, an octal or hex escape in `printf`
   (its format and `%b`) and `echo -e` writes one byte, as bash does.
   `printf '\303\251'` writes "é" and `printf '\377'` writes the byte 0xff.
