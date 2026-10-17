@@ -20,7 +20,7 @@ export function strip(input) {
 assert.equal(containsModuleSyntax('const text = "export function nope() {}";'), false);
 assert.equal(containsModuleSyntax('async function load() { return import("x"); }'), false);
 // Keys and methods named import or export: CommonJS (and no compile asked for: a bundle's conditions maps hold them).
-assert.equal(containsModuleSyntax('const c = { import: "./a.mjs", export: 1 }; class A { export() {} static import() {} }'), false);
+assert.equal(containsModuleSyntax('const c = { import: "./a.mjs", export: 1 }; class A { export() {} static import() {} export = 1; import; static export }'), false);
 // Node's syntax detection (doc/api/packages.md "Syntax detection"): a
 // typeless .js file is an ES module when it holds syntax that throws as
 // CommonJS. Each source is asked of real node: its first statement reports at

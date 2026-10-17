@@ -117,7 +117,7 @@ import('./typed/module-exports.js').catch((e) => { report.push(['import', e.name
   // import or export nested in a statement is, which eval-typescript-
   // matches-node-workerd runs: a file's report here would carry a typeless
   // warning Node's fatal error cuts off, ticket-typeless-warning-before-fatal.)
-  'nested-keys.js': "const c = { import: './a.mjs', export: 1 };\nclass A { export() {} static import() {} }\nconsole.log(typeof module, Object.keys(c).join());\n",
+  'nested-keys.js': "const c = { import: './a.mjs', export: 1 };\nclass A { export() {} static import() {} export = 1; import; static export }\nconsole.log(typeof module, Object.keys(c).join(), Object.keys(new A()).join());\n",
 };
 const EVAL_ESM = `import { sep } from 'node:path';\n${line("'eval'", 'sep')}`;
 const RUNS = [

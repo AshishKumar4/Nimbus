@@ -439,8 +439,9 @@ function unscopedAwaitScanner(source: string): ((token: Token) => boolean) & { a
  * sees every token with whether it sits at top level and the module syntax
  * it opens: for an `import` or `export` keyword, the declaration (not
  * `import(`), at top level or not, and `import.meta`; never for a member
- * named so (after `.` or `?.`), nor, nested, a key or method (before `:`
- * or `(`). `visit` returns true to stop the walk.
+ * named so (after `.` or `?.`), nor, nested, a key, a method or a class
+ * field (before `:`, `(`, `=`, `;` or `}`). `visit` returns true to stop
+ * the walk.
  *
  * Returns true when `visit` stopped it, false at the end of the source, and
  * null when the source does not tokenize (as `sourceType` does).
@@ -467,15 +468,13 @@ export function walkTopLevelModuleTokens(
       const keyword = previous !== tokTypes.dot && previous !== tokTypes.questionDot;
       previous = type;
       let syntax: ModuleSyntaxToken | null = null;
-      // Nested, a key or a method named so (`{ import: x }`, `export() {}`) is no declaration.
-      const key = (next: Token): boolean => !topLevel && (next.type === tokTypes.colon || next.type === tokTypes.parenL);
       if (keyword && type === tokTypes._export) {
         ahead = topLevel ? null : tokens.getToken();
-        if (ahead === null || !key(ahead)) syntax = 'export';
+        if (ahead === null || !namesMember(ahead)) syntax = 'export';
       } else if (keyword && type === tokTypes._import) {
         ahead = tokens.getToken();
         if (ahead.type === tokTypes.dot) syntax = 'import.meta';
-        else if (ahead.type !== tokTypes.parenL && !key(ahead)) syntax = 'import';
+        else if (ahead.type !== tokTypes.parenL && (topLevel || !namesMember(ahead))) syntax = 'import';
       } else if (type === tokTypes.braceL || type === tokTypes.dollarBraceL) braces++;
       else if (type === tokTypes.braceR) braces = Math.max(0, braces - 1);
       else if (type === tokTypes.parenL) parens++;
@@ -487,6 +486,12 @@ export function walkTopLevelModuleTokens(
   } catch {
     return null;
   }
+}
+
+/** Whether the token after a nested `import` or `export` makes it a key, a method or a class field named so (`{ import: x }`, `export() {}`, `export = 1`), not a declaration. */
+function namesMember(next: Token): boolean {
+  const type = next.type;
+  return type === tokTypes.colon || type === tokTypes.parenL || type === tokTypes.eq || type === tokTypes.semi || type === tokTypes.braceR;
 }
 
 /** A replacement of source text `[start, end)` by `text`. */
