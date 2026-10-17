@@ -38,7 +38,10 @@ for (let p = 0; p < ${PACKAGES}; p++) {
     fs.writeFileSync(path.join(dir, 'm' + m + '.js'), "const path = require('path');\\nmodule.exports = path.join(__dirname, path.basename(__filename, '.js')).length + " + next + ";\\n");
   }
 }
-fs.writeFileSync('main.js', "const path = require('path');\\nlet total = 0;\\nfor (let p = 0; p < ${PACKAGES}; p++) total += require('pkg' + p);\\nlet work = 0;\\nfor (let i = 0; i < 20000; i++) {\\n  const f = path.resolve('a/b/' + (i % 97), '../c/./d.' + (i % 7) + '.js');\\n  work += path.dirname(f).length + path.relative('/home/user/x', f).length + path.normalize(f + '/..//e').length + path.extname(f).length;\\n}\\nconsole.log('module-load done', total > 0, work > 0);\\n");
+// Each package named literally, so the launch stages the whole tree.
+let requires = '';
+for (let p = 0; p < ${PACKAGES}; p++) requires += "total += require('pkg" + p + "');\\n";
+fs.writeFileSync('main.js', "const path = require('path');\\nlet total = 0;\\n" + requires + "let work = 0;\\nfor (let i = 0; i < 20000; i++) {\\n  const f = path.resolve('a/b/' + (i % 97), '../c/./d.' + (i % 7) + '.js');\\n  work += path.dirname(f).length + path.relative('/home/user/x', f).length + path.normalize(f + '/..//e').length + path.extname(f).length;\\n}\\nconsole.log('module-load done', total > 0, work > 0);\\n");
 console.log('module-load ready');`;
 
 const result = await measurePaired(arms, ROUNDS, async (target) => {
@@ -51,7 +54,7 @@ const result = await measurePaired(arms, ROUNDS, async (target) => {
     await t.writeFile('setup.js', SETUP);
     const made = await t.run('node setup.js', 120_000);
     if (!/module-load ready/.test(made.output)) throw new Error(`${sid}: the tree was not written: ${JSON.stringify(made.output.slice(-400))}`);
-    // Once untimed, so the timed run is a warm process's, as every arm's is.
+    // Once untimed, so the timed run's tree is staged and its process warm, as every arm's is.
     await t.run('node main.js', 120_000);
     const timed = await t.run('node main.js', 120_000);
     if (!/module-load done true true/.test(timed.output)) {
