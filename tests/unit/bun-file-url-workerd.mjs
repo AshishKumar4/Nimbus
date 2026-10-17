@@ -23,7 +23,7 @@ const result = (fn, input) => {
 const rows = [];
 for (const phase of ['initial', 'moved']) {
   if (phase === 'moved') { fs.mkdirSync('moved'); process.chdir('moved'); }
-  for (const input of ['a b.txt', 'hash#name', 'percent%name', './sub/../relative #%.txt', '../parent %/', '', process.cwd() + '/a b#c%', '/tmp/a b#c%']) {
+  for (const input of ['a b.txt', 'hash#name', 'percent%name', './sub/../relative #%.txt', phase === 'initial' ? './parent %/' : '../parent %/', '', process.cwd() + '/a b#c%', '/tmp/a b#c%']) {
     rows.push([phase, 'encode', clean(input), result(api.pathToFileURL, input), result(url.pathToFileURL, input)]);
   }
   for (const input of ['file:///tmp/a%20b', 'file:///tmp/%23name%25', 'file:///tmp/%C3%A9t%C3%A9', 'file://localhost/etc/x', 'file:///tmp/a%2Fb', 'file://host/x', 'https://example.com/x', new URL(baseURL + '/a%20b%23%25')]) {
