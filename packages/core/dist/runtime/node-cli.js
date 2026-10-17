@@ -209,6 +209,10 @@ export function parseNodeCommandLine(args, nodeOptions = '') {
     const fromEnv = readOptions(envTokens, true);
     if ('error' in fromEnv)
         return fromEnv;
+    // NODE_OPTIONS' own are checked as Node parses them, before the command line can override them.
+    const envRefused = refusedOptions(fromEnv.defaultType, false);
+    if (envRefused !== null)
+        return envRefused;
     const fromArgs = readOptions(args, false);
     if ('error' in fromArgs)
         return fromArgs;
@@ -232,14 +236,15 @@ export function parseNodeCommandLine(args, nodeOptions = '') {
         version: fromArgs.version,
         help: fromArgs.help,
     };
-    // What Node refuses of the options once read (EnvironmentOptions::CheckOptions), each on its line.
+    return refusedOptions(line.defaultType, line.check && line.eval !== undefined) ?? line;
+}
+/** What Node refuses of options once it has read them (EnvironmentOptions::CheckOptions), each on its line; null for nothing. */
+function refusedOptions(defaultType, checksEval) {
     const refused = [];
-    if (line.defaultType !== undefined && line.defaultType !== 'module' && line.defaultType !== 'commonjs') {
+    if (defaultType !== undefined && defaultType !== 'module' && defaultType !== 'commonjs') {
         refused.push('--experimental-default-type must be "module" or "commonjs"');
     }
-    if (line.check && line.eval !== undefined)
+    if (checksEval)
         refused.push('either --check or --eval can be used, not both');
-    if (refused.length > 0)
-        return { error: refused.map((message) => `node: ${message}\n`).join(''), exitCode: 9 };
-    return line;
+    return refused.length === 0 ? null : { error: refused.map((message) => `node: ${message}\n`).join(''), exitCode: 9 };
 }

@@ -340,6 +340,12 @@ export const RUNTIME_INTERPRETER_PRIMORDIALS_MODULE = 'nimbus/interpreter-primor
  * an assertion's source read without loading the interpreter.
  */
 export const RUNTIME_PARSER_MODULE = 'nimbus/parser.js';
+/**
+ * What `node -c`'s entry cell throws as its first statement (worker
+ * facets/manager.ts programEntry): the cell compiles whole before any of it
+ * runs, so a cell that throws this compiled, and nothing of it ran.
+ */
+export const ENTRY_CHECKED = 'nimbus: compiled, not run (-c)';
 /** Node's library in every node launch's map (worker runtime/node-lib-module.ts), compiled when a program first needs it. */
 export const RUNTIME_NODE_LIB_MODULE = 'nimbus/node-lib.js';
 export const RUNTIME_NODE_LIB_REST_MODULE = 'nimbus/node-lib-rest.js';
