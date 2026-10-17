@@ -7637,8 +7637,16 @@ export class FacetManager {
                 : `node: Nimbus ran this program again, and it did not retrace its run before (${stop.why}), so it was ended.`)
             : `node: this program stopped (${stop.kind === 'stdin' ? 'at a synchronous read of stdin' : `at its ${stop.kind}`}) `
                 + 'after it had started, where Nimbus cannot run it again, so it was ended.';
-        await this._deliverOutput(pid, 'stderr', new TextEncoder().encode(`${message}\n`));
-        this._end(pid, { code: 1, cause: message });
+        try {
+            await this._deliverOutput(pid, 'stderr', new TextEncoder().encode(`${message}\n`));
+        }
+        catch {
+            // Its stderr refused it (a parent that closed the reader): its own log keeps why.
+            this.processes.appendOutput(pid, 'stderr', `${message}\n`);
+        }
+        finally {
+            this._end(pid, { code: 1, cause: message });
+        }
     }
     /** A booted resident died without anyone ending it: it exits 1, its reason on its stderr. */
     _residentDied(pid, error) {
