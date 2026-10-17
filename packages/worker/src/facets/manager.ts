@@ -166,6 +166,7 @@ import {
   ProcessFabric,
   ProcessHostLost,
   ResidentProcessHandle,
+  type OneShotCodeSpec,
   type ProcessHost,
   type ProcessHostFactory,
   type ResidentBootSpec,
@@ -1002,7 +1003,7 @@ interface GeneratedNodeFacetCode {
 }
 
 interface PreparedOneShotCode {
-  code(): Promise<WorkerCode>;
+  code(): Promise<OneShotCodeSpec>;
   digest?: string;
 }
 
@@ -7852,7 +7853,7 @@ export class FacetManager {
     if (!vfsState.cacheRetained) releaseGeneratedSources(vfsState);
     const admission = this.buildAdmissions.get(entry.pid);
     if (admission) admission.retain(generatedMapRetainedBytes(generated, members, admission.held()));
-    let map: WorkerCode | undefined = {
+    let map: OneShotCodeSpec | undefined = {
       compatibilityDate: CF_COMPAT_DATE,
       compatibilityFlags: [...GUEST_COMPAT_FLAGS],
       mainModule: 'runner.js',
