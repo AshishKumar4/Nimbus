@@ -35,6 +35,13 @@ published independently in the `@nimbus-sh` npm scope.
   `'true'`, so `'true'` turned on the manager's traces but left the
   runtime's debug exit notices off. `'1'` and `'true'` now enable both;
   any other value disables both.
+- Fixed: a Node program that hands `new WebAssembly.Module`,
+  `WebAssembly.compile` or `WebAssembly.instantiate` a DataView or any
+  typed array over a staged image's bytes, shared memory included, gets
+  the staged module, as it already did for a Uint8Array or an ArrayBuffer.
+  Before, those views were refused as bytes the launch did not carry. A
+  view that spans other bytes is still another image, and a detached one
+  is refused by the real compile.
 - Fixed: output that begins with U+FEFF (the UTF-8 BOM) keeps it, as a
   Linux terminal receives every byte a program writes. This covers a
   program's output in the terminal, process logs and `exec` results, a
