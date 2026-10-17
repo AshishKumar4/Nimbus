@@ -2313,8 +2313,9 @@ export declare class SqliteVFS {
      *
      * Rollback discards the cached chunks and inodes and unloads the counters,
      * so every later read answers from SQLite, which is back at the committed
-     * state; open descriptions return to the rows they described before.
-     * No inode snapshot or undo log is retained. Recovery failure is surfaced
+     * state; open descriptions return to the rows they described before (a
+     * detached file's, which has none, to its fields as they were), and the
+     * shared roots to those registered before. No undo log is retained. Recovery failure is surfaced
      * with both errors; the embedder must discard this VFS in that case.
      */
     withTransaction<T>(callback: () => T): T;
