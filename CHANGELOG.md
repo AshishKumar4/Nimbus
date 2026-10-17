@@ -91,6 +91,12 @@ The 2026-10-14 and 2026-10-15 versions reached production but were never publish
   numbered its mounts' `st_dev` from the same start, so files on the two
   could share a (dev, ino), and a move of one over the other was refused
   as "the same file".
+- Fixed: a snapshot view (`SqliteVFS.at(name)`) reads as the live tree
+  does. Its `readdir` of a link to a directory lists that directory (it
+  listed nothing), its `list` pages are bounded by their encoded bytes (a
+  page could exceed the RPC frame), and once the snapshot is dropped its
+  `acquire`, `invalidatedSince`, `revision` and `storageKey` throw ESTALE,
+  as its other calls do (they answered as if it were still pinned).
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each

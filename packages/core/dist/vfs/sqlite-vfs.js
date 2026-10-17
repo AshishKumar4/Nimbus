@@ -5097,23 +5097,31 @@ export class SqliteVFS {
         return { epoch: delta.epoch, rev: delta.rev, paths, poison: false, namespace: true };
     }
     readdir(path, cred) {
-        const np = this.storageKey(path, cred).value;
-        const resolved = np ? this.checkAccess(np, 0o4, cred) : { path: '', inode: undefined };
+        // One seek of the parent index. The entries are read, not cached: naming
+        // a directory's entries says nothing about which of them will be used.
+        return this.readdirIn(path, cred, this.inodes, (dir, results) => {
+            for (const row of this.sql.exec('SELECT path, kind FROM vfs_inodes WHERE parent_path = ?', dir)) {
+                const child = String(row.path);
+                results.push({ name: child.slice(child.lastIndexOf('/') + 1), type: inodeKindFromCode(Number(row.kind)) });
+            }
+        });
+    }
+    /**
+     * readdir(2) as the live tree and a snapshot answer it (`tree`, and
+     * `entries` of a directory's key there): the entries of the directory the
+     * name resolves to, the one the permission is checked on (through a link,
+     * its target's), sorted by UTF-16 code unit. Callers that walk a listing
+     * (the prefetch closure walk among them) rely on a stable order; SQLite's
+     * byte order differs from it for names outside the Basic Multilingual Plane.
+     */
+    readdirIn(path, cred, tree, entries) {
+        const np = this.storageKey(path, cred, tree).value;
+        const resolved = np ? this.checkAccess(np, 0o4, cred, { tree }) : { path: '', inode: undefined };
         const inode = resolved.inode;
         if (inode && inode.kind !== 'directory')
             throw vfsKeyError('ENOTDIR', path);
-        // One seek of the parent index. The entries are read, not cached: naming
-        // a directory's entries says nothing about which of them will be used.
-        // They are the entries of the directory the name resolved to, the one
-        // the permission was checked on: through a link, its target's.
         const results = [];
-        for (const row of this.sql.exec('SELECT path, kind FROM vfs_inodes WHERE parent_path = ?', resolved.path)) {
-            const child = String(row.path);
-            results.push({ name: child.slice(child.lastIndexOf('/') + 1), type: inodeKindFromCode(Number(row.kind)) });
-        }
-        // Sorted by UTF-16 code unit: callers that walk a listing (the prefetch
-        // closure walk among them) rely on a stable order. SQLite's byte order
-        // differs from it for names outside the Basic Multilingual Plane.
+        entries(resolved.path, results);
         results.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
         return results;
     }
@@ -6276,11 +6284,7 @@ export class SqliteVFS {
     /** The inode at `path` as of generation `g`: its live row if unchanged since, else the history row covering `g`. */
     inodeAt(path, g) {
         const live = [...this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE path = ? AND gen <= ?`, path, g)][0];
-        if (live !== undefined)
-            return this.inodeFromRow(live);
-        const past = [...this.sql.exec(`SELECT ${HISTORY_SELECT_COLUMNS} FROM vfs_inode_history
-       WHERE path = ? AND gen_to > ? AND gen_from <= ? ORDER BY gen_to LIMIT 1`, path, g, g)][0];
-        return past === undefined ? undefined : this.inodeFromRow(past);
+        return live !== undefined ? this.inodeFromRow(live) : this.historyAt(path, g);
     }
     /** The children of `dir` as of generation `g`, in UTF-16 name order (readdir's). */
     childrenAt(dir, g) {
@@ -6354,6 +6358,13 @@ export class SqliteVFS {
                 throw vfsError('ESTALE', `snapshot ${name} was dropped`);
         };
         const readOnly = () => { throw vfsError('EROFS', `snapshot ${name} is read-only`); };
+        // A snapshot never changes: a cursor at it has nothing to learn, and any
+        // other cursor cannot be answered by a delta from here. Once it is
+        // dropped, neither can that one (its history may be collected).
+        const unchanged = (epoch, cursor) => {
+            pinned();
+            return { epoch: this._epoch, rev: g, paths: [], poison: epoch !== this._epoch || cursor !== g };
+        };
         const resolve = (path, want, followLeaf = true) => {
             pinned();
             return this.checkAccess(path, want, bound, { followLeaf, tree });
@@ -6422,31 +6433,28 @@ export class SqliteVFS {
             getDefaultAcl: (path) => { const inode = resolve(path, 0).inode; return inode.isDir ? inode.defaultAcl : null; },
             chown: readOnly,
             readdir: (path) => {
-                const np = this.storageKey(path, bound, tree).value;
-                if (np !== '') {
-                    const inode = resolve(np, 0o4).inode;
-                    if (inode.kind !== 'directory')
-                        throw vfsKeyError('ENOTDIR', path);
-                }
-                else
-                    pinned();
-                return this.childrenAt(np, g).map((child) => ({
-                    name: child.path.slice(child.path.lastIndexOf('/') + 1),
-                    type: child.kind,
-                }));
+                pinned();
+                return this.readdirIn(path, bound, tree, (dir, results) => {
+                    for (const child of this.childrenAt(dir, g))
+                        results.push({ name: child.path.slice(child.path.lastIndexOf('/') + 1), type: child.kind });
+                });
             },
             list: (after, limit) => {
                 pinned();
                 const pageLimit = Math.min(Math.max(1, Math.trunc(limit ?? FS_LIST_PAGE_LIMIT)), FS_LIST_PAGE_LIMIT);
                 const from = after === null || after === undefined ? '' : this.lexicalKey(after, bound).value;
                 const entries = [];
+                const epoch = this._epoch;
+                // Bounded by its encoded bytes as a live page is (listPageBudget).
+                const fits = listPageBudget(epoch, g);
+                const pageEnding = () => ({ epoch, rev: g, entries, next: entries[entries.length - 1]?.path ?? null });
                 const searchableDirs = new Map();
                 let cursor = from;
                 for (;;) {
                     const page = this.pageAt(g, cursor, pageLimit + 1);
                     for (const inode of page) {
                         if (entries.length >= pageLimit)
-                            return { epoch: this._epoch, rev: g, entries, next: entries[entries.length - 1].path };
+                            return pageEnding();
                         const logical = this.logicalPath(inode.path, bound);
                         if (logical === null)
                             continue;
@@ -6466,29 +6474,26 @@ export class SqliteVFS {
                             if (!searchable)
                                 continue;
                         }
-                        entries.push({
+                        const entry = {
                             path: logical,
                             kind: inode.kind,
                             size: inode.size,
                             rev: g,
                             stat: { ...this.statOf(inode), revision: g },
                             ...(inode.kind === 'symlink' ? { linkTarget: nameDec.decode(this.readContent(inode, 0, inode.size, true)) } : {}),
-                        });
+                        };
+                        if (!fits(entry))
+                            return pageEnding();
+                        entries.push(entry);
                     }
                     if (page.length <= pageLimit)
-                        return { epoch: this._epoch, rev: g, entries, next: null };
+                        return { epoch, rev: g, entries, next: null };
                     cursor = page[page.length - 1].path;
                 }
             },
-            // A snapshot never changes: a cursor at it has nothing to learn, and any
-            // other cursor cannot be answered by a delta from here.
-            acquire: (epoch, cursor) => ({
-                epoch: this._epoch, rev: g, paths: [], poison: epoch !== this._epoch || cursor !== g,
-            }),
-            invalidatedSince: (epoch, cursor) => ({
-                epoch: this._epoch, rev: g, paths: [], poison: epoch !== this._epoch || cursor !== g,
-            }),
-            storageKey: (path) => this.storageKey(path, bound, tree).value,
+            acquire: unchanged,
+            invalidatedSince: unchanged,
+            storageKey: (path) => { pinned(); return this.storageKey(path, bound, tree).value; },
             // Nothing under a snapshot ever changes, so a watch never fires.
             subscribe: () => () => { },
             acquireExclusiveMutation: readOnly,
@@ -6504,7 +6509,7 @@ export class SqliteVFS {
             asCaller: (fn) => fn(),
             writeFileFrom: readOnly,
             mkdirBatch: readOnly,
-            revision: () => g,
+            revision: () => { pinned(); return g; },
             contentKey: (path) => {
                 const inode = resolve(path, 0o4).inode;
                 if (inode.kind === 'directory')
