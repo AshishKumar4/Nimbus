@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "b16daeb3b8706dddf90ebc277a7510dda035eb9ad4cd48504d878a6211bd674f",
+  "fingerprint": "edf679221ec6b7a596c5de697c4a5cb4c24d7b76bad3ffd5ce288a26b8e74ce4",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2805,8 +2805,8 @@
     "packages/worker/dist/runtime/wasi/preamble.d.ts.map": "2f2f5bdd767c66406b285b3c676f9eb7831b45906747a43fefdb410f5d8b1db5",
     "packages/worker/dist/runtime/wasi/preamble.js": "dc4c73aa9f7bd93f1d6c495a7ff21a91a23ccfcc46941fae391035227a656e08",
     "packages/worker/dist/session/agent-contract.d.ts": "7dfd5378f3d0385824da14c27c9da0e9876893b89858c3a5fab9768be945c81f",
-    "packages/worker/dist/session/agent-contract.d.ts.map": "5be4b37f9f5cfad1881148ea4f5c696eefd1c03c0a14acee887b1dd615658ad7",
-    "packages/worker/dist/session/agent-contract.js": "0b3bba97edc7a20832cdddd37e1bef6b2e36b163b949b5f6b1409792dc2c5030",
+    "packages/worker/dist/session/agent-contract.d.ts.map": "9358d1a39c184fe7fd4a615e6ef0cfaaf9a80ee19cd3044af79fc2310ef66719",
+    "packages/worker/dist/session/agent-contract.js": "d313afd472fe6ccbecb8d49db3bb5d82ddb65458e737fa5618d7d077e1203524",
     "packages/worker/dist/session/agent-oauth.d.ts": "716e39bdabb7214128ca3806525689db7eac3a9e418b1bb7c9042002cec11167",
     "packages/worker/dist/session/agent-oauth.d.ts.map": "d3cc69c8a7873564ebbf0109bdf189db1c34806f902ca55bb0b909161430d7aa",
     "packages/worker/dist/session/agent-oauth.js": "32bebd7d89ce68b170d25bfb1d7827105247edfa6be2d1bb1994302c2e23081d",
@@ -2993,7 +2993,7 @@
     "packages/worker/package.json": "6854b5b0b1a29fbd983a7614d746ae8bdcf1a1b37754a3a936571b75797ae77a",
     "packages/worker/patches/@ashishkumar472+cf-git+1.0.5.patch": "1461daaa40971e95a9712068f917b1b8c20622ebdbee05821ed7b06602ad5731",
     "packages/worker/public/_assets/agent-chat/agent-chat.css": "2d444acad499db96faff259bd086c63ac71a7f320f8a2360faa2a2a2222f12f9",
-    "packages/worker/public/_assets/agent-chat/agent-chat.js": "0b64ab7434563e715545cea940a1656d6524182ccfb193238b6fb7b84e68b685",
+    "packages/worker/public/_assets/agent-chat/agent-chat.js": "722aca9a4b5030eee71b2d0e8efce7d8d3109ee1ffd1b72e105329d07b31bd1b",
     "packages/worker/public/_assets/amaro/amaro-2c8132e2c965a6a1.wasm": "2c8132e2c965a6a10024bf83dcee287fe15a0cb90f987394d1f9f3d68053a851",
     "packages/worker/public/_assets/cirrus-npm-cjs-bundles.json": "f9913354f7dd4f2d1f7ea0d68e057d2e6296061f24a8fee62a758d6f0a70fb60",
     "packages/worker/public/_assets/cirrus-plugin-react.bundle.js": "729a8fec9ec58a71310194737b3be15873085c07fe7a3cf4862f718a5d667076",
@@ -3349,7 +3349,7 @@
     "packages/worker/src/runtime/stop-replay-policy.ts": "39ae851a7c51ec0ebaca65134eeec47161ab07605674d2a6b60471ee2b4f1cf6",
     "packages/worker/src/runtime/stop-replay.ts": "bd5f8f7ba1bfa71a72930867b41d50a7db23417d191f1fdf97cc6a5d1e883ab1",
     "packages/worker/src/runtime/wasi/preamble.ts": "172cf1eee35731719d67d3fddd87222dbd3148e4f03083ea714d16edc2717629",
-    "packages/worker/src/session/agent-contract.ts": "d791094c7e78ce63b2888fbfa69872d73333b704163051d8a5f1edd90800a537",
+    "packages/worker/src/session/agent-contract.ts": "655117f69994495cd77942d865324aa43c69b7aaff42ede48a9ef333a35570b5",
     "packages/worker/src/session/agent-oauth.ts": "3c620aa970430f980d01022ca3f6728ca874aaa7292dfa1199774b2e7df6b952",
     "packages/worker/src/session/agent.ts": "6c926ac2fbc3f4c42d9fae12c412c8b8a8ccd8e554fff32d11ed26aad78438ef",
     "packages/worker/src/session/ai.ts": "4213f59d8189e17b58fa0086ba4161d53c6c6a9e6126da310ade4f95cb665788",
