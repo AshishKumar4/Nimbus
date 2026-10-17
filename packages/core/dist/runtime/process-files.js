@@ -985,13 +985,12 @@ class AwaitingProcessBridge {
             if (options?.expectedEpoch !== undefined)
                 throw fsError('ESTALE', 'read', path);
             const expected = options?.expectedFile;
-            const fresh = async () => expected === undefined || sameFileVersion(await this.stat(path), expected);
-            if (!(await fresh()))
+            if (expected !== undefined && !sameFileVersion(await this.stat(path), expected))
                 throw fsError('ESTALE', 'read', path);
             const name = await this.path(path);
             const view = await this.viewed(name, true);
             const bytes = await (view ? view.slice(offset, offset + length) : readRangeOrWhole(this.namespace, name, offset, length));
-            if (!(await fresh()))
+            if (expected !== undefined && !sameFileVersion(await this.stat(path), expected))
                 throw fsError('ESTALE', 'read', path);
             return bytes;
         }));
