@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "3d49b4981a1f147f38f0a2df5d066cfbd222930d6840277a8461848c38de3473",
+  "fingerprint": "337134cb859468aaa6e006d48892a59bf8ec5bb11cb393df10a15862c3213865",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -200,7 +200,7 @@
     "packages/core/dist/_shared/process-fs-client-source.generated.d.ts.map": "f8a0d56fa937397b53ad4a346fa693ddd1f4a8a45b32b8ad0405c58dc395bf0f",
     "packages/core/dist/_shared/process-fs-client-source.generated.js": "546d9293ab5e0c485524cc6a6e712f51dc6211d3c80973f759be51e06efeedae",
     "packages/core/dist/_shared/process-fs-client.d.ts": "375208004ff94e79fbddba5095b6f8c6f26356a69b13d23677715fe1536fed01",
-    "packages/core/dist/_shared/process-fs-client.d.ts.map": "e9159713a303a774c768b3bf5bc0bce7f044463cd7e0aa3cf2398dbc92dcd152",
+    "packages/core/dist/_shared/process-fs-client.d.ts.map": "562ebcbc40b3b3feb4cde9698ddfd3186d3a14b6c71c33c246853d56c84def24",
     "packages/core/dist/_shared/process-fs-client.js": "7bd22b46b2f22ddf422fa74e220ad4a235ed4c8d84334294e794d7644d33e854",
     "packages/core/dist/_shared/process-fs-journal-reader-source.generated.d.ts": "642c7448cf0914c6bc39781a9488e073787a7ff22504f0b4d84e5a25310bd807",
     "packages/core/dist/_shared/process-fs-journal-reader-source.generated.d.ts.map": "778a2f7a78813afaa22efa990eede0d64f3f626c70f52aa4015f88f50362fb4b",
@@ -1441,7 +1441,7 @@
     "packages/core/src/_shared/null-body-status.ts": "4e23a05a32641a47e341dda378c1f6a5a42e113fa5c76ed1248cb85e1bb563a9",
     "packages/core/src/_shared/oauth.ts": "d8f179892533235f18ccf850b786505baa77818e6db750fa17a116fbbd83da55",
     "packages/core/src/_shared/process-fs-client-source.generated.ts": "82d6747f42c84633419162d5737ebf9c9c68c3681879052219cc815a9d94ee4b",
-    "packages/core/src/_shared/process-fs-client.ts": "82082b2330931a3d07ef84ef06b1484feaa502555232fc858d3c098be23b3830",
+    "packages/core/src/_shared/process-fs-client.ts": "7d6c10a4068c1210414ab0d5ebf98001a6eb56d473b3a2b06f2770a74a89ecb6",
     "packages/core/src/_shared/process-fs-journal-reader-source.generated.ts": "0c19c406b761205696bc4638faab8cf24fab87c77d1c3a37f84ec034ccd6d1b9",
     "packages/core/src/_shared/process-fs-journal-reader.ts": "7ed559905ce8a9d9d5e9eb2a58fb3dc59d37f1084f572b11edcc62d9888d684e",
     "packages/core/src/_shared/process-fs-journal.ts": "9abbfd6484127df031280406c15822dbb54c141b08de99e15bc801b019ed2df2",
