@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — 120 programs and failure shrinking took 67 s wall, 0.99 GiB on armada.
 // The model's programs through the real WASI body, against ProcessFiles.
 // Each step compares refusals, descriptor bytes and stats, /dev/fd opens,
 // and path sizes, modes and bytes. Peers belong to the guest's own session.
@@ -50,7 +51,7 @@ async function run(steps) {
       const want = await outcome(expected);
       if (denied !== undefined && want.errno === ERRNO[denied]) want.errno = ERRNO.ENOTCAPABLE;
       const got = await outcome(actual);
-      assert.equal(got.errno, want.errno, `${label} errno`);
+      assert.equal(got.errno, want.errno, `${label} errno (${got.errno} vs ${want.errno})`);
       if (got.errno === 0) assert.deepEqual(got.value, want.value, label);
       return got;
     };
@@ -65,9 +66,9 @@ async function run(steps) {
     };
     const compareStat = async (label, actual, expected) => {
       const want = await outcome(expected), got = await outcome(actual);
-      assert.equal(got.errno, want.errno, `${label} errno`);
+      assert.equal(got.errno, want.errno, `${label} errno (${got.errno} vs ${want.errno})`);
       if (got.errno !== 0) return;
-      for (const field of Object.keys(want.value)) assert.equal(got.value[field], want.value[field], `${label} ${field}`);
+      for (const field of Object.keys(want.value)) assert.equal(got.value[field], want.value[field], `${label} ${field}${field === 'nlink' ? ` (${got.value[field]} vs ${want.value[field]})` : ''}`);
     };
     // Attribute operations need live descriptions, not immutable read-only copies.
     const open = (name, flags) => guest.open(name, { ...flags, allocate: true });
@@ -182,7 +183,7 @@ async function run(steps) {
 }
 
 /** A failure's kind, with the step, its values and names removed. */
-const kindOf = (error) => String(error.message).split('\n')[0].replace(/step \d+ /, '').replace(/\{[^}]*\}/g, '{}').replace(/\b[a-c]\b/g, 'N').replace(/fd \d/g, 'fd');
+const kindOf = (error) => String(error.message).split('\n')[0].replace(/^step \d+ \{.*\}: /, '').replace(/\b[a-c]\b/g, 'N').replace(/fd \d/g, 'fd');
 
 /** Delete steps until no single deletion preserves this failure's kind. */
 async function shrink(steps, kind) {
@@ -190,7 +191,7 @@ async function shrink(steps, kind) {
   for (let chunk = Math.ceil(current.length / 2); chunk >= 1; chunk = Math.floor(chunk / 2)) {
     for (let at = 0; at < current.length;) {
       const candidate = [...current.slice(0, at), ...current.slice(at + chunk)];
-      if (await run(candidate).then(() => false, (error) => kindOf(error) === kind)) current = candidate;
+      if (await run(candidate).then(() => false, (error) => kindOf(error) === kind)) { current = candidate; if (chunk === 1) at = 0; }
       else at += chunk;
     }
   }
@@ -201,6 +202,28 @@ const seeds = process.env.NIMBUS_MODEL_SEED !== undefined
   ? [Number(process.env.NIMBUS_MODEL_SEED)]
   : Array.from({ length: Number(process.env.NIMBUS_MODEL_SEEDS ?? 120) }, (_, i) => i + 1);
 const failures = new Map();
+const WRITER = { read: true, write: true, append: false, create: true, exclusive: false, truncate: true };
+const FOUND = [
+  { name: '/dev/fd after a rename in a busy subtree', steps: [
+    ...Array.from({ length: 8 }, () => ({ op: 'writeFile', name: 'c', data: 'p' })),
+    { op: 'unlink', name: 'c' },
+    { op: 'open', fd: 0, name: 'a', flags: WRITER },
+    { op: 'rename', from: 'a', to: 'b' },
+  ] },
+  { name: 'fd_filestat_get after a peer unlinks the written file', steps: [
+    { op: 'open', fd: 0, name: 'a', flags: WRITER },
+    { op: 'write', fd: 0, offset: null, data: 'pqr' },
+    { op: 'peer', kind: 'unlink', name: 'a' },
+  ] },
+];
+for (const found of FOUND) {
+  const failure = await run(found.steps).then(() => null, (error) => error);
+  if (failure === null) continue;
+  const kind = kindOf(failure);
+  const minimal = await shrink(found.steps, kind);
+  const reason = await run(minimal).then(() => failure, (error) => error);
+  failures.set(`found: ${found.name} (${kind})`, { seeds: [0], reason, minimal });
+}
 for (const seed of seeds) {
   const steps = program(seed);
   const failure = await run(steps).then(() => null, (error) => error);
