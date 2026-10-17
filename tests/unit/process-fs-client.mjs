@@ -500,6 +500,30 @@ for (const phase of ['openWriter', 'stream']) {
   assert.ok(c.stats().ops >= 3);
 }
 
+// ── A call in pieces is refused only where every piece was ──────────────
+// The first piece of a positional write lands; the file is then made
+// read-only, and the next is refused. The call failed, but not as one the
+// session never applied. Red before: the first refused piece's verdict was
+// the call's.
+{
+  const s = session();
+  const c = client(s);
+  s.kernel.writeFile('home/user/split', enc.encode('x'));
+  s.kernel.chown('home/user/split', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  const forward = s.port.writeBatchStream;
+  let waves = 0;
+  s.port.writeBatchStream = async (...args) => {
+    const answered = await forward.apply(s.port, args);
+    if (++waves === 1) s.kernel.chmod('home/user/split', 0o444);
+    return answered;
+  };
+  const big = new Uint8Array(9 * 1024 * 1024).fill(7);
+  const answer = await c.submit({ type: 'call', call: { call: 'write', path: 'home/user/split', offset: 0, data: big } }, { acknowledged: true });
+  assert.ok(answer.failed !== undefined, 'a refused piece passed');
+  assert.notEqual(answer.failed.refused, true, 'a call one of whose pieces applied was called refused');
+  assert.ok(s.kernel.stat('home/user/split').size > 1, 'its first piece did not land');
+}
+
 // ── A session that fences nothing: committedOps answers how far it went ──
 {
   const s = session({ fenced: false });

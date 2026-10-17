@@ -37,9 +37,19 @@ export type InodeOp =
   | { readonly kind: 'chown'; readonly uid: number | null; readonly gid: number | null; readonly by: number; readonly at: number }
   | { readonly kind: 'utimes'; readonly atime: FsTime; readonly mtime: FsTime; readonly at: number };
 
+/**
+ * A private copy of the first `length` of `bytes`: a plain array no one else
+ * holds, whatever `bytes` is (a Buffer's slice is a view of it, not a copy).
+ */
+export function owned(bytes: Uint8Array, length = bytes.byteLength): Uint8Array {
+  const copy = new Uint8Array(length);
+  copy.set(bytes.subarray(0, length));
+  return copy;
+}
+
 /** A copy of `state` that folding into does not change `state`. */
 export function copyState(state: InodeState): InodeState {
-  return { ...state, bytes: state.bytes === null ? null : state.bytes.slice(0, state.size) };
+  return { ...state, bytes: state.bytes === null ? null : owned(state.bytes, state.size) };
 }
 
 /** Room for `size` bytes in `state`'s buffer, its first `state.size` kept, the rest zero. */
