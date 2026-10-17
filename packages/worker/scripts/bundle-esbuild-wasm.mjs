@@ -73,6 +73,7 @@ import { fileURLToPath } from 'node:url';
 
 import { resolvePackageDir } from './resolve-package-dir.mjs';
 import { sha256Hex, stageAsset } from './stage-asset.mjs';
+import { moduleBody } from '../../../scripts/lib/compiled-bodies.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -120,29 +121,13 @@ async function main() {
     }
   }
 
-  const exportRe = /\nexport\s*\{([\s\S]+?)\};?\s*$/;
-  const m = jsRaw.match(exportRe);
-  if (!m) {
-    throw new Error(
-      `[bundle-esbuild-wasm] could not locate trailing 'export {…}' block\n` +
-        `   in esm/browser.js — esbuild-wasm may have changed shape.`,
-    );
-  }
-  const exportBody = m[1];
-  const objectMembers = exportBody
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((entry) => {
-      const asMatch = entry.match(/^(\S+)\s+as\s+(\S+)$/);
-      if (asMatch) return `${asMatch[2]}: ${asMatch[1]}`;
-      return entry;
-    })
-    .join(', ');
-  const jsFn = jsRaw.replace(exportRe, '\n') + `\nreturn { ${objectMembers} };\n`;
-  console.log(
-    `[bundle-esbuild-wasm] rewrote ${exportBody.split(',').length} exports → object-return shape`,
-  );
+  // Its exports become the members of the object the function returns.
+  const { body, imports, exported } = moduleBody(jsRaw);
+  if (imports.length > 0) throw new Error(`[bundle-esbuild-wasm] esm/browser.js imports ${imports[0].source}: esbuild-wasm may have changed shape`);
+  if (exported.length === 0) throw new Error('[bundle-esbuild-wasm] esm/browser.js exports nothing: esbuild-wasm may have changed shape');
+  const objectMembers = exported.map(([name, local]) => (name === local ? name : `${name}: ${local}`)).join(', ');
+  const jsFn = `${body}\nreturn { ${objectMembers} };\n`;
+  console.log(`[bundle-esbuild-wasm] rewrote ${exported.length} exports → object-return shape`);
 
   // ── 2. The wasm: staged, byte for byte ──────────────────────────────
   // The esbuild facet fetches it (digest-checked) when it is loaded and
