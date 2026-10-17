@@ -87,6 +87,16 @@ export async function writeBytes(out, bytes) {
         await out.write(decodeLossless(bytes));
 }
 /**
+ * Write lossless text (decodeLossless's): as text, unless it carries a byte
+ * (U+DC80..U+DCFF) a sink's UTF-8 would not keep, when it goes as its bytes.
+ */
+export async function writeLossless(out, text) {
+    if (firstLosslessByte(text) === -1)
+        await out.write(text);
+    else
+        await writeBytes(out, encodeLossless(text));
+}
+/**
  * {@link decodeLossless} across writes: a sequence a write leaves unfinished
  * is held for the next, so a character split between writes decodes whole;
  * what is held at the end decodes byte by byte, as decodeLossless has it.
@@ -206,21 +216,23 @@ export function utf8SequenceLength(bytes, i) {
     }
     return 0;
 }
-/** The inverse of `decodeLossless`. */
-export function encodeLossless(text) {
-    let has = false;
+/** Where the first byte decodeLossless kept as U+DC80 + byte is in `text`, or -1. */
+function firstLosslessByte(text) {
     for (let i = 0; i < text.length; i++) {
         const c = text.charCodeAt(i);
-        if (c >= 0xdc80 && c <= 0xdcff && !(i > 0 && isHigh(text.charCodeAt(i - 1)))) {
-            has = true;
-            break;
-        }
+        if (c >= 0xdc80 && c <= 0xdcff && !(i > 0 && isHigh(text.charCodeAt(i - 1))))
+            return i;
     }
-    if (!has)
+    return -1;
+}
+/** The inverse of `decodeLossless`. */
+export function encodeLossless(text) {
+    const first = firstLosslessByte(text);
+    if (first === -1)
         return enc.encode(text);
     const parts = [];
     let run = 0;
-    for (let i = 0; i < text.length; i++) {
+    for (let i = first; i < text.length; i++) {
         const c = text.charCodeAt(i);
         if (c >= 0xdc80 && c <= 0xdcff && !(i > 0 && isHigh(text.charCodeAt(i - 1)))) {
             if (i > run)

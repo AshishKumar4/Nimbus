@@ -17,6 +17,12 @@
  * Every dialect reads `\\ \a \b \e \f \n \r \t \v`, `\xHH` (one or two hex
  * digits), `\uHHHH` and `\UHHHHHHHH`, and `\c`, which ends the output there.
  * Any other backslash stays as it is.
+ *
+ * An octal or hex escape names one byte, as bash's and coreutils' putchar
+ * write it: `\303\251` is the two bytes of "é", `\377` the byte 0xff. A `\u`
+ * or `\U` escape names a character, its UTF-8 bytes. The result is the
+ * lossless decoding of those bytes (bytes-io.ts), which its writer encodes
+ * back to them.
  */
 export type EscapeDialect = 'echo' | 'printf' | 'printf-b';
 /** `text` with its escapes expanded; `stopped` when a `\c` cut it short there. */
@@ -25,9 +31,10 @@ export declare function expandBackslashEscapes(text: string, dialect: EscapeDial
     stopped: boolean;
 };
 /**
- * What bash's `echo` prints for `args`: leading words of -n/-e/-E letters are
- * its options (`--` ends them), the rest joined by spaces; -e expands escapes,
- * and a `\c` among them ends the output with no newline.
+ * What bash's `echo` prints for `args`, as lossless text: leading words of
+ * -n/-e/-E letters are its options (`--` ends them), the rest joined by
+ * spaces; -e expands escapes, and a `\c` among them ends the output with no
+ * newline.
  */
 export declare function echoOutput(args: readonly string[]): string;
 //# sourceMappingURL=backslash-escapes.d.ts.map

@@ -1,3 +1,4 @@
+import { decodeLossless, encodeLossless } from './bytes-io.js';
 const SIMPLE = {
     '\\': '\\',
     a: '\x07',
@@ -29,6 +30,9 @@ function numericEscape(text, at, dialect) {
 /** `text` with its escapes expanded; `stopped` when a `\c` cut it short there. */
 export function expandBackslashEscapes(text, dialect) {
     let out = '';
+    // Whether an escape wrote a byte past ASCII, held as U+DC00 + byte until the end.
+    let bytes = false;
+    let stopped = false;
     let i = 0;
     while (i < text.length) {
         const slash = text.indexOf('\\', i);
@@ -38,16 +42,22 @@ export function expandBackslashEscapes(text, dialect) {
         }
         out += text.slice(i, slash);
         const next = text[slash + 1];
-        if (next === 'c')
-            return { text: out, stopped: true };
+        if (next === 'c') {
+            stopped = true;
+            break;
+        }
         const numeric = numericEscape(text, slash + 1, dialect);
         const digits = numeric?.[1] ?? numeric?.[2] ?? '';
         const unicode = next === 'u' || next === 'U';
         if (numeric && !(unicode && Number.parseInt(digits, 16) > 0x10ffff)) {
-            // An octal escape names a byte: `\777` is 0xff, as printf's putchar has it.
-            out += next === 'x' ? String.fromCharCode(Number.parseInt(digits, 16))
-                : unicode ? String.fromCodePoint(Number.parseInt(digits, 16))
-                    : String.fromCharCode(Number.parseInt(digits || '0', 8) & 0xff);
+            if (unicode)
+                out += String.fromCodePoint(Number.parseInt(digits, 16));
+            else {
+                // `\777` is 0xff, as putchar has it.
+                const byte = next === 'x' ? Number.parseInt(digits, 16) : Number.parseInt(digits || '0', 8) & 0xff;
+                out += String.fromCharCode(byte < 0x80 ? byte : 0xdc00 + byte);
+                bytes ||= byte >= 0x80;
+            }
             i = slash + 1 + numeric[0].length;
             continue;
         }
@@ -61,12 +71,14 @@ export function expandBackslashEscapes(text, dialect) {
             out += `\\${next}`;
         i = slash + 2;
     }
-    return { text: out, stopped: false };
+    // Escaped bytes that spell a character together (`\303\251`) read as it.
+    return { text: bytes ? decodeLossless(encodeLossless(out)) : out, stopped };
 }
 /**
- * What bash's `echo` prints for `args`: leading words of -n/-e/-E letters are
- * its options (`--` ends them), the rest joined by spaces; -e expands escapes,
- * and a `\c` among them ends the output with no newline.
+ * What bash's `echo` prints for `args`, as lossless text: leading words of
+ * -n/-e/-E letters are its options (`--` ends them), the rest joined by
+ * spaces; -e expands escapes, and a `\c` among them ends the output with no
+ * newline.
  */
 export function echoOutput(args) {
     let interpretEscapes = false;

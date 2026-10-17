@@ -38,6 +38,11 @@ export declare function concatBytes(parts: readonly Uint8Array[]): Uint8Array;
 /** Write bytes as they are, to a sink that takes bytes; a text-only sink gets their lossless decoding. */
 export declare function writeBytes(out: ByteOutput, bytes: Uint8Array): Promise<void>;
 /**
+ * Write lossless text (decodeLossless's): as text, unless it carries a byte
+ * (U+DC80..U+DCFF) a sink's UTF-8 would not keep, when it goes as its bytes.
+ */
+export declare function writeLossless(out: ByteOutput, text: string): Promise<void>;
+/**
  * {@link decodeLossless} across writes: a sequence a write leaves unfinished
  * is held for the next, so a character split between writes decodes whole;
  * what is held at the end decodes byte by byte, as decodeLossless has it.
