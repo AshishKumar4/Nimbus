@@ -151,6 +151,8 @@ export interface Inode {
   /** `base` with `records` folded over it: what the process sees. */
   state: InodeState | null;
   records: InodeRecord[];
+  /** What `records` keep of the budget (recordCost each), kept as they come and go. */
+  recordsCost: number;
   /** No name leads to it any more: its descriptors keep what it holds until the last closes. */
   unnamed: boolean;
   /** Made by this process and not yet numbered by the session (reconcile). */
@@ -186,6 +188,8 @@ interface InodeRecord {
   answered: boolean;
   /** Barriers begun when it was answered: one begun after retires it. */
   answeredAt: number;
+  /** Gone from its inode's records (refused, retired or moved): its answer says nothing more. */
+  gone?: true;
 }
 
 /** A name made, removed or moved: replayed in log order over the view, it makes the overlay. */
@@ -394,7 +398,7 @@ export function provisional(host: ProvisionalHost): Provisional {
   const inodeAt = (key: string, row: ResidentEntry): Inode => {
     let inode = inodeAtNumber(row.dev, row.ino);
     if (inode === undefined) {
-      inode = { dev: row.dev, ino: row.ino, type: row.type, key, origin: key, row, base: null, state: null, records: [], unnamed: false, local: false, descs: 0, retained: [], credit: 0, reserved: 0 };
+      inode = { dev: row.dev, ino: row.ino, type: row.type, key, origin: key, row, base: null, state: null, records: [], recordsCost: 0, unnamed: false, local: false, descs: 0, retained: [], credit: 0, reserved: 0 };
       addInode(inode);
     }
     return inode;
@@ -453,9 +457,22 @@ export function provisional(host: ProvisionalHost): Provisional {
   const cost = (inode: Inode): number => {
     let total = INODE_COST + stringCost(inode.key) + stringCost(inode.origin) + (inode.opened === undefined ? 0 : stringCost(inode.opened))
       + (inode.row.target === null ? 0 : stringCost(inode.row.target)) + (inode.base?.bytes?.byteLength ?? 0) + (inode.state?.bytes?.byteLength ?? 0)
-      + (inode.pin?.bytes.byteLength ?? 0) + inode.credit;
-    for (const record of inode.records) total += RECORD_COST + payloadOf(record.op);
+      + (inode.pin?.bytes.byteLength ?? 0) + inode.credit + inode.recordsCost;
     return total;
+  };
+
+  /** What a record keeps of the budget: itself and what its op carries. */
+  const recordCost = (record: InodeRecord): number => RECORD_COST + payloadOf(record.op);
+
+  /** `inode`'s records less `leaving` (a set of them), each gone. */
+  const dropRecords = (inode: Inode, leaving: ReadonlySet<InodeRecord>): void => {
+    if (leaving.size === 0) return;
+    inode.records = inode.records.filter((record) => {
+      if (!leaving.has(record)) return true;
+      record.gone = true;
+      inode.recordsCost -= recordCost(record);
+      return false;
+    });
   };
 
   /**
@@ -532,6 +549,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     activity();
     const record: InodeRecord = { id: ++ids, op, owner: inode, ...(description === undefined ? {} : { description }), answered: false, answeredAt: 0 };
     inode.records.push(record);
+    inode.recordsCost += recordCost(record);
     inode.state = applyOp(inode.state!, op);
     return record;
   };
@@ -596,18 +614,21 @@ export function provisional(host: ProvisionalHost): Provisional {
    */
   const settleRecords = (records: readonly InodeRecord[], refused: boolean): void => {
     const refolded = new Set<Inode>();
+    const refusedOf = new Map<Inode, Set<InodeRecord>>();
     for (const record of records) {
+      if (record.gone) continue;
       const inode = record.owner;
-      const at = inode.records.indexOf(record);
-      if (at < 0) continue;
       if (refused) {
-        inode.records.splice(at, 1);
+        let mine = refusedOf.get(inode);
+        if (mine === undefined) refusedOf.set(inode, mine = new Set());
+        mine.add(record);
         refolded.add(inode);
       } else {
         record.answered = true;
         record.answeredAt = barriers;
       }
     }
+    for (const [inode, mine] of refusedOf) dropRecords(inode, mine);
     for (const inode of refolded) {
       refold(inode);
       fit(inode);
@@ -711,7 +732,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       type, dev: host.device, ino: localIno++, nlink: type === 'directory' ? 2 : 1, size: target === null ? 0 : new TextEncoder().encode(target).byteLength,
       atime: at, mtime: at, ctime: at, mode, uid, gid, revision: 0, target,
     };
-    const inode: Inode = { dev: row.dev, ino: row.ino, type, key, origin: key, row, base: null, state: null, records: [], unnamed: false, local: true, descs: 0, retained: [], credit: 0, reserved: 0 };
+    const inode: Inode = { dev: row.dev, ino: row.ino, type, key, origin: key, row, base: null, state: null, records: [], recordsCost: 0, unnamed: false, local: true, descs: 0, retained: [], credit: 0, reserved: 0 };
     if (type === 'file') {
       inode.base = { bytes: new Uint8Array(0), size: 0, mode, uid, gid, atime: at, mtime: at, ctime: at };
       inode.state = copyState(inode.base);
@@ -750,18 +771,25 @@ export function provisional(host: ProvisionalHost): Provisional {
   const moveRecords = (records: readonly InodeRecord[], target: Inode): void => {
     if (records.length === 0) return;
     const left = new Set<Inode>();
+    const leaving = new Map<Inode, Set<InodeRecord>>();
     for (const record of records) {
       const from = record.owner;
-      const at = from.records.indexOf(record);
-      if (at >= 0) from.records.splice(at, 1);
+      if (!record.gone) {
+        let mine = leaving.get(from);
+        if (mine === undefined) leaving.set(from, mine = new Set());
+        mine.add(record);
+      }
       if (from !== target) left.add(from);
       record.owner = target;
       // What it keeps of the budget goes with it.
-      const kept = RECORD_COST + payloadOf(record.op);
+      const kept = recordCost(record);
       from.reserved -= kept;
       target.reserved += kept;
     }
+    for (const [from, mine] of leaving) dropRecords(from, mine);
+    for (const record of records) delete record.gone;
     target.records = [...target.records, ...records].sort((a, b) => a.id - b.id);
+    for (const record of records) target.recordsCost += recordCost(record);
     if (target.base === null) {
       target.base = baseline(target);
       touched.add(target);
@@ -783,7 +811,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       atime: receipt.mtimeMs, mtime: receipt.mtimeMs, ctime: receipt.ctimeMs, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid,
       revision: receipt.revision ?? 0, target: null,
     };
-    const inode: Inode = { dev: row.dev, ino: row.ino, type: 'file', key: like.key, origin: like.origin, row, base: null, state: null, records: [], unnamed: true, local: false, descs: 0, retained: [], credit: 0, reserved: 0 };
+    const inode: Inode = { dev: row.dev, ino: row.ino, type: 'file', key: like.key, origin: like.origin, row, base: null, state: null, records: [], recordsCost: 0, unnamed: true, local: false, descs: 0, retained: [], credit: 0, reserved: 0 };
     addInode(inode);
     return inode;
   };
@@ -1517,19 +1545,19 @@ export function provisional(host: ProvisionalHost): Provisional {
           // No name leads to it in the view: what it holds is what retired made of it, where its baseline's bytes can say so
           // (else they stay records while a descriptor may still read them).
           if (inode.descs > 0 && inode.base !== null && inode.base.bytes === null && retired.some((record) => payloadOf(record.op) > 0)) continue;
-          inode.records = inode.records.filter((record) => !retired.includes(record));
+          dropRecords(inode, new Set(retired));
           if (inode.base !== null) for (const record of retired) inode.base = applyOp(inode.base, record.op);
           if (inode.records.length === 0 && inode.descs === 0) {
             inode.base = null;
             inode.state = null;
           }
         } else if (inode.records.length === retired.length) {
-          inode.records = [];
+          dropRecords(inode, new Set(retired));
           inode.row = seen.row;
           inode.base = null;
           inode.state = null;
         } else {
-          inode.records = inode.records.filter((record) => !retired.includes(record));
+          dropRecords(inode, new Set(retired));
           inode.base = baseline(inode);
         }
         if (inode.state === null) {
