@@ -31,8 +31,8 @@ import type { RuntimeManifest } from './runtime-manifest.js';
 import { CLANG_CALL_TASK } from './compiled-bodies.generated.js';
 import { type ProcessView, withHostView } from './process-files.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
-import type { Facet, FacetHost } from './facet-host.js';
-import type { ClangFacetResult } from './facet-tasks.js';
+import type { Facet, FacetSpec, FacetSubmitOptions } from './facet-host.js';
+import type { ClangFacetResult, clangFacetCall } from './facet-tasks.js';
 import { CRED_KERNEL, gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI, type NimbusFilesystemAuthority, type VfsCred } from './os-contracts.js';
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
@@ -46,9 +46,17 @@ import { errorText } from '../_shared/error-text.js';
 
 const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
 
+/**
+ * What the runner uses of a facet: the clang call, and its disposal. Every
+ * FacetHost's facets are these.
+ */
+export interface ClangFacet extends Pick<Facet, 'dispose'> {
+  submit(task: typeof CLANG_CALL_TASK, args: Parameters<typeof clangFacetCall>[0], options?: FacetSubmitOptions): Promise<ClangFacetResult>;
+}
+
 /** Build the runner factory. Closes over the facet host and the filesystem authority. */
 export function makeClangRunnerFactory(deps: {
-  facets: FacetHost;
+  facets: { open(spec: FacetSpec): ClangFacet };
   filesystem: NimbusFilesystemAuthority;
   processes: SessionProcessSupervisor;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) =>
@@ -567,7 +575,7 @@ interface ClangFacetArgs {
 interface ClangFacetTarget {
   primaryName: 'clang' | 'wasm-ld';
   pid: number;
-  facet: Facet;
+  facet: ClangFacet;
 }
 
 /** A load made once, by the first call that wants it; one that failed is made again by the next. */

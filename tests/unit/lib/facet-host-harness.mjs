@@ -75,6 +75,10 @@ export const atTestEnd = (() => {
  * still running when the test ends is killed (atTestEnd), as a session's
  * teardown ends its residents.
  */
+/**
+ * @param {{ get(pid: number): { state?: string, attachedTty?: boolean } | undefined, kill(pid: number): void }} processes
+ * @param {(request: Request) => Response | Promise<Response>} [respond]
+ */
 export function residentRunner(processes, respond = () => new Response('ok')) {
   const started = new Set();
   atTestEnd(() => {
@@ -296,23 +300,28 @@ import {
 } from '../../../packages/worker/src/session/rpc.ts';
 import { isolateToken, isHostedWatch, isHostedResidency } from '../../../packages/fabric/src/peer-host.ts';
 import { processHostFor } from '../../../packages/worker/src/loaders/process-host.ts';
-import { composeFabric } from '../../../packages/fabric/src/composition.ts';
+import { composeFabric, DEFAULT_HOST_NAMESPACE, hostNamespace } from '../../../packages/fabric/src/composition.ts';
 import { openSupervisorDeliveries } from '../../../packages/core/src/workspace/supervisor-delivery.ts';
 import { sqlJournal } from '../../../packages/core/src/_shared/process-fs-journal.ts';
 import { missingAssets } from './staged-assets.mjs';
 
 // The harness plays the embedder: its ctx.exports (createCtxExports below)
-// answer to the name the real worker registers for its supervisor class.
-composeFabric({ supervisorEntrypoint: 'SupervisorRPC' });
+// answer to the name the real worker registers for its supervisor class. A
+// test that composed its own host namespace before importing the harness
+// (host-namespace-routing) keeps it.
+const composedNamespace = hostNamespace();
+composeFabric({ supervisorEntrypoint: 'SupervisorRPC', ...(composedNamespace === DEFAULT_HOST_NAMESPACE ? {} : { hostNamespace: composedNamespace }) });
 
 /** Observe the real host's public boot boundary without retaining generated source. */
 export function captureProcessBoots(world) {
-  return (...args) => {
-    const host = processHostFor(...args);
+  /** @type {typeof processHostFor} */
+  const capture = (ctx, env, disk, network, supervise) => {
+    const host = processHostFor(ctx, env, disk, network, supervise);
     const open = host.open.bind(host);
     host.open = (params) => { world.bootSpecs.push(params.boot); return open(params); };
     return host;
   };
+  return capture;
 }
 
 /** The two settings of NIMBUS_PROCESS_HOST, for suites that run under both. */
@@ -331,9 +340,17 @@ export const PROCESS_HOST_MODES = ['facet', 'peer'];
  * `deliveries: true` makes the coordinator a host that applies its processes'
  * mutations exactly once (it opens its delivery store, as NimbusSession
  * does); the host then reports that instance's `hostIncarnation`.
+ *
+ * `hostBinding` names the peers' namespace in the hosts' env, as an embedder
+ * that composes its own (composeFabric({ hostNamespace })) names it.
+ *
+ * @param {'facet' | 'peer'} mode
+ * @param {ReturnType<typeof createFacetWorld>} world
+ * @param {ReturnType<Parameters<typeof processHostFor>[2]>} disk
+ * @param {{ env?: object, coordDoId?: string, colocated?: boolean, peerWithoutFacets?: boolean, deliveries?: boolean, hostBinding?: string }} [options]
  */
 export function createProcessHost(mode, world, disk, {
-  env, coordDoId = 'coord-do-id', colocated = false, peerWithoutFacets = false, deliveries = false,
+  env, coordDoId = 'coord-do-id', colocated = false, peerWithoutFacets = false, deliveries = false, hostBinding = 'NIMBUS_SESSION',
 } = {}) {
   const hostEnv = env ?? {
     LOADER: world.loader,
@@ -341,23 +358,20 @@ export function createProcessHost(mode, world, disk, {
   };
   const coordinator = createFacetCtx(world, coordDoId);
   const hostIncarnation = deliveries ? openSupervisorDeliveries(coordinator).incarnation : undefined;
-  if (mode === 'facet') {
-    const host = processHostFor(coordinator, hostEnv, () => disk);
-    host.hostIncarnation = hostIncarnation;
-    return host;
-  }
-  const { ns, peers, calls, stubs } = createPeerNamespace(world, hostEnv, { colocated, peerWithoutFacets });
+  if (mode === 'facet') return Object.assign(processHostFor(coordinator, hostEnv, () => disk), { hostIncarnation });
+  const { ns, peers, calls, stubs } = createPeerNamespace(world, hostEnv, { colocated, peerWithoutFacets, hostBinding });
   const host = processHostFor(
     coordinator,
-    { NIMBUS_SESSION: ns, NIMBUS_PROCESS_HOST: 'peer' },
+    { [hostBinding]: ns, NIMBUS_PROCESS_HOST: 'peer' },
     () => disk,
   );
-  host.peers = peers;
-  host.acquireActivity = () => hostActivity(coordinator).acquire();
-  host.namesResolved = calls;
-  host.stubs = stubs;
-  host.hostIncarnation = hostIncarnation;
-  return host;
+  return Object.assign(host, {
+    peers,
+    acquireActivity: () => hostActivity(coordinator).acquire(),
+    namesResolved: calls,
+    stubs,
+    hostIncarnation,
+  });
 }
 
 /**
@@ -368,8 +382,13 @@ export function createProcessHost(mode, world, disk, {
  * `colocated: true` makes every peer report the COORDINATOR's isolate;
  * `peerWithoutFacets: true` gives each peer no `ctx.facets`. Each peer's storage records the alarm it arms
  * (`ctx.storage.alarmAt`). `onPeer(peer)` sees each peer as it is made.
+ * Each peer finds the namespace in its env as `hostBinding`.
+ *
+ * @param {ReturnType<typeof createFacetWorld>} world
+ * @param {object} hostEnv
+ * @param {{ colocated?: boolean, peerWithoutFacets?: boolean, onPeer?: (peer: object) => void, hostBinding?: string }} [options]
  */
-export function createPeerNamespace(world, hostEnv, { colocated = false, peerWithoutFacets = false, onPeer } = {}) {
+export function createPeerNamespace(world, hostEnv, { colocated = false, peerWithoutFacets = false, onPeer, hostBinding = 'NIMBUS_SESSION' } = {}) {
   const calls = [];
   const stubs = [];
   /** Each request a coordinator routed to a peer, and the ones it abandoned, by id. */
@@ -388,7 +407,7 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
       ctx.storage.setAlarm = async (at) => { ctx.storage.alarmAt = at; };
       peer = {
         ctx,
-        env: { ...hostEnv, NIMBUS_SESSION: ns },
+        env: { ...hostEnv, [hostBinding]: ns },
         // A peer is a DIFFERENT Durable Object, so it reports a different
         // isolate. Modelling that matters: `isolateToken()` is a module
         // singleton, so calling the real probe in-process would make every
