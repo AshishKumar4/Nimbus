@@ -43,6 +43,8 @@ import { delegationHolder } from './delegation-holder.js';
 import { readDirectoryPool } from './read-directory-pool.js';
 /** Listings one call may take before it gives the question to the authority. */
 const MAX_LISTINGS_PER_CALL = 64;
+/** Barriers one walk takes before the session answers the call: what is owed keeps growing while each lands. */
+const MAX_CATCH_UPS_PER_CALL = 3;
 /** Directory opens a run records for the next run in its facet (ResidentFilesystem.walked). */
 const WALKED_DIRECTORIES = 1024;
 /**
@@ -181,8 +183,25 @@ export function residentFilesystem(session, resident, delegation) {
         release: (bytes) => resident.release(bytes),
     };
     const delegated = (name) => { counts.delegated[name] = (counts.delegated[name] ?? 0) + 1; };
-    /** The barrier is owed: set by a change or by input, cleared only by a barrier that lands. */
-    let owed = false;
+    /**
+     * What the barrier is owed: one more for each change, input, or send of
+     * this process's (a grant given back with it); `caughtUp` is as much of it
+     * as a barrier that landed covered, which is what was owed when it began.
+     */
+    let owed = 0;
+    let caughtUp = 0;
+    const owes = () => owed > caughtUp;
+    /** The barrier, for what is owed now: true once it lands (a debt made while it ran is owed still). */
+    const catchUp = () => {
+        const at = owed;
+        counts.barriers++;
+        return store.barrier().then((ok) => {
+            if (!ok || !store.ready())
+                return false;
+            caughtUp = Math.max(caughtUp, at);
+            return true;
+        });
+    };
     if (delegation !== undefined) {
         holder = delegationHolder({
             session: delegation.session,
@@ -198,7 +217,7 @@ export function residentFilesystem(session, resident, delegation) {
             ...(delegation.grantInos === undefined ? {} : { grantInos: delegation.grantInos }),
             ...(delegation.journal === undefined ? {} : { journal: delegation.journal }),
             // What it sent changed the session: the store catches up before it answers next.
-            sent: () => { owed = true; directoryPool?.invalidate(); },
+            sent: () => { owed++; directoryPool?.invalidate(); },
         });
         if (delegation.readDirectories)
             directoryPool = readDirectoryPool({
@@ -418,18 +437,13 @@ export function residentFilesystem(session, resident, delegation) {
         // given back while the walk waited on the session drops what was decided
         // under it, and the store has it only once the barrier lands.
         const looked = new Set();
+        let caughtUps = 0;
         const attempt = (asked) => {
             if (!store.ready())
                 return DELEGATE;
-            if (owed) {
-                counts.barriers++;
-                return store.barrier().then((ok) => {
-                    if (!ok)
-                        return DELEGATE;
-                    owed = false;
-                    return attempt(asked);
-                });
-            }
+            // A debt that keeps coming while it catches up: the session walks it.
+            if (owes())
+                return ++caughtUps > MAX_CATCH_UPS_PER_CALL ? DELEGATE : catchUp().then((ok) => (ok ? attempt(asked) : DELEGATE));
             const walked = walkOnce(root, name, follow, crossed);
             if (walked === null || walked === DELEGATE || typeof walked === 'string')
                 return walked;
@@ -520,11 +534,11 @@ export function residentFilesystem(session, resident, delegation) {
      * Answer from the store when it can, else from the authority: the barrier
      * first when one is owed, then `local`, whose DELEGATE hands the call on.
      */
-    const answer = (name, local, remote) => {
+    const answer = (name, local, remote, caughtUps = 0) => {
         // What this process wrote through is the session's before the store
         // answers for it: sent first (and the barrier owed), so it reads its own writes.
         if (holder !== null && holder.throughPending())
-            return holder.send().then(() => answer(name, local, remote));
+            return holder.send().then(() => answer(name, local, remote, caughtUps));
         const settle = (value) => {
             if (value !== DELEGATE) {
                 counts.local++;
@@ -537,16 +551,19 @@ export function residentFilesystem(session, resident, delegation) {
             delegated(name);
             return remote();
         }
-        if (owed) {
-            counts.barriers++;
-            return store.barrier().then((ok) => {
-                // Still owed until a barrier lands: this call is the session's, and so is the next one's question.
-                if (!ok || !store.ready()) {
-                    delegated(name);
-                    return remote();
-                }
-                owed = false;
-                return after(local(), settle);
+        // The store answers only while nothing is owed (a barrier that lands
+        // covers what was owed when it began); one owed until a barrier lands,
+        // or owed again as each lands, leaves the call to the session.
+        if (owes()) {
+            if (caughtUps >= MAX_CATCH_UPS_PER_CALL) {
+                delegated(name);
+                return remote();
+            }
+            return catchUp().then((ok) => {
+                if (ok)
+                    return answer(name, local, remote, caughtUps + 1);
+                delegated(name);
+                return remote();
             });
         }
         return after(local(), settle);
@@ -592,10 +609,10 @@ export function residentFilesystem(session, resident, delegation) {
         directoryPool?.invalidate();
         delegated(name);
         try {
-            return after(call(), (value) => { owed = true; return value; });
+            return after(call(), (value) => { owed++; return value; });
         }
         catch (error) {
-            owed = true;
+            owed++;
             throw error;
         }
     };
@@ -620,8 +637,8 @@ export function residentFilesystem(session, resident, delegation) {
             : (...args) => { delegated(name); return call(...args); });
     }
     Reflect.set(fs, 'synchronous', authority.synchronous);
-    fs.inbound = () => { owed = true; directoryPool?.invalidate(); };
-    fs.cancelPendingDirectories = () => { owed = true; directoryPool?.cancelPending(); };
+    fs.inbound = () => { owed++; directoryPool?.invalidate(); };
+    fs.cancelPendingDirectories = () => { owed++; directoryPool?.cancelPending(); };
     fs.holding = () => holder?.pending() ?? false;
     fs.logHeld = () => holder?.logHeld();
     // What leaves the process is preceded by everything it logged.
@@ -753,7 +770,8 @@ export function residentFilesystem(session, resident, delegation) {
         return store.listTree(key)
             .then((whole) => (whole ? true : store.list(key)))
             .then((listed) => {
-            const children = listed ? store.children(key) : undefined;
+            // Owed while it listed (a grant given back with what it decided here): the session lists it.
+            const children = listed && !owes() ? store.children(key) : undefined;
             return children === undefined ? DELEGATE : children;
         });
     };
@@ -869,7 +887,7 @@ export function residentFilesystem(session, resident, delegation) {
                     if (there === undefined || there?.type === 'directory')
                         return DELEGATE;
                     delegated('open');
-                    return after(holder.openThrough(walk.key, typeof path === 'string' ? path : path.path, flags), (handle) => { owed = true; return heldOpen(handle); });
+                    return after(holder.openThrough(walk.key, typeof path === 'string' ? path : path.path, flags), (handle) => { owed++; return heldOpen(handle); });
                 });
             };
             return after(through(), (handle) => {
@@ -1147,7 +1165,7 @@ export function residentFilesystem(session, resident, delegation) {
             holder.changing([op.from, op.to]);
         else if (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir'))
             holder.changing([op.call.path]);
-        return holder.client.submit(op).then(() => { owed = true; }, (error) => { owed = true; throw error; });
+        return holder.client.submit(op).then(() => { owed++; }, (error) => { owed++; throw error; });
     };
     const pathOf = (path) => (typeof path === 'string' ? path : path.path);
     // Changes by name a held subtree holds are decided here; any other is the session's, through the client.
