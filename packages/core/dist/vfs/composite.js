@@ -1373,6 +1373,14 @@ export class CompositeVFS {
         held.push(ref);
         return ref;
     }
+    /** Whether this principal has a mount at a point accepted by `wants`. */
+    someMount(wants) {
+        for (const mount of this.table.mounts.values()) {
+            if (wants(mount.point) && this.backend(mount) !== null)
+                return true;
+        }
+        return false;
+    }
     /** The mounts this view's principal has now, root first, in mount order. */
     mounts() {
         const out = [];

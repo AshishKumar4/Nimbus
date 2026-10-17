@@ -731,7 +731,7 @@ function underKernelMount(path) {
 }
 /** Whether `view` shows a mount an embedder made: only then is a process's listing more than SQLite's. */
 function mountsBeyondSqlite(view) {
-    return view.mounts().some((mount) => isEmbedderMount(mount.point));
+    return view.someMount(isEmbedderMount);
 }
 class AwaitingProcessBridge {
     parts;
