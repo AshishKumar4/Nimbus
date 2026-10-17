@@ -493,6 +493,7 @@ async function runSteps(steps, met, grants) {
     const now = viewOf();
     const id = resolve({ opened });
     const named = [...now.names.values()].some((reference) => resolve(reference) === id);
+    const barriers = s.fs.stats().barriers;
     const reading = Promise.resolve().then(() => s.fs.read(opened.handle, 0, 1 << 12));
     reading.catch(() => {});
     await deliver();
@@ -502,22 +503,25 @@ async function runSteps(steps, met, grants) {
     const code = await errnoOf(async () => { got = await reading; });
     control.held = true;
     control.opened = Promise.withResolvers();
+    // A read that may wait takes the barrier the process owes first (it sent something since the last): it reads the session's file as it is now, and the view is the session's from then on.
+    const caught = s.fs.stats().barriers > barriers;
     if (named) {
       const file = now.fileOf(id);
       assert.equal(code, null, `${label}: an awaited read of a named file: ${code}`);
-      // A read that may wait takes the barrier the process owes first: the view's fold, or the file as the session has it now.
       const name = [...now.names].find(([, reference]) => resolve(reference) === id)?.[0];
-      const current = name !== undefined && ref.kernel.exists(`${DIR}/${name}`) ? dec.decode(ref.kernel.readFile(`${DIR}/${name}`)) : undefined;
-      if (file !== undefined && file.bytes !== null && dec.decode(got) !== current) assert.equal(dec.decode(got), dec.decode(file.bytes), `${label}: an awaited read of a named file`);
+      if (caught && name !== undefined) assert.equal(dec.decode(got), dec.decode(ref.kernel.readFile(`${DIR}/${name}`)), `${label}: an awaited read of a named file, caught up`);
+      else if (file !== undefined && file.bytes !== null) assert.equal(dec.decode(got), dec.decode(file.bytes), `${label}: an awaited read of a named file`);
+      if (caught) await catchUp();
       return;
     }
     const via = anchorOf(opened);
     if (via?.refHandle === undefined) {
       assert.ok(code === null || code === 'ESTALE', `${label}: an awaited read of a file no name leads to: ${code}`);
-      return;
+    } else {
+      assert.equal(code, null, `${label}: an awaited read through the file's anchor: ${code}`);
+      assert.equal(dec.decode(got), dec.decode(new Uint8Array(await direct.read(via.refHandle, 0, 1 << 12))), `${label}: an awaited read of a file no name leads to is the session's, through its anchor`);
     }
-    assert.equal(code, null, `${label}: an awaited read through the file's anchor: ${code}`);
-    assert.equal(dec.decode(got), dec.decode(new Uint8Array(await direct.read(via.refHandle, 0, 1 << 12))), `${label}: an awaited read of a file no name leads to is the session's, through its anchor`);
+    if (caught) await catchUp();
   };
 
   /** The view brought to the session's: what the process sent delivered, a barrier, every name read (the view holds what it read until a barrier reads it again). */
