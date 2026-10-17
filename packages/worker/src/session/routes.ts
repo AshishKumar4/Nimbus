@@ -243,8 +243,8 @@ const FanoutBenchBodySchema = z.object({
 /**
  * What a launch of this session can be waiting on, read where it waits: each
  * one-shot not yet running and its stage, the launches the pacer holds for a
- * turn, the alarm, its reasons and the dispatch running, and the ledger's
- * waits (_diag/session's `launch`).
+ * turn, the alarm, its reasons and the dispatch running, the ledger's
+ * waits, and the isolate's transient budget (_diag/session's `launch`).
  */
 async function launchDiagnosis(self: RoutesHost): Promise<Record<string, unknown>> {
   const ledger = loaderLedgerStats(self.ctx);
@@ -252,6 +252,8 @@ async function launchDiagnosis(self: RoutesHost): Promise<Record<string, unknown
     ...(self.facetManagerComposed?.manager.launchState() ?? { launches: [], pacer: null }),
     timers: await timers(self, self.ctx).state(),
     ledger: { inFlight: ledger.inFlightWorkers, waiters: ledger.waiters, pauseMs: ledger.pauseMs },
+    // The isolate's transient budget a launch's preparation is admitted on: shared with the sessions beside this one.
+    budget: readSupervisorAllocationBudget(),
   };
 }
 

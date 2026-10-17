@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: a program whose launch waits 10 seconds at one stage (its
+  preparation, its admission for a worker, or its load) logs one line to
+  Workers Logs: `[facet-manager] launch stalled:` with its pid, command,
+  stage, the wait, and the state of the worker ledger, the launch pacer
+  and the isolate's transient budget. A command that hangs before it runs
+  leaves this as its evidence. The line is logged once per launch.
+
 ## 2026-10-17: platform 0.12.0, core 0.23.0, fabric 0.18.0, worker 0.21.0, sdk 0.17.0, cli 0.2.8, loom 0.3.1, react 0.3.3, create-nimbus-app 0.2.4, runtime-bash 5.2.37-7, runtime-cpython 3.13.14-3, runtime-git 2.53.0-1 (config 0.3.1 unchanged)
 
 The 2026-10-14 and 2026-10-15 versions reached production but were never published to npm; these carry their changes too. The runtimes need core 0.23.0: it is the first core that registers bash-runner@6, cpython-runner@3 and git-runner@2.
