@@ -534,11 +534,11 @@ export function residentFilesystem(session, resident, delegation) {
      * Answer from the store when it can, else from the authority: the barrier
      * first when one is owed, then `local`, whose DELEGATE hands the call on.
      */
-    const answer = (name, local, remote) => {
+    const answer = (name, local, remote, caughtUps = 0) => {
         // What this process wrote through is the session's before the store
         // answers for it: sent first (and the barrier owed), so it reads its own writes.
         if (holder !== null && holder.throughPending())
-            return holder.send().then(() => answer(name, local, remote));
+            return holder.send().then(() => answer(name, local, remote, caughtUps));
         const settle = (value) => {
             if (value !== DELEGATE) {
                 counts.local++;
@@ -551,11 +551,17 @@ export function residentFilesystem(session, resident, delegation) {
             delegated(name);
             return remote();
         }
-        // Still owed until a barrier lands: this call is the session's, and so is the next one's question.
+        // The store answers only while nothing is owed (a barrier that lands
+        // covers what was owed when it began); one owed until a barrier lands,
+        // or owed again as each lands, leaves the call to the session.
         if (owes()) {
+            if (caughtUps >= MAX_CATCH_UPS_PER_CALL) {
+                delegated(name);
+                return remote();
+            }
             return catchUp().then((ok) => {
                 if (ok)
-                    return after(local(), settle);
+                    return answer(name, local, remote, caughtUps + 1);
                 delegated(name);
                 return remote();
             });
@@ -764,7 +770,8 @@ export function residentFilesystem(session, resident, delegation) {
         return store.listTree(key)
             .then((whole) => (whole ? true : store.list(key)))
             .then((listed) => {
-            const children = listed ? store.children(key) : undefined;
+            // Owed while it listed (a grant given back with what it decided here): the session lists it.
+            const children = listed && !owes() ? store.children(key) : undefined;
             return children === undefined ? DELEGATE : children;
         });
     };
