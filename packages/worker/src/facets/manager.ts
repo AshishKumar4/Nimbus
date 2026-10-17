@@ -6213,11 +6213,9 @@ export class FacetManager {
     const learned = await this._learnedReads(vfsState, entry.cred);
     trace(`${learned.length} learned; listing`);
     let pages = 0;
-    let names = 0;
     const plan = await planFacetData({
       list: async (after) => {
         const page = await vfs.list(after, FS_LIST_PAGE_LIMIT);
-        names += page.entries.length;
         trace(`page ${++pages}: ${page.entries.length} entries`);
         return { entries: page.entries, next: page.next };
       },
@@ -6244,7 +6242,7 @@ export class FacetManager {
     // itself (vfs/resident residentCellCost): the planned bytes on
     // overflow pages (1% over), a head and chunk rows per file, a namespace
     // row per name, and slack for the last write's page.
-    const rows = plan.paths.length * 2 + Math.ceil(plan.bytes / RESIDENT_CHUNK_BYTES) + names;
+    const rows = plan.paths.length * 2 + Math.ceil(plan.bytes / RESIDENT_CHUNK_BYTES) + plan.names;
     // And the module map, which the store adopts at boot: the process's code,
     // costed when the map was built (its cells are released once serialized).
     const moduleBytes = vfsState.moduleStorageBytes ?? moduleMapStorageBytes(vfsState.bundle, vfsState.codeOnly);

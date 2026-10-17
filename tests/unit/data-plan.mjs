@@ -395,8 +395,15 @@ assert.equal(noTs.rules.typescript.files, 0);
 {
   const tree = {
     'home/user/app/package.json': '{"name":"app"}',
-    'home/user/app/src/index.css': '@import "tailwindcss";\n@import "./theme.css";\n@source inline("underline");',
-    'home/user/app/src/theme.css': '@source "../../shared";\n@source "../../kit/**/*.tsx";\n@source not "../../ignored";\n@source "./local";',
+    'home/user/app/src/index.css': '@import "tailwindcss";\n@source "./local";\n@source inline("underline");\n@import "../../theme/theme.css";\n@import url("../../unused/unused.css");',
+    'home/user/theme/theme.css': '@source "../shared";\n@source "../{kit,app}/**/*.tsx";\n@source not "../ignored";\n@source "/home/user/app/../linked/**";\n@media screen { @import "./deeper.css"; }',
+    'home/user/theme/deeper.css': '@source "../deep/*.tsx";',
+    'home/user/unused/unused.css': '@source "../never";',
+    'home/user/deep/Deep.tsx': 'd',
+    'home/user/never/Never.tsx': 'n',
+    'home/user/real-linked/L.tsx': 'l',
+    'home/user/linked': { kind: 'symlink', size: 0, target: '/home/user/real-linked' },
+    'home/user/shared/.next/cache.js': 'c',
     'home/user/app/src/local/a.tsx': 'x',
     'home/user/shared/Card.tsx': '<div class="bg-teal-700" />',
     'home/user/shared/node_modules/dep/index.js': 'x',
@@ -406,22 +413,29 @@ assert.equal(noTs.rules.typescript.files, 0);
     'home/user/app/node_modules/@tailwindcss/oxide/index.js': 'module.exports = {}',
   };
   const ns = namespace(tree);
+  let listed = 0;
+  for (let after = null; ;) { const page = await ns.list(after); listed += page.entries.length; if (page.next === null) break; after = page.next; }
   const reads = [];
   const readText = ns.readText;
   ns.readText = async (p) => { reads.push(p); return readText(p); };
   const oxide = ['home/user/app/node_modules/@tailwindcss/oxide/index.js'];
   const withOxide = await planFacetData(ns, { cwd: '/home/user/app', home: '/home/user', closure: oxide, refs: [] });
   const held = new Set(withOxide.paths);
-  assert.ok(held.has('home/user/shared/Card.tsx'), 'a source outside the working tree is held');
-  assert.ok(held.has('home/user/kit/ui/Button.tsx'), 'a glob holds its directory prefix');
+  assert.ok(held.has('home/user/shared/Card.tsx'), 'a source outside the working tree is held, from a sheet outside it that an import after an @source names');
+  assert.ok(held.has('home/user/kit/ui/Button.tsx'), 'each brace alternative holds its directory prefix');
+  assert.ok(held.has('home/user/deep/Deep.tsx'), 'an import nested in a rule is followed, as Tailwind inlines it');
+  assert.ok(held.has('home/user/real-linked/L.tsx'), 'an absolute source with dot segments, through a link, holds its target');
+  assert.ok(!held.has('home/user/never/Never.tsx'), 'an @import url() is not followed');
   assert.ok(!held.has('home/user/ignored/Thing.tsx'), '`@source not` holds nothing');
   assert.ok(!held.has('home/user/shared/node_modules/dep/index.js'), 'a source\'s dependencies are not held');
-  assert.deepEqual(withOxide.sourceRoots, ['/home/user/shared', '/home/user/kit'], 'the plan names the roots outside the tree, for the barriers to push');
-  assert.equal(withOxide.rules['stylesheet-source'].files, 2);
+  assert.ok(!held.has('home/user/shared/.next/cache.js'), 'nor its caches: the project rule\'s exclusions');
+  assert.deepEqual(withOxide.sourceRoots, ['/home/user/shared', '/home/user/kit', '/home/user/real-linked', '/home/user/deep'], 'the plan names the roots outside the tree, for the barriers to push');
+  assert.equal(withOxide.rules['stylesheet-source'].files, 4);
+  assert.equal(withOxide.names, listed, 'the namespace is counted once, however many walks');
   const without = await planFacetData(ns, { cwd: '/home/user/app', home: '/home/user', closure: [], refs: [] });
   assert.ok(!new Set(without.paths).has('home/user/shared/Card.tsx'), 'without oxide, the source is not held');
   assert.deepEqual(without.sourceRoots, []);
-  assert.deepEqual(reads.filter((p) => p.endsWith('.css')).sort(), ['home/user/app/src/index.css', 'home/user/app/src/theme.css'], 'only an oxide process reads the stylesheets, each once');
+  assert.deepEqual(reads.filter((p) => p.endsWith('.css')).sort(), ['home/user/app/src/index.css', 'home/user/theme/deeper.css', 'home/user/theme/theme.css'], 'only an oxide process reads the stylesheets, each once');
 }
 
 console.log('data-plan: ok');

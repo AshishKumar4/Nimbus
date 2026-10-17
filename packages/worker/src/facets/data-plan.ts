@@ -33,8 +33,10 @@
  *   stylesheet-source  for a process that carries Tailwind's oxide scanner,
  *                  whose reads cannot wait: the files under each `@source`
  *                  outside the working tree that the project's stylesheets
- *                  name, through their relative `@import`s (sheetSources),
- *                  a glob's directory prefix taken whole; the plan names
+ *                  name, through the `@import`s Tailwind inlines
+ *                  (sheetSources, sheetStringImports), each brace
+ *                  alternative's directory prefix taken whole, through its
+ *                  links, with the project rule's exclusions; the plan names
  *                  these roots, for the facet's barriers to push as they
  *                  push the working tree
  *
@@ -48,7 +50,8 @@ import { resolveFile, type RequireFs } from '@nimbus-sh/core/runtime/require-res
 import { resolveDeferredImport } from '@nimbus-sh/core/runtime/require-resolver.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
-import { parseSheet, sheetSources } from '@nimbus-sh/core/runtime/css-syntax.js';
+import { parseSheet, sheetSources, sheetStringImports } from '@nimbus-sh/core/runtime/css-syntax.js';
+import braces from 'braces';
 
 export interface DataPlanEntry { path: string; kind: string; size: number; linkTarget?: string }
 
@@ -93,12 +96,14 @@ export interface DataPlan {
   rules: Record<DataPlanRule, { files: number; bytes: number }>;
   /** The stylesheet sources outside the working tree it planned (stylesheet-source), as absolute paths. */
   sourceRoots: string[];
+  /** The names the namespace listed, once however many walks the plan took: what a store holding it holds a row for. */
+  names: number;
 }
 
 /** The package whose scanner reads a stylesheet's sources synchronously (Tailwind v4). */
 const OXIDE_PACKAGE = 'node_modules/@tailwindcss/oxide';
-/** A glob's first special character: its directory prefix ends before the name holding one. */
-const GLOB_SPECIAL = /[*?[\]{}!]/;
+/** A glob character, once braces are expanded: a pattern's directory prefix ends before the name holding one. */
+const GLOB_SPECIAL = /[*?[\]{}]/;
 
 /** Package data this size or larger is a bundle or a binary, not configuration. */
 export const PACKAGE_DATA_MAX_BYTES = 256 * 1024;
@@ -409,8 +414,10 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     && (entry.size < PACKAGE_DATA_MAX_BYTES || exact.get(entry.path) === true);
 
   let after: string | null = null;
+  let names = 0;
   for (;;) {
     const page = await source.list(after);
+    names += page.entries.length;
     if (input.spend) await input.spend(page.entries.length * 64);
     for (const raw of page.entries) {
       const k = key(raw.path);
@@ -607,28 +614,31 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     }
   }
 
-  // The sources the project's stylesheets name, through their relative
-  // `@import`s, each sheet read once.
+  // The sources the project's stylesheets name, through the `@import`s
+  // Tailwind inlines (a path's, not a package's), each sheet read once.
   const sourceRoots: string[] = [];
   const sheets = new Set(projectSheets);
   for (const sheet of sheets) {
     const text = await source.readText(sheet);
     if (text === null) continue;
     const parsed = parseSheet(text);
-    const relative = (path: string) => path.startsWith('/') ? key(path) : joinKey(parentOf(sheet), path);
-    for (const { path } of parsed.imports) {
+    const resolve = (path: string) => joinKey(path.startsWith('/') ? '' : parentOf(sheet), path);
+    for (const path of sheetStringImports(parsed)) {
       if (!/^\.{0,2}\//.test(path)) continue;
-      const imported = relative(path);
+      const imported = resolve(path);
       if ((await source.stat(imported))?.kind === 'file') sheets.add(imported);
     }
     for (const { path, negated } of sheetSources(parsed)) {
       if (negated) continue;
-      const names = path.split('/');
-      const glob = names.findIndex((name) => GLOB_SPECIAL.test(name));
-      const root = relative(glob < 0 ? path : names.slice(0, glob).join('/'));
-      if (root === cwd || root.startsWith(cwdPrefix) || sourceRoots.includes('/' + root)) continue;
-      sourceRoots.push('/' + root);
-      linkedDirs.push({ target: root, rule: 'stylesheet-source' });
+      for (const alternative of braces.expand(path)) {
+        const names = alternative.split('/');
+        const glob = names.findIndex((name) => GLOB_SPECIAL.test(name));
+        const named = resolve(glob < 0 ? alternative : names.slice(0, glob).join('/') || (alternative.startsWith('/') ? '/' : '.'));
+        const root = (await throughLinks(links, named)) ?? named;
+        if (root === cwd || root.startsWith(cwdPrefix) || sourceRoots.includes('/' + root)) continue;
+        sourceRoots.push('/' + root);
+        linkedDirs.push({ target: root, rule: 'stylesheet-source' });
+      }
     }
   }
 
@@ -642,10 +652,9 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
         if (raw.kind !== 'file') continue;
         const k = key(raw.path);
         for (const { target, rule } of linkedDirs) {
-          if (k === target || k.startsWith(target + '/')) {
-            if (!k.slice(target.length).split('/').some((x) => x === 'node_modules' || x === '.git')) {
-              take({ path: k, kind: 'file', size: raw.size }, rule);
-            }
+          if (target === '' || k === target || k.startsWith(target + '/')) {
+            // What the rule that took it would have left out, had it been in place.
+            if (!excludedBelow(target, k)) take({ path: k, kind: 'file', size: raw.size }, rule);
             break;
           }
         }
@@ -655,5 +664,5 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     }
   }
 
-  return { paths, bytes, rules, sourceRoots };
+  return { paths, bytes, rules, sourceRoots, names };
 }
