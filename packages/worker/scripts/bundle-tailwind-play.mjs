@@ -12,10 +12,8 @@
  * working JIT compiler in the browser. That violates the 100% edge
  * contract: every preview load fetches a third-party CDN.
  *
- * This script downloads the Play CDN bundle ONCE at sourcing time
- * (analogous to npm install fetching tarballs from registry) and
- * writes it to public/_assets/tailwind-play.js, served lazily via the
- * ASSETS binding. The supervisor then serves it from
+ * The bundle is committed at public/_assets/tailwind-play.js, served
+ * lazily via the ASSETS binding. The supervisor then serves it from
  *
  *   /preview/__nimbus_assets/tailwind-play.js
  *
@@ -30,12 +28,15 @@
  * src/tailwind-play.generated.ts is a thin re-export of the async
  * getter + version + path constants.
  *
- * Version pinning
- * ───────────────
- * We pin to a specific Tailwind Play CDN version so deploys are
- * reproducible — a freshly-deployed worker should serve the same
- * bytes as one deployed last week, regardless of upstream CDN
- * updates. Bump TAILWIND_PLAY_VERSION when intentional.
+ * Sourcing and regeneration
+ * ─────────────────────────
+ * The version and the bundle's sha256 are pinned here. A plain run
+ * regenerates from the committed bundle, offline: it checks those bytes
+ * against the pin and writes the loader. `--fetch` is the one sourcing
+ * path: it downloads the pinned version from the CDN, refuses bytes that
+ * are not the pinned digest, and stages them. To move to a new version,
+ * set TAILWIND_PLAY_VERSION, run `--fetch`, review what it got, and pin
+ * the digest it names.
  *
  * The Play CDN is a SEPARATE build from the `tailwindcss` npm
  * package — `packages/@tailwindcss-cdn/` in the upstream repo. It
@@ -62,49 +63,44 @@ const OUT = path.join(ROOT, 'src', 'tailwind-play.generated.ts');
 const ASSETS_DIR = path.join(ROOT, 'public', '_assets');
 const ASSET_PATH = '/_assets/tailwind-play.js';
 
-// Pin to a specific version so deploys are reproducible. Bump
-// intentionally when we want a new Tailwind release; the generated
-// file is committed so reproducibility doesn't depend on the CDN
-// being reachable at deploy time.
 const TAILWIND_PLAY_VERSION = '3.4.17';
+const TAILWIND_PLAY_SHA256 = '176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15';
 const SOURCE_URL = `https://cdn.tailwindcss.com/${TAILWIND_PLAY_VERSION}`;
+const ASSET_FILE = path.join(ASSETS_DIR, 'tailwind-play.js');
 
-// Sanity-check the bundle isn't HTML / 404 / unexpected content. The
-// real bundle is a minified IIFE starting with `(()=>{`. If we get
-// anything else, fail loud rather than silently embedding garbage.
-const EXPECTED_PREFIX = '(()=>{';
-const MIN_SIZE = 200_000;
-const MAX_SIZE = 2_000_000;
+/** The pinned bundle's bytes: fetched from the CDN when `fetching`, else the committed asset. Refuses any other bytes. */
+async function pinnedBundle(fetching) {
+  let code;
+  if (fetching) {
+    console.log(`[bundle-tailwind-play] fetching ${SOURCE_URL} ...`);
+    const resp = await fetch(SOURCE_URL);
+    if (!resp.ok) throw new Error(`[bundle-tailwind-play] download failed: ${resp.status} ${resp.statusText}`);
+    code = await resp.text();
+  } else {
+    code = await fs.readFile(ASSET_FILE, 'utf8').catch(() => {
+      throw new Error(`[bundle-tailwind-play] no committed bundle at ${path.relative(ROOT, ASSET_FILE)}: source it with --fetch`);
+    });
+  }
+  const sha256 = createHash('sha256').update(code).digest('hex');
+  if (sha256 !== TAILWIND_PLAY_SHA256) {
+    throw new Error(
+      `[bundle-tailwind-play] the ${fetching ? `bundle ${SOURCE_URL} served` : 'committed bundle'} has sha256 ${sha256}, ` +
+        `not the pinned ${TAILWIND_PLAY_SHA256}. ${fetching ? 'Review it, and pin it if it is the version you mean.' : 'Restore it, or source it with --fetch.'}`,
+    );
+  }
+  return { code, sha256 };
+}
 
 async function main() {
-  console.log(`[bundle-tailwind-play] fetching ${SOURCE_URL} ...`);
-  const resp = await fetch(SOURCE_URL);
-  if (!resp.ok) {
-    throw new Error(
-      `[bundle-tailwind-play] download failed: ${resp.status} ${resp.statusText}`,
-    );
-  }
-  const code = await resp.text();
-  if (code.length < MIN_SIZE || code.length > MAX_SIZE) {
-    throw new Error(
-      `[bundle-tailwind-play] downloaded bundle has unexpected size ${code.length} ` +
-        `(expected ${MIN_SIZE}..${MAX_SIZE}). Refusing to embed.`,
-    );
-  }
-  if (!code.startsWith(EXPECTED_PREFIX)) {
-    throw new Error(
-      `[bundle-tailwind-play] downloaded bundle does not start with ${JSON.stringify(EXPECTED_PREFIX)}. ` +
-        `First 80 chars: ${JSON.stringify(code.slice(0, 80))}. Refusing to embed.`,
-    );
-  }
-
-  const sha256 = createHash('sha256').update(code).digest('hex');
+  const fetching = process.argv.includes('--fetch');
+  const { code, sha256 } = await pinnedBundle(fetching);
   console.log(
-    `[bundle-tailwind-play] version=${TAILWIND_PLAY_VERSION} size=${(code.length / 1024).toFixed(1)} KiB sha256=${sha256.slice(0, 16)}…`,
+    `[bundle-tailwind-play] version=${TAILWIND_PLAY_VERSION} size=${(code.length / 1024).toFixed(1)} KiB sha256=${sha256.slice(0, 16)}… (${fetching ? 'fetched' : 'committed'})`,
   );
-
-  await fs.mkdir(ASSETS_DIR, { recursive: true });
-  await fs.writeFile(path.join(ASSETS_DIR, 'tailwind-play.js'), code, 'utf8');
+  if (fetching) {
+    await fs.mkdir(ASSETS_DIR, { recursive: true });
+    await fs.writeFile(ASSET_FILE, code, 'utf8');
+  }
 
   const header = `/**
  * tailwind-play.generated.ts — AUTO-GENERATED by scripts/bundle-tailwind-play.mjs
@@ -119,7 +115,7 @@ async function main() {
  * and is fetched lazily via the ASSETS binding rather than inlined into the
  * supervisor bundle. Use {@link getTailwindPlayBundle}.
  *
- * Source: ${SOURCE_URL} (downloaded at build time).
+ * Source: ${SOURCE_URL} (sourced by bundle-tailwind-play.mjs --fetch).
  * SHA-256: ${sha256}
  *
  * If you change this file by hand it WILL be overwritten by the next
