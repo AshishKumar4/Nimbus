@@ -61,6 +61,8 @@ export declare function evalScriptSource(code: string, print: boolean): string;
 /**
  * The entry code for eval code as Node's eval has it (evalScriptSource's,
  * or stdin's): with `print`, a body that returns its completion value.
+ * A script with a `return` at its top, which the entry would run as its
+ * function's (illegalReturn).
  */
 export declare function evalProgram(code: string, print: boolean, mode: NodeEvalMode): NodeEvalProgram;
 /** What Node's eval runs for `-e` code or stdin, by `--input-type` and its TypeScript (execution.js). */
