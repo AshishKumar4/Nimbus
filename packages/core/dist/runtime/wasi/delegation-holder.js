@@ -803,8 +803,11 @@ export function delegationHolder(options) {
             // A grant a confined principal may not make: the session's to judge.
             if ('mode' in attrs && confinedModeRefusal(current.mode, attrs.mode) !== null)
                 return false;
-            if ('mode' in attrs)
+            if ('mode' in attrs) {
                 throughAt([key]);
+                if (provisionalActive && prov.touches(key))
+                    return false;
+            }
             const next = changedBy(current, attrs);
             decided.set(key, next);
             const local = prov.inode(current.dev, current.ino)?.cell;
