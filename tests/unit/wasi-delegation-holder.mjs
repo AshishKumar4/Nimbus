@@ -405,7 +405,8 @@ async function until(ready, what) {
 }
 
 // ── A caller that cannot wait: its provisional decisions (provisional.ts) ──
-// No grant comes here: what the process decides synchronously outside a held
+// The session grants no subtree here (it refuses each asked for, as one
+// another holds): what the process decides synchronously outside a held
 // subtree is answered from its view, logged as it made it, and the session's
 // to refuse. `control`: the session's waves wait while it holds them, and are
 // refused or accepted in turn as `verdicts` says (true: refused).
@@ -416,7 +417,7 @@ function provisionalSession(options = {}) {
   control.open = () => { control.held = false; opened.resolve(); };
   const s = session({
     ...options,
-    acquired: new Promise(() => { control.acquires++; }),
+    acquired: { then: (_resolve, reject) => { control.acquires++; reject(Object.assign(new Error('EBUSY: another holds it'), { code: 'EBUSY' })); } },
     gate: { then: (resolve, reject) => { control.entered++; return (control.held ? opened.promise : Promise.resolve()).then(resolve, reject); } },
     refuse: () => control.verdicts.shift() ?? false,
   });
