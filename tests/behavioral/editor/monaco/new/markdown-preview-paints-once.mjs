@@ -4,8 +4,10 @@
 // renderMarkdown: marked, highlight.js, DOMPurify) one time.
 //
 // Counted in a real Chrome at the island module the shell loads: its request
-// is answered with a module that re-exports the real one and counts each
-// renderMarkdown call, the rest as shipped.
+// is answered with a module that re-exports the real one, counts each
+// renderMarkdown call, tracks the calls still running, and marks each result
+// with its call's number, the rest as shipped. An operation is done when the
+// preview shows the newest call's result and no call is running.
 // Red before: activating the Markdown tab painted it, and the caller that
 // activated it painted it again, so every open and reload rendered twice.
 
@@ -36,32 +38,40 @@ try {
         body: `import * as real from '/_assets/agent-chat/agent-chat.js?probe-real';
 export * from '/_assets/agent-chat/agent-chat.js?probe-real';
 window.__probeRenders = 0;
-export function renderMarkdown(markdown) { window.__probeRenders++; return real.renderMarkdown(markdown); }
+window.__probeRunning = 0;
+export async function renderMarkdown(markdown) {
+  const call = ++window.__probeRenders;
+  window.__probeRunning++;
+  try { return (await real.renderMarkdown(markdown)) + '<i hidden data-probe-render="' + call + '"></i>'; }
+  finally { window.__probeRunning--; }
+}
 `,
       });
     }
     return request.continue();
   });
   await page.goto(`${BASE}/s/${sid}/`, { waitUntil: 'domcontentloaded', timeout: 90_000 });
-  // The welcome file's preview first, then quiet.
-  await page.waitForFunction(() => /Welcome to Nimbus/.test(document.getElementById('markdown-preview-body')?.innerText || ''), { timeout: 90_000 });
-  await new Promise((resolve) => setTimeout(resolve, 1500));
-
-  const settledCount = async (heading) => {
-    await page.waitForFunction((text) => document.querySelector('#markdown-preview-body h1')?.textContent === text, { timeout: 60_000 }, heading);
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    return page.evaluate(() => window.__probeRenders);
+  /** Once the preview shows heading `heading` from a call after `after`, and no call runs: the calls since `after`. */
+  const callsUntilShown = async (heading, after) => {
+    await page.waitForFunction((text, since) => {
+      const body = document.getElementById('markdown-preview-body');
+      const shown = Number(body?.querySelector('[data-probe-render]')?.dataset.probeRender ?? 0);
+      return body?.querySelector('h1')?.textContent === text && shown > since && shown === window.__probeRenders && window.__probeRunning === 0;
+    }, { timeout: 60_000, polling: 50 }, heading, after);
+    return (await page.evaluate(() => window.__probeRenders)) - after;
   };
+  // The welcome file's preview first.
+  await page.waitForFunction(() => /Welcome to Nimbus/.test(document.getElementById('markdown-preview-body')?.innerText || '')
+    && window.__probeRunning === 0, { timeout: 90_000, polling: 50 });
 
-  await page.evaluate(() => { window.__probeRenders = 0; });
+  const beforeOpen = await page.evaluate(() => window.__probeRenders);
   await page.locator(`.tree-node[data-path="${FILE}"]`).click();
-  const opened = await settledCount(MARK);
+  const opened = await callsUntilShown(MARK, beforeOpen);
   a.check('opening a Markdown file renders it once', opened === 1, `renders=${opened}`);
 
-  await page.evaluate(() => { window.__probeRenders = 0; });
+  const beforeReload = await page.evaluate(() => window.__probeRenders);
   await page.click('#btnReloadPreview');
-  await new Promise((resolve) => setTimeout(resolve, 300));
-  const reloaded = await settledCount(MARK);
+  const reloaded = await callsUntilShown(MARK, beforeReload);
   a.check("the preview's Reload renders it once", reloaded === 1, `renders=${reloaded}`);
   const rendered = await page.evaluate(() => ({
     code: document.querySelectorAll('#markdown-preview-body code').length,

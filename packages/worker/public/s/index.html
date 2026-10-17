@@ -1764,7 +1764,6 @@
               if (n.type === 'directory' && n.loaded) wasLoaded.add(n.path);
             }
             nodes.clear();
-            loaded = false;
             try { await ensureLoaded(); } catch {}
             // Re-load previously-loaded subdirs that are still expanded.
             for (const path of wasLoaded) {
