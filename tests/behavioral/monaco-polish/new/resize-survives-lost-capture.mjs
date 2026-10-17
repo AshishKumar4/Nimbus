@@ -30,6 +30,25 @@ try {
   await page.mouse.move(handle.x + 240, handle.y, { steps: 5 });
   const released = await width();
   a.check('and ends when the pointer is released', Math.abs(released - after) <= 1, `${after} -> ${released}`);
+
+  // Its capture lost, released over the preview's frame, where this page hears nothing:
+  // moving back without a press resizes nothing, and the next press starts a drag.
+  const frame = await (await page.waitForSelector('#previewPanel', { visible: true, timeout: 30_000 })).boundingBox();
+  const again = await grabHandle(page, '#treeResizeHandle');
+  await page.evaluate(() => {
+    const element = document.getElementById('treeResizeHandle');
+    for (const id of [1, 0]) if (element.hasPointerCapture(id)) element.releasePointerCapture(id);
+  });
+  await page.mouse.move(frame.x + frame.width / 2, frame.y + frame.height / 2, { steps: 10 });
+  await again.release();
+  const dropped = await width();
+  await page.mouse.move(again.x + 30, again.y, { steps: 5 });
+  a.check('a release the page did not hear ends the drag at the next move', Math.abs(await width() - dropped) <= 1, `${dropped} -> ${await width()}`);
+  const next = await grabHandle(page, '#treeResizeHandle');
+  await next.move(-60, 0);
+  const moved = await readUntil(width, (now) => now < dropped - 30);
+  await next.release();
+  a.check('and the next press starts a drag', moved < dropped - 30, `${dropped} -> ${moved}`);
   a.check('no page errors', pageErrors.length === 0, JSON.stringify(pageErrors));
 } finally {
   await browser.close();
