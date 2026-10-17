@@ -26,13 +26,19 @@ import { opSender, supervisorDouble } from './supervisor-double.mjs';
  * which a one-shot never takes.
  *
  * @param {string} name
- * @param {{ rewrite?: (config: any) => any, get?: (...args: any[]) => any, onImported?: (config: object) => void, onWasmEvaluate?: (name: string, compiled: WebAssembly.Module) => void }} [options]
+ * @param {{
+ *   rewrite?: (config: import('../../../packages/platform/src/worker-code.js').WorkerCode) => import('../../../packages/platform/src/worker-code.js').WorkerCode,
+ *   get?: import('../../../packages/fabric/src/vendor/types.js').WorkerLoader['get'],
+ *   onImported?: (config: import('../../../packages/platform/src/worker-code.js').WorkerCode) => void,
+ *   onWasmEvaluate?: (name: string, compiled: WebAssembly.Module) => void
+ * }} [options]
  */
 export function runnerLoader(name, { rewrite = (config) => config, get, onImported = () => {}, onWasmEvaluate } = {}) {
   const dir = mkdtempSync(join(tmpdir(), `nimbus-${name}-`));
   process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
   let loads = 0;
   return {
+    /** @param {import('../../../packages/platform/src/worker-code.js').WorkerCode} config */
     load(config) {
       config = rewrite(config);
       const file = writeModuleSet(join(dir, `runner-${loads++}`), config.modules, 'runner.js', undefined, { onWasmEvaluate });

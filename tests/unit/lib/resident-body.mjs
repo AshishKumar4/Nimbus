@@ -233,7 +233,15 @@ export function facetSql(db = new Database(':memory:')) {
  * the fabric does: `new NimbusProcess(ctx, env).startProcess({ vfsCursor })`.
  * `env` is the facet's bindings (SUPERVISOR); `processEnv` the program's own,
  * and `argv` its command line (node's flags first, as runFresh passes it).
- * @param {{ program: string, env: any, processEnv?: any, sql?: any, cwd?: string, bundle?: any, manifest?: any, metadata?: any, cursor: any, authority?: any, dataPlan?: any, startArgs?: any, argv?: string[], node?: any, wasmImports?: object[], wasmModules?: object, onImported?: (mod: object) => void, onWasmEvaluate?: (name: string, compiled: WebAssembly.Module) => void }} options
+ * @param {{
+ *   program: string, env: any, processEnv?: any, sql?: any, cwd?: string, bundle?: any,
+ *   manifest?: any, metadata?: any, cursor: any, authority?: any, dataPlan?: any,
+ *   startArgs?: any, argv?: string[], node?: any,
+ *   wasmImports?: readonly import('../../../packages/worker/src/facets/manager.js').FacetWasmImport[],
+ *   wasmModules?: Record<string, import('../../../packages/platform/src/worker-code.js').WasmModule>,
+ *   onImported?: () => void,
+ *   onWasmEvaluate?: (name: string, compiled: WebAssembly.Module) => void
+ * }} options
  */
 export async function launchResident({
   program,
@@ -274,7 +282,7 @@ export async function launchResident({
   // The generated worker is imported from here: removed when the test process ends, however it ends.
   testProcess.on('exit', () => rmSync(dir, { recursive: true, force: true }));
   const mod = await import(pathToFileURL(writeModuleSet(dir, { ...generatedModuleSet(generated, 'worker.mjs'), ...wasmModules }, 'worker.mjs', undefined, { onWasmEvaluate })).href);
-  onImported(mod);
+  onImported();
   const ctx = { storage: { sql }, waitUntil() {}, id: { toString: () => 'resident-body-test' } };
   const proc = new mod.NimbusProcess(ctx, env);
   // The plan a resident launch is handed: data-plan.ts over the authority,

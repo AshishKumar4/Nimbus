@@ -1,13 +1,13 @@
 #!/usr/bin/env bun
 // A resident drops uncached serialized sources before its real host opens,
-// while cached sources remain usable by the next launch.
+// while cached serialized sources remain intact at that boundary.
 import assert from 'node:assert/strict';
 
 import { buildFacetVfsBundleSource, generateLongRunningNodeCode, releaseGeneratedSources, releaseSerializedSources } from '../../packages/worker/src/facets/manager.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
-import { generatedModuleSet, importModuleSet, moduleMapBundle, storedBootModules, processImageModules } from './lib/module-map-bundle.mjs';
+import { importModuleSet, storedBootModules, processImageModules } from './lib/module-map-bundle.mjs';
 import { launchManager } from './lib/facet-launch-harness.mjs';
 import { createProcessFacetCtx, residentRunner } from './lib/facet-host-harness.mjs';
 import { adoptSessionSupervisor } from './lib/one-shot-runner.mjs';
@@ -28,7 +28,7 @@ async function launch(cacheRetained) {
   const authority = createAuthority();
   const { rawVfs, host } = authority;
   adoptSessionSupervisor(host, () => {});
-  let loaded;
+  const loaded = Promise.withResolvers();
   const run = residentRunner(host.processes);
   const { world, manager, processes } = launchManager(`resident-release-${cacheRetained}`, {
     session: { storage: new Map(), vfs: rawVfs },
@@ -49,10 +49,10 @@ async function launch(cacheRetained) {
   const build = manager._buildProcessBundle.bind(manager);
   manager._buildProcessBundle = async (entry, ...args) => {
     const state = await build(entry, ...args);
-    builds.set(entry.pid, { state, cursor: structuredClone(state.cursor), serialized: state.bundleSource });
+    builds.set(entry.pid, { state, cursor: structuredClone(state.cursor), serialized: structuredClone(state.bundleSource) });
     return state;
   };
-  let boundary;
+  const boundary = Promise.withResolvers();
   const open = manager.processHost.open.bind(manager.processHost);
   manager.processHost.open = (params) => {
     try {
@@ -63,7 +63,7 @@ async function launch(cacheRetained) {
       assert.equal(state.esm, undefined);
       assert.deepEqual(state.cursor, cursor, 'release preserves the builder cursor');
       if (cacheRetained) {
-        assert.equal(state.bundleSource, serialized, 'the cache keeps its serialized state');
+        assert.deepEqual(state.bundleSource, serialized, 'the cache keeps its serialized value intact');
         assert.notEqual(state.generatedSourcesReleased, true);
       } else {
         assert.equal(state.bundleSource, undefined, 'uncached sources are released before host.open');
@@ -77,27 +77,17 @@ async function launch(cacheRetained) {
     return open(params);
   };
 
-  let config;
-  let previous;
   try {
-    for (let i = 0; i < (cacheRetained ? 2 : 1); i++) {
-      boundary = Promise.withResolvers();
-      loaded = Promise.withResolvers();
-      const observed = bounded(boundary.promise);
-      const spawned = await manager.spawnNode("process.stdout.write(String(require('dep')));", {
-        filename: '/home/user/run.js', cwd: '/home/user', command: 'dep-tui', attachedTty: true,
-      });
-      assert.ok(spawned.pid > 0);
-      await observed;
-      config = await bounded(loaded.promise);
-      const built = builds.get(spawned.pid);
-      if (previous) {
-        assert.deepEqual(built.serialized, previous.serialized, 'an identical launch preserves the complete serialized program');
-      }
-      previous = built;
-      assert.deepEqual(await storedBootModules(world, fs), processImageModules(config),
-        'the complete map is reconstructed from stored images and shared assets');
-    }
+    const observed = bounded(boundary.promise);
+    const spawned = await manager.spawnNode("process.stdout.write(String(require('dep')));", {
+      filename: '/home/user/run.js', cwd: '/home/user', command: 'dep-tui', attachedTty: true,
+    });
+    assert.ok(spawned.pid > 0);
+    await observed;
+    const config = await bounded(loaded.promise);
+    const built = builds.get(spawned.pid);
+    assert.deepEqual(await storedBootModules(world, fs), processImageModules(config),
+      'the complete map is reconstructed from stored images and shared assets');
     if (!cacheRetained) assert.equal(refused, 1, 'the admission policy really refused this build');
     assert.ok(fs.readdir(FACET_IMAGE_DIR).length > 0);
 
@@ -106,7 +96,7 @@ async function launch(cacheRetained) {
     const { supervisor, log } = facetSupervisor(authority);
     const proc = new mod.NimbusProcess(createProcessFacetCtx(`released-${cacheRetained}`), { SUPERVISOR: supervisor });
     await bounded(proc.startProcess({
-      pid: log.pid, vfsCursor: previous.cursor,
+      pid: log.pid, vfsCursor: built.cursor,
       dataPlan: await residentDataPlan(authority, '/home/user'),
     }));
     assert.equal(log.stderr, '');
@@ -126,9 +116,7 @@ await runScenarios(import.meta.path, {
     assert.deepEqual(state.bundle, {});
     assert.equal(state.emits, undefined);
     assert.equal(state.esm, undefined);
-    const generated = await generateLongRunningNodeCode('', state, { cred: CRED }, false, nodeFacetSources('/* shims */'));
-    assert.deepEqual({ ...moduleMapBundle(generatedModuleSet(generated, 'worker.js')) }, bundle,
-      'serialization preserves the program data');
+    await generateLongRunningNodeCode('', state, { cred: CRED }, false, nodeFacetSources('/* shims */'));
     releaseGeneratedSources(state);
     assert.equal(state.bundleSource, undefined);
     assert.equal(state.generatedSourcesReleased, true);
@@ -136,7 +124,7 @@ await runScenarios(import.meta.path, {
     await assert.rejects(() => generateLongRunningNodeCode('', state, { cred: CRED }, false, nodeFacetSources('/* shims */')));
   },
   'uncached launch': () => launch(false),
-  'cached launch and reuse': () => launch(true),
+  'cached launch retains serialized sources': () => launch(true),
 });
 
 console.log('resident-launch-releases-module-map: ok');

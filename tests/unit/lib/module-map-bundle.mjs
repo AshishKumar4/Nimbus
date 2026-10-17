@@ -123,6 +123,11 @@ const REGISTRY_STAND_IN = 'const __nimbusCreateRequire = globalThis.__nimbusTest
  * above, so its `{ cjs }` modules load as the guest loads them. Native `{ js }`
  * members are written byte-for-byte: the runtime's offsets read their source
  * back, and staging already uses relative specifiers the host resolves.
+ * @param {string} dir
+ * @param {import('../../../packages/platform/src/worker-code.js').WorkerCode['modules']} modules
+ * @param {string} entry
+ * @param {(name: string, source: string) => string} [rewrite]
+ * @param {{ onWasmEvaluate?: (name: string, compiled: WebAssembly.Module) => void }} [options]
  */
 export function writeModuleSet(dir, modules, entry, rewrite = (_name, source) => source, { onWasmEvaluate = (_name, _compiled) => {} } = {}) {
   mkdirSync(dir, { recursive: true });
@@ -136,20 +141,20 @@ export function writeModuleSet(dir, modules, entry, rewrite = (_name, source) =>
       const file = join(dir, decodeURIComponent(name));
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, adaptHttpImports(local(rewrite(name, member))).replace(REGISTRY_IMPORT, REGISTRY_STAND_IN));
-    } else if (jsText(member) !== undefined) {
+    } else if ('js' in member) {
       const file = join(dir, decodeURIComponent(name));
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, member.js);
-    } else if (cjsText(member) !== undefined) {
+    } else if ('cjs' in member) {
       // A module name is a URL path: the file is where the registry's URL
       // resolution — the stand-in's fileURLToPath — finds it.
       const file = join(dir, decodeURIComponent(name));
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, member.cjs);
-    } else if (member?.wasm !== undefined) {
+    } else if ('wasm' in member) {
       // Only the registry may compile a member, when it is first evaluated.
       wasmRegistry.set(join(dir, decodeURIComponent(name)), () => {
-        const compiled = new NativeWasmModule(member.wasm);
+        const compiled = member.wasm instanceof NativeWasmModule ? member.wasm : new NativeWasmModule(member.wasm);
         onWasmEvaluate(name, compiled);
         return compiled;
       });
