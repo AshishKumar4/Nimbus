@@ -211,6 +211,8 @@ export function createTransport(coherence: Coherence, admission: Admission, name
     const landed = new Map<string, number>();
     let filled = 0, failed = 0, fetchedBytes = 0;
     const failedPaths = new Set<string>();
+    const why: string[] = [];
+    Reflect.set(globalThis, '__nimbusDiagFill', { requested: ranges.length, why });
     /** The revision each path is read at. */
     const revOf = new Map(ranges.map((range) => [range.path, range.rev]));
 
@@ -229,7 +231,7 @@ export function createTransport(coherence: Coherence, admission: Admission, name
       // N18: room for the batch first; what the ledger will not admit is read
       // through the session instead of held.
       if (!(await admission.ensureRoom(bytes + batch.length * RESIDENT_ROW_BYTES))) {
-        for (const r of batch) failedPaths.add(r.path);
+        for (const r of batch) { failedPaths.add(r.path); why.push('room ' + r.path); }
         continue;
       }
       let results;
@@ -237,8 +239,8 @@ export function createTransport(coherence: Coherence, admission: Admission, name
         results = await supervisor.fsReadBatch!(
           batch.map((r) => ({ path: r.path, offset: r.offset, length: r.length, expectedEpoch: r.epoch, expectedRevision: r.rev })),
         );
-      } catch {
-        for (const r of batch) failedPaths.add(r.path);
+      } catch (e) {
+        for (const r of batch) { failedPaths.add(r.path); why.push('batch ' + messageOf(e).slice(0, 160) + ' ' + r.path); }
         continue;
       }
       for (let i = 0; i < batch.length; i++) {
@@ -253,16 +255,16 @@ export function createTransport(coherence: Coherence, admission: Admission, name
           if (code === 'EACCES' && range.part === 0) {
             cells.put(t, range.path, { error: 'EACCES' }, range.rev);
             filled++;
-          } else failedPaths.add(range.path);
+          } else { failedPaths.add(range.path); why.push('error ' + String(code) + ' ' + range.path); }
           continue;
         }
-        if (entry.bytes === null || entry.bytes === undefined) { failedPaths.add(range.path); continue; }
+        if (entry.bytes === null || entry.bytes === undefined) { failedPaths.add(range.path); why.push('nobytes ' + range.path); continue; }
         const chunk = residentBytes(entry.bytes);
         if (chunk.byteLength !== range.length) { failedPaths.add(range.path); continue; }
         // Not a byte of it beneath a newer revision of the file (another fill's head and chunks).
-        if (outdated(t, range.path, range.rev)) { failedPaths.add(range.path); continue; }
+        if (outdated(t, range.path, range.rev)) { failedPaths.add(range.path); why.push('outdated ' + range.path); continue; }
         fetchedBytes += chunk.byteLength;
-        if (!cells.putChunk(t, range.path, range.part, chunk)) { failedPaths.add(range.path); continue; }
+        if (!cells.putChunk(t, range.path, range.part, chunk)) { failedPaths.add(range.path); why.push('putChunk ' + range.path); continue; }
         const seen = (landed.get(range.path) || 0) + 1;
         landed.set(range.path, seen);
         if (seen === range.parts && !failedPaths.has(range.path)) {
