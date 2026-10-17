@@ -295,19 +295,21 @@ export function provisional(host: ProvisionalHost): Provisional {
    * unnamed while it does: it serves what it retains, never another file's.
    */
   const named = (inode: Inode): boolean => {
-    const row = rowAt(inode.key);
+    let row = rowAt(inode.key);
     if (row === undefined) return !inode.unnamed;
-    inode.unnamed = row === null || row.dev !== inode.dev || row.ino !== inode.ino;
+    let found = row !== null && row.dev === inode.dev && row.ino === inode.ino;
     // The name the session opened it by, where the view has it there since (a peer moved it).
-    if (inode.unnamed && inode.opened !== undefined && inode.opened !== inode.key) {
+    if (!found && inode.opened !== undefined && inode.opened !== inode.key) {
       const there = rowAt(inode.opened);
       if (there && there.dev === inode.dev && there.ino === inode.ino) {
         inode.key = inode.origin = inode.opened;
-        inode.unnamed = false;
+        row = there;
+        found = true;
       }
     }
-    if (!inode.unnamed && inode.state === null && !inode.local) inode.row = row!;
-    return !inode.unnamed;
+    inode.unnamed = !found;
+    if (found && inode.state === null && !inode.local) inode.row = row!;
+    return found;
   };
 
   /**
