@@ -5,6 +5,7 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a resident process fills a file it listed from a synchronously mounted backend (`/mnt/data`, an SDK embedder's mount). Before, the read named the engine's epoch, which a mounted path never matches, and was refused (ESTALE). A read of a mounted file now names the file as its listing's stat did (`RuntimeReadOptions.expectedFile`: device, inode, size, mtime, ctime) and is refused only if it is no longer that file. A mounted read that names the engine's epoch is refused by the asynchronous path too, as by the synchronous one. A filled mounted file is still undated in the store: it vouches for nothing on a relaunch.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
