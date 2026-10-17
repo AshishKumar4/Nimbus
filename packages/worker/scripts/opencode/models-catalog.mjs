@@ -11,9 +11,7 @@
 // rebuild-opencode.mjs); what each does when it is not found is its own.
 import { createRequire } from 'node:module';
 
-const require = createRequire(import.meta.url);
-const { parse } = require('acorn');
-const walk = createRequire(new URL('../../../core/package.json', import.meta.url))('acorn-walk');
+const { parse } = createRequire(import.meta.url)('acorn');
 
 /** The anchor every chunk that carries the catalog also carries. */
 const ANCHOR = 'ModelsDev.fetchAndWrite';
@@ -27,11 +25,19 @@ const CATALOG_BYTES = 1024 * 1024;
 export function modelsCatalogs(source) {
   if (!source.includes(ANCHOR)) return [];
   const found = [];
-  walk.simple(parse(source, { sourceType: 'module', ecmaVersion: 'latest' }), {
-    ArrowFunctionExpression(node) {
+  // Every node of the tree, without recursion: a minified chunk nests deep.
+  const pending = [parse(source, { sourceType: 'module', ecmaVersion: 'latest' })];
+  while (pending.length > 0) {
+    const node = pending.pop();
+    if (node.type === 'ArrowFunctionExpression') {
       const catalog = node.body.type === 'ConditionalExpression' ? node.body.alternate : node.body;
       if (catalog.type === 'ObjectExpression' && catalog.end - catalog.start > CATALOG_BYTES) found.push({ start: node.start, end: node.end, catalog });
-    },
-  });
-  return found;
+    }
+    for (const value of Object.values(node)) {
+      for (const child of Array.isArray(value) ? value : [value]) {
+        if (child !== null && typeof child === 'object' && typeof child.type === 'string') pending.push(child);
+      }
+    }
+  }
+  return found.sort((a, b) => a.start - b.start);
 }
