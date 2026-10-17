@@ -11,7 +11,12 @@ import { runPairedBenchmark } from './lib/paired-runner.mjs';
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 let checksum = 0;
 
-async function make({ SqliteVFS: Store, CompositeVFS: Namespace, sqliteFiles: files, SqliteFiles: FilesClass, ProcessFiles: Processes }, removedFiles) {
+async function make({
+  'vfs/sqlite-vfs.ts': { SqliteVFS: Store },
+  'vfs/composite.ts': { CompositeVFS: Namespace },
+  'vfs/sqlite-files.ts': { sqliteFiles: files, SqliteFiles: FilesClass },
+  'runtime/process-files.ts': { ProcessFiles: Processes },
+}, removedFiles) {
   const host = await hostSqlite();
   const engine = new Store(host.sql, host.transactions);
   const root = engine.as(CRED_KERNEL);
@@ -73,7 +78,10 @@ await runPairedBenchmark({
   async run({ short, cleanup, withArms, sample }) {
     const iterations = short ? 120 : 24_000;
     const removedFiles = short ? 64 : 2000;
-    await withArms(async (from) => make(await loadIsolatedCore(from, cleanup), removedFiles), async (arms) => {
+    await withArms(async (from) => make(await loadIsolatedCore(from, cleanup, {
+      sources: CORE_CPU_SOURCES,
+      modules: ['vfs/sqlite-vfs.ts', 'vfs/composite.ts', 'vfs/sqlite-files.ts', 'runtime/process-files.ts'],
+    }), removedFiles), async (arms) => {
       for (const kind of ['store', 'namespace', 'namespace-walk', 'store-linked', 'store-pnpm-chain', 'store-dot', 'store-link-parent', 'store-dot-lease', 'process-view', 'process-linked', 'walked-removal']) {
         const leases = kind === 'store-dot-lease' ? Object.values(arms).map((arm) => [arm, arm.engine.acquireExclusiveMutation('lease')]) : [];
         const walked = kind === 'walked-removal';
