@@ -56,6 +56,10 @@ function launch({ stops = 1, signal, ctx = {}, processes = new SessionProcessSup
       preparation.push(held());
       return { generatedSourcesReleased: true, bundleKey: 'test' };
     },
+    _prepareOneShotCode: async () => {
+      assert.equal(held(), undefined, 'the map is generated before worker admission');
+      return { code: async () => { throw new Error('the Worker call is replaced'); } };
+    },
     _staticReadPlan: async () => ({}),
     _installedManifests: async () => '{"files":{}}',
     _recordLaunchLearning: async () => {},
