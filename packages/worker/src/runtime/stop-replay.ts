@@ -39,6 +39,7 @@ const __nimbusStopReplay = (() => {
   const StringFromCharCode = String.fromCharCode;
   const TypedArrayLength = Reflect.getOwnPropertyDescriptor(Reflect.getPrototypeOf(Uint8Array.prototype), "length").get;
   const NumberIsFinite = Number.isFinite;
+  const DateNow = Date.now;
   const U8 = Uint8Array;
   const QUIET = ${JSON.stringify(Object.fromEntries(SUPERVISOR_CALLS_WITHOUT_EFFECTS.map((name) => [name, true])))};
   const OBSERVATIONS = ${JSON.stringify(Object.fromEntries(REPLAY_OBSERVATION_CALLS.map((name) => [name, true])))};
@@ -367,6 +368,11 @@ const __nimbusStopReplay = (() => {
 
   return {
     ledger,
+    // The clock as it is, not the tape: for Nimbus's own reads of it (a
+    // stat's fallback times, the stamp of a file the process changed),
+    // which differ between a run and its run again as their state differs,
+    // and taken from the tape would hand the program another run's readings.
+    realNow() { return DateNow(); },
     // Outbound fetch uses a separate binding, not ledger's supervisor
     // proxy; it joins the same gate before dispatching a post-read request.
     afterBoundary() { return run && run.boundaryNotice; },
