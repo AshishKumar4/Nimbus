@@ -1,11 +1,13 @@
 // agent/new/agent-tool-card-history — the chat island renders stored history
 // as it was stored, through the built island with intercepted agent APIs:
 //   - a running tool from a stored checkpoint counts its time from when it
-//     started (its part's startedAt), not from when the card mounted; one
-//     whose start is unknown shows no timer; once settled, its stored
-//     duration;
+//     started (its part's startedAt), not from when the card mounted: its
+//     label is the browser clock less that start; one whose start is
+//     unknown, or still ahead of the clock, shows no timer; once settled,
+//     its stored duration;
 //   - tool results written before parts (their own `tool`-role rows) render
-//     as cards with the tool's name, input and output as stored.
+//     as cards with the tool's name (a string, else the row's), input and
+//     output as stored.
 // Red before: a running card started its own clock at mount, so a tool five
 // seconds in showed 0.1s, and a tool with no known start showed one too.
 
@@ -27,16 +29,20 @@ const legacyRows = [
   { id: 'l1', role: 'tool', name: 'by-name', content: JSON.stringify({ tool: 'list_files', input: { dir: '.' }, output: ['a', 'b'] }), createdAt: 2 },
   { id: 'l2', role: 'tool', name: 'by-name', content: JSON.stringify({ output: 'only output' }), createdAt: 3 },
   { id: 'l3', role: 'tool', content: 'not json', createdAt: 4 },
+  { id: 'l4', role: 'tool', name: 'by-name', content: JSON.stringify({ tool: 7, output: 'x' }), createdAt: 5 },
 ];
-/** The conversation with a turn still running: its exec started STARTED_AGO_MS before `now`; its read_file's start is unknown. */
+/** The exec's start, as the last history served said it. */
+let execStartedAt = 0;
+/** The conversation with a turn still running: its exec started STARTED_AGO_MS before `now`; its read_file's start is unknown; its fetch's is ahead of the clock. */
 const running = (now) => [
   ...legacyRows,
   { id: 'u1', role: 'user', content: 'build it', createdAt: now - STARTED_AGO_MS - 1000 },
   {
     id: 'a1', role: 'assistant', content: '', createdAt: now - STARTED_AGO_MS, status: 'streaming', replyTo: 'u1',
     parts: [
-      { type: 'tool', toolCallId: 'r1', toolName: 'exec', input: { command: 'npm run build' }, status: 'running', startedAt: now - STARTED_AGO_MS },
+      { type: 'tool', toolCallId: 'r1', toolName: 'exec', input: { command: 'npm run build' }, status: 'running', startedAt: (execStartedAt = now - STARTED_AGO_MS) },
       { type: 'tool', toolCallId: 'r2', toolName: 'read_file', input: { path: '/x' }, status: 'running' },
+      { type: 'tool', toolCallId: 'r3', toolName: 'fetch', input: { url: 'https://example.com' }, status: 'running', startedAt: now + 60_000 },
     ],
   },
 ];
@@ -45,6 +51,7 @@ const settled = (now) => running(now).map((message) => (message.id !== 'a1' ? me
   parts: [
     { type: 'tool', toolCallId: 'r1', toolName: 'exec', input: { command: 'npm run build' }, output: { exitCode: 0 }, status: 'done', startedAt: now - 6200, durationMs: 6200 },
     { type: 'tool', toolCallId: 'r2', toolName: 'read_file', input: { path: '/x' }, output: 'x', status: 'done' },
+    { type: 'tool', toolCallId: 'r3', toolName: 'fetch', input: { url: 'https://example.com' }, output: 'x', status: 'done' },
     { type: 'text', text: 'Done.' },
   ],
 }));
@@ -62,7 +69,9 @@ try {
   const runtimeErrors = [];
   page.on('pageerror', (err) => runtimeErrors.push(err.message || String(err)));
 
-  let history = () => running(Date.now());
+  // One running conversation, made at the first request for it: its starts stay put across refreshes.
+  let runningHistory = null;
+  let history = () => (runningHistory ??= running(Date.now()));
   await page.setRequestInterception(true);
   page.on('request', (request) => {
     const url = new URL(request.url());
@@ -91,35 +100,46 @@ try {
   await page.waitForSelector('#btnAgent', { visible: true, timeout: 30_000 });
   await page.click('#btnAgent');
   await page.waitForSelector('#agentMessages .agent-tool.running', { timeout: 30_000 });
-  // Two repaints' worth, so a mount clock would have shown its first ticks.
-  await new Promise((resolve) => setTimeout(resolve, 400));
 
   const cards = () => page.evaluate(() => Array.from(document.querySelectorAll('#agentMessages .agent-tool')).map((el) => ({
     name: el.querySelector('.tool-name')?.textContent || '',
     status: el.className.replace('agent-tool', '').trim(),
     duration: el.querySelector('.tool-duration')?.textContent || null,
   })));
+  /** The exec card's label and the browser clock, read together once the label reads at least `atLeast` seconds. */
+  const execTimer = async (atLeast) => {
+    await page.waitForFunction((min) => {
+      const label = [...document.querySelectorAll('#agentMessages .agent-tool')].find((el) => el.querySelector('.tool-name')?.textContent === 'exec')?.querySelector('.tool-duration')?.textContent;
+      const m = /^([\d.]+)s$/.exec(label || '');
+      return m !== null && Number(m[1]) >= min;
+    }, { timeout: 15_000, polling: 50 }, atLeast);
+    return page.evaluate(() => ({
+      now: Date.now(),
+      label: [...document.querySelectorAll('#agentMessages .agent-tool')].find((el) => el.querySelector('.tool-name')?.textContent === 'exec')?.querySelector('.tool-duration')?.textContent,
+    }));
+  };
+  // A label is the clock less the start, repainted every 100 ms and shown to a tenth of a second.
+  const anchored = ({ now, label }) => Math.abs(seconds(label) - (now - execStartedAt) / 1000) <= 0.25;
+  const first = await execTimer(0);
+  a.check('a running tool from a stored checkpoint counts from when it started', anchored(first) && seconds(first.label) >= STARTED_AGO_MS / 1000 - 0.25,
+    JSON.stringify({ ...first, expected: (first.now - execStartedAt) / 1000 }));
   const live = await cards();
-  const exec = live.find((card) => card.name === 'exec');
-  const unknown = live.find((card) => card.name === 'read_file');
-  const shown = seconds(exec?.duration);
-  a.check('a running tool from a stored checkpoint counts from when it started',
-    shown !== null && shown >= STARTED_AGO_MS / 1000 - 0.5 && shown < STARTED_AGO_MS / 1000 + 20, JSON.stringify(live));
-  a.check('a running tool whose start is unknown shows no timer', unknown !== undefined && unknown.duration === null, JSON.stringify(live));
-  await new Promise((resolve) => setTimeout(resolve, 1200));
-  const later = seconds((await cards()).find((card) => card.name === 'exec')?.duration);
-  a.check('its timer moves on while it runs', shown !== null && later !== null && later >= shown + 0.8, `${shown} → ${later}`);
+  a.check('a running tool whose start is unknown shows no timer', live.find((card) => card.name === 'read_file')?.duration === null, JSON.stringify(live));
+  a.check('a running tool whose start is ahead of the clock shows no timer', live.find((card) => card.name === 'fetch')?.duration === null, JSON.stringify(live));
+  const later = await execTimer(seconds(first.label) + 1);
+  a.check('its timer moves on with the clock while it runs', anchored(later), JSON.stringify({ ...later, expected: (later.now - execStartedAt) / 1000 }));
 
   history = () => settled(Date.now());
   await page.evaluate(() => window.NimbusAgent.ensureLoaded());
   await page.waitForFunction(() => !document.querySelector('#agentMessages .agent-tool.running'), { timeout: 15_000 });
   const done = await cards();
   a.check('once settled, a tool shows its stored duration', done.find((card) => card.name === 'exec')?.duration === '6.2s', JSON.stringify(done));
-  a.check('a settled tool with no stored duration shows none', done.find((card) => card.name === 'read_file')?.duration === null, JSON.stringify(done));
+  a.check('a settled tool with no stored duration shows none',
+    done.find((card) => card.name === 'read_file')?.duration === null && done.find((card) => card.name === 'fetch')?.duration === null, JSON.stringify(done));
 
   // Tool results written before parts: one card each, as stored.
   const legacy = [];
-  for (const id of ['l1', 'l2', 'l3']) {
+  for (const id of ['l1', 'l2', 'l3', 'l4']) {
     const index = legacyRows.findIndex((row) => row.id === id) - 1;
     const card = (await page.$$('#agentMessages .agent-tool'))[index];
     await card.$eval('.tool-head', (el) => el.click());
@@ -133,6 +153,7 @@ try {
     { name: 'list_files', status: 'done', panes: [['Input', '{\n  "dir": "."\n}'], ['Output', '[\n  "a",\n  "b"\n]']] },
     { name: 'by-name', status: 'done', panes: [['Output', 'only output']] },
     { name: 'tool', status: 'done', panes: [['Output', 'not json']] },
+    { name: 'by-name', status: 'done', panes: [['Output', 'x']] },
   ]), JSON.stringify(legacy));
   a.check('no page errors', runtimeErrors.length === 0, runtimeErrors.join('\n'));
 } finally {

@@ -1189,8 +1189,9 @@ function controlledProviderQueue() {
 
 // ── History written before parts reaches the model as it was stored ──
 // A tool result stored as its own `tool`-role row reaches the model as the
-// tool's name and output in text; an assistant answer stored before parts,
-// as its content; a part that is not an object is dropped.
+// tool's name (a string, else the row's name) and output in text; an
+// assistant answer stored before parts, as its content; a part that is not
+// an object is dropped.
 {
   const { host, store } = makeHost();
   store.set(MESSAGES_KEY, [
@@ -1200,6 +1201,7 @@ function controlledProviderQueue() {
     { id: 't3', role: 'tool', content: 'not json', createdAt: 4 },
     { id: 't4', role: 'tool', content: 'null', createdAt: 5 },
     { id: 't5', role: 'tool', content: JSON.stringify({ tool: 'zero', output: 0 }), createdAt: 6 },
+    { id: 't6', role: 'tool', name: 'by-name', content: JSON.stringify({ tool: 7, output: 'x' }), createdAt: 6 },
     { id: 'a1', role: 'assistant', content: 'stored before parts', createdAt: 7 },
     { id: 'a2', role: 'assistant', content: 'unused', parts: [null, 7, { type: 'text', text: 'from parts' }], createdAt: 8 },
   ]);
@@ -1221,6 +1223,7 @@ function controlledProviderQueue() {
       'assistant:Tool tool result:\n"not json"',
       'assistant:Tool tool result:\n"null"',
       'assistant:Tool zero result:\n0',
+      'assistant:Tool by-name result:\n"x"',
       'assistant:stored before parts',
       'assistant:from parts',
       'user:next',
