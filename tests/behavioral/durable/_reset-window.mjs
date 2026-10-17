@@ -23,11 +23,17 @@ export async function afterReset(operation, budgetMs = 10_000) {
 export const ABORT_ANSWERED = 'answered';
 export const ABORT_TORN_DOWN = 'torn-down';
 
-/** The session's instance's incarnation (`hib.isolateGen`), or null while no instance answers. */
+/**
+ * The session's primary instance's incarnation (`hib.isolateGen`), or null
+ * while the primary does not answer. The read may be served by a read
+ * replica, which the abort does not end: its answer is not the primary's.
+ */
 export async function incarnation(sid, base = BASE) {
   try {
     const response = await fetch(`${base}/s/${sid}/api/_diag/memory`, { headers: requestHeaders({}, sid), signal: AbortSignal.timeout(10_000) });
-    return response.ok ? (await response.json()).hib?.isolateGen ?? null : null;
+    if (!response.ok) return null;
+    const { hib, replica } = await response.json();
+    return replica?.isReplica === false ? hib?.isolateGen ?? null : null;
   } catch {
     return null;
   }
