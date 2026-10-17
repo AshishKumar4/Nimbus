@@ -50,6 +50,12 @@ try {
         : request.respond({ contentType: 'text/html', body: `<!doctype html><div id="root"></div><script>
 window.__guideEvents = [];
 addEventListener('message', (event) => { if (typeof event.data?.type === 'string' && event.data.type.startsWith('nimbus:')) window.__guideEvents.push(event.data.type); });
+// What the page showed as the guide's iframe first appeared, taken at that mutation.
+window.__guideMount = null;
+new MutationObserver(() => {
+  if (window.__guideMount !== null || !document.querySelector('#root iframe[src]')) return;
+  window.__guideMount = { loading: document.querySelector('#root').textContent.includes('Loading'), events: window.__guideEvents.slice() };
+}).observe(document.documentElement, { childList: true, subtree: true });
 </script><script src="/__react-guide-probe/${guide[1]}.js"></script>` });
     }
     return request.continue();
@@ -70,8 +76,7 @@ createRoot(document.getElementById('root')).render(<MyTerm token={${JSON.stringi
     });
     bundles.set(name, bundled.outputFiles[0].text);
     await page.goto(`${BASE}/__react-guide-probe/${name}`, { waitUntil: 'domcontentloaded', timeout: 90_000 });
-    const mounted = await page.waitForFunction(() => !!document.querySelector('#root iframe[src]'), { timeout: 20_000 })
-      .then(() => page.evaluate(() => ({ loading: document.querySelector('#root').textContent.includes('Loading'), events: window.__guideEvents.slice() })), () => null);
+    const mounted = await page.waitForFunction(() => window.__guideMount, { timeout: 20_000 }).then((handle) => handle.jsonValue(), () => null);
     a.check(`the ${name} guide mounts its iframe under its loading state, before the session is ready`,
       mounted !== null && mounted.loading && !mounted.events.includes('nimbus:ready'), JSON.stringify(mounted) + ' ' + await page.$eval('#root', (el) => el.innerHTML.slice(0, 300)));
     const ready = mounted !== null && await page.waitForFunction(() => window.__guideEvents.includes('nimbus:ready')
