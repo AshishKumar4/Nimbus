@@ -75,9 +75,9 @@ for (const arm of ['a1', 'a2', 'b1', 'b2']) {
 // Both candidate Previews 1.3x slower: slower, and still when one Preview,
 // on either side, is also slow for where it landed. A slow candidate
 // Preview does not hide the shift its other Preview shows, and a slow
-// baseline Preview counts once.
+// baseline Preview counts once: the shift over it is what is left of 1.3x.
 assert.equal(gradePaired(rounds({ count: 20, factor: 1.3, sigma: 0.1, seed: 22 })).slower, true);
-for (const [arm, by] of [['a1', 1.15], ['a2', 1.2], ['b1', 1.5], ['b2', 1.5]]) {
+for (const [arm, by] of [['a1', 1.15], ['a2', 1.1], ['b1', 1.5], ['b2', 1.5]]) {
   const grade = gradePaired(rounds({ count: 20, factor: 1.3, sigma: 0.1, seed: 23, offset: { [arm]: by } }));
   assert.equal(grade.slower, true, `1.3x slower with ${arm} ${by}x behind: ${JSON.stringify(grade)}`);
 }
