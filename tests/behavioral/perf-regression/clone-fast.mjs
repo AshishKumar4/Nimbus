@@ -23,6 +23,11 @@ const a = makeAsserter('perf-regression/clone-fast');
 const arms = requirePairedTargets('perf-regression/clone-fast');
 console.log(`perf-regression/clone-fast — baseline ${arms.a1.base}, ${arms.a2.base}; candidate ${arms.b.base}`);
 
+// Three runs of the unchanged code against itself (2026-10-17), cut into
+// disjoint blocks and graded with each arm in turn as the candidate: at 40
+// rounds, the unchanged code red in 0 of 9 and a +600 ms clone red in 9 of 9;
+// at 20, 1 of 18 and 17 of 18. A +600 ms clone ran red on its own run, with
+// a median of 2908 ms that the fixed bound passed. A round takes about 4 s.
 const ROUNDS = 40;
 
 const result = await measurePaired(arms, ROUNDS, async (target) => {
