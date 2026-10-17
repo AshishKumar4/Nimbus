@@ -8,8 +8,17 @@
 //   - m2 imports ./absent.mjs, never written: Node's ERR_MODULE_NOT_FOUND;
 //   - parent imports bridge, which imports ./generated.json (type json),
 //     written later: a JSON module, not read as JavaScript;
+//   - qparent imports qbridge, which imports ./generated.json?x and #x
+//     (type json): a query's and a fragment's JSON module;
 //   - m5 imported before ./late.mjs is written, then after: both imports
-//     fail, as Node's loader keeps the module job that did not link.
+//     fail, as Node's loader keeps the module job that did not link;
+//   - outer, written later, imports b5, which imports ./late5.mjs: imported
+//     before ./late5.mjs is written, then after, outer fails still, and so
+//     does b5 imported alone or from outer2, a module written since;
+//   - outer6 imports c, which imports ./late6.mjs, all written later: c
+//     fails still once ./late6.mjs is written, and outer6's require() too;
+//   - r, required before ./late7.mjs is written, then after: require()
+//     keeps no failure, as Node's does not, and a later import() finds it.
 // Host Node running the same files is the oracle.
 //
 // Red before: staging recorded the missing file as a refusal, so m0's
@@ -25,10 +34,15 @@ const files = {
   'parent.mjs': "import { v } from './bridge.mjs';\nexport const p = v;\n",
   'bridge.mjs': "import data from './generated.json' with { type: 'json' };\nexport const v = data.v;\n",
   'm5.mjs': "import { v as w } from './late.mjs';\nexport const v = w;\n",
+  'qparent.mjs': "import { v } from './qbridge.mjs';\nexport const p = v;\n",
+  'qbridge.mjs': "import a from './generated.json?x' with { type: 'json' };\nimport b from './generated.json#x' with { type: 'json' };\nexport const v = a.v + b.v;\n",
+  'b5.mjs': "import { v as w } from './late5.mjs';\nexport const v = w;\n",
   // Each names its staged module in a branch never taken, so the launch stages it.
   'main.mjs': [
     "import { writeFileSync } from 'node:fs';",
-    "if (globalThis.never) { await import('./m0.mjs'); await import('./m2.mjs'); await import('./m3.mjs'); await import('./parent.mjs'); await import('./m5.mjs'); }",
+    "import { createRequire } from 'node:module';",
+    'const require = createRequire(import.meta.url);',
+    "if (globalThis.never) { await import('./m0.mjs'); await import('./m2.mjs'); await import('./m3.mjs'); await import('./parent.mjs'); await import('./m5.mjs'); await import('./qparent.mjs'); await import('./b5.mjs'); }",
     write('./m1.mjs', "export const v = 'm1';\n"),
     write('./m4.mjs', "export const v = 'm4';\n"),
     "console.log((await import('./m0.mjs')).v);",
@@ -36,9 +50,28 @@ const files = {
     "try { await import('./m2.mjs'); } catch (error) { console.log(error.code, error.message); }",
     write('./generated.json', '{"v":1}'),
     "console.log((await import('./parent.mjs')).p);",
+    "console.log((await import('./qparent.mjs')).p);",
     "try { await import('./m5.mjs'); } catch (error) { console.log('first', error.code); }",
     write('./late.mjs', 'export const v = 5;\n'),
     "try { console.log('second', (await import('./m5.mjs')).v); } catch (error) { console.log('second', error.code); }",
+    write('./outer.mjs', "import { v } from './b5.mjs';\nexport const o = v;\n"),
+    "try { await import('./outer.mjs'); } catch (error) { console.log('outer first', error.code); }",
+    write('./late5.mjs', 'export const v = 5;\n'),
+    "try { console.log('outer second', (await import('./outer.mjs')).o); } catch (error) { console.log('outer second', error.code); }",
+    "try { console.log('b5', (await import('./b5.mjs')).v); } catch (error) { console.log('b5', error.code); }",
+    write('./outer2.mjs', "import { v } from './b5.mjs';\nexport const o = v;\n"),
+    "try { console.log('outer2', (await import('./outer2.mjs')).o); } catch (error) { console.log('outer2', error.code); }",
+    write('./c.mjs', "import { v } from './late6.mjs';\nexport const c = v;\n"),
+    write('./outer6.mjs', "import { c } from './c.mjs';\nexport const o = c;\n"),
+    "try { await import('./outer6.mjs'); } catch (error) { console.log('outer6', error.code); }",
+    write('./late6.mjs', 'export const v = 6;\n'),
+    "try { console.log('c', (await import('./c.mjs')).c); } catch (error) { console.log('c', error.code); }",
+    "try { console.log('require outer6', require('./outer6.mjs').o); } catch (error) { console.log('require outer6', error.code); }",
+    write('./r.mjs', "import { v } from './late7.mjs';\nexport const r = v;\n"),
+    "try { require('./r.mjs'); } catch (error) { console.log('require r', error.code); }",
+    write('./late7.mjs', 'export const v = 7;\n'),
+    "try { console.log('require r', require('./r.mjs').r); } catch (error) { console.log('require r', error.code); }",
+    "try { console.log('import r', (await import('./r.mjs')).r); } catch (error) { console.log('import r', error.code); }",
     '',
   ].join('\n'),
 };
