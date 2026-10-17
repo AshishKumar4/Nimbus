@@ -164,6 +164,8 @@ export class Interpreter {
     persistentInputHandles = new Map();
     errexitSuppressionDepth = 0;
     exitTrapDepth = 0;
+    /** While the EXIT trap's action runs: the status the shell was ending with, a bare `exit`'s there. */
+    trapEntryStatus = null;
     /** One frame per running function call, holding the bindings `local` shadowed. */
     localFrames = [];
     /** A child shell (fork): a discarded line ends it (finishChild). */
@@ -844,6 +846,7 @@ export class Interpreter {
                                 shell: this.config,
                                 interactive: io.interactive,
                                 getLastExitCode: () => this.lastExitCode,
+                                exitStatus: () => this.trapEntryStatus ?? this.lastExitCode,
                                 identity: () => {
                                     if (!io.commandIdentity)
                                         throw new Error('shell command identity is unavailable');
@@ -1179,12 +1182,17 @@ export class Interpreter {
         if (action === undefined)
             return exitCode;
         const savedLastExitCode = this.lastExitCode;
+        const savedTrapEntryStatus = this.trapEntryStatus;
         this.lastExitCode = exitCode;
+        this.trapEntryStatus = exitCode;
         this.exitTrapDepth++;
         try {
-            await this.executeLineWithIo(action, io, { readsLines: true });
+            // Run as the shell's own text: an `exit` in it, or an end by `set -e`, is the shell's status.
+            await this.executeLineWithIo(action, io, { readsLines: true, inline: true });
         }
         catch (e) {
+            if (e instanceof ExitSignal || e instanceof ErrexitSignal)
+                return e.exitCode;
             // A call past the nesting bound ends the action, a child shell's too; the status stays (bash 5.2).
             if (!(e instanceof FunctionNestingSignal))
                 throw e;
@@ -1192,6 +1200,7 @@ export class Interpreter {
         finally {
             this.exitTrapDepth--;
             this.lastExitCode = savedLastExitCode;
+            this.trapEntryStatus = savedTrapEntryStatus;
         }
         return exitCode;
     }

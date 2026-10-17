@@ -59,6 +59,8 @@ export interface BuiltinExecutionContext {
     /** The state of the shell running the builtin: a child shell's own, after a fork. */
     shell: ShellState;
     getLastExitCode(): number;
+    /** The status a bare `exit` ends the shell with: the last command's, or in a trap's action the one before the trap (POSIX). */
+    exitStatus(): number;
     /** The process the builtin runs as: a kill's caller, a wait's waiter. */
     identity(): Pick<CommandIdentity, 'pid' | 'cred'>;
 }
@@ -183,6 +185,8 @@ export declare class Interpreter {
     private persistentInputHandles;
     private errexitSuppressionDepth;
     private exitTrapDepth;
+    /** While the EXIT trap's action runs: the status the shell was ending with, a bare `exit`'s there. */
+    private trapEntryStatus;
     /** One frame per running function call, holding the bindings `local` shadowed. */
     private localFrames;
     /** A child shell (fork): a discarded line ends it (finishChild). */
