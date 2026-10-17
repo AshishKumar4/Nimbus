@@ -505,6 +505,7 @@ function __nimbusReadBundleFile(path, encoding) {
 const {
   LAUNCH_PRIMORDIALS: __nimbusLaunchPrimordials,
   registerSource: __nimbusRegisterSource,
+  SyntaxError: __nimbusSyntaxError,
 } = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_PRIMORDIALS_MODULE}");
 const __nimbusCodeCells = new Map(__NIMBUS_CODE_CELLS.map((__row) => [__row[0], __row]));
 // Where node:fs shows the map's modules: beside this main module, /bundle/.
@@ -516,14 +517,13 @@ const {
   runtimeCodeSourceCharge: __nimbusRuntimeCodeSourceCharge,
   sourceColumn: __nimbusEditedSourceColumn,
 } = ${COMMONJS_CELL_HELPERS_SOURCE};
-// The SyntaxErrors cells that did not compile threw. The registry keeps a
-// module's first, where Node compiles the module again at each require()
-// (it left require.cache): a new error each time, its stack formatted then.
-const __nimbusCellSyntaxErrors = new WeakSet();
 // The wrapper function of the cell at a VFS key, compiled by the registry the
 // first time it is asked for, with the module's own Function (THE WRAPPER);
 // null when the launch's map has no such cell. A cell that does not compile
-// leads its SyntaxError's stack with where.
+// throws a new SyntaxError of V8's message at each require(), its stack led
+// with where: the registry keeps the module's error and throws it again,
+// where Node compiles the module again (it left require.cache). The
+// registry's error stays the runtime's, the program's unable to change it.
 function __nimbusModuleCell(key) {
   const __row = __nimbusCodeCells.get(key);
   // A staged ES module is the registry's to evaluate (node-shims' __nimbusEsmImport).
@@ -531,8 +531,7 @@ function __nimbusModuleCell(key) {
   try {
     return __nimbusRegistryRequire("./" + __row[1])(globalThis.__nimbusCodeOrigin(__nimbusModuleImporterUrl(key)).Function);
   } catch (e) {
-    const error = __nimbusCellSyntaxErrors.has(e) ? new SyntaxError(e.message) : e;
-    if (e instanceof SyntaxError) __nimbusCellSyntaxErrors.add(e);
+    const error = e instanceof __nimbusSyntaxError ? new __nimbusSyntaxError(e.message) : e;
     __nimbusDecorateSyntaxError(error, __row[1]);
     throw error;
   }
@@ -962,7 +961,7 @@ function __nimbusFatalLocation(text, goal, offset) {
 // once (node-shims.ts __nimbusFatalReport).
 const __nimbusDecorated = new WeakSet();
 function __nimbusDecorateSyntaxError(e, name) {
-  if (!(e instanceof SyntaxError) || __nimbusDecorated.has(e)) return;
+  if (!(e instanceof __nimbusSyntaxError) || __nimbusDecorated.has(e)) return;
   // The arrow first: it may give the error Node's message before its stack is formatted.
   const arrow = typeof globalThis.__nimbusSyntaxErrorArrow === "function" ? globalThis.__nimbusSyntaxErrorArrow(__nimbusModuleNamed(name), e) : null;
   if (arrow === null || typeof e.stack !== "string") return;

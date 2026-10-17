@@ -533,6 +533,8 @@ function __nimbusGeneratedNodeError(Base, code, message, props, decoration) {
 // What the shims call a program's functions with, captured before any
 // program runs: a program may replace Reflect's.
 const __nimbusReflectApply = Reflect.apply;
+// The realm's SyntaxError, which a program may replace as a global.
+const __nimbusSyntaxError = SyntaxError;
 // The runner's stop and replay (runtime/stop-replay.ts), private to its
 // module: null in a runner without one.
 const __nimbusReplay = typeof __nimbusStopReplay !== "undefined" ? __nimbusStopReplay : null;
@@ -15139,7 +15141,7 @@ globalThis.__nimbusSyntaxErrorArrow = function __nimbusSyntaxErrorArrow(module, 
   if (error?.message === "Unexpected end of input") return __nimbusArrowOf(module, text, end, end, true);
   if (place[0] >= end) {
     const parser = __nimbusRegistryRequire("./nimbus/parser.js");
-    const named = error instanceof SyntaxError ? /^Unexpected token '(.+)'$/.exec(error.message) : null;
+    const named = error instanceof __nimbusSyntaxError ? /^Unexpected token '(.+)'$/.exec(error.message) : null;
     // An argument list left open is placed at its last token, as V8 places it whatever follows.
     if (error?.message === "missing ) after argument list") {
       const last = parser.lastTokenBefore(text, end);
