@@ -320,7 +320,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     const entry = decided.get(inode.key);
     if (entry === undefined || entry === null) return false;
     for (const desc of prov.descriptorsOf(inode)) {
-      if (!modeAllows(entry, desc.read ? 6 : 2, store.cred)) return true;
+      if (!modeAllows(entry, (desc.read ? 4 : 0) | (desc.write ? 2 : 0), store.cred)) return true;
     }
     return false;
   };
