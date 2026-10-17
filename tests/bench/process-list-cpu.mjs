@@ -10,7 +10,7 @@ import { runPairedBenchmark } from './lib/paired-runner.mjs';
 
 let checksum = 0;
 
-async function make({ SqliteVFS, ProcessFiles }, size) {
+async function make({ 'vfs/sqlite-vfs.ts': { SqliteVFS }, 'runtime/process-files.ts': { ProcessFiles } }, size) {
   const host = await hostSqlite();
   const engine = new SqliteVFS(host.sql, host.transactions);
   const root = engine.as(CRED_KERNEL);
@@ -59,7 +59,9 @@ await runPairedBenchmark({
   source: CORE_CPU_SOURCES.source,
   async run({ short, cleanup, withArms, sample }) {
     const count = (kind) => kind === 'cold-first-list' ? (short ? 2 : 20) : kind === 'first-list' ? (short ? 4 : 80) : (short ? 64 : 2000);
-    await withArms((from) => loadIsolatedCore(from, cleanup), async (modules) => {
+    await withArms((from) => loadIsolatedCore(from, cleanup, {
+      sources: CORE_CPU_SOURCES, modules: ['vfs/sqlite-vfs.ts', 'runtime/process-files.ts'],
+    }), async (modules) => {
       for (const [label, size] of [['small', 64], ['large', 8192]]) {
         await withArms((loaded) => make(loaded, size), async (arms) => {
           for (const kind of ['acquire-none', 'acquire-one', 'first-list', 'cold-first-list']) {

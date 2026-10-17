@@ -30,9 +30,14 @@ export declare function readBracedExpansion(input: string, pos: number): {
  * end when it never closes). Quotes and nested `$(...)` inside it are
  * skipped whole, so a `close` inside them does not end it.
  */
-export declare function readBalancedCommand(input: string, pos: number, open: string, close: string): {
+export declare function readBalancedCommand(input: string, pos: number, open: '(' | '{', close: ')' | '}'): {
     body: string;
     end: number;
     closed: boolean;
+};
+/** The `$'...'` at `pos`: its text, escapes decoded (backslash-escapes.ts, `ansi-c`), and where it ends. */
+export declare function readAnsiCQuote(input: string, pos: number): {
+    text: string;
+    end: number;
 };
 //# sourceMappingURL=lexer.d.ts.map

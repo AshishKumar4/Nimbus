@@ -88,6 +88,18 @@ export type W7Attrs = {
  * nothing makes a missing parent. The program-order counterpart of the
  * syscall, where `file` and `directory` are a checkout's upserts.
  */
+/** What a W7 open asks of its file, as open(2)'s O_ACCMODE: to read it, to write it, or both. */
+export type W7OpenAccess = 'read' | 'write' | 'readwrite';
+/** The rights an open's access grants its description: what a call through it may do. */
+export declare function openAccessRights(access: W7OpenAccess): {
+    read: boolean;
+    write: boolean;
+};
+/** The permission bits an open asks of the file it reaches (4 read, 2 write): its access's, and write under `truncate`, as open(2)'s. */
+export declare function openAccessMask(call: {
+    access: W7OpenAccess;
+    truncate?: true;
+}): number;
 export type W7Call = 
 /**
  * `ino`, on a call that makes a name (writeFile, appendFile, mkdir,
@@ -204,28 +216,29 @@ export type W7Call =
     mtime: number;
 }
 /**
- * open(2) of a file to write it (and to read it when `read`), as the
- * session's own open decides it: a name made (`create`, `mode` less
- * `umask`) or refused (EEXIST when `exclusive`, ENOENT without `create`,
- * EISDIR, EACCES for any access asked that the file's mode refuses),
+ * open(2) of a file with the access `access` asks, as O_ACCMODE does
+ * (W7OpenAccess), as the session's own open decides it: a name made
+ * (`create`, `mode` less `umask`) or refused (EEXIST when `exclusive`,
+ * ENOENT without `create`, EISDIR, EACCES for any access asked that the
+ * file's mode refuses, write too under `truncate`: openAccessMask),
  * emptied when `truncate`, a link at the name followed unless `nofollow`
  * (ELOOP). Its answer is the file's stat. With `description` (an id the
  * process chose), the session keeps the open description under it, its
- * access fixed now; the description's write, append and ftruncate calls
- * name it, and its `close` ends it. `ino`: the number a name it makes is
- * given (a delegation's, as a mkdir's). `fchmod`: the file it opened then
- * given exactly this mode (fchmod(2), as libuv's copyfile narrows its
- * destination before a byte reaches it), part of the open: refused
- * (EPERM: another's file), the open is refused and keeps no description,
- * so a write through it is EBADF.
+ * rights the access's (openAccessRights); the description's write, append
+ * and ftruncate calls name it, and its `close` ends it. `ino`: the number
+ * a name it makes is given (a delegation's, as a mkdir's). `fchmod`: the
+ * file it opened then given exactly this mode (fchmod(2), as libuv's
+ * copyfile narrows its destination before a byte reaches it), part of the
+ * open: refused (EPERM: another's file), the open is refused and keeps no
+ * description, so a write through it is EBADF.
  */
  | {
     call: 'open';
     path: string;
     mode: number;
+    access: W7OpenAccess;
     ino?: number;
     umask?: number;
-    read?: true;
     create?: true;
     truncate?: true;
     exclusive?: true;

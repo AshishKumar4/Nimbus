@@ -49,7 +49,7 @@ function statOf(stat: SqliteStat, epoch: string): VfsStat {
 export class SqliteFiles implements VFS {
   /** VFS.storesWrites: a regular file holds what it was written. */
   readonly storesWrites = true;
-  readonly sync: SyncVFS = this as unknown as SyncVFS;
+  readonly sync: SyncVFS = this;
   /** The database's change feed, in this principal's view (names it could list). */
   readonly changes: VfsChanges;
 
@@ -142,7 +142,8 @@ export class SqliteFiles implements VFS {
     }
     // A name that is not there is an answer: no error is made for it.
     try {
-      const stat = this.view.statIfPresent(path, options?.follow !== false);
+      // stat(2)'s answers: a name not there is null, one below a regular file ENOTDIR.
+      const stat = this.view.statIfPresent(path, options?.follow !== false, 'ENOTDIR');
       return stat === null ? null : statOf(stat, this.view.epoch);
     } catch (error) {
       const converted = toVfsError(error, options?.follow === false ? 'lstat' : 'stat', path);
@@ -172,7 +173,7 @@ export class SqliteFiles implements VFS {
   openFile(path: string, rights: { read: boolean; write: boolean }): VfsOpenFile {
     const { view } = this;
     const node = this.run('open', path, () => {
-      const there = view.statIfPresent(path, true);
+      const there = view.statIfPresent(path, true, 'ENOTDIR');
       const described = there === null ? null : this.engine.describeInode(there.ino, path.replace(/^\/+/, ''), view.cred, rights, view.principal, view.holds);
       if (described === null) throw syscallError('ENOENT', 'open', path);
       return described;
@@ -260,7 +261,7 @@ export class SqliteFiles implements VFS {
   copy(from: string, to: string, options?: VfsCopyOptions): number {
     return this.run(options?.recursive ? 'cp' : 'copyfile', from, () => {
       if (!options?.recursive) {
-        this.view.copyFile(from, to, { keepMode: options?.keepMode });
+        this.view.copyFile(from, to, { keepMode: options?.keepMode, preserve: options?.preserve });
         return 1;
       }
       return this.view.copyTree(from, to, { preserve: options.preserve, follow: options.follow });

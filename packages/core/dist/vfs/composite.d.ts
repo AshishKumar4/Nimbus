@@ -24,6 +24,7 @@ import type { Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsCopyOptions, 
 import type { FsTime, RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
 import { type VfsEvent } from './events.js';
 import { type VfsErrorCode } from './vfs-error.js';
+import { compareUtf8 as comparePaths } from '@nimbus-sh/platform/utf8.js';
 /**
  * Where a reader of a namespace's feed stands: the mount table as its
  * principal saw it, and each change feed's epoch and cursor.
@@ -79,8 +80,8 @@ export interface CompositeFeed {
      */
     walk(named: Iterable<string>, limit: number): Promise<MountWalk>;
 }
-/** Path order as SQLite's index keeps it: by UTF-8 bytes, which is code point order. */
-export declare function comparePaths(a: string, b: string): number;
+/** Path order as SQLite's index keeps it: by UTF-8 bytes (platform utf8.ts compareUtf8). */
+export { comparePaths };
 /**
  * A namespace entry's stat in the runtime contract's shape: its identity
  * (dev, ino) is the namespace's, and a mounted backend's entries carry no
@@ -316,6 +317,8 @@ interface Table {
     mounts: Map<string, Mount>;
     /** Bumped by every mount and unmount: a placement made under an older table may be stale (mountGeneration). */
     generation: number;
+    /** The last st_dev a mount was given, through any view: two mounts are never one device. */
+    lastDev: number;
     /** observeWrites: who is told, and the mounts whose backends report their own writes, subscribed. */
     writes?: WriteWatches;
     /** watchChanges: who is told. */
@@ -366,8 +369,6 @@ interface ViewShare {
 }
 export declare class CompositeVFS implements VFS {
     private readonly table;
-    /** The last st_dev a mount was given. */
-    private nextDev;
     private readonly viewer;
     /** Backends seen as this view's principal (a backend's `as` view is made once per view). */
     private readonly viewed;
@@ -927,9 +928,22 @@ export declare class CompositeVFS implements VFS {
      * the root as `made.told` says, each entry under it as made. `made` is
      * the copy's own root: a tree copied into itself (two mounts of one
      * backend) meets it on the way and passes it by, as it was not there when
-     * the copy began.
+     * the copy began. With `preserve` (cp -p), an entry's metadata is the
+     * source's once its content is in (preserveMetadata); a directory is made
+     * writable by its owner until its entries are.
      */
     private copyBytes;
+    /**
+     * cp -p's metadata for an entry a copy between backends made at `toRel`
+     * (`toAt` in the namespace; a file or a directory; a link's own is not
+     * set, as no backend sets a link's own times or owner, and through it
+     * they would land on another file): the source's owner when root copies,
+     * then its mode (a chown may clear set-id bits), then its times, as the
+     * backend allows each. Each is guarded right before it is made, after the
+     * write it waited on, and told as a change once it lands. As a native
+     * copy preserves them (SqliteVFS copyFile, planCopyTree).
+     */
+    private preserveMetadata;
     /** rmdir, or on a backend without it, an emptiness check and unlink. */
     private rmdirAt;
     /**

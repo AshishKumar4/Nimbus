@@ -18,6 +18,7 @@ import { objectHash, oidFromHex, oidToHex, type GitObjectType } from '../pack/fo
 import { CacheTree } from './cachetree.js';
 import { UnsupportedGitOperation } from '../routing.js';
 import { errnoCodeOf, isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { compareUtf8 as comparePaths } from '@nimbus-sh/platform/utf8.js';
 
 export const S_IFMT = 0o170000;
 export const S_IFREG = 0o100000;
@@ -101,19 +102,8 @@ export function decodePath(bytes: Uint8Array): string {
   return String.fromCharCode.apply(null, bytes as unknown as number[]);
 }
 
-/** git's order of two paths as strings: their UTF-8 bytes, which is code point order rather than UTF-16's. */
-export function comparePaths(a: string, b: string): number {
-  for (let i = 0; i < a.length && i < b.length; i++) {
-    let x = a.charCodeAt(i);
-    let y = b.charCodeAt(i);
-    if (x === y) continue;
-    // Surrogates (astral code points) sort above the rest of the BMP.
-    if (x >= 0xd800) x = x >= 0xe000 ? x - 0x800 : x + 0x2000;
-    if (y >= 0xd800) y = y >= 0xe000 ? y - 0x800 : y + 0x2000;
-    return x - y;
-  }
-  return a.length - b.length;
-}
+/** git's order of two paths as strings: their UTF-8 bytes (platform utf8.ts compareUtf8). */
+export { comparePaths };
 
 /** An entry's length in version 2/3 layout: the name and 1-8 NULs to a multiple of 8. */
 function paddedLength(extended: boolean, nameLength: number): number {

@@ -10,6 +10,13 @@
 import { parse, type Options, type Token } from 'acorn';
 export { parse };
 /**
+ * The brace in `body`, a CommonJS module's, that closes the function it is
+ * the body of before its end (text after it goes on outside), as
+ * [start, end]: null when it is one function body, or stops parsing before
+ * the function closes (V8, which compiled it, is its judge).
+ */
+export declare function strayClosingBrace(body: string): [number, number] | null;
+/**
  * Where module `text` imports `name` from the specifier `requested` (an
  * import's imported name, a default import's binding, an export-from's local
  * name), and that specifier's string literal, as [nameStart, nameEnd,
@@ -24,6 +31,19 @@ export type Tokens = Iterable<Token> & {
 };
 /** acorn's tokenizer, which Node's error_source.js reads an assert.ok() call's expression with. */
 export declare function tokenizer(code: string, options: Options): Tokens;
+/**
+ * The last token of `text` (as CommonJS reads it) that ends at or before
+ * `offset`, as [start, end]: where V8 places an argument list's missing `)`
+ * at the end of the input. Null for none.
+ */
+export declare function lastTokenBefore(text: string, offset: number): [number, number] | null;
+/**
+ * The rest element (`...`) directly inside the innermost parenthesis still
+ * open at `offset` in `text` (as CommonJS reads it), as [start, end]: where
+ * V8 reports a parenthesized rest no arrow follows
+ * (ParseArrowParametersWithRest) at the end of the input. Null for none.
+ */
+export declare function openParenRest(text: string, offset: number): [number, number] | null;
 /**
  * Where V8 would place a fatal error's report in `text`, a module's whole
  * text (a `{ cjs }` cell's wrapper included) as `goal` parses it, for the

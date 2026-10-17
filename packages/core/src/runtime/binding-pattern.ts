@@ -7,7 +7,7 @@
  * Reads only ESTree's fields, so it serves acorn's trees, rolldown's and the
  * interpreter's own copies alike; callers differ only in what they do with
  * the identifiers. The interpreter runs it after a program may have replaced
- * built-ins, so it names none (tests/unit/interpreter-primordials.mjs).
+ * built-ins, so it names none (tests/unit/primordials-audit.mjs).
  */
 import type { Identifier, Pattern } from 'acorn';
 

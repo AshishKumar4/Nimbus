@@ -359,6 +359,29 @@ async function until(ready, what) {
   for (const name of ['c1.bin', 'c2.bin']) assert.equal(dec.decode(s.kernel.readFile(`home/user/proj/d6/${name}`)), big);
 }
 
+// ── A copy that preserves is the session's ──
+// cp -p's metadata is the session's to judge and set: a copy both of whose
+// names the grant holds, asked to preserve, is not decided here.
+// Red before: the holder made it, with the time now and the creation mode.
+{
+  const s = session();
+  const OLD = Date.UTC(2001, 1, 3, 4, 5, 6);
+  await create(s.fs, '/home/user/proj/d8/warm.txt', 'w');
+  await until(() => s.filesystem.delegations.size === 1, 'the grant');
+  // Made, given its mode and times, and copied, all held here: the grant could decide the copy.
+  await create(s.fs, '/home/user/proj/d8/src.txt', 'src');
+  await s.fs.chmod('/home/user/proj/d8/src.txt', 0o751);
+  await s.fs.utimes('/home/user/proj/d8/src.txt', OLD, OLD);
+  const before = s.fs.stats().delegated.copyFile ?? 0;
+  await s.fs.copyFile('/home/user/proj/d8/src.txt', '/home/user/proj/d8/plain.txt');
+  assert.equal((s.fs.stats().delegated.copyFile ?? 0) - before, 0, 'a copy without preserve is decided here, not delegated');
+  await s.fs.copyFile('/home/user/proj/d8/src.txt', '/home/user/proj/d8/kept.txt', { preserve: true });
+  assert.equal((s.fs.stats().delegated.copyFile ?? 0) - before, 1, 'one that preserves is delegated to the session');
+  await s.fs.settle();
+  const kept = s.kernel.stat('home/user/proj/d8/kept.txt');
+  assert.deepEqual([kept.mtime, (kept.mode & 0o7777).toString(8)], [OLD, '751'], 'the copy is cp -p\'s');
+}
+
 // ── A resident's process logs what it sends in its own store until the session answers ──
 // (process-fs-journal.ts): what it dies holding, the session drains from
 // there. Red before: the holder's client was made without the journal.

@@ -7,7 +7,8 @@
 // node program and bash print for each refused call below is what they
 // printed on 1bf0d609, where the entrypoint threw (EXPECTED, recorded there
 // with this file), each error's own keys since in Node's uvException order
-// (errno, code, syscall, path).
+// (errno, code, syscall, path). One recorded answer was wrong and is Linux's
+// now: lstat of a name below a regular file is ENOTDIR, as stat's is.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -48,7 +49,7 @@ const BASH_SCRIPT = "cat /home/user/file/child; cat < /home/user/full; mkdir /ho
 const EXPECTED = {
   node: [
     "SHAPE stat Error Error message=\"ENOTDIR: not a directory, stat '/home/user/file/child'\"~ errno=-20 code=\"ENOTDIR\" syscall=\"stat\" path=\"/home/user/file/child\"",
-    "SHAPE lstat Error Error message=\"ENOENT: no such file or directory, lstat '/home/user/file/child'\"~ errno=-2 code=\"ENOENT\" syscall=\"lstat\" path=\"/home/user/file/child\"",
+    "SHAPE lstat Error Error message=\"ENOTDIR: not a directory, lstat '/home/user/file/child'\"~ errno=-20 code=\"ENOTDIR\" syscall=\"lstat\" path=\"/home/user/file/child\"",
     "SHAPE readFile Error Error message=\"EISDIR: illegal operation on a directory, read '/home/user/full'\"~ errno=-21 code=\"EISDIR\" syscall=\"read\" path=\"/home/user/full\"",
     "SHAPE readdir Error Error message=\"ENOTDIR: not a directory, scandir '/home/user/file'\"~ errno=-20 code=\"ENOTDIR\" syscall=\"scandir\" path=\"/home/user/file\"",
     "SHAPE writeFile Error Error message=\"ENOENT: no such file or directory, open '/home/user/missing/f'\"~ errno=-2 code=\"ENOENT\" syscall=\"open\" path=\"/home/user/missing/f\"",

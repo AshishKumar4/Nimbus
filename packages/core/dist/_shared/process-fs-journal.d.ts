@@ -18,6 +18,10 @@
  * on, entries are numbered under `writer` from `seq`, one each, in order
  * (number()). A new numbering is recorded only when the client opens a new
  * writer epoch, so the journal writes one row per change, and deletes it.
+ *
+ * A row outlives the version that wrote it (a deploy between a process's
+ * death and its drain): every read of one passes it through currentCall,
+ * which gives an earlier version's form of an op this version's.
  */
 import type { ProcessFsOp } from './process-fs-client.js';
 /** Where a numbering of the log starts: from `jid` on, numbered under `writer` from `seq`. */

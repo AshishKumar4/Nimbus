@@ -44,11 +44,15 @@ export interface ProcessWarnings {
   onWarning(warning: unknown): void;
   /** Whether Node would install it: not under NODE_NO_WARNINGS=1 or NODE_OPTIONS' --no-warnings. */
   readonly installs: boolean;
+  /** Drops the warnings whose tick has not run: an uncaught exception that ends the process runs no more ticks. */
+  dropQueued(): void;
 }
 
 /** Node's warnings for `process` (read when a warning is made, so a process made after may be named). */
 export function createProcessWarnings(process: () => WarningProcess, write: (text: string) => void): ProcessWarnings {
   let traceHintWritten = false;
+  // Bumped by dropQueued: a tick queued before it does nothing.
+  let generation = 0;
   return {
     emitWarning(warning, type, code, ctor) {
       const proc = process();
@@ -92,11 +96,16 @@ export function createProcessWarnings(process: () => WarningProcess, write: (tex
       if (told.name === 'DeprecationWarning') {
         if (proc.noDeprecation) return;
         if (proc.throwDeprecation) {
-          proc.nextTick(() => { throw told; });
+          const at = generation;
+          proc.nextTick(() => { if (at === generation) throw told; });
           return;
         }
       }
-      proc.nextTick(() => { proc.emit('warning', told); });
+      const at = generation;
+      proc.nextTick(() => { if (at === generation) proc.emit('warning', told); });
+    },
+    dropQueued() {
+      generation++;
     },
     onWarning(warning) {
       if (!(warning instanceof Error)) return;

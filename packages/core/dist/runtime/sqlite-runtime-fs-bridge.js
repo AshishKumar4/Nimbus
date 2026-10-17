@@ -7,6 +7,7 @@ import { abandon, andThen, isCharacterDevice, isPromise, readDeclaredSource, rea
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { fsError, MAX_LINK_HOPS, walkBeneath } from './beneath-walk.js';
 import { modeAllows } from '../vfs/posix-access.js';
+import { sameFileVersion } from './os-contracts.js';
 export { fsError, walkBeneath } from './beneath-walk.js';
 export class SqliteRuntimeFsBridge {
     rawVfs;
@@ -136,8 +137,8 @@ export class SqliteRuntimeFsBridge {
                 };
             }
             catch (error) {
-                // lstat answers a name below a non-directory as not there.
-                if (hasErrorCode(error, 'ENOENT') || (!followSymlinks && hasErrorCode(error, 'ENOTDIR')))
+                // A name below a regular file is ENOTDIR to lstat as to stat (Linux's lstat(2)).
+                if (hasErrorCode(error, 'ENOENT'))
                     return null;
                 throw error;
             }
@@ -149,6 +150,13 @@ export class SqliteRuntimeFsBridge {
             if (located === null || located.absent)
                 return null;
             try {
+                if (options.contentKey !== undefined) {
+                    // Checked in the read's own turn: the bytes read are the bytes the key names.
+                    if (located.mount)
+                        throw fsError('ENOTSUP', 'read', path);
+                    if (this.vfs.contentKey(located.path) !== options.contentKey)
+                        throw fsError('ESTALE', 'read', path);
+                }
                 if (options.maxBytes !== undefined) {
                     // A bounded whole read is SQLite's alone, where the size check and
                     // the read are one turn: a mount's stat and read are two calls, and
@@ -239,7 +247,12 @@ export class SqliteRuntimeFsBridge {
             const located = this.locate(path, options.followSymlinks !== false);
             if (located === null)
                 return null;
+            // Stat and read in one synchronous step: nothing comes between them.
+            if (options.expectedFile !== undefined && !sameFileVersion(this.stat(path, { followSymlinks: options.followSymlinks }), options.expectedFile)) {
+                throw fsError('ESTALE', 'read', path);
+            }
             if (located.mount) {
+                // The engine's revisions name no mounted file.
                 if (options.expectedEpoch !== undefined)
                     throw fsError('ESTALE', 'read', path);
                 const mount = located.mount;
@@ -534,7 +547,8 @@ export class SqliteRuntimeFsBridge {
                 return;
             }
             const p = located.path;
-            if (!this.vfs.exists(p))
+            // unlink(2): a name not there is ENOENT, one below a regular file ENOTDIR.
+            if (this.vfs.statIfPresent(p, false, 'ENOTDIR') === null)
                 throw fsError('ENOENT', 'unlink', path);
             this.owned(options.mutationOwner).unlink(p);
         });
@@ -547,10 +561,11 @@ export class SqliteRuntimeFsBridge {
                 return;
             }
             const p = located.path;
-            // rmdir(2): a missing path is ENOENT, anything but a directory (a file, a link) ENOTDIR.
-            if (!this.vfs.exists(p))
+            // rmdir(2): a missing path is ENOENT; anything but a directory (a file, a link), or a name below a regular file, ENOTDIR.
+            const there = this.vfs.statIfPresent(p, false, 'ENOTDIR');
+            if (there === null)
                 throw fsError('ENOENT', 'rmdir', path);
-            if (!this.vfs.isDirectory(p))
+            if (there.type !== 'directory')
                 throw fsError('ENOTDIR', 'rmdir', path);
             this.owned(options.mutationOwner).rmdir(p);
         });
@@ -573,7 +588,8 @@ export class SqliteRuntimeFsBridge {
             }
             const oldPath = source.path;
             const newPath = target.path;
-            if (!this.vfs.exists(oldPath))
+            // rename(2): a source not there is ENOENT, one below a regular file ENOTDIR.
+            if (this.vfs.statIfPresent(oldPath, false, 'ENOTDIR') === null)
                 throw callError('ENOENT', call);
             this.assertParentDirectory(newPath, call);
             this.owned(options.mutationOwner).rename(oldPath, newPath);
@@ -621,6 +637,18 @@ export class SqliteRuntimeFsBridge {
         if (located === null)
             throw fsError('ELOOP', 'revision', path);
         return located.mount ? 0 : this.vfs.revision(located.path);
+    }
+    contentKey(path) {
+        return called({ syscall: 'open', path }, () => {
+            const located = this.locate(path, true);
+            if (located === null)
+                throw fsError('ELOOP', 'open', path);
+            if (located.absent)
+                throw fsError('ENOENT', 'open', path);
+            if (located.mount)
+                throw fsError('ENOTSUP', 'open', path);
+            return this.vfs.contentKey(located.path);
+        });
     }
     acquire(epoch, cursor, options) {
         return this.vfs.acquire(epoch, cursor, options);
@@ -674,11 +702,11 @@ export class SqliteRuntimeFsBridge {
                 throw callError('ELOOP', call);
             const target = this.locateMutation(to, true, call);
             if (!source.mount && !target.mount) {
-                this.vfs.copyFile(source.path, target.path, { keepMode: options?.keepMode });
+                this.vfs.copyFile(source.path, target.path, { keepMode: options?.keepMode, preserve: options?.preserve });
                 return;
             }
             // Across filesystems, the namespace's copy, from the file the source leads to (a backend that resolves its own paths follows it there).
-            this.mounted.copy(source.mount ? source.path : '/' + source.path, target.mount ? target.path : '/' + target.path, { follow: true, keepMode: options?.keepMode });
+            this.mounted.copy(source.mount ? source.path : '/' + source.path, target.mount ? target.path : '/' + target.path, { follow: true, keepMode: options?.keepMode, preserve: options?.preserve });
         });
     }
     copyTree(from, to, options) {
@@ -720,7 +748,7 @@ export class SqliteRuntimeFsBridge {
             }
             return this.keepWaveDescription(id, describeMounted({
                 scope: this.scope, refuse: (code, syscall) => fsError(code, syscall, file.name), sync: true, bufferedWriteBytes: this.bufferedWriteBytes,
-            }, held, ino), rights);
+            }, held, ino, rights), rights);
         }),
         node: (id) => {
             const node = this.waveDescription(id);
@@ -1005,9 +1033,10 @@ export class SqliteRuntimeFsBridge {
         const parent = parentVfsPath(path);
         if (!parent)
             return;
-        if (!this.vfs.exists(parent))
+        const st = this.vfs.statIfPresent(parent, true, 'ENOTDIR');
+        if (st === null)
             throw callError('ENOENT', call);
-        if (!this.vfs.isDirectory(parent))
+        if (st.type !== 'directory')
             throw callError('ENOTDIR', call);
     }
     /**

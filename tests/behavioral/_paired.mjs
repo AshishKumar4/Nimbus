@@ -30,7 +30,7 @@ import { median, medianInterval } from '../../scripts/lib/statistics.mjs';
 import { createProbeTarget } from './_session-transport.mjs';
 
 /** The probes graded this way, as a selection names them. */
-export const PAIRED_PROBES = ['perf-regression/cold-start', 'perf-regression/first-paint', 'perf-regression/install-warm', 'perf-regression/clone-fast'];
+export const PAIRED_PROBES = ['perf-regression/cold-start', 'perf-regression/first-paint', 'perf-regression/install-warm', 'perf-regression/clone-fast', 'perf-regression/module-load', 'perf-regression/ruby-gem-require'];
 
 /** The baseline's arms and the candidate's. */
 export const BASELINE_ARMS = ['a1', 'a2'];

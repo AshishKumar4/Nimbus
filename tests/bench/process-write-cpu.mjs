@@ -16,7 +16,7 @@ const PIECE = new TextEncoder().encode('0123456789abcdef'.repeat(4));
 let checksum = 0;
 
 /** A fresh database for each sample: what a sample writes would otherwise grow the next one's tree. */
-async function session({ SqliteVFS, ProcessFiles }) {
+async function session({ 'vfs/sqlite-vfs.ts': { SqliteVFS }, 'runtime/process-files.ts': { ProcessFiles } }) {
   const host = await hostSqlite();
   const engine = new SqliteVFS(host.sql, host.transactions);
   const kernel = engine.as(CRED_KERNEL);
@@ -47,7 +47,9 @@ const WORK = {
 await runPairedBenchmark({
   source: CORE_CPU_SOURCES.source,
   async run({ short, cleanup, withArms, sample }) {
-    await withArms((from) => loadIsolatedCore(from, cleanup), async (arms) => {
+    await withArms((from) => loadIsolatedCore(from, cleanup, {
+      sources: CORE_CPU_SOURCES, modules: ['vfs/sqlite-vfs.ts', 'runtime/process-files.ts'],
+    }), async (arms) => {
       for (const [kind, work] of Object.entries(WORK)) {
         await sample(kind, arms, async (modules) => {
           const proc = await session(modules);

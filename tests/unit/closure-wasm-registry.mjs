@@ -115,13 +115,51 @@ assert.deepEqual(imports, [
   const copy = new Uint8Array(big);
   assert.equal(scope.WebAssembly.Module(copy), compiled, 'new WebAssembly.Module(bytes) is the loader\'s module');
   assert.equal(await scope.WebAssembly.compile(copy), compiled, 'WebAssembly.compile(bytes) too');
+  // Any BufferSource a program hands WebAssembly is those bytes: a view of
+  // any kind over a larger buffer is the range it spans, for Module, compile
+  // and instantiate alike, and a view one byte off is another image.
+  const padded = new ArrayBuffer(big.byteLength + 64);
+  new Uint8Array(padded, 32, big.byteLength).set(big);
+  const views = {
+    DataView: new DataView(padded, 32, big.byteLength),
+    Int8Array: new Int8Array(padded, 32, big.byteLength),
+    Uint8ClampedArray: new Uint8ClampedArray(padded, 32, big.byteLength),
+    Uint16Array: new Uint16Array(padded, 32, big.byteLength / 2),
+    Int32Array: new Int32Array(padded, 32, big.byteLength / 4),
+    Float64Array: new Float64Array(padded, 32, big.byteLength / 8),
+    BigUint64Array: new BigUint64Array(padded, 32, big.byteLength / 8),
+    'Uint8Array over a larger buffer': new Uint8Array(padded, 32, big.byteLength),
+  };
+  for (const [kind, view] of Object.entries(views)) {
+    assert.equal(scope.WebAssembly.Module(view), compiled, `new WebAssembly.Module(${kind}) is the loader's module`);
+    assert.equal(await scope.WebAssembly.compile(view), compiled, `WebAssembly.compile(${kind}) too`);
+    assert.equal((await scope.WebAssembly.instantiate(view, {})).module, compiled, `WebAssembly.instantiate(${kind}) too`);
+  }
+  // So is a view over shared memory, as WebAssembly takes one.
+  const shared = new SharedArrayBuffer(big.byteLength + 64);
+  new Uint8Array(shared, 16, big.byteLength).set(big);
+  for (const [kind, view] of Object.entries({ 'Uint8Array over a SharedArrayBuffer': new Uint8Array(shared, 16, big.byteLength), 'DataView over a SharedArrayBuffer': new DataView(shared, 16, big.byteLength) })) {
+    assert.equal(scope.WebAssembly.Module(view), compiled, `new WebAssembly.Module(${kind}) is the loader's module`);
+    assert.equal(await scope.WebAssembly.compile(view), compiled, `WebAssembly.compile(${kind}) too`);
+    assert.equal((await scope.WebAssembly.instantiate(view, {})).module, compiled, `WebAssembly.instantiate(${kind}) too`);
+  }
+  // A detached view is no image: compile and instantiate reject it, as the real
+  // ones do, rather than throw from looking it up.
+  const gone = new Uint8Array(big);
+  const detached = new Uint8Array(gone.buffer, 8, 64);
+  gone.buffer.transfer();
+  await assert.rejects(scope.WebAssembly.compile(detached), /WebAssembly cannot be compiled from bytes here/, 'a detached view goes to the real compile, which refuses it');
+  await assert.rejects(scope.WebAssembly.instantiate(detached, {}), /WebAssembly cannot be compiled from bytes here/, 'and to the real instantiate');
+  let shifted;
+  try { scope.WebAssembly.Module(new DataView(padded, 31, big.byteLength)); } catch (e) { shifted = e; }
+  assert.match(shifted?.message ?? '', /WebAssembly cannot be compiled from bytes here/, 'a view one byte off is not the image');
   const unknown = new Uint8Array(big); unknown[9] ^= 1;
   let refused;
   try { scope.WebAssembly.Module(unknown); } catch (e) { refused = e; }
   assert.ok(refused, 'bytes no launch registered are refused');
   assert.match(refused.message, /WebAssembly cannot be compiled from bytes here/);
   assert.match(refused.message, /Images this launch does carry: 1/);
-  console.log('  the seam answers the closure\'s bytes by digest and refuses unknown bytes naming what it carries');
+  console.log('  the seam answers the closure\'s bytes by digest, in any view, and refuses unknown bytes naming what it carries');
 }
 
 // ── inlined images: base64 and numeric array literals ───────────────────

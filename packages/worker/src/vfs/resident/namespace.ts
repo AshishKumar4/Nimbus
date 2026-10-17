@@ -33,6 +33,7 @@ import type { Coherence } from './coherence.js';
 import { namespaceAllows, type ModeMeta, type ResidentCred } from './permissions.js';
 import type { RuntimeVfsStat, VfsInvalidatedPath, VfsListEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { NS_DIR, NS_FILE, NS_LINK, type NsRow, type ResidentTables } from './tables.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 
 /** What a row is made from: a stat the session reported, or one the process's own write stands in with until it does. */
 export type NsStat = Pick<RuntimeVfsStat, 'type' | 'size' | 'mode' | 'uid' | 'gid' | 'atime' | 'mtime' | 'ctime' | 'ino'>
@@ -182,15 +183,14 @@ export function nsRowAt(t: ResidentTables, k: string): NsRow | undefined {
 
 function joinTarget(linkPath: string, target: unknown): string {
   const text = String(target);
-  const parts = text.startsWith('/') ? [] : nsSplit(linkPath)[0].split('/').filter(Boolean);
-  for (const seg of text.split('/')) {
-    if (seg === '' || seg === '.') continue;
-    if (seg === '..') parts.pop(); else parts.push(seg);
-  }
-  return parts.join('/');
+  return rootClampedSegments(text, text.startsWith('/') ? [] : nsSplit(linkPath)[0].split('/').filter(Boolean)).join('/');
 }
 
 export function createNamespace(coherence: Coherence, admission: Admission): Namespace {
+  // The clock, taken as the store is made, before a run that can stop tapes
+  // Date (stop-replay.ts): an own file's time is stamped when its write is
+  // answered, which a run and its run again do at other moments.
+  const realNow = Date.now;
   /** Paths of every symlink in the table: resolution walks only past these. */
   let links = new Set<string>();
   /**
@@ -515,7 +515,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
           && held.mode === Number(s.mode) && held.uid === Number(s.uid)
           && held.gid === Number(s.gid) && held.mtime === Number(s.mtime)
           && held.ctime === Number(s.ctime) && held.ino === Number(s.ino)
-          && held.rev === Number(entry.rev)
+          && held.dev === (Number(s.dev) || 0) && held.rev === Number(entry.rev)
           && (held.target ?? null) === (entry.linkTarget ?? entry.unlisted ?? null)) continue;
         put(t, k, s, entry.rev, entry.linkTarget, entry.unlisted ?? null);
       }
@@ -532,7 +532,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
       const t = coherence.require();
       const held = nsRowAt(t, k);
       if (held !== undefined && held.rev >= rev) return;
-      const now = Date.now();
+      const now = realNow();
       // A file the process created: its umask's mode, on the device of the
       // directory it is in, with one link, until the delta reports the
       // authority's own stat for it. A file it rewrote keeps its identity.

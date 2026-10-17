@@ -3,7 +3,7 @@ import { isShellIdentifier } from './names.js';
 import { DEFAULT_HOME } from '../../../constants.js';
 import type { ProcessView } from '../../../runtime/process-files.js';
 import { expandGlob, globMatch } from '../utils/glob.js';
-import { readBalancedCommand, readBracedExpansion } from './lexer.js';
+import { readAnsiCQuote, readBalancedCommand, readBracedExpansion } from './lexer.js';
 import type { ShellOptions } from './state.js';
 
 export interface ExpandContext {
@@ -27,6 +27,11 @@ export interface ExpandContext {
    * what makes `out="$(cmd)" || die` and `set -e` see a failing `cmd`.
    */
   lastSubstitutionExitCode?: number;
+  /**
+   * Expanding a here-document's body, where `'` and `$'...'` are literal
+   * text, inside a parameter's `-`, `+`, `=` and `?` words too.
+   */
+  hereDocument?: boolean;
 }
 
 export interface CapturedCommand {
@@ -574,11 +579,11 @@ async function applyDefault(
     : parameter.value !== undefined && (!colon || parameter.value !== '');
 
   if (operator === '+') {
-    return [valuePiece(set ? await expandParameterWord(word, ctx) : '', quoted)];
+    return [valuePiece(set ? await expandParameterWord(word, ctx, true) : '', quoted)];
   }
   if (set) return parameterPieces(parameter, ctx, quoted);
 
-  const value = await expandParameterWord(word, ctx);
+  const value = await expandParameterWord(word, ctx, true);
   if (operator === '?') {
     throw new ExpansionError(`${ref.name}: ${value || 'parameter null or not set'}`);
   }
@@ -757,14 +762,20 @@ function scalarOf(parameter: Parameter, ctx: ExpandContext): string {
 
 /**
  * The word inside `${p:-word}`, `${p#pattern}` and friends is itself expanded,
- * with quote removal, before it is used.
+ * with quote removal, before it is used. `operand`: a `-`, `+`, `=` or `?`
+ * word, which a here-document's body quotes as it quotes itself.
  */
-async function expandParameterWord(word: string, ctx: ExpandContext): Promise<string> {
+async function expandParameterWord(word: string, ctx: ExpandContext, operand = false): Promise<string> {
   if (word === '') return '';
-  return joinPieces(await expandParts(parameterWordParts(word), ctx));
+  // A here-document's quoting reaches the -, +, = and ? words; its patterns read quotes as anywhere.
+  return joinPieces(await expandParts(parameterWordParts(word, operand && ctx.hereDocument === true), ctx));
 }
 
-function parameterWordParts(word: string): WordPart[] {
+/**
+ * The operand word's parts. In a here-document's body, `'` and `$'...'` are
+ * literal there, and a backslash quotes only what it quotes in the body.
+ */
+function parameterWordParts(word: string, hereDocument: boolean): WordPart[] {
   const parts: WordPart[] = [];
   let text = '';
   const flush = (): void => {
@@ -776,13 +787,26 @@ function parameterWordParts(word: string): WordPart[] {
   let i = 0;
   while (i < word.length) {
     const ch = word[i];
-    if (ch === '\\' && i + 1 < word.length) {
+    // In a here-document a backslash quotes only $, `, itself and a newline; before anything else it is text.
+    if (ch === '\\' && i + 1 < word.length && (!hereDocument || '$`\\\n'.includes(word[i + 1]))) {
       flush();
       parts.push({ text: word[i + 1], quoted: 'single' });
       i += 2;
       continue;
     }
-    if (ch === "'" || ch === '"') {
+    if (ch === '$' && word[i + 1] === '$') {
+      text += '$$';
+      i += 2;
+      continue;
+    }
+    if (!hereDocument && ch === '$' && word[i + 1] === "'") {
+      flush();
+      const quoted = readAnsiCQuote(word, i);
+      parts.push({ text: quoted.text, quoted: 'single' });
+      i = quoted.end;
+      continue;
+    }
+    if ((ch === "'" && !hereDocument) || ch === '"') {
       const end = word.indexOf(ch, i + 1);
       const close = end === -1 ? word.length : end;
       flush();

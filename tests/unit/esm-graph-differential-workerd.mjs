@@ -4,7 +4,8 @@
 // kind of each module (audit RTM-4, SHI-M1, SHI-M2; core runtime/esm-graph.ts):
 // seeded random graphs mixing files the program writes (the interpreter's),
 // files staged with the launch (the registry's, or the interpreter's where
-// their graph reaches a file written later), a query's instance, data:
+// their graph reaches a file written later, a staged module's static import
+// of one included), a query's instance, data:
 // modules, CommonJS modules, top-level await and a module that throws, each
 // module logging as it runs and as its top-level await completes. Host Node
 // running the same files is the oracle: the logs are compared graph by graph.
@@ -46,9 +47,6 @@ for (let g = 0; g < GRAPHS; g++) {
     if (modules[i].kind === 'cjs') continue;
     for (let j = 0; j < size; j++) {
       if (j === i || random() >= 0.35) continue;
-      // A staged module is linked against the files there when the launch began: one it imports that the program
-      // writes later is refused (ticket-staged-import-of-later-file.md), where Node finds it. Not in these graphs.
-      if (modules[i].kind === 'staged' && (modules[j].kind === 'file' || modules[j].kind === 'query')) continue;
       // A data: module's URL holds what it imports: data: modules import only lower data: modules (no cycle of URLs).
       if (modules[i].kind === 'data' && modules[j].kind === 'data' && j > i) continue;
       modules[i].deps.push(j);

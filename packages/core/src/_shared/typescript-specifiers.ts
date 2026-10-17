@@ -37,10 +37,19 @@
  *
  * The facet shim embeds this code itself (node-shim-resolution.ts, compiled
  * once into the shim's preamble); tests/unit/typescript-specifier-resolution.mjs
- * evaluates the embedded copy over the whole table.
+ * evaluates the embedded copy over the whole table. The guest's require()
+ * calls it after a program may have replaced built-ins, so it calls only
+ * those the launch captured (primordials.ts).
  */
 
-import { vfsPathExtension } from '../vfs/path.js';
+import { regExpExec, stringEndsWith, stringLastIndexOf, stringSlice } from './primordials.js';
+
+/** The basename's extension with its dot, or '' (vfs/path.ts vfsPathExtension, on the captures). */
+function extensionOf(path: string): string {
+  const base = stringSlice(path, stringLastIndexOf(path, '/') + 1);
+  const dot = stringLastIndexOf(base, '.');
+  return dot > 0 ? stringSlice(base, dot) : '';
+}
 
 /**
  * The esbuild loader a TypeScript source takes, by its extension: `.ts`,
@@ -48,14 +57,16 @@ import { vfsPathExtension } from '../vfs/path.js';
  * any other file.
  */
 export function typescriptLoader(path: string): 'ts' | 'tsx' | null {
-  const ext = vfsPathExtension(path);
+  const ext = extensionOf(path);
   if (ext === '.tsx') return 'tsx';
   return ext === '.ts' || ext === '.mts' || ext === '.cts' ? 'ts' : null;
 }
 
+const DECLARATION_FILE = /\.d\.[mc]?ts$/;
+
 /** `name.d.ts` / `name.d.mts` / `name.d.cts`, by TypeScript's own rule. */
 export function isTypescriptDeclarationFile(path: string): boolean {
-  return /\.d\.[mc]?ts$/.test(path.slice(path.lastIndexOf('/') + 1));
+  return regExpExec(DECLARATION_FILE, stringSlice(path, stringLastIndexOf(path, '/') + 1)) !== null;
 }
 
 /** What Node 22.22.3's loaders strip the types of: `.ts`, `.mts`, `.cts`, but a declaration file. */
@@ -71,10 +82,10 @@ const NON_MAPPING_EXTENSION = /\.(ts|tsx|mts|cts|json|node|cjs)$/;
  * take has missed. Empty when the specifier cannot name one.
  */
 export function typescriptFallbackCandidates(base: string): string[] {
-  if (NON_MAPPING_EXTENSION.test(base)) return [];
-  if (base.endsWith('.mjs')) return [base.slice(0, -4) + '.mts'];
-  if (base.endsWith('.js')) {
-    const stem = base.slice(0, -3);
+  if (regExpExec(NON_MAPPING_EXTENSION, base) !== null) return [];
+  if (stringEndsWith(base, '.mjs')) return [stringSlice(base, 0, -4) + '.mts'];
+  if (stringEndsWith(base, '.js')) {
+    const stem = stringSlice(base, 0, -3);
     return [stem + '.ts', stem + '.tsx'];
   }
   return [base + '.ts', base + '.tsx'];

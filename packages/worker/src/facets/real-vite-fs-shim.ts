@@ -51,6 +51,7 @@
  */
 
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { LEXICAL_PATH_PREAMBLE } from '../loaders/workers.generated.js';
 
 /**
  * Walk the VFS and produce a snapshot suitable for seeding the facet's
@@ -1031,6 +1032,8 @@ import * as __n_util from 'node:util';
 import * as __n_zlib from 'node:zlib';
 import * as __n_workerThreads from 'node:worker_threads';
 
+${LEXICAL_PATH_PREAMBLE}
+
 const _builtinTable = {
   'assert': __n_assert, 'node:assert': __n_assert,
   'buffer': __n_buffer, 'node:buffer': __n_buffer,
@@ -1124,12 +1127,7 @@ globalThis.__cirrusRealUserspaceRequire = function __cirrusRealUserspaceRequire(
         if (b) return b;
         if (n.startsWith('./') || n.startsWith('../')) {
           // Relative require — resolve against moduleDir.
-          const segs = (moduleDir + '/' + n).split('/').reduce((acc, s) => {
-            if (s === '..') acc.pop();
-            else if (s && s !== '.') acc.push(s);
-            return acc;
-          }, []);
-          const relAbs = '/' + segs.join('/');
+          const relAbs = '/' + rootClampedSegments(moduleDir + '/' + n).join('/');
           for (const ext of ['', '.js', '.mjs', '.cjs', '.json']) {
             if (fs.files.has(relAbs + ext)) {
               const c = fs.files.get(relAbs + ext);

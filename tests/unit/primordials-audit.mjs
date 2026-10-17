@@ -1,0 +1,264 @@
+// The interpreter, and the guest's module loading, reach nothing a program
+// can replace.
+//
+// The interpreter shares its realm with the program it runs, and the program
+// may replace any built-in it can reach: a global (`Array`, `TypeError`), a
+// prototype method (`Array.prototype.push`, `WeakMap.prototype.set`), the
+// array iterator, an accessor on Object.prototype or Array.prototype. Each
+// time the interpreter went through one, the replacement could watch or
+// change the interpreter's own objects (its environments, private names,
+// argument lists), which no native code can reach. So every built-in the
+// interpreter uses is captured before any program code runs
+// (primordials.ts, loaded at the launch's start), and the rest of the
+// interpreter calls only those captures. The guest's module loading (node:path,
+// the resolver, the filesystem reads it makes) must answer as Node's loader
+// does after a program replaced a built-in, so the sources of it that are
+// typed (GUEST_LOADING) call only the captures too
+// (design-guest-loader-primordials.md); it runs with the unit tests, on every
+// change to them.
+//
+// This checks those sources with the type checker, outside the captures
+// (interpreter/primordials.ts, _shared/primordials.ts), for what would go
+// through the program's realm instead:
+//   - a global value (Array, Object, TypeError, Promise, globalThis, ...);
+//   - a method or accessor declared by the built-in library (`.push`,
+//     `.slice`, `.then`, `.call`, `.description`), except on the Safe*
+//     collections, whose methods are copied when they are captured;
+//   - for-of, spread and array destructuring, which run the array iterator;
+//   - `in`, and the read of an optional property, which look up the
+//     prototype chain when the property is absent;
+//   - a property descriptor that inherits (ToPropertyDescriptor reads
+//     `get` and `set` through Object.prototype);
+//   - a generator function not made by safeGenerator (or genCode, which
+//     calls it): driving its generators (next(), yield*) would look up
+//     %GeneratorPrototype% and %IteratorPrototype%.
+//
+// And the parser bundled with it: acorn, as the interpreter bundle rewrites
+// it (worker scripts/acorn-primordials.mjs), checked by parser-audit.mjs, which shares nothing with the rewrite. acorn
+// is JavaScript, which the type checker cannot type, so that check is by its
+// syntax tree and acorn's own declarations: no global but the parser realm,
+// no built-in method called but through it, no literal or constructor whose
+// objects inherit, nothing iterated. tests/unit/interpreter-parser-realm.mjs
+// runs the bundled parser in a realm that logs every built-in it reaches.
+
+import assert from 'node:assert/strict';
+import { readFileSync, readdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const require = createRequire(import.meta.url);
+const ts = require('typescript');
+const CORE = fileURLToPath(new URL('../../packages/core/', import.meta.url));
+const DIR = join(CORE, 'src/interpreter');
+/**
+ * Not checked: primordials.ts, where the captures are made, and host-ops.ts,
+ * whose code runs at build time to make the source text of the host module
+ * (which takes its built-ins from the runtime it is bound to).
+ */
+const UNCHECKED = new Set(['primordials.ts', 'host-ops.ts']);
+/** The mark of a line that reaches the program's realm because Node's own code does (posix-path.ts: lib/path.js join's push). */
+const LIVE_AS_NODE = /\/\/ as Node's, live:/;
+/** The guest's module loading, as it is converted: node:path's posix half, the module resolvers, their package maps and TypeScript rules, Node's errors. */
+const GUEST_LOADING = ['posix-path.ts', 'esm-resolver.ts', 'package-map.ts', 'node-error.ts', 'commonjs-resolver.ts', 'typescript-specifiers.ts']
+  .map((file) => join(CORE, 'src/_shared', file));
+const FILES = [
+  ...readdirSync(DIR).filter((f) => f.endsWith('.ts') && !UNCHECKED.has(f)).map((f) => join(DIR, f)),
+  join(CORE, 'src/_shared/runtime-function-source.ts'),
+  join(CORE, 'src/_shared/importer-url.ts'),
+  join(CORE, 'src/runtime/binding-pattern.ts'),
+  join(CORE, 'src/runtime/esm-interop.ts'),
+  ...GUEST_LOADING,
+];
+/** Globals that are not writable or configurable, so nothing can replace them. */
+const FIXED_GLOBALS = new Set(['undefined', 'NaN', 'Infinity']);
+/** Library properties that are own data properties of the objects that have them. */
+const OWN_PROPERTIES = new Set(['length', 'prototype']);
+/**
+ * Library types whose members are own data properties of every object the
+ * interpreter reads them on: descriptors it makes (dataDescriptor,
+ * accessorDescriptor) or [[GetOwnProperty]] returns, the results of its
+ * own generators' next(), and what RegExp.prototype.exec returns (each
+ * element, `index`).
+ */
+const OWN_RECORDS = /^(PropertyDescriptor|TypedPropertyDescriptor|IteratorResult|IteratorYieldResult|IteratorReturnResult|RegExpExecArray)$/;
+/** What gives a generator function SafeGeneratorPrototype. */
+const SAFE_GENERATOR_MAKERS = new Set(['safeGenerator', 'genCode']);
+/** Collections whose methods primordials.ts copies onto their own prototypes. */
+const SAFE = /^Safe(Map|Set|WeakMap|WeakSet)$/;
+
+const config = ts.getParsedCommandLineOfConfigFile(join(CORE, 'tsconfig.json'), {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => {} });
+const program = ts.createProgram(FILES, config.options);
+const checker = program.getTypeChecker();
+
+const library = (declaration) => {
+  const file = declaration.getSourceFile();
+  return program.isSourceFileDefaultLibrary(file) || /[\\/]@types[\\/]node[\\/]/.test(file.fileName);
+};
+const fromLibrary = (symbol) => !!symbol && !!symbol.declarations && symbol.declarations.length > 0 && symbol.declarations.every(library);
+const ours = (symbol) => !!symbol && !!symbol.declarations
+  && symbol.declarations.some((d) => d.getSourceFile().fileName.startsWith(DIR) || GUEST_LOADING.includes(d.getSourceFile().fileName));
+
+function isValueName(node) {
+  const p = node.parent;
+  if (ts.isPropertyAccessExpression(p) && p.name === node) return false;
+  if ((ts.isPropertyAssignment(p) || ts.isPropertyDeclaration(p) || ts.isMethodDeclaration(p) || ts.isPropertySignature(p)
+    || ts.isGetAccessor(p) || ts.isSetAccessor(p) || ts.isEnumMember(p)) && p.name === node) return false;
+  if ((ts.isImportSpecifier(p) || ts.isExportSpecifier(p) || ts.isNamespaceImport(p) || ts.isImportClause(p)) ) return false;
+  if (ts.isBindingElement(p) && p.propertyName === node) return false;
+  if (ts.isQualifiedName(p) || ts.isTypeReferenceNode(p) || ts.isExpressionWithTypeArguments(p) && ts.isHeritageClause(p.parent) && p.parent.token === ts.SyntaxKind.ImplementsKeyword) return false;
+  if (ts.isLabeledStatement(p) || ts.isBreakOrContinueStatement(p)) return false;
+  for (let a = node; a; a = a.parent) if (ts.isTypeNode(a) && !ts.isExpressionWithTypeArguments(a)) return false;
+  return true;
+}
+
+function receiverIsSafe(expression) {
+  const type = checker.getTypeAtLocation(expression);
+  const symbol = type.aliasSymbol || type.symbol;
+  return !!symbol && SAFE.test(symbol.name);
+}
+
+const violations = [];
+for (const file of FILES) {
+  const source = program.getSourceFile(file);
+  assert.ok(source, `${file} is part of the program`);
+  const at = (node, what) => {
+    const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+    // A call Node's own code makes through the program's realm, which a port of it must make too: marked on its line.
+    if (LIVE_AS_NODE.test(source.text.split('\n')[line - 1])) return;
+    violations.push(`${file.slice(CORE.length)}:${line} ${what}`);
+  };
+  const visit = (node) => {
+    if (ts.isIdentifier(node) && isValueName(node) && !FIXED_GLOBALS.has(node.text)) {
+      const symbol = checker.getSymbolAtLocation(node);
+      if (fromLibrary(symbol)) at(node, `names the global ${node.text}`);
+    }
+    if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
+      const symbol = checker.getSymbolAtLocation(ts.isPropertyAccessExpression(node) ? node.name : node.argumentExpression);
+      const name = symbol && symbol.name;
+      const owners = symbol && symbol.declarations ? symbol.declarations.map((d) => (d.parent && d.parent.name ? d.parent.name.text : '')) : [];
+      const record = owners.length > 0 && owners.every((owner) => OWN_RECORDS.test(owner));
+      if (fromLibrary(symbol) && !OWN_PROPERTIES.has(name) && !record && !receiverIsSafe(node.expression)) {
+        at(node, `uses the built-in ${checker.typeToString(checker.getTypeAtLocation(node.expression))}.${name}`);
+      }
+      if (ts.isPropertyAccessExpression(node) && symbol && (symbol.flags & ts.SymbolFlags.Optional) && ours(symbol)) {
+        at(node, `reads the optional property ${name}, which may be inherited`);
+      }
+    }
+    if ((ts.isFunctionExpression(node) || ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) && node.asteriskToken) {
+      const call = node.parent;
+      const made = ts.isCallExpression(call) && call.arguments[0] === node && ts.isIdentifier(call.expression)
+        && SAFE_GENERATOR_MAKERS.has(call.expression.text);
+      if (!made) at(node, 'makes a generator function outside safeGenerator');
+    }
+    if (ts.isForOfStatement(node)) at(node, 'iterates with for-of');
+    if (ts.isSpreadElement(node)) at(node, 'spreads with the array iterator');
+    if (ts.isArrayBindingPattern(node)) at(node, 'destructures with the array iterator');
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isArrayLiteralExpression(node.left)) {
+      at(node, 'destructures with the array iterator');
+    }
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.InKeyword) at(node, "looks up a key with 'in'");
+    if (ts.isObjectBindingPattern(node)) {
+      const type = checker.getTypeAtLocation(node);
+      for (const element of node.elements) {
+        const key = element.propertyName || element.name;
+        if (!ts.isIdentifier(key)) continue;
+        const property = type.getProperty(key.text);
+        if (property && (property.flags & ts.SymbolFlags.Optional) && ours(property)) at(element, `destructures the optional property ${key.text}`);
+      }
+    }
+    if (ts.isObjectLiteralExpression(node)) {
+      const contextual = checker.getContextualType(node);
+      const parts = !contextual ? [] : contextual.isIntersection() || contextual.isUnion() ? contextual.types : [contextual];
+      const descriptor = parts.some((t) => { const named = t.aliasSymbol || t.symbol; return !!named && /PropertyDescriptor$/.test(named.name); });
+      if (descriptor) at(node, 'makes a property descriptor that inherits (dataDescriptor and accessorDescriptor do not)');
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+}
+
+console.log(violations.join('\n'));
+assert.deepEqual(violations, [], `the interpreter and the guest's module loading go through ${violations.length} built-ins a program can replace`);
+console.log(`${FILES.length} files: the interpreter and the guest's module loading call only the built-ins the launch captured`);
+
+const { bundleInterpreter } = await import('../../packages/worker/scripts/interpreter-bundle.mjs');
+const { primordialAcorn } = await import('../../packages/worker/scripts/acorn-primordials.mjs');
+const { auditParser } = await import('../../packages/worker/scripts/parser-audit.mjs');
+const parserRealm = await import('../../packages/core/src/interpreter/parser-realm.ts');
+const audit = (code) => auditParser(code, parserRealm);
+const { parser } = await bundleInterpreter({ start: fileURLToPath(new URL('../../packages/worker/', import.meta.url)) });
+const reaches = audit(parser);
+console.log(reaches.join('\n'));
+assert.deepEqual(reaches, [], `the bundled parser reaches ${reaches.length} built-ins a program can replace`);
+console.log(`the bundled parser (${parser.length} characters) reaches the realm only through parser-realm.ts`);
+
+// What an acorn upgrade could add, which the rewrite must refuse or make safe however it is spelled.
+const acornSource = readFileSync(createRequire(join(CORE, 'package.json')).resolve('acorn').replace(/acorn\.js$/, 'acorn.mjs'), 'utf8');
+const ANCHOR = 'var lineBreakG = new RegExp(lineBreak.source, "g");';
+const LINE_BREAK = 'var lineBreak = /\\r\\n?|\\n|\\u2028|\\u2029/;';
+for (const place of [ANCHOR, LINE_BREAK, 'switch (this.input[this.pos]) {', 'var err = new SyntaxError(message);', 'err.raisedAt = this.pos;']) {
+  assert.ok(acornSource.includes(place), `the upgrade fixtures still find their place in acorn: ${place}`);
+}
+// A regexp is safe however it is read once it inherits only captures: each regexp fixture checks lineBreak's is.
+const SAFE_LINE_BREAK = 'var lineBreak = $$.regexp(/\\r\\n?|\\n|\\u2028|\\u2029/);';
+const upgrades = {
+  'a cached RegExp.prototype method': [acornSource.replace(ANCHOR, `${ANCHOR}\nvar runRegExp = RegExp.prototype.exec;`), /built-in exec|RegExp's members/],
+  'a cached method of a regexp': [acornSource.replace(ANCHOR, `${ANCHOR}\nvar testLine = lineBreak.test;`), SAFE_LINE_BREAK],
+  'an alias of the source text, indexed': [acornSource.replace('switch (this.input[this.pos]) {', 'var text = this.input; switch (text[this.pos]) {'), '$$.index(text, this.pos)'],
+  'an alias of a regexp, read for its source': [acornSource.replace(ANCHOR, 'var lineBreakAlias = lineBreak;\nvar lineBreakG = new RegExp(lineBreakAlias.source, "g");'), SAFE_LINE_BREAK],
+  "a regexp's source, read by a computed key": [acornSource.replace(ANCHOR, 'var lineBreakG = new RegExp(lineBreak["source"], "g");'), SAFE_LINE_BREAK],
+  // parser-realm's RegExp makes a regexp safe however it is reached: called, constructed, or by another name.
+  'a regexp made by calling RegExp': [acornSource.replace(LINE_BREAK, 'var lineBreak = RegExp("\\\\r\\\\n?|\\\\n|\\\\u2028|\\\\u2029");'), 'var lineBreak = $$.RegExp('],
+  'a regexp made by RegExp under another name': [acornSource.replace(LINE_BREAK, 'var makeRegExp = RegExp;\nvar lineBreak = makeRegExp("\\\\n");'), 'var makeRegExp = $$.RegExp;'],
+  "SyntaxError under another name, whose error's fields are set": [acornSource.replace('var err = new SyntaxError(message);', 'var Raise = SyntaxError; var err = new Raise(message);'), /holds SyntaxError other than to construct it|new Raise, which is not a constructor of acorn's own/],
+  "an error of the realm's handed on before it is thrown": [acornSource.replace('err.raisedAt = this.pos;', 'err.raisedAt = this.pos; this.lastError = err;'), /used other than to set its fields and throw it/],
+};
+for (const [name, [text, expected]] of Object.entries(upgrades)) {
+  let rewritten = null;
+  try { rewritten = primordialAcorn(text, '/parser-realm.ts').code; } catch (e) {
+    assert.ok(expected instanceof RegExp && expected.test(e.message), `${name}: refused for its reason (${e.message})`);
+    continue;
+  }
+  assert.ok(typeof expected === 'string' && rewritten.includes(expected), `${name}: made safe (${expected})`);
+  assert.deepEqual(audit(rewritten), [], `${name}: no reach once rewritten`);
+  assert.ok(audit(text).length > 0, `${name}: found by the check unrewritten`);
+}
+console.log(`${Object.keys(upgrades).length} upgrade fixtures: refused or made safe`);
+
+// What a parser could reach the realm through, as code added to acorn: the rewrite refuses it or makes it
+// safe, and the audit, which shares nothing with the rewrite, finds it as written in the bundled parser.
+const SNIPPETS = {
+  'new of a parameter': ['function upgradeFixture(Ctor) { return new Ctor(); }', /not a constructor of acorn's own/, /new of Ctor/],
+  'new of a member': ['function upgradeFixture() { return new this.constructor(); }', /new of an expression/, /new of this\.constructor/],
+  'new this': ['function upgradeFixture() { return new this(); }', 'new ($$.ownConstructor(this))()', /new this, unchecked/],
+  'a method by a computed key': ['function upgradeFixture(o, name) { return o[name](); }', /by a computed key/, /a call by a computed key/],
+  'for-in': ['function upgradeFixture(o) { var n = 0; for (var k in o) { n++; } return n; }', 'in $$.owned(o)', /for-in over an object not checked/],
+  'an element of arguments': ['function upgradeFixture() { return arguments[1]; }', '$$.argument(arguments, 1)', /arguments used other than for its length/],
+  'arguments written': ['function upgradeFixture(x) { arguments[0] = 2; return x; }', /arguments used other than for its length or an element/, /arguments used other than/],
+  'arguments by a string key': ["function upgradeFixture(x) { return arguments['0']; }", /arguments used other than for its length or an element/, /arguments used other than/],
+  'arguments compared': ['function upgradeFixture() { return arguments === arguments; }', /arguments used other than/, /arguments used other than/],
+  'a method a function inherits, through an alias': ['var upgradeAlias = isIdentifierStart; function upgradeFixture() { if (upgradeAlias.trace) upgradeAlias.trace(); }',
+    /a member of upgradeAlias, a function that inherits Function.prototype/, /a member of upgradeAlias, a function that inherits Function.prototype/],
+  'a call of a name acorn sets nowhere': ['function upgradeFixture(o) { return o.trace(); }', /a call of trace, a name acorn sets nowhere/, /a call of trace, a name the parser sets nowhere/],
+  'a function declared in a block': ['if (false) { function parseInt() {} }', /a function declared in a block/, /a function declared in a block/],
+  'a caught exception read': ['function upgradeFixture(f) { try { return f(); } catch (e) { return e.pos; } }', /the caught e/, /the caught e/],
+  'destructuring': ['function upgradeFixture(o) { var { a } = o; return a; }', /ObjectPattern/, /ObjectPattern/],
+  'a rest parameter': ['function upgradeFixture(...items) { return items; }', /RestElement/, /RestElement/],
+  "a built-in method of Object.keys' list": ['function upgradeFixture(o) { return Object.keys(o).map(function (k) { return k; }); }', /built-in method map|a call of map, a name acorn sets nowhere/, /a call of map/],
+  'a let declaration': ['function upgradeFixture() { let x = 1; return x; }', /let declaration/, /let declaration/],
+  'a computed read': ['function upgradeFixture(o, k) { return o[k]; }', '$$.index(o, k) : o[k]', /a computed read/],
+  'a read of a built-in method': ['function upgradeFixture(s) { return s.padStart; }', /built-in padStart/, /a read of padStart/],
+};
+for (const [name, [snippet, rewrite, finding]] of Object.entries(SNIPPETS)) {
+  const found = audit(`${parser}\n${snippet}\n`);
+  assert.ok(found.some((f) => finding.test(f)), `${name}: the audit finds it as written (${found.join('; ')})`);
+  let rewritten = null;
+  try { rewritten = primordialAcorn(`${acornSource}\n${snippet}\n`, '/parser-realm.ts').code; } catch (e) {
+    assert.ok(rewrite instanceof RegExp && rewrite.test(e.message), `${name}: refused for its reason (${e.message})`);
+    continue;
+  }
+  assert.ok(typeof rewrite === 'string' && rewritten.includes(rewrite), `${name}: made safe (${rewrite})`);
+  assert.deepEqual(audit(rewritten), [], `${name}: no reach once rewritten`);
+}
+console.log(`${Object.keys(SNIPPETS).length} escapes: refused or made safe by the rewrite, found as written by the audit`);

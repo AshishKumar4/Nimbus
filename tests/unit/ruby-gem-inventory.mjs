@@ -5,13 +5,16 @@
 // Gemfile.lock is that bundle's resolution (its requests and their runtime
 // dependencies, at the versions it settled on), not every gem ever installed.
 //
+// A gem whose version RubyGems must choose (two installed, or a dependency
+// that has two) is left off the load path, for require to activate it.
+//
 // Red before: a gem counted as installed once its lib directory existed, so
 // an install interrupted after it was never finished, and its lib was on the
 // load path; and Gemfile.lock listed every gem a separate ledger had
 // recorded, unrelated ones and every version.
 
 import assert from 'node:assert/strict';
-import { installedGemLibRoots, installRubyBundle, installRubyGems } from '../../packages/core/src/runtime/ruby-gems.ts';
+import { installedGemLoadPath, installRubyBundle, installRubyGems } from '../../packages/core/src/runtime/ruby-gems.ts';
 import { gemWorkspace, rubyGemsRegistry } from './lib/rubygems-registry.mjs';
 
 const HOME = '/home/user/.gem';
@@ -27,14 +30,19 @@ const network = await rubyGemsRegistry({
   const vfs = await gemWorkspace();
   await vfs.mkdir('home/user/.gem/gems/rack-3.0.0/lib', { recursive: true });
   await vfs.writeFile('home/user/.gem/gems/rack-3.0.0/lib/rack.rb', '# rack 3.0.0\n');
-  assert.deepEqual(await installedGemLibRoots(vfs, HOME), [], 'an interrupted install\'s lib is on the load path');
+  assert.deepEqual(await installedGemLoadPath(vfs, HOME), { libs: [], activates: false }, 'an interrupted install\'s lib is on the load path');
   const report = await installRubyGems(vfs, [{ name: 'rack', requirements: ['= 3.0.0'] }], { gemHome: HOME, network });
   assert.deepEqual(report.installed, ['rack-3.0.0'], 'a gem with a lib directory and no specification counted as installed');
   assert.ok(await vfs.exists('home/user/.gem/gems/rack-3.0.0/lib/rack/version.rb'), 'the interrupted gem\'s files were not written');
   const again = await installRubyGems(vfs, [{ name: 'rack', requirements: ['= 3.0.0'] }], { gemHome: HOME, network });
   assert.deepEqual(again.alreadyInstalled, ['rack-3.0.0']);
+  assert.deepEqual(await installedGemLoadPath(vfs, HOME), { libs: ['/home/user/.gem/gems/rack-3.0.0/lib'], activates: false }, 'an installed gem\'s lib is on the load path');
+  await installRubyGems(vfs, [{ name: 'unrelated', requirements: [] }, { name: 'rackup', requirements: [] }], { gemHome: HOME, network });
+  assert.deepEqual(await installedGemLoadPath(vfs, HOME), { libs: ['/home/user/.gem/gems/rack-3.0.0/lib', '/home/user/.gem/gems/rackup-2.1.0/lib', '/home/user/.gem/gems/unrelated-1.0.0/lib'], activates: false }, 'with one version of each, every lib is on the load path, sorted, and RubyGems reads nothing');
+  // A version RubyGems must choose is left to its activation: rack's, and
+  // rackup's, whose dependency on rack chooses one; unrelated stays.
   await installRubyGems(vfs, [{ name: 'rack', requirements: ['= 2.0.0'] }], { gemHome: HOME, network });
-  assert.deepEqual(await installedGemLibRoots(vfs, HOME), ['/home/user/.gem/gems/rack-2.0.0/lib', '/home/user/.gem/gems/rack-3.0.0/lib'], 'every installed version\'s lib is on the load path, sorted');
+  assert.deepEqual(await installedGemLoadPath(vfs, HOME), { libs: ['/home/user/.gem/gems/unrelated-1.0.0/lib'], activates: true }, 'a gem with two versions, and one depending on it, are left to RubyGems');
 }
 
 // ── Gemfile.lock is the bundle's resolution ──

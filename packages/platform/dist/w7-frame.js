@@ -15,6 +15,19 @@
 import { crc32 } from './crc32.js';
 import { CHUNK_SIZE } from './limits.js';
 import { utf8Length } from './utf8.js';
+import { rootClampedSegments } from './lexical-path.js';
+function isOpenAccess(value) {
+    return value === 'read' || value === 'write' || value === 'readwrite';
+}
+/** The rights an open's access grants its description: what a call through it may do. */
+export function openAccessRights(access) {
+    return { read: access !== 'write', write: access !== 'read' };
+}
+/** The permission bits an open asks of the file it reaches (4 read, 2 write): its access's, and write under `truncate`, as open(2)'s. */
+export function openAccessMask(call) {
+    const rights = openAccessRights(call.access);
+    return (rights.read ? 4 : 0) | (rights.write || call.truncate === true ? 2 : 0);
+}
 export const W7_MAGIC = new Uint8Array([0x4e, 0x57, 0x37, 0x04]);
 /** v3's magic: decoded, never encoded, for the release that rolls v4 out. Delete with v3 decoding. */
 const W7_MAGIC_V3 = new Uint8Array([0x4e, 0x57, 0x37, 0x03]);
@@ -372,7 +385,7 @@ v3) {
                         throw new Error(`w7-frame: unknown record tag ${envelope.tag}`);
                     summary.pathCount++;
                     summary.opCount++;
-                    const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'from', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask', 'read', 'create', 'truncate', 'exclusive', 'nofollow', 'description', 'fchmod']);
+                    const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'from', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask', 'access', 'create', 'truncate', 'exclusive', 'nofollow', 'description', 'fchmod']);
                     yield { type: 'call', call: parsePathCall(value, (path, label) => ownedPaths.claim(canonicalPath(path, label))) };
                     break;
                 }
@@ -853,25 +866,27 @@ function parsePathCall(value, path) {
                 break;
             return { call: 'lchown', path: path(value.path, 'lchown path'), uid: ownerId(value.uid, 'lchown uid'), gid: ownerId(value.gid, 'lchown gid') };
         case 'open': {
-            const flags = ['create', 'exclusive', 'nofollow', 'read', 'truncate'];
+            const flags = ['create', 'exclusive', 'nofollow', 'truncate'];
             let required = keys;
-            for (const flag of ['create', 'description', 'exclusive', 'fchmod', 'ino', 'nofollow', 'read', 'truncate', 'umask'])
+            for (const flag of ['create', 'description', 'exclusive', 'fchmod', 'ino', 'nofollow', 'truncate', 'umask'])
                 required = required.replace(`,${flag}`, '');
-            if (required !== 'call,mode,path')
+            if (required !== 'access,call,mode,path')
                 break;
             for (const flag of flags) {
                 if (value[flag] !== undefined && value[flag] !== true)
                     throw new Error(`w7-frame: open ${flag} is true or absent`);
             }
+            const access = value.access;
+            if (!isOpenAccess(access))
+                throw new Error(`w7-frame: open access is 'read', 'write' or 'readwrite': got ${String(access)}`);
             return {
-                call: 'open', path: path(value.path, 'open path'), mode: u32(value.mode, 'open mode'),
+                call: 'open', path: path(value.path, 'open path'), mode: u32(value.mode, 'open mode'), access,
                 ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'open ino') }),
                 ...(value.umask === undefined ? {} : { umask: umaskOf(value.umask, 'open umask') }),
                 ...(value.create === true ? { create: true } : {}),
                 ...(value.truncate === true ? { truncate: true } : {}),
                 ...(value.exclusive === true ? { exclusive: true } : {}),
                 ...(value.nofollow === true ? { nofollow: true } : {}),
-                ...(value.read === true ? { read: true } : {}),
                 ...(value.description === undefined ? {} : { description: descriptionId(value.description, 'open description') }),
                 ...(value.fchmod === undefined ? {} : { fchmod: u32(value.fchmod, 'open fchmod') }),
             };
@@ -1101,17 +1116,7 @@ class PathOwnership {
     }
 }
 function normalizePath(path) {
-    const out = [];
-    for (const segment of path.split('/')) {
-        if (segment === '..') {
-            if (out.length > 0)
-                out.pop();
-        }
-        else if (segment !== '' && segment !== '.') {
-            out.push(segment);
-        }
-    }
-    return out.join('/');
+    return rootClampedSegments(path).join('/');
 }
 function parentPath(path) {
     const index = path.lastIndexOf('/');

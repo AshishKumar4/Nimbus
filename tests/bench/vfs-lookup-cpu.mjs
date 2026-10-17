@@ -11,7 +11,13 @@ import { runPairedBenchmark } from './lib/paired-runner.mjs';
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 let checksum = 0;
 
-async function make({ SqliteVFS: Store, CompositeVFS: Namespace, sqliteFiles: files, SqliteFiles: FilesClass, ProcessFiles: Processes }, removedFiles) {
+async function make({
+  'vfs/sqlite-vfs.ts': { SqliteVFS: Store },
+  'vfs/composite.ts': { CompositeVFS: Namespace },
+  'vfs/sqlite-files.ts': { sqliteFiles: files, SqliteFiles: FilesClass },
+  'runtime/process-files.ts': { ProcessFiles: Processes },
+  'vfs/path.ts': { normalizeVfsPath: normalize },
+}, removedFiles) {
   const host = await hostSqlite();
   const engine = new Store(host.sql, host.transactions);
   const root = engine.as(CRED_KERNEL);
@@ -43,10 +49,13 @@ async function make({ SqliteVFS: Store, CompositeVFS: Namespace, sqliteFiles: fi
     root.chown('home/user/tree', USER.uid, USER.gid);
     for (let at = 0; at < removedFiles; at += 64) root.writeBatch({ inodes: Array.from({ length: Math.min(64, removedFiles - at) }, (_, i) => ({ path: `home/user/tree/f${at + i}`, parentPath: 'home/user/tree', isDir: false, size: 0, mtime: 1, mode: 0o644, chunkCount: 0, uid: USER.uid, gid: USER.gid })), chunks: [] });
   };
-  return { engine, root, store, namespace, process, paths, packagePaths, chainPaths, removal, seedRemoval };
+  return { engine, root, store, namespace, process, paths, packagePaths, chainPaths, removal, seedRemoval, normalize };
 }
 
-async function runWork({ store, namespace, process, paths, packagePaths, chainPaths, removal }, kind, iterations) {
+// Spellings normalizeVfsPath reduces by its names, not by its plain-key fast path.
+const SPELLED = ['/home/user/a/./b/../b/c/d/f1', 'home//user/a/b/c/d/', '/../home/user/a/b/c/d/../d/./f2', './home/user/node_modules/x/lib/../lib/f3'];
+
+async function runWork({ store, namespace, process, paths, packagePaths, chainPaths, removal, normalize }, kind, iterations) {
   if (kind === 'walked-removal') {
     const report = removal.removeRecursive('/home/user/tree');
     assert.equal(report.failures.length, 0);
@@ -55,7 +64,8 @@ async function runWork({ store, namespace, process, paths, packagePaths, chainPa
   }
   for (let i = 0; i < iterations; i++) {
     const path = paths[(i * 17) % paths.length];
-    if (kind === 'namespace') checksum += namespace.stat(path).size;
+    if (kind === 'normalize-spelled') checksum += normalize(SPELLED[i % SPELLED.length]).length;
+    else if (kind === 'namespace') checksum += namespace.stat(path).size;
     else if (kind === 'namespace-walk') checksum += namespace.stat(`/home/user/link/../d/f${(i * 17) % paths.length}`).size;
     else if (kind === 'process-view') checksum += (await process.stat(path)).size;
     else if (kind === 'process-linked') checksum += (await process.stat(chainPaths[(i * 17) % chainPaths.length])).size;
@@ -73,8 +83,11 @@ await runPairedBenchmark({
   async run({ short, cleanup, withArms, sample }) {
     const iterations = short ? 120 : 24_000;
     const removedFiles = short ? 64 : 2000;
-    await withArms(async (from) => make(await loadIsolatedCore(from, cleanup), removedFiles), async (arms) => {
-      for (const kind of ['store', 'namespace', 'namespace-walk', 'store-linked', 'store-pnpm-chain', 'store-dot', 'store-link-parent', 'store-dot-lease', 'process-view', 'process-linked', 'walked-removal']) {
+    await withArms(async (from) => make(await loadIsolatedCore(from, cleanup, {
+      sources: CORE_CPU_SOURCES,
+      modules: ['vfs/sqlite-vfs.ts', 'vfs/composite.ts', 'vfs/sqlite-files.ts', 'runtime/process-files.ts', 'vfs/path.ts'],
+    }), removedFiles), async (arms) => {
+      for (const kind of ['normalize-spelled', 'store', 'namespace', 'namespace-walk', 'store-linked', 'store-pnpm-chain', 'store-dot', 'store-link-parent', 'store-dot-lease', 'process-view', 'process-linked', 'walked-removal']) {
         const leases = kind === 'store-dot-lease' ? Object.values(arms).map((arm) => [arm, arm.engine.acquireExclusiveMutation('lease')]) : [];
         const walked = kind === 'walked-removal';
         try {

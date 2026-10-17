@@ -224,8 +224,13 @@ export interface CredentialedVfs {
     readFileString(path: string): string;
     stat(path: string): VfsStat;
     lstat(path: string): VfsStat;
-    /** stat (lstat when `followLeaf` is false), or null when the name is not there: no error made for an absence. */
-    statIfPresent(path: string, followLeaf?: boolean): VfsStat | null;
+    /**
+     * stat (lstat when `followLeaf` is false), or null when the name is not
+     * there: no error made for an absence. A name below a regular file is
+     * absent too ("is it there?"), unless `belowFile` is 'ENOTDIR', which says
+     * so as stat(2) does.
+     */
+    statIfPresent(path: string, followLeaf?: boolean, belowFile?: 'absent' | 'ENOTDIR'): VfsStat | null;
     /** Whether something is at `path` (a link not followed) as published: no append stored, no holder recalled (VFS.landedAt). */
     landedAt(path: string): boolean;
     /** utimensat(2), each time an FsTime, resolved and judged as it commits. `followSymlinks: false` sets a link's own. */
@@ -270,6 +275,7 @@ export interface CredentialedVfs {
     rename(oldPath: string, newPath: string): void;
     copyFile(src: string, dest: string, options?: {
         keepMode?: boolean;
+        preserve?: boolean;
     }): VfsStat & {
         from: {
             path: string;
@@ -362,7 +368,6 @@ export interface CredentialedVfs {
 export declare const INODE_ROWS_PER_SQL_EXEC: number;
 type TransactionLimit = 'blobBytes' | 'logicalRows' | 'sqlExecs';
 type TransactionSource = 'strict-batch' | 'range-mutation' | 'content-stage' | 'content-publish' | 'content-gc';
-type TransactionLimitMode = 'bounded';
 interface TransactionPlanMetrics {
     blobBytes: number;
     logicalRows: number;
@@ -649,12 +654,7 @@ export declare class SqliteVFS {
     private _transactionPeakLogicalRows;
     private _transactionPeakSqlExecs;
     private _transactionPeakAffectedPaths;
-    private _boundedTransactionPeakBlobBytes;
-    private _boundedTransactionPeakLogicalRows;
-    private _boundedTransactionPeakSqlExecs;
     private _lastTransaction;
-    private _overLimitFileCount;
-    private _lastOverLimitFile;
     private _cacheHits;
     private _cacheMisses;
     private _evictions;
@@ -1498,8 +1498,9 @@ export declare class SqliteVFS {
     /**
      * The content key of an inode's bytes: sha256 of them up to CHUNK_SIZE,
      * else the digest of the manifest's ordered chunk hashes. An in-place edit
-     * clears a manifest's digest; it is recomputed here and stored unless
-     * another content already holds it.
+     * clears a manifest's digest; it is recomputed here once per edit and
+     * remembered (contentKeyMemo, dropped by the next edit), never written: a
+     * lookup is a read, and the store may be open read-only.
      */
     private contentKeyOf;
     private manifestDigest;
@@ -1577,7 +1578,11 @@ export declare class SqliteVFS {
     private abandonStaging;
     private readFileString;
     private stat;
-    /** stat, with a name that is not there (or a directory on its way that is not) answered null: an answer, not an error. */
+    /**
+     * stat, with a name that is not there answered null: an answer, not an
+     * error. A file on its way (ENOTDIR) is not there either, unless
+     * `belowFile` is 'ENOTDIR' (stat(2)'s answer).
+     */
     private statIfPresent;
     /** A linked inode's stat, for `stat` and for the entries `list` reports. */
     private statOf;
@@ -1652,6 +1657,15 @@ export declare class SqliteVFS {
     private list;
     private acquire;
     private readdir;
+    /**
+     * readdir(2) as the live tree and a snapshot answer it (`tree`, and
+     * `entries` of a directory's key there): the entries of the directory the
+     * name resolves to, the one the permission is checked on (through a link,
+     * its target's), sorted by UTF-16 code unit. Callers that walk a listing
+     * (the prefetch closure walk among them) rely on a stable order; SQLite's
+     * byte order differs from it for names outside the Basic Multilingual Plane.
+     */
+    private readdirIn;
     private unlink;
     private rmdir;
     /** What unlink(2) of `path` by `cred` removes, once it may: it refuses as unlink does. */
@@ -1738,10 +1752,13 @@ export declare class SqliteVFS {
      * source's permission bits less the copier's umask, as cp(1) makes it; a
      * file there keeps its own mode. With \`keepMode\` (copyfile), the copy has
      * copyfileMode's bits, a file there too, set in this one write as chmod
-     * judges it (modeChange). Answers the copy's stat, the key it wrote
-     * (\`landed\`, the destination's links followed), and the file copied: its
-     * key and the revision of the version this write read (its row's
-     * generation then), which nothing after the read moves.
+     * judges it (modeChange). With \`preserve\` (cp -p), as a tree copy's
+     * entries (planCopyTree): the source's permission bits, a file there too,
+     * set as chmod judges it, its times, and its owner when root copies.
+     * Answers the copy's stat, the key it wrote (\`landed\`, the destination's
+     * links followed), and the file copied: its key and the revision of the
+     * version this write read (its row's generation then), which nothing
+     * after the read moves.
      */
     private copyFile;
     /**
@@ -1849,8 +1866,6 @@ export declare class SqliteVFS {
      * UTF-16 code units and would place U+10000 before U+E000.
      */
     private pageAt;
-    /** SQLite's `ORDER BY path` (UTF-8 bytes) for JS strings: keyset cursors compare in this order. */
-    private static comparePaths;
     /**
      * A read-only view of snapshot `name` for `cred`: the same methods, the
      * same permission checks and symlink resolution, over the tree the
@@ -1859,8 +1874,9 @@ export declare class SqliteVFS {
      */
     at(name: string, cred?: VfsCred): CredentialedVfs;
     /**
-     * Restore the live tree (or `subtree`) to snapshot `name`, in bounded
-     * transactions of RESTORE_PAGE_ROWS paths. Every path changed since the
+     * Restore the live tree (or `subtree`) to snapshot `name`, in pages of
+     * RESTORE_PAGE_ROWS paths read, each written in the transactions the shared
+     * budget admits. Every path changed since the
      * snapshot is replaced by the row the snapshot saw, or removed if the
      * snapshot did not have it; every path the snapshot had and the live tree
      * lost comes back. It is an ordinary write: new generations, revisions,
@@ -2235,7 +2251,7 @@ export declare class SqliteVFS {
      * (SqliteRuntimeFsBridge.open): EEXIST for an exclusive create of a name
      * there (a link included, followed or not), ENOENT without `create`,
      * ELOOP for a link when `nofollow`, EISDIR for a directory, EACCES without
-     * write permission; a name made empty with `mode` less the call's umask, or
+     * the access asked (openAccessMask); a name made empty with `mode` less the call's umask, or
      * an existing file emptied when `truncate`; then, with `fchmod`, that file
      * given the mode (chmod's rule, EPERM for another's), all of it refused
      * together. Its answer is the file's stat.
@@ -2313,8 +2329,9 @@ export declare class SqliteVFS {
      *
      * Rollback discards the cached chunks and inodes and unloads the counters,
      * so every later read answers from SQLite, which is back at the committed
-     * state; open descriptions return to the rows they described before.
-     * No inode snapshot or undo log is retained. Recovery failure is surfaced
+     * state; open descriptions return to the rows they described before (a
+     * detached file's, which has none, to its fields as they were), and the
+     * shared roots to those registered before. No undo log is retained. Recovery failure is surfaced
      * with both errors; the embedder must discard this VFS in that case.
      */
     withTransaction<T>(callback: () => T): T;
@@ -2383,6 +2400,7 @@ export declare class SqliteVFS {
     private touchDirectoryRows;
     /** The cache and the publication learn what touchDirectoryRows committed. */
     private touchedDirectoriesCommitted;
+    /** `onCommit` runs in the transaction, as its last write, given the generation it commits. */
     private executeTransactionPlan;
     /** A plan's deletions: rows, tombstones, and the content a dereferencing delete lets go of. */
     private applyPlanDeletes;
@@ -2496,7 +2514,6 @@ export declare class SqliteVFS {
     private legacyJanitorPage;
     private runContentMaintenanceSafely;
     private metricsOnlyPlan;
-    private recordOverLimitFile;
     private recordDuration;
     private currentRetainedWriteBytes;
     /** Best-effort process.memoryUsage().heapUsed; 0 in DO contexts. */
@@ -2702,8 +2719,8 @@ export declare class SqliteVFS {
                     sqlExecs: number;
                 };
                 last: {
+                    limitMode: "bounded";
                     source: TransactionSource;
-                    limitMode: TransactionLimitMode;
                     blobBytes: number;
                     logicalRows: number;
                     sqlExecs: number;
@@ -2711,10 +2728,7 @@ export declare class SqliteVFS {
                 } | null;
                 overLimitFiles: {
                     count: number;
-                    last: (TransactionPlanMetrics & {
-                        path: string;
-                        limit: TransactionLimit;
-                    }) | null;
+                    last: null;
                 };
             };
         };

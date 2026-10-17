@@ -11,6 +11,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { HEX_BYTE } from '@nimbus-sh/platform/hex.js';
 
 export const PACK_HEADER_BYTES = 12;
 export const PACK_TRAILER_BYTES = 20;
@@ -254,11 +255,10 @@ export function objectHash(type: GitObjectType, data: Uint8Array): Uint8Array {
   return createHash('sha1').update(objectIdPrefix(type, data.byteLength)).update(data).digest();
 }
 
-const HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));
-
+/** The object id at `at` in `oid` (an id alone, or one inside a tree, an index or a pack), as hex. */
 export function oidToHex(oid: Uint8Array, at = 0): string {
   let hex = '';
-  for (let i = at; i < at + OID_BYTES; i++) hex += HEX[oid[i]];
+  for (let i = at; i < at + OID_BYTES; i++) hex += HEX_BYTE[oid[i]];
   return hex;
 }
 

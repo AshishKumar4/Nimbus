@@ -17,7 +17,7 @@ import { applyFacetLimits, facetLimits } from '@nimbus-sh/fabric/facet-limits.js
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { WAVE_WRITER_PREAMBLE } from '../loaders/generated-workers.js';
+import { WAVE_WRITER_PREAMBLE } from '../loaders/workers.generated.js';
 // The producer: the writer, fed random files as fast as it takes them. Each
 // wave's stream is observed where it leaves the producer: when it was sent,
 // when the transport first and last pulled from it, and when its answer
