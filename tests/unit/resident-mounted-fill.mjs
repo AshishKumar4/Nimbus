@@ -7,6 +7,8 @@
 //   - the file changed after the listing, before the read: refused ESTALE,
 //     and the store holds neither version as the listed one;
 //   - a file the engine keeps fills as before, by its revision;
+//   - a refill from the resident's namespace (its rows keep a mount's file
+//     at rev 0, without the backend's revision), sync and async mounts;
 //   - through the bridge alone, sync and async mounts alike: a read naming
 //     the file as its stat does reads it; one naming a different file, or
 //     the engine's revisions, is ESTALE.
@@ -100,6 +102,25 @@ await check('a mounted file changed after the listing is refused, not held as li
     await authority.files.releaseProcess(binding.pid);
   }
 });
+
+// The namespace's rows keep a mount's file at rev 0, without its backend's
+// revision: a refill from them names the file by its stat alone.
+for (const async of [false, true]) {
+  await check(`a refill from the namespace, ${async ? 'asynchronously' : 'synchronously'} mounted`, async () => {
+    const { authority, handle, binding, store, reads } = launched({ async });
+    try {
+      await store.sync.synchronize(handle.supervisor);
+      assert.equal(dec.decode(store.cells.get('m/kept/data.txt')), 'old');
+      store.cells.delete(store.coherence.tables('test'), 'm/kept/data.txt');
+      reads.length = 0;
+      const report = await store.sync.refillFromNamespace(handle.supervisor, ['m/kept/data.txt']);
+      assert.equal(report.filled, 1, `refilled: ${JSON.stringify({ report, reads })}`);
+      assert.equal(dec.decode(store.cells.get('m/kept/data.txt')), 'old');
+    } finally {
+      await authority.files.releaseProcess(binding.pid);
+    }
+  });
+}
 
 for (const async of [false, true]) {
   await check(`the bridge, ${async ? 'asynchronously' : 'synchronously'} mounted`, async () => {

@@ -235,10 +235,15 @@ export interface RuntimeReadOptions {
 /** What a stat says of which file it is and its version: a mounted backend's stand-in for a revision. */
 export type RuntimeFileVersion = Pick<RuntimeVfsStat, 'dev' | 'ino' | 'size' | 'mtime' | 'ctime' | 'revision'>;
 
-/** Whether `stat` is the file `expected` named, unchanged as far as its stat can tell. */
+/**
+ * Whether `stat` is the file `expected` named, unchanged as far as its stat
+ * can tell; its revision too where `expected` names one (0 names none: a
+ * backend that keeps none, or a name kept without it, as a resident's
+ * namespace keeps a mount's).
+ */
 export function sameFileVersion(stat: RuntimeVfsStat | null, expected: RuntimeFileVersion): boolean {
   return stat !== null && stat.dev === expected.dev && stat.ino === expected.ino && stat.size === expected.size
-    && stat.mtime === expected.mtime && stat.ctime === expected.ctime && stat.revision === expected.revision;
+    && stat.mtime === expected.mtime && stat.ctime === expected.ctime && (expected.revision === 0 || stat.revision === expected.revision);
 }
 
 export interface NimbusFilesystemBinding {

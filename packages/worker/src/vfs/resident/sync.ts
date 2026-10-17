@@ -578,7 +578,11 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
   };
 }
 
-/** The file a namespace row names, as a read of an undated one (rev 0) checks it (transport.ts WantedFile). */
+/**
+ * The file a namespace row names, as a read of an undated one (rev 0) checks
+ * it (transport.ts WantedFile): its stat's identity and times, and no
+ * revision, which the row keeps none of for a mount's file.
+ */
 function versionOf(row: NsRow): RuntimeFileVersion {
   return { dev: row.dev, ino: row.ino, size: row.size, mtime: row.mtime, ctime: row.ctime, revision: row.rev };
 }
