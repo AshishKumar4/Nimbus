@@ -472,8 +472,10 @@ export interface RuntimeFsBridge {
         keepVanishedAncestors?: boolean;
     }): Awaitable<void | VfsRemoval>;
     /** copyfile, each name followed; \`keepMode\`, its mode as copyfile leaves it (VfsCopyOptions). */
+    /** `keepMode`: copyfile's mode (libuv); `preserve`: cp -p's mode, times, and owner when root copies. */
     copyFile(from: RuntimeFsPath, to: RuntimeFsPath, options?: {
         keepMode?: boolean;
+        preserve?: boolean;
     }): Awaitable<void | number>;
     /**
      * Copy the tree at `from` to the new path `to` (`cp -r`; `preserve` is

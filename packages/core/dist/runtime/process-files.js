@@ -1146,7 +1146,7 @@ class AwaitingProcessBridge {
         });
     }
     copyFile(from, to, options) {
-        return this.either([from, to], () => this.bridge.copyFile(from, to, options), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { follow: true, keepMode: options?.keepMode }));
+        return this.either([from, to], () => this.bridge.copyFile(from, to, options), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { follow: true, keepMode: options?.keepMode, preserve: options?.preserve }));
     }
     copyTree(from, to, options) {
         return this.either([from, to], () => this.bridge.copyTree(from, to, options), async () => this.namespace.copy(await this.path(from, options?.follow === true), await this.path(to), { recursive: true, preserve: options?.preserve, follow: options?.follow }));
@@ -1466,7 +1466,7 @@ export class ProcessView {
         return await this.call(options?.recursive ? 'cp' : 'copyfile', from, async () => {
             if (options?.recursive)
                 return await this.fs.copyTree(from, to, { preserve: options.preserve, follow: options.follow });
-            await this.fs.copyFile(from, to, { keepMode: options?.keepMode });
+            await this.fs.copyFile(from, to, { keepMode: options?.keepMode, preserve: options?.preserve });
             return 1;
         }, to);
     }

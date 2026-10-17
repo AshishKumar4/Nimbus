@@ -48,6 +48,7 @@ published independently in the `@nimbus-sh` npm scope.
   an AbortError and no credit taken, whatever its size. Before, a request
   at or below `smallRequestBytes` was granted from free shared capacity
   before its signal was looked at.
+- Fixed: `fs.copy(src, dst, { preserve: true })` (and `copyFile` with `preserve`) sets what `cp -p` sets, by every path a copy takes, as far as the destination's filesystem supports each. A single file copied on SQLite keeps the source's mode (no umask), its times, and its owner when root copies, onto a new name and onto a file there; before, `preserve` was dropped and the copy had the time of the copy and the mode less the umask. A copy between backends (a mounted filesystem's, recursive or not) sets each entry's owner (root), mode and times once its content is in, a directory's after its entries, and fills a read-only directory; before, it set no time, left a SQLite destination's umask, and could not write into a read-only directory it had made. A link's own metadata is not set, and nothing is set through it. With `keepMode` too, `preserve`'s mode wins. A resident process's preserving copy is the session's, as is one through the supervisor's call, which dropped `preserve`.
 - Changed: a program whose launch waits 10 seconds at one stage (its
   preparation, its admission for a worker, or its load) logs one line to
   Workers Logs: `[facet-manager] launch stalled:` with its pid, command,
