@@ -835,7 +835,10 @@ export function suspendLaunchAdmission(ctx: object, pid?: number): ((signal?: Ab
       throw new Error('Nimbus: a finished launch cannot regain its admission');
     }
     admission.end = hold;
-  })();
+  })().catch((error) => {
+    resumed = undefined;
+    throw error;
+  });
 }
 
 /**

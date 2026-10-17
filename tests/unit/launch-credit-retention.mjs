@@ -3,7 +3,8 @@
 // before reading a file that does not fit their share of the isolate budget.
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { beginLoaderFetch, DO_DYNAMIC_WORKER_LIMIT } from '../../packages/fabric/src/budgets.ts';
+import { beginHelperFetch, beginLoaderFetch, DO_DYNAMIC_WORKER_LIMIT, loaderLedgerStats } from '../../packages/fabric/src/budgets.ts';
+import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { acquireSupervisorAllocation, readSupervisorAllocationBudget } from '../../packages/platform/src/heavy-alloc-coord.ts';
 import { createFacetCtx, createFacetWorld } from './lib/facet-host-harness.mjs';
 import { adoptSessionSupervisor, oneShotManager, runnerLoader } from './lib/one-shot-runner.mjs';
@@ -28,6 +29,33 @@ const ran = (result, stdout) => {
 };
 
 await runScenarios(fileURLToPath(import.meta.url), {
+  async entryHelperOwner() {
+    const authority = createAuthority();
+    adoptSessionSupervisor(authority.host, () => {});
+    const { manager, ctx } = session(authority, 'entry-helper-owner');
+    const { oxcTransforms } = await import('./lib/oxc-engine.mjs');
+    const native = new EsbuildService(undefined, oxcTransforms);
+    const owners = [];
+    manager.setEsbuildService(new EsbuildService(undefined, {
+      transformHost: async (requests) => {
+        const end = await beginHelperFetch(ctx, 'entry-transform');
+        try {
+          owners.push(loaderLedgerStats(ctx).holders['entry-transform']);
+          return await native.transformMany(requests);
+        } finally {
+          end();
+        }
+      },
+    }));
+    const result = await manager.exec('import("node:path").then(path => process.stdout.write(path.default.basename("/home/user/entry")))', {
+      cwd: '/home/user', captureOutput: true,
+    });
+    ran(result, 'entry');
+    assert.ok(owners.length > 0, 'the evaluated entry used its transform helper');
+    assert.ok(owners.every((pids) => pids.length === 1 && pids[0] > 0), 'every generation helper is owned by the launch process');
+    drained();
+  },
+
   async parkedBurst() {
     const authority = createAuthority();
     adoptSessionSupervisor(authority.host, () => {});
