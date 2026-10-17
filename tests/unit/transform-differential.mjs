@@ -21,6 +21,7 @@ import { rewriteDynamicImports } from '../../packages/core/src/runtime/dynamic-i
 import { readEsModule } from '../../packages/core/src/runtime/native-esm.ts';
 import { rewriteProvidedCommonJsModules } from '../../packages/core/src/runtime/provided-packages.ts';
 import { wrapCommonJsCell } from '../../packages/core/src/_shared/commonjs-cell.ts';
+import { programLaunchesServer } from '../../packages/core/src/runtime/server-launch.ts';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
 import { oxcEngine } from './lib/oxc-engine.mjs';
 
@@ -60,7 +61,7 @@ function describe(value) {
  * so the order of its own
  * side effects and its dependencies' is compared too.
  */
-async function observe(code) {
+async function observe(code, dependencies = null) {
   const holder = {};
   try {
     new Function('module', wrapCommonJsCell(code, 'block').text)(holder);
@@ -75,7 +76,12 @@ async function observe(code) {
   const log = console.log;
   console.log = () => {};
   try {
-    const returned = holder.exports(Function).call(module.exports, module.exports, (s) => { requires.push(s); return anything(); }, module, '/app/x.js', '/app');
+    const returned = holder.exports(Function).call(module.exports, module.exports, (s) => {
+      requires.push(s);
+      if (dependencies === null) return anything();
+      assert.ok(Object.hasOwn(dependencies, s), `the fixture supplies ${s}`);
+      return dependencies[s];
+    }, module, '/app/x.js', '/app');
     if (returned && typeof returned.then === 'function') await returned;
   } catch (error) {
     // The message names the binding esbuild or Oxc chose; the constructor does not.
@@ -91,6 +97,7 @@ async function observe(code) {
     esModule: Boolean(exported?.__esModule),
     type: typeof exported,
     exports: keys.map((key) => { try { return `${key}=${describe(exported[key])}`; } catch (error) { return `${key} throws ${error.constructor.name}`; } }),
+    ...(dependencies === null ? {} : { values: exported }),
   };
 }
 
@@ -188,23 +195,69 @@ console.log(`  ok  ${CASES.length} modules x ${Object.keys(outcomes).length} tra
   console.log(`  ok  ${Object.keys(deep).length} deep modules equal: ${viaOxc} by Oxc, ${viaEsbuild} past its stack by esbuild`);
 }
 
-// ── The CommonJS shape other code reads by name ─────────────────────────────
+// ── Imported calls and tags preserve ES module receivers and arguments ─────
 {
-  // server-launch.ts unwraps `__toESM(require(...))` and `__toCommonJS` by
-  // name; module.exports is the __toCommonJS object, __esModule unenumerable.
-  const { code } = await oxcEngine.transform(
-    "import d from 'a'; import { x } from 'b'; export const y = x(d); export default 1;",
-    { loader: 'js', format: 'cjs' },
-  );
-  assert.match(code, /var import_a = __toESM\(require\("a"\)\);/);
-  assert.match(code, /var import_b = require\("b"\);/);
-  assert.match(code, /module\.exports = __toCommonJS\(stdin_exports\);/);
-  assert.match(code, /\(0, import_b\.x\)\(import_a\.default\)/);
-  // An imported tag is called without its record as receiver, as an ES
-  // module calls it (esbuild 0.24 passes the record; the mock above cannot tell).
-  const { code: tagged } = await oxcEngine.transform("import { tag } from 't'; tag`a`;", { loader: 'js', format: 'cjs' });
-  assert.match(tagged, /\(0, import_t\.tag\)`a`/);
-  console.log('  ok  CommonJS output keeps the helper and record names Nimbus reads');
+  const calls = [];
+  const callable = (label, result) => function (...args) {
+    calls.push({ label, receiver: this, args });
+    return result;
+  };
+  const tag = (label, result) => function (strings, ...substitutions) {
+    calls.push({ label, receiver: this, strings: [...strings], raw: [...strings.raw], substitutions });
+    return result;
+  };
+  const object = { method: callable('method', 'method-result') };
+  const source = `
+    import call from 'default-call';
+    import { call as namedCall } from 'named-call';
+    import tag from 'default-tag';
+    import { tag as namedTag, object } from 'named-tag';
+    export const called = [call('default', 7), namedCall('named', { count: 2 })];
+    export const tagged = [tag\`line\\n\${3}!\`, namedTag\`named\${{ value: 4 }}end\`];
+    export const method = object.method('method', 5);
+    export default 11;
+  `;
+  const { code } = await runTransformRequest(oxcEngine, source,
+    { loader: 'js', format: 'cjs', dynamicImportParent: 'file:///app/calls.mjs' }, runtime);
+  const observed = await observe(code, {
+    'default-call': callable('default-call', 'default-result'),
+    'named-call': { call: callable('named-call', 'named-result') },
+    'default-tag': tag('default-tag', 'default-tag-result'),
+    'named-tag': { tag: tag('named-tag', 'named-tag-result'), object },
+  });
+  assert.equal(observed.threw, null);
+  assert.equal(observed.esModule, true);
+  assert.deepEqual(observed.requires, ['default-call', 'named-call', 'default-tag', 'named-tag']);
+  assert.deepEqual(observed.values, {
+    called: ['default-result', 'named-result'], tagged: ['default-tag-result', 'named-tag-result'],
+    method: 'method-result', default: 11,
+  });
+  assert.deepEqual(calls, [
+    { label: 'default-call', receiver: undefined, args: ['default', 7] },
+    { label: 'named-call', receiver: undefined, args: ['named', { count: 2 }] },
+    { label: 'default-tag', receiver: undefined, strings: ['line\n', '!'], raw: ['line\\n', '!'], substitutions: [3] },
+    { label: 'named-tag', receiver: undefined, strings: ['named', 'end'], raw: ['named', 'end'], substitutions: [{ value: 4 }] },
+    { label: 'method', receiver: object, args: ['method', 5] },
+  ]);
+  console.log('  ok  imported calls and tags have no receiver; an imported object keeps its method receiver');
+}
+
+// ── The server classifier consumes the real emitted CommonJS ───────────────
+{
+  const { code } = await runTransformRequest(oxcEngine, `
+    import program from 'commander';
+    program.command('serve').action(() => require('node:http').createServer().listen(3000));
+    program.command('build').action(() => console.log('built'));
+    program.parse(process.argv);
+  `, { loader: 'js', format: 'cjs', dynamicImportParent: 'file:///app/cli.mjs' }, runtime);
+  const host = { resolve: async () => null, read: async () => null };
+  for (const [args, expected] of [[['serve'], true], [['build'], false], [['serve', '--help'], false], [['--help'], false]]) {
+    const launches = await programLaunchesServer({
+      source: code, path: '/app/cli.cjs', dir: '/app', packageRoot: '/app', argv: ['/usr/bin/node', '/app/cli.cjs', ...args],
+    }, host);
+    assert.equal(launches, expected, `the transformed CLI classifies ${args.join(' ')}`);
+  }
+  console.log('  ok  the server classifier distinguishes serve, build and help in transformed CommonJS');
 }
 
 // ── Refusals keep esbuild's message shape ───────────────────────────────────
