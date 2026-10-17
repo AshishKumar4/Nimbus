@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "4d1e89f3907a88c36f7ebfc3435d21d7fde918beb208567e8291eed051137433",
+  "fingerprint": "151771cb439bf9e16cd8590e2e5938f75a07c9d98084d2e34294c33bff31a842",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2616,7 +2616,7 @@
     "packages/worker/dist/npm/install-facet.js": "673b299556efd7ba53882396dc81e22a53fffdbb49366c5811c4169a8d613f78",
     "packages/worker/dist/npm/installer.d.ts": "8ff2edaf8909510ca24a71148f368407fba25566af31d587186c3bc38e5ff3da",
     "packages/worker/dist/npm/installer.d.ts.map": "274af6d246e66511ddc338904d45e73af001b85c66378b6abf9cdc7cf7a2563a",
-    "packages/worker/dist/npm/installer.js": "e373d41a3f0e3a256ae44ca6ef0ebcba0cbcfc182cfe92448d13004fecd305d2",
+    "packages/worker/dist/npm/installer.js": "5a0e32161fda98449bdec54bc33de15baf0ccdf50d84c8bccc785c4523bc134f",
     "packages/worker/dist/npm/npx-install.d.ts": "4631c878bb2516d5e545c5d6a684f739e9246d1e108ce9520d11b48fcdb155ce",
     "packages/worker/dist/npm/npx-install.d.ts.map": "2e3e3fc7b8db0bfbbbe947cbcae62915acd2357899119bd66b53c7ab6f92199b",
     "packages/worker/dist/npm/npx-install.js": "1159a4320f381bad17611853034fe2af61efe6546553657fac6bbcc207f18dc0",
@@ -3215,7 +3215,7 @@
     "packages/worker/src/esbuild-cli-artifact.generated.ts": "f2f4bc3d3bdab2c5e195370855386d7d996980d2b42c0709bdbe9348989134f2",
     "packages/worker/src/esbuild-wasm-bundle.generated.ts": "93fc8bda7345020fd8556518b3f02b965020b1a777f94c8bfa1570501632eca4",
     "packages/worker/src/facets/build-facet.ts": "89c1fbb4280a03947a7bbeb3d0c3e7228c9943d1d24bb04636031952e0398c20",
-    "packages/worker/src/facets/cirrus-real.ts": "db70cfb7d2a85fd4bbd24ea71554073d53e83a30612a7ee77a852cf8273b0ffd",
+    "packages/worker/src/facets/cirrus-real.ts": "b04599d15b8f40e373aa2769e5bd42d3364b963c649b0cd706fc1b200308a4ba",
     "packages/worker/src/facets/compose.ts": "247f9265997fd043a4f61a043dfd8d66905ef4abd31bdf382c1e48b8dd17db33",
     "packages/worker/src/facets/data-plan.ts": "589bdb5e5257b943cbf7a2ba791b5cabfc486766b163dd7ab15f041a5d07170f",
     "packages/worker/src/facets/dev-stylesheet.ts": "f3d0d28ee725eec8e6f4928d12e126973898582cb84eab0e22b0886bcaf240a4",
@@ -3317,7 +3317,7 @@
     "packages/worker/src/npm/cache.ts": "1289f13a9f6ddaf593e906c8445bb436d884d1c88b5c2030f22304975cfff4c9",
     "packages/worker/src/npm/install-batch-facet.ts": "b8a0a4fe7d4415942c891228e0760345d4c0804b5fb89537da10fb9538d6b3b0",
     "packages/worker/src/npm/install-facet.ts": "9c3004bb555235599dd3babf788897b62a044b74aae941aebc9c48705bf673b8",
-    "packages/worker/src/npm/installer.ts": "ac164707ee655f92a6777c676bb8e0a8ba22a2da4aa9cb07089f3c9c73d01fd7",
+    "packages/worker/src/npm/installer.ts": "1e40e53a55dfa3746faa9119c0358c284801198045e767897cf101adc07512fd",
     "packages/worker/src/npm/npx-install.ts": "0e35dbf4ed6a23bb9ef4ded94ceef074772085ab4e10b3849957f55154c972d9",
     "packages/worker/src/npm/package-lock.ts": "cad4d3cb2dba964b043f11302a9c52b834ac016632567e34213aee5c6e73f324",
     "packages/worker/src/npm/pre-bundle-facet.ts": "f63fb4dd05618517370f4fb55ae02eb5522d8a3a6ea617d0da459a9d2ab603b5",
