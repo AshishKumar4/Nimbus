@@ -4,11 +4,13 @@ import assert from 'node:assert/strict';
 import { makeClangRunnerFactory } from '../../packages/core/src/runtime/clang-runner.ts';
 import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runner.ts';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
-import { installedRuntime, runtimeContext } from './lib/runtime-session.mjs';
+import { installedRuntime, manifestFile, runtimeContext } from './lib/runtime-session.mjs';
 
 // A session with a home but no installed runtime: the only thing a refusal can
-// come from is the missing blob the manifest names.
+// come from is the missing blob the manifest names (with the digest of the
+// bytes it would be, as every manifest entry carries).
 const missingInstallAuthority = () => installedRuntime().filesystem;
+const published = (path) => manifestFile(path, new Uint8Array([0]));
 const outputContext = (filesystem, args) => runtimeContext(filesystem, { args, pid: 17 });
 
 // A missing install is refused before anything is compiled, so a host that
@@ -20,7 +22,7 @@ const unreachableFacets = {
 
 {
   const manifest = {
-    files: [{ path: 'share/ruby/ruby+stdlib.wasm' }],
+    files: [published('share/ruby/ruby+stdlib.wasm')],
   };
   const filesystem = missingInstallAuthority();
   const runRuby = await makeRubyRunnerFactory({
@@ -38,9 +40,9 @@ const unreachableFacets = {
 {
   const manifest = {
     files: [
-      { path: 'bin/clang' },
-      { path: 'bin/wasm-ld' },
-      { path: 'share/clang/sysroot.tar' },
+      published('bin/clang'),
+      published('bin/wasm-ld'),
+      published('share/clang/sysroot.tar'),
     ],
   };
   const filesystem = missingInstallAuthority();

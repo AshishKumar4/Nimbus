@@ -23,9 +23,9 @@
  */
 import { exitCodeForAbortSignal } from '../substrate/lifo/shell/signals.js';
 import { BASH_STEP_TASK, BASH_REQUEST_TASK } from './compiled-bodies.generated.js';
-import { installedFile, type RuntimeManifest } from './runtime-manifest.js';
+import { installedPath, type RuntimeManifest } from './runtime-manifest.js';
 import { hostImage, withHostView, type ProcessView } from './process-files.js';
-import type { Facet, FacetHost, FacetImage, ImageDigest } from './facet-host.js';
+import type { Facet, FacetHost, FacetImage } from './facet-host.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import { z } from 'zod';
 import type { BashBootArgs, BashFeedArgs, BashSlice } from './bash/types.js';
@@ -83,27 +83,26 @@ export interface BashFacetSession {
 }
 
 /**
- * The installed bash as `artifacts` sees it: its wasm images by module name
- * (bash, then each coreutils image the install has), each with the digest
- * its manifest vouches for, and its busybox applets.
+ * The installed bash as `artifacts` sees it: its wasm images' paths by module
+ * name (bash, then each coreutils image the install has) and its busybox applets.
  */
 async function installedBash(
   artifacts: ProcessView,
   manifest: RuntimeManifest,
   installRoot: string,
-): Promise<{ images: Record<string, ImageDigest & { path: string }>; applets: string[] }> {
-  const bash = installedFile(manifest, installRoot, 'share/bash/bash.async.wasm');
-  if (!bash || !(await artifacts.exists(bash.path))) {
+): Promise<{ images: Record<string, string>; applets: string[] }> {
+  const bash = installedPath(manifest, installRoot, 'share/bash/bash.async.wasm');
+  if (!bash || !(await artifacts.exists(bash))) {
     throw new Error("bash.async.wasm missing (re-run 'nimbus install bash')");
   }
-  const images: Record<string, ImageDigest & { path: string }> = { 'bash.async.wasm': bash };
+  const images: Record<string, string> = { 'bash.async.wasm': bash };
   const prefix = 'share/bash/coreutils/';
   for (const file of manifest.files) {
     if (!file.path.startsWith(prefix) || !file.path.endsWith('.wasm')) continue;
     const path = `${installRoot}/${file.path}`;
-    if (await artifacts.exists(path)) images[`cu_${file.path.slice(prefix.length, -'.wasm'.length)}.wasm`] = { path, sha256: file.sha256, size: file.size };
+    if (await artifacts.exists(path)) images[`cu_${file.path.slice(prefix.length, -'.wasm'.length)}.wasm`] = path;
   }
-  const appletsPath = installedFile(manifest, installRoot, 'share/bash/coreutils/busybox.applets')?.path ?? null;
+  const appletsPath = installedPath(manifest, installRoot, 'share/bash/coreutils/busybox.applets');
   const applets = appletsPath && (await artifacts.exists(appletsPath))
     ? new TextDecoder().decode(await artifacts.readFile(appletsPath))
       .split('\n')
@@ -150,7 +149,7 @@ export async function createBashFacetSession(deps: {
   // (FacetImage), through a lease of its own, for a session outlives the one
   // that opened them.
   const wasmModules: Record<string, FacetImage> = {};
-  for (const [name, file] of Object.entries(installed.images)) wasmModules[name] = await hostImage(deps.authority, CRED_KERNEL, file.path, file);
+  for (const [name, path] of Object.entries(installed.images)) wasmModules[name] = await hostImage(deps.authority, CRED_KERNEL, path);
   const busyboxApplets = installed.applets;
 
   const facet: Facet = deps.facets.open({

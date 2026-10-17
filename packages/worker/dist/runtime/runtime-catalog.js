@@ -58,18 +58,20 @@ import { HexSha256Schema, parseRuntimeManifest, } from '@nimbus-sh/core/runtime/
 import { runtimeEntrypoints } from '@nimbus-sh/core/runtime/installed-runtimes.js';
 import { blobPieces, RuntimeBlobDigestMismatch, splitRuntimeSpec, SUPERSEDED_RUNTIMES, } from '@nimbus-sh/core/runtime/runtime-package.js';
 import { NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI, } from '@nimbus-sh/core/runtime/os-contracts.js';
+// ── Schemas ──────────────────────────────────────────────────────────
 const CatalogVersionEntrySchema = z.object({
     manifest: z.string().min(1),
     manifest_sha256: HexSha256Schema.optional(),
     size_bytes: z.number().int().nonnegative(),
     license: z.string(),
 });
+const CatalogRuntimeEntrySchema = z.object({
+    default: z.string().min(1),
+    versions: z.record(z.string(), CatalogVersionEntrySchema),
+});
 const RuntimeCatalogSchema = z.object({
     version: z.literal(1),
-    runtimes: z.record(z.string(), z.object({
-        default: z.string().min(1),
-        versions: z.record(z.string(), CatalogVersionEntrySchema),
-    })),
+    runtimes: z.record(z.string(), CatalogRuntimeEntrySchema),
 });
 export function parseRuntimeCatalog(value) {
     return RuntimeCatalogSchema.parse(value);

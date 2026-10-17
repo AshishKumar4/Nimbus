@@ -13,8 +13,8 @@
  *   - It is evaluated as a FUNCTION body (new Function(...) in tests, a loader-pool
  *     preamble in production), so the emitted string may contain no import, no
  *     export and no top-level await. Bundling to an IIFE is what guarantees that.
- *   - Nothing may be imported for its value. Type-only imports are erased and are
- *     the only kind permitted.
+ *   - A module imported for its value is bundled in whole (tree shaking is off),
+ *     so values come only from modules the facet carries entire.
  *   - globalThis.__bashBoot and globalThis.__bashFeed are the entry points; every
  *     other declaration is reachable only from them, which is why the bundle runs
  *     with tree shaking off.
@@ -51,6 +51,7 @@ import type { Awaitable, RuntimeFsBridge, RuntimeFsPath, RuntimeSynchronousFs } 
 import type { SyscallResult, WasiSupervisorStub } from '../wasi/types.js';
 import { wasiOutputRelay, type WasiOutputTarget } from '../wasi/stdio.js';
 import { outputControlReader } from '../wasi/output-control.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 import { clockNs, clockResolutionNs, realtimeNs } from '../wasi/clock.js';
 import { unixGroups, unixUsers } from '../../shell/unix-accounts.js';
 import { ARENA_SIZE, CaptureStore, type ModuleLayout } from './capture-store.js';
@@ -78,13 +79,7 @@ let outputSupervisor: WasiOutputTarget | null = null;
 let inputSupervisor: Pick<WasiSupervisorStub, 'cpReadStdin'> | null = null;
 
 function norm(p: string): string {
-  const parts = [];
-  for (const seg of String(p).split('/')) {
-    if (!seg || seg === '.') continue;
-    if (seg === '..') { parts.pop(); continue; }
-    parts.push(seg);
-  }
-  return parts.join('/');
+  return rootClampedSegments(String(p)).join('/');
 }
 
 

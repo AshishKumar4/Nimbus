@@ -128,23 +128,14 @@ export interface WranglerConfig {
 }
 
 /**
- * The bundler aliases that every Nimbus embedder needs.
- * Exposed as a named constant so embedders building their own configs
- * by hand can drop them in without copy-paste drift.
+ * The bundler aliases that every Nimbus embedder needs: the packages the
+ * worker's dist imports by bare name (jsdiff, for Git's unified diffs). Git's
+ * own dependencies are bundled into its vendor module, so they need none.
+ * Exposed as a named constant so embedders building their own configs by
+ * hand can drop them in without copy-paste drift.
  */
 export const NIMBUS_REQUIRED_ALIASES: Readonly<Record<string, string>> = Object.freeze({
-  'clean-git-ref': 'clean-git-ref/lib/index.js',
-  'is-git-ref-name-valid': 'is-git-ref-name-valid/index.js',
-  'crc-32': 'crc-32',
-  'sha.js': 'sha.js',
-  pako: 'pako',
-  pify: 'pify',
   diff: 'diff',
-  diff3: 'diff3',
-  ignore: 'ignore',
-  'readable-stream': 'readable-stream',
-  'simple-get': 'simple-get',
-  minimisted: 'minimisted',
 });
 
 /**

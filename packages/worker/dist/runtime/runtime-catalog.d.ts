@@ -52,6 +52,7 @@
  * cache what cannot be verified is the point, and `l2Address` returning null
  * is the only way that happens — there is no "trust the key instead" fallback.
  */
+import { z } from 'zod/v4';
 import { type ManifestFile, type RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
 import { type RuntimeSource } from '@nimbus-sh/core/runtime/runtime-package.js';
 import { type RuntimePackageAbi } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -73,22 +74,42 @@ export interface RuntimeCatalogEnv {
      */
     NIMBUS_RUNTIME_CATALOG_SHA256?: string;
 }
-export interface CatalogVersionEntry {
-    manifest: string;
-    /** Hex sha256 of the manifest bytes. Absent on catalogs published
-     *  before the digest was recorded — those manifests stay out of L2. */
-    manifest_sha256?: string;
-    size_bytes: number;
-    license: string;
-}
-export interface CatalogRuntimeEntry {
-    default: string;
-    versions: Record<string, CatalogVersionEntry>;
-}
-export interface RuntimeCatalog {
-    version: 1;
-    runtimes: Record<string, CatalogRuntimeEntry>;
-}
+declare const CatalogVersionEntrySchema: z.ZodObject<{
+    manifest: z.ZodString;
+    manifest_sha256: z.ZodOptional<z.ZodString>;
+    size_bytes: z.ZodNumber;
+    license: z.ZodString;
+}, z.core.$strip>;
+/**
+ * One version of a runtime in the catalog: `manifest`, its R2 key (e.g.
+ * "manifests/clang-binji-2020.json"); `manifest_sha256`, the hex sha256 of the
+ * manifest's bytes, absent on catalogs published before the digest was
+ * recorded (those manifests stay out of L2).
+ */
+export type CatalogVersionEntry = z.output<typeof CatalogVersionEntrySchema>;
+declare const CatalogRuntimeEntrySchema: z.ZodObject<{
+    default: z.ZodString;
+    versions: z.ZodRecord<z.ZodString, z.ZodObject<{
+        manifest: z.ZodString;
+        manifest_sha256: z.ZodOptional<z.ZodString>;
+        size_bytes: z.ZodNumber;
+        license: z.ZodString;
+    }, z.core.$strip>>;
+}, z.core.$strip>;
+export type CatalogRuntimeEntry = z.output<typeof CatalogRuntimeEntrySchema>;
+declare const RuntimeCatalogSchema: z.ZodObject<{
+    version: z.ZodLiteral<1>;
+    runtimes: z.ZodRecord<z.ZodString, z.ZodObject<{
+        default: z.ZodString;
+        versions: z.ZodRecord<z.ZodString, z.ZodObject<{
+            manifest: z.ZodString;
+            manifest_sha256: z.ZodOptional<z.ZodString>;
+            size_bytes: z.ZodNumber;
+            license: z.ZodString;
+        }, z.core.$strip>>;
+    }, z.core.$strip>>;
+}, z.core.$strip>;
+export type RuntimeCatalog = z.output<typeof RuntimeCatalogSchema>;
 export declare function parseRuntimeCatalog(value: unknown): RuntimeCatalog;
 /**
  * R2 key of the catalog whose bytes hash to `sha256`. bundle-runtime.mjs

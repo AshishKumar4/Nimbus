@@ -128,7 +128,7 @@ export function calleeName(callee: AnyNode): string | null {
   return at.property.type === 'Literal' && typeof at.property.value === 'string' ? at.property.value : null;
 }
 
-/** The module syntax a token opens: a top-level declaration, or `import.meta` anywhere. */
+/** The module syntax a token opens: a declaration (an `import` not `import(`, an `export`), or `import.meta`. */
 export type ModuleSyntaxToken = 'import' | 'export' | 'import.meta';
 
 /**
@@ -155,10 +155,11 @@ export const COMMONJS_WRAPPER_NAMES: ReadonlySet<string> = new Set(['exports', '
  * the tokens answers every other source CommonJS without a parse (a
  * multi-MiB bundle must fit a 48 MiB heap). One that finds a top-level
  * `import` or `export`, or `import.meta`, before either of the others
- * answers module. Where that differs from Node (a syntax error before it;
- * an `import` or `export` nested in a block) the source compiles under
- * neither, and fails either way. The rest are compiled, by acorn in V8's
- * place (commonJsCompileError).
+ * answers module. Where that differs from Node (a syntax error before it)
+ * the source compiles under neither, and fails either way. The rest are
+ * compiled, by acorn in V8's place (commonJsCompileError): an `import` or
+ * `export` nested in a block among them, which fails as CommonJS, and which
+ * V8's error there makes a module.
  */
 export function containsModuleSyntax(source: string, scope: 'file' | 'eval' = 'file'): boolean {
   const scan = unscopedAwaitScanner(source);
@@ -167,8 +168,8 @@ export function containsModuleSyntax(source: string, scope: 'file' | 'eval' = 'f
   let candidate = false;
   // Tokenized as CommonJS is compiled: a script's tokens (a legacy octal is one).
   walkTopLevelModuleTokens(source, (token, syntax, topLevel) => {
-    if (syntax !== null) moduleSyntax = true;
-    else if (bindings(token, topLevel) || scan(token)) candidate = true;
+    if (syntax === 'import.meta' || (syntax !== null && topLevel)) moduleSyntax = true;
+    else if (syntax !== null || bindings(token, topLevel) || scan(token)) candidate = true;
     return moduleSyntax || candidate;
   }, 'script');
   if (moduleSyntax) return true;
@@ -436,9 +437,11 @@ function unscopedAwaitScanner(source: string): ((token: Token) => boolean) & { a
  * Walk `source`'s tokens tracking brace, paren and bracket depth, without
  * building an AST (a multi-MiB bundle chunk must fit a 48 MiB heap). `visit`
  * sees every token with whether it sits at top level and the module syntax
- * it opens: for a top-level `import` or `export` keyword, the declaration
- * (not `import(`), and for an `import` anywhere, `import.meta`; never for a
- * member named so (after `.` or `?.`). `visit` returns true to stop the walk.
+ * it opens: for an `import` or `export` keyword, the declaration (not
+ * `import(`), at top level or not, and `import.meta`; never for a member
+ * named so (after `.` or `?.`), nor, nested, a key, a method or a class
+ * field (before `:`, `(`, `=`, `;` or `}`). `visit` returns true to stop
+ * the walk.
  *
  * Returns true when `visit` stopped it, false at the end of the source, and
  * null when the source does not tokenize (as `sourceType` does).
@@ -465,12 +468,13 @@ export function walkTopLevelModuleTokens(
       const keyword = previous !== tokTypes.dot && previous !== tokTypes.questionDot;
       previous = type;
       let syntax: ModuleSyntaxToken | null = null;
-      if (keyword && topLevel && type === tokTypes._export) {
-        syntax = 'export';
+      if (keyword && type === tokTypes._export) {
+        ahead = topLevel ? null : tokens.getToken();
+        if (ahead === null || !namesMember(ahead)) syntax = 'export';
       } else if (keyword && type === tokTypes._import) {
         ahead = tokens.getToken();
         if (ahead.type === tokTypes.dot) syntax = 'import.meta';
-        else if (topLevel && ahead.type !== tokTypes.parenL) syntax = 'import';
+        else if (ahead.type !== tokTypes.parenL && (topLevel || !namesMember(ahead))) syntax = 'import';
       } else if (type === tokTypes.braceL || type === tokTypes.dollarBraceL) braces++;
       else if (type === tokTypes.braceR) braces = Math.max(0, braces - 1);
       else if (type === tokTypes.parenL) parens++;
@@ -482,6 +486,12 @@ export function walkTopLevelModuleTokens(
   } catch {
     return null;
   }
+}
+
+/** Whether the token after a nested `import` or `export` makes it a key, a method or a class field named so (`{ import: x }`, `export() {}`, `export = 1`), not a declaration. */
+function namesMember(next: Token): boolean {
+  const type = next.type;
+  return type === tokTypes.colon || type === tokTypes.parenL || type === tokTypes.eq || type === tokTypes.semi || type === tokTypes.braceR;
 }
 
 /** A replacement of source text `[start, end)` by `text`. */

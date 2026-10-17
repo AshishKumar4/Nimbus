@@ -12,6 +12,7 @@
 // see when a deployment is partly broken.
 
 import { nimbus } from '../index.ts';
+import { WORKLOADS } from '../../bench/workloads.mjs';
 
 const endpoint = process.env.BASE;
 const token = process.env.NIMBUS_PROBE_TOKEN;
@@ -46,25 +47,15 @@ try {
   sandbox = await compute.sandbox.create();
   console.log(`created ${sandbox.sandboxId}\n`);
 
-  await check('node -v returns a version', async () => {
-    const r = await sandbox.runCommand('node -v');
-    expect(r.exitCode === 0, `exit ${r.exitCode}: ${r.stderr}`);
-    expect(/^v\d+\.\d+\.\d+/.test(r.stdout), `unexpected output: ${JSON.stringify(r.stdout)}`);
-    return r.stdout.trim();
-  });
-
-  await check('a real process runs and returns computed output', async () => {
-    const r = await sandbox.runCommand('echo $((6*7))-$$');
-    expect(r.exitCode === 0, `exit ${r.exitCode}`);
-    expect(/^42-\d+/.test(r.stdout.trim()), `unexpected output: ${JSON.stringify(r.stdout)}`);
-    return r.stdout.trim();
-  });
-
-  await check('the Node runtime executes JavaScript', async () => {
-    const r = await sandbox.runCommand('node -e "console.log(6*7)"');
-    expect(r.exitCode === 0, `exit ${r.exitCode}: ${r.stderr}`);
-    expect(r.stdout.trim() === '42', `stdout was ${JSON.stringify(r.stdout)} (expected "42")`);
-  });
+  // The readiness workloads the TTI benchmark times, each checked as it checks them.
+  for (const [name, workload] of Object.entries(WORKLOADS)) {
+    await check(`${name}: ${workload.proves}`, async () => {
+      const r = await sandbox.runCommand(workload.command);
+      expect(r.exitCode === 0, `exit ${r.exitCode}: ${r.stderr}`);
+      expect(workload.verify(r), `unexpected output: ${JSON.stringify(r.stdout)}`);
+      return r.stdout.trim();
+    });
+  }
 
   await check('a non-zero exit survives the round trip', async () => {
     const r = await sandbox.runCommand('exit 3');

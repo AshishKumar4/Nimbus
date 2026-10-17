@@ -1,5 +1,6 @@
 import { type ProjectFs } from '../runtime/project-fs.js';
 import type { ResolvedPackage } from './resolver.js';
+import { z } from 'zod/v4';
 /**
  * A staged-artifact bin target (`nimbus-staged:<artifact>`) is a sentinel,
  * not a VFS path: the runnable bundle lives in the static-assets layer and is
@@ -11,17 +12,25 @@ export declare function stagedArtifactId(target: string): string;
 export declare function parseNpmBinManifest(text: string): NpmBinManifest | null;
 export declare const NPM_BIN_MANIFEST_VERSION = 1;
 export declare const NPM_BIN_MANIFEST_NAME = ".nimbus-bin-map.json";
-export interface NpmBinEntry {
-    name: string;
-    packageName: string;
-    packageVersion: string;
-    packagePath: string;
-    targetPath: string;
-}
-export interface NpmBinManifest {
-    version: typeof NPM_BIN_MANIFEST_VERSION;
-    bins: Record<string, NpmBinEntry>;
-}
+declare const NpmBinEntrySchema: z.ZodObject<{
+    name: z.ZodString;
+    packageName: z.ZodString;
+    packageVersion: z.ZodString;
+    packagePath: z.ZodString;
+    targetPath: z.ZodString;
+}, z.core.$strip>;
+export type NpmBinEntry = z.output<typeof NpmBinEntrySchema>;
+declare const NpmBinManifestSchema: z.ZodObject<{
+    version: z.ZodLiteral<1>;
+    bins: z.ZodRecord<z.ZodString, z.ZodObject<{
+        name: z.ZodString;
+        packageName: z.ZodString;
+        packageVersion: z.ZodString;
+        packagePath: z.ZodString;
+        targetPath: z.ZodString;
+    }, z.core.$strip>>;
+}, z.core.$strip>;
+export type NpmBinManifest = z.output<typeof NpmBinManifestSchema>;
 export interface NpmBinResolution extends NpmBinEntry {
     shimPath: string;
 }

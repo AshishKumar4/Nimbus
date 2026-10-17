@@ -31,18 +31,20 @@ export function parseNpmBinManifest(text: string): NpmBinManifest | null {
 export const NPM_BIN_MANIFEST_VERSION = 1;
 export const NPM_BIN_MANIFEST_NAME = '.nimbus-bin-map.json';
 
-export interface NpmBinEntry {
-  name: string;
-  packageName: string;
-  packageVersion: string;
-  packagePath: string;
-  targetPath: string;
-}
+const NpmBinEntrySchema = z.object({
+  name: z.string().refine((name) => npmBinName(name) === name),
+  packageName: z.string().min(1),
+  packageVersion: z.string(),
+  packagePath: z.string().min(1),
+  targetPath: z.string().min(1),
+});
+export type NpmBinEntry = z.output<typeof NpmBinEntrySchema>;
 
-export interface NpmBinManifest {
-  version: typeof NPM_BIN_MANIFEST_VERSION;
-  bins: Record<string, NpmBinEntry>;
-}
+const NpmBinManifestSchema = z.object({
+  version: z.literal(NPM_BIN_MANIFEST_VERSION),
+  bins: z.record(z.string(), NpmBinEntrySchema),
+}).refine((manifest) => Object.entries(manifest.bins).every(([key, entry]) => key === entry.name));
+export type NpmBinManifest = z.output<typeof NpmBinManifestSchema>;
 
 export interface NpmBinResolution extends NpmBinEntry {
   shimPath: string;
@@ -58,31 +60,13 @@ type WritableVfsLike = VfsLike & Pick<ProjectFs, 'mkdir' | 'writeFile' | 'chmod'
 /** What validating a bin's target reads. */
 type BinTargetFs = Pick<VfsLike, 'exists' | 'isDirectory'>;
 
-interface PackageJsonLike {
-  name: string;
-  version?: string;
-  /** Read by npmBinMap, which takes what npm takes (a string, a map, an array) and drops the rest. */
-  bin?: unknown;
-}
-
-const NpmBinEntrySchema: z.ZodType<NpmBinEntry> = z.object({
-  name: z.string().refine((name) => npmBinName(name) === name),
-  packageName: z.string().min(1),
-  packageVersion: z.string(),
-  packagePath: z.string().min(1),
-  targetPath: z.string().min(1),
-});
-
-const NpmBinManifestSchema: z.ZodType<NpmBinManifest> = z.object({
-  version: z.literal(NPM_BIN_MANIFEST_VERSION),
-  bins: z.record(z.string(), NpmBinEntrySchema),
-}).refine((manifest) => Object.entries(manifest.bins).every(([key, entry]) => key === entry.name));
-
-const PackageJsonSchema: z.ZodType<PackageJsonLike> = z.object({
+const PackageJsonSchema = z.object({
   name: z.string().min(1),
   version: z.string().optional(),
   bin: z.unknown().optional(),
 }).passthrough();
+/** A package.json as bins are read from it: its `bin` is npmBinMap's to read, which takes what npm takes (a string, a map, an array) and drops the rest. */
+type PackageJsonLike = z.output<typeof PackageJsonSchema>;
 
 export function npmBinDirPath(nodeModulesPath: string): string {
   return normalizeVfsPath(`${nodeModulesPath}/.bin`);

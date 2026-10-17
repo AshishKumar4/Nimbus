@@ -26,7 +26,7 @@
  * Dispatch stays direct: no sleeps, no caller-side retries, and no
  * catch-and-continue around loader failures.
  */
-import { installedFile } from './runtime-manifest.js';
+import { installedPath } from './runtime-manifest.js';
 import { CLANG_CALL_TASK } from './compiled-bodies.generated.js';
 import { withHostView } from './process-files.js';
 import { CRED_KERNEL, gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
@@ -42,9 +42,9 @@ const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
 /** Build the runner factory. Closes over the facet host and the filesystem authority. */
 export function makeClangRunnerFactory(deps) {
     return function clangRunnerFactory(manifest, installRoot, binName, binKind) {
-        const clangFile = installedFile(manifest, installRoot, 'bin/clang');
-        const lldFile = installedFile(manifest, installRoot, 'bin/wasm-ld');
-        const sysrootVfsPath = installedFile(manifest, installRoot, 'share/clang/sysroot.tar')?.path ?? null;
+        const clangVfsPath = installedPath(manifest, installRoot, 'bin/clang');
+        const lldVfsPath = installedPath(manifest, installRoot, 'bin/wasm-ld');
+        const sysrootVfsPath = installedPath(manifest, installRoot, 'share/clang/sysroot.tar');
         // Guest-visible: the toolchain is handed this as an absolute path.
         const sysrootDir = `/${normalizeVfsPath(`${installRoot}/${SYSROOT_DIR_REL}`)}`;
         // Made once, by the first run that needs it, and again by the next after
@@ -85,7 +85,7 @@ export function makeClangRunnerFactory(deps) {
                 ctx.stderr.write(`${binName}: sysroot.tar missing from install\n`);
                 return 127;
             }
-            if (!clangFile || !lldFile) {
+            if (!clangVfsPath || !lldVfsPath) {
                 ctx.stderr.write(`${binName}: clang/wasm-ld missing from install\n`);
                 return 127;
             }
@@ -153,8 +153,7 @@ export function makeClangRunnerFactory(deps) {
             const openTarget = async (primaryName) => {
                 let image;
                 try {
-                    const file = primaryName === 'clang' ? clangFile : lldFile;
-                    image = await runtimeVfs.image(file.path, file);
+                    image = await runtimeVfs.image(primaryName === 'clang' ? clangVfsPath : lldVfsPath);
                 }
                 catch (e) {
                     ctx.stderr.write(`${binName}: ${primaryName} runtime warm-up failed: ${errorText(e)}\n`);

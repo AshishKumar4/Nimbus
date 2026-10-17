@@ -16,6 +16,7 @@
 import { crc32 } from './crc32.js';
 import { CHUNK_SIZE } from './limits.js';
 import { utf8Length } from './utf8.js';
+import { rootClampedSegments } from './lexical-path.js';
 
 // The batch payload types live WITH the wire format that encodes them: every
 // producer and consumer of a W7 stream speaks exactly these records, and the
@@ -1427,15 +1428,7 @@ class PathOwnership {
 }
 
 function normalizePath(path: string): string {
-  const out: string[] = [];
-  for (const segment of path.split('/')) {
-    if (segment === '..') {
-      if (out.length > 0) out.pop();
-    } else if (segment !== '' && segment !== '.') {
-      out.push(segment);
-    }
-  }
-  return out.join('/');
+  return rootClampedSegments(path).join('/');
 }
 
 function parentPath(path: string): string {

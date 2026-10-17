@@ -27,6 +27,7 @@ import {
   columnMapModuleName,
   commonJsEntryModuleName,
   declaresWrapperBinding,
+  ENTRY_CHECKED,
   runtimeCodeModuleName,
   runtimeExpressionModule,
   runtimeFunctionModule,
@@ -229,6 +230,7 @@ import type { ResizableCreditLease } from '@nimbus-sh/platform/weighted-credit-p
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { streamedWasmImageDigest, type WasmImageRecord } from './wasm-image-digest.js';
 import { wasmImageDigest } from './wasm-image-key.js';
+import { nimbusDebugEnabled } from '../_shared/nimbus-debug.js';
 import { attributeAllocation, setPrefetchCacheBytes } from '@nimbus-sh/platform/diag-counters.js';
 
 /**
@@ -1099,9 +1101,9 @@ export function entryEsModuleKey(filename: string | undefined, cwd: string): str
  */
 function entryModule(
   userCode: string, filename: string | undefined, cwd: string, esModule: boolean | undefined, bundleSource: FacetVfsBundleSource,
-  preamble?: string,
+  preamble?: string, check = false,
 ): { name: string; esModule: boolean; modules: Record<string, string>; evaluate: string; stackEntry: string } {
-  const entry = programEntry(userCode, filename, cwd, esModule, bundleSource);
+  const entry = programEntry(userCode, filename, cwd, esModule, bundleSource, check);
   if (preamble === undefined) return entry;
   // The preamble, a module of its own, then the entry: `(preamble, entry)`.
   const name = commonJsEntryModuleName('[preamble]');
@@ -1113,8 +1115,12 @@ function entryModule(
   };
 }
 
+/** `node -c`'s entry cell begins with this, on the wrapper's line: its compile succeeds, and nothing of it runs. */
+const CHECKED_HEAD = `throw ${JSON.stringify(ENTRY_CHECKED)};`;
+
 function programEntry(
   userCode: string, filename: string | undefined, cwd: string, esModule: boolean | undefined, bundleSource: FacetVfsBundleSource,
+  check: boolean,
 ): { name: string; esModule: boolean; modules: Record<string, string>; evaluate: string; stackEntry: string } {
   const key = entryEsModuleKey(filename, cwd);
   const cell = commonJsCellModuleName(key);
@@ -1134,7 +1140,11 @@ function programEntry(
   const code = rewriteProvidedCommonJsModules(userCode);
   const name = commonJsEntryModuleName(filename || '[eval]');
   const path = 'filename || "/home/user/script.js"';
-  const wrapped = wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function');
+  // -c compiles a function body, as Node's wrapSafe does, whatever it declares.
+  const body = wrapCommonJsCell(code, !check && declaresWrapperBinding(code) ? 'block' : 'function');
+  // -c: the cell stops at its first statement, so not even text of the
+  // program's that closes the wrapper runs (node-shims __nimbusEvaluateEntry).
+  const wrapped = check ? { ...body, text: CHECKED_HEAD + body.text, head: CHECKED_HEAD.length + body.head } : body;
   return {
     name,
     esModule: false,
@@ -1354,9 +1364,10 @@ export async function generateEntrypointCode(
   cwd: string = DEFAULT_HOME,
   esModule?: boolean,
   preamble?: string,
+  check = false,
 ): Promise<GeneratedNodeFacetCode> {
   const bundleSource = await facetVfsBundleSourceFor(vfsState);
-  const entry = entryModule(userCode, filename, cwd, esModule, bundleSource, preamble);
+  const entry = entryModule(userCode, filename, cwd, esModule, bundleSource, preamble, check);
   const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry });
   const source = moduleSource`
 ${nodeProgramModule(bundleSource, runtime, usesSqlite, vfsState.stagedBindings, wasmImports)}
@@ -1724,7 +1735,7 @@ export async function generateLongRunningNodeCode(
   pacer?: TurnBudget,
 ): Promise<GeneratedNodeFacetCode> {
   const bundleSource = await facetVfsBundleSourceFor(vfsState, pacer);
-  const entry = entryModule(userCode, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, bundleSource, opts.preamble);
+  const entry = entryModule(userCode, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, bundleSource, opts.preamble, opts.node?.check === true);
   const args = {
     argv: opts.argv || [],
     nodeCommandLine: opts.node ?? null,
@@ -5649,10 +5660,7 @@ export class FacetManager {
         },
       }),
     });
-    const debugVar = ((typeof env === 'object' || typeof env === 'function') && env !== null)
-      ? Reflect.get(env, 'NIMBUS_DEBUG')
-      : undefined;
-    this.debugEnabled = debugVar === '1' || debugVar === 'true';
+    this.debugEnabled = nimbusDebugEnabled(env);
     const profiles = ((typeof env === 'object' || typeof env === 'function') && env !== null)
       ? Reflect.get(env, 'NPM_TARBALL_CACHE')
       : undefined;
@@ -8079,7 +8087,7 @@ export class FacetManager {
     const entryCode = await this._entryDynamicImports(code, opts.filename, opts.cwd || '/home/user', pacer);
     const generated = await this._generateUnderCeiling(
       entry.pid, vfsState, moduleMemberBytes(sqliteModules) + memberBytes.wire + ONE_SHOT_HOST_ENTRY_BYTES,
-      (state) => generateEntrypointCode(entryCode, state, usesSqlite, sources, wasmImports, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, opts.preamble),
+      (state) => generateEntrypointCode(entryCode, state, usesSqlite, sources, wasmImports, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, opts.preamble, opts.node?.check === true),
       true,
     );
     const textBytes = generatedMapRetainedBytes(generated, {});

@@ -43,6 +43,7 @@ import { normalizeVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.
 import { getTailwindPlayBundle, TAILWIND_PLAY_VERSION, } from '../tailwind-play.generated.js';
 import { recallOf, withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { staticExtension, staticMimeType, staticMimeTypes } from '@nimbus-sh/fabric/static-mime.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 // ── HMR client code ─────────────────────────────────────────────────────
 // Injected into index.html. Listens for HMR messages from parent window
 // (forwarded by the main Nimbus frontend from the WebSocket).
@@ -1643,14 +1644,7 @@ export class ViteDevServer {
     }
     /** Normalize and sanitize a preview pathname to prevent traversal. */
     sanitizePath(pathname) {
-        const segments = pathname.split('/').reduce((acc, seg) => {
-            if (seg === '..')
-                acc.pop();
-            else if (seg !== '.' && seg !== '')
-                acc.push(seg);
-            return acc;
-        }, []);
-        return '/' + segments.join('/');
+        return '/' + rootClampedSegments(pathname).join('/');
     }
     /**
      * Handle an HTTP request to the dev server.
@@ -1690,11 +1684,7 @@ export class ViteDevServer {
         return resp;
     }
     async _handleRequestInner(request, pathname, base) {
-        const safePath = this.sanitizePath(pathname);
-        if (!safePath) {
-            return new Response('400 Bad Request', { status: 400 });
-        }
-        pathname = safePath;
+        pathname = this.sanitizePath(pathname);
         // Strip query parameters for path resolution, keep for logic
         const queryIdx = pathname.indexOf('?');
         const query = queryIdx >= 0 ? pathname.substring(queryIdx) : '';
