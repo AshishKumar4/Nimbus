@@ -171,7 +171,7 @@ const LONG = 60_000;
     LOADER: {
       get(id, load) {
         gets++;
-        return { getEntrypoint: () => ({ async fetch() { if (!cache.has(id)) { builds++; cache.set(id, await load()); } return new Response('ok'); } }) };
+        return { getEntrypoint: () => ({ async fetch() { if (!cache.has(id)) { cache.set(id, await load()); builds++; } return new Response('ok'); } }) };
       },
     },
   };
