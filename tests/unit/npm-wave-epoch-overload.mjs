@@ -27,7 +27,7 @@ const OVERLOADED = 'Durable Object is overloaded. Requests queued for too long.'
     'package/package.json': '{"name":"fixture","version":"1.0.0"}',
     'package/index.js': 'module.exports = 1;',
   });
-  const files = packages.flatMap(({ pkgDir }) => [`${pkgDir}/index.js`, `${pkgDir}/package.json`]).sort();
+  const inventory = ['node_modules', ...packages.flatMap(({ pkgDir }) => [pkgDir, `${pkgDir}/index.js`, `${pkgDir}/package.json`])].sort();
   for (const shed of [1, 2]) {
     let opens = 0;
     const written = [];
@@ -51,7 +51,7 @@ const OVERLOADED = 'Durable Object is overloaded. Requests queued for too long.'
       packages.map(({ name, version, pkgDir }) => ({ name, version, pkgDir, fileCount: 2, errorText: undefined })),
       `${shed} shed open(s): every package installs at its place`);
     assert.equal(opens, shed + 1, 'the open is made again until the session answers it');
-    assert.deepEqual(written.sort(), files, 'and every package file is written under it, once');
+    assert.deepEqual(written.sort(), inventory, 'and every package directory and file is written under it, once');
   }
   // An open the session refused for a reason of its own is its verdict: not made again.
   let opens = 0;
