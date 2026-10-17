@@ -10629,7 +10629,7 @@ export class SqliteVFS {
     } catch (error) {
       // Nothing it did landed: no observer hears of it, and no run kept it.
       for (const event of publication.events) event.write?.release();
-      for (let i = captureUndo.length - 1; i >= 0; i--) captureUndo[i]!();
+      for (const undo of captureUndo.reverse()) undo();
       this.evictAll();
       this.maintenancePending = maintenancePending;
       if (sharedBefore !== null || this.sharedDirectories.size > 0) {
