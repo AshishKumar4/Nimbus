@@ -17,56 +17,11 @@
 
 import assert from 'node:assert/strict';
 import { session, user } from './lib/holder-session.mjs';
+import { DIR, NAMES, program } from './lib/fs-programs.mjs';
+import { withRecall } from '../../packages/core/src/vfs/recall.ts';
 
-const DIR = 'home/user/other';
-const NAMES = ['a', 'b', 'c'];
-const MAX_FDS = 3;
 const enc = new TextEncoder();
 const dec = new TextDecoder();
-
-/** mulberry32: a small seeded generator. */
-function generator(seed) {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) | 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-/** A program of `length` steps from `seed`. */
-function program(seed, length = 40) {
-  const random = generator(seed);
-  const pick = (items) => items[Math.floor(random() * items.length)];
-  const word = () => 'x'.repeat(1 + Math.floor(random() * 3)).replace(/x/g, () => pick(['p', 'q', 'r', 's']));
-  // As utimensat(2) takes a time: explicit milliseconds, now, or kept.
-  const time = () => pick([1_600_000_000_000 + Math.floor(random() * 9) * 1000, 'now', 'omit']);
-  const steps = [];
-  for (let i = 0; i < length; i++) {
-    const roll = random();
-    if (roll < 0.22) {
-      const access = pick(['r', 'w', 'rw']);
-      steps.push({ op: 'open', fd: Math.floor(random() * MAX_FDS), name: pick(NAMES), flags: {
-        read: access !== 'w', write: access !== 'r', append: access !== 'r' && random() < 0.25,
-        create: random() < 0.6, exclusive: random() < 0.2, truncate: random() < 0.3,
-      } });
-    } else if (roll < 0.40) steps.push({ op: 'write', fd: Math.floor(random() * MAX_FDS), offset: random() < 0.3 ? null : Math.floor(random() * 6), data: word() });
-    else if (roll < 0.46) steps.push({ op: 'ftruncate', fd: Math.floor(random() * MAX_FDS), size: Math.floor(random() * 5) });
-    else if (roll < 0.52) steps.push({ op: 'close', fd: Math.floor(random() * MAX_FDS) });
-    else if (roll < 0.57) steps.push({ op: 'unlink', name: pick(NAMES) });
-    else if (roll < 0.62) steps.push({ op: 'rename', from: pick(NAMES), to: pick(NAMES) });
-    else if (roll < 0.645) steps.push({ op: 'chmod', name: pick(NAMES), mode: pick([0o644, 0o444, 0o600]) });
-    else if (roll < 0.665) steps.push({ op: 'utimes', name: pick(NAMES), atime: time(), mtime: time() });
-    else if (roll < 0.685) steps.push({ op: 'fchmod', fd: Math.floor(random() * MAX_FDS), mode: pick([0o644, 0o444, 0o600]) });
-    else if (roll < 0.70) steps.push({ op: 'futimes', fd: Math.floor(random() * MAX_FDS), atime: time(), mtime: time() });
-    else if (roll < 0.75) steps.push({ op: 'writeFile', name: pick(NAMES), data: word() });
-    else if (roll < 0.82) steps.push({ op: 'peer', kind: pick(['write', 'write', 'unlink', 'rename', 'chmod']), name: pick(NAMES), to: pick(NAMES), data: word(), mode: pick([0o644, 0o444]) });
-    else if (roll < 0.92) steps.push({ op: 'deliver' });
-    else steps.push({ op: 'catchUp' });
-  }
-  return steps;
-}
 
 /**
  * What the process's own operations make of a file: write, append, truncate
@@ -115,18 +70,28 @@ async function errnoOf(work) {
 const KNOWN_ENGINE_BUG = /missing chunk \d+/;
 
 /** Run `steps`; throws the first divergence from the model, naming its step. */
-async function run(steps) {
+async function run(steps, grants = false) {
   const met = { waves: [] };
   try {
-    await runSteps(steps, met);
+    await runSteps(steps, met, grants);
   } catch (error) {
     const wave = met.waves.find((answer) => KNOWN_ENGINE_BUG.test(answer?.error?.message ?? ''));
     if (wave !== undefined) throw Object.assign(new Error(`known engine bug (wave EIO "${wave.error.message}", ToughWallaby P1): ${error.message}`), { known: true });
     throw error;
+  } finally {
+    // Each program alone: nothing of one (its held waves, its timers) is left to run beside the next.
+    await met.end?.();
   }
 }
 
-async function runSteps(steps, met) {
+/**
+ * `grants`: the session grants the process the subtree it changes (taken at
+ * its first change there, as a resident's is): what it decides then is the
+ * grant's (its cells), and a peer's change there recalls it, after which it
+ * decides provisionally. A peer then acts through a process of its own, once
+ * what the process sent is delivered.
+ */
+async function runSteps(steps, met, grants) {
   // The process's session: its waves wait for `deliver`; no grant is held.
   const control = { held: true, opened: Promise.withResolvers() };
   // What the process's provisional decisions take of its budget: always what they keep, and nothing once all is drained.
@@ -134,10 +99,15 @@ async function runSteps(steps, met) {
   const s = session({
     budget,
     view: {},
-    acquired: { then: (_resolve, reject) => reject(Object.assign(new Error('EBUSY'), { code: 'EBUSY' })) },
+    ...(grants ? {} : { acquired: { then: (_resolve, reject) => reject(Object.assign(new Error('EBUSY'), { code: 'EBUSY' })) } }),
     gate: { then: (resolve, reject) => (control.held ? control.opened.promise : Promise.resolve()).then(resolve, reject) },
   });
   met.waves = s.waves;
+  met.end = async () => {
+    control.held = false;
+    control.opened.resolve();
+    await Promise.race([s.fs.settle().catch(() => {}), new Promise((resolve) => setTimeout(resolve, 2000))]);
+  };
   const ref = session();
   const sync = s.fs.synchronous;
   const direct = ref.filesystem.bind({ pid: 8, cred: user });
@@ -429,6 +399,87 @@ async function runSteps(steps, met) {
     undelivered = [];
   };
 
+  /**
+   * A peer's change, as the session's own (its kernel). Without grants,
+   * between deliveries: the session has it before what the process sends
+   * next, and so does the reference. With them, once what the process sent
+   * is delivered: it recalls the grant (withRecall), and waits for what the
+   * process held to be sent. Only a change the session refuses as it would
+   * the reference's (nothing there) is let pass.
+   */
+  const peerStep = async (step) => {
+    // A peer's write stamps its own mtime, at each session's own clock: not one the process set.
+    if (step.kind === 'write' || step.kind === 'rename') peerWritten.add(step.kind === 'rename' ? step.to : step.name);
+    const key = `${DIR}/${step.name}`;
+    const change = async (target) => {
+      try {
+        if (step.kind === 'write') { target.writeFile(key, enc.encode(step.data)); target.chown(key, 1000, 1000); }
+        else if (step.kind === 'unlink') target.unlink(key);
+        else if (step.kind === 'rename') target.rename(key, `${DIR}/${step.to}`);
+        else target.chmod(key, step.mode);
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+    };
+    if (grants) {
+      await deliver();
+      control.held = false;
+      control.opened.resolve();
+    }
+    await withRecall(() => change(s.kernel));
+    if (grants) {
+      control.held = true;
+      control.opened = Promise.withResolvers();
+    }
+    await change(ref.kernel);
+  };
+
+  /**
+   * A read that may wait, by descriptor: while a name the view has leads to
+   * its file, what the model has of it; once none does, the session's file
+   * as every process holding it open made it, through the open description
+   * of it the session keeps (anchorOf), as the reference reads it.
+   */
+  const readAsync = async (step, label) => {
+    const opened = fds.get(step.fd);
+    if (opened === undefined || !opened.read) return;
+    const now = viewOf();
+    const id = resolve({ opened });
+    const named = [...now.names.values()].some((reference) => resolve(reference) === id);
+    const barriers = s.fs.stats().barriers;
+    const reading = Promise.resolve().then(() => s.fs.read(opened.handle, 0, 1 << 12));
+    reading.catch(() => {});
+    await deliver();
+    control.held = false;
+    control.opened.resolve();
+    let got;
+    const code = await errnoOf(async () => { got = await reading; });
+    control.held = true;
+    control.opened = Promise.withResolvers();
+    // A read that may wait takes the barrier the process owes first (it sent something since the last): it reads the session's file as it is now, and the view is the session's from then on.
+    const caught = s.fs.stats().barriers > barriers;
+    // One the session has a description of reads through it: the session's file as it is now.
+    const via = anchorOf(opened);
+    if (via?.refHandle !== undefined) {
+      assert.equal(code, null, `${label}: an awaited read through the file's anchor: ${code}`);
+      assert.equal(dec.decode(got), dec.decode(new Uint8Array(await direct.read(via.refHandle, 0, 1 << 12))), `${label}: an awaited read is the session's, through its anchor`);
+      if (caught) await catchUp();
+      return;
+    }
+    const name = [...now.names].find(([, reference]) => resolve(reference) === id)?.[0];
+    // Caught up, the name the view had for it may have gone at the session: then no name leads to it.
+    if (named && !(caught && (name === undefined || !ref.kernel.exists(`${DIR}/${name}`)))) {
+      const file = now.fileOf(id);
+      assert.equal(code, null, `${label}: an awaited read of a named file: ${code}`);
+      if (caught) assert.equal(dec.decode(got), dec.decode(ref.kernel.readFile(`${DIR}/${name}`)), `${label}: an awaited read of a named file, caught up`);
+      else if (file !== undefined && file.bytes !== null) assert.equal(dec.decode(got), dec.decode(file.bytes), `${label}: an awaited read of a named file`);
+      if (caught) await catchUp();
+      return;
+    }
+    assert.ok(code === null || code === 'ESTALE', `${label}: an awaited read of a file no name leads to: ${code}`);
+    if (caught) await catchUp();
+  };
+
   /** The view brought to the session's: what the process sent delivered, a barrier, every name read (the view holds what it read until a barrier reads it again). */
   const catchUp = async () => {
     await deliver();
@@ -457,25 +508,19 @@ async function runSteps(steps, met) {
     const label = `step ${i} ${JSON.stringify(step)}`;
     if (step.op === 'deliver') await deliver();
     else if (step.op === 'catchUp') await catchUp();
-    else if (step.op === 'peer') {
-      // A peer's write stamps its own mtime, at each session's own clock: not one the process set.
-      if (step.kind === 'write' || step.kind === 'rename') peerWritten.add(step.kind === 'rename' ? step.to : step.name);
-      // Between deliveries: the session has it before what the process sends next, and so does the reference.
-      for (const target of [s.kernel, ref.kernel]) {
-        const key = `${DIR}/${step.name}`;
-        try {
-          if (step.kind === 'write') { target.writeFile(key, enc.encode(step.data)); target.chown(key, 1000, 1000); }
-          else if (step.kind === 'unlink') target.unlink(key);
-          else if (step.kind === 'rename') target.rename(key, `${DIR}/${step.to}`);
-          else target.chmod(key, step.mode);
-        } catch { /* nothing there */ }
-      }
-    } else await processStep(step, label);
+    else if (step.op === 'peer') await peerStep(step);
+    else if (step.op === 'readAsync') await readAsync(step, label);
+    else await processStep(step, label);
     await check(label);
   }
   // The end: every descriptor closed, everything delivered, the session holds what the reference holds.
   for (const fd of [...fds.keys()]) await processStep({ op: 'close', fd }, 'the end');
   await deliver();
+  // A grant the process holds given back first (a peer's change recalls it): the session then has everything it decided.
+  if (grants) {
+    await peerStep({ kind: 'write', name: 'z' });
+    await peerStep({ kind: 'unlink', name: 'z' });
+  }
   const ours = [];
   const theirs = [];
   const final = viewOf();
@@ -500,14 +545,14 @@ async function runSteps(steps, met) {
 }
 
 /** The shortest program, made by deleting steps, that still fails. */
-async function shrink(steps, kind) {
+async function shrink(steps, kind, grants) {
   let current = steps;
   // Shorter only where it fails the same way, and not by the known engine bug.
   const same = (error) => error.known !== true && kindOf(error) === kind;
   for (let chunk = Math.ceil(current.length / 2); chunk >= 1; chunk = Math.floor(chunk / 2)) {
     for (let at = 0; at < current.length;) {
       const candidate = [...current.slice(0, at), ...current.slice(at + chunk)];
-      if (await run(candidate).then(() => false, same)) current = candidate;
+      if (await run(candidate, grants).then(() => false, same)) current = candidate;
       else at += chunk;
     }
   }
@@ -524,9 +569,65 @@ const seeds = process.env.NIMBUS_MODEL_SEED !== undefined
 const failures = new Map();
 /** Seeds that met the known engine bug (KNOWN_ENGINE_BUG), and nothing else. */
 const metKnown = [];
+/**
+ * Programs that found a bug, run first, whatever the seeds. A file the
+ * process made, given back with its grant (its row the view's, so nothing
+ * of it is held once its records are answered), renamed under the next
+ * grant and back: its descriptors read it at its name, where the view has
+ * its row and not yet its bytes. Red before: a file's pinned bytes were read
+ * only where no name led to it, so a read that could not wait was EAGAIN.
+ */
+const FOUND = [
+  { name: 'write after granted unlink folds over retained pinned bytes', grants: true, steps: [
+    { op: 'open', fd: 0, name: 'a', flags: { read: true, write: true, append: true, create: true, exclusive: false, truncate: false } },
+    { op: 'open', fd: 2, name: 'a', flags: { read: true, write: true, append: false, create: false, exclusive: false, truncate: false } },
+    { op: 'write', fd: 0, offset: 4, data: 'qp' },
+    { op: 'rename', from: 'a', to: 'b' },
+    { op: 'catchUp' },
+    { op: 'unlink', name: 'b' },
+    { op: 'write', fd: 2, offset: null, data: 'q' },
+  ] },
+  { name: 'fchmod after unlink and granted recreate changes the provisional fold', grants: true, steps: [
+    { op: 'writeFile', name: 'c', data: 'r' },
+    { op: 'catchUp' },
+    { op: 'unlink', name: 'c' },
+    { op: 'open', fd: 0, name: 'c', flags: { read: false, write: true, append: false, create: true, exclusive: true, truncate: false } },
+    { op: 'fchmod', fd: 0, mode: 292 },
+  ] },
+  { name: 'retired descriptor content follows a peer-renamed inode found in the view', grants: true, steps: [
+    { op: 'open', fd: 1, name: 'b', flags: { read: true, write: true, append: false, create: true, exclusive: false, truncate: true } },
+    { op: 'peer', kind: 'rename', name: 'b', to: 'c', data: 'pr', mode: 420 },
+    { op: 'write', fd: 1, offset: null, data: 's' },
+    { op: 'peer', kind: 'write', name: 'c', to: 'a', data: 'r', mode: 420 },
+    { op: 'catchUp' },
+  ] },
+  { name: 'anchor read does not report another descriptions refused write', grants: false, steps: [
+    { op: 'open', fd: 2, name: 'b', flags: { read: true, write: true, append: false, create: true, exclusive: true, truncate: true } },
+    { op: 'open', fd: 1, name: 'c', flags: { read: true, write: false, append: false, create: true, exclusive: false, truncate: false } },
+    { op: 'rename', from: 'c', to: 'b' },
+    { op: 'rename', from: 'b', to: 'c' },
+    { op: 'deliver' },
+    { op: 'rename', from: 'c', to: 'b' },
+    { op: 'peer', kind: 'chmod', name: 'c', to: 'a', data: 'sq', mode: 292 },
+    { op: 'writeFile', name: 'b', data: 'sq' },
+    { op: 'readAsync', fd: 2 },
+  ] },
+  { name: 'renamed under a grant, away and back', grants: true, steps: [
+    { op: 'open', fd: 2, name: 'a', flags: { read: true, write: true, append: true, create: true, exclusive: true, truncate: false } },
+    { op: 'rename', from: 'a', to: 'b' },
+    { op: 'catchUp' },
+    { op: 'rename', from: 'b', to: 'a' },
+  ] },
+];
+for (const found of FOUND) {
+  const failure = await run(found.steps, found.grants).then(() => null, (error) => error);
+  if (failure !== null && failure.known !== true) failures.set(`found: ${found.name}`, { seeds: [0], reason: failure, minimal: found.steps, grants: found.grants });
+}
 for (const seed of seeds) {
   const steps = program(seed);
-  const failure = await run(steps).then(() => null, (error) => error);
+  // A third of the programs run with the session granting the subtree the process changes.
+  const grants = seed % 3 === 0;
+  const failure = await run(steps, grants).then(() => null, (error) => error);
   if (failure === null) continue;
   if (failure.known === true) {
     metKnown.push(seed);
@@ -534,13 +635,13 @@ for (const seed of seeds) {
   }
   const kind = kindOf(failure);
   if (failures.has(kind)) { failures.get(kind).seeds.push(seed); continue; }
-  const minimal = await shrink(steps, kind);
-  const reason = await run(minimal).then(() => failure, (error) => error);
-  failures.set(kind, { seeds: [seed], reason, minimal });
+  const minimal = await shrink(steps, kind, grants);
+  const reason = await run(minimal, grants).then(() => failure, (error) => error);
+  failures.set(kind, { seeds: [seed], reason, minimal, grants });
   if (failures.size >= 12) break;
 }
-for (const [kind, { seeds: failing, reason, minimal }] of failures) {
-  console.error(`FAILURE ${kind} (seeds ${failing.slice(0, 8).join(', ')}${failing.length > 8 ? ', ...' : ''}): ${reason.message}\nminimal program (${minimal.length} steps):\n${minimal.map((step) => `  ${JSON.stringify(step)}`).join('\n')}\n`);
+for (const [kind, { seeds: failing, reason, minimal, grants }] of failures) {
+  console.error(`FAILURE ${kind} (seeds ${failing.slice(0, 8).join(', ')}${failing.length > 8 ? ', ...' : ''}${grants ? ', granted' : ''}): ${reason.message}\nminimal program (${minimal.length} steps):\n${minimal.map((step) => `  ${JSON.stringify(step)}`).join('\n')}\n`);
 }
 if (metKnown.length > 0) console.log(`resident-fs-model: seeds ${metKnown.join(', ')} met the known engine bug (wave EIO "missing chunk", ToughWallaby P1)`);
 if (failures.size > 0) process.exit(1);
