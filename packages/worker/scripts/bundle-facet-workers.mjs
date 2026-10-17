@@ -132,9 +132,9 @@ function withoutComments(text) {
  *
  * @param {string} entryPath
  * @param {string} label
- * @param {{ shared?: string[], bound?: Record<string, string>, as?: string }} [options]
+ * @param {{ shared?: string[], bound?: Record<string, string>, as?: string, from?: string }} [options]
  */
-async function bundleAsPreamble(entryPath, label, { shared = [], bound = {}, as } = {}) {
+async function bundleAsPreamble(entryPath, label, { shared = [], bound = {}, as, from } = {}) {
   const boundNames = Object.keys(bound);
   const result = await build({
     entryPoints: [entryPath],
@@ -184,8 +184,10 @@ async function bundleAsPreamble(entryPath, label, { shared = [], bound = {}, as 
   const names = exported.map(([name]) => name);
   const returned = exported.map(([name, local]) => (name === local ? name : `${name}: ${local}`));
   const made = `(() => {\n${destructured.join('')}${body.trim()}\nreturn { ${returned.join(', ')} };\n})()`;
-  // A module the shims hold as one value (`as`), its namespace: none of its names in their scope.
-  if (as !== undefined) return `const ${as} = ${made};\n`;
+  // A module the shims hold as one value (`as`), its namespace: none of its
+  // names in their scope; the runner's own evaluation of it where it has one
+  // (`from`), this one's only where it has none.
+  if (as !== undefined) return `const ${as} = ${from === undefined ? made : `typeof ${from} !== "undefined" ? ${from} : ${made}`};\n`;
   return `var { ${names.join(', ')} } = ${made};\n`;
 }
 
@@ -819,14 +821,15 @@ async function main() {
     }
   }
 
-  // 3a. The built-ins the guest's module loading calls, captured when the
-  //     node shims start, before any program code (core _shared/primordials.ts):
-  //     one value the shims hold, which the preambles below that read them
-  //     are bound to.
+  // 3a. The built-ins the guest's module loading calls (core
+  //     _shared/primordials.ts): the launch's capture, made before any program
+  //     code (commonjs-cell's __nimbusLaunchCaptures), which the preambles
+  //     below that read them are bound to; a capture of their own where the
+  //     shims run without the launch's runtime (a test's factory).
   const primordials = await bundleAsPreamble(
     join(coreRoot, 'src', '_shared', 'primordials.ts'),
     'primordials',
-    { as: '__nimbusPrimordials' },
+    { as: '__nimbusPrimordials', from: '__nimbusLaunchCaptures' },
   );
 
   // 3b. node:path's posix half (core _shared/posix-path.ts, Node's lib/path.js
@@ -982,7 +985,7 @@ async function main() {
     '',
     '/**',
     ' * Declares `__nimbusPrimordials`, the built-ins core _shared/primordials.ts',
-    ' * captures, as the node shims start; the preambles that read them are bound to it.',
+    ' * captures: the launch\'s (__nimbusLaunchCaptures), else its own; the preambles that read them are bound to it.',
     ' */',
     `export const PRIMORDIALS_PREAMBLE: string = ${JSON.stringify(primordials)};`,
     '',
