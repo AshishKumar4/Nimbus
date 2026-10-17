@@ -296,11 +296,9 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     if (cell === undefined || cell.detached !== undefined) return;
     dirty.delete(inode);
     delete cell.logged;
-    // A made file's cell keeps the mode its open asked, its umask beside it, until a chmod here decides it.
-    const mode = cell.umask === undefined ? cell.mode : cell.mode & ~cell.umask;
     const entry = decided.get(inode.key) ?? store.entry(inode.key) ?? {
       type: 'file' as const, dev: store.device, ino: inode.ino, nlink: 1, size: cell.length, atime: now(), mtime: now(), ctime: now(),
-      mode: 0o100000 | mode, uid: store.cred.uid, gid: store.cred.gid, revision: 0, target: null,
+      mode: 0o100000 | cell.mode, uid: store.cred.uid, gid: store.cred.gid, revision: 0, target: null,
     };
     // Each that may write: one opened only to read reads the content here, and needs none.
     const opened = prov.descriptorsOf(inode).filter((desc) => desc.description === undefined && desc.write);
@@ -315,7 +313,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         acknowledged({ type: 'call', call: { call: 'write', path: inode.key, ino: made, description, offset: 0, data: owned(cell.bytes, cell.length) } });
       }
     });
-    prov.unhold(inode, { ...entry, dev: inode.dev, ino: inode.ino, mode: (entry.mode & ~0o7777) | mode });
+    prov.unhold(inode, { ...entry, dev: inode.dev, ino: inode.ino, mode: (entry.mode & ~0o7777) | cell.mode });
   };
 
   /** What is decided here, else what the view has, at `inode`'s name while that name leads to the file. */
@@ -928,10 +926,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const next = changedBy(current, attrs);
       decided.set(key, next);
       const local = prov.inode(current.dev, current.ino)?.cell;
-      if (local !== undefined) {
-        local.mode = next.mode & 0o7777;
-        delete local.umask;
-      }
+      if (local !== undefined) local.mode = next.mode & 0o7777;
       log({ type: 'setattr', path: key, attrs: 'uid' in attrs ? { uid: next.uid, gid: next.gid } : attrs });
       return true;
     },
