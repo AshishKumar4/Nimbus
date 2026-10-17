@@ -280,12 +280,7 @@ export function delegationHolder(options) {
         drain,
         sent: () => options.sent?.(),
         // Reads by name and by number consult them only while the process sees any.
-        active: (on) => {
-            provisionalActive = on;
-            holder.entry = on ? composedEntry : names.entry;
-            holder.children = on ? composedChildren : names.children;
-            holder.content = on ? composedContent : heldContent;
-        },
+        active: (on) => { provisionalActive = on; },
         held: (key) => client.held(key) !== undefined,
         count: (key) => { client.holder(key); },
         umask: () => options.umask?.() ?? 0o022,
@@ -409,8 +404,8 @@ export function delegationHolder(options) {
         client,
         provisional: prov,
         // Composed with the provisional decisions while the process sees any (ProvisionalHost.active).
-        entry: names.entry,
-        children: names.children,
+        entry: (key) => (provisionalActive ? composedEntry(key) : names.entry(key)),
+        children: (key, base) => (provisionalActive ? composedChildren(key, base) : names.children(key, base)),
         copyFile: (from, to, path, stored, keepMode) => {
             const source = entryOf(from);
             // The source as the session's copy reads it: a file it may read, no set-id bit (the session's to judge).
@@ -491,7 +486,7 @@ export function delegationHolder(options) {
             client.seal();
             drain();
         },
-        content: heldContent,
+        content: (entry) => (provisionalActive ? composedContent(entry) : heldContent(entry)),
         owns: (handleId) => prov.owns(handleId),
         open: (key, path, flags, initial = 0) => {
             if (!flags.write || flags.append)

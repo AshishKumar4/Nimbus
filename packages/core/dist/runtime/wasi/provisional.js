@@ -379,27 +379,26 @@ export function provisional(host) {
      * has its outcome (retire).
      */
     const settleRecords = (records, refused) => {
-        const refolded = new Set();
+        if (!refused) {
+            for (const record of records) {
+                if (record.gone)
+                    continue;
+                record.answered = true;
+                record.answeredAt = barriers;
+            }
+            return;
+        }
         const refusedOf = new Map();
         for (const record of records) {
             if (record.gone)
                 continue;
-            const inode = record.owner;
-            if (refused) {
-                let mine = refusedOf.get(inode);
-                if (mine === undefined)
-                    refusedOf.set(inode, mine = new Set());
-                mine.add(record);
-                refolded.add(inode);
-            }
-            else {
-                record.answered = true;
-                record.answeredAt = barriers;
-            }
+            let mine = refusedOf.get(record.owner);
+            if (mine === undefined)
+                refusedOf.set(record.owner, mine = new Set());
+            mine.add(record);
         }
-        for (const [inode, mine] of refusedOf)
+        for (const [inode, mine] of refusedOf) {
             dropRecords(inode, mine);
-        for (const inode of refolded) {
             refold(inode);
             fit(inode);
             release(inode);
