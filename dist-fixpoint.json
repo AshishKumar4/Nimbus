@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "b72c5921622abc7e8f9636033864ffbd45243afc6e1e66805c96f88986352104",
+  "fingerprint": "935eb4608432d37a2d538c34e9fbcf5155e1f1da262a19ffdefab9762c94e3d1",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -385,8 +385,8 @@
     "packages/core/dist/runtime/cjs-module-lexer.d.ts": "79c16dac4b17aa675eb105be796260df27236d160eccbbc2b5b335514f31db66",
     "packages/core/dist/runtime/cjs-module-lexer.d.ts.map": "d6325582cd992c2f97265186205d47c38dc58900bb24a44ab0d15b75202aa7a8",
     "packages/core/dist/runtime/cjs-module-lexer.js": "1e58cb99358f9ec7c63d533f01caeaf092bb74485e1fba9f6acd280f5ca522f7",
-    "packages/core/dist/runtime/clang-runner.d.ts": "c47d4ed8c1a466cdd25fc47e6600c8633c29379f398e082768719214526cdd81",
-    "packages/core/dist/runtime/clang-runner.d.ts.map": "dbd33c63b9195f13c85100e5d87db113cb2faf514fb80deb9c3cf0398854ec20",
+    "packages/core/dist/runtime/clang-runner.d.ts": "295a011258cfb277228dc44f83de30f35e93ba7cddc9a85adf7e9b165d07b9e0",
+    "packages/core/dist/runtime/clang-runner.d.ts.map": "f1629ba9e46e8a081982c1f82df393a8fe11e02ba9ee75c3c784ecdfb1107450",
     "packages/core/dist/runtime/clang-runner.js": "92251d8fb7c53307f21171fa72f62e05a7339354b4daf1014f645589d19de4d3",
     "packages/core/dist/runtime/cli-flags.d.ts": "a7a6c3cec577c02b98e4213f426de35e39d280ff966d0dda0c5e9d4802e75115",
     "packages/core/dist/runtime/cli-flags.d.ts.map": "96e66e53ce446d92ee7ed460ab10d5361bed1da98c593846bdc50095c5910377",
@@ -1503,7 +1503,7 @@
     "packages/core/src/runtime/cjs-export-names.ts": "4ce5cf78c39615c392e15943cdad18fdd7e0465446884a42684b25397f064b7f",
     "packages/core/src/runtime/cjs-module-exports.ts": "7a0dcd757e6cf21648931d321235260f9e02139366f14267f22e23acdc5213db",
     "packages/core/src/runtime/cjs-module-lexer.ts": "8fc56fcb050b740956d3b5be22469a6e7facd60644c66f6d173c35c67d66b0fb",
-    "packages/core/src/runtime/clang-runner.ts": "dacbed36fcbe281f3cd35bfd2e3e2b00e7f74eab901381128a51f66478275873",
+    "packages/core/src/runtime/clang-runner.ts": "f58c38fd6263d349901691ec1921fd9234ce2303d13d8b1a801a565d04826c87",
     "packages/core/src/runtime/cli-flags.ts": "23b203c999b01585cb6e4ddc5e6234066f10edb80fa2a4bb7f3f3dc260b8fd80",
     "packages/core/src/runtime/comment-strip.ts": "cbfea67bdc8c7bd618716a71d80bf3be0527386f3128ba64fd51a199f4532c38",
     "packages/core/src/runtime/compiled-bodies.generated.ts": "6b774c357dd7ca1fcc9a99f336364c0d0ddcbd407af48f1879eae92a9e647040",
