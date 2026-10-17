@@ -1,13 +1,8 @@
 // @serial
 // @tier slow — native fetch cancellation and actor reset, not a promise mock.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import net from 'node:net';
-import { createRequire } from 'node:module';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { build } from 'esbuild';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { servePlainWorkerd } from './lib/plain-workerd.mjs';
 
 const main = `import {DurableObject} from 'cloudflare:workers';
 import {HostActivity,observeResidentConfig,HOST_WATCH_HEADER,HOST_REQUEST_HEADER,HOST_INCARNATION_HEADER} from './activity.js';
@@ -203,41 +198,27 @@ export class Host extends DurableObject {
   }
 }
 export default {fetch(request,env){return new URL(request.url).pathname==='/ready'?new Response('ready'):env.HOST.get(env.HOST.idFromName('proof')).run().then(value=>Response.json(value));}};`;
-const require=createRequire(import.meta.url);
-const binary=createRequire(require.resolve('wrangler/package.json'))('workerd').default;
-const dir=mkdtempSync(join(tmpdir(),'host-activity-'));
-writeFileSync(join(dir,'main.js'),main);
 const activity=await build({entryPoints:[new URL('../../packages/fabric/src/host-activity.ts',import.meta.url).pathname],bundle:true,format:'esm',platform:'neutral',write:false,logLevel:'error'});
-writeFileSync(join(dir,'activity.js'),activity.outputFiles[0].text);
-const free=net.createServer();await new Promise(r=>free.listen(0,'127.0.0.1',r));
-const port=free.address().port;await new Promise(r=>free.close(r));
-writeFileSync(join(dir,'config.capnp'),`using Workerd=import "/workerd/workerd.capnp";
+const served=await servePlainWorkerd({name:'host-activity',files:{'main.js':main,'activity.js':activity.outputFiles[0].text},readyPath:'/ready',config:({port})=>`using Workerd=import "/workerd/workerd.capnp";
 const config:Workerd.Config=(services=[(name="main",worker=(modules=[(name="main.js",esModule=embed"main.js"),(name="activity.js",esModule=embed"activity.js")],
 compatibilityDate="2026-09-26",durableObjectNamespaces=[(className="Host",uniqueKey="host-activity",enableSql=true),(className="Peer",uniqueKey="host-activity-peer",enableSql=true)],durableObjectStorage=(inMemory=void),
 bindings=[(name="HOST",durableObjectNamespace="Host"),(name="PEER",durableObjectNamespace="Peer"),(name="LOADER",workerLoader=())]))],
-sockets=[(name="http",address="127.0.0.1:${port}",http=(),service="main")]);`);
-const child=spawn(binary,['serve','config.capnp','--experimental'],{cwd:dir,stdio:['ignore','pipe','pipe']});
-let logs='';child.stderr.on('data',part=>logs+=part);child.stdout.on('data',part=>logs+=part);
+sockets=[(name="http",address="127.0.0.1:${port}",http=(),service="main")]);`});
+const {base}=served;
 try{
-  const base='http://127.0.0.1:'+port;
-  for(const deadline=Date.now()+30000;;){
-    try{await fetch(base+'/ready');break;}catch{}
-    if(child.exitCode!==null||Date.now()>deadline)throw new Error(logs);
-    await new Promise(r=>setTimeout(r,25));
-  }
   const response=await fetch(base+'/run',{signal:AbortSignal.timeout(20000)});
-  const body=await response.text();assert.equal(response.status,200,body+'\n'+logs);
+  const body=await response.text();assert.equal(response.status,200,body+'\n'+served.logs());
   const result=JSON.parse(body);
   assert.equal(result.shared,1);
   assert.equal(result.afterCancel,'user response','releasing the watch leaves the program alive');
   assert.deepEqual(result.rejectedCapability,{body:'Not found',incarnation:null},'a wrong capability enters neither the native observation endpoint nor the guest');
   assert.deepEqual(result.stale,['handleHttpRequest','fetch'].map(entry=>({entry,status:410,brand:true,body:'the instance that ran this process was replaced'})),'a replaced instance refuses the pinned incarnation on both entrypoints before its guest runs');
-  assert.equal(result.activeLost.length,1,JSON.stringify(result)+'\n'+logs);
+  assert.equal(result.activeLost.length,1,JSON.stringify(result)+'\n'+served.logs());
   assert.equal(result.admitted,false,'a reset while idle is rejected before work');
   assert.match(result.error,/restarted|reset/i);
   assert.equal(result.idleLost.length,1);
   for(const experiment of result.experiments){
-    assert.equal(experiment.remote.watches,experiment.badReply?1:0,JSON.stringify(experiment)+'\n'+logs);
+    assert.equal(experiment.remote.watches,experiment.badReply?1:0,JSON.stringify(experiment)+'\n'+served.logs());
     assert.equal(experiment.losses.length,0,'deliberate release is not host loss');
     if(experiment.badReply){
       assert.ok(experiment.remote.codes.includes(1006),'fetch abort drops the upgrade transport before its close frame');
@@ -245,7 +226,7 @@ try{
     }else assert.deepEqual(experiment.remote.replyErrors,[]);
   }
   for(const test of result.resetCases){
-    assert.equal(test.remote.watches,0,JSON.stringify(test)+'\n'+logs);
+    assert.equal(test.remote.watches,0,JSON.stringify(test)+'\n'+served.logs());
     assert.equal(test.losses.length,test.cause==='peer-reset'||test.cause==='peer-close'?1:0,JSON.stringify(test));
   }
   for(const test of result.passiveCases){
@@ -261,4 +242,4 @@ try{
   }
   for(const sent of ['manual','automatic']){const {length:_length,...seen}=result.framing[sent];assert.deepEqual(seen,{status:200,coding:'gzip',body:'hello hello'},sent+': the host receives the encoded bytes the guest sent, decoded once');}
   console.log('host-activity-workerd: native abort, shared watch, active reset, idle incarnation change, stale data refusal and the HTTP hop keeping length and coding');
-}finally{child.kill('SIGKILL');rmSync(dir,{recursive:true,force:true});}
+}finally{await served.stop();}

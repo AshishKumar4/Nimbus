@@ -5,12 +5,9 @@
 // closure and two independent ephemeral listeners. Also exercise Nimbus's
 // parked-listener and response-header deadline around real workerd dispatch.
 import assert from 'node:assert/strict';
-import net from 'node:net';
-import { createRequire } from 'node:module';
-import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { servePlainWorkerd } from './lib/plain-workerd.mjs';
 import { NATIVE_HTTP_SOURCE } from '../../packages/worker/src/runtime/native-http.ts';
 import { ENTRYPOINT_EVENT_LOOP } from '../../packages/worker/src/facets/manager.ts';
 import { clientLifetime, pendingListenLifetime, pendingCloseLifetime, exchangeLifetime } from './lib/native-http-lifetimes.mjs';
@@ -194,24 +191,8 @@ assert.deepEqual(expectedExchange, {
   ignored: { body: 'ok', heldAfter: false },
 }, 'Node 22 holds the process for an open exchange and releases it after');
 
-const require = createRequire(import.meta.url);
-const fromWrangler = createRequire(require.resolve('wrangler/package.json'));
-const binary = fromWrangler('workerd').default;
-const dir = mkdtempSync(join(tmpdir(), 'nimbus-native-http-'));
-const portReady = Promise.withResolvers();
-const probePort = net.createServer(); probePort.listen(0, '127.0.0.1', portReady.resolve);
-await portReady.promise;
-const port = probePort.address().port;
-const released = Promise.withResolvers(); probePort.close(released.resolve); await released.promise;
-writeFileSync(join(dir, 'node-lib.js'), generateNodeLibModule());
-writeFileSync(join(dir, 'node-lib-rest.js'), generateNodeLibRestModule());
-writeFileSync(join(dir, 'node-dns.js'), generateNodeDnsModule());
 const httpBridges = opencodeBuiltinBridgeModules('attached');
-writeFileSync(join(dir, 'http-bridge.js'), httpBridges['node:http'].js);
-writeFileSync(join(dir, 'https-bridge.js'), httpBridges['node:https'].js);
-writeFileSync(join(dir, 'config.capnp'), `using Workerd = import "/workerd/workerd.capnp";
-const config :Workerd.Config = (services = [(name = "main", worker = (modules = [(name = "main.js", esModule = embed "main.js"), (name = "node-lib.js", commonJsModule = embed "node-lib.js"), (name = "node-lib-rest.js", commonJsModule = embed "node-lib-rest.js"), (name = "node-dns.js", commonJsModule = embed "node-dns.js"), (name = "node:http", esModule = embed "http-bridge.js"), (name = "node:https", esModule = embed "https-bridge.js")], compatibilityDate = "2026-09-26", compatibilityFlags = ["nodejs_compat", "new_module_registry"]))], sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")]);`);
-writeFileSync(join(dir, 'main.js'), `
+const MAIN = `
 // The shims' native provider (node-shims.ts), which NATIVE_HTTP_SOURCE reads.
 const __nativeBuiltin = globalThis.process.getBuiltinModule.bind(globalThis.process);
 const __real_http = __nativeBuiltin('http');
@@ -300,42 +281,50 @@ export default { async fetch(request) {
   });
   await Promise.all(__pendingIO.splice(0));
   return Response.json({ result, registered: [...registered.keys()] });
-} };`);
-const child = spawn(binary, ['serve', 'config.capnp', '--experimental'], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
-let logs = ''; child.stdout.on('data', d => { logs += d; }); child.stderr.on('data', d => { logs += d; });
+} };`;
+const served = await servePlainWorkerd({
+  name: 'native-http',
+  files: {
+    'main.js': MAIN,
+    'node-lib.js': generateNodeLibModule(),
+    'node-lib-rest.js': generateNodeLibRestModule(),
+    'node-dns.js': generateNodeDnsModule(),
+    'http-bridge.js': httpBridges['node:http'].js,
+    'https-bridge.js': httpBridges['node:https'].js,
+  },
+  readyPath: '/ready',
+  config: ({ port }) => `using Workerd = import "/workerd/workerd.capnp";
+const config :Workerd.Config = (services = [(name = "main", worker = (modules = [(name = "main.js", esModule = embed "main.js"), (name = "node-lib.js", commonJsModule = embed "node-lib.js"), (name = "node-lib-rest.js", commonJsModule = embed "node-lib-rest.js"), (name = "node-dns.js", commonJsModule = embed "node-dns.js"), (name = "node:http", esModule = embed "http-bridge.js"), (name = "node:https", esModule = embed "https-bridge.js")], compatibilityDate = "2026-09-26", compatibilityFlags = ["nodejs_compat", "new_module_registry"]))], sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")]);`,
+});
+const { base } = served;
+const logs = served.logs;
 try {
-  const until = Date.now() + 30000;
-  for (;;) {
-    try { await fetch(`http://127.0.0.1:${port}/ready`); break; } catch {}
-    if (child.exitCode !== null || Date.now() >= until) throw new Error(logs);
-    await Bun.sleep(30);
-  }
-  const response = await fetch(`http://127.0.0.1:${port}/run`, { signal: AbortSignal.timeout(30000) });
-  assert.equal(response.status, 200, logs);
+  const response = await fetch(`${base}/run`, { signal: AbortSignal.timeout(30000) });
+  assert.equal(response.status, 200, logs());
   const actual = await response.json();
-  assert.deepEqual(actual.result, expected, logs);
+  assert.deepEqual(actual.result, expected, logs());
   assert.deepEqual(actual.registered, [], 'closing native servers releases Nimbus ports');
-  const clientResponse = await fetch(`http://127.0.0.1:${port}/run?case=client-parity`, { signal: AbortSignal.timeout(15000) });
-  assert.equal(clientResponse.status, 200, logs);
+  const clientResponse = await fetch(`${base}/run?case=client-parity`, { signal: AbortSignal.timeout(15000) });
+  assert.equal(clientResponse.status, 200, logs());
   const actualClient = await clientResponse.json();
   console.log('HTTP_CLIENT_PARITY ' + JSON.stringify({ node: expectedClient, ours: actualClient }));
   assert.deepEqual(actualClient.parity, expectedClient.parity, 'client headers, upload, abort and bound addresses match Node');
-  const esmClient = await (await fetch(`http://127.0.0.1:${port}/run?case=client-esm`, { signal: AbortSignal.timeout(15000) })).json();
+  const esmClient = await (await fetch(`${base}/run?case=client-esm`, { signal: AbortSignal.timeout(15000) })).json();
   console.log('HTTP_ESM_PARITY ' + JSON.stringify({ node: expectedClient, nimbus: esmClient }));
   // Compare both reviewed paths before asserting, so a red prints all the evidence.
   const gaps = JSON.parse(readFileSync(new URL('../fixtures/node-http-fetch-gaps.json', import.meta.url), 'utf8'));
   assert.deepEqual({ node: expectedClient.gaps, nimbus: actualClient.gaps }, gaps, 'physical socket gaps stay pinned until Outbound TCP');
   let previous;
-  try { previous = await (await fetch(`http://127.0.0.1:${port}/run?case=review-previous`, { signal: AbortSignal.timeout(10000) })).json(); }
-  catch (error) { throw new Error(logs, { cause: error }); }
-  const review = await (await fetch(`http://127.0.0.1:${port}/run?case=review-parity`, { signal: AbortSignal.timeout(10000) })).json();
+  try { previous = await (await fetch(`${base}/run?case=review-previous`, { signal: AbortSignal.timeout(10000) })).json(); }
+  catch (error) { throw new Error(logs(), { cause: error }); }
+  const review = await (await fetch(`${base}/run?case=review-parity`, { signal: AbortSignal.timeout(10000) })).json();
   console.log('HTTP_REVIEW_PARITY ' + JSON.stringify({ node: expectedReview, previous, nimbus: review }));
   assert.deepEqual(esmClient.parity, expectedClient.parity, 'native ESM named imports join the same HTTP client transport');
   assert.deepEqual(review, expectedReview, 'review regressions match host Node and are compared with the previous native shim');
   const snapshots = {};
   for (const mode of ['client', 'error', 'cancel', 'pending', 'close', 'exchange', 'ignored']) {
-    const reply = await fetch(`http://127.0.0.1:${port}/run?case=${mode}`, { signal: AbortSignal.timeout(5000) });
-    assert.equal(reply.status, 200, logs);
+    const reply = await fetch(`${base}/run?case=${mode}`, { signal: AbortSignal.timeout(5000) });
+    assert.equal(reply.status, 200, logs());
     snapshots[mode] = await reply.json();
   }
   assert.deepEqual(snapshots, {
@@ -348,7 +337,5 @@ try {
   }, 'the process may exit only after native I/O has completed, and pending close must permit a new listen');
   console.log('native-http-workerd: Node parity for binary, streams, HEAD/204, listen errors and lifecycle');
 } finally {
-  child.kill('SIGTERM');
-  if (child.exitCode === null) await new Promise(resolve => child.once('exit', resolve));
-  rmSync(dir, { recursive: true, force: true });
+  await served.stop();
 }
