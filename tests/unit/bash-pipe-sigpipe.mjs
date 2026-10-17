@@ -16,6 +16,12 @@ const cases = [
   `trap '' PIPE; ${writer} | ${reader}; ` + 'echo "${PIPESTATUS[*]}"',
   `set -o pipefail; ${writer} | ${reader}`,
   `trap '' PIPE; trap - PIPE; set -o pipefail; ${writer} | ${reader}`,
+  `trap - PIPE; trap '' PIPE; set -o pipefail; ${writer} | ${reader}`,
+  `trap '' PIPE; set -o pipefail; { trap - PIPE; ${writer}; } | ${reader}`,
+  `trap - PIPE; set -o pipefail; { trap '' PIPE; ${writer}; } | ${reader}`,
+  // The completed coreutil's shell instance may be reused for this writer.
+  `trap '' PIPE; /bin/true; trap - PIPE; set -o pipefail; ${writer} | ${reader}`,
+  `trap - PIPE; /bin/true; trap '' PIPE; set -o pipefail; ${writer} | ${reader}`,
   // BusyBox and GNU yes phrase their diagnostics differently; bash's own
   // printf above compares the full stderr, while these compare exec status.
   `trap '' PIPE; set -o pipefail; yes 2>/dev/null | ${reader}`,
