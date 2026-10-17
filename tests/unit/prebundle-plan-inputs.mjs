@@ -13,18 +13,21 @@ import { launchSession } from './lib/facet-launch-harness.mjs';
 import { namedFacetPlatform } from './lib/named-facet-platform.mjs';
 import { runScenarios } from './lib/resident-body.mjs';
 
-function fixture(name, { field = 'main', synthetic = false, unrelated = false } = {}) {
+function fixture(name, { field = 'main', synthetic = false, unrelated = false, churnFloor = false } = {}) {
   const session = launchSession();
   const fs = session.vfs.as(CRED_KERNEL);
   const root = 'home/user/app';
   const pkg = root + '/node_modules/pkg';
+  const source = churnFloor ? pkg + '/impl' : pkg;
+  const entry = (name) => (churnFloor ? 'impl/' : '') + name;
   const manifest = (entry) => JSON.stringify({ name: 'pkg', type: 'module', [field]: field === 'exports' ? './' + entry : entry });
   for (const dir of ['pkg', 'blocker', 'other', '.nimbus-synthetic']) fs.mkdir(root + '/node_modules/' + dir, { recursive: true });
-  fs.writeFile(pkg + '/package.json', manifest('index-a.js'));
-  fs.writeFile(pkg + '/index-a.js', synthetic ? 'export { X } from "./a.js";' : 'export const X = "A";');
-  fs.writeFile(pkg + '/index-b.js', synthetic ? 'export { X } from "./b.js";' : 'export const X = "B";');
-  fs.writeFile(pkg + '/a.js', 'export const X = "A";');
-  fs.writeFile(pkg + '/b.js', 'export const X = "B";');
+  fs.mkdir(source, { recursive: true });
+  fs.writeFile(pkg + '/package.json', manifest(entry('index-a.js')));
+  fs.writeFile(source + '/index-a.js', synthetic ? 'export { X } from "./a.js";' : 'export const X = "A";');
+  fs.writeFile(source + '/index-b.js', synthetic ? 'export { X } from "./b.js";' : 'export const X = "B";');
+  fs.writeFile(source + '/a.js', 'export const X = "A";');
+  fs.writeFile(source + '/b.js', 'export const X = "B";');
   fs.writeFile(root + '/node_modules/blocker/package.json', '{"main":"index.js"}');
   fs.writeFile(root + '/node_modules/blocker/index.js', 'export const blocker = 1;');
   const entered = Promise.withResolvers();
@@ -60,6 +63,7 @@ function fixture(name, { field = 'main', synthetic = false, unrelated = false } 
           fs.writeFile(root + '/node_modules/other/entry.js', `export const write = ${submissions};`);
           fs.writeFile(root + '/node_modules/.nimbus-synthetic/other.entry.js', `export const write = ${submissions};`);
         }
+        if (churnFloor && submissions <= 2) advanceFloor(fs, source + '/package.json', `queued-${synthetic}-${submissions}`);
         submitted.resolve();
       }
       return pending;
@@ -69,7 +73,7 @@ function fixture(name, { field = 'main', synthetic = false, unrelated = false } 
     esbuild: new EsbuildService(undefined, {}), serviceFallback: false, running: true };
   const barrel = synthetic ? { pkgName: 'pkg', fileCount: 1000, names: new Set(['X']), inputHash: 'x' } : null;
   return { fs, pkg, context, barrel, specs, submissions: () => submissions,
-    move: () => fs.writeFile(pkg + '/package.json', manifest('index-b.js')),
+    move: () => fs.writeFile(pkg + '/package.json', manifest(entry('index-b.js'))),
     async queued(change) {
       const blocker = buildPrebundle(context, 'blocker', null, (code) => code);
       await entered.promise;
@@ -80,6 +84,15 @@ function fixture(name, { field = 'main', synthetic = false, unrelated = false } 
       return target;
     },
   };
+}
+
+function advanceFloor(fs, absent, name) {
+  const before = fs.revision(absent);
+  const root = 'home/user/unrelated-churn/' + name;
+  const wide = 'd'.repeat(200);
+  for (let i = 0; i < 2400; i++) fs.mkdir(`${root}/${wide}${i}/child`, { recursive: true });
+  assert.equal(fs.exists(absent), false, 'the consulted missing path is still absent');
+  assert.ok(fs.revision(absent) > before, 'unrelated directory stamps exceeded the real VFS budget and advanced its floor');
 }
 
 async function entryMoves(field, synthetic) {
@@ -103,6 +116,14 @@ async function unrelatedWrites(synthetic) {
   assert.equal(h.submissions(), 1, 'unconsulted packages and sibling synthetic entries cannot invalidate a queued plan');
 }
 
+async function unrelatedFloor(synthetic) {
+  const h = fixture(`unrelated-revision-floor-${synthetic}`, { synthetic, churnFloor: true });
+  const result = await h.queued();
+  assert.equal(result.kind, 'built', JSON.stringify(result));
+  assert.equal(result.changed, false, 'a revision-floor advance changed no consulted answer');
+  assert.equal(h.submissions(), 1, 'an absent nested manifest is not a subtree watermark');
+}
+
 function inputFixture() {
   const fs = launchSession().vfs.as(CRED_KERNEL);
   const dir = 'home/user/app/node_modules/pkg';
@@ -120,6 +141,26 @@ await runScenarios(fileURLToPath(import.meta.url), {
   syntheticExportsMove: () => entryMoves('exports', true),
   unrelatedOrdinaryWrites: () => unrelatedWrites(false),
   unrelatedSyntheticWrites: () => unrelatedWrites(true),
+  unrelatedOrdinaryFloor: () => unrelatedFloor(false),
+  unrelatedSyntheticFloor: () => unrelatedFloor(true),
+  absentAndDirectoryReadsIgnoreFloors() {
+    const { fs, dir } = inputFixture();
+    const absent = dir + '/package.json';
+    const observations = [];
+    for (const operation of ['readFile', 'readFileString']) {
+      for (const path of [absent, dir]) {
+        const inputs = new PrebundleInputs(fs);
+        assert.throws(() => inputs.fs[operation](path));
+        observations.push(inputs);
+      }
+    }
+    advanceFloor(fs, absent, 'read-answers');
+    for (const inputs of observations) assert.equal(inputs.current(), true,
+      'a missing or non-file read is guarded by its answer, not the global floor');
+    fs.writeFile(absent, '{}');
+    assert.equal(observations[0].current(), false);
+    assert.equal(observations[2].current(), false);
+  },
   async entryDisappears() {
     const h = fixture('queued-entry-disappears');
     const result = await h.queued(() => h.fs.writeFile(h.pkg + '/package.json', '{"main":"missing.js"}'));
