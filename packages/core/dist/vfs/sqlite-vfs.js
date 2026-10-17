@@ -45,6 +45,7 @@ import { RecallRequired, recallOf, withRecall } from './recall.js';
 import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../_shared/read-lease-cover.js';
 export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { copiedPermissions, copyfileMode, readDeclaredSource, syncValue } from './vfs.js';
+import { DIRENT_TYPES } from './dirent-type.js';
 import { errnoCodeOf, toVfsError, vfsError } from './vfs-error.js';
 import { walkRemoval } from './removal-walk.js';
 import { inodeKind, linkedSignal, untilAborted, validateFileChunks, validateInodeShape, withUmask, } from '../runtime/wave-contracts.js';
@@ -291,7 +292,7 @@ class TransactionPlanBuilder {
         // The root has no row to date.
         if (!entry.movesWithParent && entry.parentPath !== '')
             this.entryParents.add(entry.parentPath);
-        if (!entry.isDir)
+        if (entry.kind !== 'directory')
             this.fileRows++;
         const content = entry.content;
         switch (content.type) {
@@ -346,7 +347,7 @@ class TransactionPlanBuilder {
             return;
         }
         this.addInode({
-            path, parentPath: inode.parentPath, kind: inode.kind, isDir: inode.isDir, size: inode.size,
+            path, parentPath: inode.parentPath, kind: inode.kind, size: inode.size,
             atime: inode.atime, mtime: inode.mtime, ctime: inode.ctime, mode: inode.mode, uid: inode.uid, gid: inode.gid, ino: inode.ino,
             content: { type: 'ref', chunkId: inode.chunkId, contentId: inode.contentId },
         });
@@ -397,7 +398,7 @@ class TransactionPlanBuilder {
         this.affectedPaths.add(path);
         if (!movesWithParent && parentVfsPath(path) !== '')
             this.entryParents.add(parentVfsPath(path));
-        if (dereference && prior !== undefined && !prior.isDir)
+        if (dereference && prior !== undefined && prior.kind !== 'directory')
             this.gcRefCount++;
     }
     wouldExceedPieces(additionalBlobBytes, additionalPieces) {
@@ -614,7 +615,7 @@ const engineSetTimeout = globalThis.setTimeout;
 function removedDirectories(inodes) {
     const removed = new Map();
     for (const inode of inodes)
-        if (inode.isDir)
+        if (inode.kind === 'directory')
             removed.set(inode.path, 'removed');
     return removed;
 }
@@ -1418,7 +1419,6 @@ export class SqliteVFS {
             path: String(row.path),
             parentPath: String(row.parent_path),
             kind,
-            isDir: kind === 'directory',
             size: Number(row.size),
             atime: Number(row.atime),
             mtime: Number(row.mtime),
@@ -1760,7 +1760,7 @@ export class SqliteVFS {
             const node = current();
             if (!rights.read)
                 throw vfsKeyError('EBADF', path);
-            if (node.isDir)
+            if (node.kind === 'directory')
                 throw vfsKeyError('EISDIR', path);
             // Through the chunk LRU, as a read by path is: a chunk is named by its content.
             return this.readNodeRange(node, offset, length, true);
@@ -1791,7 +1791,7 @@ export class SqliteVFS {
             write: owned((offset, bytes) => {
                 if (!rights.write)
                     throw vfsKeyError('EBADF', path);
-                if (live().isDir)
+                if (live().kind === 'directory')
                     throw vfsKeyError('EISDIR', path);
                 const start = clampNonNegativeInt(offset);
                 // O_SYNC: stored before the write returns.
@@ -1816,7 +1816,7 @@ export class SqliteVFS {
                 if (!rights.write)
                     throw vfsKeyError('EBADF', path);
                 const node = writable();
-                if (node.isDir)
+                if (node.kind === 'directory')
                     throw vfsKeyError('EISDIR', path);
                 if (!Number.isSafeInteger(size) || size < 0)
                     throw vfsKeyError('EINVAL', path);
@@ -1827,7 +1827,7 @@ export class SqliteVFS {
             }),
             readdir: () => {
                 published();
-                if (!current().isDir)
+                if (current().kind !== 'directory')
                     throw vfsKeyError('ENOTDIR', path);
                 if (!rights.read)
                     throw vfsKeyError('EBADF', path);
@@ -2054,7 +2054,7 @@ export class SqliteVFS {
     /** Host-only, engine-local delegation; roots themselves retain ordinary POSIX semantics. */
     registerSharedDirectory(path) {
         const { path: root, inode } = this.checkAccess(path, 0, CRED_KERNEL);
-        if (!inode?.isDir || root === '')
+        if (inode?.kind !== 'directory' || root === '')
             throw vfsError('EINVAL', 'shared root must be a non-root directory');
         if (inode.uid !== 0 || (inode.mode & 0o2000) === 0 || inode.defaultAcl === null
             || (inode.defaultAcl & 0o070) !== 0o070)
@@ -2101,8 +2101,8 @@ export class SqliteVFS {
         const registration = this.sharedDirectory(entry.path);
         if (!registration)
             return;
-        const mode = this.sharedMode(entry.mode, entry.isDir);
-        const acl = entry.isDir ? registration.acl : entry.defaultAcl;
+        const mode = this.sharedMode(entry.mode, entry.kind === 'directory');
+        const acl = entry.kind === 'directory' ? registration.acl : entry.defaultAcl;
         if (mode === entry.mode && entry.gid === registration.gid && acl === entry.defaultAcl)
             return;
         if (cred.uid !== 0 && (owner !== cred.uid || (cred.gid !== registration.gid && !cred.groups.includes(registration.gid)))) {
@@ -2110,7 +2110,7 @@ export class SqliteVFS {
         }
         entry.mode = mode;
         entry.gid = registration.gid;
-        if (entry.isDir)
+        if (entry.kind === 'directory')
             entry.defaultAcl = registration.acl;
     }
     /**
@@ -2863,7 +2863,7 @@ export class SqliteVFS {
      */
     pathRevision(key, inode) {
         if (inode !== null)
-            return this.pathRevisions.report(key, inode.gen, !inode.isDir, this._revision);
+            return this.pathRevisions.report(key, inode.gen, inode.kind !== 'directory', this._revision);
         const tombstone = [...this.sql.exec('SELECT gen FROM vfs_tombstones WHERE path = ?', key)][0];
         return this.pathRevisions.report(key, Number(tombstone?.gen ?? 0), false, this._revision);
     }
@@ -3941,7 +3941,6 @@ export class SqliteVFS {
             path,
             parentPath: parentKey(path),
             kind: 'directory',
-            isDir: true,
             size: 0,
             atime: now,
             mtime: now,
@@ -4035,7 +4034,7 @@ export class SqliteVFS {
             size: data.length,
             atime: now,
             mtime: now,
-            mode: inodeTypeBits('symlink') | 0o777,
+            mode: DIRENT_TYPES.symlink.format | 0o777,
             uid: cred.uid,
             gid: this.creationAttrs(placed, 0o777, cred, false).gid,
             chunkCount: w7ChunkCount(data.length),
@@ -4582,7 +4581,6 @@ export class SqliteVFS {
             path: path ?? node.path,
             parentPath: path === null ? node.parentPath : parentKey(path),
             kind: 'file',
-            isDir: false,
             size: newSize,
             atime: node.atime,
             mtime: madeAt ?? this.now(),
@@ -4782,7 +4780,6 @@ export class SqliteVFS {
             path: inode.path,
             parentPath: inode.parentPath,
             kind: inode.kind,
-            isDir: inode.isDir,
             size: inode.size,
             atime: fields.atime ?? inode.atime,
             mtime: fields.mtime ?? inode.mtime,
@@ -4866,21 +4863,21 @@ export class SqliteVFS {
         const shared = path === null ? undefined : this.sharedDirectory(path);
         let gid = inode.gid;
         if (shared) {
-            const delegated = 0o070 | (inode.isDir ? 0o2000 : 0);
+            const delegated = 0o070 | (inode.kind === 'directory' ? 0o2000 : 0);
             this.assertConfinedModeChange(inode, (mode & ~delegated) | (inode.mode & delegated), cred, path ?? 'detached inode');
-            mode = this.sharedMode(mode, inode.isDir);
+            mode = this.sharedMode(mode, inode.kind === 'directory');
             gid = shared.gid;
         }
         else
             this.assertConfinedModeChange(inode, mode, cred, path ?? 'detached inode');
-        return { mode: inodeTypeBits(inode.kind) | (mode & 0o7777), gid };
+        return { mode: DIRENT_TYPES[inode.kind].format | (mode & 0o7777), gid };
     }
     setDefaultAcl(path, perms, cred) {
         const resolved = this.checkAccess(path, 0, cred);
         const inode = resolved.inode;
         if (!inode)
             throw vfsKeyError('ENOENT', path);
-        if (!inode.isDir)
+        if (inode.kind !== 'directory')
             throw vfsKeyError('ENOTDIR', resolved.path);
         if (cred.uid !== 0 && cred.uid !== inode.uid)
             throw vfsKeyError('EPERM', resolved.path);
@@ -4894,7 +4891,7 @@ export class SqliteVFS {
         const inode = this.checkAccess(path, 0, cred).inode;
         if (!inode)
             throw vfsKeyError('ENOENT', path);
-        return inode.isDir ? inode.defaultAcl : null;
+        return inode.kind === 'directory' ? inode.defaultAcl : null;
     }
     chown(path, uid, gid, cred, followLeaf) {
         const resolved = this.checkAccess(path, 0, cred, { followLeaf });
@@ -5140,7 +5137,7 @@ export class SqliteVFS {
             throw vfsKeyError('ENOENT', path);
         this.checkParentAccess(resolved.path, cred);
         this.checkStickyParentMutation(resolved.path, inode, cred);
-        if (inode.isDir)
+        if (inode.kind === 'directory')
             throw vfsKeyError('EISDIR', resolved.path);
         return { path: resolved.path, inode };
     }
@@ -5167,7 +5164,7 @@ export class SqliteVFS {
         for (const row of children)
             if (!going?.has(String(row.path)))
                 throw vfsKeyError('ENOTEMPTY', path);
-        if (!inode.isDir)
+        if (inode.kind !== 'directory')
             throw vfsKeyError('ENOTDIR', path);
         return { path: resolved.path, inode };
     }
@@ -5256,7 +5253,7 @@ export class SqliteVFS {
             return true;
         }
         for (const dir of followedBy(this.subtree(path, { desc: true, directoriesOnly: true }), inode)) {
-            if (!dir.isDir)
+            if (dir.kind !== 'directory')
                 continue;
             if (!this.accessInode(dir, 0o7, cred))
                 return true;
@@ -5349,7 +5346,7 @@ export class SqliteVFS {
                 })()
                 : this.pageAt(options.at, after, SUBTREE_PAGE_ROWS, range.upper);
             for (const inode of page)
-                if (!options.directoriesOnly || inode.isDir)
+                if (!options.directoriesOnly || inode.kind === 'directory')
                     yield inode;
             if (page.length < SUBTREE_PAGE_ROWS)
                 return;
@@ -5395,17 +5392,17 @@ export class SqliteVFS {
             // POSIX replacement: a file never replaces a directory (EISDIR), a
             // directory never a file (ENOTDIR), and a directory replaces only an
             // empty one (ENOTEMPTY, below, with the moved-directory check first).
-            if (destInode.isDir && !inode.isDir)
+            if (destInode.kind === 'directory' && inode.kind !== 'directory')
                 throw vfsKeyError('EISDIR', newPath);
-            if (!destInode.isDir && inode.isDir)
+            if (destInode.kind !== 'directory' && inode.kind === 'directory')
                 throw vfsKeyError('ENOTDIR', newPath);
         }
         // A directory moved to another parent has its `..` rewritten: that needs
         // write permission on the directory itself (Linux may_delete/may_create).
-        if (inode.isDir && parentKey(oldPath) !== parentKey(newPath) && !this.accessInode(inode, 0o2, cred)) {
+        if (inode.kind === 'directory' && parentKey(oldPath) !== parentKey(newPath) && !this.accessInode(inode, 0o2, cred)) {
             throw vfsKeyError('EACCES', oldPath);
         }
-        if (destInode?.isDir && this.collectSubtreeInodes([newPath]).some((entry) => entry.path !== newPath)) {
+        if (destInode?.kind === 'directory' && this.collectSubtreeInodes([newPath]).some((entry) => entry.path !== newPath)) {
             throw vfsKeyError('ENOTEMPTY', newPath);
         }
         // Both questions a rename asks — what moves, and what is already at the
@@ -5466,7 +5463,6 @@ export class SqliteVFS {
                 path,
                 parentPath: parentKey(path),
                 kind: entry.kind,
-                isDir: entry.isDir,
                 size: entry.size,
                 atime: entry.atime,
                 mtime: entry.mtime,
@@ -5541,7 +5537,7 @@ export class SqliteVFS {
                     opened.path = null;
             destInode.ctime = this.now();
             this.inodes.delete(destInode.path);
-            if (destInode.isDir)
+            if (destInode.kind === 'directory')
                 this._totalDirs--;
             else {
                 this._totalFiles--;
@@ -5565,7 +5561,7 @@ export class SqliteVFS {
                 gen: stored.gen,
             };
             this.inodes.set(moved.path, moved);
-            if (moved.isDir)
+            if (moved.kind === 'directory')
                 this._totalDirs++;
             else {
                 this._totalFiles++;
@@ -5586,7 +5582,7 @@ export class SqliteVFS {
             commit(builder);
             for (const entry of retired) {
                 this.inodes.delete(entry.path);
-                if (entry.isDir)
+                if (entry.kind === 'directory')
                     this._totalDirs--;
                 else {
                     this._totalFiles--;
@@ -5660,7 +5656,6 @@ export class SqliteVFS {
                     path: occupant.path,
                     parentPath: occupant.parentPath,
                     kind: occupant.kind,
-                    isDir: occupant.isDir,
                     size: occupant.size,
                     atime: occupant.atime,
                     mtime: occupant.mtime,
@@ -5744,7 +5739,7 @@ export class SqliteVFS {
         let gid = prior?.gid ?? made.gid;
         if (options?.keepMode) {
             // libuv's fchmod of what open left: the file there, or the one made.
-            const opened = prior ?? { mode, uid: cred.uid, gid, isDir: false, kind: 'file' };
+            const opened = prior ?? { mode, uid: cred.uid, gid, kind: 'file' };
             ({ mode, gid } = this.modeChange(opened, copyfileMode(inode.mode, inode.size, cred.uid), cred, target.path));
         }
         const builder = this.newPlan();
@@ -5752,7 +5747,6 @@ export class SqliteVFS {
             path: target.path,
             parentPath: parentKey(target.path),
             kind: 'file',
-            isDir: false,
             size: inode.size,
             atime: now,
             mtime: now,
@@ -5804,12 +5798,12 @@ export class SqliteVFS {
         if (target.path === source.path || target.path.startsWith(`${source.path}/`)) {
             throw vfsError('EINVAL', source.path, 'cannot copy a directory into itself');
         }
-        if (cred.uid !== 0 && root.isDir) {
+        if (cred.uid !== 0 && root.kind === 'directory') {
             const entries = atGen === undefined
                 ? followedBy(this.subtree(source.path, { desc: true }), root)
                 : this.subtree(source.path, { at: atGen });
             for (const inode of entries) {
-                if (!this.accessInode(inode, inode.isDir ? 0o5 : inode.kind === 'symlink' ? 0 : 0o4, cred)) {
+                if (!this.accessInode(inode, inode.kind === 'directory' ? 0o5 : inode.kind === 'symlink' ? 0 : 0o4, cred)) {
                     throw vfsKeyError('EACCES', inode.path);
                 }
             }
@@ -5818,7 +5812,7 @@ export class SqliteVFS {
         // it starts; its slices draw from the reservation, so no writer between
         // them can leave it without room.
         let rows = 1;
-        if (root.isDir) {
+        if (root.kind === 'directory') {
             if (atGen === undefined) {
                 const under = subtreeWhere(source.path);
                 rows += Number([...this.sql.exec(`SELECT COUNT(*) AS n FROM vfs_inodes WHERE ${under.sql}`, ...under.params)][0].n);
@@ -6430,7 +6424,7 @@ export class SqliteVFS {
             utimes: readOnly,
             chmod: readOnly,
             setDefaultAcl: readOnly,
-            getDefaultAcl: (path) => { const inode = resolve(path, 0).inode; return inode.isDir ? inode.defaultAcl : null; },
+            getDefaultAcl: (path) => { const inode = resolve(path, 0).inode; return inode.kind === 'directory' ? inode.defaultAcl : null; },
             chown: readOnly,
             readdir: (path) => {
                 pinned();
@@ -6636,7 +6630,6 @@ export class SqliteVFS {
                     path: past.path,
                     parentPath: past.parentPath,
                     kind: past.kind,
-                    isDir: past.isDir,
                     size: past.size,
                     atime: past.atime,
                     mtime: past.mtime,
@@ -6877,7 +6870,7 @@ export class SqliteVFS {
         };
         if (start !== null && start[1] >= 0) {
             const inode = this.inodeAt(lastPath, g);
-            if (inode === undefined || inode.isDir)
+            if (inode === undefined || inode.kind === 'directory')
                 throw vfsError('EINVAL', 'manifest cursor does not name a file');
             take(inode, start[1]);
             if (partial)
@@ -6890,7 +6883,7 @@ export class SqliteVFS {
             take(inode);
             if (partial)
                 return { schema: VFS_EXPORT_SCHEMA, source, root, nextIno, after, rows, next };
-            if (!inode.isDir)
+            if (inode.kind !== 'directory')
                 return { schema: VFS_EXPORT_SCHEMA, source, root, nextIno, after, rows, next: null };
         }
         const key = SqliteVFS.comparePaths(lastPath, range.lower) < 0 ? range.lower : lastPath;
@@ -6913,7 +6906,7 @@ export class SqliteVFS {
         const row = {
             path, ino: inode.ino, kind: inode.kind, size: inode.size, mode: inode.mode,
             uid: inode.uid, gid: inode.gid, defaultAcl: inode.defaultAcl ?? null,
-            atime: inode.atime, mtime: inode.mtime, contentKey: inode.isDir ? null : this.contentKeyOf(inode),
+            atime: inode.atime, mtime: inode.mtime, contentKey: inode.kind === 'directory' ? null : this.contentKeyOf(inode),
             manifest: inode.contentId !== null, pieceOffset: offset, pieces: [],
         };
         let bytes = utf8Length(JSON.stringify(row));
@@ -7598,7 +7591,7 @@ export class SqliteVFS {
     /** Whether every directory above `path` is one, from the root down: a path an import can reach. */
     reachable(path) {
         for (let at = parentKey(path); at !== ''; at = parentKey(at)) {
-            if (!this.inodes.get(at)?.isDir)
+            if (this.inodes.get(at)?.kind !== 'directory')
                 return false;
         }
         return true;
@@ -7692,7 +7685,7 @@ export class SqliteVFS {
     assertImportTarget(target) {
         const existing = this.inodes.get(target);
         if (target !== '' && existing !== undefined) {
-            if (!existing.isDir)
+            if (existing.kind !== 'directory')
                 throw vfsKeyError('EEXIST', target);
             if (this.hasChildren(target))
                 throw vfsKeyError('ENOTEMPTY', target);
@@ -7726,7 +7719,6 @@ export class SqliteVFS {
             path,
             parentPath: parentKey(path),
             kind,
-            isDir: kind === 'directory',
             ino,
             size: row.size,
             atime: row.atime,
@@ -8025,7 +8017,7 @@ export class SqliteVFS {
             mode: prior && prior.kind === inodeKind(entry)
                 ? prior.mode
                 : inodeKind(entry) === 'symlink'
-                    ? inodeTypeBits('symlink') | 0o777
+                    ? DIRENT_TYPES.symlink.format | 0o777
                     : made?.mode ?? this.creationMode(entry.mode, cred),
             uid: prior?.uid ?? newUid,
             gid: prior?.gid ?? newGid,
@@ -8227,7 +8219,6 @@ export class SqliteVFS {
             path: inode.path,
             parentPath: inode.parentPath,
             kind,
-            isDir: kind === 'directory',
             size: inode.size,
             atime: inode.atime,
             mtime: inode.mtime,
@@ -8759,7 +8750,7 @@ export class SqliteVFS {
                 const receipts = [];
                 for (const entry of plan.inodes) {
                     const named = names.get(entry.path);
-                    if (named === undefined || entry.isDir)
+                    if (named === undefined || entry.kind === 'directory')
                         continue;
                     receipts.push({
                         path: named,
@@ -9361,12 +9352,12 @@ export class SqliteVFS {
         const collecting = this.transactionPublication ?? this.heldPublication();
         if (collecting !== null) {
             for (const inode of removed)
-                if (inode.isDir)
+                if (inode.kind === 'directory')
                     collecting.removedDirectories.push(inode);
             emit();
             return;
         }
-        const directories = removed.filter((inode) => inode.isDir);
+        const directories = removed.filter((inode) => inode.kind === 'directory');
         if (directories.length === 0) {
             emit();
             return;
@@ -9447,10 +9438,10 @@ export class SqliteVFS {
             const opened = { inode: { ...inode }, path: null, closed: false };
             this.observedRefs.add(opened);
             held.push(opened);
-            const type = inode.isDir ? 'directory' : inode.kind === 'symlink' ? 'symlink' : 'file';
+            const type = inode.kind === 'directory' ? 'directory' : inode.kind === 'symlink' ? 'symlink' : 'file';
             return {
                 type,
-                size: inode.isDir ? 0 : inode.size,
+                size: inode.kind === 'directory' ? 0 : inode.size,
                 read: () => {
                     if (opened.closed)
                         throw vfsError('EBADF', named(key), 'the write event was released');
@@ -9591,7 +9582,7 @@ export class SqliteVFS {
     touchedDirectoriesCommitted(directories, at, gen) {
         for (const path of directories) {
             const cached = this.inodes.peek(path);
-            if (cached !== undefined && cached.isDir)
+            if (cached !== undefined && cached.kind === 'directory')
                 this.inodes.set(path, { ...cached, mtime: at, ctime: at, gen });
             if (!this.committedRows.has(path))
                 this.committedRows.set(path, { gen, file: false });
@@ -9681,7 +9672,7 @@ export class SqliteVFS {
             this.committedRows.set(entry.path, { gen, file: false });
         for (const inode of plan.inodes)
             if (!inode.detached)
-                this.committedRows.set(inode.path, { gen, file: !inode.isDir });
+                this.committedRows.set(inode.path, { gen, file: inode.kind !== 'directory' });
         this.touchedDirectoriesCommitted(touched, committedAt, gen);
         for (const staging of created)
             if (!staging.durable)
@@ -10562,7 +10553,6 @@ export class SqliteVFS {
                 path: entry.path,
                 parentPath: entry.parentPath,
                 kind,
-                isDir: kind === 'directory',
                 size: entry.size,
                 atime: entry.atime,
                 mtime: entry.mtime,
@@ -10611,7 +10601,7 @@ export class SqliteVFS {
         for (const inode of deletedInodes) {
             deleted.add(inode.path);
             this.inodes.delete(inode.path);
-            if (inode.isDir) {
+            if (inode.kind === 'directory') {
                 this._totalDirs--;
             }
             else {
@@ -10639,7 +10629,6 @@ export class SqliteVFS {
                 path: entry.path,
                 parentPath: entry.parentPath,
                 kind: entry.kind,
-                isDir: entry.isDir,
                 size: entry.size,
                 atime,
                 mtime: entry.mtime,
@@ -10654,13 +10643,13 @@ export class SqliteVFS {
                 defaultAcl: entry.defaultAcl ?? null,
             };
             this.inodes.set(entry.path, node);
-            if (node.isDir)
+            if (node.kind === 'directory')
                 this.inodes.fill(node);
             published.set(entry.path, node);
             changes[index] = { before: prior ?? null, after: node };
             // Counter delta — gated on prior so we don't double-count.
             if (prior === undefined) {
-                if (entry.isDir)
+                if (entry.kind === 'directory')
                     this._totalDirs++;
                 else {
                     this._totalFiles++;
@@ -10669,17 +10658,17 @@ export class SqliteVFS {
             }
             else {
                 // Replace: handle dir↔file flip + size delta. (Identical to pre-W2.5a.)
-                if (prior.isDir && !entry.isDir) {
+                if (prior.kind === 'directory' && entry.kind !== 'directory') {
                     this._totalDirs--;
                     this._totalFiles++;
                     this._usedBytes += entry.size;
                 }
-                else if (!prior.isDir && entry.isDir) {
+                else if (prior.kind !== 'directory' && entry.kind === 'directory') {
                     this._totalFiles--;
                     this._usedBytes -= prior.size;
                     this._totalDirs++;
                 }
-                else if (!entry.isDir) {
+                else if (entry.kind !== 'directory') {
                     // File-replace: size delta only.
                     this._usedBytes += entry.size - prior.size;
                 }
@@ -10693,14 +10682,14 @@ export class SqliteVFS {
         // Every directory the batch deleted, or replaced with a file, went from
         // its name, and a reader holding anything under one must let it go; one
         // whose mode, owner or group changed changed who may enter it.
-        const removed = deletedInodes.filter((inode) => inode.isDir);
+        const removed = deletedInodes.filter((inode) => inode.kind === 'directory');
         const structural = new Map();
         for (let index = 0; index < plan.inodes.length; index++) {
             const prior = priors[index];
             const entry = plan.inodes[index];
-            if (!prior?.isDir || deleted.has(prior.path))
+            if (prior?.kind !== 'directory' || deleted.has(prior.path))
                 continue;
-            if (!entry.isDir)
+            if (entry.kind !== 'directory')
                 removed.push(prior);
             else if (entry.mode !== prior.mode || entry.uid !== prior.uid || entry.gid !== prior.gid) {
                 structural.set(prior.path, 'changed');
@@ -10717,17 +10706,17 @@ export class SqliteVFS {
             const watch = this.publishWatch;
             if (watch !== null) {
                 const reshaped = structural.size > 0 || plan.deletes.length > 0
-                    || plan.inodes.some((entry, index) => entry.isDir || entry.kind === 'symlink' || priors[index]?.isDir === true || priors[index]?.kind === 'symlink');
+                    || plan.inodes.some((entry, index) => entry.kind === 'directory' || entry.kind === 'symlink' || priors[index]?.kind === 'directory' || priors[index]?.kind === 'symlink');
                 watch(this._revision, reshaped);
             }
         }
         // 5. Events observe the already-published metadata and revision.
         this.deliverEvents(removed, () => this.emitMutations([
             ...deletedInodes.map((inode) => ({
-                type: inode.isDir ? 'unlinkDir' : 'unlink', path: inode.path, change: { before: inode, after: null },
+                type: inode.kind === 'directory' ? 'unlinkDir' : 'unlink', path: inode.path, change: { before: inode, after: null },
             })),
             ...plan.inodes.map((entry, index) => ({
-                type: entry.isDir ? 'addDir' : replacedPaths.has(entry.path) ? 'change' : 'add',
+                type: entry.kind === 'directory' ? 'addDir' : replacedPaths.has(entry.path) ? 'change' : 'add',
                 path: entry.path,
                 change: changes[index],
             })),
@@ -11053,14 +11042,6 @@ function inodeKindFromCode(code) {
     if (code === INODE_KIND_SYMLINK)
         return 'symlink';
     throw vfsError('EIO', `invalid durable inode kind ${code}`);
-}
-/** POSIX S_IFMT filetype bits for a stored st_mode (S_IFREG/S_IFDIR/S_IFLNK). */
-function inodeTypeBits(kind) {
-    if (kind === 'file')
-        return 0o100000;
-    if (kind === 'directory')
-        return 0o040000;
-    return 0o120000;
 }
 function batchMutationPaths(payload) {
     const paths = new Set(payload.deletePaths ?? []);
