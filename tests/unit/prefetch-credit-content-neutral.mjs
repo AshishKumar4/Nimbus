@@ -18,7 +18,8 @@ async function compare(free, expectBounce, observedOnly = false) {
   for (const path of ['home/user/app', 'home/user/node_modules/pkg', 'home/user/node_modules/learned', 'opt']) {
     fs.mkdir(path, { recursive: true, mode: 0o755 });
   }
-  fs.writeFile('home/user/app/entry.cjs', 'module.exports = require("pkg");', { mode: 0o644 });
+  fs.writeFile('home/user/app/entry.cjs', 'require("./native.mjs"); module.exports = require("pkg");', { mode: 0o644 });
+  fs.writeFile('home/user/app/native.mjs', 'export const nativeValue = 7;', { mode: 0o644 });
   fs.writeFile('home/user/node_modules/pkg/package.json', JSON.stringify({ name: 'pkg', main: 'index.cjs' }), { mode: 0o644 });
   fs.writeFile('home/user/node_modules/pkg/index.cjs', 'module.exports = () => import("./lazy.cjs");', { mode: 0o644 });
   fs.writeFile('home/user/node_modules/pkg/lazy.cjs', `module.exports = require("./deep.cjs");\n// ${'l'.repeat((observedOnly ? 1 : 32) * 1024)}\n`, { mode: 0o644 });
@@ -58,6 +59,8 @@ async function compare(free, expectBounce, observedOnly = false) {
   const full = make('neutral-full');
   await launch(full);
   assert.deepEqual(full.capture().evicted, [], 'the full-bound build stages every learned and lazy file');
+  assert.ok(Object.values(full.capture().modules).some((member) => typeof member === 'object' && typeof member.js === 'string'),
+    'the comparison includes native ES module members, not only CommonJS cells');
   const bounded = make('neutral-tight');
   const capacity = readSupervisorAllocationBudget().capacity;
   const held = await acquireSupervisorAllocation(capacity - free);
