@@ -343,7 +343,10 @@ function lateTarget(host, resolution) {
  * rows go to `late`.
  */
 function checkLinks(host, id, seen, checked, late) {
-    const visit = (at) => {
+    // A require() staging hoisted (a target past the row's static imports) is
+    // linked as require(esm) links: a failure in its graph is not kept.
+    const required = { modules: late.modules, rows: late.rows, kept: false };
+    const visit = (at, graph) => {
         if (checked.has(at))
             return;
         checked.add(at);
@@ -353,20 +356,21 @@ function checkLinks(host, id, seen, checked, late) {
         if (failure !== undefined)
             throw failure;
         try {
-            visitRow(at);
+            visitRow(at, graph);
         }
         catch (e) {
-            if (late.kept && e instanceof Error)
+            if (graph.kept && e instanceof Error)
                 linkFailures.set(host.rowKey(at), e);
             throw e;
         }
     };
-    const visitRow = (at) => {
-        late.rows.push(at);
+    const visitRow = (at, graph) => {
+        graph.rows.push(at);
         const { analysis, specifiers } = rowRead(host, at);
         for (const [index, target] of host.rowTargets(at).entries()) {
+            const edge = index < specifiers.length ? graph : required;
             if (target >= 0) {
-                visit(target);
+                visit(target, edge);
                 continue;
             }
             const missing = host.missing(-2 - target);
@@ -381,16 +385,16 @@ function checkLinks(host, id, seen, checked, late) {
             const file = specifier === undefined ? null : handedOnFile(host, host.rowKey(at), missing.handedOn, specifier, analysis?.bindings?.types[index]);
             if (file !== null) {
                 if (file.path !== undefined && (file.format === 'module' || file.format === 'detect'))
-                    plan(host, file.path.replace(/^\/+/, ''), file.url, seen, [], checked, late);
+                    plan(host, file.path.replace(/^\/+/, ''), file.url, seen, [], checked, edge);
                 continue;
             }
             // A query's or a fragment's file by its path; a data: module by its URL.
             const handed = new URL(missing.handedOn);
             const key = handed.protocol === 'data:' ? missing.handedOn : decodeURIComponent(handed.pathname).replace(/^\/+/, '');
-            plan(host, key, missing.handedOn, seen, [], checked, late);
+            plan(host, key, missing.handedOn, seen, [], checked, edge);
         }
     };
-    visit(id);
+    visit(id, late);
 }
 /**
  * Each name a module of the late graph imports is one its module exports,
