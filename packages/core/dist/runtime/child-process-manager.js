@@ -55,8 +55,9 @@ function normalizeStdio(stdio) {
         return ['pipe', 'pipe', 'pipe'];
     return [mode(stdio[0]), mode(stdio[1]), mode(stdio[2])];
 }
+// A command is a file's name, every character its own: Node spawns ' node' as no program (ENOENT).
 function basenameOfCommand(command) {
-    const text = String(command || '').trim();
+    const text = String(command || '');
     if (!text)
         return '';
     const slash = text.lastIndexOf('/');
@@ -67,7 +68,7 @@ function isShellCommand(command) {
     return base === 'sh' || base === 'bash';
 }
 export function normalizeChildCommand(command) {
-    const text = String(command || '').trim();
+    const text = String(command || '');
     if (!text.startsWith('/'))
         return text;
     const base = basenameOfCommand(text);
