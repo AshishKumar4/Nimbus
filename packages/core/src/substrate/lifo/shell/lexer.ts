@@ -771,12 +771,24 @@ export function readAnsiCQuote(input: string, pos: number): { text: string; end:
   return { text: expandBackslashEscapes(body, 'ansi-c').text, end: end === -1 ? input.length : end };
 }
 
+/**
+ * The quoted span at `pos`, whole. In double quotes a `$(...)`, `${...}` or
+ * backtick substitution is its own span, so a `"` inside it does not close
+ * the quote (`"$(echo ")")"`).
+ */
 function readQuoted(input: string, pos: number, quote: '"' | "'"): { text: string; end: number } {
   let i = pos + 1;
   let text = quote;
 
   while (i < input.length) {
     const ch = input[i];
+    if (quote === '"' && ((ch === '$' && (input[i + 1] === '(' || input[i + 1] === '{')) || ch === '`')) {
+      const end = ch === '`' ? readBacktickSubstitution(input, i).end
+        : input[i + 1] === '(' ? readCommandSubstitution(input, i).end : readBracedExpansion(input, i).end;
+      text += input.slice(i, end);
+      i = end;
+      continue;
+    }
     text += ch;
     i++;
     if (quote === '"' && ch === '\\' && i < input.length) {

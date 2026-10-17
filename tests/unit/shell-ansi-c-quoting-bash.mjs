@@ -13,7 +13,8 @@
 //     backslash-newline;
 //   - inside double quotes, and in a here-document's body, it is literal
 //     text; inside $(...) it is skipped whole, so a ) or " inside it does not
-//     end the substitution; a parameter's default word reads it.
+//     end the substitution (nor does a " inside a substitution nested in
+//     double quotes there); a parameter's default word reads it.
 //
 // Red before: the lexer had no $'...': `$` stayed, and the single-quoted body
 // was taken literally, so `\'` ended the quote and misread the line.
@@ -43,8 +44,9 @@ const CASES = [
   show(String.raw`"$(printf '%s' $'\') }\n')"`),
   show(String.raw`"$(printf "%s" "$(printf '%s' $'") }\n')")"`),
   show(String.raw`$(echo $'x\'y')`),
+  show(String.raw`"$(echo ")")" "$(echo "${'$'}{x:-")"}")" "$(echo "` + '`echo ")"`' + String.raw`")"`),
   String.raw`unset x; printf '<%s>' $` + String.raw`{x:-a$'\t'b} "$` + String.raw`{x:-$'\nZ'}" $` + String.raw`{x:-$'\'}'}` + HEX,
-  String.raw`x=$'a\tb'; [[ $x == a$'\t'b ]] && echo tab; [[ '*' == $'\052' ]] && echo literal; case abc in $'*') echo wrong;; *) echo nonglob;; esac`,
+  String.raw`x=$'a\tb'; [[ $x == a$'\t'b ]] && echo tab; [[ '*' == $'\052' ]] && echo literal; [[ abc == $'*' ]] || echo nonglob`,
   `cat <<EOF${HEX}\n$'\\t' "$'x'"\nEOF`,
   String.raw`f() { printf '<%s>' "$@"; }; f $'one two' $'three'; echo` + HEX,
 ];
