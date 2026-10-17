@@ -69,8 +69,7 @@ export class PrebundleInputs {
             stat: (path) => {
                 try {
                     const stat = vfs.stat(path);
-                    const observed = { ...stat };
-                    this.remember(`stat:${path}`, () => sameStat(vfs.stat(path), observed));
+                    this.remember(`stat:${path}`, () => sameStat(vfs.stat(path), stat));
                     return stat;
                 }
                 catch (error) {
@@ -100,7 +99,7 @@ export class PrebundleInputs {
             this.checks.set(key, check);
     }
     file(path) {
-        const key = `file:${path}`;
+        const key = `file:${path.startsWith('/') ? path.slice(1) : path}`;
         if (this.checks.has(key))
             return;
         const revision = this.vfs.revision(path);
@@ -174,14 +173,14 @@ export function planSliceForSpecifierWithCap(vfs, specifier, nmDir, capBytes, in
             const stat = vfs.stat(path);
             const slicePath = '/' + path.replace(/^\/+/, '');
             if (stat.type === 'directory') {
-                entries.push({ path, isDir: true, size: 0 });
+                entries.push({ path, slicePath, isDir: true, size: 0 });
                 allocationBytes += prebundleEntryBytes(slicePath);
                 return allocationBytes <= capBytes;
             }
             totalBytes += stat.size + path.length;
             if (totalBytes > capBytes)
                 return false; // caller bails
-            entries.push({ path, isDir: false, size: stat.size });
+            entries.push({ path, slicePath, isDir: false, size: stat.size });
             allocationBytes += prebundleEntryBytes(slicePath, stat.size);
             return allocationBytes <= capBytes;
         }
@@ -303,12 +302,13 @@ export function planSliceFromPaths(vfs, paths, capBytes, inputs = new PrebundleI
     let allocationBytes = 0;
     for (const entry of paths) {
         const size = entry.isDir ? 0 : vfs.stat(entry.path).size;
+        const slicePath = '/' + entry.path.replace(/^\/+/, '');
         if (!entry.isDir)
             totalBytes += size + entry.path.length;
         if (totalBytes > capBytes)
             return null;
-        entries.push({ ...entry, size });
-        allocationBytes += prebundleEntryBytes('/' + entry.path.replace(/^\/+/, ''), size);
+        entries.push({ ...entry, slicePath, size });
+        allocationBytes += prebundleEntryBytes(slicePath, size);
         if (allocationBytes > capBytes)
             return null;
     }
@@ -321,7 +321,7 @@ export function materializePrebundleSlice(vfs, plan) {
         throw new PrebundlePlanChanged();
     const slice = [];
     for (const entry of plan.entries) {
-        const path = '/' + entry.path.replace(/^\/+/, '');
+        const path = entry.slicePath;
         if (entry.isDir) {
             slice.push({ path, isDir: true });
             continue;

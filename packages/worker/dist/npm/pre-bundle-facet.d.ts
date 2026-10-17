@@ -17,10 +17,12 @@
  * (fast — direct VFS access) and ships the entire `{path → bytes}` slice as
  * part of the spec; the bundler reads from that in-memory map.
  */
-import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { CredentialedVfs, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SliceEntry } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 export type { PrebundleResult, PrebundleSpec, SlicedDir, SlicedFile, SliceEntry } from '@nimbus-sh/core/runtime/prebundle-slice.js';
-export type PrebundleReadFs = Pick<CredentialedVfs, 'exists' | 'isDirectory' | 'access' | 'stat' | 'readdir' | 'readFile' | 'readFileString' | 'revision'>;
+export type PrebundleReadFs = Pick<CredentialedVfs, 'exists' | 'isDirectory' | 'access' | 'readdir' | 'readFile' | 'readFileString' | 'revision'> & {
+    stat(path: string): Readonly<VfsStat>;
+};
 /** Only consulted answers guard a plan: sibling package/synthetic writes are not inputs. */
 export declare class PrebundleInputs {
     private readonly vfs;
@@ -34,6 +36,7 @@ export declare class PrebundleInputs {
 }
 export interface SlicePlanEntry {
     path: string;
+    slicePath: string;
     isDir: boolean;
     size: number;
 }
