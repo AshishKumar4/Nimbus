@@ -553,6 +553,11 @@ async function runSteps(steps, met, grants) {
   // The end: every descriptor closed, everything delivered, the session holds what the reference holds.
   for (const fd of [...fds.keys()]) await processStep({ op: 'close', fd }, 'the end');
   await deliver();
+  // A grant the process holds given back first (a peer's change recalls it): the session then has everything it decided.
+  if (grants) {
+    await peerStep({ kind: 'write', name: 'z' });
+    await peerStep({ kind: 'unlink', name: 'z' });
+  }
   const ours = [];
   const theirs = [];
   const final = viewOf();
@@ -569,11 +574,7 @@ async function runSteps(steps, met, grants) {
     }
   }
   assert.equal(ours.join(' '), theirs.join(' '), 'the end: the session differs from the reference');
-  // All drained, the view has it all: nothing of the budget is taken. A grant the process holds given back first (a peer's change recalls it).
-  if (grants) {
-    await peerStep({ kind: 'write', name: 'z' });
-    await peerStep({ kind: 'unlink', name: 'z' });
-  }
+  // All drained, the view has it all: nothing of the budget is taken.
   await catchUp();
   await catchUp();
   await check('the end, drained');
