@@ -429,7 +429,9 @@ export function provisional(host) {
      */
     const extended = (record, op) => {
         const was = record.op;
-        if (op.kind === 'append' ? was.kind !== 'append' : op.kind !== 'write' || was.kind !== 'write' || op.offset !== was.offset + was.data.byteLength)
+        if (!('data' in was) || !('data' in op))
+            return false;
+        if (op.kind === 'append' ? was.kind !== 'append' : was.kind !== 'write' || op.offset !== was.offset + was.data.byteLength)
             return false;
         const before = was.data.byteLength;
         const length = before + op.data.byteLength;

@@ -2090,16 +2090,11 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
             }
             counters.ops++;
           });
-          entry.answer = answer2;
-          return answer2;
+          if (entry !== void 0) entry.answer = answer2;
+          return { entry, answer: answer2 };
         });
         schedule();
-        if (answers.length === 1) {
-          if (acknowledged) answers[0].catch(() => {
-          });
-          return answers[0];
-        }
-        const answer = Promise.all(answers).then((all) => {
+        const answer = Promise.all(answers.map((piece) => piece.answer)).then((all) => {
           const first = all[0]?.mutation;
           const last = all[all.length - 1];
           if (last === void 0) return {};
@@ -2113,6 +2108,8 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         });
         if (acknowledged) answer.catch(() => {
         });
+        const only = answers.length === 1 ? answers[0].entry : void 0;
+        if (only !== void 0) only.answer = answer;
         return answer;
       },
       hurry() {

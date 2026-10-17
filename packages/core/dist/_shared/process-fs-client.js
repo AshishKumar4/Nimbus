@@ -1075,19 +1075,15 @@ export function processFsClient(options) {
                     }
                     counters.ops++;
                 });
-                entry.answer = answer;
-                return answer;
+                // Undefined where the journal refused it: nothing was queued, and the answer is that refusal.
+                if (entry !== undefined)
+                    entry.answer = answer;
+                return { entry, answer };
             });
             schedule();
-            // One piece: its answer is the call's, and the one an op folded into it is given.
-            if (answers.length === 1) {
-                if (acknowledged)
-                    answers[0].catch(() => { });
-                return answers[0];
-            }
             // A piece failed fails the call; its last piece's receipt answers it,
             // and its mutation spans them all.
-            const answer = Promise.all(answers).then((all) => {
+            const answer = Promise.all(answers.map((piece) => piece.answer)).then((all) => {
                 const first = all[0]?.mutation;
                 const last = all[all.length - 1];
                 if (last === undefined)
@@ -1104,6 +1100,10 @@ export function processFsClient(options) {
             });
             if (acknowledged)
                 answer.catch(() => { });
+            // A one-piece call's entry gives an op folded into it the call's own answer: the same, at the same turn.
+            const only = answers.length === 1 ? answers[0].entry : undefined;
+            if (only !== undefined)
+                only.answer = answer;
             return answer;
         },
         hurry() {
