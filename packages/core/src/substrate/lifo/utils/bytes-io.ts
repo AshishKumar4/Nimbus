@@ -121,10 +121,10 @@ export async function writeBytes(out: ByteOutput, bytes: Uint8Array): Promise<vo
 /**
  * Write lossless text (decodeLossless's): as text, unless it carries a byte
  * (U+DC80..U+DCFF) a sink's UTF-8 would not keep, when it goes as its bytes.
+ * Not async: plain text is the sink's own write, with no extra await.
  */
-export async function writeLossless(out: ByteOutput, text: string): Promise<void> {
-  if (firstLosslessByte(text) === -1) await out.write(text);
-  else await writeBytes(out, encodeLossless(text));
+export function writeLossless(out: CommandOutputStream, text: string): void | Promise<void> {
+  return firstLosslessByte(text) === -1 ? out.write(text) : writeBytes(out, encodeLossless(text));
 }
 
 /**
