@@ -5,6 +5,15 @@ import {
 import { SUPERVISOR_CALLS_WITHOUT_EFFECTS, REPLAY_OBSERVATION_CALLS } from './stop-replay-policy.js';
 
 /**
+ * The clock as it is, as an expression of the runner's source (a function):
+ * for Nimbus's own reads of it, which a run and its run again make
+ * differently as their state differs, so they cannot be the program's
+ * (whose readings a run again is handed back). The runner's stop-replay's
+ * realNow where it has one; the clock itself in a runner or a test without.
+ */
+export const REAL_NOW_SOURCE = '(typeof __nimbusStopReplay !== "undefined" ? __nimbusStopReplay.realNow : Date.now)';
+
+/**
  * The guest half, spliced at module level into a facet runner before the
  * node shims: `const __nimbusStopReplay`, private to the runner module.
  *
@@ -368,10 +377,7 @@ const __nimbusStopReplay = (() => {
 
   return {
     ledger,
-    // The clock as it is, not the tape: for Nimbus's own reads of it (a
-    // stat's fallback times, the stamp of a file the process changed),
-    // which differ between a run and its run again as their state differs,
-    // and taken from the tape would hand the program another run's readings.
+    // The clock as it is, not the tape (REAL_NOW_SOURCE).
     realNow() { return DateNow(); },
     // Outbound fetch uses a separate binding, not ledger's supervisor
     // proxy; it joins the same gate before dispatching a post-read request.
