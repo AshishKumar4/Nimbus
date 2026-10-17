@@ -264,8 +264,6 @@ export interface Provisional {
   open(key: string, path: string, flags: RuntimeOpenFlags, row: ResidentEntry | null, awaited?: boolean): RuntimeFileHandle | undefined;
   /** A descriptor whose open the session refused (Desc.opening): gone, nothing of it logged. */
   abandon(handleId: number): void;
-  /** File (dev, ino) loses a name by a grant's decision: its descriptors keep what the view has of it (its bytes), admitted for their lifetime. */
-  keep(dev: number, ino: number, syscall: string, path: string): void;
   /** A whole file written by name: its open, write and close, judged together. False where it is not made here. */
   writeFile(key: string, path: string, bytes: Uint8Array, row: ResidentEntry | null, umask: number | undefined): boolean;
   /** Undefined where its bytes are the store's and it does not hold them: inodeOf says what to fetch. */
@@ -1262,8 +1260,6 @@ export function provisional(host: ProvisionalHost): Provisional {
       loggedOn([fold(inode, op, described)], { type: 'setattr', path: inode.key, attrs, ...(described === undefined ? {} : { description: described }) });
       fit(inode);
     },
-
-    keep: (dev, ino, syscall, path) => keepForDescriptors(inodeAtNumber(dev, ino), 0, syscall, path),
 
     abandon: (handleId) => {
       delete descOf(handleId).description;
