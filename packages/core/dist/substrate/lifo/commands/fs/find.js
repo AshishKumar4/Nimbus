@@ -16,7 +16,7 @@ import { FindUsageError, quote } from './find/errors.js';
 import { parseFindCommand } from './find/expression.js';
 import { direntTypeLetter, fileTypeLetter, renderFormat } from './find/format.js';
 import { READ_AHEAD_CALLS, Walker } from './find/walk.js';
-import { dec as decoder } from '../../../../_shared/bytes.js';
+import { nameDec as decoder } from '../../../../_shared/bytes.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 /** What one -exec … + command line may carry, as findutils' bc_use_sensible_arg_max sets it. */
 const EXEC_ARGUMENT_BYTES = 128 * 1024;

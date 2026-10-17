@@ -10446,11 +10446,20 @@ function __makeProcessStdin() {
   const origOn = r.on.bind(r);
   const calls = Symbol("nimbus.stdin.calls");
   function wrapDataListener(listener) {
+    // Node's setEncoding decodes with one StringDecoder (string_decoder): a
+    // character split across chunks is one, and a leading U+FEFF is kept.
+    let decoder = null;
+    let decoding = null;
     const wrapped = (chunk) => {
       let out = chunk;
       if (encoding && chunk instanceof Uint8Array) {
-        try { out = new TextDecoder(encoding).decode(chunk); }
-        catch { out = chunk; }
+        try {
+          if (decoding !== encoding) {
+            decoder = new __stringDecoderMod.StringDecoder(encoding);
+            decoding = encoding;
+          }
+          out = decoder.write(chunk);
+        } catch { out = chunk; }
       }
       return listener(out);
     };
@@ -11695,9 +11704,11 @@ builtins.readline = (() => {
   function emitKeypressEvents(stream) {
     if (!stream || stream.__nimbusKeypressEvents) return;
     stream.__nimbusKeypressEvents = true;
+    // One decoder for the stream, as Node's emitKeypressEvents keeps (string_decoder).
+    const decoder = new __stringDecoderMod.StringDecoder("utf8");
     stream.on("data", (chunk) => {
       const text = chunk instanceof Uint8Array
-        ? new TextDecoder("utf-8").decode(chunk)
+        ? decoder.write(chunk)
         : String(chunk);
       for (let i = 0; i < text.length; i++) {
         let str = text[i];
@@ -11764,9 +11775,11 @@ builtins.readline = (() => {
         buffer += ch;
       }
     }
+    // One decoder for the input, as Node's readline Interface keeps (string_decoder).
+    const inputDecoder = new __stringDecoderMod.StringDecoder("utf8");
     function onData(chunk) {
       const text = chunk instanceof Uint8Array
-        ? new TextDecoder("utf-8").decode(chunk)
+        ? inputDecoder.write(chunk)
         : String(chunk);
       handleInputText(text);
     }
