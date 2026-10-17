@@ -216,6 +216,8 @@ export interface ResidentFilesystemStats {
 
 /** Listings one call may take before it gives the question to the authority. */
 const MAX_LISTINGS_PER_CALL = 64;
+/** Barriers one walk takes before the session answers the call: what is owed keeps growing while each lands. */
+const MAX_CATCH_UPS_PER_CALL = 3;
 
 /** Directory opens a run records for the next run in its facet (ResidentFilesystem.walked). */
 const WALKED_DIRECTORIES = 1024;
@@ -411,8 +413,24 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     release: (bytes) => resident.release(bytes),
   };
   const delegated = (name: string): void => { counts.delegated[name] = (counts.delegated[name] ?? 0) + 1; };
-  /** The barrier is owed: set by a change or by input, cleared only by a barrier that lands. */
-  let owed = false;
+  /**
+   * What the barrier is owed: one more for each change, input, or send of
+   * this process's (a grant given back with it); `caughtUp` is as much of it
+   * as a barrier that landed covered, which is what was owed when it began.
+   */
+  let owed = 0;
+  let caughtUp = 0;
+  const owes = (): boolean => owed > caughtUp;
+  /** The barrier, for what is owed now: true once it lands (a debt made while it ran is owed still). */
+  const catchUp = (): Promise<boolean> => {
+    const at = owed;
+    counts.barriers++;
+    return store.barrier().then((ok) => {
+      if (!ok || !store.ready()) return false;
+      caughtUp = Math.max(caughtUp, at);
+      return true;
+    });
+  };
   if (delegation !== undefined) {
     holder = delegationHolder({
       session: delegation.session,
@@ -428,7 +446,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       ...(delegation.grantInos === undefined ? {} : { grantInos: delegation.grantInos }),
       ...(delegation.journal === undefined ? {} : { journal: delegation.journal }),
       // What it sent changed the session: the store catches up before it answers next.
-      sent: () => { owed = true; directoryPool?.invalidate(); },
+      sent: () => { owed++; directoryPool?.invalidate(); },
     });
     if (delegation.readDirectories) directoryPool = readDirectoryPool({
       call: (request) => { delegated('readDirectories'); return timed(delegation.readDirectories!(request)); }, store, client: holder.client,
@@ -624,16 +642,11 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     // given back while the walk waited on the session drops what was decided
     // under it, and the store has it only once the barrier lands.
     const looked = new Set<string>();
+    let caughtUps = 0;
     const attempt = (asked: number): Resolution | Promise<Resolution> => {
       if (!store.ready()) return DELEGATE;
-      if (owed) {
-        counts.barriers++;
-        return store.barrier().then((ok) => {
-          if (!ok) return DELEGATE;
-          owed = false;
-          return attempt(asked);
-        });
-      }
+      // A debt that keeps coming while it catches up: the session walks it.
+      if (owes()) return ++caughtUps > MAX_CATCH_UPS_PER_CALL ? DELEGATE : catchUp().then((ok) => (ok ? attempt(asked) : DELEGATE));
       const walked = walkOnce(root, name, follow, crossed);
       if (walked === null || walked === DELEGATE || typeof walked === 'string') return walked;
       if (asked >= MAX_LISTINGS_PER_CALL) return DELEGATE;
@@ -725,13 +738,12 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       return remote();
     };
     if (!store.ready()) { delegated(name); return remote(); }
-    if (owed) {
-      counts.barriers++;
-      return store.barrier().then((ok) => {
-        // Still owed until a barrier lands: this call is the session's, and so is the next one's question.
-        if (!ok || !store.ready()) { delegated(name); return remote(); }
-        owed = false;
-        return after(local(), settle);
+    // Still owed until a barrier lands: this call is the session's, and so is the next one's question.
+    if (owes()) {
+      return catchUp().then((ok) => {
+        if (ok) return after(local(), settle);
+        delegated(name);
+        return remote();
       });
     }
     return after(local(), settle);
@@ -778,9 +790,9 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     directoryPool?.invalidate();
     delegated(name);
     try {
-      return after(call(), (value) => { owed = true; return value; });
+      return after(call(), (value) => { owed++; return value; });
     } catch (error) {
-      owed = true;
+      owed++;
       throw error;
     }
   };
@@ -804,8 +816,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   }
   Reflect.set(fs, 'synchronous', authority.synchronous);
 
-  fs.inbound = () => { owed = true; directoryPool?.invalidate(); };
-  fs.cancelPendingDirectories = () => { owed = true; directoryPool?.cancelPending(); };
+  fs.inbound = () => { owed++; directoryPool?.invalidate(); };
+  fs.cancelPendingDirectories = () => { owed++; directoryPool?.cancelPending(); };
   fs.holding = () => holder?.pending() ?? false;
   fs.logHeld = () => holder?.logHeld();
   // What leaves the process is preceded by everything it logged.
@@ -1019,7 +1031,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
           const there = entryAt(walk.key);
           if (there === undefined || there?.type === 'directory') return DELEGATE;
           delegated('open');
-          return after(holder!.openThrough(walk.key, typeof path === 'string' ? path : path.path, flags), (handle) => { owed = true; return heldOpen(handle); });
+          return after(holder!.openThrough(walk.key, typeof path === 'string' ? path : path.path, flags), (handle) => { owed++; return heldOpen(handle); });
         });
       };
       return after(through(), (handle) => {
@@ -1267,7 +1279,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     // A name it changes: the files the process holds open at or under it write through first.
     if (op.type === 'rename') holder!.changing([op.from, op.to]);
     else if (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir')) holder!.changing([op.call.path]);
-    return holder!.client.submit(op).then(() => { owed = true; }, (error: unknown) => { owed = true; throw error; });
+    return holder!.client.submit(op).then(() => { owed++; }, (error: unknown) => { owed++; throw error; });
   };
   const pathOf = (path: RuntimeFsPath): string => (typeof path === 'string' ? path : path.path);
 
