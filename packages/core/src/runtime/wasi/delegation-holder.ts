@@ -333,6 +333,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     entry.size = size;
     entry.mtime = at;
     entry.ctime = at;
+    names.rewritten(inode.key);
   };
 
   /** Whether `inode`'s mode, as decided here, refuses one of its open descriptions what it was opened to do: only its creating open could have. */
