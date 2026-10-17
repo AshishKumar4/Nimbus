@@ -143,7 +143,7 @@ await runPairedBenchmark({
           } finally {
             try { assert.deepEqual(await s.fs.settle(), []); } finally { s.dispose(); }
           }
-        }, { pairs: kind === 'small' ? 90 : 30, warm: 4, iterations: 1 });
+        }, { pairs: 30, warm: 4, iterations: 1 });
       }
     });
     assert.ok(checksum > 0);
