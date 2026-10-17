@@ -649,10 +649,12 @@ export class Interpreter {
         const aliases = replacesShell || viaCommand ? undefined : this.config.aliases;
         if (aliases) {
             const aliasValue = aliases.get(name);
-            if (aliasValue !== undefined) {
+            if (aliasValue !== undefined && !io.aliasesExpanding?.has(name)) {
                 // Rebuild the command line with the alias expanded
                 const expandedLine = aliasValue + (args.length > 0 ? ' ' + args.join(' ') : '');
-                return (await this.executeLineWithIo(expandedLine, io));
+                const aliasesExpanding = new Set(io.aliasesExpanding);
+                aliasesExpanding.add(name);
+                return (await this.executeLineWithIo(expandedLine, { ...io, aliasesExpanding }));
             }
         }
         // Apply per-command assignments (temporary env)
@@ -1126,6 +1128,8 @@ export class Interpreter {
             next.interactive = true;
         if (io.openFiles)
             next.openFiles = io.openFiles;
+        if (io.aliasesExpanding)
+            next.aliasesExpanding = io.aliasesExpanding;
         return next;
     }
     /** Per-execution direct-terminal write, isolated from a nested capture. */
