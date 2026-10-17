@@ -29,6 +29,7 @@ import { sanitizeUntrustedRequest } from '@nimbus-sh/core/_shared/untrusted-requ
 import { matchLogsPath, handleLogsWebSocketRequest, handleProcessesListRequest, } from '../runtime/process-logs-api.js';
 import { readDiagCounters } from '@nimbus-sh/platform/diag-counters.js';
 import { readSupervisorAllocationBudget } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import { readIsolateId } from './diag.js';
 import { getFailures, getLastRpcFrame, getLastFacetId, getRecoveryEvents, recordRecoveryEvent, resetRecoveryEvents, } from '@nimbus-sh/platform/oom-discriminator.js';
 import { LRU_MAX_ENTRIES } from '@nimbus-sh/core/constants.js';
 import { SEED_PROJECT_DIR, SEED_PROJECT_NAME } from '@nimbus-sh/core/vfs/seed-project.js';
@@ -606,6 +607,8 @@ async function routeFetch(self, request) {
             // larger than what is free waits in the FIFO with no error, no
             // alarm and no CPU, which reads exactly like a launch that stopped.
             alloc: readSupervisorAllocationBudget(),
+            // Sessions reporting the same id share this isolate and its memory limit.
+            isolate: { id: readIsolateId() },
             // The pipe read ahead launches hold here for their synchronous reads
             // of fd 0 (stdin-read.ts): what is held now, the most ever held at
             // once, and the bound neither passes.

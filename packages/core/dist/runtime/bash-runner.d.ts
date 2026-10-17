@@ -1,5 +1,4 @@
-import type { RuntimeManifest } from './runtime-manifest.js';
-import { type ProcessView } from './process-files.js';
+import { type RuntimeManifest } from './runtime-manifest.js';
 import type { FacetHost } from './facet-host.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import type { BashSlice } from './bash/types.js';
@@ -20,8 +19,8 @@ export interface BashFacetSession {
 }
 export declare function createBashFacetSession(deps: {
     facets: FacetHost;
-    /** Installed runtime blobs, read through the host lease that owns them. */
-    artifacts: ProcessView;
+    /** Where the installed runtime blobs are read from, each through a kernel host lease of its own. */
+    authority: NimbusFilesystemAuthority;
     filesystem: RuntimeFsBridge;
     pid: number;
     processes?: SessionProcessSupervisor;

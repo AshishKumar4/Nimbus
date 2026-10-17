@@ -52,6 +52,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostSqlite } from './lib/host-sqlite.mjs';
 import { missingRuntimeFile, RUNTIMES, seedRuntime } from './lib/wasm-runtimes.mjs';
+import { heldImage } from './lib/held-image.mjs';
 
 const underBun = typeof process.versions.bun === 'string';
 const CASES = ['realm', 'kill', 'ruby', 'calls', 'clang'];
@@ -221,7 +222,7 @@ case 'realm': {
   await assertEnded('(2) an aborted JavaScript loop', before);
 
   // A loop inside WebAssembly, which calls nothing: (module (func (export "spin") (loop (br 0)))).
-  const looping = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 7, 8, 1, 4, 115, 112, 105, 110, 0, 0, 10, 9, 1, 7, 0, 3, 64, 12, 0, 11, 11]).buffer;
+  const looping = heldImage(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 7, 8, 1, 4, 115, 112, 105, 110, 0, 0, 10, 9, 1, 7, 0, 3, 64, 12, 0, 11, 11]));
   const wasmController = new AbortController();
   const wasm = host.open({ tag: 'spin-wasm', wasmModules: { 'spin.wasm': looping } });
   setTimeout(() => wasmController.abort(new Error('killed')), 300);
@@ -317,8 +318,7 @@ case 'calls': {
   {
     const controller = new AbortController();
     const facet = host.open({ tag: 'abort-compile' });
-    const big = (await import('node:fs')).readFileSync(new URL('../../packages/worker/wasm/python/python.wasm', import.meta.url));
-    const image = big.buffer.slice(big.byteOffset, big.byteOffset + big.byteLength);
+    const image = heldImage((await import('node:fs')).readFileSync(new URL('../../packages/worker/wasm/python/python.wasm', import.meta.url)));
     const pending = facet.submit(facetTaskSource("function spin() { for (;;) { /* never yields */ } }"), null, { signal: controller.signal, wasmModules: { 'python.wasm': image } });
     setTimeout(() => controller.abort(new Error('killed')), 1);
     await assert.rejects(within(pending, 10_000, 'an abort while compiling'), /killed/, '(6) an abort while the modules compile ends the call');
@@ -327,12 +327,12 @@ case 'calls': {
 
   // A call whose second module fails is retried whole.
   {
-    const valid = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]).buffer;
-    const invalid = new Uint8Array([0, 97, 115, 109, 9, 9, 9, 9]).buffer;
+    const valid = heldImage(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+    const invalid = heldImage(new Uint8Array([0, 97, 115, 109, 9, 9, 9, 9]));
     const facet = host.open({ tag: 'modules' });
     const both = function both() { return Object.keys(globalThis.__NIMBUS_WASM).sort(); };
     await assert.rejects(facet.submit(facetTaskSource("function both() { return Object.keys(globalThis.__NIMBUS_WASM).sort(); }"), null, { wasmModules: { a: valid, b: invalid } }), /./, '(6) an invalid module fails the call');
-    assert.deepEqual(await facet.submit(facetTaskSource("function both() { return Object.keys(globalThis.__NIMBUS_WASM).sort(); }"), null, { wasmModules: { a: valid, b: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]).buffer } }),
+    assert.deepEqual(await facet.submit(facetTaskSource("function both() { return Object.keys(globalThis.__NIMBUS_WASM).sort(); }"), null, { wasmModules: { a: valid, b: heldImage(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])) } }),
       ['a', 'b'], '(6) the retry has every module, the one that compiled before included');
     facet.dispose();
   }

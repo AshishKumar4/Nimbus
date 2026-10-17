@@ -7,6 +7,7 @@
  */
 import { sha256Incremental } from '@nimbus-sh/core/_shared/crypto.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { memberBuffer } from '@nimbus-sh/platform/worker-code.js';
 import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
 /** UTF-16 units encoded at a time: at most 3 MiB of UTF-8. */
 const SLICE_UNITS = 1024 * 1024;
@@ -119,12 +120,9 @@ export async function storedModule(content) {
 }
 /** `bytes` (a whole stored module) as the content it was stored from. */
 export function restoredModule(kind, bytes) {
-    const exact = () => bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength && bytes.buffer instanceof ArrayBuffer
-        ? bytes.buffer
-        : bytes.slice().buffer;
     switch (kind) {
-        case 'data': return { data: exact() };
-        case 'wasm': return { wasm: exact() };
+        case 'data': return { data: memberBuffer(bytes) };
+        case 'wasm': return { wasm: memberBuffer(bytes) };
         case 'json': return { json: JSON.parse(decoder.decode(bytes)) };
         case 'string': return decoder.decode(bytes);
         case 'js': return { js: decoder.decode(bytes) };

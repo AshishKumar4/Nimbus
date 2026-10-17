@@ -5,7 +5,7 @@ import { makeCPythonRunnerFactory } from '../../packages/core/src/runtime/cpytho
 import { loaderFacetHost } from '../../packages/worker/src/runtime/facet-loader-host.ts';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runner.ts';
-import { installedRuntime, runtimeContext, runtimeSupervisor } from './lib/runtime-session.mjs';
+import { installedRuntime, manifestFile, runtimeContext, runtimeSupervisor } from './lib/runtime-session.mjs';
 
 function loaderHarness() {
   const calls = [];
@@ -40,7 +40,7 @@ const commandContext = (filesystem, env) => runtimeContext(filesystem, { args: [
   const manifest = {
     version: '0.29.4',
     files: [
-      { path: 'share/cpython/python.wasm' },
+      manifestFile('share/cpython/python.wasm', new Uint8Array([0])),
       { path: 'lib/python313.zip' },
     ],
     runtime_artifacts: [{
@@ -74,7 +74,7 @@ const commandContext = (filesystem, env) => runtimeContext(filesystem, { args: [
     '/runtime/ruby/share/ruby/ruby+stdlib.wasm': new Uint8Array([0]),
   });
   const manifest = {
-    files: [{ path: 'share/ruby/ruby+stdlib.wasm' }],
+    files: [manifestFile('share/ruby/ruby+stdlib.wasm', new Uint8Array([0]))],
   };
   const run = await makeRubyRunnerFactory({
     facets: loaderFacetHost(harness.env, harness.ctx, ISOLATE_NETWORK),
@@ -127,7 +127,7 @@ const commandContext = (filesystem, env) => runtimeContext(filesystem, { args: [
     registry,
     getHome: () => '/home/session',
     network: ISOLATE_NETWORK,
-  })({ files: [{ path: 'share/ruby/ruby+stdlib.wasm' }] }, '/runtime/ruby', 'ruby', undefined);
+  })({ files: [manifestFile('share/ruby/ruby+stdlib.wasm', new Uint8Array([0]))] }, '/runtime/ruby', 'ruby', undefined);
   const rake = commands.get('rake');
   assert.ok(rake, 'the session home\'s gem bins are registered when the runtime loads');
   assert.equal(await rake(commandContext(filesystem, {})), 0);

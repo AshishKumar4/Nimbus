@@ -37,9 +37,11 @@
 import type {
   Facet,
   FacetHost,
+  FacetImage,
   FacetSpec,
   FacetSubmitOptions,
 } from './facet-host.js';
+import { memberBuffer } from '@nimbus-sh/platform/worker-code.js';
 import { requireFacetTaskSource, type FacetTaskSource } from './facet-task.js';
 import { requireNetwork, type WorkspaceNetwork } from '../_shared/workspace-network.js';
 import type { RuntimeFsBridge } from './os-contracts.js';
@@ -215,10 +217,8 @@ const ended = (tag: string, why: string): Error => new Error(`Nimbus: facet '${t
 class RealmFacet implements Facet {
   /** The realm, started on the first call. */
   private realm: Promise<Realm> | null = null;
-  /** The image each name is in the facet's table as: what a call need not send again. */
-  private readonly installed = new Map<string, ArrayBuffer>();
-  /** Each image compiled for a thread, once, whether or not a call that sent it succeeded. */
-  private readonly compiled = new WeakMap<ArrayBuffer, WebAssembly.Module>();
+  /** The image each name is in the facet's table as (its identity): what a call need not send again. */
+  private readonly installed = new Map<string, string>();
   /** Submits are serialized: one scope, and a facet's calls are ordered. */
   private queue: Promise<unknown> = Promise.resolve();
   private readonly waiting = new Map<number, (outcome: FacetDone | Error) => void>();
@@ -336,26 +336,19 @@ class RealmFacet implements Facet {
    * Nothing is recorded as held here: only the guest's answer that it
    * installed them does that, so a call that fails sends them all again.
    */
-  private async modules(callModules: Record<string, ArrayBuffer> | undefined): Promise<{
-    images: Record<string, ArrayBuffer>;
+  private async modules(callModules: Record<string, FacetImage> | undefined): Promise<{
+    images: Record<string, string>;
     sent: Record<string, WebAssembly.Module | ArrayBuffer>;
   }> {
-    const images: Record<string, ArrayBuffer> = {};
+    const images: Record<string, string> = {};
     const sent: Record<string, WebAssembly.Module | ArrayBuffer> = {};
-    for (const [name, bytes] of Object.entries({ ...this.spec.wasmModules, ...callModules })) {
-      if (this.installed.get(name) === bytes) continue;
-      images[name] = bytes;
-      sent[name] = this.isolation === 'thread' ? await this.compile(bytes) : bytes;
+    for (const [name, image] of Object.entries({ ...this.spec.wasmModules, ...callModules })) {
+      if (this.installed.get(name) === image.identity) continue;
+      images[name] = image.identity;
+      const bytes = memberBuffer(await image.read());
+      sent[name] = this.isolation === 'thread' ? await wasmCompiler()(bytes) : bytes;
     }
     return { images, sent };
-  }
-
-  private async compile(bytes: ArrayBuffer): Promise<WebAssembly.Module> {
-    const cached = this.compiled.get(bytes);
-    if (cached) return cached;
-    const module = await wasmCompiler()(bytes);
-    this.compiled.set(bytes, module);
-    return module;
   }
 
   private async call<A, R>(fn: FacetTaskSource<A, R>, args: A, options?: FacetSubmitOptions): Promise<unknown> {
@@ -398,7 +391,7 @@ class RealmFacet implements Facet {
       realm.hold(true);
       const outcome = await Promise.race([answered, stopping]);
       if (outcome instanceof Error) throw outcome;
-      if (outcome.installed) for (const [name, bytes] of Object.entries(images)) this.installed.set(name, bytes);
+      if (outcome.installed) for (const [name, identity] of Object.entries(images)) this.installed.set(name, identity);
       if ('error' in outcome) throw fromRealmError(outcome.error);
       return outcome.value;
     } finally {

@@ -75,6 +75,7 @@
  */
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
+import { memberBuffer } from '@nimbus-sh/platform/worker-code.js';
 import { z } from 'zod/v4';
 /**
  * The class every generated resident runner exports. One name for every
@@ -270,18 +271,11 @@ export async function residentLoaderConfig(spec, disk, readAsset) {
         }),
     ]);
     for (const [moduleName, path] of Object.entries(spec.vfsWasmModules ?? {})) {
-        const bytes = await disk.readFile(path);
-        // The read's own buffer when it fits exactly, and only otherwise a copy.
-        // These are the largest members a spec carries — ruby's interpreter image
-        // is 34.3 MiB, esbuild's 13.3 — and an unconditional slice held both
-        // copies at once in the coordinator's 128 MiB isolate, at the one moment
-        // the module map is also resident.
-        const exact = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength;
-        resolved[moduleName] = {
-            wasm: exact
-                ? bytes.buffer
-                : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
-        };
+        // The read's own buffer (memberBuffer): these are the largest members a
+        // spec carries — ruby's interpreter image is 34.3 MiB, esbuild's 13.3 —
+        // and an unconditional slice held both copies at once in the
+        // coordinator's isolate, at the one moment the module map is also resident.
+        resolved[moduleName] = { wasm: memberBuffer(await disk.readFile(path)) };
     }
     for (const [moduleName, path] of Object.entries(spec.vfsTextModules ?? {})) {
         resolved[moduleName] = new TextDecoder().decode(await readFacetImageBytes(disk, path));

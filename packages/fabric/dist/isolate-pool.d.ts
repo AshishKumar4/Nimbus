@@ -30,6 +30,7 @@ import { type SupervisorBindingProps } from './supervisor-props.js';
 import { type FacetKind } from './facet-limits.js';
 import { type FacetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
 import { type DynamicWorkerClaim } from './budgets.js';
+import type { FacetImage } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { WorkerLoader } from './vendor/types.js';
 /** The one binding a pool needs off whichever env its host hands it. */
 export interface IsolatePoolEnv {
@@ -169,8 +170,15 @@ export interface IsolatePoolOptions {
     /**
      * WebAssembly modules to ship into the facet via the LOADER's
      * `modules` map. Map keys are module specifier paths (e.g.
-     * `'esbuild.wasm'`); values are the raw bytes, or a module the host
-     * already holds compiled.
+     * `'esbuild.wasm'`); values are images read by path (FacetImage), or a
+     * module the host already holds compiled.
+     *
+     * An image is read inside the loader's cache-miss callback, admitted on
+     * the isolate's transient budget for its size while the loader takes it
+     * (withSupervisorLoadAllocation), and let go when the callback returns: the
+     * session holds no image between loads, and none at all when a warm worker
+     * answers. Several sessions share this isolate's memory, so loads that
+     * would overlap wait their turn instead.
      *
      * Workerd registers each entry as `{ wasm }` in the worker's modules
      * map. The pool prepends a static
@@ -198,16 +206,16 @@ export interface IsolatePoolOptions {
      * its identity keys warm slots, as the bytes' fingerprint does, and its
      * size counts toward the dynamic-worker code limit.
      */
-    wasmModules?: Record<string, ArrayBuffer | WebAssembly.Module>;
+    wasmModules?: Record<string, FacetImage | WebAssembly.Module>;
 }
 /** Per-call override (merged with pool defaults). */
 export interface IsolateCallOptions {
     timeoutMs?: number;
     retries?: number;
     /**
-     * Per-call WebAssembly modules. Merged with the pool's
+     * Per-call WebAssembly images. Merged with the pool's
      * constructor-time `wasmModules` at dispatch time and shipped via
-     * the LOADER's modules map (same `{ wasm: ArrayBuffer }` shape).
+     * the LOADER's modules map, read and admitted as they are.
      *
      * Shipping path validated empirically against prod (see
      * `WebAssembly.instantiate(bytes)` is blocked at request-time but
@@ -216,12 +224,12 @@ export interface IsolateCallOptions {
      * permitted. The bytes ride INSIDE the worker code blob; workerd
      * never crosses structured-clone, never executes user-eval.
      *
-     * Cache key impact: per-call bytes are identified as constructor
-     * bytes are (name, length, SHA-256; wasmIdentity) and folded into
-     * the loader cache key. Identical bytes on the same
-     * slot → warm reuse; different bytes → fresh isolate. The pool's
-     * `wasmHash` field captures CONSTRUCTOR-time bytes only; per-call
-     * bytes get their own fingerprint mixed into the slot id at dispatch.
+     * Cache key impact: per-call images are identified as constructor
+     * images are (name and FacetImage.identity; wasmIdentity) and folded
+     * into the loader cache key. The same image on the same slot → warm
+     * reuse; another → fresh isolate. The pool's `wasmHash` field captures
+     * CONSTRUCTOR-time images only; per-call images get their own
+     * fingerprint mixed into the slot id at dispatch.
      *
      * Naming collision rule: a per-call key MUST NOT collide with a
      * constructor-time key (after identifier sanitisation). The
@@ -230,10 +238,12 @@ export interface IsolateCallOptions {
      * invariant downstream callers rely on.
      *
      * Used by the `wasm-runner` shell command in src/runtime/
-     * wasm-runner.ts to ship user-supplied .wasm bytes from VFS into
-     * a fresh facet isolate per invocation.
+     * wasm-runner.ts to ship a user's .wasm from the VFS into a fresh
+     * facet isolate per invocation.
      */
-    wasmModules?: Record<string, ArrayBuffer>;
+    wasmModules?: Record<string, FacetImage>;
+    /** Ends the call's wait for its load to be admitted; a call already running is not stopped by it (submitRequest's request signal does that). */
+    signal?: AbortSignal;
 }
 /** Per-map override. */
 export interface IsolateMapOptions extends IsolateCallOptions {
@@ -319,9 +329,7 @@ export declare class IsolatePool {
     private readonly wasmIds;
     /** Every constructor-time wasm module, as the loader cache key names it
      *  (wasmIdentity), so a change invalidates warm slots: a compiled module
-     *  by the identity its host described, bytes by their SHA-256. Bytes are
-     *  not pinned at deploy time: an interpreter image can be read from the
-     *  filesystem. */
+     *  by the identity its host described, an image by its own. */
     private readonly wasmKeyParts;
     /**
      * Short prefix of the owning DO's id, baked into the loader.get()

@@ -6,8 +6,8 @@
  * module map for a facet spawn.
  *
  * WHY THE SPEC IS SEPARATE FROM THE MODULE MAP: the assembled map is ~23 MB
- * of source text (the chunk pack alone is 22.6 MB) plus a 22.6 MB fetch +
- * JSON.parse transient, while the spec (argv/env/VFS snapshot) is small. The
+ * of source text (the chunk pack alone is 22.6 MB, decoded a chunk at a time
+ * from its bytes), while the spec (argv/env/VFS snapshot) is small. The
  * spawn path only ever builds the spec; `assembleOpencodeFacetConfig` runs
  * inside the Worker-Loader cache-miss callback, so the artifact sources are
  * materialized only when the facet actually loads and only for as long as the
@@ -17,10 +17,11 @@
  * envelope), while a one-shot run keeps it in the stateless
  * NimbusLoadedEntrypoint that serves the run.
  *
- * Wasm bytes are memoized per isolate; the chunk-pack fetch+parse is
- * deduped while in flight but never stays resident (permanent residency of
- * the artifact sources is what crowded the memory envelope in the first
- * place; the L2 asset cache makes refetches cheap).
+ * Wasm bytes are memoized per isolate; the chunk pack never stays resident
+ * (permanent residency of the artifact sources is what crowded the memory
+ * envelope in the first place; the L2 asset cache makes refetches cheap). An
+ * assembly runs under the isolate's whole transient budget, so two never
+ * overlap (assembleOpencodeFacetConfig).
  */
 import { z } from 'zod/v4';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
