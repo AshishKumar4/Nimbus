@@ -788,9 +788,11 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * has what is owed now (as answer() takes it) for a caller that may wait;
    * past the bound, or for one that cannot wait, over the view as it stands.
    */
-  const caughtUpFor = <T>(then: () => T, caughtUps = 0): T | Promise<Awaited<T>> => {
+  const caughtUpFor = <T>(then: () => T | Promise<T>, caughtUps = 0): T | Promise<T> => {
     if (now || !owes() || caughtUps >= MAX_CATCH_UPS_PER_CALL) return then();
-    return catchUp().then((ok) => (ok ? caughtUpFor(then, caughtUps + 1) : then()));
+    return new Promise<T>((resolve, reject) => {
+      catchUp().then((ok) => resolve(ok ? caughtUpFor(then, caughtUps + 1) : then()), reject);
+    });
   };
 
   /**
@@ -1151,10 +1153,16 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
           if (walk === DELEGATE) return DELEGATE;
           const there = entryAt(walk.key);
           if (there === undefined || there?.type === 'directory') return DELEGATE;
-          const opened = holder!.provisional.open(walk.key, pathOf(path), flags, there);
+          const opened = holder!.provisional.open(walk.key, pathOf(path), flags, there, true);
           if (opened === undefined) return DELEGATE;
           counts.local++;
-          return heldOpen(opened);
+          // Its access is the session's to judge at the open, as open(2) judges it: answered before it returns.
+          const opening = holder!.provisional.descriptor(opened.id)?.opening;
+          if (opening === undefined) return heldOpen(opened);
+          return opening.then(() => heldOpen(opened), (error: unknown) => {
+            holder!.provisional.abandon(opened.id);
+            throw error;
+          });
         });
       };
       return after(through(), (handle) => {

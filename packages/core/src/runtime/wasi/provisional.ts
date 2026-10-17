@@ -211,6 +211,8 @@ export interface Desc {
   path: string;
   /** Its open description at the session, where it may write: opened there as it was here. */
   description?: string;
+  /** For a caller that waits for it: the session's answer to its open, which rejects with the open's refusal. */
+  opening?: Promise<unknown>;
 }
 
 
@@ -259,7 +261,9 @@ export interface Provisional {
   entry(key: string): ResidentEntry | null | undefined;
   children(key: string, base: RuntimeVfsDirEntry[] | undefined): RuntimeVfsDirEntry[] | undefined;
   /** An open of `key` (resolved; `row` what it names, null for nothing): a descriptor, undefined where it is not made here. */
-  open(key: string, path: string, flags: RuntimeOpenFlags, row: ResidentEntry | null): RuntimeFileHandle | undefined;
+  open(key: string, path: string, flags: RuntimeOpenFlags, row: ResidentEntry | null, awaited?: boolean): RuntimeFileHandle | undefined;
+  /** A descriptor whose open the session refused (Desc.opening): gone, nothing of it logged. */
+  abandon(handleId: number): void;
   /** A whole file written by name: its open, write and close, judged together. False where it is not made here. */
   writeFile(key: string, path: string, bytes: Uint8Array, row: ResidentEntry | null, umask: number | undefined): boolean;
   /** Undefined where its bytes are the store's and it does not hold them: inodeOf says what to fetch. */
@@ -534,16 +538,23 @@ export function provisional(host: ProvisionalHost): Provisional {
    * fate to `settle`: refused only where the session never applied it (an
    * unknown fate counts as answered: only a fresh barrier retires it).
    */
-  const logged = (op: ProcessFsOp, settle: (refused: boolean, answer: ProcessFsAnswer | undefined) => void): void => {
+  const logged = (op: ProcessFsOp, settle: (refused: boolean, answer: ProcessFsAnswer | undefined) => void, awaited = false): Promise<unknown> | undefined => {
     host.drain();
     const settled = (refused: boolean, answer: ProcessFsAnswer | undefined): void => {
       settle(refused, answer);
       host.sent();
     };
+    if (awaited) {
+      // Its caller waits for the session's answer: a refusal is the call's error, not the next sync's.
+      const answer = host.client.submit(op);
+      void answer.then((answered) => settled(false, answered), () => settled(true, undefined));
+      return answer;
+    }
     void host.client.submit(op, { acknowledged: true }).then(
       (answer) => settled(answer.failed?.refused === true, answer),
       () => settled(false, undefined),
     );
+    return undefined;
   };
 
   /** The Inode `inode` is now: itself, or the one it merged into (reconcile). */
@@ -611,12 +622,12 @@ export function provisional(host: ProvisionalHost): Provisional {
    * its refusal (`settled` told its fate too), and counted toward taking a
    * subtree at its names, as a change decided there is.
    */
-  const loggedName = (op: ProcessFsOp, keys: readonly string[], cost: number, apply: () => void, settled?: (refused: boolean, answer: ProcessFsAnswer | undefined) => void, retired?: () => void): void => {
+  const loggedName = (op: ProcessFsOp, keys: readonly string[], cost: number, apply: () => void, settled?: (refused: boolean, answer: ProcessFsAnswer | undefined) => void, retired?: () => void, awaited = false): Promise<unknown> | undefined => {
     const record: NameRecord = { id: ++ids, keys, cost, replay: apply, ...(retired === undefined ? {} : { retired }), answered: false, answeredAt: 0 };
     nameRecords.push(record);
     apply();
     for (const key of keys) host.count(key);
-    logged(op, (refused, answer) => {
+    return logged(op, (refused, answer) => {
       if (refused) {
         const at = nameRecords.indexOf(record);
         if (at >= 0) nameRecords.splice(at, 1);
@@ -628,8 +639,8 @@ export function provisional(host: ProvisionalHost): Provisional {
         record.answered = true;
         record.answeredAt = barriers;
       }
-      settled?.(refused, answer);
-    });
+"      settled?.(refused, answer);
+    }, awaited);
   };
 
   const note = (dir: string, name: string, type: RuntimeVfsDirEntry['type'] | null): void => {
@@ -948,7 +959,7 @@ export function provisional(host: ProvisionalHost): Provisional {
    * description of its own, then `bytes` written by it and, with `close`,
    * closed. `chmod`: the mode its open sets (a copy's keepMode).
    */
-  const openToWrite = (key: string, path: string, flags: RuntimeOpenFlags, row: ResidentEntry | null, given: Uint8Array | null, close: boolean, chmod?: number): RuntimeFileHandle | undefined => {
+  const openToWrite = (key: string, path: string, flags: RuntimeOpenFlags, row: ResidentEntry | null, given: Uint8Array | null, close: boolean, chmod?: number, awaited = false): RuntimeFileHandle | undefined => {
     // Its own bytes: what it logs and what it folds, whatever the caller does with its buffer after.
     const bytes = given === null ? null : owned(given);
     const read = flags.read === true;
@@ -1020,11 +1031,12 @@ export function provisional(host: ProvisionalHost): Provisional {
     const opened = ops.filter((op) => op.kind !== 'write').map((op) => fold(target, op, description));
     // Its answer says which file the session opened first: what was made through it is that file's before any is settled.
     const answered = openAnswered(target, key, description, credit, opened, row === null);
+    let opening: Promise<unknown> | undefined;
     if (row === null) {
-      loggedName(open, [key], nameCost([key]), () => place(key, target), answered);
+      opening = loggedName(open, [key], nameCost([key]), () => place(key, target), answered, undefined, awaited);
     } else {
       host.count(key);
-      logged(open, answered);
+      opening = logged(open, answered, awaited);
     }
     for (const op of ops) {
       if (op.kind !== 'write') continue;
@@ -1033,6 +1045,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     fit(target);
     const handle = descriptor(target, path, { ...flags, write: true }, description);
     descOf(handle.id).write = flags.write === true || flags.append === true || bytes !== null;
+    if (opening !== undefined) descOf(handle.id).opening = opening;
     if (close) provisional.close(handle.id);
     return handle;
   };
@@ -1155,13 +1168,13 @@ export function provisional(host: ProvisionalHost): Provisional {
       return [...out].map(([name, type]) => ({ name, type }));
     },
 
-    open: (key, path, flags, row) => {
+    open: (key, path, flags, row, awaited = false) => {
       // One refusal order for every open: a name there refuses O_CREAT|O_EXCL whatever it is or is asked for.
       if (row !== null && flags.create && flags.exclusive) throw fsError('EEXIST', 'open', path);
       const write = flags.write === true || flags.append === true;
       // One that makes or empties its file, or may write it, is opened at the session as here.
       if (write || flags.truncate || (row === null && flags.create)) {
-        const handle = openToWrite(key, path, flags, row, null, false);
+        const handle = openToWrite(key, path, flags, row, null, false, undefined, awaited);
         if (handle !== undefined) descOf(handle.id).write = write;
         return handle;
       }
@@ -1245,6 +1258,11 @@ export function provisional(host: ProvisionalHost): Provisional {
       host.count(inode.key);
       loggedOn([fold(inode, op, described)], { type: 'setattr', path: inode.key, attrs, ...(described === undefined ? {} : { description: described }) });
       fit(inode);
+    },
+
+    abandon: (handleId) => {
+      delete descOf(handleId).description;
+      provisional.close(handleId);
     },
 
     close: (handleId) => {

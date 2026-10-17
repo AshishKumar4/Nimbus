@@ -107,6 +107,9 @@ async function processOver(seed = {}, gate, options) {
   return processOf(await sessionWith(seed), gate, options);
 }
 
+/** `gate`, or 300 ms if it never opens (a run whose walk takes no step the test opens it at). */
+const held = (gate) => Promise.race([gate, new Promise((resolve) => setTimeout(resolve, 300))]);
+
 /** Resolves once `ready()` answers, polling. */
 async function until(ready, what) {
   for (let i = 0; i < 400; i++) {
@@ -221,7 +224,7 @@ async function readWhole(fs, name) {
     sent.resolve();
     await until(() => proc.fs.stats().client.released > 0, 'the grant given back');
   };
-  proc = await processOver({ 'site/seen.txt': 'x' }, () => (holding ? sent.promise : null), { grantInos: 4, looked });
+  proc = await processOver({ 'site/seen.txt': 'x' }, () => (holding ? held(sent.promise) : null), { grantInos: 4, looked });
   const { fs, authority } = proc;
   await fs.readdir(beneath('site'));
   for (let i = 0; i < 8; i++) await fs.mkdir(beneath(`site/w${i}`));
@@ -255,7 +258,7 @@ async function readWhole(fs, name) {
     sent.resolve();
     await until(() => proc.fs.stats().client.released > 0, 'the grant given back');
   };
-  proc = await processOver({ 'site/seen.txt': 'x' }, () => (holding ? sent.promise : null), { grantInos: 4, caught });
+  proc = await processOver({ 'site/seen.txt': 'x' }, () => (holding ? held(sent.promise) : null), { grantInos: 4, caught });
   const { fs, authority } = proc;
   await fs.readdir(beneath('site'));
   for (let i = 0; i < 8; i++) await fs.mkdir(beneath(`site/w${i}`));
@@ -291,7 +294,7 @@ async function readWhole(fs, name) {
     sent.resolve();
     await until(() => proc.fs.stats().client.released > 0, 'the grant given back');
   };
-  proc = await processOver({ 'site/seen.txt': 'x' }, () => (holding ? sent.promise : null), { grantInos: 4, caught });
+  proc = await processOver({ 'site/seen.txt': 'x' }, () => (holding ? held(sent.promise) : null), { grantInos: 4, caught });
   const { fs } = proc;
   await fs.readdir(beneath('site'));
   for (let i = 0; i < 8; i++) await fs.mkdir(beneath(`site/w${i}`));
