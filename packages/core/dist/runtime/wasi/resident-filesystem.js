@@ -413,9 +413,23 @@ export function residentFilesystem(session, resident, delegation) {
         // still not known is not there or past a link, and its directory is
         // listed (which also says what is absent in it). A directory asked about
         // a second time is being walked: its subtree is listed in one answer,
-        // unless it is past the listing's bound.
+        // unless it is past the listing's bound. Each step walks a store that has
+        // what this process sent (the barrier first when one is owed): a grant
+        // given back while the walk waited on the session drops what was decided
+        // under it, and the store has it only once the barrier lands.
         const looked = new Set();
         const attempt = (asked) => {
+            if (!store.ready())
+                return DELEGATE;
+            if (owed) {
+                counts.barriers++;
+                return store.barrier().then((ok) => {
+                    if (!ok)
+                        return DELEGATE;
+                    owed = false;
+                    return attempt(asked);
+                });
+            }
             const walked = walkOnce(root, name, follow, crossed);
             if (walked === null || walked === DELEGATE || typeof walked === 'string')
                 return walked;
@@ -539,27 +553,17 @@ export function residentFilesystem(session, resident, delegation) {
     };
     /**
      * A mutation the holder may decide (a subtree it holds, or one it takes
-     * for this): `local` with the barrier taken when owed, its answer counted
-     * as local; DELEGATE (or false/undefined from the holder) hands it on.
+     * for this): `local`, whose walks take the barrier when owed, its answer
+     * counted as local; DELEGATE (or false/undefined from the holder) hands it on.
      */
-    const decide = (name, local) => {
+    const decide = (local) => {
         if (holder === null || !store.ready())
             return DELEGATE;
-        const settle = (value) => {
+        return after(local(), (value) => {
             if (value !== DELEGATE)
                 counts.local++;
             return value;
-        };
-        if (owed) {
-            counts.barriers++;
-            return store.barrier().then((ok) => {
-                if (!ok || !store.ready())
-                    return DELEGATE;
-                owed = false;
-                return after(local(), settle);
-            });
-        }
-        return after(local(), settle);
+        });
     };
     /** `path`'s walk for a mutation (the key it resolves to, and every name crossed to it), or DELEGATE. */
     const walkFor = (path, follow) => {
@@ -842,7 +846,7 @@ export function residentFilesystem(session, resident, delegation) {
         }
         if (!readOnly && holder !== null) {
             // A file made or emptied in a subtree this process holds is decided here.
-            const local = decide('open', () => after(walkFor(path, true), (walk) => (walk === DELEGATE || !decidable(walk.key, walk) ? DELEGATE
+            const local = decide(() => after(walkFor(path, true), (walk) => (walk === DELEGATE || !decidable(walk.key, walk) ? DELEGATE
                 : after(holder.open(walk.key, typeof path === 'string' ? path : path.path, flags), (handle) => (handle === undefined ? DELEGATE : heldOpen(handle))))));
             return after(local, (handle) => (handle === DELEGATE ? openOnSession(path, flags) : handle));
         }
@@ -1146,20 +1150,6 @@ export function residentFilesystem(session, resident, delegation) {
         return holder.client.submit(op).then(() => { owed = true; }, (error) => { owed = true; throw error; });
     };
     const pathOf = (path) => (typeof path === 'string' ? path : path.path);
-    /** Where the store places `path` (its directory resolved, the name itself not followed), current first; DELEGATE when it cannot say. */
-    const placedWalk = (path) => {
-        if (holder === null || !store.ready())
-            return DELEGATE;
-        if (!owed)
-            return walkFor(path, false);
-        counts.barriers++;
-        return store.barrier().then((ok) => {
-            if (!ok || !store.ready())
-                return DELEGATE;
-            owed = false;
-            return walkFor(path, false);
-        });
-    };
     // Changes by name a held subtree holds are decided here; any other is the session's, through the client.
     const bySessionMkdir = fs.mkdir;
     fs.mkdir = (path, options) => {
@@ -1167,7 +1157,7 @@ export function residentFilesystem(session, resident, delegation) {
             return bySessionMkdir(path, options);
         const mode = options?.mode ?? 0o777;
         let named;
-        const local = decide('mkdir', () => after(walkFor(path, false), (walk) => {
+        const local = decide(() => after(walkFor(path, false), (walk) => {
             if (walk === DELEGATE)
                 return DELEGATE;
             named = walk.key;
@@ -1183,7 +1173,7 @@ export function residentFilesystem(session, resident, delegation) {
         if (holder === null)
             return bySessionUnlink(path);
         let named;
-        const local = decide('unlink', () => after(walkFor(path, false), (walk) => {
+        const local = decide(() => after(walkFor(path, false), (walk) => {
             if (walk === DELEGATE)
                 return DELEGATE;
             named = walk.key;
@@ -1214,7 +1204,7 @@ export function residentFilesystem(session, resident, delegation) {
     fs.copyFile = (from, to, options) => {
         if (holder === null)
             return bySessionCopy(from, to, options);
-        const local = decide('copyFile', () => after(walkFor(from, true), (source) => (source === DELEGATE ? DELEGATE
+        const local = decide(() => after(walkFor(from, true), (source) => (source === DELEGATE ? DELEGATE
             : after(walkFor(to, true), (target) => {
                 if (target === DELEGATE || !decidable(target.key, source, target))
                     return DELEGATE;
@@ -1227,7 +1217,7 @@ export function residentFilesystem(session, resident, delegation) {
         if (holder === null)
             return bySessionRename(from, to);
         let names;
-        const local = decide('rename', () => after(walkFor(from, false), (source) => (source === DELEGATE ? DELEGATE
+        const local = decide(() => after(walkFor(from, false), (source) => (source === DELEGATE ? DELEGATE
             : after(walkFor(to, false), (target) => {
                 if (target === DELEGATE)
                     return DELEGATE;
@@ -1255,7 +1245,7 @@ export function residentFilesystem(session, resident, delegation) {
             if (holder === null || attrs === null)
                 return passed.call(fs, path, ...rest);
             let named;
-            const local = decide(name, () => after(walkFor(path, true), (walk) => {
+            const local = decide(() => after(walkFor(path, true), (walk) => {
                 if (walk === DELEGATE)
                     return DELEGATE;
                 named = walk.key;
@@ -1277,7 +1267,7 @@ export function residentFilesystem(session, resident, delegation) {
     const byName = (name, passed, pathAt, op) => (...args) => {
         if (holder === null)
             return passed(...args);
-        const placed = placedWalk(args[pathAt]);
+        const placed = walkFor(args[pathAt], false);
         return after(placed, (walk) => (walk === DELEGATE ? passed(...args) : byClient(name, op(walk.key, args))));
     };
     const bySessionRmdir = fs.rmdir;
