@@ -570,6 +570,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@0.18.0/lib/addon-webgl.min.js"></script>
   <script src="/_assets/session-id/session-id.js"></script>
+  <script src="/_assets/terminal-policy/terminal-policy.js"></script>
   <script>
     // ── Session-aware URL helpers ──
     // This page is served at /s/<id>/ via the asset binding. All DO-bound
@@ -647,16 +648,15 @@
     }
 
     // ── Terminal setup ──
+    // The look the shell's terminals share with the docs' (core's
+    // _shared/terminal-policy.ts), on the shell's background.
+    const SHELL_TERMINAL_LOOK = {
+      ...NimbusTerminalPolicy.TERMINAL_CURSOR,
+      fontFamily: NimbusTerminalPolicy.TERMINAL_FONT_FAMILY,
+      theme: { ...NimbusTerminalPolicy.TERMINAL_THEME, background: '#0d1117' },
+    };
     const term = new Terminal({
-      cursorBlink: true, cursorStyle: 'bar', fontSize: 13,
-      fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, monospace",
-      theme: {
-        background: '#0d1117', foreground: '#c9d1d9', cursor: '#58a6ff', selectionBackground: '#264f78',
-        black: '#484f58', red: '#ff7b72', green: '#3fb950', yellow: '#d29922',
-        blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39d353', white: '#c9d1d9',
-        brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#56d364', brightYellow: '#e3b341',
-        brightBlue: '#79c0ff', brightMagenta: '#d2a8ff', brightCyan: '#56d364', brightWhite: '#f0f6fc',
-      },
+      ...SHELL_TERMINAL_LOOK, fontSize: 13,
       allowProposedApi: true,
       // macOS Option key emits Meta-prefixed sequences (\x1b<letter>),
       // matching Linux Alt behaviour. Without this, Option+B/F/D on
@@ -3235,17 +3235,8 @@
         if (tab.term) return;
         tab.viewEl.classList.add('terminal-view');
         const procTerm = new Terminal({
-          cursorBlink: true,
-          cursorStyle: 'bar',
+          ...SHELL_TERMINAL_LOOK,
           fontSize: 12,
-          fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, monospace",
-          theme: {
-            background: '#0d1117', foreground: '#c9d1d9', cursor: '#58a6ff', selectionBackground: '#264f78',
-            black: '#484f58', red: '#ff7b72', green: '#3fb950', yellow: '#d29922',
-            blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39d353', white: '#c9d1d9',
-            brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#56d364', brightYellow: '#e3b341',
-            brightBlue: '#79c0ff', brightMagenta: '#d2a8ff', brightCyan: '#56d364', brightWhite: '#f0f6fc',
-          },
           allowProposedApi: true,
           macOptionIsMeta: true,
         });
