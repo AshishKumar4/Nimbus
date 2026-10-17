@@ -74,10 +74,10 @@ export function adoptSessionSupervisor(host, onOutput) {
   });
 }
 
-/** A FacetManager named `name` over `rawVfs`, loading runners through `loader`. */
-export function oneShotManager(name, { host, rawVfs, loader }) {
+/** A FacetManager named `name` over `rawVfs`, loading runners through `loader`, on `ctx` (its Durable Object's state). */
+export function oneShotManager(name, { host, rawVfs, loader, ctx = createFacetCtx(createFacetWorld(() => ({})), name) }) {
   const manager = new FacetManager(
-    createFacetCtx(createFacetWorld(() => ({})), name),
+    ctx,
     { LOADER: loader, ASSETS: stagedAssets }, host.processes, new PortRegistry(), processHostFor,
     { supervise: (props) => supervisorEntrypoint()({ props }) },
   );

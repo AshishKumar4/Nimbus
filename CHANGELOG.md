@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: a program whose launch waits 10 seconds at one stage (its
+  preparation, its admission for a worker, or its load) logs one line to
+  Workers Logs: `[facet-manager] launch stalled:` with its pid, command,
+  stage, the wait, and the worker ledger's and launch pacer's state. A
+  command that hangs before it runs leaves this as its evidence. The line
+  is logged once per launch.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
