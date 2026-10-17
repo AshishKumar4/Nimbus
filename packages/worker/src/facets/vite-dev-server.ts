@@ -1444,7 +1444,7 @@ export class ViteDevServer {
       vfs: this.vfs, root: this.root, cache: this.npmCache, pool: this.bundlePool,
       parse: transformParser(this.esbuild), esbuild: this.esbuild, serviceFallback: true,
       signal: this.prebundleAbort.signal, running: true,
-      owner: { pid: opts.pid ?? undefined, session: this.ctx?.id.toString() },
+      owner: { pid: opts.pid ?? undefined, session: this.ctx?.id?.toString() },
     };
     // Merge user defines with standard Vite defines.
     // process.env.NODE_ENV is set explicitly so bundled CJS packages (like React's

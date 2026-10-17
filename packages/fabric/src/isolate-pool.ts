@@ -870,7 +870,7 @@ export class IsolatePool {
       const resume = this.claim ? undefined : suspendHeldAdmission(this.ctx);
       // Refused or aborted, it ends at once: the launch, its admission given back, holds no worker for it.
       const credit = loadCredit(await acquireSupervisorLoad(`facet '${this.tag}' images`, imageBytes, signal,
-        { owner: `facet '${this.tag}' images`, pid: this.writerPid, session: this.ctx.id.toString() }));
+        { owner: `facet '${this.tag}' images`, pid: this.writerPid, session: this.ctx.id?.toString() }));
       try {
         await resume?.(signal);
       } catch (error) {
@@ -925,7 +925,7 @@ export class IsolatePool {
       try {
         const stub = this.loader.get(id, async () => {
           const lease = imageBytes === 0 ? null : credit?.take() ?? tryAcquireSupervisorLoad(imageBytes,
-            { owner: `facet '${this.tag}' images`, pid: this.writerPid, session: this.ctx.id.toString() });
+            { owner: `facet '${this.tag}' images`, pid: this.writerPid, session: this.ctx.id?.toString() });
           if (imageBytes > 0 && lease === null) {
             lacking = true;
             throw new Error(`IsolatePool(${this.tag}): its images' credit is not free while it holds a worker`);

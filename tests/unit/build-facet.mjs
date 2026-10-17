@@ -197,7 +197,7 @@ try {
     console.warn = () => {};
     let crashed;
     try {
-      crashed = await pool.prebundle(deep);
+      crashed = await pool.prebundle(prebundleTask(deep));
     } finally {
       console.warn = warn;
     }

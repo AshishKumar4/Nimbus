@@ -911,7 +911,7 @@ export async function _rpcFsReadBatch(
         }
       }
       return entries;
-    }, pid, self.ctx?.id.toString());
+    }, pid, self.ctx?.id?.toString());
 }
 
 export async function _rpcFsWriteRange(

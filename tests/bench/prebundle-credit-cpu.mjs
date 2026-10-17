@@ -31,11 +31,12 @@ const measured = new Set(['worker/src/npm/browser-prebundle.ts', 'worker/src/npm
 const roots = [];
 const fixtureRoots = [];
 Bun.plugin({ name: 'prebundle-credit-arms', setup(build) {
-  build.onResolve({ filter: /^@nimbus-sh\/(core|platform)\/(.+)\.js$/ }, (args) => {
+  build.onResolve({ filter: /^@nimbus-sh\/(core|platform|fabric)\/(.+)\.js$/ }, (args) => {
     const root = roots.find((path) => args.importer.startsWith(path + '/'));
     if (!root) return;
-    const match = /^@nimbus-sh\/(core|platform)\/(.+)\.js$/.exec(args.path);
-    return { path: join(root, match[1], 'src', match[2] + '.ts') };
+    const match = /^@nimbus-sh\/(core|platform|fabric)\/(.+)\.js$/.exec(args.path);
+    const file = `${match[1]}/src/${match[2]}.ts`;
+    return { path: join(measured.has(file) ? root : packages, file) };
   });
 } });
 adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });

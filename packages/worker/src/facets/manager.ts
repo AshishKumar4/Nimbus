@@ -8621,7 +8621,7 @@ export class FacetManager {
   }
 
   private _allocationOwner(pid: number): SupervisorAllocationOwner {
-    return { owner: 'launch bundle/map', pid, session: this.ctx.id.toString(), attribution: 'prefetchBundleBytes' };
+    return { owner: 'launch bundle/map', pid, session: this.ctx?.id?.toString(), attribution: 'prefetchBundleBytes' };
   }
 
   /**
