@@ -2,8 +2,9 @@
 // An octal or hex escape names one byte, as bash and GNU printf have it:
 // printf's format and %b argument and echo -e each write the bytes their
 // escapes name (`\303\251` is the two bytes of "é", `\377` the byte 0xff),
-// while \u and \U name a character, written as its UTF-8 bytes; printf's %c
-// writes its argument's first byte. Checked against the host's bash over the
+// while \u and \U name a character, written as its UTF-8 bytes (a surrogate
+// as its own three, never paired); printf's %c writes its argument's first
+// byte. Checked against the host's bash over the
 // same lines, byte for byte (od).
 //
 // Red before: the escapes became the characters U+00C3 U+00A9, written as
@@ -33,6 +34,12 @@ const CASES = [
   `ln -s "$(printf '\\357\\273\\277t')" bom && readlink bom${HEX}`,
   `x=$(printf '\\377a'); { printf '[%s]' "$x"; echo "$x"; }${HEX}`,
   `printf '\\303\\251' > f && od -An -tx1 f && wc -c < f`,
+  // A \u escape of a surrogate is its own three bytes, never paired with what follows.
+  `printf '\\uD800\\377'${HEX}`,
+  `printf '\\uD800%c' é${HEX}`,
+  `printf '\\uDC80'${HEX}`,
+  `printf '%b' '\\uDBFF\\uDFFF'${HEX}`,
+  `echo -e '\\uD800\\0377'${HEX}`,
 ];
 
 const run = (line) => `${line}; echo "status=$?"`;
