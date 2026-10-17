@@ -187,7 +187,7 @@ for (const label of ['multi', 'unknown', 'legacy shasum', 'malformed digest', 'e
     stdin: {
       contents: [
         "export { NPM_INSTALL_PREAMBLE } from './packages/worker/src/loaders/npm-install-preamble.ts';",
-        "export { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from './packages/worker/src/loaders/generated-workers.ts';",
+        "export { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from './packages/worker/src/loaders/workers.generated.ts';",
         "export { NPM_INSTALL_BATCH_TASK } from './packages/worker/src/loaders/compiled-bodies.generated.ts';",
       ].join('\n'),
       resolveDir: root,

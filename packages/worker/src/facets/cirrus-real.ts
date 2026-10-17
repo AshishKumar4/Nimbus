@@ -68,7 +68,7 @@ import {
 } from '../cirrus-plugin-react.generated.js';
 import { CIRRUS_NPM_CJS_VERSIONS, getCirrusNpmCjsBundles } from '../cirrus-npm-cjs.generated.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
-import { RPC_DISPOSE_PREAMBLE } from '../loaders/generated-workers.js';
+import { RPC_DISPOSE_PREAMBLE } from '../loaders/workers.generated.js';
 import { getCtxExports, hostRoute } from '@nimbus-sh/fabric/composition.js';
 import {
   buildFsSnapshot,

@@ -40,6 +40,8 @@ export interface NodeLaunch {
     eval?: string;
     /** `-p`/`--print`: the eval's completion value is printed when the process exits. */
     print: boolean;
+    /** `-c`/`--check`: the program's syntax is checked, and it does not run (check_syntax.js). */
+    check: boolean;
     /** `--experimental-eventsource`: the EventSource global exists (NODE_OPTIONS' or the command line's, the latter's last). */
     experimentalEventSource?: boolean;
     /** `--no-experimental-strip-types`: TypeScript is JavaScript to the loaders, unless transformTypes. */
@@ -48,15 +50,27 @@ export interface NodeLaunch {
     transformTypes?: boolean;
     /** `--enable-source-maps`, which `--experimental-transform-types` sets where it is read. */
     enableSourceMaps?: boolean;
+    /**
+     * `-e` code or stdin as Node's eval took its TypeScript (node-eval.ts
+     * nodeEvalInput): `sourceUrl`, its types stripped with no source map, its
+     * frames named by the stripper's sourceURL, `[eval]` (a transform where
+     * source maps are on carries a map instead); `hint`, amaro's message for code that compiles neither as
+     * JavaScript nor as TypeScript, which Node's report of the SyntaxError
+     * adds; `transformWarning`, a transform was attempted where Node's warning
+     * of it prints (not before a CommonJS eval's synchronous refusal).
+     */
+    evalTypeScript?: {
+        sourceUrl: boolean;
+        hint?: string;
+        transformWarning: boolean;
+    };
 }
 /** What node's command line says, for the program it runs. */
 export interface NodeCommandLine extends NodeLaunch {
     /** Where the program's own arguments start: its script (or `-`), or, for `-e`, its arguments; their end when there are none. */
     programIndex: number;
-    /** `--input-type`: what `-e` code and stdin are (`module`, `commonjs`), the command line's over NODE_OPTIONS'. */
+    /** `--input-type`: what `-e` code and stdin are (`module`, `commonjs`, `module-typescript`, `commonjs-typescript`), the command line's over NODE_OPTIONS'. */
     inputType?: string;
-    /** `-c`/`--check`: the script's syntax is checked, and it does not run. */
-    check: boolean;
     /** `--experimental-default-type`: the format of a file with no other, the command line's over NODE_OPTIONS'. */
     defaultType?: string;
     version: boolean;

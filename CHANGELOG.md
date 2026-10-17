@@ -5,6 +5,9 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: shell function nesting is bounded. A call past the bound is refused with `f: maximum function nesting level exceeded (N)`, and the rest of its line is discarded, as bash 5.2 does with FUNCNEST set. The shell goes on with the next line, its own or a sourced file's, with `$?` 1; a subshell, command substitution, pipeline element or background job ends with 1; a trap's action ends. The bound is FUNCNEST when it is a number above 0, otherwise 1000, and never more than 1000. Before, a function that called itself ran until the session's heap was gone (bash with no FUNCNEST segfaults).
+- Fixed: a hosted node program that replaces a built-in its module resolution calls (`String.prototype.startsWith`, `Array.prototype.push`, `JSON.parse`, `Map.prototype.get`, `%GeneratorPrototype%.next` and the like) still resolves `import`, `import()`, `import.meta.resolve`, `require.resolve` and `require` specifiers, and gets Node's errors for them, as Node's loader does on its primordials. A package.json's fields are its own: an `Object.prototype.main` or `.exports` a program adds no longer changes how a package resolves. A URL's members are read as Node reads them, so a replaced `URL.prototype.pathname` breaks resolution as it breaks Node's. Loading itself is the remaining work (design-guest-loader-primordials, heads 3 and 4).
+- Fixed: in the shell, a command word read from an alias's own text is not expanded as that alias again, as in bash. `alias ls='ls -l'`, `alias q=q`, two aliases that name each other, and an alias whose text runs its own name in a list, group, subshell or a function it defines now run that name as a command. A command substitution or a function defined elsewhere still expands it, as bash does. Before, an alias that named itself expanded without end until the session ran out of memory.
 - Fixed: a program that writes files before it listens, as Vite's config
   load does, serves. When its listen makes it a server, Nimbus runs it again
   and checks that run against the first. That check failed for two reasons.
@@ -22,7 +25,33 @@ published independently in the `@nimbus-sh` npm scope.
   including files edited or added while it runs, and `vite build` writes
   them too. Before, the install noted that oxide had no Workers-compatible
   build, and Tailwind v4 could not load.
-
+- Fixed: a hosted `node -e`, `node -p` or stdin program with a `return` at its top level fails as Node's does, with V8's `SyntaxError: Illegal return statement` under the `return`, plus amaro's message where Node adds one. Before, `node -e 'return 1'` ran and exited 0, and `-p` showed the error at generated code.
+- Fixed: a hosted typeless ES module entry whose graph does not compile as a module shows only its SyntaxError, as Node does. Before, the MODULE_TYPELESS_PACKAGE_JSON warning came first, a warning Node's failure cuts off.
+- Fixed: hosted `node -e`, `node -p` and a program read from stdin take TypeScript as Node 22 does, with type stripping on by default. Code that does not compile as JavaScript is stripped and run (as an ES module when its stripped syntax is one). Code that is neither JavaScript nor TypeScript fails with V8's error, adding amaro's message as Node does. `--input-type=commonjs-typescript` and `module-typescript` strip first. An unknown `--input-type` is refused with exit 9. An `import` or `export` nested in a block is module syntax to detection, as it is to Node, and a module's nested `import` is placed where V8 places it.
+- Fixed: a hosted `require()` of a CommonJS module that does not compile throws a new SyntaxError each time, as Node, which compiles the module again, does: before, every require after the first rethrew the first error, the same object with its stack as first formatted (a stack formatter installed since never saw it).
+- Fixed: a hosted CommonJS program whose SyntaxError is at the end of its source (an unclosed call, block, bracket, template or comment) is reported as Node reports it, by `node` and `node -c` alike: its line, its arrow (an argument list's last token, or nothing underlined at the end), and `Unexpected end of input` where Node says so. Before, the report showed the module wrapper's closing `}; });` a line past the source, and could say `Unexpected token '}'`.
+- Fixed: `node -c` (`--check`) in a hosted session checks a CommonJS
+  program's syntax and does not run it, as Node does: a script, stdin, or a
+  TypeScript file's own text. It exits 0, or prints Node's SyntaxError and
+  exits 1. Before, it ran the program. An ES module entry cannot be compiled
+  here without running it, so `-c` of one exits 9 with "-c cannot check an
+  ES module entry in Nimbus without running it". `-c` with `-e` or `-p`
+  is Node's refusal (exit 9).
+- Fixed: `node --experimental-default-type` in a hosted session exits 9 as
+  unsupported, as the portable node does. Before, it was ignored: `-e`
+  code under `=module` ran as CommonJS. A value other than `module` or
+  `commonjs` is Node's own refusal.
+- Fixed: a workspace resize handle could stop following the pointer
+  mid-drag when the page lost the pointer's capture. The drag now follows
+  the pointer until it is released, and a release the page cannot hear
+  (over the preview's frame, or outside the window) ends it at the next
+  move or when the window loses focus.
+- Fixed: `WeightedCreditPool.acquire` (and the supervisor allocation
+  budget over it) refuses a request whose signal is already aborted, with
+  an AbortError and no credit taken, whatever its size. Before, a request
+  at or below `smallRequestBytes` was granted from free shared capacity
+  before its signal was looked at.
+- Fixed: `fs.copy(src, dst, { preserve: true })` (and `copyFile` with `preserve`) sets what `cp -p` sets, by every path a copy takes, as far as the destination's filesystem supports each. A single file copied on SQLite keeps the source's mode (no umask), its times, and its owner when root copies, onto a new name and onto a file there; before, `preserve` was dropped and the copy had the time of the copy and the mode less the umask. A copy between backends (a mounted filesystem's, recursive or not) sets each entry's owner (root), mode and times once its content is in, a directory's after its entries, and fills a read-only directory; before, it set no time, left a SQLite destination's umask, and could not write into a read-only directory it had made. A link's own metadata is not set, and nothing is set through it. With `keepMode` too, `preserve`'s mode wins. A resident process's preserving copy is the session's, as is one through the supervisor's call, which dropped `preserve`.
 - Changed: a program whose launch waits 10 seconds at one stage (its
   preparation, its admission for a worker, or its load) logs one line to
   Workers Logs: `[facet-manager] launch stalled:` with its pid, command,
@@ -39,6 +68,31 @@ published independently in the `@nimbus-sh` npm scope.
   sent again and completes. The file tree showed "fs-list failed:
   Session connection closed" until it was refreshed by hand. A save that
   was waiting still fails, since it may have been written.
+- Changed (config): `NIMBUS_REQUIRED_ALIASES`, and so the alias map
+  `buildNimbusWranglerConfig` writes, is `{ diff: 'diff' }`. The other 11
+  entries (clean-git-ref, is-git-ref-name-valid, crc-32, sha.js, pako,
+  pify, diff3, ignore, readable-stream, simple-get, minimisted) were for
+  Git's dependencies, which are bundled into its vendor module, so they
+  are no longer needed. `extraAliases` still merges over the map. A
+  hand-written config may drop those entries.
+- Changed (worker): `@nimbus-sh/worker` no longer declares
+  `@renovatebot/pep440` or `pip-requirements-js`. `@nimbus-sh/core`,
+  which is the one that imports them, still does.
+- Fixed (computesdk-nimbus): `nimbus({ timeout })` is now the default
+  timeout of every command, as documented; a `runCommand` without its own
+  `timeout` used to run with no deadline. `getInfo` reports that timeout,
+  or 0 when none is configured, in place of a fixed 300000.
+
+- Fixed: with two versions of a gem installed, `require` now picks the
+  version host Ruby does. A bare `require "a"` loads the highest version.
+  A gem whose dependency requires `a < 2` gets a 1.x. Requiring both
+  where they conflict raises `Gem::ConflictError`. Before, the older
+  version could be loaded, and conflicts loaded anyway. Only gems whose
+  version RubyGems must choose are activated: two versions installed, or
+  a dependency, at any depth, that has two. Every other require loads from
+  the load path as before, at no added cost. A gem's executable runs the
+  version RubyGems activates, as host Ruby's binstub does, including the
+  wrappers an earlier Nimbus wrote into a persisted home.
 ## 2026-10-17: platform 0.12.0, core 0.23.0, fabric 0.18.0, worker 0.21.0, sdk 0.17.0, cli 0.2.8, loom 0.3.1, react 0.3.3, create-nimbus-app 0.2.4, runtime-bash 5.2.37-7, runtime-cpython 3.13.14-3, runtime-git 2.53.0-1 (config 0.3.1 unchanged)
 
 The 2026-10-14 and 2026-10-15 versions reached production but were never published to npm; these carry their changes too. The runtimes need core 0.23.0: it is the first core that registers bash-runner@6, cpython-runner@3 and git-runner@2.
@@ -191,16 +245,44 @@ The 2026-10-14 and 2026-10-15 versions reached production but were never publish
   what it waited for.
 - Changed (core): `FacetSpec.wasmModules` and a call's `wasmModules` take
   `FacetImage`s instead of ArrayBuffers. Open one with
-  `ProcessView.image(path, { sha256, size })` or `hostImage(authority,
-  cred, path, { sha256, size })`, naming the bytes it must be: for an
-  installed runtime file, `installedFile(manifest, installRoot, rel)`
-  gives its path and the manifest's digest. The host reads the image when
-  it builds the facet, bounded at `size`, and refuses it (ESTALE) unless
-  the file holds those bytes. An image on a mount, which cannot bound the
-  read, is refused (EFBIG). `ws.fs.readArrayBufferUncached` is removed;
-  `readFileUncached` returns the read's own bytes without copying them.
+  `ProcessView.image(path)` or `hostImage(authority, cred, path)`. An
+  image is named by the store's content key for its bytes
+  (`RuntimeFsBridge.contentKey`), which equal bytes share in every
+  session, and nothing is hashed to name it. The host reads the image
+  when it builds the facet, and refuses it (ESTALE) unless the file still
+  holds those bytes, checked in the read's own turn. An image on a mount,
+  which keeps no content keys, is refused (ENOTSUP).
+  `ws.fs.readArrayBufferUncached` is removed; `readFileUncached` returns
+  the read's own bytes without copying them.
 - Added: `/api/_diag/memory` names the isolate the session runs in
   (`isolate.id`). Sessions that report one id share its memory limit.
+- Fixed: `NIMBUS_DEBUG` means the same in a hosted runtime as in a session.
+  A hosted runtime accepted only `'1'`, while its facet manager also took
+  `'true'`, so `'true'` turned on the manager's traces but left the
+  runtime's debug exit notices off. `'1'` and `'true'` now enable both;
+  any other value disables both.
+- Fixed: a Node program that hands `new WebAssembly.Module`,
+  `WebAssembly.compile` or `WebAssembly.instantiate` a DataView or any
+  typed array over a staged image's bytes, shared memory included, gets
+  the staged module, as it already did for a Uint8Array or an ArrayBuffer.
+  Before, those views were refused as bytes the launch did not carry. A
+  view that spans other bytes is still another image, and a detached one
+  is refused by the real compile.
+- Changed (core, worker): the validated record types are derived from
+  their schemas, under the names they had: `ManifestFile`,
+  `ManifestEntrypoint`, `RuntimeArtifactMetadata`,
+  `RuntimePythonExtensionModuleMetadata`,
+  `RuntimePythonPackageArtifactMetadata` and `RuntimeManifest` (core
+  `runtime/runtime-manifest.js`); `CatalogVersionEntry`,
+  `CatalogRuntimeEntry` and `RuntimeCatalog` (worker `./runtime/catalog`);
+  and `NimbusAgentOAuthCookie` (worker `./oauth`). They are type aliases
+  now, not interfaces, so declaration merging no longer extends them. A
+  `RuntimeManifest`'s `runtime_artifacts` elements are typed as parsed:
+  they keep unknown keys (`[key: string]: unknown`), so a value typed by an
+  interface of your own no longer assigns to them. Each was checked both
+  ways against the interface it replaces, and that was the only
+  difference. `envString` (an env var, trimmed, or `''`) moves to core's
+  OAuth module and `@nimbus-sh/sdk/oauth`.
 - Fixed: output that begins with U+FEFF (the UTF-8 BOM) keeps it, as a
   Linux terminal receives every byte a program writes. This covers a
   program's output in the terminal, process logs and `exec` results, a

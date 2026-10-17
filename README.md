@@ -18,7 +18,7 @@ build, a transform, a git network step, a fan-out task) has one.
 
 > This is a hobby/research project to see how far can we push Cloudflare durable objects to. Although it works, there are several rough edges, and I only work on it in my spare time. This README is edited and maintained with Claude (AI) and presented as-is.
 
-**Give every agent its own computer.** Nimbus is a free and open-source, POSIX-like cloud OS that runs entirely on Cloudflare's network. A sandbox is a Worker isolate rather than a container, so it starts in about a second. Open a URL or call the SDK, and you get a real shell with `node` + `bun` (Cloudflare workerd `nodejs_compat` runtime), `npm`, `git`, real `python` (Pyodide-compiled CPython 3.13), real `ruby` (ruby.wasm 3.3), real `clang` (LLVM 8 → `wasm32-wasi-nimbus`), and 60+ Unix commands.
+**Give every agent its own computer.** Nimbus is a free and open-source, POSIX-like cloud OS that runs entirely on Cloudflare's network. A sandbox is a Worker isolate rather than a container, so it starts in about a second. Open a URL or call the SDK, and you get a real shell with `node` + `bun` (Cloudflare workerd `nodejs_compat` runtime), `npm`, `git`, real `python` (CPython 3.13 for `wasm32-wasi`), real `ruby` (ruby.wasm 3.3), real `clang` (LLVM 8 → `wasm32-wasi-nimbus`), and 60+ Unix commands.
 
 The OS half is also a library. [`@nimbus-sh/core`](packages/core) runs the same durable filesystem, shell, and wasm runtimes in bun or node over a local SQLite, with no Cloudflare account involved. It also embeds inside other people's Durable Objects. See [Use Nimbus as a library](#use-nimbus-as-a-library).
 
@@ -40,7 +40,7 @@ your own Cloudflare account with `npx create-nimbus-app`.
 
 A VM-backed cloud dev environment is slow to start and expensive to idle. A browser sandbox starts fast and cannot run a real toolchain.
 
-- **Linux-like userland.** `node` and `bun` run on the Cloudflare workerd `nodejs_compat` runtime, the same V8 your Workers code runs on. They are not a JS interpreter stub, and they are not the upstream Node or Bun binaries. Real `git clone` over HTTPS via isomorphic-git. Real `npm install` against the live npm registry. Real `python` (Pyodide-compiled CPython 3.13, WebAssembly), real `ruby` (ruby.wasm 3.3, WebAssembly), real `clang` (LLVM 8 with modern wasi-libc, compiles C to `wasm32-wasi-nimbus` in-session).
+- **Linux-like userland.** `node` and `bun` run on the Cloudflare workerd `nodejs_compat` runtime, the same V8 your Workers code runs on. They are not a JS interpreter stub, and they are not the upstream Node or Bun binaries. Real `git clone` over HTTPS via isomorphic-git. Real `npm install` against the live npm registry. Real `python` (CPython 3.13 cross-compiled to `wasm32-wasi`), real `ruby` (ruby.wasm 3.3, WebAssembly), real `clang` (LLVM 8 with modern wasi-libc, compiles C to `wasm32-wasi-nimbus` in-session).
 - **Sub-second start.** Each session is a Cloudflare Durable Object backed by SQLite. Session create → first command runs in ~0.7 s median (measured with the ComputeSDK TTI methodology, N=200, 100% success). There is no VM boot and no image pull.
 - **Built for agents.** Every agent can mint its own sandbox through the SDK. Sandboxes are cheap enough to create per-task, and 100 simultaneous creates succeed without a warm pool.
 - **One process, one isolate, 128 MiB each.** Every isolate on Workers is capped at 128 MiB. Nimbus treats processes the way an OS treats them, so a heavy app spans several isolates. Each process gets its own isolate, with its own memory and CPU budget, wired to the others over the session's loopback network. opencode runs this way, as a server process and a TUI process in two isolates.
@@ -78,7 +78,7 @@ A behavioral probe suite in `tests/behavioral/` covers this table. Run it agains
 | Programmatic sandbox SDK — exec/files/runtimes/processes/ports/Proteus-style tools | ✅ |
 | JS agent CLI primitives — env/home, npm/npx, child_process.spawn/exec/execFile, piped stdio, streams, logs | ✅ |
 | Foreground attached npm-bin TTY tabs — stdin, resize, ANSI output, clean exit; Pi official installer and npm path probed | Alpha |
-| Python package workflows — pip, PyPI pure wheels, requirements/constraints, curated pure source artifacts, declared Pyodide startup-module packages, Flask, python -m flask run, python -m http.server preview | Alpha |
+| Python package workflows — pip, PyPI pure wheels, requirements/constraints, curated pure source artifacts, numpy and MarkupSafe linked into the interpreter, Flask, python -m flask run, python -m http.server preview | Alpha |
 | Ruby package workflows — gem, bundle, pure gems, Rack/WEBrick preview | Alpha |
 | Session Agent — editor-workspace chat with Cloudflare OAuth / Workers AI and sandbox tools | ✅ |
 | npx &lt;pkg&gt; — first-class shebang + auto-install fallback | ✅ |
@@ -397,7 +397,7 @@ It has the same shape any external project ships.
 
 **Stateful (real interpreter, real persistence):**
 
-- `python` / `python3` — drives Pyodide's `PyodideConsole` directly. Variables, functions, imports, multi-line blocks persist across submits. `>>> ` primary, `... ` continuation.
+- `python` / `python3` — a CPython REPL session in its own facet. Variables, functions, imports, multi-line blocks persist across submits. `>>> ` primary, `... ` continuation.
 - `ruby` / `ruby3` — drives the long-lived ruby.wasm runtime. `irb`-style `irb> ` / `irb* ` prompts. Variables, methods, requires persist.
 
 **Stateless emulation (workerd CSP-bounded):**

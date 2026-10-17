@@ -1,7 +1,6 @@
 export const RUBY_SOCKET_SHIM = String.raw `
 begin
   require 'js'
-  require 'json'
 rescue LoadError => e
   raise LoadError, "Nimbus Ruby virtual sockets require the ruby.wasm JS bridge: #{e.message}"
 end

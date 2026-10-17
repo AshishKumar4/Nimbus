@@ -19,6 +19,7 @@
  * `globalThis.__esbuildCliRun` is its entry point.
  */
 import { supervisorFilesystem } from '../vfs-supervisor.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 // Node's open(2) flag values. Go reads them off `fs.constants`.
 const O_WRONLY = 0o1, O_RDWR = 0o2, O_CREAT = 0o100, O_EXCL = 0o200, O_TRUNC = 0o1000, O_APPEND = 0o2000;
 const O_DIRECTORY = 0o200000;
@@ -46,16 +47,7 @@ function goError(error) {
     });
 }
 function resolvePath(cwd, path) {
-    const parts = [];
-    for (const part of (path.startsWith('/') ? path : `${cwd}/${path}`).split('/')) {
-        if (part === '' || part === '.')
-            continue;
-        if (part === '..')
-            parts.pop();
-        else
-            parts.push(part);
-    }
-    return `/${parts.join('/')}`;
+    return `/${rootClampedSegments(path.startsWith('/') ? path : `${cwd}/${path}`).join('/')}`;
 }
 function goStats(stat, size = stat.size) {
     const type = stat.type === 'directory' ? S_IFDIR : stat.type === 'symlink' ? S_IFLNK : S_IFREG;

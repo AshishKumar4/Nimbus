@@ -46,6 +46,11 @@ export interface ListNode {
         connector: '&&' | '||' | null;
     }>;
     background: boolean;
+    /**
+     * A script's list a newline (or the end) follows: the last of the lines
+     * bash reads and runs as one (a discard skips to it). Set at the top level.
+     */
+    endsLine?: boolean;
 }
 export interface PipelineNode {
     type: 'pipeline';
@@ -68,6 +73,13 @@ export interface SimpleCommandNode {
     assignments: AssignmentNode[];
     words: WordPart[][];
     redirections: RedirectionNode[];
+    /**
+     * The aliases whose replacement text this command was read from: none of
+     * them is expanded again as its command word (bash's rule, a read-time
+     * one: a function defined there keeps it; a later parse, a command
+     * substitution's or a sourced file's, starts afresh).
+     */
+    aliasesExpanding?: ReadonlySet<string>;
 }
 export interface RedirectionNode {
     operator: 'write' | 'append' | 'read' | 'readWrite' | 'writeAll' | 'dupOutput' | 'dupInput' | 'heredoc';

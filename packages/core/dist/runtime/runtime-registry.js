@@ -49,7 +49,7 @@ import { isDirectory } from '../vfs/vfs.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES } from './server-launch.js';
 import { parseNodeCommandLine, typeScriptStripOptions } from './node-cli.js';
 import { resolveRuntimeScriptPath } from './script-path.js';
-import { nodeEvalProgram, nodeStdinPrintProgram } from './node-eval.js';
+import { evalProgram, evalScriptSource, nodeEvalInput } from './node-eval.js';
 /**
  * The nearest directory at or above `dir` that holds a package.json, or null.
  * The first one wins (Node's rule); the filesystem root is not a package.
@@ -214,7 +214,7 @@ export function buildRuntimeHandler(spec, ctx0) {
         }
         const flagSpan = line.programIndex;
         // What a node run takes of its command line (RuntimeRunOpts.node).
-        const { programIndex: _programIndex, version: _version, help: _help, print, inputType, check: _check, defaultType: _defaultType, ...launch } = line;
+        const { programIndex: _programIndex, version: _version, help: _help, print, inputType, defaultType, ...launch } = line;
         // A node program's argv is its own: Node's options are execArgv. Another runtime's carries its flags.
         const leadingFlags = spec.nodeCommandLine ? [] : args.slice(0, flagSpan);
         /**
@@ -239,7 +239,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                     command: program.command,
                     output: programStdin.output,
                     ...(spec.nodeCommandLine
-                        ? { node: { ...launch, print: program.print === true, ...(program.refusedBeforeImports ? { import: [] } : {}) } }
+                        ? { node: { ...launch, print: program.print === true, ...(program.refusedBeforeImports ? { import: [] } : {}), ...(program.runsRefusal ? { check: false } : {}), ...(program.evalTypeScript ? { evalTypeScript: program.evalTypeScript } : {}) } }
                         : {}),
                     ...program.stdin,
                     ...(program.reserved === false ? {} : reservedProcess),
@@ -285,20 +285,51 @@ export function buildRuntimeHandler(spec, ctx0) {
             }
         }
         /**
-         * `-e` code or a program read from stdin as the process runs it: an ES
-         * module (`--input-type=module`, or its syntax, module-format.ts), which
-         * the launch stages as it stages every ES module and `-p` refuses as Node
-         * does (node-eval.ts); else Node's eval code.
+         * `-e` code or a program read from stdin as the process runs it: what
+         * Node's eval runs, by `--input-type` and its TypeScript (node-eval.ts
+         * nodeEvalInput), an ES module the launch stages as it stages every ES
+         * module and `-p` refuses as Node does, else Node's eval code. Null when
+         * a strip failed otherwise, which it has reported.
          */
-        function inputProgram(source, what) {
-            const esModule = isEsModuleInput(source, inputType);
-            if (esModule && !print)
-                return { code: source, written: source, refusedBeforeImports: false, esModule: true };
-            if (!spec.nodeCommandLine)
-                return { code: source, written: source, refusedBeforeImports: false, esModule: false };
-            const mode = esModule ? 'module' : inputType === 'commonjs' ? 'commonjs' : 'default';
-            const prepared = what === '[eval]' ? nodeEvalProgram(source, print, mode) : print ? nodeStdinPrintProgram(source, mode) : { code: source, refusedBeforeImports: false };
-            return { ...prepared, written: prepared.code, esModule: false };
+        async function inputProgram(source, what) {
+            if (!spec.nodeCommandLine) {
+                const esModule = isEsModuleInput(source, inputType) && !print;
+                return { code: source, written: source, refusedBeforeImports: false, esModule };
+            }
+            const stripTypes = typeScriptStripOptions(launch);
+            const strip = stripTypes === 'javascript' ? null : async (code) => {
+                const [outcome] = await (await getEsbuild()).transformMany([{ code, options: { stripTypes, stripOnly: true, sourcefile: '[eval]' } }]);
+                if ('typescript' in outcome)
+                    return { refusal: outcome.typescript };
+                if ('error' in outcome)
+                    throw new Error(outcome.error);
+                return { code: outcome.code };
+            };
+            let input;
+            try {
+                input = await nodeEvalInput(source, what === '[eval]' ? evalScriptSource(source, print) : source, inputType, strip);
+            }
+            catch (e) {
+                ctx.stderr.write(`${name}: transform error for ${what}: ${errorText(e)}\n`);
+                return null;
+            }
+            const transforms = stripTypes !== 'javascript' && stripTypes.mode === 'transform';
+            // amaro's transform gives a source map where maps are on (a strip, none), and Node's code carries it in the sourceURL's place.
+            const sourceUrl = input.stripped && !(transforms && stripTypes.sourceMap);
+            // Node's warning is a next tick's, which a CommonJS eval's synchronous refusal ends the process before.
+            const transformWarning = transforms && input.stripAttempted && input.refusal === undefined && (input.hint === undefined || input.esModule);
+            const typeScript = sourceUrl || transformWarning || input.hint !== undefined
+                ? { evalTypeScript: { sourceUrl, transformWarning, ...(input.hint !== undefined ? { hint: input.hint } : {}) } }
+                : {};
+            if (input.refusal !== undefined) {
+                const code = typeScriptRefusalShim(input.refusal);
+                return { code, written: input.code, refusedBeforeImports: true, esModule: false };
+            }
+            if (input.esModule && !print)
+                return { code: input.code, written: input.code, refusedBeforeImports: false, esModule: true, ...typeScript };
+            const prepared = evalProgram(input.code, print, input.mode);
+            const refusedBeforeImports = prepared.refusedBeforeImports || input.refusedBeforeImports === true;
+            return { ...prepared, refusedBeforeImports, written: prepared.code, esModule: false, ...typeScript };
         }
         // ── --version ──
         if (line.version) {
@@ -312,16 +343,32 @@ export function buildRuntimeHandler(spec, ctx0) {
                 ctx.stdout.write('\n');
             return 0;
         }
+        // ── What this node does not take ──
+        // Nimbus decides a module's format as Node 22 does without the option.
+        if (defaultType !== undefined) {
+            ctx.stderr.write('node: --experimental-default-type is not supported by this node\n');
+            return 9;
+        }
+        // -c compiles a CommonJS program without running it (check_syntax.js); an
+        // ES module cannot be compiled here without being evaluated.
+        const refuseModuleCheck = () => {
+            ctx.stderr.write('node: -c cannot check an ES module entry in Nimbus without running it\n');
+            return 9;
+        };
         // ── -e / --eval, and -p / --print ──
         // Node's eval code as Node prepares it (node-eval.ts); `-p`'s returns
         // the value the process prints when it exits.
         if (line.eval !== undefined) {
-            const { code, written, refusedBeforeImports, esModule } = inputProgram(line.eval, '[eval]');
+            const input = await inputProgram(line.eval, '[eval]');
+            if (input === null)
+                return 1;
+            const { code, written, refusedBeforeImports, esModule, evalTypeScript } = input;
             const programArgs = args.slice(flagSpan);
             return runProgram(code, {
                 print,
                 refusedBeforeImports,
                 esModule,
+                evalTypeScript,
                 argv: programArgs,
                 filename: '<eval>',
                 dirname: ctx.cwd || '/home/user',
@@ -335,7 +382,7 @@ export function buildRuntimeHandler(spec, ctx0) {
         // No script: the REPL at a terminal, otherwise the program is stdin, as
         // Node decides between them by whether stdin is a TTY.
         const terminalInput = ctx.terminalStdin !== undefined && (ctx.stdin === undefined || ctx.stdin === ctx.terminalStdin) && ctx.isFdTerminal?.(0) !== false;
-        if (args[scriptIdx] === undefined && spec.repl !== undefined && terminalInput && ctx.terminalStdin) {
+        if (args[scriptIdx] === undefined && spec.repl !== undefined && terminalInput && ctx.terminalStdin && !launch.check) {
             // The REPL takes Ctrl-C as input, as Node's readline does: the
             // terminal's signal keys are off while it runs (termios ISIG).
             const terminal = ctx.terminalStdin;
@@ -366,12 +413,28 @@ export function buildRuntimeHandler(spec, ctx0) {
         // program's own stdin is what is left after the read: nothing.
         if (scriptPath === '-') {
             const input = ctx.stdin ? (await ctx.stdin.readAll()) : '';
+            // -c checks stdin as CommonJS, whatever its syntax, unless --input-type says module (check_syntax.js).
+            if (launch.check) {
+                if (inputType === 'module')
+                    return refuseModuleCheck();
+                return runProgram(input, {
+                    argv: [...leadingFlags, '-', ...args.slice(scriptIdx + 1)],
+                    filename: '[stdin]',
+                    dirname: ctx.cwd || '/home/user',
+                    command: command || `${name} -`,
+                    stdin: { output: programStdin.output },
+                });
+            }
             // `-p` prints the value of the code it read (eval_stdin.js).
-            const { code, written, refusedBeforeImports, esModule } = inputProgram(input, '[stdin]');
+            const program = await inputProgram(input, '[stdin]');
+            if (program === null)
+                return 1;
+            const { code, written, refusedBeforeImports, esModule, evalTypeScript } = program;
             return runProgram(code, {
                 print,
                 refusedBeforeImports,
                 esModule,
+                evalTypeScript,
                 argv: [...leadingFlags, '-', ...args.slice(scriptIdx + 1)],
                 filename: '[stdin]',
                 dirname: ctx.cwd || '/home/user',
@@ -418,10 +481,11 @@ export function buildRuntimeHandler(spec, ctx0) {
             ctx.stderr.write(`${name}: cannot find module '${scriptPath}'\n`);
             return 1;
         }
-        // Shebang strip (primitive #1).
+        // Shebang strip (primitive #1): its line stays, empty, so every line and
+        // column is the file's own, as Node reports them.
         if (code.startsWith('#!')) {
             const nl = code.indexOf('\n');
-            code = nl >= 0 ? code.substring(nl + 1) : '';
+            code = nl >= 0 ? code.substring(nl) : '';
         }
         // ── Module format ──
         //
@@ -458,8 +522,11 @@ export function buildRuntimeHandler(spec, ctx0) {
                 stat: (path) => fs.stat(path),
             }, resolvedPath.slice(0, Math.max(0, resolvedPath.lastIndexOf('/'))))
             : null;
+        // -c of TypeScript, a declaration file's too: Node compiles its own text as CommonJS
+        // (check_syntax.js: its format is never 'module'), or, stripping off, refuses its extension.
+        const checksTypeScript = launch.check && typescriptLoader(resolvedPath) === 'ts';
         // Node's own TypeScript is stripped, then JavaScript of Node's format for it.
-        const stripTypes = spec.nodeCommandLine && moduleScope === 'node' && stripsTypeScript(resolvedPath) ? typeScriptStripOptions(launch) : null;
+        const stripTypes = spec.nodeCommandLine && moduleScope === 'node' && stripsTypeScript(resolvedPath) && !launch.check ? typeScriptStripOptions(launch) : null;
         let stripped = null;
         if (stripTypes === 'javascript') {
             const refused = typeScriptEntryRefused(packageType, code, launch.import.length > 0);
@@ -477,21 +544,27 @@ export function buildRuntimeHandler(spec, ctx0) {
         // An ES module, or TypeScript or JSX the launch compiles, is the launch's
         // staged module of the entry file (worker facets/manager.ts entryModule):
         // the program's own module, never a copy of it.
-        const esm = stripped === null
-            ? typescript !== null || scriptExt === '.jsx' || isEsModuleFile(resolvedPath, code, () => packageType)
-            : stripped.esModule;
+        const esm = checksTypeScript
+            ? false
+            : stripped === null
+                ? typescript !== null || scriptExt === '.jsx' || isEsModuleFile(resolvedPath, code, () => packageType)
+                : stripped.esModule;
+        if (launch.check && esm)
+            return refuseModuleCheck();
         const filename = '/' + resolvedPath;
         const dirname = filename.includes('/')
             ? filename.substring(0, filename.lastIndexOf('/'))
             : '/';
-        return runProgram(code, {
+        const refusesExtension = checksTypeScript && launch.stripTypes === false;
+        return runProgram(refusesExtension ? typeScriptRefusalShim(unknownExtensionRefusal(filename)) : code, {
+            ...(refusesExtension ? { runsRefusal: true } : {}),
             esModule: esm,
             argv: [...leadingFlags, filename, ...args.slice(scriptIdx + 1)],
             filename,
             dirname,
             command: command || `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
             stdin: programStdin,
-            launchesServer: await launches(code, resolvedPath, dirname, [filename, ...args.slice(scriptIdx + 1)]),
+            launchesServer: !launch.check && await launches(code, resolvedPath, dirname, [filename, ...args.slice(scriptIdx + 1)]),
         });
     }
     return async function runtimeHandler(ctx) {

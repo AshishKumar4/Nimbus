@@ -139,14 +139,8 @@ export function resumeReturning<R>(it: Generator<unknown, R, unknown>, value: un
   return reflectApply(GeneratorPrototypeReturn, it, [value]);
 }
 
-/**
- * `fn`, a generator function of the interpreter's own, made to create
- * generators that inherit SafeGeneratorPrototype.
- */
-export function safeGenerator<A extends unknown[], R>(fn: (...args: A) => Generator<unknown, R, unknown>): (...args: A) => Generator<unknown, R, unknown> {
-  defineOrThrow(fn, 'prototype', dataDescriptor(SafeGeneratorPrototype, true, false, false));
-  return fn;
-}
+// The runtime's one rule for its own generators (primordials.ts).
+export const safeGenerator = primordials.safeGenerator;
 
 /** Object.defineProperty: define the property, or throw. */
 export function defineOrThrow(target: object, key: PropertyKey, descriptor: PropertyDescriptor): void {

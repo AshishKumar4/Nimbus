@@ -48,12 +48,11 @@ import { routeRuntimeLoopback, type EnsurePortServer } from './loopback.js';
 import { NIMBUS_AI_TOKEN_ENV, mintSessionAiToken } from '@nimbus-sh/core/_shared/ai-egress.js';
 import {
   normalizeNimbusOAuthToken, NIMBUS_CLOUDFLARE_API, fetchNimbusCloudflareAccounts,
-  fetchNimbusCloudflareUserInfo, readNimbusCookie, requestNimbusCloudflareOAuthToken,
+  fetchNimbusCloudflareUserInfo, readNimbusCookie, requestNimbusCloudflareOAuthToken, envString,
   type NimbusCloudflareAccount,
 } from '@nimbus-sh/core/_shared/oauth.js';
 import {
   NIMBUS_AGENT_AUTH_COOKIE,
-  envString,
   loadNimbusAgentOAuthFromRequest,
   readNimbusAgentCookieSecret,
   readNimbusAgentOAuthConfig,

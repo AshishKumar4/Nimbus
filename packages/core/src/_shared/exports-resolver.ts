@@ -1,5 +1,11 @@
 import { z } from 'zod/v4';
-import { nodeError } from './node-error.js';
+import { packageJsonText, selectPackageMap, type PackageMapPolicy } from './package-map.js';
+
+export {
+  codeOf, createNodePackageMapPolicy, DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, nativeResolutionError, packageJsonText,
+  packageSelfReferenceSubpath, patternKeyCompare, resolutionError, selectPackageMap, type PackageMapPolicy, type PackageMapSteps,
+  type PackageTargetMatch, type SelfReferencingPackageJson,
+} from './package-map.js';
 
 /**
  * exports-resolver.ts — Single source of truth for `package.json#exports` /
@@ -39,13 +45,11 @@ import { nodeError } from './node-error.js';
  * map's own key order decides, the first key that is active (or
  * `default`) whose target resolves wins, as Node's PACKAGE_TARGET_RESOLVE
  * (and every bundler's) takes it.
+ *
+ * Node's maps and their errors are package-map.ts's, which the guest's
+ * module loading calls after a program may have replaced built-ins; this
+ * module adds the build's tolerant policy and package.json reading.
  */
-
-/** Node 22.12+ defaults. `default` is always active, not a user condition. */
-export const DEFAULT_ESM_CONDITIONS = ['import', 'node', 'node-addons', 'module-sync'];
-
-/** Default conditions for CJS runtime resolution (user-shell node). */
-export const DEFAULT_CJS_CONDITIONS = ['require', 'node', 'node-addons', 'module-sync'];
 
 /** The install/bundler/browser policy, deliberately not Node's conditions. */
 export const DEFAULT_BUILD_CONDITIONS = ['import', 'module', 'browser', 'default'];
@@ -100,15 +104,6 @@ function resolvablePackageJsonSchema(): z.ZodType<ResolvablePackageJson> {
 }
 
 /**
- * A package.json's text as Node's reader parses it: a leading byte order
- * mark skipped (src/node_modules.cc, whose simdjson skips one). The file
- * itself keeps it: a copy of one, a module map's cell, is every byte.
- */
-export function packageJsonText(text: string): string {
-  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
-}
-
-/**
  * The entry-point fields of a package.json read off disk, or null when the
  * text is not JSON or not an object. A caller narrows through this rather
  * than annotating `JSON.parse`, so a malformed package resolves as "no
@@ -119,125 +114,6 @@ export function parseResolvablePackageJson(text: string): ResolvablePackageJson 
     const result = resolvablePackageJsonSchema().safeParse(JSON.parse(packageJsonText(text)));
     return result.success ? result.data : null;
   } catch { return null; }
-}
-
-/** Host-independent package-map traversal; only leaves and errors are policy. */
-export type PackageMapSteps<T> = Generator<unknown, T, unknown>;
-export interface PackageTargetMatch {
-  key: string;
-  subpath: string;
-  pattern: boolean;
-  internal: boolean;
-  isPathMap: boolean;
-}
-export interface PackageMapPolicy<T> {
-  readonly name: string;
-  readonly internal: boolean;
-  /** Build/browser compatibility only: permissive leaves and historical fallbacks. */
-  readonly permissive?: boolean;
-  target(value: string, match: PackageTargetMatch): PackageMapSteps<T>;
-  invalidTarget(value: unknown, match: PackageTargetMatch): Error;
-  invalidConfig(reason: 'mixed' | 'numeric'): Error;
-}
-
-const codeOf = (error: unknown): unknown =>
-  error !== null && typeof error === 'object' && 'code' in error ? error.code : undefined;
-
-/** Node's PATTERN_KEY_COMPARE: prefix first, then trailer, not total length. */
-export function patternKeyCompare(a: string, b: string): number {
-  const aStar = a.indexOf('*');
-  const bStar = b.indexOf('*');
-  const baseA = aStar === -1 ? a.length : aStar + 1;
-  const baseB = bStar === -1 ? b.length : bStar + 1;
-  if (baseA > baseB) return -1;
-  if (baseB > baseA) return 1;
-  if (aStar === -1) return 1;
-  if (bStar === -1) return -1;
-  return b.length - a.length;
-}
-
-/**
- * One exact/sugar/pattern selection and target traversal for exports/imports.
- * undefined is unmatched; null is blocked. A blocked condition or best pattern
- * never falls back to a sibling. Arrays retain Node's last-null/invalid-target
- * rule (a null array element is not a conditional fallback).
- */
-export function* selectPackageMap<T>(
-  field: unknown, name: string, conditions: ReadonlySet<string> | readonly string[], policy: PackageMapPolicy<T>,
-): PackageMapSteps<T | null | undefined> {
-  const active = conditions instanceof Set ? conditions : new Set(conditions);
-  function* target(value: unknown, match: PackageTargetMatch): PackageMapSteps<T | null | undefined> {
-    if (typeof value === 'string') return yield* policy.target(value, match);
-    if (Array.isArray(value)) {
-      if (value.length === 0) return null;
-      let last: unknown;
-      for (const item of value) {
-        let result: T | null | undefined;
-        try { result = yield* target(item, match); }
-        catch (error) {
-          if (codeOf(error) !== 'ERR_INVALID_PACKAGE_TARGET') throw error;
-          last = error;
-          continue;
-        }
-        if (result === undefined || (policy.permissive && result === '')) continue;
-        if (result === null) { last = null; continue; }
-        return result;
-      }
-      if (last === undefined || last === null) return last;
-      throw last;
-    }
-    if (value === null) return null;
-    if (typeof value === 'object' && value !== null) {
-      const keys = Object.getOwnPropertyNames(value);
-      if (!policy.permissive && keys.some((key) => /^\d+$/.test(key) && String(Number(key)) === key && Number(key) < 4294967295)) {
-        throw policy.invalidConfig('numeric');
-      }
-      for (const key of keys) {
-        if (key !== 'default' && !active.has(key)) continue;
-        const result = yield* target(Reflect.get(value, key), match);
-        if (result === undefined || (policy.permissive && (result === null || result === ''))) continue;
-        return result;
-      }
-      return undefined;
-    }
-    if (policy.permissive) return undefined;
-    throw policy.invalidTarget(value, match);
-  }
-
-  if (field === undefined) return undefined;
-  if (field === null) return null;
-  let map: Record<string, unknown>;
-  if (!policy.internal) {
-    let sugar = typeof field !== 'object' || Array.isArray(field);
-    if (typeof field === 'object' && !Array.isArray(field)) {
-      const keys = Object.getOwnPropertyNames(field);
-      sugar = keys.length > 0 && !keys[0].startsWith('.');
-      if (!policy.permissive && keys.some((key) => !key.startsWith('.') !== sugar)) throw policy.invalidConfig('mixed');
-    }
-    map = sugar ? { '.': field } : field as Record<string, unknown>;
-  } else {
-    if (typeof field !== 'object' || Array.isArray(field)) return undefined;
-    map = field as Record<string, unknown>;
-  }
-  const match = (key: string, subpath: string, pattern: boolean): PackageTargetMatch =>
-    ({ key, subpath, pattern, internal: policy.internal, isPathMap: !policy.internal && name.endsWith('/') });
-  if (Object.prototype.hasOwnProperty.call(map, name) && (policy.permissive || (!name.includes('*') && !name.endsWith('/')))) {
-    return yield* target(map[name], match(name, '', false));
-  }
-  const candidates = Object.getOwnPropertyNames(map).filter((key) => {
-    const star = key.indexOf('*');
-    if (star === -1 || (!policy.permissive && key.lastIndexOf('*') !== star)) return false;
-    const trailer = key.slice(star + 1);
-    return name.startsWith(key.slice(0, star)) && name.endsWith(trailer)
-      && name.length >= (policy.permissive ? key.length - 1 : key.length);
-  }).sort(policy.permissive ? (a, b) => b.length - a.length : patternKeyCompare);
-  for (const key of candidates) {
-    const star = key.indexOf('*');
-    const subpath = name.slice(star, name.length - (key.length - star - 1));
-    const result = yield* target(map[key], match(key, subpath, true));
-    if (!policy.permissive || (result != null && result !== '') || map[key] === null) return result;
-  }
-  return undefined;
 }
 
 /** Old build/browser tolerance is explicit, and never used by Node resolution. */
@@ -263,89 +139,6 @@ export function resolveExports(
   const next = steps.next();
   if (!next.done) throw new Error('The build/browser package-map policy must be synchronous');
   return next.value ?? null;
-}
-
-/**
- * A package resolution error Node's JavaScript gives an `ERR_*` code: its
- * internal NodeError, `Name [CODE]: message` in its toString() and its stack
- * (lib/internal/errors.js). A module not found by require() is not one:
- * Node's CJS loader makes that a plain Error, its `code` MODULE_NOT_FOUND.
- */
-export function resolutionError(code: string, message: string, Type: ErrorConstructor | TypeErrorConstructor = Error): Error {
-  return nodeError(Type, code, message, undefined, resolutionError);
-}
-
-/**
- * A package resolution error Node 22 throws from C++ (node_errors.h
- * THROW_ERR_*): a package.json it cannot parse (node_modules.cc), a package
- * main legacyMainResolve does not find (node_file.cc). A plain Error with its
- * code, `Error: message` in its toString() and its stack, as V8 makes it.
- */
-export function nativeResolutionError(code: string, message: string): Error {
-  return Object.assign(new Error(message), { code });
-}
-
-/**
- * Node's leaf validation and error construction, shared by CJS and ESM.
- * A bare imports target is delegated to the caller's package resolver; any
- * host questions it yields remain inside the same array traversal.
- */
-export function createNodePackageMapPolicy(
-  packageJsonUrl: URL, base: string, internal: boolean,
-  resolveBare: (specifier: string) => PackageMapSteps<URL>,
-): PackageMapPolicy<URL> {
-  const path = (url: URL): string => decodeURIComponent(url.pathname);
-  const pjsonPath = path(packageJsonUrl);
-  const root = new URL('.', packageJsonUrl);
-  const error = resolutionError;
-  function invalidTarget(value: unknown, match: PackageTargetMatch): Error {
-    const text = typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value);
-    const related = !internal && text.length > 0 && !text.startsWith('./');
-    const tail = `in the package config ${path(root)}package.json imported from ${base}${related ? '; targets must start with "./"' : ''}`;
-    return error('ERR_INVALID_PACKAGE_TARGET', match.key === '.'
-      ? `Invalid "exports" main target ${JSON.stringify(text)} defined ${tail}`
-      : `Invalid "${internal ? 'imports' : 'exports'}" target ${JSON.stringify(text)} defined for '${match.key}' ${tail}`);
-  }
-  // Empty segments are deprecated by Node, but dot/dotdot/node_modules
-  // segments (including percent-encoded spellings) are invalid.
-  const invalidSegments = (text: string): boolean => text.split(/[\\/]/).some((segment) => {
-    let decoded: string;
-    try { decoded = decodeURIComponent(segment); } catch { decoded = segment; }
-    return decoded === '.' || decoded === '..' || decoded.toLowerCase() === 'node_modules';
-  });
-  return {
-    name: 'node-package-map',
-    internal,
-    invalidTarget,
-    invalidConfig(reason) {
-      const baseUrl = new URL('file://');
-      baseUrl.pathname = base;
-      const detail = reason === 'numeric'
-        ? '"exports" cannot contain numeric property keys.'
-        : '"exports" cannot contain some keys starting with \'.\' and some not. The exports object must either be an object of package subpath keys or an object of main entry condition name keys only.';
-      return error('ERR_INVALID_PACKAGE_CONFIG', `Invalid package config ${pjsonPath} while importing ${baseUrl.href}. ${detail}`);
-    },
-    *target(value, match) {
-      if (!value.startsWith('./')) {
-        if (internal && !value.startsWith('../') && !value.startsWith('/')) {
-          let isUrl = false;
-          try { new URL(value); isUrl = true; } catch { /* a bare package */ }
-          if (!isUrl) return yield* resolveBare(match.pattern ? value.replace(/\*/g, () => match.subpath) : value);
-        }
-        throw invalidTarget(value, match);
-      }
-      if (invalidSegments(value.slice(2))) throw invalidTarget(value, match);
-      const resolved = new URL(value, packageJsonUrl);
-      if (!resolved.pathname.startsWith(root.pathname)) throw invalidTarget(value, match);
-      if (!match.subpath) return resolved;
-      if (invalidSegments(match.subpath) && !match.isPathMap) {
-        const request = match.pattern ? match.key.replace('*', () => match.subpath) : match.key + match.subpath;
-        throw error('ERR_INVALID_MODULE_SPECIFIER',
-          `Invalid module "${request}" request is not a valid match in pattern "${match.key}" for the "${internal ? 'imports' : 'exports'}" resolution of ${pjsonPath} imported from ${base}`, TypeError);
-      }
-      return new URL(resolved.href.replace(/\*/g, () => match.subpath));
-    },
-  };
 }
 
 /**
@@ -386,34 +179,4 @@ export function resolvePackageEntry(
 
   // 3. Non-root subpath without exports — caller probes raw subpath
   return subpath;
-}
-
-/** The package.json fields Node's self-reference rule reads. */
-export interface SelfReferencingPackageJson {
-  name?: string;
-  exports?: ExportsField;
-}
-
-/**
- * Node's LOAD_PACKAGE_SELF: from inside a package, a bare specifier whose
- * package name is the enclosing package's own `name` resolves through that
- * package's `exports` map — and only then. A package without `exports` does
- * not self-reference (Node falls through to node_modules), and the scope is
- * the NEAREST enclosing package.json: the caller finds it by walking up
- * from the requiring file to the first package.json, and never past a
- * nearer package of a different name to a matching ancestor.
- *
- * Returns the exports subpath to resolve (`'.'` for the bare name,
- * `'./sub'` for `<name>/sub`), or null when the rule does not apply. The
- * caller resolves that subpath against `pkg.exports` with its conditions.
- */
-export function packageSelfReferenceSubpath(
-  pkg: SelfReferencingPackageJson | null | undefined,
-  specifier: string,
-): string | null {
-  if (!pkg || typeof pkg.name !== 'string' || pkg.name.length === 0) return null;
-  if (pkg.exports === undefined || pkg.exports === null) return null;
-  if (specifier === pkg.name) return '.';
-  if (!specifier.startsWith(`${pkg.name}/`)) return null;
-  return `.${specifier.slice(pkg.name.length)}`;
 }

@@ -28,7 +28,7 @@
  * all again. One git at a time runs in a warm facet; a git started while
  * another runs (its child, or one beside it) takes another.
  */
-import { installedFile } from './runtime-manifest.js';
+import { installedPath } from './runtime-manifest.js';
 import { hostImage } from './process-files.js';
 import { nameDec } from '../_shared/bytes.js';
 import { GIT_CALL_TASK } from './compiled-bodies.generated.js';
@@ -73,8 +73,8 @@ export function makeGitRunnerFactory(deps) {
                     return 1;
                 }
             };
-        const wasm = installedFile(manifest, installRoot, GIT_WASM);
-        const systemConfig = installedFile(manifest, installRoot, GIT_SYSTEM_CONFIG)?.path ?? null;
+        const wasmPath = installedPath(manifest, installRoot, GIT_WASM);
+        const systemConfig = installedPath(manifest, installRoot, GIT_SYSTEM_CONFIG);
         return async function gitBinHandler(ctx) {
             const started = Date.now();
             const argv = ctx.args || [];
@@ -84,17 +84,17 @@ export function makeGitRunnerFactory(deps) {
                 ctx.stderr.write(`${binName}: ${notHydrated}\n`);
                 return 1;
             }
-            if (wasm === null || systemConfig === null) {
+            if (wasmPath === null || systemConfig === null) {
                 ctx.stderr.write(`${binName}: ${GIT_WASM} or ${GIT_SYSTEM_CONFIG} missing from the install\n`);
                 return 127;
             }
             const cred = requireVfsCred(ctx.cred, binName);
             let image;
             try {
-                image = await hostImage(deps.filesystem, CRED_KERNEL, wasm.path, wasm);
+                image = await hostImage(deps.filesystem, CRED_KERNEL, wasmPath);
             }
             catch (error) {
-                ctx.stderr.write(`${binName}: opening ${wasm.path}: ${errorMessage(error)}\n`);
+                ctx.stderr.write(`${binName}: opening ${wasmPath}: ${errorMessage(error)}\n`);
                 return 1;
             }
             // The caller's environment, as a process's children get it (custom

@@ -78,7 +78,7 @@ export { RecallRequired, recallOf, withRecall } from './recall.js';
 interface LexicalVfsKey { readonly kind: 'lexical'; readonly value: string; readonly spelling: string }
 interface PhysicalVfsKey { readonly kind: 'physical'; readonly value: string }
 interface DeletionVfsKey { readonly key: PhysicalVfsKey; readonly literal: INode | undefined }
-import { copiedPermissions, copyfileMode, readDeclaredSource, syncValue, type Principal, type VfsContentRef, type VfsDirentType, type VfsRemoval, type VfsWriteEvent } from './vfs.js';
+import { copiedPermissions, copySetsMode, readDeclaredSource, syncValue, type Principal, type VfsContentRef, type VfsDirentType, type VfsRemoval, type VfsWriteEvent } from './vfs.js';
 import { DIRENT_TYPES } from './dirent-type.js';
 import { errnoCodeOf, toVfsError, vfsError } from './vfs-error.js';
 import { walkRemoval, type RemovalSteps } from './removal-walk.js';
@@ -513,7 +513,7 @@ export interface CredentialedVfs {
    */
   removeRecursive(path: string, options?: { keepVanishedAncestors?: boolean }): VfsRemoval;
   rename(oldPath: string, newPath: string): void;
-  copyFile(src: string, dest: string, options?: { keepMode?: boolean }): VfsStat & { from: { path: string; revision: number }; landed: string };
+  copyFile(src: string, dest: string, options?: { keepMode?: boolean; preserve?: boolean }): VfsStat & { from: { path: string; revision: number }; landed: string };
   /**
    * Copy a tree to a new path by reference (`cp -r`; `preserve` is `-p`).
    * Returns the entries copied. See SqliteVFS.copyTree.
@@ -5313,8 +5313,9 @@ export class SqliteVFS {
   /**
    * The content key of an inode's bytes: sha256 of them up to CHUNK_SIZE,
    * else the digest of the manifest's ordered chunk hashes. An in-place edit
-   * clears a manifest's digest; it is recomputed here and stored unless
-   * another content already holds it.
+   * clears a manifest's digest; it is recomputed here once per edit and
+   * remembered (contentKeyMemo, dropped by the next edit), never written: a
+   * lookup is a read, and the store may be open read-only.
    */
   private contentKeyOf(ref: ContentRef & { size: number; path: string }): string {
     if (ref.chunkId !== null) {
@@ -5323,17 +5324,15 @@ export class SqliteVFS {
       return hex(this.blobToUint8Array(row.hash));
     }
     if (ref.contentId === null) return hex(EMPTY_CONTENT_KEY);
+    // Held only for a content whose stored digest an edit cleared: it answers before the row is read.
+    const memo = this.contentKeyMemo.get(ref.contentId);
+    if (memo !== undefined) return memo;
     const content = [...this.sql.exec('SELECT digest FROM vfs_contents WHERE id = ?', ref.contentId)][0];
     if (!content) throw vfsError('EIO', ref.path, `missing content ${ref.contentId}`);
     if (content.digest !== null && content.digest !== undefined) return hex(this.blobToUint8Array(content.digest));
-    const memo = this.contentKeyMemo.get(ref.contentId);
-    if (memo !== undefined) return memo;
-    const digest = this.manifestDigest(ref.contentId);
-    const key = digest.digest(ref.size);
-    const taken = [...this.sql.exec('SELECT 1 FROM vfs_contents WHERE digest = ?', key)].length > 0;
-    if (taken) this.contentKeyMemo.set(ref.contentId, hex(key));
-    else this.transactionSync(() => { this.sql.exec('UPDATE vfs_contents SET digest = ? WHERE id = ?', key, ref.contentId); });
-    return hex(key);
+    const key = hex(this.manifestDigest(ref.contentId).digest(ref.size));
+    this.contentKeyMemo.set(ref.contentId, key);
+    return key;
   }
 
   private manifestDigest(content: number): ManifestDigest {
@@ -6729,12 +6728,15 @@ export class SqliteVFS {
    * source's permission bits less the copier's umask, as cp(1) makes it; a
    * file there keeps its own mode. With \`keepMode\` (copyfile), the copy has
    * copyfileMode's bits, a file there too, set in this one write as chmod
-   * judges it (modeChange). Answers the copy's stat, the key it wrote
-   * (\`landed\`, the destination's links followed), and the file copied: its
-   * key and the revision of the version this write read (its row's
-   * generation then), which nothing after the read moves.
+   * judges it (modeChange). With \`preserve\` (cp -p), as a tree copy's
+   * entries (planCopyTree): the source's permission bits, a file there too,
+   * set as chmod judges it, its times, and its owner when root copies.
+   * Answers the copy's stat, the key it wrote (\`landed\`, the destination's
+   * links followed), and the file copied: its key and the revision of the
+   * version this write read (its row's generation then), which nothing
+   * after the read moves.
    */
-  private copyFile(src: string, dest: string, cred: VfsCred, options?: { keepMode?: boolean }): VfsStat & { from: { path: string; revision: number }; landed: string } {
+  private copyFile(src: string, dest: string, cred: VfsCred, options?: { keepMode?: boolean; preserve?: boolean }): VfsStat & { from: { path: string; revision: number }; landed: string } {
     const source = this.checkAccess(src, 0o4, cred);
     const inode = source.inode;
     if (!inode) throw vfsKeyError('ENOENT', src);
@@ -6751,10 +6753,17 @@ export class SqliteVFS {
     const made = prior ? undefined : this.creationAttrs(target.path, copiedPermissions(inode.mode, false), cred, false);
     let mode = prior ? prior.mode : made!.mode;
     let gid = prior?.gid ?? made!.gid;
-    if (options?.keepMode) {
-      // libuv's fchmod of what open left: the file there, or the one made.
+    let uid = prior?.uid ?? cred.uid;
+    const wanted = copySetsMode(inode.mode, inode.size, cred.uid, options ?? {});
+    if (wanted !== null) {
+      // libuv's fchmod (cp -p's) of what open left: the file there, or the one made.
       const opened = prior ?? { mode, uid: cred.uid, gid, kind: 'file' as const };
-      ({ mode, gid } = this.modeChange(opened, copyfileMode(inode.mode, inode.size, cred.uid), cred, target.path));
+      ({ mode, gid } = this.modeChange(opened, wanted, cred, target.path));
+    }
+    // cp -p's owner, which only root may give; a shared directory's group stands.
+    if (options?.preserve && cred.uid === 0) {
+      uid = inode.uid;
+      if (this.sharedDirectory(target.path) === undefined) gid = inode.gid;
     }
     const builder = this.newPlan();
     builder.addInode({
@@ -6762,10 +6771,10 @@ export class SqliteVFS {
       parentPath: parentKey(target.path),
       kind: 'file',
       size: inode.size,
-      atime: now,
-      mtime: now,
+      atime: options?.preserve ? inode.atime : now,
+      mtime: options?.preserve ? inode.mtime : now,
       mode,
-      uid: prior?.uid ?? cred.uid,
+      uid,
       gid,
       content: { type: 'ref', chunkId: inode.chunkId, contentId: inode.contentId },
     });
@@ -11390,6 +11399,8 @@ export class SqliteVFS {
             `UPDATE vfs_contents SET state = ${CONTENT_DYING}, digest = NULL WHERE id IN (${deadList}) AND state != ${CONTENT_DYING}`,
             ...dead,
           );
+          // Their keys go with them, before an id is ever reused.
+          for (const id of dead) this.contentKeyMemo.delete(id);
           const rows = [...this.sql.exec(
             `SELECT content_id, off, chunk_id FROM vfs_content_chunks WHERE content_id IN (${deadList})
              ORDER BY content_id, off LIMIT ?`,

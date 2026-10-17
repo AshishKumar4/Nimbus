@@ -373,7 +373,7 @@ export async function createNativeEsmLoader(
 			let evaluating = false;
 			try {
 				const path = filename === mainPath ? filename : context.filesystem().realpath(filename);
-				record = recordFor({ url: pathToFileURL(path).href, path, format: 'module' });
+				record = recordFor({ url: pathToFileURL(path).href, path, builtin: undefined, format: 'module' });
 				const caller = parentFilename && parentFilename !== '[eval]' ? parentFilename
 					: context.filename === '[eval]' ? `${context.cwd}/[eval]` : context.filename;
 				if (bun) checkRequireGraph(record, caller);
@@ -387,7 +387,7 @@ export async function createNativeEsmLoader(
 			if (!main || !mainPath || !mainUrl) throw new Error('lifo: no native ES module entry');
 			let record: ModuleRecord | undefined;
 			try {
-				record = recordFor({ url: mainUrl, path: mainPath, format: 'module' });
+				record = recordFor({ url: mainUrl, path: mainPath, builtin: undefined, format: 'module' });
 				return await import(/* @vite-ignore */ root + record.name);
 			} catch (error) { if (bun) failedGraph(record, error); return explain(error); }
 		},
