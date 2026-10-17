@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import type { StoredToolPart } from '../../../src/session/agent-contract.js';
 
 /** Duration below which we do not show a timer (it reads as noise). */
@@ -28,28 +28,20 @@ function commandOf(part: StoredToolPart): string | null {
 }
 
 /**
- * Elapsed timer that only counts runs we actually observed start (live
- * streaming), never guessing durations for history loaded mid-flight.
+ * A running tool's time so far, counted from its part's start (startedAt:
+ * the stream's tool-call, or a stored checkpoint's) and repainted while it
+ * runs; none when its start is unknown.
  */
-function useObservedElapsed(running: boolean): number | null {
-  const startedAt = useRef<number | null>(null);
-  const [elapsed, setElapsed] = useState<number | null>(null);
+function useRunningElapsed(part: StoredToolPart): number | null {
+  const startedAt = part.status === 'running' ? part.startedAt : undefined;
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (running) {
-      startedAt.current = Date.now();
-      setElapsed(0);
-      const timer = setInterval(() => {
-        if (startedAt.current != null) setElapsed(Date.now() - startedAt.current);
-      }, 100);
-      return () => clearInterval(timer);
-    }
-    if (startedAt.current != null) {
-      setElapsed(Date.now() - startedAt.current);
-      startedAt.current = null;
-    }
-    return undefined;
-  }, [running]);
-  return elapsed;
+    if (!startedAt) return undefined;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 100);
+    return () => clearInterval(timer);
+  }, [startedAt]);
+  return startedAt ? Math.max(0, now - startedAt) : null;
 }
 
 export function ToolCard({ part }: { part: StoredToolPart }) {
@@ -58,10 +50,8 @@ export function ToolCard({ part }: { part: StoredToolPart }) {
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
   const running = part.status === 'running';
   const expanded = userExpanded ?? running;
-  const observedElapsed = useObservedElapsed(running);
-
-  const settledMs = part.durationMs ?? (running ? null : observedElapsed);
-  const shownMs = running ? observedElapsed : settledMs;
+  const runningMs = useRunningElapsed(part);
+  const shownMs = running ? runningMs : part.durationMs ?? null;
   const duration = shownMs != null && shownMs > MIN_SHOWN_MS ? formatDuration(shownMs) : null;
   const command = commandOf(part);
   const stateLabel = running ? 'running' : part.status === 'error' ? 'failed' : 'done';
