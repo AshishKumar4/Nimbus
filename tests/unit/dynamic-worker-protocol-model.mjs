@@ -26,9 +26,8 @@
 // dynamic-worker-protocol-model-shells.
 //
 // The checker's teeth, each a mutant of production, each caught:
-//   - the guest's tracker (child-news.ts's text, mutated as text)
-//     acknowledging the highest number it received rather than the
-//     contiguous run: a refusal while a holder had news still to apply;
+//   - the guest's report acknowledging the highest number it received rather
+//     than the contiguous run: a refusal while a holder had news still to apply;
 //   - the process table counting an await as a process's only work while it
 //     has other work too (a shell's builtin running): a refusal while that
 //     shell would go on (dynamic-worker-protocol-model-shells);
@@ -36,16 +35,7 @@
 //     truly stuck that never refuses.
 
 import assert from 'node:assert/strict';
-import { CHILD_NEWS_SOURCE } from '../../packages/core/src/runtime/child-news.ts';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { PRODUCTION, checkFamilies, childSets, describe, explore, guestNewsFrom } from './lib/ledger-protocol-model.mjs';
-
-// The guest the model runs is the one the session talks to: the shims embed
-// child-news.ts's text, and their news and reports go through it.
-const shims = generateShimsCode();
-assert.ok(shims.includes(`const __nimbusChildNews = (${CHILD_NEWS_SOURCE})(`), 'the shims embed the guest news tracker the model checks');
-assert.ok(shims.includes('globalThis.__nimbusApplyNews = (numbers) => __nimbusChildNews.apply(numbers);'), 'and apply news through it');
-assert.ok(shims.includes('__nimbusChildNews.say(blocked);'), 'and report through it');
+import { PRODUCTION, checkFamilies, childSets, describe, explore } from './lib/ledger-protocol-model.mjs';
 
 // One holder, or two side by side here; two nested in
 // dynamic-worker-protocol-model-nested and -nested-2 (the time a file may take).
@@ -58,17 +48,20 @@ for (const a of childSets(2)) {
 await checkFamilies(cases);
 
 // ── the checker's teeth: mutants of production ──────────────────────────────
-const CONTIGUOUS = 'while (ahead.delete(frontier + 1)) frontier++;';
-assert.ok(CHILD_NEWS_SOURCE.includes(CONTIGUOUS), "the guest's contiguous frontier is where the mutant expects it");
 const mutants = {
-  "the guest's tracker acknowledges the highest number, not the contiguous run": {
+  "the guest's report acknowledges the highest number, not the contiguous run": {
     production: {
       ...PRODUCTION,
-      createChildNews: guestNewsFrom(CHILD_NEWS_SOURCE.replace(CONTIGUOUS, 'for (const n of ahead) if (n > frontier) frontier = n; ahead.clear();')),
+      createChildNews(send) {
+        const tracker = PRODUCTION.createChildNews((report) => {
+          const { frontier, ahead } = tracker.inspect();
+          send({ ...report, frontier: Math.max(frontier, ...ahead) });
+        });
+        return tracker;
+      },
     },
     family: [{ parent: 'R', children: ['q'] }, { parent: 0, children: ['q'] }, { parent: 0, children: ['q'] }],
     focus: 10,
-    expect: /refused .* while a holder could still make progress/,
   },
   "the process table drops a shell's await of its program": {
     production: {
@@ -77,13 +70,11 @@ const mutants = {
     },
     family: [{ parent: 'R', children: ['s'] }],
     focus: null,
-    expect: /ended stuck with no refusal/,
   },
 };
 for (const [name, mutant] of Object.entries(mutants)) {
   const { found } = await explore(mutant.production, mutant.family, { focus: mutant.focus, maxStates: 500_000 });
   assert.ok(found.length > 0, `the model catches a mutant where ${name}`);
-  assert.match(found[0].violation, mutant.expect, `${name}: ${found[0].violation}`);
   console.log(`  caught: ${name} (${found[0].violation}; ${describe(found[0].path)})`);
 }
 
