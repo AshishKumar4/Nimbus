@@ -1784,8 +1784,8 @@ export declare class FacetManager {
     /**
      * `entry`'s launch is at `stage` from now, until its run is entered or it
      * is killed (`signal`). One that waits LAUNCH_STALL_MS at a stage logs one
-     * line naming it, with the ledger's and the pacer's state, and no more
-     * after that.
+     * line naming it, with the ledger's, the pacer's and the supervisor
+     * budget's state, and no more after that.
      */
     private _launchStage;
     /** `pid`'s launch is over: its run was entered, or it ended before it could be. */
