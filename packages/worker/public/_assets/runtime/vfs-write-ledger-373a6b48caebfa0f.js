@@ -145,11 +145,6 @@ var __nimbusProcessFsModule = (() => {
     return bytes;
   }
 
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/vfs-write-ledger-cdd434e9fb17fd9f.js
-  function isOpenAccess(value) {
-    return value === "read" || value === "write" || value === "readwrite";
-  }
-========
   function rootClampedSegments(path, base = []) {
     const out = [...base];
     for (const segment of path.split("/")) {
@@ -161,7 +156,9 @@ var __nimbusProcessFsModule = (() => {
     return out;
   }
 
->>>>>>>> origin/work/dpt-merge:packages/worker/public/_assets/runtime/vfs-write-ledger-b809f9c2e7cb6bc7.js
+  function isOpenAccess(value) {
+    return value === "read" || value === "write" || value === "readwrite";
+  }
   var W7_MAGIC = new Uint8Array([78, 87, 55, 4]);
   var W7_MAGIC_V3 = new Uint8Array([78, 87, 55, 3]);
   var ENCODER_PULL_BYTES = 256 * 1024;
