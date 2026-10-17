@@ -6,7 +6,7 @@ import { stripVTControlCharacters } from 'node:util';
 import { mock } from 'bun:test';
 import { requireFacetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 import { normalizeTerminalNewlines } from '../../packages/core/src/_shared/terminal.ts';
-import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
+
 import { installedRuntime, manifestFile, runtimeSupervisor, SESSION_USER } from './lib/runtime-session.mjs';
 import { loadPreamble } from './lib/bash-preamble.mjs';
 
