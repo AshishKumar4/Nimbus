@@ -6187,7 +6187,7 @@ export class FacetManager {
             // takes it again for its run.
             const brokered = suspendLaunchAdmission(this.ctx, entry.pid);
             let vfsState;
-            const prepare = async () => {
+            const prepare = () => withLaunchPreparation(this.ctx, { pid: entry.pid }, async () => {
                 try {
                     return await this._prepareOneShotCode(code, launch, entry, vfsState, pacer, diagSink);
                 }
@@ -6197,7 +6197,7 @@ export class FacetManager {
                     vfsState = await this._rebuildUnderCeiling(entry, bundleSpec, vfsState, error, pacer);
                     return this._prepareOneShotCode(code, launch, entry, vfsState, pacer, diagSink);
                 }
-            };
+            });
             let prepared;
             try {
                 vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
