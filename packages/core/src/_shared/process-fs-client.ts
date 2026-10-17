@@ -54,6 +54,7 @@ import { SYSCALL_VERDICTS, type VfsErrorCode } from '../vfs/vfs-error.js';
 import { parentKey } from '../vfs/path.js';
 import type { WaveMutation, WriteBatchStreamResult, WriteStreamReceipt } from '../runtime/wave-contracts.js';
 import { memoryJournal, type ProcessFsJournal, type ProcessFsJournalSource, type ProcessFsNumbering } from './process-fs-journal.js';
+import { FOLDED_DATA } from './process-fs-fold-data.js';
 
 export { journalSource, memoryJournal, sqlJournal, type JournalSql, type ProcessFsJournal, type ProcessFsJournalSource } from './process-fs-journal.js';
 /** The calls' answers (vfs-error.ts), as the write ledger spliced beside this client classifies what a program caught. */
@@ -545,13 +546,6 @@ function descriptionOf(call: W7Call): string | undefined {
 
 type DataCall = Extract<W7Call, { data: Uint8Array }>;
 
-interface FoldBuffer {
-  bytes: Uint8Array;
-  /** Last journaled prefix: older ops sharing it cannot extend it in place. */
-  used: number;
-}
-const FOLDED_DATA = new WeakMap<ProcessFsOp, { buffer: FoldBuffer; data: Uint8Array; append: Uint8Array }>();
-
 function extended(last: ProcessFsOp, data: Uint8Array): ProcessFsOp {
   const call = (last as { call: DataCall }).call;
   const held = FOLDED_DATA.get(last);
@@ -564,15 +558,10 @@ function extended(last: ProcessFsOp, data: Uint8Array): ProcessFsOp {
   }
   buffer.bytes.set(data, call.data.byteLength);
   const joined = buffer.bytes.subarray(0, size);
+  buffer.used = size;
   const op: ProcessFsOp = { type: 'call', call: { ...call, data: joined } };
-  FOLDED_DATA.set(op, { buffer, data: joined, append: data });
+  FOLDED_DATA.set(op, { buffer, data: joined, append: data, pending: true });
   return op;
-}
-
-function replaceFold(journal: ProcessFsJournal, jid: number, op: ProcessFsOp): void {
-  const held = FOLDED_DATA.get(op);
-  journal.replace(jid, op, held?.append);
-  if (held !== undefined) held.buffer.used = held.data.byteLength;
 }
 
 /**
@@ -1354,7 +1343,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         ? folded(tail.op, parts[0]!) : null;
       if (merged !== null && tail !== undefined) {
         const mergedBytes = merged.type === 'call' && 'data' in merged.call ? merged.call.data.byteLength : 0;
-        replaceFold(journal, tail.jid, merged);
+        journal.replace(tail.jid, merged);
         const grown = mergedBytes - tail.bytes;
         tail.op = merged;
         tail.bytes = mergedBytes;

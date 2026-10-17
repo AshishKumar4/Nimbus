@@ -21,6 +21,7 @@
  */
 
 import type { ProcessFsOp } from './process-fs-client.js';
+import { pendingFold } from './process-fs-fold-data.js';
 
 /** Where a numbering of the log starts: from `jid` on, numbered under `writer` from `seq`. */
 export interface ProcessFsNumbering {
@@ -126,10 +127,13 @@ export function sqlJournal(sql: JournalSql): ProcessFsJournal {
       return readRow(row);
     },
     replace(jid, op, append) {
+      const fold = pendingFold(op);
+      append ??= fold?.append;
       if (append !== undefined) {
         sql.exec('INSERT INTO nimbus_fs_journal_parts (jid, data) VALUES (?, ?)', jid, append);
         withParts.add(jid);
         bytes += append.byteLength;
+        if (fold !== undefined) fold.pending = false;
         return;
       }
       const before = [...sql.exec('SELECT COALESCE(LENGTH(data), 0) + (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nimbus_fs_journal_parts WHERE jid = ?) AS bytes FROM nimbus_fs_journal WHERE jid = ?', jid, jid)][0];
@@ -137,6 +141,7 @@ export function sqlJournal(sql: JournalSql): ProcessFsJournal {
       sql.exec('UPDATE nimbus_fs_journal SET op = ?, data = ? WHERE jid = ?', row.json, row.data, jid);
       withParts.delete(jid);
       bytes += (row.data?.byteLength ?? 0) - Number(before?.bytes ?? 0);
+      if (fold !== undefined) fold.pending = false;
     },
     entries() {
       return [...sql.exec('SELECT jid, op, data FROM nimbus_fs_journal ORDER BY jid')]
@@ -202,6 +207,8 @@ export function memoryJournal(): ProcessFsJournal {
       if (before === undefined) throw new Error(`process-fs journal: entry ${jid} is not held`);
       bytes += (dataOf(op)?.byteLength ?? 0) - (dataOf(before)?.byteLength ?? 0);
       held.set(jid, op);
+      const fold = pendingFold(op);
+      if (fold !== undefined) fold.pending = false;
     },
     entries() {
       return [...held].map(([jid, op]) => ({ jid, op }));
