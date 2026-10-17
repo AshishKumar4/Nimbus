@@ -192,6 +192,10 @@ interface InodeRecord {
   gone?: true;
 }
 
+/** An inode with none: one shared empty list each, frozen, until it has one of its own. */
+const NO_RECORDS = Object.freeze([]) as readonly InodeRecord[] as InodeRecord[];
+const NO_RETAINED = Object.freeze([]) as readonly string[] as string[];
+
 /** A name made, removed or moved: replayed in log order over the view, it makes the overlay. */
 interface NameRecord {
   readonly id: number;
@@ -398,7 +402,7 @@ export function provisional(host: ProvisionalHost): Provisional {
   const inodeAt = (key: string, row: ResidentEntry): Inode => {
     let inode = inodeAtNumber(row.dev, row.ino);
     if (inode === undefined) {
-      inode = { dev: row.dev, ino: row.ino, type: row.type, key, origin: key, row, base: null, state: null, records: [], recordsCost: 0, unnamed: false, local: false, descs: 0, retained: [], credit: 0, reserved: 0 };
+      inode = { dev: row.dev, ino: row.ino, type: row.type, key, origin: key, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: false, local: false, descs: 0, retained: NO_RETAINED, credit: 0, reserved: 0 };
       addInode(inode);
     }
     return inode;
@@ -548,7 +552,8 @@ export function provisional(host: ProvisionalHost): Provisional {
     touched.add(inode);
     activity();
     const record: InodeRecord = { id: ++ids, op, owner: inode, ...(description === undefined ? {} : { description }), answered: false, answeredAt: 0 };
-    inode.records.push(record);
+    if (inode.records === NO_RECORDS) inode.records = [record];
+    else inode.records.push(record);
     inode.recordsCost += recordCost(record);
     inode.state = applyOp(inode.state!, op);
     return record;
@@ -732,7 +737,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       type, dev: host.device, ino: localIno++, nlink: type === 'directory' ? 2 : 1, size: target === null ? 0 : new TextEncoder().encode(target).byteLength,
       atime: at, mtime: at, ctime: at, mode, uid, gid, revision: 0, target,
     };
-    const inode: Inode = { dev: row.dev, ino: row.ino, type, key, origin: key, row, base: null, state: null, records: [], recordsCost: 0, unnamed: false, local: true, descs: 0, retained: [], credit: 0, reserved: 0 };
+    const inode: Inode = { dev: row.dev, ino: row.ino, type, key, origin: key, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: false, local: true, descs: 0, retained: NO_RETAINED, credit: 0, reserved: 0 };
     if (type === 'file') {
       inode.base = { bytes: new Uint8Array(0), size: 0, mode, uid, gid, atime: at, mtime: at, ctime: at };
       inode.state = copyState(inode.base);
@@ -811,7 +816,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       atime: receipt.mtimeMs, mtime: receipt.mtimeMs, ctime: receipt.ctimeMs, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid,
       revision: receipt.revision ?? 0, target: null,
     };
-    const inode: Inode = { dev: row.dev, ino: row.ino, type: 'file', key: like.key, origin: like.origin, row, base: null, state: null, records: [], recordsCost: 0, unnamed: true, local: false, descs: 0, retained: [], credit: 0, reserved: 0 };
+    const inode: Inode = { dev: row.dev, ino: row.ino, type: 'file', key: like.key, origin: like.origin, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: true, local: false, descs: 0, retained: NO_RETAINED, credit: 0, reserved: 0 };
     addInode(inode);
     return inode;
   };
@@ -854,7 +859,10 @@ export function provisional(host: ProvisionalHost): Provisional {
       for (const desc of descs.values()) if (desc.inode === inode) desc.inode = known;
       known.descs += inode.descs;
       inode.descs = 0;
-      known.retained.push(...inode.retained.splice(0));
+      if (inode.retained.length > 0) {
+        known.retained = [...known.retained, ...inode.retained];
+        inode.retained = NO_RETAINED;
+      }
       for (const [key, value] of layer) if (value === inode) layer.set(key, known);
       touched.delete(inode);
       // Its records and what they keep go with them; the rest of its charge, at once, to the file it is.
@@ -880,7 +888,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     const kept = inode.retained.indexOf(description);
     if (kept >= 0) {
       inode.retained.splice(kept, 1);
-      target.retained.push(description);
+      target.retained = [...target.retained, description];
     }
     for (const desc of descs.values()) {
       if (desc.description !== description || desc.inode !== inode) continue;
@@ -1321,11 +1329,13 @@ export function provisional(host: ProvisionalHost): Provisional {
       inode.descs--;
       // Its description outlives it while another descriptor of the file stays open with none of its own (the file's anchor); the last closes it.
       if (desc.description !== undefined) {
-        if (inode.descs > 0 && inode.retained.length === 0 && anchorOf(inode) === undefined) inode.retained.push(desc.description);
+        if (inode.descs > 0 && inode.retained.length === 0 && anchorOf(inode) === undefined) inode.retained = [desc.description];
         else logged({ type: 'call', call: { call: 'close', path: inode.key, description: desc.description } }, () => {});
       }
       if (inode.descs === 0) {
-        for (const description of inode.retained.splice(0)) {
+        const retained = inode.retained;
+        inode.retained = NO_RETAINED;
+        for (const description of retained) {
           sessions.delete(description);
           logged({ type: 'call', call: { call: 'close', path: inode.key, description } }, () => {});
         }
