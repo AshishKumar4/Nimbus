@@ -15,6 +15,7 @@
  * Long-running processes use a dynamic Worker entrypoint that stays
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { residencyMissReport } from '../runtime/residency-miss-report.js';
 import { buildOpenCodeTransportPlan } from '../runtime/opencode-invocation.js';
@@ -107,6 +108,36 @@ import { streamedWasmImageDigest } from './wasm-image-digest.js';
 import { wasmImageDigest } from './wasm-image-key.js';
 import { attributeAllocation, setPrefetchCacheBytes } from '@nimbus-sh/platform/diag-counters.js';
 const launchAdapters = new WeakMap();
+class PrefetchCreditGate {
+    limit;
+    entry;
+    used = 0;
+    charged = new Map();
+    refusal;
+    constructor(limit, entry) {
+        this.limit = limit;
+        this.entry = entry;
+    }
+    charge(path, bytes, kind = 'file') {
+        this.check();
+        const key = `${kind}\0${stripLeadingSlashes(path)}`;
+        const previous = this.charged.get(key) ?? 0;
+        const next = Math.max(previous, bytes);
+        if (this.used + next - previous > this.limit) {
+            this.refusal = new ClosureBoundExceededError({
+                kind: 'closure-exceeds-bound', entry: this.entry, bytesSeen: this.used, bound: this.limit, lastPath: path,
+            });
+            throw this.refusal;
+        }
+        this.used += next - previous;
+        this.charged.set(key, next);
+    }
+    // Optional-read catches may skip a failed file, but cannot clear a credit refusal.
+    check() { if (this.refusal)
+        throw this.refusal; }
+}
+/** A gather's own gate, never another reader's even when they share a bridge or adapter. */
+const prefetchReadCredit = new AsyncLocalStorage();
 /** The exact type of `entry` in `dir` on a launch's fs, lstat'ing it where its listing could not type it. */
 function launchEntryType(vfs, dir, entry) {
     return direntTypeOf(entry, () => vfs.stat(`${dir}/${entry.name}`, { followSymlinks: false }));
@@ -128,7 +159,31 @@ function declaredBindingFs(fs) {
 function filesOf(fs) {
     let files = launchAdapters.get(fs);
     if (files === undefined) {
-        files = requireFsOverBridge(fs);
+        const base = requireFsOverBridge(fs);
+        const readBytes = (path) => {
+            const credit = prefetchReadCredit.getStore();
+            if (credit === undefined)
+                return base.readBytes(path);
+            return (async () => {
+                credit.check();
+                const stat = await base.stat(path).catch(() => null);
+                if (stat !== null)
+                    credit.charge(path, stat.size);
+                const bytes = await base.readBytes(path);
+                if (bytes !== null)
+                    credit.charge(path, bytes.byteLength);
+                return bytes;
+            })();
+        };
+        files = { ...base, readBytes, readFileString: (path) => {
+                if (prefetchReadCredit.getStore() === undefined)
+                    return base.readFileString(path);
+                return readBytes(path).then((bytes) => {
+                    if (bytes === null)
+                        throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+                    return fileText(bytes);
+                });
+            } };
         launchAdapters.set(fs, files);
     }
     return files;
@@ -2522,7 +2577,7 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
                 return false;
             if (bundle[stripped] === undefined && !(await _bundleAdmits(vfs, stripped, budgetState, BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES)))
                 return false;
-            const closure = await prefetchForRequire(requireFsOverBridge(vfs), '', stripped.slice(0, stripped.lastIndexOf('/')), '/' + stripped, bound, options.pacer?.spend.bind(options.pacer), {
+            const closure = await prefetchForRequire(filesOf(vfs), '', stripped.slice(0, stripped.lastIndexOf('/')), '/' + stripped, bound, options.pacer?.spend.bind(options.pacer), {
                 purpose: 'dependency-closure', held: bundle,
                 maxAdditionalBytes: Math.max(0, bound - rawBytes),
                 maxAdditionalFiles: Math.max(0, VFS_BUNDLE_MAX_FILES - budgetState.fileCount),
@@ -2744,7 +2799,7 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
     for (let i = 0; i < deferred.length; i++) {
         if (rawBytes >= bound || budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
             break;
-        const target = await resolveDeferredImport(requireFsOverBridge(vfs), deferred[i], options.pacer?.spend.bind(options.pacer), options.conditions);
+        const target = await resolveDeferredImport(filesOf(vfs), deferred[i], options.pacer?.spend.bind(options.pacer), options.conditions);
         // Its own package: where the deferral lands, not how it is spelled.
         const own = packageRootOf(deferred[i].fromDir.replace(/^\/+/, '') + '/_');
         if (target === null || own === null || packageRootOf(target) !== own || followed.has(target))
@@ -3280,7 +3335,7 @@ export async function addObservedReads(vfs, observed, bundle, requiredPaths, bud
     for (const path of observed) {
         if (!/\.[cm]?js$/.test(path) || bundle[path] === undefined)
             continue;
-        const closure = await prefetchForRequire(requireFsOverBridge(vfs), '', '/' + path.slice(0, path.lastIndexOf('/')), '/' + path, undefined, pacer?.spend.bind(pacer), {
+        const closure = await prefetchForRequire(filesOf(vfs), '', '/' + path.slice(0, path.lastIndexOf('/')), '/' + path, undefined, pacer?.spend.bind(pacer), {
             purpose: 'dependency-closure', held: bundle,
             // UTF-8 bytes, which bound both the raw bytes `room` counts and the
             // cell lengths the bundle's own cap counts.
@@ -3761,10 +3816,19 @@ async function withPrefetchAllocation(work, wait, bytes) {
 }
 /** The launch's cells, gathered from `vfs` (callers hold withPrefetchAllocation's admission). */
 async function gatherPrefetchBundle(vfs, options, creditLimit) {
+    if (creditLimit === undefined && prefetchReadCredit.getStore() === undefined)
+        return gatherPrefetchWithin(vfs, options);
+    const gate = creditLimit === undefined ? undefined : new PrefetchCreditGate(creditLimit, options.scriptPath ?? 'entry code');
+    return prefetchReadCredit.run(gate, () => gatherPrefetchWithin(vfs, options, creditLimit));
+}
+async function gatherPrefetchWithin(vfs, options, creditLimit) {
     try {
-        return await _buildPrefetchBundle(vfs, options, creditLimit);
+        const state = await _buildPrefetchBundle(vfs, options);
+        prefetchReadCredit.getStore()?.check();
+        return state;
     }
     catch (error) {
+        prefetchReadCredit.getStore()?.check();
         // The modules earlier runs executed are what an earlier run got through
         // without; they must not stop this one starting. A launch they (or
         // their emits, which the walk does not count) take past the bound is
@@ -3777,10 +3841,12 @@ async function gatherPrefetchBundle(vfs, options, creditLimit) {
             throw error;
         console.warn(`[facet-manager] the modules earlier runs executed take ${options.scriptPath ?? 'the entry code'}'s map past `
             + `its ${options.maxBundleBytes ?? VFS_BUNDLE_MAX_BYTES}-byte bound (${error.outcome.lastPath}); they are staged as optional roots, as far as the bound allows`);
-        return await _buildPrefetchBundle(vfs, { ...options, executedModules: learned.map((root) => ({ ...root, optional: true })) }, creditLimit);
+        const state = await _buildPrefetchBundle(vfs, { ...options, executedModules: learned.map((root) => ({ ...root, optional: true })) });
+        prefetchReadCredit.getStore()?.check();
+        return state;
     }
 }
-async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, moduleScope = 'node', observedReads, pacer, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, learnedFor, executedModules, transformStore, conditions = [], stripTypes = null, preloads = [], entryEsModule, staticRefs, dataOnly = false, }, creditLimit) {
+async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, moduleScope = 'node', observedReads, pacer, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, learnedFor, executedModules, transformStore, conditions = [], stripTypes = null, preloads = [], entryEsModule, staticRefs, dataOnly = false, }) {
     // Read the cursor BEFORE the walk: a mutation that lands while the bundle
     // is being assembled must be reported as invalidated, not silently missed.
     const admitted = await vfs.acquire(null, 0);
@@ -3798,9 +3864,10 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     // extension (Tailwind scans .js/.ts content files as text). The tool's
     // configs ride along, as optional roots (RequiredModuleRoot.config).
     const configRoots = [...preloads, ...await toolConfigRoots(vfs, cwd, scriptPath)];
-    const walkRoots = (roots) => prefetchForRequire(requireFsOverBridge(vfs), entryCode || '', cwd, scriptPath, maxBundleBytes, pacer?.spend.bind(pacer), undefined, roots.length > 0 ? roots : undefined, conditions, creditLimit);
+    const walkRoots = (roots) => prefetchForRequire(filesOf(vfs), entryCode || '', cwd, scriptPath, maxBundleBytes, pacer?.spend.bind(pacer), undefined, roots.length > 0 ? roots : undefined, conditions);
     // A launch they take past the bound is built again with them optional (buildPrefetchBundle).
     const prefetch = await walkRoots([...configRoots, ...executedModules ?? []]);
+    prefetchReadCredit.getStore()?.check();
     phase('walk');
     if ('kind' in prefetch) {
         // A required closure larger than the bound can never launch as a
@@ -3831,31 +3898,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     // while a small one never reaches a chunk bound and runs exactly as it
     // always did, with no suspension at all.
     const paceAfterPass = () => {
-        // Credit only aborts a try; every content choice still uses maxBundleBytes.
-        if (creditLimit !== undefined) {
-            let bytes = 0;
-            let lastPath = scriptPath ?? 'entry code';
-            for (const [path, cell] of Object.entries(bundle)) {
-                if (!codeOnly.has(path))
-                    bytes += _bundleCellRawBytes(cell);
-                if (bytes > creditLimit) {
-                    lastPath = path;
-                    break;
-                }
-            }
-            if (bytes <= creditLimit)
-                for (const [path, emit] of emits) {
-                    bytes += utf8Length(emit);
-                    if (bytes > creditLimit) {
-                        lastPath = path;
-                        break;
-                    }
-                }
-            if (bytes > creditLimit)
-                throw new ClosureBoundExceededError({
-                    kind: 'closure-exceeds-bound', entry: scriptPath ?? 'entry code', bytesSeen: bytes, bound: creditLimit, lastPath,
-                });
-        }
+        prefetchReadCredit.getStore()?.check();
         return pacer ? pacer.spend(_bundleWeight(bundle)) : Promise.resolve();
     };
     // 1.5 Observed reads. Every pass below this line guesses what a program
@@ -3980,6 +4023,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     // what reads the cells for their code (bundleUsesNodeSqlite, the wasm and
     // binding scans) reads the module, which is all the map carries.
     const placeEmit = (path, code) => {
+        prefetchReadCredit.getStore()?.charge(path, utf8Length(code), 'emit');
         emits.set(path, code);
         if (!runOnly(path))
             return;
@@ -4214,6 +4258,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
             }
         };
         phase('fit');
+        const credit = prefetchReadCredit.getStore();
         // With no module to stage, the map carries no ES module host at all.
         if (cells.size > 0)
             esm = await stageEsModules({ files: filesOf(vfs), realpath: async (path) => await vfs.realpath(path), entries, held }, cells, {
@@ -4224,6 +4269,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
                 typeScript: stripTypes !== 'javascript',
                 isCode: (key) => !dataModules.has(key) && (emits.has(key) || (typeof bundle[key] === 'string' && isCodeCellPath(key))),
                 gate: true,
+                emitted: credit === undefined ? undefined : (path, text) => credit.charge(path, utf8Length(text), 'emit'),
             });
         // Staging reads and rewrites its modules' text, which the map's
         // serialization spends as it carries each one (buildFacetVfsBundleSource),

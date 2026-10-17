@@ -11,6 +11,11 @@ published independently in the `@nimbus-sh` npm scope.
   stage, the wait, and the state of the worker ledger, the launch pacer
   and the isolate's transient budget. A command that hangs before it runs
   leaves this as its evidence. The line is logged once per launch.
+- Fixed: when sessions compete for an isolate's transient budget, a
+  program's launch no longer reads past the share it holds while it
+  stages its files. A read that would take it over is refused before it
+  happens, and the launch asks for the whole budget once, as it already
+  did when its files outgrew its share.
 
 ## 2026-10-17: platform 0.12.0, core 0.23.0, fabric 0.18.0, worker 0.21.0, sdk 0.17.0, cli 0.2.8, loom 0.3.1, react 0.3.3, create-nimbus-app 0.2.4, runtime-bash 5.2.37-7, runtime-cpython 3.13.14-3, runtime-git 2.53.0-1 (config 0.3.1 unchanged)
 
