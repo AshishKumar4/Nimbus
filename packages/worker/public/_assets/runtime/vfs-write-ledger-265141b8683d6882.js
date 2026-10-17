@@ -1175,13 +1175,14 @@ var __nimbusProcessFsModule = (() => {
     let bytes = Number(held?.bytes ?? 0);
     const readRow = (row) => {
       const op = opOf(String(row.op), row.data);
-      const parts = [...sql.exec("SELECT data FROM nimbus_fs_journal_parts WHERE jid = ? ORDER BY part", row.jid)];
-      if (parts.length === 0) return op;
+      const extra = [...sql.exec("SELECT COALESCE(SUM(LENGTH(data)), 0) AS bytes FROM nimbus_fs_journal_parts WHERE jid = ?", row.jid)][0];
+      const size = Number(extra?.bytes ?? 0);
+      if (size === 0) return op;
       const first = dataOf(op);
-      const data = new Uint8Array(parts.reduce((size, part) => size + part.data.byteLength, first.byteLength));
+      const data = new Uint8Array(first.byteLength + size);
       data.set(first);
       let at = first.byteLength;
-      for (const part of parts) {
+      for (const part of sql.exec("SELECT data FROM nimbus_fs_journal_parts WHERE jid = ? ORDER BY part", row.jid)) {
         const piece = part.data instanceof Uint8Array ? part.data : new Uint8Array(part.data);
         data.set(piece, at);
         at += piece.byteLength;
