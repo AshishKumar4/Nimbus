@@ -2219,6 +2219,8 @@ interface FacetVfsState {
    * under the ceiling on the map lowers its bound from (_rebuildUnderCeiling).
    */
   rawBytes?: number;
+  /** This state's last one-shot map's owned bytes; a cache hit takes that share before generating it again. */
+  oneShotMapBytes?: number;
   /** Diagnostics: how the build's transforms were answered. */
   transforms?: BundleCellTransformStats;
   /**
@@ -2403,9 +2405,9 @@ export function generatedMapTextBytes(generated: GeneratedNodeFacetCode, room: n
 }
 
 /** What the map owns in V8; immutable runtime sources are shared by every launch. */
-function generatedMapRetainedBytes(generated: GeneratedNodeFacetCode, members: Readonly<Record<string, string | { wasm: ArrayBuffer }>>): number {
+function generatedMapRetainedBytes(generated: GeneratedNodeFacetCode | null, members: Readonly<Record<string, string | { wasm: ArrayBuffer }>>): number {
   let bytes = 0;
-  const texts = [...generated.source.parts.filter((part) => typeof part === 'string'),
+  const texts = generated === null ? [] : [...generated.source.parts.filter((part) => typeof part === 'string'),
     ...Object.values(generated.modules), ...Object.values(generated.codeModules), ...Object.values(generated.esModules)];
   for (const member of Object.values(members)) {
     if (typeof member === 'string') texts.push(member);
@@ -7946,7 +7948,8 @@ export class FacetManager {
     const usesSqlite = vfsState.usesNodeSqlite ?? bundleUsesNodeSqlite(code, vfsState.bundle);
     const wasmImports = facetWasmImports([], vfsState.wasmImages ?? []);
     const bindingNames = vfsState.stagedBindings ?? [];
-    const memberBytes = await this._oneShotMemberBytes(entry, wasmImports, bindingNames);
+    const memberBytes = wasmImports.length + bindingNames.length === 0 ? { owned: 0, wire: 0 }
+      : await this._oneShotMemberBytes(entry, wasmImports, bindingNames);
     const [sqliteModules, sources] = await Promise.all([
       this.sqliteModuleEntry(usesSqlite),
       fetchNodeFacetSources(this.env),
@@ -7977,11 +7980,12 @@ export class FacetManager {
     }
     const digest = opts.codeDigest ? answerDigest([generated.source.recipe(), generated.modules, generated.codeModules, generated.esModules,
       Object.fromEntries(Object.entries(generated.immutableModules).map(([name, source]) => [name, source.asset]))]) : undefined;
-    const retained = generatedMapRetainedBytes(generated, ownedMembers);
+    const retained = textBytes + generatedMapRetainedBytes(null, ownedMembers);
     this._ensureOneShotShare(entry.pid, retained);
     if (!vfsState.cacheRetained) releaseGeneratedSources(vfsState);
     const admission = this.buildAdmissions.get(entry.pid);
     admission?.retain(retained);
+    vfsState.oneShotMapBytes = retained;
     let map: { generated: GeneratedNodeFacetCode; members: typeof members } | undefined = { generated, members };
     return {
       digest,
@@ -8502,7 +8506,8 @@ export class FacetManager {
    */
   private _holdMapShare(entry: ProcessEntry, state: FacetVfsState): FacetVfsState | Promise<FacetVfsState> {
     if (this.buildAdmissions.has(entry.pid)) return state;
-    const need = prefetchNeed(state.rawBytes ?? 0);
+    const need = Math.min(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES,
+      Math.max(prefetchNeed(state.rawBytes ?? 0), state.oneShotMapBytes ?? 0));
     const now = tryAdmitPrefetch(need, true);
     if (now !== null) {
       this.buildAdmissions.set(entry.pid, now);
