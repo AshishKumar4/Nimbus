@@ -386,13 +386,21 @@ async function shrink(steps) {
 const seeds = process.env.NIMBUS_MODEL_SEED !== undefined
   ? [Number(process.env.NIMBUS_MODEL_SEED)]
   : Array.from({ length: Number(process.env.NIMBUS_MODEL_SEEDS ?? 200) }, (_, i) => i + 1);
+// Every distinct failure (its message less the values it names), each shrunk once.
+const failures = new Map();
 for (const seed of seeds) {
   const steps = program(seed);
   const failure = await run(steps).then(() => null, (error) => error);
   if (failure === null) continue;
+  const kind = String(failure.message).split('\n')[0].replace(/step \d+ /, '').replace(/\{[^}]*\}/g, '{}').replace(/\b[a-c]\b/g, 'N').replace(/fd \d/g, 'fd');
+  if (failures.has(kind)) { failures.get(kind).seeds.push(seed); continue; }
   const minimal = await shrink(steps);
   const reason = await run(minimal).then(() => failure, (error) => error);
-  console.error(`seed ${seed} fails: ${reason.message}\nminimal program (${minimal.length} steps):\n${minimal.map((step) => `  ${JSON.stringify(step)}`).join('\n')}`);
-  process.exit(1);
+  failures.set(kind, { seeds: [seed], reason, minimal });
+  if (failures.size >= 12) break;
 }
+for (const [kind, { seeds: failing, reason, minimal }] of failures) {
+  console.error(`FAILURE ${kind} (seeds ${failing.slice(0, 8).join(', ')}${failing.length > 8 ? ', ...' : ''}): ${reason.message}\nminimal program (${minimal.length} steps):\n${minimal.map((step) => `  ${JSON.stringify(step)}`).join('\n')}\n`);
+}
+if (failures.size > 0) process.exit(1);
 console.log(`resident-fs-model: ${seeds.length} programs agree with the model`);
