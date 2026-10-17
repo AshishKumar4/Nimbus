@@ -366,18 +366,6 @@ export function provisional(host: ProvisionalHost): Provisional {
     if (touched.size > 0) {
       const row = host.row(key);
       const changed = row ? inodeAtNumber(row.dev, row.ino) : undefined;
-      if (changed !== undefined && changed.state !== null && !changed.local && changed.cell === undefined
-        && changed.heldAt === undefined && changed.records.length === 0 && ![...layer.values()].includes(changed)) {
-        // A retained fold is only the fallback while no name leads to its inode.
-        // The view found it again (a peer's rename): its retired content is the view's.
-        changed.key = changed.origin = key;
-        changed.row = row!;
-        changed.base = changed.state = null;
-        touched.delete(changed);
-        fit(changed);
-        activity();
-        return undefined;
-      }
       if (changed !== undefined && changed.state !== null) return entryOf(changed);
     }
     if (layer.size === 0) return undefined;
@@ -441,8 +429,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     const seen = inode.local ? undefined : viewed(inode);
     if (seen !== undefined) inode.row = seen.row;
     const row = inode.row;
-    const held = seen?.bytes ?? (inode.pin?.revision === row.revision ? inode.pin.bytes : undefined);
-    const bytes = held === undefined ? (row.size === 0 ? new Uint8Array(0) : null) : owned(held);
+    const bytes = seen?.bytes === undefined ? (row.size === 0 ? new Uint8Array(0) : null) : owned(seen.bytes);
     return { bytes, size: row.size, mode: row.mode, uid: row.uid, gid: row.gid, atime: row.atime, mtime: row.mtime, ctime: row.ctime };
   };
 
@@ -469,9 +456,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     let size = inode.state?.size ?? inode.row.size;
     if (inode.base === null) {
       // A grant's file: its cell's bytes are what the first record folds over (fold: unhold).
-      const seen = inode.local || inode.cell !== undefined ? undefined : viewed(inode);
-      const held = inode.cell !== undefined ? inode.cell.bytes.subarray(0, inode.cell.length)
-        : seen?.bytes ?? (inode.pin?.revision === (seen?.row.revision ?? inode.row.revision) ? inode.pin.bytes : undefined);
+      const held = inode.cell !== undefined ? inode.cell.bytes.subarray(0, inode.cell.length) : inode.local ? undefined : viewed(inode)?.bytes;
       known = held !== undefined || inode.row.size === 0;
       baseBytes = held?.byteLength ?? 0;
       capacity = baseBytes;

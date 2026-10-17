@@ -923,10 +923,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       if ('uid' in attrs && chownRefusal(current, attrs.uid, attrs.gid, store.cred) !== null) return false;
       // A grant a confined principal may not make: the session's to judge.
       if ('mode' in attrs && confinedModeRefusal(current.mode, attrs.mode) !== null) return false;
-      if ('mode' in attrs) {
-        throughAt([key]);
-        if (provisionalActive && prov.touches(key)) return false;
-      }
+      if ('mode' in attrs) throughAt([key]);
       const next = changedBy(current, attrs);
       decided.set(key, next);
       const local = prov.inode(current.dev, current.ino)?.cell;
