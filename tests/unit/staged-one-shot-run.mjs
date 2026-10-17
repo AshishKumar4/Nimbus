@@ -26,6 +26,7 @@ composeFabric({
 const loads = [];
 const fetches = [];
 const env = { LOADER: {
+  load() { throw new Error('a staged run is loaded in its hop, never in its host'); },
   get(key, callback) {
     const code = callback();
     loads.push({ key, code });
