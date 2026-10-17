@@ -12,8 +12,8 @@ import { join } from 'node:path';
 import { ARMS } from '../../../tests/behavioral/_paired.mjs';
 import { INSTALL } from '../../install-deps.mjs';
 
-const git = (cwd, args) => {
-  const done = spawnSync('git', args, { cwd, encoding: 'utf8' });
+const git = (cwd, args, stdio = ['ignore', 'pipe', 'pipe']) => {
+  const done = spawnSync('git', args, { cwd, encoding: 'utf8', stdio });
   if (done.status !== 0) throw new Error(`git ${args[0]} failed: ${(done.stderr || done.error?.message || '').trim()}`);
   return done.stdout.trim();
 };
@@ -67,7 +67,7 @@ export function pairedPreviews({ repo, runDir, log = (line) => console.error(lin
     if (git(repo, ['rev-parse', 'HEAD']) === commit) return Promise.resolve(repo);
     if (!checkouts.has(commit)) {
       const checkout = join(runDir.dir, `checkout-${commit.slice(0, 12)}`);
-      git(repo, ['worktree', 'add', '--detach', checkout, commit]);
+      git(repo, ['worktree', 'add', '--detach', checkout, commit], piped);
       worktrees.push(checkout);
       checkouts.set(commit, run(checkout, 'bun', INSTALL.split(' ').slice(1), piped).then(() => checkout));
     }
@@ -149,7 +149,7 @@ export function pairedPreviews({ repo, runDir, log = (line) => console.error(lin
       if (left) return left;
       left = [];
       for (const { name, checkout } of previews) {
-        const down = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'down', '--name', name], { cwd: checkout, encoding: 'utf8' });
+        const down = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'down', '--name', name], { cwd: checkout, encoding: 'utf8', stdio: piped });
         if (down.status !== 0) left.push(`Preview ${name}: finish with (cd ${checkout} && bun tests/behavioral/_throwaway-target.mjs down --name ${name})`);
       }
       for (const dir of worktrees) {
