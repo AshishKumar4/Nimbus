@@ -254,23 +254,37 @@ export async function exchangeAttachCookie(page, sid) {
   }
 }
 
+/** `url` with no credentials, query or fragment: its origin and path, or only its scheme. */
+function shownUrl(url) {
+  if (!URL.canParse(url)) return '(not a URL)';
+  const at = new URL(url);
+  return at.origin === 'null' ? `${at.protocol}…` : `${at.origin}${at.pathname}`;
+}
+
 /**
- * Print every navigation of `page`'s top document that the page itself
- * starts (a script, a meta or header refresh, a frame navigating its top),
- * with why and when: a probe's own goto starts none. Evidence for a probe
- * that finds its page replaced; it never fails one.
+ * Print every navigation of `page`'s top document that a page starts (a
+ * script, a meta or header refresh, a frame, cross-site ones included,
+ * navigating the top), with why and when: a probe's own goto starts none.
+ * Evidence for a probe that finds its page replaced; it never fails one.
  */
 async function reportPageNavigations(page) {
   const since = performance.now();
   const cdp = await page.createCDPSession();
   await cdp.send('Page.enable');
-  const { frameTree } = await cdp.send('Page.getFrameTree');
-  cdp.on('Page.frameRequestedNavigation', ({ frameId, reason, url, disposition }) => {
-    if (frameId !== frameTree.frame.id) return;
-    const at = new URL(url);
-    at.search = at.search ? '?…' : '';
-    console.log(`  [page] the page navigated itself (${reason}, ${disposition}) to ${at} at +${Math.round(performance.now() - since)} ms`);
+  const top = (await cdp.send('Page.getFrameTree')).frameTree.frame.id;
+  const report = ({ frameId, reason, url, disposition }) => {
+    if (frameId !== top) return;
+    console.log(`  [page] the page navigated itself (${reason}, ${disposition}) to ${shownUrl(url)} at +${Math.round(performance.now() - since)} ms`);
+  };
+  cdp.on('Page.frameRequestedNavigation', report);
+  // A cross-site frame runs in a process of its own: its requests are its own target's.
+  cdp.on('Target.attachedToTarget', ({ sessionId, targetInfo }) => {
+    const frame = targetInfo.type === 'iframe' ? cdp.connection()?.session(sessionId) : null;
+    if (!frame) return;
+    frame.on('Page.frameRequestedNavigation', report);
+    frame.send('Page.enable').catch(() => {});
   });
+  await cdp.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
 }
 
 export async function openPage(browser, sid, opts = {}) {
