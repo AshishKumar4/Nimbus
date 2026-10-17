@@ -44,6 +44,9 @@ const files = {
   'redeclared.js': 'let alpha = 1;\nlet alpha = 2;\n',
   // TypeScript whose first error compiling it as CommonJS is not of module syntax: Node's SyntaxError.
   'typed-export.cts': 'const a: number = 1;\nexport {};\n',
+  // A declaration file is TypeScript to the check too; with stripping off, Node refuses the extension.
+  'plain.d.ts': 'const value = 1;\n',
+  'plain.ts': 'const value = 1;\n',
 };
 
 await matchNodeInWorkerd('node-check-matches-node-workerd', ROOT, files, [
@@ -66,4 +69,6 @@ await matchNodeInWorkerd('node-check-matches-node-workerd', ROOT, files, [
   "echo 'const require = 1' | node -c",
   'node redeclared.js',
   'node -c typed-export.cts',
+  'node -c plain.d.ts',
+  'node --no-experimental-strip-types -c plain.ts',
 ]);

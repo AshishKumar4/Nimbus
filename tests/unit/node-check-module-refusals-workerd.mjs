@@ -20,6 +20,7 @@ const ROOT = '/home/user/chk';
 const modules = {
   'm.mts': 'console.log("ran");\nexport const a = 1;\n',
   'n.ts': 'export const a: number = 1;\nconsole.log("ran");\n',
+  'mod.d.ts': 'export const v = 1;\nconsole.log("ran");\n',
 };
 const hostDir = mkdtempSync(join(tmpdir(), 'node-check-modules-'));
 try {

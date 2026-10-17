@@ -461,6 +461,8 @@ export function buildRuntimeHandler(
       print?: boolean;
       /** Node refuses the code before it loads `--import`'s modules (NodeEvalProgram.refusedBeforeImports): none load. */
       refusedBeforeImports?: boolean;
+      /** The code is Node's refusal of the file, run as -c's answer: it holds none of the program. */
+      runsRefusal?: boolean;
       esModule?: boolean;
     }): Promise<number> => {
       let result: RuntimeRunResult;
@@ -477,7 +479,7 @@ export function buildRuntimeHandler(
           command: program.command,
           output: programStdin.output,
           ...(spec.nodeCommandLine
-            ? { node: { ...launch, print: program.print === true, ...(program.refusedBeforeImports ? { import: [] } : {}) } }
+            ? { node: { ...launch, print: program.print === true, ...(program.refusedBeforeImports ? { import: [] } : {}), ...(program.runsRefusal ? { check: false } : {}) } }
             : {}),
           ...program.stdin,
           ...(program.reserved === false ? {} : reservedProcess),
@@ -727,8 +729,10 @@ export function buildRuntimeHandler(
         stat: (path) => fs.stat(path),
       }, resolvedPath.slice(0, Math.max(0, resolvedPath.lastIndexOf('/'))))
       : null;
-    // Node's own TypeScript is stripped, then JavaScript of Node's format for it; -c compiles a
-    // TypeScript file's own text, as CommonJS (check_syntax.js: its format is never 'module').
+    // -c of TypeScript, a declaration file's too: Node compiles its own text as CommonJS
+    // (check_syntax.js: its format is never 'module'), or, stripping off, refuses its extension.
+    const checksTypeScript = launch.check && /\.[cm]?ts$/.test(resolvedPath);
+    // Node's own TypeScript is stripped, then JavaScript of Node's format for it.
     const stripTypes = spec.nodeCommandLine && moduleScope === 'node' && stripsTypeScript(resolvedPath) && !launch.check ? typeScriptStripOptions(launch) : null;
     let stripped: { code: string; esModule: boolean } | null = null;
     if (stripTypes === 'javascript') {
@@ -745,7 +749,7 @@ export function buildRuntimeHandler(
     // An ES module, or TypeScript or JSX the launch compiles, is the launch's
     // staged module of the entry file (worker facets/manager.ts entryModule):
     // the program's own module, never a copy of it.
-    const esm = launch.check && stripsTypeScript(resolvedPath)
+    const esm = checksTypeScript
       ? false
       : stripped === null
         ? typescript !== null || scriptExt === '.jsx' || isEsModuleFile(resolvedPath, code, () => packageType)
@@ -756,7 +760,9 @@ export function buildRuntimeHandler(
     const dirname = filename.includes('/')
       ? filename.substring(0, filename.lastIndexOf('/'))
       : '/';
-    return runProgram(code, {
+    const refusesExtension = checksTypeScript && launch.stripTypes === false;
+    return runProgram(refusesExtension ? typeScriptRefusalShim(unknownExtensionRefusal(filename)) : code, {
+      ...(refusesExtension ? { runsRefusal: true } : {}),
       esModule: esm,
       argv: [...leadingFlags, filename, ...args.slice(scriptIdx + 1)],
       filename,
