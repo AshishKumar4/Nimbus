@@ -12874,6 +12874,9 @@ function __nimbusEsmRequire(id, required, parent = undefined) {
   }
   // It threw: what it threw, once its evaluation's rejection said.
   if (record.state === __ESM_FAILED && record.error !== undefined) throw record.error.value;
+  // An import()'s link failed in it: that failure, as Node's loader keeps the ModuleJob (esm-late-link keptFailure).
+  const kept = __nimbusLateModule?.keptFailure(__nimbusEsm.table[id][1]);
+  if (kept !== undefined) throw kept;
   const filename = "/" + __nimbusEsm.table[id][1];
   // Evaluating, for an import: Node's ESM loader's refusal, naming the requirer.
   if (record.state === __ESM_BEGAN || (record.state === __ESM_ADOPTED && record.namespace === null && record.requirer === undefined)) {
@@ -13012,16 +13015,23 @@ async function __nimbusEsmImport(id) {
 // one the interpreter took) is checked first as a late graph is (core
 // esm-late-link.ts linkAdopted): every imported name, before any of it
 // runs, unless a link checked it already.
+// A module an import() of failed to link (its late link, or its record),
+// by its record's key: the failure stays, as Node's loader keeps a
+// ModuleJob that did not link, and a later import of it rejects with it,
+// whatever the program wrote since. import()'s alone: require() retries.
+const __nimbusImportFailures = new Map();
 async function __nimbusEsmInterpret(id, linked) {
   const key = __nimbusEsm.table[id][1];
   const url = __nimbusEsmUrl("/" + key);
   let record = __nimbusGraphRecords.get("/" + key);
   if (record === undefined) {
+    if (__nimbusImportFailures.has("/" + key)) throw __nimbusImportFailures.get("/" + key);
     try {
       if (!linked) __nimbusLateOf().linkAdopted(__nimbusLateLinkHost, id, key, url);
       record = __nimbusAdoptedRecord(id, key);
     } catch (e) {
       __nimbusExplainCommonJSGlobalLike(e, url, false);
+      __nimbusImportFailures.set("/" + key, e);
       throw e;
     }
   }
@@ -13547,14 +13557,16 @@ async function __nimbusImportGraph(resolution) {
   const key = resolution.format === "data" ? resolution.url : resolution.path.replace(/^\\/+/, "");
   const recordKey = resolution.format === "data" || resolution.url.includes("?") || resolution.url.includes("#") ? resolution.url : "/" + key;
   let record = __nimbusGraphRecords.get(recordKey);
-  try {
-    if (record === undefined || record.status === "unlinked") {
-      if (resolution.format !== "data" || __nimbusDataModuleOf(resolution.url).format === "module") __nimbusLateLink(key, resolution.url);
+  if (record === undefined || record.status === "unlinked") {
+    if (__nimbusImportFailures.has(recordKey)) throw __nimbusImportFailures.get(recordKey);
+    try {
+      if (resolution.format !== "data" || __nimbusDataModuleOf(resolution.url).format === "module") __nimbusLateLink(key, resolution.url, true);
+      record ??= __nimbusGraphRecord(resolution, undefined);
+    } catch (e) {
+      __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
+      __nimbusImportFailures.set(recordKey, e);
+      throw e;
     }
-    record ??= __nimbusGraphRecord(resolution, undefined);
-  } catch (e) {
-    __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
-    throw e;
   }
   const namespace = await __nimbusImportRecord(record, resolution.url);
   __esmNamespaces.set(resolution.url, namespace);
@@ -13578,7 +13590,7 @@ function __nimbusRequireRecord(record, parent) {
     __nimbusGraphSync = true;
     try {
       // Its late graph's names, as its import() checks them: a runtime module's.
-      if (record.status === "unlinked" && !state.adopted && !state.data) __nimbusLateLink(state.resolvedPath.replace(/^\\/+/, ""), state.moduleUrl);
+      if (record.status === "unlinked" && !state.adopted && !state.data) __nimbusLateLink(state.resolvedPath.replace(/^\\/+/, ""), state.moduleUrl, false);
       __nimbusPlanGraph(record, true);
       if (__nimbusGraphAwaits(record, new Set())) throw __nimbusRequireAsync(parent, state.filename);
       __nimbusGraph.link(record);
@@ -13659,9 +13671,11 @@ const __nimbusLateLinkHost = {
   },
   requests: (path, text, javaScript, goal) => __nimbusModuleRequests(path, text, javaScript, goal),
 };
-// Links the late graph of the module at \`key\` (\`url\`); the staged rows it imports, in order.
-function __nimbusLateLink(key, url) {
-  return __nimbusRegistryRequire("./${RUNTIME_ESM_LATE_MODULE}").linkLateGraph(__nimbusLateLinkHost, key, url);
+// Links the late graph of the module at \`key\` (\`url\`), an import()'s
+// (\`kept\`: a module it fails in keeps the failure) or a require()'s; the
+// staged rows it imports, in order.
+function __nimbusLateLink(key, url, kept) {
+  return __nimbusLateOf().linkLateGraph(__nimbusLateLinkHost, key, url, kept);
 }
 // A bundled copy of a package the runtime provides, bound to the runtime's
 // (provided-packages.ts rewriteProvidedCommonJsModules, PROVIDED_PACKAGE_HOOK):
