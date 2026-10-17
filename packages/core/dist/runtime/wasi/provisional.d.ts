@@ -209,10 +209,10 @@ export interface Provisional {
     answeredHeld(root: string): void;
     /** Whether file (dev, ino)'s content and size are this process's here (a cell, or its fold), not the view's. */
     pending(dev: number, ino: number): boolean;
-    /** The session descriptor of the open description `handleId`'s file is reached by (its own, else its file's anchor), once that open is answered. */
-    sessionOf(handleId: number): number | undefined;
+    /** The session descriptor of `handleId`'s own description, else its file's anchor. With `read`, only a description opened for reading. */
+    sessionOf(handleId: number, access?: 'read'): number | undefined;
     /** Open description `description` was answered: `handle` is the session's descriptor of it. */
-    anchored(description: string, handle: number | undefined): void;
+    anchored(description: string, handle: number | undefined, read: boolean): void;
     owns(handleId: number): boolean;
     /** Whether a decision of this process's at `key`, or at the directory it is in, is not yet the view's: a held subtree decides nothing there until it is. */
     touches(key: string): boolean;

@@ -75,7 +75,7 @@ export function provisional(host) {
     }
     /** Every descriptor of those files, held and provisional alike. */
     const descs = new Map();
-    /** The session's descriptor of each open description this process opened there, once its open is answered. */
+    /** Each answered session description's descriptor and the read access its open asked for. */
     const sessions = new Map();
     /** The overlay: the names the pending name records made, removed or moved, and the listings' changes, replayed over the view. */
     const layer = new Map();
@@ -677,12 +677,12 @@ export function provisional(host) {
      * then what was made through it settled, then what the answer did not
      * need of the credit given back.
      */
-    const openAnswered = (inode, key, description, credit, records, creating) => (refused, answer) => {
+    const openAnswered = (inode, key, description, credit, records, creating, read) => (refused, answer) => {
         const owner = live(inode);
         owner.credit -= credit;
         // The session's descriptor of the description: what reads its file once no name leads to it (sessionOf).
         if (!refused && answer?.receipt?.handle !== undefined)
-            sessions.set(description, answer.receipt.handle);
+            sessions.set(description, { handle: answer.receipt.handle, read });
         if (!refused)
             reconcile(owner, key, description, answer, creating);
         settleRecords(records, refused);
@@ -742,13 +742,14 @@ export function provisional(host) {
         return { bytes: seen.bytes, size: seen.bytes.byteLength };
     };
     /** An open description of `inode` at the session, any of its descriptors': what reaches it whatever names it (its anchor). */
-    const anchorOf = (inode) => {
+    const anchorOf = (inode, read = false) => {
         if (inode.descs === 0)
             return undefined;
-        if (inode.retained.length > 0)
-            return inode.retained[0];
+        for (const description of inode.retained)
+            if (!read || sessions.get(description)?.read === true)
+                return description;
         for (const desc of descs.values())
-            if (desc.inode === inode && desc.description !== undefined)
+            if (desc.inode === inode && desc.description !== undefined && (!read || sessions.get(desc.description)?.read === true))
                 return desc.description;
         return undefined;
     };
@@ -871,7 +872,7 @@ export function provisional(host) {
         // The open's own effects (its truncate, its fchmod) are its records; its writes are theirs.
         const opened = ops.filter((op) => op.kind !== 'write').map((op) => fold(target, op, description));
         // Its answer says which file the session opened first: what was made through it is that file's before any is settled.
-        const answered = openAnswered(target, key, description, credit, opened, row === null);
+        const answered = openAnswered(target, key, description, credit, opened, row === null, read);
         let opening;
         if (row === null) {
             opening = loggedName(open, [key], nameCost([key]), () => place(key, target), answered, undefined, awaited);
@@ -959,16 +960,17 @@ export function provisional(host) {
             const inode = inodeAtNumber(dev, ino);
             return inode !== undefined && (inode.cell !== undefined || inode.state !== null);
         },
-        sessionOf: (handleId) => {
+        sessionOf: (handleId, access) => {
             const desc = descs.get(handleId);
             if (desc === undefined)
                 return undefined;
-            const description = desc.description ?? anchorOf(desc.inode);
-            return description === undefined ? undefined : sessions.get(description);
+            const own = desc.description;
+            const description = own !== undefined && (access !== 'read' || sessions.get(own)?.read === true) ? own : anchorOf(desc.inode, access === 'read');
+            return description === undefined ? undefined : sessions.get(description)?.handle;
         },
-        anchored: (description, handle) => {
+        anchored: (description, handle, read) => {
             if (handle !== undefined)
-                sessions.set(description, handle);
+                sessions.set(description, { handle, read });
         },
         kept: () => {
             let total = 0;
@@ -1175,7 +1177,7 @@ export function provisional(host) {
                 admitOps(inode, records, 'open', desc.path, credit);
                 inode.credit += credit;
                 const made = records.map((op) => fold(inode, op, description));
-                logged(open, openAnswered(inode, inode.key, description, credit, made, false));
+                logged(open, openAnswered(inode, inode.key, description, credit, made, false, read));
                 fit(inode);
             }
             const handle = descriptor(inode, desc.path, { ...flags, read }, description);

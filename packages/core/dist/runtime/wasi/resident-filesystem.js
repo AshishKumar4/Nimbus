@@ -962,8 +962,11 @@ export function residentFilesystem(session, resident, delegation) {
      * wait reads what is here, or is refused (not resident, or ESTALE).
      */
     const readOwn = (handleId, offset, length) => {
-        // A caller that may wait reads a file the session has a description of through it, as the session has the file now (a peer's change included).
-        if (!now && holder.provisional.sessionOf(handleId) !== undefined)
+        // A grant's cell answers here. Its own description reads the live file;
+        // a borrowed anchor is only needed once no name leads to this reader's file.
+        const desc = holder.provisional.descriptor(handleId);
+        if (!now && desc.inode.cell === undefined && holder.provisional.sessionOf(handleId, 'read') !== undefined
+            && (desc.description !== undefined || holder.provisional.inodeOf(handleId) === undefined))
             return readByAnchor(handleId, offset, length);
         const read = () => holder.read(handleId, offset, length);
         let done;
@@ -984,7 +987,7 @@ export function residentFilesystem(session, resident, delegation) {
             return readByAnchor(handleId, offset, length);
         // Fetched by the name, while its access lets the process read it; else through its anchor, whose access was its open's.
         return Promise.resolve(contentOf(at.key, at.entry)).then(() => read() ?? readByAnchor(handleId, offset, length), (error) => {
-            if (holder.provisional.sessionOf(handleId) === undefined)
+            if (holder.provisional.sessionOf(handleId, 'read') === undefined)
                 throw error;
             return readByAnchor(handleId, offset, length);
         });
@@ -1001,9 +1004,12 @@ export function residentFilesystem(session, resident, delegation) {
     };
     /** A read through the session's open description of `handleId`'s file (Provisional.sessionOf), at `offset` or the descriptor's position. */
     const readByAnchor = async (handleId, offset, length) => {
+        const desc = holder.provisional.descriptor(handleId);
+        if (!desc.read)
+            throw fsError('EBADF', 'read', desc.path);
         const key = holder.keyOf(handleId);
         await holder.send();
-        const session = holder.provisional.sessionOf(handleId);
+        const session = holder.provisional.sessionOf(handleId, 'read');
         if (session === undefined)
             throw fsError('ESTALE', 'read', '/' + key);
         const start = offset ?? holder.seek(handleId, 0, 'current');
@@ -1081,7 +1087,7 @@ export function residentFilesystem(session, resident, delegation) {
         if (holder?.owns(handleId))
             return caughtUpFor(() => {
                 // As its open description at the session has it (its names, its size), as its reads are.
-                if (!now && holder.provisional.sessionOf(handleId) !== undefined)
+                if (!now && holder.provisional.descriptor(handleId).inode.cell === undefined && holder.provisional.sessionOf(handleId) !== undefined)
                     return statByAnchor(handleId);
                 counts.local++;
                 return statOf(holder.fstat(handleId));
@@ -1241,7 +1247,9 @@ export function residentFilesystem(session, resident, delegation) {
             const held = holder;
             if (!held?.owns(target.handle))
                 return Reflect.apply(bySessionReopen, fs, [target, flags, options]);
-            const local = held.reopen(target.handle, flags);
+            const desc = held.provisional.descriptor(target.handle);
+            const described = desc.inode.cell === undefined && (desc.description !== undefined || held.provisional.sessionOf(target.handle) !== undefined);
+            const local = !now && described ? undefined : held.reopen(target.handle, flags);
             if (local !== undefined) {
                 counts.local++;
                 return heldOpen(local);
@@ -1300,7 +1308,19 @@ export function residentFilesystem(session, resident, delegation) {
             holder.changing([op.from, op.to]);
         else if (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir'))
             holder.changing([op.call.path]);
-        return holder.client.submit(op).then(() => { owed++; }, (error) => { owed++; throw error; });
+        return holder.client.submit(op).then(() => {
+            // The session's answer supersedes the held names it changed, even
+            // while their grant remains held. Its rename moves the one registry's
+            // inodes too, as a rename decided under the grant does.
+            if (op.type === 'rename') {
+                holder.undecided(op.from);
+                holder.undecided(op.to);
+                holder.provisional.moved(op.from, op.to);
+            }
+            else if (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir'))
+                holder.undecided(op.call.path);
+            owed++;
+        }, (error) => { owed++; throw error; });
     };
     const pathOf = (path) => (typeof path === 'string' ? path : path.path);
     // Changes by name a held subtree holds are decided here; any other is the session's, through the client.
