@@ -4,8 +4,8 @@
 // it, as a Linux terminal receives every byte a program writes: the wasm
 // bash's printf, a node program's write of the bytes, and the shell's cat of
 // a file that begins with them. And a child's command is its name, every
-// character its own: node's spawnSync(' node') and spawnSync('\uFEFFnode')
-// find no program (ENOENT), as host Node's do. Host bash and host node run
+// character its own: node's spawn(' node') and spawn('\uFEFFnode') find no
+// program (ENOENT), as host Node's do. Host bash and host node run
 // the same lines; the BOM must lead each output.
 //
 // Red before: the output streams' decoders dropped a leading BOM (one per
@@ -25,7 +25,9 @@ import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
 
 const BOM = '\uFEFF';
 const bomFile = new Uint8Array([0xef, 0xbb, 0xbf, 0x7a, 0x0a]);
-const spawns = "const cp = require('child_process'); for (const c of [' node', 'node ', '\\\\uFEFFnode']) { const r = cp.spawnSync(c, ['-e', '1']); console.log(JSON.stringify([c, r.error ? r.error.code : null])); }";
+// Each spawn's outcome, a line each in whatever order they come: its 'error' code, or its exit code.
+const spawns = "const cp = require('child_process'); for (const c of [' node', 'node ', '\\\\uFEFFnode']) cp.spawn(c, ['-e', '1']).on('error', (e) => console.log(JSON.stringify([c, e.code]))).on('exit', (code) => console.log(JSON.stringify([c, code])));";
+const sortedLines = (text) => text.replace(/\r/g, '').split('\n').filter(Boolean).sort().join('\n');
 // [the line, the text its output begins with once the terminal's leading line breaks are gone]
 const lines = [
   ["bash -c 'printf \"\\357\\273\\277x\\n\"'", `${BOM}x`],
@@ -44,11 +46,11 @@ let spawned;
 try {
   writeFileSync(join(host, 'bom.txt'), bomFile);
   for (const [line, begins] of lines) assert.ok(hostOut(line).startsWith(begins), `host: ${line} begins with ${JSON.stringify(begins)}`);
-  spawned = hostOut(`node -e "${spawns}"`);
+  spawned = sortedLines(hostOut(`node -e "${spawns}"`));
 } finally {
   rmSync(host, { recursive: true, force: true });
 }
-assert.equal(spawned, '[" node","ENOENT"]\n["node ","ENOENT"]\n["\uFEFFnode","ENOENT"]\n', 'host node finds no program for a padded name');
+assert.equal(spawned, sortedLines('[" node","ENOENT"]\n["node ","ENOENT"]\n["\uFEFFnode","ENOENT"]\n'), 'host node finds no program for a padded name');
 
 const probe = await startLocalProbe();
 const failed = [];
@@ -66,10 +68,9 @@ try {
       }
     }
     const r = await terminal.run(`cd /home/user && node -e "${spawns}"`, 90_000);
-    const shown = r.stdout.replace(/\r/g, '').replace(/^\n+/, '');
-    if (shown === spawned) console.log('  ok  spawnSync of a padded name finds no program');
+    if (sortedLines(r.stdout) === spawned) console.log('  ok  spawn of a padded name finds no program');
     else {
-      console.log(`  FAIL  spawnSync of a padded name: ${JSON.stringify(r.stdout)}`);
+      console.log(`  FAIL  spawn of a padded name: ${JSON.stringify(r.stdout)}`);
       failed.push('spawn');
     }
   } finally {
