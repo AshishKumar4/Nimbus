@@ -1,41 +1,40 @@
 #!/usr/bin/env bun
-// monaco-polish/new/monaco-still-lazy-script — narrower invariant
-// after the editor-default switch.
-//
-// Editor is the default workspace, so Monaco may load at runtime.
-// The invariant is: no <script src="...monaco..."> tag in initial HTML.
-// Monaco loader is appended via document.head at runtime.
+// monaco-polish/new/monaco-still-lazy-script — Monaco loads when the
+// Editor surface is first chosen, once, in a real Chrome. A shell opened
+// on the Agent surface (?agent=1) requests nothing of Monaco; choosing
+// Editor loads it and shows the welcome file; switching away and back
+// loads it no second time. (The editor is the default surface, so a
+// shell opened plainly loads Monaco at boot, which is that same choice.)
 
-import { mintSession, BASE, makeAsserter, requestHeaders } from '../../_driver.mjs';
+import { BASE, mintSession, deleteSession, makeAsserter } from '../../_driver.mjs';
+import { launchBrowser, openPage } from '../../_runtime-behavioral-template.mjs';
 
-if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('monaco-polish/new/monaco-still-lazy-script');
-console.log(`monaco-polish/new/monaco-still-lazy-script — ${process.env.BASE}`);
-
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders({}, sid) });
-const html = await r.text();
+const browser = await launchBrowser();
+try {
+  const { page, pageErrors } = await openPage(browser, sid);
+  const monaco = [];
+  page.on('request', (request) => { if (/monaco-editor/.test(request.url())) monaco.push(request.url()); });
+  await page.goto(`${BASE}/s/${sid}/?agent=1`, { waitUntil: 'load', timeout: 60_000 });
+  await page.waitForSelector('#agentPanel', { visible: true, timeout: 30_000 });
+  a.check('a shell opened on the Agent surface requests nothing of Monaco',
+    monaco.length === 0 && await page.evaluate(() => !window.__nimbusMonacoEditor), JSON.stringify(monaco));
 
-// Invariant: no eager <script src> for Monaco assets.
-const eagerScripts = Array.from(html.matchAll(/<script\s+[^>]*src=["']([^"']+)["']/gi)).map(m => m[1]);
-const eagerMonaco = eagerScripts.filter(s => /monaco/i.test(s));
-a.check('NO eager <script src> referencing Monaco',
-  eagerMonaco.length === 0,
-  `eagerMonacoUrls=${JSON.stringify(eagerMonaco)} allEager=${JSON.stringify(eagerScripts)}`);
+  await page.click('#btnEditor');
+  await page.waitForFunction(() => window.__nimbusMonacoEditor?.getValue().includes('Welcome to Nimbus'), { timeout: 60_000 });
+  const loaders = () => monaco.filter((url) => url.endsWith('/vs/loader.min.js'));
+  a.check('choosing Editor loads Monaco\'s loader once and shows the welcome file', loaders().length === 1, JSON.stringify(monaco));
 
-// Monaco is referenced inline (string literal) inside Editor.ensureLoaded()
-// — that runs ONLY when setLayout('editor') fires (which now fires at
-// page-load default, but the loader is still NOT pre-fetched by a
-// <script src> tag). Asserting Monaco loader URL is in inline JS but
-// NOT a top-level src.
-a.check('Monaco loader URL present in inline JS (runtime-appended)',
-  /cdnjs\.cloudflare\.com\/ajax\/libs\/monaco-editor/.test(html),
-  `Monaco CDN reference missing`);
-
-// document.head.appendChild path is the loader mechanism.
-a.check('Monaco loader via document.head.appendChild (runtime, not eager)',
-  /document\.head\.appendChild\(script\)/.test(html),
-  `appendChild loader missing`);
-
-const sum = a.summary();
-process.exit(sum.fail > 0 ? 1 : 0);
+  await page.click('#btnAgent');
+  await page.waitForSelector('#agentPanel', { visible: true, timeout: 30_000 });
+  await page.click('#btnEditor');
+  await page.waitForSelector('#editorPanel .monaco-editor', { visible: true, timeout: 30_000 });
+  a.check('switching away and back loads Monaco no second time', loaders().length === 1, JSON.stringify(loaders()));
+  a.check('no page errors', pageErrors.length === 0, JSON.stringify(pageErrors));
+} finally {
+  await browser.close();
+  await deleteSession(sid);
+}
+const result = a.summary();
+process.exit(result.fail ? 1 : 0);

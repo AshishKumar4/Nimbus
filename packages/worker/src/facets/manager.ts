@@ -43,6 +43,7 @@ import { ensureKernelStoreRoot, KERNEL_STORE_ROOT } from './kernel-store-root.js
 import { parseProcessSignalName } from '@nimbus-sh/core/runtime/process-io-protocol.js';
 import { createNodeFacetRuntime, fetchNodeFacetSources, nodeFacetSource, type NodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { moduleSource, type ModuleSource, type ImmutableModuleSource } from '@nimbus-sh/platform/module-source.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { generateSqliteFacetPreamble } from '../runtime/sqlite-shim.js';
 import { NODE_SHIMS_IMPORTS } from '../runtime/node-shims-imports.js';
 import {
@@ -53,7 +54,7 @@ import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { NimbusFilesystemAuthority, NimbusHostFilesystemLease, RuntimeFsBridge, RuntimeSynchronousFs, RuntimeVfsDirEntry, RuntimeVfsStat, VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { normalizeVfsPath, stripLeadingSlashes, vfsPathExtension } from '@nimbus-sh/core/vfs/path.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
-import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
+import { base64, sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 import { direntTypeOf, type KnownDirentType } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { relayRpcBody, responseScope, type PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import {
@@ -134,7 +135,7 @@ import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
 import { STOP_REPLAY_SOURCE } from '../runtime/stop-replay.js';
 import { PENDING_IO_SOURCE } from '../runtime/pending-io.js';
-import { encodeBase64, OwnedPieces, ReplayOutputGate, StdinTaken, stopRecordOf } from '../runtime/stop-replay-host.js';
+import { OwnedPieces, ReplayOutputGate, StdinTaken, stopRecordOf } from '../runtime/stop-replay-host.js';
 import { answerDigest } from '../runtime/stop-replay-journal.js';
 import { REPLAY_PREFIX_MAX_BYTES, REPLAY_JOURNAL_MAX_ENTRIES, REPLAY_READ_RECEIPT_MAX_BYTES, STOP_LIMIT, type ReplayLaunch, type StopRecord } from '../runtime/stop-replay-contracts.js';
 import { ReplaySessions } from '../runtime/replay-session.js';
@@ -224,11 +225,7 @@ import type { ResizableCreditLease } from '@nimbus-sh/platform/weighted-credit-p
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { streamedWasmImageDigest, type WasmImageRecord } from './wasm-image-digest.js';
 import { wasmImageDigest } from './wasm-image-key.js';
-import {
-  prefetchBundleStart,
-  prefetchBundleEnd,
-  setPrefetchCacheBytes,
-} from '@nimbus-sh/platform/diag-counters.js';
+import { attributeAllocation, setPrefetchCacheBytes } from '@nimbus-sh/platform/diag-counters.js';
 
 /**
  * The filesystem a launch's module map is built from: the process's bound
@@ -2386,30 +2383,7 @@ export function generatedMapTextBytes(generated: GeneratedNodeFacetCode, room: n
   for (const text of texts) units += text.length;
   if (sharedBytes + units * 3 <= room) return null;
   let bytes = sharedBytes;
-  for (const text of texts) bytes += mapTextBytes(text);
-  return bytes;
-}
-
-const NON_ASCII = /[^\x00-\x7f]/;
-const mapTextEncoder = new TextEncoder();
-let mapTextScratch: Uint8Array | undefined;
-
-/**
- * The UTF-8 bytes of a map's text, at native speed: ASCII text, most of a
- * map, is its length, which one scan finds; other text is encoded a slice at
- * a time into one reused buffer, only the count kept. For 31 M units, an
- * astro-sized map, Node's V8 took 40-60 ms counting a unit at a time
- * (_encodedSourceBytes) and 11 ms this way.
- */
-function mapTextBytes(text: string): number {
-  if (!NON_ASCII.test(text)) return text.length;
-  mapTextScratch ??= new Uint8Array(256 * 1024);
-  let bytes = 0;
-  for (let read = 0; read < text.length;) {
-    const done = mapTextEncoder.encodeInto(read === 0 ? text : text.slice(read), mapTextScratch);
-    read += done.read;
-    bytes += done.written;
-  }
+  for (const text of texts) bytes += utf8Length(text);
   return bytes;
 }
 
@@ -2444,7 +2418,7 @@ export function learnedRuntimeCodeWithin(
 /** What a map's members hold that are not its generated text: sidecars and staged bindings by value. */
 function moduleMemberBytes(members: Readonly<Record<string, string | { wasm: ArrayBuffer }>>): number {
   let bytes = 0;
-  for (const member of Object.values(members)) bytes += typeof member === 'string' ? mapTextBytes(member) : member.wasm.byteLength;
+  for (const member of Object.values(members)) bytes += typeof member === 'string' ? utf8Length(member) : member.wasm.byteLength;
   return bytes;
 }
 
@@ -2531,7 +2505,7 @@ async function _readBundleCell(
 /** A cell's raw bytes: UTF-8 for text, as the file is on disk. */
 function _bundleCellRawBytes(cell: FacetVfsBundle[string]): number {
   if (cell instanceof Uint8Array) return cell.byteLength;
-  return typeof cell === 'string' ? _encodedSourceBytes(cell) : 0;
+  return typeof cell === 'string' ? utf8Length(cell) : 0;
 }
 
 function _bundleCellLength(cell: string | Uint8Array): number {
@@ -2714,27 +2688,6 @@ function _serializeBundleForFacet(bundle: FacetVfsBundle): string {
 const FACET_VFS_MODULE_PREFIX = '__nimbus_vfs_bundle_';
 const FACET_VFS_MODULE_SOURCE_MARGIN = 1024;
 
-/**
- * UTF-8 byte length of a generated module source, counted rather than
- * materialized.
- *
- * `new TextEncoder().encode(source).length` answers the same question by
- * allocating a second full copy of the string and then reading one number off
- * it. For pi's inline bundle expression that is an 18.26 MB Uint8Array, live
- * on the session DO beside the 18.26 MB string it measures, whose only use is
- * its own `.length` — and the encode also flattens the string it is given,
- * so a rope the template builder had not yet paid for becomes flat too.
- *
- * Same discipline `_jsonEncodedBytes` applies to a cell's JSON text:
- * sizing something never allocates a copy of it. Exactly equivalent to the
- * encoder, including its replacement of an unpaired surrogate with U+FFFD.
- */
-function _encodedSourceBytes(source: string): number {
-  // UTF-8 bytes, a lone surrogate as U+FFFD's three: mapTextBytes, natively
-  // (the guard measures every cell and emit of a launch with it).
-  return mapTextBytes(source);
-}
-
 function _facetBundleModuleSource(bundle: FacetVfsBundle): string {
   return `export default ${_serializeBundleForFacet(bundle)};`;
 }
@@ -2745,8 +2698,8 @@ function _facetBundleModuleSource(bundle: FacetVfsBundle): string {
  * a side module wraps it in. Measured off the serializer itself so the
  * counts and the thing they count cannot drift.
  */
-const _FACET_INLINE_ENVELOPE_BYTES = _encodedSourceBytes(_serializeBundleForFacet({}));
-const _FACET_MODULE_ENVELOPE_BYTES = _encodedSourceBytes(_facetBundleModuleSource({}));
+const _FACET_INLINE_ENVELOPE_BYTES = utf8Length(_serializeBundleForFacet({}));
+const _FACET_MODULE_ENVELOPE_BYTES = utf8Length(_facetBundleModuleSource({}));
 
 /**
  * What one cell adds to a generated bundle source, counted rather than built.
@@ -2969,7 +2922,7 @@ async function serializeFacetVfsData(
     const moduleName = `${FACET_VFS_MODULE_PREFIX}${index}.js`;
     const alias = `__nimbusVfsBundle${index}`;
     const source = _facetBundleModuleSource(chunk);
-    if (_encodedSourceBytes(source) > BUNDLE_MAX_ENCODED_BYTES) {
+    if (utf8Length(source) > BUNDLE_MAX_ENCODED_BYTES) {
       throw new Error(`Nimbus: generated VFS side module exceeds encoded limit: ${moduleName}`);
     }
     modules[moduleName] = source;
@@ -3036,7 +2989,7 @@ export function assertStagedBundleFitsRpcPayload(
   serialized: string,
   bundle: FacetVfsBundle,
 ): void {
-  const bytes = _encodedSourceBytes(serialized);
+  const bytes = utf8Length(serialized);
   if (bytes <= MAX_RPC_SAFE_PAYLOAD_BYTES) return;
   const cells: BundleCellSize[] = Object.entries(bundle)
     .map(([path, cell]) => [
@@ -4342,7 +4295,7 @@ async function admitPrefetch(wait?: LaunchWait, bytes = SUPERVISOR_IN_FLIGHT_ALL
       lease.release();
       throw waiting.signal.reason;
     }
-    return admissionOf(lease, bytes, true);
+    return admissionOf(lease, true);
   } finally {
     waiting?.dispose();
   }
@@ -4355,28 +4308,24 @@ async function admitPrefetch(wait?: LaunchWait, bytes = SUPERVISOR_IN_FLIGHT_ALL
  */
 function tryAdmitPrefetch(bytes: number, copy = false): PrefetchAdmission | null {
   const lease = copy ? tryAcquireSupervisorCopyAllocation(bytes) : tryAcquireSupervisorAllocation(bytes);
-  return lease === null ? null : admissionOf(lease, bytes, false);
+  return lease === null ? null : admissionOf(lease, false);
 }
 
-function admissionOf(admitted: ResizableCreditLease, bytes: number, queued: boolean): PrefetchAdmission {
+function admissionOf(admitted: ResizableCreditLease, queued: boolean): PrefetchAdmission {
   // Attributed so it lands under `prefetchBundleBytes`, not the unattributed remainder.
-  let held = bytes;
-  prefetchBundleStart(held);
+  const lease = attributeAllocation('prefetchBundleBytes', admitted);
+  let released = false;
   return {
     queued,
-    held: () => held,
+    held: () => (released ? 0 : lease.bytes),
     fit(closureBytes) {
       const need = prefetchNeed(closureBytes);
-      if (held === 0 || need >= held) return;
-      admitted.shrinkTo(need);
-      prefetchBundleEnd(held - need);
-      held = need;
+      if (released || need >= lease.bytes) return;
+      lease.shrinkTo(need);
     },
     release() {
-      if (held === 0) return;
-      prefetchBundleEnd(held);
-      held = 0;
-      admitted.release();
+      released = true;
+      lease.release();
     },
   };
 }
@@ -4681,7 +4630,7 @@ async function _buildPrefetchBundle(
   }
   // A module's emit is part of what its path costs, beside its file when that is carried.
   for (const [path, emit] of emits) {
-    const bytes = _encodedSourceBytes(emit);
+    const bytes = utf8Length(emit);
     rawBytes.set(path, (rawBytes.get(path) ?? 0) + bytes);
     rawTotal += bytes;
   }
@@ -6760,7 +6709,7 @@ export class FacetManager {
       if (bytes === null || bytes <= room) return generated;
       const source = vfsState.bundleSource;
       const keys: string[] = source ? JSON.parse(source.runtimeCode) : [];
-      const learned = keys.map((key) => [key, mapTextBytes(generated!.codeModules[runtimeCodeModuleName(key)] ?? '')] as const);
+      const learned = keys.map((key) => [key, utf8Length(generated!.codeModules[runtimeCodeModuleName(key)] ?? '')] as const);
       generated = undefined;
       const { kept, over } = learnedRuntimeCodeWithin(bytes, learned, room);
       if (over > 0 || !source) throw new ModuleMapOverCeilingError(over);
@@ -6823,7 +6772,7 @@ export class FacetManager {
     wasmImports: readonly FacetWasmImport[],
   ): number {
     let bytes = moduleMemberBytes(sqliteModules) + hostAdapterBytes('worker.js');
-    if (staged) bytes += mapTextBytes(staged.loader) + staged.trampoline.byteLength;
+    if (staged) bytes += utf8Length(staged.loader) + staged.trampoline.byteLength;
     // Sized as the process its boot reads them as (_residentDisk).
     const fs = this.vfs?.as(this.processes.cred(pid));
     for (const path of [...wasmImports.map((image) => image.vfsPath), ...Object.values(staged?.bindingPaths ?? {})]) {
@@ -7555,7 +7504,7 @@ export class FacetManager {
         run: stop.run + 1,
         tape: stop.tape!,
         listen: true,
-        prefix: { stdout: encodeBase64(stopped.prefix.stdout), stderr: encodeBase64(stopped.prefix.stderr) },
+        prefix: { stdout: base64(stopped.prefix.stdout), stderr: base64(stopped.prefix.stderr) },
       },
       ...(before.bytes > 0 ? { stdinAtLeast: before.bytes } : {}),
       // A \`< file\` is read again from where the run read it: the same
@@ -7661,7 +7610,7 @@ export class FacetManager {
       run: stop.run + 1,
       tape: stop.tape!,
       stopAt: stop.stopAt!,
-      prefix: stopped.prefix ? { stdout: encodeBase64(stopped.prefix.stdout), stderr: encodeBase64(stopped.prefix.stderr) } : null,
+      prefix: stopped.prefix ? { stdout: base64(stopped.prefix.stdout), stderr: base64(stopped.prefix.stderr) } : null,
       observations: this.replay.get(pid)?.journal.observations,
     };
     // A \`< file\` the stopped run read synchronously but the launch had not
@@ -7906,10 +7855,10 @@ export class FacetManager {
             if (diagSink) {
               diagSink.moduleMapBytes = generatedWorker.source.byteLength;
               for (const source of Object.values(generatedWorker.modules)) {
-                diagSink.moduleMapBytes += _encodedSourceBytes(source);
+                diagSink.moduleMapBytes += utf8Length(source);
               }
               for (const text of [...Object.values(generatedWorker.codeModules), ...Object.values(generatedWorker.esModules)]) {
-                diagSink.moduleMapBytes += _encodedSourceBytes(text);
+                diagSink.moduleMapBytes += utf8Length(text);
               }
               for (const source of Object.values(generatedWorker.immutableModules)) diagSink.moduleMapBytes += source.byteLength;
               for (const m of [...Object.values(sqliteModules), ...Object.values(wasmModules)]) {
@@ -7917,12 +7866,12 @@ export class FacetManager {
               }
               // Read before the release below, which is the last moment the
               // three parts of that total are separable.
-              diagSink.bundleBytes = _encodedSourceBytes(vfsState.bundleSource?.expression ?? '');
+              diagSink.bundleBytes = utf8Length(vfsState.bundleSource?.expression ?? '');
               for (const source of Object.values(vfsState.bundleSource?.modules ?? {})) {
-                diagSink.bundleBytes += _encodedSourceBytes(source);
+                diagSink.bundleBytes += utf8Length(source);
               }
               for (const text of Object.values(vfsState.bundleSource?.codeModules ?? {})) {
-                diagSink.bundleBytes += _encodedSourceBytes(text);
+                diagSink.bundleBytes += utf8Length(text);
               }
             }
             // A run after a stop loads what the first run loaded, or nothing:
@@ -9027,7 +8976,7 @@ export class FacetManager {
     let bundleBytes = 0;
     if (diagOn) {
       for (const source of [...Object.values(generatedWorker.modules), ...Object.values(generatedWorker.codeModules), ...Object.values(generatedWorker.esModules)]) {
-        bundleBytes += _encodedSourceBytes(source);
+        bundleBytes += utf8Length(source);
       }
       moduleMapBytes = generatedWorker.source.byteLength + bundleBytes
         + Object.values(generatedWorker.immutableModules).reduce((bytes, source) => bytes + source.byteLength, 0);

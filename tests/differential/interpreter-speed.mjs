@@ -17,20 +17,21 @@ import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { buildInterpreterFiles } from '../unit/lib/interpreter-build.mjs';
-import { APPS, LIB, ensureApp, sleep, withServer } from './lib/apps.mjs';
+import { APPS, LIB, ensureApp, page, withServer } from './lib/apps.mjs';
 
 const files = await buildInterpreterFiles();
 const env = { NIMBUS_INTERPRETER: files.interpreterFile, NIMBUS_INTERPRETER_OPS: files.opsFile };
 const INTERPRET = ['--disallow-code-generation-from-strings', '--import', join(LIB, 'interpret-preload.mjs')];
 
+/**
+ * A render, timed: the latency of the request that rendered `marker` (what
+ * is compared), and, when it took more than one request, the time to that
+ * render, so a failed attempt is seen rather than left out.
+ */
 async function timed(port, path, marker) {
-  for (;;) {
-    const t0 = performance.now();
-    const body = await fetch(`http://127.0.0.1:${port}${path}`, { signal: AbortSignal.timeout(60000) }).then((r) => (r.status === 200 ? r.text() : '')).catch(() => '');
-    const ms = performance.now() - t0;
-    if (body.includes(marker)) return ms;
-    await sleep(50);
-  }
+  const { latencyMs, readyMs, attempts } = await page(port, path, marker);
+  if (attempts > 1) console.log(`  ${path} rendered ${marker} on request ${attempts}, ${readyMs.toFixed(0)} ms after the first`);
+  return latencyMs;
 }
 
 async function astroRun(dir, port, flags) {
@@ -38,11 +39,7 @@ async function astroRun(dir, port, flags) {
   writeFileSync(proof, '# Markdown proof\n\n**speed-marker**\n');
   return withServer(APPS.astro, dir, port, flags, env, async () => {
     // Ready: a static file answers, which renders no page.
-    for (let i = 0; i < 600; i++) {
-      const r = await fetch(`http://127.0.0.1:${port}/favicon.svg`).catch(() => null);
-      if (r && r.status === 200) { await r.arrayBuffer(); break; }
-      await sleep(100);
-    }
+    await page(port, '/favicon.svg', '<svg', 60_000);
     const first = await timed(port, '/', '<strong>speed-marker</strong>');
     writeFileSync(proof, '# Markdown proof\n\n**speed-marker-edited**\n');
     const reload = await timed(port, '/', '<strong>speed-marker-edited</strong>');

@@ -77,6 +77,8 @@ export function sessionOutcomes(text) {
   for (const line of text.split('\n')) {
     let e;
     try { e = JSON.parse(line); } catch { continue; }
+    // An abnormal close is a diagnosis (probeSessions), not a cleanup event.
+    if (!['mint', 'delete', 'exit-delete'].includes(e.event)) continue;
     const s = sessions.get(e.sid) ?? { probe: e.probe, deletedBy: null, last: 'none', reap: null };
     if (e.event === 'mint') {
       if (e.reap) s.reap = e.reap;
@@ -94,4 +96,29 @@ export function sessionOutcomes(text) {
     leaks: undeleted.filter(([, s]) => s.reap !== 'ttl'),
     ttlReaped: undeleted.filter(([, s]) => s.reap === 'ttl'),
   };
+}
+
+/**
+ * Each probe's sessions, from the ledger: the sid, its mint time and target,
+ * and when one of its sockets ended with no close frame (1006). remote-probes
+ * attributes a reset by these.
+ *
+ * @param {string} text  The ledger file's contents.
+ * @returns {Map<string, Array<{ sid: string, at: string, base: string | null, abnormalCloses: string[] }>>}
+ */
+export function probeSessions(text) {
+  const byProbe = new Map();
+  const bySid = new Map();
+  for (const line of text.split('\n')) {
+    let e;
+    try { e = JSON.parse(line); } catch { continue; }
+    if (e.event === 'mint') {
+      const session = { sid: e.sid, at: e.at, base: e.base ?? null, abnormalCloses: [] };
+      bySid.set(e.sid, session);
+      byProbe.set(e.probe, [...(byProbe.get(e.probe) ?? []), session]);
+    } else if (e.event === 'abnormal-close') {
+      bySid.get(e.sid)?.abnormalCloses.push(e.at);
+    }
+  }
+  return byProbe;
 }

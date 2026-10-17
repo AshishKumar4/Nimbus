@@ -12,7 +12,7 @@
 // file } } } }. release.mjs adds staged.json when staging verified it.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { loadConfig } from '../../deploy-isolation.mjs';
 import { filesUnder } from '../../lib/fs-walk.mjs';
@@ -70,6 +70,22 @@ export async function fetchRelease({ repo, sha, targets, log = (line) => console
   writeFileSync(join(dir, 'release.json'), `${JSON.stringify(release, null, 2)}\n`);
   log(`release: ${Object.entries(release.bundles).map(([target, bundle]) => `${target} ${bundle.sha256.slice(0, 16)}…`).join(', ')} (job ${mapped.jobId}) in ${dir}`);
   return { dir, release };
+}
+
+/**
+ * The commit production serves, as this machine promoted it: the latest
+ * promoted.json (scripts/ci/promote.mjs) whose live checks were green.
+ * Throws when none is recorded here.
+ */
+export function productionCommit() {
+  const promoted = (existsSync(RELEASES) ? readdirSync(RELEASES) : [])
+    .map((name) => join(RELEASES, name, 'promoted.json'))
+    .filter((path) => existsSync(path))
+    .map((path) => JSON.parse(readFileSync(path, 'utf8')))
+    .filter((record) => record.live?.exitCode === 0)
+    .sort((x, y) => Date.parse(y.at) - Date.parse(x.at));
+  if (promoted.length === 0) throw new Error(`no green promotion is recorded under ${RELEASES}, so the commit production serves is not known here`);
+  return promoted[0].commit;
 }
 
 /** The release in `dir`. */

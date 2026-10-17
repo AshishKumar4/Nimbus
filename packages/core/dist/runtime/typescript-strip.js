@@ -3,6 +3,7 @@
 // (--experimental-transform-types) moves code, and with --enable-source-maps
 // the result carries its source map. Runs in the transform facet.
 import { typeScriptFormat } from './module-format.js';
+import { base64Utf8 } from '../_shared/crypto.js';
 // Loaded on the first strip: the esbuild facet runs this runtime too, with no amaro module.
 let amaro = null;
 export async function stripTypeScript(code, filename, { mode, sourceMap }, packageType) {
@@ -31,11 +32,4 @@ export async function stripTypeScript(code, filename, { mode, sourceMap }, packa
     if (!output.map)
         return { code: output.code, format };
     return { code: `${output.code}\n\n//# sourceMappingURL=data:application/json;base64,${base64Utf8(output.map)}`, format };
-}
-function base64Utf8(text) {
-    const bytes = new TextEncoder().encode(text);
-    let binary = '';
-    for (let i = 0; i < bytes.length; i += 0x8000)
-        binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    return btoa(binary);
 }

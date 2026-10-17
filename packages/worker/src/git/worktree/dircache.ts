@@ -13,7 +13,7 @@
 
 import { createHash } from 'node:crypto';
 
-import { oidFromHex, oidToHex } from '../pack/format.js';
+import { objectHash, oidFromHex, oidToHex, type GitObjectType } from '../pack/format.js';
 import { CacheTree } from './cachetree.js';
 import { UnsupportedGitOperation } from '../routing.js';
 import { errnoCodeOf, isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
@@ -141,9 +141,9 @@ function encodeVarint(value: number): number[] {
   return out;
 }
 
-/** An object's id: SHA-1 of `<type> <size>\0` and the bytes. */
-export function objectId(type: string, data: Uint8Array): string {
-  return oidToHex(createHash('sha1').update(encoder.encode(`${type} ${data.length}\0`)).update(data).digest());
+/** An object's id, in hex: SHA-1 of `<type> <size>\0` and the bytes. */
+export function objectId(type: GitObjectType, data: Uint8Array): string {
+  return oidToHex(objectHash(type, data));
 }
 
 export class IndexFormatError extends Error {

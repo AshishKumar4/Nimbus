@@ -30,4 +30,38 @@ for (let round = 0; round < 20_000; round++) {
   const text = String.fromCharCode(...units);
   assert.equal(utf8Length(text), encoder.encode(text).byteLength, JSON.stringify(units));
 }
+
+// Long strings, counted in slices: every class again, at lengths around the
+// first slice's end and well past it, so pairs and lone surrogates fall on
+// the boundaries; and long ASCII.
+function longText(length) {
+  const units = [];
+  while (units.length < length) {
+    switch (next() % 6) {
+      case 0: units.push(0x20 + (next() % 0x60)); break;
+      case 1: units.push(0x80 + (next() % 0x780)); break;
+      case 2: units.push(0x800 + (next() % 0xd000)); break;
+      case 3: units.push(0xd800 + (next() % 0x400), 0xdc00 + (next() % 0x400)); break;
+      case 4: units.push(0xd800 + (next() % 0x800)); break;
+      default: units.push(0xe000 + (next() % 0x2000)); break;
+    }
+  }
+  let text = '';
+  for (let at = 0; at < units.length; at += 8192) text += String.fromCharCode(...units.slice(at, at + 8192));
+  return text;
+}
+for (const length of [255, 256, 257, 87_381, 87_382, 131_072, 262_144, 300_001]) {
+  for (let round = 0; round < 4; round++) {
+    const text = longText(length);
+    assert.equal(utf8Length(text), encoder.encode(text).byteLength, `a long string of ${text.length} units`);
+  }
+}
+for (const tail of ['', 'é', '😀', '\ud800', '\udc00']) {
+  for (const length of [256, 262_143, 262_144, 262_145, 600_000]) {
+    const text = 'a'.repeat(length) + tail;
+    assert.equal(utf8Length(text), encoder.encode(text).byteLength, `${length} ASCII units then ${JSON.stringify(tail)}`);
+    const wide = '€'.repeat(Math.ceil(length / 3)) + tail;
+    assert.equal(utf8Length(wide), encoder.encode(wide).byteLength, `${wide.length} three-byte units then ${JSON.stringify(tail)}`);
+  }
+}
 console.log('utf8 length: ok');

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-// One walk over node_modules (npm.ts packagesIn) serves lifo list, the boot
-// restore, npm ls and local bin registration; one registrar
+// One walk over node_modules (npm.ts packagesIn) serves lifo list, lifo's
+// boot restore and npm ls; one registrar
 // (registerLifoManifestCommands) serves lifo install, the boot restore and
 // dev links. A package is a directory or a link (an npm-linked or workspace
 // package: npm ls lists it, its bins run), a scope's packages count, and
@@ -8,7 +8,7 @@
 // and boot, and registered by a dev link (it fails when it runs).
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
-import { rehydrateGlobalPackages } from '../../packages/core/src/substrate/lifo/commands/system/lifo.ts';
+import { rehydrateLifoPackages } from '../../packages/core/src/substrate/lifo/commands/system/lifo.ts';
 import { createNpmCommand } from '../../packages/core/src/substrate/lifo/commands/system/npm.ts';
 import { CommandRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 import { linkPackage, loadDevLinks } from '../../packages/core/src/substrate/lifo/pkg/lifo-dev.ts';
@@ -27,8 +27,9 @@ try {
     await ws.fs.writeFile(`${dir}/package.json`, JSON.stringify(json));
     for (const [file, body] of Object.entries(files)) await ws.fs.writeFile(`${dir}/${file}`, body);
   };
-  // The global folder is root's, as on Linux: here handed to the user, as root may.
-  const G = '/usr/lib/node_modules';
+  // npm's global folder (its default prefix's) is root's, as on Linux: here handed to the user, as root may.
+  const G = '/usr/local/lib/node_modules';
+  ws.vfs.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 }).mkdir(G.slice(1), { recursive: true, mode: 0o755 });
   ws.vfs.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 }).chown(G.slice(1), 1000, 1000);
   await pkg(`${G}/plain`, { name: 'plain', version: '1.0.0', bin: { plainbin: 'cli.js' } }, { 'cli.js': 'x' });
   await pkg(`${G}/@sc/tool`, { name: '@sc/tool', version: '2.0.0', bin: { scbin: 'b.js' } }, { 'b.js': 'x' });
@@ -40,8 +41,8 @@ try {
 
   const view = ws.filesystem.view({ pid: 900, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
   const registry = new CommandRegistry();
-  await rehydrateGlobalPackages(view, registry);
-  assert.deepEqual(registry.list(), ['demo', 'linkbin', 'plainbin', 'scbin'], 'boot restore: bins, scoped bins, linked bins, lifo commands with entries; a lifo manifest wins over its bins');
+  await rehydrateLifoPackages(view, registry, { cwd: '/home/user', env: { HOME: '/home/user' } });
+  assert.deepEqual(registry.list(), ['demo'], 'boot restore: lifo commands with entries; npm bins are found on PATH, not registered');
 
   // npm ls over a project's node_modules: the same walk.
   const N = '/home/user/proj/node_modules';

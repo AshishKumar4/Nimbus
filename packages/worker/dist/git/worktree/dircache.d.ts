@@ -10,6 +10,7 @@
  * written by one ordered merge of the old entries' bytes with the new ones,
  * which are themselves held as bytes (NewEntries), straight into the file.
  */
+import { type GitObjectType } from '../pack/format.js';
 import { CacheTree } from './cachetree.js';
 export declare const S_IFMT = 61440;
 export declare const S_IFREG = 32768;
@@ -70,8 +71,8 @@ export declare function compareBytes(a: Uint8Array, b: Uint8Array): number;
 export declare function decodePath(bytes: Uint8Array): string;
 /** git's order of two paths as strings: their UTF-8 bytes, which is code point order rather than UTF-16's. */
 export declare function comparePaths(a: string, b: string): number;
-/** An object's id: SHA-1 of `<type> <size>\0` and the bytes. */
-export declare function objectId(type: string, data: Uint8Array): string;
+/** An object's id, in hex: SHA-1 of `<type> <size>\0` and the bytes. */
+export declare function objectId(type: GitObjectType, data: Uint8Array): string;
 export declare class IndexFormatError extends Error {
     readonly detail?: string | undefined;
     /** What verify_hdr found (read-cache.c), which git reports as an error before it dies. */

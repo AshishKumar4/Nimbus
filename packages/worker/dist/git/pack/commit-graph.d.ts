@@ -25,6 +25,7 @@
  * (commitRecord): its id, root tree, committer date and parents, parsed as
  * git's parse_commit_buffer and parse_commit_date read them.
  */
+import { type TreeReader } from './tree-object.js';
 /** Where a clone writes its graph: the chain file names its layers, oldest first. */
 export declare const COMMIT_GRAPHS_DIR = ".git/objects/info/commit-graphs";
 export declare const COMMIT_GRAPH_CHAIN: string;
@@ -81,13 +82,12 @@ export declare function murmur3(seed: number, data: Uint8Array): number;
  * paths, one 0xff byte when there are too many.
  */
 export declare function bloomFilter(changed: readonly Uint8Array[] | null): Uint8Array;
-/** A tree's entries, by its id. */
-export type TreeReader = (oid: Uint8Array) => Promise<Uint8Array>;
 /**
  * The paths a recursive tree diff (git's diff_tree_oid, no renames) of
- * `from` (null: the empty tree) to `to` changes: every file, symlink or
- * submodule added, removed or modified (its id or mode), a directory's by
- * each entry below it. Null once there are more than `limit`.
+ * `from` (null: the empty tree) to `to` changes (tree-object.ts
+ * diffTreeLeaves): every file, symlink or submodule added, removed or
+ * modified, a directory's by each entry below it. Null once there are more
+ * than `limit`.
  */
 export declare function changedPaths(read: TreeReader, from: Uint8Array | null, to: Uint8Array, limit?: number): Promise<Uint8Array[] | null>;
 /** One chunk of a graph file: its id, and where it is. */

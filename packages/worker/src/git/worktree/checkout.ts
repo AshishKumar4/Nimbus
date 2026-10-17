@@ -206,7 +206,8 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
   };
   if (!force && head !== null) {
     await diffTrees(store, head, target, async (path, before, after) => {
-      targetAt.set(path, after);
+      // Names that decode alike are one path: what the target holds there stays.
+      if (after !== null || !targetAt.has(path)) targetAt.set(path, after);
       if (before) headAt.set(path, before);
       queue.push(path);
       if (after) targetDirs(path);

@@ -31,6 +31,8 @@
 import { bundleCss, CssError, percentEscapedDataUrl } from './css-bundle.js';
 import { resolveTsSettings } from './tsconfig-raw.js';
 import { compileForBuild, jsxAndTypescriptOf } from './rolldown-compat.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+import { base64 } from '../_shared/crypto.js';
 /** esbuild options a Nimbus build may pass; anything else is refused. */
 const SUPPORTED = new Set([
     'entryPoints', 'bundle', 'format', 'target', 'platform', 'outdir', 'outfile', 'sourcemap', 'minify', 'external',
@@ -160,16 +162,10 @@ function extensionOf(path) {
     const dot = base.lastIndexOf('.');
     return dot > 0 ? base.slice(dot).toLowerCase() : '';
 }
-function base64Of(bytes) {
-    let latin1 = '';
-    for (let i = 0; i < bytes.length; i += 0x8000)
-        latin1 += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    return btoa(latin1);
-}
 /** esbuild's data URL of `bytes`: the shorter of base64 and percent-escaped text, every byte kept (a BOM too). */
 export function dataUrlOf(path, bytes) {
     const mime = guessMimeType(extensionOf(path), bytes);
-    const encoded = `data:${mime};base64,${base64Of(bytes)}`;
+    const encoded = `data:${mime};base64,${base64(bytes)}`;
     let text;
     try {
         text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
@@ -379,7 +375,6 @@ async function locateUnresolved(api, options, records, loaded) {
     }
     return records.map((r) => message(r.text, placed.get(r) ?? null, r.pluginName));
 }
-const utf8Length = (text) => new TextEncoder().encode(text).length;
 class BuildError extends Error {
     messages;
     constructor(messages) {
@@ -702,7 +697,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
                 raise(`No loader produced ${fileOf({ namespace, path })}`);
             const loader = answer.loader ?? 'js';
             const contents = answer.contents;
-            inputBytes.set(id, typeof contents === 'string' ? new TextEncoder().encode(contents).length : contents.length);
+            inputBytes.set(id, typeof contents === 'string' ? utf8Length(contents) : contents.length);
             const text = typeof contents === 'string' ? contents : loader === 'binary' || loader === 'base64' || loader === 'dataurl' || loader === 'file' ? '' : new TextDecoder().decode(contents);
             const lastSlash = path.lastIndexOf('/');
             loaded.set(id, {
@@ -731,12 +726,12 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
             if (loader === 'dataurl')
                 return value(dataUrlOf(path, bytesOf()));
             if (loader === 'base64')
-                return value(base64Of(bytesOf()));
+                return value(base64(bytesOf()));
             // A Uint8Array of the bytes, decoded from base64 as esbuild's __toBinary
             // does (rolldown's `binary` takes a string, and would store its UTF-8);
             // CommonJS, so a require() gets the array itself.
             if (loader === 'binary') {
-                return { code: `module.exports = Uint8Array.from(atob(${JSON.stringify(base64Of(bytesOf()))}), (c) => c.charCodeAt(0));`, moduleType: 'js' };
+                return { code: `module.exports = Uint8Array.from(atob(${JSON.stringify(base64(bytesOf()))}), (c) => c.charCodeAt(0));`, moduleType: 'js' };
             }
             let compiled = null;
             try {

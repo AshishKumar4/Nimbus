@@ -28,8 +28,8 @@
 
 import { createHash } from 'node:crypto';
 
-import { OID_BYTES, PackFormatError } from './format.js';
-import { TreeEntries } from './tree-object.js';
+import { compareOids, OID_BYTES, oidToHex, PackFormatError } from './format.js';
+import { diffTreeLeaves, type TreeReader } from './tree-object.js';
 
 const GRAPH_PARENT_NONE = 0x70000000;
 const GRAPH_EXTRA_EDGES_NEEDED = 0x80000000;
@@ -56,14 +56,14 @@ export function commitRecord(oid: Uint8Array, data: Uint8Array): Uint8Array {
   // parse_commit_buffer: "tree <hex>\n", then "parent <hex>\n" lines.
   const TREE_LINE = 5 + 40;
   if (data.byteLength <= TREE_LINE + 1 || latin1.decode(data.subarray(0, 5)) !== 'tree ' || data[TREE_LINE] !== 0x0a) {
-    throw new PackFormatError('bogus commit object ' + hex(oid));
+    throw new PackFormatError('bogus commit object ' + oidToHex(oid));
   }
   const tree = hexBytes(data, 5, oid);
   const parents: Uint8Array[] = [];
   const PARENT_LINE = 7 + 40;
   let at = TREE_LINE + 1;
   while (at + PARENT_LINE < data.byteLength && latin1.decode(data.subarray(at, at + 7)) === 'parent ') {
-    if (data.byteLength <= at + PARENT_LINE + 1 || data[at + PARENT_LINE] !== 0x0a) throw new PackFormatError('bad parents in commit ' + hex(oid));
+    if (data.byteLength <= at + PARENT_LINE + 1 || data[at + PARENT_LINE] !== 0x0a) throw new PackFormatError('bad parents in commit ' + oidToHex(oid));
     parents.push(hexBytes(data, at + 7, oid));
     at += PARENT_LINE + 1;
   }
@@ -118,7 +118,7 @@ function hexBytes(data: Uint8Array, at: number, oid: Uint8Array): Uint8Array {
   for (let i = 0; i < OID_BYTES; i++) {
     const high = hexValue(data[at + 2 * i]);
     const low = hexValue(data[at + 2 * i + 1]);
-    if (high < 0 || low < 0) throw new PackFormatError('bad object id in commit ' + hex(oid));
+    if (high < 0 || low < 0) throw new PackFormatError('bad object id in commit ' + oidToHex(oid));
     out[i] = (high << 4) | low;
   }
   return out;
@@ -129,12 +129,6 @@ function hexValue(c: number): number {
   if (c >= 0x61 && c <= 0x66) return c - 0x61 + 10;
   if (c >= 0x41 && c <= 0x46) return c - 0x41 + 10;
   return -1;
-}
-
-function hex(bytes: Uint8Array): string {
-  let out = '';
-  for (const byte of bytes) out += byte.toString(16).padStart(2, '0');
-  return out;
 }
 
 /** The records of a staged list (commitRecord's, back to back), as views of its bytes. */
@@ -185,11 +179,11 @@ export interface GraphCommits {
 export function graphCommits(records: Iterable<Uint8Array>): GraphCommits {
   const list = [...records];
   const count = list.length;
-  const byId = list.map((record, i) => i).sort((a, b) => compareOid(list[a], 0, list[b], 0));
+  const byId = list.map((record, i) => i).sort((a, b) => compareOids(list[a], 0, list[b], 0));
   const oids = new Uint8Array(count * OID_BYTES);
   byId.forEach((from, i) => oids.set(list[from].subarray(0, OID_BYTES), i * OID_BYTES));
   for (let i = 1; i < count; i++) {
-    if (compareOid(oids, (i - 1) * OID_BYTES, oids, i * OID_BYTES) === 0) throw new PackFormatError('commit ' + hex(oids.subarray(i * OID_BYTES, (i + 1) * OID_BYTES)) + ' recorded twice');
+    if (compareOids(oids, (i - 1) * OID_BYTES, oids, i * OID_BYTES) === 0) throw new PackFormatError('commit ' + oidToHex(oids.subarray(i * OID_BYTES, (i + 1) * OID_BYTES)) + ' recorded twice');
   }
   const trees = new Uint8Array(count * OID_BYTES);
   const dates = new BigUint64Array(count);
@@ -208,7 +202,7 @@ export function graphCommits(records: Iterable<Uint8Array>): GraphCommits {
     for (let p = 0; p < n; p++) {
       const at = 2 * OID_BYTES + 10 + p * OID_BYTES;
       const position = findOid(oids, count, record, at);
-      if (position < 0) throw new PackFormatError('missing parent ' + hex(record.subarray(at, at + OID_BYTES)) + ' for commit ' + hex(record.subarray(0, OID_BYTES)));
+      if (position < 0) throw new PackFormatError('missing parent ' + oidToHex(record.subarray(at, at + OID_BYTES)) + ' for commit ' + oidToHex(record.subarray(0, OID_BYTES)));
       parents[next++] = position;
     }
   });
@@ -216,20 +210,12 @@ export function graphCommits(records: Iterable<Uint8Array>): GraphCommits {
   return { count, oids, trees, dates, parentStart, parents };
 }
 
-function compareOid(a: Uint8Array, aAt: number, b: Uint8Array, bAt: number): number {
-  for (let i = 0; i < OID_BYTES; i++) {
-    const d = a[aAt + i] - b[bAt + i];
-    if (d !== 0) return d;
-  }
-  return 0;
-}
-
 function findOid(oids: Uint8Array, count: number, key: Uint8Array, at: number): number {
   let lo = 0;
   let hi = count;
   while (lo < hi) {
     const mid = (lo + hi) >>> 1;
-    const d = compareOid(oids, mid * OID_BYTES, key, at);
+    const d = compareOids(oids, mid * OID_BYTES, key, at);
     if (d === 0) return mid;
     if (d < 0) lo = mid + 1;
     else hi = mid;
@@ -429,95 +415,16 @@ export function bloomFilter(changed: readonly Uint8Array[] | null): Uint8Array {
   return filter;
 }
 
-/** One entry of a tree, as the diff walks it. */
-interface DiffEntry {
-  name: Uint8Array;
-  mode: number;
-  oid: Uint8Array;
-}
-
-/** A tree's entries, by its id. */
-export type TreeReader = (oid: Uint8Array) => Promise<Uint8Array>;
-
-const MODE_TREE = 0o040000;
-const EMPTY = new Uint8Array(0);
-
-function treeEntries(tree: Uint8Array): DiffEntry[] {
-  const entries: DiffEntry[] = [];
-  for (const e = new TreeEntries(tree); e.next();) entries.push({ name: tree.subarray(e.nameAt, e.nameEnd), mode: e.mode, oid: tree.subarray(e.oidAt, e.oidAt + OID_BYTES) });
-  return entries;
-}
-
-const isTree = (mode: number) => (mode & 0o170000) === MODE_TREE;
-
-/** base_name_compare: names by bytes, a tree's as if it ended in '/'. */
-function compareEntries(a: DiffEntry, b: DiffEntry): number {
-  const n = Math.min(a.name.byteLength, b.name.byteLength);
-  for (let i = 0; i < n; i++) if (a.name[i] !== b.name[i]) return a.name[i] - b.name[i];
-  const ca = a.name.byteLength > n ? a.name[n] : isTree(a.mode) ? 0x2f : 0;
-  const cb = b.name.byteLength > n ? b.name[n] : isTree(b.mode) ? 0x2f : 0;
-  return ca - cb;
-}
-
-function joinPath(base: Uint8Array, name: Uint8Array): Uint8Array {
-  if (base.byteLength === 0) return name;
-  const out = new Uint8Array(base.byteLength + 1 + name.byteLength);
-  out.set(base);
-  out[base.byteLength] = 0x2f;
-  out.set(name, base.byteLength + 1);
-  return out;
-}
-
 /**
  * The paths a recursive tree diff (git's diff_tree_oid, no renames) of
- * `from` (null: the empty tree) to `to` changes: every file, symlink or
- * submodule added, removed or modified (its id or mode), a directory's by
- * each entry below it. Null once there are more than `limit`.
+ * `from` (null: the empty tree) to `to` changes (tree-object.ts
+ * diffTreeLeaves): every file, symlink or submodule added, removed or
+ * modified, a directory's by each entry below it. Null once there are more
+ * than `limit`.
  */
 export async function changedPaths(read: TreeReader, from: Uint8Array | null, to: Uint8Array, limit = BLOOM_MAX_CHANGED_PATHS): Promise<Uint8Array[] | null> {
   const changed: Uint8Array[] = [];
-  const add = (path: Uint8Array) => changed.push(path) <= limit;
-  // Every leaf below a tree only one side has.
-  const all = async (tree: Uint8Array, base: Uint8Array): Promise<boolean> => {
-    for (const entry of treeEntries(await read(tree))) {
-      const path = joinPath(base, entry.name);
-      if (isTree(entry.mode) ? !(await all(entry.oid, path)) : !add(path)) return false;
-    }
-    return true;
-  };
-  const walk = async (a: Uint8Array | null, b: Uint8Array | null, base: Uint8Array): Promise<boolean> => {
-    const left = a === null ? [] : treeEntries(await read(a));
-    const right = b === null ? [] : treeEntries(await read(b));
-    let i = 0;
-    let j = 0;
-    while (i < left.length || j < right.length) {
-      const cmp = i >= left.length ? 1 : j >= right.length ? -1 : compareEntries(left[i], right[j]);
-      if (cmp < 0) {
-        const entry = left[i++];
-        const path = joinPath(base, entry.name);
-        if (isTree(entry.mode) ? !(await all(entry.oid, path)) : !add(path)) return false;
-      } else if (cmp > 0) {
-        const entry = right[j++];
-        const path = joinPath(base, entry.name);
-        if (isTree(entry.mode) ? !(await all(entry.oid, path)) : !add(path)) return false;
-      } else {
-        const l = left[i++];
-        const r = right[j++];
-        if (l.mode === r.mode && equalOid(l.oid, r.oid)) continue;
-        const path = joinPath(base, l.name);
-        if (isTree(l.mode)) {
-          if (!(await walk(l.oid, r.oid, path))) return false;
-        } else if (!add(path)) return false;
-      }
-    }
-    return true;
-  };
-  return (await walk(from, to, EMPTY)) ? changed : null;
-}
-
-function equalOid(a: Uint8Array, b: Uint8Array): boolean {
-  for (let i = 0; i < OID_BYTES; i++) if (a[i] !== b[i]) return false;
-  return true;
+  return (await diffTreeLeaves(read, from, to, (path) => changed.push(path) <= limit)) ? changed : null;
 }
 
 /** One chunk of a graph file: its id, and where it is. */
@@ -683,11 +590,11 @@ export async function* chunkFileStream(chunks: readonly StreamedChunk[], named: 
     if (written !== chunk.size) throw new PackFormatError(`chunk ${chunk.id} has ${written} of its ${chunk.size} bytes`);
   }
   const digest = new Uint8Array(hash.digest());
-  named(hex(digest));
+  named(oidToHex(digest));
   yield digest;
 }
 
 /** A layer's name: its trailing hash, in hex. */
 export function graphName(file: Uint8Array): string {
-  return hex(file.subarray(file.byteLength - OID_BYTES));
+  return oidToHex(file.subarray(file.byteLength - OID_BYTES));
 }

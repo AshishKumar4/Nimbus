@@ -140,7 +140,7 @@ export declare function rewriteExternalRequires(code: string, basePath: string):
  * Cloudflare Workers runtime disallows string-to-code generation outside of
  * module initialization.
  *
- * The names are the CJS scan's Vite policy over the entire bundled text:
+ * The names are the CJS scan's (runtime/cjs-export-names.ts) over the entire bundled text:
  * `exports.NAME =`, `exports["NAME"] =`, `module.exports.NAME =`, every
  * `Object.defineProperty(exports, "NAME", ...)`, and every key of a
  * `module.exports = { ... }` literal whatever its value.

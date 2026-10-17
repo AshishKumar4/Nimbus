@@ -29,7 +29,7 @@
 // Black-box driven: only POST /new + WS terminal + GET /api/_diag/cache.
 // No /api/_diag/memory (RPC-level counters, separate axis).
 
-import { mintSession, Terminal, sleep, makeAsserter, BASE, requestHeaders } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, BASE, requestHeaders } from '../_driver.mjs';
 
 async function getCacheSnapshot(sid) {
   const r = await fetch(`${BASE}/s/${sid}/api/_diag/cache`, {
@@ -61,7 +61,6 @@ console.log(`  sidA=${sidA}`);
 
 const tA = new Terminal(sidA);
 await tA.connect();
-await sleep(1_500);
 await tA.waitForPrompt(15_000);
 
 // Reset counters in session A's isolate.
@@ -179,7 +178,6 @@ console.log(`  sidB=${sidB}`);
 
 const tB = new Terminal(sidB);
 await tB.connect();
-await sleep(1_500);
 await tB.waitForPrompt(15_000);
 
 await resetCache(sidB);

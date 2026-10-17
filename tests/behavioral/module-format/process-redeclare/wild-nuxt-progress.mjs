@@ -17,14 +17,13 @@
 // accepted — this probe ONLY asserts the `process` redeclare gate
 // is passed.
 
-import { Terminal, mintSession, sleep, makeAsserter, BASE } from '../../_driver.mjs';
+import { Terminal, mintSession, makeAsserter, BASE } from '../../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[process-redeclare/wild-nuxt-progress] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 const A = makeAsserter('process-redeclare/wild-nuxt-progress');

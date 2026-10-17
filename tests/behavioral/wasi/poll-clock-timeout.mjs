@@ -12,14 +12,15 @@
 // sleep/select/poll based program failed at the syscall boundary. This
 // probe validates the JSPI-wrapped setTimeout deadline path works on prod.
 
-import { openWasiProbe, tailLines, trimmedLines } from './_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/poll-clock-timeout', { dir: '/home/user/sb', fixture: 'poll-clock-timeout', as: 'pc.wasm' });
 const { t } = probe;
 try {
   const r = await t.run('wasm-runner pc.wasm', 30_000);
   const tail = tailLines(r.output, 6);
-  const lines = trimmedLines(tail);
+  const lines = outputLines(tail);
   const ok = lines.some(s => s === '1');
 
   probe.report([['poll_oneoff(CLOCK MONOTONIC +100ms) → nev=1, type=CLOCK', ok]], { tail, ok });

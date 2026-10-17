@@ -126,7 +126,7 @@ async function workerTree(registry, deps) {
     if (!version) return { ...empty, pkg: null, error: { type: 'unresolved', reason: `no version of ${name} satisfies ${spec?.range}` } };
     const pkg = {
       name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: `sha512-${name}-${version}`,
-      dependencies: versions[version], exports: null, main: 'index.js', module: '', bin: {},
+      dependencies: versions[version], main: 'index.js', bin: {},
     };
     return { ...empty, pkg, cacheWrites: [registryRecord(pkg, Date.now())] };
   };

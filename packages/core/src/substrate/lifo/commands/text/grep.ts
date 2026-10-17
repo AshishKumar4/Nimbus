@@ -6,6 +6,7 @@ import { globMatch as fnmatch } from '../../utils/glob.js';
 import { NOT_WORD, PosixRegexSyntax, WORD, translate, literal } from '../../utils/posix-regex.js';
 import { enc } from '../../../../_shared/bytes.js';
 import { getopt, type GetoptSpec } from '../../utils/args.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 
 // GNU grep (3.12) in a UTF-8 locale. Patterns: BRE (default), ERE (-E),
 // fixed strings (-F) and Perl-style (-P, as JavaScript's regex). A line is a
@@ -408,7 +409,7 @@ export async function runGrep(ctx: GrepContext): Promise<number> {
                 continue;
               }
               if (o.contextGiven && o.groupSeparator !== null && anyPrinted && lineNo > lastPrinted + 1) emit(`${o.groupSeparator}\n`);
-              head(lineNo, at + enc.encode(line.slice(0, m.start)).length, ':');
+              head(lineNo, at + utf8Length(line.slice(0, m.start)), ':');
               emit(text);
               emit(Uint8Array.of(eol));
               lastPrinted = lineNo;

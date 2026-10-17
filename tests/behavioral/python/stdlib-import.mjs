@@ -5,7 +5,7 @@
 // /lib/python313.zip and the ZipImporter can resolve modules.
 // Uses `json` (pure Python) for the test.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('python/stdlib-import');
@@ -25,8 +25,7 @@ await t.run('nimbus install python', 180_000);
     `python -c 'import json; print(json.dumps([1, 2]))'`, 120_000,
   );
   const stripped = stripAnsi(output);
-  const lines = stripped.split(/\r?\n/).map((l) => l.trim());
-  const has = lines.some((l) => l === '[1, 2]');
+  const has = hasOutputLine(output, '[1, 2]');
   a.check('json stdlib import works; json.dumps([1, 2]) → [1, 2]',
     has, has ? `elapsed=${elapsed}ms` : JSON.stringify(stripped.slice(-400)));
 }
@@ -37,8 +36,7 @@ await t.run('nimbus install python', 180_000);
     `python -c 'import re; print(re.sub(r"\\d+", "X", "a1b22c333"))'`, 60_000,
   );
   const stripped = stripAnsi(output);
-  const lines = stripped.split(/\r?\n/).map((l) => l.trim());
-  const has = lines.some((l) => l === 'aXbXcX');
+  const has = hasOutputLine(output, 'aXbXcX');
   a.check('re stdlib import works; re.sub → "aXbXcX"', has,
     has ? '' : JSON.stringify(stripped.slice(-400)));
 }

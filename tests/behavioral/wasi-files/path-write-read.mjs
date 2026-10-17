@@ -7,7 +7,8 @@
 //
 // Pass: stdout includes "write+read OK".
 
-import { openWasiProbe, tailLines } from '../wasi/_harness.mjs';
+import { tailLines } from '../_driver.mjs';
+import { openWasiProbe } from '../wasi/_harness.mjs';
 
 const probe = await openWasiProbe('wasi-files/path-write-read', { dir: '/home/user/w2', fixture: 'path-write-read', as: 'pwr.wasm' });
 const { t } = probe;

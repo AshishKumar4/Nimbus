@@ -28,7 +28,7 @@ function resolvedResult(name, version, overrides = {}) {
   return {
     pkg: {
       name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
-      dependencies: {}, exports: null, main: 'index.js', module: '', bin: {}, ...overrides,
+      dependencies: {}, main: 'index.js', bin: {}, ...overrides,
     },
     cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
   };

@@ -100,7 +100,7 @@ try {
       }
       if (mode !== 'native') reports[mode] = readReport(report);
     }
-    const shadow = { functions: 0, ssrModules: 0, vmExpressions: 0, compared: 0, equal: 0, mismatches: [], refused: [], moduleResults: [], ...reports.shadow };
+    const shadow = { functions: 0, ssrModules: 0, vmExpressions: 0, compared: 0, equal: 0, awaiting: 0, mismatches: [], refused: [], moduleResults: [], ...reports.shadow };
     const moduleDiffs = shadow.moduleResults.filter((m) => m.difference);
     const vm = reports.interpreted.vmExpressions ?? [];
     console.log(`${name}: ${shadow.functions} functions built from strings (${shadow.ssrModules} Vite SSR modules), ${shadow.vmExpressions} vm.runInThisContext expressions, ${shadow.compared} runs compared, ${shadow.equal} equal; ${shadow.moduleResults.length} module files compared; corpus in .cache/interpreter-differential/corpus/${name}`);
@@ -109,6 +109,7 @@ try {
     if (app.vmConfig && !vm.some((code) => app.vmConfig.test(code))) failures.push(`${name}: the interpreted run did not interpret its config through vm.runInThisContext`);
     for (const m of shadow.mismatches) failures.push(`${name}: ${m.label} ${m.key}: ${m.difference}`);
     for (const r of shadow.refused) failures.push(`${name}: refused ${r.kind} ${r.key}: ${r.error}`);
+    if (shadow.awaiting !== 0) failures.push(`${name}: ${shadow.awaiting} comparisons were still waiting for an awaitable when the run ended`);
     for (const m of moduleDiffs) failures.push(`${name}: module ${m.url}: ${m.difference}`);
     for (const [key, native] of Object.entries(outputs.native)) {
       const interpreted = outputs.interpreted[key];

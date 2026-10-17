@@ -10,14 +10,15 @@
 // widen to rb=~0, ri=~0. Expects errno 76 = ENOTCAPABLE. Prints
 // '0' + (errno%10) + '\\n' = '6\\n'.
 
-import { openWasiProbe, tailLines, trimmedLines } from './_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/fdstat-rights-no-widen', { dir: '/home/user/sb', fixture: 'fdstat-rights-no-widen', as: 'fsr2.wasm' });
 const { t } = probe;
 try {
   const r = await t.run('wasm-runner fsr2.wasm', 60_000);
   const tail = tailLines(r.output, 6);
-  const lines = trimmedLines(tail);
+  const lines = outputLines(tail);
   // ENOTCAPABLE = 76; last digit '6'.
   const ok = lines.some(s => s === '6');
 

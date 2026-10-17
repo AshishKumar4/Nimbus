@@ -399,9 +399,5 @@ export declare class R2CacheClient {
     putPackument(name: string, json: string, registry?: string, expiresAt?: number, etag?: string, 
     /** Write only over this version of the stored object (R2's own etag). */
     over?: string): Promise<boolean>;
-    /** Lightweight feature-detection for callers that want to log path. */
-    hasTarballBucket(): boolean;
-    /** Lightweight feature-detection for callers that want to log path. */
-    hasPackumentBucket(): boolean;
 }
 //# sourceMappingURL=r2-cache.d.ts.map

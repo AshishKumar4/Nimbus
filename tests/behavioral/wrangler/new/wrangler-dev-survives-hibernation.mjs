@@ -13,7 +13,8 @@
 //
 // Black-box: the session's terminal, its Worker URL and its diagnostics.
 
-import { deleteSession, makeAsserter, mintSession, requestHeaders, sleep, stripAnsi, Terminal } from '../../_driver.mjs';
+import { dirname } from 'node:path';
+import { deleteSession, makeAsserter, mintSession, requestHeaders, sleep, stripAnsi, Terminal, writeFileViaShell } from '../../_driver.mjs';
 import { afterReset } from '../../durable/_reset-window.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -49,10 +50,10 @@ let t = new Terminal(sid);
 try {
   await t.connect();
   await t.waitForPrompt(60_000);
-  const write = (path, content) => t.run(
-    `node -e "require('fs').mkdirSync(require('path').dirname('${path}'),{recursive:true});require('fs').writeFileSync('${path}', Buffer.from('${Buffer.from(content).toString('base64')}','base64'))"`,
-    60_000,
-  );
+  const write = async (path, content) => {
+    await t.run(`mkdir -p ${dirname(path)}`, 10_000);
+    return writeFileViaShell((command) => t.run(command, 60_000), path, content);
+  };
   await write('/home/user/idle/wrangler.jsonc', JSON.stringify(CONFIG));
   await write('/home/user/idle/src/index.js', WORKER);
   await write('/home/user/site/index.html', `<!doctype html><title>site</title><p>${MARKER}</p>`);

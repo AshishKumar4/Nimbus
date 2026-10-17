@@ -1,5 +1,7 @@
 // Node v22.22.3's undici WebSocket/WebIDL entrypoints. Native WebSocket has
 // no message-transport hook; conversions stay here, separate from the relay.
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+
 const toUSVString = (value: unknown): string => {
   const string = `${value as string}` as string & { toWellFormed(): string };
   return string.toWellFormed();
@@ -85,6 +87,6 @@ export function webSocketClose(code: unknown, reason: unknown): { code: number |
   }
   const text = reason === undefined ? '' : toUSVString(reason as string);
   if (number !== undefined && number !== 1000 && (number < 3000 || number > 4999)) throw new DOMException('invalid code', 'InvalidAccessError');
-  if (new TextEncoder().encode(text).byteLength > 123) throw new DOMException('Reason must be less than 123 bytes', 'SyntaxError');
+  if (utf8Length(text) > 123) throw new DOMException('Reason must be less than 123 bytes', 'SyntaxError');
   return { code: number, reason: text };
 }

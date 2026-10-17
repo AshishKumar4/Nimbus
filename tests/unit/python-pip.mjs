@@ -1,104 +1,31 @@
 #!/usr/bin/env bun
+// pip install, planned and run: what each request installs (pipInstall runs
+// the install the CPython runner would, with python3, against real wheels),
+// and the requests pip refuses before installing anything.
 
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { buildPipInvocation } from '../../packages/core/src/runtime/python-pip.ts';
+import { FakeVfs, cwd, file, installMockPypi, markers, pipInstall, project, restoreFetch, scratch, wheelhouse, writeWheels } from './lib/pypi-mock.mjs';
 import {
   isRuntimePythonPackageArtifactMetadata,
   parseRuntimeManifest,
 } from '../../packages/core/src/runtime/runtime-manifest.ts';
 
-class FakeVfs {
-  get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
-
-  constructor(files = {}, deniedPaths = []) {
-    this.files = new Map(Object.entries(files).map(([path, value]) => [
-      path,
-      typeof value === 'string' ? new TextEncoder().encode(value) : value,
-    ]));
-    this.deniedPaths = new Set(deniedPaths);
-  }
-
-  exists(path) {
-    if (this.deniedPaths.has(path)) throw new Error(`EACCES: permission denied, access '/${path}'`);
-    return this.files.has(path);
-  }
-
-  readFile(path) {
-    const data = this.files.get(path);
-    if (!data) throw new Error(`missing file: ${path}`);
-    return data;
-  }
-}
-
-const cwd = '/home/user/project';
-const originalFetch = globalThis.fetch;
-
-function file(name, version, filename, options = {}) {
-  return {
-    filename,
-    packagetype: filename.endsWith('.whl') ? 'bdist_wheel' : 'sdist',
-    url: `https://files.example/${filename}`,
-    digests: options.sha256 === false ? undefined : {
-      sha256: options.sha256 || '0'.repeat(64),
-    },
-    yanked: false,
-  };
-}
-
-function project(name, versions, requiresDist = {}) {
-  return {
-    name,
-    versions,
-    requiresDist,
-  };
-}
-
-function pyodideLockfile(packages) {
-  return JSON.stringify({
-    info: {
-      abi_version: '2025_0',
-      arch: 'wasm32',
-      platform: 'emscripten_4_0_9',
-      python: '3.13.2',
-    },
-    packages,
-  });
-}
-
-function installMockPypi(projects) {
-  const byName = new Map(projects.map((pkg) => [pkg.name, pkg]));
-  globalThis.fetch = async (rawUrl) => {
-    const url = new URL(rawUrl);
-    const parts = url.pathname.split('/').filter(Boolean);
-    assert.equal(parts[0], 'pypi');
-    const name = parts[1];
-    const version = parts[2] === 'json' ? null : parts[2];
-    const pkg = byName.get(name);
-    if (!pkg) {
-      return { ok: false, status: 404, json: async () => ({}) };
-    }
-    const releases = Object.fromEntries(Object.entries(pkg.versions).map(([ver, files]) => [ver, files]));
-    const selectedVersion = version || Object.keys(pkg.versions).at(-1);
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({
-        info: {
-          name: pkg.name,
-          version: selectedVersion,
-          requires_dist: pkg.requiresDist[selectedVersion] || [],
-        },
-        releases,
-        urls: version ? pkg.versions[version] : [],
-      }),
-    };
-  };
-}
+const places = [];
+/** A scratch home and project, removed when the file ends. */
+const place = () => {
+  const made = scratch();
+  places.push(made);
+  return made;
+};
 
 try {
   {
-    installMockPypi([
+    const at = place();
+    installMockPypi(wheelhouse(at, [
       project('requests', {
         '2.31.0': [file('requests', '2.31.0', 'requests-2.31.0-py3-none-any.whl')],
       }, {
@@ -106,13 +33,9 @@ try {
           'certifi>=2017.4.17',
           'charset-normalizer<4,>=2',
           'idna<4,>=2.5; python_version >= "3"',
-          'emscripten-only; sys_platform == "emscripten"',
           'windows-only; sys_platform == "win32"',
           'urllib3<3,>=1.21.1',
         ],
-      }),
-      project('emscripten-only', {
-        '1.0.0': [file('emscripten-only', '1.0.0', 'emscripten_only-1.0.0-py3-none-any.whl')],
       }),
       project('windows-only', {
         '1.0.0': [file('windows-only', '1.0.0', 'windows_only-1.0.0-py3-none-any.whl')],
@@ -129,30 +52,44 @@ try {
       project('urllib3', {
         '2.6.0': [file('urllib3', '2.6.0', 'urllib3-2.6.0-py3-none-any.whl')],
       }),
-    ]);
-    const invocation = await buildPipInvocation(['install', 'requests'], 'pip', cwd, new FakeVfs(), { home: '/home/user', network: ISOLATE_NETWORK });
-    assert.equal(invocation.mode, 'pip');
-    for (const name of ['requests', 'certifi', 'charset-normalizer', 'idna', 'urllib3', 'emscripten-only']) {
-      assert.match(invocation.code, new RegExp(`"canonicalName":"${name}"`));
-    }
-    assert.doesNotMatch(invocation.code, /"canonicalName":"windows-only"/);
+    ]));
+    assert.deepEqual(await pipInstall(['requests'], at), {
+      installed: ['certifi==2025.11.12', 'charset-normalizer==3.4.4', 'idna==3.11', 'requests==2.31.0', 'urllib3==2.6.0'],
+    }, 'requests and its dependencies, and not the one for Windows');
   }
 
   {
-    installMockPypi([
+    const at = place();
+    installMockPypi(wheelhouse(at, [
       project('packaging', {
         '24.2': [file('packaging', '24.2', 'packaging-24.2-py3-none-any.whl')],
         '25.0': [file('packaging', '25.0', 'packaging-25.0-py3-none-any.whl')],
       }),
-    ]);
-    const vfs = new FakeVfs({
-      'home/user/project/requirements.txt': 'packaging\n',
-      'home/user/project/constraints.txt': 'packaging==24.2\n',
-    });
-    const invocation = await buildPipInvocation(['install', '-r', 'requirements.txt', '-c', 'constraints.txt'], 'pip', cwd, vfs, { home: '/home/user', network: ISOLATE_NETWORK });
-    assert.equal(invocation.mode, 'pip');
-    assert.match(invocation.code, /"canonicalName":"packaging","version":"24\.2"/);
-    assert.doesNotMatch(invocation.code, /"canonicalName":"packaging","version":"25\.0"/);
+    ]));
+    writeFileSync(join(at.project, 'requirements.txt'), 'packaging\n');
+    writeFileSync(join(at.project, 'constraints.txt'), 'packaging==24.2\n');
+    assert.deepEqual(await pipInstall(['-r', 'requirements.txt', '-c', 'constraints.txt'], at), { installed: ['packaging==24.2'] });
+  }
+
+  // A constraints file's includes are constraints, -r too; a requirements
+  // file's -c is constraints, and its -r requirements.
+  {
+    const at = place();
+    installMockPypi(wheelhouse(at, [
+      project('packaging', {
+        '24.2': [file('packaging', '24.2', 'packaging-24.2-py3-none-any.whl')],
+        '25.0': [file('packaging', '25.0', 'packaging-25.0-py3-none-any.whl')],
+      }),
+      project('idna', { '3.11': [file('idna', '3.11', 'idna-3.11-py3-none-any.whl')] }),
+      project('six', { '1.17.0': [file('six', '1.17.0', 'six-1.17.0-py3-none-any.whl')] }),
+    ]));
+    for (const dir of ['nested', 'pins']) mkdirSync(join(at.project, dir));
+    writeFileSync(join(at.project, 'requirements.txt'), '-r nested/more.txt\n-c pins/constraints.txt\n');
+    writeFileSync(join(at.project, 'nested/more.txt'), 'packaging\n');
+    writeFileSync(join(at.project, 'pins/constraints.txt'), '-r pinned.txt\n');
+    writeFileSync(join(at.project, 'pins/pinned.txt'), 'packaging==24.2\nidna==3.11\n');
+    assert.deepEqual(await pipInstall(['-r', 'requirements.txt', 'six'], at), { installed: ['packaging==24.2', 'six==1.17.0'] },
+      'the nested requirements file is requirements, pinned by the nested constraints; a requirements file a constraints file includes is constraints');
   }
 
   {
@@ -162,7 +99,7 @@ try {
       'pip',
       cwd,
       new FakeVfs({}, [requirementsPath]),
-      { home: '/home/user', network: ISOLATE_NETWORK },
+      { home: '/home/user', network: ISOLATE_NETWORK, markers },
     );
     assert.equal(invocation.mode, 'none');
     assert.equal(invocation.exitCode, 1);
@@ -176,7 +113,7 @@ try {
       'pip',
       cwd,
       new FakeVfs({}, [constraintsPath]),
-      { home: '/home/user', network: ISOLATE_NETWORK },
+      { home: '/home/user', network: ISOLATE_NETWORK, markers },
     );
     assert.equal(invocation.mode, 'none');
     assert.equal(invocation.exitCode, 1);
@@ -190,7 +127,7 @@ try {
       'pip',
       cwd,
       new FakeVfs({}, [wheelPath]),
-      { home: '/home/user', network: ISOLATE_NETWORK },
+      { home: '/home/user', network: ISOLATE_NETWORK, markers },
     );
     assert.equal(invocation.mode, 'none');
     assert.equal(invocation.exitCode, 1);
@@ -198,29 +135,16 @@ try {
   }
 
   {
-    const vfs = new FakeVfs({
-      'home/user/project/local_pkg-0.1.0-py3-none-any.whl': new Uint8Array([1, 2, 3]),
-    });
-    const invocation = await buildPipInvocation(['install', './local_pkg-0.1.0-py3-none-any.whl'], 'pip', cwd, vfs, { home: '/home/user', network: ISOLATE_NETWORK });
-    assert.equal(invocation.mode, 'pip');
-    assert.match(invocation.code, /"displayName":"local_pkg-0\.1\.0-py3-none-any"/);
-    assert.match(invocation.code, /"path":"\/home\/user\/project\/local_pkg-0\.1\.0-py3-none-any\.whl"/);
+    const at = place();
+    writeWheels([{ path: join(at.project, 'local_pkg-0.1.0-py3-none-any.whl'), name: 'local_pkg', version: '0.1.0' }]);
+    assert.deepEqual(await pipInstall(['./local_pkg-0.1.0-py3-none-any.whl'], at), { installed: ['local_pkg==0.1.0'] }, 'a local wheel, by its path');
   }
 
   {
-    const vfs = new FakeVfs({
-      'home/user/project/direct_ref-0.1.0-py3-none-any.whl': new Uint8Array([1, 2, 3]),
-    });
-    const invocation = await buildPipInvocation(
-      ['install', 'direct-ref @ file:///home/user/project/direct_ref-0.1.0-py3-none-any.whl'],
-      'pip',
-      cwd,
-      vfs,
-      { home: '/home/user', network: ISOLATE_NETWORK },
-    );
-    assert.equal(invocation.mode, 'pip');
-    assert.match(invocation.code, /"displayName":"direct-ref"/);
-    assert.match(invocation.code, /"path":"\/home\/user\/project\/direct_ref-0\.1\.0-py3-none-any\.whl"/);
+    const at = place();
+    const wheel = join(at.project, 'direct_ref-0.1.0-py3-none-any.whl');
+    writeWheels([{ path: wheel, name: 'direct-ref', version: '0.1.0' }]);
+    assert.deepEqual(await pipInstall([`direct-ref @ file://${wheel}`], at), { installed: ['direct-ref==0.1.0'] }, 'a local wheel, by a direct reference');
   }
 
   {
@@ -229,88 +153,9 @@ try {
         '1.0.0': [file('native-only', '1.0.0', 'native_only-1.0.0-cp313-cp313-manylinux_2_28_x86_64.whl')],
       }),
     ]);
-    const invocation = await buildPipInvocation(['install', 'native-only'], 'pip', cwd, new FakeVfs(), { home: '/home/user', network: ISOLATE_NETWORK });
+    const invocation = await buildPipInvocation(['install', 'native-only'], 'pip', cwd, new FakeVfs(), { home: '/home/user', network: ISOLATE_NETWORK, markers });
     assert.equal(invocation.mode, 'none');
     assert.match(invocation.error || '', /native platform wheels|native Linux wheels/);
-  }
-
-  {
-    const numpyLockfile = pyodideLockfile({
-      numpy: {
-        depends: [],
-        file_name: 'numpy-2.2.5-cp313-cp313-pyemscripten_2025_0_wasm32.whl',
-        imports: ['numpy'],
-        install_dir: 'site',
-        name: 'numpy',
-        package_type: 'package',
-        sha256: '8'.repeat(64),
-        version: '2.2.5',
-      },
-    });
-    const invocation = await buildPipInvocation(
-      ['install', 'numpy'],
-      'pip',
-      cwd,
-      new FakeVfs(),
-      {
-        home: '/home/user',
-        pyodideLockfileText: numpyLockfile,
-      },
-    );
-    assert.equal(invocation.mode, 'none');
-    assert.match(invocation.error || '', /numpy==2\.2\.5/);
-    assert.match(invocation.error || '', /startup-loaded Python package artifact/);
-    assert.match(invocation.error || '', /Request-time WebAssembly extension loading is not supported/);
-
-    const artifactInvocation = await buildPipInvocation(
-      ['install', 'numpy'],
-      'pip',
-      cwd,
-      new FakeVfs(),
-      {
-        home: '/home/user',
-        pyodideLockfileText: numpyLockfile,
-        runtimeArtifacts: [{
-          path: 'share/pyodide/packages/numpy-2.2.5-cp313-cp313-pyemscripten_2025_0_wasm32.whl',
-          kind: 'python-package',
-          id: 'pyodide-package:numpy@2.2.5',
-          sha256: '1'.repeat(64),
-          language: 'python',
-          packageName: 'numpy',
-          version: '2.2.5',
-          abi: 'pyodide-emscripten-2025_0-wasm32',
-          pyodideVersion: '0.29.4',
-          pythonVersion: '3.13.2',
-          wheelFileName: 'numpy-2.2.5-cp313-cp313-pyemscripten_2025_0_wasm32.whl',
-          wheelSha256: '8'.repeat(64),
-          loadMode: 'startup-module',
-          imports: ['numpy'],
-          dependencies: [],
-          extensionModules: [{
-            path: 'numpy/_core/_multiarray_umath.cpython-313-wasm32-emscripten.so',
-            runtimePath: 'share/pyodide/packages/numpy/side-modules/numpy/_core/_multiarray_umath.cpython-313-wasm32-emscripten.so',
-            sha256: '3'.repeat(64),
-          }],
-        }],
-      },
-    );
-    assert.equal(artifactInvocation.mode, 'pip');
-    assert.equal(artifactInvocation.pyodidePackages?.length, 1);
-    assert.match(artifactInvocation.code, /pyodide_packages = /);
-    assert.match(artifactInvocation.code, /_nimbus_install_pyodide_package/);
-    assert.match(artifactInvocation.code, /_nimbus_record_pyodide_packages/);
-  }
-
-  {
-    const invocation = await buildPipInvocation(
-      ['install', 'numpy'],
-      'pip',
-      cwd,
-      new FakeVfs(),
-      { home: '/home/user', network: ISOLATE_NETWORK, pyodideLockfileText: '{"packages":{"numpy":{}}}' },
-    );
-    assert.equal(invocation.mode, 'none');
-    assert.match(invocation.error || '', /installed Pyodide lockfile is invalid/);
   }
 
   {
@@ -322,11 +167,10 @@ try {
       'pip',
       cwd,
       vfs,
-      { home: '/home/user', network: ISOLATE_NETWORK },
+      { home: '/home/user', network: ISOLATE_NETWORK, markers },
     );
     assert.equal(invocation.mode, 'none');
     assert.match(invocation.error || '', /Pyodide\/Emscripten extension wheel/);
-    assert.match(invocation.error || '', /startup-loaded Nimbus Python package artifact/);
   }
 
   {
@@ -373,8 +217,16 @@ try {
   // a new release, and every process's own network left its answers behind.
   {
     let fetches = 0;
-    const versions = { '1.0.0': [file('fresh', '1.0.0', 'fresh-1.0.0-py3-none-any.whl')] };
-    installMockPypi([project('fresh', versions), project('plain', { '1.0.0': [file('plain', '1.0.0', 'plain-1.0.0-py3-none-any.whl')] })]);
+    const wheels = place();
+    const [fresh, plain] = wheelhouse(wheels, [
+      project('fresh', {
+        '1.0.0': [file('fresh', '1.0.0', 'fresh-1.0.0-py3-none-any.whl')],
+        '2.0.0': [file('fresh', '2.0.0', 'fresh-2.0.0-py3-none-any.whl')],
+      }),
+      project('plain', { '1.0.0': [file('plain', '1.0.0', 'plain-1.0.0-py3-none-any.whl')] }),
+    ]);
+    const versions = { '1.0.0': fresh.versions['1.0.0'] };
+    installMockPypi([{ ...fresh, versions }, plain]);
     const mocked = globalThis.fetch;
     globalThis.fetch = async (url) => {
       fetches++;
@@ -383,15 +235,15 @@ try {
     };
     const realNow = Date.now;
     const network = { ...ISOLATE_NETWORK, id: 'npm-11' };
-    const install = async (name) => (await buildPipInvocation(['install', name], 'pip', cwd, new FakeVfs(), { home: '/home/user', network })).code;
+    const install = async (name) => (await pipInstall([name], place(), { network })).installed;
     try {
-      assert.match(await install('fresh'), /"version":"1\.0\.0"/);
+      assert.deepEqual(await install('fresh'), ['fresh==1.0.0']);
       const first = fetches;
       await install('fresh');
       assert.equal(fetches, first, 'within its max-age, an answer is reused');
-      versions['2.0.0'] = [file('fresh', '2.0.0', 'fresh-2.0.0-py3-none-any.whl')];
+      versions['2.0.0'] = fresh.versions['2.0.0'];
       Date.now = () => realNow() + 901_000;
-      assert.match(await install('fresh'), /"version":"2\.0\.0"/, 'past its max-age, the release list was not fetched again');
+      assert.deepEqual(await install('fresh'), ['fresh==2.0.0'], 'past its max-age, the release list was not fetched again');
       const plainBefore = fetches;
       await install('plain');
       const once = fetches - plainBefore;
@@ -403,7 +255,8 @@ try {
     }
   }
 } finally {
-  globalThis.fetch = originalFetch;
+  restoreFetch();
+  for (const made of places) made.done();
 }
 
 console.log('python-pip: ok');

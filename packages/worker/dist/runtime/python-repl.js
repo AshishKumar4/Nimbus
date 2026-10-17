@@ -5,9 +5,10 @@ import { withHostView } from '@nimbus-sh/core/runtime/process-files.js';
 import { z } from 'zod/v4';
 import { ReplSession } from './repl-session.js';
 import { sessionUsesSciVariant } from '@nimbus-sh/core/runtime/python-pip.js';
-import { buildCPythonPreamble, enterWorkingDirectory } from '@nimbus-sh/core/runtime/cpython-runner.js';
+import { buildCPythonPreamble, cpythonMarkers, enterWorkingDirectory } from '@nimbus-sh/core/runtime/cpython-runner.js';
 import { getFacetManagerLoaderHost } from './facet-loader-host.js';
 import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
 /** Written by the driver when the source so far cannot yet be run. */
 const INCOMPLETE_MARKER = '__NIMBUS_PY_INCOMPLETE__';
 /**
@@ -34,7 +35,7 @@ const CPYTHON_STDLIB_REL = 'lib/python313.zip';
  * every escape on the way through.
  */
 function buildReplDriver(source) {
-    const b64 = btoa(String.fromCharCode(...new TextEncoder().encode(source)));
+    const b64 = base64Utf8(source);
     return [
         'import base64, codeop, sys, traceback',
         'import __main__',
@@ -82,7 +83,7 @@ class PythonReplAdapter {
         this.deps = deps;
     }
     banner() {
-        return ('Python 3.13.14 (CPython, wasm32-wasi, Nimbus runtime)\r\n' +
+        return (`Python ${cpythonMarkers(this.deps.manifest).python_full_version} (CPython, wasm32-wasi, Nimbus runtime)\r\n` +
             'Type "exit()" or press Ctrl-D to exit.\r\n');
     }
     async initialize() {

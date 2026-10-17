@@ -35,7 +35,7 @@
 // the elapsed time, never a hang — that failure mode is the one this
 // probe exists to catch.
 
-import { mintSession, Terminal, stripAnsi, deleteSession, makeAsserter, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, deleteSession, makeAsserter, writeFileViaShell, BASE } from '../_driver.mjs';
 import { run } from './_run.mjs';
 
 const TS_VERSION = '5.7.3';
@@ -103,12 +103,7 @@ try {
     [`${DIR}/tsconfig.json`, TSCONFIG],
     [`${DIR}/src/index.ts`, GOOD_TS],
   ]) {
-    const b64 = Buffer.from(body, 'utf8').toString('base64');
-    await run(
-      t,
-      `node -e "require('fs').writeFileSync('${path}', Buffer.from('${b64}','base64').toString('utf8'))"`,
-      30_000,
-    );
+    await writeFileViaShell((command) => run(t, command, 30_000), path, body);
   }
 
   const install = await run(t, `npm i typescript@${TS_VERSION}`, 300_000);
@@ -145,12 +140,7 @@ try {
         `dist/index.js=${JSON.stringify(emitted.output.slice(-400))}`);
 
   // ── 3. the compiler CHECKS ───────────────────────────────────────────
-  const badB64 = Buffer.from(BAD_TS, 'utf8').toString('base64');
-  await run(
-    t,
-    `node -e "require('fs').writeFileSync('${DIR}/src/index.ts', Buffer.from('${badB64}','base64').toString('utf8'))"`,
-    30_000,
-  );
+  await writeFileViaShell((command) => run(t, command, 30_000), `${DIR}/src/index.ts`, BAD_TS);
   const diag = await run(t, 'tsc -p . --noEmit', 120_000);
   const diagOk = diag.ok && /error TS2322/.test(diag.output);
   check('`tsc --noEmit` reports the real diagnostic for a type error', diagOk,

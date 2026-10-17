@@ -19,7 +19,8 @@ import { FindUsageError, quote } from './find/errors.js';
 import { parseFindCommand, type Expression, type FindPlan, type Primary, type TypeLetter } from './find/expression.js';
 import { direntTypeLetter, fileTypeLetter, renderFormat, type FileTypeLetter } from './find/format.js';
 import { FindEntry, READ_AHEAD_CALLS, Walker, type VisitResult } from './find/walk.js';
-import { dec as decoder, enc as encoder } from '../../../../_shared/bytes.js';
+import { dec as decoder } from '../../../../_shared/bytes.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 
 
 /** What one -exec … + command line may carry, as findutils' bc_use_sensible_arg_max sets it. */
@@ -93,7 +94,7 @@ class Batch {
   directory: string | null = null;
 
   constructor(readonly primary: Extract<Primary, { kind: 'exec' }>) {
-    this.bytes = primary.argv.reduce((total, arg) => total + encoder.encode(arg).length + 1, 0);
+    this.bytes = primary.argv.reduce((total, arg) => total + utf8Length(arg) + 1, 0);
   }
 }
 
@@ -371,7 +372,7 @@ class FindRun {
     if (primary.batch) {
       const batch = this.batches.get(primary);
       if (batch === undefined) throw new Error('find: an -exec … + site without its batch');
-      const size = encoder.encode(place.argument).length + 1;
+      const size = utf8Length(place.argument) + 1;
       if (batch.pending.length > 0 && batch.bytes + size > EXEC_ARGUMENT_BYTES) await this.flush(batch);
       batch.directory = place.directory;
       batch.pending.push(place.argument);
@@ -405,7 +406,7 @@ class FindRun {
     const argv = [...batch.primary.argv, ...batch.pending];
     const directory = batch.directory ?? this.ctx.cwd;
     batch.pending.length = 0;
-    batch.bytes = batch.primary.argv.reduce((total, arg) => total + encoder.encode(arg).length + 1, 0);
+    batch.bytes = batch.primary.argv.reduce((total, arg) => total + utf8Length(arg) + 1, 0);
     if ((await this.launch(argv, directory)).status !== 0) this.walker.fail();
   }
 

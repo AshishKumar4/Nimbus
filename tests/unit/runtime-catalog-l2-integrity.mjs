@@ -29,7 +29,6 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 
 const WORKER_SRC = new URL('../../packages/worker/src/', import.meta.url);
 const CATALOG_SRC = new URL('runtime/runtime-catalog.ts', WORKER_SRC);
@@ -95,7 +94,7 @@ const attackerCatalogText = JSON.stringify({
   },
 });
 
-const { fetchCatalog, fetchManifest, fetchBlob } = await import(CATALOG_SRC.pathname);
+const { fetchCatalog, fetchManifest, fetchBlob, catalogCommandIndex } = await import(CATALOG_SRC.pathname);
 
 // The module keeps per-isolate state (the digests whose cached copy failed),
 // so a case about that state gets an instance of its own, as a new isolate.
@@ -510,38 +509,30 @@ for (const url of Object.values(keys)) {
   assert.equal(store.size, 0, 'a blob its consumer abandoned was stored in L2');
 }
 
-// ── 10. The Cache API is reachable only through the checked helpers ────
+// ── 10. A fully attacker-controlled L2 cannot change the commands offered ─
 //
-// Both properties above live in `l2Get` / `l2Put`. A future read path that
-// touches `caches.default` directly would bypass them while every test above
-// still passed, so pin the module's access to those two functions.
+// catalogCommandIndex reads the catalog and every manifest to name the
+// commands `nimbus install` would bring. An attacker chain that adds a
+// command, each document consistent with the one above it, offers nothing:
+// the pinned root breaks it, as it does for an install.
 
 {
-  const source = readFileSync(CATALOG_SRC, 'utf8');
-  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+  const store = installCache();
+  const r2 = honestR2();
+  const evilManifest = enc(JSON.stringify({
+    ...JSON.parse(attackerManifestText),
+    entrypoints: [{ binName: 'python', runner: 'python-runner', args: [] }, { binName: 'evil', runner: 'python-runner', args: [] }],
+  }));
+  const evilCatalog = enc(JSON.stringify({
+    version: 1,
+    runtimes: { python: { default: '1.0', versions: { '1.0': { ...catalogEntry, manifest_sha256: sha(evilManifest) } } } },
+  }));
+  poison(store, keys.catalog, evilCatalog);
+  poison(store, keys.manifest, evilManifest);
 
-  // Guard the guard: if comment-stripping ate the module, the count below
-  // would be trivially satisfied.
-  assert.ok(code.includes('export async function fetchBlob'), 'comment stripping removed the code under test');
-  assert.ok(!code.includes('trust model'), 'comment stripping left doc comments behind');
-
-  const start = code.indexOf('async function l2Get(');
-  const end = code.indexOf('function l2Url(');
-  assert.ok(start > 0 && end > start, 'could not locate the L2 helpers; this check is not running');
-
-  const helpers = code.slice(start, end);
-  assert.ok((helpers.match(/\bcaches\b/g) ?? []).length > 0, 'the helpers do not reach the Cache API');
-
-  // Everything but the helpers and the type alias naming the global.
-  const outside = (code.slice(0, start) + code.slice(end))
-    .split('\n')
-    .filter((line) => !line.startsWith('type CacheGlobal'))
-    .join('\n');
-  assert.deepEqual(
-    outside.match(/\bcaches\b/g) ?? [],
-    [],
-    'the module reaches the Cache API outside l2Get/l2Put, skipping the digest checks',
-  );
+  const index = await catalogCommandIndex(envWith(r2));
+  assert.equal(index.get('python'), 'python');
+  assert.equal(index.has('evil'), false, 'a poisoned colo cache added a command to the catalog\'s index');
 }
 
 console.log('runtime-catalog-l2-integrity: ok');

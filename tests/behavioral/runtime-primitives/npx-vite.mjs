@@ -21,15 +21,14 @@
 // core-private process-registry, NOT Nimbus's processTable. So
 // `ps` (which reads processTable) shows nothing.
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, termBody, BASE } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[#1] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
-await t.waitForPrompt(15_000).catch(() => {});
+await t.waitForPrompt(15_000);
 
 async function runProbe(cmd, timeoutMs) {
   try {
@@ -89,30 +88,19 @@ const psHasNpxRow = psRows.some(l =>
   /\.npx-cache|node_modules\/semver|semver\.js|cowsay/.test(l)
 );
 
-// ── D: per-pid log buffer captured something for the npx process.
+// ── D: the npx-launched process's own log buffer holds what it printed.
 //
-// Find the highest PID from `ps` output and try `logs <pid>`.
-// Nimbus's `logs` command at init.ts:2177 reads from processLogs.
-// If npx-launched bins flow through Nimbus's logging, we see the
-// cowsay banner here. If they go through core's private process
-// registry, this returns no rows or an error.
-const psLines = psOutput.split(/\r?\n/);
-const pidMatches = psLines
-  .map(l => l.match(/^\s*(\d+)\s+/))
-  .filter(Boolean)
-  .map(m => parseInt(m[1], 10));
-const highestPid = pidMatches.length > 0 ? Math.max(...pidMatches) : null;
+// The pid is the semver row's, from `ps`; `logs <pid>` (init.ts, reading
+// processLogs) must succeed and hold semver's output, 7.9.5. An npx bin
+// that ran outside Nimbus's process table has no such row or buffer.
+const npxRow = psRows.find((l) => /semver/.test(l));
+const npxPid = npxRow ? Number(npxRow.match(/^\s*(\d+)\s+/)[1]) : null;
 let logsHasOutput = false;
 let logsHead = '';
-if (highestPid != null) {
-  const logsResult = await t.run(`logs ${highestPid}`, 15_000);
-  const logsOutput = stripAnsi(logsResult.output);
-  logsHead = logsOutput.slice(0, 600);
-  // The buffer must contain SOMETHING. Empty buffer = the npx process
-  // didn't flow through Nimbus's processLogs at all. Any non-empty
-  // line that isn't "no logs" / error counts as a hit.
-  logsHasOutput = logsOutput.length > 0 &&
-    !/no log buffer|no such process/i.test(logsOutput);
+if (npxPid !== null) {
+  const logsResult = await t.run(`logs ${npxPid}`, 15_000);
+  logsHead = stripAnsi(logsResult.output).slice(0, 600);
+  logsHasOutput = logsResult.exitCode === 0 && /\b7\.9\.5\b/.test(termBody(logsResult.output));
 }
 
 const findings = {
@@ -131,7 +119,7 @@ const findings = {
     head: psOutput.slice(0, 600),
   },
   logsObserved: {
-    pid: highestPid,
+    pid: npxPid,
     hasOutput: logsHasOutput,
     head: logsHead,
   },
@@ -144,7 +132,7 @@ const checks = [
   ['npx --version responds',                                   versionOk],
   ['npx cowsay auto-installs and runs',                        cowOk],
   ['ps shows the npx-launched process row',                    psHasNpxRow],
-  ['logs <pid> returns the npx process buffer',                logsHasOutput],
+  ['logs <pid> of the semver row returns its output',          logsHasOutput],
 ];
 
 let pass = 0;

@@ -15,7 +15,8 @@
 
 import { isDeepStrictEqual } from 'node:util';
 
-import { deleteSession, makeAsserter, mintSession, requestHeaders, stripAnsi, Terminal } from '../../_driver.mjs';
+import { dirname } from 'node:path';
+import { deleteSession, makeAsserter, mintSession, requestHeaders, stripAnsi, Terminal, writeFileViaShell } from '../../_driver.mjs';
 import { WORKER, WRANGLER_CONFIG, expectedAnswer, nimbusAnswer } from './_storage-bindings-worker.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -30,10 +31,10 @@ const t = new Terminal(sid);
 try {
   await t.connect();
   await t.waitForPrompt(60_000);
-  const write = (path, content) => t.run(
-    `node -e "require('fs').mkdirSync(require('path').dirname('${path}'),{recursive:true});require('fs').writeFileSync('${path}', Buffer.from('${Buffer.from(content).toString('base64')}','base64'))"`,
-    60_000,
-  );
+  const write = async (path, content) => {
+    await t.run(`mkdir -p ${dirname(path)}`, 10_000);
+    return writeFileViaShell((command) => t.run(command, 60_000), path, content);
+  };
   await write('/home/user/storage/wrangler.jsonc', JSON.stringify(WRANGLER_CONFIG));
   await write('/home/user/storage/src/index.js', WORKER);
   await t.run('cd /home/user/storage', 10_000);
@@ -66,7 +67,7 @@ try {
     }
   }
   t.send('\x03');
-  await t.waitForPrompt(30_000).catch(() => {});
+  await t.waitForPrompt(30_000);
 } finally {
   await t.close().catch(() => {});
   const cleanup = await deleteSession(sid);

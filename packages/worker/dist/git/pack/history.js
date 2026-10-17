@@ -26,8 +26,9 @@
 import { GRAPH_RECORDS_DIR, commitRecord } from './commit-graph.js';
 import { decodeBatch, MODE_GITLINK, MODE_TREE } from './plan.js';
 import { TreeEntries } from './tree-object.js';
-import { OID_BYTES, oidToHex, PackFormatError } from './format.js';
-import { STAGE_DIR, commitTree, concat, join, readRange, resumePack, settledBefore, TagWatch, storePackResumable, } from './clone.js';
+import { OID_BYTES, oidBytes, oidToHex, PackFormatError } from './format.js';
+import { concatBytes } from '@nimbus-sh/core/_shared/bytes.js';
+import { STAGE_DIR, commitTree, join, readRange, resumePack, settledBefore, TagWatch, storePackResumable, } from './clone.js';
 import { requestPack } from './upload-pack.js';
 /** Root trees per trees request. */
 export const COMMITS_PER_CHUNK = 5_000;
@@ -66,7 +67,7 @@ class ListWriter {
         const bytes = this.size;
         if (this.dir !== STAGE_DIR)
             await writer.directory(this.dir);
-        await writer.file(this.dir + '/' + name, 0o644, concat(this.parts));
+        await writer.file(this.dir + '/' + name, 0o644, concatBytes(this.parts));
         return [{ name, bytes }];
     }
 }
@@ -76,7 +77,7 @@ function lister(kind, list, graph) {
         return (object) => {
             if (object.type !== 'commit')
                 return;
-            list.add(hexBytes(commitTree(object.data, oidToHex(object.oid))));
+            list.add(oidBytes(commitTree(object.data, oidToHex(object.oid))));
             try {
                 graph.add(commitRecord(object.oid, object.data));
             }
@@ -112,12 +113,6 @@ function lister(kind, list, graph) {
         };
     }
     return undefined;
-}
-function hexBytes(hex) {
-    const out = new Uint8Array(OID_BYTES);
-    for (let i = 0; i < OID_BYTES; i++)
-        out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-    return out;
 }
 async function settle(writer, kind, stored, list, graph, listName, watch) {
     const lists = await list.write(writer, listName);
@@ -294,7 +289,7 @@ export async function historyPlan(context, request) {
     for (const file of request.present) {
         const bytes = await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/' + file.name), 0, file.bytes);
         for (const oid of decodeBatch(bytes).keys())
-            table.add(hexBytes(oid), 0, null);
+            table.add(oidBytes(oid), 0, null);
     }
     for (const file of request.lists) {
         const bytes = await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/' + file.name), 0, file.bytes);

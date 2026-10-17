@@ -28,7 +28,7 @@ try {
   const behavioral = join(root, 'tests', 'behavioral');
   mkdirSync(behavioral, { recursive: true });
   mkdirSync(join(root, 'scripts', 'ci', 'lib'), { recursive: true });
-  for (const file of ['run-all.mjs', '_probe-browser.mjs', '_ledger.mjs', '_session-transport.mjs', '_assertions.mjs']) copyFileSync(join(REPO, 'tests', 'behavioral', file), join(behavioral, file));
+  for (const file of ['run-all.mjs', '_probe-browser.mjs', '_ledger.mjs', '_session-transport.mjs', '_assertions.mjs', '_selection.mjs']) copyFileSync(join(REPO, 'tests', 'behavioral', file), join(behavioral, file));
   copyFileSync(join(REPO, 'scripts', 'ci', 'probes.mjs'), join(root, 'scripts', 'ci', 'probes.mjs'));
   copyFileSync(join(REPO, 'scripts', 'ci', 'lib', 'probe-screenshots.mjs'), join(root, 'scripts', 'ci', 'lib', 'probe-screenshots.mjs'));
   const capture = `if (process.env.NIMBUS_PROBE_SCREENSHOTS) require('fs').writeFileSync(require('path').join(process.env.NIMBUS_PROBE_SCREENSHOTS, 'capture.png'), Buffer.from('${PNG.toString('base64')}', 'base64'));\n`;
@@ -131,6 +131,18 @@ try {
     const partial = await run(false);
     assert.equal(gradeMatrix([{ tasks: [{ task: 'fixture', rows: partial.rows }] }], [entry]).exitCode, 1,
       'the same failure without producer completion stays red, independent of printed output');
+  }
+  {
+    // The paired perf probes' arms carry tokens of their own (_paired.mjs).
+    const arms = Object.fromEntries(['a1', 'a2', 'b'].map((arm) => [arm, { base, token: `${arm}-arm-token-${process.pid}-not-a-jwt` }]));
+    writeFileSync(join(behavioral, 'paired-print.mjs'), "const arms = JSON.parse(process.env.NIMBUS_PAIRED_TARGETS); for (const arm of Object.values(arms)) { console.log('holding ' + arm.token); console.error(('y'.repeat(5) + arm.token).repeat(3000)); }\nprocess.exit(1);\n");
+    const verdict = await probes(['--base', base, '--only', 'paired-print'], { NIMBUS_PAIRED_TARGETS: JSON.stringify(arms) });
+    assert.equal(verdict.status, 1, 'a failing probe: its output is printed whole');
+    const seen = JSON.stringify(verdict);
+    for (const { token } of Object.values(arms)) assert.ok(!seen.includes(token), `${token.split('-')[0]}'s token appears nowhere`);
+    assert.match(verdict.rows.find((row) => row.name.endsWith('paired-print.mjs')).output, /holding \[NIMBUS_PROBE_TOKEN\]/);
+    assert.match(verdict.log, /(y{5}\[NIMBUS_PROBE_TOKEN\]){100}/, 'an arm token split across reads is scrubbed too');
+    console.log('  ok  the paired targets\' tokens are scrubbed like the target\'s, whole and split across reads');
   }
 } finally {
   server.close();

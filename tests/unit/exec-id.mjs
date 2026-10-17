@@ -83,7 +83,7 @@ await kernel.writeFile('/home/user/app/server.js', SERVER, { mode: 0o644 });
 for (const name of ['other.js', 'job.js', 'named.js', 'nested.js', 'after.js', 'dev.js', 'bunserve.js', 'sdk.js', 'env.js', 'remote.js']) {
   await kernel.writeFile(`/home/user/app/${name}`, SERVER, { mode: 0o644 });
 }
-await kernel.writeFile('/home/user/app/package.json', JSON.stringify({ name: 'app', scripts: { dev: 'node dev.js', serve: 'node bunserve.js' } }), { mode: 0o644 });
+await kernel.writeFile('/home/user/app/package.json', JSON.stringify({ name: 'app', scripts: { dev: 'node dev.js', serve: 'node bunserve.js', start: 'echo started', poststart: 'echo post' } }), { mode: 0o644 });
 
 const fm = () => runtime.facets().manager;
 /** The resident a call started for `script`, still running. */
@@ -152,6 +152,11 @@ try {
   const script = await runtime.exec('npm run dev', { execId: 'j5', cwd: '/home/user/app' });
   assert.equal(script.exitCode, 0, JSON.stringify(script));
   assert.equal(residentOf('dev.js').execId, 'j5', 'a server a package script starts carries it');
+  // A start script that ends is no resident: its process exits, and its poststart runs.
+  const finite = await runtime.exec('npm start', { cwd: '/home/user/app' });
+  assert.equal(finite.exitCode, 0, JSON.stringify(finite));
+  assert.match(finite.stdout, /^post$/m, `a start script that ended is followed by its poststart: ${JSON.stringify(finite)}`);
+  assert.equal(processes.getAll().filter((p) => p.command === 'echo started' && p.state === 'running').length, 0, 'and its process is not left running');
   const after = await runtime.exec('node after.js', { shellId: 'agent' });
   assert.equal(after.exitCode, 0, JSON.stringify(after));
   assert.equal(residentOf('after.js').execId, undefined, 'the execId is the call\'s, not the shell\'s: the next call on it tags nothing');
