@@ -8203,9 +8203,11 @@ const __fsMod = (() => {
   }
   function _isStdioFd(fd) { const n = Number(fd); return n === 0 || n === 1 || n === 2; }
   // stdio descriptors are character devices, not VFS files.
-  // A terminal's: a character device, crw--w----.
+  // A terminal's: a character device, crw--w----. Its times are read as
+  // the program reads the clock: only the program asks for them, as many
+  // times in a run again as in its run, so a run again is handed the same.
   function _stdioStat() {
-    const now = __nimbusOwnNow();
+    const now = Date.now();
     return _newStats(0o020620, cred.uid, cred.gid, undefined, 0, now, now, now, 1);
   }
   // Node treats a null position — and a negative one, which libuv maps to
