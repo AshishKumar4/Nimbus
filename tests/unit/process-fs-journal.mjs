@@ -216,6 +216,41 @@ function mortalPort(s, live = Infinity) {
   assert.equal(s.text(path), prefix + 'e'.repeat(5));
 }
 
+// ── An input view overlapping the tail's spare bytes is logged before that view changes ──
+{
+  const s = session();
+  const sql = facetSql();
+  const inner = sqlJournal(sql);
+  let latest;
+  const journal = new Proxy(inner, { get(target, key) {
+    if (key === 'replace') return (jid, op, ...rest) => { latest = op; return target.replace(jid, op, ...rest); };
+    return Reflect.get(target, key);
+  } });
+  const c = processFsClient({ session: s.port, journal, retry: RETRY });
+  const path = 'home/user/out/overlap';
+  c.submit(writeFile(path, 'a'.repeat(10)), { acknowledged: true });
+  c.submit(append(path, 'b'.repeat(10)), { acknowledged: true });
+  c.submit(append(path, 'c'.repeat(10)), { acknowledged: true });
+  const data = latest.call.data;
+  const end = data.byteOffset + data.byteLength;
+  const spare = data.buffer.byteLength - end;
+  const prefix = spare > 1 ? Math.min(5, spare - 1) : 5;
+  const suffix = spare > 1 ? Math.min(prefix, spare - prefix) : 0;
+  const fill = new Uint8Array(data.buffer, end, Math.min(10, spare));
+  fill.set(enc.encode('0123456789').subarray(0, fill.byteLength));
+  const piece = new Uint8Array(data.buffer, end - prefix, prefix + suffix);
+  const want = new Uint8Array(data.byteLength + piece.byteLength);
+  want.set(data);
+  want.set(piece, data.byteLength);
+  c.submit({ type: 'call', call: { call: 'appendFile', path, mode: 0o644, data: piece } }, { acknowledged: true });
+  c.seal();
+  const reopened = sqlJournal(sql);
+  assert.deepEqual(reopened.entries()[0].op.call.data, want, 'the durable delta came from the input after an overlapping copy changed it');
+  const drained = await drainProcessFsJournal({ journal: journalSource(reopened), session: s.port, retry: RETRY });
+  assert.deepEqual(drained.failures, []);
+  assert.deepEqual(s.kernel.readFile(path), want);
+}
+
 // ── A new entry refused by the journal does not disturb its preceding folded tail ──
 {
   const s = session();
