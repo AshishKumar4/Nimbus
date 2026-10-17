@@ -5,6 +5,17 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `node -c` (`--check`) in a hosted session checks a CommonJS
+  program's syntax and does not run it, as Node does: a script, stdin, or a
+  TypeScript file's own text. It exits 0, or prints Node's SyntaxError and
+  exits 1. Before, it ran the program. An ES module entry cannot be compiled
+  here without running it, so `-c` of one exits 9 with "-c cannot check an
+  ES module entry in Nimbus without running it". `-c` with `-e` or `-p`
+  is Node's refusal (exit 9).
+- Fixed: `node --experimental-default-type` in a hosted session exits 9 as
+  unsupported, as the portable node does. Before, it was ignored: `-e`
+  code under `=module` ran as CommonJS. A value other than `module` or
+  `commonjs` is Node's own refusal.
 - Fixed: a hosted ES module, staged or interpreted, can statically import
   a `data:` module (`import x from 'data:text/javascript,…'`). Its imported
   names are checked before any module body runs. It runs once, in a cycle
