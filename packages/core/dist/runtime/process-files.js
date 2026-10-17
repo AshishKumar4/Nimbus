@@ -611,12 +611,15 @@ export class ProcessFiles {
         for (const [id, opened] of scope.handles) {
             if (opened.node.mounted && opened.node.pendingBytes() > 0)
                 lost.push(id);
-            // Dropped unflushed; a description another process still holds stays open, and a mount's
-            // file its backend holds open is closed with nothing written (MountedFileDescription.discard).
-            if (--opened.refs === 0 && opened.node.mounted) {
-                const { node } = opened;
-                abandon({ close: () => node.discard() });
-            }
+            // Dropped unflushed; a description another process still holds stays open.
+            if (--opened.refs > 0)
+                continue;
+            const { node } = opened;
+            // A mount's file its backend holds open is closed with nothing written
+            // (MountedFileDescription.discard); the engine's is closed, so it pins
+            // nothing (an unlinked file's content): what was written through it is
+            // the file's already.
+            abandon(node.mounted ? { close: () => node.discard() } : node);
         }
         scope.handles.clear();
         scope.held.clear();
