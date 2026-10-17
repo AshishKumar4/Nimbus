@@ -79,7 +79,7 @@ export declare function commonJsNames(host: LateLinkHost, key: string): readonly
  * staged modules it imports, in import order, for the caller to evaluate
  * before the interpreter does the rest.
  */
-export declare function linkLateGraph(host: LateLinkHost, key: string, url: string): number[];
+export declare function linkLateGraph(host: LateLinkHost, key: string, url: string, kept: boolean): number[];
 /**
  * Links staged row `id` (its module at `key`, `url`), which the interpreter
  * adopts because workerd could not link its graph (it reaches a module

@@ -29,6 +29,24 @@ function rowNames(host, row) {
     }
     return facadeNames[row] ?? null;
 }
+/** Staged module rows as read, by row, once each. */
+const rowReads = new Map();
+/** A staged module row's source, read once (its static imports index its targets). */
+function rowRead(host, row) {
+    const known = rowReads.get(row);
+    if (known !== undefined)
+        return known;
+    const key = host.rowKey(row);
+    const text = host.source(key, row);
+    const analysis = text === null ? null : host.requests(key, text, true, 'module');
+    const specifiers = [];
+    for (const request of analysis?.requests ?? [])
+        if (request.kind === 'static')
+            specifiers.push(request.specifier);
+    const read = { analysis, specifiers };
+    rowReads.set(row, read);
+    return read;
+}
 /** Staged module rows' facts, by row, read from their sources when a link first needs them. */
 const rowFacts = new Map();
 /** A staged module row's facts, or null where its source does not tell them. */
@@ -38,14 +56,9 @@ function moduleFacts(host, row) {
         return known;
     let facts = null;
     const key = host.rowKey(row);
-    const text = host.source(key, row);
-    const analysis = text === null ? null : host.requests(key, text, true, 'module');
+    const { analysis, specifiers } = rowRead(host, row);
     const bindings = analysis?.bindings;
     const targets = host.rowTargets(row);
-    const specifiers = [];
-    for (const request of analysis?.requests ?? [])
-        if (request.kind === 'static')
-            specifiers.push(request.specifier);
     if (bindings !== undefined && bindings.imports.length === targets.length && specifiers.length === targets.length) {
         // What static import `at` loads: a row, or what staging handed it on to.
         const loads = (at) => {
@@ -84,6 +97,15 @@ function moduleFacts(host, row) {
     rowFacts.set(row, facts);
     return facts;
 }
+/**
+ * The modules an import()'s link failed in, by instance (a file's path; a
+ * query's, a fragment's or a data: module's URL): the module a static
+ * import of did not resolve or load, and each that imports it on the way
+ * from the link's root. The failure stays, as Node's loader keeps a
+ * ModuleJob that did not link: a later link reaching one fails with it,
+ * whatever the program wrote since.
+ */
+const linkFailures = new Map();
 /** Every late module a link has read, by URL: what an interpreted module's `export *` asks of (starConflicts). */
 const lateModules = new Map();
 /** The CommonJS modules' names Node's lexer found, by path. */
@@ -107,9 +129,9 @@ export function commonJsNames(host, key) {
  * staged modules it imports, in import order, for the caller to evaluate
  * before the interpreter does the rest.
  */
-export function linkLateGraph(host, key, url) {
+export function linkLateGraph(host, key, url, kept) {
     const order = [];
-    const late = { modules: new Map(), rows: [] };
+    const late = { modules: new Map(), rows: [], kept };
     plan(host, key, url, new Set(), order, new Set(), late);
     checkBindings(host, late, url);
     for (const row of late.rows)
@@ -127,12 +149,12 @@ const checkedRows = new Set();
 export function linkAdopted(host, id, key, url) {
     if (checkedRows.has(id))
         return;
-    linkLateGraph(host, key, url);
+    linkLateGraph(host, key, url, true);
     checkedRows.add(id);
 }
 /** The names the `export *`s of the interpreted module at `url` reach two different bindings of, which its namespace omits. */
 export function starConflicts(host, url) {
-    const late = { modules: lateModules, rows: [] };
+    const late = { modules: lateModules, rows: [], kept: false };
     // A staged module the interpreter evaluates, by its file; not a query's or a fragment's instance.
     const { protocol, search, hash, pathname } = new URL(url);
     const row = protocol === 'file:' && search === '' && hash === '' ? host.row('module', decodeURIComponent(pathname).replace(/^\/+/, '')) : -1;
@@ -150,7 +172,7 @@ export function starConflicts(host, url) {
  * namespace taken in a cycle has them all.
  */
 export function namespaceNames(host, url) {
-    const late = { modules: lateModules, rows: [] };
+    const late = { modules: lateModules, rows: [], kept: false };
     if (!lateModules.has(url))
         return null;
     const target = { url };
@@ -168,6 +190,20 @@ function plan(host, key, url, seen, order, checked, late) {
     if (seen.has(url))
         return;
     seen.add(url);
+    const instance = url.startsWith('file:') && !url.includes('?') && !url.includes('#') ? key : url;
+    const failure = linkFailures.get(instance);
+    if (failure !== undefined)
+        throw failure;
+    try {
+        planModule(host, key, url, seen, order, checked, late);
+    }
+    catch (e) {
+        if (late.kept && e instanceof Error)
+            linkFailures.set(instance, e);
+        throw e;
+    }
+}
+function planModule(host, key, url, seen, order, checked, late) {
     // A data: URL's module is its body, an ES module (its MIME type's goal): no row, no file.
     const data = url.startsWith('data:') ? dataModule(url) : null;
     const staged = data !== null ? -1 : host.row('module', key);
@@ -247,36 +283,19 @@ function plan(host, key, url, seen, order, checked, late) {
     }
 }
 /**
- * A plain file staging handed on (one the launch lacked, or did not stage as
- * the format it is: no query, fragment or data: URL), resolved again from
+ * A file staging handed on (one the launch lacked, did not stage as the
+ * format it is, or a query's or a fragment's instance), resolved again from
  * its importer at `key` as the loader resolves it when the importer is
- * imported, checked against its `type` attribute; null for any other URL.
- * Throws Node's error where it does not resolve still.
+ * imported, checked against its `type` attribute: the module it loads is
+ * its format's. Null for a data: URL. Throws Node's error where it does not
+ * resolve still.
  */
 function handedOnFile(host, key, url, specifier, type) {
-    const { protocol, search, hash } = new URL(url);
-    if (protocol !== 'file:' || search !== '' || hash !== '')
+    if (new URL(url).protocol !== 'file:')
         return null;
     const parent = new URL('file://');
     parent.pathname = '/' + key;
-    const resolution = host.resolve(specifier, parent.href, type);
-    return resolution.path === undefined ? null : resolution;
-}
-/** Staged module row `row`'s static imports, in order, each with its type attribute; null where its source does not tell them. */
-function staticRequests(host, row) {
-    const key = host.rowKey(row);
-    const text = host.source(key, row);
-    if (text === null)
-        return null;
-    const analysis = host.requests(key, text, true, 'module');
-    const statics = [];
-    for (const request of analysis.requests) {
-        if (request.kind !== 'static')
-            continue;
-        const at = statics.length;
-        statics.push({ specifier: request.specifier, type: analysis.bindings?.types[at] });
-    }
-    return statics;
+    return host.resolve(specifier, parent.href, type);
 }
 /**
  * What a module staging handed on (or a data: import) loads: a query's or a
@@ -330,8 +349,21 @@ function checkLinks(host, id, seen, checked, late) {
         checked.add(at);
         if (host.rowKind(at) !== 'module' || host.rowSettled(at))
             return;
+        const failure = linkFailures.get(host.rowKey(at));
+        if (failure !== undefined)
+            throw failure;
+        try {
+            visitRow(at);
+        }
+        catch (e) {
+            if (late.kept && e instanceof Error)
+                linkFailures.set(host.rowKey(at), e);
+            throw e;
+        }
+    };
+    const visitRow = (at) => {
         late.rows.push(at);
-        const statics = staticRequests(host, at);
+        const { analysis, specifiers } = rowRead(host, at);
         for (const [index, target] of host.rowTargets(at).entries()) {
             if (target >= 0) {
                 visit(target);
@@ -345,10 +377,10 @@ function checkLinks(host, id, seen, checked, late) {
             // A file handed on is resolved now, as the loader resolves it when the
             // module is imported (Node's error if it is missing still), and planned
             // as an unstaged module is: a JSON or CommonJS file has no links.
-            const request = statics?.[index];
-            const file = request === undefined ? null : handedOnFile(host, host.rowKey(at), missing.handedOn, request.specifier, request.type);
+            const specifier = specifiers[index];
+            const file = specifier === undefined ? null : handedOnFile(host, host.rowKey(at), missing.handedOn, specifier, analysis?.bindings?.types[index]);
             if (file !== null) {
-                if (file.format === 'module' || file.format === 'detect')
+                if (file.path !== undefined && (file.format === 'module' || file.format === 'detect'))
                     plan(host, file.path.replace(/^\/+/, ''), file.url, seen, [], checked, late);
                 continue;
             }
