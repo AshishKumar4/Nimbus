@@ -223,10 +223,12 @@ async function rangeReadBytes(
 export async function withReadAllocation<T>(
   bytes: number,
   read: () => Promise<T>,
+  pid?: number,
+  session?: string,
 ): Promise<T> {
   const payloadBytes = checkedReadPayloadBytes(bytes);
   if (payloadBytes === 0) return read();
-  const lease = await acquireSupervisorReadAllocation(payloadBytes);
+  const lease = await acquireSupervisorReadAllocation(payloadBytes, undefined, { owner: 'filesystem read RPC', pid, session });
   rpcPayloadStart(payloadBytes);
   try {
     return await read();
@@ -909,7 +911,7 @@ export async function _rpcFsReadBatch(
         }
       }
       return entries;
-    });
+    }, pid, self.ctx?.id.toString());
 }
 
 export async function _rpcFsWriteRange(

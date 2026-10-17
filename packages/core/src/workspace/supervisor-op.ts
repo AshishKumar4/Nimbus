@@ -130,7 +130,7 @@ export interface SupervisorOpDeps {
    * memory budget holds a lease for the payload while it is produced. Absent,
    * reads are unaccounted, which is an in-process workspace's whole budget.
    */
-  readonly readLease?: <T>(bytes: number, read: () => Promise<T>) => Promise<T>;
+  readonly readLease?: <T>(bytes: number, read: () => Promise<T>, pid?: number) => Promise<T>;
   readonly extend?: Partial<Record<SupervisorOpName, SupervisorOpHandler>>;
   /**
    * The instance's receipts for mutations delivered exactly once
@@ -382,7 +382,7 @@ async function readWholeFile(e: SupervisorOpEnvelope, t: SupervisorOpTools, path
   const fs = fsFor(e, t);
   const stat = await fs.stat(path);
   if (!stat) return null;
-  return readHydrating(t.hydrated, () => t.readLease(stat.size, () => Promise.resolve(fs.readFile(path))));
+  return readHydrating(t.hydrated, () => t.readLease(stat.size, () => Promise.resolve(fs.readFile(path)), e.pid));
 }
 
 /** A range read, leased for what the range can return rather than what it asks. */
@@ -391,7 +391,7 @@ async function readRange(e: SupervisorOpEnvelope, t: SupervisorOpTools, options:
   const path = stringArg(e, 0), offset = numberArg(e, 1), length = numberArg(e, 2);
   const stat = await fs.stat(path);
   const available = stat ? Math.max(0, Math.min(length, stat.size - offset)) : 0;
-  return readHydrating(t.hydrated, () => t.readLease(available, () => Promise.resolve(fs.readRange(path, offset, length, options))));
+  return readHydrating(t.hydrated, () => t.readLease(available, () => Promise.resolve(fs.readRange(path, offset, length, options)), e.pid));
 }
 
 /**
@@ -414,7 +414,7 @@ const NATIVE_OPS = {
   fsReadDirectories: (e, t) => readDirectoryBatch(fsFor(e, t), e.args?.[0]),
   fsRead: (e, t) => {
     const length = numberArg(e, 2);
-    return readHydrating(t.hydrated, () => t.readLease(length, () => Promise.resolve(fsFor(e, t).read(numberArg(e, 0), nullableNumberArg(e, 1), length))));
+    return readHydrating(t.hydrated, () => t.readLease(length, () => Promise.resolve(fsFor(e, t).read(numberArg(e, 0), nullableNumberArg(e, 1), length)), e.pid));
   },
   fsWrite: (e, t) => fsFor(e, t).write(numberArg(e, 0), nullableNumberArg(e, 1), bytesArg(e, 2)),
   fsClose: (e, t) => fsFor(e, t).close(numberArg(e, 0)),

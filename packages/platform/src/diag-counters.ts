@@ -33,7 +33,7 @@
 // (parsing package-lock.json). See _shared/install-phase.ts for full
 // semantics documentation.
 import type { InstallPhase } from './install-phase.js';
-import type { ResizableCreditLease } from './weighted-credit-pool.js';
+import { readSupervisorAllocationAttribution, type AllocationAttribution, type SupervisorAllocationLease } from './heavy-alloc-coord.js';
 
 export interface DiagCounters {
   /** Top-level install phase. */
@@ -155,11 +155,9 @@ export interface DiagCounters {
   };
 }
 
-const _counters: DiagCounters = {
+const _counters: Omit<DiagCounters, 'prefetchBundleBytes' | 'preBundleSliceBytes'> = {
   installPhase: 'idle',
   inFlightRpcPayloadBytes: 0,
-  prefetchBundleBytes: 0,
-  preBundleSliceBytes: 0,
   prefetchCacheBytes: 0,
   supervisorAnsweredBytes: 0,
   installFacet: {
@@ -185,7 +183,7 @@ const _counters: DiagCounters = {
 
 /** Read a snapshot — caller-side mutations don't affect the singleton. */
 export function readDiagCounters(): DiagCounters {
-  return { ..._counters };
+  return { ..._counters, ...readSupervisorAllocationAttribution() };
 }
 
 /** Count `bytes` the session answered a process's supervisor call with. */
@@ -241,32 +239,15 @@ export function rpcPayloadEnd(bytes: number): void {
 }
 
 /** The counters that name the live allocation leases of one owner. */
-export type AllocationOwner = 'prefetchBundleBytes' | 'preBundleSliceBytes';
+export type AllocationOwner = AllocationAttribution;
 
 /**
- * `lease`, its bytes counted under `owner` for as long as it holds them: a
- * shrink takes what it gives back off at once, and the release the rest.
- * The count is the lease's own, so it is right however its holder ends.
+ * Attribution belongs to the budget's actual lease. The public gauges are
+ * derived from its holders, never maintained in a second counter registry.
  */
-export function attributeAllocation(owner: AllocationOwner, lease: ResizableCreditLease): ResizableCreditLease {
-  _counters[owner] += lease.bytes;
-  let released = false;
-  return {
-    get bytes() {
-      return lease.bytes;
-    },
-    shrinkTo(bytes) {
-      const before = lease.bytes;
-      lease.shrinkTo(bytes);
-      _counters[owner] -= before - lease.bytes;
-    },
-    release() {
-      if (released) return;
-      released = true;
-      _counters[owner] -= lease.bytes;
-      lease.release();
-    },
-  };
+export function attributeAllocation(owner: AllocationOwner, lease: SupervisorAllocationLease): SupervisorAllocationLease {
+  lease.attribute(owner);
+  return lease;
 }
 
 /**

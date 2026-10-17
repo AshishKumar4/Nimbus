@@ -189,7 +189,7 @@ export function makeWasmRunner(deps: {
           // build line rather than a trap deep inside libc.
           threadsInfo: inspectWasmThreads(bytes),
         };
-      });
+      }, { owner: `wasm-runner inspect '${opts.filename}'`, pid: opts.invokerPid });
       program = await hostImage(deps.filesystem, cred, wasmPath, read.digest);
       inspected = read;
     } catch (e: unknown) {
