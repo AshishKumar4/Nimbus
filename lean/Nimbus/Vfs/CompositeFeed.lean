@@ -9,8 +9,10 @@
   a live mount point and each directory above one is the composite's directory,
   whichever backend holds that path (structural first, as `isStructural` in
   composite.ts); otherwise a path under a mount with `changes` is that backend's
-  entry at the relative path, one under a mount without `changes` is not staged
-  (never_cached), and any other path is the root backend's.
+  entry at the relative path, one under a mount without `changes` is its held
+  launch walk's observation, and any other path is the root backend's. The walk
+  is bounded and partial: only a fully listed directory certifies absence. It
+  is installed at boot/relist and retained between them, not refreshed by a feed.
 
   (0) `view_closed`: the staged view is a tree whenever the backends are, and
       `fs_inv`/`staged_closed`: in every reachable ProcessFs state (boot relist,
@@ -35,7 +37,8 @@
       per-principal source switching between null and live) poisons, and the relist
       yields the new view; the feeds alone would miss it
       (`a_mount_appearing_is_not_in_any_feed`).
-  (3) mounts without `changes` contribute no entries and nothing under them is staged.
+  (3) mounts without `changes` contribute no incremental entries. Walked entries
+      have revision 0, which is no clock evidence for held bytes.
   (4) CAS: revisions `(epoch, gen)`, a fresh epoch per incarnation, gens increasing
       within one: two writes with one revision are one write (`revision_unique`),
       so a stale expected revision from before a recovery that regressed gens never
@@ -71,9 +74,42 @@ theorem ownerPt_mem (pts : List Path) (p : Path) {m : Path} (h : ownerPt pts p =
 /-- `p` is a proper ancestor of a live mount point (a synthesized directory). -/
 def synthAnc (pts : List Path) (p : Path) : Bool := p != [] && pts.any fun m => p.isPrefixOf m && p != m
 
+def rootOnly : Tree := fun q => if q = [] then some .dir else none
+
+/-- One partial walk of the unfed namespace. Structural directories are already
+    known from the table; every other new child costs one name. A directory not
+    in `listed` says nothing about missing children. -/
+structure Walk where
+  tree : Tree := rootOnly
+  spent : Nat := 0
+  limit : Nat := 0
+  listed : List Path := []
+
+def insertWalk (tree : Tree) (p : Path) (k : Kind) : Tree :=
+  fun q => if q = p then some k else tree q
+
+/-- Directory enumeration is abstracted to bounded observations and a completion
+    certificate. Only a whole directory may receive that certificate. -/
+inductive WalkStep (backend : Tree) (structuralName : Path → Bool) : Walk → Walk → Prop
+  | observe (s : Walk) (p : Path) (k : Kind) (hp : p ≠ [])
+      (hparent : s.tree p.dropLast = some .dir) (hfresh : s.tree p = none)
+      (hvalue : backend p = some k) (hroom : s.spent + (if structuralName p then 0 else 1) ≤ s.limit) :
+      WalkStep backend structuralName s { s with tree := insertWalk s.tree p k, spent := s.spent + (if structuralName p then 0 else 1) }
+  | complete (s : Walk) (dir : Path) (hdir : s.tree dir = some .dir)
+      (hwhole : ∀ q, q.dropLast = dir → q ≠ [] → s.tree q = backend q) :
+      WalkStep backend structuralName s { s with listed := dir :: s.listed }
+
+inductive WalkReach (backend : Tree) (structuralName : Path → Bool) : Walk → Prop
+  | start (limit : Nat) : WalkReach backend structuralName { limit := limit }
+  | step {s s' : Walk} : WalkReach backend structuralName s → WalkStep backend structuralName s s' →
+      WalkReach backend structuralName s'
+
+def walkEntry (s : Walk) (p : Path) : Option (Kind × Nat) := (s.tree p).map fun k => (k, 0)
+
 structure World where
   root : Tree
   bt : Path → Tree
+  walk : Walk := {}
 
 /-- A live mount point or a directory above one: the composite's own directory,
     whichever backend would otherwise serve the path (`isStructural` in composite.ts). -/
@@ -83,12 +119,17 @@ def view (T : Table) (W : World) (q : Path) : Option Kind :=
   if q = [] then some .dir else
   if structural T.pts q then some .dir else
   match ownerPt T.pts q with
-  | some m => if T.ch m then W.bt m (q.drop m.length) else none
+  | some m => if T.ch m then W.bt m (q.drop m.length) else W.walk.tree q
   | none => W.root q
 
 /-- Every backend a principal reaches is a POSIX tree. -/
 def BackendsClosed (T : Table) (W : World) : Prop :=
   Closed W.root ∧ ∀ m ∈ T.pts, T.ch m = true → Closed (W.bt m)
+
+def WalksClosed (W : World) : Prop := Closed W.walk.tree
+
+def WalkInstalled (T : Table) (W : World) : Prop :=
+  WalkReach (view { T with ch := fun _ => true } W) (structural T.pts) W.walk
 
 /-! ### Routing facts -/
 
@@ -128,6 +169,57 @@ theorem dropLast_length_lt {q : Path} (h : q ≠ []) : q.dropLast.length < q.len
   | nil => exact absurd rfl h
   | cons _ _ => simp [List.length_dropLast]
 
+theorem walk_inv {backend : Tree} {structuralName : Path → Bool} {s : Walk} (h : WalkReach backend structuralName s) :
+    Closed s.tree ∧ s.spent ≤ s.limit ∧
+      ∀ dir ∈ s.listed, ∀ q, q.dropLast = dir → q ≠ [] → s.tree q = backend q := by
+  induction h with
+  | start limit =>
+    refine ⟨?_, Nat.zero_le _, ?_⟩
+    · intro q hq hq0 _; simp [rootOnly, hq0] at hq
+    · intro dir hd; cases hd
+  | step _ hs ih =>
+    cases hs with
+    | observe p k hp hparent hfresh hvalue hroom =>
+      refine ⟨?_, hroom, ?_⟩
+      · intro q hq hq0 hd
+        by_cases he : q = p
+        · subst q
+          have hne : p.dropLast ≠ p := fun e => by
+            have := dropLast_length_lt hp; rw [e] at this; omega
+          simp [insertWalk, hne, hparent]
+        · have hq' : _ := hq
+          simp only [insertWalk, if_neg he] at hq'
+          have hdir := ih.1 q hq' hq0 hd
+          have hne : q.dropLast ≠ p := fun e => by rw [e, hfresh] at hdir; cases hdir
+          simp [insertWalk, hne, hdir]
+      · intro dir hd q hqd hq0
+        by_cases he : q = p
+        · subst q; simp [insertWalk, hvalue]
+        · simp [insertWalk, he, ih.2.2 dir hd q hqd hq0]
+    | complete dir hdir hwhole =>
+      refine ⟨ih.1, ih.2.1, ?_⟩
+      intro d hd q hqd hq0
+      rcases List.mem_cons.mp hd with rfl | hd
+      · exact hwhole q hqd hq0
+      · exact ih.2.2 d hd q hqd hq0
+
+theorem walk_entries_undated (s : Walk) (p : Path) {k : Kind} {rev : Nat}
+    (h : walkEntry s p = some (k, rev)) : rev = 0 := by
+  unfold walkEntry at h
+  cases hs : s.tree p <;> simp [hs] at h
+  exact h.2.symm
+
+theorem listed_absence {backend : Tree} {structuralName : Path → Bool} {s : Walk} (h : WalkReach backend structuralName s)
+    {p : Path} (hp : p ≠ []) (hd : p.dropLast ∈ s.listed) (ha : s.tree p = none) : backend p = none := by
+  rw [← (walk_inv h).2.2 p.dropLast hd p rfl hp]; exact ha
+
+theorem installed_walks_closed {T : Table} {W : World} (h : WalkInstalled T W) : WalksClosed W :=
+  (walk_inv h).1
+
+theorem walks_closed_of_retained {W0 W1 : World} (h : WalksClosed W0)
+    (hr : W0.walk = W1.walk) : WalksClosed W1 := by
+  change Closed W1.walk.tree; rw [← hr]; exact h
+
 /-- The directory of a structural path is structural. -/
 theorem structural_dropLast {pts : List Path} {q : Path} (hq : q ≠ []) (hs : structural pts q = true)
     (hd : q.dropLast ≠ []) : synthAnc pts q.dropLast = true := by
@@ -142,7 +234,7 @@ theorem structural_dropLast {pts : List Path} {q : Path} (hq : q ≠ []) (hs : s
 
 /-- The staged view is a POSIX tree whenever the backends are: every staged
     entry's directory is staged as a directory. -/
-theorem view_closed {T : Table} {W : World} (hW : BackendsClosed T W) : Closed (view T W) := by
+theorem view_closed {T : Table} {W : World} (hW : BackendsClosed T W) (hU : WalksClosed W) : Closed (view T W) := by
   intro q hq hq0 hd
   have hdir : structural T.pts q.dropLast = true → view T W q.dropLast = some .dir := fun h => by
     simp [view, hd, h]
@@ -177,15 +269,16 @@ theorem view_closed {T : Table} {W : World} (hW : BackendsClosed T W) : Closed (
     have ho' : ownerPt T.pts (m ++ t).dropLast = some m :=
       ownerPt_between ho (by rw [hdl]; exact List.prefix_append _ _) (List.dropLast_prefix _)
     rw [ho']
+    have htd : t.dropLast ≠ [] := by
+      intro e
+      rw [hdl, e, List.append_nil] at hsd'
+      simp [structural, List.contains_iff_mem, hmp] at hsd'
     cases hch : T.ch m
-    · simp [hch] at hq
+    · simp only [hch, Bool.false_eq_true, if_false] at hq ⊢
+      exact hU (m ++ t) hq hq0 hd
     · simp only [hch, if_true] at hq ⊢
       rw [hdl, List.drop_left]
       rw [List.drop_left] at hq
-      have htd : t.dropLast ≠ [] := by
-        intro e
-        rw [hdl, e, List.append_nil] at hsd'
-        simp [structural, List.contains_iff_mem, hmp] at hsd'
       exact hW.2 m hmp hch t hq ht htd
 
 /-! ## (1) The composite feed -/
@@ -211,7 +304,9 @@ def feed (T : Table) (rlog : List Path) (mlog : Path → List Path) (W1 : World)
 
 /-- The logs are complete for the window. -/
 def Complete (W0 W1 : World) (T : Table) (rlog : List Path) (mlog : Path → List Path) : Prop :=
-  (∀ p, W0.root p ≠ W1.root p → p ∈ rlog) ∧ (∀ m ∈ T.pts, T.ch m = true → ∀ r, W0.bt m r ≠ W1.bt m r → r ∈ mlog m)
+  (∀ p, W0.root p ≠ W1.root p → p ∈ rlog) ∧
+    (∀ m ∈ T.pts, T.ch m = true → ∀ r, W0.bt m r ≠ W1.bt m r → r ∈ mlog m) ∧
+    W0.walk = W1.walk
 
 theorem feed_values (T : Table) (rlog : List Path) (mlog : Path → List Path) (W1 : World) :
     ∀ x ∈ feed T rlog mlog W1, x.2 = view T W1 x.1 ∧ x.1 ≠ [] := by
@@ -239,9 +334,9 @@ theorem feed_values (T : Table) (rlog : List Path) (mlog : Path → List Path) (
 
 /-- (1) The composite feed is exact for the staged view, in any order. -/
 theorem feed_exact (T : Table) (W0 W1 : World) (rlog : List Path) (mlog : Path → List Path)
-    (hW : BackendsClosed T W1) (hcomp : Complete W0 W1 T rlog mlog) :
+    (hW : BackendsClosed T W1) (hU : WalksClosed W1) (hcomp : Complete W0 W1 T rlog mlog) :
     applyDelta (view T W0) (feed T rlog mlog W1) = view T W1 := by
-  apply apply_exact _ _ (view_closed hW) _ (fun x hx => (feed_values T rlog mlog W1 x hx).1)
+  apply apply_exact _ _ (view_closed hW hU) _ (fun x hx => (feed_values T rlog mlog W1 x hx).1)
     (fun x hx => (feed_values T rlog mlog W1 x hx).2)
   intro q hq
   have hq0 : q ≠ [] := by intro e; subst e; simp [view] at hq
@@ -258,11 +353,11 @@ theorem feed_exact (T : Table) (W0 W1 : World) (rlog : List Path) (mlog : Path �
     simp only at hq
     obtain ⟨hmp, hpre⟩ := ownerPt_mem T.pts q ho
     cases hch : T.ch m
-    · simp [hch] at hq
+    · simp [hch, hcomp.2.2] at hq
     · rw [if_pos hch, if_pos hch] at hq
       obtain ⟨t, rfl⟩ := hpre
       rw [List.drop_left] at hq
-      have hr := hcomp.2 m hmp hch t hq
+      have hr := hcomp.2.1 m hmp hch t hq
       refine ⟨(m ++ t, W1.bt m t), List.mem_append_right _ (List.mem_flatMap.mpr ⟨m, hmp, ?_⟩), rfl⟩
       rw [if_pos hch]
       refine List.mem_filter.mpr ⟨List.mem_map.mpr ⟨t, hr, rfl⟩, ?_⟩
@@ -278,8 +373,8 @@ theorem feed_exact (T : Table) (W0 W1 : World) (rlog : List Path) (mlog : Path �
     the composite shows nothing there. -/
 theorem an_unfiltered_root_feed_stages_a_shadowed_row :
     let T : Table := ⟨[["pc"]], fun _ => true⟩
-    let W0 : World := ⟨fun _ => none, fun _ _ => none⟩
-    let W1 : World := ⟨fun q => if q = ["pc", "shadowed"] then some (.file 1) else none, fun _ _ => none⟩
+    let W0 : World := { root := fun _ => none, bt := fun _ _ => none }
+    let W1 : World := { root := fun q => if q = ["pc", "shadowed"] then some (.file 1) else none, bt := fun _ _ => none }
     applyDelta (view T W0) (rootFeed [["pc", "shadowed"]] W1) ["pc", "shadowed"] = some (.file 1) ∧
       view T W1 ["pc", "shadowed"] = none ∧ feed T [["pc", "shadowed"]] (fun _ => []) W1 = [] := by
   decide
@@ -303,7 +398,8 @@ def Covers (log : List LEnt) (q : Path) : Prop :=
 
 def CompleteSub (W0 W1 : World) (T : Table) (rlog : List LEnt) (mlog : Path → List LEnt) : Prop :=
   (∀ p, W0.root p ≠ W1.root p → Covers rlog p) ∧
-    (∀ m ∈ T.pts, T.ch m = true → ∀ r, W0.bt m r ≠ W1.bt m r → Covers (mlog m) r)
+    (∀ m ∈ T.pts, T.ch m = true → ∀ r, W0.bt m r ≠ W1.bt m r → Covers (mlog m) r) ∧
+    W0.walk = W1.walk
 
 /-- What the facet does with one entry: stage a path's current value, or relist a
     subtree from the backend that serves it. -/
@@ -461,9 +557,10 @@ theorem apply_ops_exact (V NS : Tree) (hV : Closed V) (ops : List FOp) (hs : ∀
 /-- (1b) With the table unchanged and no poison, the shown entries, applied in
     any order, make the staged namespace exact. -/
 theorem feedOps_exact (T : Table) (W0 W1 : World) (rlog : List LEnt) (mlog : Path → List LEnt)
-    (hW : BackendsClosed T W1) (hcomp : CompleteSub W0 W1 T rlog mlog) (hp : subPoison T rlog mlog = false) :
+    (hW : BackendsClosed T W1) (hU : WalksClosed W1)
+    (hcomp : CompleteSub W0 W1 T rlog mlog) (hp : subPoison T rlog mlog = false) :
     (feedOps T rlog mlog W1).foldl applyOp (view T W0) = view T W1 := by
-  apply apply_ops_exact _ _ (view_closed hW)
+  apply apply_ops_exact _ _ (view_closed hW hU)
   · intro o ho
     rcases List.mem_append.mp ho with ho | ho
     · obtain ⟨e, he, rfl⟩ := List.mem_map.mp ho
@@ -522,7 +619,7 @@ theorem feedOps_exact (T : Table) (W0 W1 : World) (rlog : List LEnt) (mlog : Pat
       rw [ho] at hq
       obtain ⟨hmp, t, rfl⟩ := ownerPt_mem _ _ ho
       cases hch : T.ch m
-      · simp [hch] at hq
+      · simp [hch, hcomp.2.2] at hq
       simp only [hch, if_true, List.drop_left] at hq
       have hshq : shown T (some m) (m ++ t) = true := by simp [shown, hq0, hs, ho]
       have mem : ∀ e ∈ mlog m, shown T (some m) (m ++ e.path) = true →
@@ -530,7 +627,7 @@ theorem feedOps_exact (T : Table) (W0 W1 : World) (rlog : List LEnt) (mlog : Pat
         List.mem_append_right _ (List.mem_flatMap.mpr ⟨m, hmp, by
           rw [if_pos hch]
           exact List.mem_map.mpr ⟨reroot m e, List.mem_filter.mpr ⟨List.mem_map.mpr ⟨e, he, rfl⟩, hsh⟩, rfl⟩⟩)
-      rcases hcomp.2 m hmp hch t hq with ⟨e, he, rfl⟩ | ⟨e, he, hsub, hpre⟩
+      rcases hcomp.2.1 m hmp hch t hq with ⟨e, he, rfl⟩ | ⟨e, he, hsub, hpre⟩
       · refine ⟨_, mem e he hshq, ?_⟩
         unfold entOp; split
         · exact List.prefix_refl _
@@ -553,9 +650,10 @@ theorem feedOps_exact (T : Table) (W0 W1 : World) (rlog : List LEnt) (mlog : Pat
     which is gone; the entry is not shown, so without the poison `/m/a` stays. -/
 theorem a_subtree_entry_at_a_composite_directory_must_poison :
     let T : Table := ⟨[["m", "pc"]], fun _ => true⟩
-    let W0 : World := ⟨fun q => if q = ["m"] then some .dir else if q = ["m", "a"] then some (.file 1) else none,
-      fun _ _ => none⟩
-    let W1 : World := ⟨fun _ => none, fun _ _ => none⟩
+    let W0 : World := {
+      root := fun q => if q = ["m"] then some .dir else if q = ["m", "a"] then some (.file 1) else none
+      bt := fun _ _ => none }
+    let W1 : World := { root := fun _ => none, bt := fun _ _ => none }
     let rlog : List LEnt := [⟨["m"], true⟩]
     view T W0 ["m", "a"] = some (.file 1) ∧ view T W1 ["m", "a"] = none ∧
       (feedOps T rlog (fun _ => []) W1).isEmpty = true ∧ subPoison T rlog (fun _ => []) = true := by
@@ -568,8 +666,8 @@ theorem a_subtree_entry_at_a_composite_directory_must_poison :
     `feedOps_exact` takes the answer's table and the backends' own logs.) -/
 theorem an_aba_window_needs_no_poison :
     let T : Table := ⟨[["pc"]], fun _ => true⟩
-    let W0 : World := ⟨fun _ => none, fun _ _ => none⟩
-    let W1 : World := ⟨fun q => if q = ["pc", "a"] then some (.file 1) else none, fun _ _ => none⟩
+    let W0 : World := { root := fun _ => none, bt := fun _ _ => none }
+    let W1 : World := { root := fun q => if q = ["pc", "a"] then some (.file 1) else none, bt := fun _ _ => none }
     let rlog : List LEnt := [⟨["pc", "a"], false⟩]
     (feedOps T rlog (fun _ => []) W1).isEmpty = true ∧ subPoison T rlog (fun _ => []) = false ∧
       view T W0 = view T W1 := by
@@ -597,8 +695,8 @@ def ownerFirstKeep (T : Table) (m : Path) (x : Path × Option Kind) : Bool :=
     composite's directory and the entry is filtered out. -/
 theorem owner_first_routing_is_not_a_tree :
     let T : Table := ⟨[["a"], ["a", "b", "c"]], fun _ => true⟩
-    let W0 : World := ⟨fun _ => none, fun m r => if m = ["a"] ∧ r = ["b"] then some (.file 1) else none⟩
-    let W1 : World := ⟨fun _ => none, fun _ _ => none⟩
+    let W0 : World := { root := fun _ => none, bt := fun m r => if m = ["a"] ∧ r = ["b"] then some (.file 1) else none }
+    let W1 : World := { root := fun _ => none, bt := fun _ _ => none }
     ownerFirstView T W1 ["a", "b", "c"] = some .dir ∧ ownerFirstView T W1 ["a", "b"] = none ∧
       (mountFeed ["a"] [["b"]] W1).filter (ownerFirstKeep T ["a"]) = [(["a", "b"], none)] ∧
       applyDelta (view T W0) [(["a", "b"], none)] ["a", "b", "c"] = none ∧
@@ -609,6 +707,17 @@ theorem owner_first_routing_is_not_a_tree :
 /-! ## (2) Mount-table changes poison -/
 
 def sameTable (T0 T1 : Table) : Prop := T0.pts = T1.pts ∧ ∀ m ∈ T0.pts, T0.ch m = T1.ch m
+
+/-- SQLite-only bound listings record the declaration generation. Composite
+    listings retain the feed signature and its subtree-poison rule. -/
+def listingPoison (sqliteOnly : Bool) (listed now : Nat) (signatureChanged subtreePoison : Bool) : Bool :=
+  if sqliteOnly then listed != now else signatureChanged || subtreePoison
+
+theorem sqlite_generation_change_poisons (listed now : Nat) (h : listed ≠ now)
+    (signatureChanged subtreePoison : Bool) : listingPoison true listed now signatureChanged subtreePoison = true := by
+  simp [listingPoison, h]
+
+theorem sqlite_only_aba_relists : listingPoison true 0 2 false false = true := by decide
 
 /-- The facet's step: a table change poisons and relists; otherwise the feed applies. -/
 def step (T0 T1 : Table) (changed : Bool) (W0 W1 : World) (rlog : List Path) (mlog : Path → List Path) : Tree :=
@@ -632,14 +741,14 @@ theorem view_table_congr {T0 T1 : Table} (h : sameTable T0 T1) (W : World) : vie
 /-- Poison exactly when the table changed: the staged namespace is always the
     composite's staged view at answer time. -/
 theorem step_exact (T0 T1 : Table) (W0 W1 : World) (rlog : List Path) (mlog : Path → List Path)
-    (hW : BackendsClosed T1 W1) (hcomp : Complete W0 W1 T1 rlog mlog) (changed : Bool)
+    (hW : BackendsClosed T1 W1) (hU : WalksClosed W1) (hcomp : Complete W0 W1 T1 rlog mlog) (changed : Bool)
     (hpoison : changed = false → sameTable T0 T1) :
     step T0 T1 changed W0 W1 rlog mlog = view T1 W1 := by
   unfold step
   cases changed
   · simp only [Bool.false_eq_true, if_false]
     rw [view_table_congr (hpoison rfl) W0]
-    exact feed_exact T1 W0 W1 rlog mlog hW hcomp
+    exact feed_exact T1 W0 W1 rlog mlog hW hU hcomp
   · rfl
 
 /-- A mount appearing over a root directory changes no backend, so no feed names
@@ -647,28 +756,42 @@ theorem step_exact (T0 T1 : Table) (W0 W1 : World) (rlog : List Path) (mlog : Pa
 theorem a_mount_appearing_is_not_in_any_feed :
     let T0 : Table := ⟨[], fun _ => true⟩
     let T1 : Table := ⟨[["pc"]], fun _ => true⟩
-    let W : World := ⟨fun q => if q = ["pc"] then some .dir else if q = ["pc", "a"] then some (.file 1) else none,
-      fun _ _ => none⟩
+    let W : World := {
+      root := fun q => if q = ["pc"] then some .dir else if q = ["pc", "a"] then some (.file 1) else none
+      bt := fun _ _ => none }
     feed T1 [] (fun _ => []) W = [] ∧ view T0 W ["pc", "a"] = some (.file 1) ∧ view T1 W ["pc", "a"] = none := by
   decide
 
 /-! ## (3) Mounts without `changes` -/
 
-/-- A mount without `changes` contributes no entries, and nothing strictly under
-    it is staged but the composite's own directories (a nested live mount and the
-    directories above it). -/
-theorem no_changes_never_staged (T : Table) (W : World) (rlog : List Path) (mlog : Path → List Path)
-    {m : Path} (hm : T.ch m = false) {q : Path} (ho : ownerPt T.pts q = some m) (hq : q ≠ m)
-    (hs : structural T.pts q = false) :
-    view T W q = none ∧ ∀ x ∈ feed T rlog mlog W, x.1 = q → x.2 = none := by
-  have hv : view T W q = none := by
-    have hq0 : q ≠ [] := by
-      intro e; subst e
-      obtain ⟨_, hp⟩ := ownerPt_mem T.pts [] ho
-      exact hq (List.prefix_nil.mp hp).symm
-    simp [view, hq0, ho, hs, hm]
-  refine ⟨hv, fun x hx he => ?_⟩
-  rw [(feed_values T rlog mlog W x hx).1, he, hv]
+/-- An unfed mount supplies no incremental record, even for a walked name. -/
+theorem no_changes_no_incremental (T : Table) (W : World) (rlog : List Path) (mlog : Path → List Path)
+    {m : Path} (hm : T.ch m = false) :
+    ∀ x ∈ feed T rlog mlog W, ownerPt T.pts x.1 ≠ some m := by
+  intro x hx ho
+  rcases List.mem_append.mp hx with hx | hx
+  · have hk := (List.mem_filter.mp hx).2
+    simp [keepRoot, ho] at hk
+  · obtain ⟨m', _, hx⟩ := List.mem_flatMap.mp hx
+    split at hx
+    · rename_i hc
+      have hk := (List.mem_filter.mp hx).2
+      simp only [keepMount, Bool.and_eq_true, beq_iff_eq] at hk
+      have he : m' = m := Option.some.inj (hk.2.symm.trans ho)
+      subst m'; rw [hm] at hc; cases hc
+    · cases hx
+
+theorem unfed_view_is_walk (T : Table) (W : World) {m q : Path} (hm : T.ch m = false)
+    (ho : ownerPt T.pts q = some m) (hq : q ≠ []) (hs : structural T.pts q = false) :
+    view T W q = W.walk.tree q := by
+  simp [view, hq, hs, ho, hm]
+
+/-- A skipped directory is unknown, not evidence that its children are absent. -/
+theorem unlisted_does_not_mean_absent :
+    let backend : Tree := fun p => if p = [] then some .dir else if p = ["x"] then some (.file 1) else none
+    let s : Walk := { limit := 0 }
+    WalkReach backend (fun _ => false) s ∧ [] ∉ s.listed ∧ s.tree ["x"] = none ∧ backend ["x"] = some (.file 1) := by
+  exact ⟨WalkReach.start 0, by decide, by decide, by decide⟩
 
 /-! ## The staged namespace in every reachable state -/
 
@@ -690,42 +813,96 @@ inductive FsStep : Fs → Fs → Prop
   | answer (s : Fs) (W1 : World) (rlog : List LEnt) (mlog : Path → List LEnt)
       (hW : BackendsClosed s.T W1) (hc : CompleteSub s.W W1 s.T rlog mlog) (hp : subPoison s.T rlog mlog = false) :
       FsStep s { s with W := W1, NS := (feedOps s.T rlog mlog W1).foldl applyOp s.NS }
-  | poison (s : Fs) (T1 : Table) (W1 : World) (hW : BackendsClosed T1 W1) :
+  | poison (s : Fs) (T1 : Table) (W1 : World) (hW : BackendsClosed T1 W1) (hi : WalkInstalled T1 W1) :
       FsStep s ⟨T1, W1, view T1 W1⟩
   | own (s : Fs) (W1 : World) (d : List (Path × Option Kind)) (hW : BackendsClosed s.T W1)
       (hd : ∀ x ∈ d, x.2 = view s.T W1 x.1 ∧ x.1 ≠ [])
-      (hcov : ∀ q, view s.T s.W q ≠ view s.T W1 q → ∃ x ∈ d, x.1 = q) :
+      (hcov : ∀ q, view s.T s.W q ≠ view s.T W1 q → ∃ x ∈ d, x.1 = q)
+      (hretain : s.W.walk = W1.walk) :
       FsStep s { s with W := W1, NS := applyDelta s.NS d }
   | push (s : Fs) : FsStep s s
 
 inductive FsReach : Fs → Prop
-  | boot (T : Table) (W : World) (hW : BackendsClosed T W) : FsReach ⟨T, W, view T W⟩
+  | boot (T : Table) (W : World) (hW : BackendsClosed T W) (hi : WalkInstalled T W) : FsReach ⟨T, W, view T W⟩
   | step {s s' : Fs} : FsReach s → FsStep s s' → FsReach s'
 
 /-- In every reachable state the staged namespace is the composite's staged view of
     the backends at the cursor, and so a tree: `feed_exact`'s closedness premise
     holds wherever it is used. -/
-theorem fs_inv {s : Fs} (h : FsReach s) : BackendsClosed s.T s.W ∧ s.NS = view s.T s.W := by
+theorem fs_inv {s : Fs} (h : FsReach s) : BackendsClosed s.T s.W ∧ WalksClosed s.W ∧ s.NS = view s.T s.W := by
   induction h with
-  | boot T W hW => exact ⟨hW, rfl⟩
+  | boot T W hW hi => exact ⟨hW, installed_walks_closed hi, rfl⟩
   | step _ hs ih =>
-    obtain ⟨hW0, hNS⟩ := ih
+    obtain ⟨hW0, hU0, hNS⟩ := ih
     cases hs with
     | answer W1 rlog mlog hW hc hp =>
-      refine ⟨hW, ?_⟩
+      have hU := walks_closed_of_retained hU0 hc.2.2
+      refine ⟨hW, hU, ?_⟩
       simp only at hNS ⊢
-      rw [hNS]; exact feedOps_exact _ _ _ _ _ hW hc hp
-    | poison T1 W1 hW => exact ⟨hW, rfl⟩
-    | own W1 d hW hd hcov =>
-      refine ⟨hW, ?_⟩
+      rw [hNS]; exact feedOps_exact _ _ _ _ _ hW hU hc hp
+    | poison T1 W1 hW hi => exact ⟨hW, installed_walks_closed hi, rfl⟩
+    | own W1 d hW hd hcov hretain =>
+      have hU := walks_closed_of_retained hU0 hretain
+      refine ⟨hW, hU, ?_⟩
       simp only at hNS ⊢
       rw [hNS]
-      exact apply_exact _ _ (view_closed hW) d (fun x hx => (hd x hx).1) (fun x hx => (hd x hx).2) hcov
-    | push => exact ⟨hW0, hNS⟩
+      exact apply_exact _ _ (view_closed hW hU) d (fun x hx => (hd x hx).1) (fun x hx => (hd x hx).2) hcov
+    | push => exact ⟨hW0, hU0, hNS⟩
 
 theorem staged_closed {s : Fs} (h : FsReach s) : Closed s.NS := by
-  obtain ⟨hW, hNS⟩ := fs_inv h
-  rw [hNS]; exact view_closed hW
+  obtain ⟨hW, hU, hNS⟩ := fs_inv h
+  rw [hNS]; exact view_closed hW hU
+
+theorem staged_walk_bounded {s : Fs} (h : FsReach s) :
+    s.W.walk.spent ≤ s.W.walk.limit := by
+  induction h with
+  | boot T W hW hi => exact (walk_inv hi).2.1
+  | step _ hs ih =>
+    cases hs with
+    | answer W1 rlog mlog hW hc hp =>
+      rw [← hc.2.2]; exact ih
+    | poison T1 W1 hW hi => exact (walk_inv hi).2.1
+    | own W1 d hW hd hcov hretain =>
+      rw [← hretain]; exact ih
+    | push => exact ih
+
+/-- A launch walks `x = v1`; an external unfed write changes it to `v2`.
+    An ordinary answer leaves the reachable staged observation at `v1`. -/
+theorem a_walk_can_hold_an_old_unfed_value :
+    ∃ s, FsReach s ∧ s.W.bt ["m"] ["x"] = some (.file 2) ∧
+      s.NS ["m", "x"] = some (.file 1) ∧ feed s.T [] (fun _ => []) s.W = [] := by
+  let T : Table := ⟨[["m"]], fun _ => false⟩
+  let point : Walk := { tree := insertWalk rootOnly ["m"] .dir, limit := 1 }
+  let held : Walk := { point with tree := insertWalk point.tree ["m", "x"] (.file 1), spent := 1 }
+  let W0 : World := {
+    root := fun _ => none
+    bt := fun _ r => if r = [] then some .dir else if r = ["x"] then some (.file 1) else none
+    walk := held }
+  let W1 : World := { W0 with bt := fun _ r => if r = [] then some .dir else if r = ["x"] then some (.file 2) else none }
+  have hW0 : BackendsClosed T W0 := by
+    constructor
+    · intro q hq _ _; exact (hq rfl).elim
+    · intro m hm hc; cases hc
+  have hW1 : BackendsClosed T W1 := by
+    constructor
+    · intro q hq _ _; exact (hq rfl).elim
+    · intro m hm hc; cases hc
+  have hi : WalkInstalled T W0 := by
+    have first : WalkReach (view { T with ch := fun _ => true } W0) (structural T.pts) point := by
+      apply WalkReach.step (WalkReach.start 1)
+      exact WalkStep.observe { limit := 1 } ["m"] .dir
+        (by decide) (by decide) (by decide) (by decide) (by decide)
+    apply WalkReach.step first
+    exact WalkStep.observe point ["m", "x"] (.file 1)
+      (by decide) (by decide) (by decide) (by decide) (by decide)
+  have hc : CompleteSub W0 W1 T [] (fun _ => []) := by
+    refine ⟨?_, ?_, ?_⟩
+    · intro q hq; exact (hq rfl).elim
+    · intro m hm hch; cases hch
+    · rfl
+  have boot := FsReach.boot T W0 hW0 hi
+  have answer := FsReach.step boot (.answer _ W1 [] (fun _ => []) hW1 hc (by decide))
+  exact ⟨_, answer, by decide, by decide, by decide⟩
 
 /-! ## (4) Epoch-qualified revisions -/
 

@@ -17,6 +17,9 @@ published independently in the `@nimbus-sh` npm scope.
   `trap '' PIPE` ignores SIGPIPE, including commands that inherit it across
   exec. Before, a write after the pipe's reader closed killed the writer
   with SIGPIPE even when the signal was ignored.
+- Fixed: a running process now notices an embedder filesystem mounted after
+  its first filesystem listing. Before, a process that started with SQLite
+  alone could keep a staged namespace that omitted the new mount.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
