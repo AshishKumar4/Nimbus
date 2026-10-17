@@ -18,6 +18,10 @@
  * on, entries are numbered under `writer` from `seq`, one each, in order
  * (number()). A new numbering is recorded only when the client opens a new
  * writer epoch, so the journal writes one row per change, and deletes it.
+ *
+ * A row outlives the version that wrote it (a deploy between a process's
+ * death and its drain): every read of one passes it through currentCall,
+ * which gives an earlier version's form of an op this version's.
  */
 function dataOf(op) {
     return op.type === 'call' && 'data' in op.call ? op.call.data : null;
@@ -30,8 +34,17 @@ function rowOf(op) {
     const { data: _data, ...call } = op.call;
     return { json: JSON.stringify({ type: 'call', call }), data };
 }
+/** `call` as this version's frame takes it: a journaled open given the access it had. */
+function currentCall(call) {
+    if (call.call === 'open' && call.access === undefined) {
+        const { read, ...open } = call;
+        return { ...open, access: read === true ? 'readwrite' : 'write' };
+    }
+    return call;
+}
 function opOf(json, data) {
-    const op = JSON.parse(json);
+    const journaled = JSON.parse(json);
+    const op = journaled.type === 'call' ? { type: 'call', call: currentCall(journaled.call) } : journaled;
     if (data === null || data === undefined)
         return op;
     const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);

@@ -1,6 +1,14 @@
 import { STOP_RECORD_PREFIX, REPLAY_PREFIX_MAX_BYTES, REPLAY_TAPE_MAX_READINGS, REPLAY_TAPE_MAX_RANDOM_BYTES, REPLAY_TAPE_MAX_WRITES, REPLAY_TAPE_MAX_WRITE_BYTES, REPLAY_WRITE_ENTRY_MAX_CHARS, } from './stop-replay-contracts.js';
 import { SUPERVISOR_CALLS_WITHOUT_EFFECTS, REPLAY_OBSERVATION_CALLS } from './stop-replay-policy.js';
 /**
+ * The clock as it is, as an expression of the runner's source (a function):
+ * for Nimbus's own reads of it, which a run and its run again make
+ * differently as their state differs, so they cannot be the program's
+ * (whose readings a run again is handed back). The runner's stop-replay's
+ * realNow where it has one; the clock itself in a runner or a test without.
+ */
+export const REAL_NOW_SOURCE = '(typeof __nimbusStopReplay !== "undefined" ? __nimbusStopReplay.realNow : Date.now)';
+/**
  * The guest half, spliced at module level into a facet runner before the
  * node shims: `const __nimbusStopReplay`, private to the runner module.
  *
@@ -35,6 +43,7 @@ const __nimbusStopReplay = (() => {
   const StringFromCharCode = String.fromCharCode;
   const TypedArrayLength = Reflect.getOwnPropertyDescriptor(Reflect.getPrototypeOf(Uint8Array.prototype), "length").get;
   const NumberIsFinite = Number.isFinite;
+  const DateNow = Date.now;
   const U8 = Uint8Array;
   const QUIET = ${JSON.stringify(Object.fromEntries(SUPERVISOR_CALLS_WITHOUT_EFFECTS.map((name) => [name, true])))};
   const OBSERVATIONS = ${JSON.stringify(Object.fromEntries(REPLAY_OBSERVATION_CALLS.map((name) => [name, true])))};
@@ -363,6 +372,8 @@ const __nimbusStopReplay = (() => {
 
   return {
     ledger,
+    // The clock as it is, not the tape (REAL_NOW_SOURCE).
+    realNow() { return DateNow(); },
     // Outbound fetch uses a separate binding, not ledger's supervisor
     // proxy; it joins the same gate before dispatching a post-read request.
     afterBoundary() { return run && run.boundaryNotice; },
@@ -521,6 +532,18 @@ const __nimbusStopReplay = (() => {
       else if (run.writeBytes > WRITE_BYTES_MAX) unreplayable("wrote more than " + WRITE_BYTES_MAX + " bytes first, more than a second run is checked against");
       else if (path.length > WRITE_ENTRY_MAX - 64) unreplayable("changed a file whose path is longer than " + (WRITE_ENTRY_MAX - 64) + " characters first");
       else run.tape.writes[run.tape.writes.length] = name + " " + path + " " + digest(op);
+    },
+    // A change the program asked for and found made already, so made
+    // nothing and is no mutation: mkdir -p of a directory there. A run again
+    // finds what the run before it made, so the change of the tape it would
+    // have made next is made again by being there.
+    found(op) {
+      if (!run || !run.armed || !run.tape || !replaying() || run.replay.listen !== true) return;
+      if (run.writesAt >= run.replayedWrites) return;
+      const call = op.type === "call" ? op.call : op;
+      const name = op.type === "call" ? "" + call.call : "" + op.type;
+      const path = typeof call.path === "string" ? call.path : "";
+      if (run.tape.writes[run.writesAt] === name + " " + path + " " + digest(op)) run.writesAt++;
     },
     // A server's first listen, before it binds or reserves anything. A run
     // again of a run that stopped here has reached where it stopped; a

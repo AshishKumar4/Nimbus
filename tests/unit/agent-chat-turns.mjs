@@ -1187,4 +1187,51 @@ function controlledProviderQueue() {
   console.log('ok - text with a lone surrogate is refused before it is stored or hashed');
 }
 
+// ── History written before parts reaches the model as it was stored ──
+// A tool result stored as its own `tool`-role row reaches the model as the
+// tool's name (a string, else the row's name) and output in text; an
+// assistant answer stored before parts, as its content; a part that is not
+// an object is dropped.
+{
+  const { host, store } = makeHost();
+  store.set(MESSAGES_KEY, [
+    { id: 'u1', role: 'user', content: 'go', createdAt: 1 },
+    { id: 't1', role: 'tool', name: 'by-name', content: JSON.stringify({ tool: 'list_files', input: { dir: '.' }, output: ['a', 'b'] }), createdAt: 2 },
+    { id: 't2', role: 'tool', name: 'by-name', content: JSON.stringify({ output: 'only output' }), createdAt: 3 },
+    { id: 't3', role: 'tool', content: 'not json', createdAt: 4 },
+    { id: 't4', role: 'tool', content: 'null', createdAt: 5 },
+    { id: 't5', role: 'tool', content: JSON.stringify({ tool: 'zero', output: 0 }), createdAt: 6 },
+    { id: 't6', role: 'tool', name: 'by-name', content: JSON.stringify({ tool: 7, output: 'x' }), createdAt: 6 },
+    { id: 'a1', role: 'assistant', content: 'stored before parts', createdAt: 7 },
+    { id: 'a2', role: 'assistant', content: 'unused', parts: [null, 7, { type: 'text', text: 'from parts' }], createdAt: 8 },
+  ]);
+  const sent = [];
+  const provider = mockProviderFetch();
+  globalThis.fetch = async (input, init) => {
+    const body = await (input instanceof Request ? input.clone().text() : new Response(init.body).text());
+    sent.push(JSON.parse(body).messages);
+    return provider(input, { ...init, body });
+  };
+  try {
+    const response = await postChat(host, { message: 'next', stream: true });
+    await readEventsUntil(response, (list) => list.some((event) => event.type === 'done'));
+    const texts = sent[0].filter((m) => m.role !== 'system').map((m) => `${m.role}:${typeof m.content === 'string' ? m.content : m.content.map((c) => c.text).join('')}`);
+    assert.deepEqual(texts, [
+      'user:go',
+      'assistant:Tool list_files result:\n["a","b"]',
+      'assistant:Tool by-name result:\n"only output"',
+      'assistant:Tool tool result:\n"not json"',
+      'assistant:Tool tool result:\n"null"',
+      'assistant:Tool zero result:\n0',
+      'assistant:Tool by-name result:\n"x"',
+      'assistant:stored before parts',
+      'assistant:from parts',
+      'user:next',
+    ]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log('ok - history written before parts reaches the model as it was stored');
+}
+
 console.log('agent-chat-turns: all assertions passed');

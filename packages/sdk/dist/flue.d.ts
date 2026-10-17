@@ -13,21 +13,8 @@ export interface NimbusFlueFileStat {
     size: number;
     mtime: Date;
 }
-export interface NimbusFlueSessionEnv {
-    exec(command: string, options?: NimbusFlueExecOptions): Promise<NimbusFlueShellResult>;
-    readFile(path: string): Promise<string>;
-    readFileBuffer(path: string): Promise<Uint8Array>;
-    writeFile(path: string, content: string | Uint8Array): Promise<void>;
-    stat(path: string): Promise<NimbusFlueFileStat>;
-    readdir(path: string): Promise<string[]>;
-    exists(path: string): Promise<boolean>;
-    mkdir(path: string, options?: {
-        recursive?: boolean;
-    }): Promise<void>;
-    rm(path: string, options?: {
-        recursive?: boolean;
-        force?: boolean;
-    }): Promise<void>;
+/** A Flue session's environment: the sandbox's API, rooted at `cwd`. */
+export interface NimbusFlueSessionEnv extends NimbusFlueSandboxApi {
     cwd: string;
     resolvePath(path: string): string;
 }

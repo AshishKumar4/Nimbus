@@ -6,6 +6,24 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Fixed: a hosted node program that replaces a built-in its module resolution calls (`String.prototype.startsWith`, `Array.prototype.push`, `JSON.parse`, `Map.prototype.get`, `%GeneratorPrototype%.next` and the like) still resolves `import`, `import()`, `import.meta.resolve`, `require.resolve` and `require` specifiers, and gets Node's errors for them, as Node's loader does on its primordials. A package.json's fields are its own: an `Object.prototype.main` or `.exports` a program adds no longer changes how a package resolves. A URL's members are read as Node reads them, so a replaced `URL.prototype.pathname` breaks resolution as it breaks Node's. Loading itself is the remaining work (design-guest-loader-primordials, heads 3 and 4).
+- Fixed: a program that writes files before it listens, as Vite's config
+  load does, serves. When its listen makes it a server, Nimbus runs it again
+  and checks that run against the first. That check failed for two reasons.
+  A `mkdir -p` of a directory the first run had made made nothing, so the
+  check saw one change fewer. Nimbus's own clock reads (the resident's boot,
+  its startup and event-loop deadlines, a stat's fallback times) took
+  readings meant for the program, so its `Date.now()` named a file
+  otherwise. Now the found directory counts as made again, and Nimbus reads
+  the clock itself. `react-router dev` gets past its relaunch.
+
+- Fixed: Tailwind CSS v4 works again. Its scanner, `@tailwindcss/oxide`
+  4.3.3, runs from Nimbus's staged threadless build, so `@tailwindcss/vite`,
+  `@tailwindcss/postcss` and `@tailwindcss/cli` install and serve. A Vite
+  dev server's stylesheet carries the utilities the project's files use,
+  including files edited or added while it runs, and `vite build` writes
+  them too. Before, the install noted that oxide had no Workers-compatible
+  build, and Tailwind v4 could not load.
+
 - Changed: a program whose launch waits 10 seconds at one stage (its
   preparation, its admission for a worker, or its load) logs one line to
   Workers Logs: `[facet-manager] launch stalled:` with its pid, command,
@@ -122,6 +140,43 @@ The 2026-10-14 and 2026-10-15 versions reached production but were never publish
 - Fixed: a resident process fills a file it listed from a synchronously mounted backend (`/mnt/data`, an SDK embedder's mount). Before, the read named the engine's epoch, which a mounted path never matches, and was refused (ESTALE). A read of a mounted file now names the file as its listing's stat did (`RuntimeReadOptions.expectedFile`: device, inode, size, mtime, ctime) and is refused only if it is no longer that file. A mounted read that names the engine's epoch is refused by the asynchronous path too, as by the synchronous one. A filled mounted file is still undated in the store: it vouches for nothing on a relaunch.
 - Fixed: a hosted ES module that statically imports a file the program writes after it starts (a module staged with the launch, its import of `./generated.mjs` written at runtime) finds the file when it is imported, as Node does. Before, the import failed with "Cannot find module", because the file was missing when the launch began. One still missing fails with Node's `ERR_MODULE_NOT_FOUND`, and, as in Node, so do later imports of the modules that failed to link, even once the file is written; a `require()` tries again. A query's or a fragment's import of such a file (`./generated.json?x`) loads as the file's format.
 - Changed: the hosted node's `node:path` posix half is now Node v22.22.3's own `lib/path.js`, ported onto built-ins the launch captures before any program code runs. A program that replaces `String.prototype.charCodeAt`, `slice` and the like gets from `path` what Node's `path` gives, where workerd's `path` used to fail. Its key order, function names and argument errors are Node's, including `path.join` failing, as Node's does, when `Array.prototype.push` is replaced. `win32` and `matchesGlob` remain the platform's.
+- Changed (docs): the docs' sandbox terminal keeps the session it booted
+  per attach endpoint, so two endpoints on one origin no longer share it. A
+  browser that cached a session the old way keeps it: the first visit moves
+  it to the new key and removes the old ones.
+- Fixed (shell): when the Explorer's first listing fails (a lost connection,
+  a refused listing), selecting the Editor again lists the files. Before,
+  the tree counted itself loaded and kept the error until Refresh. A
+  folder's icon now opens and closes with the folder; it kept the state the
+  folder had when first shown. A Markdown preview renders once per open and
+  reload, not twice.
+- Breaking (react): `useNimbusSession` no longer takes `tenant` or `sub`.
+  The hook never read them; identity belongs to the token.
+  `<NimbusTerminal />` keeps both props, to show on its iframe. Drop them
+  from a hook call.
+- Fixed (react): the headless `useNimbusSession` guide (README and the
+  hook's own example) works as written. It mounts the iframe at once and
+  shows its loading state over it until the shell reports ready. Before,
+  it waited for ready before mounting the iframe, and only that iframe
+  could report ready, so it showed "Loading…" forever.
+- Fixed (agent chat): a running tool's timer counts from when the tool
+  started. Before, a chat opened while a tool ran showed it starting from
+  zero, and a tool whose start was unknown showed a timer it could not
+  know.
+- Fixed (shell): the built-in shell reads `$'...'` (ANSI-C quoting) as bash
+  does. `echo $'\303\251'` prints "é", `$'\cA'` is the control character,
+  `$'\u00e9'` a character, `$'it\'s'` keeps its apostrophe, and a NUL ends
+  the quoted part. Nothing inside expands, and inside double quotes it stays
+  literal. Before, the `$` stayed and the body was read as a plain
+  single-quoted string, so `\'` ended it early. A `"` inside a substitution
+  nested in double quotes within `$(...)` no longer ends the outer
+  substitution.
+- Fixed (shell): in the built-in shell, an octal or hex escape in `printf`
+  (its format and `%b`) and `echo -e` writes one byte, as bash does.
+  `printf '\303\251'` writes "é" and `printf '\377'` writes the byte 0xff.
+  Before, each escape became a character written as UTF-8, so
+  `printf '\357\273\277'` gave six bytes instead of a byte order mark.
+  `printf %c` writes its argument's first byte.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
@@ -575,6 +630,52 @@ The 2026-10-14 and 2026-10-15 versions reached production but were never publish
   file but did not own it was refused (`EPERM`). A time left as it is
   (`UTIME_OMIT`) is the one the file has when the change lands; before, a
   change to it made in between could be undone.
+- Fixed: a napi binding's WASI opens (rolldown, the Astro compiler,
+  satteri) no longer follow a final symlink when the binding asks not to.
+  Such an open is refused with `ELOOP`, or `ENOTDIR` for a directory, as
+  `open(2)` with `O_NOFOLLOW` refuses it. Before, the loader dropped the
+  flag and opened the link's target. `fd_fdstat_set_flags` that changes
+  `APPEND` is now refused with `ENOTSUP`, because the host's descriptor
+  cannot change it. Before, it answered success and the descriptor kept its
+  old mode.
+
+- Fixed: in Node programs, `fs.open` honours `O_NOFOLLOW`: a final symbolic
+  link is `ELOOP`, or `ENOTDIR` with `O_DIRECTORY`, as on Linux, and
+  `EEXIST` under `O_CREAT|O_EXCL`. An open that creates or truncates is one
+  call the session judges with its flags and the access it asks, so a file
+  a peer replaces with a link after the program looked is refused, not
+  followed and emptied, and `O_RDONLY|O_CREAT` opens a file its owner may
+  only read. `O_CREAT|O_DIRECTORY` is `EINVAL`. `O_SYNC` follows each write
+  with an fsync. `FileHandle.write` reads its arguments
+  as `fs.write` does: `handle.write('ff', 0, 'hex')` writes the byte `ff`
+  (it wrote `66 66`), and `handle.write(buffer, { offset, length,
+  position })` writes that part there.
+- Fixed: a name below a regular file is `Not a directory` (ENOTDIR), as on
+  Linux, to `lstat`, `unlink` and `rmdir`, and to a mounted file system's
+  `stat` and `open`. It was `No such file or directory`. `rm`, `mkdir -p`,
+  `cp`, `mv`, Node's `lstatSync` and git now see the right error, and
+  `existsSync` stays false. `ls` exits 2 for an operand it cannot reach, as
+  GNU's does. `rename` from, or into, a name below a regular file is
+  ENOTDIR too. `mv f/x a d` with `f` a file reports `cannot stat 'f/x'` and
+  still moves `a`, as GNU's does; it ended the whole command.
+- Fixed: `Bun.file` and `Bun.write` in `bun` answer as Bun's do. `text`,
+  `json`, `arrayBuffer`, `bytes` and `stream` read through the session, so
+  a file the process does not hold reads its bytes; before, `text()` and
+  `arrayBuffer()` answered empty. A missing file rejects with `ENOENT`,
+  `text()` drops a byte order mark, a directory does not `exists()`, and
+  `name` is the path as given. `Bun.write` writes the bytes of a `Blob`,
+  `Response`, `BunFile` or view, encodes a string as UTF-8 and anything
+  else as its string, and answers the byte count. Before, a `Blob` was
+  written as text (0xff became U+FFFD) and a string's count was its UTF-16
+  length. opencode's `Bun` uses the same `file` and gains `write`.
+- Fixed: a barrel package's synthetic entry reads the barrel with the
+  JavaScript parser. A re-export in a comment or a string no longer wins
+  over the real one, every name of `export const a = 1, b = 2` and of a
+  destructuring export counts, and `export * as ns` is one name. A barrel
+  that does not parse is refused rather than read in part. The barrel and
+  each module it re-exports with `export *` are read one statement at a
+  time, so no module's whole syntax tree is held in memory.
+
 - Fixed (CLI): `nimbus runtime sync` with no runtime named, and so `nimbus
   setup cloudflare`, now publishes `cpython@3.13.14-3` as the bucket's Python.
   It used to publish `python@0.29.4`, Pyodide, whose `python-runner` no host

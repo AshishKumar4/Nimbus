@@ -10,6 +10,7 @@ import { resolveContext, type CommandRegistry } from '../commands/registry.js';
 import type { CommandInputStream, CommandOutputStream } from '../commands/types.js';
 import { resolve } from '../utils/path.js';
 import { echoOutput } from '../utils/backslash-escapes.js';
+import { writeLossless } from '../utils/bytes-io.js';
 import { singleQuote } from '../../../_shared/shell-quote.js';
 import { isDecimalInteger, isShellIdentifier } from './names.js';
 import { assignArray, assignVariable } from './variables.js';
@@ -128,7 +129,7 @@ async function builtinPwd({ stdout, state }: BuiltinCall): Promise<number> {
 }
 
 async function builtinEcho({ args, stdout }: BuiltinCall): Promise<number> {
-  (await stdout.write(echoOutput(args)));
+  await writeLossless(stdout, echoOutput(args));
   return 0;
 }
 

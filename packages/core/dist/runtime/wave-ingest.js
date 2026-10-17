@@ -9,7 +9,7 @@
  * with its namespace as the router; a filesystem without one ingests with none.
  */
 import { acquireSupervisorRunningAllocation, tryAcquireSupervisorRunningAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
-import { decodeWriteBatchStream, encodeWriteBatchStream } from '@nimbus-sh/platform/w7-frame.js';
+import { decodeWriteBatchStream, encodeWriteBatchStream, openAccessRights } from '@nimbus-sh/platform/w7-frame.js';
 import { concatBytes, nameDec } from '../_shared/bytes.js';
 import { SYSCALL_VERDICTS, errnoCodeOf, vfsError } from '../vfs/vfs-error.js';
 import { parentKey } from '../vfs/path.js';
@@ -862,9 +862,12 @@ export class WaveIngest {
                             // A call observes everything the stream wrote before it.
                             phase = 'publish';
                             const call = record.call;
-                            // A mkdir commits with the calls beside it; any other may change
-                            // where later names resolve, and commits now.
-                            queueCall(call.path, record, { alone: call.call !== 'mkdir', receipt: call.call === 'open' || call.call === 'copyFile' });
+                            // A mkdir, and an open that keeps no description (it makes or
+                            // empties one file, as a data call does), commit with the calls
+                            // beside it; any other may change where later names resolve, or
+                            // keeps state beside the engine's, and commits now.
+                            const alone = call.call !== 'mkdir' && !(call.call === 'open' && call.description === undefined);
+                            queueCall(call.path, record, { alone, receipt: call.call === 'open' || call.call === 'copyFile' });
                             break;
                         }
                         case 'batch-end':
@@ -1099,7 +1102,7 @@ export class WaveIngest {
                     // Its answer is the file's stat; with `description`, the binding keeps the file it found, and its descriptor is in the answer.
                     const opened = await backend(router.open({ ...call, path: placed }, as, at.guard, owner));
                     const handle = call.description === undefined || descriptions === undefined ? undefined
-                        : await backend(Promise.resolve(descriptions.describe(call.description, opened.file, opened.stat.ino, { read: call.read === true, write: true })));
+                        : await backend(Promise.resolve(descriptions.describe(call.description, opened.file, opened.stat.ino, openAccessRights(call.access))));
                     // The id is this mount's description's now: what the session kept of an earlier one under it is not adopted again.
                     if (call.description !== undefined)
                         scope.forgetDescription(call.description);

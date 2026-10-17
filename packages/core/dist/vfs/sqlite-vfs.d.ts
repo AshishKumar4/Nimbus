@@ -224,8 +224,13 @@ export interface CredentialedVfs {
     readFileString(path: string): string;
     stat(path: string): VfsStat;
     lstat(path: string): VfsStat;
-    /** stat (lstat when `followLeaf` is false), or null when the name is not there: no error made for an absence. */
-    statIfPresent(path: string, followLeaf?: boolean): VfsStat | null;
+    /**
+     * stat (lstat when `followLeaf` is false), or null when the name is not
+     * there: no error made for an absence. A name below a regular file is
+     * absent too ("is it there?"), unless `belowFile` is 'ENOTDIR', which says
+     * so as stat(2) does.
+     */
+    statIfPresent(path: string, followLeaf?: boolean, belowFile?: 'absent' | 'ENOTDIR'): VfsStat | null;
     /** Whether something is at `path` (a link not followed) as published: no append stored, no holder recalled (VFS.landedAt). */
     landedAt(path: string): boolean;
     /** utimensat(2), each time an FsTime, resolved and judged as it commits. `followSymlinks: false` sets a link's own. */
@@ -1571,7 +1576,11 @@ export declare class SqliteVFS {
     private abandonStaging;
     private readFileString;
     private stat;
-    /** stat, with a name that is not there (or a directory on its way that is not) answered null: an answer, not an error. */
+    /**
+     * stat, with a name that is not there answered null: an answer, not an
+     * error. A file on its way (ENOTDIR) is not there either, unless
+     * `belowFile` is 'ENOTDIR' (stat(2)'s answer).
+     */
     private statIfPresent;
     /** A linked inode's stat, for `stat` and for the entries `list` reports. */
     private statOf;
@@ -2237,7 +2246,7 @@ export declare class SqliteVFS {
      * (SqliteRuntimeFsBridge.open): EEXIST for an exclusive create of a name
      * there (a link included, followed or not), ENOENT without `create`,
      * ELOOP for a link when `nofollow`, EISDIR for a directory, EACCES without
-     * write permission; a name made empty with `mode` less the call's umask, or
+     * the access asked (openAccessMask); a name made empty with `mode` less the call's umask, or
      * an existing file emptied when `truncate`; then, with `fchmod`, that file
      * given the mode (chmod's rule, EPERM for another's), all of it refused
      * together. Its answer is the file's stat.

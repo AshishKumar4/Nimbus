@@ -16,7 +16,7 @@ import { beginNimbusCloudflareOAuth, exchangeNimbusCloudflareOAuthCode, createNi
 import { clearSessionAiCredential, createSessionAiModel, describeSessionAiConnection, readSessionAiConfig, resolveSessionAiCredential, sessionAiAccountIsAvailable, setSessionAiAccount, storeSessionAiCredential, } from './ai.js';
 import { ensureProgrammaticReady, rpcExec, rpcEnsureRuntimes, rpcInstallRuntime, rpcExposeApp, rpcKillProcess, rpcListApps, rpcListPorts, rpcListProcesses, rpcProcessLogs, rpcStartProcess, } from './programmatic.js';
 import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import { appendTextPart, interruptRunningTools, isInterruptedMessage, textFromParts, upsertStoredMessage, upsertToolPart, AGENT_OAUTH_RESULT_CHANNEL, } from './agent-contract.js';
+import { appendTextPart, interruptRunningTools, isInterruptedMessage, legacyToolResult, storedMessageParts, textFromParts, upsertStoredMessage, upsertToolPart, AGENT_OAUTH_RESULT_CHANNEL, } from './agent-contract.js';
 import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
@@ -620,10 +620,10 @@ function buildModelMessages(messages) {
             continue;
         }
         if (message.role === 'tool') {
-            const payload = parseLegacyToolPayload(message);
+            const result = legacyToolResult(message);
             modelMessages.push({
                 role: 'assistant',
-                content: `Tool ${payload.tool || message.name || 'tool'} result:\n${safeJsonStringify(payload.output ?? message.content)}`,
+                content: `Tool ${result.toolName} result:\n${safeJsonStringify(result.output)}`,
             });
         }
     }
@@ -773,7 +773,7 @@ function recordToolEvent(parts, event, startedAt) {
     return { type: 'tool-error', toolCallId, toolName, input, error };
 }
 function appendAssistantModelMessages(modelMessages, message) {
-    const parts = normalizeMessageParts(message);
+    const parts = storedMessageParts(message);
     if (parts.length === 0) {
         if (message.content)
             modelMessages.push({ role: 'assistant', content: message.content });
@@ -825,28 +825,12 @@ function appendAssistantModelMessages(modelMessages, message) {
     }
     flush();
 }
-function normalizeMessageParts(message) {
-    if (Array.isArray(message.parts))
-        return message.parts.filter((part) => part && typeof part === 'object');
-    if (message.role !== 'assistant' || !message.content)
-        return [];
-    return [{ type: 'text', text: message.content }];
-}
 function toToolModelOutput(value, error) {
     if (error)
         return { type: 'error-text', value: stringifyError(value) };
     if (typeof value === 'string')
         return { type: 'text', value };
     return { type: 'json', value: value === undefined ? null : value };
-}
-function parseLegacyToolPayload(message) {
-    try {
-        const parsed = JSON.parse(message.content || '{}');
-        if (parsed && typeof parsed === 'object')
-            return parsed;
-    }
-    catch { }
-    return { tool: message.name || 'tool', output: message.content || '' };
 }
 function isToolOutputFailure(output) {
     if (!output || typeof output !== 'object')

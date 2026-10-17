@@ -271,18 +271,6 @@ const REJECTS = [
             'or @resvg/resvg-wasm for SVG.',
         transitive: 'fail',
     },
-    // ── Tailwind v4 oxide native parent ─────────────────────────────────
-    // Ships only platform-native .node bindings + a wasm32-wasi shard.
-    // workerd has no node:wasi, so neither path loads. Without this REJECT
-    // entry the parent installs fine and surfaces a misleading runtime
-    // error (npm-4828 fallthrough). With transitive='fail', the install is
-    // loudly rejected at resolve time.
-    {
-        from: '@tailwindcss/oxide',
-        reason: 'Native Rust Tailwind v4 oxide engine; ships only platform-specific .node bindings plus a wasm32-wasi shard. workerd has no node:wasi, and bare native bindings cannot dlopen.',
-        suggest: 'no Workers-compatible target — Tailwind v3 (`tailwindcss@^3`) is pure JS and works in Workers (untested by Nimbus). Tailwind v4 inherently requires the Rust oxide engine.',
-        transitive: 'fail',
-    },
 ];
 /**
  * The single typed package-ABI policy (see `PackageAbiPolicy` in

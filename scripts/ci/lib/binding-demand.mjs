@@ -27,6 +27,9 @@ export const DEMAND = [
   ['astro', '@astrojs/markdown-satteri', 'satteri'],
   ['astro', 'rolldown'],
   ['vite', 'rolldown'],
+  ['@tailwindcss/vite', '@tailwindcss/oxide'],
+  ['@tailwindcss/postcss', '@tailwindcss/oxide'],
+  ['@tailwindcss/cli', '@tailwindcss/oxide'],
 ];
 
 /** The registry's install metadata for a package (dist-tags, and each version's dependencies). */
