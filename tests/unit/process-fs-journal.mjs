@@ -18,8 +18,9 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { createSupervisorOpHandler, journalDrainSession } from '../../packages/core/src/workspace/supervisor-op.ts';
-import { drainProcessFsJournal, journalSource, processFsClient, sqlJournal } from '../../packages/core/src/_shared/process-fs-client.ts';
+import { drainProcessFsJournal, journalSource, memoryJournal, processFsClient, sqlJournal } from '../../packages/core/src/_shared/process-fs-client.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { sqlJournal as mainJournal } from './fixtures/process-fs-journal-main.ts';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -137,6 +138,243 @@ function mortalPort(s, live = Infinity) {
     assert.equal(s.text(`home/user/out/log${k}`), want, `log${k}: an append was lost, doubled or reordered`);
   }
   assert.equal(reopened.entries().length, 0);
+}
+
+// ── Rollback to main still drains the complete unsent folded row ──
+{
+  const s = session();
+  const sql = facetSql();
+  const journal = sqlJournal(sql);
+  const c = processFsClient({ session: mortalPort(s, 0), journal, retry: RETRY });
+  const want = Uint8Array.from({ length: 20_000 }, (_, i) => (i * 29 + Math.floor(i / 10)) % 256);
+  c.submit(writeFile('home/user/out/rollback', ''), { acknowledged: true });
+  for (let at = 0; at < want.byteLength; at += 10) c.submit({ type: 'call', call: { call: 'appendFile', path: 'home/user/out/rollback', mode: 0o644, data: want.subarray(at, at + 10) } }, { acknowledged: true });
+  c.seal();
+  assert.equal(c.stats().folded, want.byteLength / 10);
+  assert.equal([...sql.exec('SELECT COUNT(*) AS n FROM nimbus_fs_journal_parts')][0].n, 0, 'the stage-one writer emitted parts');
+  const old = mainJournal(sql);
+  assert.deepEqual(old.entries()[0].op.call.data, want, 'main recovered only a prefix of the folded row');
+  const drained = await drainProcessFsJournal({ journal: journalSource(old), session: s.port, retry: RETRY });
+  assert.deepEqual(drained.failures, []);
+  assert.deepEqual(s.kernel.readFile('home/user/out/rollback'), want);
+  assert.deepEqual(old.entries(), []);
+}
+
+// ── The stage-one reader drains the parts a later writer will leave ──
+{
+  const s = session();
+  const sql = facetSql();
+  const writer = sqlJournal(sql);
+  const path = 'home/user/out/future-parts';
+  const want = Uint8Array.from({ length: 20_000 }, (_, i) => (i * 31 + Math.floor(i / 10)) % 256);
+  const jid = writer.append({ type: 'call', call: { call: 'writeFile', path, mode: 0o600, data: want.subarray(0, 10) } });
+  for (let at = 10; at < want.byteLength; at += 10) sql.exec('INSERT INTO nimbus_fs_journal_parts (jid, data) VALUES (?, ?)', jid, want.subarray(at, at + 10));
+  const reopened = sqlJournal(sql);
+  assert.equal(reopened.bytes, want.byteLength);
+  assert.deepEqual(reopened.read(jid).call.data, want);
+  assert.deepEqual(reopened.readAfter(0, 1)[0].op.call.data, want);
+  const drained = await drainProcessFsJournal({ journal: journalSource(reopened), session: s.port, retry: RETRY });
+  assert.deepEqual(drained.failures, []);
+  assert.deepEqual(s.kernel.readFile(path), want);
+  assert.equal(s.kernel.stat(path).mode & 0o777, 0o600);
+  assert.equal([...sql.exec('SELECT COUNT(*) AS n FROM nimbus_fs_journal_parts')][0].n, 0, 'acknowledgement left future parts behind');
+  assert.equal(sqlJournal(sql).bytes, 0);
+}
+
+// ── A full replacement atomically discards future-writer parts ──
+{
+  const sql = facetSql();
+  const writer = sqlJournal(sql);
+  const jid = writer.append(writeFile('home/user/out/replaced-parts', 'old'));
+  sql.exec('INSERT INTO nimbus_fs_journal_parts (jid, data) VALUES (?, ?)', jid, enc.encode('-parts'));
+  const reopened = sqlJournal(sql);
+  assert.equal(dec.decode(reopened.read(jid).call.data), 'old-parts');
+  reopened.replace(jid, writeFile('home/user/out/replaced-parts', 'whole'));
+  assert.equal(dec.decode(reopened.read(jid).call.data), 'whole');
+  assert.equal(dec.decode(mainJournal(sql).read(jid).call.data), 'whole');
+  assert.equal(sqlJournal(sql).bytes, 5);
+}
+
+// ── A folded tail survives a restart, including a rewrite of appended bytes ──
+{
+  const s = session();
+  const sql = facetSql();
+  const journal = sqlJournal(sql);
+  const c = processFsClient({ session: mortalPort(s, 0), journal, retry: RETRY });
+  const count = 20_000;
+  const want = Uint8Array.from({ length: count * 10 }, (_, i) => (i * 19 + Math.floor(i / 10)) % 256);
+  c.submit(writeFile('home/user/out/folded', ''), { acknowledged: true });
+  for (let i = 0; i < count; i++) c.submit({ type: 'call', call: { call: 'appendFile', path: 'home/user/out/folded', mode: 0o644, data: want.subarray(i * 10, i * 10 + 10) } }, { acknowledged: true });
+  for (let i = 0; i < 500; i++) c.submit(append('home/user/out/replaced', 'discarded'), { acknowledged: true });
+  c.submit(writeFile('home/user/out/replaced', 'kept'), { acknowledged: true });
+  for (let i = 0; i < 500; i++) c.submit(append('home/user/out/replaced', `${i},`), { acknowledged: true });
+  const replaced = 'kept' + Array.from({ length: 500 }, (_, i) => `${i},`).join('');
+  c.seal();
+  // Only the facet's SQL survives; no buffer from the client participates.
+  const reopened = sqlJournal(sql);
+  assert.equal(reopened.bytes, want.byteLength + enc.encode(replaced).byteLength);
+  assert.equal(reopened.entries().length, 2, 'the folded tail changed its place in the journal');
+  assert.deepEqual(reopened.read(reopened.entries()[0].jid).call.data, want);
+  const first = reopened.readAfter(0, want.byteLength);
+  assert.equal(first.length, 1, 'the read bound omitted appended bytes');
+  assert.deepEqual(first[0].op.call.data, want);
+  assert.equal(dec.decode(reopened.readAfter(first[0].jid, 1)[0].op.call.data), replaced, 'a rewrite replayed its discarded pieces');
+  const drained = await drainProcessFsJournal({ journal: journalSource(reopened), session: s.port, retry: RETRY });
+  assert.deepEqual(drained.failures, []);
+  assert.equal(drained.landed, 2);
+  assert.deepEqual(s.kernel.readFile('home/user/out/folded'), want, 'the restarted drain lost or reordered folded bytes');
+  assert.equal(s.text('home/user/out/replaced'), replaced);
+  const empty = sqlJournal(sql);
+  assert.equal(empty.bytes, 0, 'answered pieces stayed in the durable log');
+  const next = empty.append(writeFile('home/user/out/new', 'new'));
+  assert.equal(dec.decode(empty.read(next).call.data), 'new', 'an old piece was attached to a new entry');
+}
+
+// ── A failed fold leaves the accepted prefix intact, in memory and after restart ──
+{
+  const s = session();
+  const harness = createSqliteVfsTestHarness();
+  const journal = sqlJournal(harness.sql);
+  const c = processFsClient({ session: s.port, journal, retry: RETRY });
+  c.submit(writeFile('home/user/out/fault', 'first'), { acknowledged: true });
+  c.submit(append('home/user/out/fault', '-second'), { acknowledged: true });
+  harness.failOnStatement(1, new Error('append refused'));
+  assert.throws(() => c.submit(append('home/user/out/fault', '-lost'), { acknowledged: true }), /append refused/);
+  assert.equal(journal.bytes, enc.encode('first-second').byteLength);
+  assert.equal(dec.decode(sqlJournal(harness.sql).entries()[0].op.call.data), 'first-second');
+  harness.failOnStatement(2, new Error('replacement refused'));
+  assert.throws(() => c.submit(writeFile('home/user/out/fault', 'lost'), { acknowledged: true }), /replacement refused/);
+  assert.equal(journal.bytes, enc.encode('first-second').byteLength);
+  assert.equal(dec.decode(sqlJournal(harness.sql).entries()[0].op.call.data), 'first-second');
+  c.submit(append('home/user/out/fault', '-third'), { acknowledged: true });
+  await c.settle();
+  assert.equal(s.text('home/user/out/fault'), 'first-second-third', 'a failed fold changed the queued bytes');
+  assert.equal(sqlJournal(harness.sql).bytes, 0);
+}
+
+// ── Reusing an older journal op must not overwrite a newer prefix sharing its buffer ──
+{
+  const s = session();
+  const journal = memoryJournal();
+  const c = processFsClient({ session: s.port, journal, retry: RETRY });
+  const path = 'home/user/out/shared';
+  const prefix = 'a'.repeat(10) + 'b'.repeat(10) + 'c'.repeat(10);
+  c.submit(writeFile(path, 'a'.repeat(10)), { acknowledged: true });
+  c.submit(append(path, 'b'.repeat(10)), { acknowledged: true });
+  c.submit(append(path, 'c'.repeat(10)), { acknowledged: true });
+  const remembered = journal.entries()[0].op;
+  c.submit(append(path, 'd'.repeat(5)), { acknowledged: true });
+  c.submit({ type: 'call', call: { call: 'copyFile', from: path, path: 'home/user/out/snapshot' } }, { acknowledged: true });
+  c.submit(remembered, { acknowledged: true });
+  c.submit(append(path, 'e'.repeat(5)), { acknowledged: true });
+  await c.settle();
+  assert.equal(s.text('home/user/out/snapshot'), prefix + 'd'.repeat(5));
+  assert.equal(s.text(path), prefix + 'e'.repeat(5));
+}
+
+// ── An input view overlapping the tail's spare bytes is logged before that view changes ──
+{
+  const s = session();
+  const sql = facetSql();
+  const inner = sqlJournal(sql);
+  let latest;
+  const journal = new Proxy(inner, { get(target, key) {
+    if (key === 'replace') return (jid, op, ...rest) => { latest = op; return target.replace(jid, op, ...rest); };
+    return Reflect.get(target, key);
+  } });
+  const c = processFsClient({ session: s.port, journal, retry: RETRY });
+  const path = 'home/user/out/overlap';
+  c.submit(writeFile(path, 'a'.repeat(10)), { acknowledged: true });
+  c.submit(append(path, 'b'.repeat(10)), { acknowledged: true });
+  c.submit(append(path, 'c'.repeat(10)), { acknowledged: true });
+  const data = latest.call.data;
+  const end = data.byteOffset + data.byteLength;
+  const spare = data.buffer.byteLength - end;
+  const prefix = spare > 1 ? Math.min(5, spare - 1) : 5;
+  const suffix = spare > 1 ? Math.min(prefix, spare - prefix) : 0;
+  const fill = new Uint8Array(data.buffer, end, Math.min(10, spare));
+  fill.set(enc.encode('0123456789').subarray(0, fill.byteLength));
+  const piece = new Uint8Array(data.buffer, end - prefix, prefix + suffix);
+  const want = new Uint8Array(data.byteLength + piece.byteLength);
+  want.set(data);
+  want.set(piece, data.byteLength);
+  c.submit({ type: 'call', call: { call: 'appendFile', path, mode: 0o644, data: piece } }, { acknowledged: true });
+  c.seal();
+  const reopened = sqlJournal(sql);
+  assert.deepEqual(reopened.entries()[0].op.call.data, want, 'the durable delta came from the input after an overlapping copy changed it');
+  const drained = await drainProcessFsJournal({ journal: journalSource(reopened), session: s.port, retry: RETRY });
+  assert.deepEqual(drained.failures, []);
+  assert.deepEqual(s.kernel.readFile(path), want);
+}
+
+// ── A new entry refused by the journal does not disturb its preceding folded tail ──
+{
+  const s = session();
+  const harness = createSqliteVfsTestHarness();
+  const c = processFsClient({ session: s.port, journal: sqlJournal(harness.sql), retry: RETRY });
+  c.submit(writeFile('home/user/out/prefix', 'a'), { acknowledged: true });
+  c.submit(append('home/user/out/prefix', '-b'), { acknowledged: true });
+  harness.failOnStatement(1, new Error('new entry refused'));
+  const refused = c.submit(writeFile('home/user/out/refused', 'lost'), { acknowledged: true });
+  c.submit(append('home/user/out/prefix', '-c'), { acknowledged: true });
+  await assert.rejects(refused, /new entry refused/);
+  await c.settle();
+  assert.equal(s.text('home/user/out/prefix'), 'a-b-c');
+  assert.equal(s.text('home/user/out/refused'), null);
+  assert.equal(c.stats().folded, 2);
+}
+
+// ── Plain entries need only their row; the pieces cache follows writes and reopening ──
+{
+  const harness = createSqliteVfsTestHarness();
+  const journal = sqlJournal(harness.sql);
+  const a = journal.append(writeFile('home/user/out/a', 'a'));
+  const b = journal.append(writeFile('home/user/out/b', 'b'));
+  const oneQuery = (read) => {
+    const before = harness.statementCount;
+    const answer = read();
+    assert.equal(harness.statementCount - before, 1, 'an entry without pieces queried the pieces table');
+    return answer;
+  };
+  assert.equal(dec.decode(oneQuery(() => journal.read(a)).call.data), 'a');
+  assert.equal(oneQuery(() => journal.entries()).length, 2);
+  assert.equal(oneQuery(() => journal.readAfter(0, 1)).length, 1);
+  harness.failOnStatement(1, new Error('first piece refused'));
+  assert.throws(() => journal.replace(a, writeFile('home/user/out/a', 'a+'), enc.encode('+')), /first piece refused/);
+  assert.equal(dec.decode(oneQuery(() => journal.read(a)).call.data), 'a');
+  journal.replace(a, writeFile('home/user/out/a', 'a+'), enc.encode('+'));
+  assert.equal(dec.decode(journal.read(a).call.data), 'a+');
+  journal.replace(a, writeFile('home/user/out/a', 'new'));
+  assert.equal(dec.decode(oneQuery(() => journal.read(a)).call.data), 'new');
+  harness.sql.exec('INSERT INTO nimbus_fs_journal_parts (jid, data) VALUES (?, ?)', b, enc.encode('+'));
+  const reopened = sqlJournal(harness.sql);
+  assert.equal(dec.decode(reopened.read(b).call.data), 'b+');
+  assert.equal(dec.decode(oneQuery(() => reopened.read(a)).call.data), 'new');
+  reopened.dropThrough(a);
+  assert.equal(dec.decode(reopened.read(b).call.data), 'b+', 'dropping a prefix cleared a later entry\'s pieces');
+  const c = reopened.append(writeFile('home/user/out/c', 'c'));
+  assert.equal(dec.decode(oneQuery(() => reopened.read(c)).call.data), 'c');
+  reopened.replace(c, writeFile('home/user/out/c', 'c+'), enc.encode('+'));
+  reopened.dropThrough(b);
+  assert.equal(dec.decode(reopened.read(c).call.data), 'c+');
+  reopened.dropThrough(c);
+  assert.equal(reopened.bytes, 0);
+  assert.deepEqual(oneQuery(() => reopened.entries()), []);
+}
+
+// ── Journals written before data pieces existed still recover ──
+{
+  const s = session();
+  const sql = facetSql();
+  sql.exec('CREATE TABLE nimbus_fs_journal (jid INTEGER PRIMARY KEY, op TEXT NOT NULL, data BLOB)');
+  sql.exec('CREATE TABLE nimbus_fs_numbering (jid INTEGER PRIMARY KEY, writer TEXT, seq INTEGER NOT NULL)');
+  sql.exec('INSERT INTO nimbus_fs_journal (jid, op, data) VALUES (?, ?, ?)', 7, JSON.stringify({ type: 'call', call: { call: 'writeFile', path: 'home/user/out/legacy', mode: 0o644 } }), enc.encode('before'));
+  const journal = sqlJournal(sql);
+  assert.equal(journal.bytes, 6);
+  const drained = await drainProcessFsJournal({ journal: journalSource(journal), session: s.port, retry: RETRY });
+  assert.deepEqual(drained.failures, []);
+  assert.equal(s.text('home/user/out/legacy'), 'before');
+  assert.equal(sqlJournal(sql).bytes, 0);
 }
 
 // ── Dies with a wave landed but its answer lost: the drain lands the rest, once ──
