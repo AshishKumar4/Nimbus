@@ -40,7 +40,6 @@ const NpmBinManifestSchema = z.object({
 const PackageJsonSchema = z.object({
     name: z.string().min(1),
     version: z.string().optional(),
-    /** Read by npmBinMap, which takes what npm takes (a string, a map, an array) and drops the rest. */
     bin: z.unknown().optional(),
 }).passthrough();
 export function npmBinDirPath(nodeModulesPath) {

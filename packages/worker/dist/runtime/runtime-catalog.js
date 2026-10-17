@@ -60,10 +60,7 @@ import { blobPieces, RuntimeBlobDigestMismatch, splitRuntimeSpec, SUPERSEDED_RUN
 import { NIMBUS_RUNTIME_ABIS, NATIVE_UNSUPPORTED_ABI, } from '@nimbus-sh/core/runtime/os-contracts.js';
 // ── Schemas ──────────────────────────────────────────────────────────
 const CatalogVersionEntrySchema = z.object({
-    /** R2 key, e.g. "manifests/clang-binji-2020.json". */
     manifest: z.string().min(1),
-    /** Hex sha256 of the manifest bytes. Absent on catalogs published
-     *  before the digest was recorded — those manifests stay out of L2. */
     manifest_sha256: HexSha256Schema.optional(),
     size_bytes: z.number().int().nonnegative(),
     license: z.string(),

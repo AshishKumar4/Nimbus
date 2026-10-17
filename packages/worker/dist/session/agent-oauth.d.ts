@@ -1,4 +1,6 @@
 import { z } from 'zod/v4';
+import { envString } from '@nimbus-sh/core/_shared/oauth.js';
+export { envString };
 export declare const NIMBUS_AGENT_AUTH_COOKIE = "nimbus_agent_oauth";
 export declare const NIMBUS_AGENT_AUTH_COOKIE_TTL_SECONDS: number;
 export declare const NIMBUS_AGENT_AUTH_COOKIE_PURPOSE = "nimbus-agent-oauth-auth";
@@ -36,5 +38,4 @@ export declare function nimbusAgentRouteContext(request: Request): {
     tenantSegment: string;
 };
 export declare function isNimbusTenantSegment(value: string): boolean;
-export {};
 //# sourceMappingURL=agent-oauth.d.ts.map

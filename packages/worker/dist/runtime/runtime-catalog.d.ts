@@ -80,6 +80,12 @@ declare const CatalogVersionEntrySchema: z.ZodObject<{
     size_bytes: z.ZodNumber;
     license: z.ZodString;
 }, z.core.$strip>;
+/**
+ * One version of a runtime in the catalog: `manifest`, its R2 key (e.g.
+ * "manifests/clang-binji-2020.json"); `manifest_sha256`, the hex sha256 of the
+ * manifest's bytes, absent on catalogs published before the digest was
+ * recorded (those manifests stay out of L2).
+ */
 export type CatalogVersionEntry = z.output<typeof CatalogVersionEntrySchema>;
 declare const CatalogRuntimeEntrySchema: z.ZodObject<{
     default: z.ZodString;

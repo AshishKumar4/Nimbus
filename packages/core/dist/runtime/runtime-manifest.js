@@ -25,26 +25,16 @@ const PathNameSchema = z.string().regex(/^(?!\.\.?$)[^/\0]+$/, 'must be one path
 /** A path below a runtime's root: relative, each of its names one such name. */
 const RelativePathSchema = z.string().refine((path) => path.split('/').every((name) => PathNameSchema.safeParse(name).success), 'must be a relative path of path names: no leading "/", empty name, "." or ".."');
 const ManifestFileSchema = z.object({
-    /** VFS path relative to /usr/lib/nimbus/<name>/<version>/. */
     path: RelativePathSchema,
-    /** Publisher-side key for the content blob. */
     content: z.string().min(1),
-    /** Hex sha256 of the content blob bytes. */
     sha256: HexSha256Schema,
-    /** Byte size. */
     size: z.number().int().nonnegative(),
-    /** Optional file mode hint ("exec" → registered as a shell bin). */
     mode: z.literal('exec').optional(),
 });
 const ManifestEntrypointSchema = z.object({
-    /** Shell command name. */
     binName: z.string().min(1),
-    /** Runner key (e.g. "clang-runner") — package manager dispatches to
-     *  the right runner factory by this. */
     runner: z.string().min(1),
-    /** Default args prepended to user args at invocation. */
     args: z.array(z.string()),
-    /** Optional secondary classification (e.g. "linker" for wasm-ld). */
     kind: z.string().optional(),
 });
 /** The fields every runtime artifact names; an artifact parsed keeps any others it carries. */
@@ -57,9 +47,7 @@ const RuntimeArtifactMetadataFields = z.object({
 });
 const RuntimeArtifactMetadataSchema = RuntimeArtifactMetadataFields.passthrough();
 const RuntimePythonExtensionModuleMetadataSchema = z.object({
-    /** Path inside Python site-packages, as stored in the wheel. */
     path: z.string().min(1),
-    /** Path inside the installed Nimbus runtime root. */
     runtimePath: z.string().min(1),
     sha256: HexSha256Schema,
 });
@@ -83,8 +71,6 @@ const RuntimeManifestSchema = z.object({
     name: PathNameSchema,
     version: PathNameSchema,
     license: z.string(),
-    /** Which WASI namespace the binaries import — `wasi_unstable` for
-     *  binji clang. `null` for non-WASI runtimes (e.g. Pyodide). */
     wasi_namespace: z.string().nullable(),
     files: z.array(ManifestFileSchema),
     entrypoints: z.array(ManifestEntrypointSchema),

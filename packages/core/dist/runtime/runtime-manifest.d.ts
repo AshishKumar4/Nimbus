@@ -24,6 +24,12 @@ declare const ManifestFileSchema: z.ZodObject<{
     size: z.ZodNumber;
     mode: z.ZodOptional<z.ZodLiteral<"exec">>;
 }, z.core.$strip>;
+/**
+ * A file a runtime is made of: `path`, relative to
+ * /usr/lib/nimbus/<name>/<version>/; `content`, the publisher-side key of its
+ * blob; `sha256` (hex) and `size` of the blob's bytes; and `mode`, 'exec' to
+ * register it as a shell bin.
+ */
 export type ManifestFile = z.output<typeof ManifestFileSchema>;
 declare const ManifestEntrypointSchema: z.ZodObject<{
     binName: z.ZodString;
@@ -31,6 +37,12 @@ declare const ManifestEntrypointSchema: z.ZodObject<{
     args: z.ZodArray<z.ZodString>;
     kind: z.ZodOptional<z.ZodString>;
 }, z.core.$strip>;
+/**
+ * A shell command a runtime provides: `binName`, the command; `runner`, the
+ * runner factory the package manager dispatches it to (e.g. "clang-runner");
+ * `args`, prepended to the user's args at invocation; and `kind`, an optional
+ * secondary classification (e.g. "linker" for wasm-ld).
+ */
 export type ManifestEntrypoint = z.output<typeof ManifestEntrypointSchema>;
 /** The fields every runtime artifact names; an artifact parsed keeps any others it carries. */
 declare const RuntimeArtifactMetadataFields: z.ZodObject<{
@@ -46,6 +58,7 @@ declare const RuntimePythonExtensionModuleMetadataSchema: z.ZodObject<{
     runtimePath: z.ZodString;
     sha256: z.ZodString;
 }, z.core.$strip>;
+/** A Python extension module: `path` inside site-packages, as the wheel stores it, and `runtimePath` inside the installed Nimbus runtime root. */
 export type RuntimePythonExtensionModuleMetadata = z.output<typeof RuntimePythonExtensionModuleMetadataSchema>;
 declare const RuntimePythonPackageArtifactFields: z.ZodObject<{
     kind: z.ZodLiteral<"python-package">;
@@ -118,6 +131,11 @@ declare const RuntimeManifestSchema: z.ZodObject<{
         sha256: z.ZodString;
     }, z.core.$loose>>>;
 }, z.core.$strip>;
+/**
+ * What an installed runtime is. `wasi_namespace` is the WASI namespace its
+ * binaries import (`wasi_unstable` for binji clang), or null for a non-WASI
+ * runtime (e.g. Pyodide).
+ */
 export type RuntimeManifest = z.output<typeof RuntimeManifestSchema>;
 export declare function parseRuntimeManifest(value: unknown): RuntimeManifest;
 export declare function isRuntimePythonPackageArtifactMetadata(artifact: RuntimeArtifactMetadata): artifact is RuntimePythonPackageArtifactMetadata;
