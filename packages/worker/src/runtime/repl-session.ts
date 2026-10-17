@@ -75,8 +75,6 @@ export class ReplSession {
 
   /** Current line buffer (chars typed since the last enter). */
   private lineBuf: string = '';
-  /** Cursor position within lineBuf (0 = beginning). */
-  private cursorPos: number = 0;
   /** Accumulated lines for a multi-line block (e.g. inside def/class). */
   private blockBuf: string[] = [];
   /** True while the adapter is processing a push (block subsequent submits). */
@@ -231,7 +229,6 @@ export class ReplSession {
         }
         // Idle: discard current buffer, reset, fresh prompt.
         this.lineBuf = '';
-        this.cursorPos = 0;
         this.blockBuf = [];
         this.terminal.write('\r\nKeyboardInterrupt\r\n' + this.adapter.ps1);
         continue;
@@ -241,18 +238,11 @@ export class ReplSession {
         await this.submitLine();
         continue;
       }
-      // Backspace (0x7f) or DEL (\b 0x08): delete char before cursor.
+      // Backspace (0x7f) or DEL (\b 0x08): delete the last char.
       if (ch === '\x7f' || ch === '\b') {
-        if (this.cursorPos > 0) {
-          this.lineBuf =
-            this.lineBuf.slice(0, this.cursorPos - 1) +
-            this.lineBuf.slice(this.cursorPos);
-          this.cursorPos--;
-          // Repaint: move cursor back, write rest, clear trailing, restore.
-          this.terminal.write('\b' + this.lineBuf.slice(this.cursorPos) + ' \b');
-          // Cursor sits one past the rewritten chars; pull it back to position.
-          const tail = this.lineBuf.slice(this.cursorPos).length;
-          for (let k = 0; k < tail; k++) this.terminal.write('\b');
+        if (this.lineBuf.length > 0) {
+          this.lineBuf = this.lineBuf.slice(0, -1);
+          this.terminal.write('\b \b');
         }
         continue;
       }
@@ -269,17 +259,8 @@ export class ReplSession {
       }
       // Printable char: append + echo.
       if (ch >= ' ' && ch !== '\x7f') {
-        if (this.cursorPos === this.lineBuf.length) {
-          this.lineBuf += ch;
-          this.cursorPos++;
-          this.terminal.write(ch);
-        } else {
-          // Mid-line insert (rare without left-arrow editing in v1).
-          this.lineBuf =
-            this.lineBuf.slice(0, this.cursorPos) + ch + this.lineBuf.slice(this.cursorPos);
-          this.cursorPos++;
-          this.terminal.write(ch);
-        }
+        this.lineBuf += ch;
+        this.terminal.write(ch);
       }
     }
   }
@@ -304,7 +285,6 @@ export class ReplSession {
     this.terminal.write('\r\n');
     const line = this.lineBuf;
     this.lineBuf = '';
-    this.cursorPos = 0;
     // Record in history (skip blank and duplicate-of-most-recent).
     if (line.length > 0 && this.history[0] !== line) {
       this.history.unshift(line);
@@ -412,11 +392,10 @@ export class ReplSession {
   private replaceCurrentLine(text: string): void {
     // Erase current chars: backspace + space + backspace per char.
     const oldLen = this.lineBuf.length;
-    for (let i = 0; i < this.cursorPos; i++) this.terminal.write('\b');
+    for (let i = 0; i < oldLen; i++) this.terminal.write('\b');
     for (let i = 0; i < oldLen; i++) this.terminal.write(' ');
     for (let i = 0; i < oldLen; i++) this.terminal.write('\b');
     this.lineBuf = text;
-    this.cursorPos = text.length;
     this.terminal.write(text);
   }
   private endSession(code: number): Promise<void> {

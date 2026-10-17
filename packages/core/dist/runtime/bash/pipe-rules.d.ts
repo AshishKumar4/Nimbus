@@ -19,7 +19,7 @@ export interface PipeCounts {
     readonly writers: number;
 }
 /**
- * - `sigpipe`: no read end is open, now or ever; the write kills the writer.
+ * - `sigpipe`: no read end is open; deliver SIGPIPE, or EPIPE if it is ignored.
  * - `write`: append the bytes.
  * - `park`: wait (JSPI host) until the pipe drains below capacity or its
  *   readers leave, then decide again.

@@ -363,7 +363,6 @@ export interface CredentialedVfs {
 export declare const INODE_ROWS_PER_SQL_EXEC: number;
 type TransactionLimit = 'blobBytes' | 'logicalRows' | 'sqlExecs';
 type TransactionSource = 'strict-batch' | 'range-mutation' | 'content-stage' | 'content-publish' | 'content-gc';
-type TransactionLimitMode = 'bounded';
 interface TransactionPlanMetrics {
     blobBytes: number;
     logicalRows: number;
@@ -650,12 +649,7 @@ export declare class SqliteVFS {
     private _transactionPeakLogicalRows;
     private _transactionPeakSqlExecs;
     private _transactionPeakAffectedPaths;
-    private _boundedTransactionPeakBlobBytes;
-    private _boundedTransactionPeakLogicalRows;
-    private _boundedTransactionPeakSqlExecs;
     private _lastTransaction;
-    private _overLimitFileCount;
-    private _lastOverLimitFile;
     private _cacheHits;
     private _cacheMisses;
     private _evictions;
@@ -1653,6 +1647,15 @@ export declare class SqliteVFS {
     private list;
     private acquire;
     private readdir;
+    /**
+     * readdir(2) as the live tree and a snapshot answer it (`tree`, and
+     * `entries` of a directory's key there): the entries of the directory the
+     * name resolves to, the one the permission is checked on (through a link,
+     * its target's), sorted by UTF-16 code unit. Callers that walk a listing
+     * (the prefetch closure walk among them) rely on a stable order; SQLite's
+     * byte order differs from it for names outside the Basic Multilingual Plane.
+     */
+    private readdirIn;
     private unlink;
     private rmdir;
     /** What unlink(2) of `path` by `cred` removes, once it may: it refuses as unlink does. */
@@ -1853,8 +1856,6 @@ export declare class SqliteVFS {
      * UTF-16 code units and would place U+10000 before U+E000.
      */
     private pageAt;
-    /** SQLite's `ORDER BY path` (UTF-8 bytes) for JS strings: keyset cursors compare in this order. */
-    private static comparePaths;
     /**
      * A read-only view of snapshot `name` for `cred`: the same methods, the
      * same permission checks and symlink resolution, over the tree the
@@ -1863,8 +1864,9 @@ export declare class SqliteVFS {
      */
     at(name: string, cred?: VfsCred): CredentialedVfs;
     /**
-     * Restore the live tree (or `subtree`) to snapshot `name`, in bounded
-     * transactions of RESTORE_PAGE_ROWS paths. Every path changed since the
+     * Restore the live tree (or `subtree`) to snapshot `name`, in pages of
+     * RESTORE_PAGE_ROWS paths read, each written in the transactions the shared
+     * budget admits. Every path changed since the
      * snapshot is replaced by the row the snapshot saw, or removed if the
      * snapshot did not have it; every path the snapshot had and the live tree
      * lost comes back. It is an ordinary write: new generations, revisions,
@@ -2317,8 +2319,9 @@ export declare class SqliteVFS {
      *
      * Rollback discards the cached chunks and inodes and unloads the counters,
      * so every later read answers from SQLite, which is back at the committed
-     * state; open descriptions return to the rows they described before.
-     * No inode snapshot or undo log is retained. Recovery failure is surfaced
+     * state; open descriptions return to the rows they described before (a
+     * detached file's, which has none, to its fields as they were), and the
+     * shared roots to those registered before. No undo log is retained. Recovery failure is surfaced
      * with both errors; the embedder must discard this VFS in that case.
      */
     withTransaction<T>(callback: () => T): T;
@@ -2387,6 +2390,7 @@ export declare class SqliteVFS {
     private touchDirectoryRows;
     /** The cache and the publication learn what touchDirectoryRows committed. */
     private touchedDirectoriesCommitted;
+    /** `onCommit` runs in the transaction, as its last write, given the generation it commits. */
     private executeTransactionPlan;
     /** A plan's deletions: rows, tombstones, and the content a dereferencing delete lets go of. */
     private applyPlanDeletes;
@@ -2500,7 +2504,6 @@ export declare class SqliteVFS {
     private legacyJanitorPage;
     private runContentMaintenanceSafely;
     private metricsOnlyPlan;
-    private recordOverLimitFile;
     private recordDuration;
     private currentRetainedWriteBytes;
     /** Best-effort process.memoryUsage().heapUsed; 0 in DO contexts. */
@@ -2706,8 +2709,8 @@ export declare class SqliteVFS {
                     sqlExecs: number;
                 };
                 last: {
+                    limitMode: "bounded";
                     source: TransactionSource;
-                    limitMode: TransactionLimitMode;
                     blobBytes: number;
                     logicalRows: number;
                     sqlExecs: number;
@@ -2715,10 +2718,7 @@ export declare class SqliteVFS {
                 } | null;
                 overLimitFiles: {
                     count: number;
-                    last: (TransactionPlanMetrics & {
-                        path: string;
-                        limit: TransactionLimit;
-                    }) | null;
+                    last: null;
                 };
             };
         };

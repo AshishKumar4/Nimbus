@@ -114,8 +114,8 @@ export class ReplayJournal {
   /** Why the current run cannot be replayed: the first thing it did outside itself, or a bound. */
   private disqualified: string | null = null;
   private bodies = new Map<string, string>();
-  /** Protocol replies are also digested; their replay is owned by the input/output tapes. */
-  private protocolReplies: string[] = [];
+  /** Protocol replies are bounded here; their replay is owned by the input/output tapes. */
+  private protocolReplies = 0;
   diverged: string | null = null;
   private expected: Map<string, Expected[]> | null = null;
   private expectedCompleted = 0;
@@ -236,7 +236,7 @@ export class ReplayJournal {
     this.completions = 0;
     this.disqualified = null;
     this.bodies.clear();
-    this.protocolReplies = [];
+    this.protocolReplies = 0;
   }
 
   /** The process ended: nothing more is answered or held. */
@@ -292,7 +292,7 @@ export class ReplayJournal {
         if (!(reply.data instanceof Uint8Array) || reply.data.length > (length as number)) throw new Error('invalid stdin preparation reply');
         prep.at += reply.data.length; prep.remaining -= reply.data.length; prep.pending = false;
         if (prep.at >= reply.size || prep.remaining === 0) this.preparation = null;
-        this.protocolReplies.push(op + ' ' + answerDigest(value));
+        this.protocolReplies++;
         return value;
       }, (error) => { prep.pending = false; throw error; });
     }
@@ -305,8 +305,8 @@ export class ReplayJournal {
           const unsupported = Object.keys(value).find((key) => !policy.inputFields?.includes(key) && (value as Record<string, unknown>)[key] !== undefined);
           if (unsupported) this.disqualify(`${op} delivered ${unsupported}, which the stdin tape cannot replay`);
         }
-        if (this.protocolReplies.length >= REPLAY_JOURNAL_MAX_ENTRIES) this.disqualify('received too many protocol replies');
-        else this.protocolReplies.push(op + ' ' + answerDigest(value));
+        if (this.protocolReplies >= REPLAY_JOURNAL_MAX_ENTRIES) this.disqualify('received too many protocol replies');
+        else this.protocolReplies++;
         return value;
       }, (error) => { this.disqualify(describeCall(op, args) + ' failed: ' + String(error)); throw error; });
     }

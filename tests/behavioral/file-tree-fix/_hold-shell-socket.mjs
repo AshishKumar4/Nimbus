@@ -3,9 +3,11 @@ export function holdShellSocket() {
   const Real = window.WebSocket;
   let release;
   let released = new Promise((resolve) => { release = resolve; });
-  const held = { sockets: 0, sendsWhileHeld: 0, treeTexts: [] };
+  const held = { sockets: 0, sendsWhileHeld: 0, sent: 0, treeTexts: [], dropReplies: false };
   window.__probeHeld = held;
   window.__probeReleaseWs = () => release();
+  // While set, the session's answers to requests are lost, as a dropped socket loses them.
+  window.__probeDropReplies = (drop) => { held.dropReplies = drop; };
   window.__probeHoldNextWs = () => { released = new Promise((resolve) => { release = resolve; }); };
   function Held(url, protocols) {
     const at = new URL(url, location.href);
@@ -19,6 +21,7 @@ export function holdShellSocket() {
       get url() { return url; },
       send(data) {
         if (!real) { held.sendsWhileHeld++; throw new DOMException('Still in CONNECTING state.', 'InvalidStateError'); }
+        held.sent++;
         real.send(data);
       },
       close(code, reason) { if (real) real.close(code, reason); else closed = true; },
@@ -27,7 +30,10 @@ export function holdShellSocket() {
       if (closed) return;
       real = new Real(url, protocols);
       for (const type of ['open', 'message', 'close', 'error']) {
-        real.addEventListener(type, (event) => facade[`on${type}`]?.call(facade, event));
+        real.addEventListener(type, (event) => {
+          if (type === 'message' && held.dropReplies && /"type":"[a-z-]+-result"/.test(String(event.data))) return;
+          facade[`on${type}`]?.call(facade, event);
+        });
       }
     });
     return facade;

@@ -34,6 +34,7 @@ import { errorText } from '../_shared/error-text.js';
 import { documentPolicyOf, type DocumentPolicy } from './document-policy.js';
 import type { ResponseScope, RouteableFacetTarget } from './os-contracts.js';
 import type { ProcessOutput } from './output-gate.js';
+import { bytesToHex } from '@nimbus-sh/platform/hex.js';
 
 export interface PortEntry {
   port: number;
@@ -260,8 +261,7 @@ export function innerRequestUrl(outer: string, pathname: string): string {
 }
 
 export function createPortCapability(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(12));
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return bytesToHex(crypto.getRandomValues(new Uint8Array(12)));
 }
 
 /**

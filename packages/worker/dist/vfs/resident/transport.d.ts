@@ -4,13 +4,19 @@
  * packed ranged batches. What boot, reconcile and a lazily listed namespace
  * fetch with (sync.ts, lazy.ts). Every bound here is the session's.
  */
-import type { RuntimeVfsStat, VfsListEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { RuntimeFileVersion, RuntimeVfsStat, VfsListEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { Admission } from './admission.js';
 import type { Cells } from './cells.js';
 import type { Coherence, Cursor } from './coherence.js';
 import { type Namespace } from './namespace.js';
 import type { ResidentSupervisor } from './supervisor.js';
 /** A file to fetch: its listed size and revision, the epoch they are on, and its content key. */
+/**
+ * A file to fetch, as a listing named it. An undated one (rev 0: a mounted
+ * backend's, which keeps no revision the session's) is read as the file its
+ * `version` (or its `stat`) names, or not at all; held, it still vouches for
+ * nothing (sync.ts).
+ */
 export interface WantedFile {
     path: string;
     size: number;
@@ -18,6 +24,7 @@ export interface WantedFile {
     epoch: string;
     ckey?: string | null;
     stat?: RuntimeVfsStat | null;
+    version?: RuntimeFileVersion | null;
 }
 export interface FillReport {
     requested: number;

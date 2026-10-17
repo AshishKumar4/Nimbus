@@ -62,6 +62,7 @@ export const BUN_SHIM_PREAMBLE = `
   const fs = (() => { try { return require('fs'); } catch { return null; } })();
   const path = (() => { try { return require('path'); } catch { return null; } })();
   const cp = (() => { try { return require('child_process'); } catch { return null; } })();
+  const url = require('node:url');
   const BUN_VERSION = ${JSON.stringify(BUN_VERSION)};
 
   function makeBunFile(p) {
@@ -182,8 +183,8 @@ export const BUN_SHIM_PREAMBLE = `
     sleep(ms) { return new Promise((r) => setTimeout(r, ms)); },
     sleepSync(_ms) { throw new Error('Bun.sleepSync: not implementable in async runtime'); },
     nanoseconds() { return BigInt(Math.floor(performance.now() * 1e6)); },
-    fileURLToPath(u) { return new URL(u).pathname; },
-    pathToFileURL(p) { return new URL('file://' + p); },
+    fileURLToPath: url.fileURLToPath,
+    pathToFileURL: url.pathToFileURL,
   };
 })();
 // ── End Bun-runtime shim preamble ──────────────────────────────────

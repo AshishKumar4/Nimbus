@@ -7,7 +7,7 @@
 // see, and change, the code being parsed (tests/unit/interpreter-isolation.mjs
 // has a program do that through Array.prototype.push). The bundled parser is
 // rewritten to reach only what the launch captured at its start
-// (core src/interpreter/parser-realm.ts), and interpreter-primordials.mjs
+// (core src/interpreter/parser-realm.ts), and primordials-audit.mjs
 // checks the rewrite's output by its syntax. This checks it by running it:
 // after the launch's start, every built-in a program can reach logs its use
 // (each property of each built-in prototype, constructor and namespace, every

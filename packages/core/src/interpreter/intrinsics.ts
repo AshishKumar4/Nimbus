@@ -5,7 +5,7 @@
  * A program shares the interpreter's realm and may replace built-ins, and
  * accessors on Object.prototype or Array.prototype answer any lookup that
  * reaches them. So no code of the interpreter reaches a built-in through a
- * path a program can change (tests/unit/interpreter-primordials.mjs checks):
+ * path a program can change (tests/unit/primordials-audit.mjs checks):
  *
  *   - it calls built-ins only as captured here, and walks arrays with index
  *     loops (never for-of, spread or array destructuring, which call the

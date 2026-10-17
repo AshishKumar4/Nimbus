@@ -134,7 +134,7 @@ function refusal(error: unknown): EsmMissing {
 export async function stageEsModules(
   fs: EsmStageFs,
   cells: ReadonlyMap<string, { readonly code: string; readonly sites: ImportSites }>,
-  { conditions, cwd, isCode, gate, scope = 'node', stripsTypes = false, typeScript = true }: {
+  { conditions, cwd, isCode, gate, emitted, scope = 'node', stripsTypes = false, typeScript = true }: {
     /** Node strips TypeScript's types (node-cli.ts typeScriptStripOptions): it refuses TypeScript under node_modules. */
     stripsTypes?: boolean;
     /** A TypeScript file has a format (EsmResolverOptions.stripTypes): not under `--no-experimental-strip-types`. */
@@ -147,6 +147,8 @@ export async function stageEsModules(
     isCode(key: string): boolean;
     /** Whether the registry needs each module gated: workerd (native-esm.ts). */
     gate: boolean;
+    /** A member's text as it becomes known, before the next filesystem question. */
+    emitted?(path: string, text: string): void;
   },
 ): Promise<EsmStage> {
   const started = Date.now();
@@ -155,6 +157,7 @@ export async function stageEsModules(
     [ESM_HOST_MODULE]: ESM_HOST_SOURCE,
     [ESM_META_MODULE]: metaModuleSource(gate),
   };
+  if (emitted) for (const [path, text] of Object.entries(members)) emitted(path, text);
   const missing: EsmMissing[] = [];
   // A cell's id is its place among `cells`: the table's first rows, its targets filled as it is staged.
   const targetIds: number[][] = [];
@@ -176,7 +179,9 @@ export async function stageEsModules(
       const row: EsmModuleRow = [kind, key];
       const name = esmRowName(row, id);
       table.push(row);
-      members[name] = source(id, name);
+      const text = source(id, name);
+      emitted?.(name, text);
+      members[name] = text;
       bindings[id] = ['default', ...exported];
       ids.set(`${kind}:${key}`, id);
     }
@@ -350,7 +355,12 @@ export async function stageEsModules(
       } catch (error) {
         rowTargets.push(-2 - missing.length);
         targets.push(`${ESM_MISSING_DIR}${missing.length}.js`);
-        missing.push(refusal(error));
+        // A file the launch's files lack, the program may write before the
+        // import: its importer's graph is the interpreter's, which resolves it
+        // then, as Node's loader does, and fails as Node's if it is missing still.
+        const url = Reflect.get(Object(error), 'url');
+        const later = Reflect.get(Object(error), 'code') === 'ERR_MODULE_NOT_FOUND' && typeof url === 'string' && url.startsWith('file:');
+        missing.push(refusal(later ? notStaged(new URL(url).pathname, url) : error));
       }
     }
     targetNames.push(targets);
@@ -381,11 +391,13 @@ export async function stageEsModules(
   const modules = new Map<string, StagedEsModule>();
   id = 0;
   for (const [key, { code, sites }] of cells) {
-    modules.set(key, stageEsModule(code, sites, {
+    const staged = stageEsModule(code, sites, {
       id, name: commonJsCellModuleName(key), targets: targetNames[id]!,
       ...(hoisted[id]!.length > 0 ? { hoisted: hoisted[id] } : {}),
       ...(sites.commonJsNames ? { commonJsNames: sites.commonJsNames } : {}),
-    }));
+    });
+    emitted?.(key, staged.text);
+    modules.set(key, staged);
     id++;
   }
   for (let row = 0; row < table.length; row++) bindings[row] ??= null;

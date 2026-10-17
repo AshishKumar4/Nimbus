@@ -27,6 +27,7 @@
  * build time, which runs in the inner isolate.
  */
 import { jsgInt } from './jsg-int.js';
+import { bytesToHex } from '@nimbus-sh/platform/hex.js';
 /**
  * The adapter, as it runs in the inner isolate: it replaces each of `names`
  * in `env` that holds the binding the loader passes with the platform's
@@ -558,7 +559,7 @@ function wireChecksums(options) {
             const view = digest instanceof ArrayBuffer ? new Uint8Array(digest) : new Uint8Array(digest.buffer, digest.byteOffset, digest.byteLength);
             if (view.byteLength !== bytes)
                 throw new TypeError(`${label} is ${bytes} bytes, not ${view.byteLength}`);
-            checksums = { [name]: Array.from(view, (b) => b.toString(16).padStart(2, '0')).join('') };
+            checksums = { [name]: bytesToHex(view) };
         }
     }
     return checksums;

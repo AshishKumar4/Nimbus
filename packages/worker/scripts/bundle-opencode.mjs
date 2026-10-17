@@ -59,7 +59,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { buildOpencodeAttachEntryFromSources, chunkClosure } from './build-opencode-attach-entry.mjs';
+import { asciiChunkSource, buildOpencodeAttachEntryFromSources, chunkClosure } from './build-opencode-attach-entry.mjs';
 import { readCorePin, sha256Hex } from './stage-asset.mjs';
 import { assertCurrentInputs, digestInputs } from './artifact-inputs.mjs';
 import { OPENCODE_SOURCE, opencodeInputs } from './opencode/inputs.mjs';
@@ -366,7 +366,7 @@ async function main() {
     }
     const pack = {};
     for (const name of chunkNames) {
-      pack[name] = await fs.readFile(path.join(distDir, name), 'utf8');
+      pack[name] = await asciiChunkSource(await fs.readFile(path.join(distDir, name), 'utf8'), name);
     }
     staged.push({ name: CHUNKS_PACK, bytes: Buffer.from(JSON.stringify(pack), 'utf8') });
     staged.sort((a, b) => a.name.localeCompare(b.name));
@@ -393,6 +393,11 @@ async function main() {
         );
       }
       console.log(`[bundle-opencode] chunk closure verified: ${packed.size} chunks reachable from index.js`);
+      // Restaged or freshly packed, every source must be one V8 holds one-byte (asciiChunkSource).
+      const wide = Object.keys(pack).filter((name) => /[^\x00-\x7f]/.test(pack[name]));
+      if (wide.length > 0) {
+        throw new Error(`[bundle-opencode] ${CHUNKS_PACK}: ${wide.length} chunk(s) not ASCII (${wide.slice(0, 3).join(', ')}) — rebuild them through asciiChunkSource`);
+      }
     }
   }
 

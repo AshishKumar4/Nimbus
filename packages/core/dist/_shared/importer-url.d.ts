@@ -9,7 +9,7 @@
  * percent-encoded (a lone surrogate U+FFFD's), so a `#` or `?` in a name is
  * part of the path. It calls no built-in method but `codeAt`, so the
  * interpreter gives its own (interpreter/intrinsics.ts charCodeAt): a
- * program may have replaced the others (tests/unit/interpreter-primordials.mjs).
+ * program may have replaced the others (tests/unit/primordials-audit.mjs).
  */
 export declare function importerUrl(path: string, codeAt: (text: string, index: number) => number): string;
 //# sourceMappingURL=importer-url.d.ts.map

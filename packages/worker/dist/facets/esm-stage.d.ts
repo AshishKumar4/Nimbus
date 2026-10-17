@@ -84,7 +84,7 @@ export interface EsmStageFs {
 export declare function stageEsModules(fs: EsmStageFs, cells: ReadonlyMap<string, {
     readonly code: string;
     readonly sites: ImportSites;
-}>, { conditions, cwd, isCode, gate, scope, stripsTypes, typeScript }: {
+}>, { conditions, cwd, isCode, gate, emitted, scope, stripsTypes, typeScript }: {
     /** Node strips TypeScript's types (node-cli.ts typeScriptStripOptions): it refuses TypeScript under node_modules. */
     stripsTypes?: boolean;
     /** A TypeScript file has a format (EsmResolverOptions.stripTypes): not under `--no-experimental-strip-types`. */
@@ -97,5 +97,7 @@ export declare function stageEsModules(fs: EsmStageFs, cells: ReadonlyMap<string
     isCode(key: string): boolean;
     /** Whether the registry needs each module gated: workerd (native-esm.ts). */
     gate: boolean;
+    /** A member's text as it becomes known, before the next filesystem question. */
+    emitted?(path: string, text: string): void;
 }): Promise<EsmStage>;
 //# sourceMappingURL=esm-stage.d.ts.map

@@ -82,7 +82,8 @@ import type { SupervisorBindingProps } from './supervisor-props.js';
 import { z } from 'zod/v4';
 import type { ResponseScope, RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
-import type { ServiceStub, WorkerCode } from './vendor/types.js';
+import type { CjsModule, JsModule, ServiceStub, WorkerCode } from './vendor/types.js';
+import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 
 /**
  * The class every generated resident runner exports. One name for every
@@ -249,9 +250,7 @@ export const FACET_IMAGE_DIR = '.nimbus/facet-images';
  */
 export async function facetImageDigest(image: string | Uint8Array): Promise<string> {
   // An image is its UTF-8 bytes; a caller holding them is not made to encode a second copy.
-  const bytes = typeof image === 'string' ? new TextEncoder().encode(image) : image;
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
-  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+  return sha256Hex(image);
 }
 
 export function facetImagePath(digest: string): string {
@@ -639,7 +638,7 @@ export interface OneShotCodeSpec {
   compatibilityDate: string;
   compatibilityFlags: string[];
   mainModule: string;
-  modules: Record<string, string | { wasm: ArrayBuffer } | { cjs: string }>;
+  modules: Record<string, string | { wasm: ArrayBuffer } | CjsModule | JsModule>;
 }
 
 /**
@@ -694,6 +693,13 @@ export interface OneShotParams {
    * can see where one ends and the other begins.
    */
   onLoaded?(): void;
+  /**
+   * Called once the program's run is entered: its first call back to its
+   * host (the run's `ended`). A staged run, started in its stateless hop,
+   * which tells its host nothing more, is entered as its fetch is sent.
+   * Between onLoaded and this, the platform is starting its worker.
+   */
+  onEntered?(): void;
   /**
    * The program's network goes through its supervisor binding: the binding
    * is also its globalOutbound, so its fetch and connect reach the session,

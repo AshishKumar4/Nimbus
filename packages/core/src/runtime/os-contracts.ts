@@ -225,8 +225,25 @@ export interface RuntimeReadFileOptions {
 export interface RuntimeReadOptions {
   followSymlinks?: boolean;
   cached?: boolean;
+  /** The engine's incarnation and the path's revision a read is of (both or neither): ESTALE if either moved, and on a mounted path, which has neither. */
   expectedEpoch?: string;
   expectedRevision?: number;
+  /** The file as a listing's stat named it, for a path with no revision to name (a mount's): ESTALE if it is not that file still (sameFileVersion). */
+  expectedFile?: RuntimeFileVersion;
+}
+
+/** What a stat says of which file it is and its version: a mounted backend's stand-in for a revision. */
+export type RuntimeFileVersion = Pick<RuntimeVfsStat, 'dev' | 'ino' | 'size' | 'mtime' | 'ctime' | 'revision'>;
+
+/**
+ * Whether `stat` is the file `expected` named, unchanged as far as its stat
+ * can tell; its revision too where `expected` names one (0 names none: a
+ * backend that keeps none, or a name kept without it, as a resident's
+ * namespace keeps a mount's).
+ */
+export function sameFileVersion(stat: RuntimeVfsStat | null, expected: RuntimeFileVersion): boolean {
+  return stat !== null && stat.dev === expected.dev && stat.ino === expected.ino && stat.size === expected.size
+    && stat.mtime === expected.mtime && stat.ctime === expected.ctime && (expected.revision === 0 || stat.revision === expected.revision);
 }
 
 export interface NimbusFilesystemBinding {

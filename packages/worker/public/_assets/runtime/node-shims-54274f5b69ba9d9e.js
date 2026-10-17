@@ -512,6 +512,497 @@ ${warning.detail}`;
 return { createProcessWarnings };
 })();
 
+// The built-ins the module loading calls, captured now, before any program
+// code (core _shared/primordials.ts), and node:path's posix half on them
+// (core _shared/posix-path.ts, Node's lib/path.js).
+const __nimbusPrimordials = typeof __nimbusLaunchCaptures !== "undefined" ? __nimbusLaunchCaptures : (() => {
+var reflectApply = Reflect.apply;
+var reflectConstruct = Reflect.construct;
+var reflectGet = Reflect.get;
+var reflectSet = Reflect.set;
+var reflectHas = Reflect.has;
+var reflectOwnKeys = Reflect.ownKeys;
+var reflectDefineProperty = Reflect.defineProperty;
+var reflectDeleteProperty = Reflect.deleteProperty;
+var reflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
+var reflectGetPrototypeOf = Reflect.getPrototypeOf;
+var reflectSetPrototypeOf = Reflect.setPrototypeOf;
+var objectCreate = Object.create;
+var objectKeys = Object.keys;
+var objectFreeze = Object.freeze;
+var objectAssign = Object.assign;
+var objectHasOwn = Object.hasOwn;
+var objectGetOwnPropertyNames = Object.getOwnPropertyNames;
+var arrayIsArray = Array.isArray;
+var symbolFor = Symbol.for;
+var symbolIterator = Symbol.iterator;
+var symbolAsyncIterator = Symbol.asyncIterator;
+var symbolUnscopables = Symbol.unscopables;
+var stringOf = String;
+var ObjectOf = Object;
+var PromiseConstructor = Promise;
+var PromiseResolve = Promise.resolve;
+var PromiseReject = Promise.reject;
+var PromisePrototypeThen = Promise.prototype.then;
+var ObjectPrototypePropertyIsEnumerable = Object.prototype.propertyIsEnumerable;
+var ArrayConstructor = Array;
+var ArrayFrom = Array.from;
+var ArrayValues = Array.prototype[Symbol.iterator];
+var ArrayIteratorPrototype = Reflect.getPrototypeOf([][Symbol.iterator]()) ?? {};
+var ArrayIteratorNext = Reflect.get(ArrayIteratorPrototype, "next");
+var ArrayPrototypeWith = Reflect.get(Array.prototype, "with");
+var ArrayPrototypeToSpliced = Reflect.get(Array.prototype, "toSpliced");
+var StringPrototypeSlice = String.prototype.slice;
+var StringPrototypeLastIndexOf = String.prototype.lastIndexOf;
+var StringPrototypeCharCodeAt = String.prototype.charCodeAt;
+var SymbolPrototypeToString = Symbol.prototype.toString;
+var StringPrototypeCharAt = String.prototype.charAt;
+var StringPrototypeIndexOf = String.prototype.indexOf;
+var StringPrototypeSubstr = String.prototype.substr;
+var StringFromCharCode = String.fromCharCode;
+var ArrayPrototypePop = Array.prototype.pop;
+var ArrayPrototypeIndexOf = Array.prototype.indexOf;
+var ArrayPrototypeLastIndexOf = Array.prototype.lastIndexOf;
+var RegExpPrototypeExec = RegExp.prototype.exec;
+var RegExpPrototypeAccessors = (() => {
+  const accessors = objectCreate(null);
+  const names = Object.getOwnPropertyNames(RegExp.prototype);
+  for (let i = 0; i < names.length; i++) {
+    const getter = Reflect.getOwnPropertyDescriptor(RegExp.prototype, names[i])?.get;
+    if (getter !== void 0) accessors[names[i]] = getter;
+  }
+  return accessors;
+})();
+var NumberPrototypeToString = Number.prototype.toString;
+var BigIntPrototypeToString = BigInt.prototype.toString;
+var ObjectPrototype = Object.prototype;
+var ObjectPrototypeHasOwnProperty = Object.prototype.hasOwnProperty;
+var ObjectPrototypeToString = Object.prototype.toString;
+var objectDefineProperties = Object.defineProperties;
+var parseIntOf = parseInt;
+var parseFloatOf = parseFloat;
+var SymbolConstructor = Symbol;
+var SymbolPrototypeDescription = Reflect.getOwnPropertyDescriptor(Symbol.prototype, "description")?.get;
+var globalObject = globalThis;
+var BigIntOf = BigInt;
+var ErrorConstructor = Error;
+var RangeErrorConstructor = RangeError;
+var ReferenceErrorConstructor = ReferenceError;
+var RegExpConstructor = RegExp;
+var SyntaxErrorConstructor = SyntaxError;
+var TypeErrorConstructor = TypeError;
+function dataDescriptor(value, writable, enumerable, configurable) {
+  const descriptor = objectCreate(null);
+  descriptor.value = value;
+  descriptor.writable = writable;
+  descriptor.enumerable = enumerable;
+  descriptor.configurable = configurable;
+  return descriptor;
+}
+function copyMethods(to, from, methods) {
+  for (let i = 0; i < methods.length; i++) {
+    const descriptor = reflectGetOwnPropertyDescriptor(from, methods[i]);
+    if (descriptor) reflectDefineProperty(to, methods[i], descriptor);
+  }
+}
+var SafeMap = class extends Map {
+};
+copyMethods(SafeMap.prototype, Map.prototype, ["get", "set", "has", "delete", "clear", "forEach", "size"]);
+var SafeSet = class extends Set {
+};
+copyMethods(SafeSet.prototype, Set.prototype, ["add", "has", "delete", "clear", "forEach", "size"]);
+var SafeWeakMap = class extends WeakMap {
+};
+copyMethods(SafeWeakMap.prototype, WeakMap.prototype, ["get", "set", "has", "delete"]);
+var SafeWeakSet = class extends WeakSet {
+};
+copyMethods(SafeWeakSet.prototype, WeakSet.prototype, ["add", "has", "delete"]);
+var SafeList = class extends Array {
+};
+reflectSetPrototypeOf(SafeList.prototype, null);
+var SafeGeneratorPrototype = objectCreate(null);
+var SafeAsyncGeneratorPrototype = objectCreate(null);
+{
+  const generatorPrototype = reflectGetPrototypeOf(function* () {
+  }.prototype) ?? {};
+  const asyncGeneratorPrototype = reflectGetPrototypeOf(async function* () {
+  }.prototype) ?? {};
+  copyMethods(SafeGeneratorPrototype, generatorPrototype, ["next", "return", "throw"]);
+  copyMethods(SafeGeneratorPrototype, reflectGetPrototypeOf(generatorPrototype) ?? {}, [Symbol.iterator]);
+  copyMethods(SafeAsyncGeneratorPrototype, asyncGeneratorPrototype, ["next", "return", "throw"]);
+  copyMethods(SafeAsyncGeneratorPrototype, reflectGetPrototypeOf(asyncGeneratorPrototype) ?? {}, [Symbol.asyncIterator]);
+}
+var SafeRegExpPrototype = objectCreate(null);
+{
+  const keys = Reflect.ownKeys(RegExp.prototype);
+  const members = [];
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (key !== "constructor" && key !== Symbol.split && key !== Symbol.matchAll) members[members.length] = key;
+  }
+  copyMethods(SafeRegExpPrototype, RegExp.prototype, members);
+}
+var GeneratorPrototypeNext = reflectGet(SafeGeneratorPrototype, "next");
+var GeneratorPrototypeReturn = reflectGet(SafeGeneratorPrototype, "return");
+var GeneratorPrototypeThrow = reflectGet(SafeGeneratorPrototype, "throw");
+var FunctionPrototypeCall = Function.prototype.call;
+var FunctionPrototypeBind = Function.prototype.bind;
+function uncurryThis(fn) {
+  return reflectApply(FunctionPrototypeBind, FunctionPrototypeCall, [fn]);
+}
+var stringCharCodeAt = uncurryThis(String.prototype.charCodeAt);
+var stringSlice = uncurryThis(String.prototype.slice);
+var stringLastIndexOf = uncurryThis(String.prototype.lastIndexOf);
+var arrayJoin = uncurryThis(Array.prototype.join);
+return { ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt: BigIntOf, BigIntPrototypeToString, Error: ErrorConstructor, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, RangeError: RangeErrorConstructor, ReferenceError: ReferenceErrorConstructor, RegExp: RegExpConstructor, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError: SyntaxErrorConstructor, TypeError: TypeErrorConstructor, arrayIsArray, arrayJoin, dataDescriptor, globalObject, objectAssign, objectCreate, objectDefineProperties, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectKeys, parseFloatOf, parseIntOf, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, stringCharCodeAt, stringLastIndexOf, stringOf, stringSlice, symbolAsyncIterator, symbolFor, symbolIterator, symbolUnscopables };
+})();
+
+var { createPosixPath } = (() => {
+const { arrayIsArray, arrayJoin, FunctionPrototypeBind, reflectApply, stringCharCodeAt, stringLastIndexOf, stringSlice } = __nimbusPrimordials;
+var CHAR_DOT = 46;
+var CHAR_FORWARD_SLASH = 47;
+function validateString(value, name) {
+  if (typeof value !== "string") throw invalidArgType(name, "string", value);
+}
+function isPosixPathSeparator(code) {
+  return code === CHAR_FORWARD_SLASH;
+}
+function normalizeString(path, allowAboveRoot, separator, isPathSeparator) {
+  let res = "";
+  let lastSegmentLength = 0;
+  let lastSlash = -1;
+  let dots = 0;
+  let code = 0;
+  for (let i = 0; i <= path.length; ++i) {
+    if (i < path.length) code = stringCharCodeAt(path, i);
+    else if (isPathSeparator(code)) break;
+    else code = CHAR_FORWARD_SLASH;
+    if (isPathSeparator(code)) {
+      if (lastSlash === i - 1 || dots === 1) {
+      } else if (dots === 2) {
+        if (res.length < 2 || lastSegmentLength !== 2 || stringCharCodeAt(res, res.length - 1) !== CHAR_DOT || stringCharCodeAt(res, res.length - 2) !== CHAR_DOT) {
+          if (res.length > 2) {
+            const lastSlashIndex = res.length - lastSegmentLength - 1;
+            if (lastSlashIndex === -1) {
+              res = "";
+              lastSegmentLength = 0;
+            } else {
+              res = stringSlice(res, 0, lastSlashIndex);
+              lastSegmentLength = res.length - 1 - stringLastIndexOf(res, separator);
+            }
+            lastSlash = i;
+            dots = 0;
+            continue;
+          } else if (res.length !== 0) {
+            res = "";
+            lastSegmentLength = 0;
+            lastSlash = i;
+            dots = 0;
+            continue;
+          }
+        }
+        if (allowAboveRoot) {
+          res += res.length > 0 ? `${separator}..` : "..";
+          lastSegmentLength = 2;
+        }
+      } else {
+        if (res.length > 0) res += `${separator}${stringSlice(path, lastSlash + 1, i)}`;
+        else res = stringSlice(path, lastSlash + 1, i);
+        lastSegmentLength = i - lastSlash - 1;
+      }
+      lastSlash = i;
+      dots = 0;
+    } else if (code === CHAR_DOT && dots !== -1) {
+      ++dots;
+    } else {
+      dots = -1;
+    }
+  }
+  return res;
+}
+function formatExt(ext) {
+  return ext ? `${ext[0] === "." ? "" : "."}${ext}` : "";
+}
+function _format(sep, pathObject) {
+  if (pathObject === null || typeof pathObject !== "object" || arrayIsArray(pathObject)) throw invalidArgType("pathObject", "Object", pathObject);
+  const dir = pathObject.dir || pathObject.root;
+  const base = pathObject.base || `${pathObject.name || ""}${formatExt(pathObject.ext)}`;
+  if (!dir) return base;
+  return dir === pathObject.root ? `${dir}${base}` : `${dir}${sep}${base}`;
+}
+function createPosixPath(cwd) {
+  const posix = {
+    resolve(...args) {
+      if (args.length === 0 || args.length === 1 && (args[0] === "" || args[0] === ".")) {
+        const dir = cwd();
+        if (stringCharCodeAt(dir, 0) === CHAR_FORWARD_SLASH) return dir;
+      }
+      let resolvedPath = "";
+      let resolvedAbsolute = false;
+      for (let i = args.length - 1; i >= 0 && !resolvedAbsolute; i--) {
+        const path = args[i];
+        validateString(path, `paths[${i}]`);
+        if (path.length === 0) continue;
+        resolvedPath = `${path}/${resolvedPath}`;
+        resolvedAbsolute = stringCharCodeAt(path, 0) === CHAR_FORWARD_SLASH;
+      }
+      if (!resolvedAbsolute) {
+        const dir = cwd();
+        resolvedPath = `${dir}/${resolvedPath}`;
+        resolvedAbsolute = stringCharCodeAt(dir, 0) === CHAR_FORWARD_SLASH;
+      }
+      resolvedPath = normalizeString(resolvedPath, !resolvedAbsolute, "/", isPosixPathSeparator);
+      if (resolvedAbsolute) return `/${resolvedPath}`;
+      return resolvedPath.length > 0 ? resolvedPath : ".";
+    },
+    normalize(path) {
+      validateString(path, "path");
+      if (path.length === 0) return ".";
+      const isAbsolute = stringCharCodeAt(path, 0) === CHAR_FORWARD_SLASH;
+      const trailingSeparator = stringCharCodeAt(path, path.length - 1) === CHAR_FORWARD_SLASH;
+      path = normalizeString(path, !isAbsolute, "/", isPosixPathSeparator);
+      if (path.length === 0) {
+        if (isAbsolute) return "/";
+        return trailingSeparator ? "./" : ".";
+      }
+      if (trailingSeparator) path += "/";
+      return isAbsolute ? `/${path}` : path;
+    },
+    isAbsolute(path) {
+      validateString(path, "path");
+      return path.length > 0 && stringCharCodeAt(path, 0) === CHAR_FORWARD_SLASH;
+    },
+    join(...args) {
+      if (args.length === 0) return ".";
+      const path = [];
+      for (let i = 0; i < args.length; ++i) {
+        const arg = args[i];
+        validateString(arg, "path");
+        if (arg.length > 0) {
+          path.push(arg);
+        }
+      }
+      if (path.length === 0) return ".";
+      return posix.normalize(arrayJoin(path, "/"));
+    },
+    relative(from, to) {
+      validateString(from, "from");
+      validateString(to, "to");
+      if (from === to) return "";
+      from = posix.resolve(from);
+      to = posix.resolve(to);
+      if (from === to) return "";
+      const fromStart = 1;
+      const fromEnd = from.length;
+      const fromLen = fromEnd - fromStart;
+      const toStart = 1;
+      const toLen = to.length - toStart;
+      const length = fromLen < toLen ? fromLen : toLen;
+      let lastCommonSep = -1;
+      let i = 0;
+      for (; i < length; i++) {
+        const fromCode = stringCharCodeAt(from, fromStart + i);
+        if (fromCode !== stringCharCodeAt(to, toStart + i)) break;
+        else if (fromCode === CHAR_FORWARD_SLASH) lastCommonSep = i;
+      }
+      if (i === length) {
+        if (toLen > length) {
+          if (stringCharCodeAt(to, toStart + i) === CHAR_FORWARD_SLASH) {
+            return stringSlice(to, toStart + i + 1);
+          }
+          if (i === 0) {
+            return stringSlice(to, toStart + i);
+          }
+        } else if (fromLen > length) {
+          if (stringCharCodeAt(from, fromStart + i) === CHAR_FORWARD_SLASH) {
+            lastCommonSep = i;
+          } else if (i === 0) {
+            lastCommonSep = 0;
+          }
+        }
+      }
+      let out = "";
+      for (i = fromStart + lastCommonSep + 1; i <= fromEnd; ++i) {
+        if (i === fromEnd || stringCharCodeAt(from, i) === CHAR_FORWARD_SLASH) {
+          out += out.length === 0 ? ".." : "/..";
+        }
+      }
+      return `${out}${stringSlice(to, toStart + lastCommonSep)}`;
+    },
+    toNamespacedPath(path) {
+      return path;
+    },
+    dirname(path) {
+      validateString(path, "path");
+      if (path.length === 0) return ".";
+      const hasRoot = stringCharCodeAt(path, 0) === CHAR_FORWARD_SLASH;
+      let end = -1;
+      let matchedSlash = true;
+      for (let i = path.length - 1; i >= 1; --i) {
+        if (stringCharCodeAt(path, i) === CHAR_FORWARD_SLASH) {
+          if (!matchedSlash) {
+            end = i;
+            break;
+          }
+        } else {
+          matchedSlash = false;
+        }
+      }
+      if (end === -1) return hasRoot ? "/" : ".";
+      if (hasRoot && end === 1) return "//";
+      return stringSlice(path, 0, end);
+    },
+    basename(path, suffix) {
+      if (suffix !== void 0) validateString(suffix, "suffix");
+      validateString(path, "path");
+      let start = 0;
+      let end = -1;
+      let matchedSlash = true;
+      if (suffix !== void 0 && suffix.length > 0 && suffix.length <= path.length) {
+        if (suffix === path) return "";
+        let extIdx = suffix.length - 1;
+        let firstNonSlashEnd = -1;
+        for (let i = path.length - 1; i >= 0; --i) {
+          const code = stringCharCodeAt(path, i);
+          if (code === CHAR_FORWARD_SLASH) {
+            if (!matchedSlash) {
+              start = i + 1;
+              break;
+            }
+          } else {
+            if (firstNonSlashEnd === -1) {
+              matchedSlash = false;
+              firstNonSlashEnd = i + 1;
+            }
+            if (extIdx >= 0) {
+              if (code === stringCharCodeAt(suffix, extIdx)) {
+                if (--extIdx === -1) {
+                  end = i;
+                }
+              } else {
+                extIdx = -1;
+                end = firstNonSlashEnd;
+              }
+            }
+          }
+        }
+        if (start === end) end = firstNonSlashEnd;
+        else if (end === -1) end = path.length;
+        return stringSlice(path, start, end);
+      }
+      for (let i = path.length - 1; i >= 0; --i) {
+        if (stringCharCodeAt(path, i) === CHAR_FORWARD_SLASH) {
+          if (!matchedSlash) {
+            start = i + 1;
+            break;
+          }
+        } else if (end === -1) {
+          matchedSlash = false;
+          end = i + 1;
+        }
+      }
+      if (end === -1) return "";
+      return stringSlice(path, start, end);
+    },
+    extname(path) {
+      validateString(path, "path");
+      let startDot = -1;
+      let startPart = 0;
+      let end = -1;
+      let matchedSlash = true;
+      let preDotState = 0;
+      for (let i = path.length - 1; i >= 0; --i) {
+        const char = path[i];
+        if (char === "/") {
+          if (!matchedSlash) {
+            startPart = i + 1;
+            break;
+          }
+          continue;
+        }
+        if (end === -1) {
+          matchedSlash = false;
+          end = i + 1;
+        }
+        if (char === ".") {
+          if (startDot === -1) startDot = i;
+          else if (preDotState !== 1) preDotState = 1;
+        } else if (startDot !== -1) {
+          preDotState = -1;
+        }
+      }
+      if (startDot === -1 || end === -1 || preDotState === 0 || preDotState === 1 && startDot === end - 1 && startDot === startPart + 1) {
+        return "";
+      }
+      return stringSlice(path, startDot, end);
+    },
+    format: reflectApply(FunctionPrototypeBind, _format, [null, "/"]),
+    parse(path) {
+      validateString(path, "path");
+      const ret = { root: "", dir: "", base: "", ext: "", name: "" };
+      if (path.length === 0) return ret;
+      const isAbsolute = stringCharCodeAt(path, 0) === CHAR_FORWARD_SLASH;
+      let start;
+      if (isAbsolute) {
+        ret.root = "/";
+        start = 1;
+      } else {
+        start = 0;
+      }
+      let startDot = -1;
+      let startPart = 0;
+      let end = -1;
+      let matchedSlash = true;
+      let i = path.length - 1;
+      let preDotState = 0;
+      for (; i >= start; --i) {
+        const code = stringCharCodeAt(path, i);
+        if (code === CHAR_FORWARD_SLASH) {
+          if (!matchedSlash) {
+            startPart = i + 1;
+            break;
+          }
+          continue;
+        }
+        if (end === -1) {
+          matchedSlash = false;
+          end = i + 1;
+        }
+        if (code === CHAR_DOT) {
+          if (startDot === -1) startDot = i;
+          else if (preDotState !== 1) preDotState = 1;
+        } else if (startDot !== -1) {
+          preDotState = -1;
+        }
+      }
+      if (end !== -1) {
+        const start2 = startPart === 0 && isAbsolute ? 1 : startPart;
+        if (startDot === -1 || preDotState === 0 || preDotState === 1 && startDot === end - 1 && startDot === startPart + 1) {
+          ret.base = ret.name = stringSlice(path, start2, end);
+        } else {
+          ret.name = stringSlice(path, start2, startDot);
+          ret.base = stringSlice(path, start2, end);
+          ret.ext = stringSlice(path, startDot, end);
+        }
+      }
+      if (startPart > 0) ret.dir = stringSlice(path, 0, startPart - 1);
+      else if (isAbsolute) ret.dir = "/";
+      return ret;
+    },
+    matchesGlob: null,
+    sep: "/",
+    delimiter: ":",
+    win32: null,
+    posix: null,
+    _makeLong: null
+  };
+  posix.posix = posix;
+  posix._makeLong = posix.toNamespacedPath;
+  return posix;
+}
+return { createPosixPath };
+})();
+
 Object.defineProperties(globalThis, {
   __nimbusNodeError: { value: __nimbusGeneratedNodeError, configurable: true },
   __nimbusNodeSystemError: { value: nodeSystemError, configurable: true },
@@ -3160,17 +3651,15 @@ function __vfsNormalizePath(p) {
 // `join("", "hello.txt")` was "/hello.txt" and sirv mapped every file under
 // "//name" and answered 404. Only resolution is the process's: resolve and
 // relative start from its cwd, not the Worker's.
+// Its posix half is Node's own (createPosixPath), on built-ins captured
+// before the program ran, as Node's path is: a program that replaces
+// String.prototype.charCodeAt has its own path, and the loader's, answer as
+// Node's do. matchesGlob is minimatch's, the platform's; win32 the platform's.
 const __pathMod = (() => {
   const native = __nativeBuiltin("path");
-  const posix = native.posix ?? native;
-  const resolve = (...p) => posix.resolve(cwd || "/home/user", ...p);
-  const mod = {
-    ...posix,
-    resolve,
-    relative: (from, to) => posix.relative(resolve(from), resolve(to)),
-    win32: native.win32,
-  };
-  mod.posix = mod;
+  const mod = createPosixPath(() => cwd || "/home/user");
+  mod.matchesGlob = (native.posix ?? native).matchesGlob;
+  mod.win32 = native.win32;
   return mod;
 })();
 
@@ -3288,9 +3777,9 @@ const __fsConstants = Object.freeze({
 // ═══════════════════════════════════════════════════════════════════════
 // libuv's words for each code (core vfs-error.ts ERRNO_DESCRIPTION).
 const __nimbusErrnoDescription = {"E2BIG":"argument list too long","EPERM":"operation not permitted","ENOENT":"no such file or directory","EIO":"i/o error","ENXIO":"no such device or address","EAGAIN":"resource temporarily unavailable","EACCES":"permission denied","EBUSY":"resource busy or locked","EEXIST":"file already exists","EXDEV":"cross-device link not permitted","ENOTDIR":"not a directory","EISDIR":"illegal operation on a directory","EINVAL":"invalid argument","ENOSPC":"no space left on device","EROFS":"read-only file system","ELOOP":"too many symbolic links encountered","ENAMETOOLONG":"name too long","ENOTEMPTY":"directory not empty","ENOTSUP":"operation not supported on socket","ESTALE":"stale file handle","EBADF":"bad file descriptor","EFBIG":"file too large","ENODATA":"no data available","ENOSYS":"function not implemented","EMFILE":"too many open files","ENFILE":"file table overflow","ENOMEM":"not enough memory","ETXTBSY":"text file is busy","EMLINK":"too many links","ENODEV":"no such device","ESPIPE":"invalid seek","EPIPE":"broken pipe","EINTR":"interrupted system call","ERANGE":"result too large","EOVERFLOW":"value too large for defined data type","ETIMEDOUT":"connection timed out","ECANCELED":"operation canceled","EFAULT":"bad address in system call argument"};
-const { utf8Length: __nimbusUtf8Length } = (()=>{var c=new TextEncoder,f;function i(n){if(n.length>=256)return d(n);let t=n.length;for(let e=0;e<n.length;e++){let r=n.charCodeAt(e);if(!(r<128))if(r<2048)t+=1;else if(r>=55296&&r<=56319&&e+1<n.length){let o=n.charCodeAt(e+1);o>=56320&&o<=57343?(t+=2,e++):t+=2}else t+=2}return t}function d(n){f??=new Uint8Array(256*1024);let t=0;for(let e=0;e<n.length;){let r=c.encodeInto(e===0?n:n.slice(e),f);e+=r.read,t+=r.written}return t}
+const { utf8Length: __nimbusUtf8Length } = (()=>{var c=new TextEncoder,f;function d(n){if(n.length>=256)return s(n);let e=n.length;for(let t=0;t<n.length;t++){let r=n.charCodeAt(t);if(!(r<128))if(r<2048)e+=1;else if(r>=55296&&r<=56319&&t+1<n.length){let o=n.charCodeAt(t+1);o>=56320&&o<=57343?(e+=2,t++):e+=2}else e+=2}return e}function s(n){f??=new Uint8Array(256*1024);let e=0;for(let t=0;t<n.length;){let r=c.encodeInto(t===0?n:n.slice(t),f);t+=r.read,e+=r.written}return e}
 
-return {"utf8Length":i};})();
+return {"utf8Length":d};})();
 const __fsMod = (() => {
   const _enc = new TextEncoder();
   const _dec = new TextDecoder();
@@ -17457,7 +17946,9 @@ const __nimbusCallbackWork = {
 // Those whose functions throw workerd's NodeError (node-builtin-errors-match-node-workerd).
 for (const name of ["zlib", "crypto"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name], { callbacks: true, prototypes: true, held: __nimbusCallbackWork[name] });
 builtins.string_decoder = __nimbusNodeErrorsAt(builtins.string_decoder, { prototypes: true });
-for (const name of ["url", "path", "vm"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name]);
+for (const name of ["url", "vm"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name]);
+// node:path's posix half throws Node's errors itself (core _shared/posix-path.ts); matchesGlob is workerd's.
+builtins.path.matchesGlob = __nimbusNodeErrorsOf(builtins.path.matchesGlob, false, null);
 __nimbusNodeErrorsAt(builtins.events, { inPlace: true });
 __nimbusNodeErrorsAt(__BufferMod, { inPlace: true });
 // Node's argument checks in front of them (node-builtin-fronts.ts).
@@ -17478,32 +17969,26 @@ function __nimbusFront(target, name, make) {
   Object.defineProperty(target, name, { value: fronted, writable: true, enumerable: descriptor?.enumerable ?? true, configurable: true });
 }
 
-// lib/path.js: validate from the right until an absolute path ends resolution.
+// lib/path.js: the posix half is Node's own (core _shared/posix-path.ts),
+// which checks its arguments as Node's does; win32's and matchesGlob are the
+// platform's.
 function __nimbusFrontPath(path) {
-  __nimbusFront(path, "resolve", (real) => function (...paths) {
-    for (let i = paths.length - 1; i >= 0; i--) {
-      if (typeof paths[i] !== "string") throw invalidArgType("paths[" + i + "]", "string", paths[i]);
-      if (paths[i].charCodeAt(0) === 47) break;
-    }
-    return Reflect.apply(real, this, paths);
-  });
-  __nimbusFront(path, "relative", (real) => function (from, to) {
-    if (typeof from !== "string") throw invalidArgType("from", "string", from);
-    if (typeof to !== "string") throw invalidArgType("to", "string", to);
+  __nimbusFront(path, "matchesGlob", (real) => function (path, pattern) {
+    if (typeof path !== "string") throw invalidArgType("path", "string", path);
+    if (typeof pattern !== "string") throw invalidArgType("pattern", "string", pattern);
     return Reflect.apply(real, this, arguments);
   });
-  for (const mod of [path, path.win32]) {
-    __nimbusFront(mod, "basename", (real) => function (path, suffix) {
-      if (suffix !== undefined && typeof suffix !== "string") throw invalidArgType("suffix", "string", suffix);
-      return Reflect.apply(real, this, arguments);
-    });
-    __nimbusFront(mod, "matchesGlob", (real) => function (path, pattern) {
-      if (typeof path !== "string") throw invalidArgType("path", "string", path);
-      if (typeof pattern !== "string") throw invalidArgType("pattern", "string", pattern);
-      return Reflect.apply(real, this, arguments);
-    });
-    mod._makeLong = mod.toNamespacedPath;
-  }
+  const win32 = path.win32;
+  __nimbusFront(win32, "basename", (real) => function (path, suffix) {
+    if (suffix !== undefined && typeof suffix !== "string") throw invalidArgType("suffix", "string", suffix);
+    return Reflect.apply(real, this, arguments);
+  });
+  __nimbusFront(win32, "matchesGlob", (real) => function (path, pattern) {
+    if (typeof path !== "string") throw invalidArgType("path", "string", path);
+    if (typeof pattern !== "string") throw invalidArgType("pattern", "string", pattern);
+    return Reflect.apply(real, this, arguments);
+  });
+  win32._makeLong = win32.toNamespacedPath;
 }
 
 function __nimbusFrontUrl(url) {
@@ -19608,6 +20093,9 @@ function __nimbusEsmRequire(id, required, parent = undefined) {
   }
   // It threw: what it threw, once its evaluation's rejection said.
   if (record.state === __ESM_FAILED && record.error !== undefined) throw record.error.value;
+  // An import()'s link failed in it: that failure, as Node's loader keeps the ModuleJob (esm-late-link keptFailure).
+  const kept = __nimbusLateModule?.keptFailure(__nimbusEsm.table[id][1]);
+  if (kept !== undefined) throw kept;
   const filename = "/" + __nimbusEsm.table[id][1];
   // Evaluating, for an import: Node's ESM loader's refusal, naming the requirer.
   if (record.state === __ESM_BEGAN || (record.state === __ESM_ADOPTED && record.namespace === null && record.requirer === undefined)) {
@@ -19752,16 +20240,23 @@ async function __nimbusEsmImport(id) {
 // one the interpreter took) is checked first as a late graph is (core
 // esm-late-link.ts linkAdopted): every imported name, before any of it
 // runs, unless a link checked it already.
+// A module an import() of failed to link (its late link, or its record),
+// by its record's key: the failure stays, as Node's loader keeps a
+// ModuleJob that did not link, and a later import of it rejects with it,
+// whatever the program wrote since. import()'s alone: require() retries.
+const __nimbusImportFailures = new Map();
 async function __nimbusEsmInterpret(id, linked) {
   const key = __nimbusEsm.table[id][1];
   const url = __nimbusEsmUrl("/" + key);
   let record = __nimbusGraphRecords.get("/" + key);
   if (record === undefined) {
+    if (__nimbusImportFailures.has("/" + key)) throw __nimbusImportFailures.get("/" + key);
     try {
       if (!linked) __nimbusLateOf().linkAdopted(__nimbusLateLinkHost, id, key, url);
       record = __nimbusAdoptedRecord(id, key);
     } catch (e) {
       __nimbusExplainCommonJSGlobalLike(e, url, false);
+      __nimbusImportFailures.set("/" + key, e);
       throw e;
     }
   }
@@ -20287,14 +20782,16 @@ async function __nimbusImportGraph(resolution) {
   const key = resolution.format === "data" ? resolution.url : resolution.path.replace(/^\/+/, "");
   const recordKey = resolution.format === "data" || resolution.url.includes("?") || resolution.url.includes("#") ? resolution.url : "/" + key;
   let record = __nimbusGraphRecords.get(recordKey);
-  try {
-    if (record === undefined || record.status === "unlinked") {
-      if (resolution.format !== "data" || __nimbusDataModuleOf(resolution.url).format === "module") __nimbusLateLink(key, resolution.url);
+  if (record === undefined || record.status === "unlinked") {
+    if (__nimbusImportFailures.has(recordKey)) throw __nimbusImportFailures.get(recordKey);
+    try {
+      if (resolution.format !== "data" || __nimbusDataModuleOf(resolution.url).format === "module") __nimbusLateLink(key, resolution.url, true);
+      record ??= __nimbusGraphRecord(resolution, undefined);
+    } catch (e) {
+      __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
+      __nimbusImportFailures.set(recordKey, e);
+      throw e;
     }
-    record ??= __nimbusGraphRecord(resolution, undefined);
-  } catch (e) {
-    __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
-    throw e;
   }
   const namespace = await __nimbusImportRecord(record, resolution.url);
   __esmNamespaces.set(resolution.url, namespace);
@@ -20318,7 +20815,7 @@ function __nimbusRequireRecord(record, parent) {
     __nimbusGraphSync = true;
     try {
       // Its late graph's names, as its import() checks them: a runtime module's.
-      if (record.status === "unlinked" && !state.adopted && !state.data) __nimbusLateLink(state.resolvedPath.replace(/^\/+/, ""), state.moduleUrl);
+      if (record.status === "unlinked" && !state.adopted && !state.data) __nimbusLateLink(state.resolvedPath.replace(/^\/+/, ""), state.moduleUrl, false);
       __nimbusPlanGraph(record, true);
       if (__nimbusGraphAwaits(record, new Set())) throw __nimbusRequireAsync(parent, state.filename);
       __nimbusGraph.link(record);
@@ -20399,9 +20896,11 @@ const __nimbusLateLinkHost = {
   },
   requests: (path, text, javaScript, goal) => __nimbusModuleRequests(path, text, javaScript, goal),
 };
-// Links the late graph of the module at `key` (`url`); the staged rows it imports, in order.
-function __nimbusLateLink(key, url) {
-  return __nimbusRegistryRequire("./nimbus/esm-late.js").linkLateGraph(__nimbusLateLinkHost, key, url);
+// Links the late graph of the module at `key` (`url`), an import()'s
+// (`kept`: a module it fails in keeps the failure) or a require()'s; the
+// staged rows it imports, in order.
+function __nimbusLateLink(key, url, kept) {
+  return __nimbusLateOf().linkLateGraph(__nimbusLateLinkHost, key, url, kept);
 }
 // A bundled copy of a package the runtime provides, bound to the runtime's
 // (provided-packages.ts rewriteProvidedCommonJsModules, PROVIDED_PACKAGE_HOOK):
