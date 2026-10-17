@@ -44,7 +44,7 @@
  * session refused is not asked for again.
  */
 
-import { encodeWriteBatch, type W7Attrs, type W7Call } from '@nimbus-sh/platform/w7-frame.js';
+import { encodeWriteBatch, type W7Attrs, type W7Call, type W7DataCall } from '@nimbus-sh/platform/w7-frame.js';
 import type { ExclusiveMutationGrant, GrantCertificate, RecallKind } from '../runtime/os-contracts.js';
 import { WAVE_BYTES, WAVE_PATHS, WAVE_PATH_BYTES, openWaveEpoch, sendWaveAttempts, waveAttemptsOf, type WaveFence, type WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
@@ -543,6 +543,16 @@ function descriptionOf(call: W7Call): string | undefined {
   return 'description' in call ? call.description : undefined;
 }
 
+function extended(call: W7DataCall, data: Uint8Array, buffer: Uint8Array | null): { op: ProcessFsOp; buffer: Uint8Array; append: Uint8Array } {
+  const size = call.data.byteLength + data.byteLength;
+  if (buffer === null || buffer.byteLength < size) {
+    buffer = new Uint8Array(Math.min(DATA_PIECE_BYTES, Math.max(size, (buffer?.byteLength ?? call.data.byteLength) * 2)));
+    buffer.set(call.data);
+  }
+  buffer.set(data, call.data.byteLength);
+  return { op: { type: 'call', call: { ...call, data: buffer.subarray(0, size) } }, buffer, append: data };
+}
+
 /**
  * `next` folded into `last`, the log's unsent tail, when it is the same
  * file's next bytes and nothing was logged between them: a whole write
@@ -558,27 +568,18 @@ function folded(last: ProcessFsOp, next: ProcessFsOp, buffer: Uint8Array | null)
   // Through one description only: another's access, or its file, may differ.
   if (a.path !== b.path || descriptionOf(a) !== descriptionOf(b) || a.data.byteLength + b.data.byteLength > DATA_PIECE_BYTES) return null;
   const inoOf = (call: W7Call): number | undefined => ('ino' in call ? call.ino : undefined);
-  const join = (): { op: ProcessFsOp; buffer: Uint8Array; append: Uint8Array } => {
-    const size = a.data.byteLength + b.data.byteLength;
-    if (buffer === null || buffer.byteLength < size) {
-      buffer = new Uint8Array(Math.min(DATA_PIECE_BYTES, Math.max(size, (buffer?.byteLength ?? a.data.byteLength) * 2)));
-      buffer.set(a.data);
-    }
-    buffer.set(b.data, a.data.byteLength);
-    return { op: { type: 'call', call: { ...a, data: buffer.subarray(0, size) } as W7Call }, buffer, append: b.data };
-  };
   if (b.call === 'writeFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) {
     // The last write's file is made (or kept) by the first: its make wins, the bytes are the last's.
     return { op: { type: 'call', call: { ...a, call: 'writeFile', data: b.data } as W7Call }, buffer: null };
   }
   if (b.call === 'appendFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) {
-    return join();
+    return extended(a, b.data, buffer);
   }
   if (b.call === 'append' && a.call === 'append' && inoOf(a) === inoOf(b)) {
-    return join();
+    return extended(a, b.data, buffer);
   }
   if (b.call === 'write' && a.call === 'write' && inoOf(a) === inoOf(b) && a.offset + a.data.byteLength === b.offset) {
-    return join();
+    return extended(a, b.data, buffer);
   }
   return null;
 }
