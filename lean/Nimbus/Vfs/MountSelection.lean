@@ -31,6 +31,7 @@ theorem fold_spec (point : α → Path) (p : Path) :
         exact List.isPrefixOf_iff_prefix.mp h.1
       · exact hb
     obtain ⟨h1, h2, h3, h4⟩ := ih (pick point p best m) hp
+    simp only [select] at h1 h2 h3 h4
     refine ⟨h1, ?_, ?_, ?_⟩
     · rcases h2 with h2 | h2
       · rw [h2]; unfold pick; split
