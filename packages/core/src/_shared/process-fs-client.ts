@@ -560,7 +560,7 @@ function extended(last: ProcessFsOp, data: Uint8Array): ProcessFsOp {
   const joined = buffer.bytes.subarray(0, size);
   buffer.used = size;
   const op: ProcessFsOp = { type: 'call', call: { ...call, data: joined } };
-  FOLDED_DATA.set(op, { buffer, data: joined, append: data, pending: true });
+  FOLDED_DATA.set(op, { buffer, data: joined, append: joined.subarray(call.data.byteLength), pending: true });
   return op;
 }
 
