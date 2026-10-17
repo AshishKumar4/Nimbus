@@ -1858,8 +1858,6 @@ export declare class SqliteVFS {
      * UTF-16 code units and would place U+10000 before U+E000.
      */
     private pageAt;
-    /** SQLite's `ORDER BY path` (UTF-8 bytes) for JS strings: keyset cursors compare in this order. */
-    private static comparePaths;
     /**
      * A read-only view of snapshot `name` for `cred`: the same methods, the
      * same permission checks and symlink resolution, over the tree the
