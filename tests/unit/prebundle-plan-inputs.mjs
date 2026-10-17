@@ -148,18 +148,25 @@ await runScenarios(fileURLToPath(import.meta.url), {
     const absent = dir + '/package.json';
     const observations = [];
     for (const operation of ['readFile', 'readFileString']) {
-      for (const path of [absent, dir]) {
+      for (const path of [absent, dir, dir + '/index.js']) {
         const inputs = new PrebundleInputs(fs);
-        assert.throws(() => inputs.fs[operation](path));
-        observations.push(inputs);
+        if (path.endsWith('/index.js')) inputs.fs[operation](path);
+        else assert.throws(() => inputs.fs[operation](path));
+        observations.push({ inputs, path });
       }
     }
+    const missingStat = new PrebundleInputs(fs);
+    assert.throws(() => missingStat.fs.stat(absent));
+    observations.push({ inputs: missingStat, path: absent });
     advanceFloor(fs, absent, 'read-answers');
-    for (const inputs of observations) assert.equal(inputs.current(), true,
+    for (const { inputs } of observations) assert.equal(inputs.current(), true,
       'a missing or non-file read is guarded by its answer, not the global floor');
     fs.writeFile(absent, '{}');
-    assert.equal(observations[0].current(), false);
-    assert.equal(observations[2].current(), false);
+    for (const { inputs, path } of observations) if (path === absent) assert.equal(inputs.current(), false,
+      'a real appearance still invalidates each negative observation');
+    fs.writeFile(dir + '/index.js', 'export const x = 2;');
+    for (const { inputs, path } of observations) if (path.endsWith('/index.js')) assert.equal(inputs.current(), false,
+      'successful reads still notice a same-size file change');
   },
   async entryDisappears() {
     const h = fixture('queued-entry-disappears');
@@ -193,10 +200,10 @@ await runScenarios(fileURLToPath(import.meta.url), {
   equivalentInputNames() {
     const { fs, dir } = inputFixture();
     let lookups = 0;
-    const inputs = new PrebundleInputs({ ...fs, revision(path) {
-      if (path !== undefined) lookups++;
-      return fs.revision(path);
-    } });
+    const inputs = new PrebundleInputs({ ...fs,
+      stat(path) { lookups++; return fs.stat(path); },
+      revision(path) { assert.equal(path, undefined, 'only the global clock is consulted'); return fs.revision(); },
+    });
     inputs.fs.readFileString(dir + '/index.js');
     inputs.fs.readFileString('/' + dir + '/index.js');
     assert.equal(lookups, 1, 'the VFS-rooted spellings name the same consulted file');
