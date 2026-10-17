@@ -47,7 +47,10 @@ try {
     if (url.origin === new URL(BASE).origin && guide && bundles.has(guide[1])) {
       return guide[2]
         ? request.respond({ contentType: 'text/javascript', body: bundles.get(guide[1]) })
-        : request.respond({ contentType: 'text/html', body: `<!doctype html><div id="root"></div><script src="/__react-guide-probe/${guide[1]}.js"></script>` });
+        : request.respond({ contentType: 'text/html', body: `<!doctype html><div id="root"></div><script>
+window.__guideEvents = [];
+addEventListener('message', (event) => { if (typeof event.data?.type === 'string' && event.data.type.startsWith('nimbus:')) window.__guideEvents.push(event.data.type); });
+</script><script src="/__react-guide-probe/${guide[1]}.js"></script>` });
     }
     return request.continue();
   });
@@ -67,10 +70,15 @@ createRoot(document.getElementById('root')).render(<MyTerm token={${JSON.stringi
     });
     bundles.set(name, bundled.outputFiles[0].text);
     await page.goto(`${BASE}/__react-guide-probe/${name}`, { waitUntil: 'domcontentloaded', timeout: 90_000 });
-    const mounted = await page.waitForFunction(() => !!document.querySelector('#root iframe[src]'), { timeout: 20_000 }).then(() => true, () => false);
-    a.check(`the ${name} guide mounts its iframe before the session is ready`, mounted, await page.$eval('#root', (el) => el.innerHTML.slice(0, 300)));
-    const settled = mounted && await page.waitForFunction(() => !document.querySelector('#root')?.textContent.includes('Loading'), { timeout: 90_000 }).then(() => true, () => false);
-    a.check(`the ${name} guide leaves its loading state once the shell is ready`, settled, await page.$eval('#root', (el) => el.innerHTML.slice(0, 300)));
+    const mounted = await page.waitForFunction(() => !!document.querySelector('#root iframe[src]'), { timeout: 20_000 })
+      .then(() => page.evaluate(() => ({ loading: document.querySelector('#root').textContent.includes('Loading'), events: window.__guideEvents.slice() })), () => null);
+    a.check(`the ${name} guide mounts its iframe under its loading state, before the session is ready`,
+      mounted !== null && mounted.loading && !mounted.events.includes('nimbus:ready'), JSON.stringify(mounted) + ' ' + await page.$eval('#root', (el) => el.innerHTML.slice(0, 300)));
+    const ready = mounted !== null && await page.waitForFunction(() => window.__guideEvents.includes('nimbus:ready')
+      && !document.querySelector('#root').textContent.includes('Loading') && !!document.querySelector('#root iframe[src]'), { timeout: 90_000 }).then(() => true, () => false);
+    const after = await page.evaluate(() => ({ events: window.__guideEvents.slice(), root: document.querySelector('#root').innerHTML.slice(0, 300) }));
+    a.check(`the ${name} guide's shell reports ready, and the guide drops its loading state with its iframe still there`,
+      ready && !after.events.includes('nimbus:error'), JSON.stringify(after));
   }
   a.check('the guides cause no browser errors', pageErrors.length === 0, JSON.stringify(pageErrors));
 } finally {
