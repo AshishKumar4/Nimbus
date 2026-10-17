@@ -516,6 +516,10 @@ const {
   runtimeCodeSourceCharge: __nimbusRuntimeCodeSourceCharge,
   sourceColumn: __nimbusEditedSourceColumn,
 } = ${COMMONJS_CELL_HELPERS_SOURCE};
+// The SyntaxErrors cells that did not compile threw. The registry keeps a
+// module's first, where Node compiles the module again at each require()
+// (it left require.cache): a new error each time, its stack formatted then.
+const __nimbusCellSyntaxErrors = new WeakSet();
 // The wrapper function of the cell at a VFS key, compiled by the registry the
 // first time it is asked for, with the module's own Function (THE WRAPPER);
 // null when the launch's map has no such cell. A cell that does not compile
@@ -527,8 +531,10 @@ function __nimbusModuleCell(key) {
   try {
     return __nimbusRegistryRequire("./" + __row[1])(globalThis.__nimbusCodeOrigin(__nimbusModuleImporterUrl(key)).Function);
   } catch (e) {
-    __nimbusDecorateSyntaxError(e, __row[1]);
-    throw e;
+    const error = __nimbusCellSyntaxErrors.has(e) ? new SyntaxError(e.message) : e;
+    if (e instanceof SyntaxError) __nimbusCellSyntaxErrors.add(e);
+    __nimbusDecorateSyntaxError(error, __row[1]);
+    throw error;
   }
 }
 // The entry's wrapper function, with the Function of the entry's own URL,

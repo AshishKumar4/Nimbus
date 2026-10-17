@@ -57,6 +57,6 @@ export const ESM_LATE_ENTRY = "/_assets/runtime/esm-late-36caa6c688ea48fc.js";
 export const ESM_LATE_BUILD_ID = "36caa6c688ea48fc";
 export const ESM_LATE_SHA256 = "36caa6c688ea48fc681465419808e36bc427a3e02a52ae6b80727cd485375e6e";
 /** core src/_shared/commonjs-cell.ts through interpreter-bundle.mjs */
-export const NODE_REGISTRY_ENTRY = "/_assets/runtime/node-registry-ea5228531eba45f1.js";
-export const NODE_REGISTRY_BUILD_ID = "ea5228531eba45f1";
-export const NODE_REGISTRY_SHA256 = "ea5228531eba45f1bdbcd7a5dd4e4c5d0b033e18bfb0cfcbb5dc2e6fea9ab1b1";
+export const NODE_REGISTRY_ENTRY = "/_assets/runtime/node-registry-b36c6d7310128f29.js";
+export const NODE_REGISTRY_BUILD_ID = "b36c6d7310128f29";
+export const NODE_REGISTRY_SHA256 = "b36c6d7310128f29a8dd6a7a37e7ba8342ffc1ba740245fef26d559179df9f1e";
