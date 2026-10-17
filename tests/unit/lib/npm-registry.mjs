@@ -1,4 +1,4 @@
-import semver from 'semver';
+import { compareSemver, parseSemver } from '../../../packages/core/src/_shared/npm-semver.ts';
 import { resolveOnePackumentInFacet } from '../../../packages/worker/src/npm/resolve-one-facet.ts';
 import { parseRegistryRequest } from '../../../packages/core/src/_shared/npm-spec.ts';
 import './resolve-facet-scope.mjs';
@@ -28,9 +28,15 @@ export function npmRegistry(packages, { distTags = {} } = {}) {
   const packumentFor = (name) => {
     const versions = packages[name];
     if (!versions) return null;
+    const ordered = Object.keys(versions).sort((a, b) => {
+      const left = parseSemver(a);
+      const right = parseSemver(b);
+      if (left === null || right === null) throw new TypeError(`invalid fixture version: ${a}, ${b}`);
+      return compareSemver(right, left);
+    });
     return {
       name,
-      'dist-tags': { latest: semver.rsort(Object.keys(versions))[0], ...distTags[name] },
+      'dist-tags': { latest: ordered[0], ...distTags[name] },
       versions: Object.fromEntries(Object.entries(versions).map(([version, fields]) => [version, {
         name, version, main: 'index.js', ...fields,
         dist: { tarball: `https://registry.invalid/${name}-${version}.tgz`, integrity: `sha512-${name}-${version}`, ...fields.dist },
