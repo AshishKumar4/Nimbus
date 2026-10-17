@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: two mounts made through different views of one namespace (the
+  root and a principal's `as` view, say) are two devices. Before, each view
+  numbered its mounts' `st_dev` from the same start, so files on the two
+  could share a (dev, ino), and a move of one over the other was refused
+  as "the same file".
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
