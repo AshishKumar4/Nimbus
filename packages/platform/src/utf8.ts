@@ -73,25 +73,33 @@ function codePointAt(text: string, index: number): number {
 /**
  * `a` against `b` (negative, 0, positive) as their UTF-8 bytes order them,
  * as SQLite's `ORDER BY` of a text column and git's index do: code point
- * order, a lone surrogate being the U+FFFD TextEncoder writes for it.
+ * order, a lone surrogate being the U+FFFD TextEncoder writes for it. Units
+ * equal in both are passed as they are (a pair or a lone half is the same
+ * code point in each); two that differ, neither a surrogate, are their own
+ * code points. The rest, rare in a path, is surrogatesFrom's.
  */
 export function compareUtf8(a: string, b: string): number {
-  let i = 0;
-  let j = 0;
-  while (i < a.length && j < b.length) {
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) {
     const x = a.charCodeAt(i);
-    const y = b.charCodeAt(j);
-    // Neither a surrogate: one unit, its own code point.
-    if (x === y && (x < 0xd800 || x > 0xdfff)) {
-      i++;
-      j++;
-      continue;
-    }
-    const p = codePointAt(a, i);
-    const q = codePointAt(b, j);
-    if (p !== q) return p - q;
-    i += p > 0xffff ? 2 : 1;
-    j += q > 0xffff ? 2 : 1;
+    const y = b.charCodeAt(i);
+    if (x === y) continue;
+    if ((x < 0xd800 || x > 0xdfff) && (y < 0xd800 || y > 0xdfff)) return x - y;
+    return surrogatesFrom(a, b, i);
   }
-  return (a.length - i) - (b.length - j);
+  return a.length - b.length;
+}
+
+/** compareUtf8 of `a` and `b`, equal before `i`, where one of their units at `i` is a surrogate. */
+function surrogatesFrom(a: string, b: string, i: number): number {
+  // A low half after a high one the two share: the code points begin at the high one.
+  const before = i > 0 ? a.charCodeAt(i - 1) : 0;
+  const x = a.charCodeAt(i);
+  const y = b.charCodeAt(i);
+  const at = before >= 0xd800 && before <= 0xdbff && ((x >= 0xdc00 && x <= 0xdfff) || (y >= 0xdc00 && y <= 0xdfff)) ? i - 1 : i;
+  const p = codePointAt(a, at);
+  const q = codePointAt(b, at);
+  if (p !== q) return p - q;
+  // Two lone halves, each U+FFFD, one unit each: the rest compared from past them.
+  return compareUtf8(a.slice(i + 1), b.slice(i + 1));
 }

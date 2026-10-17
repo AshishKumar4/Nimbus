@@ -21,11 +21,12 @@ import { comparePaths as gitOrder } from '../../packages/worker/src/git/worktree
 const sign = (n) => (n > 0 ? 1 : n < 0 ? -1 : 0);
 const bytesOrder = (a, b) => sign(Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8')));
 
-const pieces = ['a', 'b', 'z', '/', '~', 'é', 'ÿ', '\u07ff', '\u0800', '\ud7ff', '\ue000', '\uf8ff', '\ufffd', '\uffff', '😀', '\u{10000}', '\u{10ffff}', '\ud800', '\udc00', '\udbff', '\udfff'];
+// Halves of one pair among them, so a pair can differ only in its low half, or meet a lone half.
+const pieces = ['a', 'b', 'z', '/', '~', 'é', 'ÿ', '\u07ff', '\u0800', '\ud7ff', '\ue000', '\uf8ff', '\ufffd', '\uffff', '😀', '😁', '\u{10000}', '\u{10ffff}', '\ud800', '\udc00', '\udbff', '\udfff', '\ud83d', '\ude00'];
 let seed = 7;
 const random = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
 const strings = ['', ...pieces];
-for (let n = 0; n < 1500; n++) {
+for (let n = 0; n < 3000; n++) {
   let text = '';
   const length = 1 + Math.floor(random() * 6);
   for (let k = 0; k < length; k++) text += pieces[Math.floor(random() * pieces.length)];
