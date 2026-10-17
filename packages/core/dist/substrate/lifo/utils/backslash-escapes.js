@@ -1,4 +1,4 @@
-import { decodeLossless, encodeLossless, joinLossless } from './bytes-io.js';
+import { decodeLossless, encodeLossless, joinLossless } from './lossless-text.js';
 const SIMPLE = {
     '\\': '\\',
     a: '\x07',
@@ -17,10 +17,31 @@ const OCTAL = {
     'ansi-c': /([0-7]{1,3})/y,
 };
 const HEX = /x([0-9a-fA-F]{1,2})/y;
+// `$'...'` alone: `\x{H...}`, any run of hex digits, its closing brace optional.
+const BRACED_HEX = /x\{([0-9a-fA-F]*)\}?/y;
 const UNICODE = /(?:u([0-9a-fA-F]{1,4})|U([0-9a-fA-F]{1,8}))/y;
+const NUMERIC = {
+    echo: [OCTAL.echo, HEX, UNICODE],
+    printf: [OCTAL.printf, HEX, UNICODE],
+    'printf-b': [OCTAL['printf-b'], HEX, UNICODE],
+    'ansi-c': [OCTAL['ansi-c'], BRACED_HEX, HEX, UNICODE],
+};
+/**
+ * The bytes bash's UTF-8 conversion writes for code point `cp`: its own
+ * three for a surrogate, never paired, and the wider forms past U+10FFFF
+ * (to six bytes, below 0x80000000), each as U+DC00 + byte.
+ */
+function wideUtf8(cp) {
+    const length = cp < 0x10000 ? 3 : cp < 0x200000 ? 4 : cp < 0x4000000 ? 5 : 6;
+    const lead = [0, 0, 0, 0xe0, 0xf0, 0xf8, 0xfc][length];
+    let out = String.fromCharCode(0xdc00 | lead | Math.floor(cp / 2 ** (6 * (length - 1))));
+    for (let shift = 6 * (length - 2); shift >= 0; shift -= 6)
+        out += String.fromCharCode(0xdc00 | 0x80 | (Math.floor(cp / 2 ** shift) & 0x3f));
+    return out;
+}
 /** The numeric escape (octal, hex or Unicode) starting at `at`, if one does. */
 function numericEscape(text, at, dialect) {
-    for (const pattern of [OCTAL[dialect], HEX, UNICODE]) {
+    for (const pattern of NUMERIC[dialect]) {
         pattern.lastIndex = at;
         const match = pattern.exec(text);
         if (match)
@@ -62,18 +83,20 @@ export function expandBackslashEscapes(text, dialect) {
         const digits = numeric?.[1] ?? numeric?.[2] ?? '';
         const unicode = next === 'u' || next === 'U';
         const cp = unicode ? Number.parseInt(digits, 16) : 0;
-        if (numeric && !(unicode && cp > 0x10ffff)) {
-            if (unicode && cp >= 0xd800 && cp <= 0xdfff) {
-                // A surrogate is its own three bytes, as bash's UTF-8 conversion has
-                // it, never paired with the escape or byte after it.
-                out = joinLossless(out, String.fromCharCode(0xdc00 | 0xe0 | (cp >> 12), 0xdc00 | 0x80 | ((cp >> 6) & 0x3f), 0xdc00 | 0x80 | (cp & 0x3f)));
+        if (numeric) {
+            if (unicode && cp >= 0x80000000) {
+                // Past bash's widest form: nothing.
+            }
+            else if (unicode && ((cp >= 0xd800 && cp <= 0xdfff) || cp > 0x10ffff)) {
+                out = joinLossless(out, wideUtf8(cp));
                 bytes = true;
             }
             else if (unicode)
                 out += String.fromCodePoint(cp);
             else {
-                // `\777` is 0xff, as putchar has it.
-                const byte = next === 'x' ? Number.parseInt(digits, 16) : Number.parseInt(digits || '0', 8) & 0xff;
+                // `\777` is 0xff, as putchar has it; a hex run keeps its last two digits' byte.
+                const byte = next === 'x' ? [...digits].reduce((value, digit) => ((value << 4) | Number.parseInt(digit, 16)) & 0xff, 0)
+                    : Number.parseInt(digits || '0', 8) & 0xff;
                 out = joinLossless(out, String.fromCharCode(byte < 0x80 ? byte : 0xdc00 + byte));
                 bytes ||= byte >= 0x80;
             }

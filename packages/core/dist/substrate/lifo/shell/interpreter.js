@@ -1257,7 +1257,7 @@ export class Interpreter {
                 const heredoc = redir.heredoc ?? { body: '', quoted: false, stripTabs: false };
                 const body = heredoc.quoted
                     ? heredoc.body
-                    : await expandWord([{ text: heredoc.body, quoted: 'double' }], expandCtx);
+                    : await expandWord([{ text: heredoc.body, quoted: 'double' }], { ...expandCtx, hereDocument: true });
                 this.setInputFd(fds, redir.fd ?? 0, { stream: staticStdinReader(body), terminal: false });
                 continue;
             }

@@ -88,6 +88,11 @@ export function continuationState(input) {
                 quote = null;
             continue;
         }
+        // $$, the shell's pid, is two dollars: a quote after it is its own.
+        if (ch === '$' && input[i + 1] === '$') {
+            i++;
+            continue;
+        }
         if (ch === '$' && input[i + 1] === "'") {
             const end = ansiCQuoteEnd(input, i);
             if (end === -1)
@@ -487,7 +492,7 @@ function readWord(input, pos) {
         // $# $@ $N $? -- special variables that start with $
         if (ch === '$' && i + 1 < input.length) {
             const nc = input[i + 1];
-            if (nc === '#' || nc === '@' || nc === '?' || /[0-9]/.test(nc)) {
+            if (nc === '#' || nc === '@' || nc === '?' || nc === '$' || /[0-9]/.test(nc)) {
                 currentText += '$' + nc;
                 i += 2;
                 hasContent = true;
@@ -609,6 +614,8 @@ export function readBracedExpansion(input, pos) {
     const balanced = readBalancedCommand(input, pos + 2, '{', '}');
     return { text: input.slice(pos, balanced.end), inner: balanced.body, end: balanced.end };
 }
+/** What a `#` that starts a comment may follow: a blank, or an operator that ends a word. */
+const COMMENT_AFTER = ' \t\n;&|()<>';
 /**
  * The body of a balanced `open`...`close` span whose body starts at `pos`
  * (just past `open`), and where it ends (just past `close`, or the input's
@@ -638,9 +645,23 @@ export function readBalancedCommand(input, pos, open, close) {
             i = quoted.end;
             continue;
         }
+        if (ch === '$' && input[i + 1] === '$') {
+            body += '$$';
+            i += 2;
+            continue;
+        }
         if (ch === '$' && input[i + 1] === "'") {
             const end = ansiCQuoteEnd(input, i);
             const stop = end === -1 ? input.length : end;
+            body += input.slice(i, stop);
+            i = stop;
+            continue;
+        }
+        // A comment, where a word may start in a command's span: its text to
+        // the line's end, quotes and all, is no syntax.
+        if (open === '(' && ch === '#' && (i === pos || COMMENT_AFTER.includes(input[i - 1]))) {
+            const newline = input.indexOf('\n', i);
+            const stop = newline === -1 ? input.length : newline;
             body += input.slice(i, stop);
             i = stop;
             continue;

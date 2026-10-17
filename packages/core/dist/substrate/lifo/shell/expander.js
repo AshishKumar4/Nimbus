@@ -642,9 +642,13 @@ function scalarOf(parameter, ctx) {
 async function expandParameterWord(word, ctx) {
     if (word === '')
         return '';
-    return joinPieces(await expandParts(parameterWordParts(word), ctx));
+    return joinPieces(await expandParts(parameterWordParts(word, ctx.hereDocument === true), ctx));
 }
-function parameterWordParts(word) {
+/**
+ * The operand word's parts. In a here-document's body, `'` and `$'...'` are
+ * literal there, and a backslash quotes only what it quotes in the body.
+ */
+function parameterWordParts(word, hereDocument) {
     const parts = [];
     let text = '';
     const flush = () => {
@@ -656,20 +660,26 @@ function parameterWordParts(word) {
     let i = 0;
     while (i < word.length) {
         const ch = word[i];
-        if (ch === '\\' && i + 1 < word.length) {
+        // In a here-document a backslash quotes only $, `, itself and a newline; before anything else it is text.
+        if (ch === '\\' && i + 1 < word.length && (!hereDocument || '$`\\\n'.includes(word[i + 1]))) {
             flush();
             parts.push({ text: word[i + 1], quoted: 'single' });
             i += 2;
             continue;
         }
-        if (ch === '$' && word[i + 1] === "'") {
+        if (ch === '$' && word[i + 1] === '$') {
+            text += '$$';
+            i += 2;
+            continue;
+        }
+        if (!hereDocument && ch === '$' && word[i + 1] === "'") {
             flush();
             const quoted = readAnsiCQuote(word, i);
             parts.push({ text: quoted.text, quoted: 'single' });
             i = quoted.end;
             continue;
         }
-        if (ch === "'" || ch === '"') {
+        if ((ch === "'" && !hereDocument) || ch === '"') {
             const end = word.indexOf(ch, i + 1);
             const close = end === -1 ? word.length : end;
             flush();

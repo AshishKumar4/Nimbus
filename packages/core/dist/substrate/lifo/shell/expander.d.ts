@@ -22,6 +22,11 @@ export interface ExpandContext {
      * what makes `out="$(cmd)" || die` and `set -e` see a failing `cmd`.
      */
     lastSubstitutionExitCode?: number;
+    /**
+     * Expanding a here-document's body, where `'` and `$'...'` are literal
+     * text, inside a parameter's operand word too.
+     */
+    hereDocument?: boolean;
 }
 export interface CapturedCommand {
     output: string;

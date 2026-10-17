@@ -16,8 +16,9 @@
  * - `printf-b`: printf's `%b` argument, either spelling (coreutils' and
  *   bash's `%b`); `\"` is `"`.
  * - `ansi-c`: the body of a `$'...'` word, `\NNN`; `\E` is ESC; `\'`, `\"`
- *   and `\?` are themselves; `\cX` is X's control character (`\c?` DEL), and
- *   a NUL ends the text there, as bash's C strings have it.
+ *   and `\?` are themselves; `\x{H...}` is a byte too; `\cX` is X's control
+ *   character (`\c?` DEL), and a NUL ends the text there, as bash's C
+ *   strings have it.
  * Every dialect reads `\\ \a \b \e \f \n \r \t \v`, `\xHH` (one or two hex
  * digits), `\uHHHH` and `\UHHHHHHHH`, and, but in `ansi-c`, `\c`, which ends
  * the output there. Any other backslash stays as it is.
@@ -25,7 +26,7 @@
  * An octal or hex escape names one byte, as bash's and coreutils' putchar
  * write it: `\303\251` is the two bytes of "é", `\377` the byte 0xff. A `\u`
  * or `\U` escape names a character, its UTF-8 bytes (a surrogate its own
- * three). The result is the
+ * three, and past U+10FFFF bash's wider forms, to U+7FFFFFFF). The result is the
  * lossless decoding of those bytes (bytes-io.ts), which its writer encodes
  * back to them.
  */

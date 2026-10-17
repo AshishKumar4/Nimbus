@@ -1,5 +1,6 @@
 import { type ProcessView } from '../../../runtime/process-files.js';
 import type { CommandInputStream, CommandOutputStream } from '../commands/types.js';
+export { decodeLossless, encodeLossless, joinLossless, utf8SequenceLength } from './lossless-text.js';
 export interface ByteInputContext {
     cwd: string;
     vfs: ProcessView;
@@ -44,16 +45,6 @@ export declare function writeBytes(out: ByteOutput, bytes: Uint8Array): Promise<
  */
 export declare function writeLossless(out: CommandOutputStream, text: string): void | Promise<void>;
 /**
- * {@link decodeLossless} across writes: a sequence a write leaves unfinished
- * is held for the next, so a character split between writes decodes whole;
- * what is held at the end decodes byte by byte, as decodeLossless has it.
- */
-export declare class LosslessDecoder {
-    private held;
-    decode(bytes: Uint8Array): string;
-    end(): string;
-}
-/**
  * An output the shell captures as text (exec's stdout and stderr, `$( )`):
  * the bytes of every command writing to it decoded as one stream, as its
  * reader would read them, and `end`ed when the capture is read.
@@ -64,23 +55,6 @@ export declare function textCapture(append: (text: string) => void): {
     };
     end(): void;
 };
-/**
- * Bytes as a string without loss: valid UTF-8 decodes to its characters,
- * and every byte of an invalid sequence to U+DC80 + byte (a lone surrogate,
- * which valid UTF-8 never produces). `encodeLossless` inverts it exactly.
- */
-export declare function decodeLossless(bytes: Uint8Array): string;
-/** The length of the valid UTF-8 sequence at `i`, or 0. */
-export declare function utf8SequenceLength(bytes: Uint8Array, i: number): number;
-/**
- * `head` then `tail`, lossless text joined as their bytes join. A high
- * surrogate ending `head` is half a character (the shell can cut one), and
- * a byte (U+DC80..U+DCFF) starting `tail` would read as its other half: that
- * half goes as what it encodes to alone, U+FFFD, and the byte stays a byte.
- */
-export declare function joinLossless(head: string, tail: string): string;
-/** The inverse of `decodeLossless`. */
-export declare function encodeLossless(text: string): Uint8Array;
 /** A write to a pipe whose reader has gone: the writer ends there, silently, as SIGPIPE ends it. */
 export declare function isBrokenPipe(error: unknown): boolean;
 /** Whether `error` is a write the store or a device refused (not a broken pipe: that is SIGPIPE's). */
