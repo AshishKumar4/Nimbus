@@ -496,17 +496,22 @@ async function runSteps(steps, met) {
 }
 
 /** The shortest program, made by deleting steps, that still fails. */
-async function shrink(steps) {
+async function shrink(steps, kind) {
   let current = steps;
+  // Shorter only where it fails the same way, and not by the known engine bug.
+  const same = (error) => error.known !== true && kindOf(error) === kind;
   for (let chunk = Math.ceil(current.length / 2); chunk >= 1; chunk = Math.floor(chunk / 2)) {
     for (let at = 0; at < current.length;) {
       const candidate = [...current.slice(0, at), ...current.slice(at + chunk)];
-      if (await run(candidate).then(() => false, () => true)) current = candidate;
+      if (await run(candidate).then(() => false, same)) current = candidate;
       else at += chunk;
     }
   }
   return current;
 }
+
+/** A failure's kind: its message less the step, the values and the names it names. */
+const kindOf = (error) => String(error.message).split('\n')[0].replace(/step \d+ /, '').replace(/\{[^}]*\}/g, '{}').replace(/\b[a-c]\b/g, 'N').replace(/fd \d/g, 'fd');
 
 const seeds = process.env.NIMBUS_MODEL_SEED !== undefined
   ? [Number(process.env.NIMBUS_MODEL_SEED)]
@@ -523,9 +528,9 @@ for (const seed of seeds) {
     metKnown.push(seed);
     continue;
   }
-  const kind = String(failure.message).split('\n')[0].replace(/step \d+ /, '').replace(/\{[^}]*\}/g, '{}').replace(/\b[a-c]\b/g, 'N').replace(/fd \d/g, 'fd');
+  const kind = kindOf(failure);
   if (failures.has(kind)) { failures.get(kind).seeds.push(seed); continue; }
-  const minimal = await shrink(steps);
+  const minimal = await shrink(steps, kind);
   const reason = await run(minimal).then(() => failure, (error) => error);
   failures.set(kind, { seeds: [seed], reason, minimal });
   if (failures.size >= 12) break;
