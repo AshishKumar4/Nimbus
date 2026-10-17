@@ -2,6 +2,7 @@ import type { ChildExit, CommandInputStream, CommandRunAsHost, RunAsOptions, Ter
 import type { VfsCred } from '../runtime/os-contracts.js';
 import type { ProcessView as VFS } from '../runtime/process-files.js';
 import { resolveVfsPath } from '../vfs/path.js';
+import { nameDec } from '../_shared/bytes.js';
 import { outputHooks } from '../_shared/byte-stream.js';
 import { parseShellInvocation, type ShellInvocationOptions, type ShellName } from './shell-invocation.js';
 
@@ -301,8 +302,8 @@ function isInputStream(value: unknown): value is CommandInputStream {
 
 function stdinChunkToString(chunk: unknown): string {
   if (typeof chunk === 'string') return chunk;
-  if (chunk instanceof Uint8Array) return new TextDecoder().decode(chunk);
-  if (chunk instanceof ArrayBuffer) return new TextDecoder().decode(chunk);
+  if (chunk instanceof Uint8Array) return nameDec.decode(chunk);
+  if (chunk instanceof ArrayBuffer) return nameDec.decode(chunk);
   return String(chunk);
 }
 

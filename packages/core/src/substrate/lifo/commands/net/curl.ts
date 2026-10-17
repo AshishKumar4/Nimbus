@@ -5,7 +5,7 @@ import { dispatchWorkspaceRequest, hopInit, sendHop, walkRedirects, workspaceReq
 import { MAX_REDIRECTS } from '../../../../runtime/http-redirect-policy.js';
 import { NIMBUS_AI_TOKEN_ENV, requestCarriesSessionAiToken } from '../../../../_shared/ai-egress.js';
 import { NIMBUS_AI_GATEWAY_PORT } from '../../../../constants.js';
-import { dec } from '../../../../_shared/bytes.js';
+import { nameDec } from '../../../../_shared/bytes.js';
 
 
 type CurlOptions = {
@@ -561,7 +561,7 @@ async function writeCurlOutput(ctx: Parameters<Command>[0], options: CurlOptions
       await ctx.stdout.write(body);
       if (!body.endsWith('\n')) await ctx.stdout.write('\n');
     } else if (body instanceof Uint8Array) {
-      await ctx.stdout.write(dec.decode(body));
+      await ctx.stdout.write(nameDec.decode(body));
     } else {
       await streamCurlBodyToStdout(ctx, body);
     }
@@ -593,7 +593,8 @@ async function streamCurlBodyToStdout(ctx: Parameters<Command>[0], body: Readabl
     return;
   }
   ctx.signal.addEventListener('abort', onAbort, { once: true });
-  const decoder = new TextDecoder();
+  // The body's bytes as curl writes them, a leading U+FEFF among them.
+  const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
   let tail = '';
   try {
     for (;;) {

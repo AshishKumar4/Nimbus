@@ -18,6 +18,7 @@
 import type { Command, CommandContext, CommandInputStream, CommandOutputStream } from '../substrate/lifo/commands/types.js';
 import type { EsbuildCliArgs, EsbuildCliOutput } from './esbuild-cli/types.js';
 import { normalizeVfsPath } from '../vfs/path.js';
+import { nameDec } from '../_shared/bytes.js';
 
 export type { EsbuildCliArgs, EsbuildCliOutput } from './esbuild-cli/types.js';
 
@@ -50,7 +51,7 @@ async function readStdin(stdin: CommandInputStream): Promise<Uint8Array> {
 async function emit(stream: CommandOutputStream, bytes: Uint8Array): Promise<void> {
   if (bytes.length === 0) return;
   if (stream.writeBytes) await stream.writeBytes(bytes);
-  else await stream.write(new TextDecoder().decode(bytes));
+  else await stream.write(nameDec.decode(bytes));
 }
 
 export function makeEsbuildCommand(deps: EsbuildCommandDeps): Command {

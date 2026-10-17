@@ -8,7 +8,8 @@
 export class ByteQueue {
   private buffer: Uint8Array[] = [];
   private waiting: Array<(value: Uint8Array | null) => void> = [];
-  private readonly decoder = new TextDecoder('utf-8');
+  // What flows through keeps a leading U+FEFF, as a pipe's bytes do.
+  private readonly decoder = new TextDecoder('utf-8', { ignoreBOM: true });
   protected ended = false;
 
   /** `consumed` hears how many bytes each read takes (a pipe's capacity accounting). */
