@@ -10,7 +10,10 @@
 // as an eval's or an alias's would have, and a sourced file's failing last
 // command ended a script. Each line runs as a session's line and as host
 // bash's `bash -c`; each script as `bash ./s.sh`. Host bash is the oracle
-// (stdout, status, stderr without bash's line prefix).
+// (stdout, status, stderr without bash's line prefix). A script's special
+// builtin that fails on its own (`.` of a missing file, an eval option)
+// ends it, as POSIX has it, inside eval's text or a sourced file too: those
+// run as `sh ./s.sh`, with `bash --posix` the oracle (stdout and status).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -63,24 +66,34 @@ const SCRIPTS = [
   'set -e; eval false; echo no',
   "eval -- 'echo hi'; eval 'exit 3' || echo no; echo no",
   "printf 'false\\n' > f.sh; . ./f.sh || echo recovered; . ./f.sh; echo \"st=$?\"",
+  "set -e; eval 'false; echo no'; echo no",
+];
+
+/** Run as POSIX scripts: a special builtin's own failure ends one, from inside eval's text or a sourced file too. */
+const POSIX_SCRIPTS = [
+  "eval '. ./missing'; echo after",
+  "eval 'eval -x'; echo after",
+  "printf '. ./missing\\n' > g.sh; . ./g.sh; echo after",
+  'eval false || echo recovered; echo after',
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, a function's `environment: line 2: ` (the armada image's bash). */
 const plainStderr = (text) => text.replace(/^(?:bash|environment): (?:-c: )?(?:line \d+: )?/gm, '');
 
 const runs = [
-  ...CASES.map((line) => ({ line, script: false })),
-  ...SCRIPTS.map((line) => ({ line, script: true })),
+  ...CASES.map((line) => ({ line, script: null })),
+  ...SCRIPTS.map((line) => ({ line, script: 'bash' })),
+  ...POSIX_SCRIPTS.map((line) => ({ line, script: 'sh' })),
 ];
 const want = [];
 for (const { line, script } of runs) {
   const dir = mkdtempSync(join(tmpdir(), 'shell-eval-'));
   try {
-    if (script) writeFileSync(join(dir, 's.sh'), `${line}\n`);
-    const argv = script ? ['./s.sh'] : ['--norc', '--noprofile', '-O', 'expand_aliases', '-c', line];
+    if (script !== null) writeFileSync(join(dir, 's.sh'), `${line}\n`);
+    const argv = script === 'sh' ? ['--posix', './s.sh'] : script === 'bash' ? ['./s.sh'] : ['--norc', '--noprofile', '-O', 'expand_aliases', '-c', line];
     const r = spawnSync('bash', argv, { cwd: dir, encoding: 'utf8', timeout: 10_000, env: { PATH: process.env.PATH, LC_ALL: 'C.UTF-8' } });
     assert.equal(r.error, undefined, `bash ran ${JSON.stringify(line)}: ${r.error?.message}`);
-    want.push({ stdout: r.stdout, stderr: plainStderr(r.stderr), status: r.status });
+    want.push(script === 'sh' ? { stdout: r.stdout, status: r.status } : { stdout: r.stdout, stderr: plainStderr(r.stderr), status: r.status });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -88,7 +101,7 @@ for (const { line, script } of runs) {
 
 const { sql, transactions } = await hostSqlite();
 const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1 });
-// `bash`, as the session's command registry has it.
+// `bash` and `sh`, as the session's command registry has them.
 registerShellEntrypointCommands(ws.registry, { execute: (cmd, options) => ws.shell.execute(cmd, options) });
 const failed = [];
 try {
@@ -96,9 +109,9 @@ try {
   for (const [i, { line, script }] of runs.entries()) {
     const dir = `/home/user/ev${n++}`;
     await ws.exec(`mkdir -p ${dir}`, { cwd: '/home/user' });
-    if (script) await ws.fs.writeFile(`${dir}/s.sh`, `${line}\n`);
-    const r = await ws.exec(script ? 'bash ./s.sh' : line, { cwd: dir });
-    const ours = { stdout: r.stdout, stderr: r.stderr, status: r.exitCode };
+    if (script !== null) await ws.fs.writeFile(`${dir}/s.sh`, `${line}\n`);
+    const r = await ws.exec(script === null ? line : `${script} ./s.sh`, { cwd: dir });
+    const ours = script === 'sh' ? { stdout: r.stdout, status: r.exitCode } : { stdout: r.stdout, stderr: r.stderr, status: r.exitCode };
     if (JSON.stringify(ours) !== JSON.stringify(want[i])) failed.push(`${JSON.stringify(line)}\n  bash: ${JSON.stringify(want[i])}\n  ours: ${JSON.stringify(ours)}`);
   }
 } finally {

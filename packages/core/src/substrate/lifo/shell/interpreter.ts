@@ -442,8 +442,8 @@ export class Interpreter {
    * a sourced file's, a trap's; not an alias's text, which is part of the
    * line it is in), a line a nested call discards ends, and the next runs
    * with $? 1, in a shell that is no child: a child's ends (finishChild).
-   * Text run `inline` (eval's, a sourced file's, an alias's) leaves an `exit`
-   * to the shell that runs it.
+   * Text run `inline` (eval's, a sourced file's, an alias's) leaves an `exit`,
+   * and an end by `set -e` or a fatal error, to the shell that runs it.
    */
   private async executeScriptWithIo(
     script: ScriptNode,
@@ -464,9 +464,7 @@ export class Interpreter {
         }
       }
     } catch (error) {
-      if (error instanceof ErrexitSignal) {
-        exitCode = error.exitCode;
-      } else if (error instanceof ExitSignal && !inline) {
+      if ((error instanceof ErrexitSignal || error instanceof ExitSignal) && !inline) {
         exitCode = error.exitCode;
       } else {
         throw error;
