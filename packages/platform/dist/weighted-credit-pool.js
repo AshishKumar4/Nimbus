@@ -15,9 +15,8 @@ class CreditLane {
             return null;
         return this.grant(bytes);
     }
+    /** The pool has refused an aborted `signal` already (WeightedCreditPool.acquire). */
     acquire(bytes, signal) {
-        if (signal?.aborted)
-            return Promise.reject(abortError(signal));
         const immediate = this.tryAcquire(bytes);
         if (immediate)
             return Promise.resolve(immediate);
@@ -173,6 +172,9 @@ export class WeightedCreditPool {
         catch (error) {
             return Promise.reject(error);
         }
+        // Refused before any lane is asked, whichever would have granted it.
+        if (signal?.aborted)
+            return Promise.reject(abortError(signal));
         if (this.isSmall(bytes)) {
             // Shared capacity while it is free — a small request should get the
             // same concurrency as any other when nothing is contending. It never
