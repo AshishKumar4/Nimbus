@@ -228,11 +228,7 @@ async function buildInFacet(ctx, initialPool, specifier, entry) {
                 owner: { owner: `prebundle '${specifier}'`, ...ctx.owner },
                 prepare: () => {
                     ctx.signal?.throwIfAborted();
-                    if (ctx.vfs.revision() !== revision)
-                        throw new PrebundlePlanChanged();
                     const slice = materializePrebundleSlice(ctx.vfs, plan);
-                    if (ctx.vfs.revision() !== revision)
-                        throw new PrebundlePlanChanged();
                     return { specifier, entryPath: entry.entryPath, externals, slice, bundlerVersion: key, define: PREBUNDLE_DEFINE };
                 },
             });
@@ -267,7 +263,8 @@ async function discoverSlice(ctx, specifier, entry) {
         const paths = await discoverScopedSliceForSynthetic(ctx.vfs, nmDir, packageNameFromSpecifier(specifier), entry.referencedFiles, ctx.parse);
         paths.push({ path: entry.entryPath.substring(0, entry.entryPath.lastIndexOf('/')), isDir: true });
         paths.push({ path: entry.entryPath, isDir: false });
-        plan = planSliceFromPaths(ctx.vfs, paths, PRE_BUNDLE_SLICE_CAP_BYTES);
+        const fences = [nmDir, entry.entryPath, ...paths.filter((path) => !path.isDir).map(({ path }) => path.endsWith('/package.json') ? path : path.substring(0, path.lastIndexOf('/')))];
+        plan = planSliceFromPaths(ctx.vfs, paths, PRE_BUNDLE_SLICE_CAP_BYTES, fences);
     }
     else
         plan = planSliceForSpecifierWithCap(ctx.vfs, specifier, nmDir, PRE_BUNDLE_SLICE_CAP_BYTES);

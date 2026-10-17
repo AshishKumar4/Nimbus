@@ -42,6 +42,8 @@ export function buildSliceForSpecifierWithCap(vfs, specifier, nmDir, capBytes) {
 }
 /** Discover names and sizes without retaining a slice; metadata parsing owns only its current input. */
 export function planSliceForSpecifierWithCap(vfs, specifier, nmDir, capBytes) {
+    const revision = vfs.revision();
+    const fences = new Map([[nmDir, vfs.revision(nmDir)]]);
     const externals = new Set();
     for (const e of getSharedRuntimeExternals(specifier)) {
         // strip glob suffix: "react/*" → "react"
@@ -139,6 +141,7 @@ export function planSliceForSpecifierWithCap(vfs, specifier, nmDir, capBytes) {
         if (externals.has(pkgName) && !isRoot)
             return true;
         const pkgDir = nmDir + '/' + pkgName;
+        fences.set(pkgDir, vfs.revision(pkgDir));
         if (!vfs.exists(pkgDir) || !vfs.isDirectory(pkgDir))
             return true;
         if (!addFile(pkgDir))
@@ -178,10 +181,12 @@ export function planSliceForSpecifierWithCap(vfs, specifier, nmDir, capBytes) {
         // back to legacy in-supervisor path or skip pre-bundling entirely.
         return null;
     }
-    return { entries, totalBytes, allocationBytes };
+    return { revision, fences: [...fences].map(([path, revision]) => ({ path, revision })), entries, totalBytes, allocationBytes };
 }
 /** A discovered scoped graph, including the same directories its old slice carried. */
-export function planSliceFromPaths(vfs, paths, capBytes) {
+export function planSliceFromPaths(vfs, paths, capBytes, roots = ['']) {
+    const revision = vfs.revision();
+    const fences = [...new Set(roots)].map((path) => ({ path, revision: vfs.revision(path) }));
     const entries = [];
     let totalBytes = 0;
     let allocationBytes = 0;
@@ -196,10 +201,13 @@ export function planSliceFromPaths(vfs, paths, capBytes) {
         if (allocationBytes > capBytes)
             return null;
     }
-    return { entries, totalBytes, allocationBytes };
+    return { revision, fences, entries, totalBytes, allocationBytes };
 }
 /** Synchronous and admitted by its caller: no parser/RPC wait can retain a partial slice. */
 export function materializePrebundleSlice(vfs, plan) {
+    const turn = vfs.revision();
+    if (turn !== plan.revision && plan.fences.some(({ path, revision }) => vfs.revision(path) !== revision))
+        throw new PrebundlePlanChanged();
     const slice = [];
     for (const entry of plan.entries) {
         const path = '/' + entry.path.replace(/^\/+/, '');
@@ -208,7 +216,8 @@ export function materializePrebundleSlice(vfs, plan) {
             continue;
         }
         try {
-            if (vfs.stat(entry.path).size > entry.size)
+            // No yield in this loop. Only a moved clock requires rechecking a file's stat before allocating it.
+            if (turn !== plan.revision && vfs.stat(entry.path).size > entry.size)
                 throw new PrebundlePlanChanged();
             const bytes = vfs.readFile(entry.path);
             if (bytes.byteLength > entry.size)
@@ -220,5 +229,7 @@ export function materializePrebundleSlice(vfs, plan) {
                 throw error;
         }
     }
+    if (vfs.revision() !== turn)
+        throw new PrebundlePlanChanged();
     return slice;
 }

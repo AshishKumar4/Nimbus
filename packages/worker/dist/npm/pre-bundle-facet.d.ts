@@ -26,6 +26,11 @@ export interface SlicePlanEntry {
     size: number;
 }
 export interface PrebundleSlicePlan {
+    revision: number;
+    fences: Array<{
+        path: string;
+        revision: number;
+    }>;
     entries: SlicePlanEntry[];
     totalBytes: number;
     allocationBytes: number;
@@ -43,7 +48,7 @@ export declare function planSliceForSpecifierWithCap(vfs: CredentialedVfs, speci
 export declare function planSliceFromPaths(vfs: CredentialedVfs, paths: ReadonlyArray<{
     path: string;
     isDir: boolean;
-}>, capBytes: number): PrebundleSlicePlan | null;
+}>, capBytes: number, roots?: readonly string[]): PrebundleSlicePlan | null;
 /** Synchronous and admitted by its caller: no parser/RPC wait can retain a partial slice. */
 export declare function materializePrebundleSlice(vfs: CredentialedVfs, plan: PrebundleSlicePlan): SliceEntry[];
 //# sourceMappingURL=pre-bundle-facet.d.ts.map

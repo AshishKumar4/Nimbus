@@ -1793,7 +1793,7 @@ export declare class FacetManager {
     private _launchStage;
     /** `pid`'s launch is over: its run was entered, or it ended before it could be. */
     private _launchEnded;
-    /** The one-shot launches not yet running (their stage and its age) and the launches waiting for a turn. */
+    /** Launches not yet running (their stage and its age) and the launches waiting for a turn. */
     launchState(now?: number): {
         launches: Array<{
             pid: number;
