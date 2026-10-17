@@ -133,11 +133,13 @@ Object.defineProperties(globalThis, {
   __nimbusNodeSystemError: { value: nodeSystemError, configurable: true },
 });
 // Generated code's: a \`decoration\` (null for none) marks the error as one whose
-// report has no arrow of the generated code, the decoration before its stack
+// report has no arrow of the generated code, nor its frame (Node's comes from
+// its loader, with none of the file's), the decoration before its stack
 // where Node shows the source there (decorateErrorStack).
 function __nimbusGeneratedNodeError(Base, code, message, props, decoration) {
   const error = nodeError(Base, code, message, props, __nimbusGeneratedNodeError);
   if (decoration !== undefined) {
+    error.stack = error.stack.replace(/\\n    at [^\\n]*/, "");
     if (decoration !== null) error.stack = decoration + "\\n" + error.stack;
     __nimbusDecorated.add(error);
   }
