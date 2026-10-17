@@ -76,8 +76,9 @@ def synthAnc (pts : List Path) (p : Path) : Bool := p != [] && pts.any fun m => 
 
 def rootOnly : Tree := fun q => if q = [] then some .dir else none
 
-/-- A partial walk of one unfed backend. Points cost no names; each new child
-    costs one. A directory not in `listed` says nothing about missing children. -/
+/-- A partial walk of one unfed backend. Structural directories are already
+    known from the table; every other new child costs one name. A directory not
+    in `listed` says nothing about missing children. -/
 structure Walk where
   tree : Tree := rootOnly
   spent : Nat := 0
@@ -89,18 +90,20 @@ def insertWalk (tree : Tree) (p : Path) (k : Kind) : Tree :=
 
 /-- Directory enumeration is abstracted to bounded observations and a completion
     certificate. Only a whole directory may receive that certificate. -/
-inductive WalkStep (backend : Tree) : Walk → Walk → Prop
+inductive WalkStep (backend : Tree) (structuralName : Path → Bool) : Walk → Walk → Prop
   | observe (s : Walk) (p : Path) (k : Kind) (hp : p ≠ [])
       (hparent : s.tree p.dropLast = some .dir) (hfresh : s.tree p = none)
-      (hvalue : backend p = some k) (hroom : s.spent + 1 ≤ s.limit) :
-      WalkStep backend s { s with tree := insertWalk s.tree p k, spent := s.spent + 1 }
+      (hvalue : backend p = some k) (hroom : s.spent + (if structuralName p then 0 else 1) ≤ s.limit) :
+      WalkStep backend structuralName s { s with tree := insertWalk s.tree p k,
+        spent := s.spent + (if structuralName p then 0 else 1) }
   | complete (s : Walk) (dir : Path) (hdir : s.tree dir = some .dir)
       (hwhole : ∀ q, q.dropLast = dir → q ≠ [] → s.tree q = backend q) :
-      WalkStep backend s { s with listed := dir :: s.listed }
+      WalkStep backend structuralName s { s with listed := dir :: s.listed }
 
-inductive WalkReach (backend : Tree) : Walk → Prop
-  | start (limit : Nat) : WalkReach backend { limit := limit }
-  | step {s s' : Walk} : WalkReach backend s → WalkStep backend s s' → WalkReach backend s'
+inductive WalkReach (backend : Tree) (structuralName : Path → Bool) : Walk → Prop
+  | start (limit : Nat) : WalkReach backend structuralName { limit := limit }
+  | step {s s' : Walk} : WalkReach backend structuralName s → WalkStep backend structuralName s s' →
+      WalkReach backend structuralName s'
 
 def walkEntry (s : Walk) (p : Path) : Option (Kind × Nat) := (s.tree p).map fun k => (k, 0)
 
@@ -126,7 +129,8 @@ def BackendsClosed (T : Table) (W : World) : Prop :=
 
 def WalkInstalled (T : Table) (W : World) : Prop :=
   ∀ m ∈ T.pts, T.ch m = false →
-    WalkReach (fun r => view { T with ch := fun _ => true } W (m ++ r)) (W.walk m)
+    WalkReach (fun r => view { T with ch := fun _ => true } W (m ++ r))
+      (fun r => structural T.pts (m ++ r)) (W.walk m)
 
 /-! ### Routing facts -/
 
@@ -166,7 +170,7 @@ theorem dropLast_length_lt {q : Path} (h : q ≠ []) : q.dropLast.length < q.len
   | nil => exact absurd rfl h
   | cons _ _ => simp [List.length_dropLast]
 
-theorem walk_inv {backend : Tree} {s : Walk} (h : WalkReach backend s) :
+theorem walk_inv {backend : Tree} {structuralName : Path → Bool} {s : Walk} (h : WalkReach backend structuralName s) :
     Closed s.tree ∧ s.spent ≤ s.limit ∧
       ∀ dir ∈ s.listed, ∀ q, q.dropLast = dir → q ≠ [] → s.tree q = backend q := by
   induction h with
@@ -206,7 +210,7 @@ theorem walk_entries_undated (s : Walk) (p : Path) {k : Kind} {rev : Nat}
   cases hs : s.tree p <;> simp [hs] at h
   exact h.2.symm
 
-theorem listed_absence {backend : Tree} {s : Walk} (h : WalkReach backend s)
+theorem listed_absence {backend : Tree} {structuralName : Path → Bool} {s : Walk} (h : WalkReach backend structuralName s)
     {p : Path} (hp : p ≠ []) (hd : p.dropLast ∈ s.listed) (ha : s.tree p = none) : backend p = none := by
   rw [← (walk_inv h).2.2 p.dropLast hd p rfl hp]; exact ha
 
@@ -765,7 +769,7 @@ theorem unfed_view_is_walk (T : Table) (W : World) {m q : Path} (hm : T.ch m = f
 theorem unlisted_does_not_mean_absent :
     let backend : Tree := fun p => if p = [] then some .dir else if p = ["x"] then some (.file 1) else none
     let s : Walk := { limit := 0 }
-    WalkReach backend s ∧ [] ∉ s.listed ∧ s.tree ["x"] = none ∧ backend ["x"] = some (.file 1) := by
+    WalkReach backend (fun _ => false) s ∧ [] ∉ s.listed ∧ s.tree ["x"] = none ∧ backend ["x"] = some (.file 1) := by
   exact ⟨WalkReach.start 0, by decide, by decide, by decide⟩
 
 /-! ## The staged namespace in every reachable state -/

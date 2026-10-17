@@ -121,8 +121,9 @@ def launchWalk (s : S) (named : List Path) (limit : Nat := 8192) : Launch := Id.
   return walkQueue all (all.length + 1) queue held
 
 def withWalk (s : S) (held : Launch) : World :=
-  { world s with walk := fun m => { tree := fun r => if r = [] then some .dir else toTree held.entries (m ++ r),
-      spent := held.entries.countP (fun x => m.isPrefixOf x.1 && x.1 != m), limit := 8192,
+  { world s with walk := fun m => { tree := fun r =>
+      if r = [] || structural (table s).pts (m ++ r) then some .dir else toTree held.entries (m ++ r),
+      spent := held.entries.countP (fun x => m.isPrefixOf x.1 && !structural (table s).pts x.1), limit := 8192,
       listed := held.listed.filterMap fun p => if m.isPrefixOf p then some (p.drop m.length) else none } }
 
 def staged (s : S) (held : Launch) : Json :=
