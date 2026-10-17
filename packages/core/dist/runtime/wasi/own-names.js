@@ -17,13 +17,17 @@ function within(key, root) {
     return key === root || key.startsWith(`${root}/`);
 }
 export function ownNames(options) {
-    const decided = new Map();
+    /** The barriers begun when each name's subtree was last given back, everything decided there answered, and not decided again since: one begun after retires it. */
+    const own = new Map();
+    /** What it decided; a name decided again is the deciding grant's, whatever an earlier one gave back. */
+    const decided = new (class extends Map {
+        set(key, value) {
+            own.delete(key);
+            return super.set(key, value);
+        }
+    })();
     const added = new Map();
     const removed = new Map();
-    /** The barriers begun when each name's subtree was last given back, everything decided there answered: one begun after retires it. */
-    const own = new Map();
-    /** Of those, the ones outside a held subtree: what a landed barrier may retire. */
-    const settling = new Set();
     let barriers = 0;
     /** The directories made here: until the view has one, its names are the ones made in it. */
     const made = new Set();
@@ -33,7 +37,6 @@ export function ownNames(options) {
     const forget = (key) => {
         const entry = decided.get(key);
         own.delete(key);
-        settling.delete(key);
         decided.delete(key);
         made.delete(key);
         added.get(parentKey(key))?.delete(nameOf(key));
@@ -117,28 +120,20 @@ export function ownNames(options) {
                     continue;
                 own.delete(key);
                 own.set(moved(key), value);
-                if (settling.delete(key))
-                    settling.add(moved(key));
             }
         },
         released: (root) => {
             // Stamped at every release: one decided under a later grant retires after this release, not an earlier one.
-            for (const key of decided.keys()) {
-                if (!within(key, root))
-                    continue;
-                own.set(key, barriers);
-                settling.add(key);
-            }
+            for (const key of decided.keys())
+                if (within(key, root))
+                    own.set(key, barriers);
         },
         barrierBegun: () => ++barriers,
+        // A subtree held again since does not keep it: what the session has there now is what the view read.
         retire: (begun) => {
-            for (const key of [...settling]) {
-                const settled = own.get(key);
-                if (settled === undefined || options.held(key))
-                    settling.delete(key);
-                else if (settled < begun)
+            for (const [key, settled] of [...own])
+                if (settled < begun)
                     forget(key);
-            }
         },
     };
 }

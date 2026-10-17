@@ -63,7 +63,6 @@ export function delegationHolder(options) {
     /** What it decided by name, until the view has it. */
     const names = ownNames({
         entry: (key) => store.entry(key),
-        held: (key) => client.held(key) !== undefined,
         // A cell goes with its name, but for bytes still unlogged or open.
         forgot: (key, entry) => {
             const inode = entry ? prov.inode(entry.dev, entry.ino) : undefined;
@@ -137,16 +136,6 @@ export function delegationHolder(options) {
             }
         });
         prov.unhold(inode, { ...entry, dev: inode.dev, ino: inode.ino, mode: (entry.mode & ~0o7777) | mode });
-    };
-    /** Whether file `entry`'s descriptors kept what the view has of it (Provisional.keep), its name about to go; false where the budget has no room. */
-    const kept = (entry, syscall, path) => {
-        try {
-            prov.keep(entry.dev, entry.ino, syscall, path);
-            return true;
-        }
-        catch {
-            return false;
-        }
     };
     /** What is decided here, else what the view has, at `inode`'s name while that name leads to the file. */
     const atName = (inode) => {
@@ -741,12 +730,9 @@ export function delegationHolder(options) {
                 return false;
             if (writableParent(key, path, 'unlink') === undefined)
                 return false;
-            const local = prov.inode(current.dev, current.ino);
-            // One the provisional decisions hold: its descriptors keep the view's bytes of it before the name goes, else the session's.
-            if (local?.cell === undefined && !kept(current, 'unlink', path))
-                return false;
             decided.set(key, null);
             names.note(parentKey(key), nameOf(key), null);
+            const local = prov.inode(current.dev, current.ino);
             if (local?.cell !== undefined && local.key === key) {
                 const made = local.cell.made;
                 // Its bytes go with it: nothing of them is logged, now or through a
@@ -776,8 +762,6 @@ export function delegationHolder(options) {
             if (from === to)
                 return true;
             if (writableParent(from, path, 'rename') === undefined || writableParent(to, path, 'rename') === undefined)
-                return false;
-            if (target !== null && prov.inode(target.dev, target.ino)?.cell === undefined && !kept(target, 'rename', path))
                 return false;
             // What was written before the rename is logged under the name it had.
             drain();

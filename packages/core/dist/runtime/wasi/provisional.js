@@ -688,8 +688,9 @@ export function provisional(host) {
             return { bytes: inode.pin.bytes, size: inode.pin.bytes.byteLength };
         }
         inode.row = seen.row;
+        // The view's name for it has no bytes yet (moved there by a rename): what its descriptors read of it at that revision.
         if (seen.bytes === undefined)
-            return undefined;
+            return inode.pin?.revision === seen.row.revision ? { bytes: inode.pin.bytes, size: inode.pin.bytes.byteLength } : undefined;
         // Pinned for its descriptors while the view's name for it may move or go.
         if (inode.descs > 0 && inode.pin?.revision !== seen.row.revision) {
             inode.pin = { revision: seen.row.revision, bytes: seen.bytes };
@@ -1068,7 +1069,6 @@ export function provisional(host) {
             loggedOn([fold(inode, op, described)], { type: 'setattr', path: inode.key, attrs, ...(described === undefined ? {} : { description: described }) });
             fit(inode);
         },
-        keep: (dev, ino, syscall, path) => keepForDescriptors(inodeAtNumber(dev, ino), 0, syscall, path),
         abandon: (handleId) => {
             delete descOf(handleId).description;
             provisional.close(handleId);
