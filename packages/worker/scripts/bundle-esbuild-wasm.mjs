@@ -126,7 +126,7 @@ async function main() {
   if (imports.length > 0) throw new Error(`[bundle-esbuild-wasm] esm/browser.js imports ${imports[0].source}: esbuild-wasm may have changed shape`);
   if (exported.length === 0) throw new Error('[bundle-esbuild-wasm] esm/browser.js exports nothing: esbuild-wasm may have changed shape');
   const objectMembers = exported.map(([name, local]) => (name === local ? name : `${name}: ${local}`)).join(', ');
-  const jsFn = `${body}\nreturn { ${objectMembers} };\n`;
+  const jsFn = `${body.trimEnd()}\n\nreturn { ${objectMembers} };\n`;
   console.log(`[bundle-esbuild-wasm] rewrote ${exported.length} exports → object-return shape`);
 
   // ── 2. The wasm: staged, byte for byte ──────────────────────────────
