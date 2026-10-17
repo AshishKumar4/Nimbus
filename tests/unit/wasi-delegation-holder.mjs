@@ -594,6 +594,31 @@ async function caughtUp(s) {
   assert.equal(dec.decode(s.kernel.readFile('home/user/other/to.txt')), 'Xbc');
 }
 
+// A file made here that the session's answer names as one this process
+// already has a descriptor of is that file (canonicalize): its unlink
+// refused, the creating open (O_TRUNC) emptied that file and wrote it, and
+// every descriptor of it reads what the session has. Red before: the
+// descriptor kept the old file's bytes beyond what was written.
+{
+  const { s, control, sync } = provisionalSession();
+  await resident(s, 'same.txt', 'OLDOLDOLD');
+  const fd = sync.open(other('same.txt'), { read: true }).id;
+  control.hold();
+  sync.unlink(other('same.txt'));
+  const sent = s.fs.flush().catch(() => {});
+  await until(() => control.entered > 0, 'the unlink on its way');
+  sync.writeFile(other('same.txt'), enc.encode('NEW'));
+  control.verdicts.push(true);
+  control.open();
+  await sent;
+  await s.fs.flush().catch(() => {});
+  assert.equal(dec.decode(s.kernel.readFile('home/user/other/same.txt')), 'NEW');
+  assert.equal(dec.decode(sync.readFile(other('same.txt'))), 'NEW');
+  assert.equal(dec.decode(sync.read(fd, 0, 16)), 'NEW', 'a descriptor of the file the session named kept bytes it no longer has');
+  assert.equal(Number(sync.fstat(fd).ino), s.kernel.stat('home/user/other/same.txt').ino);
+  sync.close(fd);
+}
+
 // What a decision kept goes back once the view has it, whatever became of
 // its name since. Red before: a renamed file's cell was never given back.
 {

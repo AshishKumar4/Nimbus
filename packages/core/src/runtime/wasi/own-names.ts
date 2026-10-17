@@ -22,10 +22,8 @@ export interface OwnNamesOptions {
 export interface OwnNames {
   /** This process's word on `key`: what it decided, or absent for a name not made in a directory it made. Undefined where it has none. */
   entry(key: string): ResidentEntry | null | undefined;
-  /** What it decided at `key` (null: removed); undefined where it decided nothing. */
-  decided(key: string): ResidentEntry | null | undefined;
-  /** `key` is `entry` as it decided (null: removed). */
-  decide(key: string, entry: ResidentEntry | null): void;
+  /** What it decided, by name (null: removed): read and changed as the holder decides. */
+  readonly decided: Map<string, ResidentEntry | null>;
   /** Its decision at `key` is no longer its own: the session's answer replaced it. */
   undecide(key: string): void;
   /** Directory `dir` gained `name` (`type`), or lost it (null). */
@@ -97,8 +95,7 @@ export function ownNames(options: OwnNamesOptions): OwnNames {
       const dir = parentKey(key);
       return key !== '' && madeHere(dir) && !added.get(dir)?.has(nameOf(key)) ? null : undefined;
     },
-    decided: (key) => decided.get(key),
-    decide: (key, entry) => { decided.set(key, entry); },
+    decided,
     undecide: (key) => { decided.delete(key); },
     note: (dir, name, type) => {
       if (type === null) {

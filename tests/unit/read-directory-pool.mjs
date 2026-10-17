@@ -234,4 +234,19 @@ function fixture(options = {}) {
   assert.deepEqual((await s.retiredNext()).filter((id) => received.includes(id)).sort(), received.sort(), 'no received ID was lost between receipt and admission');
   await s.close();
 }
+// A close that cannot wait (a synchronous caller's) queues its retirement
+// and begins no exchange, however full the queue; one that may wait retires
+// the full queue. Red before: the close past the queue's bound waited on it.
+{
+  const s = fixture();
+  for (let i = 100; i < 140; i++) s.nodes.set(`d${i}`, { ...s.nodes.get('d0'), ino: i + 1 });
+  const ids = [];
+  for (let i = 0; i < 135; i++) ids.push((await s.pool.open(`/d${i}`, `d${i}`, async () => [])).id);
+  const sent = s.calls.length;
+  for (const id of ids.slice(0, 134)) assert.equal(s.pool.close(id, false), undefined, 'a close that cannot wait began a retirement exchange');
+  assert.equal(s.calls.length, sent);
+  await s.pool.close(ids[134]);
+  assert.ok(s.calls.length > sent, 'a close that may wait did not retire the full queue');
+  await s.close();
+}
 console.log('read-directory-pool: original ask, recall ordering, final namespace, late parks and bounded lifetime');
