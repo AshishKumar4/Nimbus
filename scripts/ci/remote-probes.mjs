@@ -171,7 +171,7 @@ try {
     : flags.baseline ? git(repo, ['rev-parse', '--verify', `${flags.baseline}^{commit}`]) : defaultBaseline(repo, sha);
   // Every release this run uploads, built at once and settled together: the
   // candidate's for --deploy or the paired arm b, the baseline's for a1 and a2.
-  // They, and the baseline's checkout, are this run's alone: kept in its own directory, deleted when it ends.
+  // They, and the baseline's checkout, are this run's alone: kept in its own directory under RUNS, deleted when it ends.
   const commits = [...new Set([...(flags.deploy || baseline ? [sha] : []), ...(baseline ? [baseline] : [])])];
   if (commits.length > 0) {
     runDir = openRunDir(repo);
@@ -191,7 +191,7 @@ try {
   signals(true);
   if (flags.deploy) {
     // Its exports (a token among them) are not wanted: probes get their own, below.
-    const up = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'up', '--name', flags.deploy, '--bundle', releases[sha]], { cwd: repo, stdio: ['ignore', 'ignore', 'inherit'] });
+    const up = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'up', '--name', flags.deploy, '--bundle', releases[sha]], { cwd: repo, stdio: runDir.stdio(['ignore', 'ignore', 'inherit']) });
     if (up.status !== 0) throw new Error(`the upload of the release to ${flags.deploy} failed (exit ${up.status})`);
   }
   // A target this run uploaded must serve that upload (its record's versionId); one it did not, what it serves now.
@@ -201,7 +201,7 @@ try {
   }
   if (baseline) {
     console.error(`remote-probes: ${paired.join(', ')} graded against ${baseline.slice(0, 12)}${baseline === sha ? ' (the candidate itself)' : ''}`);
-    arms = pairedPreviews({ repo, dir: runDir.dir });
+    arms = pairedPreviews({ repo, runDir });
     await arms.standUp({ baseline, candidate: sha, releases });
     for (const [arm, id] of Object.entries(arms.receipts())) expected[`arm ${arm}`] = id;
   }

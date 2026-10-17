@@ -4,7 +4,8 @@
 // remote-probes --deploy uploads one. An upload reads its app's config from
 // a checkout at the release's own commit (uploadConfig), so a commit this
 // worktree is not at is uploaded from a detached worktree of it, made in the
-// run's own directory (lib/run-dir.mjs) and removed with it.
+// run's own directory (lib/run-dir.mjs) and removed with it. Every process
+// started here holds that directory's lock while it runs.
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
@@ -22,14 +23,14 @@ const running = new Set();
 /** Set by `halt`: from then on `run` starts nothing. */
 let halted = false;
 
-/** Run `args` in `cwd`; resolves to its stdout, rejects naming the command and its stderr's tail. */
-function run(cwd, command, args) {
+/** Run `args` in `cwd` with `stdio`; resolves to its stdout, rejects naming the command and its stderr's tail. */
+function run(cwd, command, args, stdio) {
   return new Promise((resolve, reject) => {
     if (halted) {
       reject(new Error(`halted before ${command} ${args.slice(0, 3).join(' ')} could start`));
       return;
     }
-    const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    const child = spawn(command, args, { cwd, stdio, detached: true });
     running.add(child);
     child.on('close', () => running.delete(child));
     let stdout = '';
@@ -48,12 +49,13 @@ export function defaultBaseline(repo, sha) {
 }
 
 /**
- * The arms of one run in `repo`, its checkouts made in `dir` (the run's
- * own). Everything `standUp` makes is recorded as it is made, so `teardown`
- * (synchronous, for an 'exit' listener as well as the run's end) deletes it
- * whatever ended the run.
+ * The arms of one run in `repo`, its checkouts made in the run's own
+ * directory (`runDir`, lib/run-dir.mjs). Everything `standUp` makes is
+ * recorded as it is made, so `teardown` (synchronous, for an 'exit' listener
+ * as well as the run's end) deletes it whatever ended the run.
  */
-export function pairedPreviews({ repo, dir, log = (line) => console.error(line) }) {
+export function pairedPreviews({ repo, runDir, log = (line) => console.error(line) }) {
+  const piped = runDir.stdio(['ignore', 'pipe', 'pipe']);
   const runId = randomBytes(3).toString('hex');
   const worktrees = [];
   const previews = [];
@@ -64,16 +66,16 @@ export function pairedPreviews({ repo, dir, log = (line) => console.error(line) 
   const checkoutAt = (commit) => {
     if (git(repo, ['rev-parse', 'HEAD']) === commit) return Promise.resolve(repo);
     if (!checkouts.has(commit)) {
-      const checkout = join(dir, `checkout-${commit.slice(0, 12)}`);
+      const checkout = join(runDir.dir, `checkout-${commit.slice(0, 12)}`);
       git(repo, ['worktree', 'add', '--detach', checkout, commit]);
       worktrees.push(checkout);
-      checkouts.set(commit, run(checkout, 'bun', INSTALL.split(' ').slice(1)).then(() => checkout));
+      checkouts.set(commit, run(checkout, 'bun', INSTALL.split(' ').slice(1), piped).then(() => checkout));
     }
     return checkouts.get(commit);
   };
   const throwaway = (args, arm) => ['tests/behavioral/_throwaway-target.mjs', ...args, '--name', arms[arm].name];
   /** The deployment `arm` serves now, read by this checkout's script (an older baseline's has no `version`). */
-  const version = async (arm) => (await run(repo, 'bun', throwaway(['version'], arm))).trim();
+  const version = async (arm) => (await run(repo, 'bun', throwaway(['version'], arm), piped)).trim();
   const receipts = {};
   /** The stand-up while it runs, so `halt` waits for it to unwind. */
   let standing = Promise.resolve();
@@ -92,7 +94,7 @@ export function pairedPreviews({ repo, dir, log = (line) => console.error(line) 
       for (const arm of group) {
         previews.push(arms[arm]);
         log(`paired: ${arm} is ${commit[arm].slice(0, 12)} on throwaway ${arms[arm].name}`);
-        await run(arms[arm].checkout, 'bun', [...throwaway(['up', '--bundle', releases[commit[arm]]], arm)]);
+        await run(arms[arm].checkout, 'bun', [...throwaway(['up', '--bundle', releases[commit[arm]]], arm)], piped);
         receipts[arm] = readState(throwawayStatePath(arms[arm].checkout, arms[arm].name))?.versionId;
         if (!receipts[arm]) throw new Error(`${arms[arm].name}'s upload recorded no deployment in ${arms[arm].checkout}`);
       }
@@ -113,7 +115,7 @@ export function pairedPreviews({ repo, dir, log = (line) => console.error(line) 
     /** Each arm's { base, token }, a token minted now to live `ttlMs`. */
     async credentials(ttlMs) {
       return Object.fromEntries(await Promise.all(ARMS.map(async (arm) => [arm,
-        JSON.parse(await run(arms[arm].checkout, 'bun', [...throwaway(['token', '--json', '--ttl-ms', String(ttlMs)], arm)]))])));
+        JSON.parse(await run(arms[arm].checkout, 'bun', [...throwaway(['token', '--json', '--ttl-ms', String(ttlMs)], arm)], piped))])));
     },
     /** The deployment each arm's upload made (its record's versionId): what every job must find. */
     receipts() {
