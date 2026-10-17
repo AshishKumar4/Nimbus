@@ -2,21 +2,15 @@
   "artifact": "napi-wasm",
   "source": {
     "inputs": {
-      "packages/core/src/runtime/wasi/filesystem.ts": "680ae71e769f8358fcf5f86aeb545fec55b0b51de09b0ae3b742f0d0593548dc",
+      "packages/core/src/runtime/wasi/filesystem.ts": "6ee425ec367a9c5a3471248d47863373a278fec5f9050e5d1a19585ccaff3515",
       "packages/core/src/vfs/dirent-type.ts": "f22395b71aab1211b5f55eded1f996c0719d05c1b838025fc3651ba61e253185",
       "packages/core/src/vfs/vfs-error.ts": "0470e3d0a43c1b5c6f8b5daebeea895f6858307203a72f984fde4d6e01041008",
       "packages/core/src/vfs/vfs.ts": "0b175801c0381098ecee652a18c0422b3f67e39fd77a6958f2ad582d1ff2a066",
       "packages/core/tsconfig.json": "6dc680d90729597ee71dcaf78368fceb9f44638d4e301811dd4cff58bdb9b62f",
       "packages/worker/scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
-<<<<<<<< HEAD:packages/worker/public/_assets/napi-wasm/loader/103b4d19dd972a9c/provenance.json
       "packages/worker/scripts/napi-wasm/build.mjs": "45b17dfa68a17b6582d61eab755aff6b4d6c1e734d180e0aa8eff73ef1697387",
       "packages/worker/scripts/napi-wasm/inputs.mjs": "5bac3fae82b6bc1bf7f23fc75ff8cb81098d53cbd4325ae0ccb495362348dbd6",
       "packages/worker/scripts/napi-wasm/loader/napi-wasm-loader.ts": "ecc01118f58a0f13523b9bfb0219adabbe687f281af275f3b6ed736314dc67ed",
-========
-      "packages/worker/scripts/napi-wasm/build.mjs": "5f1d124e26a906bfef4ba0faccf0a0d9e36164f1ae370b6c4f2d40f873c0b645",
-      "packages/worker/scripts/napi-wasm/inputs.mjs": "a06c519ffee5e2637688e25ca527bf885f99d2f2fa4b5fe34a81ba5afda94dc4",
-      "packages/worker/scripts/napi-wasm/loader/napi-wasm-loader.ts": "be1f648fadb9ad0fef6f0317d37dd616076a10e4ffc0e186609ee23361fe2918",
->>>>>>>> origin/main:packages/worker/public/_assets/napi-wasm/loader/509367ac77c6ad1f/provenance.json
       "packages/worker/scripts/napi-wasm/loader/wasi-trampoline.mjs": "cb857b5989626e502f2a1d86198ba32cec763f360e09bab108bacde3746bbd62",
       "packages/worker/scripts/napi-wasm/specs.mjs": "c12128ac7b54509bbb359380572208302d0e72d16a54f6341de8542ee36c9613",
       "packages/worker/scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",
@@ -50,9 +44,9 @@
       "bun.lock#@esbuild/win32-ia32": "bf86282659172e0bd98aa767e66cc1f2d2e22a87467eb4cd2f0fdaba56868a0a",
       "bun.lock#@esbuild/win32-x64": "fab96a9b3da5d6d290e01b96354bf5059b42ce1faade63672fed0084ec14c231",
       "bun.lock#esbuild": "add5ecc823d2dd6f81362b09025f25d76ab708b382ff33103bd0314cb655dee7",
-      "package.json": "a0d482519e26833358f20cc67a3d24067c15c173e0c0c753423d415a62aa483a",
-      "packages/core/package.json": "cc7e2c99ece7864577d557606ce7ac2de7302bd2006a100d795daf666b807075",
-      "packages/worker/package.json": "2e4200a6b9eb6626f5d85412d303790c3b55d3b5034db12e4920623754a60b06"
+      "package.json": "dfb51423f844cc937e1905e4d87c06bc2e6b15c607dfab143bef39090153102a",
+      "packages/core/package.json": "8a4be1f62df7008c2590b696b3b4efb455d87b7633a8f4e856cf35aa5439e383",
+      "packages/worker/package.json": "95248d474468b931b3621b28e992ec129665ff5ce964676c5851a040b70cf1eb"
     },
     "graph": [
       "packages/core/src/runtime/wasi/filesystem.ts",
@@ -170,13 +164,8 @@
   ],
   "outputs": {
     "napi-wasm-loader.mjs": {
-<<<<<<<< HEAD:packages/worker/public/_assets/napi-wasm/loader/103b4d19dd972a9c/provenance.json
       "bytes": 212756,
       "sha256": "1b79bc3076eed6968ed7f11d08cc4b1c62579b560221cc4b33773bd531cb1b1a"
-========
-      "bytes": 212676,
-      "sha256": "7dd7bdaf1ae87443e36f6d6f810b4147831f815210b5cb8b0960a709022b881f"
->>>>>>>> origin/main:packages/worker/public/_assets/napi-wasm/loader/509367ac77c6ad1f/provenance.json
     },
     "wasi-trampoline.wasm": {
       "bytes": 1961,
