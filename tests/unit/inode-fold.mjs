@@ -58,4 +58,13 @@ assert.deepEqual([foldOps(base(''), [{ kind: 'utimes', atime: 'now', mtime: 'now
 const blind = foldOps(base('', { bytes: null, size: 10 }), [write(8, 'abcd'), chmod(0o600)]);
 assert.deepEqual([blind.bytes, blind.size, blind.mode & 0o7777], [null, 12, 0o600]);
 
+// Truncated to nothing, unknown bytes are known: none. What is written after them is all there is.
+const emptied = foldOps(base('', { bytes: null, size: 10 }), [truncate(0), write(0, 'NEW')]);
+assert.deepEqual([text(emptied), emptied.size], ['NEW', 3]);
+assert.deepEqual(text(foldOps(base('', { bytes: null, size: 10 }), [truncate(0), { kind: 'append', data: enc.encode('ab'), at: 5 }, write(4, 'z')])), 'ab\0\0z');
+// No bytes written or appended: nothing changes, past the end or at it.
+const still = base('abc');
+const unchanged = foldOps(still, [write(9, ''), { kind: 'append', data: new Uint8Array(0), at: 9 }]);
+assert.deepEqual([text(unchanged), unchanged.size, unchanged.mtime, unchanged.ctime], ['abc', 3, still.mtime, still.ctime]);
+
 console.log('inode-fold: ok');

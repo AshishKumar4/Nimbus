@@ -32,7 +32,7 @@ import { fsError } from '../beneath-walk.js';
 import { chmodRefusal, chownRefusal, explicitTimes, modeAllows, utimesRefusal } from '../../vfs/posix-access.js';
 import { copiedPermissions, copyfileMode } from '../../vfs/vfs.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
-import type { ProcessFsAnswer, ProcessFsClient, ProcessFsOp } from '../../_shared/process-fs-client.js';
+import type { ProcessFsAnswer, ProcessFsClient, ProcessFsOp, ProcessFsReceipt } from '../../_shared/process-fs-client.js';
 import { applyOp, copyState, foldOps, type InodeOp, type InodeState } from './inode-fold.js';
 
 /** Where a provisional file's own numbers start: past any the session gives. */
@@ -95,7 +95,7 @@ interface Inode {
   key: string;
   /** The name it is reached by in the view, its retired renames included: where a replay of the pending ones starts it. */
   origin: string;
-  /** Merged into another (canonicalize): every reference to it is to that one. */
+  /** Merged into another (reconcile): every reference to it is to that one. */
   mergedInto?: Inode;
   /** Its row: the view's as last read while nothing of the process's is pending on it, or what this process made it. */
   row: ResidentEntry;
@@ -108,21 +108,27 @@ interface Inode {
   /** `base` with `records` folded over it: what the process sees. */
   state: InodeState | null;
   records: InodeRecord[];
-  /** Barriers begun when its last record was answered. */
-  answeredAt: number;
   /** No name leads to it any more: its descriptors keep what it holds until the last closes. */
   unnamed: boolean;
-  /** Made by this process and not yet numbered by the session (canonicalize). */
+  /** Made by this process and not yet numbered by the session (reconcile). */
   local: boolean;
   descs: number;
   /** What it holds of the process's budget: its records and its bytes. */
   reserved: number;
 }
 
+/** One of the process's operations on an inode, kept until the view has its outcome (retire). */
 interface InodeRecord {
+  /** Log order. */
   readonly id: number;
   readonly op: InodeOp;
+  /** The inode it is of: the one its op reached at the session, once an open's answer says which (reconcile). */
+  owner: Inode;
+  /** The description it was made through, where one was: what an open's answer moves with it. */
+  readonly description?: string;
   answered: boolean;
+  /** Barriers begun when it was answered: one begun after retires it. */
+  answeredAt: number;
 }
 
 /** A name made, removed or moved: replayed in log order over the view, it makes the overlay. */
@@ -260,7 +266,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     const id = identity(row.dev, row.ino);
     let inode = inodes.get(id);
     if (inode === undefined) {
-      inode = { dev: row.dev, ino: row.ino, type: row.type, key, origin: key, row, base: null, state: null, records: [], answeredAt: 0, unnamed: false, local: false, descs: 0, reserved: 0 };
+      inode = { dev: row.dev, ino: row.ino, type: row.type, key, origin: key, row, base: null, state: null, records: [], unnamed: false, local: false, descs: 0, reserved: 0 };
       inodes.set(id, inode);
     }
     return inode;
@@ -279,11 +285,24 @@ export function provisional(host: ProvisionalHost): Provisional {
     return !inode.unnamed;
   };
 
-  /** What an inode's first record takes as its baseline: its row, and its bytes where the view holds them (by the name the view has it at). */
-  const baseline = (inode: Inode): InodeState => {
-    const row = inode.row;
+  /**
+   * The view's row and bytes of `inode`, by the name the view has it at
+   * (origin), where that name still leads to it: never another file's that
+   * a name came to lead to since. Its row refreshed from there.
+   */
+  const viewed = (inode: Inode): { row: ResidentEntry; bytes: Uint8Array | undefined } | undefined => {
+    const row = host.row(inode.origin);
+    if (!row || row.dev !== inode.dev || row.ino !== inode.ino) return undefined;
     const held = inode.type === 'file' ? host.content(inode.origin, row.revision) : undefined;
-    const bytes = held !== undefined && held.byteLength === row.size ? held.slice() : null;
+    return { row, bytes: held !== undefined && held.byteLength === row.size ? held : undefined };
+  };
+
+  /** What an inode's records fold over: the view's version of it where the view still has it, else its row as last known, its bytes not held. */
+  const baseline = (inode: Inode): InodeState => {
+    const seen = inode.local ? undefined : viewed(inode);
+    if (seen !== undefined) inode.row = seen.row;
+    const row = inode.row;
+    const bytes = seen?.bytes?.slice() ?? (row.size === 0 ? new Uint8Array(0) : null);
     return { bytes, size: row.size, mode: row.mode, uid: row.uid, gid: row.gid, atime: row.atime, mtime: row.mtime, ctime: row.ctime };
   };
 
@@ -320,15 +339,15 @@ export function provisional(host: ProvisionalHost): Provisional {
     if (need > 0) inode.reserved += need;
   };
 
-  /** Fold `op` into `inode` (its baseline taken first): its record, kept until it retires. */
-  const fold = (inode: Inode, op: InodeOp): InodeRecord => {
+  /** Fold `op` into `inode` (its baseline taken first): its record, kept until it retires; `description` the one it was made through. */
+  const fold = (inode: Inode, op: InodeOp, description?: string): InodeRecord => {
     if (inode.base === null) {
       inode.base = baseline(inode);
       inode.state = copyState(inode.base);
     }
     touched.set(inode.key, inode);
     activity();
-    const record: InodeRecord = { id: ++ids, op, answered: false };
+    const record: InodeRecord = { id: ++ids, op, owner: inode, ...(description === undefined ? {} : { description }), answered: false, answeredAt: 0 };
     inode.records.push(record);
     inode.state = applyOp(inode.state!, op);
     return record;
@@ -366,37 +385,48 @@ export function provisional(host: ProvisionalHost): Provisional {
     );
   };
 
-  /** The Inode `inode` is now: itself, or the one it merged into (canonicalize). */
+  /** The Inode `inode` is now: itself, or the one it merged into (reconcile). */
   const live = (inode: Inode): Inode => {
     let at = inode;
     while (at.mergedInto !== undefined) at = at.mergedInto;
     return at;
   };
 
-  /** `records` of `inode` met their op's fate: a refused one leaves and the rest fold again from the baseline; an answered one is stamped. */
-  const settleRecords = (made: Inode, records: readonly InodeRecord[], refused: boolean): void => {
-    const inode = live(made);
-    let changed = false;
+  /** `inode`'s fold again from its baseline: what it is with the records it has now. */
+  const refold = (inode: Inode): void => {
+    if (inode.base === null) return;
+    inode.state = foldOps(inode.base, inode.records.map((record) => record.op));
+  };
+
+  /**
+   * `records` met their op's fate, each on the inode it is of now (its
+   * owner, whatever answers moved it since): a refused one leaves and its
+   * inode folds again; an answered one is stamped, and stays until the view
+   * has its outcome (retire).
+   */
+  const settleRecords = (records: readonly InodeRecord[], refused: boolean): void => {
+    const refolded = new Set<Inode>();
     for (const record of records) {
+      const inode = record.owner;
       const at = inode.records.indexOf(record);
       if (at < 0) continue;
       if (refused) {
         inode.records.splice(at, 1);
-        changed = true;
+        refolded.add(inode);
       } else {
         record.answered = true;
-        inode.answeredAt = barriers;
+        record.answeredAt = barriers;
       }
     }
-    if (changed) inode.state = foldOps(inode.base!, inode.records.map((pending) => pending.op));
-    // What is answered with nothing pending before it is the baseline's now: a later refusal folds from there.
-    while (inode.records.length > 0 && inode.records[0]!.answered) inode.base = applyOp(inode.base!, inode.records.shift()!.op);
-    trim(inode);
+    for (const inode of refolded) {
+      refold(inode);
+      trim(inode);
+    }
   };
 
-  /** Log the op that made `records` of `inode`, its fate theirs. */
-  const loggedOn = (inode: Inode, records: readonly InodeRecord[], op: ProcessFsOp): void => {
-    logged(op, (refused) => settleRecords(inode, records, refused));
+  /** Log the op that made `records`, their fate its. */
+  const loggedOn = (records: readonly InodeRecord[], op: ProcessFsOp): void => {
+    logged(op, (refused) => settleRecords(records, refused));
   };
 
   /** The overlay rebuilt: every name record still pending replayed over the view, in log order. */
@@ -477,7 +507,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     return { uid: host.cred.uid, gid: setgid ? parent.gid : host.cred.gid, setgid };
   };
 
-  /** A file, directory or link made here: numbered by this process until its creating open's answer numbers it (canonicalize). */
+  /** A file, directory or link made here: numbered by this process until its creating open's answer numbers it (reconcile). */
   const made = (key: string, type: ResidentEntry['type'], mode: number, parent: ResidentEntry, target: string | null = null): Inode => {
     const { uid, gid } = ownership(parent);
     const at = host.now();
@@ -485,7 +515,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       type, dev: host.device, ino: localIno++, nlink: type === 'directory' ? 2 : 1, size: target === null ? 0 : new TextEncoder().encode(target).byteLength,
       atime: at, mtime: at, ctime: at, mode, uid, gid, revision: 0, target,
     };
-    const inode: Inode = { dev: row.dev, ino: row.ino, type, key, origin: key, row, base: null, state: null, records: [], answeredAt: 0, unnamed: false, local: true, descs: 0, reserved: RECORD_COST };
+    const inode: Inode = { dev: row.dev, ino: row.ino, type, key, origin: key, row, base: null, state: null, records: [], unnamed: false, local: true, descs: 0, reserved: RECORD_COST };
     if (type === 'file') {
       inode.base = { bytes: new Uint8Array(0), size: 0, mode, uid, gid, atime: at, mtime: at, ctime: at };
       inode.state = copyState(inode.base);
@@ -496,35 +526,92 @@ export function provisional(host: ProvisionalHost): Provisional {
     return inode;
   };
 
+  /** `records` are `target`'s from now on, in log order among its own; their old inodes fold again without them. */
+  const moveRecords = (records: readonly InodeRecord[], target: Inode): void => {
+    if (records.length === 0) return;
+    const left = new Set<Inode>();
+    for (const record of records) {
+      const from = record.owner;
+      const at = from.records.indexOf(record);
+      if (at >= 0) from.records.splice(at, 1);
+      if (from !== target) left.add(from);
+      record.owner = target;
+      from.reserved -= RECORD_COST;
+      target.reserved += RECORD_COST;
+    }
+    target.records = [...target.records, ...records].sort((a, b) => a.id - b.id);
+    if (target.base === null) {
+      target.base = baseline(target);
+      touched.set(target.key, target);
+    }
+    refold(target);
+    for (const inode of left) {
+      refold(inode);
+      trim(inode);
+    }
+    trim(target);
+    activity();
+  };
+
+  /** The session's file an open's answer named that this process has no Inode for, as its receipt has it; reached by `like`'s name, which the view has as another's. */
+  const adopted = (receipt: ProcessFsReceipt, like: Inode): Inode => {
+    const row: ResidentEntry = {
+      type: 'file', dev: receipt.dev, ino: receipt.ino, nlink: 1, size: receipt.size,
+      atime: receipt.mtimeMs, mtime: receipt.mtimeMs, ctime: receipt.ctimeMs, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid,
+      revision: receipt.revision ?? 0, target: null,
+    };
+    const inode: Inode = { dev: row.dev, ino: row.ino, type: 'file', key: like.key, origin: like.origin, row, base: null, state: null, records: [], unnamed: true, local: false, descs: 0, reserved: 0 };
+    inodes.set(identity(row.dev, row.ino), inode);
+    return inode;
+  };
+
   /**
-   * The session numbered a file made here (its creating open's answer): it
-   * is that inode from now on. Where this process already has an Inode for
-   * it, the made one merges into it: its descriptors, its names, and its
-   * records spliced in log order over that inode's baseline.
+   * An open's answer names the file the session opened (its receipt): what
+   * was made through its `description`, and its descriptors, are that
+   * file's. A file this process made is the session's numbered one from
+   * now on: rekeyed, its baseline the receipt's (the session may have had
+   * the name already), or merged into the Inode this process has for it,
+   * its records spliced in log order. A file it knew that the session's
+   * name no longer led to gives up to the one the session opened only what
+   * was made through this description.
    */
-  const canonicalize = (local: Inode, answer: ProcessFsAnswer | undefined): void => {
+  const reconcile = (inode: Inode, description: string, answer: ProcessFsAnswer | undefined): void => {
     const receipt = answer?.receipt;
-    if (!local.local || receipt === undefined) return;
-    const { dev, ino } = receipt;
-    inodes.delete(identity(local.dev, local.ino));
-    local.local = false;
-    const known = inodes.get(identity(dev, ino));
-    if (known === undefined) {
-      local.dev = dev;
-      local.ino = ino;
-      local.row = { ...local.row, dev, ino };
-      inodes.set(identity(dev, ino), local);
+    if (receipt === undefined || (!inode.local && inode.dev === receipt.dev && inode.ino === receipt.ino)) return;
+    const known = inodes.get(identity(receipt.dev, receipt.ino));
+    if (inode.local) {
+      inodes.delete(identity(inode.dev, inode.ino));
+      inode.local = false;
+      if (known === undefined) {
+        inode.dev = receipt.dev;
+        inode.ino = receipt.ino;
+        inode.row = { ...inode.row, dev: receipt.dev, ino: receipt.ino, size: receipt.size, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid };
+        inodes.set(identity(receipt.dev, receipt.ino), inode);
+        // The receipt is the file as the open left it: what this process made of it folds over that.
+        inode.base = { bytes: receipt.size === 0 ? new Uint8Array(0) : null, size: receipt.size, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid, atime: receipt.mtimeMs, mtime: receipt.mtimeMs, ctime: receipt.ctimeMs };
+        refold(inode);
+        return;
+      }
+      inode.mergedInto = known;
+      for (const desc of descs.values()) if (desc.inode === inode) desc.inode = known;
+      known.descs += inode.descs;
+      inode.descs = 0;
+      for (const [key, value] of layer) if (value === inode) layer.set(key, known);
+      if (touched.get(inode.key) === inode) touched.delete(inode.key);
+      known.reserved += inode.reserved - RECORD_COST * inode.records.length;
+      inode.reserved = RECORD_COST * inode.records.length;
+      moveRecords([...inode.records], known);
       return;
     }
-    local.mergedInto = known;
-    for (const desc of descs.values()) if (desc.inode === local) desc.inode = known;
-    known.descs += local.descs;
-    for (const [key, value] of layer) if (value === local) layer.set(key, known);
-    known.base ??= baseline(known);
-    known.records = [...known.records, ...local.records].sort((a, b) => a.id - b.id);
-    known.state = foldOps(known.base, known.records.map((record) => record.op));
-    known.reserved += local.reserved;
-    trim(known);
+    const target = known ?? adopted(receipt, inode);
+    moveRecords(inode.records.filter((record) => record.description === description), target);
+    for (const desc of descs.values()) {
+      if (desc.description !== description || desc.inode !== inode) continue;
+      inode.descs--;
+      desc.inode = target;
+      target.descs++;
+    }
+    release(inode);
   };
 
   /** A new descriptor of `inode` with its own rights; `description` its open at the session where it may write. */
@@ -569,10 +656,11 @@ export function provisional(host: ProvisionalHost): Provisional {
    */
   const contentOp = (desc: Desc, op: InodeOp, call: ProcessFsOp, logs: number, syscall: string): void => {
     const inode = desc.inode;
-    if (inode.state === null && !named(inode)) throw fsError('ESTALE', syscall, desc.path);
+    // Through its description the session reaches its file wherever, or whether, a name leads to it; by number only while one does.
+    if (desc.description === undefined && inode.state === null && !named(inode)) throw fsError('ESTALE', syscall, desc.path);
     host.client.fitsSync(logs, desc.path);
     admitOps(inode, [op], syscall, desc.path);
-    loggedOn(inode, [fold(inode, op)], call);
+    loggedOn([fold(inode, op, desc.description)], call);
   };
 
   const judgeAttrs = (row: ResidentEntry, attrs: W7Attrs, syscall: string, path: string): void => {
@@ -592,7 +680,9 @@ export function provisional(host: ProvisionalHost): Provisional {
    * description of its own, then `bytes` written by it and, with `close`,
    * closed. `chmod`: the mode its open sets (a copy's keepMode).
    */
-  const openToWrite = (key: string, path: string, flags: RuntimeOpenFlags, row: ResidentEntry | null, bytes: Uint8Array | null, close: boolean, chmod?: number): RuntimeFileHandle | undefined => {
+  const openToWrite = (key: string, path: string, flags: RuntimeOpenFlags, row: ResidentEntry | null, given: Uint8Array | null, close: boolean, chmod?: number): RuntimeFileHandle | undefined => {
+    // Its own bytes: what it logs and what it folds, whatever the caller does with its buffer after.
+    const bytes = given === null ? null : given.slice();
     const read = flags.read === true;
     const umask = flags.umask ?? host.umask();
     const asked = (flags.mode ?? 0o666) & 0o777;
@@ -612,7 +702,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     }
     const at = host.now();
     const ops: InodeOp[] = [];
-    // A made file's O_TRUNC changes nothing here, but is the session's if the name turns out to be another's file (canonicalize).
+    // A made file's O_TRUNC changes nothing here, but is the session's if the name turns out to be another's file (reconcile).
     if (flags.truncate) ops.push({ kind: 'truncate', size: 0, at });
     if (bytes !== null && bytes.byteLength > 0) ops.push({ kind: 'write', offset: 0, data: bytes, at });
     if (chmod !== undefined) ops.push({ kind: 'chmod', mode: chmod, at });
@@ -623,10 +713,11 @@ export function provisional(host: ProvisionalHost): Provisional {
     else admit(RECORD_COST * (2 + ops.length) + written, 'open', path);
     // Made.
     const description = descriptionId();
+    // The open as the caller asked it: the session's name may lead elsewhere by the time it lands, and its open is the one that decides.
     const open: ProcessFsOp = {
       type: 'call', call: {
-        call: 'open', path: key, mode: row === null ? asked : row.mode & 0o7777,
-        ...(row === null ? { umask, create: true as const } : {}),
+        call: 'open', path: key, mode: flags.create ? asked : row!.mode & 0o7777,
+        ...(flags.create ? { umask, create: true as const } : {}),
         ...(flags.exclusive && row === null ? { exclusive: true as const } : {}),
         ...(flags.truncate ? { truncate: true as const } : {}),
         ...(flags.followSymlinks === false ? { nofollow: true as const } : {}),
@@ -643,20 +734,21 @@ export function provisional(host: ProvisionalHost): Provisional {
       target = inode!;
     }
     // The open's own effects (its truncate, its fchmod) are its records; its writes are theirs.
-    const opened = ops.filter((op) => op.kind !== 'write').map((op) => fold(target, op));
+    const opened = ops.filter((op) => op.kind !== 'write').map((op) => fold(target, op, description));
+    // Its answer says which file the session opened first: what was made through it is that file's before any is settled.
+    const answered = (refused: boolean, answer: ProcessFsAnswer | undefined): void => {
+      if (!refused) reconcile(target, description, answer);
+      settleRecords(opened, refused);
+    };
     if (row === null) {
-      loggedName(open, [key], () => place(key, target), (refused, answer) => {
-        // Numbered first: a merge splices its records, its O_TRUNC among them, before any is answered.
-        if (!refused) canonicalize(target, answer);
-        settleRecords(target, opened, refused);
-      });
+      loggedName(open, [key], () => place(key, target), answered);
     } else {
       host.count(key);
-      loggedOn(target, opened, open);
+      logged(open, answered);
     }
     for (const op of ops) {
       if (op.kind !== 'write') continue;
-      loggedOn(target, [fold(target, op)], { type: 'call', call: { call: 'write', path: key, description, offset: op.offset, data: op.data.slice() } });
+      loggedOn([fold(target, op, description)], { type: 'call', call: { call: 'write', path: key, description, offset: op.offset, data: op.data.slice() } });
     }
     const handle = descriptor(target, path, { ...flags, write: true }, description);
     descOf(handle.id).write = flags.write === true || flags.append === true || bytes !== null;
@@ -690,6 +782,8 @@ export function provisional(host: ProvisionalHost): Provisional {
     },
 
     open: (key, path, flags, row) => {
+      // One refusal order for every open: a name there refuses O_CREAT|O_EXCL whatever it is or is asked for.
+      if (row !== null && flags.create && flags.exclusive) throw fsError('EEXIST', 'open', path);
       const write = flags.write === true || flags.append === true;
       // One that makes or empties its file, or may write it, is opened at the session as here.
       if (write || flags.truncate || (row === null && flags.create)) {
@@ -741,6 +835,7 @@ export function provisional(host: ProvisionalHost): Provisional {
 
     seek: (handleId, offset, whence) => {
       const desc = descOf(handleId);
+      if (whence === 'end') named(desc.inode);
       const position = (whence === 'set' ? 0 : whence === 'current' ? desc.position : entryOf(desc.inode).size) + offset;
       if (position < 0) throw fsError('EINVAL', 'lseek', desc.path);
       desc.position = position;
@@ -765,7 +860,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       const op = attrOp(attrs, host.now());
       admitOps(inode, [op], syscall, desc.path);
       host.count(inode.key);
-      loggedOn(inode, [fold(inode, op)], { type: 'setattr', path: inode.key, attrs });
+      loggedOn([fold(inode, op)], { type: 'setattr', path: inode.key, attrs });
     },
 
     close: (handleId) => {
@@ -799,13 +894,14 @@ export function provisional(host: ProvisionalHost): Provisional {
         if (!named(inode)) throw fsError('ESTALE', 'open', desc.path);
         description = descriptionId();
         const open: ProcessFsOp = { type: 'call', call: { call: 'open', path: inode.key, mode: entryOf(inode).mode & 0o7777, ...(flags.truncate ? { truncate: true as const } : {}), ...(read ? { read: true as const } : {}), description } };
-        if (flags.truncate) {
-          const op: InodeOp = { kind: 'truncate', size: 0, at: host.now() };
-          admitOps(inode, [op], 'open', desc.path);
-          loggedOn(inode, [fold(inode, op)], open);
-        } else {
-          logged(open, () => {});
-        }
+        const reopened = description;
+        const records = flags.truncate ? [{ kind: 'truncate', size: 0, at: host.now() } as InodeOp] : [];
+        admitOps(inode, records, 'open', desc.path);
+        const made = records.map((op) => fold(inode, op, reopened));
+        logged(open, (refused, answer) => {
+          if (!refused) reconcile(inode, reopened, answer);
+          settleRecords(made, refused);
+        });
       }
       const handle = descriptor(inode, desc.path, { ...flags, read }, description);
       descOf(handle.id).write = write;
@@ -933,7 +1029,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       const op = attrOp(attrs, host.now());
       admitOps(inode, [op], syscall, path);
       host.count(key);
-      loggedOn(inode, [fold(inode, op)], { type: 'setattr', path: key, attrs });
+      loggedOn([fold(inode, op)], { type: 'setattr', path: key, attrs });
       return true;
     },
 
@@ -974,15 +1070,32 @@ export function provisional(host: ProvisionalHost): Provisional {
         replay();
       }
       for (const inode of [...inodes.values()]) {
-        // Rebased: its records all answered before the barrier began, it is the view's again (unnamed, it keeps what it holds).
-        if (inode.records.length > 0 || inode.answeredAt >= begun || host.held(inode.key)) continue;
-        if (inode.unnamed && inode.descs > 0) continue;
-        if (inode.state !== null && !inode.local) {
+        if (host.held(inode.key) || (inode.local && inode.records.length > 0)) continue;
+        // Its records answered before the barrier began are the view's now: it is the view's version with the rest folded over it.
+        const retired = inode.records.filter((record) => record.answered && record.answeredAt < begun);
+        if (retired.length === 0 && inode.records.length > 0) continue;
+        inode.records = inode.records.filter((record) => !retired.includes(record));
+        const seen = viewed(inode);
+        if (seen === undefined) {
+          // No name leads to it in the view: what it holds is what retired made of it.
+          if (inode.base !== null) for (const record of retired) inode.base = applyOp(inode.base, record.op);
+          if (inode.records.length === 0 && inode.descs === 0) {
+            inode.base = null;
+            inode.state = null;
+          }
+        } else if (inode.records.length === 0) {
+          inode.row = seen.row;
           inode.base = null;
           inode.state = null;
-          if (touched.get(inode.key) === inode) touched.delete(inode.key);
-          trim(inode);
+        } else {
+          inode.base = baseline(inode);
         }
+        if (inode.state === null) {
+          if (touched.get(inode.key) === inode) touched.delete(inode.key);
+        } else {
+          refold(inode);
+        }
+        trim(inode);
         release(inode);
       }
       activity();
