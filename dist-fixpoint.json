@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "3f5e5558eb3678bc40e3378dfc784c4465be723a4956f2dd0299f3eb2de2c5a9",
+  "fingerprint": "5b3a727dbd2923df99a455a82943c0cb1f1396fb19a32be6fbaaafd9273d91b5",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1917,8 +1917,8 @@
     "packages/fabric/dist/inner-storage-env.d.ts.map": "325db41d7ff38bac160d728dd8ecaaf8360c1088dd8cfa0fcef5d32371793f5a",
     "packages/fabric/dist/inner-storage-env.js": "9ff1d3ef465b736260a31bb98ba8147fb890ad8c07e0d59541b909dbca34264b",
     "packages/fabric/dist/isolate-pool.d.ts": "936eb963fc9013fb83f21a6284297cd676947815352116001da8bc61c7af8c20",
-    "packages/fabric/dist/isolate-pool.d.ts.map": "3b9b7179fa61bb9b2120ea1448914e9b61e0e36e8cda8434f92bd019a7873811",
-    "packages/fabric/dist/isolate-pool.js": "2cb116fb7c06ac50c00a9309161c9c453bd47d9cb09e2e6f0ba5bede1fa1c250",
+    "packages/fabric/dist/isolate-pool.d.ts.map": "bd9114e835607f5c1915bced59e01342a228810b7aa6bafe3109c97e8eb97580",
+    "packages/fabric/dist/isolate-pool.js": "0e770a52af883692255ddc8ce9152cb1249dd43b35e280530a3a405916cca5e9",
     "packages/fabric/dist/journal.d.ts": "515eb0576ed8e1770af653faa8ac02d93c5e205645e136947b3a2b143d6aecca",
     "packages/fabric/dist/journal.d.ts.map": "3a7fc30ff56aef2921d10e20c8b7d75dee0112ef35b4a2018738d05d4ff40e84",
     "packages/fabric/dist/journal.js": "55a38796538871c0a6a01d9b283ad8f7b82bbf7d0addd2dcd493a22546e7d665",
@@ -2003,7 +2003,7 @@
     "packages/fabric/src/inner-do-registry.ts": "c0d8a50f03689ba62d1e1ff7e2fc099ba9580cc712c8fc2b148c38a34b3ebf62",
     "packages/fabric/src/inner-env.ts": "b719e2f673c3afbd7465f2cc77fcf225bc449c83e345577c4a235d50b9548551",
     "packages/fabric/src/inner-storage-env.ts": "5be1eff92147469b7b094b6d0b92374c7bf5c6c0f1bcdd6191f832ff8f790797",
-    "packages/fabric/src/isolate-pool.ts": "6cbe314725f8fe1b0a5ab473ba193732675268d9c8e62b1931901e8631e30361",
+    "packages/fabric/src/isolate-pool.ts": "7674ed634d4106d631de7516474395badc13884760e25000a20cb0b499260879",
     "packages/fabric/src/journal.ts": "c3bf520e0396361a0cc8357e42ae28c03289846f36b1e084e4721478d63d1134",
     "packages/fabric/src/jsg-int.ts": "4304b6ce0bfbd03818c8ec58cbb16e5c6d90987d6d2533989d8fd610f3694022",
     "packages/fabric/src/loader-heap.ts": "2c692dc267af8f05a2e51ea9b31a490d7e4901ae172da989dcc27f2feeed2094",
