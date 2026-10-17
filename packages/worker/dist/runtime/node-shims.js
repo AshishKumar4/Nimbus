@@ -149,6 +149,9 @@ const __nimbusReflectApply = Reflect.apply;
 // The runner's stop and replay (runtime/stop-replay.ts), private to its
 // module: null in a runner without one.
 const __nimbusReplay = typeof __nimbusStopReplay !== "undefined" ? __nimbusStopReplay : null;
+// The clock for the shims' own reads (stop-replay's realNow): a program's
+// reads are its tape, and these are not the program's.
+const __nimbusOwnNow = __nimbusReplay ? __nimbusReplay.realNow : () => Date.now();
 // A connection opened through workerd's own socket class, which a program
 // reaches past every export of node:net and node:tls (it is the prototype of
 // tls.TLSSocket), is something a second run would do again: counted where
@@ -2010,7 +2013,7 @@ const __fsMod = (() => {
   // for itself, so only an entry keeps it). Reading the clock at each stat
   // instead gave a file a new mtime on every stat, which a watcher polling
   // mtimeMs reads as an edit.
-  function _ownWritten(k, at = Date.now()) {
+  function _ownWritten(k, at = __nimbusOwnNow()) {
     const entry = _nsOwnGet(k);
     if (entry !== undefined) entry.written = at;
     return at;
@@ -3411,7 +3414,7 @@ const __fsMod = (() => {
     const type = meta?.type || (meta?.isDir || meta?.isDirectory ? "directory" : "file");
     const isDir = type === "directory";
     const isSymlink = type === "symlink";
-    const now = Date.now();
+    const now = __nimbusOwnNow();
     // This process's own utimes, until it is reported back, ahead of the
     // namespace's (_recordLocalTimes).
     const own = key === undefined ? undefined : _localAttr("times", key)?.value;
@@ -5780,7 +5783,7 @@ const __fsMod = (() => {
   // stdio descriptors are character devices, not VFS files.
   // A terminal's: a character device, crw--w----.
   function _stdioStat() {
-    const now = Date.now();
+    const now = __nimbusOwnNow();
     return _newStats(0o020620, cred.uid, cred.gid, undefined, 0, now, now, now, 1);
   }
   // Node treats a null position — and a negative one, which libuv maps to
