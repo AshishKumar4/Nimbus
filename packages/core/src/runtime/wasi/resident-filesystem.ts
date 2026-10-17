@@ -1384,66 +1384,52 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     return holder!.client.submit(op).then(() => { owed = true; }, (error: unknown) => { owed = true; throw error; });
   };
   const pathOf = (path: RuntimeFsPath): string => (typeof path === 'string' ? path : path.path);
-  /** Where the store places `path` (its directory resolved, the name itself not followed), current first; DELEGATE when it cannot say. */
-  const placedWalk = (path: RuntimeFsPath): Walk | Delegate | Promise<Walk | Delegate> => {
-    if (holder === null || !store.ready()) return DELEGATE;
-    if (!owed || now) return walkFor(path, false);
-    counts.barriers++;
-    return store.barrier().then((ok) => {
-      if (!ok || !store.ready()) return DELEGATE;
-      owed = false;
-      return walkFor(path, false);
-    });
-  };
-
-  // Changes by name a held subtree holds are decided here; any other is the session's, through the client.
-  // A whole file written by name: made or emptied, written and closed here
-  // where the holder decides that open, as the three calls are.
-  const bySessionWriteFile = fs.writeFile;
-  fs.writeFile = (path, bytes, options) => {
-    if (holder === null || options?.createParents === true || options?.expectedRevision !== undefined) return bySessionWriteFile(path, bytes, options);
-    const data = typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes;
-    const flags: RuntimeOpenFlags = { write: true, create: true, truncate: true, mode: 0o666, ...(options?.umask === undefined ? {} : { umask: options.umask }) };
-    const local = decide<number>('writeFile', () => after(walkFor(path, true), (walk) => {
-      if (walk === DELEGATE || !decidable(walk.key, walk)) return DELEGATE;
-      return holder!.writeFile(walk.key, pathOf(path), data, flags) ?? DELEGATE;
-    }));
-    return after(local, (done) => (done !== DELEGATE ? done
-      : now ? provisionally(path, true, (key, row) => holder!.provisional.writeFile(key, pathOf(path), data, row, options?.umask) && (holder!.entry(key)?.revision ?? 0))
-      : bySessionWriteFile(path, bytes, options)));
-  };
-  const bySessionMkdir = fs.mkdir;
-  fs.mkdir = (path, options) => {
-    if (holder === null) return bySessionMkdir(path, options);
-    // A caller that cannot wait makes each missing directory on the way, as
-    // mkdir -p does; any other asks the session to.
-    if (options?.recursive) return now && typeof path === 'string' ? mkdirParents(path, options) : bySessionMkdir(path, options);
-    const mode = options?.mode ?? 0o777;
-    let named: string | undefined;
-    const local = decide<void>('mkdir', () => after(walkFor(path, false), (walk) => {
-      if (walk === DELEGATE) return DELEGATE;
-      named = walk.key;
-      if (!decidable(walk.key, walk)) return DELEGATE;
-      return after(holder!.mkdir(walk.key, pathOf(path), mode, options?.umask), (done) => (done ? undefined : DELEGATE));
-    }));
-    return after(local, (done) => (done !== DELEGATE ? undefined
-      : now ? void provisionally(path, false, (key, row) => holder!.provisional.mkdir(key, pathOf(path), mode, row, options?.umask))
-      : named !== undefined ? byClient('mkdir', { type: 'call', call: { call: 'mkdir', path: named, mode, ...(options?.umask === undefined ? {} : { umask: options.umask }) } }) : bySessionMkdir(path, options)));
-  };
+  /**
+   * mkdir -p for a caller that cannot wait: planned whole against the view
+   * first (`..` after a directory it is to make is that directory's parent,
+   * as the session's walk takes it), so a call that cannot answer now (a
+   * name the view cannot place, another filesystem's directory) refuses
+   * before it makes anything; then each directory planned made in order.
+   */
   const mkdirParents = (path: string, options: { mode?: number; umask?: number }): undefined => {
-    const keys = keyOf(path).split('/');
-    for (let at = 1; at <= keys.length; at++) {
-      const key = keys.slice(0, at).join('/');
-      const walked = walkOnce('', key, true);
+    const parts = path.split('/').filter((part) => part !== '' && part !== '.');
+    const planned: string[] = [];
+    const making = new Set<string>();
+    let current = '';
+    for (let at = 0; at < parts.length; at++) {
+      const part = parts[at]!;
+      const last = at === parts.length - 1;
+      if (part === '..') {
+        current = parentKey(current);
+        continue;
+      }
+      const next = current === '' ? part : `${current}/${part}`;
+      // Beneath a directory it is to make: nothing is there yet.
+      if (making.has(current)) {
+        planned.push(next);
+        making.add(next);
+        current = next;
+        continue;
+      }
+      const walked = walkOnce('', next, true);
       if (walked === null) throw fsError('ELOOP', 'mkdir', path);
       const entry = typeof walked === 'string' ? entryAt(walked) : undefined;
       if (entry === undefined) throw NOT_NOW;
       if (entry === null) {
-        fs.mkdir('/' + key, { ...(options.mode === undefined ? {} : { mode: options.mode }), ...(options.umask === undefined ? {} : { umask: options.umask }) });
+        const parent = entryAt(parentKey(walked as string));
+        // Made where the view cannot say it may be made (another filesystem, a mode it would have to judge): the session's.
+        if (!parent || parent.type !== 'directory' || parent.dev !== store.device) throw NOT_NOW;
+        if (!modeAllows(parent, 3, store.cred)) throw fsError('EACCES', 'mkdir', path);
+        if (((options.mode ?? 0o777) & 0o7000) !== 0) throw NOT_NOW;
+        planned.push(walked as string);
+        making.add(walked as string);
+        current = walked as string;
         continue;
       }
-      if (entry.type !== 'directory') throw fsError(at === keys.length ? 'EEXIST' : 'ENOTDIR', 'mkdir', path);
+      if (entry.type !== 'directory') throw fsError(last ? 'EEXIST' : 'ENOTDIR', 'mkdir', path);
+      current = walked as string;
     }
+    for (const key of planned) fs.mkdir('/' + key, { ...(options.mode === undefined ? {} : { mode: options.mode }), ...(options.umask === undefined ? {} : { umask: options.umask }) });
     return undefined;
   };
   const bySessionUnlink = fs.unlink;

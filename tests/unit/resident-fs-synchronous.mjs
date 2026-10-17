@@ -94,6 +94,14 @@ await runScenarios(import.meta.path, {
     await answersNow(e, 'readFile of a directory', () => sync.readFile(`${APP}/dir`), 'EISDIR');
   },
 
+  async 'mkdir -p is planned whole: one that reaches a name the view cannot place makes nothing'(e = undefined) {
+    e = await boot();
+    const sync = e.sync;
+    // APP listed: dir known, its children not. `..` after a directory to make leads back into APP.
+    await e.fs.readdir(APP);
+    await answersNow(e, 'mkdir -p through .. into an unlisted directory', () => sync.mkdir(`${APP}/new/../dir/child`, { recursive: true }), 'EAGAIN');
+    assert.equal(sync.stat(`${APP}/new`), null, 'a refused mkdir -p made a directory');
+  },
   async 'what the process holds is answered now, the barrier it owes not taken'(e = undefined) {
     e = await boot();
     const sync = e.sync;
