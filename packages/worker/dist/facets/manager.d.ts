@@ -364,6 +364,8 @@ interface FacetVfsState {
      * under the ceiling on the map lowers its bound from (_rebuildUnderCeiling).
      */
     rawBytes?: number;
+    /** This state's last one-shot map's owned bytes; a cache hit takes that share before generating it again. */
+    oneShotMapBytes?: number;
     /** Diagnostics: how the build's transforms were answered. */
     transforms?: BundleCellTransformStats;
     /**
@@ -1859,6 +1861,8 @@ export declare class FacetManager {
      * always maps to rpc_timeout regardless of message.
      */
     private _w5RecordTermination;
+    private _ensureOneShotShare;
+    private _oneShotMemberBytes;
     private _parkOneShotMap;
     /** Generate before waiting for a worker, keeping only the map's retained share until the load takes it. */
     private _prepareOneShotCode;
