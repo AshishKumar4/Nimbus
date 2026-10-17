@@ -32,7 +32,25 @@ function namespace(files) {
       ? { entries: entries.slice(0, 40), next: entries.length > 40 ? entries[39].path : null }
       : { entries: entries.slice(40), next: null },
     readText: async (p) => all.get(p.replace(/^\/+/, ''))?.text ?? null,
-    stat: async (p) => { const e = all.get(p.replace(/^\/+/, '')); return e ? { kind: e.kind, size: e.size } : null; },
+    // As a lookup resolves a path: through every link on it.
+    stat: async (p) => {
+      let segs = p.replace(/^\/+/, '').split('/');
+      for (let i = 1, hops = 0; i <= segs.length; i++) {
+        const e = all.get(segs.slice(0, i).join('/'));
+        if (e?.kind !== 'symlink') continue;
+        if (++hops > 40) return null;
+        const base = e.target.startsWith('/') ? [] : segs.slice(0, i - 1);
+        const resolved = [];
+        for (const seg of [...base, ...e.target.split('/'), ...segs.slice(i)]) {
+          if (seg === '' || seg === '.') continue;
+          if (seg === '..') resolved.pop(); else resolved.push(seg);
+        }
+        segs = resolved;
+        i = 0;
+      }
+      const e = all.get(segs.join('/'));
+      return e ? { kind: e.kind, size: e.size } : null;
+    },
     readdir: async (p) => {
       const dir = p.replace(/^\/+/, '');
       if (dir !== '' && all.get(dir)?.kind !== 'directory') return null;
