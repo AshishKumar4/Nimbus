@@ -52,15 +52,7 @@ const LOADER_EXTERNALS = [
   'cirrus-ws.js', 'cirrus-chokidar.js',
 ];
 
-// Modules we fully replace with stubs: the native-binding packages Vite 6
-// imports (lightningcss lazily, fsevents through chokidar), which won't run
-// inside workerd.
-const HARD_STUBS = [
-  'lightningcss',
-  'fsevents',
-];
-
-// esbuild gets its own stub (separate from HARD_STUBS because it
+// esbuild gets its own stub (separate from STUB_SOURCES because it
 // needs a different set of thrower functions). In real-vite mode
 // no esbuild call is ever reachable: vite:esbuild transform is
 // patched to use our CJS→ESM intercept, replaceDefine is patched
@@ -80,8 +72,10 @@ export const version = '0.0.0-cirrus-stub';
 export default { transform, build, context, formatMessages };
 `;
 
-// Each stub, as what Vite 6 reads of it: lightningcss's CSS entry points
-// (each throws if ever called), and fsevents' default export.
+// The native-binding packages Vite 6 imports, which won't run inside
+// workerd (lightningcss lazily, fsevents through chokidar), each replaced by
+// what Vite reads of it: lightningcss's CSS entry points (each throws if
+// ever called), and fsevents' default export.
 const STUB_SOURCES = {
   lightningcss: `
 const thrower = (name) => () => { throw new Error('[real-vite-spike] ' + name + ' is stubbed (native binding)'); };
@@ -95,7 +89,7 @@ export const bundleAsync = async () => thrower('lightningcss.bundleAsync')();
 const stubPlugin = {
   name: 'real-vite-stubs',
   setup(build) {
-    for (const s of HARD_STUBS) {
+    for (const s of Object.keys(STUB_SOURCES)) {
       const re = new RegExp('^' + s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\\//g, '\\/') + '$');
       build.onResolve({ filter: re }, (args) => ({ path: args.path, namespace: 'real-vite-stub' }));
     }
