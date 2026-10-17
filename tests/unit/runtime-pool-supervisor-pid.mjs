@@ -67,6 +67,8 @@ function world() {
   const ops = buildSessionSupervisorOps(host, createSupervisorBridgeStore({ vfs, processes, filesystem }));
   attachSupervisorOps(host, ops);
   root.mkdir('/home', { mode: 0o755 });
+  root.mkdir('/home/user', { mode: 0o755 });
+  root.chown('/home/user', 1000, 1000);
   const users = [1101, 2202].map((uid) => {
     const home = `/home/u${uid}`;
     root.mkdir(home, { recursive: true, mode: 0o700 });
@@ -158,7 +160,7 @@ for (const kind of ['python', 'ruby', 'loader', 'loader-per-call']) {
   try {
     if (kind === 'python') {
       w.scenario = async (supervisor) => assert.equal(supervisor, undefined, 'warm-up exposed a SUPERVISOR');
-      await warmPythonRepl({ ...w.deps, ...w.python, home: w.users[0].home });
+      await warmPythonRepl({ ...w.deps, ...w.python, home: '/home/user' });
       assert.equal(w.calls, 1, 'warm-up never reached its loaded worker');
     }
     const previous = new Map();
