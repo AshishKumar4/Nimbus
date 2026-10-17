@@ -12,6 +12,15 @@ const capture = () => captureTerminal(WebSocketTerminal);
 const output = (stdout = '') => ({ kind: 'output', stdout, stderr: '' });
 const baseAdapter = { ps1: '>>> ', ps2: '... ', banner: () => '', close: async () => {} };
 
+/** `text` without the notice a Ctrl-C prints on the line after `line`, which must be there. */
+const withoutNotice = (text, line) => {
+  const lines = text.split('\r\n');
+  const at = lines.indexOf(line) + 1;
+  assert.ok(at > 0 && lines[at].length > 0, `a Ctrl-C after ${JSON.stringify(line)} prints a notice`);
+  lines.splice(at, 1);
+  return lines.join('\r\n');
+};
+
 // Editing stays at the end, including after history, cancellation and a block.
 {
   const view = capture();
@@ -50,7 +59,7 @@ const baseAdapter = { ps1: '>>> ', ps2: '... ', banner: () => '', close: async (
     view.reset();
     view.terminal.sendData('discard\x03kept\r');
     await view.seen('EVAL 5');
-    assert.equal(view.text(), 'discard\r\nKeyboardInterrupt\r\n>>> kept\r\nEVAL 5\r\n>>> ');
+    assert.equal(withoutNotice(view.text(), 'discard'), 'discard\r\n>>> kept\r\nEVAL 5\r\n>>> ');
     view.reset();
     view.terminal.sendData('block\r');
     await view.seen('... ');
@@ -65,7 +74,7 @@ const baseAdapter = { ps1: '>>> ', ps2: '... ', banner: () => '', close: async (
     await view.seen('... ');
     view.terminal.sendData('abandoned\x03last\r');
     await view.seen('EVAL 9');
-    assert.equal(view.text(), 'block\r\n... abandoned\r\nKeyboardInterrupt\r\n>>> last\r\nEVAL 9\r\n>>> ');
+    assert.equal(withoutNotice(view.text(), '... abandoned'), 'block\r\n... abandoned\r\n>>> last\r\nEVAL 9\r\n>>> ');
     assert.deepEqual(calls, ['aDXY', 'two', 'fresZ', 'fres!', 'kept', 'block', 'block\ntail', 'block', 'last']);
     view.terminal.sendData('\x04');
     assert.equal(await bounded(run, 'empty-line Ctrl-D did not close the editor'), 0);
