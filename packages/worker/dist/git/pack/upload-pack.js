@@ -9,11 +9,10 @@
  * processor buffers more than one side-band packet.
  */
 import { retrying } from '@nimbus-sh/platform/retry.js';
-import { RETRY_ATTEMPTS, RETRY_BACKOFF_MS, STALL_MS, TRANSIENT_HTTP_STATUSES, UploadPackError, gitHttpHeaders, gitHttpRemote } from './transport.js';
+import { RETRY_ATTEMPTS, RETRY_BACKOFF_MS, STALL_MS, TRANSIENT_HTTP_STATUSES, UploadPackError, agentCapability, gitHttpHeaders, gitHttpRemote } from './transport.js';
 import { PktReader, pktLine, text } from './pkt-line.js';
 import { PackFormatError } from './format.js';
 import { answeredFailure, transportFailure } from './remote-failure.js';
-const AGENT = 'agent=git/nimbus';
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 /**
@@ -150,7 +149,7 @@ function requestCapabilities(advertised, request) {
             throw new UploadPackError('the server does not support --filter');
         capabilities.push('filter');
     }
-    capabilities.push(AGENT);
+    capabilities.push(...agentCapability(advertised));
     return capabilities;
 }
 /** One request, and the pack it answers with. */

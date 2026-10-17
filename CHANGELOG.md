@@ -5,6 +5,19 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Breaking (worker): `vendor/git.generated.mjs` no longer exports
+  `gitHttp`, cf-git's own HTTP client (isomorphic-git/http/web), nor
+  declares it (`vendor/git-http.generated.d.ts` is gone). Nimbus's git
+  speaks smart HTTP through its own clients (`git/pack/upload-pack.ts`,
+  `receive-pack.ts`), and nothing used it. The vendor module was never a
+  package export.
+- Changed: the built-in `git push` over HTTP speaks receive-pack through
+  Nimbus's own client (`git/pack/receive-pack.ts`), the one `git fetch`,
+  `git clone` and the git remote helpers already use. It streams its pack
+  as git does past `http.postBuffer`; before, cf-git collected the whole
+  request and sent it with a Content-Length. Push no longer reads the
+  isomorphic-git-only `http.corsProxy` setting, which fetch already
+  ignored and git never had.
 - Fixed: a hosted ES module, staged or interpreted, can statically import
   a `data:` module (`import x from 'data:text/javascript,…'`). Its imported
   names are checked before any module body runs. It runs once, in a cycle

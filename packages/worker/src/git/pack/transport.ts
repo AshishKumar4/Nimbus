@@ -4,10 +4,10 @@
  * crossed it is tried, and how far apart.
  *
  * - An HTTP request to the git server: upload-pack.ts's for a clone, a
- *   fetch and a pull, and cf-git's (retryingGitHttp) for a push. Retried
- *   when it failed before an answer, answered with a transient edge status,
- *   or sent no headers within STALL_MS; only an idempotent one (a GET, an
- *   upload-pack POST: it changes nothing on the server).
+ *   fetch and a pull, receive-pack.ts's for a push. Retried when it failed
+ *   before an answer, answered with a transient edge status, or sent no
+ *   headers within STALL_MS; only an idempotent one (a GET, an upload-pack
+ *   POST: it changes nothing on the server).
  * - A clone piece (network-facet.ts invokeClonePhase): its request failed
  *   in transit (an UploadPackError), or it hung. Objects are addressed by
  *   content, so a piece run again writes what it would have; a hung one
@@ -24,8 +24,7 @@
  * with its cause. Nothing else is retried.
  */
 
-import { retryDelayMs, retrying } from '@nimbus-sh/platform/retry.js';
-import type { HttpClient } from '../../../vendor/git-http.generated.js';
+import { retryDelayMs } from '@nimbus-sh/platform/retry.js';
 import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
 import { selectRemoteCredentials, type RemoteFailure } from './remote-failure.js';
 
@@ -64,6 +63,16 @@ export const STALL_MS = 45_000;
 /** What upload-pack.ts throws for a request to the git server that failed in transit. */
 export const UPLOAD_PACK_ERROR_PREFIX = 'git upload-pack: ';
 
+/**
+ * The agent capability a request asks with: only of a server that
+ * advertised its own, as fetch-pack.c and send-pack.c send it
+ * (gitprotocol-capabilities "agent"); a server that did not may refuse it.
+ */
+export function agentCapability(advertised: ReadonlySet<string>): string[] {
+  for (const capability of advertised) if (capability.startsWith('agent=')) return ['agent=git/nimbus'];
+  return [];
+}
+
 /** Whether a failure's message names a lost transport to the git server (a hang is known by its timeout). */
 export function isLostTransport(message: string): boolean {
   return message.startsWith(UPLOAD_PACK_ERROR_PREFIX);
@@ -72,31 +81,6 @@ export function isLostTransport(message: string): boolean {
 /** The wait before try `attempt + 2` (0-based `attempt` of the one that failed). */
 export function retryDelay(attempt: number, schedule: readonly number[] = RETRY_BACKOFF_MS): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, retryDelayMs(schedule, attempt)));
-}
-
-/**
- * cf-git's HTTP client under this policy (a push's: its fetch speaks
- * upload-pack.ts): a GET that fails before its answer, or is answered with a
- * transient status, is tried again; a receive-pack POST is not.
- * `schedule` is for tests.
- */
-export function retryingGitHttp(base: HttpClient, schedule: readonly number[] = RETRY_BACKOFF_MS): HttpClient {
-  return {
-    async request(request) {
-      if ((request.method ?? 'GET') !== 'GET') return await base.request(request);
-      return await retrying(() => base.request(request), {
-        retries: RETRY_ATTEMPTS - 1,
-        schedule,
-        retryReason: (outcome) => !outcome.ok ? 'failed in transit'
-          : TRANSIENT_HTTP_STATUSES.has(outcome.value.statusCode) ? 'HTTP ' + outcome.value.statusCode
-          : null,
-        // Its web client's body is the response's stream where streams iterate (workerd): cancelled, not left open.
-        discard: (response) => {
-          if (response.body instanceof ReadableStream) void response.body.cancel();
-        },
-      });
-    },
-  };
 }
 
 export class UploadPackError extends Error {
