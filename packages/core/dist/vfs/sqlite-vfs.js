@@ -5678,10 +5678,13 @@ export class SqliteVFS {
      * source's permission bits less the copier's umask, as cp(1) makes it; a
      * file there keeps its own mode. With \`keepMode\` (copyfile), the copy has
      * copyfileMode's bits, a file there too, set in this one write as chmod
-     * judges it (modeChange). Answers the copy's stat, the key it wrote
-     * (\`landed\`, the destination's links followed), and the file copied: its
-     * key and the revision of the version this write read (its row's
-     * generation then), which nothing after the read moves.
+     * judges it (modeChange). With \`preserve\` (cp -p), as a tree copy's
+     * entries (planCopyTree): the source's permission bits, a file there too,
+     * set as chmod judges it, its times, and its owner when root copies.
+     * Answers the copy's stat, the key it wrote (\`landed\`, the destination's
+     * links followed), and the file copied: its key and the revision of the
+     * version this write read (its row's generation then), which nothing
+     * after the read moves.
      */
     copyFile(src, dest, cred, options) {
         const source = this.checkAccess(src, 0o4, cred);
@@ -5707,10 +5710,18 @@ export class SqliteVFS {
         const made = prior ? undefined : this.creationAttrs(target.path, copiedPermissions(inode.mode, false), cred, false);
         let mode = prior ? prior.mode : made.mode;
         let gid = prior?.gid ?? made.gid;
-        if (options?.keepMode) {
-            // libuv's fchmod of what open left: the file there, or the one made.
+        let uid = prior?.uid ?? cred.uid;
+        if (options?.keepMode || options?.preserve) {
+            // libuv's fchmod (cp -p's) of what open left: the file there, or the one made.
             const opened = prior ?? { mode, uid: cred.uid, gid, isDir: false, kind: 'file' };
-            ({ mode, gid } = this.modeChange(opened, copyfileMode(inode.mode, inode.size, cred.uid), cred, target.path));
+            const wanted = options.preserve ? inode.mode & 0o7777 : copyfileMode(inode.mode, inode.size, cred.uid);
+            ({ mode, gid } = this.modeChange(opened, wanted, cred, target.path));
+        }
+        // cp -p's owner, which only root may give; a shared directory's group stands.
+        if (options?.preserve && cred.uid === 0) {
+            uid = inode.uid;
+            if (this.sharedDirectory(target.path) === undefined)
+                gid = inode.gid;
         }
         const builder = this.newPlan();
         builder.addInode({
@@ -5719,10 +5730,10 @@ export class SqliteVFS {
             kind: 'file',
             isDir: false,
             size: inode.size,
-            atime: now,
-            mtime: now,
+            atime: options?.preserve ? inode.atime : now,
+            mtime: options?.preserve ? inode.mtime : now,
             mode,
-            uid: prior?.uid ?? cred.uid,
+            uid,
             gid,
             content: { type: 'ref', chunkId: inode.chunkId, contentId: inode.contentId },
         });
