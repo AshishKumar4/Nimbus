@@ -532,21 +532,31 @@ assert.equal(noTs.rules.typescript.files, 0);
 }
 
 // A source on a mount the process's listing walks only where its launch
-// names: the plan names its root there, so the listing the process boots
-// from holds what the plan holds, and counts those names.
-{
+// names: the plan names where it read there, so the listing the process
+// boots from holds what the plan holds, and the plan counts the names that
+// adds. The source may be the mount, a directory above it, a file on it, or
+// a directory below its root, whose listing brings its parents' entries.
+async function mountedSource(label, sheet, mounts, sqlite, held) {
   const harness = createSqliteVfsTestHarness();
   const files = new ProcessFiles(new SqliteVFS(harness.sql, harness.ctx));
-  const device = new MemoryVFS();
-  device.mkdir('/ui', { recursive: true });
-  device.writeFile('/ui/Card.tsx', new TextEncoder().encode('<div class="bg-teal-700" />'));
-  files.vfs.mount('/shared-ui', device);
-  const kernel = files.bind({ pid: 8, cred: CRED_KERNEL });
   const text = (value) => new TextEncoder().encode(value);
-  await kernel.mkdir('/home/user/app/src', { recursive: true });
-  await kernel.writeFile('/home/user/app/src/index.css', text('@source "/shared-ui";'));
-  await kernel.mkdir('/home/user/app/node_modules/@tailwindcss/oxide', { recursive: true });
-  await kernel.writeFile('/home/user/app/node_modules/@tailwindcss/oxide/index.js', text('module.exports = {}'));
+  const kernel = files.bind({ pid: 8, cred: CRED_KERNEL });
+  const write = async (path, value) => {
+    await kernel.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true });
+    await kernel.writeFile(path, text(value));
+  };
+  await write('/home/user/app/src/index.css', sheet);
+  await write('/home/user/app/node_modules/@tailwindcss/oxide/index.js', 'module.exports = {}');
+  for (const [path, value] of Object.entries(sqlite)) await write(path, value);
+  for (const [point, tree] of Object.entries(mounts)) {
+    const device = new MemoryVFS();
+    for (const [path, value] of Object.entries(tree)) {
+      device.mkdir(path.slice(0, path.lastIndexOf('/')) || '/', { recursive: true });
+      device.writeFile(path, text(value));
+    }
+    await kernel.mkdir(point, { recursive: true });
+    files.vfs.mount(point, device);
+  }
   const binding = { pid: 7, cred: CRED_KERNEL };
   const bridge = files.bind(binding);
   const view = new ProcessView(bridge);
@@ -560,7 +570,6 @@ assert.equal(noTs.rules.typescript.files, 0);
       after = page.next;
     }
   };
-  assert.ok(!(await listing()).includes('shared-ui/ui/Card.tsx'), 'the launch named nothing on the mount');
   const plan = await planFacetData({
     list: async (after) => bridge.list(after, 500),
     readText: async (path) => view.readFileString(path).catch(() => null),
@@ -578,15 +587,23 @@ assert.equal(noTs.rules.typescript.files, 0);
   }, {
     cwd: '/home/user/app', home: '/home/user', refs: [],
     closure: ['home/user/app/node_modules/@tailwindcss/oxide/index.js'],
-    nameSources: (roots) => files.nameLaunch(binding, () => roots),
+    nameSources: (read) => files.nameLaunch(binding, () => read),
   });
-  assert.ok(plan.paths.includes('shared-ui/ui/Card.tsx'), `the mount's source is held: ${JSON.stringify(plan.paths)}`);
   const booted = await listing();
-  assert.ok(booted.includes('shared-ui/ui/Card.tsx'), 'and the listing the process boots from holds it');
-  assert.equal(plan.names, booted.length, 'the plan counts the names that listing holds');
+  for (const path of held) {
+    assert.ok(plan.paths.includes(path), `${label}: the mount's source ${path} is held: ${JSON.stringify(plan.paths)}`);
+    assert.ok(booted.includes(path), `${label}: and the listing the process boots from holds it`);
+  }
+  assert.equal(plan.names, booted.length, `${label}: the plan counts the names that listing holds`);
   await files.releaseProcess(7);
   await files.releaseProcess(8);
   harness.db.close();
 }
+await mountedSource('the mount', '@source "/shared-ui";', { '/shared-ui': { '/ui/Card.tsx': 'c' } }, {}, ['shared-ui/ui/Card.tsx']);
+await mountedSource('a directory above it', '@source "/shared";', { '/shared/ui': { '/Card.tsx': 'c' } },
+  { '/shared/S.tsx': 's' }, ['shared/ui/Card.tsx', 'shared/S.tsx']);
+await mountedSource('a file on it', '@source "/files/Card.tsx";', { '/files': { '/Card.tsx': 'c', '/Other.tsx': 'o', '/sub/X.tsx': 'x' } }, {}, ['files/Card.tsx']);
+await mountedSource('a directory below its root', '@source "/kit/ui/buttons";',
+  { '/kit': { '/ui/buttons/B.tsx': 'b', '/ui/cards/C.tsx': 'c', '/top.txt': 't' } }, {}, ['kit/ui/buttons/B.tsx']);
 
 console.log('data-plan: ok');
