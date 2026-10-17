@@ -236,16 +236,18 @@ Nimbus already has a real base:
 
 These areas exist, but are not yet good enough for Nimbus OS quality:
 
-- Python currently runs through Pyodide and has command execution, script
-  execution, stdlib, VFS-backed imports/file IO, command aliases, REPL
-  support, `pip`/`pip3`, `python -m pip`, requirements-file installs, local
-  pure-wheel installs, constraints, extras, environment markers, PyPI pure
-  wheel resolution, persistent `site-packages`, declared Pyodide startup-module
-  package artifacts, and deterministic native wheel ABI diagnostics. It does
-  not provide build isolation, general compiled extension builds, arbitrary
-  Pyodide/Emscripten package catalogs, or a complete upstream `pip` CLI
-  contract. Nimbus rejects request-time extension module loading because Workers
-  cannot compile arbitrary wasm after startup.
+- Python is CPython 3.13 cross-compiled to `wasm32-wasi` (cpython-runner),
+  with command execution, script execution, stdlib, VFS-backed imports/file
+  IO, command aliases, REPL support, `pip`/`pip3`, `python -m pip`,
+  requirements-file installs, local pure-wheel installs, constraints, extras,
+  environment markers, PyPI pure wheel resolution, persistent
+  `site-packages`, and deterministic native wheel ABI diagnostics.
+  `wasm32-wasi` has no `dlopen`, so a compiled package works only when it is
+  linked into the interpreter: the `python-sci` build carries numpy and
+  MarkupSafe's C speedups, chosen per invocation from what the session
+  installed. It does not provide build isolation, general compiled extension
+  builds, or a complete upstream `pip` CLI contract, and Pyodide/Emscripten
+  extension wheels are refused with an ABI diagnostic.
 - Ruby currently runs through ruby.wasm and has basic command execution,
   script execution, stdlib, VFS-backed require/file IO, command aliases, and
   REPL support. `gem`, `bundle`, and `bundler` install compatible pure Ruby
@@ -253,9 +255,9 @@ These areas exist, but are not yet good enough for Nimbus OS quality:
   generate a Nimbus lockfile, and reject native-extension gems with a precise
   ABI diagnostic. Full Bundler resolution and native-extension builds are not
   implemented.
-- Python and Ruby command runners use bounded VFS snapshots plus diff flushes.
-  That is acceptable for short one-shot commands, but it is not the final
-  live OS model.
+- Python and Ruby run as WASI modules over the session filesystem through the
+  WASI host (runtime/wasi): no per-command snapshot is copied in or diffed
+  back out.
 - Python virtual-socket previews are production-probed for Flask,
   `python -m flask run`, and `python -m http.server`. Ruby virtual-socket
   previews are production-probed for WEBrick and Rack. Broader WSGI/ASGI/Rack
@@ -371,7 +373,7 @@ behavior. They must stay documented until production probes prove otherwise.
 |---|---|---|
 | Durable storage under peer hosting | `NIMBUS_PROCESS_HOST=peer` supports ephemeral residents, not retained application SQLite. An explicit durable worker or a Node relaunch that owns a durable reservation is refused before a pid is allocated or announced, with a facet-host requirement. | Retained application storage requires `NIMBUS_PROCESS_HOST=facet`. Peer durability would need a separate authenticated, stable storage-owner contract; it is not silently emulated or moved between actors. |
 | opencode/Proteus CLIs | Pi's npm CLI path is production-probed. opencode runs as a Nimbus-staged JS bundle through the ESM facet: `--version`, `--help`, and `models` are production-probed working, and `opencode run` drives its full DB-backed pipeline (sqlite via the VFS-backed sql.js shim, in-process server, session, tool registry, model resolution) to the model-dispatch boundary, surfacing opencode's own domain errors cleanly. A real model stream additionally requires opencode account auth, and the full interactive TUI (libopentui Zig FFI) is out of scope. opencode requires Nimbus-specific build flags + deferred-entry source patches (scripts/opencode/); it is not an unmodified upstream binary. The local Proteus CLI is not yet proven in live Nimbus. | JavaScript CLIs launched from the terminal should see TTY=true when attached, TTY=false when piped, and should run unmodified unless they require unsupported native shards. |
-| Python package breadth | Flask and MarkupSafe pure-source artifact paths are production-probed, and declared Pyodide startup-module package artifacts are supported by the runtime catalog. `pip` is not a complete upstream build system. | Nimbus pip must resolve/install only Nimbus-compatible artifacts, preloaded PyEmscripten modules, pure wheels, or curated pure source artifacts. Unsupported extension artifacts fail before import with an ABI diagnostic. |
+| Python package breadth | Flask and MarkupSafe pure-source artifact paths are production-probed, and numpy and MarkupSafe's C speedups are linked into the `python-sci` interpreter. `pip` is not a complete upstream build system. | Nimbus pip must resolve/install only pure wheels, curated pure source artifacts, or packages linked into the interpreter. Unsupported extension artifacts fail before import with an ABI diagnostic. |
 | Shell parser debt | The shell has structured parser/interpreter support for common POSIX-like constructs, but final field splitting, alias/quote handling, heredoc behavior, trap/job-control semantics, and script parity still need hardening. | Shell syntax should be represented in an AST and executed through structured semantics, not regex rewrites in the hot path. |
 | Native platform packages | Native `linux-x64`, `darwin`, `win32`, manylinux wheels, and native gems cannot execute. | Package managers must select Nimbus ABI artifacts, pure packages, or fail early with exact unsupported ABI reasons. |
 | Vite 8 and Astro 7 native bindings | Nimbus stages threadless wasm32-wasip1 builds of rolldown 1.2.11, satteri 0.10.5 and @astrojs/compiler-binding 0.5.1. One recipe (`scripts/napi-wasm/build.mjs`, pins in `specs.mjs`) records source archive digests, toolchains, lockfiles, flags, exact-match seams and output hashes. All three wasm outputs reproduced byte-for-byte in a second work directory. The shared loader uses emnapi's non-threaded N-API, Nimbus's WASI filesystem codec and, for rolldown, an event-loop-driven current-thread executor with JSPI for non-resident reads. Assets remain on the digest-verified ASSETS/VFS path, not in every session's host bundle. The owner and WASI-binding package names use staged-artifact policy entries; lightningcss and rollup select their upstream wasm packages. Native Buffer is shared with crypto/zlib rather than emulated. | Keep source pins and artifact provenance in lockstep. Guest wasm linear memory was measured after a real Vite build; that is not a measurement of total isolate heap or compiled-code memory against the 128 MiB limit. |

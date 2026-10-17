@@ -19,7 +19,7 @@ hello from clang on the edge
 
 `node` and `bun` run on workerd's `nodejs_compat` V8 with Nimbus shims for
 `fs`, `child_process`, HTTP, and streams. They are not the upstream Node or
-Bun binaries. `python` is Pyodide CPython 3.13.
+Bun binaries. `python` is CPython 3.13 cross-compiled to `wasm32-wasi`.
 `ruby` is ruby.wasm 3.3. `clang` is LLVM 8 with a modern wasi-libc sysroot.
 It compiles C in the session to `wasm32-wasi-nimbus`, including multi-file
 builds, user headers, and `fopen` against session files. `-pthread` is
@@ -41,19 +41,21 @@ gem install rack                # pure gems from RubyGems (alpha)
 npm works against the live registry. Tarballs cache in R2 across sessions,
 large dependency trees shard across peer DOs, and a 611-package app installs
 in ~165 s cold. `pip` and `gem` are alpha. Pure packages work end to end, and
-Flask and Rack apps run in preview tabs. Curated source artifacts and declared
-Pyodide extension modules also work. Runtimes are packages too. Run `python`
+Flask and Rack apps run in preview tabs. Curated source artifacts also work.
+`wasm32-wasi` has no `dlopen`, so a compiled Python package works only when it
+is linked into the interpreter: numpy and MarkupSafe's C speedups are, and
+pip refuses other extension wheels with an ABI diagnostic. Runtimes are
+packages too. Run `python`
 before installing it and the shell prints the install hint.
 
 The terminal below asks for a runtime that is not installed, installs it
 with `nimbus install`, and opens the CPython REPL it just fetched. The
-install pulls ~19 MiB of Pyodide from the content-addressed cache, usually
+install pulls the ~11 MiB interpreter and its stdlib from the content-addressed cache, usually
 seconds, up to a minute cold.
 
 <NimbusSandbox
 	title="nimbus — toolchains"
 	rows={16}
-	demoId="toolchains"
 	demo={[
 		'python --version',
 		['nimbus install python', 120_000],
