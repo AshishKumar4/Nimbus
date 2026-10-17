@@ -15,7 +15,7 @@
 // A divergence must be listed, with its reason, in the fixture's DIVERGENT.
 
 import assert from 'node:assert/strict';
-import { tokenizer } from 'acorn';
+import { createRequire } from 'node:module';
 import { CASES, DIVERGENT } from '../fixtures/transform-differential/cases.mjs';
 import { generateTransformFacetRuntimeSource } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { rewriteDynamicImports } from '../../packages/core/src/runtime/dynamic-import-rewrite.ts';
@@ -27,6 +27,7 @@ import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
 import { oxcEngine } from './lib/oxc-engine.mjs';
 import { originalPosition } from './lib/sourcemap-vlq.mjs';
 
+const { tokenizer } = createRequire(new URL('../../packages/core/package.json', import.meta.url))('acorn');
 const { runTransformRequest } = new Function(`${generateTransformFacetRuntimeSource()}\nreturn { runTransformRequest };`)();
 // What the transform facet's preamble installs beside its engine.
 const runtime = { rewriteDynamicImports, readEsModule, rewriteProvidedCommonJsModules };
