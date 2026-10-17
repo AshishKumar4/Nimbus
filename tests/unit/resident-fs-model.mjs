@@ -125,6 +125,9 @@ async function run(steps, grants = false) {
     const wave = met.waves.find((answer) => KNOWN_ENGINE_BUG.test(answer?.error?.message ?? ''));
     if (wave !== undefined) throw Object.assign(new Error(`known engine bug (wave EIO "${wave.error.message}", ToughWallaby P1): ${error.message}`), { known: true });
     throw error;
+  } finally {
+    // Each program alone: nothing of one (its held waves, its timers) is left to run beside the next.
+    await met.end?.();
   }
 }
 
@@ -147,6 +150,11 @@ async function runSteps(steps, met, grants) {
     gate: { then: (resolve, reject) => (control.held ? control.opened.promise : Promise.resolve()).then(resolve, reject) },
   });
   met.waves = s.waves;
+  met.end = async () => {
+    control.held = false;
+    control.opened.resolve();
+    await Promise.race([s.fs.settle().catch(() => {}), new Promise((resolve) => setTimeout(resolve, 2000))]);
+  };
   const ref = session();
   const sync = s.fs.synchronous;
   const direct = ref.filesystem.bind({ pid: 8, cred: user });
