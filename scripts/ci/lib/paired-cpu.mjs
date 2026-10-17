@@ -15,7 +15,8 @@ import { median, medianInterval } from '../../lib/statistics.mjs';
  * median of each run's paired branch-minus-null differences (a second copy
  * of the baseline), its bootstrap interval, and the
  * spread of the runs' null deltas, the A/A. The bar is no detectable loss: a
- * kind fails only when its interval lies wholly above 0.
+ * kind fails when its interval lies wholly above 0 (confirmedVerdicts then
+ * asks a second set of runs).
  */
 export function pairedCpuVerdicts(runs) {
   return (runs[0] ?? []).map(({ kind }) => {
@@ -28,6 +29,21 @@ export function pairedCpuVerdicts(runs) {
     const aaSpread = [Math.min(...aa), Math.max(...aa)];
     const failures = ci95[0] > 0 ? [`slower: the paired CPU delta's interval [${ci95[0]}, ${ci95[1]}] ms lies above 0`] : [];
     return { kind, runs: deltas.length, medianA: median(of.map((result) => result.medianA)), medianB: median(of.map((result) => result.medianB)), medianDelta: median(deltas), ci95, aaSpread, failures };
+  });
+}
+
+/**
+ * `verdicts` with each slower kind confirmed by `again` (the verdicts of a
+ * second set of runs): a kind is slower only when both sets find it slower.
+ * Its interval is drawn from one set of processes, and at 95% a bench with
+ * a dozen kinds finds about one slower in two runs that are not.
+ */
+export function confirmedVerdicts(verdicts, again) {
+  return verdicts.map((verdict) => {
+    if (verdict.failures.length === 0) return verdict;
+    const second = again.find((other) => other.kind === verdict.kind);
+    const confirmation = { medianDelta: second.medianDelta, ci95: second.ci95, failures: second.failures };
+    return { ...verdict, confirmation, failures: second.failures.length > 0 ? [...verdict.failures, 'confirmed: a second set of runs finds it slower too'] : [] };
   });
 }
 
@@ -64,21 +80,27 @@ export async function remotePairedCpu({ name, receipts, source, baselineDir, fil
         .split('\n').filter(Boolean).map((path) => path.slice(source.length + 1)) : []),
   ])];
   const measured = overlayCommit(repo, sha, names.map((path) => ({ path: `${baselineDir}/${path}`, bytes: git('show', `${base}:${source}/${path}`) })));
-  const run = await mapOnArmada({
+  const runSet = (label) => mapOnArmada({
     repo, sha: measured, files: [], items: Array.from({ length: RUNS }, (_, i) => i + 1), pool: RUNS, timeout: 1200,
-    label: `${name} ${sha.slice(0, 12)}`,
+    label: `${name} ${sha.slice(0, 12)}${label}`,
     command: [...command, '--baseline', baselineDir, '--out', '{out}', ...(values.short ? ['--short'] : [])],
   });
-  const runs = run.outputs.filter((output) => output !== null).map((output) => JSON.parse(output));
-  const verdicts = values.short ? [] : pairedCpuVerdicts(runs);
+  const resultsOf = (set) => set.outputs.filter((output) => output !== null).map((output) => JSON.parse(output));
+  const run = await runSet('');
+  const runs = resultsOf(run);
+  const first = values.short ? [] : pairedCpuVerdicts(runs);
+  // A slower kind is measured again, on a second set of runs, before it is called slower.
+  const confirmation = first.some((verdict) => verdict.failures.length > 0) ? await runSet(' confirmation') : null;
+  const verdicts = confirmation ? confirmedVerdicts(first, pairedCpuVerdicts(resultsOf(confirmation))) : first;
   const directory = join(NIMBUS_STATE, receipts);
   mkdirSync(directory, { recursive: true });
   const receipt = join(directory, `${values.short ? 'short-' : ''}${sha.slice(0, 12)}-${run.jobId}.json`);
-  writeFileSync(receipt, `${JSON.stringify({ baseline: base, head: sha, short: values.short, performanceGraded: !values.short, verdicts, ...run }, null, 2)}\n`);
+  writeFileSync(receipt, `${JSON.stringify({ baseline: base, head: sha, short: values.short, performanceGraded: !values.short, verdicts, ...run, ...(confirmation ? { confirmation } : {}) }, null, 2)}\n`);
   console.log(`receipt: ${receipt}`);
-  for (const outcome of run.outcomes) if (outcome.kind !== 'exited' || outcome.exitCode !== 0) console.log(outcome.tail);
+  const sets = [run, ...(confirmation ? [confirmation] : [])];
+  for (const set of sets) for (const outcome of set.outcomes) if (outcome.kind !== 'exited' || outcome.exitCode !== 0) console.log(outcome.tail);
   for (const verdict of verdicts) console.log(JSON.stringify(verdict));
-  const complete = runs.length === RUNS && run.outcomes.every((outcome) => outcome.kind === 'exited' && outcome.exitCode === 0);
+  const complete = sets.every((set) => resultsOf(set).length === RUNS && set.outcomes.every((outcome) => outcome.kind === 'exited' && outcome.exitCode === 0));
   if (values.short) console.log(`short smoke: ${runs.length}/${RUNS} runs completed; performance is not graded`);
   process.exit(complete && verdicts.every((verdict) => verdict.failures.length === 0) ? 0 : 1);
 }

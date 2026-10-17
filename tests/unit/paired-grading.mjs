@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import { gradePaired } from '../behavioral/_paired.mjs';
-import { pairedCpuVerdicts } from '../../scripts/ci/lib/paired-cpu.mjs';
+import { confirmedVerdicts, pairedCpuVerdicts } from '../../scripts/ci/lib/paired-cpu.mjs';
 import { median } from '../../scripts/lib/statistics.mjs';
 
 /** A seeded normal source (Box-Muller over mulberry32), so every run draws the same samples. */
@@ -157,6 +157,20 @@ for (const shift of [-10, 0, 10]) {
   assert.equal(verdict.medianDelta, shift);
   assert.deepEqual(verdict.ci95, [shift, shift]);
   assert.equal(verdict.failures.length > 0, shift > 0);
+}
+
+// A slower kind is slower only when a second set of runs finds it slower
+// too; a kind the first set clears is not asked again.
+{
+  const graded = (shift) => pairedCpuVerdicts(cpuRuns([100, 200, 300].map((ms) => ({ A1: ms, A2: ms, null: ms, real: ms + shift }))))[0];
+  const [held] = confirmedVerdicts([graded(10)], [graded(10)]);
+  assert.equal(held.failures.length, 2, JSON.stringify(held));
+  assert.deepEqual(held.confirmation.ci95, [10, 10]);
+  const [cleared] = confirmedVerdicts([graded(10)], [graded(0)]);
+  assert.deepEqual(cleared.failures, [], 'slower on one set of runs only: not slower');
+  assert.deepEqual(cleared.confirmation.ci95, [0, 0], 'and the verdict keeps what the second set found');
+  const [untouched] = confirmedVerdicts([graded(0)], [graded(10)]);
+  assert.deepEqual(untouched, graded(0), 'a kind the first set clears is graded by it alone');
 }
 
 console.log('paired-grading: ok');

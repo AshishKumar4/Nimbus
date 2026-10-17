@@ -58,8 +58,12 @@ export function defaultBaseline(repo, sha) {
 export function pairedPreviews({ repo, runDir, log = (line) => console.error(line) }) {
   const piped = runDir.stdio(['ignore', 'pipe', 'pipe']);
   const runId = randomBytes(3).toString('hex');
+  /** Which set of Previews this is: the first, or a fresh one stood up after it (replace). */
+  let set = 1;
   const worktrees = [];
   const previews = [];
+  /** Previews of an earlier set that could not be taken down, each with the command that finishes it. */
+  const notTakenDown = [];
   const arms = {};
   let left = null;
   /** A clean checkout at `commit`: this one when it is there, else a detached worktree with dependencies installed. */
@@ -78,6 +82,11 @@ export function pairedPreviews({ repo, runDir, log = (line) => console.error(lin
   /** The deployment `arm` serves now, read by this checkout's script (an older baseline's has no `version`). */
   const version = async (arm) => (await run(repo, 'bun', throwaway(['version'], arm), piped)).trim();
   const receipts = {};
+  /** Take down each of `which`, from its checkout; returns what could not be, each with the command that finishes it. */
+  const takeDown = (which) => which.flatMap(({ name, checkout }) => {
+    const down = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'down', '--name', name], { cwd: checkout, encoding: 'utf8', stdio: piped });
+    return down.status === 0 ? [] : [`Preview ${name}: finish with (cd ${checkout} && bun tests/behavioral/_throwaway-target.mjs down --name ${name})`];
+  });
   /** The stand-up while it runs, so `halt` waits for it to unwind. */
   let standing = Promise.resolve();
   /** Upload each arm; see standUp. */
@@ -88,7 +97,7 @@ export function pairedPreviews({ repo, runDir, log = (line) => console.error(lin
     const groups = new Map();
     for (const arm of ARMS) {
       const checkout = await checkoutAt(commit[arm]);
-      arms[arm] = { name: `pp-${runId}-${arm}`, checkout };
+      arms[arm] = { name: set === 1 ? `pp-${runId}-${arm}` : `pp-${runId}-${set}-${arm}`, checkout };
       groups.set(checkout, [...(groups.get(checkout) ?? []), arm]);
     }
     const settled = await Promise.allSettled([...groups.values()].map(async (group) => {
@@ -110,6 +119,16 @@ export function pairedPreviews({ repo, runDir, log = (line) => console.error(lin
      * two checkouts at once; every upload settles before a failure is thrown.
      */
     standUp(options) {
+      standing = upload(options);
+      return standing;
+    },
+    /**
+     * Take this set of Previews down and stand up a fresh one from the same
+     * checkouts and releases: where a Preview lands is drawn again.
+     */
+    replace(options) {
+      notTakenDown.push(...takeDown(previews.splice(0)));
+      set++;
       standing = upload(options);
       return standing;
     },
@@ -148,11 +167,7 @@ export function pairedPreviews({ repo, runDir, log = (line) => console.error(lin
     /** Delete every Preview and worktree made here, once; returns what could not be, each with the command that finishes it. */
     teardown() {
       if (left) return left;
-      left = [];
-      for (const { name, checkout } of previews) {
-        const down = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'down', '--name', name], { cwd: checkout, encoding: 'utf8', stdio: piped });
-        if (down.status !== 0) left.push(`Preview ${name}: finish with (cd ${checkout} && bun tests/behavioral/_throwaway-target.mjs down --name ${name})`);
-      }
+      left = [...notTakenDown, ...takeDown(previews)];
       for (const dir of worktrees) {
         if (left.some((line) => line.includes(dir))) continue;
         try { git(repo, ['worktree', 'remove', '--force', dir]); } catch (error) { left.push(`worktree ${dir}: ${error.message}`); }

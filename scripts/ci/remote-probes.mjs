@@ -44,7 +44,8 @@
 // the commit's merge-base with origin/main) beside the candidate, stands up
 // four fresh throwaways (lib/paired-previews.mjs: two of the baseline, two
 // of the candidate), runs those probes in a task of their own beside the
-// parts, and deletes the throwaways when the run ends.
+// parts, and deletes the throwaways when the run ends. A paired probe red
+// there is run again on a fresh set of four, and is red only if red on both.
 //
 // A red row whose session socket closed 1006 (the run's session ledger) or
 // that shows E_NIMBUS_DO_OVERLOADED is attributed from the platform's own
@@ -209,7 +210,7 @@ try {
     await arms.standUp({ baseline, candidate: sha, releases });
     for (const [arm, id] of Object.entries(arms.receipts())) expected[`arm ${arm}`] = id;
   }
-  status = await probeRun();
+  status = await probeRun({ baseline, releases });
 } catch (error) {
   console.error(`remote-probes: NOT GRADED — ${error.message}`);
   status = 2;
@@ -249,8 +250,12 @@ async function credentials() {
   return { base, token, arms: arms ? await arms.credentials(TOKEN_TTL_MS) : null, startBy };
 }
 
-/** The suite against the target, and its verdict kept; resolves to the run's exit status. */
-async function probeRun() {
+/**
+ * The suite against the target, and its verdict kept; resolves to the run's
+ * exit status. `baseline` and `releases` stand up a fresh set of paired
+ * Previews to confirm a paired red on.
+ */
+async function probeRun({ baseline, releases }) {
   const secrets = [];
   const scrub = (text) => secrets.reduce((scrubbed, secret) => scrubbed.replaceAll(secret, '[NIMBUS_PROBE_TOKEN]'), text);
   /** Map `list` on armada with credentials of its own; every token it carries is scrubbed from what this prints and keeps. */
@@ -330,6 +335,33 @@ async function probeRun() {
       });
     } catch (error) {
       problems.push(`the regrade could not run: ${scrub(error.message)}`);
+    }
+  }
+
+  // A paired probe red on one set of Previews is run again on a fresh set,
+  // and is red only if red on both: a set can land slow as a whole, and
+  // where it landed is drawn again; a slower candidate is slower on both.
+  const pairedRed = tasks.flatMap((task) => (task.rows ?? []).filter((row) => row.exitCode === 1 && !row.regraded
+    && PAIRED_PROBES.some((probe) => row.name === `tests/behavioral/${probe}.mjs`)));
+  if (arms && pairedRed.length > 0) {
+    const probes = [...new Set(pairedRed.map((row) => row.name.replace(/^tests\/behavioral\//, '').replace(/\.mjs$/, '')))];
+    const confirm = [{ task: 'paired perf on fresh Previews', part: '1/1', only: probes.join(','), skip: '', jobs: 1 }];
+    try {
+      await arms.replace({ baseline, candidate: sha, releases });
+      for (const [arm, id] of Object.entries(arms.receipts())) expected[`arm ${arm}`] = id;
+      const again = await mapItems(confirm, `remote-probes ${sha.slice(0, 12)} paired confirmation`);
+      problems.push(...again.moved);
+      const [rerun] = readTasks(confirm, again.mapped, scrub);
+      tasks.push(rerun);
+      for (const row of pairedRed) {
+        const second = rerun.rows?.find((other) => other.name === row.name);
+        if (second?.exitCode === 0) {
+          row.regraded = { task: confirm[0].task, evidence: ['red on one set of Previews and green on a fresh set: where they landed, not the code'] };
+          console.log(`REGRADED ${row.name}: red on one set of Previews, green on a fresh set`);
+        } else if (second) console.log(`CONFIRMED ${row.name}: red on two sets of Previews`);
+      }
+    } catch (error) {
+      problems.push(`the paired confirmation could not run: ${scrub(error.message)}`);
     }
   }
 
