@@ -15,6 +15,7 @@
 import { crc32 } from './crc32.js';
 import { CHUNK_SIZE } from './limits.js';
 import { utf8Length } from './utf8.js';
+import { rootClampedSegments } from './lexical-path.js';
 export const W7_MAGIC = new Uint8Array([0x4e, 0x57, 0x37, 0x04]);
 /** v3's magic: decoded, never encoded, for the release that rolls v4 out. Delete with v3 decoding. */
 const W7_MAGIC_V3 = new Uint8Array([0x4e, 0x57, 0x37, 0x03]);
@@ -1101,17 +1102,7 @@ class PathOwnership {
     }
 }
 function normalizePath(path) {
-    const out = [];
-    for (const segment of path.split('/')) {
-        if (segment === '..') {
-            if (out.length > 0)
-                out.pop();
-        }
-        else if (segment !== '' && segment !== '.') {
-            out.push(segment);
-        }
-    }
-    return out.join('/');
+    return rootClampedSegments(path).join('/');
 }
 function parentPath(path) {
     const index = path.lastIndexOf('/');

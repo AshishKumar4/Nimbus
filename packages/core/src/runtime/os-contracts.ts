@@ -1,4 +1,5 @@
 import type { VfsEvent } from '../vfs/events.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 import type { VfsRemoval } from '../vfs/vfs.js';
 
 /**
@@ -358,15 +359,7 @@ export async function gateSyncLaunch(
 
 /** The paths a synchronous-reading launch names (see {@link gateSyncLaunch}). */
 export function launchNamedPaths(cwd: string, program: string | null, argv: readonly string[]): string[] {
-  const anchor = (path: string) => {
-    const joined = path.startsWith('/') ? path : `${cwd.replace(/\/+$/, '')}/${path}`;
-    const out: string[] = [];
-    for (const part of joined.split('/')) {
-      if (part === '' || part === '.') continue;
-      if (part === '..') out.pop(); else out.push(part);
-    }
-    return `/${out.join('/')}`;
-  };
+  const anchor = (path: string) => `/${rootClampedSegments(path.startsWith('/') ? path : `${cwd}/${path}`).join('/')}`;
   const named = program === null ? [] : [anchor(program)];
   for (const arg of argv) if (arg !== '' && !arg.startsWith('-')) named.push(anchor(arg));
   return named;

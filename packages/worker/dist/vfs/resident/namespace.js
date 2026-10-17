@@ -29,6 +29,7 @@
 import { namespaceRowBytes } from './cell-cost.js';
 import { namespaceAllows } from './permissions.js';
 import { NS_DIR, NS_FILE, NS_LINK } from './tables.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 /** Symlink hops before a resolution is ELOOP, as Linux's MAXSYMLINKS. */
 const NS_MAX_HOPS = 40;
 export function nsSplit(k) {
@@ -88,16 +89,7 @@ export function nsRowAt(t, k) {
 }
 function joinTarget(linkPath, target) {
     const text = String(target);
-    const parts = text.startsWith('/') ? [] : nsSplit(linkPath)[0].split('/').filter(Boolean);
-    for (const seg of text.split('/')) {
-        if (seg === '' || seg === '.')
-            continue;
-        if (seg === '..')
-            parts.pop();
-        else
-            parts.push(seg);
-    }
-    return parts.join('/');
+    return rootClampedSegments(text, text.startsWith('/') ? [] : nsSplit(linkPath)[0].split('/').filter(Boolean)).join('/');
 }
 export function createNamespace(coherence, admission) {
     /** Paths of every symlink in the table: resolution walks only past these. */

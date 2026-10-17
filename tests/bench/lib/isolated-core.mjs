@@ -25,7 +25,7 @@ export async function loadIsolatedCore(from, cleanup) {
     }
   }
   const at = (path) => import(pathToFileURL(join(fixture, path)).href);
-  const [{ SqliteVFS }, { CompositeVFS }, { sqliteFiles, SqliteFiles }, { ProcessFiles }] = await Promise.all(
-    ['vfs/sqlite-vfs.ts', 'vfs/composite.ts', 'vfs/sqlite-files.ts', 'runtime/process-files.ts'].map(at));
-  return { SqliteVFS, CompositeVFS, sqliteFiles, SqliteFiles, ProcessFiles };
+  const [{ SqliteVFS }, { CompositeVFS }, { sqliteFiles, SqliteFiles }, { ProcessFiles }, { normalizeVfsPath }] = await Promise.all(
+    ['vfs/sqlite-vfs.ts', 'vfs/composite.ts', 'vfs/sqlite-files.ts', 'runtime/process-files.ts', 'vfs/path.ts'].map(at));
+  return { SqliteVFS, CompositeVFS, sqliteFiles, SqliteFiles, ProcessFiles, normalizeVfsPath };
 }
