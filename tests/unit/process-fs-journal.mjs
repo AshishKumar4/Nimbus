@@ -196,6 +196,23 @@ function mortalPort(s, live = Infinity) {
   assert.equal(sqlJournal(harness.sql).bytes, 0);
 }
 
+// ── A new entry refused by the journal does not disturb its preceding folded tail ──
+{
+  const s = session();
+  const harness = createSqliteVfsTestHarness();
+  const c = processFsClient({ session: s.port, journal: sqlJournal(harness.sql), retry: RETRY });
+  c.submit(writeFile('home/user/out/prefix', 'a'), { acknowledged: true });
+  c.submit(append('home/user/out/prefix', '-b'), { acknowledged: true });
+  harness.failOnStatement(1, new Error('new entry refused'));
+  const refused = c.submit(writeFile('home/user/out/refused', 'lost'), { acknowledged: true });
+  c.submit(append('home/user/out/prefix', '-c'), { acknowledged: true });
+  await assert.rejects(refused, /new entry refused/);
+  await c.settle();
+  assert.equal(s.text('home/user/out/prefix'), 'a-b-c');
+  assert.equal(s.text('home/user/out/refused'), null);
+  assert.equal(c.stats().folded, 2);
+}
+
 // ── Plain entries need only their row; the pieces cache follows writes and reopening ──
 {
   const harness = createSqliteVfsTestHarness();
