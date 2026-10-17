@@ -167,7 +167,10 @@ export class SqliteRuntimeFsBridge {
                         ? this.vfs.readFileUncached(located.path)
                         : this.vfs.readFile(located.path);
                 }
-                return this.processView(located, options.followSymlinks !== false) ?? located.mount.readFile(located.path);
+                const bytes = this.processView(located, options.followSymlinks !== false) ?? located.mount.readFile(located.path);
+                // An uncached read hands back bytes of its own, as SQLite's does: a
+                // mount's may be the very bytes it keeps.
+                return options.cached === false && bytes !== null ? bytes.slice() : bytes;
             }
             catch (error) {
                 if (hasErrorCode(error, 'ENOENT'))

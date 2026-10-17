@@ -14,6 +14,20 @@ export interface SupervisorAllocationBudgetStats {
     readonly peak: number;
     readonly queued: number;
 }
+/**
+ * A facet's load the budget did not admit within its bound
+ * (SUPERVISOR_LOAD_WAIT_MS): nothing of it was read, and the facet is not
+ * started. Resource temporarily unavailable, as the ledger's refusal of a
+ * wait no release can satisfy is.
+ */
+export declare class SupervisorLoadWaitError extends Error {
+    readonly load: string;
+    readonly bytes: number;
+    readonly waitedMs: number;
+    readonly code = "EAGAIN";
+    readonly errno = -11;
+    constructor(load: string, bytes: number, waitedMs: number, held: SupervisorAllocationBudgetStats);
+}
 interface AllocationBudgetLifecycle {
     onActive?: () => void;
     onIdle?: () => void;
@@ -51,6 +65,19 @@ export declare class SupervisorAllocationBudget {
      * stops a large read overlapping a large write.
      */
     acquireWithoutLifecycle(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
+    /**
+     * Reserve what a facet's load holds while the loader takes its module map:
+     * `bytes`, or for a load larger than the whole budget the whole budget, so
+     * that it holds it alone and every owner after it waits. Granted in the
+     * budget's one FIFO order, so no owner queued after a load overtakes it,
+     * however small, and refused with SupervisorLoadWaitError when not granted
+     * within `waitMs`. Like a copy it holds bytes the session already has, for
+     * as long as the load takes, so the disposable VFS cache is not shrunk.
+     */
+    acquireLoad(load: string, bytes: number, options: {
+        waitMs: number;
+        signal?: AbortSignal;
+    }): Promise<ResizableCreditLease>;
     /** Reserve bytes now or not at all, driving the lifecycle as acquire does (or not, `drivesLifecycle` false). */
     tryAcquire(bytes: number, drivesLifecycle?: boolean): ResizableCreditLease | null;
     private _acquire;
@@ -99,6 +126,15 @@ export declare function acquireSupervisorReadAllocation(bytes: number, signal?: 
 export declare function tryAcquireSupervisorCopyAllocation(bytes: number): ResizableCreditLease | null;
 /** {@link tryAcquireSupervisorCopyAllocation}, waiting for room. */
 export declare function acquireSupervisorCopyAllocation(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
+/**
+ * Run `load`, a facet's load holding `bytes` of this isolate while the loader
+ * takes its module map (the wasm images read for it; `name` says whose),
+ * admitted on the supervisor budget for as long as it runs
+ * (SupervisorAllocationBudget.acquireLoad): FIFO, the whole budget for one
+ * larger than it, refused by name after SUPERVISOR_LOAD_WAIT_MS. `signal`
+ * ends the wait.
+ */
+export declare function withSupervisorLoadAllocation<T>(name: string, bytes: number, signal: AbortSignal | undefined, load: () => Promise<T>): Promise<T>;
 /**
  * Reserve the full budget for an allocation whose retained size is not known
  * accurately enough to overlap safely with other heavy work.

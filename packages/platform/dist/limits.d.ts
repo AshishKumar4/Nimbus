@@ -106,6 +106,7 @@ export declare const RESIDENT_PAGE_BYTES: number;
 export declare const RESIDENT_PAGE_CACHE_BYTES: number;
 export declare const RESIDENT_PAGE_CACHE_FREE_SHARE = 0.25;
 export declare const SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES: number;
+export declare const SUPERVISOR_LOAD_WAIT_MS = 60000;
 export declare const SUPERVISOR_READ_RESERVE_BYTES: number;
 export declare const MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES: number;
 export declare const PRE_BUNDLE_SLICE_CAP_BYTES: number;
