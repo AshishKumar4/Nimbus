@@ -33,7 +33,11 @@ export interface LateLinkHost {
     rowTargets(row: number): readonly number[];
     /** Whether a staged row has run, or the interpreter took it over. */
     rowSettled(row: number): boolean;
-    /** The staging refused as -2 - i: a query's or a fragment's instance handed on (its URL), or Node's refusal. */
+    /**
+     * The staging refused as -2 - i: a module handed on (its URL: a query's or
+     * a fragment's instance, a data: module, or a file the launch lacked or did
+     * not stage, resolved again when it is linked), or Node's refusal.
+     */
     missing(i: number): {
         readonly handedOn: string;
     } | {

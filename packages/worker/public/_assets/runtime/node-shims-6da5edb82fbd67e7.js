@@ -19752,16 +19752,22 @@ async function __nimbusEsmImport(id) {
 // one the interpreter took) is checked first as a late graph is (core
 // esm-late-link.ts linkAdopted): every imported name, before any of it
 // runs, unless a link checked it already.
+// A staged module whose adoption failed (its late link, or its record) keeps
+// the failure, as Node's loader keeps a ModuleJob that did not link: a later
+// import of it rejects with it, whatever the program wrote since.
+const __nimbusAdoptionFailures = new Map();
 async function __nimbusEsmInterpret(id, linked) {
   const key = __nimbusEsm.table[id][1];
   const url = __nimbusEsmUrl("/" + key);
   let record = __nimbusGraphRecords.get("/" + key);
   if (record === undefined) {
+    if (__nimbusAdoptionFailures.has(id)) throw __nimbusAdoptionFailures.get(id);
     try {
       if (!linked) __nimbusLateOf().linkAdopted(__nimbusLateLinkHost, id, key, url);
       record = __nimbusAdoptedRecord(id, key);
     } catch (e) {
       __nimbusExplainCommonJSGlobalLike(e, url, false);
+      __nimbusAdoptionFailures.set(id, e);
       throw e;
     }
   }
