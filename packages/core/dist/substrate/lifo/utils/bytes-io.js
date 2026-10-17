@@ -89,12 +89,10 @@ export async function writeBytes(out, bytes) {
 /**
  * Write lossless text (decodeLossless's): as text, unless it carries a byte
  * (U+DC80..U+DCFF) a sink's UTF-8 would not keep, when it goes as its bytes.
+ * Not async: plain text is the sink's own write, with no extra await.
  */
-export async function writeLossless(out, text) {
-    if (firstLosslessByte(text) === -1)
-        await out.write(text);
-    else
-        await writeBytes(out, encodeLossless(text));
+export function writeLossless(out, text) {
+    return firstLosslessByte(text) === -1 ? out.write(text) : writeBytes(out, encodeLossless(text));
 }
 /**
  * {@link decodeLossless} across writes: a sequence a write leaves unfinished

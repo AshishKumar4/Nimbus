@@ -40,8 +40,9 @@ export declare function writeBytes(out: ByteOutput, bytes: Uint8Array): Promise<
 /**
  * Write lossless text (decodeLossless's): as text, unless it carries a byte
  * (U+DC80..U+DCFF) a sink's UTF-8 would not keep, when it goes as its bytes.
+ * Not async: plain text is the sink's own write, with no extra await.
  */
-export declare function writeLossless(out: ByteOutput, text: string): Promise<void>;
+export declare function writeLossless(out: CommandOutputStream, text: string): void | Promise<void>;
 /**
  * {@link decodeLossless} across writes: a sequence a write leaves unfinished
  * is held for the next, so a character split between writes decodes whole;
