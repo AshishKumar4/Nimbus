@@ -13,7 +13,6 @@ import { runPairedBenchmark } from './lib/paired-runner.mjs';
 
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const PIECE = new TextEncoder().encode('0123456789abcdef'.repeat(4));
-const settled = async (value) => (value instanceof Promise ? await value : value);
 let checksum = 0;
 
 /** A fresh database for each sample: what a sample writes would otherwise grow the next one's tree. */
@@ -28,9 +27,9 @@ async function session({ SqliteVFS, ProcessFiles }) {
 }
 
 async function appendTo(proc, path, count) {
-  const handle = await settled(proc.open(path, { write: true, create: true, truncate: true, mode: 0o644 }));
-  for (let i = 0; i < count; i++) checksum += await settled(proc.write(handle.id, null, PIECE));
-  await settled(proc.close(handle.id));
+  const handle = await proc.open(path, { write: true, create: true, truncate: true, mode: 0o644 });
+  for (let i = 0; i < count; i++) checksum += await proc.write(handle.id, null, PIECE);
+  await proc.close(handle.id);
 }
 
 const WORK = {
