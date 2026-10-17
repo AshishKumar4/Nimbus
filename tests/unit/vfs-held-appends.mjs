@@ -342,6 +342,14 @@ const giveRoom = () => vfs.ledger.deleteFacet('room-taker');
   await proc.close(handle.id);
   proc.releaseExclusiveMutation(grant.owner);
   assert.equal(text(kernel.readFile('home/user/proj/held.txt')), 'held appends', '(11) the run stored after its 100 ms is the writer\'s');
+  // A run the store refuses is the close's error, naming the file, though the
+  // description is closed by then. Red before: EBADF, from naming it.
+  const refused = await proc.open('/home/user/proj/refused.txt', { write: true, create: true, truncate: true, mode: 0o644 });
+  await proc.write(refused.id, null, bytesOf('no room'));
+  const room = engine.ledger.view();
+  engine.ledger.fill('room-taker', room.limit - engine.ledger.kernelReserve - room.used);
+  await assert.rejects(async () => proc.close(refused.id), (error) => error.code === 'ENOSPC' && error.message.includes('refused.txt'), '(11) close reports what storing the run failed with');
+  engine.ledger.deleteFacet('room-taker');
 }
 
 await ws.close();
