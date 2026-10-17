@@ -103,11 +103,28 @@ function concatBytes(parts: readonly Uint8Array[], size: number): Uint8Array {
  * says it showed.
  */
 export class ReplayOutputGate {
-  run = 1;
+  run: number;
   private received = { stdout: 0, stderr: 0 };
   private shown: Record<'stdout' | 'stderr', Uint8Array[]> = { stdout: [], stderr: [] };
   /** More than REPLAY_PREFIX_MAX_BYTES was shown on a stream: no run after a stop can be checked. */
   over = false;
+
+  /** `run`: the run whose output it delivers first (a run from its start after one that stopped). */
+  constructor(run = 1) {
+    this.run = run;
+  }
+
+  /**
+   * Run `run` starts over from its start, unchecked: all it prints is
+   * delivered from its first byte, and an earlier run's late chunk is not.
+   */
+  restart(run: number): void {
+    if (this.run === -1) return;
+    this.run = run;
+    this.received = { stdout: 0, stderr: 0 };
+    this.shown = { stdout: [], stderr: [] };
+    this.over = false;
+  }
 
   /** A run strayed: nothing more it prints is delivered. */
   close(): void {

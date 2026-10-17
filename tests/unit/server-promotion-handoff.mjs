@@ -62,7 +62,11 @@ function handoff({ took = null, resident = async () => {}, signal, stdin, stdinF
     // ended during its boot returns (`ended`).
     spawnNode: async (_code, opts) => {
       spawned.push(opts);
-      result.gated = manager.outputGates.has(entry.pid);
+      // What the gate lets through as the resident boots: a stopped run's late chunk, and the resident's first.
+      result.gated = {
+        late: manager.gateOutput(entry.pid, 'stdout', new TextEncoder().encode('late'), 0, 1).byteLength,
+        first: manager.gateOutput(entry.pid, 'stdout', new TextEncoder().encode('first'), 0, opts.run ?? 2).byteLength,
+      };
       const outcome = await resident(entry);
       if (outcome !== 'ended' && processes.get(entry.pid)?.state !== 'running') throw new Error('the process ended while its facet was being created');
       return { pid: entry.pid };
@@ -100,7 +104,8 @@ function handoff({ took = null, resident = async () => {}, signal, stdin, stdinF
   const result = await h.done;
   assert.equal(result.promotedPid, h.entry.pid, 'a server all the same');
   assert.equal(h.spawned[0].resume, undefined, 'no replay');
-  assert.equal(h.gated, false, 'all it prints while it boots is shown');
+  assert.equal(h.spawned[0].run, 2, 'its output is the next run\'s');
+  assert.deepEqual(h.gated, { late: 0, first: 5 }, 'all it prints from its first byte is shown, and none of the stopped run\'s late output');
   assert.deepEqual(h.spawned[0].stdinFile, { path: '/home/user/in.txt', offset: 3, syncRead: true }, 'its file, from where it was read first');
   assert.match(h.processes.allLogs(h.entry.pid).map((chunk) => chunk.data).join(''), /runs it again as one from its start, over the files as they are: \/home\/user\/x was changed since it changed it\. What it printed before it listened is printed again\./);
 }

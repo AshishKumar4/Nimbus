@@ -21,7 +21,8 @@ export const REAL_NOW_SOURCE = '(typeof __nimbusStopReplay !== "undefined" ? __n
  *                        read fails where the program can catch it. The
  *                        session counts them too, and is what decides.
  *   begin(launch)        per run: { replay, abort, captured, capturedText,
- *                        nonce, boundary, outbound, promote }.
+ *                        nonce, boundary, outbound, promote, run (a run from its
+ *                        start past one that stopped) }.
  *   arm(canStop, whyNot) before the entry: records the run's draws when it can
  *                        stop, replays the stopped run's.
  *   write / ackedRun     each streamed chunk of output on its way out, and the ones a call took.
@@ -349,7 +350,7 @@ const __nimbusStopReplay = (() => {
       run = {
         observed: {},
         bodies: [],
-        number: replay ? replay.run : 1,
+        number: replay ? replay.run : typeof launch.run === "number" && launch.run > 1 ? launch.run : 1,
         abort: ctxAbort,
         nonce: "" + (launch.nonce || ""),
         captured: !!launch.captured,

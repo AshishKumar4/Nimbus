@@ -538,6 +538,13 @@ const listened = guest(`
 assert.equal(listened.stopped.kind, 'listen', 'its first listen stops it');
 assert.equal(listened.stopped.tape.writes, undefined, 'its changes are no part of its tape: the session puts them back (SqliteVFS.restoreRun)');
 assert.notEqual(stopRecordOf(new Error(STOP_RECORD_PREFIX + NONCE + ' ' + JSON.stringify(listened.stopped)), NONCE, 1), null, 'a listen stop is a record the session believes');
+// Run from its start past a run that stopped, unretraced: its output and its stops are that next run's.
+assert.equal(guest(`
+  sr.begin({ replay: null, abort, captured: false, nonce: NONCE, promote: true, run: 2 });
+  sr.arm(false);
+  aborts(() => sr.listen());
+  console.log(JSON.stringify({ stopped }));
+`).stopped.run, 2);
 // Something outside itself before its listen: it cannot run on as a server, and says so where it listens.
 assert.match(guest(`
   sr.begin({ replay: null, abort, captured: false, nonce: NONCE, promote: true });

@@ -155,6 +155,17 @@ const truncate = (path, size) => ({ type: 'truncate', path, size });
   assert.equal(s.text('home/user/made/peer'), 'p');
   assert.equal(s.text('home/user/made/a'), 'a', 'nothing is put back');
 }
+// … or wrote into a directory the run put where a file was, which the restore puts the file back over.
+{
+  const s = session();
+  s.seed('home/user/d', 'a file');
+  s.engine.captureRun(RUN);
+  await s.wave(RUN, [unlink('home/user/d'), mkdir('home/user/d'), write('home/user/d/a', 'a')]);
+  await s.wave(PEER, [write('home/user/d/peer', 'p')]);
+  await s.wave(RUN, [write('home/user/d/b', 'b')]);
+  assert.match(s.engine.restoreRun(RUN).refused, /^\/home\/user\/d\/peer was made in \/home\/user\/d, which it made$/);
+  assert.equal(s.text('home/user/d/peer'), 'p');
+}
 // … or made again, and removed again, a file the run removed.
 {
   const s = session();
@@ -198,6 +209,21 @@ const truncate = (path, size) => ({ type: 'truncate', path, size });
   await s.wave(PEER, [write('home/user/theirs.txt', 'peer')]);
   assert.ok('restored' in s.engine.restoreRun(RUN));
   assert.equal(s.text('home/user/theirs.txt'), 'peer', "the peer's write stays: the refused open changed nothing of the run's");
+}
+
+// What a key held when the run first changed it is held at once, inside its
+// transaction: another key's later write in the same transaction does not
+// edit that content in place.
+{
+  const s = session();
+  s.seed('home/user/a', 'shared bytes');
+  s.seed('home/user/b', 'other');
+  s.engine.captureRun(RUN);
+  await s.wave(RUN, [write('home/user/b', 'shared bytes')]);
+  await s.wave(RUN, [write('home/user/a', 'new'), call({ call: 'ftruncate', path: 'home/user/b', size: 2 })]);
+  assert.ok('restored' in s.engine.restoreRun(RUN));
+  assert.equal(s.text('home/user/a'), 'shared bytes');
+  assert.equal(s.text('home/user/b'), 'other');
 }
 
 // ── a tree back over several transactions keeps its directories' times ──
@@ -260,6 +286,13 @@ const truncate = (path, size) => ({ type: 'truncate', path, size });
   await s.wave(RUN, [write('home/user/x.txt', 'r'), write('dev/null', 'gone')]);
   assert.match(s.engine.restoreRun(RUN).refused, /^it changed \/dev\/null, on a mounted filesystem, which is not put back$/);
   assert.equal(s.text('home/user/x.txt'), 'r');
+}
+// An open to read that changes the mode is a change too.
+{
+  const s = session();
+  s.engine.captureRun(RUN);
+  await s.send(RUN, [call({ call: 'open', path: 'dev/null', mode: 0o666, access: 'read', fchmod: 0o600 })]);
+  assert.match(s.engine.restoreRun(RUN).refused, /^it changed \/dev\/null, on a mounted filesystem, which is not put back$/);
 }
 
 console.log('sqlite-vfs-run-restore: a run\'s changes are put back as it found them, or refused, naming why, and none is');
