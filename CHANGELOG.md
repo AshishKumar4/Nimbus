@@ -97,6 +97,11 @@ The 2026-10-14 and 2026-10-15 versions reached production but were never publish
   page could exceed the RPC frame), and once the snapshot is dropped its
   `acquire`, `invalidatedSince`, `revision` and `storageKey` throw ESTALE,
   as its other calls do (they answered as if it were still pinned).
+- Fixed: `ProcessFiles.killProcess(pid)` closes the last description of
+  each file the killed process held open, as a process's exit does on
+  Linux, so an unlinked file it held is collected once no one else holds
+  it. Before, only a mount's files were closed, and an unlinked file's
+  content stayed pinned for the session's life.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
