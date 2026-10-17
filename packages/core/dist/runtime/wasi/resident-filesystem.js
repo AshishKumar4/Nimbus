@@ -951,8 +951,7 @@ export function residentFilesystem(session, resident, delegation) {
     /** A read through the session's open description of `handleId`'s file (Provisional.sessionOf), at `offset` or the descriptor's position. */
     const readByAnchor = async (handleId, offset, length) => {
         const key = holder.keyOf(handleId);
-        // What this process logged reaches the session first; a refusal among it is the next sync's to report, not this read's.
-        await holder.send();
+        await holder.flush();
         const session = holder.provisional.sessionOf(handleId);
         if (session === undefined)
             throw fsError('ESTALE', 'read', '/' + key);
@@ -1022,24 +1021,11 @@ export function residentFilesystem(session, resident, delegation) {
                 return current ? statOf(current.entry) : DELEGATE;
             }, () => authority.fstat(handleId));
         if (holder?.owns(handleId)) {
-            // A file no name leads to: as its open description at the session has it, as its reads are.
-            if (!now && holder.provisional.sessionOf(handleId) !== undefined && holder.provisional.unnamed(handleId))
-                return statByAnchor(handleId);
             counts.local++;
             return statOf(holder.fstat(handleId));
         }
         delegated('fstat');
         return authority.fstat(handleId);
-    };
-    /** `handleId`'s file as the session's open description of it has it (Provisional.sessionOf), once what this process logged is there. */
-    const statByAnchor = async (handleId) => {
-        const key = holder.keyOf(handleId);
-        await holder.send();
-        const session = holder.provisional.sessionOf(handleId);
-        if (session === undefined)
-            throw fsError('ESTALE', 'fstat', '/' + key);
-        delegated('fstat');
-        return authority.fstat(session);
     };
     fs.read = (handleId, offset, length) => {
         if (holder?.owns(handleId)) {
