@@ -51,8 +51,8 @@ function shimInjection(nameToFactory) {
 // Injected by scripts/bundle-real-vite.mjs.
 //
 // __cirrusRealRequireShim resolves a small whitelist of bundled CJS
-// factories (picomatch/postcss inside readdirp/chokidar) — consumed by the
-// post-patched __require2 call sites.
+// factories (picomatch inside readdirp/chokidar, postcss inside the CSS
+// pipeline) — consumed by the post-patched __require2 call sites.
 ;(() => {
   const _bundledFactories = { ${Object.entries(nameToFactory)
     .map(([k, v]) => `${JSON.stringify(k)}: () => ${v}()`)

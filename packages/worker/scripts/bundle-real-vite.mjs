@@ -7,13 +7,14 @@
  * facet imports it via `import * as vite from './real-vite.bundle.js'`.
  *
  * Strategy (matches PHASE2-REAL-VITE-PLAN.md §2):
- *   - Install vite from npm if missing
+ *   - Resolve vite from the installed dependencies
  *   - Bundle vite/dist/node/index.js with esbuild (platform=neutral)
  *   - Stub out the native-binding imports Vite 6 makes: lightningcss,
  *     fsevents, #module-sync-enabled
  *   - Keep node:* imports external — the facet gets nodejs_compat so
  *     workerd provides them
- *   - Write to src/real-vite-bundle.generated.ts as a TS string export
+ *   - Write the bundle to public/_assets/real-vite-bundle.js, and its
+ *     loader to src/real-vite-bundle.generated.ts
  *
  * This is a FEASIBILITY SPIKE: the bundle will let Vite import, but any
  * call path that hits a stubbed function (most of build/*, some of
@@ -64,38 +65,31 @@ const HARD_STUBS = [
 // no esbuild call is ever reachable: vite:esbuild transform is
 // patched to use our CJS→ESM intercept, replaceDefine is patched
 // to use regex replacement, optimizeDeps is disabled, and vite
-// build is blocked (rolldown needs node:wasi). Bundling the real
+// build is blocked. Bundling the real
 // esbuild-wasm adds ~2.3 MB of JS + WASM to the facet for zero
 // runtime benefit — big contributor to the facet OOM at 137.
+// What Vite 6 reads of it: transform, build and formatMessages by name,
+// context on the default export.
 const ESBUILD_STUB_SRC = `
 const thrower = (name) => () => { throw new Error('[cirrus-real] esbuild.' + name + ' stubbed — real-vite facet does not ship esbuild runtime'); };
 export const transform = thrower('transform');
-export const transformSync = thrower('transformSync');
 export const build = thrower('build');
-export const buildSync = thrower('buildSync');
 export const context = thrower('context');
 export const formatMessages = async () => [];
-export const formatMessagesSync = () => [];
-export const analyzeMetafile = async () => '';
-export const analyzeMetafileSync = () => '';
-export const stop = () => {};
-export const version = '0.0.0-cirrus-stub';
-export const initialize = async () => {};
-export default { transform, transformSync, build, buildSync, context, formatMessages, formatMessagesSync, analyzeMetafile, analyzeMetafileSync, stop, version, initialize };
+export default { transform, build, context, formatMessages };
 `;
 
-function stubSource() {
-  // Every named export throws if it is ever called.
-  return `
+// Each stub, as what Vite 6 reads of it: lightningcss's CSS entry points
+// (each throws if ever called), and fsevents' default export.
+const STUB_SOURCES = {
+  lightningcss: `
 const thrower = (name) => () => { throw new Error('[real-vite-spike] ' + name + ' is stubbed (native binding)'); };
-// lightningcss
 export const transform = thrower('lightningcss.transform');
-export const bundle = thrower('lightningcss.bundle');
-export const bundleAsync = async (...a) => thrower('lightningcss.bundleAsync')();
-// generic fallback
-export default { __stubbed: true };
-`.trim();
-}
+export const transformStyleAttribute = thrower('lightningcss.transformStyleAttribute');
+export const bundleAsync = async () => thrower('lightningcss.bundleAsync')();
+`.trim(),
+  fsevents: 'export default { __stubbed: true };',
+};
 
 const stubPlugin = {
   name: 'real-vite-stubs',
@@ -116,8 +110,8 @@ const stubPlugin = {
     build.onResolve({ filter: /^#module-sync-enabled$/ }, (args) => ({
       path: args.path, namespace: 'real-vite-stub-bool-false',
     }));
-    build.onLoad({ filter: /.*/, namespace: 'real-vite-stub' }, () => ({
-      contents: stubSource(), loader: 'js',
+    build.onLoad({ filter: /.*/, namespace: 'real-vite-stub' }, (args) => ({
+      contents: STUB_SOURCES[args.path], loader: 'js',
     }));
     build.onLoad({ filter: /.*/, namespace: 'real-vite-stub-bool-false' }, () => ({
       contents: 'export default false;', loader: 'js',
@@ -267,7 +261,7 @@ async function main() {
  * DO NOT EDIT.
  *
  * Bundled Vite ${viteVersion} with native-binding stubs (lightningcss,
- * fsevents). Consumed by src/cirrus-real.ts at facet spawn time.
+ * fsevents). Consumed by src/facets/cirrus-real.ts at facet spawn time.
  *
  * [sdk-phase-1] The large strings (REAL_VITE_BUNDLE, ROLLUP_WASM_BASE64)
  * now ship via the ASSETS binding rather than inline. Use the async
