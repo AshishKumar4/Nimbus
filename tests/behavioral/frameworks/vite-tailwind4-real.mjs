@@ -59,6 +59,7 @@ try {
   if (dev.ok) {
     const first = await stylesheetWith(sid, ['#123456'], 60_000);
     a.check('the first stylesheet carries the utility App.tsx uses', first.ok, `${first.css.status} ${first.css.body.slice(0, 600)}`);
+    console.log('DIAG dev: ' + JSON.stringify(stripAnsi(proc.output).split('\n').filter((l) => /DIAG|resident boot/.test(l)).slice(0, 40)));
     await t.run(heredocCommand(`${APP}/src/Badge.tsx`, BADGE_TSX), 15_000);
     await t.run(heredocCommand(`${APP}/src/App.tsx`, APP_TSX(true)), 15_000);
     const next = await stylesheetWith(sid, ['#123456', '#246802', '#654321'], 90_000);
