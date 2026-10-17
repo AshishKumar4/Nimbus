@@ -110,8 +110,8 @@ export function sqlJournal(sql: JournalSql): ProcessFsJournal {
   sql.exec(`CREATE TABLE IF NOT EXISTS nimbus_fs_journal_parts (part INTEGER PRIMARY KEY, jid INTEGER NOT NULL, data BLOB NOT NULL)`);
   sql.exec(`CREATE INDEX IF NOT EXISTS nimbus_fs_journal_parts_jid ON nimbus_fs_journal_parts (jid, part)`);
   // Replacement and deletion discard the pieces atomically with their entry.
-  sql.exec(`CREATE TRIGGER IF NOT EXISTS nimbus_fs_journal_replace AFTER UPDATE ON nimbus_fs_journal BEGIN DELETE FROM nimbus_fs_journal_parts WHERE jid = OLD.jid; END`);
-  sql.exec(`CREATE TRIGGER IF NOT EXISTS nimbus_fs_journal_drop AFTER DELETE ON nimbus_fs_journal BEGIN DELETE FROM nimbus_fs_journal_parts WHERE jid = OLD.jid; END`);
+  sql.exec(`CREATE TRIGGER IF NOT EXISTS nimbus_fs_journal_replace AFTER UPDATE ON nimbus_fs_journal WHEN EXISTS (SELECT 1 FROM nimbus_fs_journal_parts WHERE jid = OLD.jid) BEGIN DELETE FROM nimbus_fs_journal_parts WHERE jid = OLD.jid; END`);
+  sql.exec(`CREATE TRIGGER IF NOT EXISTS nimbus_fs_journal_drop AFTER DELETE ON nimbus_fs_journal WHEN EXISTS (SELECT 1 FROM nimbus_fs_journal_parts WHERE jid = OLD.jid) BEGIN DELETE FROM nimbus_fs_journal_parts WHERE jid = OLD.jid; END`);
   const last = [...sql.exec('SELECT MAX(jid) AS jid FROM nimbus_fs_journal')][0];
   let next = Number(last?.jid ?? 0) + 1;
   const held = [...sql.exec('SELECT (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nimbus_fs_journal) + (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nimbus_fs_journal_parts) AS bytes')][0];
