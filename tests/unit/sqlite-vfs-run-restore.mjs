@@ -11,6 +11,8 @@
  *     Another process's change is its own and stays.
  *   kept: what the run replaced stays readable, whatever content
  *     maintenance collects meanwhile.
+ *   settled: the waves of its epochs still being applied land before it
+ *     is put back, and none is admitted after.
  *   refused: another writer changed a key after the run last did, or wrote
  *     into a directory the run made; the run's changes are then left as
  *     they are, and the key is named. So are a capture let go and one past
@@ -25,6 +27,7 @@ import assert from 'node:assert/strict';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { RUN_CAPTURE_MAX_KEYS, SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
@@ -167,6 +170,28 @@ const truncate = (path, size) => ({ type: 'truncate', path, size });
   for (let i = 0; i < names.length; i += 512) await s.wave(RUN, names.slice(i, i + 512).map((name) => write(name, '')));
   assert.deepEqual(s.engine.restoreRun(RUN), { refused: `it changed more than ${RUN_CAPTURE_MAX_KEYS} files and directories` });
   assert.equal(s.text('home/user/many/0'), '', 'nothing is put back');
+}
+
+// ── its late waves: settled before it is put back, and none admitted after ──
+{
+  const deliveries = new SupervisorDeliveries();
+  const epochs = [deliveries.openWaveWriter(RUN, 60_000), deliveries.openWaveWriter(RUN, 60_000)];
+  const peer = deliveries.openWaveWriter(PEER, 60_000);
+  const landing = epochs.map(() => Promise.withResolvers());
+  for (const [i, writer] of epochs.entries()) {
+    deliveries.admitWave(RUN, writer, 1, 0);
+    void deliveries.applyingWave(RUN, writer, landing[i].promise);
+  }
+  let retired = false;
+  const retiring = deliveries.retireWaveWriters(RUN).then(() => { retired = true; });
+  assert.throws(() => deliveries.admitWave(RUN, epochs[0], 2, 0), /ESTALE/, 'a wave of its epochs is refused once they are retired');
+  deliveries.admitWave(PEER, peer, 1, 0);
+  landing[0].resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(retired, false, 'retiring waits for each wave of its epochs being applied');
+  landing[1].reject(new Error('cut'));
+  await retiring;
+  assert.equal(retired, true);
 }
 
 console.log('sqlite-vfs-run-restore: a run\'s changes are put back as it found them, or refused, naming why, and none is');

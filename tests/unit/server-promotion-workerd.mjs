@@ -103,9 +103,13 @@ const FILES = {
   ].join('\n'),
   'crowded.js': [
     "const fs = require('fs');",
-    "fs.mkdirSync('crowd', { recursive: true });",
-    "for (let i = 0; i < 4100; i++) fs.writeFileSync('crowd/' + i, '');",
-    SERVE(4111, 'crowded'),
+    '(async () => {',
+    "  fs.mkdirSync('crowd', { recursive: true });",
+    "  for (let i = 0; i < 4100; i++) fs.writeFileSync('crowd/' + i, '');",
+    // Awaited, a write goes with every one before it: all of them are the session's before it listens.
+    "  await fs.promises.writeFile('crowd/done', '');",
+    '  ' + SERVE(4111, 'crowded').split('\n').join('\n  '),
+    '})();',
   ].join('\n'),
   'spawned.js': [
     "require('child_process').spawnSync('true');",
