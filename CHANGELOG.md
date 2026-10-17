@@ -43,6 +43,11 @@ published independently in the `@nimbus-sh` npm scope.
   the pointer until it is released, and a release the page cannot hear
   (over the preview's frame, or outside the window) ends it at the next
   move or when the window loses focus.
+- Fixed: `WeightedCreditPool.acquire` (and the supervisor allocation
+  budget over it) refuses a request whose signal is already aborted, with
+  an AbortError and no credit taken, whatever its size. Before, a request
+  at or below `smallRequestBytes` was granted from free shared capacity
+  before its signal was looked at.
 - Changed: a program whose launch waits 10 seconds at one stage (its
   preparation, its admission for a worker, or its load) logs one line to
   Workers Logs: `[facet-manager] launch stalled:` with its pid, command,
