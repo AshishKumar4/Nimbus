@@ -45,7 +45,7 @@ const CASES = [
   show(String.raw`"$(printf "%s" "$(printf '%s' $'") }\n')")"`),
   show(String.raw`$(echo $'x\'y')`),
   show(String.raw`"$(echo ")")" "$(echo "${'$'}{x:-")"}")" "$(echo "` + '`echo ")"`' + String.raw`")"`),
-  String.raw`unset x; printf '<%s>' $` + String.raw`{x:-a$'\t'b} "$` + String.raw`{x:-$'\nZ'}" $` + String.raw`{x:-$'\'}'}` + HEX,
+  String.raw`unset x; printf '<%s>' $` + String.raw`{x:-a$'\x41'b} "$` + String.raw`{x:-$'\nZ'}" $` + String.raw`{x:-$'\'}'}` + HEX,
   String.raw`x=$'a\tb'; [[ $x == a$'\t'b ]] && echo tab; [[ '*' == $'\052' ]] && echo literal; [[ abc == $'*' ]] || echo nonglob`,
   `cat <<EOF${HEX}\n$'\\t' "$'x'"\nEOF`,
   String.raw`f() { printf '<%s>' "$@"; }; f $'one two' $'three'; echo` + HEX,
