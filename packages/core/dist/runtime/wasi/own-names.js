@@ -53,6 +53,7 @@ export function ownNames(options) {
             return key !== '' && madeHere(dir) && !added.get(dir)?.has(nameOf(key)) ? null : undefined;
         },
         decided,
+        current: (key) => (own.has(key) ? undefined : decided.get(key)),
         rewritten: (key) => {
             if (own.size !== 0)
                 own.delete(key);
