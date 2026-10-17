@@ -9,8 +9,8 @@
  * evaluated; PACKAGE_ABI_POLICY.stagedArtifacts routes each owner package and
  * the packages it requires the binding by to its entry.
  */
-export const NAPI_WASM_LOADER = { "path": "/_assets/napi-wasm/loader/509367ac77c6ad1f/napi-wasm-loader.mjs", "sha256": "7dd7bdaf1ae87443e36f6d6f810b4147831f815210b5cb8b0960a709022b881f", "bytes": 212676 };
-export const NAPI_WASM_TRAMPOLINE = { "path": "/_assets/napi-wasm/loader/509367ac77c6ad1f/wasi-trampoline.wasm", "sha256": "0ad53da157e16656eee42877724d38aaa9876de20369f975f44b8a5e5d6f9cf6", "bytes": 1961 };
+export const NAPI_WASM_LOADER = { "path": "/_assets/napi-wasm/loader/8b7af554831f8a3c/napi-wasm-loader.mjs", "sha256": "bc2d40aa0943930e5d57651788e94755c7540991d7f3787eeb1633b72d37518c", "bytes": 212769 };
+export const NAPI_WASM_TRAMPOLINE = { "path": "/_assets/napi-wasm/loader/8b7af554831f8a3c/wasi-trampoline.wasm", "sha256": "0ad53da157e16656eee42877724d38aaa9876de20369f975f44b8a5e5d6f9cf6", "bytes": 1961 };
 export const STAGED_BINDING_ARTIFACTS = [
     {
         "name": "rolldown",
@@ -80,6 +80,20 @@ export const STAGED_BINDING_ARTIFACTS = [
             "path": "/_assets/napi-wasm/astro-compiler/0.5.2/astro-compiler.wasm",
             "sha256": "8d5bb39f31cc53eacb7943517a33c6a1d408549d4420186df4bdf460b0325f77",
             "bytes": 6574305
+        }
+    },
+    {
+        "name": "oxide",
+        "version": "4.3.3",
+        "owner": "@tailwindcss/oxide",
+        "requiredAs": [
+            "@tailwindcss/oxide-wasm32-wasi"
+        ],
+        "memoryPages": 70,
+        "wasm": {
+            "path": "/_assets/napi-wasm/oxide/4.3.3/oxide.wasm",
+            "sha256": "161dc7f93bbedaf0989074ec099d498fa7ed399bf17294a0eb118f07762a1ea8",
+            "bytes": 1906658
         }
     }
 ];
