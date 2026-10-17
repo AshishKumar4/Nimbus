@@ -866,7 +866,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       // A later mount must invalidate this SQLite-only listing too.
       const listing = after === null || after === undefined ? this.listing(true) : undefined;
       if (listing) {
-        listing.table = this.namespace.feed.position().table;
+        listing.table = this.namespace.feed.signature();
         listing.sqliteOnly = true;
       }
       return this.bridge.list(after, limit);

@@ -70,6 +70,8 @@ export type MountWalk = readonly VfsListEntry[];
  * `walk` of it, what the walk named.
  */
 export interface CompositeFeed {
+  /** The current mount table, without reading the backends' revision clocks. */
+  signature(): string;
   position(): FeedPosition;
   since(position: FeedPosition<string | null>, options?: VfsAcquireOptions): FeedAnswer;
   list(after: string | null, limit: number, walked?: MountWalk): { entries: VfsListEntry[]; next: string | null };
@@ -742,6 +744,7 @@ export class CompositeVFS implements VFS {
   /** This principal's namespace feed. */
   get feed(): CompositeFeed {
     return {
+      signature: () => this.feedSignature(),
       position: () => this.feedPosition(this.feedSignature(), this.feedSources()),
       since: (position, options) => this.feedSince(position, options),
       list: (after, limit, walked) => this.feedList(after, limit, walked),
