@@ -20,7 +20,7 @@ function escaped(code) {
  * percent-encoded (a lone surrogate U+FFFD's), so a `#` or `?` in a name is
  * part of the path. It calls no built-in method but `codeAt`, so the
  * interpreter gives its own (interpreter/intrinsics.ts charCodeAt): a
- * program may have replaced the others (tests/unit/interpreter-primordials.mjs).
+ * program may have replaced the others (tests/unit/primordials-audit.mjs).
  */
 export function importerUrl(path, codeAt) {
     if (path[0] === 'd' && path[1] === 'a' && path[2] === 't' && path[3] === 'a' && path[4] === ':')

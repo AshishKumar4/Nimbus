@@ -30,7 +30,7 @@
  * namespace is, so a call on it reads `Module.f` in a stack.
  *
  * The interpreter runs this module after a program may have replaced
- * built-ins, so it names none (tests/unit/interpreter-primordials.mjs), and
+ * built-ins, so it names none (tests/unit/primordials-audit.mjs), and
  * it makes its lists with the caller's EsmLists.
  */
 import type { ExportAllDeclaration, ExportNamedDeclaration, ImportDeclaration, ModuleDeclaration, Statement } from 'acorn';
