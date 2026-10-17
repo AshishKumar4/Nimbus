@@ -862,7 +862,7 @@ export function provisional(host) {
                 ...(flags.exclusive && row === null ? { exclusive: true } : {}),
                 ...(flags.truncate ? { truncate: true } : {}),
                 ...(flags.followSymlinks === false ? { nofollow: true } : {}),
-                ...(read ? { read: true } : {}),
+                access: read ? 'readwrite' : 'write',
                 ...(chmod === undefined ? {} : { fchmod: chmod }),
                 description,
             },
@@ -1183,7 +1183,7 @@ export function provisional(host) {
                 if (!named(inode))
                     throw fsError('ESTALE', 'open', desc.path);
                 description = descriptionId();
-                const open = { type: 'call', call: { call: 'open', path: inode.key, mode: entryOf(inode).mode & 0o7777, ...(flags.truncate ? { truncate: true } : {}), ...(read ? { read: true } : {}), description } };
+                const open = { type: 'call', call: { call: 'open', path: inode.key, mode: entryOf(inode).mode & 0o7777, ...(flags.truncate ? { truncate: true } : {}), access: read ? 'readwrite' : 'write', description } };
                 const records = flags.truncate ? [{ kind: 'truncate', size: 0, at: host.now() }] : [];
                 host.drain();
                 const credit = openCredit(inode, inode.key);

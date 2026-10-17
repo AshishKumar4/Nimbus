@@ -23,7 +23,7 @@
  *   W7_MAGIC, W7_MAX_RECORD_BYTES.
  *
  * Tar size: 5.81 KiB
- * W7 size:  51.53 KiB
+ * W7 size:  52.16 KiB
  */
 export declare const TAR_STREAM_PREAMBLE: string;
 export declare const W7_FRAME_PREAMBLE: string;
