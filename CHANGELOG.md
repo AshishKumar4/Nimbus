@@ -110,6 +110,10 @@ The 2026-10-14 and 2026-10-15 versions reached production but were never publish
   namespace's listings and git's index order through it. Before, the three
   disagreed about lone surrogates, and the engine took two different ones
   as the same name.
+- Fixed: `SqliteVFS.restore` and `dropSnapshot` (and their async forms)
+  write in transactions the storage envelope admits. Before, one page of
+  200 paths was one transaction of up to 600 rows (restore) or 401 (drop),
+  past the 256 a transaction may hold.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
