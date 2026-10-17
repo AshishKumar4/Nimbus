@@ -38,6 +38,8 @@ const files = {
   // What a function body may hold: new.target; what it may not: a wrapper name redeclared.
   'new-target.cjs': 'console.log(new.target);\n',
   'require-redeclared.cjs': 'const require = 1;\n',
+  // Run, a name declared twice: V8 marks it by its first character.
+  'redeclared.js': 'let alpha = 1;\nlet alpha = 2;\n',
   // TypeScript whose first error compiling it as CommonJS is not of module syntax: Node's SyntaxError.
   'typed-export.cts': 'const a: number = 1;\nexport {};\n',
 };
@@ -59,5 +61,6 @@ await matchNodeInWorkerd('node-check-matches-node-workerd', ROOT, files, [
   'node -c new-target.cjs',
   'node -c require-redeclared.cjs',
   "echo 'const require = 1' | node -c",
+  'node redeclared.js',
   'node -c typed-export.cts',
 ]);

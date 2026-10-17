@@ -9,7 +9,7 @@
  */
 import { Parser, parse, tokTypes, type Options, type Program, type Token } from 'acorn';
 import { own } from './parser-realm.js';
-import { objectCreate, objectKeys, reflectGet, reflectSet } from './intrinsics.js';
+import { objectCreate, objectKeys, reflectGet, reflectSet, stringSlice } from './intrinsics.js';
 import type { AcornParser } from '../runtime/javascript-ast.js';
 
 // The interpreter's acorn (worker scripts/interpreter-bundle.mjs checks it imports nothing else).
@@ -18,6 +18,8 @@ export { parse };
 const MODULE_OPTIONS: Options = own({ ecmaVersion: 'latest', allowHashBang: true, sourceType: 'module' });
 const COMMONJS_OPTIONS: Options = own({ ecmaVersion: 'latest', allowHashBang: true, sourceType: 'script', allowReturnOutsideFunction: true });
 const SCRIPT_OPTIONS: Options = own({ ecmaVersion: 'latest', sourceType: 'script' });
+// The end of acorn's message (and V8's) for a name declared twice.
+const REDECLARED = ' has already been declared';
 
 interface BlockParser extends AcornParser {
   strict: boolean;
@@ -62,7 +64,10 @@ class ThrowFinder extends AcornParserClass {
     const declared = this.declared;
     const missingInitializer = declared !== null && declared.required && declared.end === this.lastTokEnd
       && this.type !== tokTypes.eq && (pos === this.start || pos === this.lastTokEnd);
+    // V8 marks a redeclared name by its first character.
+    const redeclared = stringSlice(message, -REDECLARED.length) === REDECLARED;
     this.raisedToken = missingInitializer ? [declared.start, declared.end]
+      : redeclared ? [pos, pos + 1]
       : pos === this.start ? [pos, this.end] : pos === this.lastTokStart ? [pos, this.lastTokEnd] : null;
     return super.raise(pos, message);
   }
@@ -136,18 +141,15 @@ const BODY_HEAD = 'function f(exports, require, module, __filename, __dirname) {
 /**
  * The brace in `body`, a CommonJS module's, that closes the function it is
  * the body of before its end (text after it goes on outside), as
- * [start, end]: null when it is one function body, or does not parse (V8,
- * which compiled it, is its judge).
+ * [start, end]: null when it is one function body, or stops parsing before
+ * the function closes (V8, which compiled it, is its judge).
  */
 export function strayClosingBrace(body: string): [number, number] | null {
   const text = BODY_HEAD + body + '\n}';
   const counter = new StatementCounter(SCRIPT_OPTIONS, text);
-  try {
-    counter.parse();
-  } catch {
-    return null;
-  }
-  if (counter.statements === 1 && counter.firstEnd === text.length) return null;
+  // Whether the parse ends or stops at a syntax error after it, the function closed where its first statement ended.
+  try { counter.parse(); } catch { /* where it closed is known, or V8 is the judge */ }
+  if (counter.statements === 0 || counter.firstEnd === text.length) return null;
   const at = counter.firstEnd - 1 - BODY_HEAD.length;
   return [at, at + 1];
 }
