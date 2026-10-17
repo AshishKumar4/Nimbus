@@ -5,11 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- Changed: a stopped process's input and output replies cost almost no
-  CPU to record for its replay. Each reply was hashed byte by byte and
-  the hash kept, though nothing read it: about 0.9 ms of CPU for each
-  64 KiB of piped input. The replay keeps only their count, which is all
-  its limit needs.
+- Changed: a process that can be stopped and replayed records its input
+  and output replies at almost no CPU cost. Each reply was hashed byte by
+  byte and the hash kept, though nothing read it: about 0.9 ms of CPU for
+  each 64 KiB of piped input. The replay keeps only their count, which is
+  all its limit needs.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
