@@ -1225,6 +1225,8 @@ export function provisional(host: ProvisionalHost): Provisional {
         return handle;
       }
       if (row === null) throw fsError('ENOENT', 'open', path);
+      // Read-only, for a caller that may wait (an O_CREAT of a file there): the session's descriptor, as every read-only open of such a caller is.
+      if (awaited) return undefined;
       // Read-only: metadata only, nothing read and nothing logged.
       if (row.type === 'directory' || row.type !== 'file') return undefined;
       if (!modeAllows(row, 4, host.cred)) throw fsError('EACCES', 'open', path);
