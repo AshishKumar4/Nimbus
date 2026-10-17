@@ -3071,8 +3071,10 @@ function formatOneArg(spec: string, arg: string | undefined): string {
   let body: string;
   switch (conv) {
     case 's': {
+      // Precision counts bytes, as printf's does: a cut through a character
+      // leaves its first bytes, never half a surrogate pair.
       body = String(arg ?? '');
-      if (prec >= 0) body = body.slice(0, prec);
+      if (prec >= 0) body = decodeLossless(encodeLossless(body).subarray(0, prec));
       break;
     }
     case 'd': case 'i': {
@@ -3136,17 +3138,20 @@ function formatOneArg(spec: string, arg: string | undefined): string {
       break;
     default: body = '%' + conv;
   }
-  // Apply width padding.
-  if (width > body.length) {
+  // Apply width padding, in bytes as printf counts them (a string's length
+  // in UTF-16 units is never more).
+  const size = width > body.length ? encodeLossless(body).length : body.length;
+  if (width > size) {
     const zeroPad = flags.includes('0') && /[diouxXfFeEgG]/.test(conv) && !flags.includes('-');
     const padCh = zeroPad ? '0' : ' ';
-    if (flags.includes('-')) body = body.padEnd(width, ' ');
+    const pad = width - size;
+    if (flags.includes('-')) body += ' '.repeat(pad);
     else {
       // For zero-pad on negative numbers, keep the sign at the front.
       if (zeroPad && (body.startsWith('-') || body.startsWith('+') || body.startsWith(' '))) {
-        body = body[0] + body.slice(1).padStart(width - 1, padCh);
+        body = body[0] + padCh.repeat(pad) + body.slice(1);
       } else {
-        body = body.padStart(width, padCh);
+        body = padCh.repeat(pad) + body;
       }
     }
   }

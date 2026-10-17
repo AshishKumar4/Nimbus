@@ -4,7 +4,7 @@
 // escapes name (`\303\251` is the two bytes of "é", `\377` the byte 0xff),
 // while \u and \U name a character, written as its UTF-8 bytes (a surrogate
 // as its own three, never paired); printf's %c writes its argument's first
-// byte. Checked against the host's bash over the
+// byte, and its width and precision count bytes. Checked against the host's bash over the
 // same lines, byte for byte (od).
 //
 // Red before: the escapes became the characters U+00C3 U+00A9, written as
@@ -40,6 +40,11 @@ const CASES = [
   `printf '\\uDC80'${HEX}`,
   `printf '%b' '\\uDBFF\\uDFFF'${HEX}`,
   `echo -e '\\uD800\\0377'${HEX}`,
+  // printf's width and precision count bytes, so a cut never leaves half a character to pair with a byte.
+  `printf '%.1s\\377' '😀'${HEX}`,
+  `printf '%.1s\\uDC80' '😀'${HEX}`,
+  `printf '%.1s|%.2s|%5s|%-4s|%.3s|' é é é é aé${HEX}`,
+  `printf '%.1b|%4b|' é '\\303\\251'${HEX}`,
 ];
 
 const run = (line) => `${line}; echo "status=$?"`;
