@@ -20898,14 +20898,21 @@ function __nimbusEnrichCommonJsError(e, source, filename) {
   Error.captureStackTrace(warning, __nimbusEnrichCommonJsError);
   __processMod.emit("warning", warning);
 }
-// -c of a cell that compiled: its text alone must parse as a function body,
+// -c of a cell that compiled: its body alone must parse as a function body,
 // or it compiled only by closing the wrapper's, and is the SyntaxError Node
-// reports, at the token that does (V8 names a stray one so).
-function __nimbusCheckedAlone(source) {
-  const text = source();
-  const at = text === null ? null : __nimbusRegistryRequire("./nimbus/parser.js").fatalLocation(text, "script", -1);
+// reports, at the token that does (V8 names a stray one so), its arrow as a
+// compile's (__nimbusDecorateSyntaxError).
+function __nimbusCheckedAlone() {
+  const module = __nimbusEntryModule();
+  const text = module === null ? null : __nimbusFrameModuleText(module);
+  if (text === null) return undefined;
+  const body = text.slice(module.head, text.length - module.tail);
+  const at = __nimbusRegistryRequire("./nimbus/parser.js").fatalLocation(body, "script", -1);
   if (at === null) return undefined;
-  throw new SyntaxError("Unexpected token '" + text.slice(at[0], at[1]) + "'");
+  const error = new SyntaxError("Unexpected token '" + body.slice(at[0], at[1]) + "'");
+  error.stack = __nimbusArrowOf(module, text, module.head + at[0], module.head + at[1]) + "\n" + error.stack;
+  __nimbusDecorated.add(error);
+  throw error;
 }
 // A CommonJS entry evaluated as Node's loader runs it (manager.ts
 // entryModule; an ES entry is the registry's, __nimbusEsmRunEntry).
@@ -20924,7 +20931,7 @@ function __nimbusEvaluateEntry(load, mod, filename, dirname) {
   try {
     wrapper = load();
   } catch (e) {
-    if (check && e === "nimbus: compiled, not run (-c)") return __nimbusCheckedAlone(source);
+    if (check && e === "nimbus: compiled, not run (-c)") return __nimbusCheckedAlone();
     // TypeScript's module syntax Node retries as an ES module (wrapSafe), which cannot be checked here without running it.
     if (check && stripsTypeScript(filename) && __nimbusModuleSyntaxError(e, source)) {
       __processMod.stderr.write("node: -c cannot check an ES module entry in Nimbus without running it\n");
