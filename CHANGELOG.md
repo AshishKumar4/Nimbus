@@ -5,7 +5,7 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- Changed: a paired perf probe red on one set of Previews is run again on a fresh set of four, and is red only when it is red on both; a paired CPU bench's slower kind is measured again on a second set of runs, and is slower only when both find it slower. A set of Previews can land slow as a whole, and 95% per kind finds about one slower kind in two runs of a dozen that are not.
+- Changed: a paired perf probe grades each candidate Preview against the mean of the two baseline Previews, and a probe red on one set of Previews is run again on a fresh set of four, red only when it is red on both. Against each single baseline Preview, a real +46% cold start was found on only half the sets. A paired CPU bench's slower kind is measured again on a second set of runs, and is slower only when both find it slower: 95% per kind finds about one slower kind in two runs of a dozen that are not.
 - Changed: the paired perf probes measure the candidate on two Previews
   beside the baseline's two, and grade it slower only when both of its
   Previews are slower than both of the baseline's. One Preview can run
