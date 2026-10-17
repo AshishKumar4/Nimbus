@@ -9,20 +9,68 @@ export function gemHomeFor(home) {
     return `${normalizeVfsPath(home)}/.gem`;
 }
 /**
- * Every installed gem's lib directory, each version the specifications name
- * (`gems/<name>-<version>/lib`, where that is a directory), sorted: what
- * Ruby's load path is given (NIMBUS_GEM_LIBS). From the specifications'
- * names, the one inventory: a gem whose install was interrupted has none.
+ * The installed gems' lib directories Ruby's load path is given ahead of
+ * RubyGems: each version the specifications name (`gems/<name>-<version>/lib`,
+ * where that is a directory), the one inventory, so a gem whose install was
+ * interrupted has none. A gem whose version RubyGems must choose is left out,
+ * for `require` to activate it as RubyGems does: one with two versions
+ * installed, and one whose runtime dependencies reach such a gem at any depth
+ * (its requirements choose the version). A home with no version to choose
+ * costs no activation, and RubyGems does not read it at all.
  */
-export async function installedGemLibRoots(vfs, gemHome) {
+export async function installedGemLoadPath(vfs, gemHome) {
     const home = normalizeVfsPath(gemHome);
-    const out = [];
-    for (const path of await gemSpecFiles(vfs, home)) {
+    const installed = await Promise.all((await gemSpecFiles(vfs, home)).map(async (path) => ({ path, spec: await readGemSpec(vfs, path) })));
+    const specs = installed.flatMap(({ spec }) => (spec === null ? [] : [spec]));
+    const versions = new Map();
+    for (const spec of specs)
+        versions.set(spec.name, (versions.get(spec.name) ?? 0) + 1);
+    const chosen = new Set([...versions].filter(([, count]) => count > 1).map(([name]) => name));
+    for (let grew = chosen.size > 0; grew;) {
+        grew = false;
+        for (const spec of specs) {
+            if (!chosen.has(spec.name) && spec.dependencies.some((dep) => chosen.has(dep.name))) {
+                chosen.add(spec.name);
+                grew = true;
+            }
+        }
+    }
+    const libs = [];
+    for (const { path, spec } of installed) {
+        if (spec !== null && chosen.has(spec.name))
+            continue;
         const lib = `${home}/gems/${path.slice(path.lastIndexOf('/') + 1, -'.gemspec'.length)}/lib`;
         if ((await vfs.exists(lib)) && (await vfs.isDirectory(lib)))
-            out.push('/' + lib);
+            libs.push('/' + lib);
     }
-    return out.sort();
+    return { libs: libs.sort(), activates: chosen.size > 0 };
+}
+/** The wrapper an earlier Nimbus wrote for a gem executable: one version's, loaded whatever RubyGems would choose. */
+const LEGACY_GEM_WRAPPER = /^#!\/usr\/bin\/env ruby\nload "\/(.+)\/gems\/([^/"]+)\/bin\/([^/"]+)"\n$/;
+/**
+ * Every gem-bin wrapper in `gemHome` that an earlier Nimbus wrote, written
+ * again as writeGemExecutableWrapper writes one now, so that RubyGems chooses
+ * its executable where it chooses its version. Its gem is named by its
+ * specification (readGemSpec). Run before the bins are registered; a wrapper
+ * already current is read and left alone.
+ */
+export async function reconcileGemBinWrappers(vfs, gemHome) {
+    const home = normalizeVfsPath(gemHome);
+    for (const bin of await installedGemBins(vfs, home)) {
+        let text;
+        try {
+            text = new TextDecoder('utf-8').decode(await vfs.readFile(bin.path));
+        }
+        catch {
+            continue;
+        }
+        const [, root, key, executable] = LEGACY_GEM_WRAPPER.exec(text) ?? [];
+        if (root !== home || executable !== bin.name || key === undefined)
+            continue;
+        const spec = await readGemSpec(vfs, `${home}/specifications/${key}.gemspec`);
+        if (spec !== null)
+            await writeGemExecutableWrapper(vfs, home, spec.name, key, bin.name);
+    }
 }
 export async function installedGemBins(vfs, gemHome) {
     const binRoot = `${normalizeVfsPath(gemHome)}/bin`;
@@ -404,7 +452,7 @@ async function installOneGem(vfs, req, ctx) {
     }
     (await vfs.writeFile(`${ctx.gemHome}/cache/${installedKey}.gem`, gemBytes));
     for (const executable of executables) {
-        (await writeGemExecutableWrapper(vfs, ctx.gemHome, installedKey, executable));
+        (await writeGemExecutableWrapper(vfs, ctx.gemHome, metadata.name, installedKey, executable));
     }
     (await vfs.writeFile(specPath, buildSyntheticGemspec(metadata, executables, dependencies)));
     ctx.report.installed.push(installedKey);
@@ -554,7 +602,7 @@ function gemExecutableNames(files) {
     }
     return Array.from(names).sort();
 }
-async function writeGemExecutableWrapper(vfs, gemHome, installedKey, executable) {
+async function writeGemExecutableWrapper(vfs, gemHome, name, installedKey, executable) {
     const binRoot = `${gemHome}/bin`;
     (await ensureDir(vfs, binRoot));
     const scriptPath = `/${gemHome}/gems/${installedKey}/bin/${executable}`;
@@ -568,9 +616,17 @@ async function writeGemExecutableWrapper(vfs, gemHome, installedKey, executable)
         if (!isVfsError(error, 'ENOENT'))
             throw error;
     }
+    // Where RubyGems chooses the gem's version (installedGemLoadPath left its
+    // lib to it), it chooses the executable too, as its own binstubs do; else
+    // this version's runs, with its lib on the load path.
+    const lib = `/${gemHome}/gems/${installedKey}/lib`;
     (await vfs.writeFile(wrapperPath, [
         '#!/usr/bin/env ruby',
-        `load ${JSON.stringify(scriptPath)}`,
+        `if ENV["NIMBUS_GEM_ACTIVATE"] == "1" && !ENV["NIMBUS_GEM_LIBS"].to_s.split(":").include?(${JSON.stringify(lib)})`,
+        `  load Gem.activate_bin_path(${JSON.stringify(name)}, ${JSON.stringify(executable)}, ">= 0.a")`,
+        'else',
+        `  load ${JSON.stringify(scriptPath)}`,
+        'end',
         '',
     ].join('\n'), { mode: 0o755 }));
 }

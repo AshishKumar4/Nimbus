@@ -62,7 +62,8 @@ import {
   installRubyBundle,
   installRubyGems,
   installedGemBins,
-  installedGemLibRoots,
+  installedGemLoadPath,
+  reconcileGemBinWrappers,
   parseRubyGemRequirements,
   type RubyGemRequest,
 } from './ruby-gems.js';
@@ -107,6 +108,8 @@ export function makeRubyRunnerFactory(deps: {
     const wasmVfs = installedPath(manifest, installRoot, 'share/ruby/ruby+stdlib.wasm');
 
     const registerGemBins = async (vfs: CredentialedVfs, home: string): Promise<void> => {
+      // Wrappers an earlier Nimbus wrote, made to let RubyGems choose their executable as it chooses their version.
+      await reconcileGemBinWrappers(vfs, gemHomeFor(home));
       if (!registry) return;
       for (const bin of (await installedGemBins(vfs, gemHomeFor(home)))) {
         if (RUBY_RUNTIME_BIN_NAMES.has(bin.name)) continue;
@@ -214,7 +217,9 @@ export function makeRubyRunnerFactory(deps: {
       if (!userEnv.LANG) userEnv.LANG = 'C.UTF-8';
       userEnv.GEM_HOME ||= '/' + gemHomeFor(home);
       userEnv.GEM_PATH ||= userEnv.GEM_HOME;
-      userEnv.NIMBUS_GEM_LIBS = (await installedGemLibRoots(vfs, gemHomeFor(home))).join(':');
+      const gems = await installedGemLoadPath(vfs, gemHomeFor(home));
+      userEnv.NIMBUS_GEM_LIBS = gems.libs.join(':');
+      if (gems.activates) userEnv.NIMBUS_GEM_ACTIVATE = '1';
       // Ruby looks for charset hints via these vars; set sensible
       // defaults so puts of non-ASCII strings doesn't trip on the
       // wasi default of "ASCII-8BIT".
@@ -1396,6 +1401,13 @@ async function __rubyRunOnce(args) {
     'ENV["GEM_HOME"] ||= File.join(ENV["HOME"], ".gem")',
     'ENV["GEM_PATH"] ||= ENV["GEM_HOME"]',
     'begin; Dir.mkdir(ENV["GEM_HOME"]) unless Dir.exist?(ENV["GEM_HOME"]); rescue Exception; end',
+    // RubyGems read its paths when the VM booted, before this env. Where a gem
+    // was left off NIMBUS_GEM_LIBS for it to activate (NIMBUS_GEM_ACTIVATE),
+    // it reads them again (Gem.clear_paths) whenever they differ from what it
+    // last read. Elsewhere Gem is not so much as named: naming it loads
+    // RubyGems (~450 ms), and reading GEM_HOME would cost every default gem's
+    // require a search of it.
+    'begin; if ENV["NIMBUS_GEM_ACTIVATE"] == "1"; e = [ENV["GEM_HOME"], ENV["GEM_PATH"]]; (Gem.clear_paths; $__nimbus_gem_env = e) unless $__nimbus_gem_env == e; end; rescue Exception; end',
     // A cwd it cannot enter fails the run before the program starts (the
     // body below), as a shell's cd fails, rather than running it in '/'. A
     // step that continues a VM (a prompt's next line) names no cwd and keeps

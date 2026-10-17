@@ -36,6 +36,16 @@ published independently in the `@nimbus-sh` npm scope.
   `timeout` used to run with no deadline. `getInfo` reports that timeout,
   or 0 when none is configured, in place of a fixed 300000.
 
+- Fixed: with two versions of a gem installed, `require` now picks the
+  version host Ruby does. A bare `require "a"` loads the highest version.
+  A gem whose dependency requires `a < 2` gets a 1.x. Requiring both
+  where they conflict raises `Gem::ConflictError`. Before, the older
+  version could be loaded, and conflicts loaded anyway. Only gems whose
+  version RubyGems must choose are activated: two versions installed, or
+  a dependency, at any depth, that has two. Every other require loads from
+  the load path as before, at no added cost. A gem's executable runs the
+  version RubyGems activates, as host Ruby's binstub does, including the
+  wrappers an earlier Nimbus wrote into a persisted home.
 ## 2026-10-17: platform 0.12.0, core 0.23.0, fabric 0.18.0, worker 0.21.0, sdk 0.17.0, cli 0.2.8, loom 0.3.1, react 0.3.3, create-nimbus-app 0.2.4, runtime-bash 5.2.37-7, runtime-cpython 3.13.14-3, runtime-git 2.53.0-1 (config 0.3.1 unchanged)
 
 The 2026-10-14 and 2026-10-15 versions reached production but were never published to npm; these carry their changes too. The runtimes need core 0.23.0: it is the first core that registers bash-runner@6, cpython-runner@3 and git-runner@2.

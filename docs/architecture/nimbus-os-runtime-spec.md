@@ -270,7 +270,13 @@ These areas exist, but are not yet good enough for Nimbus OS quality:
   gems from RubyGems.org into persistent `GEM_HOME`, support simple Gemfiles,
   generate a Nimbus lockfile, and reject native-extension gems with a precise
   ABI diagnostic. Full Bundler resolution and native-extension builds are not
-  implemented.
+  implemented. `require` puts an installed gem's lib on the load path ahead
+  of RubyGems unless RubyGems must choose its version (two versions
+  installed, or a dependency at any depth that has two), and RubyGems
+  activates those as host Ruby does. Two differences from host Ruby remain,
+  both lenient: a gem on the load path is not in `Gem.loaded_specs`, and a
+  gem installed while ruby runs can be found before `Gem.refresh`, never
+  missed where host Ruby finds it.
 - Python and Ruby run as WASI modules over the session filesystem through the
   WASI host (runtime/wasi): no per-command snapshot is copied in or diffed
   back out.
