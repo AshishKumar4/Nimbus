@@ -194,6 +194,8 @@ export interface DelegationHolder {
      * of it is the session's now, and the store answers it after its barrier.
      */
     undecided(key: string): void;
+    /** The session moved or removed the name `key` (OwnNames.superseded). */
+    superseded(key: string): void;
     /** Whether a mutation at `key` would be decided here (a held subtree holds it). */
     holds(key: string): boolean;
     /** A barrier begins: its number, which `retire` takes once it lands. */

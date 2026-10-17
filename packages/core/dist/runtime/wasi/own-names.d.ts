@@ -25,6 +25,8 @@ export interface OwnNames {
     rewritten(key: string): void;
     /** Its decision at `key` is no longer its own: the session's answer replaced it. */
     undecide(key: string): void;
+    /** The session moved or removed the name `key`: what it decided at and under it goes, with what was noted there (its listing, a file's cell). */
+    superseded(key: string): void;
     /** Directory `dir` gained `name` (`type`), or lost it (null). */
     note(dir: string, name: string, type: RuntimeVfsDirEntry['type'] | null): void;
     /** A directory made at `key`: its names are the ones made in it. */

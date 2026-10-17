@@ -58,7 +58,8 @@ export function ownNames(options) {
             if (own.size !== 0)
                 own.delete(key);
         },
-        undecide: (key) => {
+        undecide: (key) => { decided.delete(key); },
+        superseded: (key) => {
             for (const name of [...decided.keys()])
                 if (within(name, key))
                     forget(name);

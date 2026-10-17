@@ -859,6 +859,7 @@ export function delegationHolder(options) {
             return true;
         },
         undecided: (key) => { names.undecide(key); },
+        superseded: (key) => { names.superseded(key); },
         holds: (key) => client.held(key) !== undefined,
         barrierBegun: () => {
             prov.barrierBegun();
