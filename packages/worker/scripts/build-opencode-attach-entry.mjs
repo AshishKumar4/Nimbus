@@ -154,14 +154,14 @@ function escapeRegexLiteral(literal) {
 }
 
 /**
- * Make the attach entry pure ASCII. esbuild's default ASCII charset escapes
- * every literal except regular expressions, so opencode's typographic-quote
- * regexes (`/[‘’‚‛]/g`, `/…/g`) survive, and one character above U+00FF makes
- * V8 hold the whole 14 MB source as a two-byte string: 29 MB in the session
- * that assembles the facet's module map and again in the facet that runs it.
- * Fails loud if non-ASCII remains anywhere else.
+ * Make esbuild output pure ASCII. esbuild's ASCII charset escapes every
+ * literal except regular expressions, so opencode's typographic-quote regexes
+ * (`/[‘’‚‛]/g`, `/…/g`) survive, and one character above U+00FF makes V8 hold
+ * the whole source as a two-byte string, twice its size, in the session that
+ * assembles the facet's module map and again in the facet that runs it.
+ * Fails loud if non-ASCII remains anywhere else; `what` names the source.
  */
-function asciiOnlyAttachEntry(src) {
+function asciiOnlyEsbuildOutput(src, what) {
   const acorn = require('acorn');
   const parts = [];
   let last = 0;
@@ -177,12 +177,25 @@ function asciiOnlyAttachEntry(src) {
   const residual = out.search(/[^\x00-\x7f]/);
   if (residual >= 0) {
     throw new Error(
-      '[build-opencode-attach-entry] non-ASCII outside a regex literal at offset ' +
+      `[build-opencode-attach-entry] ${what}: non-ASCII outside a regex literal at offset ` +
         `${residual} (${JSON.stringify(out.slice(Math.max(0, residual - 40), residual + 10))}) — ` +
-        'escape it here, or the attach source is held as a two-byte string',
+        'escape it here, or the source is held as a two-byte string',
     );
   }
   return out;
+}
+
+/**
+ * A split-build chunk's source as pure ASCII (asciiOnlyEsbuildOutput): one
+ * already ASCII as it is, any other reprinted by esbuild with its ASCII
+ * charset, which writes every other character as an escape where the language
+ * allows one. A chunk holding one character above U+00FF is otherwise held as
+ * a two-byte string: 52 of opencode 1.16.2's 283 chunks, 16.2M characters.
+ */
+export async function asciiChunkSource(src, name) {
+  if (!/[^\x00-\x7f]/.test(src)) return src;
+  const { code } = await require('esbuild').transform(src, { loader: 'js', charset: 'ascii', sourcefile: name, logLevel: 'error' });
+  return asciiOnlyEsbuildOutput(code, name);
 }
 
 /**
@@ -246,7 +259,7 @@ export async function buildOpencodeAttachEntryFromSources(entry, packInput) {
       },
     ],
   });
-  const out = asciiOnlyAttachEntry(result.outputFiles[0].text);
+  const out = asciiOnlyEsbuildOutput(result.outputFiles[0].text, 'index-attach.js');
   const residual = [...out.matchAll(/import\(\s*["'](?:\.\/)?(chunk-[a-z0-9]+\.js)["']\s*[,)]/g)];
   if (residual.length > 0) {
     throw new Error(
