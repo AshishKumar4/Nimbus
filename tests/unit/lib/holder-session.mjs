@@ -17,6 +17,7 @@ export const user = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
  * (`view.barrier` runs after); else the store reads the session at every
  * call. `acquired`: what the session's grant waits for. `grantBytes`: the
  * storage a grant reserves.
+ * @param {{ grantInos?: number, journal?: any, gate?: PromiseLike<unknown>, refuse?: () => boolean, view?: { barrier?: () => unknown }, acquired?: PromiseLike<unknown>, grantBytes?: number, budget?: { used: number, limit: number } }} [options]
  */
 export function session({ grantInos, journal, gate, refuse, view, acquired, grantBytes, budget } = {}) {
   const harness = createSqliteVfsTestHarness();

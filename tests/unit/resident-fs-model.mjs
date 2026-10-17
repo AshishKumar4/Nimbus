@@ -64,41 +64,31 @@ function program(seed, length = 40) {
   return steps;
 }
 
-/** What the process's own operations make of a file: write, append, truncate and chmod over its bytes and mode. */
+/**
+ * What the process's own operations make of a file: write, append, truncate
+ * and chmod over its bytes and mode. Bytes not known (null) stay unknown
+ * but for their size, until a truncate to nothing makes them known.
+ */
 function apply(file, op) {
-  if (op.kind === 'chmod') return { bytes: file.bytes, mode: op.mode };
+  if (op.kind === 'chmod') return { ...file, mode: op.mode };
   if (op.kind === 'truncate') {
+    if (op.size === 0) return { ...file, bytes: new Uint8Array(0), size: 0 };
+    if (file.bytes === null) return { ...file, size: op.size };
     const bytes = new Uint8Array(op.size);
     bytes.set(file.bytes.subarray(0, Math.min(op.size, file.bytes.length)));
-    return { bytes, mode: file.mode };
+    return { ...file, bytes, size: op.size };
   }
   if (op.data.length === 0) return file;
-  const at = op.kind === 'append' ? file.bytes.length : op.offset;
-  const bytes = new Uint8Array(Math.max(file.bytes.length, at + op.data.length));
+  const at = op.kind === 'append' ? file.size : op.offset;
+  const size = Math.max(file.size, at + op.data.length);
+  if (file.bytes === null) return { ...file, size };
+  const bytes = new Uint8Array(size);
   bytes.set(file.bytes);
   bytes.set(op.data, at);
-  return { bytes, mode: file.mode };
+  return { ...file, bytes, size };
 }
 
-/**
- * The process's view as the model has it: the names and files its view
- * last admitted (a snapshot of the session), with its own operations since,
- * the session's refusals among them dropped, replayed over them in order.
- */
-function viewOf(admitted, pending, key) {
-  const names = new Map(admitted.names);
-  const files = new Map([...admitted.files].map(([id, file]) => [id, { ...file }]));
-  for (const step of pending) {
-    if (step.refused) continue;
-    const e = step.effect;
-    if (e.kind === 'name') { if (e.id === null) names.delete(e.name); else names.set(e.name, e.id); }
-    else if (e.kind === 'rename') { const id = names.get(e.from); names.delete(e.from); names.set(e.to, id); }
-    // A file it made that the session's answer names as one the view has: that file, as the view has it.
-    else if (e.kind === 'create') { if (key(e.id) === e.id) files.set(e.id, { bytes: new Uint8Array(0), mode: e.mode }); }
-    else if (e.kind !== 'none') files.set(key(e.id), apply(files.get(key(e.id)) ?? { bytes: new Uint8Array(0), mode: 0o644 }, e));
-  }
-  return { names, files };
-}
+const known = (bytes, mode) => ({ bytes, size: bytes.length, mode });
 
 async function errnoOf(work) {
   try { await work(); return null; } catch (error) { return error?.code ?? String(error); }
@@ -117,15 +107,42 @@ async function run(steps) {
   const sync = s.fs.synchronous;
   const direct = ref.filesystem.bind({ pid: 8, cred: user });
   const path = (name) => `/${DIR}/${name}`;
-  // The view's ids are the session's inode numbers; a file the process makes is `L<n>` until its open is delivered.
+
+  // A file is named by a reference: `{ fixed: ino }` for one the view admitted
+  // (its session number), or an open of the process's (`opened`), which is the
+  // file the view had at its name (`view`: an ino, or `L<n>` for one it made)
+  // until its delivery says which file the session opened (`session`, with
+  // the stat its open left, `receipt`).
   let local = 0;
-  const alias = new Map();
-  /** A file the process made, as the model keys it: the session's file once its open is answered, if the view has that one. */
-  const key = (id) => { const named = alias.get(id); return named !== undefined && admitted.files.has(named) ? named : id; };
-  /** A file the process made that the session's answer names as one the view has not admitted: the view may not hold its bytes. */
-  const unadmitted = (id) => alias.has(id) && !admitted.files.has(alias.get(id));
+  let admitted;
+  /** The file a reference is, as the model keys it now: an admitted ino, `S<ino>` for one the session opened that the view has not admitted, or `L<n>`. */
+  const resolve = (reference) => {
+    if (reference.fixed !== undefined) return reference.fixed;
+    const opened = reference.opened;
+    if (opened.session === undefined) return opened.view;
+    return admitted.files.has(opened.session) ? opened.session : `S${opened.session}`;
+  };
+  /** What the view has of a file it has not admitted, before the process's operations on it: its open's receipt, its bytes unknown but none. */
+  const receipts = new Map();
   /** Files no name leads to any more that a descriptor holds: what the view had of them last. */
   const unnamed = new Set();
+
+  /** The view as the model has it: what it admitted, with the process's operations since, the refused dropped, replayed over it in order. */
+  const viewOf = () => {
+    const names = new Map([...admitted.names].map(([name, ino]) => [name, { fixed: ino }]));
+    const files = new Map(admitted.files);
+    const fileOf = (id) => files.get(id) ?? receipts.get(id);
+    for (const record of pending) {
+      if (record.refused) continue;
+      const e = record.effect;
+      if (e.kind === 'name') { if (e.ref === null) names.delete(e.name); else names.set(e.name, e.ref); }
+      else if (e.kind === 'rename') { const moved = names.get(e.from); names.delete(e.from); names.set(e.to, moved); }
+      else if (e.kind === 'create') { const id = resolve(e.ref); if (String(id).startsWith('L')) files.set(id, known(new Uint8Array(0), e.mode)); }
+      else if (e.kind !== 'none') { const id = resolve(e.ref); const file = fileOf(id); if (file !== undefined) files.set(id, apply(file, e)); }
+    }
+    return { names, files, fileOf };
+  };
+
   /** The session's names and files now, as the reference has them. */
   const snapshot = async () => {
     const names = new Map();
@@ -135,154 +152,160 @@ async function run(steps) {
       try { stat = await direct.stat(path(name)); } catch { /* absent */ }
       if (stat === null) continue;
       names.set(name, stat.ino);
-      files.set(stat.ino, { bytes: new Uint8Array(await direct.readFile(path(name))), mode: stat.mode & 0o7777 });
+      files.set(stat.ino, known(new Uint8Array(await direct.readFile(path(name))), stat.mode & 0o7777));
     }
     return { names, files };
   };
-  let admitted = await snapshot();
+  admitted = await snapshot();
   /** The process's own operations since its view last admitted the session's, each with its effect and, once delivered, its fate. */
   let pending = [];
   let undelivered = [];
-  /** Per fd: the file it opened (as the view had it), its rights, and the reference's descriptor of it once delivered. */
+  /** Per fd: its open (the file it opened, its rights, the reference's descriptor of it once delivered). */
   const fds = new Map();
-  const view = () => viewOf(admitted, pending, key);
-  /** The name the view has `id` at, if any. */
-  const nameOf = (now, id) => { for (const [name, at] of now.names) if (key(at) === key(id)) return name; return undefined; };
 
   const check = async (label) => {
-    const now = view();
-    for (const [fd, open] of fds) {
-      if (!open.read) continue;
-      const file = now.files.get(key(open.id));
+    const now = viewOf();
+    for (const [fd, opened] of fds) {
+      const id = resolve({ opened });
+      const file = now.fileOf(id);
+      const size = Number(sync.fstat(opened.handle).size);
+      if (file !== undefined) assert.equal(size, file.size, `${label}: fd ${fd} fstat size`);
+      if (!opened.read) continue;
       let got;
-      const code = await errnoOf(() => { got = sync.read(open.handle, 0, 1 << 12); });
-      // ESTALE: a file no name leads to whose bytes the view no longer holds; EAGAIN: bytes the view has not admitted.
-      if (code === 'ESTALE' && (file === undefined || unnamed.has(key(open.id)))) continue;
-      if (code === 'EAGAIN' && unadmitted(open.id)) continue;
+      const code = await errnoOf(() => { got = sync.read(opened.handle, 0, 1 << 12); });
+      // Bytes the view does not hold: refused (EAGAIN), or ESTALE once no name leads to them.
+      if ((code === 'EAGAIN' || code === 'ESTALE') && (file === undefined || file.bytes === null)) continue;
+      if (code === 'ESTALE' && unnamed.has(id)) continue;
       assert.equal(code, null, `${label}: fd ${fd} read ${code}`);
-      assert.equal(dec.decode(got), dec.decode(file?.bytes ?? new Uint8Array(0)), `${label}: fd ${fd} read`);
-      assert.equal(Number(sync.fstat(open.handle).size), (file?.bytes ?? new Uint8Array(0)).length, `${label}: fd ${fd} fstat size`);
+      if (file === undefined || file.bytes === null) continue;
+      assert.equal(dec.decode(got), dec.decode(file.bytes), `${label}: fd ${fd} read`);
     }
     for (const name of NAMES) {
-      const id = now.names.get(name);
+      const reference = now.names.get(name);
       const stat = sync.stat(path(name));
-      assert.equal(stat === null, id === undefined, `${label}: ${name} ${stat === null ? 'absent' : 'present'}`);
-      if (id === undefined || unadmitted(id)) continue;
-      const file = now.files.get(key(id));
-      assert.equal(Number(stat.size), file.bytes.length, `${label}: ${name} size`);
+      assert.equal(stat === null, reference === undefined, `${label}: ${name} ${stat === null ? 'absent' : 'present'}`);
+      if (reference === undefined) continue;
+      const file = now.fileOf(resolve(reference));
+      if (file === undefined) continue;
+      assert.equal(Number(stat.size), file.size, `${label}: ${name} size`);
       assert.equal(Number(stat.mode) & 0o7777, file.mode, `${label}: ${name} mode`);
     }
   };
 
   /** The process's operation `step`, made synchronously: its local refusal, which the model predicts, or its effects. */
   const processStep = async (step, label) => {
-    const now = view();
+    const now = viewOf();
     const add = (effect, logged) => {
-      const record = { step, effect, refused: false };
+      const record = { effect, refused: false };
       pending.push(record);
       if (logged) undelivered.push({ record, logged });
       return record;
     };
+    const fileAt = (name) => { const reference = now.names.get(name); return reference === undefined ? undefined : now.fileOf(resolve(reference)); };
     if (step.op === 'open') {
       if (fds.has(step.fd)) return;
-      const id = now.names.get(step.name);
-      const file = id === undefined ? undefined : now.files.get(key(id));
+      const reference = now.names.get(step.name);
+      const file = fileAt(step.name);
       const writes = step.flags.write || step.flags.append;
-      const expected = id === undefined ? (step.flags.create ? null : 'ENOENT')
+      const expected = reference === undefined ? (step.flags.create ? null : 'ENOENT')
         : step.flags.create && step.flags.exclusive ? 'EEXIST'
         : ((step.flags.read && !(file.mode & 0o400)) || ((writes || step.flags.truncate) && !(file.mode & 0o200))) ? 'EACCES' : null;
       let handle;
       const code = await errnoOf(() => { handle = sync.open(path(step.name), step.flags).id; });
       assert.equal(code, expected, `${label}: open ${step.name} ${JSON.stringify(step.flags)}`);
       if (code !== null) return;
-      let target = id;
-      if (id === undefined) {
-        target = `L${++local}`;
-        add({ kind: 'create', id: target, mode: 0o644 & ~0o022 });
-        add({ kind: 'name', name: step.name, id: target });
+      const made = reference === undefined;
+      const opened = { handle, view: made ? `L${++local}` : resolve(reference), read: step.flags.read || !writes, write: writes, append: step.flags.append, name: step.name, position: 0 };
+      fds.set(step.fd, opened);
+      // Logged where it makes, empties or may write its file: the session's open, as the caller asked it; its refusal is all of its effects'.
+      const logs = writes || step.flags.truncate || made;
+      const records = [];
+      if (made) {
+        records.push(add({ kind: 'create', ref: { opened }, mode: 0o644 & ~0o022 }));
+        records.push(add({ kind: 'name', name: step.name, ref: { opened } }));
       }
-      const logs = writes || step.flags.truncate || id === undefined;
-      const open = { handle, id: target, read: step.flags.read || !writes, write: writes, append: step.flags.append, name: step.name, logs };
-      fds.set(step.fd, open);
-      const record = add(step.flags.truncate && id !== undefined ? { kind: 'truncate', id: target, size: 0 } : { kind: 'none' }, logs ? { open, flags: step.flags } : null);
-      record.open = open;
+      if (step.flags.truncate) records.push(add({ kind: 'truncate', ref: { opened }, size: 0 }));
+      const flags = { write: true, read: step.flags.read, create: step.flags.create, exclusive: made && step.flags.exclusive, truncate: step.flags.truncate };
+      if (logs) undelivered.push({ records, logged: { opened, flags } });
+      opened.logs = logs;
       return;
     }
     if (step.op === 'write' || step.op === 'ftruncate' || step.op === 'fchmod' || step.op === 'close') {
-      const open = fds.get(step.fd);
-      if (open === undefined) return;
+      const opened = fds.get(step.fd);
+      if (opened === undefined) return;
       if (step.op === 'close') {
-        sync.close(open.handle);
+        sync.close(opened.handle);
         fds.delete(step.fd);
-        if (open.logs) undelivered.push({ record: { step, effect: { kind: 'none' }, refused: false }, logged: { close: open } });
+        if (opened.logs) undelivered.push({ record: { effect: { kind: 'none' }, refused: false }, logged: { close: opened } });
         return;
       }
       if (step.op === 'write') {
         const data = enc.encode(step.data);
-        const code = await errnoOf(() => sync.write(open.handle, step.offset, data));
-        if (!open.write) { assert.equal(code, 'EBADF', `${label}: write by a read-only fd`); return; }
+        const code = await errnoOf(() => sync.write(opened.handle, step.offset, data));
+        if (!opened.write) { assert.equal(code, 'EBADF', `${label}: write by a read-only fd`); return; }
         assert.equal(code, null, `${label}: write`);
-        const at = step.offset ?? open.position ?? 0;
-        const effect = open.append ? { kind: 'append', id: open.id, data } : { kind: 'write', id: open.id, offset: at, data };
-        if (!open.append && step.offset === null) open.position = at + data.length;
-        add(effect, { open, write: effect });
+        const at = step.offset ?? opened.position;
+        const effect = opened.append ? { kind: 'append', ref: { opened }, data } : { kind: 'write', ref: { opened }, offset: at, data };
+        if (!opened.append && step.offset === null) opened.position = at + data.length;
+        add(effect, { opened, write: effect });
         return;
       }
       if (step.op === 'ftruncate') {
-        const code = await errnoOf(() => sync.ftruncate(open.handle, step.size));
-        if (!open.write) { assert.ok(code !== null, `${label}: ftruncate by a read-only fd answered`); return; }
+        const code = await errnoOf(() => sync.ftruncate(opened.handle, step.size));
+        if (!opened.write) { assert.ok(code !== null, `${label}: ftruncate by a read-only fd answered`); return; }
         assert.equal(code, null, `${label}: ftruncate`);
-        add({ kind: 'truncate', id: open.id, size: step.size }, { open, truncate: step.size });
+        add({ kind: 'truncate', ref: { opened }, size: step.size }, { opened, truncate: step.size });
         return;
       }
-      // By the name that leads to its file: none, and the view cannot say which file it would change (ESTALE).
-      const name = nameOf(now, open.id);
-      const code = await errnoOf(() => sync.fchmod(open.handle, step.mode));
-      if (name === undefined) { assert.equal(code, 'ESTALE', `${label}: fchmod of a file no name leads to`); return; }
-      assert.equal(code, null, `${label}: fchmod`);
-      add({ kind: 'chmod', id: open.id, mode: step.mode }, { chmod: [name, step.mode] });
+      // By the name that leads to its file: none, and no file can be named (ESTALE).
+      const id = resolve({ opened });
+      let name;
+      for (const [at, reference] of now.names) if (resolve(reference) === id) name = at;
+      const code = await errnoOf(() => sync.fchmod(opened.handle, step.mode));
+      if (name === undefined) { assert.ok(code === 'ESTALE' || code === null, `${label}: fchmod of a file no name leads to: ${code}`); if (code !== null) return; }
+      else assert.equal(code, null, `${label}: fchmod`);
+      add({ kind: 'chmod', ref: { opened }, mode: step.mode }, name === undefined ? null : { chmod: [name, step.mode] });
       return;
     }
     if (step.op === 'unlink') {
-      const id = now.names.get(step.name);
+      const reference = now.names.get(step.name);
       const code = await errnoOf(() => sync.unlink(path(step.name)));
-      assert.equal(code, id === undefined ? 'ENOENT' : null, `${label}: unlink ${step.name}`);
-      if (code === null) add({ kind: 'name', name: step.name, id: null }, { unlink: step.name });
+      assert.equal(code, reference === undefined ? 'ENOENT' : null, `${label}: unlink ${step.name}`);
+      if (code === null) add({ kind: 'name', name: step.name, ref: null }, { unlink: step.name });
       return;
     }
     if (step.op === 'rename') {
-      const id = now.names.get(step.from);
+      const reference = now.names.get(step.from);
       const code = await errnoOf(() => sync.rename(path(step.from), path(step.to)));
-      assert.equal(code, id === undefined ? 'ENOENT' : null, `${label}: rename ${step.from} ${step.to}`);
+      assert.equal(code, reference === undefined ? 'ENOENT' : null, `${label}: rename ${step.from} ${step.to}`);
       if (code === null && step.from !== step.to) add({ kind: 'rename', from: step.from, to: step.to }, { rename: [step.from, step.to] });
       return;
     }
     if (step.op === 'chmod') {
-      const id = now.names.get(step.name);
+      const reference = now.names.get(step.name);
       const code = await errnoOf(() => sync.chmod(path(step.name), step.mode));
-      assert.equal(code, id === undefined ? 'ENOENT' : null, `${label}: chmod ${step.name}`);
-      if (code === null) add({ kind: 'chmod', id, mode: step.mode }, { chmod: [step.name, step.mode] });
+      assert.equal(code, reference === undefined ? 'ENOENT' : null, `${label}: chmod ${step.name}`);
+      if (code === null) add({ kind: 'chmod', ref: reference, mode: step.mode }, { chmod: [step.name, step.mode] });
       return;
     }
     if (step.op === 'writeFile') {
-      const id = now.names.get(step.name);
-      const file = id === undefined ? undefined : now.files.get(key(id));
+      const reference = now.names.get(step.name);
+      const file = fileAt(step.name);
       const expected = file !== undefined && !(file.mode & 0o200) ? 'EACCES' : null;
       const data = enc.encode(step.data);
       const code = await errnoOf(() => sync.writeFile(path(step.name), data));
       assert.equal(code, expected, `${label}: writeFile ${step.name}`);
       if (code !== null) return;
-      let target = id;
-      if (id === undefined) {
-        target = `L${++local}`;
-        add({ kind: 'create', id: target, mode: 0o644 & ~0o022 });
-        add({ kind: 'name', name: step.name, id: target });
-      } else {
-        add({ kind: 'truncate', id: target, size: 0 });
+      const made = reference === undefined;
+      const opened = { view: made ? `L${++local}` : resolve(reference), write: true, name: step.name };
+      const records = [];
+      if (made) {
+        records.push(add({ kind: 'create', ref: { opened }, mode: 0o644 & ~0o022 }));
+        records.push(add({ kind: 'name', name: step.name, ref: { opened } }));
       }
-      const open = { id: target, write: true, name: step.name, logs: true };
-      const record = add({ kind: 'write', id: target, offset: 0, data }, { open, flags: { write: true, create: true, truncate: true }, write: { kind: 'write', offset: 0, data }, close: open });
-      record.open = open;
+      records.push(add({ kind: 'truncate', ref: { opened }, size: 0 }));
+      const written = add({ kind: 'write', ref: { opened }, offset: 0, data });
+      undelivered.push({ records, record: written, logged: { opened, flags: { write: true, create: true, truncate: true }, write: { kind: 'write', offset: 0, data }, close: opened } });
     }
   };
 
@@ -293,24 +316,35 @@ async function run(steps) {
     await errnoOf(() => s.fs.flush());
     control.held = true;
     control.opened = Promise.withResolvers();
-    for (const { record, logged } of undelivered) {
+    for (const { record, records, logged } of undelivered) {
       let refused = false;
       if (logged.unlink) refused = (await errnoOf(() => direct.unlink(path(logged.unlink)))) !== null;
       else if (logged.rename) refused = (await errnoOf(() => direct.rename(path(logged.rename[0]), path(logged.rename[1])))) !== null;
       else if (logged.chmod) refused = (await errnoOf(() => direct.chmod(path(logged.chmod[0]), logged.chmod[1]))) !== null;
       else {
-        const open = logged.open ?? logged.close;
+        const opened = logged.opened ?? logged.close;
         if (logged.flags) {
-          refused = (await errnoOf(async () => { open.refHandle = (await direct.open(path(open.name), { ...logged.flags, mode: 0o666, umask: 0o022 })).id; })) !== null;
-          if (!refused && String(open.id).startsWith('L')) alias.set(open.id, (await direct.fstat(open.refHandle)).ino);
-          if (refused) open.refHandle = undefined;
+          // The session's open is to write (and to read when asked): its answer names the file it opened.
+          refused = (await errnoOf(async () => { opened.refHandle = (await direct.open(path(opened.name), { ...logged.flags, mode: 0o666, umask: 0o022 })).id; })) !== null;
+          for (const made of records ?? []) made.refused = refused;
+          if (refused) opened.refHandle = undefined;
+          else {
+            const stat = await direct.fstat(opened.refHandle);
+            opened.session = stat.ino;
+            receipts.set(`S${stat.ino}`, { bytes: Number(stat.size) === 0 ? new Uint8Array(0) : null, size: Number(stat.size), mode: stat.mode & 0o7777 });
+          }
         }
-        if (logged.write && open.refHandle !== undefined) refused = (await errnoOf(() => direct.write(open.refHandle, logged.write.kind === 'append' ? null : logged.write.offset, logged.write.data))) !== null;
-        else if (logged.write) refused = true;
-        if (logged.truncate !== undefined) refused = open.refHandle === undefined || (await errnoOf(() => direct.ftruncate(open.refHandle, logged.truncate))) !== null;
-        if (logged.close && open.refHandle !== undefined) { await errnoOf(() => direct.close(open.refHandle)); open.refHandle = undefined; }
+        if (logged.write) {
+          if (opened.refHandle === undefined) refused = true;
+          else {
+            const at = logged.write.kind === 'append' ? Number((await direct.fstat(opened.refHandle)).size) : logged.write.offset;
+            refused = (await errnoOf(() => direct.write(opened.refHandle, at, logged.write.data))) !== null;
+          }
+        }
+        if (logged.truncate !== undefined) refused = opened.refHandle === undefined || (await errnoOf(() => direct.ftruncate(opened.refHandle, logged.truncate))) !== null;
+        if (logged.close && opened.refHandle !== undefined) { await errnoOf(() => direct.close(opened.refHandle)); opened.refHandle = undefined; }
       }
-      record.refused = refused;
+      if (record !== undefined) record.refused = refused;
     }
     undelivered = [];
   };
@@ -324,25 +358,24 @@ async function run(steps) {
       await errnoOf(() => s.fs.stat(path(name)));
       await errnoOf(() => s.fs.readFile(path(name)));
     }
+    // A file a descriptor holds that no name leads to now keeps what the view had of it, by its session number.
+    const before = viewOf();
+    const held = [...fds.values()].map((opened) => [opened.session ?? resolve({ opened }), before.fileOf(resolve({ opened }))]);
+    admitted = await snapshot();
+    pending = [];
+    for (const [id, file] of held) {
+      if (typeof id !== 'number' || admitted.files.has(id) || file === undefined) continue;
+      admitted.files.set(id, file);
+      unnamed.add(id);
+    }
   };
   await catchUp();
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
     const label = `step ${i} ${JSON.stringify(step)}`;
     if (step.op === 'deliver') await deliver();
-    else if (step.op === 'catchUp') {
-      await catchUp();
-      // A file a descriptor holds that no name leads to now keeps what the view had of it, by its session identity.
-      const before = view();
-      const held = [...fds.values()].map((open) => [alias.get(open.id) ?? open.id, before.files.get(key(open.id))]);
-      admitted = await snapshot();
-      pending = [];
-      for (const [id, file] of held) {
-        if (admitted.files.has(id) || file === undefined) continue;
-        admitted.files.set(id, file);
-        unnamed.add(id);
-      }
-    } else if (step.op === 'peer') {
+    else if (step.op === 'catchUp') await catchUp();
+    else if (step.op === 'peer') {
       // Between deliveries: the session has it before what the process sends next, and so does the reference.
       for (const target of [s.kernel, ref.kernel]) {
         const key = `${DIR}/${step.name}`;
@@ -357,7 +390,7 @@ async function run(steps) {
     await check(label);
   }
   await deliver();
-  for (const open of fds.values()) if (open.refHandle !== undefined) await errnoOf(() => direct.close(open.refHandle));
+  for (const opened of fds.values()) if (opened.refHandle !== undefined) await errnoOf(() => direct.close(opened.refHandle));
   // The end: the session holds what the reference holds.
   const ours = [];
   const theirs = [];
