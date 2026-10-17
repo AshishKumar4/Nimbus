@@ -58,7 +58,7 @@ export interface NimbusConfig {
   subject?: string;
   /** Sandbox filesystem root. Defaults to `/home/user`. */
   root?: string;
-  /** Default command timeout in milliseconds. */
+  /** Default command timeout in milliseconds; a command's own timeout is over it. Defaults to 300000. */
   timeout?: number;
 }
 
@@ -73,6 +73,8 @@ export interface NimbusSandboxHandle {
   root: string;
   createdAt: number;
   envs: Record<string, string>;
+  /** The commands' timeout when a call names none (NimbusConfig.timeout), in milliseconds. */
+  timeout: number;
 }
 
 interface SandboxMarker {
@@ -99,6 +101,10 @@ function resolveEndpoint(config: NimbusConfig): string {
     );
   }
   return endpoint;
+}
+
+function resolveTimeout(config: NimbusConfig): number {
+  return config.timeout ?? DEFAULT_TIMEOUT_MS;
 }
 
 function resolveRoot(config: NimbusConfig): string {
@@ -185,7 +191,7 @@ export const nimbus = defineProvider<NimbusSandboxHandle, NimbusConfig>({
           JSON.stringify({ createdAt, envs } satisfies SandboxMarker),
         );
 
-        return { sandbox: { box: sandbox, id, root, createdAt, envs }, sandboxId: id };
+        return { sandbox: { box: sandbox, id, root, createdAt, envs, timeout: resolveTimeout(config) }, sandboxId: id };
       },
 
       getById: async (config: NimbusConfig, sandboxId: string) => {
@@ -208,6 +214,7 @@ export const nimbus = defineProvider<NimbusSandboxHandle, NimbusConfig>({
             root,
             createdAt: marker.createdAt,
             envs: marker.envs ?? {},
+            timeout: resolveTimeout(config),
           },
           sandboxId,
         };
@@ -239,7 +246,7 @@ export const nimbus = defineProvider<NimbusSandboxHandle, NimbusConfig>({
         const execOptions = {
           cwd: options?.cwd ? absolute(handle.root, options.cwd) : undefined,
           env: Object.keys(env).length > 0 ? env : undefined,
-          timeoutMs: options?.timeout,
+          timeoutMs: options?.timeout ?? handle.timeout,
         };
 
         if (options?.background) {
@@ -270,7 +277,7 @@ export const nimbus = defineProvider<NimbusSandboxHandle, NimbusConfig>({
         provider: 'nimbus',
         status: 'running',
         createdAt: new Date(handle.createdAt),
-        timeout: DEFAULT_TIMEOUT_MS,
+        timeout: handle.timeout,
         metadata: { root: handle.root },
       }),
 
