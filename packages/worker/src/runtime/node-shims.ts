@@ -11212,6 +11212,15 @@ function __nimbusFatalReport(error, fromPromise, enhance) {
   }
   return report + "\\nNode.js " + __processMod.version + "\\n";
 }
+// The entry's typeless warning, where its graph did not link
+// (__nimbusEsmImport): Node's next tick prints it if a listener takes the
+// failure and the process goes on, and never if the failure ends it.
+let __nimbusHeldEntryWarning = null;
+function __nimbusReleaseEntryWarning(emit) {
+  const warning = __nimbusHeldEntryWarning;
+  __nimbusHeldEntryWarning = null;
+  if (emit && warning !== null) warning();
+}
 // An exception nothing caught (\`fromPromise\`: a rejection, or an ES
 // module's evaluation): whether a listener took it.
 function __nimbusUncaughtException(error, fromPromise = false) {
@@ -11224,19 +11233,25 @@ function __nimbusUncaughtException(error, fromPromise = false) {
     __processMod.emit("uncaughtExceptionMonitor", error, type);
     if (__nimbusExceptionCapture !== null) {
       __nimbusExceptionCapture(error);
+      __nimbusReleaseEntryWarning(true);
       return true;
     }
-    if (__processMod.emit("uncaughtException", error, type)) return true;
+    if (__processMod.emit("uncaughtException", error, type)) {
+      __nimbusReleaseEntryWarning(true);
+      return true;
+    }
   } catch (thrown) {
     if (thrown instanceof __ProcessExit) {
       __nimbusReportProcessExit(thrown.code, "");
       return true;
     }
+    __nimbusReleaseEntryWarning(false);
     const report = __nimbusFatalReport(thrown, false, false);
     __nimbusWriteFatal(report);
     __nimbusReportProcessExit(7, report);
     return false;
   }
+  __nimbusReleaseEntryWarning(false);
   try {
     if (!__processMod._exiting) {
       __processMod._exiting = true;
@@ -13036,9 +13051,9 @@ async function __nimbusEsmImport(id, entry = false) {
   if (record.state === __ESM_DONE && record.namespace !== null) return record.namespace;
   const row = __nimbusEsm.table[id];
   // The entry's typeless warning waits for its evaluation to begin: Node's,
-  // a next tick's, never prints where the entry's graph does not link, whose
-  // failure ends the process first (an import()'s failure, which the
-  // program may catch, does not).
+  // a next tick's, never prints where the entry's graph does not link and
+  // its failure ends the process first (__nimbusHeldEntryWarning). An
+  // import()'s failure, which the program may catch, does not wait.
   let warns = row[0] === "module" && record.state === 0;
   const tainted = row[0] === "module" && __nimbusEsmTainted(id);
   if (warns && (!entry || tainted)) {
@@ -13064,6 +13079,7 @@ async function __nimbusEsmImport(id, entry = false) {
       if (warns) {
         warns = false;
         if (linked) __nimbusEsmWarnTypeless(id);
+        else __nimbusHeldEntryWarning = () => __nimbusEsmWarnTypeless(id);
       }
       resolve();
     };

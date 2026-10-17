@@ -117,8 +117,8 @@ import('./typed/module-exports.js').catch((e) => { report.push(['import', e.name
   // microtask drain that loaded the module ends the process before: an
   // entry whose graph does not compile as a module (an import nested in a
   // statement, a syntax error after an import) shows only its error. A
-  // caught failure, a later exit (a timer's), or a rejection nothing handles
-  // leaves it printed first. (An entry whose evaluation throws before the
+  // caught failure, a later exit (a timer's), a rejection nothing handles, or
+  // the entry's failure a listener takes leaves it printed. (An entry whose evaluation throws before the
   // drain ends shows no warning in Node either; the guest's next tick is a
   // microtask, so it does: ticket-node-tick-queue.)
   'nested-import.js': "{ import { sep } from 'node:path'; }\n",
@@ -131,6 +131,8 @@ import('./typed/module-exports.js').catch((e) => { report.push(['import', e.name
   'unhandled/package.json': JSON.stringify({ name: 'unhandled' }),
   'unhandled/broken.js': "import { sep } from 'node:path';\nconst a = ;\n",
   'imports-unhandled.mjs': "setTimeout(() => {}, 10);\nimport('./unhandled/broken.js');\n",
+  // A preload's listener takes the entry's failure: the process goes on, and the warning prints.
+  'handles-uncaught.mjs': "process.on('uncaughtException', (e) => console.log('handled', e.name));\nprocess.on('warning', (w) => console.log('warning', w.code));\n",
   // Keys and methods named import or export are no module syntax.
   'nested-keys.js': "const c = { import: './a.mjs', export: 1 };\nclass A { export() {} static import() {} export = 1; import; static export }\nconsole.log(typeof module, Object.keys(c).join(), Object.keys(new A()).join());\n",
 };
@@ -183,6 +185,7 @@ const RUNS = [
   ['timer-exits.js'],
   ['imports-caught.mjs'],
   ['imports-unhandled.mjs'],
+  ['--import', './handles-uncaught.mjs', 'late-error.js'],
 ];
 // Each run as a command line, its stdin from a file of the tree.
 const stdins = {};
