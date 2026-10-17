@@ -3,8 +3,8 @@
 // Injected by scripts/bundle-real-vite.mjs.
 //
 // __cirrusRealRequireShim resolves a small whitelist of bundled CJS
-// factories (picomatch/postcss inside readdirp/chokidar) — consumed by the
-// post-patched __require2 call sites.
+// factories (picomatch inside readdirp/chokidar, postcss inside the CSS
+// pipeline) — consumed by the post-patched __require2 call sites.
 ;(() => {
   const _bundledFactories = { "picomatch": () => require_picomatch(), "postcss": () => require_postcss() };
   const _stubModule = { __stubbed: true };
@@ -4354,27 +4354,18 @@ var require_picomatch2 = __commonJS({
 });
 
 // real-vite-esbuild-stub:esbuild
-var thrower, transform, transformSync, build, buildSync, context, formatMessages, formatMessagesSync, analyzeMetafile, analyzeMetafileSync, stop, version, initialize, esbuild_default;
+var thrower, transform, build, context, formatMessages, version, esbuild_default;
 var init_esbuild = __esm({
   "real-vite-esbuild-stub:esbuild"() {
     thrower = /* @__PURE__ */ __name((name) => () => {
       throw new Error("[cirrus-real] esbuild." + name + " stubbed \u2014 real-vite facet does not ship esbuild runtime");
     }, "thrower");
     transform = thrower("transform");
-    transformSync = thrower("transformSync");
     build = thrower("build");
-    buildSync = thrower("buildSync");
     context = thrower("context");
     formatMessages = /* @__PURE__ */ __name(async () => [], "formatMessages");
-    formatMessagesSync = /* @__PURE__ */ __name(() => [], "formatMessagesSync");
-    analyzeMetafile = /* @__PURE__ */ __name(async () => "", "analyzeMetafile");
-    analyzeMetafileSync = /* @__PURE__ */ __name(() => "", "analyzeMetafileSync");
-    stop = /* @__PURE__ */ __name(() => {
-    }, "stop");
     version = "0.0.0-cirrus-stub";
-    initialize = /* @__PURE__ */ __name(async () => {
-    }, "initialize");
-    esbuild_default = { transform, transformSync, build, buildSync, context, formatMessages, formatMessagesSync, analyzeMetafile, analyzeMetafileSync, stop, version, initialize };
+    esbuild_default = { transform, build, context, formatMessages };
   }
 });
 
@@ -22344,20 +22335,11 @@ var init_dep_CvfTChi5 = __esm({
 // real-vite-stub:fsevents
 var fsevents_exports = {};
 __export(fsevents_exports, {
-  bundle: () => bundle,
-  bundleAsync: () => bundleAsync,
-  default: () => fsevents_default,
-  transform: () => transform2
+  default: () => fsevents_default
 });
-var thrower2, transform2, bundle, bundleAsync, fsevents_default;
+var fsevents_default;
 var init_fsevents = __esm({
   "real-vite-stub:fsevents"() {
-    thrower2 = /* @__PURE__ */ __name((name) => () => {
-      throw new Error("[real-vite-spike] " + name + " is stubbed (native binding)");
-    }, "thrower");
-    transform2 = thrower2("lightningcss.transform");
-    bundle = thrower2("lightningcss.bundle");
-    bundleAsync = /* @__PURE__ */ __name(async (...a) => thrower2("lightningcss.bundleAsync")(), "bundleAsync");
     fsevents_default = { __stubbed: true };
   }
 });
@@ -26531,29 +26513,29 @@ function requireToRegexRange() {
   function splitToRanges2(min2, max) {
     let nines = 1;
     let zeros2 = 1;
-    let stop2 = countNines2(min2, nines);
+    let stop = countNines2(min2, nines);
     let stops = /* @__PURE__ */ new Set([max]);
-    while (min2 <= stop2 && stop2 <= max) {
-      stops.add(stop2);
+    while (min2 <= stop && stop <= max) {
+      stops.add(stop);
       nines += 1;
-      stop2 = countNines2(min2, nines);
+      stop = countNines2(min2, nines);
     }
-    stop2 = countZeros2(max + 1, zeros2) - 1;
-    while (min2 < stop2 && stop2 <= max) {
-      stops.add(stop2);
+    stop = countZeros2(max + 1, zeros2) - 1;
+    while (min2 < stop && stop <= max) {
+      stops.add(stop);
       zeros2 += 1;
-      stop2 = countZeros2(max + 1, zeros2) - 1;
+      stop = countZeros2(max + 1, zeros2) - 1;
     }
     stops = [...stops];
     stops.sort(compare2);
     return stops;
   }
   __name(splitToRanges2, "splitToRanges");
-  function rangeToPattern2(start, stop2, options2) {
-    if (start === stop2) {
+  function rangeToPattern2(start, stop, options2) {
+    if (start === stop) {
       return { pattern: start, count: [], digits: 0 };
     }
-    let zipped = zip2(start, stop2);
+    let zipped = zip2(start, stop);
     let digits = zipped.length;
     let pattern = "";
     let count = 0;
@@ -26639,9 +26621,9 @@ function requireToRegexRange() {
   }
   __name(countZeros2, "countZeros");
   function toQuantifier2(digits) {
-    let [start = 0, stop2 = ""] = digits;
-    if (stop2 || start > 1) {
-      return `{${start + (stop2 ? "," + stop2 : "")}}`;
+    let [start = 0, stop = ""] = digits;
+    if (stop || start > 1) {
+      return `{${start + (stop ? "," + stop : "")}}`;
     }
     return "";
   }
@@ -26684,7 +26666,7 @@ function requireFillRange() {
   const util3 = require$$2;
   const toRegexRange2 = /* @__PURE__ */ requireToRegexRange();
   const isObject3 = /* @__PURE__ */ __name((val) => val !== null && typeof val === "object" && !Array.isArray(val), "isObject");
-  const transform6 = /* @__PURE__ */ __name((toNumber) => {
+  const transform5 = /* @__PURE__ */ __name((toNumber) => {
     return (value2) => toNumber === true ? Number(value2) : String(value2);
   }, "transform");
   const isValidValue2 = /* @__PURE__ */ __name((value2) => {
@@ -26754,8 +26736,8 @@ function requireFillRange() {
     }
     let start = String.fromCharCode(a);
     if (a === b) return start;
-    let stop2 = String.fromCharCode(b);
-    return `[${start}-${stop2}]`;
+    let stop = String.fromCharCode(b);
+    return `[${start}-${stop}]`;
   }, "toRange");
   const toRegex2 = /* @__PURE__ */ __name((start, end, options2) => {
     if (Array.isArray(start)) {
@@ -26795,7 +26777,7 @@ function requireFillRange() {
     let padded = zeros2(startString) || zeros2(endString) || zeros2(stepString);
     let maxLen = padded ? Math.max(startString.length, endString.length, stepString.length) : 0;
     let toNumber = padded === false && stringify6(start, end, options2) === false;
-    let format2 = options2.transform || transform6(toNumber);
+    let format2 = options2.transform || transform5(toNumber);
     if (options2.toRegex && step === 1) {
       return toRange2(toMaxLen2(start, maxLen), toMaxLen2(end, maxLen), true, options2);
     }
@@ -28041,8 +28023,8 @@ function requireFseventsHandler() {
     262912
   ]);
   const createFSEventsInstance2 = /* @__PURE__ */ __name((path6, callback2) => {
-    const stop2 = fsevents2.watch(path6, callback2);
-    return { stop: stop2 };
+    const stop = fsevents2.watch(path6, callback2);
+    return { stop };
   }, "createFSEventsInstance");
   function setFSEventsListener2(path6, realPath, listener2, rawEmitter) {
     let watchPath = sysPath2.extname(realPath) ? sysPath2.dirname(realPath) : realPath;
@@ -28188,13 +28170,13 @@ function requireFseventsHandler() {
      * @param {Function} globFilter - path filter in case a glob pattern was provided
      * @returns {Function} closer for the watcher instance
     */
-    _watchWithFsEvents(watchPath, realPath, transform6, globFilter) {
+    _watchWithFsEvents(watchPath, realPath, transform5, globFilter) {
       if (this.fsw.closed || this.fsw._isIgnored(watchPath)) return;
       const opts = this.fsw.options;
       const watchCallback = /* @__PURE__ */ __name(async (fullPath, flags, info) => {
         if (this.fsw.closed) return;
         if (opts.depth !== void 0 && calcDepth2(fullPath, realPath) > opts.depth) return;
-        const path6 = transform6(sysPath2.join(
+        const path6 = transform5(sysPath2.join(
           watchPath,
           sysPath2.relative(watchPath, fullPath)
         ));
@@ -28249,7 +28231,7 @@ function requireFseventsHandler() {
      * @param {Number} curDepth level of subdirectories traversed to where symlink is
      * @returns {Promise<void>}
      */
-    async _handleFsEventsSymlink(linkPath, fullPath, transform6, curDepth) {
+    async _handleFsEventsSymlink(linkPath, fullPath, transform5, curDepth) {
       if (this.fsw.closed || this.fsw._symlinkPaths.has(fullPath)) return;
       this.fsw._symlinkPaths.set(fullPath, true);
       this.fsw._incrReadyCount();
@@ -28267,7 +28249,7 @@ function requireFseventsHandler() {
           } else if (path6 !== DOT_SLASH2) {
             aliasedPath = sysPath2.join(linkPath, path6);
           }
-          return transform6(aliasedPath);
+          return transform5(aliasedPath);
         }, false, curDepth);
       } catch (error3) {
         if (this.fsw._handleError(error3)) {
@@ -28310,12 +28292,12 @@ function requireFseventsHandler() {
      * @param {Number=} priorDepth Level of subdirectories already traversed.
      * @returns {Promise<void>}
      */
-    async _addToFsEvents(path6, transform6, forceAdd, priorDepth) {
+    async _addToFsEvents(path6, transform5, forceAdd, priorDepth) {
       if (this.fsw.closed) {
         return;
       }
       const opts = this.fsw.options;
-      const processPath = typeof transform6 === FUNCTION_TYPE2 ? transform6 : IDENTITY_FN2;
+      const processPath = typeof transform5 === FUNCTION_TYPE2 ? transform5 : IDENTITY_FN2;
       const wh = this.fsw._getWatchHelpers(path6);
       try {
         const stats = await statMethods2[wh.statMethod](wh.watchPath);
@@ -28357,7 +28339,7 @@ function requireFseventsHandler() {
         }
       }
       if (opts.persistent && forceAdd !== true) {
-        if (typeof transform6 === FUNCTION_TYPE2) {
+        if (typeof transform5 === FUNCTION_TYPE2) {
           this.initWatch(void 0, path6, wh, processPath);
         } else {
           let realPath;
@@ -34218,7 +34200,7 @@ function ensureBuffer(input) {
   }
   return input;
 }
-async function renderChunks(chunks, bundle3, pluginDriver, outputOptions, log2) {
+async function renderChunks(chunks, bundle, pluginDriver, outputOptions, log2) {
   timeStart("render chunks", 2);
   reserveEntryChunksInBundle(chunks);
   const renderedChunks = await Promise.all(chunks.map((chunk) => chunk.render()));
@@ -34227,8 +34209,8 @@ async function renderChunks(chunks, bundle3, pluginDriver, outputOptions, log2) 
   const getHash2 = hasherByType[outputOptions.hashCharacters];
   const chunkGraph = getChunkGraph(chunks);
   const { hashDependenciesByPlaceholder, initialHashesByPlaceholder, nonHashedChunksWithPlaceholders, placeholders, renderedChunksByPlaceholder } = await transformChunksAndGenerateContentHashes(renderedChunks, chunkGraph, outputOptions, pluginDriver, getHash2, log2);
-  const hashesByPlaceholder = generateFinalHashes(renderedChunksByPlaceholder, hashDependenciesByPlaceholder, initialHashesByPlaceholder, placeholders, bundle3, getHash2);
-  addChunksToBundle(renderedChunksByPlaceholder, hashesByPlaceholder, bundle3, nonHashedChunksWithPlaceholders, pluginDriver, outputOptions);
+  const hashesByPlaceholder = generateFinalHashes(renderedChunksByPlaceholder, hashDependenciesByPlaceholder, initialHashesByPlaceholder, placeholders, bundle, getHash2);
+  addChunksToBundle(renderedChunksByPlaceholder, hashesByPlaceholder, bundle, nonHashedChunksWithPlaceholders, pluginDriver, outputOptions);
   timeEnd("transform chunks", 2);
 }
 function reserveEntryChunksInBundle(chunks) {
@@ -34356,7 +34338,7 @@ async function transformChunksAndGenerateContentHashes(renderedChunks, chunkGrap
     renderedChunksByPlaceholder
   };
 }
-function generateFinalHashes(renderedChunksByPlaceholder, hashDependenciesByPlaceholder, initialHashesByPlaceholder, placeholders, bundle3, getHash2) {
+function generateFinalHashes(renderedChunksByPlaceholder, hashDependenciesByPlaceholder, initialHashesByPlaceholder, placeholders, bundle, getHash2) {
   const hashesByPlaceholder = new Map(initialHashesByPlaceholder);
   for (const placeholder of placeholders) {
     const { fileName } = renderedChunksByPlaceholder.get(placeholder);
@@ -34377,13 +34359,13 @@ function generateFinalHashes(renderedChunksByPlaceholder, hashDependenciesByPlac
       }
       finalHash = getHash2(contentToHash).slice(0, placeholder.length);
       finalFileName = replaceSinglePlaceholder(fileName, placeholder, finalHash);
-    } while (bundle3[lowercaseBundleKeys].has(finalFileName.toLowerCase()));
-    bundle3[finalFileName] = FILE_PLACEHOLDER;
+    } while (bundle[lowercaseBundleKeys].has(finalFileName.toLowerCase()));
+    bundle[finalFileName] = FILE_PLACEHOLDER;
     hashesByPlaceholder.set(placeholder, finalHash);
   }
   return hashesByPlaceholder;
 }
-function addChunksToBundle(renderedChunksByPlaceholder, hashesByPlaceholder, bundle3, nonHashedChunksWithPlaceholders, pluginDriver, options2) {
+function addChunksToBundle(renderedChunksByPlaceholder, hashesByPlaceholder, bundle, nonHashedChunksWithPlaceholders, pluginDriver, options2) {
   for (const { chunk, code, fileName, sourcemapFileName, map: map2 } of renderedChunksByPlaceholder.values()) {
     let updatedCode = replacePlaceholders(code, hashesByPlaceholder);
     const finalFileName = replacePlaceholders(fileName, hashesByPlaceholder);
@@ -34396,7 +34378,7 @@ function addChunksToBundle(renderedChunksByPlaceholder, hashesByPlaceholder, bun
       map2.file = replacePlaceholders(map2.file, hashesByPlaceholder);
       updatedCode += emitSourceMapAndGetComment(finalSourcemapFileName, map2, pluginDriver, options2);
     }
-    bundle3[finalFileName] = chunk.finalizeChunk(updatedCode, map2, finalSourcemapFileName, hashesByPlaceholder);
+    bundle[finalFileName] = chunk.finalizeChunk(updatedCode, map2, finalSourcemapFileName, hashesByPlaceholder);
   }
   for (const { chunk, code, fileName, sourcemapFileName, map: map2 } of nonHashedChunksWithPlaceholders) {
     let updatedCode = hashesByPlaceholder.size > 0 ? replacePlaceholders(code, hashesByPlaceholder) : code;
@@ -34408,7 +34390,7 @@ function addChunksToBundle(renderedChunksByPlaceholder, hashesByPlaceholder, bun
       finalSourcemapFileName = sourcemapFileName ? replacePlaceholders(sourcemapFileName, hashesByPlaceholder) : `${fileName}.map`;
       updatedCode += emitSourceMapAndGetComment(finalSourcemapFileName, map2, pluginDriver, options2);
     }
-    bundle3[fileName] = chunk.finalizeChunk(updatedCode, map2, finalSourcemapFileName, hashesByPlaceholder);
+    bundle[fileName] = chunk.finalizeChunk(updatedCode, map2, finalSourcemapFileName, hashesByPlaceholder);
   }
 }
 function emitSourceMapAndGetComment(fileName, map2, pluginDriver, { sourcemap, sourcemapBaseUrl }) {
@@ -34488,8 +34470,8 @@ function isFileNameOutsideOutputDirectory(fileName) {
   const normalized = join(fileName).replaceAll("\\", "/");
   return normalized === ".." || normalized.startsWith("../") || normalized === "." || isAbsolute(normalized);
 }
-function validateOutputBundleFileNames(bundle3) {
-  for (const [bundleKey, entry] of Object.entries(bundle3)) {
+function validateOutputBundleFileNames(bundle) {
+  for (const [bundleKey, entry] of Object.entries(bundle)) {
     if (isFileNameOutsideOutputDirectory(bundleKey)) {
       return error(logFileNameOutsideOutputDirectory(bundleKey));
     }
@@ -34691,7 +34673,7 @@ function getCacheForUncacheablePlugin(pluginName) {
     }
   };
 }
-async function transform3(source, module, pluginDriver, options2) {
+async function transform2(source, module, pluginDriver, options2) {
   const id3 = module.id;
   const sourcemapChain = [];
   let originalSourcemap = source.map === null ? null : decodedSourcemap(source.map);
@@ -34832,7 +34814,7 @@ async function waitForDependencyResolution(loadPromise) {
   const [resolveStaticDependencyPromises, resolveDynamicImportPromises] = await loadPromise;
   return Promise.all([...resolveStaticDependencyPromises, ...resolveDynamicImportPromises]);
 }
-function generateAssetFileName(name, names, source, originalFileName, originalFileNames, sourceHash, outputOptions, bundle3, inputOptions) {
+function generateAssetFileName(name, names, source, originalFileName, originalFileNames, sourceHash, outputOptions, bundle, inputOptions) {
   const emittedName = outputOptions.sanitizeFileName(name || "asset");
   return makeUnique(renderNamePattern(typeof outputOptions.assetFileNames === "function" ? outputOptions.assetFileNames({
     // Additionally, this should be non-enumerable in the next major
@@ -34854,13 +34836,13 @@ function generateAssetFileName(name, names, source, originalFileName, originalFi
     extname: /* @__PURE__ */ __name(() => extname2(emittedName), "extname"),
     hash: /* @__PURE__ */ __name((size) => sourceHash.slice(0, Math.min(Math.max(0, size || DEFAULT_HASH_SIZE), MAX_HASH_SIZE)), "hash"),
     name: /* @__PURE__ */ __name(() => emittedName.slice(0, Math.max(0, emittedName.length - extname2(emittedName).length)), "name")
-  }), bundle3);
+  }), bundle);
 }
-function reserveFileNameInBundle(fileName, { bundle: bundle3 }, log2) {
-  if (bundle3[lowercaseBundleKeys].has(fileName.toLowerCase())) {
+function reserveFileNameInBundle(fileName, { bundle }, log2) {
+  if (bundle[lowercaseBundleKeys].has(fileName.toLowerCase())) {
     log2(LOGLEVEL_WARN, logFileNameConflict(fileName));
   } else {
-    bundle3[fileName] = FILE_PLACEHOLDER;
+    bundle[fileName] = FILE_PLACEHOLDER;
   }
 }
 function hasValidType(emittedFile) {
@@ -35457,8 +35439,8 @@ function normalizePlugins(plugins2, anonymousPrefix) {
 async function handleGenerateWrite(isWrite, inputOptions, unsetInputOptions, rawOutputOptions, graph) {
   const { options: outputOptions, outputPluginDriver, unsetOptions } = await getOutputOptionsAndPluginDriver(rawOutputOptions, graph.pluginDriver, inputOptions, unsetInputOptions);
   return catchUnfinishedHookActions(outputPluginDriver, async () => {
-    const bundle3 = new Bundle2(outputOptions, unsetOptions, inputOptions, outputPluginDriver, graph);
-    const generated = await bundle3.generate(isWrite);
+    const bundle = new Bundle2(outputOptions, unsetOptions, inputOptions, outputPluginDriver, graph);
+    const generated = await bundle.generate(isWrite);
     if (isWrite) {
       timeStart("WRITE", 1);
       if (!outputOptions.dir && !outputOptions.file) {
@@ -36894,18 +36876,18 @@ var init_node_entry = __esm({
         return this;
       }
       clone() {
-        const bundle3 = new Bundle({
+        const bundle = new Bundle({
           intro: this.intro,
           separator: this.separator
         });
         this.sources.forEach((source) => {
-          bundle3.addSource({
+          bundle.addSource({
             filename: source.filename,
             content: source.content.clone(),
             separator: source.separator
           });
         });
-        return bundle3;
+        return bundle;
       }
       generateDecodedMap(options2 = {}) {
         const names = [];
@@ -48936,7 +48918,7 @@ ${next}` : out, "concatDblSeparator");
       static {
         __name(this, "Chunk");
       }
-      constructor(orderedModules, inputOptions, outputOptions, unsetOptions, pluginDriver, modulesById, chunkByModule, externalChunkByModule, facadeChunkByModule, includedNamespaces, manualChunkAlias, getPlaceholder, bundle3, inputBase, snippets) {
+      constructor(orderedModules, inputOptions, outputOptions, unsetOptions, pluginDriver, modulesById, chunkByModule, externalChunkByModule, facadeChunkByModule, includedNamespaces, manualChunkAlias, getPlaceholder, bundle, inputBase, snippets) {
         this.orderedModules = orderedModules;
         this.inputOptions = inputOptions;
         this.outputOptions = outputOptions;
@@ -48949,7 +48931,7 @@ ${next}` : out, "concatDblSeparator");
         this.includedNamespaces = includedNamespaces;
         this.manualChunkAlias = manualChunkAlias;
         this.getPlaceholder = getPlaceholder;
-        this.bundle = bundle3;
+        this.bundle = bundle;
         this.inputBase = inputBase;
         this.snippets = snippets;
         this.dependencies = /* @__PURE__ */ new Set();
@@ -49013,8 +48995,8 @@ ${next}` : out, "concatDblSeparator");
         this.suggestedVariableName = makeLegal(this.generateVariableName());
         this.isManualChunk = manualChunkAlias !== null;
       }
-      static generateFacade(inputOptions, outputOptions, unsetOptions, pluginDriver, modulesById, chunkByModule, externalChunkByModule, facadeChunkByModule, includedNamespaces, facadedModule, facadeName, getPlaceholder, bundle3, inputBase, snippets) {
-        const chunk = new _Chunk([], inputOptions, outputOptions, unsetOptions, pluginDriver, modulesById, chunkByModule, externalChunkByModule, facadeChunkByModule, includedNamespaces, null, getPlaceholder, bundle3, inputBase, snippets);
+      static generateFacade(inputOptions, outputOptions, unsetOptions, pluginDriver, modulesById, chunkByModule, externalChunkByModule, facadeChunkByModule, includedNamespaces, facadedModule, facadeName, getPlaceholder, bundle, inputBase, snippets) {
+        const chunk = new _Chunk([], inputOptions, outputOptions, unsetOptions, pluginDriver, modulesById, chunkByModule, externalChunkByModule, facadeChunkByModule, includedNamespaces, null, getPlaceholder, bundle, inputBase, snippets);
         chunk.assignFacadeName(facadeName, facadedModule);
         if (!facadeChunkByModule.has(facadedModule)) {
           facadeChunkByModule.set(facadedModule, chunk);
@@ -50164,9 +50146,9 @@ ${next}` : out, "concatDblSeparator");
         }
         return manualChunkAliasByEntry;
       }
-      finaliseAssets(bundle3) {
+      finaliseAssets(bundle) {
         if (this.outputOptions.validate) {
-          for (const file of Object.values(bundle3)) {
+          for (const file of Object.values(bundle)) {
             if ("code" in file) {
               try {
                 parseAst(file.code, { jsx: this.inputOptions.jsx !== false });
@@ -50178,7 +50160,7 @@ ${next}` : out, "concatDblSeparator");
         }
         this.pluginDriver.finaliseAssets();
       }
-      async generateChunks(bundle3, getHashPlaceholder) {
+      async generateChunks(bundle, getHashPlaceholder) {
         const { experimentalMinChunkSize, inlineDynamicImports, manualChunks, preserveModules, onlyExplicitManualChunks } = this.outputOptions;
         const manualChunkAliasByEntry = typeof manualChunks === "object" ? await this.addManualChunks(manualChunks) : this.assignManualChunks(manualChunks);
         const snippets = getGenerateCodeSnippets(this.outputOptions);
@@ -50191,7 +50173,7 @@ ${next}` : out, "concatDblSeparator");
         let index3 = 0;
         for (const { alias: alias2, modules } of executableModule) {
           sortByExecutionOrder(modules);
-          const chunk = new Chunk2(modules, this.inputOptions, this.outputOptions, this.unsetOptions, this.pluginDriver, this.graph.modulesById, chunkByModule, externalChunkByModule, this.facadeChunkByModule, this.includedNamespaces, alias2, getHashPlaceholder, bundle3, inputBase, snippets);
+          const chunk = new Chunk2(modules, this.inputOptions, this.outputOptions, this.unsetOptions, this.pluginDriver, this.graph.modulesById, chunkByModule, externalChunkByModule, this.facadeChunkByModule, this.includedNamespaces, alias2, getHashPlaceholder, bundle, inputBase, snippets);
           chunks[index3++] = chunk;
         }
         for (const chunk of chunks) {
@@ -50435,7 +50417,7 @@ ${next}` : out, "concatDblSeparator");
     };
     __name(uncacheablePluginError, "uncacheablePluginError");
     __name(getCacheForUncacheablePlugin, "getCacheForUncacheablePlugin");
-    __name(transform3, "transform");
+    __name(transform2, "transform");
     RESOLVE_DEPENDENCIES = "resolveDependencies";
     ModuleLoader = class {
       static {
@@ -50573,7 +50555,7 @@ ${next}` : out, "concatDblSeparator");
           await module.setSource(cachedModule);
         } else {
           module.updateOptions(sourceDescription);
-          await module.setSource(await transform3(sourceDescription, module, this.pluginDriver, this.options));
+          await module.setSource(await transform2(sourceDescription, module, this.pluginDriver, this.options));
         }
       }
       async awaitLoadModulesPromise() {
@@ -50905,10 +50887,10 @@ ${next}` : out, "concatDblSeparator");
         this.setChunkInformation = (facadeChunkByModule) => {
           this.facadeChunkByModule = facadeChunkByModule;
         };
-        this.setOutputBundle = (bundle3, outputOptions) => {
+        this.setOutputBundle = (bundle, outputOptions) => {
           const getHash2 = hasherByType[outputOptions.hashCharacters];
           const output = this.output = {
-            bundle: bundle3,
+            bundle,
             fileNamesBySourceHash: /* @__PURE__ */ new Map(),
             getHash: getHash2,
             outputOptions
@@ -51049,19 +51031,19 @@ ${next}` : out, "concatDblSeparator");
         }
         return referenceId;
       }
-      finalizeAdditionalAsset(consumedFile, source, { bundle: bundle3, fileNamesBySourceHash, getHash: getHash2, outputOptions }) {
+      finalizeAdditionalAsset(consumedFile, source, { bundle, fileNamesBySourceHash, getHash: getHash2, outputOptions }) {
         let { fileName, name, needsCodeReference, originalFileName, referenceId } = consumedFile;
         if (!fileName) {
           const sourceHash = getHash2(source);
           fileName = fileNamesBySourceHash.get(sourceHash);
           if (!fileName) {
-            fileName = generateAssetFileName(name, name ? [name] : [], source, originalFileName, originalFileName ? [originalFileName] : [], sourceHash, outputOptions, bundle3, this.options);
+            fileName = generateAssetFileName(name, name ? [name] : [], source, originalFileName, originalFileName ? [originalFileName] : [], sourceHash, outputOptions, bundle, this.options);
             fileNamesBySourceHash.set(sourceHash, fileName);
           }
         }
         const assetWithFileName = { ...consumedFile, fileName, source };
         this.filesByReferenceId.set(referenceId, assetWithFileName);
-        const existingAsset = bundle3[fileName];
+        const existingAsset = bundle[fileName];
         if (existingAsset?.type === "asset") {
           existingAsset.needsCodeReference &&= needsCodeReference;
           if (name) {
@@ -51072,7 +51054,7 @@ ${next}` : out, "concatDblSeparator");
           }
         } else {
           const { options: options2 } = this;
-          bundle3[fileName] = {
+          bundle[fileName] = {
             fileName,
             get name() {
               warnDeprecation('Accessing the "name" property of emitted assets in the bundle is deprecated. Use the "names" property instead.', URL_GENERATEBUNDLE, false, options2);
@@ -51090,14 +51072,14 @@ ${next}` : out, "concatDblSeparator");
           };
         }
       }
-      finalizeAssetsWithSameSource(consumedFiles, sourceHash, { bundle: bundle3, fileNamesBySourceHash, outputOptions }) {
+      finalizeAssetsWithSameSource(consumedFiles, sourceHash, { bundle, fileNamesBySourceHash, outputOptions }) {
         const { names, originalFileNames } = getNamesFromAssets(consumedFiles);
         let fileName = "";
         let usedConsumedFile;
         let needsCodeReference = true;
         for (const consumedFile of consumedFiles) {
           needsCodeReference &&= consumedFile.needsCodeReference;
-          const assetFileName = generateAssetFileName(consumedFile.name, names, consumedFile.source, consumedFile.originalFileName, originalFileNames, sourceHash, outputOptions, bundle3, this.options);
+          const assetFileName = generateAssetFileName(consumedFile.name, names, consumedFile.source, consumedFile.originalFileName, originalFileNames, sourceHash, outputOptions, bundle, this.options);
           if (!fileName || assetFileName.length < fileName.length || assetFileName.length === fileName.length && assetFileName < fileName) {
             fileName = assetFileName;
             usedConsumedFile = consumedFile;
@@ -51109,7 +51091,7 @@ ${next}` : out, "concatDblSeparator");
           this.filesByReferenceId.set(consumedFile.referenceId, assetWithFileName);
         }
         const { options: options2 } = this;
-        bundle3[fileName] = {
+        bundle[fileName] = {
           fileName,
           get name() {
             warnDeprecation('Accessing the "name" property of emitted assets in the bundle is deprecated. Use the "names" property instead.', URL_GENERATEBUNDLE, false, options2);
@@ -52657,7 +52639,7 @@ async function parseStyles$1(result, styles, options2, state, conditions, from, 
   }
   let charset;
   const imports = [];
-  const bundle3 = [];
+  const bundle = [];
   function handleCharset(stmt) {
     if (!charset) charset = stmt;
     else if (stmt.node.params.toLowerCase() !== charset.node.params.toLowerCase()) {
@@ -52676,15 +52658,15 @@ async function parseStyles$1(result, styles, options2, state, conditions, from, 
         stmt.children.forEach((child, index3) => {
           if (child.type === "import") imports.push(child);
           else if (child.type === "charset") handleCharset(child);
-          else bundle3.push(child);
+          else bundle.push(child);
           if (index3 === 0) child.parent = stmt;
         });
       } else imports.push(stmt);
     } else if (stmt.type === "nodes") {
-      bundle3.push(stmt);
+      bundle.push(stmt);
     }
   });
-  return charset ? [charset, ...imports.concat(bundle3)] : imports.concat(bundle3);
+  return charset ? [charset, ...imports.concat(bundle)] : imports.concat(bundle);
 }
 async function resolveImportId(result, stmt, options2, state, postcss3) {
   if (dataURL.isValid(stmt.uri)) {
@@ -52827,7 +52809,7 @@ function AtImport(options2) {
       if (options2.plugins && !Array.isArray(options2.plugins)) {
         throw new Error("plugins option must be an array");
       }
-      const bundle3 = await parseStyles(
+      const bundle = await parseStyles(
         result,
         styles,
         options2,
@@ -52836,9 +52818,9 @@ function AtImport(options2) {
         [],
         postcss3
       );
-      applyRaws2(bundle3);
-      applyConditions2(bundle3, atRule2);
-      applyStyles2(bundle3, styles);
+      applyRaws2(bundle);
+      applyConditions2(bundle, atRule2);
+      applyStyles2(bundle, styles);
     }
   };
 }
@@ -52887,8 +52869,8 @@ var init_dep_4_IQbZQm = __esm({
       return params;
     }, "base64EncodedConditionalImport");
     base64EncodedConditionalImport2 = base64EncodedImport;
-    applyConditions$1 = /* @__PURE__ */ __name(function applyConditions(bundle3, atRule2) {
-      bundle3.forEach((stmt) => {
+    applyConditions$1 = /* @__PURE__ */ __name(function applyConditions(bundle, atRule2) {
+      bundle.forEach((stmt) => {
         if (stmt.type === "charset" || stmt.type === "warning" || !stmt.conditions?.length) {
           return;
         }
@@ -52944,8 +52926,8 @@ var init_dep_4_IQbZQm = __esm({
         delete stmt.node;
       });
     }, "applyConditions");
-    applyRaws$1 = /* @__PURE__ */ __name(function applyRaws(bundle3) {
-      bundle3.forEach((stmt, index3) => {
+    applyRaws$1 = /* @__PURE__ */ __name(function applyRaws(bundle) {
+      bundle.forEach((stmt, index3) => {
         if (index3 === 0) return;
         if (stmt.parent) {
           const { before } = stmt.parent.node.raws;
@@ -52956,9 +52938,9 @@ var init_dep_4_IQbZQm = __esm({
         }
       });
     }, "applyRaws");
-    applyStyles$1 = /* @__PURE__ */ __name(function applyStyles(bundle3, styles) {
+    applyStyles$1 = /* @__PURE__ */ __name(function applyStyles(bundle, styles) {
       styles.nodes = [];
-      bundle3.forEach((stmt) => {
+      bundle.forEach((stmt) => {
         if (["charset", "import"].includes(stmt.type)) {
           stmt.node.parent = void 0;
           styles.append(stmt.node);
@@ -59700,8 +59682,8 @@ function requireWasmHash() {
           let i = 65536 - buffered;
           data.copy(mem, buffered, 0, i);
           exports.update(65536);
-          const stop2 = l - buffered - 65536;
-          while (i < stop2) {
+          const stop = l - buffered - 65536;
+          while (i < stop) {
             data.copy(mem, 0, i, i + 65536);
             exports.update(65536);
             i += 65536;
@@ -60123,7 +60105,7 @@ function normalizeNodeArray(nodes) {
   return array;
 }
 function localizeNode(rule2, mode2, localAliasMap) {
-  const transform6 = /* @__PURE__ */ __name((node3, context2) => {
+  const transform5 = /* @__PURE__ */ __name((node3, context2) => {
     if (context2.ignoreNextSpacing && !isSpacing(node3)) {
       throw new Error("Missing whitespace after " + context2.ignoreNextSpacing);
     }
@@ -60142,7 +60124,7 @@ function localizeNode(rule2, mode2, localAliasMap) {
             hasLocals: false,
             explicit: false
           };
-          n3 = transform6(n3, nContext);
+          n3 = transform5(n3, nContext);
           if (typeof resultingGlobal === "undefined") {
             resultingGlobal = nContext.global;
           } else if (resultingGlobal !== nContext.global) {
@@ -60160,7 +60142,7 @@ function localizeNode(rule2, mode2, localAliasMap) {
         break;
       }
       case "selector": {
-        newNodes = node3.map((childNode) => transform6(childNode, context2));
+        newNodes = node3.map((childNode) => transform5(childNode, context2));
         node3 = node3.clone();
         node3.nodes = normalizeNodeArray(newNodes);
         break;
@@ -60201,7 +60183,7 @@ function localizeNode(rule2, mode2, localAliasMap) {
               hasLocals: false,
               explicit: true
             };
-            newNodes = node3.map((childNode) => transform6(childNode, childContext)).reduce((acc, next) => acc.concat(next.nodes), []);
+            newNodes = node3.map((childNode) => transform5(childNode, childContext)).reduce((acc, next) => acc.concat(next.nodes), []);
             if (newNodes.length) {
               const { before, after } = node3.spaces;
               const first2 = newNodes[0];
@@ -60224,7 +60206,7 @@ function localizeNode(rule2, mode2, localAliasMap) {
                 ...childContext,
                 enforceNoSpacing: false
               };
-              const result = transform6(childNode, newContext);
+              const result = transform5(childNode, newContext);
               childContext.global = newContext.global;
               childContext.hasLocals = newContext.hasLocals;
               return result;
@@ -60289,7 +60271,7 @@ function localizeNode(rule2, mode2, localAliasMap) {
     hasPureGlobals: false
   };
   rootContext.selector = selectorParser$1((root4) => {
-    transform6(root4, rootContext);
+    transform5(root4, rootContext);
   }).processSync(rule2, { updateSelector: false, lossless: true });
   return rootContext;
 }
@@ -64711,14 +64693,14 @@ var init_dep_lpEPC2f9 = __esm({
           return new Promise(function(resolve8, reject) {
             try {
               var root4 = _this._root(rule2, options2);
-              Promise.resolve(_this.func(root4)).then(function(transform6) {
+              Promise.resolve(_this.func(root4)).then(function(transform5) {
                 var string3 = void 0;
                 if (_this._shouldUpdateSelector(rule2, options2)) {
                   string3 = root4.toString();
                   rule2.selector = string3;
                 }
                 return {
-                  transform: transform6,
+                  transform: transform5,
                   root: root4,
                   string: string3
                 };
@@ -64734,8 +64716,8 @@ var init_dep_lpEPC2f9 = __esm({
             options2 = {};
           }
           var root4 = this._root(rule2, options2);
-          var transform6 = this.func(root4);
-          if (transform6 && typeof transform6.then === "function") {
+          var transform5 = this.func(root4);
+          if (transform5 && typeof transform5.then === "function") {
             throw new Error("Selector processor returned a promise to a synchronous call.");
           }
           var string3 = void 0;
@@ -64744,7 +64726,7 @@ var init_dep_lpEPC2f9 = __esm({
             rule2.selector = string3;
           }
           return {
-            transform: transform6,
+            transform: transform5,
             root: root4,
             string: string3
           };
@@ -64757,12 +64739,12 @@ var init_dep_lpEPC2f9 = __esm({
         _proto.astSync = /* @__PURE__ */ __name(function astSync(rule2, options2) {
           return this._runSync(rule2, options2).root;
         }, "astSync");
-        _proto.transform = /* @__PURE__ */ __name(function transform6(rule2, options2) {
+        _proto.transform = /* @__PURE__ */ __name(function transform5(rule2, options2) {
           return this._run(rule2, options2).then(function(result) {
             return result.transform;
           });
         }, "transform");
-        _proto.transformSync = /* @__PURE__ */ __name(function transformSync2(rule2, options2) {
+        _proto.transformSync = /* @__PURE__ */ __name(function transformSync(rule2, options2) {
           return this._runSync(rule2, options2).transform;
         }, "transformSync");
         _proto.process = /* @__PURE__ */ __name(function process3(rule2, options2) {
@@ -65584,21 +65566,19 @@ var init_dep_lpEPC2f9 = __esm({
 // real-vite-stub:lightningcss
 var lightningcss_exports = {};
 __export(lightningcss_exports, {
-  bundle: () => bundle2,
-  bundleAsync: () => bundleAsync2,
-  default: () => lightningcss_default,
-  transform: () => transform4
+  bundleAsync: () => bundleAsync,
+  transform: () => transform3,
+  transformStyleAttribute: () => transformStyleAttribute
 });
-var thrower3, transform4, bundle2, bundleAsync2, lightningcss_default;
+var thrower2, transform3, transformStyleAttribute, bundleAsync;
 var init_lightningcss = __esm({
   "real-vite-stub:lightningcss"() {
-    thrower3 = /* @__PURE__ */ __name((name) => () => {
+    thrower2 = /* @__PURE__ */ __name((name) => () => {
       throw new Error("[real-vite-spike] " + name + " is stubbed (native binding)");
     }, "thrower");
-    transform4 = thrower3("lightningcss.transform");
-    bundle2 = thrower3("lightningcss.bundle");
-    bundleAsync2 = /* @__PURE__ */ __name(async (...a) => thrower3("lightningcss.bundleAsync")(), "bundleAsync");
-    lightningcss_default = { __stubbed: true };
+    transform3 = thrower2("lightningcss.transform");
+    transformStyleAttribute = thrower2("lightningcss.transformStyleAttribute");
+    bundleAsync = /* @__PURE__ */ __name(async () => thrower2("lightningcss.bundleAsync")(), "bundleAsync");
   }
 });
 
@@ -71225,15 +71205,15 @@ function assetPlugin(config2) {
         return null;
       }
     },
-    generateBundle(_, bundle3) {
+    generateBundle(_, bundle) {
       let importedFiles;
-      for (const file in bundle3) {
-        const chunk = bundle3[file];
+      for (const file in bundle) {
+        const chunk = bundle[file];
         if (chunk.type === "chunk" && chunk.isEntry && chunk.moduleIds.length === 1 && config2.assetsInclude(chunk.moduleIds[0]) && this.getModuleInfo(chunk.moduleIds[0])?.meta["vite:asset"]) {
           if (!importedFiles) {
             importedFiles = /* @__PURE__ */ new Set();
-            for (const file2 in bundle3) {
-              const chunk2 = bundle3[file2];
+            for (const file2 in bundle) {
+              const chunk2 = bundle[file2];
               if (chunk2.type === "chunk") {
                 for (const importedFile of chunk2.imports) {
                   importedFiles.add(importedFile);
@@ -71245,14 +71225,14 @@ function assetPlugin(config2) {
             }
           }
           if (!importedFiles.has(file)) {
-            delete bundle3[file];
+            delete bundle[file];
           }
         }
       }
       if (config2.command === "build" && !this.environment.config.build.emitAssets) {
-        for (const file in bundle3) {
-          if (bundle3[file].type === "asset" && !file.endsWith("ssr-manifest.json") && !jsSourceMapRE.test(file)) {
-            delete bundle3[file];
+        for (const file in bundle) {
+          if (bundle[file].type === "asset" && !file.endsWith("ssr-manifest.json") && !jsSourceMapRE.test(file)) {
+            delete bundle[file];
           }
         }
       }
@@ -71437,7 +71417,7 @@ function manifestPlugin() {
     buildStart() {
       getState(this).reset();
     },
-    generateBundle({ format: format2 }, bundle3) {
+    generateBundle({ format: format2 }, bundle) {
       const state = getState(this);
       const { manifest } = state;
       const { root: root4 } = this.environment.config;
@@ -71449,10 +71429,10 @@ function manifestPlugin() {
       function getInternalImports(imports) {
         const filteredImports = [];
         for (const file of imports) {
-          if (bundle3[file] === void 0) {
+          if (bundle[file] === void 0) {
             continue;
           }
-          filteredImports.push(getChunkName(bundle3[file]));
+          filteredImports.push(getChunkName(bundle[file]));
         }
         return filteredImports;
       }
@@ -71510,8 +71490,8 @@ function manifestPlugin() {
         } catch {
         }
       }
-      for (const file in bundle3) {
-        const chunk = bundle3[file];
+      for (const file in bundle) {
+        const chunk = bundle[file];
         if (chunk.type === "chunk") {
           manifest[getChunkName(chunk)] = createChunk(chunk);
         } else if (chunk.type === "asset" && chunk.names.length > 0) {
@@ -76456,28 +76436,28 @@ function collatePatterns(neg, pos, options2) {
 function splitToRanges(min2, max) {
   let nines = 1;
   let zeros2 = 1;
-  let stop2 = countNines(min2, nines);
+  let stop = countNines(min2, nines);
   let stops = /* @__PURE__ */ new Set([max]);
-  while (min2 <= stop2 && stop2 <= max) {
-    stops.add(stop2);
+  while (min2 <= stop && stop <= max) {
+    stops.add(stop);
     nines += 1;
-    stop2 = countNines(min2, nines);
+    stop = countNines(min2, nines);
   }
-  stop2 = countZeros(max + 1, zeros2) - 1;
-  while (min2 < stop2 && stop2 <= max) {
-    stops.add(stop2);
+  stop = countZeros(max + 1, zeros2) - 1;
+  while (min2 < stop && stop <= max) {
+    stops.add(stop);
     zeros2 += 1;
-    stop2 = countZeros(max + 1, zeros2) - 1;
+    stop = countZeros(max + 1, zeros2) - 1;
   }
   stops = [...stops];
   stops.sort(compare);
   return stops;
 }
-function rangeToPattern(start, stop2, options2) {
-  if (start === stop2) {
+function rangeToPattern(start, stop, options2) {
+  if (start === stop) {
     return { pattern: start, count: [], digits: 0 };
   }
-  let zipped = zip(start, stop2);
+  let zipped = zip(start, stop);
   let digits = zipped.length;
   let pattern = "";
   let count = 0;
@@ -76555,9 +76535,9 @@ function countZeros(integer, zeros2) {
   return integer - integer % Math.pow(10, zeros2);
 }
 function toQuantifier(digits) {
-  let [start = 0, stop2 = ""] = digits;
-  if (stop2 || start > 1) {
-    return `{${start + (stop2 ? "," + stop2 : "")}}`;
+  let [start = 0, stop = ""] = digits;
+  if (stop || start > 1) {
+    return `{${start + (stop ? "," + stop : "")}}`;
   }
   return "";
 }
@@ -81033,13 +81013,13 @@ ${js}`;
         }
       }
     },
-    async generateBundle(options2, bundle3) {
+    async generateBundle(options2, bundle) {
       const analyzedImportedCssFiles = /* @__PURE__ */ new Map();
       const inlineEntryChunk = /* @__PURE__ */ new Set();
       const getImportedChunks = /* @__PURE__ */ __name((chunk, seen2 = /* @__PURE__ */ new Set()) => {
         const chunks = [];
         chunk.imports.forEach((file) => {
-          const importee = bundle3[file];
+          const importee = bundle[file];
           if (importee) {
             if (importee.type === "chunk" && !seen2.has(file)) {
               seen2.add(file);
@@ -81096,7 +81076,7 @@ ${js}`;
         }
         const files = [];
         chunk.imports.forEach((file) => {
-          const importee = bundle3[file];
+          const importee = bundle[file];
           if (importee?.type === "chunk") {
             files.push(...getCssFilesForChunk(importee, seenChunks, seenCss));
           }
@@ -81136,7 +81116,7 @@ ${js}`;
         const toOutputPublicAssetFilePath = /* @__PURE__ */ __name((filename) => toOutputFilePath(filename, "public"), "toOutputPublicAssetFilePath");
         const isAsync = isAsyncScriptMap.get(config2).get(normalizedId);
         let result = html;
-        const chunk = Object.values(bundle3).find(
+        const chunk = Object.values(bundle).find(
           (chunk2) => chunk2.type === "chunk" && chunk2.isEntry && chunk2.facadeModuleId && normalizePath$3(chunk2.facadeModuleId) === normalizedId
         );
         let canInlineEntry = false;
@@ -81172,7 +81152,7 @@ ${js}`;
         }
         if (!this.environment.config.build.cssCodeSplit) {
           const cssBundleName = cssBundleNameCache.get(config2);
-          const cssChunk = cssBundleName && Object.values(bundle3).find(
+          const cssChunk = cssBundleName && Object.values(bundle).find(
             (chunk2) => chunk2.type === "asset" && chunk2.names.includes(cssBundleName)
           );
           if (cssChunk) {
@@ -81206,7 +81186,7 @@ ${js}`;
           {
             path: "/" + relativeUrlPath,
             filename: normalizedId,
-            bundle: bundle3,
+            bundle,
             chunk
           }
         );
@@ -81239,7 +81219,7 @@ ${js}`;
         });
       }
       for (const fileName of inlineEntryChunk) {
-        delete bundle3[fileName];
+        delete bundle[fileName];
       }
     }
   };
@@ -81958,7 +81938,7 @@ function timeMiddleware(root4) {
     next();
   }, "viteTimeMiddleware");
 }
-function mapIterator(iterable, transform6) {
+function mapIterator(iterable, transform5) {
   return {
     [Symbol.iterator]() {
       return this;
@@ -81966,7 +81946,7 @@ function mapIterator(iterable, transform6) {
     next() {
       const r2 = iterable.next();
       return r2.done ? r2 : {
-        value: transform6(r2.value),
+        value: transform5(r2.value),
         done: false
       };
     }
@@ -83586,7 +83566,7 @@ async function bundleWorkerEntry(config2, id3) {
   const workerConfig = await plugins2(newBundleChain);
   const workerEnvironment = new BuildEnvironment("client", workerConfig);
   await workerEnvironment.init();
-  const bundle3 = await rollup2({
+  const bundle = await rollup2({
     ...rollupOptions,
     input,
     plugins: workerEnvironment.plugins.map(
@@ -83603,7 +83583,7 @@ async function bundleWorkerEntry(config2, id3) {
     const workerConfig2 = workerOutputConfig ? Array.isArray(workerOutputConfig) ? workerOutputConfig[0] || {} : workerOutputConfig : {};
     const {
       output: [outputChunk, ...outputChunks]
-    } = await bundle3.generate({
+    } = await bundle.generate({
       entryFileNames: path$b.posix.join(
         config2.build.assetsDir,
         "[name]-[hash].js"
@@ -83639,7 +83619,7 @@ async function bundleWorkerEntry(config2, id3) {
     }
     throw e2;
   } finally {
-    await bundle3.close();
+    await bundle.close();
   }
   return emitSourcemapForWorkerEntry(config2, chunk);
 }
@@ -83883,13 +83863,13 @@ function webWorkerPlugin(config2) {
       }
       return result();
     },
-    generateBundle(opts, bundle3) {
+    generateBundle(opts, bundle) {
       if (opts.__vite_skip_asset_emit__ || isWorker) {
         return;
       }
       const workerMap = workerCache.get(config2);
       workerMap.assets.forEach((asset) => {
-        const duplicateAsset = bundle3[asset.fileName];
+        const duplicateAsset = bundle[asset.fileName];
         if (duplicateAsset) {
           const content = duplicateAsset.type === "asset" ? duplicateAsset.source : duplicateAsset.code;
           if (isSameContent(content, asset.source)) {
@@ -86124,7 +86104,7 @@ function cssPostPlugin(config2) {
         return hash3;
       }
     },
-    async generateBundle(opts, bundle3) {
+    async generateBundle(opts, bundle) {
       if (opts.__vite_skip_asset_emit__) {
         return;
       }
@@ -86132,7 +86112,7 @@ function cssPostPlugin(config2) {
         let collect2 = /* @__PURE__ */ __name(function(chunk) {
           if (!chunk || chunk.type !== "chunk" || collected.has(chunk)) return;
           collected.add(chunk);
-          chunk.imports.forEach((importName) => collect2(bundle3[importName]));
+          chunk.imports.forEach((importName) => collect2(bundle[importName]));
           chunk.dynamicImports.forEach(
             (importName) => dynamicImports.add(importName)
           );
@@ -86141,13 +86121,13 @@ function cssPostPlugin(config2) {
         let extractedCss = "";
         const collected = /* @__PURE__ */ new Set();
         const dynamicImports = /* @__PURE__ */ new Set();
-        for (const chunk of Object.values(bundle3)) {
+        for (const chunk of Object.values(bundle)) {
           if (chunk.type === "chunk" && chunk.isEntry) {
             collect2(chunk);
           }
         }
         for (const chunkName of dynamicImports) {
-          collect2(bundle3[chunkName]);
+          collect2(bundle[chunkName]);
         }
         if (extractedCss) {
           hasEmitted = true;
@@ -86164,20 +86144,20 @@ function cssPostPlugin(config2) {
       }
       if (pureCssChunks.size) {
         const prelimaryNameToChunkMap = Object.fromEntries(
-          Object.values(bundle3).filter((chunk) => chunk.type === "chunk").map((chunk) => [chunk.preliminaryFileName, chunk.fileName])
+          Object.values(bundle).filter((chunk) => chunk.type === "chunk").map((chunk) => [chunk.preliminaryFileName, chunk.fileName])
         );
         const pureCssChunkNames = [...pureCssChunks].map((pureCssChunk) => prelimaryNameToChunkMap[pureCssChunk.fileName]).filter(Boolean);
         const replaceEmptyChunk = getEmptyChunkReplacer(
           pureCssChunkNames,
           opts.format
         );
-        for (const file in bundle3) {
-          const chunk = bundle3[file];
+        for (const file in bundle) {
+          const chunk = bundle[file];
           if (chunk.type === "chunk") {
             let chunkImportsPureCssChunk = false;
             chunk.imports = chunk.imports.filter((file2) => {
               if (pureCssChunkNames.includes(file2)) {
-                const { importedCss, importedAssets } = bundle3[file2].viteMetadata;
+                const { importedCss, importedAssets } = bundle[file2].viteMetadata;
                 importedCss.forEach(
                   (file3) => chunk.viteMetadata.importedCss.add(file3)
                 );
@@ -86196,12 +86176,12 @@ function cssPostPlugin(config2) {
         }
         const removedPureCssFiles = removedPureCssFilesCache.get(config2);
         pureCssChunkNames.forEach((fileName) => {
-          removedPureCssFiles.set(fileName, bundle3[fileName]);
-          delete bundle3[fileName];
-          delete bundle3[`${fileName}.map`];
+          removedPureCssFiles.set(fileName, bundle[fileName]);
+          delete bundle[fileName];
+          delete bundle[`${fileName}.map`];
         });
       }
-      const cssAssets = Object.values(bundle3).filter(
+      const cssAssets = Object.values(bundle).filter(
         (asset) => asset.type === "asset" && asset.fileName.endsWith(".css")
       );
       for (const cssAsset of cssAssets) {
@@ -87509,15 +87489,15 @@ function buildImportAnalysisPlugin(config2) {
       }
       return null;
     },
-    generateBundle({ format: format2 }, bundle3) {
+    generateBundle({ format: format2 }, bundle) {
       if (format2 !== "es") {
         return;
       }
       if (!getInsertPreload(this.environment)) {
         const removedPureCssFiles = removedPureCssFilesCache.get(config2);
         if (removedPureCssFiles && removedPureCssFiles.size > 0) {
-          for (const file in bundle3) {
-            const chunk = bundle3[file];
+          for (const file in bundle) {
+            const chunk = bundle[file];
             if (chunk.type === "chunk" && chunk.code.includes("import")) {
               const code = chunk.code;
               let imports;
@@ -87565,8 +87545,8 @@ function buildImportAnalysisPlugin(config2) {
       }
       const buildSourcemap = this.environment.config.build.sourcemap;
       const { modulePreload } = this.environment.config.build;
-      for (const file in bundle3) {
-        const chunk = bundle3[file];
+      for (const file in bundle) {
+        const chunk = bundle[file];
         if (chunk.type === "chunk" && chunk.code.indexOf(preloadMarker) > -1) {
           const code = chunk.code;
           let imports;
@@ -87624,7 +87604,7 @@ function buildImportAnalysisPlugin(config2) {
                   if (filename === ownerFilename) return;
                   if (analyzed.has(filename)) return;
                   analyzed.add(filename);
-                  const chunk2 = bundle3[filename];
+                  const chunk2 = bundle[filename];
                   if (chunk2) {
                     deps.add(chunk2.fileName);
                     if (chunk2.type === "chunk") {
@@ -87765,7 +87745,7 @@ function buildImportAnalysisPlugin(config2) {
                 if (originalDebugId) {
                   map2.debugId = originalDebugId;
                 }
-                const mapAsset = bundle3[chunk.fileName + ".map"];
+                const mapAsset = bundle[chunk.fileName + ".map"];
                 if (mapAsset && mapAsset.type === "asset") {
                   mapAsset.source = map2.toString();
                 }
@@ -87786,12 +87766,12 @@ function ssrManifestPlugin() {
     applyToEnvironment(environment) {
       return !!environment.config.build.ssrManifest;
     },
-    generateBundle(_options, bundle3) {
+    generateBundle(_options, bundle) {
       const config2 = this.environment.config;
       const ssrManifest = getSsrManifest(this);
       const { base: base2 } = config2;
-      for (const file in bundle3) {
-        const chunk = bundle3[file];
+      for (const file in bundle) {
+        const chunk = bundle[file];
         if (chunk.type === "chunk") {
           for (const id3 in chunk.modules) {
             const normalizedId = normalizePath$3(relative$2(config2.root, id3));
@@ -87835,7 +87815,7 @@ function ssrManifestPlugin() {
                   if (filename === ownerFilename) return;
                   if (analyzed.has(filename)) return;
                   analyzed.add(filename);
-                  const chunk2 = bundle3[filename];
+                  const chunk2 = bundle[filename];
                   if (chunk2) {
                     chunk2.viteMetadata.importedCss.forEach((file2) => {
                       deps.push(joinUrlSegments(base2, file2));
@@ -88085,7 +88065,7 @@ ${stackOnly}`;
     logger.error(e2.message, { error: e2 });
   }, "outputBuildError");
   const isSsrTargetWebworkerEnvironment = environment.name === "ssr" && environment.getTopLevelConfig().ssr?.target === "webworker";
-  let bundle3;
+  let bundle;
   let startTime;
   try {
     const buildOutputOptions = /* @__PURE__ */ __name((output = {}) => {
@@ -88197,13 +88177,13 @@ build started...`));
     }
     const { rollup: rollup2 } = await Promise.resolve().then(() => (init_rollup(), rollup_exports));
     startTime = Date.now();
-    bundle3 = await rollup2(rollupOptions);
+    bundle = await rollup2(rollupOptions);
     if (options2.write) {
       prepareOutDir(resolvedOutDirs, emptyOutDir, environment);
     }
     const res = [];
     for (const output of normalizedOutputs) {
-      res.push(await bundle3[options2.write ? "write" : "generate"](output));
+      res.push(await bundle[options2.write ? "write" : "generate"](output));
     }
     logger.info(
       `${colors$1.green(`\u2713 built in ${displayTime(Date.now() - startTime)}`)}`
@@ -88220,7 +88200,7 @@ build started...`));
     }
     throw e2;
   } finally {
-    if (bundle3) await bundle3.close();
+    if (bundle) await bundle.close();
   }
 }
 function prepareOutDir(outDirs, emptyOutDir, environment) {
@@ -88413,7 +88393,7 @@ function isExternal(id3, test) {
   }
 }
 function injectEnvironmentAndFilterToHooks(environment, plugin3) {
-  const { resolveId: resolveId3, load: load2, transform: transform6 } = plugin3;
+  const { resolveId: resolveId3, load: load2, transform: transform5 } = plugin3;
   const clone2 = { ...plugin3 };
   for (const hook of Object.keys(clone2)) {
     switch (hook) {
@@ -88424,7 +88404,7 @@ function injectEnvironmentAndFilterToHooks(environment, plugin3) {
         clone2[hook] = wrapEnvironmentAndFilterLoad(environment, load2);
         break;
       case "transform":
-        clone2[hook] = wrapEnvironmentAndFilterTransform(environment, transform6);
+        clone2[hook] = wrapEnvironmentAndFilterTransform(environment, transform5);
         break;
       default:
         if (ROLLUP_HOOKS.includes(hook)) {
@@ -90701,7 +90681,7 @@ function optimizeDepsDisabledBackwardCompatibility(resolved, optimizeDeps2, opti
     }
   }
 }
-var import_picomatch2, __require4, commonjsGlobal, picocolors2, p, argv, env$1, isColorSupported, formatter, replaceClose, createColors, picocolorsExports2, colors$1, VALID_ID_PREFIX2, NULL_BYTE_PLACEHOLDER2, SOURCEMAPPING_URL3, MODULE_RUNNER_SOURCEMAPPING_SOURCE, ERR_OUTDATED_OPTIMIZED_DEP2, isWindows$3, windowsSlashRE2, postfixRE2, WalkerBase$1, SyncWalker$1, extractors2, extractAssignedNames3, blockDeclarations, Scope2, attachScopes, normalizePathRegExp2, normalizePath$5, createFilter$2, reservedWords2, builtins2, forbiddenIdentifiers2, makeLegalIdentifier, hasStringIsWellFormed, dataToEsm, path$a, commondir2, getCommonDir, comma5, semicolon3, chars$12, intToChar3, charToInt3, bufLength2, td2, StringWriter2, StringReader3, BitSet2, Chunk3, btoa$1, SourceMap$1, toString$1, wordRegex2, Mappings2, n$1, warned2, MagicString2, version$2, peerDependencies, firstpassGlobal, firstpassNoGlobal, getVirtualPathForDynamicRequirePath, FAILED_REQUIRE_ERROR, COMMONJS_REQUIRE_EXPORT, CREATE_COMMONJS_REQUIRE_EXPORT, isWrappedId, wrapId, unwrapId2, PROXY_SUFFIX, WRAPPED_SUFFIX, EXTERNAL_SUFFIX, EXPORTS_SUFFIX, MODULE_SUFFIX, ENTRY_SUFFIX, ES_IMPORT_SUFFIX, DYNAMIC_MODULES_ID, HELPERS_ID, IS_WRAPPED_COMMONJS, HELPERS, operators, KEY_COMPILED_ESM, reservedMethod, exportsPattern, functionType, PLUGIN_NAME2, schemeRegex, urlRegex, fileRegex, COLUMN$1, SOURCES_INDEX$1, SOURCE_LINE$1, SOURCE_COLUMN$1, NAMES_INDEX$1, found2, LINE_GTR_ZERO2, COL_GTR_EQ_ZERO2, LEAST_UPPER_BOUND2, GREATEST_LOWER_BOUND2, TraceMap, SetArray, COLUMN2, SOURCES_INDEX2, SOURCE_LINE2, SOURCE_COLUMN2, NAMES_INDEX2, NO_NAME, GenMapping, maybeAddSegment, SOURCELESS_MAPPING, EMPTY_SOURCES, SourceMap3, node$12, ms$1, hasRequiredMs, common$4, hasRequiredCommon, nodeExports$1, debug$j, pnp, createFilter$12, replaceSlashOrColonRE, replaceDotRE, replaceNestedIdRE, replaceHashRE, flattenId, FLATTEN_ID_HASH_LENGTH, FLATTEN_ID_MAX_FILE_LENGTH, limitFlattenIdLength, normalizeId, NODE_BUILTIN_NAMESPACE, NPM_BUILTIN_NAMESPACE, BUN_BUILTIN_NAMESPACE, nodeBuiltins2, isBuiltinCache, nodeLikeBuiltins, bareImportRE, deepImportRE, _require$1, _dirname, rollupVersion, filter, DEBUG, urlCanParse, isCaseInsensitiveFS, VOLUME_RE, externalRE, isExternalUrl, dataUrlRE, isDataUrl, virtualModuleRE, virtualModulePrefix, knownJsSrcRE, isJSRequest, importQueryRE, directRequestRE$1, internalPrefixes, InternalPrefixRE, trailingSeparatorRE, isImportRequest, isInternalRequest, urlRE$1, rawRE$1, timestampRE, splitRE, range, splitFirstDirRE, ERR_SYMLINK_IN_RECURSIVE_READDIR, safeRealpathSync, windowsNetworkMap, parseNetUseRE, firstSafeRealPathSyncRun, imageCandidateRegex, escapedSpaceCharacters, windowsDriveRE, replaceWindowsDriveRE, linuxAbsolutePathRE, revertWindowsDriveRE, nullSourceMap, multilineCommentsRE, singlelineCommentsRE, requestQuerySplitRE, requestQueryMaybeEscapedSplitRE, blankReplacer, hash$1, requireResolveFromRootWithFallback, windowsDrivePathPrefixRE, isNonDriveRelativeAbsolutePath, escapeRegexRE, sigtermCallbacks, parentSigtermCallback, setupSIGTERMListener, teardownSIGTERMListener, LogLevels, lastType, lastMsg, sameCount, timeFormatter, groups, COMPRESSIBLE_ASSETS_RE, POSIX_SEP_RE, NATIVE_SEP_RE, PATTERN_REGEX_CACHE, GLOB_ALL_PATTERN, TS_EXTENSIONS, JS_EXTENSIONS, TSJS_EXTENSIONS, TS_EXTENSIONS_RE_GROUP, TSJS_EXTENSIONS_RE_GROUP, IS_POSIX, isInNodeModules, posix2native, native2posix, resolve2posix, singleComment, multiComment, not_found_result, EXTENDABLE_KEYS, REBASE_KEYS, TSConfckParseError, DEFAULT_JSCONFIG_COMPILER_OPTIONS, TSConfckCache, debug$i, IIFE_BEGIN_RE, validExtensionRE, jsxExtensionsRE, defaultEsbuildSupported, rollupToEsbuildFormatMap, buildEsbuildPlugin, globalTSConfckCache, tsconfckCacheMap, AsyncFunction2, codeToDataUrl, viteSsrDynamicImport, Worker, importRe, internalImportName, FakeWorker, WorkerWithFallback, terserPath, loadTerserPath, mimes, publicFilesMap, assetUrlRE, jsSourceMapRE, noInlineRE, inlineRE$3, svgExtRE, assetCache, cssEntriesMap, publicAssetUrlCache, publicAssetUrlRE, GIT_LFS_PREFIX, nestedQuotesRE, endsWithJSRE, dataUriRE, base64RE, dataUriPrefix, ImportType, A, C2, E, init, convertSourceMap$1, convertSourceMap, debug$h, virtualSourceRE, src$12, path$9, fs$7, os$2, url$4, fsReadFileAsync, jsonLoader, requireFunc, defaultLoadersSync, dynamicImport, defaultLoaders, makeEmplace, createRequire2, fileURLToPath3, pathToFileURL, TS_EXT_RE, tsx, jiti, importError, req_1, req$2, options_1, req$1, plugins_1, resolve7, config$1, loadOptions, loadPlugins, req, interopRequireDefault, yaml, withLoaders, src2, postcssrc, jsonExtRE, jsonObjRE, jsonLangs, jsonLangRE, isJSONRequest, HASH_RE, AMPERSAND_RE, SLASH_RE, EQUAL_RE, PLUS_RE, ENC_CARET_RE, ENC_BACKTICK_RE, ENC_PIPE_RE, ENC_SPACE_RE, own$1, classRegExp, kTypes, messages, nodeInternalPrefix, userStackTraceLimit, captureLargerStackTrace, ESM_STATIC_IMPORT_RE, TYPE_RE, ESM_RE, COMMENT_RE, externalWithConversionNamespace, convertedExternalPrefix, cjsExternalFacadeNamespace, nonFacadePrefix, externalTypes, matchesEntireLine, environmentColors, PartialEnvironment, BaseEnvironment, HashbangComment, Identifier3, JSXIdentifier2, JSXPunctuator, JSXString, JSXText2, KeywordsWithExpressionAfter, KeywordsWithNoLineTerminatorAfter, LineTerminatorSequence, MultiLineComment, Newline, NumericLiteral, Punctuator, RegularExpressionLiteral, SingleLineComment, StringLiteral, Template, TokensNotPrecedingObjectLiteral, TokensPrecedingExpression, WhiteSpace, jsTokens_1, jsTokens, importGlobRE, objectKeysRE, objectValuesRE, knownOptions, forceDefaultAs, importPrefix, basename4, dirname5, relative4, ScanEnvironment, debug$g, htmlTypesRE, importsRE, scriptRE, commentRE$1, srcRE, typeRE, langRE, svelteScriptModuleRE, svelteModuleRE, debug$f, jsExtensionRE, jsMapExtensionRE, firstLoadCachedDepOptimizationMetadata, lockfileFormats, lockfilePaths, MAX_TEMP_DIR_AGE_MS, GRACEFUL_RENAME_TIMEOUT, safeRename, debug$e, isExternalCache, normalizedClientEntry$1, normalizedEnvEntry$1, ERR_RESOLVE_PACKAGE_ENTRY_FAIL, browserExternalId, optionalPeerDepId, subpathImportsPrefix, startsWithWordCharRE, debug$d, knownTsOutputRE, isPossibleTsOutput, debug$c, main, version$1, require$$4, fs$6, path$8, os$1, crypto$1, packageJson, version4, LINE, DotenvModule, parse_1$22, expand_1$1, debug$b, docsURL, deprecationCode, deprecationMessages, _ignoreDeprecationWarnings, node2, debug$a, s, m, h, d, y, ms, debugExports, nodeExports2, encodeurl, ENCODE_CHARS_REGEXP, UNMATCHED_SURROGATE_PAIR_REGEXP, UNMATCHED_SURROGATE_PAIR_REPLACE, matchHtmlRegExp, escapeHtml_1, escapeHtml$2, onFinished$2, eeFirst, first, defer$2, onFinishedExports, parseurl$1, url$3, parse$a, Url, parseurlExports, require$$0$13, codes, statuses$1, unpipe_1, debug$9, encodeUrl, escapeHtml, onFinished, parseUrl$2, statuses, unpipe, DOUBLE_SPACE_REGEXP, NEWLINE_REGEXP, defer$1, isFinished, finalhandler_1, utilsMerge, utilsMergeExports, debug$8, EventEmitter$3, finalhandler, http$4, merge3, parseUrl$1, connect, env3, proto, defer, connect$1, lib2, getOwnPropertySymbols, hasOwnProperty2, propIsEnumerable, objectAssign, vary$1, FIELD_NAME_REGEXP, varyExports, libExports, corsMiddleware, chokidar2, fs$5, Readable, sysPath$3, promisify$3, picomatch$12, readdir$1, stat$3, lstat$2, realpath$1, BANG$2, RECURSIVE_ERROR_CODE, NORMAL_FLOW_ERRORS, FILE_TYPE, DIR_TYPE, FILE_DIR_TYPE, EVERYTHING_TYPE, ALL_TYPES, isNormalFlowError, maj, min, wantBigintFsStats, normalizeFilter$1, ReaddirpStream, readdirp$1, readdirpPromise, readdirp_12, anymatch$2, normalizePath$2, anymatch_12, picomatch4, normalizePath$1, BANG$1, DEFAULT_OPTIONS, arrify$1, createPattern, matchPatterns, anymatch$1, anymatchExports, isExtglob$1, isExtglob3, chars3, strictCheck, relaxedCheck, isGlob$2, isGlob$1, pathPosixDirname, isWin32, slash4, backslash3, enclosure, globby, escaped, globParent$1, utils$3, utils$22, stringify$4, isNumber$2, isNumber$1, toRegexRange$1, toRegexRange_12, util2, toRegexRange, isObject2, transform5, isValidValue, isNumber3, zeros, stringify$3, pad, toMaxLen, toSequence, toRange, toRegex, rangeError, invalidRange, invalidStep, fillNumbers, fillLetters, fill$2, fillRange2, fill$1, utils$12, compile$1, compile_12, fill, stringify$2, utils3, append, expand$1, expand_12, constants$22, stringify$12, MAX_LENGTH, CHAR_BACKSLASH, CHAR_BACKTICK, CHAR_COMMA, CHAR_DOT, CHAR_LEFT_PARENTHESES, CHAR_RIGHT_PARENTHESES, CHAR_LEFT_CURLY_BRACE, CHAR_RIGHT_CURLY_BRACE, CHAR_LEFT_SQUARE_BRACKET, CHAR_RIGHT_SQUARE_BRACKET, CHAR_DOUBLE_QUOTE, CHAR_SINGLE_QUOTE, CHAR_NO_BREAK_SPACE, CHAR_ZERO_WIDTH_NOBREAK_SPACE, parse$8, parse_1$12, stringify5, compile, expand, parse$7, braces$1, braces_12, require$$03, binaryExtensions$1, path$7, binaryExtensions2, extensions, isBinaryPath$1, constants$12, fs$4, sysPath$2, promisify$2, isBinaryPath2, isWindows$2, isLinux, EMPTY_FN$2, EMPTY_STR$1, KEY_LISTENERS, KEY_ERR, KEY_RAW, HANDLER_KEYS, EV_CHANGE$2, EV_ADD$2, EV_ADD_DIR$2, EV_ERROR$2, STR_DATA$1, STR_END$2, BRACE_START$1, STAR, THROTTLE_MODE_WATCH, open$1, stat$2, lstat$1, close, fsrealpath, statMethods$1, foreach, addAndConvert, clearItem, delFromSet, isEmptySet, FsWatchInstances, fsWatchBroadcast, setFsWatchListener, FsWatchFileInstances, setFsWatchFileListener, NodeFsHandler$1, nodefsHandler2, fseventsHandler2, fs$3, sysPath$1, promisify$1, fsevents, EV_ADD$1, EV_CHANGE$1, EV_ADD_DIR$1, EV_UNLINK$1, EV_ERROR$1, STR_DATA, STR_END$1, FSEVENT_CREATED, FSEVENT_MODIFIED, FSEVENT_DELETED, FSEVENT_MOVED, FSEVENT_UNKNOWN, FSEVENT_FLAG_MUST_SCAN_SUBDIRS, FSEVENT_TYPE_FILE, FSEVENT_TYPE_DIRECTORY, FSEVENT_TYPE_SYMLINK, ROOT_GLOBSTAR, DIR_SUFFIX, DOT_SLASH, FUNCTION_TYPE$1, EMPTY_FN$1, IDENTITY_FN, Depth, stat$1, lstat, realpath2, statMethods, FSEventsWatchers, consolidateThreshhold, wrongEventFlags, createFSEventsInstance, couldConsolidate, canUse, calcDepth, sameTypes, FsEventsHandler$1, fseventsHandlerExports, EventEmitter$2, fs$2, sysPath, promisify, readdirp, anymatch2, globParent3, isGlob3, braces, normalizePath6, NodeFsHandler2, FsEventsHandler2, EV_ALL, EV_READY, EV_ADD, EV_CHANGE, EV_UNLINK, EV_ADD_DIR, EV_UNLINK_DIR, EV_RAW, EV_ERROR, STR_CLOSE, STR_END, BACK_SLASH_RE, DOUBLE_SLASH_RE, SLASH_OR_BACK_SLASH_RE, DOT_RE, REPLACER_RE, SLASH, SLASH_SLASH, BRACE_START, BANG, ONE_DOT, TWO_DOTS, GLOBSTAR, SLASH_GLOBSTAR, ANYMATCH_OPTS, STRING_TYPE, FUNCTION_TYPE, EMPTY_STR, EMPTY_FN, isWindows$1, isMacos, isIBMi, stat2, readdir2, arrify, flatten, unifyPaths, toUnix, normalizePathToUnix, normalizeIgnored, getAbsolutePath, undef, DirEntry, STAT_METHOD_F, STAT_METHOD_L, WatchHelper, FSWatcher, watch2, shellQuote$1, quote, CONTROL, controlRE, META, SINGLE_QUOTE, DOUBLE_QUOTE, hash2, SQ, DQ, DS, TOKEN, mult, i, startsWithToken, parse$6, macos, linux, windows$1, path$6, shellQuote, childProcess$1, COMMON_EDITORS_MACOS, COMMON_EDITORS_LINUX, COMMON_EDITORS_WIN, guess, path$5, getArgs, fs$1, os2, path$4, colors, childProcess, guessEditor2, getArgumentsForPosition2, positionRE, _childProcess, launchEditor_1, url$2, path$3, launch, launchEditorMiddleware, launchEditorMiddleware$1, offset, rewroteStacktraces, prepareStackTrace2, createServerModuleRunnerTransport, SSRCompatModuleRunner, WalkerBase2, SyncWalker2, ssrModuleExportsKey2, ssrImportKey2, ssrDynamicImportKey2, ssrExportAllKey2, ssrImportMetaKey2, hashbangRE, isNodeInPatternWeakSet, setIsNodeInPattern, isNodeInPattern, isStaticProperty, isStaticPropertyKey, functionNodeTypeRE, blockNodeTypeRE, isDockerCached, cachedResult, hasContainerEnv, isWsl, isWsl$1, execFileAsync$3, execFileAsync$2, execFileAsync$1, windowsBrowserProgIds, UnknownBrowserError, execFileAsync, titleize, __dirname2, localXdgOpenPath, platform2, arch, getWslDrivesMountPoint, pTryEach, baseOpen, open, apps, crossSpawn, windows, hasRequiredWindows, mode, hasRequiredMode, core, isexe_1, isWindows2, path$22, COLON, isexe, getNotFoundError, getPathInfo, which$1, whichSync, which_1, pathKey$1, pathKey, pathKeyExports, path$13, which, getPathKey, resolveCommand_1, _escape, metaCharsRegExp, shebangRegex$1, shebangRegex, shebangCommand$1, fs3, shebangCommand, readShebang_1, path5, resolveCommand, escape$1, readShebang, isWin$1, isExecutableRegExp, isCmdShimRegExp, parse_13, isWin2, enoent$1, cp, parse$4, enoent, crossSpawnExports, spawn$1, supportedChromiumBrowsers, BASE_DEV_SHORTCUTS, BASE_PREVIEW_SHORTCUTS, NoopWatcher, bufferUtil$1, BINARY_TYPES$2, hasBlob$1, constants3, EMPTY_BUFFER$3, FastBuffer$2, bufferUtilExports, kDone, kRun, Limiter$1, limiter, zlib, bufferUtil, Limiter2, kStatusCode$2, FastBuffer$1, TRAILER, kPerMessageDeflate, kTotalLength, kCallback, kBuffers, kError$1, zlibLimiter, PerMessageDeflate$4, permessageDeflate, validation, isUtf8, hasBlob, tokenChars$2, validationExports, Writable$1, PerMessageDeflate$3, BINARY_TYPES$1, EMPTY_BUFFER$2, kStatusCode$1, kWebSocket$3, concat, toArrayBuffer, unmask, isValidStatusCode$1, isValidUTF8, FastBuffer, GET_INFO, GET_PAYLOAD_LENGTH_16, GET_PAYLOAD_LENGTH_64, GET_MASK, GET_DATA, INFLATING, DEFER_EVENT, Receiver$1, receiver, randomFillSync, PerMessageDeflate$2, EMPTY_BUFFER$1, kWebSocket$2, NOOP$2, isBlob$1, isValidStatusCode, applyMask, toBuffer$1, kByteLength, maskBuffer, RANDOM_POOL_SIZE, randomPool, randomPoolPointer, DEFAULT, DEFLATING, GET_BLOB_DATA, Sender$1, sender, kForOnEventAttribute$1, kListener$1, kCode, kData, kError, kMessage, kReason, kTarget, kType, kWasClean, Event$1, CloseEvent, ErrorEvent, MessageEvent, EventTarget, eventTarget, tokenChars$1, extension$1, EventEmitter$1, https$2, http$3, net, tls, randomBytes, createHash$1, URL$2, PerMessageDeflate$1, Receiver2, Sender2, isBlob, BINARY_TYPES, EMPTY_BUFFER, GUID$1, kForOnEventAttribute, kListener, kStatusCode, kWebSocket$1, NOOP$1, addEventListener, removeEventListener, format, parse$2, toBuffer, closeTimeout, kAborted, protocolVersions, readyStates, subprotocolRegex, WebSocket$1, websocket, tokenChars, subprotocol$1, EventEmitter, http$2, createHash, extension, PerMessageDeflate2, subprotocol, WebSocket2, GUID, kWebSocket, keyRegex, RUNNING, CLOSING, CLOSED, WebSocketServer, websocketServer, WebSocketServerRaw_, allowedHostsServerCache, allowedHostsPreviewCache, isFileOrExtensionProtocolRE, WebSocketServerRaw, HMR_HEADER, isWebSocketServer, wsServerEvents, httpProxy$3, eventemitter3, eventemitter3Exports, common$3, requiresPort, url$1, common$2, redirectRegex, webOutgoing, followRedirects$1, debug$7, debug_1, url, URL$1, http$1, https$1, Writable, assert, debug$6, useNativeURL, preservedUrlFields, events, eventHandlers, InvalidUrlError, RedirectionError, TooManyRedirectsError, MaxBodyLengthExceededError, WriteAfterEndError, destroy, followRedirectsExports, httpNative, httpsNative, web_o, common$1, followRedirects, nativeAgents, webIncoming, http, https, common, wsIncoming, httpProxyExports, ProxyServer, httpProxy$2, httpProxy, httpProxy$1, debug$5, rewriteOriginHeader, debug$4, etag_1, crypto2, Stats, toString3, getEtag, debug$3, alias, noop2, ENCODING, knownJavascriptExtensionRE, ERR_DENIED_FILE, sirvOptions, ERR_LOAD_URL, ERR_LOAD_PUBLIC_URL, ERR_DENIED_ID, debugLoad, debugTransform, debugCache$1, ALLOWED_META_NAME, ALLOWED_META_PROPERTY, DEFAULT_HTML_ASSET_SOURCES, modulePreloadPolyfillId, resolvedModulePreloadPolyfillId, htmlProxyRE$1, isHtmlProxyRE, inlineCSSRE$1, inlineImportRE, htmlLangRE, spaceRe, importMapRE, moduleScriptRE, modulePreloadLinkRE, importMapAppendRE, isHTMLProxy, isHTMLRequest, htmlProxyMap, htmlProxyResult, noInlineLinkRels, isAsyncScriptMap, attrValueStartRE, elementsAllowedInHead, importRE, commentRE, headInjectRE, headPrependInjectRE, htmlInjectRE, htmlPrependInjectRE, bodyInjectRE, bodyPrependInjectRE, doctypePrependInjectRE, unaryTags, debugCache, knownIgnoreList, trailingQuerySeparatorsRE, urlRE, rawRE, inlineRE$2, svgRE, wordCharRE, processNodeUrl, devHtmlHook, logTime, EMPTY_OBJECT$1, ModuleNode, ModuleGraph, DualWeakMap, ROOT_FILES, usedConfigs, serverConfigDefaults, debugHmr, whitespaceRE, normalizedClientDir, normalizeHotChannel, sortedHotUpdatePluginsCache, nonJsRe, isNonJsRequest, importMetaEnvMarker, importMetaEnvKeyReCache, workerOrSharedWorkerRE, workerFileRE, inlineRE$1, WORKER_FILE_ID, workerCache, workerAssetUrlRE, debug$2, clientDir, skipRE, canSkipImportAnalysis, optimizedDepChunkRE, optimizedDepDynamicRE, hasViteIgnoreRE, urlIsStringRE, templateLiteralRE, interopHelper, normalizedClientEntry, normalizedEnvEntry, wasmHelperId, wasmInitRE, wasmHelper, wasmHelperCode, wasmHelperPlugin, wasmFallbackPlugin, VariableDynamicImportError, example, defaultProtocol, ignoredProtocols, dynamicImportHelperId, relativePathRE, hasDynamicImportRE, dynamicImportHelper, filterForPlugin, viteAliasCustomResolver, EMPTY_OBJECT2, debugSourcemapCombineFilter, debugSourcemapCombine, debugResolve, debugPluginResolve, debugPluginTransform, debugPluginContainerContext, ERR_CLOSED_SERVER, EnvironmentPluginContainer, MinimalPluginContext, PluginContext, ResolveIdContext, LoadPluginContext, TransformPluginContext, PluginContainer, decoder, cssConfigDefaults, cssModuleRE, directRequestRE, htmlProxyRE, htmlProxyIndexRE, commonjsProxyRE, inlineRE, inlineCSSRE, styleAttrRE, functionCallRE, transformOnlyRE, nonEscapedDoubleQuoteRe, defaultCssBundleName, isCSSRequest, isModuleCSSRequest, isDirectCSSRequest, isDirectRequest, cssModulesCache, removedPureCssFilesCache, cssBundleNameCache, postcssConfigCache, cssUrlAssetRE, fileURLWithWindowsDriveRE, configToAtImportResolvers, importPostcssImport, importPostcssModules, importPostcss, preprocessorWorkerControllerCache, alwaysFakeWorkerWorkerControllerCache, viteHashUpdateMarker, viteHashUpdateMarkerRE, cssUrlRE, cssDataUriRE, importCssRE, cssImageSetRE, UrlRewritePostcssPlugin, cssNotProcessedRE, atImportRE, atCharsetRE, loadedPreprocessorPath, cachedSss, makeScssWorker, makeModernScssWorker, makeModernCompilerScssWorker, scssProcessor, makeLessWorker, lessProcessor, makeStylWorker, stylProcessor, createPreprocessorWorkerController, normalizeMaxWorkers, preprocessorSet, importLightningCSS, map, esMap, esRE, versionRE, convertTargetsCache, convertTargets, isModernFlag, preloadMethod, preloadMarker, preloadHelperId, preloadMarkerRE, dynamicImportPrefixRE, dynamicImportTreeshakenRE, buildEnvironmentOptionsDefaults, warningIgnoreList, dynamicImportWarningIgnoreList, normalizeLog2, needsEscapeRegEx2, quoteNewlineRegEx2, backSlashRegEx2, getResolveUrl2, getRelativeUrlFromDocument2, getFileUrlFromFullPath2, getFileUrlFromRelativePath2, relativeUrlMechanisms2, customRelativeUrlMechanisms, toOutputFilePathInCss, toOutputFilePathInHtml, BuildEnvironment, builderOptionsDefaults, build$12, OTHER_SOURCE_MAP_REGEXP, debug$1, debounceMs, EnvironmentModuleNode, EnvironmentModuleGraph, DevEnvironment, callCrawlEndIfIdleAfterMs, RunnableDevEnvironment, NOOP, MIMES, ssrConfigDefaults, debug, promisifiedRealpath, SYMBOL_RESOLVED_CONFIG, configDefaults, clientAlias, _require;
+var import_picomatch2, __require4, commonjsGlobal, picocolors2, p, argv, env$1, isColorSupported, formatter, replaceClose, createColors, picocolorsExports2, colors$1, VALID_ID_PREFIX2, NULL_BYTE_PLACEHOLDER2, SOURCEMAPPING_URL3, MODULE_RUNNER_SOURCEMAPPING_SOURCE, ERR_OUTDATED_OPTIMIZED_DEP2, isWindows$3, windowsSlashRE2, postfixRE2, WalkerBase$1, SyncWalker$1, extractors2, extractAssignedNames3, blockDeclarations, Scope2, attachScopes, normalizePathRegExp2, normalizePath$5, createFilter$2, reservedWords2, builtins2, forbiddenIdentifiers2, makeLegalIdentifier, hasStringIsWellFormed, dataToEsm, path$a, commondir2, getCommonDir, comma5, semicolon3, chars$12, intToChar3, charToInt3, bufLength2, td2, StringWriter2, StringReader3, BitSet2, Chunk3, btoa$1, SourceMap$1, toString$1, wordRegex2, Mappings2, n$1, warned2, MagicString2, version$2, peerDependencies, firstpassGlobal, firstpassNoGlobal, getVirtualPathForDynamicRequirePath, FAILED_REQUIRE_ERROR, COMMONJS_REQUIRE_EXPORT, CREATE_COMMONJS_REQUIRE_EXPORT, isWrappedId, wrapId, unwrapId2, PROXY_SUFFIX, WRAPPED_SUFFIX, EXTERNAL_SUFFIX, EXPORTS_SUFFIX, MODULE_SUFFIX, ENTRY_SUFFIX, ES_IMPORT_SUFFIX, DYNAMIC_MODULES_ID, HELPERS_ID, IS_WRAPPED_COMMONJS, HELPERS, operators, KEY_COMPILED_ESM, reservedMethod, exportsPattern, functionType, PLUGIN_NAME2, schemeRegex, urlRegex, fileRegex, COLUMN$1, SOURCES_INDEX$1, SOURCE_LINE$1, SOURCE_COLUMN$1, NAMES_INDEX$1, found2, LINE_GTR_ZERO2, COL_GTR_EQ_ZERO2, LEAST_UPPER_BOUND2, GREATEST_LOWER_BOUND2, TraceMap, SetArray, COLUMN2, SOURCES_INDEX2, SOURCE_LINE2, SOURCE_COLUMN2, NAMES_INDEX2, NO_NAME, GenMapping, maybeAddSegment, SOURCELESS_MAPPING, EMPTY_SOURCES, SourceMap3, node$12, ms$1, hasRequiredMs, common$4, hasRequiredCommon, nodeExports$1, debug$j, pnp, createFilter$12, replaceSlashOrColonRE, replaceDotRE, replaceNestedIdRE, replaceHashRE, flattenId, FLATTEN_ID_HASH_LENGTH, FLATTEN_ID_MAX_FILE_LENGTH, limitFlattenIdLength, normalizeId, NODE_BUILTIN_NAMESPACE, NPM_BUILTIN_NAMESPACE, BUN_BUILTIN_NAMESPACE, nodeBuiltins2, isBuiltinCache, nodeLikeBuiltins, bareImportRE, deepImportRE, _require$1, _dirname, rollupVersion, filter, DEBUG, urlCanParse, isCaseInsensitiveFS, VOLUME_RE, externalRE, isExternalUrl, dataUrlRE, isDataUrl, virtualModuleRE, virtualModulePrefix, knownJsSrcRE, isJSRequest, importQueryRE, directRequestRE$1, internalPrefixes, InternalPrefixRE, trailingSeparatorRE, isImportRequest, isInternalRequest, urlRE$1, rawRE$1, timestampRE, splitRE, range, splitFirstDirRE, ERR_SYMLINK_IN_RECURSIVE_READDIR, safeRealpathSync, windowsNetworkMap, parseNetUseRE, firstSafeRealPathSyncRun, imageCandidateRegex, escapedSpaceCharacters, windowsDriveRE, replaceWindowsDriveRE, linuxAbsolutePathRE, revertWindowsDriveRE, nullSourceMap, multilineCommentsRE, singlelineCommentsRE, requestQuerySplitRE, requestQueryMaybeEscapedSplitRE, blankReplacer, hash$1, requireResolveFromRootWithFallback, windowsDrivePathPrefixRE, isNonDriveRelativeAbsolutePath, escapeRegexRE, sigtermCallbacks, parentSigtermCallback, setupSIGTERMListener, teardownSIGTERMListener, LogLevels, lastType, lastMsg, sameCount, timeFormatter, groups, COMPRESSIBLE_ASSETS_RE, POSIX_SEP_RE, NATIVE_SEP_RE, PATTERN_REGEX_CACHE, GLOB_ALL_PATTERN, TS_EXTENSIONS, JS_EXTENSIONS, TSJS_EXTENSIONS, TS_EXTENSIONS_RE_GROUP, TSJS_EXTENSIONS_RE_GROUP, IS_POSIX, isInNodeModules, posix2native, native2posix, resolve2posix, singleComment, multiComment, not_found_result, EXTENDABLE_KEYS, REBASE_KEYS, TSConfckParseError, DEFAULT_JSCONFIG_COMPILER_OPTIONS, TSConfckCache, debug$i, IIFE_BEGIN_RE, validExtensionRE, jsxExtensionsRE, defaultEsbuildSupported, rollupToEsbuildFormatMap, buildEsbuildPlugin, globalTSConfckCache, tsconfckCacheMap, AsyncFunction2, codeToDataUrl, viteSsrDynamicImport, Worker, importRe, internalImportName, FakeWorker, WorkerWithFallback, terserPath, loadTerserPath, mimes, publicFilesMap, assetUrlRE, jsSourceMapRE, noInlineRE, inlineRE$3, svgExtRE, assetCache, cssEntriesMap, publicAssetUrlCache, publicAssetUrlRE, GIT_LFS_PREFIX, nestedQuotesRE, endsWithJSRE, dataUriRE, base64RE, dataUriPrefix, ImportType, A, C2, E, init, convertSourceMap$1, convertSourceMap, debug$h, virtualSourceRE, src$12, path$9, fs$7, os$2, url$4, fsReadFileAsync, jsonLoader, requireFunc, defaultLoadersSync, dynamicImport, defaultLoaders, makeEmplace, createRequire2, fileURLToPath3, pathToFileURL, TS_EXT_RE, tsx, jiti, importError, req_1, req$2, options_1, req$1, plugins_1, resolve7, config$1, loadOptions, loadPlugins, req, interopRequireDefault, yaml, withLoaders, src2, postcssrc, jsonExtRE, jsonObjRE, jsonLangs, jsonLangRE, isJSONRequest, HASH_RE, AMPERSAND_RE, SLASH_RE, EQUAL_RE, PLUS_RE, ENC_CARET_RE, ENC_BACKTICK_RE, ENC_PIPE_RE, ENC_SPACE_RE, own$1, classRegExp, kTypes, messages, nodeInternalPrefix, userStackTraceLimit, captureLargerStackTrace, ESM_STATIC_IMPORT_RE, TYPE_RE, ESM_RE, COMMENT_RE, externalWithConversionNamespace, convertedExternalPrefix, cjsExternalFacadeNamespace, nonFacadePrefix, externalTypes, matchesEntireLine, environmentColors, PartialEnvironment, BaseEnvironment, HashbangComment, Identifier3, JSXIdentifier2, JSXPunctuator, JSXString, JSXText2, KeywordsWithExpressionAfter, KeywordsWithNoLineTerminatorAfter, LineTerminatorSequence, MultiLineComment, Newline, NumericLiteral, Punctuator, RegularExpressionLiteral, SingleLineComment, StringLiteral, Template, TokensNotPrecedingObjectLiteral, TokensPrecedingExpression, WhiteSpace, jsTokens_1, jsTokens, importGlobRE, objectKeysRE, objectValuesRE, knownOptions, forceDefaultAs, importPrefix, basename4, dirname5, relative4, ScanEnvironment, debug$g, htmlTypesRE, importsRE, scriptRE, commentRE$1, srcRE, typeRE, langRE, svelteScriptModuleRE, svelteModuleRE, debug$f, jsExtensionRE, jsMapExtensionRE, firstLoadCachedDepOptimizationMetadata, lockfileFormats, lockfilePaths, MAX_TEMP_DIR_AGE_MS, GRACEFUL_RENAME_TIMEOUT, safeRename, debug$e, isExternalCache, normalizedClientEntry$1, normalizedEnvEntry$1, ERR_RESOLVE_PACKAGE_ENTRY_FAIL, browserExternalId, optionalPeerDepId, subpathImportsPrefix, startsWithWordCharRE, debug$d, knownTsOutputRE, isPossibleTsOutput, debug$c, main, version$1, require$$4, fs$6, path$8, os$1, crypto$1, packageJson, version4, LINE, DotenvModule, parse_1$22, expand_1$1, debug$b, docsURL, deprecationCode, deprecationMessages, _ignoreDeprecationWarnings, node2, debug$a, s, m, h, d, y, ms, debugExports, nodeExports2, encodeurl, ENCODE_CHARS_REGEXP, UNMATCHED_SURROGATE_PAIR_REGEXP, UNMATCHED_SURROGATE_PAIR_REPLACE, matchHtmlRegExp, escapeHtml_1, escapeHtml$2, onFinished$2, eeFirst, first, defer$2, onFinishedExports, parseurl$1, url$3, parse$a, Url, parseurlExports, require$$0$13, codes, statuses$1, unpipe_1, debug$9, encodeUrl, escapeHtml, onFinished, parseUrl$2, statuses, unpipe, DOUBLE_SPACE_REGEXP, NEWLINE_REGEXP, defer$1, isFinished, finalhandler_1, utilsMerge, utilsMergeExports, debug$8, EventEmitter$3, finalhandler, http$4, merge3, parseUrl$1, connect, env3, proto, defer, connect$1, lib2, getOwnPropertySymbols, hasOwnProperty2, propIsEnumerable, objectAssign, vary$1, FIELD_NAME_REGEXP, varyExports, libExports, corsMiddleware, chokidar2, fs$5, Readable, sysPath$3, promisify$3, picomatch$12, readdir$1, stat$3, lstat$2, realpath$1, BANG$2, RECURSIVE_ERROR_CODE, NORMAL_FLOW_ERRORS, FILE_TYPE, DIR_TYPE, FILE_DIR_TYPE, EVERYTHING_TYPE, ALL_TYPES, isNormalFlowError, maj, min, wantBigintFsStats, normalizeFilter$1, ReaddirpStream, readdirp$1, readdirpPromise, readdirp_12, anymatch$2, normalizePath$2, anymatch_12, picomatch4, normalizePath$1, BANG$1, DEFAULT_OPTIONS, arrify$1, createPattern, matchPatterns, anymatch$1, anymatchExports, isExtglob$1, isExtglob3, chars3, strictCheck, relaxedCheck, isGlob$2, isGlob$1, pathPosixDirname, isWin32, slash4, backslash3, enclosure, globby, escaped, globParent$1, utils$3, utils$22, stringify$4, isNumber$2, isNumber$1, toRegexRange$1, toRegexRange_12, util2, toRegexRange, isObject2, transform4, isValidValue, isNumber3, zeros, stringify$3, pad, toMaxLen, toSequence, toRange, toRegex, rangeError, invalidRange, invalidStep, fillNumbers, fillLetters, fill$2, fillRange2, fill$1, utils$12, compile$1, compile_12, fill, stringify$2, utils3, append, expand$1, expand_12, constants$22, stringify$12, MAX_LENGTH, CHAR_BACKSLASH, CHAR_BACKTICK, CHAR_COMMA, CHAR_DOT, CHAR_LEFT_PARENTHESES, CHAR_RIGHT_PARENTHESES, CHAR_LEFT_CURLY_BRACE, CHAR_RIGHT_CURLY_BRACE, CHAR_LEFT_SQUARE_BRACKET, CHAR_RIGHT_SQUARE_BRACKET, CHAR_DOUBLE_QUOTE, CHAR_SINGLE_QUOTE, CHAR_NO_BREAK_SPACE, CHAR_ZERO_WIDTH_NOBREAK_SPACE, parse$8, parse_1$12, stringify5, compile, expand, parse$7, braces$1, braces_12, require$$03, binaryExtensions$1, path$7, binaryExtensions2, extensions, isBinaryPath$1, constants$12, fs$4, sysPath$2, promisify$2, isBinaryPath2, isWindows$2, isLinux, EMPTY_FN$2, EMPTY_STR$1, KEY_LISTENERS, KEY_ERR, KEY_RAW, HANDLER_KEYS, EV_CHANGE$2, EV_ADD$2, EV_ADD_DIR$2, EV_ERROR$2, STR_DATA$1, STR_END$2, BRACE_START$1, STAR, THROTTLE_MODE_WATCH, open$1, stat$2, lstat$1, close, fsrealpath, statMethods$1, foreach, addAndConvert, clearItem, delFromSet, isEmptySet, FsWatchInstances, fsWatchBroadcast, setFsWatchListener, FsWatchFileInstances, setFsWatchFileListener, NodeFsHandler$1, nodefsHandler2, fseventsHandler2, fs$3, sysPath$1, promisify$1, fsevents, EV_ADD$1, EV_CHANGE$1, EV_ADD_DIR$1, EV_UNLINK$1, EV_ERROR$1, STR_DATA, STR_END$1, FSEVENT_CREATED, FSEVENT_MODIFIED, FSEVENT_DELETED, FSEVENT_MOVED, FSEVENT_UNKNOWN, FSEVENT_FLAG_MUST_SCAN_SUBDIRS, FSEVENT_TYPE_FILE, FSEVENT_TYPE_DIRECTORY, FSEVENT_TYPE_SYMLINK, ROOT_GLOBSTAR, DIR_SUFFIX, DOT_SLASH, FUNCTION_TYPE$1, EMPTY_FN$1, IDENTITY_FN, Depth, stat$1, lstat, realpath2, statMethods, FSEventsWatchers, consolidateThreshhold, wrongEventFlags, createFSEventsInstance, couldConsolidate, canUse, calcDepth, sameTypes, FsEventsHandler$1, fseventsHandlerExports, EventEmitter$2, fs$2, sysPath, promisify, readdirp, anymatch2, globParent3, isGlob3, braces, normalizePath6, NodeFsHandler2, FsEventsHandler2, EV_ALL, EV_READY, EV_ADD, EV_CHANGE, EV_UNLINK, EV_ADD_DIR, EV_UNLINK_DIR, EV_RAW, EV_ERROR, STR_CLOSE, STR_END, BACK_SLASH_RE, DOUBLE_SLASH_RE, SLASH_OR_BACK_SLASH_RE, DOT_RE, REPLACER_RE, SLASH, SLASH_SLASH, BRACE_START, BANG, ONE_DOT, TWO_DOTS, GLOBSTAR, SLASH_GLOBSTAR, ANYMATCH_OPTS, STRING_TYPE, FUNCTION_TYPE, EMPTY_STR, EMPTY_FN, isWindows$1, isMacos, isIBMi, stat2, readdir2, arrify, flatten, unifyPaths, toUnix, normalizePathToUnix, normalizeIgnored, getAbsolutePath, undef, DirEntry, STAT_METHOD_F, STAT_METHOD_L, WatchHelper, FSWatcher, watch2, shellQuote$1, quote, CONTROL, controlRE, META, SINGLE_QUOTE, DOUBLE_QUOTE, hash2, SQ, DQ, DS, TOKEN, mult, i, startsWithToken, parse$6, macos, linux, windows$1, path$6, shellQuote, childProcess$1, COMMON_EDITORS_MACOS, COMMON_EDITORS_LINUX, COMMON_EDITORS_WIN, guess, path$5, getArgs, fs$1, os2, path$4, colors, childProcess, guessEditor2, getArgumentsForPosition2, positionRE, _childProcess, launchEditor_1, url$2, path$3, launch, launchEditorMiddleware, launchEditorMiddleware$1, offset, rewroteStacktraces, prepareStackTrace2, createServerModuleRunnerTransport, SSRCompatModuleRunner, WalkerBase2, SyncWalker2, ssrModuleExportsKey2, ssrImportKey2, ssrDynamicImportKey2, ssrExportAllKey2, ssrImportMetaKey2, hashbangRE, isNodeInPatternWeakSet, setIsNodeInPattern, isNodeInPattern, isStaticProperty, isStaticPropertyKey, functionNodeTypeRE, blockNodeTypeRE, isDockerCached, cachedResult, hasContainerEnv, isWsl, isWsl$1, execFileAsync$3, execFileAsync$2, execFileAsync$1, windowsBrowserProgIds, UnknownBrowserError, execFileAsync, titleize, __dirname2, localXdgOpenPath, platform2, arch, getWslDrivesMountPoint, pTryEach, baseOpen, open, apps, crossSpawn, windows, hasRequiredWindows, mode, hasRequiredMode, core, isexe_1, isWindows2, path$22, COLON, isexe, getNotFoundError, getPathInfo, which$1, whichSync, which_1, pathKey$1, pathKey, pathKeyExports, path$13, which, getPathKey, resolveCommand_1, _escape, metaCharsRegExp, shebangRegex$1, shebangRegex, shebangCommand$1, fs3, shebangCommand, readShebang_1, path5, resolveCommand, escape$1, readShebang, isWin$1, isExecutableRegExp, isCmdShimRegExp, parse_13, isWin2, enoent$1, cp, parse$4, enoent, crossSpawnExports, spawn$1, supportedChromiumBrowsers, BASE_DEV_SHORTCUTS, BASE_PREVIEW_SHORTCUTS, NoopWatcher, bufferUtil$1, BINARY_TYPES$2, hasBlob$1, constants3, EMPTY_BUFFER$3, FastBuffer$2, bufferUtilExports, kDone, kRun, Limiter$1, limiter, zlib, bufferUtil, Limiter2, kStatusCode$2, FastBuffer$1, TRAILER, kPerMessageDeflate, kTotalLength, kCallback, kBuffers, kError$1, zlibLimiter, PerMessageDeflate$4, permessageDeflate, validation, isUtf8, hasBlob, tokenChars$2, validationExports, Writable$1, PerMessageDeflate$3, BINARY_TYPES$1, EMPTY_BUFFER$2, kStatusCode$1, kWebSocket$3, concat, toArrayBuffer, unmask, isValidStatusCode$1, isValidUTF8, FastBuffer, GET_INFO, GET_PAYLOAD_LENGTH_16, GET_PAYLOAD_LENGTH_64, GET_MASK, GET_DATA, INFLATING, DEFER_EVENT, Receiver$1, receiver, randomFillSync, PerMessageDeflate$2, EMPTY_BUFFER$1, kWebSocket$2, NOOP$2, isBlob$1, isValidStatusCode, applyMask, toBuffer$1, kByteLength, maskBuffer, RANDOM_POOL_SIZE, randomPool, randomPoolPointer, DEFAULT, DEFLATING, GET_BLOB_DATA, Sender$1, sender, kForOnEventAttribute$1, kListener$1, kCode, kData, kError, kMessage, kReason, kTarget, kType, kWasClean, Event$1, CloseEvent, ErrorEvent, MessageEvent, EventTarget, eventTarget, tokenChars$1, extension$1, EventEmitter$1, https$2, http$3, net, tls, randomBytes, createHash$1, URL$2, PerMessageDeflate$1, Receiver2, Sender2, isBlob, BINARY_TYPES, EMPTY_BUFFER, GUID$1, kForOnEventAttribute, kListener, kStatusCode, kWebSocket$1, NOOP$1, addEventListener, removeEventListener, format, parse$2, toBuffer, closeTimeout, kAborted, protocolVersions, readyStates, subprotocolRegex, WebSocket$1, websocket, tokenChars, subprotocol$1, EventEmitter, http$2, createHash, extension, PerMessageDeflate2, subprotocol, WebSocket2, GUID, kWebSocket, keyRegex, RUNNING, CLOSING, CLOSED, WebSocketServer, websocketServer, WebSocketServerRaw_, allowedHostsServerCache, allowedHostsPreviewCache, isFileOrExtensionProtocolRE, WebSocketServerRaw, HMR_HEADER, isWebSocketServer, wsServerEvents, httpProxy$3, eventemitter3, eventemitter3Exports, common$3, requiresPort, url$1, common$2, redirectRegex, webOutgoing, followRedirects$1, debug$7, debug_1, url, URL$1, http$1, https$1, Writable, assert, debug$6, useNativeURL, preservedUrlFields, events, eventHandlers, InvalidUrlError, RedirectionError, TooManyRedirectsError, MaxBodyLengthExceededError, WriteAfterEndError, destroy, followRedirectsExports, httpNative, httpsNative, web_o, common$1, followRedirects, nativeAgents, webIncoming, http, https, common, wsIncoming, httpProxyExports, ProxyServer, httpProxy$2, httpProxy, httpProxy$1, debug$5, rewriteOriginHeader, debug$4, etag_1, crypto2, Stats, toString3, getEtag, debug$3, alias, noop2, ENCODING, knownJavascriptExtensionRE, ERR_DENIED_FILE, sirvOptions, ERR_LOAD_URL, ERR_LOAD_PUBLIC_URL, ERR_DENIED_ID, debugLoad, debugTransform, debugCache$1, ALLOWED_META_NAME, ALLOWED_META_PROPERTY, DEFAULT_HTML_ASSET_SOURCES, modulePreloadPolyfillId, resolvedModulePreloadPolyfillId, htmlProxyRE$1, isHtmlProxyRE, inlineCSSRE$1, inlineImportRE, htmlLangRE, spaceRe, importMapRE, moduleScriptRE, modulePreloadLinkRE, importMapAppendRE, isHTMLProxy, isHTMLRequest, htmlProxyMap, htmlProxyResult, noInlineLinkRels, isAsyncScriptMap, attrValueStartRE, elementsAllowedInHead, importRE, commentRE, headInjectRE, headPrependInjectRE, htmlInjectRE, htmlPrependInjectRE, bodyInjectRE, bodyPrependInjectRE, doctypePrependInjectRE, unaryTags, debugCache, knownIgnoreList, trailingQuerySeparatorsRE, urlRE, rawRE, inlineRE$2, svgRE, wordCharRE, processNodeUrl, devHtmlHook, logTime, EMPTY_OBJECT$1, ModuleNode, ModuleGraph, DualWeakMap, ROOT_FILES, usedConfigs, serverConfigDefaults, debugHmr, whitespaceRE, normalizedClientDir, normalizeHotChannel, sortedHotUpdatePluginsCache, nonJsRe, isNonJsRequest, importMetaEnvMarker, importMetaEnvKeyReCache, workerOrSharedWorkerRE, workerFileRE, inlineRE$1, WORKER_FILE_ID, workerCache, workerAssetUrlRE, debug$2, clientDir, skipRE, canSkipImportAnalysis, optimizedDepChunkRE, optimizedDepDynamicRE, hasViteIgnoreRE, urlIsStringRE, templateLiteralRE, interopHelper, normalizedClientEntry, normalizedEnvEntry, wasmHelperId, wasmInitRE, wasmHelper, wasmHelperCode, wasmHelperPlugin, wasmFallbackPlugin, VariableDynamicImportError, example, defaultProtocol, ignoredProtocols, dynamicImportHelperId, relativePathRE, hasDynamicImportRE, dynamicImportHelper, filterForPlugin, viteAliasCustomResolver, EMPTY_OBJECT2, debugSourcemapCombineFilter, debugSourcemapCombine, debugResolve, debugPluginResolve, debugPluginTransform, debugPluginContainerContext, ERR_CLOSED_SERVER, EnvironmentPluginContainer, MinimalPluginContext, PluginContext, ResolveIdContext, LoadPluginContext, TransformPluginContext, PluginContainer, decoder, cssConfigDefaults, cssModuleRE, directRequestRE, htmlProxyRE, htmlProxyIndexRE, commonjsProxyRE, inlineRE, inlineCSSRE, styleAttrRE, functionCallRE, transformOnlyRE, nonEscapedDoubleQuoteRe, defaultCssBundleName, isCSSRequest, isModuleCSSRequest, isDirectCSSRequest, isDirectRequest, cssModulesCache, removedPureCssFilesCache, cssBundleNameCache, postcssConfigCache, cssUrlAssetRE, fileURLWithWindowsDriveRE, configToAtImportResolvers, importPostcssImport, importPostcssModules, importPostcss, preprocessorWorkerControllerCache, alwaysFakeWorkerWorkerControllerCache, viteHashUpdateMarker, viteHashUpdateMarkerRE, cssUrlRE, cssDataUriRE, importCssRE, cssImageSetRE, UrlRewritePostcssPlugin, cssNotProcessedRE, atImportRE, atCharsetRE, loadedPreprocessorPath, cachedSss, makeScssWorker, makeModernScssWorker, makeModernCompilerScssWorker, scssProcessor, makeLessWorker, lessProcessor, makeStylWorker, stylProcessor, createPreprocessorWorkerController, normalizeMaxWorkers, preprocessorSet, importLightningCSS, map, esMap, esRE, versionRE, convertTargetsCache, convertTargets, isModernFlag, preloadMethod, preloadMarker, preloadHelperId, preloadMarkerRE, dynamicImportPrefixRE, dynamicImportTreeshakenRE, buildEnvironmentOptionsDefaults, warningIgnoreList, dynamicImportWarningIgnoreList, normalizeLog2, needsEscapeRegEx2, quoteNewlineRegEx2, backSlashRegEx2, getResolveUrl2, getRelativeUrlFromDocument2, getFileUrlFromFullPath2, getFileUrlFromRelativePath2, relativeUrlMechanisms2, customRelativeUrlMechanisms, toOutputFilePathInCss, toOutputFilePathInHtml, BuildEnvironment, builderOptionsDefaults, build$12, OTHER_SOURCE_MAP_REGEXP, debug$1, debounceMs, EnvironmentModuleNode, EnvironmentModuleGraph, DevEnvironment, callCrawlEndIfIdleAfterMs, RunnableDevEnvironment, NOOP, MIMES, ssrConfigDefaults, debug, promisifiedRealpath, SYMBOL_RESOLVED_CONFIG, configDefaults, clientAlias, _require;
 var init_dep_Dq2t6Dq0 = __esm({
   "node_modules/vite/dist/node/chunks/dep-Dq2t6Dq0.js"() {
     import_picomatch2 = __toESM(require_picomatch2(), 1);
@@ -94227,7 +94207,7 @@ ${e2.message}`);
         packageProp,
         searchPlaces,
         stopDir,
-        transform: transform6,
+        transform: transform5,
         cache
       } = getOptions2(name, options2 ?? {}, false);
       const searchCache = /* @__PURE__ */ new Map();
@@ -94287,7 +94267,7 @@ ${e2.message}`);
           }
           const transformed = (
             // not found
-            result.filepath === "" && result.config === null ? transform6(null) : transform6(result)
+            result.filepath === "" && result.config === null ? transform5(null) : transform5(result)
           );
           if (cache) {
             for (const p2 of visited) searchCache.set(p2, transformed);
@@ -94310,7 +94290,7 @@ ${e2.message}`);
             return emplace(
               loadCache,
               absPath,
-              transform6({
+              transform5({
                 config: getPackageProp(packageProp, pkg),
                 filepath: absPath
               })
@@ -94325,7 +94305,7 @@ ${e2.message}`);
             return emplace(
               loadCache,
               absPath,
-              transform6({
+              transform5({
                 config: void 0,
                 filepath: absPath,
                 isEmpty: true
@@ -94335,7 +94315,7 @@ ${e2.message}`);
           return emplace(
             loadCache,
             absPath,
-            transform6(isEmpty ? { ...result, isEmpty, config: void 0 } : result)
+            transform5(isEmpty ? { ...result, isEmpty, config: void 0 } : result)
           );
         },
         clearLoadCache() {
@@ -94359,7 +94339,7 @@ ${e2.message}`);
         packageProp,
         searchPlaces,
         stopDir,
-        transform: transform6,
+        transform: transform5,
         cache
       } = getOptions2(name, options2 ?? {}, true);
       const searchCache = /* @__PURE__ */ new Map();
@@ -94419,7 +94399,7 @@ ${e2.message}`);
           }
           const transformed = (
             // not found
-            result.filepath === "" && result.config === null ? transform6(null) : transform6(result)
+            result.filepath === "" && result.config === null ? transform5(null) : transform5(result)
           );
           if (cache) {
             for (const p2 of visited) searchCache.set(p2, transformed);
@@ -94439,7 +94419,7 @@ ${e2.message}`);
           const content = String(fs$7.readFileSync(absPath));
           if (base2 === "package.json") {
             const pkg = loader2(absPath, content);
-            return transform6({
+            return transform5({
               config: getPackageProp(packageProp, pkg),
               filepath: absPath
             });
@@ -94453,7 +94433,7 @@ ${e2.message}`);
             return emplace(
               loadCache,
               absPath,
-              transform6({
+              transform5({
                 filepath: absPath,
                 config: void 0,
                 isEmpty: true
@@ -94463,7 +94443,7 @@ ${e2.message}`);
           return emplace(
             loadCache,
             absPath,
-            transform6(isEmpty ? { ...result, isEmpty, config: void 0 } : result)
+            transform5(isEmpty ? { ...result, isEmpty, config: void 0 } : result)
           );
         },
         clearLoadCache() {
@@ -97102,7 +97082,7 @@ ${e2.message}`);
     util2 = require$$13;
     toRegexRange = toRegexRange_12;
     isObject2 = /* @__PURE__ */ __name((val) => val !== null && typeof val === "object" && !Array.isArray(val), "isObject");
-    transform5 = /* @__PURE__ */ __name((toNumber) => {
+    transform4 = /* @__PURE__ */ __name((toNumber) => {
       return (value2) => toNumber === true ? Number(value2) : String(value2);
     }, "transform");
     isValidValue = /* @__PURE__ */ __name((value2) => {
@@ -97172,8 +97152,8 @@ ${e2.message}`);
       }
       let start = String.fromCharCode(a);
       if (a === b) return start;
-      let stop2 = String.fromCharCode(b);
-      return `[${start}-${stop2}]`;
+      let stop = String.fromCharCode(b);
+      return `[${start}-${stop}]`;
     }, "toRange");
     toRegex = /* @__PURE__ */ __name((start, end, options2) => {
       if (Array.isArray(start)) {
@@ -97213,7 +97193,7 @@ ${e2.message}`);
       let padded = zeros(startString) || zeros(endString) || zeros(stepString);
       let maxLen = padded ? Math.max(startString.length, endString.length, stepString.length) : 0;
       let toNumber = padded === false && stringify$3(start, end, options2) === false;
-      let format2 = options2.transform || transform5(toNumber);
+      let format2 = options2.transform || transform4(toNumber);
       if (options2.toRegex && step === 1) {
         return toRange(toMaxLen(start, maxLen), toMaxLen(end, maxLen), true, options2);
       }
@@ -98618,8 +98598,8 @@ ${e2.message}`);
       262912
     ]);
     createFSEventsInstance = /* @__PURE__ */ __name((path6, callback2) => {
-      const stop2 = fsevents.watch(path6, callback2);
-      return { stop: stop2 };
+      const stop = fsevents.watch(path6, callback2);
+      return { stop };
     }, "createFSEventsInstance");
     __name(setFSEventsListener, "setFSEventsListener");
     couldConsolidate = /* @__PURE__ */ __name((path6) => {
@@ -98713,13 +98693,13 @@ ${e2.message}`);
        * @param {Function} globFilter - path filter in case a glob pattern was provided
        * @returns {Function} closer for the watcher instance
       */
-      _watchWithFsEvents(watchPath, realPath, transform6, globFilter) {
+      _watchWithFsEvents(watchPath, realPath, transform5, globFilter) {
         if (this.fsw.closed || this.fsw._isIgnored(watchPath)) return;
         const opts = this.fsw.options;
         const watchCallback = /* @__PURE__ */ __name(async (fullPath, flags, info) => {
           if (this.fsw.closed || this.fsw._isIgnored(fullPath)) return;
           if (opts.depth !== void 0 && calcDepth(fullPath, realPath) > opts.depth) return;
-          const path6 = transform6(sysPath$1.join(
+          const path6 = transform5(sysPath$1.join(
             watchPath,
             sysPath$1.relative(watchPath, fullPath)
           ));
@@ -98774,7 +98754,7 @@ ${e2.message}`);
        * @param {Number} curDepth level of subdirectories traversed to where symlink is
        * @returns {Promise<void>}
        */
-      async _handleFsEventsSymlink(linkPath, fullPath, transform6, curDepth) {
+      async _handleFsEventsSymlink(linkPath, fullPath, transform5, curDepth) {
         if (this.fsw.closed || this.fsw._symlinkPaths.has(fullPath)) return;
         this.fsw._symlinkPaths.set(fullPath, true);
         this.fsw._incrReadyCount();
@@ -98792,7 +98772,7 @@ ${e2.message}`);
             } else if (path6 !== DOT_SLASH) {
               aliasedPath = sysPath$1.join(linkPath, path6);
             }
-            return transform6(aliasedPath);
+            return transform5(aliasedPath);
           }, false, curDepth);
         } catch (error3) {
           if (this.fsw._handleError(error3)) {
@@ -98835,12 +98815,12 @@ ${e2.message}`);
        * @param {Number=} priorDepth Level of subdirectories already traversed.
        * @returns {Promise<void>}
        */
-      async _addToFsEvents(path6, transform6, forceAdd, priorDepth) {
+      async _addToFsEvents(path6, transform5, forceAdd, priorDepth) {
         if (this.fsw.closed) {
           return;
         }
         const opts = this.fsw.options;
-        const processPath = typeof transform6 === FUNCTION_TYPE$1 ? transform6 : IDENTITY_FN;
+        const processPath = typeof transform5 === FUNCTION_TYPE$1 ? transform5 : IDENTITY_FN;
         const wh = this.fsw._getWatchHelpers(path6);
         try {
           const stats = await statMethods[wh.statMethod](wh.watchPath);
@@ -98882,7 +98862,7 @@ ${e2.message}`);
           }
         }
         if (opts.persistent && forceAdd !== true) {
-          if (typeof transform6 === FUNCTION_TYPE$1) {
+          if (typeof transform5 === FUNCTION_TYPE$1) {
             this.initWatch(void 0, path6, wh, processPath);
           } else {
             let realPath;
