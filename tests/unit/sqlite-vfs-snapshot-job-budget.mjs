@@ -99,10 +99,11 @@ async function directoryOverFile(files, async) {
   fs.mkdir('p');
   fs.writeFile('p/new', enc.encode('new'));
   fs.chmod('p', 0o700);
-  await (async ? vfs.restoreAsync('s') : vfs.restore('s'));
+  try { await (async ? vfs.restoreAsync('s') : vfs.restore('s')); }
+  catch (error) { throw new Error(`the restore itself: ${error.message}`); }
   assert.equal(fs.stat('p')?.type, 'file', `${files} files${async ? ', async' : ''}: p is a file again`);
   assert.equal(text(fs.readFile('p')), 'the file p');
-  assert.equal(fs.stat('p/new'), null);
+  assert.throws(() => fs.stat('p/new'), /ENOTDIR/, 'p/new is gone with the directory: p is a file');
   for (let i = 0; i < files; i++) assert.equal(text(fs.readFile(`f${i}`)), `before ${i}`);
   within(vfs, `${files} files`);
   h.db.close();
