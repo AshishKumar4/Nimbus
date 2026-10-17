@@ -861,7 +861,8 @@ theorem a_walk_can_hold_an_old_unfed_value :
     ∃ s, FsReach s ∧ s.W.bt ["m"] ["x"] = some (.file 2) ∧
       s.NS ["m", "x"] = some (.file 1) ∧ feed s.T [] (fun _ => []) s.W = [] := by
   let T : Table := ⟨[["m"]], fun _ => false⟩
-  let held : Walk := { tree := insertWalk (insertWalk rootOnly ["m"] .dir) ["m", "x"] (.file 1), spent := 1, limit := 1 }
+  let point : Walk := { tree := insertWalk rootOnly ["m"] .dir, limit := 1 }
+  let held : Walk := { point with tree := insertWalk point.tree ["m", "x"] (.file 1), spent := 1 }
   let W0 : World := {
     root := fun _ => none
     bt := fun _ r => if r = [] then some .dir else if r = ["x"] then some (.file 1) else none
@@ -876,10 +877,13 @@ theorem a_walk_can_hold_an_old_unfed_value :
     · intro q hq _ _; exact (hq rfl).elim
     · intro m hm hc; cases hc
   have hi : WalkInstalled T W0 := by
-    refine WalkReach.step ?_ (.observe _ ["m", "x"] (.file 1)
-      (by decide) (by decide) (by decide) (by decide) (by decide))
-    exact WalkReach.step (.start 1) (.observe _ ["m"] .dir
-      (by decide) (by decide) (by decide) (by decide) (by decide))
+    have first : WalkReach (view { T with ch := fun _ => true } W0) (structural T.pts) point := by
+      apply WalkReach.step (WalkReach.start 1)
+      exact WalkStep.observe { limit := 1 } ["m"] .dir
+        (by decide) (by decide) (by decide) (by decide) (by decide)
+    apply WalkReach.step first
+    exact WalkStep.observe point ["m", "x"] (.file 1)
+      (by decide) (by decide) (by decide) (by decide) (by decide)
   have hc : CompleteSub W0 W1 T [] (fun _ => []) := by
     refine ⟨?_, ?_, ?_⟩
     · intro q hq; exact (hq rfl).elim
