@@ -59,7 +59,7 @@ const CASES = [
   // $'...' alone reads \x{H...}: its hex digits as one byte, the brace optional at the end.
   show(String.raw`$'\x{41}' $'\x{141}' $'\x{}z' $'\x{41' $'\x{4}b'`),
   // A here-document's body is literal text, inside a parameter's default word too.
-  "unset x; cat <<EOF" + HEX + "\n${x:-$'\\t'} ${x-$'\\n'}\nEOF",
+  "unset x; cat <<EOF" + HEX + "\n${x:-$'\\t'} ${x-$'\\n'} ${x:-'a'} ${x:-\"b\"}\nEOF",
 ];
 
 // A line of its own for the status, so a here-document's delimiter ends its line.

@@ -28,8 +28,8 @@ export interface ExpandContext {
    */
   lastSubstitutionExitCode?: number;
   /**
-   * Expanding a here-document's body, where a `$'...'` is literal text,
-   * inside a parameter's default word too (bash quotes nothing there).
+   * Expanding a here-document's body, where `'` and `$'...'` are literal
+   * text, inside a parameter's operand word too.
    */
   hereDocument?: boolean;
 }
@@ -766,10 +766,11 @@ function scalarOf(parameter: Parameter, ctx: ExpandContext): string {
  */
 async function expandParameterWord(word: string, ctx: ExpandContext): Promise<string> {
   if (word === '') return '';
-  return joinPieces(await expandParts(parameterWordParts(word, ctx.hereDocument !== true), ctx));
+  return joinPieces(await expandParts(parameterWordParts(word, ctx.hereDocument === true), ctx));
 }
 
-function parameterWordParts(word: string, ansiC: boolean): WordPart[] {
+/** The operand word's parts; in a here-document's body, `'` and `$'...'` are literal there, as bash reads them. */
+function parameterWordParts(word: string, hereDocument: boolean): WordPart[] {
   const parts: WordPart[] = [];
   let text = '';
   const flush = (): void => {
@@ -792,14 +793,14 @@ function parameterWordParts(word: string, ansiC: boolean): WordPart[] {
       i += 2;
       continue;
     }
-    if (ansiC && ch === '$' && word[i + 1] === "'") {
+    if (!hereDocument && ch === '$' && word[i + 1] === "'") {
       flush();
       const quoted = readAnsiCQuote(word, i);
       parts.push({ text: quoted.text, quoted: 'single' });
       i = quoted.end;
       continue;
     }
-    if (ch === "'" || ch === '"') {
+    if ((ch === "'" && !hereDocument) || ch === '"') {
       const end = word.indexOf(ch, i + 1);
       const close = end === -1 ? word.length : end;
       flush();
