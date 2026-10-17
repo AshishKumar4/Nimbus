@@ -550,7 +550,6 @@ export function provisional(host: ProvisionalHost): Provisional {
     const record: InodeRecord = { id: ++ids, op, owner: inode, ...(description === undefined ? {} : { description }), answered: false, answeredAt: 0 };
     inode.records.push(record);
     inode.recordsCost += recordCost(record);
-    inode.state = applyOp(inode.state!, op);
     return record;
   };
 
