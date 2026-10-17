@@ -2691,6 +2691,21 @@ var __nimbusResidentModule = (() => {
         }
         if (plan.has(file.path) || wanted.has(file.path) || pushable(file.path) && (!comparable || file.rev > held.rev)) fetch.push(file);
       }
+      {
+        const listed2 = new Set(listing.entries.map((file) => file.path));
+        const planned = [...plan].filter((path) => path.includes("/src/"));
+        Reflect.set(globalThis, "__nimbusDiagSync", {
+          complete: listing.complete,
+          reason: listing.reason ?? null,
+          entries: listing.entries.length,
+          plan: plan.size,
+          current: current.size,
+          fetch: fetch.length,
+          comparable,
+          judgeable,
+          srcPlanned: planned.map((path) => path + (listed2.has(path) ? "" : " UNLISTED") + (current.has(path) ? " CURRENT" : ""))
+        });
+      }
       const heap = coherence.heap;
       const namespaceGrowth = admission.inHeap && describable && heap !== null ? Math.max(0, listing.namespaceBytes - heap.nsBytes()) : 0;
       const refused = admission.namespaceRefusal(namespaceGrowth);

@@ -1497,7 +1497,7 @@ ${VFS_CURSOR_SEED_SOURCE}
       try {
         const __stats = __resident.cells.stats();
         await __supervisor.stderr(new TextEncoder().encode("[nimbus-debug] resident boot " + JSON.stringify({
-          ms: ${REAL_NOW_SOURCE}() - __residentBootStarted, ...__stats, failure: __residentBooted.failure || null, fill: globalThis.__nimbusDiagFill || null,
+          ms: ${REAL_NOW_SOURCE}() - __residentBootStarted, ...__stats, failure: __residentBooted.failure || null, fill: globalThis.__nimbusDiagFill || null, sync: globalThis.__nimbusDiagSync || null,
         }) + "\\n"));
       } catch {}
     }

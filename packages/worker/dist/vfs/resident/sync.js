@@ -321,6 +321,15 @@ export function createSync(coherence, admission, namespace, cells, transport) {
                 || (pushable(file.path) && (!comparable || file.rev > held.rev)))
                 fetch.push(file);
         }
+        {
+            const listed = new Set(listing.entries.map((file) => file.path));
+            const planned = [...plan].filter((path) => path.includes('/src/'));
+            Reflect.set(globalThis, '__nimbusDiagSync', {
+                complete: listing.complete, reason: listing.reason ?? null, entries: listing.entries.length, plan: plan.size,
+                current: current.size, fetch: fetch.length, comparable, judgeable,
+                srcPlanned: planned.map((path) => path + (listed.has(path) ? '' : ' UNLISTED') + (current.has(path) ? ' CURRENT' : '')),
+            });
+        }
         // Reserve mandatory metadata growth while optional data is fetched, but
         // retain the existing namespace publication order across the await.
         const heap = coherence.heap;
