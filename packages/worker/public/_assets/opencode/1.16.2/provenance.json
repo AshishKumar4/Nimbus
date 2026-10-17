@@ -6,9 +6,10 @@
     "url": "https://github.com/sst/opencode",
     "inputs": {
       "packages/worker/scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
-      "packages/worker/scripts/opencode/build-node.ts": "2b3eec620758f457bf72b49269a0583c94cf9327365c9643b7df6099d88b1787",
+      "packages/worker/scripts/opencode/build-node.ts": "c2954c1f37c40cfbd06bf1b3f4f409513befc791b74c2212e96cddefbbb4d89d",
       "packages/worker/scripts/opencode/bundle-patches.ts": "091e620065cb87a938e238b5a52ebb672721e73434cfbbfc8d4ada8497649aca",
-      "packages/worker/scripts/opencode/inputs.mjs": "0dd15212e85188bd51b2970c1b0908b044aabfd4535970a4c8794fd7071db0cc",
+      "packages/worker/scripts/opencode/inputs.mjs": "665d2b30a66b0604109ce5235d593d622ce7b03520549f835e5891738c471930",
+      "packages/worker/scripts/opencode/models-catalog.mjs": "eb6652eb41c33c02a72422edf88cfd3ed69f9cddf08063becc56afe922996a95",
       "packages/worker/scripts/opencode/nimbus-defer-global-io.patch": "63caa2b2ae778a570b759fb7ec39d3c19ab8fbddbd8491aa34915eb3ae5523da",
       "packages/worker/scripts/opencode/nimbus-tree-sitter-exports.patch": "63a643a0827e88630e88614e354ddcc963937285ed7a256a8174416850841361",
       "packages/worker/scripts/opencode/stubs/bun-ffi-shim.ts": "51c25d480b4050b4291ddaf9a071224b19c1eec8a15a5b587020e4e4be062e55",
@@ -18,7 +19,7 @@
       "packages/worker/scripts/opencode/stubs/parser-worker-threads.ts": "cff7a27dafe59ab26b760db346c1f620fd50ef7d7adc28b6bc0ca2726add5c8d",
       "packages/worker/scripts/opencode/stubs/pty-stub.ts": "b169c1ff0bd8cdfbacedb36bea2eedc8fec30e09bdbcd3eb8fd2647185fa8772",
       "packages/worker/scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",
-      "scripts/ci/rebuild-opencode.mjs": "4b7f0294f2ad124136aadd335795fe48e30cec26db7ef26034a8fb609e1122cc",
+      "scripts/ci/rebuild-opencode.mjs": "d5d55f040765784dbb0345a00c06129e302b891134f58a62e8549896b9bf6337",
       "toolchain#bun": "74b860b3270666137a4d543c3e3d1e4e473d54636f7593d1c17bf693e6540bbe"
     },
     "catalogSnapshotSha256": "47762e1d6c662e747ae6dc3eff4a1684e77e63bc897728795259523ce594cb8e",
