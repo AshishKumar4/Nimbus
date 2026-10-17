@@ -1873,14 +1873,14 @@ export class SqliteVFS {
             return false;
         let run = this.appendRuns.get(node.ino);
         // A run is one caller's: another's write stores it first (writable), as its own.
-        if (run !== undefined && (run.privileged !== this.privileged || !samePrincipal(run.origin, this.activeOrigin)))
+        if (run !== undefined && (run.privileged !== this.privileged || !samePrincipal(run.origin, this.activeOrigin) || run.holds !== this.activeHolds))
             return false;
         if (offset !== (run === undefined ? node.size : run.base + run.bytes))
             return false;
         if (run === undefined) {
             if (this.refusalAt(path) !== null)
                 return false;
-            run = { ino: node.ino, path, base: node.size, parts: [], bytes: 0, admitted: 0, privileged: this.privileged, origin: this.activeOrigin, writers: new Set(), madeAt: 0, timer: null };
+            run = { ino: node.ino, path, base: node.size, parts: [], bytes: 0, admitted: 0, privileged: this.privileged, origin: this.activeOrigin, holds: this.activeHolds, writers: new Set(), madeAt: 0, timer: null };
         }
         if (run.bytes + bytes.byteLength > run.admitted) {
             try {
@@ -1928,11 +1928,12 @@ export class SqliteVFS {
                 at += part.byteLength;
             }
         }
-        const caller = { privileged: this.privileged, owner: this.activeMutationOwner, reservation: this.activeReservation, origin: this.activeOrigin };
+        const caller = { privileged: this.privileged, owner: this.activeMutationOwner, reservation: this.activeReservation, origin: this.activeOrigin, holds: this.activeHolds };
         this.privileged = run.privileged;
         this.activeMutationOwner = null;
         this.activeReservation = null;
         this.activeOrigin = run.origin;
+        this.activeHolds = run.holds;
         try {
             // Published with the time it was made, in the same transaction as its
             // bytes: a stat that stores it later must not move the file's mtime and
@@ -1950,6 +1951,7 @@ export class SqliteVFS {
             this.activeMutationOwner = caller.owner;
             this.activeReservation = caller.reservation;
             this.activeOrigin = caller.origin;
+            this.activeHolds = caller.holds;
         }
     }
     /** Write the appends held for inode `ino`, if any. */
@@ -2291,7 +2293,11 @@ export class SqliteVFS {
             access: (path, mode) => { this.checkAccess(path, mode, bound); },
             mkdir: (path, options) => this.mkdir(path, options, withUmask(bound, options?.umask)),
             writeFile: (path, content, options) => this.writeFile(path, content, options, withUmask(bound, options?.umask)),
-            writeFileFrom: (path, size, source, options) => this.spanning(() => this.writeFileFrom(path, size, source, options, bound, mutationOwner, origin), mutationOwner),
+            writeFileFrom: (path, size, source, options) => {
+                // Its caller's holds as the call begins: spanning may start it later, behind a snapshot.
+                const holds = this.activeHolds;
+                return this.spanning(() => this.writeFileFrom(path, size, source, options, bound, mutationOwner, origin, holds), mutationOwner);
+            },
             symlink: (target, path) => this.symlink(target, path, bound),
             readlink: (path) => this.readlink(path, bound),
             resolveSymlink: (path) => this.resolveSymlink(path, bound),
@@ -2324,7 +2330,8 @@ export class SqliteVFS {
             copyTreeAsync: (src, dest, options) => {
                 const owner = mutationOwner ?? options?.mutationOwner;
                 const job = this.withMutationOwner(owner, () => this.planCopyTree(src, dest, bound, options));
-                return this.spanning(() => this.copyTreeInSlices(job, owner, origin), owner);
+                const holds = this.activeHolds;
+                return this.spanning(() => this.copyTreeInSlices(job, owner, origin, holds), owner);
             },
             writeBatch: (payload) => this.writeBatch(payload, bound),
             wave: (options, work) => this.wave(mutationOwner === undefined ? options : { ...options, mutationOwner }, work, bound, origin),
@@ -5809,9 +5816,10 @@ export class SqliteVFS {
         };
         return job;
     }
-    async copyTreeInSlices(job, owner, origin = null) {
+    async copyTreeInSlices(job, owner, origin = null, holds = null) {
         const reservation = this.reserveCopy(job);
-        const run = (id) => this.asOrigin(origin, () => this.withMutationOwner(owner, () => this.withReservation(reservation, () => this.runCopyTree(job, id, JOB_SLICE_PAGES))));
+        // Each slice is its caller's, the delegations its process held as it called included, whichever turn runs it.
+        const run = (id) => this.withHolds(holds, () => this.asOrigin(origin, () => this.withMutationOwner(owner, () => this.withReservation(reservation, () => this.runCopyTree(job, id, JOB_SLICE_PAGES)))));
         try {
             let slice = run(null);
             let copied = slice.copied;
@@ -8229,18 +8237,19 @@ export class SqliteVFS {
      * file's tail on every piece, and a piece past half a transaction's blob
      * bound copies the manifest of everything before it again.
      */
-    async writeFileFrom(path, size, source, options, cred, mutationOwner, origin = null) {
+    async writeFileFrom(path, size, source, options, cred, mutationOwner, origin = null, holds = null) {
         if (!Number.isSafeInteger(size) || size < 0)
             throw vfsError('EINVAL', path, `invalid size ${size}`);
         const atMost = options?.atMost === true;
         // uid 0 may use the ledger's kernel reserve (callerView), but that view
         // only covers a call's synchronous part, and this one awaits its source:
-        // each transaction below is run with the caller's own privilege, as its call.
+        // each transaction below is run with the caller's own privilege and the
+        // delegations its process held as it called, as its call.
         const asCaller = (fn) => {
             const prior = this.privileged;
             this.privileged = cred.uid === 0;
             try {
-                return this.asOrigin(origin, () => this.withMutationOwner(mutationOwner, fn));
+                return this.withHolds(holds, () => this.asOrigin(origin, () => this.withMutationOwner(mutationOwner, fn)));
             }
             finally {
                 this.privileged = prior;

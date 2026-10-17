@@ -15,21 +15,12 @@ import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { kernelInstaller } from './lib/npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { npmRegistry } from './lib/npm-registry.mjs';
 
 const PROJ = 'app';
 const NM = `${PROJ}/node_modules`;
-
-function resolvedResult(name, version, overrides = {}) {
-  return {
-    pkg: {
-      name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
-      dependencies: {}, main: 'index.js', bin: {}, ...overrides,
-    },
-    cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-  };
-}
 
 function makeInstaller(pkgJson) {
   const harness = createSqliteVfsTestHarness(new Database(':memory:'));
@@ -39,37 +30,11 @@ function makeInstaller(pkgJson) {
   root.mkdir(NM, { recursive: true });
   root.writeFile(`${PROJ}/package.json`, JSON.stringify(pkgJson));
   const log = [];
-  // Both fanouts answer through here, on either topology: an install task is
-  // a shard of packages, a resolve task is one package.
-  const answer = (task) => {
-    if (!Array.isArray(task?.packages)) return resolvedResult(task.name, '1.0.0');
-    return {
-      perPackage: task.packages.map((p) => {
-        root.mkdir(`${NM}/${p.name}`, { recursive: true });
-        root.writeFile(`${NM}/${p.name}/package.json`, JSON.stringify({ name: p.name, version: p.version }));
-        return { name: p.name, version: p.version, fileCount: 1, bytesWritten: 40, elapsed: 1, warnings: [] };
-      }),
-      elapsed: 1,
-      facetCounters: { tarballsCompleted: 0, cumulativeBytesDecoded: 0, peakInFlight: 1, pipelinedTarballRaceWins: 0, pipelinedTarballRaceLosses: 0 },
-      cacheStatEvents: [],
-    };
-  };
-  const env = {
-    // In-DO: one entrypoint.execute per task.
-    LOADER: { get() { return { getEntrypoint: () => ({ execute: async (task) => answer(task) }) }; } },
-    NIMBUS_SESSION: {
-      idFromName(name) { return { toString: () => name, name }; },
-      idFromString(id) { return { toString: () => id, name: id }; },
-      get() {
-        return {
-          async supervisorOp(envelope) {
-            const [_fnSource, args] = envelope.args;
-            return { results: args.map((task) => ({ ok: true, value: answer(task) })) };
-          },
-        };
-      },
-    },
-  };
+  const { resultFor } = npmRegistry({
+    ...Object.fromEntries(['ok-a', 'ok-b', 'ok-c', 'ok-d', 'ok-e', 'dev-x'].map((name) => [name, { '1.0.0': {} }])),
+    puppeteer: { '24.0.0': {} },
+  });
+  const env = makeFanoutEnv({ root, NM, resultFor });
   const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
   const installer = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: (msg) => log.push(msg) });
   return { installer, log, root };

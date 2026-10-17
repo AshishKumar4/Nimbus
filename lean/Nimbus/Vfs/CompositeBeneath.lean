@@ -137,88 +137,19 @@ theorem beneath_contained (S : St) (c : Cred) (f : Bool) (R : Path) (abs : Bool)
 
 /-! ## Handed over beneath a root -/
 
-private def pick (p : Path) (best m : Mnt) : Mnt :=
-  if m.point.isPrefixOf p && best.point.length < m.point.length then m else best
-
-private theorem ownerOf_eq (ms : List Mnt) (p : Path) : ownerOf ms p = ms.foldl (pick p) ⟨[], 0⟩ := rfl
-
-private theorem foldl_pick_prefix (p : Path) :
-    ∀ (ms : List Mnt) (best : Mnt), best.point <+: p → (ms.foldl (pick p) best).point <+: p := by
-  intro ms
-  induction ms with
-  | nil => intro best h; exact h
-  | cons m ms ih =>
-    intro best h
-    apply ih
-    unfold pick
-    split
-    · rename_i hc
-      simp only [Bool.and_eq_true, decide_eq_true_eq] at hc
-      exact List.isPrefixOf_iff_prefix.mp hc.1
-    · exact h
-
-private theorem foldl_pick_mono (p : Path) :
-    ∀ (ms : List Mnt) (best : Mnt), best.point.length ≤ (ms.foldl (pick p) best).point.length := by
-  intro ms
-  induction ms with
-  | nil => intro best; exact Nat.le_refl _
-  | cons m ms ih =>
-    intro best
-    refine Nat.le_trans ?_ (ih _)
-    unfold pick
-    split
-    · rename_i hc
-      simp only [Bool.and_eq_true, decide_eq_true_eq] at hc
-      exact Nat.le_of_lt hc.2
-    · exact Nat.le_refl _
-
-private theorem foldl_pick_max (p : Path) :
-    ∀ (ms : List Mnt) (best m : Mnt), m ∈ ms → m.point <+: p →
-      m.point.length ≤ (ms.foldl (pick p) best).point.length := by
-  intro ms
-  induction ms with
-  | nil => intro _ _ hm; simp at hm
-  | cons m' ms ih =>
-    intro best m hm hp
-    simp only [List.foldl]
-    rcases List.mem_cons.mp hm with rfl | hm
-    · refine Nat.le_trans ?_ (foldl_pick_mono p ms _)
-      unfold pick
-      split
-      · exact Nat.le_refl _
-      · rename_i hc
-        have : m.point.isPrefixOf p = true := List.isPrefixOf_iff_prefix.mpr hp
-        simp only [this, Bool.true_and, decide_eq_true_eq] at hc
-        omega
-    · exact ih _ _ hm hp
-
-private theorem foldl_pick_mem (p : Path) :
-    ∀ (ms : List Mnt) (best : Mnt), ms.foldl (pick p) best = best ∨ ms.foldl (pick p) best ∈ ms := by
-  intro ms
-  induction ms with
-  | nil => intro best; exact .inl rfl
-  | cons m ms ih =>
-    intro best
-    simp only [List.foldl]
-    rcases ih (pick p best m) with h | h
-    · rw [h]; unfold pick; split
-      · exact .inr (List.mem_cons_self _ _)
-      · exact .inl rfl
-    · exact .inr (List.mem_cons_of_mem _ h)
-
 theorem ownerOf_prefix (ms : List Mnt) (p : Path) : (ownerOf ms p).point <+: p :=
-  foldl_pick_prefix p ms _ List.nil_prefix
+  (MountSelection.fold_spec (·.point) p ms (Mnt.mk [] 0) List.nil_prefix).1
 
 /-- `ownerOf` is the default root mount or one of `ms`. -/
 theorem ownerOf_mem (ms : List Mnt) (p : Path) : (ownerOf ms p).point = [] ∨ ownerOf ms p ∈ ms := by
-  rcases foldl_pick_mem p ms ⟨[], 0⟩ with h | h
-  · exact .inl (by rw [ownerOf_eq, h])
+  rcases (MountSelection.fold_spec (·.point) p ms (Mnt.mk [] 0) List.nil_prefix).2.1 with h | h
+  · exact .inl (by change (MountSelection.select (·.point) ms p (Mnt.mk [] 0)).point = []; rw [h])
   · exact .inr h
 
 /-- A mount whose point is on `p` is no deeper than the one `p` is in. -/
 theorem ownerOf_max {ms : List Mnt} {p : Path} {m : Mnt} (hm : m ∈ ms) (hp : m.point <+: p) :
     m.point.length ≤ (ownerOf ms p).point.length :=
-  foldl_pick_max p ms _ m hm hp
+  (MountSelection.fold_spec (·.point) p ms (Mnt.mk [] 0) List.nil_prefix).2.2.2 m hm hp
 
 /-- The mount `q` is in, if its point lies on `p` (`q` on the way to `p`), is a prefix of `p`'s. -/
 theorem ownerOf_prefix_of {ms : List Mnt} {q p : Path} (hq : (ownerOf ms q).point <+: p) :

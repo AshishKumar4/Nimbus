@@ -110,8 +110,14 @@ memory limit under either host: measured 2026-09-22 on staging, a
 facet-hosted process allocating 215 MB of heap objects was killed with
 "Worker exceeded memory limit" while its own session and a second session
 kept their terminals and were not reset. What resets a session is the
-session's own work: the launch-time bundle build, and a wasm engine's
-memory, which only grows. That is why every session-side transform runs in
+work done in its own isolate, which it shares, with its memory limit, with
+the other sessions the platform places there: the launch-time bundle build,
+a wasm engine's memory, which only grows, and what a facet's load holds.
+A facet's wasm images are read by path in the loader's cache-miss callback,
+and the load is admitted on the isolate's transient budget before its worker
+(`acquireSupervisorLoad`), so loads that would overlap take turns
+(measured 2026-10-16: three clang compiles at once reset the isolate
+before, at 239 MiB). That is why every session-side transform runs in
 the loader-backed transform facet on Nimbus's Oxc build
 (`packages/worker/scripts/oxc-wasm`, whose memory starts at 4.25 MiB), and
 every `EsbuildService.build()` in the build facet on rolldown's staged
@@ -127,6 +133,20 @@ unrecognised value is refused rather than defaulted. Flip it on a target with
 and read back where a process actually landed in the process log: every
 probe target, each throwaway included, is deployed with `NIMBUS_DEBUG=1`
 (`PROBE_TARGET_VARS` in `tests/behavioral/_deploy-target.mjs`).
+
+Lock order: supervisor credit, then a Dynamic Worker. Nothing waits for
+credit (SupervisorAllocationBudget acquire or acquireLoad, or growing a
+lease) while it holds a worker's fetch hold (beginLoaderFetch,
+claimAdmission, readmitRefused). While it holds one, it may give credit
+back, shrink it, or take credit without waiting (tryAcquire). Running work
+is the one exception, and comes first. Credit a running process needs (its
+write waves and the session RPCs it makes, through acquireRunning) overtakes
+every queued ask. When nothing else frees it, it reclaims parked launches'
+retained maps, oldest parked first: each is dropped, its launch is sent back
+to prepare, and the map is rebuilt at that launch's turn. Otherwise it waits
+only for credit other running work holds. A facet's load is not running
+work.
+The runtime spec's "Launch lock order" section says how each holder keeps it.
 
 The Runtime OS target and honest support matrix are tracked in
 `docs/architecture/nimbus-os-runtime-spec.md`. Keep docs and UI claims within

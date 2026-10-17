@@ -16,11 +16,10 @@ import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { registryRecord } from '../../packages/worker/src/npm/registry-record.ts';
+import { npmRegistry } from './lib/npm-registry.mjs';
 import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
-import { parseRegistryRequest } from '../../packages/core/src/_shared/npm-spec.ts';
 import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
@@ -34,12 +33,10 @@ function project() {
   root.mkdir(NM, { recursive: true });
   root.writeFile(`${PROJ}/package.json`, JSON.stringify({ name: 'app', version: '1.0.0' }));
   const crash = { at: null, when: null };
+  const { resultFor } = npmRegistry({ a: { '1.0.0': {} }, b: { '1.0.0': {} } });
   const env = makeFanoutEnv({
     root, NM,
-    resultFor: (name) => {
-      const pkg = { name, version: '1.0.0', tarballUrl: `https://registry.invalid/${name}-1.0.0.tgz`, integrity: `sha512-${name}`, dependencies: {}, main: 'index.js', bin: {} };
-      return { pkg, cacheWrites: [registryRecord(pkg, Date.now())], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
-    },
+    resultFor,
     crashFor: (p) => (p.name === crash.at ? crash.when : null),
   });
   const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
@@ -94,9 +91,11 @@ for (const [clock, touched, replacement] of [['running', false, 'slot@npm:real-b
   const realNow = Date.now;
   if (clock === 'frozen') { const at = realNow(); Date.now = () => at; }
   try {
-  const REGISTRY = { 'real-a': { d: '1.0.0' }, 'real-b': {}, d: {} };
-  // real-a@1.0.0's tarball, which the registry changes for the last case.
-  let realA = 'sha512-real-a';
+  const REGISTRY = {
+    'real-a': { '1.0.0': { dependencies: { d: '1.0.0' }, dist: { integrity: 'sha512-real-a' } } },
+    'real-b': { '1.0.0': {} }, d: { '1.0.0': {} },
+  };
+  const { resultFor } = npmRegistry(REGISTRY);
   const harness = createSqliteVfsTestHarness(new Database(':memory:'));
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
   const root = vfs.as(CRED_KERNEL);
@@ -105,11 +104,7 @@ for (const [clock, touched, replacement] of [['running', false, 'slot@npm:real-b
   const crash = { at: null, when: null };
   const env = makeFanoutEnv({
     root, NM,
-    resultFor: (name, spec) => {
-      const { registryName } = parseRegistryRequest(name, spec.range);
-      const pkg = { name, registryName, version: '1.0.0', tarballUrl: `https://registry.invalid/${registryName}-1.0.0.tgz`, integrity: registryName === 'real-a' ? realA : `sha512-${registryName}`, dependencies: REGISTRY[registryName], main: 'index.js', bin: {} };
-      return { pkg, cacheWrites: [registryRecord({ ...pkg, name: registryName }, Date.now())], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
-    },
+    resultFor,
     manifestFor: (p) => ({ name: p.tarballUrl.match(/registry\.invalid\/(.+)-1\.0\.0\.tgz/)[1], version: p.version }),
     crashFor: (p) => {
       if (p.name !== crash.at) return null;
@@ -127,8 +122,8 @@ for (const [clock, touched, replacement] of [['running', false, 'slot@npm:real-b
   assert.deepEqual(before.lock, ['d=d@1.0.0', 'slot=real-a@1.0.0']);
 
   Object.assign(crash, { at: 'slot', when: 'before' });
-  realA = 'sha512-real-a-republished';
-  const result = await installer.install(PROJ, { packages: [replacement] });
+  REGISTRY['real-a']['1.0.0'].dist.integrity = 'sha512-real-a-republished';
+  const result = await installer.install(PROJ, { packages: [replacement], cache: 'no-cache' });
   assert.deepEqual(result.failed, ['slot@1.0.0'], `${replacement} (${clock} clock${touched ? ', touched' : ''}): the replacement did not land`);
   assert.equal(JSON.parse(root.readFileString(`${NM}/slot/package.json`)).name, 'real-a', 'the copy there is the one installed before');
   assert.equal(installer.npmCache.readLockfile(PROJ).get('slot').integrity, 'sha512-real-a', 'and the lockfile says so');
@@ -150,14 +145,12 @@ for (const [when, touched] of [['after', false], ['after', true], ['before', tru
   const root = vfs.as(CRED_KERNEL);
   root.mkdir(NM, { recursive: true });
   root.writeFile(`${PROJ}/package.json`, JSON.stringify({ name: 'app', version: '1.0.0' }));
-  let integrity = 'sha512-x';
+  const REGISTRY = { x: { '1.0.0': { dist: { integrity: 'sha512-x' } } } };
+  const { resultFor } = npmRegistry(REGISTRY);
   const crash = { at: null };
   const env = makeFanoutEnv({
     root, NM,
-    resultFor: (name) => {
-      const pkg = { name, registryName: name, version: '1.0.0', tarballUrl: `https://registry.invalid/${name}-1.0.0.tgz`, integrity, dependencies: {}, main: 'index.js', bin: {} };
-      return { pkg, cacheWrites: [registryRecord(pkg, Date.now())], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
-    },
+    resultFor,
     manifestFor: (p) => ({ name: p.name, version: p.version, integrity: p.integrity }),
     crashFor: (p) => {
       if (p.name !== crash.at) return null;
@@ -170,9 +163,9 @@ for (const [when, touched] of [['after', false], ['after', true], ['before', tru
   assert.deepEqual((await installer.install(PROJ, { packages: ['x@1.0.0'] })).failed, []);
 
   // The registry's x@1.0.0 is another tarball now.
-  integrity = 'sha512-x-republished';
+  REGISTRY.x['1.0.0'].dist.integrity = 'sha512-x-republished';
   crash.at = 'x';
-  const result = await installer.install(PROJ, { packages: ['x@1.0.0'] });
+  const result = await installer.install(PROJ, { packages: ['x@1.0.0'], cache: 'no-cache' });
   const label = `${when}${touched ? ', touched' : ''}`;
   const landed = when === 'after';
   assert.deepEqual(result.failed, landed ? [] : ['x@1.0.0'], `${label}: ${landed ? 'its receipt says it landed' : 'no receipt: it did not'}`);
@@ -195,14 +188,12 @@ for (const [when, touched] of [['after', false], ['after', true], ['before', tru
   const files = new ProcessFiles(vfs);
   const mounted = new MemoryVFS({ uid: 0, gid: 0 });
   files.vfs.mount(`/${NM}/.nimbus-receipts`, mounted);
-  let integrity = 'sha512-x';
+  const REGISTRY = { x: { '1.0.0': { dist: { integrity: 'sha512-x' } } } };
+  const { resultFor } = npmRegistry(REGISTRY);
   const crash = { at: null };
   const env = makeFanoutEnv({
     root, NM,
-    resultFor: (name) => {
-      const pkg = { name, registryName: name, version: '1.0.0', tarballUrl: `https://registry.invalid/${name}-1.0.0.tgz`, integrity, dependencies: {}, main: 'index.js', bin: {} };
-      return { pkg, cacheWrites: [registryRecord(pkg, Date.now())], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
-    },
+    resultFor,
     manifestFor: (p) => ({ name: p.name, version: p.version, integrity: p.integrity }),
     crashFor: (p) => (p.name === crash.at ? 'after' : null),
     writeReceipt: (path) => mounted.writeFile(path.slice(`${NM}/.nimbus-receipts`.length), new Uint8Array(0)),
@@ -211,9 +202,9 @@ for (const [when, touched] of [['after', false], ['after', true], ['before', tru
   const installer = new NpmInstaller(files, harness.sql, { env, ctx, onProgress: () => {} });
   const install = (options) => installer.install(PROJ, { pid: 1, cred: CRED_KERNEL, ...options });
   assert.deepEqual((await install({ packages: ['x@1.0.0'] })).failed, []);
-  integrity = 'sha512-x-republished';
+  REGISTRY.x['1.0.0'].dist.integrity = 'sha512-x-republished';
   crash.at = 'x';
-  assert.deepEqual((await install({ packages: ['x@1.0.0'] })).failed, [], 'the receipt the namespace holds says it landed');
+  assert.deepEqual((await install({ packages: ['x@1.0.0'], cache: 'no-cache' })).failed, [], 'the receipt the namespace holds says it landed');
   assert.equal(installer.npmCache.readLockfile(PROJ).get('x').integrity, 'sha512-x-republished');
   assert.deepEqual(mounted.readdir('/').map(({ name }) => name), [], 'and nothing of the batch is left in the mount');
 }

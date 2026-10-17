@@ -115,7 +115,6 @@ export class WorkspaceFs {
     /** Create the file if absent, and set its times to now (touch). */
     async touch(path) { return await this.view.touch(this.resolve(path)); }
     async readFileUncached(path) { return await this.view.readFileUncached(this.resolve(path)); }
-    async readArrayBufferUncached(path) { return await this.view.readArrayBufferUncached(this.resolve(path)); }
     /** rm: a file, or with `recursive` a tree, whole or not at all; `force` makes a missing path no error. */
     async remove(path, options) { return await this.view.remove(this.entry(path, 'rm'), options); }
     /** Each entry of a directory with its own stat (links not followed). */

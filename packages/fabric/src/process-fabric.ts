@@ -76,12 +76,13 @@
 
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
+import { memberBuffer } from '@nimbus-sh/platform/worker-code.js';
 import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { SupervisorBindingProps } from './supervisor-props.js';
 import { z } from 'zod/v4';
 import type { ResponseScope, RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
-import type { ServiceStub, WorkerCode } from './vendor/types.js';
+import type { CjsModule, JsModule, ServiceStub, WorkerCode } from './vendor/types.js';
 
 /**
  * The class every generated resident runner exports. One name for every
@@ -336,18 +337,11 @@ export async function residentLoaderConfig(
     }),
   ]);
   for (const [moduleName, path] of Object.entries(spec.vfsWasmModules ?? {})) {
-    const bytes = await disk.readFile(path);
-    // The read's own buffer when it fits exactly, and only otherwise a copy.
-    // These are the largest members a spec carries — ruby's interpreter image
-    // is 34.3 MiB, esbuild's 13.3 — and an unconditional slice held both
-    // copies at once in the coordinator's 128 MiB isolate, at the one moment
-    // the module map is also resident.
-    const exact = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength;
-    resolved[moduleName] = {
-      wasm: exact
-        ? bytes.buffer as ArrayBuffer
-        : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
-    };
+    // The read's own buffer (memberBuffer): these are the largest members a
+    // spec carries — ruby's interpreter image is 34.3 MiB, esbuild's 13.3 —
+    // and an unconditional slice held both copies at once in the
+    // coordinator's isolate, at the one moment the module map is also resident.
+    resolved[moduleName] = { wasm: memberBuffer(await disk.readFile(path)) };
   }
   for (const [moduleName, path] of Object.entries(spec.vfsTextModules ?? {})) {
     resolved[moduleName] = new TextDecoder().decode(await readFacetImageBytes(disk, path));
@@ -645,7 +639,7 @@ export interface OneShotCodeSpec {
   compatibilityDate: string;
   compatibilityFlags: string[];
   mainModule: string;
-  modules: Record<string, string | { wasm: ArrayBuffer } | { cjs: string }>;
+  modules: Record<string, string | { wasm: ArrayBuffer } | CjsModule | JsModule>;
 }
 
 /**
@@ -700,6 +694,13 @@ export interface OneShotParams {
    * can see where one ends and the other begins.
    */
   onLoaded?(): void;
+  /**
+   * Called once the program's run is entered: its first call back to its
+   * host (the run's `ended`). A staged run, started in its stateless hop,
+   * which tells its host nothing more, is entered as its fetch is sent.
+   * Between onLoaded and this, the platform is starting its worker.
+   */
+  onEntered?(): void;
   /**
    * The program's network goes through its supervisor binding: the binding
    * is also its globalOutbound, so its fetch and connect reach the session,

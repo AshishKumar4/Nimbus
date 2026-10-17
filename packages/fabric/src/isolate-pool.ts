@@ -39,6 +39,7 @@ import {
   beginLoaderFetch,
   readmitRefused,
   claimAdmission,
+  suspendHeldAdmission,
   withDynamicWorkerCapNamed,
   type DynamicWorkerClaim,
   type EndLoaderFetch,
@@ -52,8 +53,16 @@ import {
   RetryExhaustedError,
   TimeoutError,
 } from './vendor/errors.js';
-import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
-import type { ModuleContent, WorkerLoader } from './vendor/types.js';
+import type { FacetBindings, FacetImage } from '@nimbus-sh/core/runtime/facet-host.js';
+import {
+  SupervisorLoadWaitError,
+  acquireSupervisorLoad,
+  reclaimableSupervisorAllocation,
+  tryAcquireSupervisorLoad,
+} from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import type { ResizableCreditLease } from '@nimbus-sh/platform/weighted-credit-pool.js';
+import { memberBuffer } from '@nimbus-sh/platform/worker-code.js';
+import type { ModuleContent, WorkerCode, WorkerLoader } from './vendor/types.js';
 import { hostWasmIdentity } from './host-wasm.js';
 
 
@@ -196,8 +205,15 @@ export interface IsolatePoolOptions {
   /**
    * WebAssembly modules to ship into the facet via the LOADER's
    * `modules` map. Map keys are module specifier paths (e.g.
-   * `'esbuild.wasm'`); values are the raw bytes, or a module the host
-   * already holds compiled.
+   * `'esbuild.wasm'`); values are images read by path (FacetImage), or a
+   * module the host already holds compiled.
+   *
+   * An image is read inside the loader's cache-miss callback, admitted on
+   * the isolate's transient budget for its size while the loader takes it
+   * (withSupervisorLoadAllocation), and let go when the callback returns: the
+   * session holds no image between loads, and none at all when a warm worker
+   * answers. Several sessions share this isolate's memory, so loads that
+   * would overlap wait their turn instead.
    *
    * Workerd registers each entry as `{ wasm }` in the worker's modules
    * map. The pool prepends a static
@@ -225,7 +241,7 @@ export interface IsolatePoolOptions {
    * its identity keys warm slots, as the bytes' fingerprint does, and its
    * size counts toward the dynamic-worker code limit.
    */
-  wasmModules?: Record<string, ArrayBuffer | WebAssembly.Module>;
+  wasmModules?: Record<string, FacetImage | WebAssembly.Module>;
 }
 
 /** Per-call override (merged with pool defaults). */
@@ -233,9 +249,9 @@ export interface IsolateCallOptions {
   timeoutMs?: number;
   retries?: number;
   /**
-   * Per-call WebAssembly modules. Merged with the pool's
+   * Per-call WebAssembly images. Merged with the pool's
    * constructor-time `wasmModules` at dispatch time and shipped via
-   * the LOADER's modules map (same `{ wasm: ArrayBuffer }` shape).
+   * the LOADER's modules map, read and admitted as they are.
    *
    * Shipping path validated empirically against prod (see
    * `WebAssembly.instantiate(bytes)` is blocked at request-time but
@@ -244,12 +260,12 @@ export interface IsolateCallOptions {
    * permitted. The bytes ride INSIDE the worker code blob; workerd
    * never crosses structured-clone, never executes user-eval.
    *
-   * Cache key impact: per-call bytes are identified as constructor
-   * bytes are (name, length, SHA-256; wasmIdentity) and folded into
-   * the loader cache key. Identical bytes on the same
-   * slot → warm reuse; different bytes → fresh isolate. The pool's
-   * `wasmHash` field captures CONSTRUCTOR-time bytes only; per-call
-   * bytes get their own fingerprint mixed into the slot id at dispatch.
+   * Cache key impact: per-call images are identified as constructor
+   * images are (name and FacetImage.identity; wasmIdentity) and folded
+   * into the loader cache key. The same image on the same slot → warm
+   * reuse; another → fresh isolate. The pool's `wasmHash` field captures
+   * CONSTRUCTOR-time images only; per-call images get their own
+   * fingerprint mixed into the slot id at dispatch.
    *
    * Naming collision rule: a per-call key MUST NOT collide with a
    * constructor-time key (after identifier sanitisation). The
@@ -258,10 +274,12 @@ export interface IsolateCallOptions {
    * invariant downstream callers rely on.
    *
    * Used by the `wasm-runner` shell command in src/runtime/
-   * wasm-runner.ts to ship user-supplied .wasm bytes from VFS into
-   * a fresh facet isolate per invocation.
+   * wasm-runner.ts to ship a user's .wasm from the VFS into a fresh
+   * facet isolate per invocation.
    */
-  wasmModules?: Record<string, ArrayBuffer>;
+  wasmModules?: Record<string, FacetImage>;
+  /** Ends the call's wait for its load to be admitted; a call already running is not stopped by it (submitRequest's request signal does that). */
+  signal?: AbortSignal;
 }
 
 /** Per-map override. */
@@ -378,9 +396,6 @@ export function assembleLoaderWorkerModuleSource(
   return lines.join('\n');
 }
 
-/** One image in a loader cache key: a host-compiled module's described identity, or bytes to digest. */
-type WasmKeyPart = string | { name: string; bytes: ArrayBuffer };
-
 /** A wasm module of the generated worker: the name it is imported by, and the identifier its import binds. */
 interface WasmEntry<W> {
   name: string;
@@ -407,19 +422,88 @@ function wasmEntry<W>(name: string, wasm: W, bound: Map<string, string>, scope: 
 }
 
 /**
+ * The loader ids with images each Durable Object's pools have most recently
+ * loaded, at most LOADED_IDS_KEPT: a dispatch to one takes no credit before
+ * its worker, for the loader answers it warm and reads nothing. One
+ * forgotten only takes credit it gives back unused.
+ */
+const loadedByCtx = new WeakMap<object, Set<string>>();
+const LOADED_IDS_KEPT = 256;
+/** `id` as the most recently loaded: insertion order is recency, the oldest dropped past LOADED_IDS_KEPT. */
+function noteLoaded(ids: Set<string>, id: string): void {
+  ids.delete(id);
+  ids.add(id);
+  for (const oldest of ids) {
+    if (ids.size <= LOADED_IDS_KEPT) break;
+    ids.delete(oldest);
+  }
+}
+function loadedIds(ctx: object): Set<string> {
+  let ids = loadedByCtx.get(ctx);
+  if (ids === undefined) loadedByCtx.set(ctx, ids = new Set());
+  return ids;
+}
+
+/**
+ * A load's images' credit, taken before its worker and not yet used: running
+ * work may reclaim it (the lock order) until the loader's callback takes it,
+ * for the load may wait for a worker, and a worker the loader answers warm
+ * never calls back.
+ */
+interface LoadCredit {
+  /** The lease, no longer reclaimable, or null if it was reclaimed or taken. */
+  take(): ResizableCreditLease | null;
+  /** Give back what is not taken. */
+  release(): void;
+}
+
+function loadCredit(lease: ResizableCreditLease): LoadCredit {
+  let held: ResizableCreditLease | null = lease;
+  const unregister = reclaimableSupervisorAllocation(() => {
+    held = null;
+    lease.release();
+  });
+  const take = (): ResizableCreditLease | null => {
+    unregister();
+    const taken = held;
+    held = null;
+    return taken;
+  };
+  return { take, release: () => take()?.release() };
+}
+
+/** The hold a refused call's readmission took for its next attempt, and the credit taken before it. */
+interface Readmission {
+  readonly admitted: EndLoaderFetch;
+  readonly credit: LoadCredit | null;
+}
+
+/**
  * The images' part of a loader cache key: '0' for none, so a pool without
  * wasm keeps one stable key, else the SHA-256 of every image's name and
- * identity. Bytes are identified by their SHA-256, never by a short hash: a
- * key two images share runs one image's module for the other. clang's ./a
- * and ./b were both 7572 bytes with equal first and last bytes, differing
- * only at offset 651, and a length+endpoints key ran ./a's module for ./b.
+ * identity. An image's identity is equal only for equal bytes
+ * (FacetImage.identity), never a guess from its size: a key two images share
+ * runs one image's module for the other. clang's ./a and ./b were both 7572
+ * bytes with equal first and last bytes, differing only at offset 651, and a
+ * length+endpoints key ran ./a's module for ./b.
  */
-async function wasmIdentity(parts: readonly WasmKeyPart[]): Promise<string> {
+async function wasmIdentity(parts: readonly string[]): Promise<string> {
   if (parts.length === 0) return '0';
-  const described = await Promise.all(parts.map(async (part) => (typeof part === 'string'
-    ? part
-    : `${part.name}:${part.bytes.byteLength}:${await sha256Hex(part.bytes)}`)));
-  return sha256Hex(described.join('|'));
+  return sha256Hex(parts.join('|'));
+}
+
+/** `entry` as its loader-key part: an image by its identity, a host-compiled module by the one its host described. */
+function wasmKeyPart(entry: WasmEntry<FacetImage | WebAssembly.Module>): string {
+  if (!(entry.wasm instanceof WebAssembly.Module)) return `${entry.name}:${entry.wasm.identity}`;
+  const identity = hostWasmIdentity(entry.wasm);
+  if (!identity) {
+    throw new BindingError(
+      `IsolatePool: wasmModules['${entry.name}'] is a WebAssembly.Module nobody described; ` +
+      'pass it through describeHostWasm (@nimbus-sh/fabric/host-wasm.js) so warm slots ' +
+      'can be keyed by it and the code limit can count it.',
+    );
+  }
+  return `${entry.name}:host:${identity.id}:${identity.bytes}`;
 }
 
 /**
@@ -475,15 +559,13 @@ export class IsolatePool {
    * insertion order so the per-import preamble we generate matches
    * across pool dispatches (cache-key stability).
    */
-  private readonly wasmModules: Array<WasmEntry<ArrayBuffer | WebAssembly.Module>>;
+  private readonly wasmModules: Array<WasmEntry<FacetImage | WebAssembly.Module>>;
   /** The identifiers wasmModules bind, each to the key that took it: a per-call module takes none of them. */
   private readonly wasmIds = new Map<string, string>();
   /** Every constructor-time wasm module, as the loader cache key names it
    *  (wasmIdentity), so a change invalidates warm slots: a compiled module
-   *  by the identity its host described, bytes by their SHA-256. Bytes are
-   *  not pinned at deploy time: an interpreter image can be read from the
-   *  filesystem. */
-  private readonly wasmKeyParts: WasmKeyPart[];
+   *  by the identity its host described, an image by its own. */
+  private readonly wasmKeyParts: string[];
   /** wasmIdentity of wasmKeyParts, digested on the first dispatch. */
   #wasmHash: Promise<string> | null = null;
   /**
@@ -546,38 +628,8 @@ export class IsolatePool {
     this.network = requireNetwork(opts.network, 'IsolatePool').forProcess(opts.processSupervisor?.pid ?? opts.supervisorPid ?? 0);
 
     // The wasm-modules table, in the order given.
-    const wasmEntries: Array<WasmEntry<ArrayBuffer | WebAssembly.Module>> = [];
-    const keyParts: WasmKeyPart[] = [];
-    if (opts.wasmModules) {
-      for (const [name, wasm] of Object.entries(opts.wasmModules)) {
-        let keyPart: WasmKeyPart;
-        if (wasm instanceof ArrayBuffer) {
-          keyPart = { name, bytes: wasm };
-        } else if (wasm instanceof WebAssembly.Module) {
-          const identity = hostWasmIdentity(wasm);
-          if (!identity) {
-            throw new BindingError(
-              `IsolatePool: wasmModules['${name}'] is a WebAssembly.Module nobody described; ` +
-              'pass it through describeHostWasm (@nimbus-sh/fabric/host-wasm.js) so warm slots ' +
-              'can be keyed by it and the code limit can count it.',
-            );
-          }
-          keyPart = `${name}:host:${identity.id}:${identity.bytes}`;
-        } else {
-          // Reached only when a caller broke the declared option type, so the
-          // value is whatever it really was rather than the union here.
-          const got = (wasm as { constructor?: { name?: string } } | null | undefined)?.constructor?.name;
-          throw new BindingError(
-            `IsolatePool: wasmModules['${name}'] must be an ArrayBuffer or a WebAssembly.Module ` +
-            `(got ${got || typeof wasm}).`,
-          );
-        }
-        wasmEntries.push(wasmEntry(name, wasm, this.wasmIds, 'pool wasmModules'));
-        keyParts.push(keyPart);
-      }
-    }
-    this.wasmModules = wasmEntries;
-    this.wasmKeyParts = keyParts;
+    this.wasmModules = Object.entries(opts.wasmModules ?? {}).map(([name, wasm]) => wasmEntry(name, wasm, this.wasmIds, 'pool wasmModules'));
+    this.wasmKeyParts = this.wasmModules.map(wasmKeyPart);
 
     const bindings: Record<string, unknown> = { ...(opts.extraBindings ?? {}) };
     this.supervisorKey = 's-none';
@@ -640,105 +692,65 @@ export class IsolatePool {
   }
 
   /**
-   * The call's own wasm modules, as entries after the pool's: bytes only,
-   * and none may bind an identifier the pool's modules bind.
+   * The call's own wasm images, as entries after the pool's: none may bind
+   * an identifier the pool's modules bind.
    *
    * Returns [] when there are no per-call entries — that's the hot
    * path (every existing pool dispatch).
    */
   #materialisePerCallWasm(
-    perCall: Record<string, ArrayBuffer> | undefined,
-  ): Array<WasmEntry<ArrayBuffer>> {
+    perCall: Record<string, FacetImage> | undefined,
+  ): Array<WasmEntry<FacetImage>> {
     if (!perCall) return [];
-    const out: Array<WasmEntry<ArrayBuffer>> = [];
     const bound = new Map(this.wasmIds);
-    for (const [name, bytes] of Object.entries(perCall)) {
-      if (!(bytes instanceof ArrayBuffer)) {
-        const got = (bytes as { constructor?: { name?: string } } | null | undefined)?.constructor?.name;
-        throw new BindingError(
-          `IsolatePool: per-call wasmModules['${name}'] must be ` +
-            `ArrayBuffer (got ${got || typeof bytes}).`,
-        );
-      }
-      out.push(wasmEntry(name, bytes, bound, 'per-call wasmModules'));
-    }
-    return out;
+    return Object.entries(perCall).map(([name, image]) => wasmEntry(name, image, bound, 'per-call wasmModules'));
   }
 
   /**
-   * Build the WorkerCode blob that the loader callback will return.
-   * Same bytes every time for a given function and slot, allowing workerd
-   * to reuse the isolate.
+   * The generated worker.js for `fnSource`: the same text every time for a
+   * given function and module table, so workerd can reuse the isolate.
    *
-   * Always prepends the ESBUILD_RUNTIME_SHIM so stringified functions that
-   * reference esbuild-emitted helpers (__name, __defProp, etc.) don't
-   * crash the facet with "__name is not defined". User preambles are
-   * appended below the shim.
+   * Each entry in `wasmModules` (constructor-time + per-call) is imported
+   * from the LOADER's modules map, which carries it as `{ wasm }`. workerd
+   * compiles each during the worker's module-load phase (eval permitted
+   * there) and the standard ESM import binding receives the resulting
+   * WebAssembly.Module, exposed on `globalThis.__NIMBUS_WASM` so the user
+   * fn can read it at request time. Per-call entries (wasm-runner's) follow
+   * the pool's; a name colliding with the pool's was refused in
+   * #materialisePerCallWasm.
    */
-  #buildCode(
-    fnSource: string,
-    perCallWasmEntries?: Array<WasmEntry<ArrayBuffer>>,
-  ) {
-    const workerOpts = {
-      compatibilityDate: CF_COMPAT_DATE,
-      compatibilityFlags: [...GUEST_COMPAT_FLAGS],
-      env: this.bindings,
-    };
-
-    // ── WASM module imports ───────────────────────────────────────────
-    // Each entry in `wasmModules` (constructor-time + per-call) is
-    // registered in the LOADER's modules map (below) as
-    // `{ wasm: ArrayBuffer }`. workerd compiles each during the
-    // worker's module-load phase (eval permitted there) and the
-    // standard ESM import binding receives the resulting
-    // WebAssembly.Module. We expose them on `globalThis.__NIMBUS_WASM`
-    // so the user fn can read them at request time without having to
-    // re-import (task expressions bind only the guest's supplied modules).
-    //
-    // Per-call entries (passed via IsolateCallOptions.wasmModules
-    // — used by the wasm-runner shell command) are appended to the same
-    // table. Naming collision with constructor entries is rejected
-    // upstream in #materialisePerCallWasm so the import block here
-    // doesn't have to deduplicate.
-    const allWasmEntries = [
-      ...this.wasmModules,
-      ...(perCallWasmEntries ?? []),
-    ];
-    const moduleSource = assembleLoaderWorkerModuleSource({
+  #workerSource(fnSource: string, entries: ReadonlyArray<WasmEntry<FacetImage | WebAssembly.Module>>): string {
+    return assembleLoaderWorkerModuleSource({
       fnSource,
       preamble: this.preamble,
-      wasmEntries: allWasmEntries,
+      wasmEntries: entries,
       hasBindings: this.bindings !== undefined,
       callBindings: this.callBindings !== undefined,
     });
+  }
 
-    // Modules map: the entry worker.js source plus any wasm modules the
-    // pool was constructed with. Workerd parses the modules map at
-    // worker-load time and resolves the static `import` statements
-    // we generated above against this map. The wasm-shape entry
-    // (`{ wasm: ArrayBuffer }`) tells workerd to compile during the
-    // module-load phase — the only phase where wasm code generation
-    // is permitted in this deploy.
-    //
-    // Per-call entries are appended after constructor entries so the
-    // map order matches the import order in the generated worker.js
-    // (matters only for human-readable diffs; workerd doesn't care).
-    const modules: Record<string, ModuleContent> = { 'worker.js': moduleSource };
-    for (const w of allWasmEntries) {
-      modules[w.name] = { wasm: w.wasm };
+  /**
+   * The WorkerCode the loader's cache-miss callback returns, built inside it:
+   * the worker and every wasm module, its images read now (memberBuffer, the
+   * read's own buffer) under an admission on the isolate's budget for their
+   * size, both let go as the callback returns. A warm worker never calls
+   * back, so it costs no read and no admission.
+   */
+  async #loadCode(source: string, entries: ReadonlyArray<WasmEntry<FacetImage | WebAssembly.Module>>): Promise<WorkerCode> {
+    const modules: Record<string, ModuleContent> = { 'worker.js': source };
+    for (const entry of entries) {
+      modules[entry.name] = { wasm: entry.wasm instanceof WebAssembly.Module ? entry.wasm : memberBuffer(await entry.wasm.read()) };
     }
-    assertModuleMapWithinCodeLimit(modules);
-
     return {
-      compatibilityDate: workerOpts.compatibilityDate,
-      compatibilityFlags: workerOpts.compatibilityFlags,
+      compatibilityDate: CF_COMPAT_DATE,
+      compatibilityFlags: [...GUEST_COMPAT_FLAGS],
       mainModule: 'worker.js',
       modules,
-      env: workerOpts.env,
+      env: this.bindings,
       // The workspace's egress when the pool works for one; else the key is
       // absent and the facet inherits the parent's network.
       ...loaderOutbound(this.network),
-    } as const;
+    };
   }
 
   /**
@@ -759,7 +771,7 @@ export class IsolatePool {
     slotIndex: number,
     invoke: (entrypoint: { execute(...args: unknown[]): Promise<unknown>; fetch(input: RequestInfo, init?: RequestInit): Promise<Response> }, attempt: number) => Promise<T>,
     resilience: ResolvedResilience,
-    perCallWasm?: Record<string, ArrayBuffer>,
+    perCallWasm?: Record<string, FacetImage>,
     signal?: AbortSignal,
     /** Collects this dispatch's tail: it settles once every execution the dispatch started has. */
     tails?: Promise<void>[],
@@ -797,19 +809,19 @@ export class IsolatePool {
     slotIndex: number,
     invoke: (entrypoint: { execute(...args: unknown[]): Promise<unknown>; fetch(input: RequestInfo, init?: RequestInit): Promise<Response> }, attempt: number) => Promise<T>,
     resilience: ResolvedResilience,
-    perCallWasm: Record<string, ArrayBuffer> | undefined,
+    perCallWasm: Record<string, FacetImage> | undefined,
     inFlight: Promise<unknown>[],
     signal?: AbortSignal,
   ): Promise<T> {
     // Per-call wasm fingerprint. Mixed into the cache key so two calls
-    // with different bytes hit different slots (no cache poisoning).
+    // with different images hit different slots (no cache poisoning).
     // For the common case (no per-call wasm) the fingerprint is '0',
-    // which is bytes-stable so warm reuse is unaffected.
+    // which is stable so warm reuse is unaffected.
     const perCallWasmEntries = this.#materialisePerCallWasm(perCallWasm);
     this.#wasmHash ??= wasmIdentity(this.wasmKeyParts);
     const [wasmHash, perCallWasmHash] = await Promise.all([
       this.#wasmHash,
-      wasmIdentity(perCallWasmEntries.map(({ name, wasm }) => ({ name, bytes: wasm }))),
+      wasmIdentity(perCallWasmEntries.map(wasmKeyPart)),
     ]);
 
     // Cache key includes the short DO id so warm isolates are scoped to
@@ -820,22 +832,63 @@ export class IsolatePool {
     const buildId = (generation: number): string =>
       `nfp:${facetLoaderKey(this.facetKind, this.tag)}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${wasmHash}:${perCallWasmHash}:${this.supervisorKey}:slot-${slotIndex}:g${generation}${this.scope ? `:${this.scope}` : ''}${this.network?.id ? `:${this.network.id}` : ''}`;
     let id = buildId(this.slotGenerations.get(slotIndex) ?? 0);
-    const code = this.#buildCode(fnSource, perCallWasmEntries);
+    const entries = [...this.wasmModules, ...perCallWasmEntries];
+    const source = this.#workerSource(fnSource, entries);
+    // What the images will weigh once read, so a map over the platform's
+    // ceiling, which can never load, is refused before anything is read or
+    // waited for.
+    const members: Record<string, ModuleContent> = { 'worker.js': source };
+    const unread: Record<string, number> = {};
+    let imageBytes = 0;
+    for (const entry of entries) {
+      if (entry.wasm instanceof WebAssembly.Module) {
+        members[entry.name] = { wasm: entry.wasm };
+      } else {
+        unread[entry.name] = entry.wasm.size;
+        imageBytes += entry.wasm.peak;
+      }
+    }
+    assertModuleMapWithinCodeLimit(members, unread);
 
     // W5 Lever 5: record the dispatch so /api/_diag/memory shows the
     // last-facet-id even on a hang or silent kill. Bounded — single
     // slot updated on every dispatch.
     try { setLastFacetId(id, slotIndex); } catch { /* best-effort */ }
 
-    // A hold the ledger already took for the next attempt, when a refused
-    // call waited on it for room; otherwise the attempt begins its own.
-    let admitted: EndLoaderFetch | undefined;
+    const loaded = loadedIds(this.ctx);
+    /**
+     * The credit a load this Durable Object's pools have not made needs, taken
+     * before any worker hold (LoadCredit): an inherited launch admission's
+     * worker is given back for the wait, and taken again once the credit is
+     * held. One it has made is answered warm and reads nothing; should the
+     * loader have dropped it, or running work reclaimed its credit, its
+     * callback takes credit without waiting, or the call ends its hold and
+     * comes back here for it.
+     */
+    const takeCredit = async (): Promise<LoadCredit | null> => {
+      if (imageBytes === 0 || loaded.has(id)) return null;
+      const resume = this.claim ? undefined : suspendHeldAdmission(this.ctx);
+      // Refused or aborted, it ends at once: the launch, its admission given back, holds no worker for it.
+      const credit = loadCredit(await acquireSupervisorLoad(`facet '${this.tag}' images`, imageBytes, signal));
+      try {
+        await resume?.(signal);
+      } catch (error) {
+        credit.release();
+        throw error;
+      }
+      return credit;
+    };
     // The hold the latest attempt ran on: a refused one is readmitted on its terms.
     let held: EndLoaderFetch | undefined;
-    const runOnce = async (): Promise<T> => {
+    /**
+     * One attempt, on the hold and credit a refused call's readmission took
+     * for it, or on its own: credit, then a worker. The credit is its own, for
+     * attempts a timeout left running overlap.
+     */
+    const runOnce = async (readmitted: Readmission | null): Promise<T> => {
       // loader.get() is synchronous from the caller's POV; the callback
-      // is only invoked on cache miss. We wrap the callback tightly so a
-      // retry doesn't rebuild workerCode — that's already stable here.
+      // is only invoked on cache miss, and builds the code then: a retry
+      // that misses again reads its images again.
       //
       // The returned `stub` is the cached worker reference. We deliberately
       // do NOT dispose it: loader.get() is designed for warm-slot reuse
@@ -858,15 +911,31 @@ export class IsolatePool {
       // binding stub once the whole pool is done, which does NOT
       // invalidate any in-flight slot's entrypoint reference.
       //
-      // The hold comes first, so it ends whatever setup throws: a retry's
-      // was taken when the ledger let it in.
+      // Lock order (acquireSupervisorLoad): credit, then a worker.
+      const credit = readmitted ? readmitted.credit : await takeCredit();
+      let lacking = false;
+      try {
+      // The hold comes first among what remains, so it ends whatever setup
+      // throws: a readmitted one was taken when the ledger let it in.
       // Inside an admitted launch (a child's python, ruby or wasm runtime
       // dispatching here), the first dispatch is the launch's own worker.
-      const endFetch = admitted ?? (this.claim ? undefined : claimAdmission(this.ctx)) ?? beginLoaderFetch(this.ctx, id, this.claim);
-      admitted = undefined;
+      const endFetch = readmitted?.admitted ?? (this.claim ? undefined : claimAdmission(this.ctx)) ?? beginLoaderFetch(this.ctx, id, this.claim);
       held = endFetch;
       try {
-        const stub = this.loader.get(id, async () => applyFacetLimits(this.facetKind, code));
+        const stub = this.loader.get(id, async () => {
+          const lease = imageBytes === 0 ? null : credit?.take() ?? tryAcquireSupervisorLoad(imageBytes);
+          if (imageBytes > 0 && lease === null) {
+            lacking = true;
+            throw new Error(`IsolatePool(${this.tag}): its images' credit is not free while it holds a worker`);
+          }
+          try {
+            const code = applyFacetLimits(this.facetKind, await this.#loadCode(source, entries));
+            if (imageBytes > 0) noteLoaded(loaded, id);
+            return code;
+          } finally {
+            lease?.release();
+          }
+        });
         const entrypoint = stub.getEntrypoint(undefined, { limits: facetLimits(this.facetKind) });
         // Direct property call, awaited by this frame — bracketed, never
         // wrapped. See beginLoaderFetch for the measured DO-poisoning hazard.
@@ -874,12 +943,20 @@ export class IsolatePool {
       } catch (err) {
         // The ledger learns a limit refusal from the hold it ends.
         endFetch(err);
+        // A load the loader dropped, whose credit was not free: its hold ended, it waits for credit as a new load does.
+        if (lacking) {
+          loaded.delete(id);
+          return await runOnce(null);
+        }
         if (err instanceof Error) {
           throw new ExecutionError(err.message, err.stack);
         }
         throw new ExecutionError(String(err));
       } finally {
         endFetch();
+      }
+      } finally {
+        credit?.release();
       }
     };
 
@@ -889,7 +966,11 @@ export class IsolatePool {
     // When the platform first refused this call (readmitRefused).
     let firstRefusal: number | undefined;
     let attempt = 0;
+    // What a refused call's readmission took for the next attempt.
+    let readmitted: Readmission | null = null;
     while (attempt < maxAttempts) {
+      const taken = readmitted;
+      readmitted = null;
       try {
         if (resilience.timeoutMs > 0) {
           // Race runOnce() against a settable timer. CRITICAL: clear
@@ -908,7 +989,7 @@ export class IsolatePool {
           // See plan in close-plan-2026-04-28.
           let timerId: ReturnType<typeof setTimeout> | undefined;
           try {
-            const attemptPromise = runOnce();
+            const attemptPromise = runOnce(taken);
             inFlight.push(attemptPromise);
             return await Promise.race([
               attemptPromise,
@@ -923,10 +1004,11 @@ export class IsolatePool {
             if (timerId !== undefined) clearTimeout(timerId);
           }
         }
-        const attemptPromise = runOnce();
+        const attemptPromise = runOnce(taken);
         inFlight.push(attemptPromise);
         return await attemptPromise;
       } catch (err) {
+        if (err instanceof SupervisorLoadWaitError) throw err;
         lastError = err instanceof Error ? err : new Error(String(err));
         const cause = classifyError(lastError);
         // W5 Lever 5: classify + record. We push on EVERY failed
@@ -973,8 +1055,18 @@ export class IsolatePool {
           // The platform refused to start this call: nothing ran, so it is
           // sent again, without spending an attempt, once the ledger lets it in.
           firstRefusal ??= Date.now();
-          admitted = await readmitRefused(held, { since: firstRefusal, signal });
-          if (admitted) continue;
+          // Credit before the worker the readmission holds.
+          const credit = await takeCredit();
+          let admitted: EndLoaderFetch | undefined;
+          try {
+            admitted = await readmitRefused(held, { since: firstRefusal, signal });
+          } finally {
+            if (!admitted) credit?.release();
+          }
+          if (admitted) {
+            readmitted = { admitted, credit };
+            continue;
+          }
           // The caller aborted while waiting: surface its abort as above.
           if (signal?.aborted) throw lastError;
         }
@@ -1021,6 +1113,7 @@ export class IsolatePool {
         (entrypoint) => this.#execute(entrypoint, arg) as Promise<Awaited<R>>,
         resilience,
         opts?.wasmModules,
+        opts?.signal,
       ));
     } catch (error) {
       throw this.#ended(error);
@@ -1034,7 +1127,8 @@ export class IsolatePool {
    * sent, the session cannot know.
    */
   #ended(error: unknown): unknown {
-    return this.writerPid === undefined ? error : unsettledEnd(error);
+    // A load refused before it ran wrote nothing.
+    return this.writerPid === undefined || error instanceof SupervisorLoadWaitError ? error : unsettledEnd(error);
   }
 
   /**
@@ -1073,7 +1167,7 @@ export class IsolatePool {
         (entrypoint) => entrypoint.fetch(request.clone()),
         resilience,
         opts?.wasmModules,
-        request.signal,
+        opts?.signal ? AbortSignal.any([request.signal, opts.signal]) : request.signal,
       );
     } catch (error) {
       throw this.#ended(error);
@@ -1153,7 +1247,7 @@ export class IsolatePool {
             (entrypoint) => this.#execute(entrypoint, items[idx]),
             resilience,
             opts?.wasmModules,
-            undefined,
+            opts?.signal,
             tails,
           )) as Awaited<R>;
           settled[idx] = { ok: true, value };

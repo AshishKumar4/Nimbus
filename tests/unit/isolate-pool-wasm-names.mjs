@@ -12,6 +12,7 @@ import { BindingError } from '../../packages/fabric/src/vendor/errors.ts';
 import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 import { parseJavaScriptModule } from '../../packages/core/src/runtime/javascript-ast.ts';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
+import { heldImage } from './lib/held-image.mjs';
 
 const ctx = {
   id: { toString: () => 'wasm-names-test-do' },
@@ -19,7 +20,7 @@ const ctx = {
 };
 
 /** The smallest valid module: the magic number and version 1. */
-const image = () => new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]).buffer;
+const image = () => heldImage(new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]));
 
 function pool(constructorWasm, built) {
   const env = {

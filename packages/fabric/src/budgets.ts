@@ -835,7 +835,10 @@ export function suspendLaunchAdmission(ctx: object, pid?: number): ((signal?: Ab
       throw new Error('Nimbus: a finished launch cannot regain its admission');
     }
     admission.end = hold;
-  })();
+  })().catch((error) => {
+    resumed = undefined;
+    throw error;
+  });
 }
 
 /**
@@ -860,6 +863,17 @@ export function beginAdmittedFetch(ctx: object): EndLoaderFetch | undefined {
  * ledger. The hold counts for `pid` too, the process whose state says
  * whether the worker can be given back (see setProcessBlocked).
  */
+/**
+ * suspendLaunchAdmission where the current launch's admission holds its worker
+ * unclaimed, so a wait for credit inside it holds no worker (the lock order:
+ * credit, then a worker); undefined where it holds none to give back.
+ */
+export function suspendHeldAdmission(ctx: object): ((signal?: AbortSignal) => Promise<void>) | undefined {
+  const admission = launchAdmission.getStore();
+  if (admission?.ctx !== ctx || admission.end === undefined || admission.claimed || admission.closed) return undefined;
+  return suspendLaunchAdmission(ctx);
+}
+
 export function claimAdmission(ctx: object, pid?: number): EndLoaderFetch | undefined {
   const admission = launchAdmission.getStore();
   if (admission?.ctx !== ctx || admission.end === undefined || admission.claimed) return undefined;
@@ -1064,18 +1078,22 @@ export const DYNAMIC_WORKER_CODE_LIMIT_BYTES = 67_108_864;
  * text the generators emit and undercount otherwise; the platform's own
  * refusal still backstops the exotic case, because this check exists to name
  * members, not to be the ceiling. Over it: exact UTF-8 sizes, computed only
- * then, sorted so the biggest lever is first.
+ * then, sorted so the biggest lever is first. `unread` are members not read
+ * yet (a facet's wasm images, by the size they were opened at), so a map that
+ * can never load is refused before its images are read.
  */
-export function assertModuleMapWithinCodeLimit(modules: Record<string, unknown>): void {
+export function assertModuleMapWithinCodeLimit(modules: Record<string, unknown>, unread: Record<string, number> = {}): void {
   let estimate = 0;
   for (const content of Object.values(modules)) {
     estimate += memberBytes(content, false);
   }
+  for (const bytes of Object.values(unread)) estimate += bytes;
   if (estimate <= DYNAMIC_WORKER_CODE_LIMIT_BYTES) return;
 
-  const sized = Object.entries(modules)
-    .map(([name, content]) => ({ name, bytes: memberBytes(content, true) }))
-    .sort((a, b) => b.bytes - a.bytes);
+  const sized = [
+    ...Object.entries(modules).map(([name, content]) => ({ name, bytes: memberBytes(content, true) })),
+    ...Object.entries(unread).map(([name, bytes]) => ({ name, bytes })),
+  ].sort((a, b) => b.bytes - a.bytes);
   const total = sized.reduce((sum, member) => sum + member.bytes, 0);
   const top = sized.slice(0, 5)
     .map(({ name, bytes }) => `'${name}' (${bytes.toLocaleString('en-US')} bytes)`)

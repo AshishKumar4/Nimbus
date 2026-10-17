@@ -58,9 +58,6 @@ function makeHandler(files, { nodeCommandLine = false } = {}) {
         async transformMany(requests) {
           return requests.map(({ code, options }) => {
             transforms.push({ code, opts: options });
-            if (code.includes('enum ')) {
-              return { error: 'x', typescript: { code: 'ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX', message: 'enum', filename: options.sourcefile, startLine: 1, snippet: 'enum E {}' } };
-            }
             const stripped = code.replace(/: number/g, (types) => ' '.repeat(types.length));
             return { code: stripped, map: '', warnings: [], ...(/\b(import|export)\b/.test(code) ? { esModule: 'node' } : {}) };
           });
@@ -115,7 +112,7 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
   assert.equal(r.exitCode, 0, r.stderr);
   assert.equal(r.transforms.length, 0, 'a CommonJS bin must not be rewritten');
   assert.equal(r.opts.esModule, undefined);
-  assert.match(r.code, /require\('\.\.\/lib\/tsc\.js'\)/);
+  assert.equal(r.code, CJS_SOURCE.slice(CJS_SOURCE.indexOf('\n') + 1));
 }
 
 // ── the nearest package.json wins, not an ancestor ──
@@ -194,7 +191,7 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
   assert.equal(r.exitCode, 0, r.stderr);
   assert.equal(r.transforms.length, 0, 'the shim is no package\'s: CommonJS, untransformed');
   assert.equal(r.opts.esModule, undefined);
-  assert.match(r.code, /require\("\/home\/user\/node_modules\/genpkg\/bin\/genpkg"\)/);
+  assert.equal(r.code, shim);
 }
 
 // ── a dotfile entry has no extension; its package type decides ──
@@ -242,8 +239,8 @@ for (const [entry, source] of [
 // ── Under node, TypeScript is Node's: stripped, then run as JavaScript of Node's format ──
 //
 // The strip is a request of its own; an ES module's stripped code reaches
-// the runner natively, CommonJS runs as stripped, and a file Node
-// refuses is code that throws Node's error.
+// the runner natively and CommonJS runs as stripped. Refusals execute in
+// typescript-matches-node-workerd.mjs's direct-entry differential.
 {
   const node = { nodeCommandLine: true };
   const esm = await runScript({ 'home/user/main.mts': 'export const x: number = 1;\n' }, '/home/user/main.mts', node);
@@ -256,11 +253,8 @@ for (const [entry, source] of [
   assert.equal(cjs.transforms.length, 1, 'only the strip');
   assert.equal(cjs.code, `const x${' '.repeat(': number'.length)} = 1;\nmodule.exports = x;\n`, 'CommonJS runs as stripped');
   assert.equal(cjs.opts.esModule, undefined);
-  const refused = await runScript({ 'home/user/main.ts': 'enum E {}\n' }, '/home/user/main.ts', node);
-  assert.match(refused.code, /__nimbusNodeError\(SyntaxError, "ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX"/, 'a refused file throws Node\'s error');
   const vendored = await runScript({ 'home/user/node_modules/x/main.ts': 'const x: number = 1;\n' }, '/home/user/node_modules/x/main.ts', node);
-  assert.equal(vendored.transforms.length, 0, 'TypeScript under node_modules is not stripped');
-  assert.match(vendored.code, /ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING/);
+  assert.equal(vendored.transforms.length, 0, 'TypeScript under node_modules is refused before requesting a transform');
 }
 
 // ── ES eval and stdin programs reach the runner exactly as written ──

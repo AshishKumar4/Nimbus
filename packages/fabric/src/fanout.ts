@@ -156,11 +156,6 @@ export interface FanoutOptions {
    */
   preamble?: string;
   /**
-   * Wasm modules forwarded to every facet. Same semantics as
-   * IsolatePool's wasmModules option.
-   */
-  wasmModules?: Record<string, ArrayBuffer>;
-  /**
    * Extra bindings forwarded to every facet. Same semantics as
    * IsolatePool's extraBindings option.
    */
@@ -347,7 +342,6 @@ export class Fanout {
       timeoutMs: this.opts.timeoutMs,
       tag: this.opts.tag,
       preamble: this.opts.preamble,
-      wasmModules: this.opts.wasmModules,
       extraBindings: this.opts.extraBindings,
       omitSupervisor: this.opts.omitSupervisor,
       supervisorPid: this.opts.supervisorPid,
@@ -430,7 +424,6 @@ export class Fanout {
               tag: this.opts.tag,
               timeoutMs: this.opts.timeoutMs,
               preamble: this.opts.preamble,
-              wasmModules: this.opts.wasmModules,
               extraBindings: this.opts.extraBindings,
               omitSupervisor: this.opts.omitSupervisor,
               // The invoking process's egress: the peer's facets go out through it too.
@@ -535,7 +528,6 @@ export interface FanoutShardOptions {
   tag?: string;
   timeoutMs?: number;
   preamble?: string;
-  wasmModules?: Record<string, ArrayBuffer>;
   extraBindings?: Record<string, unknown>;
   omitSupervisor?: boolean;
   /**
@@ -593,7 +585,6 @@ export async function executeFanoutShard(
     timeoutMs: opts.timeoutMs,
     tag: opts.tag ?? 'fanout-peer',
     preamble: opts.preamble,
-    wasmModules: opts.wasmModules,
     extraBindings: opts.extraBindings,
     omitSupervisor: opts.omitSupervisor,
     // INSTALL-HONESTY: SUPERVISOR.* routes back to the coordinator (the

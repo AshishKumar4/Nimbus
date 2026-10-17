@@ -60,7 +60,7 @@
     },
     "packages/cli": {
       "name": "@nimbus-sh/cli",
-      "version": "0.2.7",
+      "version": "0.2.8",
       "bin": {
         "cli": "dist/bin.js",
         "nimbus": "dist/bin.js",
@@ -97,9 +97,9 @@
     },
     "packages/core": {
       "name": "@nimbus-sh/core",
-      "version": "0.22.0",
+      "version": "0.23.0",
       "dependencies": {
-        "@nimbus-sh/platform": "^0.11.0",
+        "@nimbus-sh/platform": "^0.12.0",
         "@npmcli/config": "9.0.0",
         "@renovatebot/pep440": "^5.0.0",
         "acorn": "^8.15.0",
@@ -139,10 +139,10 @@
     },
     "packages/fabric": {
       "name": "@nimbus-sh/fabric",
-      "version": "0.17.0",
+      "version": "0.18.0",
       "dependencies": {
-        "@nimbus-sh/core": "^0.22.0",
-        "@nimbus-sh/platform": "^0.11.0",
+        "@nimbus-sh/core": "^0.23.0",
+        "@nimbus-sh/platform": "^0.12.0",
         "zod": "^4.4.3",
       },
       "devDependencies": {
@@ -166,7 +166,7 @@
     },
     "packages/platform": {
       "name": "@nimbus-sh/platform",
-      "version": "0.11.0",
+      "version": "0.12.0",
       "devDependencies": {
         "@cloudflare/workers-types": "^5.20260928.1",
         "typescript": "^5.7.0",
@@ -176,43 +176,43 @@
       "name": "@nimbus-sh/react",
       "version": "0.3.3",
       "devDependencies": {
-        "@nimbus-sh/sdk": "^0.16.0",
+        "@nimbus-sh/sdk": "^0.17.0",
         "@types/react": "^19.0.0",
         "typescript": "^5.7.0",
       },
       "peerDependencies": {
-        "@nimbus-sh/sdk": "^0.16.0",
+        "@nimbus-sh/sdk": "^0.17.0",
         "react": ">=18.0.0",
       },
     },
     "packages/sdk": {
       "name": "@nimbus-sh/sdk",
-      "version": "0.16.0",
+      "version": "0.17.0",
       "dependencies": {
         "@nimbus-sh/config": "^0.3.1",
-        "@nimbus-sh/core": "^0.22.0",
-        "@nimbus-sh/platform": "^0.11.0",
+        "@nimbus-sh/core": "^0.23.0",
+        "@nimbus-sh/platform": "^0.12.0",
         "zod": "^4.4.3",
       },
       "devDependencies": {
         "@cloudflare/workers-types": "^5.20260928.1",
-        "@nimbus-sh/worker": "^0.20.0",
+        "@nimbus-sh/worker": "^0.21.0",
         "typescript": "^5.7.0",
       },
       "peerDependencies": {
-        "@nimbus-sh/core": "^0.22.0",
-        "@nimbus-sh/worker": "^0.20.0",
+        "@nimbus-sh/core": "^0.23.0",
+        "@nimbus-sh/worker": "^0.21.0",
       },
     },
     "packages/worker": {
       "name": "@nimbus-sh/worker",
-      "version": "0.20.0",
+      "version": "0.21.0",
       "dependencies": {
         "@ai-sdk/openai-compatible": "^2.0.41",
         "@nimbus-sh/config": "^0.3.1",
-        "@nimbus-sh/core": "^0.22.0",
-        "@nimbus-sh/fabric": "^0.17.0",
-        "@nimbus-sh/platform": "^0.11.0",
+        "@nimbus-sh/core": "^0.23.0",
+        "@nimbus-sh/fabric": "^0.18.0",
+        "@nimbus-sh/platform": "^0.12.0",
         "@renovatebot/pep440": "^5.0.0",
         "ai": "^6.0.182",
         "clean-git-ref": "^2.0.1",

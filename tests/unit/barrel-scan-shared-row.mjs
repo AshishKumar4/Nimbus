@@ -26,10 +26,11 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ViteDevServer } from '../../packages/worker/src/facets/vite-dev-server.ts';
 import { NpmCache } from '../../packages/worker/src/npm/cache.ts';
-import { kernelInstaller } from './lib/npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 import { freshFacetClass, releaseBuildFacetHarness } from './lib/build-facet-harness.mjs';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { npmRegistry } from './lib/npm-registry.mjs';
 
 const ICONS = 1501;
 const harness = createSqliteVfsTestHarness(new Database(':memory:'));
@@ -51,22 +52,8 @@ for (let n = 0; n < ICONS; n++) {
 }
 write('app/node_modules/big-icons/index.js', index.join('\n') + '\n');
 
-const resolved = {
-  pkg: {
-    name: 'big-icons', version: '1.0.0', tarballUrl: 'https://registry.invalid/big-icons-1.0.0.tgz', integrity: 'sha512-fixture',
-    dependencies: {}, main: 'index.js', bin: {},
-  },
-  cacheWrites: [], messages: [], events: [],
-  packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-};
-const env = {
-  LOADER: { get() { return { getEntrypoint: () => ({ execute: async () => resolved }) }; } },
-  NIMBUS_SESSION: {
-    idFromName: (name) => ({ toString: () => name, name }),
-    idFromString: (id) => ({ toString: () => id, name: id }),
-    get: () => ({ supervisorOp: async (envelope) => ({ results: envelope.args[1].map(() => ({ ok: true, value: resolved })) }) }),
-  },
-};
+const { resultFor } = npmRegistry({ 'big-icons': { '1.0.0': {} } });
+const env = makeFanoutEnv({ root, NM: 'app/node_modules', resultFor });
 
 const scratch = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'barrel-scan-shared-row-'));
 const cache = new NpmCache(harness.sql);

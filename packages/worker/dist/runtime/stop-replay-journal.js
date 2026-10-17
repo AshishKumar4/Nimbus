@@ -120,8 +120,8 @@ export class ReplayJournal {
     /** Why the current run cannot be replayed: the first thing it did outside itself, or a bound. */
     disqualified = null;
     bodies = new Map();
-    /** Protocol replies are also digested; their replay is owned by the input/output tapes. */
-    protocolReplies = [];
+    /** Protocol replies are bounded here; their replay is owned by the input/output tapes. */
+    protocolReplies = 0;
     diverged = null;
     expected = null;
     expectedCompleted = 0;
@@ -245,7 +245,7 @@ export class ReplayJournal {
         this.completions = 0;
         this.disqualified = null;
         this.bodies.clear();
-        this.protocolReplies = [];
+        this.protocolReplies = 0;
     }
     /** The process ended: nothing more is answered or held. */
     close() {
@@ -305,7 +305,7 @@ export class ReplayJournal {
                 prep.pending = false;
                 if (prep.at >= reply.size || prep.remaining === 0)
                     this.preparation = null;
-                this.protocolReplies.push(op + ' ' + answerDigest(value));
+                this.protocolReplies++;
                 return value;
             }, (error) => { prep.pending = false; throw error; });
         }
@@ -320,10 +320,10 @@ export class ReplayJournal {
                     if (unsupported)
                         this.disqualify(`${op} delivered ${unsupported}, which the stdin tape cannot replay`);
                 }
-                if (this.protocolReplies.length >= REPLAY_JOURNAL_MAX_ENTRIES)
+                if (this.protocolReplies >= REPLAY_JOURNAL_MAX_ENTRIES)
                     this.disqualify('received too many protocol replies');
                 else
-                    this.protocolReplies.push(op + ' ' + answerDigest(value));
+                    this.protocolReplies++;
                 return value;
             }, (error) => { this.disqualify(describeCall(op, args) + ' failed: ' + String(error)); throw error; });
         }

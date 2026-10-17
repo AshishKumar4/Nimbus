@@ -197,26 +197,24 @@ theorem fork_child_fresh (s : St) (i k : Nat) (hp : (s.procs i).st = .parkW ∨ 
   rw [if_pos ⟨hp, hk, hu, hki⟩]
   split <;> simp [setProc, upd, hki]
 
-/-! ## (1) accounting and (4) the budget -/
+/-! ## (1) accounting -/
 
 /-- A pipe's books: every accepted byte is read, in flight, discarded when its last
-    reader closed, or lost; under the approved rules nothing is lost; the bytes in
-    flight stay within the budget. -/
-def Books (R : Rules) (B : Nat) (pp : Pipe) : Prop :=
-  pp.acc = pp.rd + pp.q + pp.drop + pp.lost ∧ (R.heldKill = false → R.forkDrops = false → pp.lost = 0) ∧
-    (R.heldKill = false → R.globalBudget = false → pp.q ≤ B)
+    reader closed, or lost; under the approved rules nothing is lost. -/
+def Books (R : Rules) (pp : Pipe) : Prop :=
+  pp.acc = pp.rd + pp.q + pp.drop + pp.lost ∧ (R.heldKill = false → R.forkDrops = false → pp.lost = 0)
 
-def AllBooks (s : St) : Prop := ∀ p, Books R s.B (s.pipes p)
+def AllBooks (s : St) : Prop := ∀ p, Books R (s.pipes p)
 
 theorem books_settle {s : St} (h : AllBooks R s) : AllBooks R (settle s) := by
   intro p
   simp only [settle]
   split
-  · obtain ⟨h1, h2, h3⟩ := h p
-    exact ⟨by simp only at h1 ⊢; omega, h2, fun _ _ => Nat.zero_le _⟩
+  · obtain ⟨h1, h2⟩ := h p
+    exact ⟨by simp only at h1 ⊢; omega, h2⟩
   · exact h p
 
-theorem books_upd {s : St} (h : AllBooks R s) {p : Nat} {pp : Pipe} (hp : Books R s.B pp) :
+theorem books_upd {s : St} (h : AllBooks R s) {p : Nat} {pp : Pipe} (hp : Books R pp) :
     AllBooks R { s with pipes := upd s.pipes p pp } := by
   intro q
   by_cases e : q = p
@@ -254,10 +252,8 @@ theorem books_core (s : St) (i : Nat) (h : AllBooks R s) : AllBooks R (execCore 
       by_cases c5 : accepts R s (s.procs i) p n = true
       · simp only [c5, if_true]
         apply books_procs R (books_upd R h _)
-        obtain ⟨h1, h2, h3⟩ := h p
-        refine ⟨by simp only at h1 ⊢; omega, h2, fun hk hg => ?_⟩
-        simp only [accepts, hg, Bool.false_eq_true, if_false, Bool.and_eq_true, decide_eq_true_eq] at c5
-        simp only; omega
+        obtain ⟨h1, h2⟩ := h p
+        exact ⟨by simp only at h1 ⊢; omega, h2⟩
       simp only [c5, Bool.false_eq_true, if_false]
       split
       · exact hs _
@@ -272,9 +268,8 @@ theorem books_core (s : St) (i : Nat) (h : AllBooks R s) : AllBooks R (execCore 
       by_cases c2 : 0 < (s.pipes p).q
       · simp only [c2, if_true]
         apply books_procs R (books_upd R h _)
-        obtain ⟨h1, h2, h3⟩ := h p
-        refine ⟨by simp only at h1 ⊢; have := Nat.min_le_right n (s.pipes p).q; omega, h2, fun hk hg => ?_⟩
-        simp only; have := h3 hk hg; omega
+        obtain ⟨h1, h2⟩ := h p
+        exact ⟨by simp only at h1 ⊢; have := Nat.min_le_right n (s.pipes p).q; omega, h2⟩
       simp only [c2, if_false]
       by_cases c3 : ws s p = 0
       · simp only [c3, if_true]; exact hs _
@@ -301,13 +296,13 @@ theorem books_core (s : St) (i : Nat) (h : AllBooks R s) : AllBooks R (execCore 
         split
         · rename_i p hf
           apply books_finish R (books_upd R h _)
-          obtain ⟨h1, h2, h3⟩ := h p
+          obtain ⟨h1, h2⟩ := h p
           have hC : s.C < (s.pipes p).q := by
             have := List.find?_some hf
             simp only [Bool.and_eq_true, decide_eq_true_eq] at this
             exact this.1.2
-          refine ⟨by simp only at h1 ⊢; omega, fun hk' => ?_, fun hk' => ?_⟩ <;>
-            (simp only [hk', Bool.false_and, Bool.false_eq_true] at hk)
+          refine ⟨by simp only at h1 ⊢; omega, fun hk' => ?_⟩
+          simp only [hk', Bool.false_and, Bool.false_eq_true] at hk
         · exact books_finish R h _ _
       · exact books_finish R h _ _
 
@@ -324,12 +319,12 @@ theorem books_step (s : St) (e : Ev) (h : AllBooks R s) : AllBooks R (step R s e
     · split
       · rename_i p n rest _ _ _
         intro q
-        show Books R s.B (upd s.pipes p _ q)
+        show Books R (upd s.pipes p _ q)
         by_cases e : q = p
         · subst e
           rw [upd_same]
-          obtain ⟨h1, h2, h3⟩ := h q
-          refine ⟨?_, fun _ hf => by simp_all, fun hk hg => h3 hk hg⟩
+          obtain ⟨h1, h2⟩ := h q
+          refine ⟨?_, fun _ hf => by simp_all⟩
           simp only [setProc_pipes]
           omega
         · rw [upd_ne _ _ e]; exact h q
@@ -355,22 +350,31 @@ theorem step_B (s : St) (e : Ev) : (step R s e).B = s.B := by
 
 theorem books {s : St} (h : Reach R s) : AllBooks R s := by
   induction h with
-  | init c => intro p; exact ⟨rfl, fun _ _ => rfl, fun _ _ => Nat.zero_le _⟩
-  | step e _ ih =>
-    have := books_step R _ e ih
-    intro p; have h := this p; rw [step_B] at h ⊢; exact h
+  | init c => intro p; exact ⟨rfl, fun _ _ => rfl⟩
+  | step e _ ih => exact books_step R _ e ih
 
 /-- (1) Every byte a writer handed over is read, still in flight, or was discarded when
     its pipe's last reader closed; none is lost. -/
 theorem accounting (hR : R = Rules.ok) {s : St} (h : Reach R s) (p : Nat) :
     (s.pipes p).acc = (s.pipes p).rd + (s.pipes p).q + (s.pipes p).drop ∧ (s.pipes p).lost = 0 := by
-  obtain ⟨h1, h2, _⟩ := books R h p
+  obtain ⟨h1, h2⟩ := books R h p
   have := h2 (by subst hR; rfl) (by subst hR; rfl)
   exact ⟨by omega, this⟩
 
-/-- (4) A pipe never holds more than the budget. -/
-theorem budget (hR : R = Rules.ok) {s : St} (h : Reach R s) (p : Nat) : (s.pipes p).q ≤ s.B :=
-  (books R h p).2.2 (by subst hR; rfl) (by subst hR; rfl)
+/-! ## (4) Host-specific write admission, not a hard bound on queued bytes -/
+
+theorem local_write_budget (hR : R.globalBudget = false) (s : St) (pr : Proc) (p n : Nat)
+    (hm : pr.mode ≠ .jspi) (hq : (s.pipes p).q ≠ 0) (h : accepts R s pr p n = true) :
+    (s.pipes p).q + n ≤ s.B := by
+  simpa [accepts, hm, hR, hq] using h
+
+theorem local_empty_write (hR : R.globalBudget = false) (s : St) (pr : Proc) (p n : Nat)
+    (hm : pr.mode ≠ .jspi) (hq : (s.pipes p).q = 0) : accepts R s pr p n = true := by
+  simp [accepts, hm, hR, hq]
+
+theorem jspi_write_capacity (s : St) (pr : Proc) (p n : Nat) (hm : pr.mode = .jspi) :
+    accepts R s pr p n = true ↔ (s.pipes p).q < s.C := by
+  simp [accepts, hm]
 
 /-- Discarding happens only to a pipe whose last read end is gone. -/
 theorem drop_only_readerless (s : St) (p : Nat) (h : (s.pipes p).drop < ((settle s).pipes p).drop) : rs s p = 0 := by

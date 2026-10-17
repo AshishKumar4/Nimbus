@@ -32,6 +32,7 @@ import {
 } from '../runtime/process-logs-api.js';
 import { readDiagCounters } from '@nimbus-sh/platform/diag-counters.js';
 import { readSupervisorAllocationBudget } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import { readIsolateId } from './diag.js';
 import {
   getFailures, getLastRpcFrame, getLastFacetId,
   getRecoveryEvents, recordRecoveryEvent, resetRecoveryEvents,
@@ -242,8 +243,8 @@ const FanoutBenchBodySchema = z.object({
 /**
  * What a launch of this session can be waiting on, read where it waits: each
  * one-shot not yet running and its stage, the launches the pacer holds for a
- * turn, the alarm, its reasons and the dispatch running, and the ledger's
- * waits (_diag/session's `launch`).
+ * turn, the alarm, its reasons and the dispatch running, the ledger's
+ * waits, and the isolate's transient budget (_diag/session's `launch`).
  */
 async function launchDiagnosis(self: RoutesHost): Promise<Record<string, unknown>> {
   const ledger = loaderLedgerStats(self.ctx);
@@ -251,6 +252,8 @@ async function launchDiagnosis(self: RoutesHost): Promise<Record<string, unknown
     ...(self.facetManagerComposed?.manager.launchState() ?? { launches: [], pacer: null }),
     timers: await timers(self, self.ctx).state(),
     ledger: { inFlight: ledger.inFlightWorkers, waiters: ledger.waiters, pauseMs: ledger.pauseMs },
+    // The isolate's transient budget a launch's preparation is admitted on: shared with the sessions beside this one.
+    budget: readSupervisorAllocationBudget(),
   };
 }
 
@@ -652,6 +655,8 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         // larger than what is free waits in the FIFO with no error, no
         // alarm and no CPU, which reads exactly like a launch that stopped.
         alloc: readSupervisorAllocationBudget(),
+        // Sessions reporting the same id share this isolate and its memory limit.
+        isolate: { id: readIsolateId() },
         // The pipe read ahead launches hold here for their synchronous reads
         // of fd 0 (stdin-read.ts): what is held now, the most ever held at
         // once, and the bound neither passes.

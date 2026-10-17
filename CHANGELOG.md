@@ -21,6 +21,99 @@ published independently in the `@nimbus-sh` npm scope.
   unsupported, as the portable node does. Before, it was ignored: `-e`
   code under `=module` ran as CommonJS. A value other than `module` or
   `commonjs` is Node's own refusal.
+- Changed: a program whose launch waits 10 seconds at one stage (its
+  preparation, its admission for a worker, or its load) logs one line to
+  Workers Logs: `[facet-manager] launch stalled:` with its pid, command,
+  stage, the wait, and the state of the worker ledger, the launch pacer
+  and the isolate's transient budget. A command that hangs before it runs
+  leaves this as its evidence. The line is logged once per launch.
+- Fixed: when sessions compete for an isolate's transient budget, a
+  program's launch no longer reads past the share it holds while it
+  stages its files. A read that would take it over is refused before it
+  happens, and the launch asks for the whole budget once, as it already
+  did when its files outgrew its share.
+
+## 2026-10-17: platform 0.12.0, core 0.23.0, fabric 0.18.0, worker 0.21.0, sdk 0.17.0, cli 0.2.8, loom 0.3.1, react 0.3.3, create-nimbus-app 0.2.4, runtime-bash 5.2.37-7, runtime-cpython 3.13.14-3, runtime-git 2.53.0-1 (config 0.3.1 unchanged)
+
+The 2026-10-14 and 2026-10-15 versions reached production but were never published to npm; these carry their changes too. The runtimes need core 0.23.0: it is the first core that registers bash-runner@6, cpython-runner@3 and git-runner@2.
+
+- Fixed: a WASI process that makes a directory and then a file in it,
+  as `pip install` does for each package, no longer fails ENOENT about
+  once in a hundred runs. That happened when the process's hold on the
+  subtree was renewed or given back while the new file's name was being
+  looked up: the lookup carried on over a listing from before the
+  directory reached the session. Each step of a lookup now catches up
+  with the session first when the process has sent it anything.
+- Fixed: a process that wrote a file through a descriptor in a subtree it
+  held itself (a WASI process's delegation) could lose those bytes when
+  the file stayed open more than 100 ms after the write. The held write
+  was stored later as if another process had made it, the store refused
+  it, and the close failed with EBADF. It is now stored as the writer's.
+  A close whose held writes the store refuses now reports that refusal,
+  for example ENOSPC, and names the file, instead of EBADF.
+- Fixed: a running program no longer stalls waiting on launches that are not
+  running. A Durable Object runs at most ten Dynamic Workers. When every one
+  ran a program whose next write needed supervisor credit, and parked
+  launches or loads waiting for a worker held that credit, neither side could
+  go on. Credit is now taken before a worker, never while holding one, and a
+  running program's writes and session calls come first. When only parked
+  launches' module maps, or credit a load took and has not used, stand in
+  the way, that credit is reclaimed: the launch prepares again at its turn,
+  and the load takes its credit once it has a worker. A load refused its
+  credit fails at once with EAGAIN.
+- Fixed: launch-credit contention no longer changes which learned reads or
+  lazy imports are staged. A tight first try now retries with full credit
+  instead of trimming the program's snapshot.
+- Fixed: a command waiting for its session's busy workers no longer stalls
+  commands in other sessions sharing its isolate. One-shot commands prepare
+  their module maps before waiting and keep only their retained share of the
+  isolate budget; new builds use the remaining room within a checked bound.
+  Running programs can reclaim parked maps for their writes and reads; the
+  waiting commands prepare their maps again before taking a worker.
+- Changed: a process that can be stopped and replayed records its input
+  and output replies at almost no CPU cost. Each reply was hashed byte by
+  byte and the hash kept, though nothing read it: about 0.9 ms of CPU for
+  each 64 KiB of piped input. The replay keeps only their count, which is
+  all its limit needs.
+- Fixed: Bun's file-URL helpers preserve spaces, `#`, `%` and other escaped
+  filename characters, and resolve relative paths from the process's current
+  directory, including after `process.chdir`, as its `node:url` helpers do.
+- Fixed: bash and its commands receive a broken-pipe write error when
+  `trap '' PIPE` ignores SIGPIPE, including commands that inherit it across
+  exec. Before, a write after the pipe's reader closed killed the writer
+  with SIGPIPE even when the signal was ignored.
+- Fixed: a running process now notices an embedder filesystem mounted after
+  its first filesystem listing. Before, a process that started with SQLite
+  alone could keep a staged namespace that omitted the new mount.
+- Fixed: dragging the handle between the editor and the preview keeps the
+  handle under the pointer. It fell behind by a fifth of the drag, and a
+  fast drag to the right could end on the preview's frame and stop short.
+  The workspace's resize handles now keep the pointer while they are held.
+- Fixed: one session's compiles no longer reset the other sessions that
+  share its isolate. The platform runs several sessions in one isolate
+  with one memory limit, and resets all of them when it is crossed. Each
+  `clang` compile read its 31 MiB compiler into that isolate, copied it,
+  and held it through the link, so three compiles at once, in one session
+  or across co-tenants, reset every session there. A runtime's wasm image
+  (clang, wasm-ld, CPython, Ruby, bash, git, a `wasm-runner` program) is
+  now read by path when its facet loads, without a copy, and each load is
+  admitted on the isolate's transient budget: loads that would overlap
+  take turns, and one larger than the budget runs alone. Staged opencode
+  decodes its chunk pack one chunk at a time and assembles under the same
+  admission. A load not admitted within 60 s fails with EAGAIN, naming
+  what it waited for.
+- Changed (core): `FacetSpec.wasmModules` and a call's `wasmModules` take
+  `FacetImage`s instead of ArrayBuffers. Open one with
+  `ProcessView.image(path, { sha256, size })` or `hostImage(authority,
+  cred, path, { sha256, size })`, naming the bytes it must be: for an
+  installed runtime file, `installedFile(manifest, installRoot, rel)`
+  gives its path and the manifest's digest. The host reads the image when
+  it builds the facet, bounded at `size`, and refuses it (ESTALE) unless
+  the file holds those bytes. An image on a mount, which cannot bound the
+  read, is refused (EFBIG). `ws.fs.readArrayBufferUncached` is removed;
+  `readFileUncached` returns the read's own bytes without copying them.
+- Added: `/api/_diag/memory` names the isolate the session runs in
+  (`isolate.id`). Sessions that report one id share its memory limit.
 - Fixed: output that begins with U+FEFF (the UTF-8 BOM) keeps it, as a
   Linux terminal receives every byte a program writes. This covers a
   program's output in the terminal, process logs and `exec` results, a

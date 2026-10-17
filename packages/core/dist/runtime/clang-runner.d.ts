@@ -26,7 +26,7 @@
  * Dispatch stays direct: no sleeps, no caller-side retries, and no
  * catch-and-continue around loader failures.
  */
-import type { RuntimeManifest } from './runtime-manifest.js';
+import { type RuntimeManifest } from './runtime-manifest.js';
 import { CLANG_CALL_TASK } from './compiled-bodies.generated.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import type { Facet, FacetSpec, FacetSubmitOptions } from './facet-host.js';
