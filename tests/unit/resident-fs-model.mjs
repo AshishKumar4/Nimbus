@@ -299,7 +299,7 @@ async function run(steps) {
       else if (logged.rename) refused = (await errnoOf(() => direct.rename(path(logged.rename[0]), path(logged.rename[1])))) !== null;
       else if (logged.chmod) refused = (await errnoOf(() => direct.chmod(path(logged.chmod[0]), logged.chmod[1]))) !== null;
       else {
-        const open = logged.open;
+        const open = logged.open ?? logged.close;
         if (logged.flags) {
           refused = (await errnoOf(async () => { open.refHandle = (await direct.open(path(open.name), { ...logged.flags, mode: 0o666, umask: 0o022 })).id; })) !== null;
           if (!refused && String(open.id).startsWith('L')) alias.set(open.id, (await direct.fstat(open.refHandle)).ino);
