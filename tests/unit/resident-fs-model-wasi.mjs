@@ -98,7 +98,11 @@ async function run(steps) {
           const fd = await open(path(name), { read: true });
           try { return await guest.pread(fd, 1 << 12); }
           finally { await ok(guest.close(fd)); }
-        }, async () => dec.decode(await direct.readFile(refPath(name))));
+        }, async () => {
+          const bytes = await direct.readFile(refPath(name));
+          if (bytes === null) fail('ENOENT');
+          return dec.decode(bytes);
+        });
       }
     };
 
