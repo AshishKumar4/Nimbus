@@ -102,6 +102,35 @@ function residentWorld(label) {
   return { manager, fs: seedProgram(vfs), launch };
 }
 
+function oneShotWorld(label) {
+  const loads = [];
+  let report = {};
+  const env = {
+    LOADER: {
+      load(config) {
+        loads.push(config);
+        return { getEntrypoint: () => ({ async run() { return Response.json({ exitCode: 0, stdout: '', stderr: '', ...report }); } }) };
+      },
+      get() { throw new Error('a one-shot never takes the keyed loader path'); },
+    },
+    ASSETS: stagedAssets,
+  };
+  const manager = new FacetManager(
+    createFacetCtx(createFacetWorld(() => ({})), label),
+    env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {},
+  );
+  const { vfs } = launchSession();
+  manager.setVfs(vfs, new ProcessFiles(vfs));
+  return {
+    fs: seedProgram(vfs),
+    report: (next) => { report = next; },
+    async run() {
+      const result = await manager.exec("require('dep');", { filename: '/home/user/run.js', cwd: '/home/user', captureOutput: true });
+      return { result, config: loads.at(-1) };
+    },
+  };
+}
+
 try {
   // ── 0. the count, and the choice, a map is made under ──────────────────
   {
@@ -174,42 +203,42 @@ try {
 
   // ── 3. a one-shot rerun stages the runtime code its run needed first ─────
   {
-    const loads = [];
-    let report = {};
-    const env = {
-      LOADER: {
-        load(config) {
-          loads.push(config);
-          return { getEntrypoint: () => ({ async run() { return Response.json({ exitCode: 0, stdout: '', stderr: '', ...report }); } }) };
-        },
-        get() { throw new Error('a one-shot never takes the keyed loader path'); },
-      },
-      ASSETS: stagedAssets,
-    };
-    const manager = new FacetManager(
-      createFacetCtx(createFacetWorld(() => ({})), 'module-map-under-ceiling-one-shot'),
-      env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {},
-    );
-    const { vfs } = launchSession();
-    manager.setVfs(vfs, new ProcessFiles(vfs));
-    const fs = seedProgram(vfs);
-    const run = async () => {
-      const result = await manager.exec("require('dep');", { filename: '/home/user/run.js', cwd: '/home/user', captureOutput: true });
-      return { result, config: loads.at(-1) };
-    };
-
+    const { fs, run, report } = oneShotWorld('module-map-under-ceiling-one-shot');
     const bare = await run();
     assert.equal(bare.result.exitCode, 0, `the run without its wasm image ran: ${bare.result.stderr}`);
     writeImage(fs, mapBytes(bare.config.modules), 3_000_000);
-    report = { runtimeCode: learnedCode };
+    report({ runtimeCode: learnedCode });
     const first = await run();
     assert.equal(first.result.exitCode, 0, `the run with its wasm image ran: ${first.result.stderr}`);
-    report = {};
+    report({});
     const second = await run();
     assert.equal(second.result.exitCode, 0, `the rerun ran rather than being refused at its ceiling: ${second.result.stderr}`);
     const bytes = mapBytes(second.config.modules);
     assert.ok(bytes <= CEILING, `the rerun's map is ${bytes} bytes, within the ${CEILING}-byte ceiling`);
     console.log(`  a one-shot rerun stages the runtime code its run needed first, as far as its ceiling allows: ${stagedCode(second.config.modules)} of 6, ${bytes} bytes`);
+  }
+
+  // A credit retry keeps the effective ceiling bound, rather than restoring learned roots the map already trimmed.
+  {
+    const { fs, run, report } = oneShotWorld('module-map-under-ceiling-one-shot-roots');
+    fs.mkdir('home/user/node_modules/late', { recursive: true, mode: 0o755 });
+    fs.writeFile('home/user/node_modules/late/a.js', `module.exports = "A-executed-first ${'a'.repeat(600_000)}";\n`, { mode: 0o644 });
+    fs.writeFile('home/user/node_modules/late/b.js', `module.exports = "B-executed-next ${'b'.repeat(700_000)}";\n`, { mode: 0o644 });
+    const bare = await run();
+    assert.equal(bare.result.exitCode, 0, bare.result.stderr);
+    writeImage(fs, mapBytes(bare.config.modules), 1_000_000);
+    report({ moduleMisses: ['home/user/node_modules/late/a.js', 'home/user/node_modules/late/b.js'] });
+    const first = await run();
+    assert.equal(first.result.exitCode, 0, first.result.stderr);
+    report({});
+    const second = await run();
+    assert.equal(second.result.exitCode, 0, `the trimmed one-shot survives its owned-member credit retry: ${second.result.stderr}`);
+    const bytes = mapBytes(second.config.modules);
+    assert.ok(bytes <= CEILING, `the retried one-shot map is ${bytes} bytes, under its ceiling`);
+    const text = moduleMapText(second.config.modules);
+    assert.ok(text.includes('A-executed-first'), 'the first learned root stays staged after the credit retry');
+    assert.ok(!text.includes('B-executed-next'), 'the trimmed root is not restored by the credit retry');
+    console.log(`  a one-shot with a large owned wasm keeps its trimmed learned roots through credit retry: ${bytes} bytes`);
   }
 } catch (error) {
   console.error(error);
