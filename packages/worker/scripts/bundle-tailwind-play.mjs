@@ -34,9 +34,13 @@
  * regenerates from the committed bundle, offline: it checks those bytes
  * against the pin and writes the loader. `--fetch` is the one sourcing
  * path: it downloads the pinned version from the CDN, refuses bytes that
- * are not the pinned digest, and stages them. To move to a new version,
- * set TAILWIND_PLAY_VERSION, run `--fetch`, review what it got, and pin
- * the digest it names.
+ * are not the pinned digest, and stages them. To move to a new version:
+ *   1. set TAILWIND_PLAY_VERSION and run `bun run --cwd packages/worker
+ *      source:tailwind`: it refuses the new bytes, naming their digest;
+ *   2. review those bytes (curl the URL it names) and set
+ *      TAILWIND_PLAY_SHA256 to the digest;
+ *   3. run source:tailwind again: it stages the bundle and writes the
+ *      loader; commit both, then regenerate the dist (remote-build).
  *
  * The Play CDN is a SEPARATE build from the `tailwindcss` npm
  * package — `packages/@tailwindcss-cdn/` in the upstream repo. It
@@ -85,7 +89,7 @@ async function pinnedBundle(fetching) {
   if (sha256 !== TAILWIND_PLAY_SHA256) {
     throw new Error(
       `[bundle-tailwind-play] the ${fetching ? `bundle ${SOURCE_URL} served` : 'committed bundle'} has sha256 ${sha256}, ` +
-        `not the pinned ${TAILWIND_PLAY_SHA256}. ${fetching ? 'Review it, and pin it if it is the version you mean.' : 'Restore it, or source it with --fetch.'}`,
+        `not the pinned ${TAILWIND_PLAY_SHA256}. ${fetching ? 'Review those bytes; if they are the version you mean, pin their digest and fetch again (see the header).' : 'Restore it, or source it with --fetch.'}`,
     );
   }
   return { code, sha256 };
