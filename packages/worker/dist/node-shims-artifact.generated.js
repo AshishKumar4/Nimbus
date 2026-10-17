@@ -33,9 +33,9 @@ export const JS_INTERPRETER_OPS_ENTRY = "/_assets/runtime/js-interpreter-ops-32c
 export const JS_INTERPRETER_OPS_BUILD_ID = "32cc78b8a580ed69";
 export const JS_INTERPRETER_OPS_SHA256 = "32cc78b8a580ed69cd7a2a738d584eb7805c1fcb4b43d1298ca60e5551a4c3f3";
 /** @nimbus-sh/core src/interpreter/parser.ts, bundled by scripts/interpreter-bundle.mjs */
-export const JS_PARSER_ENTRY = "/_assets/runtime/js-parser-7352682fac9ec1d4.js";
-export const JS_PARSER_BUILD_ID = "7352682fac9ec1d4";
-export const JS_PARSER_SHA256 = "7352682fac9ec1d4519e1ecd82547a01b63c93b6814225f3f07953e610cfc32b";
+export const JS_PARSER_ENTRY = "/_assets/runtime/js-parser-385d57488a77487a.js";
+export const JS_PARSER_BUILD_ID = "385d57488a77487a";
+export const JS_PARSER_SHA256 = "385d57488a77487a927ec9c4c7c79bf2485b55acc85eb626a645cc9d647da6b8";
 /** dist/runtime/node-lib-module.js generateNodeLibModule() */
 export const NODE_LIB_ENTRY = "/_assets/runtime/node-lib-87b52afb47082f0b.js";
 export const NODE_LIB_BUILD_ID = "87b52afb47082f0b";
