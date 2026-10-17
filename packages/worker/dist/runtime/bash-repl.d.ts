@@ -1,7 +1,7 @@
 import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
-import { type VfsCred, type RuntimeFsBridge, type NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsCred, RuntimeFsBridge, NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 export interface BashReplDeps {

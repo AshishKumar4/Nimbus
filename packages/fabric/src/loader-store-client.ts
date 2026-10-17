@@ -7,7 +7,7 @@
  */
 import { sha256Incremental } from '@nimbus-sh/core/_shared/crypto.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import type { ModuleContent } from '@nimbus-sh/platform/worker-code.js';
+import { memberBuffer, type ModuleContent } from '@nimbus-sh/platform/worker-code.js';
 import type { HostRoute } from './composition.js';
 import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
 
@@ -132,12 +132,9 @@ export async function storedModule(content: ModuleContent): Promise<StoredModule
 
 /** `bytes` (a whole stored module) as the content it was stored from. */
 export function restoredModule(kind: StoredKind, bytes: Uint8Array): ModuleContent {
-  const exact = (): ArrayBuffer => bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength && bytes.buffer instanceof ArrayBuffer
-    ? bytes.buffer
-    : bytes.slice().buffer;
   switch (kind) {
-    case 'data': return { data: exact() };
-    case 'wasm': return { wasm: exact() };
+    case 'data': return { data: memberBuffer(bytes) };
+    case 'wasm': return { wasm: memberBuffer(bytes) };
     case 'json': return { json: JSON.parse(decoder.decode(bytes)) };
     case 'string': return decoder.decode(bytes);
     case 'js': return { js: decoder.decode(bytes) };

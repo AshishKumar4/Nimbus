@@ -2,11 +2,18 @@
 // way the supervisor installs them, and one invocation's context (the
 // session user's credential and view, collected output).
 
+import { createHash } from 'node:crypto';
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles, ProcessView } from '../../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+
+/** `path` as a runtime manifest lists `bytes` there: with the digest and size an image is opened by. */
+export function manifestFile(path, bytes) {
+  const data = typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes;
+  return { path, sha256: createHash('sha256').update(data).digest('hex'), size: data.byteLength };
+}
 
 export const SESSION_USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
 

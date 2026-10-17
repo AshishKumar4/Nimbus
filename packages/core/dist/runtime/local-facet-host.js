@@ -33,6 +33,7 @@
  * through the egress (realm-egress.ts, as the inline `node` does); a
  * WebSocket, which cannot cross, is refused by name.
  */
+import { memberBuffer } from '@nimbus-sh/platform/worker-code.js';
 import { requireFacetTaskSource } from './facet-task.js';
 import { requireNetwork } from '../_shared/workspace-network.js';
 import { isEgressGuestEvent, RealmEgress } from './realm-egress.js';
@@ -146,10 +147,8 @@ class RealmFacet {
     network;
     /** The realm, started on the first call. */
     realm = null;
-    /** The image each name is in the facet's table as: what a call need not send again. */
+    /** The image each name is in the facet's table as (its identity): what a call need not send again. */
     installed = new Map();
-    /** Each image compiled for a thread, once, whether or not a call that sent it succeeded. */
-    compiled = new WeakMap();
     /** Submits are serialized: one scope, and a facet's calls are ordered. */
     queue = Promise.resolve();
     waiting = new Map();
@@ -271,21 +270,14 @@ class RealmFacet {
     async modules(callModules) {
         const images = {};
         const sent = {};
-        for (const [name, bytes] of Object.entries({ ...this.spec.wasmModules, ...callModules })) {
-            if (this.installed.get(name) === bytes)
+        for (const [name, image] of Object.entries({ ...this.spec.wasmModules, ...callModules })) {
+            if (this.installed.get(name) === image.identity)
                 continue;
-            images[name] = bytes;
-            sent[name] = this.isolation === 'thread' ? await this.compile(bytes) : bytes;
+            images[name] = image.identity;
+            const bytes = memberBuffer(await image.read());
+            sent[name] = this.isolation === 'thread' ? await wasmCompiler()(bytes) : bytes;
         }
         return { images, sent };
-    }
-    async compile(bytes) {
-        const cached = this.compiled.get(bytes);
-        if (cached)
-            return cached;
-        const module = await wasmCompiler()(bytes);
-        this.compiled.set(bytes, module);
-        return module;
     }
     async call(fn, args, options) {
         if (this.disposed)
@@ -335,8 +327,8 @@ class RealmFacet {
             if (outcome instanceof Error)
                 throw outcome;
             if (outcome.installed)
-                for (const [name, bytes] of Object.entries(images))
-                    this.installed.set(name, bytes);
+                for (const [name, identity] of Object.entries(images))
+                    this.installed.set(name, identity);
             if ('error' in outcome)
                 throw fromRealmError(outcome.error);
             return outcome.value;

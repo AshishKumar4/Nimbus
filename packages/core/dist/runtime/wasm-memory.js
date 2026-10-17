@@ -50,6 +50,12 @@ export const WASM32_MAX_PAGES = 65536;
  */
 export const DEFAULT_WASM_PROCESS_LIMIT_BYTES = 128 * 1024 * 1024;
 /**
+ * The most withMemoryLimit lengthens a module: a maximum's varuint where it
+ * had none (one no larger than WASM32_MAX_PAGES), and one more byte for the
+ * memory section's own size. A lowered maximum is never longer.
+ */
+export const MEMORY_LIMIT_GROWTH_BYTES = encodeVaruint(WASM32_MAX_PAGES).length + 1;
+/**
  * Return a copy of `bytes` whose defined memory carries an explicit maximum of
  * at most `limitBytes`.
  *

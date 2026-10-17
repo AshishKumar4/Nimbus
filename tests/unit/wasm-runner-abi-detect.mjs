@@ -128,6 +128,54 @@ async function dispatch(bytes, argv, output) {
   assert.equal(submitted[0]?.wasiAbi, 'preview1', 'a module importing both namespaces is preview1');
 }
 
+// The facet loads the program it was decided from: its image is read when
+// the facet loads it, and the bytes inspected are the only ones it runs. A
+// program written between the inspection and the load is refused (ESTALE),
+// not run under the other's ABI.
+{
+  const filesystem = authority({ 'home/user/program.wasm': directWithCustomNeedle });
+  const loaded = [];
+  const run = makeWasmRunner({
+    filesystem,
+    facets: {
+      parking: 'none',
+      open() {
+        return {
+          async submit(_fn, args, options) {
+            loaded.push(await options.wasmModules['user.wasm'].read());
+            return { ok: true, mode: args.mode, exitCode: 0, result: 7, stdout: '', stderr: '' };
+          },
+          dispose() {},
+        };
+      },
+    },
+    processes: new SessionProcessSupervisor(),
+  });
+  const opts = { argv: ['f'], env: {}, cwd: '/home/user', filename: '/home/user/program.wasm', dirname: '/home/user', command: 'wasm-runner /home/user/program.wasm', cred: USER_CRED };
+  assert.equal((await run('', opts)).exitCode, 0);
+  assert.equal(WebAssembly.validate(loaded[0]), true, 'the facet loads the program, capped');
+  const rewriting = makeWasmRunner({
+    filesystem,
+    facets: {
+      parking: 'none',
+      open() {
+        return {
+          async submit(_fn, _args, options) {
+            filesystem.view({ pid: 1, cred: CRED_KERNEL }).writeFile('/home/user/program.wasm', preview0WithNeedles);
+            await options.wasmModules['user.wasm'].read();
+            return { ok: true, mode: 'direct', exitCode: 0, result: 7, stdout: '', stderr: '' };
+          },
+          dispose() {},
+        };
+      },
+    },
+    processes: new SessionProcessSupervisor(),
+  });
+  const refused = await rewriting('', opts);
+  assert.notEqual(refused.exitCode, 0);
+  assert.match(refused.stderr, /not the image it was opened as|EFBIG/, 'a program written since its inspection is refused');
+}
+
 {
   const { result, processes } = await dispatch(directWithCustomNeedle, ['f'], () => {});
   assert.equal(result.stdout, '7\n');
