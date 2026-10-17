@@ -40,6 +40,8 @@ export interface ProcessWarnings {
     onWarning(warning: unknown): void;
     /** Whether Node would install it: not under NODE_NO_WARNINGS=1 or NODE_OPTIONS' --no-warnings. */
     readonly installs: boolean;
+    /** Drops the warnings whose tick has not run: an uncaught exception that ends the process runs no more ticks. */
+    dropQueued(): void;
 }
 /** Node's warnings for `process` (read when a warning is made, so a process made after may be named). */
 export declare function createProcessWarnings(process: () => WarningProcess, write: (text: string) => void): ProcessWarnings;

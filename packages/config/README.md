@@ -80,14 +80,15 @@ npx wrangler secret put NIMBUS_CLOUDFLARE_API_TOKEN
 
 1. **Forwards-compat**: if Nimbus adds a required binding in v0.2, this
    package updates and your `wrangler.jsonc` regenerates cleanly.
-2. **Alias map**: `isomorphic-git` and the npm installer need 12 alias
-   entries. Copied by hand they drift. The helper exports them as
-   `NIMBUS_REQUIRED_ALIASES`.
+2. **Alias map**: the worker imports jsdiff by bare name, so the config
+   aliases `diff`. Git's other dependencies are bundled with it and need
+   no alias. The helper exports the map as `NIMBUS_REQUIRED_ALIASES`, so a
+   hand-written config does not drift from it.
 3. **Programmatic**: it runs from Pulumi, Terraform, CDK, or any custom CI.
 
 ```ts
 import { NIMBUS_REQUIRED_ALIASES } from '@nimbus-sh/config';
-// → { 'clean-git-ref': '...', 'sha.js': 'sha.js', ... }
+// → { diff: 'diff' }
 ```
 
 ## Sandbox profiles

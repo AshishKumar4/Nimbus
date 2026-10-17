@@ -113,6 +113,32 @@ import('./typed/module-exports.js').catch((e) => { report.push(['import', e.name
   'seed.mjs': `import { readFileSync } from 'node:fs';\nimport config from './example-app/tailwind.config.js';\nconst pkg = JSON.parse(readFileSync(new URL('./example-app/package.json', import.meta.url), 'utf8'));\n${line("'seed'", 'pkg.type', 'config')}`,
   'commonjs/package.json': JSON.stringify({ name: 'commonjs', type: 'commonjs' }),
   'commonjs/import.js': "import { sep } from 'node:path';\nconsole.log(sep);\n",
+  // Node's typeless warning is a next tick's, which a fatal exception in the
+  // microtask drain that loaded the module ends the process before: an
+  // entry whose graph does not compile as a module (an import nested in a
+  // statement, a syntax error after an import) shows only its error. A
+  // caught failure, a later exit (a timer's), a rejection nothing handles, or
+  // the entry's failure a listener takes leaves it printed. (An entry whose evaluation throws before the
+  // drain ends shows no warning in Node either; the guest's next tick is a
+  // microtask, so it does: ticket-node-tick-queue.)
+  'nested-import.js': "{ import { sep } from 'node:path'; }\n",
+  'nested-export.js': 'function f() { export const a = 1; }\n',
+  'late-error.js': "import { sep } from 'node:path';\nconst a = ;\n",
+  'timer-exits.js': "import { sep } from 'node:path';\nsetTimeout(() => { console.error('timer', sep); process.exit(3); });\n",
+  'caught/package.json': JSON.stringify({ name: 'caught' }),
+  'caught/broken.js': "import { sep } from 'node:path';\nconst a = ;\n",
+  'imports-caught.mjs': "import('./caught/broken.js').catch((e) => console.log('caught', e.name));\n",
+  'unhandled/package.json': JSON.stringify({ name: 'unhandled' }),
+  'unhandled/broken.js': "import { sep } from 'node:path';\nconst a = ;\n",
+  'imports-unhandled.mjs': "setTimeout(() => {}, 10);\nimport('./unhandled/broken.js');\n",
+  // A preload's listener takes the entry's failure: the process goes on, and the warning prints.
+  'handles-uncaught.mjs': "process.on('uncaughtException', (e) => console.log('handled', e.name));\nprocess.on('warning', (w) => console.log('warning', w.code));\n",
+  // A warning listener that exits: never run where the entry's failure ends the process.
+  'exits-on-warning.mjs': "process.on('warning', () => process.exit(0));\n",
+  // ... and replaces emitWarning, then warns: the loader's warning, issued before, comes first.
+  'handles-and-warns.mjs': "process.on('uncaughtException', (e) => { console.log('handled', e.name); const emit = process.emitWarning; process.emitWarning = () => { throw new Error('late replacement'); }; emit.call(process, 'later'); });\nprocess.on('warning', (w) => console.log('warning', w.code ?? w.message));\n",
+  // Keys and methods named import or export are no module syntax.
+  'nested-keys.js': "const c = { import: './a.mjs', export: 1 };\nclass A { export() {} static import() {} export = 1; import; static export }\nconsole.log(typeof module, Object.keys(c).join(), Object.keys(new A()).join());\n",
 };
 const EVAL_ESM = `import { sep } from 'node:path';\n${line("'eval'", 'sep')}`;
 const RUNS = [
@@ -156,6 +182,16 @@ const RUNS = [
   ['--input-type=module', '-e', "require('node:path');\n"],
   ['import-in.cjs'],
   ['commonjs/import.js'],
+  ['nested-keys.js'],
+  ['nested-import.js'],
+  ['nested-export.js'],
+  ['late-error.js'],
+  ['timer-exits.js'],
+  ['imports-caught.mjs'],
+  ['imports-unhandled.mjs'],
+  ['--import', './handles-uncaught.mjs', 'late-error.js'],
+  ['--import', './handles-and-warns.mjs', 'late-error.js'],
+  ['--import', './exits-on-warning.mjs', 'late-error.js'],
 ];
 // Each run as a command line, its stdin from a file of the tree.
 const stdins = {};

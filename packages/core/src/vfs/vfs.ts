@@ -453,6 +453,19 @@ export function copyfileMode(mode: number, size: number, uid: number): number {
   return bits & ~(0o4000 | (bits & 0o010 ? 0o2000 : 0));
 }
 
+/**
+ * The mode a copy sets once its content is in, from the source's: cp -p's
+ * (`preserve`), the source's permission bits, before copyfile's
+ * (`keepMode`); null for neither, the mode a creation there makes. One
+ * rule for the engine's copy (SqliteVFS copyFile) and the copy between
+ * backends (CompositeVFS copyBytes).
+ */
+export function copySetsMode(mode: number, size: number, uid: number, options: { preserve?: boolean; keepMode?: boolean }): number | null {
+  if (options.preserve) return mode & 0o7777;
+  if (options.keepMode) return copyfileMode(mode, size, uid);
+  return null;
+}
+
 /** True for a character device such as `/dev/zero`, which streams rather than stores. */
 export function isCharacterDevice(mode: number | undefined): boolean {
   return mode !== undefined && (mode & S_IFMT) === S_IFCHR;

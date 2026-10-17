@@ -15,6 +15,7 @@
 
 import { bundleCss, CssError } from '@nimbus-sh/core/runtime/css-bundle.js';
 import type { EsbuildRemotePlugin } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 
 /** The reads a stylesheet needs from the dev server's VFS. */
 export interface DevStylesheetFs {
@@ -27,13 +28,7 @@ const dirOf = (path: string) => path.slice(0, path.lastIndexOf('/')) || '/';
 
 /** `path` with `.` and `..` segments resolved, leading slash as given. */
 function normalize(path: string): string {
-  const out: string[] = [];
-  for (const segment of path.split('/')) {
-    if (segment === '' || segment === '.') continue;
-    if (segment === '..') out.pop();
-    else out.push(segment);
-  }
-  return (path.startsWith('/') ? '/' : '') + out.join('/');
+  return (path.startsWith('/') ? '/' : '') + rootClampedSegments(path).join('/');
 }
 
 /**

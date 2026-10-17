@@ -44,7 +44,7 @@
  *     canonical_abi_drop_rb-abi-value, memory.
  */
 import { RUBY_CALL_TASK } from './compiled-bodies.generated.js';
-import { installedFile } from './runtime-manifest.js';
+import { installedPath } from './runtime-manifest.js';
 import { withHostView } from './process-files.js';
 import { z } from 'zod';
 import { hasLeadingCliFlag } from './cli-flags.js';
@@ -53,7 +53,7 @@ import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { RUBY_SOCKET_SHIM } from './ruby-socket-shim.js';
 import { RUBY_GREEN_THREADS } from './ruby-green-threads.js';
-import { gemHomeFor, installRubyBundle, installRubyGems, installedGemBins, installedGemLibRoots, parseRubyGemRequirements, } from './ruby-gems.js';
+import { gemHomeFor, installRubyBundle, installRubyGems, installedGemBins, installedGemLoadPath, reconcileGemBinWrappers, parseRubyGemRequirements, } from './ruby-gems.js';
 import { errorText } from '../_shared/error-text.js';
 import { openRuntimeStdio, runtimeOutput } from './runtime-stdio.js';
 import { unsettledNoteOf } from '../_shared/process-fs-client.js';
@@ -67,8 +67,10 @@ const RUBY_VERSION_FLAGS = new Set(['--version', '-v']);
 export function makeRubyRunnerFactory(deps) {
     const { registry } = deps;
     return async function rubyRunnerFactory(manifest, installRoot, binName, binKind) {
-        const wasm = installedFile(manifest, installRoot, 'share/ruby/ruby+stdlib.wasm');
+        const wasmVfs = installedPath(manifest, installRoot, 'share/ruby/ruby+stdlib.wasm');
         const registerGemBins = async (vfs, home) => {
+            // Wrappers an earlier Nimbus wrote, made to let RubyGems choose their executable as it chooses their version.
+            await reconcileGemBinWrappers(vfs, gemHomeFor(home));
             if (!registry)
                 return;
             for (const bin of (await installedGemBins(vfs, gemHomeFor(home)))) {
@@ -127,7 +129,7 @@ export function makeRubyRunnerFactory(deps) {
                 return 0;
             }
             // The interpreter image must be installed.
-            if (!wasm || !(await vfs.exists(wasm.path))) {
+            if (!wasmVfs || !(await vfs.exists(wasmVfs))) {
                 ctx.stderr.write(`${binName}: ruby+stdlib.wasm missing (re-run 'nimbus install ruby')\n`);
                 return 127;
             }
@@ -178,14 +180,17 @@ export function makeRubyRunnerFactory(deps) {
                 userEnv.LANG = 'C.UTF-8';
             userEnv.GEM_HOME ||= '/' + gemHomeFor(home);
             userEnv.GEM_PATH ||= userEnv.GEM_HOME;
-            userEnv.NIMBUS_GEM_LIBS = (await installedGemLibRoots(vfs, gemHomeFor(home))).join(':');
+            const gems = await installedGemLoadPath(vfs, gemHomeFor(home));
+            userEnv.NIMBUS_GEM_LIBS = gems.libs.join(':');
+            if (gems.activates)
+                userEnv.NIMBUS_GEM_ACTIVATE = '1';
             // Ruby looks for charset hints via these vars; set sensible
             // defaults so puts of non-ASCII strings doesn't trip on the
             // wasi default of "ASCII-8BIT".
             if (!userEnv.LC_ALL)
                 userEnv.LC_ALL = 'C.UTF-8';
             const facetArgs = {
-                wasmVfsPath: wasm.path,
+                wasmVfsPath: wasmVfs,
                 userCode,
                 requires: parsed.requires,
                 rbArgv,
@@ -222,7 +227,7 @@ export function makeRubyRunnerFactory(deps) {
             else {
                 const stdio = openRuntimeStdio(deps, ctx, formatRubyCommand(binName, argv));
                 try {
-                    result = await dispatchRubyFacet(deps.facets, stdio.syscalls, facetArgs, await vfs.image(wasm.path, wasm), stdio.pid, stdio.signal);
+                    result = await dispatchRubyFacet(deps.facets, stdio.syscalls, facetArgs, await vfs.image(wasmVfs), stdio.pid, stdio.signal);
                 }
                 finally {
                     await stdio.finish(result?.exitCode ?? 1);
@@ -1260,6 +1265,13 @@ async function __rubyRunOnce(args) {
     'ENV["GEM_HOME"] ||= File.join(ENV["HOME"], ".gem")',
     'ENV["GEM_PATH"] ||= ENV["GEM_HOME"]',
     'begin; Dir.mkdir(ENV["GEM_HOME"]) unless Dir.exist?(ENV["GEM_HOME"]); rescue Exception; end',
+    // RubyGems read its paths when the VM booted, before this env. Where a gem
+    // was left off NIMBUS_GEM_LIBS for it to activate (NIMBUS_GEM_ACTIVATE),
+    // it reads them again (Gem.clear_paths) whenever they differ from what it
+    // last read. Elsewhere Gem is not so much as named: naming it loads
+    // RubyGems (~450 ms), and reading GEM_HOME would cost every default gem's
+    // require a search of it.
+    'begin; if ENV["NIMBUS_GEM_ACTIVATE"] == "1"; e = [ENV["GEM_HOME"], ENV["GEM_PATH"]]; (Gem.clear_paths; $__nimbus_gem_env = e) unless $__nimbus_gem_env == e; end; rescue Exception; end',
     // A cwd it cannot enter fails the run before the program starts (the
     // body below), as a shell's cd fails, rather than running it in '/'. A
     // step that continues a VM (a prompt's next line) names no cwd and keeps

@@ -97,7 +97,7 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
     'home/user/node_modules/typescript/bin/tsc': ESM_SOURCE,
   }, '/home/user/node_modules/typescript/bin/tsc');
   assert.equal(r.exitCode, 0, r.stderr);
-  assert.equal(r.code, ESM_SOURCE.slice(ESM_SOURCE.indexOf('\n') + 1), 'the runner gets the original source after the handler\'s shebang strip');
+  assert.equal(r.code, ESM_SOURCE.slice(ESM_SOURCE.indexOf('\n')), 'the runner gets the original source after the handler\'s shebang strip, its line kept empty');
   assert.equal(r.transforms.length, 0, 'native ESM is staged by the launch, not transformed by the handler');
   assert.equal(r.opts.esModule, true);
   assert.equal(r.opts.moduleScope, 'node');
@@ -112,7 +112,7 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
   assert.equal(r.exitCode, 0, r.stderr);
   assert.equal(r.transforms.length, 0, 'a CommonJS bin must not be rewritten');
   assert.equal(r.opts.esModule, undefined);
-  assert.equal(r.code, CJS_SOURCE.slice(CJS_SOURCE.indexOf('\n') + 1));
+  assert.equal(r.code, CJS_SOURCE.slice(CJS_SOURCE.indexOf('\n')), 'the shebang strip keeps its line, empty');
 }
 
 // ── the nearest package.json wins, not an ancestor ──
@@ -191,7 +191,7 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
   assert.equal(r.exitCode, 0, r.stderr);
   assert.equal(r.transforms.length, 0, 'the shim is no package\'s: CommonJS, untransformed');
   assert.equal(r.opts.esModule, undefined);
-  assert.equal(r.code, shim);
+  assert.equal(r.code, `\n${shim}`, 'the shebang strip keeps its line, empty');
 }
 
 // ── a dotfile entry has no extension; its package type decides ──

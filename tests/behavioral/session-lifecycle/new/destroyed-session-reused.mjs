@@ -1,6 +1,7 @@
 // session-lifecycle/new/destroyed-session-reused — a session id used again
-// after its DELETE comes up whole: its terminal attaches, and its files can
-// be written and read.
+// after its DELETE comes up whole: its terminal attaches, its files can be
+// written and read, and the embedder's mount (apps/probe's /mnt/data) is
+// there again, as it was before.
 //
 // A destroy closes the session's filesystem and the next use opens a new one.
 // Measured on main 117df4482 (BusyVicuna, b6c57bdf3, verdict
@@ -27,6 +28,8 @@ try {
   await first.connect();
   await first.waitForPrompt(30_000);
   await sandbox.files.write('/home/user/before.txt', 'before');
+  const mountedBefore = await first.run('grep -c " /mnt/data " /proc/mounts', 15_000);
+  a.check('the embedder mount is there before the DELETE', /^1\s*$/m.test(mountedBefore.output), mountedBefore.output.slice(-200));
   await first.close();
 
   const deleted = await deleteSession(sid, 'destroyed-session-reused');
@@ -46,6 +49,9 @@ try {
     a.check('what was written before the DELETE is gone', gone === null, String(gone));
     const ran = await again.run('cat /home/user/after.txt; echo EXIT=$?', 15_000);
     a.check('and the terminal sees the new session\'s files', /^written-after-delete/m.test(ran.output) && ran.output.includes('EXIT=0'), ran.output.slice(-300));
+    // The mount is the embedder's, made with each filesystem the session opens.
+    const mountedAfter = await again.run('grep -c " /mnt/data " /proc/mounts; echo mounted > /mnt/data/after.txt && cat /mnt/data/after.txt', 15_000);
+    a.check('the embedder mount is there again after it', /^1\s*$/m.test(mountedAfter.output) && /^mounted$/m.test(mountedAfter.output), mountedAfter.output.slice(-300));
     await again.close();
   }
 } finally {

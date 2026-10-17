@@ -150,6 +150,14 @@ export async function grabHandle(page, selector) {
   const x = box.x + box.width / 2;
   const y = box.y + box.height / 2;
   await page.mouse.move(x, y);
+  // What a press there would hit: the handle, or what covers or replaced it since it was measured.
+  const hit = await page.evaluate(({ selector, x, y }) => {
+    const at = document.elementFromPoint(x, y);
+    const handle = document.querySelector(selector);
+    if (at === handle) return null;
+    return { at: at ? `${at.tagName.toLowerCase()}#${at.id}.${[...at.classList].join('.')}` : null, handle: handle && JSON.stringify(handle.getBoundingClientRect()) };
+  }, { selector, x, y });
+  if (hit) throw new Error(`${selector} measured at ${JSON.stringify(box)} is not what a press at (${x}, ${y}) hits: ${JSON.stringify(hit)}`);
   await page.mouse.down();
   return {
     x,
