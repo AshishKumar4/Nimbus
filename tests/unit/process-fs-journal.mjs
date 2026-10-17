@@ -196,6 +196,44 @@ function mortalPort(s, live = Infinity) {
   assert.equal(sqlJournal(harness.sql).bytes, 0);
 }
 
+// ── Plain entries need only their row; the pieces cache follows writes and reopening ──
+{
+  const harness = createSqliteVfsTestHarness();
+  const journal = sqlJournal(harness.sql);
+  const a = journal.append(writeFile('home/user/out/a', 'a'));
+  const b = journal.append(writeFile('home/user/out/b', 'b'));
+  const oneQuery = (read) => {
+    const before = harness.statementCount;
+    const answer = read();
+    assert.equal(harness.statementCount - before, 1, 'an entry without pieces queried the pieces table');
+    return answer;
+  };
+  assert.equal(dec.decode(oneQuery(() => journal.read(a)).call.data), 'a');
+  assert.equal(oneQuery(() => journal.entries()).length, 2);
+  assert.equal(oneQuery(() => journal.readAfter(0, 1)).length, 1);
+  harness.failOnStatement(1, new Error('first piece refused'));
+  assert.throws(() => journal.replace(a, writeFile('home/user/out/a', 'a+'), enc.encode('+')), /first piece refused/);
+  assert.equal(dec.decode(oneQuery(() => journal.read(a)).call.data), 'a');
+  journal.replace(a, writeFile('home/user/out/a', 'a+'), enc.encode('+'));
+  assert.equal(dec.decode(journal.read(a).call.data), 'a+');
+  journal.replace(a, writeFile('home/user/out/a', 'new'));
+  assert.equal(dec.decode(oneQuery(() => journal.read(a)).call.data), 'new');
+  journal.replace(b, writeFile('home/user/out/b', 'b+'), enc.encode('+'));
+  const reopened = sqlJournal(harness.sql);
+  assert.equal(dec.decode(reopened.read(b).call.data), 'b+');
+  assert.equal(dec.decode(oneQuery(() => reopened.read(a)).call.data), 'new');
+  reopened.dropThrough(a);
+  assert.equal(dec.decode(reopened.read(b).call.data), 'b+', 'dropping a prefix cleared a later entry\'s pieces');
+  const c = reopened.append(writeFile('home/user/out/c', 'c'));
+  assert.equal(dec.decode(oneQuery(() => reopened.read(c)).call.data), 'c');
+  reopened.replace(c, writeFile('home/user/out/c', 'c+'), enc.encode('+'));
+  reopened.dropThrough(b);
+  assert.equal(dec.decode(reopened.read(c).call.data), 'c+');
+  reopened.dropThrough(c);
+  assert.equal(reopened.bytes, 0);
+  assert.deepEqual(oneQuery(() => reopened.entries()), []);
+}
+
 // ── Journals written before data pieces existed still recover ──
 {
   const s = session();

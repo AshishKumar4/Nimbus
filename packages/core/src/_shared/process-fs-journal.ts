@@ -93,8 +93,10 @@ export function sqlJournal(sql: JournalSql): ProcessFsJournal {
   let next = Number(last?.jid ?? 0) + 1;
   const held = [...sql.exec('SELECT (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nimbus_fs_journal) + (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nimbus_fs_journal_parts) AS bytes')][0];
   let bytes = Number(held?.bytes ?? 0);
+  const withParts = new Set([...sql.exec('SELECT DISTINCT jid FROM nimbus_fs_journal_parts')].map((row) => Number(row.jid)));
   const readRow = (row: Record<string, unknown>): ProcessFsOp => {
     const op = opOf(String(row.op), row.data);
+    if (!withParts.has(Number(row.jid))) return op;
     const extra = [...sql.exec('SELECT COALESCE(SUM(LENGTH(data)), 0) AS bytes FROM nimbus_fs_journal_parts WHERE jid = ?', row.jid)][0];
     const size = Number(extra?.bytes ?? 0);
     if (size === 0) return op;
@@ -126,12 +128,14 @@ export function sqlJournal(sql: JournalSql): ProcessFsJournal {
     replace(jid, op, append) {
       if (append !== undefined) {
         sql.exec('INSERT INTO nimbus_fs_journal_parts (jid, data) VALUES (?, ?)', jid, append);
+        withParts.add(jid);
         bytes += append.byteLength;
         return;
       }
       const before = [...sql.exec('SELECT COALESCE(LENGTH(data), 0) + (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nimbus_fs_journal_parts WHERE jid = ?) AS bytes FROM nimbus_fs_journal WHERE jid = ?', jid, jid)][0];
       const row = rowOf(op);
       sql.exec('UPDATE nimbus_fs_journal SET op = ?, data = ? WHERE jid = ?', row.json, row.data, jid);
+      withParts.delete(jid);
       bytes += (row.data?.byteLength ?? 0) - Number(before?.bytes ?? 0);
     },
     entries() {
@@ -154,6 +158,7 @@ export function sqlJournal(sql: JournalSql): ProcessFsJournal {
       const freed = [...sql.exec('SELECT (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nimbus_fs_journal WHERE jid <= ?) + (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nimbus_fs_journal_parts WHERE jid <= ?) AS bytes', jid, jid)][0];
       bytes -= Number(freed?.bytes ?? 0);
       sql.exec('DELETE FROM nimbus_fs_journal WHERE jid <= ?', jid);
+      for (const at of withParts) if (at <= jid) withParts.delete(at);
       // A numbering no held entry is under any more goes with them.
       sql.exec(
         'DELETE FROM nimbus_fs_numbering WHERE jid < (SELECT COALESCE(MAX(jid), 0) FROM nimbus_fs_numbering WHERE jid <= ?)',
