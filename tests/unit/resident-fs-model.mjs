@@ -605,6 +605,26 @@ const seeds = process.env.NIMBUS_MODEL_SEED !== undefined
 const failures = new Map();
 /** Seeds that met the known engine bug (KNOWN_ENGINE_BUG), and nothing else. */
 const metKnown = [];
+/**
+ * Programs that found a bug, run first, whatever the seeds. A file the
+ * process made, given back with its grant (its row the view's, so nothing
+ * of it is held once its records are answered), renamed under the next
+ * grant and back: its descriptors read it at its name. Red before: only a
+ * grant's cells moved with a rename the grant decided, so the file's held
+ * name was the old one, and a read that could not wait was EAGAIN.
+ */
+const FOUND = [
+  { name: 'renamed under a grant, away and back', grants: true, steps: [
+    { op: 'open', fd: 2, name: 'a', flags: { read: true, write: true, append: true, create: true, exclusive: true, truncate: false } },
+    { op: 'rename', from: 'a', to: 'b' },
+    { op: 'catchUp' },
+    { op: 'rename', from: 'b', to: 'a' },
+  ] },
+];
+for (const found of FOUND) {
+  const failure = await run(found.steps, found.grants).then(() => null, (error) => error);
+  if (failure !== null && failure.known !== true) failures.set(`found: ${found.name}`, { seeds: [0], reason: failure, minimal: found.steps, grants: found.grants });
+}
 for (const seed of seeds) {
   const steps = program(seed);
   // A third of the programs run with the session granting the subtree the process changes.
