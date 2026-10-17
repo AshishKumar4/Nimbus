@@ -74,13 +74,16 @@ async function opencodeOneShot(program) {
   return { result: await response.json(), caught };
 }
 
-/** A one-shot node exec of `program` over the session's supervisor; `sent` is each stream's bytes, as they came. */
-async function nodeOneShot(program, onWrite = () => {}) {
+/**
+ * A one-shot node exec of `program` over the session's supervisor; each
+ * write goes to `onWrite(stream, bytes)`, by default kept in `sent`.
+ */
+async function nodeOneShot(program, onWrite = null) {
   const { createAuthority } = await import('./lib/resident-body.mjs');
   const { adoptSessionSupervisor, oneShotManager, runnerLoader } = await import('./lib/one-shot-runner.mjs');
   const { host, rawVfs } = createAuthority();
   const sent = { stdout: [], stderr: [] };
-  adoptSessionSupervisor(host, (_text, stream, bytes) => { onWrite(stream, bytes); sent[stream].push(bytes); });
+  adoptSessionSupervisor(host, (_text, stream, bytes) => (onWrite ? onWrite(stream, bytes) : sent[stream].push(bytes)));
   const manager = oneShotManager('output-capture', { host, rawVfs, loader: runnerLoader('output-capture') });
   const run = manager.exec(program, { filename: '/home/user/live.js', dirname: '/home/user', cwd: '/home/user', captureOutput: false });
   return { run, sent };
