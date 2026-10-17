@@ -33,6 +33,9 @@ The 2026-10-14 and 2026-10-15 versions reached production but were never publish
   the way, that credit is reclaimed: the launch prepares again at its turn,
   and the load takes its credit once it has a worker. A load refused its
   credit fails at once with EAGAIN.
+- Fixed: launch-credit contention no longer changes which learned reads or
+  lazy imports are staged. A tight first try now retries with full credit
+  instead of trimming the program's snapshot.
 - Fixed: a command waiting for its session's busy workers no longer stalls
   commands in other sessions sharing its isolate. One-shot commands prepare
   their module maps before waiting and keep only their retained share of the

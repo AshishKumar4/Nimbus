@@ -4403,9 +4403,9 @@ async function withPrefetchAllocation<T>(work: (admission: PrefetchAdmission) =>
 }
 
 /** The launch's cells, gathered from `vfs` (callers hold withPrefetchAllocation's admission). */
-async function gatherPrefetchBundle(vfs: LaunchFs, options: PrefetchBundleOptions, internalBound = false): Promise<FacetVfsState> {
+async function gatherPrefetchBundle(vfs: LaunchFs, options: PrefetchBundleOptions, creditLimit?: number): Promise<FacetVfsState> {
   try {
-    return await _buildPrefetchBundle(vfs, options);
+    return await _buildPrefetchBundle(vfs, options, creditLimit);
   } catch (error) {
     // The modules earlier runs executed are what an earlier run got through
     // without; they must not stop this one starting. A launch they (or
@@ -4415,10 +4415,10 @@ async function gatherPrefetchBundle(vfs: LaunchFs, options: PrefetchBundleOption
     // loads late, as the run that learned it loaded it. Only a launch that
     // overflows pays the second build.
     const learned = options.executedModules ?? [];
-    if (internalBound || !(error instanceof ClosureBoundExceededError) || learned.length === 0 || learned.every((root) => root.optional)) throw error;
+    if (!(error instanceof ClosureBoundExceededError) || error.outcome.bound === creditLimit || learned.length === 0 || learned.every((root) => root.optional)) throw error;
     console.warn(`[facet-manager] the modules earlier runs executed take ${options.scriptPath ?? 'the entry code'}'s map past `
       + `its ${options.maxBundleBytes ?? VFS_BUNDLE_MAX_BYTES}-byte bound (${error.outcome.lastPath}); they are staged as optional roots, as far as the bound allows`);
-    return await _buildPrefetchBundle(vfs, { ...options, executedModules: learned.map((root) => ({ ...root, optional: true })) });
+    return await _buildPrefetchBundle(vfs, { ...options, executedModules: learned.map((root) => ({ ...root, optional: true })) }, creditLimit);
   }
 }
 
@@ -4444,6 +4444,7 @@ async function _buildPrefetchBundle(
     staticRefs,
     dataOnly = false,
   }: PrefetchBundleOptions,
+  creditLimit?: number,
 ): Promise<FacetVfsState> {
   // Read the cursor BEFORE the walk: a mutation that lands while the bundle
   // is being assembled must be reported as invalidated, not silently missed.
@@ -4464,7 +4465,7 @@ async function _buildPrefetchBundle(
   // configs ride along, as optional roots (RequiredModuleRoot.config).
   const configRoots = [...preloads, ...await toolConfigRoots(vfs, cwd, scriptPath)];
   const walkRoots = (roots: Array<RequiredModuleRoot | PreloadModuleRoot>) => prefetchForRequire(requireFsOverBridge(vfs), entryCode || '', cwd, scriptPath,
-    maxBundleBytes, pacer?.spend.bind(pacer), undefined, roots.length > 0 ? roots : undefined, conditions);
+    maxBundleBytes, pacer?.spend.bind(pacer), undefined, roots.length > 0 ? roots : undefined, conditions, creditLimit);
   // A launch they take past the bound is built again with them optional (buildPrefetchBundle).
   const prefetch = await walkRoots([...configRoots, ...executedModules ?? []]);
   phase('walk');
@@ -4487,6 +4488,8 @@ async function _buildPrefetchBundle(
   for (const path of closurePaths) room -= _bundleCellRawBytes(bundle[path]);
   let truncated = false;
   const budgetState = { totalBytes: 0, fileCount: 0 };
+  const emits = new Map<string, string>();
+  const codeOnly = new Set<string>();
   // Each enrichment pass below re-scans the bundle accumulated so far, so a
   // pass costs about what the bundle currently weighs however little it adds
   // — which is why the cost reported here is the bundle's weight and not
@@ -4495,9 +4498,25 @@ async function _buildPrefetchBundle(
   // a large program's build cross turns — pi's passes each scan tens of MB —
   // while a small one never reaches a chunk bound and runs exactly as it
   // always did, with no suspension at all.
-  const paceAfterPass = pacer
-    ? () => pacer.spend(_bundleWeight(bundle))
-    : () => Promise.resolve();
+  const paceAfterPass = () => {
+    // Credit only aborts a try; every content choice still uses maxBundleBytes.
+    if (creditLimit !== undefined) {
+      let bytes = 0;
+      let lastPath = scriptPath ?? 'entry code';
+      for (const [path, cell] of Object.entries(bundle)) {
+        if (!codeOnly.has(path)) bytes += _bundleCellRawBytes(cell);
+        if (bytes > creditLimit) { lastPath = path; break; }
+      }
+      if (bytes <= creditLimit) for (const [path, emit] of emits) {
+        bytes += utf8Length(emit);
+        if (bytes > creditLimit) { lastPath = path; break; }
+      }
+      if (bytes > creditLimit) throw new ClosureBoundExceededError({
+        kind: 'closure-exceeds-bound', entry: scriptPath ?? 'entry code', bytesSeen: bytes, bound: creditLimit, lastPath,
+      });
+    }
+    return pacer ? pacer.spend(_bundleWeight(bundle)) : Promise.resolve();
+  };
 
   // 1.5 Observed reads. Every pass below this line guesses what a program
   //     will read — from a call shape, a package layout, a string literal —
@@ -4609,7 +4628,6 @@ async function _buildPrefetchBundle(
   //     for staging, TypeScript stripped or compiled, CommonJS's import()
   //     routed; each result is the path's emit, and each ES module's import
   //     sites are kept for its staging below. A data-only build has none.
-  const emits = new Map<string, string>();
   const esModules = new Map<string, string>();
   // A file staged only to run carries its emit and not itself
   // (FacetVfsState.codeOnly): installed code is most of a map, and each ES
@@ -4619,7 +4637,6 @@ async function _buildPrefetchBundle(
   // project that tools read their sources and configs from (Vite bundling
   // vite.config.ts, tsc, a linter).
   const projectRoot = cwdProjectRoot(cwd);
-  const codeOnly = new Set<string>();
   const runOnly = (path: string) =>
     stagedToRun.has(path) && !observedPaths.has(path) && !learnedPaths.has(path) && !inCwdProject(projectRoot, path);
   // A code-only file's cell is given its emit, the one string, the moment it
@@ -4697,7 +4714,7 @@ async function _buildPrefetchBundle(
     rawTotal += bytes;
   }
   if (rawTotal > maxBundleBytes) {
-    // Eager manifests are counted here: a bounded try can overrun its share by their size before it bounces.
+    // This content ceiling is independent of the transient limit checked after each pass.
     // Only the walk's closure can fail a launch, and the path it names is the
     // one whose bytes (with its emit) crossed the bound, in walk order.
     let closureBytes = 0;
@@ -6582,7 +6599,7 @@ export class FacetManager {
     // hold a worker, and waits for no credit.
     const held = this.buildAdmissions.get(entry.pid);
     this.buildAdmissions.delete(entry.pid);
-    const buildUnder = async (admission: PrefetchAdmission, bound: number, internalBound: boolean): Promise<{ state: FacetVfsState; shared: { state: FacetVfsState; revision: number } | null }> => {
+    const buildUnder = async (admission: PrefetchAdmission, fullBound: number, creditLimit: number | undefined): Promise<{ state: FacetVfsState; shared: { state: FacetVfsState; revision: number } | null }> => {
       const admitted = admission.queued ? await takeCached() : null;
       if (admitted) return { state: admitted, shared: null };
       // It builds the filesystem as it is now, read again after its wait: a
@@ -6620,7 +6637,7 @@ export class FacetManager {
         learnedFor,
         // Under the ceiling's bound, what earlier runs executed is staged as far as it allows (_rebuildUnderCeiling).
         executedModules: spec.maxBundleBytes === undefined ? executed : executed.map((root) => ({ ...root, optional: true })),
-        maxBundleBytes: bound,
+        maxBundleBytes: fullBound,
         transformStore: this._transformStore(),
         conditions: launch.conditions,
         stripTypes: launch.stripTypes,
@@ -6629,7 +6646,7 @@ export class FacetManager {
           ...launch.import.map((specifier) => ({ preload: 'import' as const, specifier })),
         ],
         ...(evaluatedModule ? { entryEsModule: entryEsModuleKey(spec.scriptPath, spec.cwd) } : {}),
-      }, internalBound);
+      }, creditLimit);
       // A preparation returning for a larger map keeps the share it already sized.
       if (held === undefined) admission.fit(vfsState.rawBytes ?? 0);
       if (offered.length > 0) {
@@ -6717,13 +6734,13 @@ export class FacetManager {
         const fullBound = spec.maxBundleBytes ?? VFS_BUNDLE_MAX_BYTES;
         const bound = admission.held() < SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES
           ? Math.min(fullBound, Math.floor(admission.held() / PREFETCH_PEAK_PER_BYTE)) : fullBound;
-        const internalBound = bound < fullBound;
+        const creditLimit = bound < fullBound ? bound : undefined;
         try {
-          return await buildUnder(admission, bound, internalBound);
+          return await buildUnder(admission, fullBound, creditLimit);
         } catch (error) {
           // The failed gather has unwound before its credit is returned; no partial cells survive the bounce.
           this._releaseBuildAdmission(entry.pid);
-          if (!internalBound || !(error instanceof ClosureBoundExceededError) || error.outcome.bound !== bound) throw error;
+          if (creditLimit === undefined || !(error instanceof ClosureBoundExceededError) || error.outcome.bound !== creditLimit) throw error;
           admission = await admitPrefetch(() => this._launchEnds(entry.pid));
         }
       }

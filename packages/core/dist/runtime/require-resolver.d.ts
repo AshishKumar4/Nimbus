@@ -144,9 +144,10 @@ export interface PreloadModuleRoot {
  * Resolve the complete dependency graph starting from entry code.
  * `conditions`: the program's own (`node --conditions`), beside Node's, for
  * `require` and `import` alike, as the process resolves under them.
+ * `abortBundleBytes` only refuses a try; it never limits optional content.
  */
-export declare function prefetchForRequire(vfs: StagingRequireFs, entryCode: string, cwd: string, entryFile?: string, maxBundleBytes?: number, progress?: WalkProgress, policy?: undefined, requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>, conditions?: readonly string[]): Promise<PrefetchOutcome>;
-export declare function prefetchForRequire(vfs: StagingRequireFs, entryCode: string, cwd: string, entryFile: string | undefined, maxBundleBytes: number | undefined, progress: WalkProgress | undefined, policy: DependencyClosurePolicy, requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>, conditions?: readonly string[]): Promise<DependencyClosureOutcome>;
+export declare function prefetchForRequire(vfs: StagingRequireFs, entryCode: string, cwd: string, entryFile?: string, maxBundleBytes?: number, progress?: WalkProgress, policy?: undefined, requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>, conditions?: readonly string[], abortBundleBytes?: number): Promise<PrefetchOutcome>;
+export declare function prefetchForRequire(vfs: StagingRequireFs, entryCode: string, cwd: string, entryFile: string | undefined, maxBundleBytes: number | undefined, progress: WalkProgress | undefined, policy: DependencyClosurePolicy, requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>, conditions?: readonly string[], abortBundleBytes?: number): Promise<DependencyClosureOutcome>;
 /**
  * The file a deferral a dependency closure reported (PrefetchResult.deferred)
  * loads, or null; resolved as the walk resolves its own, staging nothing:
