@@ -15,6 +15,13 @@ The 2026-10-14 and 2026-10-15 versions reached production but were never publish
   looked up: the lookup carried on over a listing from before the
   directory reached the session. Each step of a lookup now catches up
   with the session first when the process has sent it anything.
+- Fixed: a process that wrote a file through a descriptor in a subtree it
+  held itself (a WASI process's delegation) could lose those bytes when
+  the file stayed open more than 100 ms after the write. The held write
+  was stored later as if another process had made it, the store refused
+  it, and the close failed with EBADF. It is now stored as the writer's.
+  A close whose held writes the store refuses now reports that refusal,
+  for example ENOSPC, and names the file, instead of EBADF.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
