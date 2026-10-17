@@ -94,11 +94,12 @@ export interface DataPlanInput {
   /** Called with the bytes of each listed page, to pace a long walk. */
   spend?: (units: number) => Promise<void>;
   /**
-   * Name the stylesheet sources' roots where the process's listing walks
-   * mounts (NimbusFilesystemAuthority.nameLaunch), as its launch's own
-   * names are, so that its listing at boot holds what is under them.
+   * Name what the stylesheet sources' walk read (planStylesheetSources'
+   * `read`) where the process's listing walks mounts
+   * (NimbusFilesystemAuthority.nameLaunch), as its launch's own names are,
+   * so that its listing at boot holds what the plan holds.
    */
-  nameSources?: (roots: readonly string[]) => void;
+  nameSources?: (read: readonly string[]) => void;
 }
 
 export type DataPlanRule =
@@ -421,8 +422,8 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
   const linkedDirs: { target: string; rule: DataPlanRule }[] = [];
   /** The project's stylesheets, for the sources they name (stylesheet-source): its own, and those behind its links. */
   const projectSheets: string[] = [];
-  /** Directories the listing did not walk, on a mount whose listing walks what is named. */
-  const unlisted: string[] = [];
+  /** The mount points of directories the listing did not walk: mounts whose listing walks what is named. */
+  const unlistedMounts = new Set<string>();
   /**
    * A statically named file is worth holding when the module map does not
    * already hold it, and it is data-sized or the code reads it synchronously
@@ -444,7 +445,7 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
       const k = key(raw.path);
       const entry = { path: k, kind: raw.kind, size: raw.size };
       if (entry.kind === 'directory') {
-        if (raw.unlisted !== undefined) unlisted.push(k);
+        if (raw.unlisted !== undefined) unlistedMounts.add(key(raw.unlisted));
         if (listed.has(k)) expanded.add(k);
         if (packageRootOf(k + '/x') === k) packageRoots.add(k);
         continue;
@@ -661,14 +662,16 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     const found = await planStylesheetSources({ ...source, linkTarget: links.linkTarget }, { cwd, home, sheets: projectSheets, spend: input.spend });
     for (const entry of found.files) take(entry, 'stylesheet-source');
     sourceRoots.push(...found.roots);
-    if (found.roots.length > 0 && input.nameSources) {
-      // Named, a root on a mount the listing did not walk adds what is under it to the listing: its names are counted.
-      const roots = found.roots.map(key);
-      const unwalked = roots.filter((r) => unlisted.some((u) => under(u, r) || under(r, u)))
-        .filter((r, _, all) => !all.some((other) => other !== r && under(other, r)));
-      const before = await listedUnder(source, unwalked);
-      input.nameSources(found.roots);
-      names += (await listedUnder(source, unwalked)) - before;
+    if (found.read.length > 0 && input.nameSources) {
+      // Named, what the walk read on a mount the listing did not walk joins
+      // the listing, with the directories above it there: the names it adds
+      // are counted, over each such mount.
+      const read = found.read.map(key);
+      const mounts = [...unlistedMounts].filter((m) => read.some((k) => under(m, k)))
+        .filter((m, _, all) => !all.some((other) => other !== m && under(other, m)));
+      const before = await listedUnder(source, mounts);
+      input.nameSources(found.read);
+      names += (await listedUnder(source, mounts)) - before;
     }
   }
 
@@ -680,18 +683,19 @@ function under(dir: string, k: string): boolean {
   return dir === '' || k === dir || k.startsWith(dir + '/');
 }
 
-/** How many names the listing has below `dirs`, each listed from where it begins. */
+/** How many names the listing has below `dirs`, each listed from where it begins to where its names end. */
 async function listedUnder(source: Pick<DataPlanSource, 'list'>, dirs: readonly string[]): Promise<number> {
   let count = 0;
   for (const dir of dirs) {
     const prefix = dir + '/';
+    let inside = false;
     for (let after: string | null = dir; after !== null;) {
       const page = await source.list(after);
       after = page.next;
       for (const raw of page.entries) {
         const k = key(raw.path);
-        if (k.startsWith(prefix)) count++;
-        else if (k > prefix) { after = null; break; }
+        if (k.startsWith(prefix)) { count++; inside = true; continue; }
+        if (inside || k > prefix) { after = null; break; }
       }
     }
   }
@@ -726,12 +730,13 @@ function below(dir: WalkedDir, at: string): boolean {
  * directory at a time with the project rule's exclusions, which are of a path
  * as it is named below its root, whatever a link makes of it. The roots it
  * returns are what the facet's barriers push: those, and wherever a link
- * below one leads.
+ * below one leads; `read` is where it read, which a process's listing of a
+ * mount that walks only what is named must be named.
  */
 export async function planStylesheetSources(
   source: Pick<DataPlanSource, 'readText' | 'stat' | 'linkTarget' | 'readdir'>,
   input: { cwd: string; home: string; sheets: Iterable<string>; spend?: (units: number) => Promise<void> | void },
-): Promise<{ roots: string[]; files: DataPlanEntry[] }> {
+): Promise<{ roots: string[]; files: DataPlanEntry[]; read: string[] }> {
   const cwd = key(input.cwd);
   const home = key(input.home);
   const roots: string[] = [];
@@ -763,12 +768,18 @@ export async function planStylesheetSources(
     }
   }
   const files = new Map<string, DataPlanEntry>();
+  // Where the walk read: each directory it listed, and each file it holds that no such listing named.
+  const read = new Set<string>();
   // What a barrier pushes: the roots, and wherever a link below one leads out of them.
   const pushed = [...roots];
   const pushFrom = (k: string) => { if (!pushed.some((dir) => under(dir, k))) pushed.push(k); };
   for (const root of roots) {
     const at = await source.stat(root);
-    if (at?.kind === 'file') { files.set(root, { path: root, kind: 'file', size: at.size }); continue; }
+    if (at?.kind === 'file') {
+      files.set(root, { path: root, kind: 'file', size: at.size });
+      read.add(root);
+      continue;
+    }
     if (at?.kind !== 'directory') continue;
     // Each directory as it is named below the root, which its exclusions are
     // of, where it is, which is what is read, and what it is below: a name is
@@ -779,6 +790,7 @@ export async function planStylesheetSources(
       if (dir === undefined) break;
       const entries = await source.readdir(dir.at);
       if (entries === null) continue;
+      read.add(dir.at);
       if (input.spend) await input.spend(entries.length * 64);
       for (const entry of entries) {
         const named = dir.named === '' ? baseOf(entry.path) : `${dir.named}/${baseOf(entry.path)}`;
@@ -796,9 +808,10 @@ export async function planStylesheetSources(
         } else if (kind === 'file' && !excludedBelow(home, root, named)) {
           pushFrom(path);
           files.set(path, { path, kind, size });
+          if (path !== entry.path) read.add(path);
         }
       }
     }
   }
-  return { roots: pushed.map((root) => '/' + root), files: [...files.values()] };
+  return { roots: pushed.map((root) => '/' + root), files: [...files.values()], read: [...read].map((k) => '/' + k) };
 }

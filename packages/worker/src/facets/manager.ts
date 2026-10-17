@@ -6260,7 +6260,7 @@ export class FacetManager {
       learned,
       conditions,
       spend: (units) => pacer.spend(units),
-      nameSources: (roots) => filesystem.nameLaunch?.(entry, () => roots),
+      nameSources: (read) => filesystem.nameLaunch?.(entry, () => read),
     });
     trace(`planned ${plan.paths.length}`);
     // What the facet's store will hold (N18), in the cost its store charges
@@ -6312,7 +6312,7 @@ export class FacetManager {
       const found = await planStylesheetSources(planSourceOf(vfs), { cwd, home: home || '/home/user', sheets, spend: (units) => pacer.spend(units) });
       for (const file of found.files) if (!held.has(file.path)) plan.add(file.path);
       // Where its listing walks mounts, as its launch's names are.
-      this.filesystem.nameLaunch?.(entry, () => found.roots);
+      this.filesystem.nameLaunch?.(entry, () => found.read);
     }
     return [...plan];
   }
