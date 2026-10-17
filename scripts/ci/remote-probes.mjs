@@ -69,6 +69,7 @@ import { mapOnArmada } from './lib/armada.mjs';
 import { assertInstalled } from './lib/installed.mjs';
 import { defaultBaseline, pairedPreviews } from './lib/paired-previews.mjs';
 import { OBSERVABILITY_TOKEN_FILE, attributeRow, describeAttribution, regradable, showsResetSymptom, telemetry } from './lib/reset-attribution.mjs';
+import { openRunDir } from './lib/run-dir.mjs';
 import { NIMBUS_STATE } from './lib/state-dir.mjs';
 import { writeScreenshots } from './lib/probe-screenshots.mjs';
 
@@ -157,6 +158,8 @@ const onArmada = async (job) => {
 };
 
 let arms = null;
+/** This run's own directory (lib/run-dir.mjs), opened when it fetches a release. */
+let runDir = null;
 /** The deployment each throwaway this run grades must serve throughout: its upload's, or the target's when this run did not upload it. */
 const expected = {};
 let status = 0;
@@ -172,9 +175,18 @@ try {
     : flags.baseline ? git(repo, ['rev-parse', '--verify', `${flags.baseline}^{commit}`]) : defaultBaseline(repo, sha);
   // Every release this run uploads, built at once and settled together: the
   // candidate's for --deploy or the paired arms b1 and b2, the baseline's for a1 and a2.
+  // They, and the baseline's checkout, are this run's alone: kept in its own directory under RUNS, deleted when it ends.
   const commits = [...new Set([...(flags.deploy || baseline ? [sha] : []), ...(baseline ? [baseline] : [])])];
+  if (commits.length > 0) {
+    runDir = openRunDir(repo);
+    process.on('exit', () => {
+      // A Preview its checkout could not take down is finished from that checkout: then the directory stays.
+      const left = arms?.teardown() ?? [];
+      for (const line of [...left, ...(left.length > 0 ? runDir.keep() : runDir.close())]) console.error(`remote-probes: LEFT BEHIND ${line}`);
+    });
+  }
   const { fetchRelease } = await import('./lib/release.mjs');
-  const built = await Promise.allSettled(commits.map((commit) => fetchRelease({ repo, sha: commit, targets: ['apps/probe'] })));
+  const built = await Promise.allSettled(commits.map((commit) => fetchRelease({ repo, sha: commit, targets: ['apps/probe'], into: join(runDir.dir, 'releases') })));
   const releases = {};
   for (const [i, outcome] of built.entries()) {
     if (outcome.status === 'rejected') throw outcome.reason;
@@ -183,8 +195,8 @@ try {
   signals(true);
   if (flags.deploy) {
     // Its exports (a token among them) are not wanted: probes get their own, below.
-    const up = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'up', '--name', flags.deploy, '--bundle', releases[sha]], { cwd: repo, stdio: ['ignore', 'ignore', 'inherit'] });
-    if (up.status !== 0) throw new Error(`the upload of the release to ${flags.deploy} failed (exit ${up.status}); the release is in ${releases[sha]}`);
+    const up = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'up', '--name', flags.deploy, '--bundle', releases[sha]], { cwd: repo, stdio: runDir.stdio(['ignore', 'ignore', 'inherit']) });
+    if (up.status !== 0) throw new Error(`the upload of the release to ${flags.deploy} failed (exit ${up.status})`);
   }
   // A target this run uploaded must serve that upload (its record's versionId); one it did not, what it serves now.
   if (throwaway !== undefined) {
@@ -193,10 +205,7 @@ try {
   }
   if (baseline) {
     console.error(`remote-probes: ${paired.join(', ')} graded against ${baseline.slice(0, 12)}${baseline === sha ? ' (the candidate itself)' : ''}`);
-    arms = pairedPreviews({ repo });
-    process.on('exit', () => {
-      for (const line of arms.teardown()) console.error(`remote-probes: LEFT BEHIND ${line}`);
-    });
+    arms = pairedPreviews({ repo, runDir });
     await arms.standUp({ baseline, candidate: sha, releases });
     for (const [arm, id] of Object.entries(arms.receipts())) expected[`arm ${arm}`] = id;
   }
