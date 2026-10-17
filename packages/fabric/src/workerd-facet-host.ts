@@ -800,6 +800,12 @@ async function runOneShot<T>(
     // that builds a pipelined `fetch.call` path workerd refuses for
     // dynamically-loaded workers.
     let enter: (request: Request, ended: () => Promise<string | null>) => Promise<Response>;
+    let wasEntered = false;
+    const entered = () => {
+      if (wasEntered) return;
+      wasEntered = true;
+      params.onEntered?.();
+    };
     if ('stage' in code) {
       // Assembled and loaded in a stateless isolate, on its loader's miss,
       // never here, and entered by fetch with a binding minted there: a stub
@@ -827,7 +833,7 @@ async function runOneShot<T>(
       entrypoint = ep;
       if (typeof ep.run !== 'function') throw new Error('Nimbus: one-shot runtime entrypoint has no run method');
       const handed = capability;
-      enter = (request, ended) => ep.run(request, handed, ended);
+      enter = (request, ended) => ep.run(request, handed, () => { entered(); return ended(); });
     }
     // The loader has taken the map; holding it here would keep a second full
     // copy of the program alive for as long as the program runs.
@@ -844,6 +850,7 @@ async function runOneShot<T>(
         return await untilEnded(params.request.signal, async (ended) => {
           const response = await enter(request, ended);
           started = true;
+          entered();
           try {
             return await consume(response);
           } finally {

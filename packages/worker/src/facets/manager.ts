@@ -2433,6 +2433,9 @@ const ONE_SHOT_HOST_ENTRY_BYTES = 4096;
  */
 const LAUNCH_STALL_MS = 10_000;
 
+/** How much of a stalled launch's command its report carries: a command line can be any length, and a log line has a budget. */
+const LAUNCH_STALL_COMMAND_CHARS = 200;
+
 type LaunchStage = 'prepare' | 'admission' | 'load';
 
 /** A resident's staged napi bindings: the shared loader's text, the trampoline by value, each build by path. */
@@ -7161,7 +7164,9 @@ export class FacetManager {
     // never ran.
     let admitted = false;
     let prepareFailed = false;
-    this._launchStage(entry, 'prepare');
+    this._launchStage(entry, 'prepare', abortController.signal);
+    // A kill ends the launch where it waits, whether or not that wait hears it.
+    abortController.signal.addEventListener('abort', () => this._launchEnded(entry.pid), { once: true });
     // Paced like a resident launch: a tree too large for one turn costs
     // turns, and the pacer's stillWanted check ends a build whose process was
     // killed while it was suspended. The invocation that granted the last
@@ -7215,11 +7220,11 @@ export class FacetManager {
         this._end(entry.pid, { code: 1, cause: `assembling the filesystem bundle for \`${command}\` failed: ${errorMessage(err)}` });
         throw err;
       }
-      this._launchStage(entry, 'admission');
+      this._launchStage(entry, 'admission', abortController.signal);
       await brokered?.(abortController.signal);
       return await withLaunchAdmission(this.ctx, { pid: entry.pid }, abortController.signal, async () => {
         admitted = true;
-        this._launchStage(entry, 'load');
+        this._launchStage(entry, 'load', abortController.signal);
         // What it reports missing as it runs is filed against this bundle.
         if (vfsState.bundleKey) this.launchBundles.set(entry.pid, { key: vfsState.bundleKey, refused: new Set() });
         // Where the one-shot's listing of its namespace walks mounts: what its
@@ -7439,11 +7444,13 @@ export class FacetManager {
   }
 
   /**
-   * `entry`'s launch is at `stage` from now. One that waits LAUNCH_STALL_MS
-   * at a stage logs one line naming it, with the ledger's and the pacer's
-   * state, and no more after that.
+   * `entry`'s launch is at `stage` from now, until its run is entered or it
+   * is killed (`signal`). One that waits LAUNCH_STALL_MS at a stage logs one
+   * line naming it, with the ledger's and the pacer's state, and no more
+   * after that.
    */
-  private _launchStage(entry: ProcessEntry, stage: LaunchStage): void {
+  private _launchStage(entry: ProcessEntry, stage: LaunchStage, signal: AbortSignal): void {
+    if (signal.aborted) return;
     const prior = this.launching.get(entry.pid);
     if (prior?.stall) clearTimeout(prior.stall);
     const reported = prior !== undefined && prior.stall === null;
@@ -7453,14 +7460,16 @@ export class FacetManager {
       launch.stall = null;
       const { inFlightWorkers, waiting, pauseMs } = loaderLedgerStats(this.ctx);
       console.warn(`[facet-manager] launch stalled: ${JSON.stringify({
-        pid: entry.pid, command: launch.command, stage: launch.stage, ms: Date.now() - launch.since,
+        pid: entry.pid,
+        command: launch.command.length > LAUNCH_STALL_COMMAND_CHARS ? `${launch.command.slice(0, LAUNCH_STALL_COMMAND_CHARS)}…` : launch.command,
+        stage: launch.stage, ms: Date.now() - launch.since,
         ledger: { inFlight: inFlightWorkers.length, waiting, pauseMs }, pacer: this.launchPump.state(),
       })}`);
     }, LAUNCH_STALL_MS);
     this.launching.set(entry.pid, { stage, since: Date.now(), command: entry.command, stall });
   }
 
-  /** `pid`'s launch is over: it runs, or it ended before it could. */
+  /** `pid`'s launch is over: its run was entered, or it ended before it could be. */
   private _launchEnded(pid: number): void {
     const launch = this.launching.get(pid);
     if (launch?.stall) clearTimeout(launch.stall);
@@ -7941,9 +7950,9 @@ export class FacetManager {
             this._activateProcessVfsWriter(entry.pid, id);
             writerActivated = true;
           },
+          onEntered: () => this._launchEnded(entry.pid),
           onLoaded: () => {
             pacer.settle();
-            this._launchEnded(entry.pid);
             if (!diagSink) return;
             diagSink.loadMs = Date.now() - __loadStart;
             __runStart = Date.now();
