@@ -861,9 +861,9 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
    */
   list(after?: string | null, limit?: number): VfsListPage | Promise<VfsListPage> {
     if (!mountsBeyondSqlite(this.namespace)) {
-      // A listing of SQLite alone from the start begins at no mount table.
-      const listing = after === null || after === undefined ? this.listing(false) : undefined;
-      if (listing) listing.table = null;
+      // A later mount must invalidate this SQLite-only listing too.
+      const listing = after === null || after === undefined ? this.listing(true) : undefined;
+      if (listing) listing.table = this.namespace.feed.position().table;
       return this.bridge.list(after, limit);
     }
     this.authority();
