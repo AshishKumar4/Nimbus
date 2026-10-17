@@ -32,6 +32,24 @@ export function kernelInstaller(vfs, sql, opts) {
   return installer;
 }
 
+/**
+ * A package the write shard is asked to install.
+ * @typedef {{ name: string, version: string, pkgDir?: string, mtime?: number, receipt?: string }} ShardPackage
+ */
+
+/**
+ * @param {{
+ *   root: { mkdir(path: string, options?: { recursive?: boolean }): void, writeFile(path: string, content: string): void, utimes(path: string, atime: number, mtime: number): void },
+ *   NM: string,
+ *   resultFor: (name: string, spec: { name: string, range?: string }) => object,
+ *   shardsSeen?: string[],
+ *   failFor?: (p: ShardPackage) => string | null,
+ *   crashFor?: (p: ShardPackage) => 'before' | 'partial' | 'after' | null,
+ *   manifestFor?: (p: ShardPackage) => object,
+ *   filesFor?: (p: ShardPackage) => Record<string, string>,
+ *   writeReceipt?: ((path: string) => void) | null,
+ * }} options
+ */
 export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], failFor = () => null, crashFor = () => null, manifestFor = (p) => ({ name: p.name, version: p.version }), filesFor = () => ({}), writeReceipt = null }) {
   const fanoutReply = (args) => {
     if (args[0] && Array.isArray(args[0].packages)) {

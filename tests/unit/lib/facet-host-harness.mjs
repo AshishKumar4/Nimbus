@@ -75,6 +75,10 @@ export const atTestEnd = (() => {
  * still running when the test ends is killed (atTestEnd), as a session's
  * teardown ends its residents.
  */
+/**
+ * @param {{ get(pid: number): { state?: string, attachedTty?: boolean } | undefined, kill(pid: number): void }} processes
+ * @param {(request: Request) => Response | Promise<Response>} [respond]
+ */
 export function residentRunner(processes, respond = () => new Response('ok')) {
   const started = new Set();
   atTestEnd(() => {
@@ -310,12 +314,14 @@ composeFabric({ supervisorEntrypoint: 'SupervisorRPC', ...(composedNamespace ===
 
 /** Observe the real host's public boot boundary without retaining generated source. */
 export function captureProcessBoots(world) {
-  return (...args) => {
-    const host = processHostFor(...args);
+  /** @type {typeof processHostFor} */
+  const capture = (ctx, env, disk, network, supervise) => {
+    const host = processHostFor(ctx, env, disk, network, supervise);
     const open = host.open.bind(host);
     host.open = (params) => { world.bootSpecs.push(params.boot); return open(params); };
     return host;
   };
+  return capture;
 }
 
 /** The two settings of NIMBUS_PROCESS_HOST, for suites that run under both. */
@@ -337,6 +343,11 @@ export const PROCESS_HOST_MODES = ['facet', 'peer'];
  *
  * `hostBinding` names the peers' namespace in the hosts' env, as an embedder
  * that composes its own (composeFabric({ hostNamespace })) names it.
+ *
+ * @param {'facet' | 'peer'} mode
+ * @param {ReturnType<typeof createFacetWorld>} world
+ * @param {ReturnType<Parameters<typeof processHostFor>[2]>} disk
+ * @param {{ env?: object, coordDoId?: string, colocated?: boolean, peerWithoutFacets?: boolean, deliveries?: boolean, hostBinding?: string }} [options]
  */
 export function createProcessHost(mode, world, disk, {
   env, coordDoId = 'coord-do-id', colocated = false, peerWithoutFacets = false, deliveries = false, hostBinding = 'NIMBUS_SESSION',
@@ -347,23 +358,20 @@ export function createProcessHost(mode, world, disk, {
   };
   const coordinator = createFacetCtx(world, coordDoId);
   const hostIncarnation = deliveries ? openSupervisorDeliveries(coordinator).incarnation : undefined;
-  if (mode === 'facet') {
-    const host = processHostFor(coordinator, hostEnv, () => disk);
-    host.hostIncarnation = hostIncarnation;
-    return host;
-  }
+  if (mode === 'facet') return Object.assign(processHostFor(coordinator, hostEnv, () => disk), { hostIncarnation });
   const { ns, peers, calls, stubs } = createPeerNamespace(world, hostEnv, { colocated, peerWithoutFacets, hostBinding });
   const host = processHostFor(
     coordinator,
     { [hostBinding]: ns, NIMBUS_PROCESS_HOST: 'peer' },
     () => disk,
   );
-  host.peers = peers;
-  host.acquireActivity = () => hostActivity(coordinator).acquire();
-  host.namesResolved = calls;
-  host.stubs = stubs;
-  host.hostIncarnation = hostIncarnation;
-  return host;
+  return Object.assign(host, {
+    peers,
+    acquireActivity: () => hostActivity(coordinator).acquire(),
+    namesResolved: calls,
+    stubs,
+    hostIncarnation,
+  });
 }
 
 /**
@@ -375,6 +383,10 @@ export function createProcessHost(mode, world, disk, {
  * `peerWithoutFacets: true` gives each peer no `ctx.facets`. Each peer's storage records the alarm it arms
  * (`ctx.storage.alarmAt`). `onPeer(peer)` sees each peer as it is made.
  * Each peer finds the namespace in its env as `hostBinding`.
+ *
+ * @param {ReturnType<typeof createFacetWorld>} world
+ * @param {object} hostEnv
+ * @param {{ colocated?: boolean, peerWithoutFacets?: boolean, onPeer?: (peer: object) => void, hostBinding?: string }} [options]
  */
 export function createPeerNamespace(world, hostEnv, { colocated = false, peerWithoutFacets = false, onPeer, hostBinding = 'NIMBUS_SESSION' } = {}) {
   const calls = [];
