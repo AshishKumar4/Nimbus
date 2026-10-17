@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `NIMBUS_DEBUG` means the same in a hosted runtime as in a session.
+  A hosted runtime accepted only `'1'`, while its facet manager also took
+  `'true'`, so `'true'` turned on the manager's traces but left the
+  runtime's debug exit notices off. `'1'` and `'true'` now enable both;
+  any other value disables both.
 - Fixed: output that begins with U+FEFF (the UTF-8 BOM) keeps it, as a
   Linux terminal receives every byte a program writes. This covers a
   program's output in the terminal, process logs and `exec` results, a
