@@ -75,8 +75,8 @@ export class PrebundleInputs {
       stat: (path) => {
         try {
           const stat = vfs.stat(path);
-          const signature = statSignature(stat);
-          this.remember(`stat:${path}`, () => statSignature(vfs.stat(path)) === signature);
+          const observed = { ...stat };
+          this.remember(`stat:${path}`, () => sameStat(vfs.stat(path), observed));
           return stat;
         } catch (error) {
           this.remember(`stat:${path}`, () => unavailable(() => { vfs.stat(path); }));
@@ -86,8 +86,8 @@ export class PrebundleInputs {
       readdir: (path) => {
         try {
           const entries = vfs.readdir(path);
-          const signature = directorySignature(entries);
-          this.remember(`readdir:${path}`, () => directorySignature(vfs.readdir(path)) === signature);
+          const observed = entries.map(({ name, type }) => ({ name, type }));
+          this.remember(`readdir:${path}`, () => sameDirectory(vfs.readdir(path), observed));
           return entries;
         } catch (error) {
           this.remember(`readdir:${path}`, () => unavailable(() => { vfs.readdir(path); }));
@@ -132,14 +132,17 @@ function unavailable(read: () => void): boolean {
   }
 }
 
-function statSignature(stat: VfsStat): string {
+function sameStat(now: VfsStat, observed: VfsStat): boolean {
   // A directory's subtree generation/mtime changes when an unrelated descendant is written.
-  return JSON.stringify([stat.dev, stat.ino, stat.type, stat.mode, stat.uid, stat.gid,
-    ...(stat.type === 'directory' ? [] : [stat.gen, stat.size, stat.ctime, stat.mtime])]);
+  return now.dev === observed.dev && now.ino === observed.ino && now.type === observed.type
+    && now.mode === observed.mode && now.uid === observed.uid && now.gid === observed.gid
+    && (now.type === 'directory' || (now.gen === observed.gen && now.size === observed.size
+      && now.ctime === observed.ctime && now.mtime === observed.mtime));
 }
 
-function directorySignature(entries: ReturnType<PrebundleReadFs['readdir']>): string {
-  return JSON.stringify([...entries].sort((a, b) => a.name.localeCompare(b.name)).map(({ name, type }) => [name, type]));
+function sameDirectory(now: ReturnType<PrebundleReadFs['readdir']>, observed: ReturnType<PrebundleReadFs['readdir']>): boolean {
+  // CredentialedVfs.readdir already supplies a stable UTF-16 name order.
+  return now.length === observed.length && now.every((entry, i) => entry.name === observed[i]?.name && entry.type === observed[i]?.type);
 }
 
 export interface SlicePlanEntry { path: string; isDir: boolean; size: number }

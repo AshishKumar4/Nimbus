@@ -17,7 +17,7 @@
 
 import { getSharedRuntimeExternals, vfsBuildInputs, type EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier, splitBareSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
-import { PREBUNDLE_DEFINE, type PrebundleResult } from '@nimbus-sh/core/runtime/prebundle-slice.js';
+import { PREBUNDLE_DEFINE } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import { R_OK } from '@nimbus-sh/core/runtime/process-files.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { recallOf } from '@nimbus-sh/core/vfs/recall.js';
