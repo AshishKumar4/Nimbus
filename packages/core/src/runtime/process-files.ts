@@ -212,7 +212,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   list(after?: string | null, limit?: number): VfsListPage { this.guard(); return this.target.list(after, limit); }
   realpath(path: RuntimeFsPath): string { this.guard(); return this.target.realpath(path); }
   remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean; report?: boolean; keepVanishedAncestors?: boolean }): void | VfsRemoval { this.guard(); return this.target.remove(path, options); }
-  copyFile(from: RuntimeFsPath, to: RuntimeFsPath, options?: { keepMode?: boolean }): void { this.guard(); return this.target.copyFile(from, to, options); }
+  copyFile(from: RuntimeFsPath, to: RuntimeFsPath, options?: { keepMode?: boolean; preserve?: boolean }): void { this.guard(); return this.target.copyFile(from, to, options); }
   copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean; follow?: boolean }): number | Promise<number> {
     this.guard(); return this.target.copyTree(from, to, options);
   }
@@ -1145,8 +1145,8 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       }
     });
   }
-  copyFile(from: RuntimeFsPath, to: RuntimeFsPath, options?: { keepMode?: boolean }) {
-    return this.either<void | number>([from, to], () => this.bridge.copyFile(from, to, options), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { follow: true, keepMode: options?.keepMode }));
+  copyFile(from: RuntimeFsPath, to: RuntimeFsPath, options?: { keepMode?: boolean; preserve?: boolean }) {
+    return this.either<void | number>([from, to], () => this.bridge.copyFile(from, to, options), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { follow: true, keepMode: options?.keepMode, preserve: options?.preserve }));
   }
   copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: { preserve?: boolean; follow?: boolean }) {
     return this.either([from, to], () => this.bridge.copyTree(from, to, options), async () => this.namespace.copy(await this.path(from, options?.follow === true), await this.path(to), { recursive: true, preserve: options?.preserve, follow: options?.follow }));
@@ -1486,7 +1486,7 @@ export class ProcessView implements VFS {
   async copy(from: string, to: string, options?: VfsCopyOptions): Promise<number> {
     return await this.call(options?.recursive ? 'cp' : 'copyfile', from, async () => {
       if (options?.recursive) return await this.fs.copyTree(from, to, { preserve: options.preserve, follow: options.follow });
-      await this.fs.copyFile(from, to, { keepMode: options?.keepMode });
+      await this.fs.copyFile(from, to, { keepMode: options?.keepMode, preserve: options?.preserve });
       return 1;
     }, to);
   }
