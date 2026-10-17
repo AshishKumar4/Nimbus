@@ -438,7 +438,9 @@ async function runSteps(steps, met) {
     }
     // A file a descriptor holds that no name leads to now keeps what the view had of it, by its session number.
     const before = viewOf();
-    const held = [...fds.values()].map((opened) => [opened.session ?? resolve({ opened }), before.fileOf(resolve({ opened }))]);
+    // `S<ino>`: the session's file the view had not admitted, by its number.
+    const sessionNumber = (id) => (typeof id === 'string' && id.startsWith('S') ? Number(id.slice(1)) : id);
+    const held = [...fds.values()].map((opened) => [sessionNumber(opened.session ?? resolve({ opened })), before.fileOf(resolve({ opened }))]);
     admitted = await snapshot();
     pending = [];
     for (const [id, file] of held) {

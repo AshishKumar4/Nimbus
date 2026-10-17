@@ -95,11 +95,16 @@ await runScenarios(import.meta.path, {
   },
 
   async 'mkdir -p is planned whole: one that reaches a name the view cannot place makes nothing'(e = undefined) {
-    e = await boot();
+    e = await bootEngine('holder', {
+      seed(authority) {
+        authority.kfs.mkdir('home/user/elsewhere', { mode: 0o755 });
+        authority.kfs.symlink('/home/user/elsewhere', 'home/user/app/link');
+      },
+    });
     const sync = e.sync;
-    // APP listed: dir known, its children not. `..` after a directory to make leads back into APP.
+    // APP listed: `new` may be made there; `..` after it leads back into APP, and its link into a directory the view has not listed.
     await e.fs.readdir(APP);
-    await answersNow(e, 'mkdir -p through .. into an unlisted directory', () => sync.mkdir(`${APP}/new/../dir/child`, { recursive: true }), 'EAGAIN');
+    await answersNow(e, 'mkdir -p through .. into a directory the view cannot place', () => sync.mkdir(`${APP}/new/../link/child`, { recursive: true }), 'EAGAIN');
     assert.equal(sync.stat(`${APP}/new`), null, 'a refused mkdir -p made a directory');
   },
   async 'what the process holds is answered now, the barrier it owes not taken'(e = undefined) {

@@ -100,14 +100,15 @@ export function timeAt(time: FsTime, kept: number, now: number): number {
 }
 
 /**
- * utimes(2)'s rule: explicit times only by the owner or root (EPERM); the
- * current time by anyone who may write the entry (EACCES).
+ * utimensat(2)'s rule: explicit times only by the owner or root (EPERM); the
+ * current time (and an omitted one) by the owner, root or anyone who may
+ * write the entry (EACCES).
  */
 export function utimesRefusal(
   entry: { readonly mode: number; readonly uid: number; readonly gid: number; readonly type: PosixNodeType },
   explicit: boolean,
   cred: PosixCred,
 ): 'EPERM' | 'EACCES' | null {
-  if (!explicit) return posixAccess(entry, 0o2, cred) ? null : 'EACCES';
+  if (!explicit) return cred.uid === 0 || cred.uid === entry.uid || posixAccess(entry, 0o2, cred) ? null : 'EACCES';
   return cred.uid !== 0 && cred.uid !== entry.uid ? 'EPERM' : null;
 }

@@ -87,6 +87,20 @@ for (const [where, mount] of [['the session', null], ['a SQLite mount', (files) 
   await s.op({ op: 'fsClose', args: [opened.id], pid: s.pid });
 });
 
+// ── The owner sets now on a file it may not write, as utimensat(2) lets
+//    it: owner, writer or root. Red before: refused EACCES ───────────────
+for (const [where, mount] of [['the session', null], ['a SQLite mount', (files) => files]]) await check(`${where}: now by the owner of a file it may not write`, async () => {
+  const s = session(mount);
+  const key = mount === null ? 'home/user/mine' : 'mine';
+  const kernel = mount === null ? s.kernel : s.mountKernel;
+  kernel.writeFile(key, 'm');
+  kernel.chown(key, 1000, 1000);
+  kernel.chmod(key, 0o444);
+  const path = mount === null ? '/home/user/mine' : '/home/user/m/mine';
+  assert.equal(await outcome(() => s.fs.utimes(path, 'now', 'now')), 'ok', `${where}: now by the owner`);
+  assert.equal(await outcome(() => s.fs.utimes(path, 'omit', 'now')), 'ok', `${where}: mtime now by the owner`);
+});
+
 // ── On an awaiting mount, an omitted time is the one there as the change
 //    commits: a change to it between the call and its commit stands ────────
 await check('an awaiting mount keeps an omitted time as it is at commit', async () => {

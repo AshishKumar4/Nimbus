@@ -88,7 +88,7 @@ export interface BatchWritePayload {
  * A time utimes and futimes set, as utimensat(2) takes it: ms since the
  * epoch (explicit: only the owner may set it), 'now' (UTIME_NOW: the
  * clock of the filesystem that commits the change, as it commits it) or
- * 'omit' (UTIME_OMIT: left as it is then). 'now' and 'omit' need only write
+ * 'omit' (UTIME_OMIT: left as it is then). 'now' and 'omit' need the owner or write
  * permission. Carried as it is to the filesystem that commits the change,
  * which alone resolves it (posix-access.ts, timeAt) and judges it
  * (utimesRefusal, explicitTimes).

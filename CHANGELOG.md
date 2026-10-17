@@ -5,6 +5,10 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `utimes`/`futimes` with `'now'` (or an omitted time) by a file's
+  owner now succeeds when the owner lacks write permission, as
+  utimensat(2) allows. Before, it was refused `EACCES`.
+
 - Breaking (worker): `vendor/git.generated.mjs` no longer exports
   `gitHttp`, cf-git's own HTTP client (isomorphic-git/http/web), nor
   declares it (`vendor/git-http.generated.d.ts` is gone). Nimbus's git
