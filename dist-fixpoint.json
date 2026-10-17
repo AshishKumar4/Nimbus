@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "0f3342c2de74ba58ac137b417261107036f2dcc5ff2647cba6504ce1fe9e7a01",
+  "fingerprint": "a1788168138005b56f65a017a4fb2ac56048326a7c2a795c38fbe8cfd7ada3ba",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2624,8 +2624,8 @@
     "packages/worker/dist/npm/package-lock.d.ts.map": "1e516f3fe28816137f8b08e9c0c3b8b8ec06bbd7bdea63564b536f87565f88b1",
     "packages/worker/dist/npm/package-lock.js": "a64c1eee5fd3292b4e6ec09887fcb47268eafde99d363d13b71b7f0463774560",
     "packages/worker/dist/npm/pre-bundle-facet.d.ts": "5ed489c8a1fdc18ea92b8c8370578641f960df1d54b35db1c5477bdace21c8f2",
-    "packages/worker/dist/npm/pre-bundle-facet.d.ts.map": "ecfb801aa4df15ab5ba88802fd1363fdd90ac77dbc5324b3cd897821c67486ce",
-    "packages/worker/dist/npm/pre-bundle-facet.js": "1c1cd5d635606e864768dde5c95da6f9f6c8ab3b8feb53bfdf6139aaa429f785",
+    "packages/worker/dist/npm/pre-bundle-facet.d.ts.map": "874588e60e2a2d5d1df7505f79d87b8faf047f5c9644369a0e576075b14f7442",
+    "packages/worker/dist/npm/pre-bundle-facet.js": "f0efe8914a73bd0d0b85ab8a6310557289395285f45f0a227d550c7660f5f5c1",
     "packages/worker/dist/npm/r2-cache.d.ts": "5e98e243d18bb1f446ca866c96990db90f95d205c29a82ca18e365429a46aadc",
     "packages/worker/dist/npm/r2-cache.d.ts.map": "4a494d3f6cabab1d278f1f7cd45c60192c77e30772bec4a40919ba65e2ee8dc3",
     "packages/worker/dist/npm/r2-cache.js": "d45abb8bc638c04b51ed56ed8af1dd68316255bed2e7252eda201c512921a42a",
@@ -3320,7 +3320,7 @@
     "packages/worker/src/npm/installer.ts": "1e40e53a55dfa3746faa9119c0358c284801198045e767897cf101adc07512fd",
     "packages/worker/src/npm/npx-install.ts": "0e35dbf4ed6a23bb9ef4ded94ceef074772085ab4e10b3849957f55154c972d9",
     "packages/worker/src/npm/package-lock.ts": "cad4d3cb2dba964b043f11302a9c52b834ac016632567e34213aee5c6e73f324",
-    "packages/worker/src/npm/pre-bundle-facet.ts": "7cb8d2216e01565586964569c8d55a82daa7c45691d382bee64cbf5d76d6c489",
+    "packages/worker/src/npm/pre-bundle-facet.ts": "abcbf136ff1f66a3e356f30331b2a42b67fb0e497c91f72cf4d5d8dd6072b086",
     "packages/worker/src/npm/r2-cache.ts": "4a7bbb4d4b8cd7e1bedc2d876b328ff0dda8a3060338dd6ec65a726756b8fa7d",
     "packages/worker/src/npm/registry-record.ts": "a94f3264c9a98e009c1e07c35bc47f1f1816bf5cf4a73161678d9d567b8ae282",
     "packages/worker/src/npm/registry-retry.ts": "e0d9259257edd7191b83b38939c6b383881a7ccbdc902cc348d9bae6b922e296",
