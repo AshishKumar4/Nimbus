@@ -27,7 +27,7 @@ import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
 import { oxcEngine } from './lib/oxc-engine.mjs';
 import { originalPosition } from './lib/sourcemap-vlq.mjs';
 
-const { tokenizer } = createRequire(new URL('../../packages/core/package.json', import.meta.url))('acorn');
+const { parse } = createRequire(new URL('../../packages/core/package.json', import.meta.url))('acorn');
 const { runTransformRequest } = new Function(`${generateTransformFacetRuntimeSource()}\nreturn { runTransformRequest };`)();
 // What the transform facet's preamble installs beside its engine.
 const runtime = { rewriteDynamicImports, readEsModule, rewriteProvidedCommonJsModules };
@@ -144,10 +144,15 @@ const outcomes = {
     const map = await (await fetch(mapUrl)).json();
     assert.equal(map.version, 3);
     if (name === 'destructure.mjs') {
-      const tokens = [...tokenizer(code, { ecmaVersion: 'latest', locations: true })];
-      const token = tokens.find(({ type, value }) => type.label === 'name' && value === 'obj');
-      assert.ok(token, 'the transformed module retains the source binding');
-      assert.deepEqual(originalPosition(map, token.loc.start.line, token.loc.start.column), [1, source.indexOf('obj')],
+      const firstBinding = (text) => {
+        const ast = parse(text, { ecmaVersion: 'latest', sourceType: 'module', locations: true });
+        const declaration = ast.body.find(({ type }) => type === 'VariableDeclaration');
+        assert.ok(declaration, 'the module declares a binding');
+        return declaration.declarations[0].id.loc.start;
+      };
+      const input = firstBinding(source);
+      const output = firstBinding(code);
+      assert.deepEqual(originalPosition(map, output.line, output.column), [input.line, input.column],
         'the browser map points the emitted binding back to its source position');
       assert.ok(map.sourcesContent.includes(source), 'the map carries the source as written');
     }
