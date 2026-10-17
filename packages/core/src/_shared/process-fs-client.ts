@@ -492,6 +492,8 @@ function commonAncestor(left: string, right: string): string {
 interface Entry {
   /** The change, while the heap holds it; else the journal does (journal.read(jid)). */
   op: ProcessFsOp | null;
+  /** Spare capacity for the unsent tail's next bytes; doubled when full. */
+  buffer: Uint8Array | null;
   /** Its place in the journal. */
   jid: number;
   /** The call's name, for a failure's report (writeFile, mkdir, rename, …). */
@@ -551,31 +553,34 @@ function descriptionOf(call: W7Call): string | undefined {
  * page cache folds them; null when it is not such a change, or the folded
  * bytes would pass a piece.
  */
-function folded(last: ProcessFsOp, next: ProcessFsOp): ProcessFsOp | null {
+function folded(last: ProcessFsOp, next: ProcessFsOp, buffer: Uint8Array | null): { op: ProcessFsOp; buffer: Uint8Array | null; append?: Uint8Array } | null {
   if (last.type !== 'call' || next.type !== 'call' || !('data' in last.call) || !('data' in next.call)) return null;
   const a = last.call;
   const b = next.call;
   // Through one description only: another's access, or its file, may differ.
   if (a.path !== b.path || descriptionOf(a) !== descriptionOf(b) || a.data.byteLength + b.data.byteLength > DATA_PIECE_BYTES) return null;
   const inoOf = (call: W7Call): number | undefined => ('ino' in call ? call.ino : undefined);
-  const join = (left: Uint8Array, right: Uint8Array): Uint8Array => {
-    const out = new Uint8Array(left.byteLength + right.byteLength);
-    out.set(left, 0);
-    out.set(right, left.byteLength);
-    return out;
+  const join = (): { op: ProcessFsOp; buffer: Uint8Array; append: Uint8Array } => {
+    const size = a.data.byteLength + b.data.byteLength;
+    if (buffer === null || buffer.byteLength < size) {
+      buffer = new Uint8Array(Math.min(DATA_PIECE_BYTES, Math.max(size, (buffer?.byteLength ?? a.data.byteLength) * 2)));
+      buffer.set(a.data);
+    }
+    buffer.set(b.data, a.data.byteLength);
+    return { op: { type: 'call', call: { ...a, data: buffer.subarray(0, size) } as W7Call }, buffer, append: b.data };
   };
   if (b.call === 'writeFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) {
     // The last write's file is made (or kept) by the first: its make wins, the bytes are the last's.
-    return { type: 'call', call: { ...a, call: 'writeFile', data: b.data } as W7Call };
+    return { op: { type: 'call', call: { ...a, call: 'writeFile', data: b.data } as W7Call }, buffer: null };
   }
   if (b.call === 'appendFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) {
-    return { type: 'call', call: { ...a, data: join(a.data, b.data) } as W7Call };
+    return join();
   }
   if (b.call === 'append' && a.call === 'append' && inoOf(a) === inoOf(b)) {
-    return { type: 'call', call: { ...a, data: join(a.data, b.data) } };
+    return join();
   }
   if (b.call === 'write' && a.call === 'write' && inoOf(a) === inoOf(b) && a.offset + a.data.byteLength === b.offset) {
-    return { type: 'call', call: { ...a, data: join(a.data, b.data) } };
+    return join();
   }
   return null;
 }
@@ -807,7 +812,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     try {
       ops = entries.map(opOf);
       // Sent: the heap's copy is the wave's now.
-      for (const entry of entries) if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; }
+      for (const entry of entries) if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; entry.buffer = null; }
       bytes = await encodeWriteBatch({ inodes: [], chunks: [], ops });
       // Numbered once, under the epoch they are first sent under; a re-send keeps them.
       numberEntries(entries);
@@ -944,7 +949,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     processGone ??= refusal;
     const ended = [...entries, ...queue.splice(0)];
     for (const entry of ended) {
-      if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; }
+      if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; entry.buffer = null; }
       fail(entry, 'ESRCH', processGone.message);
     }
     forget(ended[ended.length - 1]!.jid, false);
@@ -957,7 +962,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     processGone ??= fsError('EIO', refusal.message, '');
     const stopped = [...entries, ...queue.splice(0)];
     for (const entry of stopped) {
-      if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; }
+      if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; entry.buffer = null; }
       fail(entry, 'EIO', refusal.message);
     }
     forget(stopped[stopped.length - 1]!.jid, false);
@@ -1325,12 +1330,13 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       const tail = queue[queue.length - 1];
       // (The queue holds only unsent changes; one sent and back for a re-send is numbered.)
       const merged = parts.length === 1 && tail !== undefined && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged
-        ? folded(tail.op, parts[0]!) : null;
+        ? folded(tail.op, parts[0]!, tail.buffer) : null;
       if (merged !== null && tail !== undefined) {
-        const mergedBytes = merged.type === 'call' && 'data' in merged.call ? merged.call.data.byteLength : 0;
-        journal.replace(tail.jid, merged);
+        const mergedBytes = merged.op.type === 'call' && 'data' in merged.op.call ? merged.op.call.data.byteLength : 0;
+        journal.replace(tail.jid, merged.op, merged.append);
         const grown = mergedBytes - tail.bytes;
-        tail.op = merged;
+        tail.op = merged.op;
+        tail.buffer = merged.buffer;
         tail.bytes = mergedBytes;
         // Someone waits on the fold now: what lingered goes.
         if (tail.lingers && !lingers) {
@@ -1358,7 +1364,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         // The heap keeps a window of what is unsent; the rest is read back from the journal.
         const kept = !journal.durable || heapBytes + partBytes <= PROCESS_FS_HEAP_WINDOW_BYTES;
         if (kept) heapBytes += partBytes;
-        queue.push({ op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject });
+        queue.push({ op: kept ? part : null, buffer: null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject });
         pendingBytes += partBytes;
         if (acknowledged) {
           pendingSyncBytes += partBytes;

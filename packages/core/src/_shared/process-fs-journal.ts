@@ -36,8 +36,8 @@ export interface ProcessFsJournal {
   append(op: ProcessFsOp): number;
   /** The entry `jid`, still held. */
   read(jid: number): ProcessFsOp;
-  /** The entry `jid` (not yet sent) is now `op`: a later change folded into it. */
-  replace(jid: number, op: ProcessFsOp): void;
+  /** The entry `jid` (not yet sent) is now `op`; `append`, when given, only extends its data, leaving its other fields unchanged. */
+  replace(jid: number, op: ProcessFsOp, append?: Uint8Array): void;
   /** Every entry held, in order. */
   entries(): { jid: number; op: ProcessFsOp }[];
   /** The entries after `after`, in order: at least one when any is held, and no more than about `maxBytes` of data. */
@@ -77,18 +77,37 @@ function opOf(json: string, data: unknown): ProcessFsOp {
 }
 
 /**
- * The journal in a process's own SQLite. Two tables: the entries (one row
- * each, deleted once answered) and the numberings (one row per writer
- * epoch). A facet that restarts after a crash opens the same tables, and the
- * entries it finds are what its process left unanswered.
+ * The journal in a process's own SQLite: entries, their appended data
+ * pieces (joined only when read), and numberings (one row per writer epoch).
+ * A facet that restarts opens the same tables: everything left unanswered.
  */
 export function sqlJournal(sql: JournalSql): ProcessFsJournal {
   sql.exec(`CREATE TABLE IF NOT EXISTS nimbus_fs_journal (jid INTEGER PRIMARY KEY, op TEXT NOT NULL, data BLOB)`);
   sql.exec(`CREATE TABLE IF NOT EXISTS nimbus_fs_numbering (jid INTEGER PRIMARY KEY, writer TEXT, seq INTEGER NOT NULL)`);
+  sql.exec(`CREATE TABLE IF NOT EXISTS nimbus_fs_journal_parts (part INTEGER PRIMARY KEY, jid INTEGER NOT NULL, data BLOB NOT NULL)`);
+  sql.exec(`CREATE INDEX IF NOT EXISTS nimbus_fs_journal_parts_jid ON nimbus_fs_journal_parts (jid, part)`);
+  // Replacement and deletion discard the pieces atomically with their entry.
+  sql.exec(`CREATE TRIGGER IF NOT EXISTS nimbus_fs_journal_replace AFTER UPDATE ON nimbus_fs_journal BEGIN DELETE FROM nimbus_fs_journal_parts WHERE jid = OLD.jid; END`);
+  sql.exec(`CREATE TRIGGER IF NOT EXISTS nimbus_fs_journal_drop AFTER DELETE ON nimbus_fs_journal BEGIN DELETE FROM nimbus_fs_journal_parts WHERE jid = OLD.jid; END`);
   const last = [...sql.exec('SELECT MAX(jid) AS jid FROM nimbus_fs_journal')][0];
   let next = Number(last?.jid ?? 0) + 1;
-  const held = [...sql.exec('SELECT COALESCE(SUM(LENGTH(data)), 0) AS bytes FROM nimbus_fs_journal')][0];
+  const held = [...sql.exec('SELECT (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nimbus_fs_journal) + (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nimbus_fs_journal_parts) AS bytes')][0];
   let bytes = Number(held?.bytes ?? 0);
+  const readRow = (row: Record<string, unknown>): ProcessFsOp => {
+    const op = opOf(String(row.op), row.data);
+    const parts = [...sql.exec('SELECT data FROM nimbus_fs_journal_parts WHERE jid = ? ORDER BY part', row.jid)];
+    if (parts.length === 0) return op;
+    const first = dataOf(op)!;
+    const data = new Uint8Array(parts.reduce((size, part) => size + (part.data as ArrayBuffer).byteLength, first.byteLength));
+    data.set(first);
+    let at = first.byteLength;
+    for (const part of parts) {
+      const piece = part.data instanceof Uint8Array ? part.data : new Uint8Array(part.data as ArrayBuffer);
+      data.set(piece, at);
+      at += piece.byteLength;
+    }
+    return { type: 'call', call: { ...(op as { call: object }).call, data } } as ProcessFsOp;
+  };
   return {
     durable: true,
     append(op) {
@@ -99,33 +118,39 @@ export function sqlJournal(sql: JournalSql): ProcessFsJournal {
       return jid;
     },
     read(jid) {
-      const row = [...sql.exec('SELECT op, data FROM nimbus_fs_journal WHERE jid = ?', jid)][0];
+      const row = [...sql.exec('SELECT jid, op, data FROM nimbus_fs_journal WHERE jid = ?', jid)][0];
       if (row === undefined) throw new Error(`process-fs journal: entry ${jid} is not held`);
-      return opOf(String(row.op), row.data);
+      return readRow(row);
     },
-    replace(jid, op) {
-      const before = [...sql.exec('SELECT LENGTH(data) AS bytes FROM nimbus_fs_journal WHERE jid = ?', jid)][0];
+    replace(jid, op, append) {
+      if (append !== undefined) {
+        sql.exec('INSERT INTO nimbus_fs_journal_parts (jid, data) VALUES (?, ?)', jid, append);
+        bytes += append.byteLength;
+        return;
+      }
+      const before = [...sql.exec('SELECT COALESCE(LENGTH(data), 0) + (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nimbus_fs_journal_parts WHERE jid = ?) AS bytes FROM nimbus_fs_journal WHERE jid = ?', jid, jid)][0];
       const row = rowOf(op);
       sql.exec('UPDATE nimbus_fs_journal SET op = ?, data = ? WHERE jid = ?', row.json, row.data, jid);
       bytes += (row.data?.byteLength ?? 0) - Number(before?.bytes ?? 0);
     },
     entries() {
       return [...sql.exec('SELECT jid, op, data FROM nimbus_fs_journal ORDER BY jid')]
-        .map((row) => ({ jid: Number(row.jid), op: opOf(String(row.op), row.data) }));
+        .map((row) => ({ jid: Number(row.jid), op: readRow(row) }));
     },
     readAfter(after, maxBytes) {
       const out: { jid: number; op: ProcessFsOp }[] = [];
       let taken = 0;
       for (const row of sql.exec('SELECT jid, op, data FROM nimbus_fs_journal WHERE jid > ? ORDER BY jid', after)) {
-        const size = row.data === null || row.data === undefined ? 0 : (row.data as ArrayBuffer).byteLength;
+        const op = readRow(row);
+        const size = dataOf(op)?.byteLength ?? 0;
         if (out.length > 0 && taken + size > maxBytes) break;
-        out.push({ jid: Number(row.jid), op: opOf(String(row.op), row.data) });
+        out.push({ jid: Number(row.jid), op });
         taken += size;
       }
       return out;
     },
     dropThrough(jid) {
-      const freed = [...sql.exec('SELECT COALESCE(SUM(LENGTH(data)), 0) AS bytes FROM nimbus_fs_journal WHERE jid <= ?', jid)][0];
+      const freed = [...sql.exec('SELECT (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nimbus_fs_journal WHERE jid <= ?) + (SELECT COALESCE(SUM(LENGTH(data)), 0) FROM nimbus_fs_journal_parts WHERE jid <= ?) AS bytes', jid, jid)][0];
       bytes -= Number(freed?.bytes ?? 0);
       sql.exec('DELETE FROM nimbus_fs_journal WHERE jid <= ?', jid);
       // A numbering no held entry is under any more goes with them.
