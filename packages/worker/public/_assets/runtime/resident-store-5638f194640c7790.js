@@ -1541,13 +1541,18 @@ var __nimbusResidentModule = (() => {
           }
           if (entry.subtree || entry.structural) {
             const end = prefixEnd(path + "/");
+            let diagDropped = 0;
             for (const row2 of t.fileRevsIn(path + "/", end)) {
               const stamped2 = row2.rev;
               if (stamped2 === RK_OWN_WRITE || stamped2 >= Number(entry.rev)) continue;
               t.chunkDelete(row2.path);
               t.fileDelete(row2.path);
               dropped.push(row2.path);
+              diagDropped++;
             }
+            const diag = Reflect.get(globalThis, "__nimbusDiagDrops") ?? [];
+            diag.push(JSON.stringify({ path, subtree: entry.subtree ?? null, structural: entry.structural ?? null, rev: entry.rev, dropped: diagDropped }));
+            Reflect.set(globalThis, "__nimbusDiagDrops", diag);
             for (const [heldPath, heldCell2] of [...held]) {
               if (!heldPath.startsWith(path + "/") || heldCell2.rev === RK_OWN_WRITE || heldCell2.rev >= Number(entry.rev)) continue;
               forgetHeld(heldPath);
