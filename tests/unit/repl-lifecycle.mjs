@@ -44,6 +44,50 @@ function capture() {
 const output = (stdout = '') => ({ kind: 'output', stdout, stderr: '' });
 const baseAdapter = { ps1: '>>> ', ps2: '... ', banner: () => '', close: async () => {} };
 
+// Editing stays at the end, including after history, cancellation and a block.
+{
+  const view = capture();
+  const calls = [];
+  const run = new ReplSession({
+    ...baseAdapter,
+    push: async (line) => {
+      calls.push(line);
+      return line === 'block' ? { kind: 'incomplete' } : output(`EVAL ${calls.length}\n`);
+    },
+  }, view.terminal).run();
+  try {
+    view.reset();
+    view.terminal.sendData('\x1b[A\x1b[B\b\x7fabc\b\x7fD\x1b[DX\x1b[CY\t\x04\r');
+    await view.seen('EVAL 1');
+    assert.equal(view.text(), 'abc\b \b\b \bDXY\r\nEVAL 1\r\n>>> ', 'end-only editing echoes each change once');
+    view.terminal.sendData('two\r');
+    await view.seen('EVAL 2');
+    view.terminal.sendData('draft\x1b[A\x1b[A\x1b[B\x1b[Bfresh\bZ\r');
+    await view.seen('EVAL 3');
+    view.terminal.sendData('\x1b[A\b!\r');
+    await view.seen('EVAL 4');
+    view.terminal.sendData('discard\x03kept\r');
+    await view.seen('EVAL 5');
+    view.reset();
+    view.terminal.sendData('block\r');
+    await view.seen('... ');
+    view.terminal.sendData('tailX\b\r');
+    await view.seen('EVAL 7');
+    view.reset();
+    view.terminal.sendData('block\r');
+    await view.seen('... ');
+    view.terminal.sendData('abandoned\x03last\r');
+    await view.seen('EVAL 9');
+    assert.deepEqual(calls, ['aDXY', 'two', 'fresZ', 'fres!', 'kept', 'block', 'block\ntail', 'block', 'last']);
+    view.terminal.sendData('\x04');
+    assert.equal(await bounded(run, 'empty-line Ctrl-D did not close the editor'), 0);
+  } finally {
+    await bounded(view.terminal.disposeRepl(), 'editing REPL cleanup hung');
+    await bounded(run, 'editing REPL run did not end');
+    view.terminal.close();
+  }
+}
+
 // The first prompt is a readiness signal, not a promise to boot on the first line.
 {
   const view = capture();
