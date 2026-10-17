@@ -1062,6 +1062,8 @@ export class Interpreter {
 
     let exitCode: number;
     let writeFailed = false;
+    // eval's and `.`'s status is their text's once it runs: its failure is not theirs.
+    let ranText = false;
 
     try {
       // Check for break/continue/return builtins
@@ -1115,7 +1117,10 @@ export class Interpreter {
                 isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
                 getPositionals: () => this.readPositionals(builtinIo),
                 setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
-                executeInline: async (input, options) => (await this.executeInline(input, builtinIo, options)),
+                executeInline: async (input, options) => {
+                  ranText = true;
+                  return (await this.executeInline(input, builtinIo, options));
+                },
             declareLocal: (name) => this.declareLocal(name),
             unsetFunction: (name) => this.functions.delete(name),
             shell: this.config,
@@ -1202,6 +1207,7 @@ export class Interpreter {
     const fatalSpecialBuiltin = io.scriptMode === true
       && exitCode !== 0
       && !viaCommand
+      && !ranText
       && isFatalSpecialBuiltin(name);
     this.lastExitCode = exitCode;
     if (fatalSpecialBuiltin) throw new ErrexitSignal(exitCode);
