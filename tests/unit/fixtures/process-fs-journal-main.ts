@@ -1,4 +1,4 @@
-// sqlJournal and its helpers from main 336d41697549ff841accf0e0bf4150a1ff6b3361.
+// sqlJournal and its helpers from main 9c1f4eeb82bc69367b2f46a68f13f17f90010d9f.
 // Type-only imports point at the current contracts; the reader code is unchanged.
 import type { W7Call } from '../../../packages/platform/src/w7-frame.js';
 import type { ProcessFsOp } from '../../../packages/core/src/_shared/process-fs-client.js';
