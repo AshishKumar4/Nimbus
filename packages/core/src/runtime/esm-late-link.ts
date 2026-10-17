@@ -116,9 +116,15 @@ interface LateGraph {
   readonly modules: Map<string, LateNode>;
   readonly rows: number[];
   /** The require()s staging hoisted that the link reached, by row and target: linked after the static graph (linkRequired). */
-  readonly required: { readonly row: number; readonly index: number; readonly kept: boolean }[];
+  readonly required: RequiredEdge[];
   /** An import()'s link: a module it fails in keeps the failure (linkFailures); a require()'s retries, as Node's does. */
   readonly kept: boolean;
+}
+
+/** A require() staging hoisted: staged row `row`'s target `index`, past its static imports. */
+interface RequiredEdge {
+  readonly row: number;
+  readonly index: number;
 }
 
 /** The facades' export names, by row, read once. */
@@ -252,7 +258,7 @@ export function linkLateGraph(host: LateLinkHost, key: string, url: string, kept
   plan(host, key, url, seen, order, checked, late);
   checkBindings(host, late, url);
   if (late.required.length > 0) {
-    linkRequired(host, seen, checked, late);
+    linkRequired(host, seen, checked, late, late.required);
     checkBindings(host, late, url);
   }
   for (const row of late.rows) checkedRows.add(row);
@@ -384,6 +390,8 @@ function planModule(host: LateLinkHost, key: string, url: string, seen: Set<stri
     checkLinks(host, id, seen, checked, late);
     if (!order.includes(id)) order.push(id);
   }
+  // A staged module's require()s staging hoisted (its own instance's, not a query's or a fragment's), linked after its static graph.
+  if (staged !== -1 && !url.includes('?') && !url.includes('#')) for (let index = statics; index < host.rowTargets(staged).length; index++) late.required.push({ row: staged, index });
 }
 
 /**
@@ -454,7 +462,7 @@ function checkLinks(host: LateLinkHost, id: number, seen: Set<string>, checked: 
     const targets = host.rowTargets(id);
     for (let index = 0; index < targets.length; index++) {
       if (index < statics) checkTarget(host, id, index, seen, checked, late);
-      else late.required.push({ row: id, index, kept: late.kept });
+      else late.required.push({ row: id, index });
     }
   } catch (e) {
     if (late.kept && e instanceof Error) linkFailures.set(host.rowKey(id), e);
@@ -490,19 +498,21 @@ function checkTarget(host: LateLinkHost, row: number, index: number, seen: Set<s
 
 /**
  * Links the require()s staging hoisted that the late graph reached, once
- * its static graph is linked, as Node's require() links each when its row
- * evaluates (require(esm)): a failure in a required graph is not kept; its
- * requiring row's is, where an import()'s link reached the row, as the
- * row's evaluation fails in Node.
+ * its static graph is linked, as Node's require() links each where its row
+ * evaluates (require(esm)), and in that order: each required graph's own
+ * hoisted require()s before the next. A failure in a required graph is not
+ * kept, as a require()'s link is not; its requiring row's is, whatever
+ * link reached the row: the row's evaluation fails in Node, and a module
+ * keeps the error its evaluation threw.
  */
-function linkRequired(host: LateLinkHost, seen: Set<string>, checked: Set<number>, late: LateGraph): void {
-  const required: LateGraph = { modules: late.modules, rows: late.rows, required: late.required, kept: false };
-  for (let i = 0; i < late.required.length; i++) {
-    const { row, index, kept } = late.required[i];
+function linkRequired(host: LateLinkHost, seen: Set<string>, checked: Set<number>, late: LateGraph, required: readonly RequiredEdge[]): void {
+  for (const { row, index } of required) {
+    const nested: RequiredEdge[] = [];
     try {
-      checkTarget(host, row, index, seen, checked, required);
+      checkTarget(host, row, index, seen, checked, { modules: late.modules, rows: late.rows, required: nested, kept: false });
+      linkRequired(host, seen, checked, late, nested);
     } catch (e) {
-      if (kept && e instanceof Error) linkFailures.set(host.rowKey(row), e);
+      if (e instanceof Error) linkFailures.set(host.rowKey(row), e);
       throw e;
     }
   }
