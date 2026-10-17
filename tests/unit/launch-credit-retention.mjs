@@ -90,6 +90,9 @@ await runScenarios(fileURLToPath(import.meta.url), {
     const authority = createAuthority();
     adoptSessionSupervisor(authority.host, () => {});
     const { manager, ctx } = session(authority, 'running-before-parking');
+    const cwd = '/home/user/before-parking';
+    authority.kfs.mkdir(cwd);
+    authority.kfs.writeFile(`${cwd}/cell.js`, `module.exports = 7;\n// ${'x'.repeat(256 * 1024)}\n`);
     const { oxcTransforms } = await import('./lib/oxc-engine.mjs');
     const native = new EsbuildService(undefined, oxcTransforms);
     const entered = Promise.withResolvers();
@@ -102,8 +105,8 @@ await runScenarios(fileURLToPath(import.meta.url), {
       },
     }));
     const holds = occupy(ctx);
-    const waiting = manager.exec('import("node:path").then(path => process.stdout.write(path.default.basename("/home/user/entry")))', {
-      cwd: '/home/user', captureOutput: true,
+    const waiting = manager.exec('require("./cell.js"); import("node:path").then(path => process.stdout.write(path.default.basename("/home/user/entry")))', {
+      cwd, captureOutput: true,
     });
     try {
       await entered.promise;
