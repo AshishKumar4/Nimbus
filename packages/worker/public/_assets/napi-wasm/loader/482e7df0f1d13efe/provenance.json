@@ -2,10 +2,10 @@
   "artifact": "napi-wasm",
   "source": {
     "inputs": {
-      "packages/core/src/runtime/wasi/filesystem.ts": "680ae71e769f8358fcf5f86aeb545fec55b0b51de09b0ae3b742f0d0593548dc",
+      "packages/core/src/runtime/wasi/filesystem.ts": "c943a545e7d39575af0a827fcfc2c9fb48089a6545351f60738ba0712847c663",
       "packages/core/src/vfs/dirent-type.ts": "f22395b71aab1211b5f55eded1f996c0719d05c1b838025fc3651ba61e253185",
       "packages/core/src/vfs/vfs-error.ts": "0470e3d0a43c1b5c6f8b5daebeea895f6858307203a72f984fde4d6e01041008",
-      "packages/core/src/vfs/vfs.ts": "b4d9db73e00017cd88e804330bb466fc3d607fbe3da838e8a8cc00564cf85d99",
+      "packages/core/src/vfs/vfs.ts": "a005a63f4ca0f75ec935f650dab084b34545af8e594cb65d7506b7edf0f29430",
       "packages/core/tsconfig.json": "6dc680d90729597ee71dcaf78368fceb9f44638d4e301811dd4cff58bdb9b62f",
       "packages/platform/src/lexical-path.ts": "cf6c5834a0e850007f9289347c79c67a2902bc7daad5711337f1565da3000b2e",
       "packages/platform/tsconfig.json": "6dc680d90729597ee71dcaf78368fceb9f44638d4e301811dd4cff58bdb9b62f",
