@@ -75,7 +75,7 @@ import { parse } from 'acorn';
 
 import { amaroFacetDriver } from './amaro-driver.mjs';
 import { compileFacetBodies } from '../../../scripts/compile-facet-bodies.mjs';
-import { compiledBodies } from '../../../scripts/lib/compiled-bodies.mjs';
+import { compiledBodies, moduleBody } from '../../../scripts/lib/compiled-bodies.mjs';
 import { FACET_GLOBALS, freeNames } from './free-names.mjs';
 import { resolvePackageDir } from './resolve-package-dir.mjs';
 import { stageRuntimeAsset } from './stage-asset.mjs';
@@ -129,8 +129,13 @@ function withoutComments(text) {
  * else stays inside a function of its own, so preambles concatenated into
  * one module never shadow one another's private names (the tar decoder's
  * and W7's decoders were both a module-level `UTF8`).
+ *
+ * @param {string} entryPath
+ * @param {string} label
+ * @param {{ shared?: string[], bound?: Record<string, string>, as?: string, from?: string }} [options]
  */
-async function bundleAsPreamble(entryPath, label, { shared = [] } = {}) {
+async function bundleAsPreamble(entryPath, label, { shared = [], bound = {}, as, from } = {}) {
+  const boundNames = Object.keys(bound);
   const result = await build({
     entryPoints: [entryPath],
     bundle: true,
@@ -143,10 +148,13 @@ async function bundleAsPreamble(entryPath, label, { shared = [] } = {}) {
     legalComments: 'none',
     // A module the shims declare once for all the code they load (`shared`):
     // left out, its import removed below, its names the shims' own.
-    plugins: shared.length === 0 ? [] : [{
+    // A module bound to a value the shims hold (`bound`: the module's name to
+    // the shims' name for its namespace) is left out too, its import made a
+    // destructuring of that value.
+    plugins: shared.length === 0 && boundNames.length === 0 ? [] : [{
       name: 'shims-shared-modules',
       setup(pluginBuild) {
-        pluginBuild.onResolve({ filter: /.*/ }, (args) => (shared.some((name) => args.path === `./${name}.js`) ? { path: args.path, external: true } : undefined));
+        pluginBuild.onResolve({ filter: /.*/ }, (args) => ([...shared, ...boundNames].some((name) => args.path === `./${name}.js`) ? { path: args.path, external: true } : undefined));
       },
     }],
     // Strip TypeScript-only imports (e.g. `import type {…}`) — esbuild
@@ -155,25 +163,32 @@ async function bundleAsPreamble(entryPath, label, { shared = [] } = {}) {
   if (!result.outputFiles || result.outputFiles.length === 0) {
     throw new Error(`[bundle-facet-workers/${label}] esbuild produced no output`);
   }
-  let stripped = withoutComments(result.outputFiles[0].text);
-  for (const name of shared) {
-    const before = stripped;
-    stripped = stripped.replace(new RegExp(`^import \\{[^}]*\\} from "\\./${name}\\.js";\\n`, 'm'), '');
-    if (stripped === before) throw new Error(`[bundle-facet-workers/${label}] expected an import of ./${name}.js to leave to the shims`);
+  // Its exports become the scope's names; the only imports it may keep are
+  // the shared modules', whose names the shims declare.
+  const { body, imports, exported } = moduleBody(withoutComments(result.outputFiles[0].text));
+  for (const name of [...shared, ...boundNames]) {
+    if (!imports.some((entry) => entry.source === `./${name}.js`)) throw new Error(`[bundle-facet-workers/${label}] expected an import of ./${name}.js to leave to the shims`);
   }
-  // Its exports, exported name to local: declared exported, and listed in the closing clause.
-  const exported = new Map();
-  for (const match of stripped.matchAll(/^export\s+(?:async\s+)?(?:function\*?|const|let|class)\s+([A-Za-z_$][\w$]*)/gm)) exported.set(match[1], match[1]);
-  const clause = /\n?export\s*\{([^}]*)\}\s*;\s*$/.exec(stripped);
-  for (const specifier of clause ? clause[1].split(',') : []) {
-    const [local, name = local] = specifier.trim().split(/\s+as\s+/);
-    if (local) exported.set(name, local);
-  }
-  stripped = stripped.replace(/^export\s+(async\s+function|function|const|let|class)\b/gm, '$1');
-  stripped = stripped.replace(/\n?export\s*\{[^}]*\}\s*;\s*$/g, '');
-  const names = [...exported.keys()];
-  const returned = [...exported].map(([name, local]) => (name === local ? name : `${name}: ${local}`));
-  return `var { ${names.join(', ')} } = (() => {\n${stripped}\nreturn { ${returned.join(', ')} };\n})();\n`;
+  const unshared = imports.find((entry) => ![...shared, ...boundNames].some((name) => entry.source === `./${name}.js`));
+  if (unshared) throw new Error(`[bundle-facet-workers/${label}] an import the shims do not declare: ${unshared.text}`);
+  const destructured = imports.filter((entry) => boundNames.some((name) => entry.source === `./${name}.js`)).map((entry) => {
+    const [declaration] = parse(entry.text, { ecmaVersion: 'latest', sourceType: 'module' }).body;
+    if (declaration.type !== 'ImportDeclaration') throw new Error(`[bundle-facet-workers/${label}] not an import: ${entry.text}`);
+    const names = declaration.specifiers.map((specifier) => {
+      if (specifier.type !== 'ImportSpecifier') throw new Error(`[bundle-facet-workers/${label}] a bound module's import names each binding: ${entry.text}`);
+      const imported = specifier.imported.type === 'Identifier' ? specifier.imported.name : String(specifier.imported.value);
+      return imported === specifier.local.name ? imported : `${imported}: ${specifier.local.name}`;
+    });
+    return `const { ${names.join(', ')} } = ${bound[entry.source.slice(2, -3)]};\n`;
+  });
+  const names = exported.map(([name]) => name);
+  const returned = exported.map(([name, local]) => (name === local ? name : `${name}: ${local}`));
+  const made = `(() => {\n${destructured.join('')}${body.trim()}\nreturn { ${returned.join(', ')} };\n})()`;
+  // A module the shims hold as one value (`as`), its namespace: none of its
+  // names in their scope; the runner's own evaluation of it where it has one
+  // (`from`), this one's only where it has none.
+  if (as !== undefined) return `const ${as} = ${from === undefined ? made : `typeof ${from} !== "undefined" ? ${from} : ${made}`};\n`;
+  return `var { ${names.join(', ')} } = ${made};\n`;
 }
 
 /**
@@ -453,11 +468,11 @@ async function bundleWasiInstance() {
   if (!result.outputFiles || result.outputFiles.length === 0) {
     throw new Error('[bundle-facet-workers/wasi-instance] esbuild produced no output');
   }
-  let src = withoutComments(result.outputFiles[0].text);
-  // The body is spliced into another module; a re-export block there is a
-  // syntax error, and callers append their own `export { … }`.
-  src = src.replace(/^export\s+(async\s+function|function|const|let|var|class)\b/gm, '$1');
-  src = src.replace(/\n?export\s*\{[^}]*\}\s*;\s*$/g, '');
+  // The body is spliced flat into another module, its imports kept at the
+  // top; an export there is a syntax error, and callers append their own
+  // `export { … }`.
+  const flat = moduleBody(withoutComments(result.outputFiles[0].text));
+  let src = [...flat.imports.map((entry) => entry.text), flat.body.trim()].join('\n');
   const { CHILD_NEWS_SOURCE } = await import(pathToFileURL(join(root, '..', 'core', 'dist', 'runtime', 'child-news.js')).href);
   src = `const __wasiCreateChildNews = (${CHILD_NEWS_SOURCE});\n${src}`;
 
@@ -806,6 +821,28 @@ async function main() {
     }
   }
 
+  // 3a. The built-ins the guest's module loading calls (core
+  //     _shared/primordials.ts): the launch's capture, made before any program
+  //     code (commonjs-cell's __nimbusLaunchCaptures), which the preambles
+  //     below that read them are bound to; a capture of their own where the
+  //     shims run without the launch's runtime (a test's factory).
+  const primordials = await bundleAsPreamble(
+    join(coreRoot, 'src', '_shared', 'primordials.ts'),
+    'primordials',
+    { as: '__nimbusPrimordials', from: '__nimbusLaunchCaptures' },
+  );
+
+  // 3b. node:path's posix half (core _shared/posix-path.ts, Node's lib/path.js
+  //     on those captures), the shims' node:path.
+  const posixPath = await bundleAsPreamble(
+    join(coreRoot, 'src', '_shared', 'posix-path.ts'),
+    'posix-path',
+    { shared: ['node-error'], bound: { primordials: '__nimbusPrimordials' } },
+  );
+  if (!/^function createPosixPath\(/m.test(posixPath)) {
+    throw new Error('[bundle-facet-workers/posix-path] the bundle no longer declares function createPosixPath');
+  }
+
   // 3a. Node's argument validators (parseFileMode, stringToFlags, …), which
   //     the node shims' process and fs take, as lifo's node's do: one module.
   const nodeArguments = await bundleAsPreamble(
@@ -860,8 +897,9 @@ async function main() {
   const shimResolution = await bundleAsPreamble(
     join(coreRoot, 'src', '_shared', 'node-shim-resolution.ts'),
     'node-shim-resolution',
+    { shared: ['node-error'] },
   );
-  for (const name of ['createRequireResolver', 'requireNodeModulePaths', 'createNodePackageMapPolicy', 'resolveExports', 'resolvePackageEntry', 'packageSelfReferenceSubpath', 'typescriptFallbackCandidates', 'stripsTypeScript', 'presentedCredential', 'isWebSocketUpgradeRequest']) {
+  for (const name of ['createRequireResolver', 'requireNodeModulePaths', 'createNodePackageMapPolicy', 'nativeResolutionError', 'resolveExports', 'resolvePackageEntry', 'packageSelfReferenceSubpath', 'typescriptFallbackCandidates', 'stripsTypeScript', 'presentedCredential', 'isWebSocketUpgradeRequest']) {
     if (!new RegExp(`^function ${name}\\(`, 'm').test(shimResolution)) {
       throw new Error(`[bundle-facet-workers/node-shim-resolution] the bundle no longer declares function ${name}`);
     }
@@ -944,6 +982,15 @@ async function main() {
     ' * first, for themselves and the preambles below, which use them by name.',
     ' */',
     `export const NODE_ERROR_PREAMBLE: string = ${JSON.stringify(nodeErrors)};`,
+    '',
+    '/**',
+    ' * Declares `__nimbusPrimordials`, the built-ins core _shared/primordials.ts',
+    ' * captures: the launch\'s (__nimbusLaunchCaptures), else its own; the preambles that read them are bound to it.',
+    ' */',
+    `export const PRIMORDIALS_PREAMBLE: string = ${JSON.stringify(primordials)};`,
+    '',
+    '/** Declares `function createPosixPath(cwd)`, node:path\'s posix half; the node shims call it. */',
+    `export const POSIX_PATH_PREAMBLE: string = ${JSON.stringify(posixPath)};`,
     '',
     '/**',
     ' * Declares Node\'s argument validators, `function parseFileMode(value, name, def)`,',

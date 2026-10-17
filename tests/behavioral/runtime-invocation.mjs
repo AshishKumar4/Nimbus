@@ -15,7 +15,7 @@
 //   5. Same battery for `bun` (post-Change-B). Pre-Change-B: probe records
 //      PARTIAL (node passes, bun fails or shows "command not found").
 
-import { mintSession, Terminal, makeAsserter, sleep, fetchPort, heredocCommand } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter, sleep, heredocCommand, outputLines } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('runtime-invocation');
@@ -25,7 +25,7 @@ const sid = await mintSession();
 console.log(`SID: ${sid}`);
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
+await t.waitForPrompt(60_000);
 t.reset();
 
 // 1. node --version
@@ -42,7 +42,7 @@ t.reset();
 {
   const tag = 'NODE_OUT_' + Math.random().toString(36).slice(2, 8);
   const r = await t.run(`node -e 'console.log("${tag}")'`, 30_000);
-  const lines = r.output.split('\n').map((l) => l.replace(/\r/g, ''));
+  const lines = outputLines(r.output);
   const seenInOutput = lines.some((l) => l.includes(tag) && !l.startsWith('user@') && !l.includes('node -e'));
   a.check('node -e prints output (on a non-echo line)', seenInOutput,
     `output: ${r.output.slice(-300)}`);
@@ -83,27 +83,7 @@ try {
 }
 a.check('node server.cjs produced started-marker (LISTENING or [started (long-running)])', serverStarted);
 
-// Wait briefly for OS-level bind on the port.
-await sleep(1_500);
-
-// 3a. /s/<sid>/port/<n>/ proxy for this non-watch invocation is not
-//    part of the supported contract. Explicit long-running Node servers
-//    use `node --watch` and are asserted by
-//    preview/node-watch-port-proxy.mjs. Keep this observation non-gating
-//    so the probe still records old/content-sniff behavior when present.
-{
-  const r = await fetchPort(sid, SERVER_PORT, '');
-  const ok = r.status === 200 && /hello-from-http-server/.test(r.body);
-  if (ok) {
-    a.check('GET /s/<sid>/port/<port>/ proxies to user server (returns 200 with body)', true);
-  } else {
-    // Don't fail; this command did not opt into the long-running path.
-    console.log(`  (info) port-proxy /s/<sid>/port/<n>/ returned status=${r.status} body[:120]=${r.body.slice(0, 120)}`);
-    console.log(`  (info) explicit long-running port proxy is covered by preview/node-watch-port-proxy.mjs.`);
-  }
-}
-
-// 3b. In-shell curl routes loopback requests through the session port registry.
+// Then in-shell curl routes loopback requests through the session port registry.
 //     "[started (long-running)]" is printed before the server binds, so the
 //     request is retried until the server answers, within its 14 s life.
 {
@@ -123,9 +103,7 @@ await sleep(1_500);
 //    sequential short scripts BOTH appear in ps.
 {
   await t.run('node -e "console.log(\'inv-A\')"', 30_000);
-  await sleep(300);
   await t.run('node -e "console.log(\'inv-B\')"', 30_000);
-  await sleep(300);
   const r = await t.run('ps', 15_000);
   const pids = [...r.output.matchAll(/^\s*(\d+)\s+/gm)].map((m) => m[1]);
   const distinctPids = new Set(pids);
@@ -137,14 +115,14 @@ await sleep(1_500);
 {
   const r = await t.run('bun --version', 15_000);
   // bun's stdout is just "1.x.y". Look on a line that doesn't include the prompt.
-  const lines = r.output.split('\n').map((l) => l.replace(/\r/g, ''));
+  const lines = outputLines(r.output);
   const hasVersion = lines.some((l) => /^\d+\.\d+\.\d+/.test(l) && !l.startsWith('user@'));
   a.check('bun --version returns a semver', hasVersion, r.output.slice(-200));
 }
 {
   const tag = 'BUN_OUT_' + Math.random().toString(36).slice(2, 8);
   const r = await t.run(`bun -e 'console.log("${tag}")'`, 15_000);
-  const lines = r.output.split('\n').map((l) => l.replace(/\r/g, ''));
+  const lines = outputLines(r.output);
   const seenInOutput = lines.some((l) => l.includes(tag) && !l.startsWith('user@') && !l.includes('bun -e'));
   a.check('bun -e prints output (on a non-echo line)', seenInOutput, r.output.slice(-200));
 }

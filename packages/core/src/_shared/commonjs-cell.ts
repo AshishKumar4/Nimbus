@@ -349,8 +349,7 @@ export type RuntimeCodeEntry =
 
 /** The key of a piece of runtime code: SHA-256 of runtimeCodeKeySource, hex. */
 export function runtimeCodeKey(entry: RuntimeCodeEntry): string {
-  const digest = createHash('sha256').update(new TextEncoder().encode(runtimeCodeKeySource(entry))).digest();
-  return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return createHash('sha256').update(new TextEncoder().encode(runtimeCodeKeySource(entry))).digest('hex');
 }
 
 /** What a piece of runtime code is charged against RUNTIME_CODE_MAX_BYTES (runtimeCodeSourceCharge). */
@@ -514,10 +513,12 @@ function __nimbusReadBundleFile(path, encoding) {
 // The built-ins the interpreter calls, captured now, before any program code
 // runs (core interpreter/primordials.ts): the interpreter itself loads only
 // when the program first produces code, by when it may have replaced them.
+// The node shims' module loading reads them too (__nimbusLaunchCaptures).
+const __nimbusLaunchCaptures = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_PRIMORDIALS_MODULE}");
 const {
   LAUNCH_PRIMORDIALS: __nimbusLaunchPrimordials,
   registerSource: __nimbusRegisterSource,
-} = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_PRIMORDIALS_MODULE}");
+} = __nimbusLaunchCaptures;
 const __nimbusCodeCells = new Map(__NIMBUS_CODE_CELLS.map((__row) => [__row[0], __row]));
 // Where node:fs shows the map's modules: beside this main module, /bundle/.
 const __NIMBUS_BUNDLE_FILES = decodeURIComponent(new URL("./", import.meta.url).pathname);
@@ -1086,6 +1087,14 @@ function __nimbusDetectedModule(cell) {
 // Whether an interpreted ES module awaits at its top level (moduleAwaits).
 function __nimbusModuleAwaits(cell) {
   return __nimbusInterpreter !== null && __nimbusInterpreter.moduleAwaits(cell);
+}
+// An interpreted ES module's link, which answers its execution (moduleLink), and the static imports it requires
+// (moduleLinkRequests); null for any other cell.
+function __nimbusModuleLink(cell) {
+  return __nimbusInterpreter === null ? null : __nimbusInterpreter.moduleLink(cell);
+}
+function __nimbusModuleRequestsOf(cell) {
+  return __nimbusInterpreter === null ? null : __nimbusInterpreter.moduleLinkRequests(cell);
 }
 // A staged module's code from an origin (runtimeFunctionModule): a module
 // takes the origin's Function; a constructor's code takes its import() too,

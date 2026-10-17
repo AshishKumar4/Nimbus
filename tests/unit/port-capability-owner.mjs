@@ -11,6 +11,7 @@ import {
   clearPortCapability,
 } from '../../packages/worker/src/session/port-capability.ts';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../../packages/worker/src/session/keys.ts';
+import { memoryStorage } from './lib/do-storage.mjs';
 
 // A port record's owner lives in the stored row, not in a hook the caller
 // supplies. This file pins that contract: persisting a capability preserves
@@ -18,34 +19,8 @@ import { PORT_CAPABILITY_KEY_PREFIX } from '../../packages/worker/src/session/ke
 // the durable re-adopt path gates on the record's own owner — so a foreign
 // caller cannot pull a reserved port's token out of the store.
 //
-// A serialized transaction mirrors DO storage: each body runs alone on a
-// private copy of the committed rows and commits it only when it resolves.
-const rows = new Map();
-let queue = Promise.resolve();
-const storage = {
-  get: async (key) => rows.get(key),
-  put: async (key, value) => { rows.set(key, value); },
-  delete: async (key) => rows.delete(key),
-  list: async ({ prefix }) => new Map([...rows].filter(([key]) => key.startsWith(prefix))),
-  transaction(body) {
-    const run = queue.then(() => {
-      const copy = new Map(rows);
-      const view = {
-        get: async (k) => copy.get(k),
-        put: async (k, v) => { copy.set(k, v); },
-        delete: async (k) => copy.delete(k),
-        list: async ({ prefix }) => new Map([...copy].filter(([k]) => k.startsWith(prefix))),
-      };
-      return Promise.resolve(body(view)).then((value) => {
-        rows.clear();
-        for (const [k, v] of copy) rows.set(k, v);
-        return value;
-      });
-    });
-    queue = run.then(() => undefined, () => undefined);
-    return run;
-  },
-};
+// Its storage serializes transactions as DO storage does (lib/do-storage.mjs).
+const storage = memoryStorage();
 const ctx = { storage };
 
 /** A host whose registry holds a live listener on `port`, serving `body`. */
@@ -64,7 +39,7 @@ const CAP2 = 'b'.repeat(24);
   // A durable application reserved its port; the SDK then tells the embedder
   // the registry's capability, which persists it. With no owner hook anywhere
   // the row must still read back owned.
-  rows.set(`${PORT_CAPABILITY_KEY_PREFIX}20000`, { owner: 'workspace/app-a/caller-a', capability: null, visibility: 'scoped' },);
+  storage.rows.set(`${PORT_CAPABILITY_KEY_PREFIX}20000`, { owner: 'workspace/app-a/caller-a', capability: null, visibility: 'scoped' },);
   const self = activate(20000, 1, 'A');
   await persistPortCapability(self, 20000, CAP);
   assert.deepEqual(
@@ -107,7 +82,7 @@ const CAP2 = 'b'.repeat(24);
 
 // ── an ownerless exposure behaves the way it always did ─────────────────────
 {
-  rows.set(`${PORT_CAPABILITY_KEY_PREFIX}20010`, { owner: null, capability: CAP2 });
+  storage.rows.set(`${PORT_CAPABILITY_KEY_PREFIX}20010`, { owner: null, capability: CAP2 });
   const ordinary = activate(20010, 4, 'ordinary');
   assert.equal(await readPortCapability(ordinary, 20010), CAP2, 'an ownerless record reads back its capability');
   assert.equal(await restoreReservedPortCapability(ordinary, 20010, 'anyone'), null,

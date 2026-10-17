@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld } from './lib/facet-host-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
 import { HOSTED_WATCH_HEADER, HOSTED_WEBSOCKET_CAPABILITY_HEADER } from '../../packages/fabric/src/peer-host.ts';

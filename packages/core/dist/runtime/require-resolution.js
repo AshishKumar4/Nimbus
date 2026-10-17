@@ -1,4 +1,4 @@
-import { createNodePackageMapPolicy, DEFAULT_CJS_CONDITIONS, packageJsonText, packageSelfReferenceSubpath, selectPackageMap, resolvePackageEntry, } from '../_shared/exports-resolver.js';
+import { createNodePackageMapPolicy, DEFAULT_CJS_CONDITIONS, nativeResolutionError, packageJsonText, packageSelfReferenceSubpath, resolutionError, selectPackageMap, resolvePackageEntry, } from '../_shared/exports-resolver.js';
 import { TYPESCRIPT_INDEX_CANDIDATES, typescriptFallbackCandidates } from '../_shared/typescript-specifiers.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 export const METADATA_CANDIDATE_WORK = 256;
@@ -19,7 +19,9 @@ const fileUrl = (path) => {
     url.pathname = path;
     return url;
 };
-const error = (code, message, Type = Error) => Object.assign(new Type(message), { code });
+const error = resolutionError;
+/** A module require() did not find: a plain Error, its code MODULE_NOT_FOUND, as Node's CJS loader makes it. */
+const moduleNotFound = (message, props) => Object.assign(new Error(message), { code: 'MODULE_NOT_FOUND' }, props);
 /** Node's node_modules lookup paths, with no node_modules/node_modules. */
 export function requireNodeModulePaths(fromDir) {
     const paths = [];
@@ -90,7 +92,7 @@ export function createRequireResolver(host, options = {}) {
             pkg = JSON.parse(packageJsonText(text));
         }
         catch {
-            throw error('ERR_INVALID_PACKAGE_CONFIG', 'Invalid package config ' + path + '.');
+            throw nativeResolutionError('ERR_INVALID_PACKAGE_CONFIG', 'Invalid package config ' + path + '.');
         }
         const config = pkg !== null && typeof pkg === 'object' ? pkg : {};
         state.configs.set(path, config);
@@ -144,7 +146,7 @@ export function createRequireResolver(host, options = {}) {
                 if (source)
                     return source;
             }
-            throw Object.assign(error('MODULE_NOT_FOUND', "Cannot find module '" + main + "'. Please verify that the package.json has a valid \"main\" entry"), { path: pkgPath, requestPath: path });
+            throw moduleNotFound("Cannot find module '" + main + "'. Please verify that the package.json has a valid \"main\" entry", { path: pkgPath, requestPath: path });
         }
         return yield* loadIndex(path);
     }
@@ -209,7 +211,8 @@ export function createRequireResolver(host, options = {}) {
             const found = yield* loadAsDirectory(dir, state);
             if (found)
                 return fileUrl(found);
-            throw error('ERR_MODULE_NOT_FOUND', "Cannot find package '" + dir + "/index.js' imported from " + fromDir);
+            // legacyMainResolve's.
+            throw nativeResolutionError('ERR_MODULE_NOT_FOUND', "Cannot find package '" + dir + "/index.js' imported from " + fromDir);
         }
         throw error('ERR_MODULE_NOT_FOUND', "Cannot find package '" + split.name + "' imported from " + fromDir);
     }
@@ -230,7 +233,7 @@ export function createRequireResolver(host, options = {}) {
         }
         const path = decodeURIComponent(target.pathname);
         if ((yield* ask.kind(path)) !== 'file') {
-            throw Object.assign(error('MODULE_NOT_FOUND', "Cannot find module '" + path + "'"), { path: pjsonPath });
+            throw moduleNotFound("Cannot find module '" + path + "'", { path: pjsonPath });
         }
         return absolute(path);
     }

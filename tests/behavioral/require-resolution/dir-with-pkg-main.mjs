@@ -30,14 +30,13 @@
 //      honours `main`; the bug is in the relative-require branch
 //      that lands directly on __resolveFile.
 
-import { Terminal, mintSession, sleep, makeAsserter, BASE } from '../_driver.mjs';
+import { Terminal, mintSession, makeAsserter, BASE } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[require-resolution/dir-with-pkg-main] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 const A = makeAsserter('require-resolution/dir-with-pkg-main');

@@ -1,4 +1,5 @@
 import { z } from 'zod/v4';
+import { nodeError } from './node-error.js';
 /**
  * exports-resolver.ts — Single source of truth for `package.json#exports` /
  * `package.json#imports` resolution per the Node.js spec.
@@ -233,6 +234,24 @@ export function resolveExports(exportsField, subpath = '.', conditions = DEFAULT
     return next.value ?? null;
 }
 /**
+ * A package resolution error Node's JavaScript gives an `ERR_*` code: its
+ * internal NodeError, `Name [CODE]: message` in its toString() and its stack
+ * (lib/internal/errors.js). A module not found by require() is not one:
+ * Node's CJS loader makes that a plain Error, its `code` MODULE_NOT_FOUND.
+ */
+export function resolutionError(code, message, Type = Error) {
+    return nodeError(Type, code, message, undefined, resolutionError);
+}
+/**
+ * A package resolution error Node 22 throws from C++ (node_errors.h
+ * THROW_ERR_*): a package.json it cannot parse (node_modules.cc), a package
+ * main legacyMainResolve does not find (node_file.cc). A plain Error with its
+ * code, `Error: message` in its toString() and its stack, as V8 makes it.
+ */
+export function nativeResolutionError(code, message) {
+    return Object.assign(new Error(message), { code });
+}
+/**
  * Node's leaf validation and error construction, shared by CJS and ESM.
  * A bare imports target is delegated to the caller's package resolver; any
  * host questions it yields remain inside the same array traversal.
@@ -241,7 +260,7 @@ export function createNodePackageMapPolicy(packageJsonUrl, base, internal, resol
     const path = (url) => decodeURIComponent(url.pathname);
     const pjsonPath = path(packageJsonUrl);
     const root = new URL('.', packageJsonUrl);
-    const error = (code, message, Type = Error) => Object.assign(new Type(message), { code });
+    const error = resolutionError;
     function invalidTarget(value, match) {
         const text = typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value);
         const related = !internal && text.length > 0 && !text.startsWith('./');

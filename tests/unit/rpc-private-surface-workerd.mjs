@@ -23,8 +23,8 @@
 //   - NimbusFsJournalReader (an ended process's journal, held by the drain).
 //     Red before: `journal()` answered functions that append to it.
 //   - ProcessSupervisor (a one-shot's SUPERVISOR), NimbusLoadedWorker,
-//     NimbusAssetsRPC, NimbusDurableObjectNamespace and NimbusDOStub: their
-//     fields and other names answer nothing either.
+//     NimbusAssetsRPC and NimbusDurableObjectNamespace: their fields and
+//     other names answer nothing either.
 //   - NimbusAssetsRPC reads as the process the host minted it for. Red
 //     before: it read every asset as the session's user.
 //   - NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket (a wrangler-dev
@@ -38,18 +38,13 @@
 // Runs lib/rpc-surface-workerd-entry.ts, bundled from source.
 
 import assert from 'node:assert/strict';
-import net from 'node:net';
-import { spawn } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
+import { servePlainWorkerd } from './lib/plain-workerd.mjs';
 
 const REPO = resolve(import.meta.dirname, '../..');
 const DEADLINE_MS = 30_000;
 
-const dir = mkdtempSync(join(tmpdir(), 'nimbus-rpc-private-surface-'));
 const bundled = await build({
   entryPoints: [join(import.meta.dirname, 'lib/rpc-surface-workerd-entry.ts')],
   bundle: true,
@@ -63,19 +58,12 @@ const bundled = await build({
   write: false,
   logLevel: 'error',
 });
-writeFileSync(join(dir, 'main.js'), bundled.outputFiles[0].text);
-
-const require = createRequire(import.meta.url);
-const workerd = createRequire(require.resolve('wrangler/package.json'))('workerd').default;
-const free = net.createServer();
-const listening = Promise.withResolvers();
-free.listen(0, '127.0.0.1', listening.resolve);
-await listening.promise;
-const port = free.address().port;
-const closed = Promise.withResolvers();
-free.close(closed.resolve);
-await closed.promise;
-writeFileSync(join(dir, 'config.capnp'), `using Workerd = import "/workerd/workerd.capnp";
+const served = await servePlainWorkerd({
+  name: 'rpc-private-surface',
+  files: { 'main.js': bundled.outputFiles[0].text },
+  dirs: ['store'],
+  readyPath: '/ready',
+  config: ({ port, dir }) => `using Workerd = import "/workerd/workerd.capnp";
 const config :Workerd.Config = (
   services = [
     (name = "main", worker = (
@@ -96,15 +84,11 @@ const config :Workerd.Config = (
     (name = "store", disk = (path = ${JSON.stringify(join(dir, 'store'))}, writable = true)),
   ],
   sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")],
-);`);
-mkdirSync(join(dir, 'store'));
-const child = spawn(workerd, ['serve', 'config.capnp', '--experimental'], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
-let logs = '';
-child.stdout.on('data', (d) => { logs += d; });
-child.stderr.on('data', (d) => { logs += d; });
+);`,
+});
 
 async function get(path, params = {}) {
-  const response = await fetch(`http://127.0.0.1:${port}${path}?${new URLSearchParams(params)}`, { signal: AbortSignal.timeout(DEADLINE_MS) });
+  const response = await fetch(`${served.base}${path}?${new URLSearchParams(params)}`, { signal: AbortSignal.timeout(DEADLINE_MS) });
   return response.json();
 }
 /** The guest holding `session`'s `kind` calls `method`(...args), with a Request last when `withRequest`. */
@@ -138,15 +122,6 @@ async function nothingElse(kind, others) {
 const COMMON = [['read:ctx'], ['read:env'], ['read:props']];
 
 try {
-  for (const until = Date.now() + 30_000; ;) {
-    try {
-      await fetch(`http://127.0.0.1:${port}/ready`);
-      break;
-    } catch {}
-    if (child.exitCode !== null || Date.now() > until) throw new Error(`workerd did not start:\n${logs}`);
-    await new Promise((r) => setTimeout(r, 100));
-  }
-
   // ── CirrusHmrRPC: its intended methods reach the session ─────────────────
   {
     const events = await asGuest('hmr-intended', 'hmrNextEvent', [1]);
@@ -218,13 +193,13 @@ try {
   }
   await nothingElse('NimbusAssetsRPC', COMMON);
   {
-    const id = await asGuest('dons-intended', 'idFromName', ['room'], 'NimbusDurableObjectNamespace');
-    assert.equal(id.ok, true, `idFromName: ${JSON.stringify(id)}`);
-    assert.equal(typeof id.value, 'string');
-    console.log('  ok  NimbusDurableObjectNamespace: idFromName answers');
+    const called = await asGuest('dons-intended', 'callOn', ['room', ['ping'], [1]], 'NimbusDurableObjectNamespace');
+    assert.deepEqual(called, { ok: true, value: null }, JSON.stringify(called));
+    assert.deepEqual((await asked('dons-intended')).map((e) => [e.op, e.args]),
+      [['innerDoCall', [{ bindingName: 'COUNTER', id: 'room', path: ['ping'], args: [1] }]]], 'a member call is its object\'s');
+    console.log('  ok  NimbusDurableObjectNamespace: callOn reaches the session for its object');
   }
-  await nothingElse('NimbusDurableObjectNamespace', COMMON);
-  await nothingElse('NimbusDOStub', COMMON);
+  await nothingElse('NimbusDurableObjectNamespace', [['idFromName', ['room']], ['newUniqueId'], ['idFromString', ['x']], ['get', ['room']], ...COMMON]);
 
   // ── The storage bindings: each call is its own store's ────────────────────
   {
@@ -267,9 +242,8 @@ try {
 
   console.log('rpc-private-surface-workerd: ok');
 } catch (error) {
-  console.error(logs.slice(-4000));
+  console.error(served.logs().slice(-4000));
   throw error;
 } finally {
-  child.kill('SIGKILL');
-  rmSync(dir, { recursive: true, force: true });
+  await served.stop();
 }

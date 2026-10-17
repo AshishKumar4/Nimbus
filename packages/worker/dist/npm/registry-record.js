@@ -40,8 +40,8 @@ function ranges(json) {
     const map = decoded(json, isStringMap, {});
     return Object.keys(map).length > 0 ? map : undefined;
 }
-/** The record of `pkg`, fetched at `fetchedAt`, as the cache keeps it. */
-export function registryRecord(pkg, fetchedAt) {
+/** The record of `pkg`, as the cache keeps it. */
+export function registryRecord(pkg) {
     return {
         name: pkg.name,
         version: pkg.version,
@@ -50,16 +50,13 @@ export function registryRecord(pkg, fetchedAt) {
         integrity: pkg.integrity,
         depsJson: JSON.stringify(pkg.dependencies),
         peerDepsJson: JSON.stringify(pkg.peerDependencies ?? {}),
-        exportsJson: JSON.stringify(pkg.exports ?? {}),
         main: pkg.main,
-        moduleField: pkg.module,
         binJson: JSON.stringify(pkg.bin),
         platformJson: JSON.stringify({ os: pkg.os, cpu: pkg.cpu, libc: pkg.libc }),
         optionalDepsJson: JSON.stringify(pkg.optionalDependencies ?? {}),
         peerMetaJson: JSON.stringify(pkg.peerDependenciesMeta ?? {}),
         bundleJson: pkg.bundleDependencies === undefined ? '' : JSON.stringify(pkg.bundleDependencies),
         enginesJson: pkg.engines === undefined ? '' : JSON.stringify(pkg.engines),
-        fetchedAt,
     };
 }
 const NO_PLATFORM = Object.freeze({});
@@ -84,9 +81,7 @@ export function resolvedFromRecord(record) {
         cpu: isStringList(platform.cpu) ? platform.cpu : undefined,
         libc: isStringList(platform.libc) ? platform.libc : undefined,
         ...(engines === undefined ? {} : { engines }),
-        exports: decoded(record.exportsJson, isAnyJson, null),
         main: record.main,
-        module: record.moduleField,
         bin: decoded(record.binJson, isStringMap, {}),
     };
 }

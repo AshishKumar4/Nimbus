@@ -37,6 +37,8 @@
  * is larger than esbuild's, never different in meaning.
  */
 import { componentsEqual, parseSheet, printComponents, quoteString, sheetRules, sheetUrls, } from './css-syntax.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+import { base64Utf8 } from '../_shared/crypto.js';
 export class CssError extends Error {
     diagnostic;
     constructor(diagnostic) {
@@ -51,7 +53,6 @@ const isCssLoader = (loader) => loader === 'css' || loader === 'global-css' || l
 function fileOf(module) {
     return module.namespace === 'file' || module.namespace === '' ? module.path : `${module.namespace}:${module.path}`;
 }
-const utf8Length = (text) => new TextEncoder().encode(text).length;
 export async function bundleCss(modules, plugin, assets, { minify }) {
     const diagnostic = (module, at, length, text, pluginName = '') => {
         const before = module.source.slice(0, at);
@@ -352,11 +353,7 @@ function printImport(path, conditions, minify) {
 }
 /** esbuild's EncodeStringAsShortestDataURL. */
 export function shortestDataUrl(mimeType, text) {
-    const bytes = new TextEncoder().encode(text);
-    let latin1 = '';
-    for (let i = 0; i < bytes.length; i += 0x8000)
-        latin1 += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    const encoded = `data:${mimeType};base64,${btoa(latin1)}`;
+    const encoded = `data:${mimeType};base64,${base64Utf8(text)}`;
     const escaped = percentEscapedDataUrl(mimeType, text);
     return escaped.length < encoded.length ? escaped : encoded;
 }

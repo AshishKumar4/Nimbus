@@ -22,7 +22,7 @@ import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
  */
 import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
-import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
+import { type RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
 import { type NimbusFilesystemAuthority, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 export interface PythonReplDeps {
     facetMgr: FacetManager;

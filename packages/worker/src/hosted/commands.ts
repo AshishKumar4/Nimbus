@@ -261,6 +261,7 @@ workspace.runtimes.registerRunner(
         authority: workspace.filesystem,
         terminal: terminal,
         installRoot,
+        manifest,
         // The caller's filesystem and credential, from its working directory.
         pid: ctx.pid,
         cred: requireVfsCred(ctx.cred, 'Ruby REPL'),
@@ -929,41 +930,6 @@ HeredocHandler.install(shell, terminal);
 //    active. ──
 LineEditorExtender.install(shell, terminal);
 
-// ── Wire npm/npx with shellExecute ──
-
-const shellExecute = async (cmd: string, cmdCtx: CommandContext): Promise<number> => {
-  const stdin = cmdCtx.stdin && cmdCtx.stdin !== cmdCtx.terminalStdin
-    ? await cmdCtx.stdin.readAll()
-    : undefined;
-  const hooks = outputHooks(cmdCtx);
-  try {
-    const result = await shell.execute(cmd, {
-      cwd: cmdCtx.cwd,
-      env: cmdCtx.env,
-      onStdout: hooks.onStdout,
-      onStderr: hooks.onStderr,
-      stdin,
-      terminalStdin: cmdCtx.terminalStdin,
-      // `npm run x` runs x on npm's own fds. Handing the nested execution a
-      // sink without saying where that sink leads would make every fd look
-      // redirected, and a runtime whose stdout is redirected stops streaming.
-      terminalFds: {
-        stdin: cmdCtx.isFdTerminal?.(0) ?? false,
-        stdout: cmdCtx.isFdTerminal?.(1) ?? false,
-        stderr: cmdCtx.isFdTerminal?.(2) ?? false,
-      },
-      commandContext: {
-        pid: cmdCtx.pid,
-        cred: cmdCtx.cred,
-        setUmask: cmdCtx.setUmask,
-      },
-      runAs: runAsProcess,
-    });
-    return result.exitCode;
-  } finally {
-    await hooks.end();
-  }
-};
 const shellEntrypointExecutor = {
   execute: async (cmd, options) => {
     const parentPid = options?.commandContext?.['pid'];
@@ -1018,13 +984,22 @@ const shellEntrypointExecutor = {
 } satisfies ShellEntrypointExecutor;
 registerShellEntrypointCommands(registry, shellEntrypointExecutor);
 
+/**
+ * Whether a server adopted `pid` (the bin-spawn contract) and runs on as
+ * it: a dev server binds its stop to the pid (runsWork), a node resident
+ * holds it in the facet manager.
+ */
+const adopted = (pid: number): boolean =>
+  self.processes.runsWork(pid) || (self.facetManager?.hasResidentProcess(pid) ?? false);
+
 // Shell scripts that execute through the local shell still need the same
-// process-table and log-store contract as facet-backed processes.
+// process-table and log-store contract as facet-backed processes. Answers
+// 'resident' for a long-running script a server adopted, which runs on.
 const shellExecuteTracked = async (
   cmd: string,
   cmdCtx: CommandContext,
   opts: { longRunning?: boolean } = {},
-): Promise<number> => {
+): Promise<number | 'resident'> => {
   const entry = self.processes.spawn(
     cmd,
     [cmd],
@@ -1071,6 +1046,7 @@ const shellExecuteTracked = async (
   const stop = new AbortController();
   const stopped = self.processes.holdWork(pid, (reason) => stop.abort(reason), stop.signal);
   let exitCode = 1;
+  let handedOffToLongRunningFacet = false;
   try {
     const result = await scriptShell.execute(cmd, {
       cwd: cmdCtx.cwd,
@@ -1127,7 +1103,7 @@ const shellExecuteTracked = async (
       // emitting an immediate exit would print a false `[shell exited]` and
       // flip the process to terminated in /api/processes. Mirror the npm-bin
       // resolver's `handedOffToLongRunningFacet` contract.
-      const handedOffToLongRunningFacet = opts.longRunning === true && exitCode === 0;
+      handedOffToLongRunningFacet = opts.longRunning === true && exitCode === 0 && adopted(pid);
       if (!handedOffToLongRunningFacet) {
         try { self.processes.exit(pid, exitCode); } catch {}
         try {
@@ -1148,7 +1124,7 @@ const shellExecuteTracked = async (
       }
     }
   }
-  return exitCode;
+  return handedOffToLongRunningFacet ? 'resident' : exitCode;
 };
 const runtimeCommandHint = createRuntimeCommandHintResolver(self.env as any);
 installNpmBinFallbackResolver(registry, {
@@ -1172,49 +1148,20 @@ installNpmBinFallbackResolver(registry, {
 
 // Register core npm — the install work itself goes through the port,
 // which owns the NpmInstaller, prefix dirs and bin materialisation.
-const coreNpmCmd = createNpmCommand(registry, shellExecute, kernel, {
-  installer: createNpmInstallPort(self, workspace.filesystem),
-  // Releases before 0.13.2 wrote package.json as root.
-  beforeWrite: (ctx, path) => handKernelArtifact(workspace.filesystem, ctx.vfs, ctx.cred, path),
-});
-registry.register('npm', async (ctx: any) => {
-  const args: string[] = ctx.args || [];
-  const sub = args[0];
-  const cwdKey = normalizeVfsPath(ctx.cwd || '/home/user');
-
-  // npm run <script> / npm test / npm start — parse package.json and execute
-  if (sub === 'run' || sub === 'run-script' || sub === 'test' || sub === 'start') {
-    const scriptName = sub === 'test' ? 'test' : sub === 'start' ? 'start' : args[1];
-    if (!scriptName) {
-      // npm run (no script) — list available scripts
-      const pkgPath = `/${cwdKey}/package.json`;
-      try {
-        const pkg = JSON.parse(await ctx.vfs.readFileString(pkgPath));
-        if (pkg.scripts && Object.keys(pkg.scripts).length > 0) {
-          ctx.stdout.write('Lifecycle scripts:\n');
-          for (const [name, cmd] of Object.entries(pkg.scripts)) {
-            ctx.stdout.write(`  ${name}\n    ${cmd}\n`);
-          }
-        } else {
-          ctx.stdout.write('No scripts found in package.json\n');
-        }
-      } catch { ctx.stderr.write('npm ERR! no package.json found\n'); return 1; }
-      return 0;
-    }
-
-    const pkgPath = `/${cwdKey}/package.json`;
-    try {
-      const pkg = JSON.parse(await ctx.vfs.readFileString(pkgPath));
-      const script = pkg.scripts?.[scriptName];
-      if (!script) {
-        ctx.stderr.write(`npm ERR! Missing script: "${scriptName}"\n`);
-        if (pkg.scripts) {
-          ctx.stderr.write('npm ERR! Available scripts:\n');
-          for (const name of Object.keys(pkg.scripts)) ctx.stderr.write(`  - ${name}\n`);
-        }
-        return 1;
-      }
-
+/** npm run's events whose scripts serve until stopped: run as long-running processes. */
+const LONG_RUNNING_EVENTS: Readonly<Record<string, true>> = { dev: true, start: true, serve: true, watch: true };
+const coreNpmCmd = createNpmCommand(
+  registry,
+  // Each script npm runs is a process of its own, on a shell of its own.
+  (cmd, cmdCtx, script) => shellExecuteTracked(cmd, cmdCtx, { longRunning: script !== undefined && Object.hasOwn(LONG_RUNNING_EVENTS, script.event) }),
+  kernel,
+  {
+    installer: createNpmInstallPort(self, workspace.filesystem),
+    // Releases before 0.13.2 wrote package.json as root.
+    beforeWrite: (ctx, path) => handKernelArtifact(workspace.filesystem, ctx.vfs, ctx.cred, path),
+    beforeRun: async (ctx, { event: ran, scripts, manifest }) => {
+      // Nimbus's own flags, anywhere on the command line, before `--` or after.
+      const words: readonly string[] = ctx.args;
       // ── node_modules preflight ────────────────────────────────────
       // If the script invokes a known bundler/framework CLI (vite, next,
       // webpack, tsc, ...) and node_modules is missing, HARD-FAIL before
@@ -1222,75 +1169,53 @@ registry.register('npm', async (ctx: any) => {
       // found" / "cannot find package" error that's less helpful.
       // For custom/unknown scripts (e.g. `echo hi`), emit a warning but
       // continue — the user's intent might not need deps at all.
-      // Bypass with --force / --no-install-check in the script args, or
-      // by setting NIMBUS_SKIP_INSTALL_CHECK=1 in env.
-      const scriptArgs = args.slice(sub === 'run' || sub === 'run-script' ? 2 : 1);
+      // Bypass with --force / --no-install-check, or by setting
+      // NIMBUS_SKIP_INSTALL_CHECK=1 in env.
       const bypassRunCheck =
-        scriptArgs.includes('--force') ||
-        scriptArgs.includes('--no-install-check') ||
+        words.includes('--force') ||
+        words.includes('--no-install-check') ||
         ctx.env?.NIMBUS_SKIP_INSTALL_CHECK === '1';
       if (!bypassRunCheck) {
-        const guard = await checkNodeModulesGuard(ctx.vfs, `/${cwdKey}`);
+        const guard = await checkNodeModulesGuard(ctx.vfs, `/${normalizeVfsPath(ctx.cwd || '/home/user')}`);
         if (guard.missing) {
-          const bundler = detectBundlerBin(script);
-          if (bundler) {
+          for (const { event, script } of scripts) {
+            const bundler = detectBundlerBin(script);
+            if (!bundler) continue;
             // Hard fail: script needs a bundler binary that lives in node_modules/.bin.
-            ctx.stderr.write(
+            await ctx.stderr.write(
               '\x1b[31m\u2718\x1b[0m \x1b[1mnode_modules/ not found\x1b[0m — ' +
-              `script "${scriptName}" runs \x1b[36m${bundler}\x1b[0m which needs installed dependencies ` +
+              `script "${event}" runs \x1b[36m${bundler}\x1b[0m which needs installed dependencies ` +
               `(${guard.depCount} declared).\n` +
               '  Run \x1b[36mnpm install\x1b[0m first,\n' +
-              '  or re-run with \x1b[36mnpm run ' + scriptName + ' -- --force\x1b[0m to skip this check.\n'
+              '  or re-run with \x1b[36mnpm run ' + ran + ' -- --force\x1b[0m to skip this check.\n'
             );
             return 1;
           }
           // Soft warning: script might not need deps; let it try.
-          ctx.stderr.write(
+          await ctx.stderr.write(
             '\x1b[33m\u26A0\x1b[0m  node_modules/ not found (' + guard.depCount + ' deps declared) — ' +
             'proceeding anyway. Run \x1b[36mnpm install\x1b[0m if the script fails.\n\n'
           );
         }
       }
 
-      ctx.stdout.write(`\n> ${pkg.name || 'project'}@${pkg.version || '1.0.0'} ${scriptName}\n`);
-      ctx.stdout.write(`> ${script}\n\n`);
-
-      // ── Next.js loud-block (was W11 per-framework substrate) ──────
-      //
-      // runtime primitive support (P12): the previous wave shipped this as a
-      // 45-line standalone module at src/frameworks/next.ts that
-      // exported nothing but the strings used here. Per the
-      // "no per-framework substrate" rule, the message is inlined
-      // (the only thing the module did was hold these strings) and
-      // the file is deleted.
-      //
-      // Next.js dev/start/build/export all need the same pipeline —
-      // custom http.Server + child_process.fork with v8-IPC +
-      // webpack/Turbopack — none of which Nimbus ships. We surface a
-      // deterministic refusal rather than letting the script hang or
-      // (build) reset the isolate during spawn. The block remains a
-      // one-off symbol-detection guard, NOT a generic per-framework
-      // code path. Any future similar guard belongs alongside this
-      // one — not in its own src/frameworks/<name>.ts file.
-      const refused = refusedNextSubcommand(scriptName, script, pkg, scriptArgs);
-      if (refused) {
-        ctx.stderr.write(NEXT_REFUSAL_MESSAGE);
+      // Next.js dev/start/build/export need a custom http.Server,
+      // child_process.fork with v8-IPC and webpack/Turbopack, none of which
+      // Nimbus ships: a deterministic refusal, rather than a script that hangs
+      // or (build) resets the isolate during spawn. A one-off symbol-detection
+      // guard, not a per-framework code path.
+      if (scripts.some(({ event, script }) => refusedNextSubcommand(event, script, manifest, words))) {
+        await ctx.stderr.write(NEXT_REFUSAL_MESSAGE);
         return 127;
       }
-
-      const scriptTrim = script.trim();
-      const longRunning =
-        scriptName === 'dev' || scriptName === 'start' ||
-        scriptName === 'serve' || scriptName === 'watch';
-      return await shellExecuteTracked(scriptTrim, {
-        ...ctx,
-        env: { ...ctx.env, npm_lifecycle_event: scriptName, npm_package_name: pkg.name || '' },
-      }, { longRunning });
-    } catch (e: any) {
-      ctx.stderr.write(`npm ERR! ${e?.message || e}\n`);
-      return 1;
-    }
-  }
+      return null;
+    },
+  },
+);
+registry.register('npm', async (ctx: any) => {
+  const args: string[] = ctx.args || [];
+  const sub = args[0];
+  const cwdKey = normalizeVfsPath(ctx.cwd || '/home/user');
 
   // npm init, npm create, npm innit: core npm's (npm-init.ts), npm's own
   // package.json or the initializer it names, run by npx.

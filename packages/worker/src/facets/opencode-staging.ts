@@ -6,8 +6,8 @@
  * module map for a facet spawn.
  *
  * WHY THE SPEC IS SEPARATE FROM THE MODULE MAP: the assembled map is ~23 MB
- * of source text (the chunk pack alone is 22.6 MB) plus a 22.6 MB fetch +
- * JSON.parse transient, while the spec (argv/env/VFS snapshot) is small. The
+ * of source text (the chunk pack alone is 22.6 MB, decoded a chunk at a time
+ * from its bytes), while the spec (argv/env/VFS snapshot) is small. The
  * spawn path only ever builds the spec; `assembleOpencodeFacetConfig` runs
  * inside the Worker-Loader cache-miss callback, so the artifact sources are
  * materialized only when the facet actually loads and only for as long as the
@@ -17,10 +17,11 @@
  * envelope), while a one-shot run keeps it in the stateless
  * NimbusLoadedEntrypoint that serves the run.
  *
- * Wasm bytes are memoized per isolate; the chunk-pack fetch+parse is
- * deduped while in flight but never stays resident (permanent residency of
- * the artifact sources is what crowded the memory envelope in the first
- * place; the L2 asset cache makes refetches cheap).
+ * Wasm bytes are memoized per isolate; the chunk pack never stays resident
+ * (permanent residency of the artifact sources is what crowded the memory
+ * envelope in the first place; the L2 asset cache makes refetches cheap). An
+ * assembly runs under the isolate's whole transient budget, so two never
+ * overlap (assembleOpencodeFacetConfig).
  */
 
 import { z } from 'zod/v4';
@@ -36,6 +37,7 @@ import {
 import { fetchOpenTUIWasmBytes } from '../runtime/opentui-wasm-bytes.js';
 import { OPENTUI_WASM_MODULE_NAME } from '../runtime/opentui-facet-backend.js';
 import {
+  OPENCODE_CHUNK_RANGES,
   OPENCODE_CHUNKS_PACK,
   OPENCODE_TREE_SITTER_WASMS,
   OPENCODE_TUI_PARSER_WORKER,
@@ -50,6 +52,8 @@ import {
 } from '../runtime/opencode-facet-runner.js';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
+import { withSupervisorLoadAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import { SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES } from '@nimbus-sh/platform/limits.js';
 
 export interface OpencodeAssetsEnv {
   ASSETS: { fetch(req: Request): Promise<Response> };
@@ -164,21 +168,12 @@ async function parserWorkerModuleEntry(env: OpencodeAssetsEnv): Promise<Record<s
   return { [parser]: await fetchOpencodeWorkerSource(env, parser) };
 }
 
-// In-flight (never resident) chunk-pack fetch+parse dedupe: concurrent
-// assemblies in the same isolate share one fetch + ~22 MB JSON parse.
-let chunkEntriesInflight: Promise<Record<string, string>> | null = null;
-
 function chunkModuleEntries(env: OpencodeAssetsEnv): Promise<Record<string, string>> {
   // Flat staging: the entry bundle inlines every chunk (no runtime chunk-graph
   // imports — the #20 process-kill trigger family); there is no pack and no
   // chunk module-map entries.
-  if (!OPENCODE_CHUNKS_PACK) return Promise.resolve({});
-  if (!chunkEntriesInflight) {
-    chunkEntriesInflight = fetchOpencodeChunkSources(env, OPENCODE_CHUNKS_PACK).finally(() => {
-      chunkEntriesInflight = null;
-    });
-  }
-  return chunkEntriesInflight;
+  if (!OPENCODE_CHUNKS_PACK || !OPENCODE_CHUNK_RANGES) return Promise.resolve({});
+  return fetchOpencodeChunkSources(env, OPENCODE_CHUNKS_PACK, OPENCODE_CHUNK_RANGES);
 }
 
 // A 'staged' boot spec reaching the fabric assembles through
@@ -196,6 +191,14 @@ export async function assembleOpencodeFacetConfig(
 ): Promise<WorkerCode> {
   const spec = OpencodeStageSpecSchema.parse(specInput);
   const assets = requireAssets(env, 'staged opencode artifact');
+  // The map holds more than the isolate's whole transient budget (serve's
+  // chunk sources alone are about 38 MB of strings), so the assembly takes all
+  // of it and runs alone: two sessions starting opencode at once, or one
+  // beside a compile's load, take turns instead of overlapping.
+  return await withSupervisorLoadAllocation('opencode facet', SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, undefined, () => assemble(assets, spec));
+}
+
+async function assemble(assets: OpencodeAssetsEnv, spec: OpencodeStageSpec): Promise<WorkerCode> {
   const attached = spec.mode === 'attached';
 
   const [bundle, sources, sqliteModules, treeSitterModules, openTuiModules, chunkModules, parserModule, yogaModules] =

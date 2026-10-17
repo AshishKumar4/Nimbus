@@ -1,9 +1,8 @@
 #!/usr/bin/env bun
 // A package installed globally (npm install -g) is a shell command again
-// after a boot: the hosted runtime rehydrates /usr/lib/node_modules from the
-// workspace's filesystem, and has done so by the time it is composed (a
-// floating rehydration used to finish whenever it finished, and a failure
-// in it was an unhandled rejection that no try/catch around the call saw).
+// after a boot, as with npm: its bin is linked into the prefix's bin, on
+// PATH, and the shell finds it there. Nothing restores it, and nothing
+// registers it: a bin of a package not under the prefix is no command.
 // A hosted runtime keeps its embedder's Durable Object in memory while a
 // resident process runs, by the same rule the session DO follows.
 //
@@ -24,10 +23,11 @@
 import assert from 'node:assert/strict';
 
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld } from './lib/facet-host-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
 import { hostedLifecycle } from './lib/hosted-lifecycle.mjs';
+import { npmBinShim } from '../../packages/core/src/runtime/npm-bin-map.ts';
 
 // One graph for the runtime and the workspace it is composed over, so the
 // filesystem authority the runtime checks for is the class it knows.
@@ -71,22 +71,27 @@ const env = {
 const vfs = new bundle.SqliteVFS(harness.sql, harness.ctx);
 const processes = new bundle.SessionProcessSupervisor();
 processes.setPidBase(bundle.PID_GEN_STRIDE);
-// An earlier boot: the workspace seeded, and `npm install -g fakebin` left its package on disk.
+// An earlier boot: the workspace seeded, and `npm install -g` left two
+// packages under the prefix and their bins in its bin; a package outside it
+// has a bin no install linked.
 {
   const earlier = await bundle.NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, vfs, processes: new bundle.SessionProcessSupervisor(), generation: 1 });
   const kernel = vfs.as(bundle.CRED_KERNEL);
-  kernel.mkdir('usr/lib/node_modules/fakebin', { recursive: true, mode: 0o755 });
-  kernel.writeFile('usr/lib/node_modules/fakebin/package.json', JSON.stringify({ name: 'fakebin', version: '1.0.0', bin: { fakebin: 'cli.js' } }));
-  kernel.writeFile('usr/lib/node_modules/fakebin/cli.js', 'console.log("fakebin ran")');
-  kernel.mkdir('usr/lib/node_modules/@scope/tool', { recursive: true, mode: 0o755 });
-  kernel.writeFile('usr/lib/node_modules/@scope/tool/package.json', JSON.stringify({ name: '@scope/tool', version: '1.0.0', bin: 'bin/tool.js' }));
-  kernel.mkdir('usr/lib/node_modules/@scope/tool/bin', { mode: 0o755 });
-  kernel.writeFile('usr/lib/node_modules/@scope/tool/bin/tool.js', '');
+  const installed = (dir, json, bin, target) => {
+    kernel.mkdir(`usr/local/lib/node_modules/${dir}/${target.split('/').slice(0, -1).join('/')}`, { recursive: true, mode: 0o755 });
+    kernel.writeFile(`usr/local/lib/node_modules/${dir}/package.json`, JSON.stringify(json));
+    kernel.writeFile(`usr/local/lib/node_modules/${dir}/${target}`, `console.log(${JSON.stringify(`${bin} ran`)});\n`);
+    kernel.mkdir('usr/local/bin', { recursive: true, mode: 0o755 });
+    kernel.writeFile(`usr/local/bin/${bin}`, npmBinShim('/usr/local/bin', `/usr/local/lib/node_modules/${dir}/${target}`));
+    kernel.chmod(`usr/local/bin/${bin}`, 0o755);
+  };
+  installed('fakebin', { name: 'fakebin', version: '1.0.0', bin: { fakebin: 'cli.js' } }, 'fakebin', 'cli.js');
+  installed('@scope/tool', { name: '@scope/tool', version: '1.0.0', bin: 'bin/tool.js' }, 'tool', 'bin/tool.js');
+  kernel.mkdir('usr/lib/node_modules/stray', { recursive: true, mode: 0o755 });
+  kernel.writeFile('usr/lib/node_modules/stray/package.json', JSON.stringify({ name: 'stray', version: '1.0.0', bin: { stray: 'cli.js' } }));
   await earlier.close();
 }
 const workspace = await bundle.NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, vfs, processes, generation: 2 });
-// The workspace restores them itself, once, as it is created (CUTOVER §2.9).
-assert.equal(workspace.registry.has('fakebin'), true, 'the global bin is a command once the workspace exists');
 const runtime = await bundle.composeHostedRuntime({
   workspace,
   ctx,
@@ -94,6 +99,10 @@ const runtime = await bundle.composeHostedRuntime({
   ports: new bundle.PortRegistry(),
   lifecycle: hostedLifecycle(ctx, () => runtime),
 });
-assert.equal(workspace.registry.has('fakebin'), true, 'the global bin is a command once the runtime is composed');
-assert.equal(workspace.registry.has('tool'), true, 'and a scoped package\'s bin');
+const found = async (name) => (await workspace.exec(`command -v ${name}`)).stdout.trim();
+assert.equal(await found('fakebin'), '/usr/local/bin/fakebin', 'the global bin is a command, found on PATH');
+assert.equal(await found('tool'), '/usr/local/bin/tool', 'and a scoped package\'s bin');
+assert.equal(await found('stray'), '', 'a bin no install linked is no command');
+// That they run is npm-run-invocation's (a global install, a boot, the bin run): here node is a facet.
+assert.equal(workspace.registry.has('fakebin'), false, 'nothing registered it');
 console.log('hosted-global-bins-rehydrate: ok');

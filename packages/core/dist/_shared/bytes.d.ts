@@ -15,6 +15,14 @@ export declare const enc: TextEncoder;
 /** Shared UTF-8 decoder. Stateless; safe to share across all callers. */
 export declare const dec: TextDecoder;
 /**
+ * Shared UTF-8 decoder for names (paths, directory and archive entries,
+ * link targets, argv and environment) and for a stream's bytes decoded whole
+ * (a write's output, a chunk of stdin). It keeps a leading U+FEFF, as git,
+ * tar and Linux keep it in a name and a terminal shows it in output; `dec`
+ * drops it, as a file's text drops it.
+ */
+export declare const nameDec: TextDecoder;
+/**
  * A fresh ArrayBuffer holding exactly the bytes `bytes` views — its window,
  * not its whole backing buffer — for APIs that take an ArrayBuffer
  * (WebAssembly modules, structured clone across a facet boundary).
@@ -23,8 +31,9 @@ export declare function toArrayBuffer(bytes: Uint8Array): ArrayBuffer;
 /**
  * A text consumer's edge over a byte stream: one streaming UTF-8 decoder per
  * key (a pid, or a (pid, stream) pair), so a multibyte character whose bytes
- * arrive in two chunks still decodes as one character. `drop(key)` flushes
- * the decoder's pending bytes and forgets it; call it when the stream ends.
+ * arrive in two chunks still decodes as one character, and a leading U+FEFF
+ * is the stream's own, as a terminal shows it. `drop(key)` flushes the
+ * decoder's pending bytes and forgets it; call it when the stream ends.
  */
 export declare class StreamTextDecoders<K> {
     private readonly decoders;

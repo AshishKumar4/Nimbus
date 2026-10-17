@@ -19,6 +19,7 @@ import { fsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { ROUTED_FILE_MAX } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import { facetFileApi, READ_RANGE_BYTES, supervisorStat, WHOLE_FILE_RPC_SAFE_BYTES, } from './facet-supervisor.js';
 import { replaceFile } from './mount-writer.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 /** A record as an inode: a link followed reads as the file it names. */
 function recordStat(entry, follow) {
     return {
@@ -265,7 +266,7 @@ export function createBufferedFs(supervisor, stats, phaseDeadline = null, worktr
             return bufferMutation(async () => {
                 const now = Date.now();
                 const linkMetadata = {
-                    kind: 'symlink', size: enc.encode(target).byteLength, mode: 0o777, mtimeMs: now, ctimeMs: now, atimeMs: now,
+                    kind: 'symlink', size: utf8Length(target), mode: 0o777, mtimeMs: now, ctimeMs: now, atimeMs: now,
                 };
                 await writer.symlink(p, target, linkMetadata);
             });

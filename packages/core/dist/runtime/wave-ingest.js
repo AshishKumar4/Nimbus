@@ -8,9 +8,9 @@
  * (staging, authorisation, transactions, publication). ProcessFiles ingests
  * with its namespace as the router; a filesystem without one ingests with none.
  */
-import { acquireSupervisorAllocation, tryAcquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
-import { decodeWriteBatchStream, encodeWriteBatchStream, openAccessRights } from '@nimbus-sh/platform/w7-frame.js';
-import { concatBytes } from '../_shared/bytes.js';
+import { acquireSupervisorRunningAllocation, tryAcquireSupervisorRunningAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import { decodeWriteBatchStream, encodeWriteBatchStream } from '@nimbus-sh/platform/w7-frame.js';
+import { concatBytes, nameDec } from '../_shared/bytes.js';
 import { SYSCALL_VERDICTS, errnoCodeOf, vfsError } from '../vfs/vfs-error.js';
 import { parentKey } from '../vfs/path.js';
 import { CALL_GROUP_BYTES, CALL_GROUP_OPS, DATA_CALL_MAX, ROUTED_FILE_MAX, ROUTED_LINK_TARGET_MAX, untilAborted, validateFileChunks, validateInodeShape, withUmask, } from './wave-contracts.js';
@@ -460,7 +460,8 @@ export class WaveIngest {
             const writeLease = await awaitCredit(() => scope.credit.tryAcquire(byteLength), () => scope.credit.acquire(byteLength, abort));
             let supervisorLease;
             try {
-                supervisorLease = await awaitCredit(() => tryAcquireSupervisorAllocation(byteLength), () => acquireSupervisorAllocation(byteLength, abort));
+                // A running facet's wave: running work, never held up by a launch that is not running (the lock order).
+                supervisorLease = await awaitCredit(() => tryAcquireSupervisorRunningAllocation(byteLength), () => acquireSupervisorRunningAllocation(byteLength, abort));
             }
             catch (error) {
                 writeLease.release();
@@ -861,12 +862,9 @@ export class WaveIngest {
                             // A call observes everything the stream wrote before it.
                             phase = 'publish';
                             const call = record.call;
-                            // A mkdir, and an open that keeps no description (it makes or
-                            // empties one file, as a data call does), commit with the calls
-                            // beside it; any other may change where later names resolve, or
-                            // keeps state beside the engine's, and commits now.
-                            const alone = call.call !== 'mkdir' && !(call.call === 'open' && call.description === undefined);
-                            queueCall(call.path, record, { alone, receipt: call.call === 'open' || call.call === 'copyFile' });
+                            // A mkdir commits with the calls beside it; any other may change
+                            // where later names resolve, and commits now.
+                            queueCall(call.path, record, { alone: call.call !== 'mkdir', receipt: call.call === 'open' || call.call === 'copyFile' });
                             break;
                         }
                         case 'batch-end':
@@ -1101,7 +1099,7 @@ export class WaveIngest {
                     // Its answer is the file's stat; with `description`, the binding keeps the file it found, and its descriptor is in the answer.
                     const opened = await backend(router.open({ ...call, path: placed }, as, at.guard, owner));
                     const handle = call.description === undefined || descriptions === undefined ? undefined
-                        : await backend(Promise.resolve(descriptions.describe(call.description, opened.file, opened.stat.ino, openAccessRights(call.access))));
+                        : await backend(Promise.resolve(descriptions.describe(call.description, opened.file, opened.stat.ino, { read: call.read === true, write: true })));
                     // The id is this mount's description's now: what the session kept of an earlier one under it is not adopted again.
                     if (call.description !== undefined)
                         scope.forgetDescription(call.description);
@@ -1209,7 +1207,7 @@ export class WaveIngest {
                     const stat = await backend(router.apply(file.call !== undefined
                         ? { type: 'data-call', call: file.call, path: file.placed, mode: file.mode, bytes, ...(file.offset === undefined ? {} : { offset: file.offset }) }
                         : file.link
-                            ? { type: 'symlink', path: file.placed, target: new TextDecoder().decode(bytes), slot: `${at.waveId}-${file.index}` }
+                            ? { type: 'symlink', path: file.placed, target: nameDec.decode(bytes), slot: `${at.waveId}-${file.index}` }
                             : { type: 'file', path: file.placed, mode: file.mode, bytes }, withUmask(cred, file.umask), at.guard, owner));
                     at.committed(stat === null ? null : { path: file.named, ...stat }, bytes.byteLength);
                 }

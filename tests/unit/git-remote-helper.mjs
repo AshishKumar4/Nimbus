@@ -102,6 +102,15 @@ assert.equal(unquoteC('"open'), null);
   });
   assert.equal(override.code, 0);
   assert.equal(override.asked[0][1].commonDir, '/home/user/common.git');
+  // Git drops the line's end alone (setup.c get_common_dir_noenv): a name that ends in a space or a U+FEFF keeps it.
+  for (const name of ['common ', 'common\uFEFF']) {
+    const named = await converse(`fetch ${A} refs/heads/main\n\n`, {
+      env: { GIT_DIR: '/srv/linked' },
+      readFile: async (path) => path === '/srv/linked/commondir' ? new TextEncoder().encode(`/srv/${name}\r\n`) : null,
+    });
+    assert.equal(named.code, 0);
+    assert.equal(named.asked[0][1].commonDir, `/srv/${name}`, JSON.stringify(name));
+  }
 }
 
 {

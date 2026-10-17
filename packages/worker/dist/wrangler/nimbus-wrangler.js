@@ -642,9 +642,9 @@ export class NimbusWrangler {
         }
         // ── durable_objects ──
         // Inner worker: env[binding] is a local namespace (inner-do-env.ts) over
-        // the binding made here, whose fetchOn, callOn and getOn each stub
-        // relays to. buildAndLoad registers the classes, from the load this env
-        // goes into, in the registry _rpcInnerDoFetch and _rpcInnerDoCall read.
+        // the binding made here, whose callOn and getOn each stub relays to.
+        // buildAndLoad registers the classes, from the load this env goes into,
+        // in the registry _rpcInnerDoCall reads.
         const doBindingNames = (this.config?.durable_objects?.bindings || []).map((b) => b.name);
         if (doBindingNames.length > 0) {
             const ctxExports = this.supervisorCtx?.exports;

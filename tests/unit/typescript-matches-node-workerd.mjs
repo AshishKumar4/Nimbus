@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd
 // TypeScript as Node 22.22.3 runs it (core runtime/typescript-strip.ts,
 // amaro, Node's own stripper): each program's stdout, its stderr byte for
 // byte (but the stack frames, which are the runtime's own beside the
@@ -32,12 +33,7 @@
 // generated artifacts before testing a runner change.
 
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { localTerminal, splitScenarioOutput, startLocalProbe } from './lib/workerd-probe.mjs';
-import { withoutInternalArrow } from './lib/node-report.mjs';
+import { matchNodeInWorkerd, nodeShown } from './lib/node-differential.mjs';
 
 const W = '/home/user/typescript';
 const FILES = {
@@ -53,12 +49,13 @@ const FILES = {
   'arrow.cts': "type A = string;\nconst v: A = 's'; null.x;\n",
   'graph.mts': "console.log('graph ran');\nimport './enum.ts';\n",
   'enum.ts': "console.log('enum ran');\nenum E { A }\n",
+  'report-refusal.cjs': "process.once('uncaughtException', (error) => { console.log(JSON.stringify([error.constructor.name, error.code])); process.exitCode = 1; });\n",
   'require-enum.cjs': "console.log('before');\nrequire('./enum.cts');\n",
   'enum.cts': "console.log('enum.cts ran');\nenum E { A }\n",
   'invalid.ts': 'const bad: = 1;\n',
   'dep.mts': "import { x } from 'dep';\nconsole.log(x);\n",
   'node_modules/dep/package.json': '{"name":"dep","main":"index.ts"}',
-  'node_modules/dep/index.ts': 'export const x: number = 1;\n',
+  'node_modules/dep/index.ts': "console.log('dep ran');\nexport const x: number = 1;\n",
   'pkg/package.json': '{"type":"commonjs"}',
   'pkg/typed.ts': "const t: number = 4;\nconsole.log(t, typeof require);\n",
   "tt-enum.ts": "enum Color { Red, Green }\ninterface P { c: Color }\nfunction boom(p: P): never {\n  throw new Error('color ' + Color[p.c]);\n}\nboom({ c: Color.Green });\n",
@@ -114,6 +111,8 @@ const FRAMED = [
 const COMMANDS = [
   'node main.mts', 'node use-cjs.cjs', 'node detect-esm.ts', 'node detect-cjs.ts', 'node frames.mts', 'node frames.cts',
   'node arrow.cts', 'node graph.mts', 'node require-enum.cjs', 'node invalid.ts', 'node dep.mts', 'node pkg/typed.ts',
+  'node --require ./report-refusal.cjs enum.ts',
+  'node --require ./report-refusal.cjs node_modules/dep/index.ts',
   ...FRAMED,
   'node --no-experimental-strip-types off/plain.ts',
   'node --no-experimental-strip-types tt-enum.ts',
@@ -132,49 +131,17 @@ const COMMANDS = [
   'node --import ./rv/pre.mjs --no-experimental-strip-types rv/plain.mts',
 ];
 
-const host = realpathSync(mkdtempSync(join(tmpdir(), 'typescript-')));
-process.on('exit', () => rmSync(host, { recursive: true, force: true }));
-for (const [path, text] of Object.entries(FILES)) {
-  mkdirSync(dirname(join(host, path)), { recursive: true });
-  writeFileSync(join(host, path), text);
-}
-// What a command printed, with the place it ran named W, a warning's pid left
-// out, and the frames left out, or only the program's left.
-const shown = (text, from, framed) => text.split(from).join(W).replace(/^\(node:\d+\)/gm, '(node:PID)')
-  .split('\n').filter((line) => !/^\s+at /.test(line) || (framed && line.includes(`${W}/`))).join('\n');
-const run = (command) => `${command} > out.txt 2> err.txt; echo $? > code.txt`;
-const read = `node -e "const fs = require('fs'); process.stdout.write(JSON.stringify({ out: fs.readFileSync('out.txt').toString('base64'), err: fs.readFileSync('err.txt').toString('base64'), code: fs.readFileSync('code.txt', 'utf8') }))"`;
-const hostRead = (name) => spawnSync('cat', [name], { cwd: host, encoding: 'utf8' }).stdout;
-
-console.log('typescript-matches-node-workerd: starting local workerd');
-const probe = await startLocalProbe({ runtimes: [] });
-try {
-  const session = await localTerminal(probe, { install: [] });
-  try {
-    for (const [path, text] of Object.entries(FILES)) {
-      const at = `${W}/${path}`;
-      await session.run(`mkdir -p '${at.slice(0, at.lastIndexOf('/'))}'`, 30_000);
-      await session.writeFile(at, text);
-    }
-    for (const command of COMMANDS) {
-      assert.equal(spawnSync('sh', ['-c', run(command)], { cwd: host, env: { PATH: process.env.PATH, HOME: host } }).status, 0);
-      const framed = FRAMED.includes(command);
-      const want = { out: shown(hostRead('out.txt'), host, framed), err: withoutInternalArrow(shown(hostRead('err.txt'), host, framed)), code: hostRead('code.txt').trim() };
-      await session.run(`cd ${W} && ${run(command)}`, 120_000);
-      const r = await session.run(`cd ${W} && ${read}`, 60_000);
-      const line = splitScenarioOutput(r.stdout).lines.find((l) => l.startsWith('{'));
-      assert.ok(line, `${command}: read its output: ${r.stdout.slice(-1500)}`);
-      const got = JSON.parse(line);
-      const decode = (b64) => shown(Buffer.from(b64, 'base64').toString('utf8'), W, framed);
-      assert.equal(decode(got.out), want.out, `${command}: stdout is Node's`);
-      assert.equal(decode(got.err), want.err, `${command}: stderr is Node's`);
-      assert.equal(got.code.trim(), want.code, `${command}: exits as Node does`);
-      console.log(`  ok  ${command}: exit ${want.code}`);
-    }
-  } finally {
-    await session.close().catch(() => {});
+// A command's frames are left out, or, when it is FRAMED, only the program's are kept.
+const shown = (text, printed) => {
+  const { stream, side, command } = printed;
+  if (stream === 'out' && command.includes('--require ./report-refusal.cjs')) {
+    const expected = command.endsWith(' enum.ts')
+      ? ['SyntaxError', 'ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX']
+      : ['Error', 'ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING'];
+    assert.deepEqual(JSON.parse(text), expected, `${side}: the direct entry throws before its body runs`);
   }
-} finally {
-  await probe.stop();
-}
+  const kept = nodeShown(text, printed);
+  return FRAMED.includes(command) ? kept : kept.split('\n').filter((line) => !/^\s+at /.test(line)).join('\n');
+};
+await matchNodeInWorkerd('typescript-matches-node-workerd', W, FILES, COMMANDS, { shown });
 console.log(`typescript-matches-node-workerd: ${COMMANDS.length} programs as Node runs them`);

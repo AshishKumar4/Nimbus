@@ -14,9 +14,8 @@ import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { resolveVersion } from '../../packages/core/src/_shared/npm-semver.ts';
-import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
-import { registryRecord } from '../../packages/worker/src/npm/registry-record.ts';
+import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
+import { npmRegistry } from './lib/npm-registry.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const PROJ = 'app';
@@ -33,34 +32,14 @@ const REGISTRY = {
   evil: { '1.0.0': { bin: { '../../keep.txt': 'cli.js', 'x\\..\\..\\y': 'cli.js', '..': 'cli.js', up: '../../../outside.js' } } },
 };
 
-function resolveFromRegistry(name, spec) {
-  const versions = REGISTRY[name] ?? {};
-  const version = resolveVersion(Object.keys(versions), spec?.range ?? 'latest');
-  if (!version) {
-    return {
-      pkg: null,
-      cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-      error: { type: 'unresolved', reason: `no version of ${name} satisfies ${spec?.range}` },
-    };
-  }
-  const { dependencies = {}, bin = {} } = versions[version];
-  const pkg = {
-    name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: `sha512-${name}-${version}`,
-    dependencies, exports: null, main: 'index.js', module: '', bin,
-  };
-  return {
-    pkg,
-    cacheWrites: [registryRecord(pkg, Date.now())],
-    messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-  };
-}
+const { resultFor } = npmRegistry(REGISTRY);
 
 const harness = createSqliteVfsTestHarness(new Database(':memory:'));
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
 const root = vfs.as(CRED_KERNEL);
 root.mkdir(NM, { recursive: true });
 const log = [];
-const env = makeFanoutEnv({ root, NM, resultFor: resolveFromRegistry });
+const env = makeFanoutEnv({ root, NM, resultFor });
 const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
 const installer = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: (msg) => log.push(msg) });
 

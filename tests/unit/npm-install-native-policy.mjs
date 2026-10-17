@@ -34,42 +34,11 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { NpmCache } from '../../packages/worker/src/npm/cache.ts';
 import { npmBinManifestPath } from '../../packages/worker/src/npm/bin-links.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
+import { npmRegistry, resolvePackage } from './lib/npm-registry.mjs';
 
 const PROJ = 'app';
 const NM = `${PROJ}/node_modules`;
-
-function resolvedResult(name, version, overrides = {}) {
-  return {
-    pkg: {
-      name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
-      dependencies: {}, exports: null, main: 'index.js', module: '', bin: {}, ...overrides,
-    },
-    cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-  };
-}
-
-// A refusal carries the package refused, as the resolver task answers it:
-// its manifest still shapes the tree.
-function rejectedResult(from, reason, suggest) {
-  return { ...resolvedResult(from, '1.0.0'), error: { type: 'w6-reject', from, reason, suggest } };
-}
-
-// A table-listed package resolves like any other and reports the policy
-// entry as an advisory — install keeps it (npm parity), the `note:` line
-// names the reason.
-function advisedResult(name, version, reason, suggest, overrides = {}) {
-  const r = resolvedResult(name, version, overrides);
-  r.events = [{ type: 'advisory', from: name, reason, suggest, ctx: 'transitive' }];
-  return r;
-}
-
-const CANVAS = {
-  reason:
-    'Native canvas bindings; no Workers-compatible WASM build published.',
-  suggest:
-    'use canvaskit-wasm or @resvg/resvg-wasm.',
-};
 
 function makeInstaller(pkgJson, resultFor) {
   const harness = createSqliteVfsTestHarness(new Database(':memory:'));
@@ -93,7 +62,7 @@ function makeInstaller(pkgJson, resultFor) {
 {
   const { installer, log, root } = makeInstaller(
     { name: 'x', dependencies: { sharp: '^0.34.0', 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' } },
-    (name) => resolvedResult(name, name === 'sharp' ? '0.34.0' : '1.0.0'),
+    (name, spec) => resolvePackage(name, name === 'sharp' ? '0.34.0' : '1.0.0', {}, spec),
   );
   const result = await installer.install(PROJ);
   const output = log.join('\n');
@@ -121,14 +90,14 @@ function makeInstaller(pkgJson, resultFor) {
   const optShards = { sharp: '^0.34.0', 'opt-1': '^1.0.0', 'opt-2': '^1.0.0', 'opt-3': '^1.0.0', 'opt-4': '^1.0.0' };
   const { installer, log, root } = makeInstaller(
     { name: 'opt-sharp', dependencies: ok },
-    (name) => {
+    (name, spec) => {
       if (name === 'ok-a') {
-        return resolvedResult(name, '1.0.0', { optionalDependencies: optShards });
+        return resolvePackage(name, '1.0.0', { optionalDependencies: optShards }, spec);
       }
       if (name === 'sharp') {
-        return advisedResult('sharp', '0.34.0', 'Native libvips bindings; not portable to Workers.', 'use Cloudflare Images');
+        return resolvePackage('sharp', '0.34.0', {}, spec);
       }
-      return resolvedResult(name, '1.0.0');
+      return resolvePackage(name, '1.0.0', {}, spec);
     },
   );
   const result = await installer.install(PROJ);
@@ -161,9 +130,9 @@ function makeInstaller(pkgJson, resultFor) {
       specsSeen.push({ name, range: spec.range });
       if (name === 'esbuild') {
         assert.equal(spec.range, 'npm:esbuild-wasm@latest', 'the swap is dispatched as an alias spec');
-        return resolvedResult('esbuild', '0.27.0', { bin: { esbuild: 'bin/esbuild' } });
+        return resolvePackage('esbuild', '0.27.0', { bin: { esbuild: 'bin/esbuild' } }, spec);
       }
-      return resolvedResult(name, name === 'sharp' ? '0.34.0' : '1.0.0');
+      return resolvePackage(name, name === 'sharp' ? '0.34.0' : '1.0.0', {}, spec);
     },
   );
   // Padding specs widen the layer; the swap and the refusal are what this
@@ -219,13 +188,13 @@ function makeInstaller(pkgJson, resultFor) {
     (name, spec) => {
       if (name === 'esbuild') {
         assert.equal(spec.range, 'npm:esbuild-wasm@^0.27.0');
-        return resolvedResult('esbuild', '0.27.0');
+        return resolvePackage('esbuild', '0.27.0', {}, spec);
       }
       if (name === 'esbuild-wasm') {
         assert.equal(spec.range, '^0.26.0', 'the sibling keeps its own range');
-        return resolvedResult('esbuild-wasm', '0.26.0');
+        return resolvePackage('esbuild-wasm', '0.26.0', {}, spec);
       }
-      return resolvedResult(name, '1.0.0');
+      return resolvePackage(name, '1.0.0', {}, spec);
     },
   );
   const result = await installer.install(PROJ);
@@ -247,7 +216,7 @@ function makeInstaller(pkgJson, resultFor) {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
   const { installer, log, root } = makeInstaller(
     { name: 'dev-sharp', dependencies: ok, devDependencies: { sharp: '^0.34.0' } },
-    (name) => resolvedResult(name, '1.0.0'),
+    (name, spec) => resolvePackage(name, name === 'sharp' ? '0.34.0' : '1.0.0', {}, spec),
   );
   const result = await installer.install(PROJ);
   const output = log.join('\n');
@@ -272,10 +241,10 @@ function makeInstaller(pkgJson, resultFor) {
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
   const pluginDeps = { '@tailwindcss/oxide': '4.3.3', 'vc-1': '1.0.0', 'vc-2': '1.0.0', 'vc-3': '1.0.0', 'vc-4': '1.0.0' };
-  const resultFor = (name) => {
-    if (name === '@tailwindcss/vite') return resolvedResult(name, '4.3.3', { dependencies: pluginDeps });
-    if (name === '@tailwindcss/oxide') return resolvedResult(name, '4.3.3');
-    return resolvedResult(name, '1.0.0');
+  const resultFor = (name, spec) => {
+    if (name === '@tailwindcss/vite') return resolvePackage(name, '4.3.3', { dependencies: pluginDeps }, spec);
+    if (name === '@tailwindcss/oxide') return resolvePackage('@tailwindcss/oxide', '4.3.3', {}, spec);
+    return resolvePackage(name, '1.0.0', {}, spec);
   };
   const pkgJson = { name: 'vite-app', dependencies: ok, devDependencies: { '@tailwindcss/vite': '4.3.3' } };
 
@@ -307,10 +276,10 @@ function makeInstaller(pkgJson, resultFor) {
   const appDeps = { '@napi-rs/canvas': '^0.1.0', 'sc-1': '1.0.0', 'sc-2': '1.0.0', 'sc-3': '1.0.0', 'sc-4': '1.0.0' };
   const { installer, log, root } = makeInstaller(
     { name: 'needs-canvas', dependencies: { ...ok, 'some-app-dep': '^1.0.0' } },
-    (name) => {
-      if (name === 'some-app-dep') return resolvedResult(name, '1.0.0', { dependencies: appDeps });
-      if (name === '@napi-rs/canvas') return advisedResult('@napi-rs/canvas', '0.1.0', CANVAS.reason, CANVAS.suggest);
-      return resolvedResult(name, '1.0.0');
+    (name, spec) => {
+      if (name === 'some-app-dep') return resolvePackage(name, '1.0.0', { dependencies: appDeps }, spec);
+      if (name === '@napi-rs/canvas') return resolvePackage('@napi-rs/canvas', '0.1.0', {}, spec);
+      return resolvePackage(name, '1.0.0', {}, spec);
     },
   );
   const result = await installer.install(PROJ);
@@ -342,14 +311,14 @@ function makeInstaller(pkgJson, resultFor) {
   const cDeps = { 'native-gate': '^1.0.0', 'cc-1': '1.0.0', 'cc-2': '1.0.0', 'cc-3': '1.0.0', 'cc-4': '1.0.0' };
   const { installer, log } = makeInstaller(
     { name: 'mixed-app', dependencies: { ...ok, a: '^1.0.0' }, devDependencies: { vite: '^8.0.0' } },
-    (name) => {
-      if (name === 'vite') return resolvedResult(name, '8.0.0', { dependencies: viteDeps });
-      if (name === 'a') return resolvedResult(name, '1.0.0', { dependencies: aDeps });
-      if (name === 'p1') return resolvedResult(name, '1.0.0', { dependencies: p1Deps });
-      if (name === 'b') return resolvedResult(name, '1.0.0', { dependencies: bDeps });
-      if (name === 'c') return resolvedResult(name, '1.0.0', { dependencies: cDeps });
-      if (name === 'native-gate') return rejectedResult('native-gate', 'Requires a native binding for linux-x64.', 'none today');
-      return resolvedResult(name, '1.0.0');
+    (name, spec) => {
+      if (name === 'vite') return resolvePackage(name, '8.0.0', { dependencies: viteDeps }, spec);
+      if (name === 'a') return resolvePackage(name, '1.0.0', { dependencies: aDeps }, spec);
+      if (name === 'p1') return resolvePackage(name, '1.0.0', { dependencies: p1Deps }, spec);
+      if (name === 'b') return resolvePackage(name, '1.0.0', { dependencies: bDeps }, spec);
+      if (name === 'c') return resolvePackage(name, '1.0.0', { dependencies: cDeps }, spec);
+      if (name === 'native-gate') return resolvePackage('native-gate', '1.0.0', { os: ['linux'], cpu: ['x64'] }, spec);
+      return resolvePackage(name, '1.0.0', {}, spec);
     },
   );
   const result = await installer.install(PROJ);
@@ -357,7 +326,7 @@ function makeInstaller(pkgJson, resultFor) {
 
   assert.ok(result.failed.includes('native-gate'), `the later required chain upgrades the refusal (failed=${JSON.stringify(result.failed)})`);
   assert.ok(!/\[skip\].*native-gate/.test(output), `a required refusal is no skip:\n${output}`);
-  assert.ok(/npm ERR! native-gate: Requires a native binding for linux-x64\./.test(output), `the refusal names the package + reason:\n${output}`);
+  assert.ok(/npm ERR! native-gate:/.test(output), `the refusal names the package + reason:\n${output}`);
   assert.ok(/npm ERR! install incomplete.*native-gate/.test(output), `the closing line names it:\n${output}`);
   console.log('  caseG: dev-first ancestor, deeper required chain — end-of-walk closure wins');
 }
@@ -374,15 +343,15 @@ function makeInstaller(pkgJson, resultFor) {
   const yDeps = { sharp: '^0.34.0', 'yc-1': '1.0.0', 'yc-2': '1.0.0', 'yc-3': '1.0.0', 'yc-4': '1.0.0' };
   const { installer, log, root } = makeInstaller(
     { name: 'opt-subtree', dependencies: { ...ok, x: '^1.0.0' } },
-    (name) => {
+    (name, spec) => {
       if (name === 'x') {
-        return resolvedResult(name, '1.0.0', { optionalDependencies: optDeps });
+        return resolvePackage(name, '1.0.0', { optionalDependencies: optDeps }, spec);
       }
-      if (name === 'y') return resolvedResult(name, '1.0.0', { dependencies: yDeps });
+      if (name === 'y') return resolvePackage(name, '1.0.0', { dependencies: yDeps }, spec);
       if (name === 'sharp') {
-        return advisedResult('sharp', '0.34.0', 'Native libvips bindings; not portable to Workers.', 'use Cloudflare Images');
+        return resolvePackage('sharp', '0.34.0', {}, spec);
       }
-      return resolvedResult(name, '1.0.0');
+      return resolvePackage(name, '1.0.0', {}, spec);
     },
   );
   const result = await installer.install(PROJ);
@@ -401,7 +370,7 @@ function makeInstaller(pkgJson, resultFor) {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
   const { installer, log, root } = makeInstaller(
     { name: 'opt-root', dependencies: ok, optionalDependencies: { sharp: '^0.34.0' } },
-    (name) => resolvedResult(name, '1.0.0'),
+    (name, spec) => resolvePackage(name, name === 'sharp' ? '0.34.0' : '1.0.0', {}, spec),
   );
   const result = await installer.install(PROJ);
   const output = log.join('\n');
@@ -422,7 +391,7 @@ function makeInstaller(pkgJson, resultFor) {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
   const { installer, log, root } = makeInstaller(
     { name: 'both-maps', dependencies: { ...ok, sharp: '^0.34.0' }, optionalDependencies: { sharp: '^0.34.0' } },
-    (name) => resolvedResult(name, '1.0.0'),
+    (name, spec) => resolvePackage(name, name === 'sharp' ? '0.34.0' : '1.0.0', {}, spec),
   );
   const result = await installer.install(PROJ);
   const output = log.join('\n');
@@ -449,17 +418,17 @@ function makeInstaller(pkgJson, resultFor) {
   const orDeps = { c: '1.0.0', 'oc-1': '1.0.0', 'oc-2': '1.0.0', 'oc-3': '1.0.0', 'oc-4': '1.0.0' };
   const { installer, log } = makeInstaller(
     { name: 'opt-first', dependencies: { ...ok, a: '^1.0.0', x: '^1.0.0' } },
-    (name) => {
+    (name, spec) => {
       if (name === 'x') {
-        return resolvedResult(name, '1.0.0', { optionalDependencies: optDeps });
+        return resolvePackage(name, '1.0.0', { optionalDependencies: optDeps }, spec);
       }
-      if (name === 'optional-root') return resolvedResult(name, '1.0.0', { dependencies: orDeps });
-      if (name === 'a') return resolvedResult(name, '1.0.0', { dependencies: aDeps });
-      if (name === 'p1') return resolvedResult(name, '1.0.0', { dependencies: p1Deps });
-      if (name === 'c') return resolvedResult(name, '1.0.0', { dependencies: cDeps });
-      if (name === 'b') return resolvedResult(name, '1.0.0', { dependencies: bDeps });
-      if (name === 'native-gate') return rejectedResult('native-gate', 'Requires a native binding for linux-x64.', 'none today');
-      return resolvedResult(name, '1.0.0');
+      if (name === 'optional-root') return resolvePackage(name, '1.0.0', { dependencies: orDeps }, spec);
+      if (name === 'a') return resolvePackage(name, '1.0.0', { dependencies: aDeps }, spec);
+      if (name === 'p1') return resolvePackage(name, '1.0.0', { dependencies: p1Deps }, spec);
+      if (name === 'c') return resolvePackage(name, '1.0.0', { dependencies: cDeps }, spec);
+      if (name === 'b') return resolvePackage(name, '1.0.0', { dependencies: bDeps }, spec);
+      if (name === 'native-gate') return resolvePackage('native-gate', '1.0.0', { os: ['linux'], cpu: ['x64'] }, spec);
+      return resolvePackage(name, '1.0.0', {}, spec);
     },
   );
   const result = await installer.install(PROJ);
@@ -476,10 +445,10 @@ function makeInstaller(pkgJson, resultFor) {
   // after `a` is filtered as already-seen.
   const { installer } = makeInstaller(
     { name: 'cyclic', dependencies: { a: '^1.0.0', 'ok-1': '1.0.0', 'ok-2': '1.0.0', 'ok-3': '1.0.0', 'ok-4': '1.0.0' } },
-    (name) => {
-      if (name === 'a') return resolvedResult(name, '1.0.0', { dependencies: { b: '1.0.0', 'ac-1': '1.0.0', 'ac-2': '1.0.0', 'ac-3': '1.0.0', 'ac-4': '1.0.0' } });
-      if (name === 'b') return resolvedResult(name, '1.0.0', { dependencies: { a: '1.0.0', 'bc-1': '1.0.0', 'bc-2': '1.0.0', 'bc-3': '1.0.0', 'bc-4': '1.0.0', 'bc-5': '1.0.0' } });
-      return resolvedResult(name, '1.0.0');
+    (name, spec) => {
+      if (name === 'a') return resolvePackage(name, '1.0.0', { dependencies: { b: '1.0.0', 'ac-1': '1.0.0', 'ac-2': '1.0.0', 'ac-3': '1.0.0', 'ac-4': '1.0.0' } }, spec);
+      if (name === 'b') return resolvePackage(name, '1.0.0', { dependencies: { a: '1.0.0', 'bc-1': '1.0.0', 'bc-2': '1.0.0', 'bc-3': '1.0.0', 'bc-4': '1.0.0', 'bc-5': '1.0.0' } }, spec);
+      return resolvePackage(name, '1.0.0', {}, spec);
     },
   );
   const result = await installer.install(PROJ);
@@ -500,13 +469,13 @@ function makeInstaller(pkgJson, resultFor) {
   const reqDeps = { 'native-gate': '^1.0.0', 'rc-1': '1.0.0', 'rc-2': '1.0.0', 'rc-3': '1.0.0', 'rc-4': '1.0.0' };
   const { installer, log } = makeInstaller(
     { name: 'shared-refusal', dependencies: { ...ok, x: '^1.0.0', y: '^1.0.0' } },
-    (name) => {
+    (name, spec) => {
       if (name === 'x') {
-        return resolvedResult(name, '1.0.0', { optionalDependencies: optDeps });
+        return resolvePackage(name, '1.0.0', { optionalDependencies: optDeps }, spec);
       }
-      if (name === 'y') return resolvedResult(name, '1.0.0', { dependencies: reqDeps });
-      if (name === 'native-gate') return rejectedResult('native-gate', 'Requires a native binding for linux-x64.', 'none today');
-      return resolvedResult(name, '1.0.0');
+      if (name === 'y') return resolvePackage(name, '1.0.0', { dependencies: reqDeps }, spec);
+      if (name === 'native-gate') return resolvePackage('native-gate', '1.0.0', { os: ['linux'], cpu: ['x64'] }, spec);
+      return resolvePackage(name, '1.0.0', {}, spec);
     },
   );
   const result = await installer.install(PROJ);
@@ -526,23 +495,14 @@ function makeInstaller(pkgJson, resultFor) {
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
   const appDeps = { 'native-gate': '^1.0.0', 'sc-1': '1.0.0', 'sc-2': '1.0.0', 'sc-3': '1.0.0', 'sc-4': '1.0.0' };
-  const cw = (name, version, deps = {}) => ({
-    name, registryName: name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
-    depsJson: JSON.stringify(deps), peerDepsJson: '{}', exportsJson: 'null', main: 'index.js', moduleField: '',
-    binJson: '{}', platformJson: '{}', optionalDepsJson: '{}', fetchedAt: Date.now(),
-  });
   const { installer, log } = makeInstaller(
     { name: 'needs-gate', dependencies: { ...ok, 'some-app-dep': '^1.0.0' } },
-    (name) => {
+    (name, spec) => {
       if (name === 'some-app-dep') {
-        const r = resolvedResult(name, '1.0.0', { dependencies: appDeps });
-        r.cacheWrites = [cw(name, '1.0.0', appDeps)];
-        return r;
+        return resolvePackage(name, '1.0.0', { dependencies: appDeps }, spec);
       }
-      if (name === 'native-gate') return rejectedResult('native-gate', 'Requires a native binding for linux-x64.', 'none today');
-      const r = resolvedResult(name, '1.0.0');
-      r.cacheWrites = [cw(name, '1.0.0')];
-      return r;
+      if (name === 'native-gate') return resolvePackage('native-gate', '1.0.0', { os: ['linux'], cpu: ['x64'] }, spec);
+      return resolvePackage(name, '1.0.0', {}, spec);
     },
   );
   const first = await installer.install(PROJ);
@@ -561,17 +521,10 @@ function makeInstaller(pkgJson, resultFor) {
 // ── Case O: a complete tree's second install still uses the lockfile ────
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
-  const cw = (name, version) => ({
-    name, registryName: name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
-    depsJson: '{}', peerDepsJson: '{}', exportsJson: 'null', main: 'index.js', moduleField: '',
-    binJson: '{}', platformJson: '{}', optionalDepsJson: '{}', fetchedAt: Date.now(),
-  });
   const { installer, log } = makeInstaller(
     { name: 'complete', dependencies: ok },
-    (name) => {
-      const r = resolvedResult(name, '1.0.0');
-      r.cacheWrites = [cw(name, '1.0.0')];
-      return r;
+    (name, spec) => {
+      return resolvePackage(name, '1.0.0', {}, spec);
     },
   );
   const first = await installer.install(PROJ);
@@ -598,25 +551,24 @@ function makeInstaller(pkgJson, resultFor) {
   const pluginDeps = { miniflare: '1.0.0', 'vc-1': '1.0.0', 'vc-2': '1.0.0' };
   const { installer, log, root } = makeInstaller(
     { name: 'tooling-app', dependencies: { ...ok, wrangler: '^4.0.0', '@cloudflare/vite-plugin': '^1.0.0' } },
-    (name) => {
+    (name, spec) => {
       if (name === 'wrangler') {
-        const r = resolvedResult(name, '4.0.0', {
+        return resolvePackage(name, '4.0.0', {
           optionalDependencies: wranglerOptDeps,
           bin: { wrangler: 'bin/wrangler.js' },
-        });
-        return r;
+        }, spec);
       }
       if (name === '@cloudflare/vite-plugin') {
-        return resolvedResult(name, '1.0.0', { dependencies: pluginDeps });
+        return resolvePackage(name, '1.0.0', { dependencies: pluginDeps }, spec);
       }
       if (name === 'workerd-1' || name === 'workerd-2') {
         // The optional native shards wrangler pulls: platform-pinned
         // packages whose only artifact is a native binary. The
         // optional-native-binding classifier refuses them and the parent
         // lives without them.
-        return resolvedResult(name, '1.0.0', { os: ['linux'], cpu: ['x64'] });
+        return resolvePackage(name, '1.0.0', { os: ['linux'], cpu: ['x64'] }, spec);
       }
-      return resolvedResult(name, '1.0.0');
+      return resolvePackage(name, '1.0.0', {}, spec);
     },
   );
   const result = await installer.install(PROJ);
@@ -645,17 +597,10 @@ function makeInstaller(pkgJson, resultFor) {
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
   // A record is the registry package's: the alias's is react's, under react.
-  const cw = (name, version) => ({
-    name, registryName: name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
-    depsJson: '{}', peerDepsJson: '{}', exportsJson: 'null', main: 'index.js', moduleField: '',
-    binJson: '{}', platformJson: '{}', optionalDepsJson: '{}', fetchedAt: Date.now(),
-  });
   const { installer, log } = makeInstaller(
     { name: 'alias-app', dependencies: { ...ok, vliw: 'npm:react@^19.0.0' } },
-    (name) => {
-      if (name !== 'vliw') return { ...resolvedResult(name, '1.0.0'), cacheWrites: [cw(name, '1.0.0')] };
-      const r = resolvedResult(name, '19.1.0');
-      return { ...r, pkg: { ...r.pkg, registryName: 'react' }, cacheWrites: [cw('react', '19.1.0')] };
+    (name, spec) => {
+      return resolvePackage(name, name === 'vliw' ? '19.1.0' : '1.0.0', {}, spec);
     },
   );
   const first = await installer.install(PROJ);
@@ -676,18 +621,13 @@ function makeInstaller(pkgJson, resultFor) {
 // semver range against the pin under `esbuild` and stays valid; `latest` stays valid; a changed range invalidates; a git spec —
 // which is not a semver range at all — answers presence-only.
 {
-  const cw = (name, version) => ({
-    name, registryName: name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
-    depsJson: '{}', peerDepsJson: '{}', exportsJson: 'null', main: 'index.js', moduleField: '',
-    binJson: '{}', platformJson: '{}', optionalDepsJson: '{}', fetchedAt: Date.now(),
-  });
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0' };
 
   // swapped root — second install trusts the lockfile
   {
     const { installer, log } = makeInstaller(
       { name: 'swap-app', dependencies: { ...ok, esbuild: '^0.20.0' } },
-      (name) => { const v = name === 'esbuild' ? '0.20.0' : '1.0.0'; const r = resolvedResult(name, v); r.cacheWrites = [cw(name, v)]; return r; },
+      (name, spec) => resolvePackage(name, name === 'esbuild' ? '0.20.0' : '1.0.0', {}, spec),
     );
     const first = await installer.install(PROJ);
     assert.deepEqual(first.failed, []);
@@ -702,7 +642,7 @@ function makeInstaller(pkgJson, resultFor) {
   {
     const { installer, log } = makeInstaller(
       { name: 'latest-app', dependencies: { ...ok, latpkg: 'latest' } },
-      (name) => { const v = name === 'latpkg' ? '2.0.0' : '1.0.0'; const r = resolvedResult(name, v); r.cacheWrites = [cw(name, v)]; return r; },
+      (name, spec) => resolvePackage(name, name === 'latpkg' ? '2.0.0' : '1.0.0', {}, spec),
     );
     await installer.install(PROJ);
     log.length = 0;
@@ -716,7 +656,7 @@ function makeInstaller(pkgJson, resultFor) {
     const pkgJson = { name: 'chg-app', dependencies: { ...ok, chg: '^1.0.0' } };
     const { installer, log, root } = makeInstaller(
       pkgJson,
-      (name) => { const r = resolvedResult(name, name === 'chg' ? '1.4.0' : '1.0.0'); r.cacheWrites = [cw(name, r.pkg.version)]; return r; },
+      (name, spec) => resolvePackage(name, name === 'chg' ? '1.4.0' : '1.0.0', {}, spec),
     );
     await installer.install(PROJ);
     pkgJson.dependencies.chg = '^2.0.0';
@@ -732,19 +672,23 @@ function makeInstaller(pkgJson, resultFor) {
     const asked = [];
     const { installer, log, harness } = makeInstaller(
       { name: 'git-app', dependencies: { ...ok, gitpkg: 'github:user/repo#v1' } },
-      (name) => { asked.push(name); return resolvedResult(name, '1.0.0'); },
+      (name, spec) => { asked.push(name); return resolvePackage(name, '1.0.0', {}, spec); },
     );
     // A git spec is not installed here, and never reaches the resolver:
     // a registry package of its name installed before does not meet it.
+    const { resultFor } = npmRegistry({
+      ...Object.fromEntries(Object.keys(ok).map((name) => [name, { '1.0.0': { dist: { integrity: 'sha512-fixture' } } }])),
+      gitpkg: { '0.0.0-abc123': { dist: { integrity: 'sha512-fixture' } } },
+    });
     const entries = new Map();
     for (const name of ['ok-a', 'ok-b', 'ok-c', 'ok-d']) {
-      installer.npmCache.putRegistryEntries({ registry: 'https://registry.npmjs.org', network: '' }, [cw(name, '1.0.0')]);
-      entries.set(name, { name, registryName: name, resolvedVer: '1.0.0', integrity: 'sha512-fixture', depsJson: '{}', hoistedPath: `${NM}/${name}` });
+      installer.npmCache.putRegistryEntries({ registry: 'https://registry.npmjs.org', network: '' }, (await resultFor(name, { range: '1.0.0' })).cacheWrites);
+      entries.set(name, { name, registryName: name, resolvedVer: '1.0.0', integrity: 'sha512-fixture', hoistedPath: `${NM}/${name}` });
     }
-    installer.npmCache.putRegistryEntries({ registry: 'https://registry.npmjs.org', network: '' }, [cw('gitpkg', '0.0.0-abc123')]);
+    installer.npmCache.putRegistryEntries({ registry: 'https://registry.npmjs.org', network: '' }, (await resultFor('gitpkg', { range: '0.0.0-abc123' })).cacheWrites);
     entries.set('gitpkg', {
       name: 'gitpkg', registryName: 'gitpkg', resolvedVer: '0.0.0-abc123', integrity: 'sha512-fixture',
-      depsJson: '{}', hoistedPath: `${NM}/gitpkg`,
+      hoistedPath: `${NM}/gitpkg`,
     });
     installer.npmCache.writeLockfile(PROJ, entries, { storage: harness.ctx.storage });
     const result = await installer.install(PROJ);

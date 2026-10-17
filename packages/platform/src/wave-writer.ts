@@ -300,7 +300,6 @@ export class WaveWriter<Meta = undefined> {
   private ownedPathBytes = 0;
   private pin: Pin | null = null;
   private inFlight: Promise<void> | null = null;
-  private cutQueue: Promise<unknown> = Promise.resolve();
   private sequence = 0;
   private failure: WaveFailure | null = null;
   /** Owners (records' `meta`) whose records a failed wave carried. */
@@ -552,13 +551,24 @@ export class WaveWriter<Meta = undefined> {
     if (admit) this.owned.add(path);
   }
 
-  /** collectDirectoryPaths' chain from `path` upward, to the first directory already owned. */
-  private walkChain(path: string, admit: boolean, tally: Tally): void {
+  /**
+   * The directories a wave publishes for something at or below `dir`:
+   * `dir` and each one above it, deepest first, up to the writer's root
+   * (included) and inside its worktree root.
+   */
+  private *chain(dir: string): Generator<string, void, undefined> {
     const { root, worktreeRoot = null } = this.options;
-    let current = path;
-    while (current) {
-      if (root && current !== root && !current.startsWith(root + '/')) break;
-      if (worktreeRoot !== null && !current.startsWith(worktreeRoot + '/')) break;
+    for (let current = dir; current; current = parentOf(current)) {
+      if (root && current !== root && !current.startsWith(root + '/')) return;
+      if (worktreeRoot !== null && !current.startsWith(worktreeRoot + '/')) return;
+      yield current;
+      if (current === root) return;
+    }
+  }
+
+  /** The chain from `path` upward, to the first directory already owned. */
+  private walkChain(path: string, admit: boolean, tally: Tally): void {
+    for (const current of this.chain(path)) {
       this.counters.ownershipVisits++;
       if (this.ownedDirectories.has(current)) break;
       if (admit) this.ownedDirectories.add(current);
@@ -567,8 +577,6 @@ export class WaveWriter<Meta = undefined> {
         tally.pathBytes += utf8Length(current);
         if (admit) this.owned.add(current);
       }
-      if (current === root) break;
-      current = parentOf(current);
     }
   }
 
@@ -637,16 +645,14 @@ export class WaveWriter<Meta = undefined> {
   }
 
   /**
-   * Send the buffered wave once the one in flight has published. Cuts are
-   * serialised, so at most one wave is in flight and one buffers.
+   * Send the buffered wave once the one in flight has published. Only a
+   * mutation cuts, and mutations run one at a time, so at most one wave is
+   * in flight and one buffers.
    */
-  private cut(): Promise<void> {
-    const run = this.cutQueue.then(() => this.cutNow());
-    this.cutQueue = run.catch(() => {});
-    return run;
-  }
-
-  private async cutNow(): Promise<void> {
+  private async cut(): Promise<void> {
+    // A later turn than the mutation that asks: a pin set or cleared by a
+    // microtask queued before the cut is the wave's.
+    await Promise.resolve();
     if (this.inFlight) {
       const waitStarted = Date.now();
       await this.inFlight.catch(() => {});
@@ -849,16 +855,10 @@ export class WaveWriter<Meta = undefined> {
   /** The directories the buffered records publish, shallowest first. */
   private publishedDirectories(): string[] {
     const dirs = new Set<string>();
-    const { root, worktreeRoot = null } = this.options;
     const collect = (path: string): void => {
-      let current = path;
-      while (current) {
-        if (root && current !== root && !current.startsWith(root + '/')) break;
-        if (worktreeRoot !== null && !current.startsWith(worktreeRoot + '/')) break;
+      for (const current of this.chain(path)) {
         if (dirs.has(current)) break;
         dirs.add(current);
-        if (current === root) break;
-        current = parentOf(current);
       }
     };
     for (const path of this.records.keys()) collect(parentOf(path));

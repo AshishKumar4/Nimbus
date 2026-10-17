@@ -25,7 +25,7 @@ const manifest = (version, registry = 'https://registry.npmjs.org') => ({
 const packument = JSON.stringify({ name: 'p', 'dist-tags': { latest: '3.4.0' }, versions: Object.fromEntries(VERSIONS.map((v) => [v, manifest(v)])) });
 const record = (version, registry) => registryRecord({
   name: 'p', version, registryName: 'p', tarballUrl: `${registry}/p/-/p-${version}.tgz`, integrity: `sha512-${version}`,
-  dependencies: {}, main: '', module: '', bin: {},
+  dependencies: {}, main: '', bin: {},
 }, 1);
 globalThis.fetch = async () => { throw new Error('the resolve facet must not perform network I/O'); };
 

@@ -8,6 +8,7 @@ import { abandon, andThen, isCharacterDevice, isPromise, readDeclaredSource, rea
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { fsError, MAX_LINK_HOPS, walkBeneath, type FsError } from './beneath-walk.js';
 import { modeAllows } from '../vfs/posix-access.js';
+import { sameFileVersion } from './os-contracts.js';
 
 export { fsError, walkBeneath, type BeneathLookup } from './beneath-walk.js';
 import type {
@@ -177,7 +178,10 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
             ? this.vfs.readFileUncached(located.path)
             : this.vfs.readFile(located.path);
         }
-        return this.processView(located, options.followSymlinks !== false) ?? located.mount.readFile(located.path);
+        const bytes = this.processView(located, options.followSymlinks !== false) ?? located.mount.readFile(located.path);
+        // An uncached read hands back bytes of its own, as SQLite's does: a
+        // mount's may be the very bytes it keeps.
+        return options.cached === false && bytes !== null ? bytes.slice() : bytes;
       } catch (error) {
         if (hasErrorCode(error, 'ENOENT')) return null;
         throw error;
@@ -253,7 +257,12 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       }
       const located = this.locate(path, options.followSymlinks !== false);
       if (located === null) return null;
+      // Stat and read in one synchronous step: nothing comes between them.
+      if (options.expectedFile !== undefined && !sameFileVersion(this.stat(path, { followSymlinks: options.followSymlinks }), options.expectedFile)) {
+        throw fsError('ESTALE', 'read', path);
+      }
       if (located.mount) {
+        // The engine's revisions name no mounted file.
         if (options.expectedEpoch !== undefined) throw fsError('ESTALE', 'read', path);
         const mount = located.mount;
         const viewed = this.processView(located, options.followSymlinks !== false);

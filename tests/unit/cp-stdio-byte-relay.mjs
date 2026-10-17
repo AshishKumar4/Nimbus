@@ -13,22 +13,17 @@
 // supervisor's wait, so a stub that resolves instantly turns them into a
 // tight microtask loop that starves the macrotask queue and no timer in the
 // test ever fires again.
+//
+// That the generated entries relay a program's output whole and once is
+// opencode-output-capture's: it runs them.
 import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
-import { generateOpencodeRunnerCode } from '../../packages/worker/src/runtime/opencode-facet-runner.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { _rpcStdout, _rpcReportExit } from '../../packages/worker/src/session/rpc.ts';
 import { StreamTextDecoders } from '../../packages/core/src/_shared/bytes.ts';
 import { outputHooks } from '../../packages/core/src/_shared/byte-stream.ts';
-import {
-  generateEntrypointCode,
-  generateLongRunningNodeCode,
-} from '../../packages/worker/src/facets/manager.ts';
-import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
 
-const { parse } = createRequire(new URL('../../packages/core/package.json', import.meta.url))('acorn');
 // Captured before the shims install their timer barrier over the global.
 const realSetTimeout = globalThis.setTimeout;
 const sleep = (ms) => new Promise((r) => realSetTimeout(r, ms));
@@ -198,32 +193,6 @@ console.log('  the child\'s reported text decodes split characters as one');
   assert.deepEqual(out, ['€', '\ufffd'], 'a text output gets whole characters, and its end writes what an unfinished one decodes to');
 }
 
-// ── the generated wrappers still parse with the byte relay spliced in ────
-// The override that carries a facet's stdout is in the two generated
-// wrappers, outside the type checker; a template escape that survives
-// typecheck can still produce an unparseable entry.
-{
-  const state = {
-    bundle: {}, manifest: {}, metadata: {}, cursor: 0,
-    serializedManifest: '{}', serializedMetadata: '{}',
-  };
-  const cred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
-  const sources = nodeFacetSources(generateShimsCode());
-  const oneShot = (await generateEntrypointCode('', state, false, sources)).code;
-  const resident = (await generateLongRunningNodeCode('', state, { cred }, false, sources)).code;
-  const { code: opencode } = generateOpencodeRunnerCode({
-    argv: [], env: {}, cred, cwd: '/home/user', stdin: '', mode: 'attached',
-    sources, vfsBundle: '{}', vfsManifest: '{}', vfsMetadata: '{}',
-  });
-  for (const [label, code] of [['one-shot wrapper', oneShot], ['resident wrapper', resident], ['opencode wrapper', opencode]]) {
-    assert.doesNotThrow(() => parse(code, { ecmaVersion: 'latest', sourceType: 'module' }), `${label} parses`);
-    for (const sink of ['"stdout"', '"stderr"']) {
-      const write = label === 'opencode wrapper' ? `__queueRpcWrite(${sink}, b)` : `__nimbusWriteLiveOutput(${sink}, d, enc, cb, __queueRpcWrite)`;
-      assert.ok(code.includes(write), `${label} sends the stream's bytes through its delivery-accounted sink`);
-    }
-  }
-  console.log('  both generated wrappers parse and relay bytes');
-}
 
 console.log('cp-stdio-byte-relay OK');
 process.exit(0);

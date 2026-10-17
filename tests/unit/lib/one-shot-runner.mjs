@@ -12,7 +12,7 @@ import { FacetManager } from '../../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../../packages/core/src/runtime/port-registry.ts';
 import { adoptCtxExports, supervisorEntrypoint } from '../../../packages/fabric/src/composition.ts';
-import { createFacetCtx, createFacetWorld } from '../facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { writeModuleSet } from './module-map-bundle.mjs';
 import { processFiles } from './process-bridge.mjs';
 import { stagedAssets } from './staged-assets.mjs';
@@ -26,20 +26,30 @@ import { opSender, supervisorDouble } from './supervisor-double.mjs';
  * which a one-shot never takes.
  *
  * @param {string} name
- * @param {{ rewrite?: (config: any) => any, get?: (...args: any[]) => any }} [options]
+ * @param {{
+ *   rewrite?: (config: import('../../../packages/platform/src/worker-code.js').WorkerCode) => import('../../../packages/platform/src/worker-code.js').WorkerCode,
+ *   get?: import('../../../packages/fabric/src/vendor/types.js').WorkerLoader['get'],
+ *   onImported?: (config: import('../../../packages/platform/src/worker-code.js').WorkerCode) => void,
+ *   onWasmEvaluate?: (name: string, compiled: WebAssembly.Module) => void
+ * }} [options]
  */
-export function runnerLoader(name, { rewrite = (config) => config, get } = {}) {
+export function runnerLoader(name, { rewrite = (config) => config, get, onImported = () => {}, onWasmEvaluate } = {}) {
   const dir = mkdtempSync(join(tmpdir(), `nimbus-${name}-`));
   process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
   let loads = 0;
   return {
+    /** @param {import('../../../packages/platform/src/worker-code.js').WorkerCode} config */
     load(config) {
       config = rewrite(config);
-      const file = writeModuleSet(join(dir, `runner-${loads++}`), config.modules, 'runner.js');
-      const loaded = import(pathToFileURL(file).href);
+      const file = writeModuleSet(join(dir, `runner-${loads++}`), config.modules, 'runner.js', undefined, { onWasmEvaluate });
+      const loaded = import(pathToFileURL(file).href).then((mod) => { onImported(config); return mod; });
       return {
         getEntrypoint: () => ({
-          async run(request, supervisor) { return (await loaded).default.fetch(request, { SUPERVISOR: supervisor }); },
+          // Entered as the real entry is (one-shot-entry.ts): it asks how its run ends first.
+          async run(request, supervisor, ended) {
+            ended?.().catch(() => {});
+            return (await loaded).default.fetch(request, { SUPERVISOR: supervisor });
+          },
           [Symbol.dispose]() {},
         }),
         [Symbol.dispose]() {},
@@ -52,7 +62,8 @@ export function runnerLoader(name, { rewrite = (config) => config, get } = {}) {
 /**
  * SUPERVISOR as the session serves it, as binding and capability alike:
  * every op for the process's own pid through `host`'s supervisor-op handler;
- * stdout and stderr go to `onOutput` as text, and reportExit is dropped.
+ * each stdout and stderr write goes to `onOutput(text, stream, bytes)`, and
+ * reportExit is dropped.
  */
 export function adoptSessionSupervisor(host, onOutput) {
   const dec = new TextDecoder();
@@ -61,7 +72,11 @@ export function adoptSessionSupervisor(host, onOutput) {
     SupervisorRPC: /** @type {any} */ (({ props }) => {
       const send = opSender((envelope) => host.supervisorOp({ ...envelope, pid: props?.pid }));
       return supervisorDouble(async (op, args) => {
-        if (op === 'stdout' || op === 'stderr') { onOutput(dec.decode(/** @type {Uint8Array} */ (args[0]))); return; }
+        if (op === 'stdout' || op === 'stderr') {
+          const bytes = /** @type {Uint8Array} */ (args[0]);
+          onOutput(dec.decode(bytes), op, bytes);
+          return;
+        }
         if (op === 'reportExit') return;
         return send(op, args);
       });
@@ -69,10 +84,10 @@ export function adoptSessionSupervisor(host, onOutput) {
   });
 }
 
-/** A FacetManager named `name` over `rawVfs`, loading runners through `loader`. */
-export function oneShotManager(name, { host, rawVfs, loader }) {
+/** A FacetManager named `name` over `rawVfs`, loading runners through `loader`, on `ctx` (its Durable Object's state). */
+export function oneShotManager(name, { host, rawVfs, loader, ctx = createFacetCtx(createFacetWorld(() => ({})), name) }) {
   const manager = new FacetManager(
-    createFacetCtx(createFacetWorld(() => ({})), name),
+    ctx,
     { LOADER: loader, ASSETS: stagedAssets }, host.processes, new PortRegistry(), processHostFor,
     { supervise: (props) => supervisorEntrypoint()({ props }) },
   );

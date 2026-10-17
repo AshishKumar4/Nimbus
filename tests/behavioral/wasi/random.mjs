@@ -2,7 +2,8 @@
 // wasi/random — random_get fills a buffer; fixture writes (buf[0] % 10) + '\n'.
 // Probe asserts a single ASCII digit + newline appears.
 
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/random', { dir: '/home/user/wasi', fixture: 'random', as: 'random.wasm' });
 const { t } = probe;

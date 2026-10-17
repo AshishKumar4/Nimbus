@@ -44,6 +44,7 @@
  *     canonical_abi_drop_rb-abi-value, memory.
  */
 import { RUBY_CALL_TASK } from './compiled-bodies.generated.js';
+import { installedFile } from './runtime-manifest.js';
 import { withHostView } from './process-files.js';
 import { z } from 'zod';
 import { hasLeadingCliFlag } from './cli-flags.js';
@@ -66,11 +67,7 @@ const RUBY_VERSION_FLAGS = new Set(['--version', '-v']);
 export function makeRubyRunnerFactory(deps) {
     const { registry } = deps;
     return async function rubyRunnerFactory(manifest, installRoot, binName, binKind) {
-        const findFile = (rel) => {
-            const entry = manifest.files.find((f) => f.path === rel);
-            return entry ? `${installRoot}/${entry.path}` : null;
-        };
-        const wasmVfs = findFile('share/ruby/ruby+stdlib.wasm');
+        const wasm = installedFile(manifest, installRoot, 'share/ruby/ruby+stdlib.wasm');
         const registerGemBins = async (vfs, home) => {
             if (!registry)
                 return;
@@ -130,7 +127,7 @@ export function makeRubyRunnerFactory(deps) {
                 return 0;
             }
             // The interpreter image must be installed.
-            if (!wasmVfs || !(await vfs.exists(wasmVfs))) {
+            if (!wasm || !(await vfs.exists(wasm.path))) {
                 ctx.stderr.write(`${binName}: ruby+stdlib.wasm missing (re-run 'nimbus install ruby')\n`);
                 return 127;
             }
@@ -188,7 +185,7 @@ export function makeRubyRunnerFactory(deps) {
             if (!userEnv.LC_ALL)
                 userEnv.LC_ALL = 'C.UTF-8';
             const facetArgs = {
-                wasmVfsPath: wasmVfs,
+                wasmVfsPath: wasm.path,
                 userCode,
                 requires: parsed.requires,
                 rbArgv,
@@ -225,7 +222,7 @@ export function makeRubyRunnerFactory(deps) {
             else {
                 const stdio = openRuntimeStdio(deps, ctx, formatRubyCommand(binName, argv));
                 try {
-                    result = await dispatchRubyFacet(deps.facets, stdio.syscalls, facetArgs, await vfs.readArrayBufferUncached(wasmVfs), stdio.pid, stdio.signal);
+                    result = await dispatchRubyFacet(deps.facets, stdio.syscalls, facetArgs, await vfs.image(wasm.path, wasm), stdio.pid, stdio.signal);
                 }
                 finally {
                     await stdio.finish(result?.exitCode ?? 1);
@@ -360,14 +357,6 @@ function buildRubyToolInvocation(binKind, binName, argv) {
                 exitCode: 0,
             };
         }
-        if (argv[0] === 'install') {
-            return {
-                mode: 'none',
-                code: '',
-                error: 'gem install command was not handled by Nimbus RubyGems',
-                exitCode: 1,
-            };
-        }
         return {
             mode: 'none',
             code: '',
@@ -398,14 +387,6 @@ function buildRubyToolInvocation(binKind, binName, argv) {
                 'end',
             ].join('\n'),
             exitCode: 0,
-        };
-    }
-    if (argv[0] === 'install') {
-        return {
-            mode: 'none',
-            code: '',
-            error: 'bundle install command was not handled by Nimbus RubyGems',
-            exitCode: 1,
         };
     }
     return {
@@ -798,8 +779,10 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
   };
 
   const jsAbiResources = jsValueSlab;
+  // A Ruby string's value, a leading U+FEFF kept: a name or a value, never a document.
+  const guestStringDecoder = new TextDecoder('utf-8', { ignoreBOM: true });
   function readGuestString(ptr, len) {
-    return new TextDecoder().decode(new Uint8Array(memRef.buffer, ptr, len));
+    return guestStringDecoder.decode(new Uint8Array(memRef.buffer, ptr, len));
   }
   function writeGuestString(outPtr, value) {
     const bytes = new TextEncoder().encode(String(value));

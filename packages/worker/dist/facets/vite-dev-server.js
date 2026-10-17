@@ -42,6 +42,7 @@ import { rewriteJavaScriptModuleSource } from '@nimbus-sh/core/runtime/module-so
 import { normalizeVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 import { getTailwindPlayBundle, TAILWIND_PLAY_VERSION, } from '../tailwind-play.generated.js';
 import { recallOf, withRecall } from '@nimbus-sh/core/vfs/recall.js';
+import { staticExtension, staticMimeType, staticMimeTypes } from '@nimbus-sh/fabric/static-mime.js';
 // ── HMR client code ─────────────────────────────────────────────────────
 // Injected into index.html. Listens for HMR messages from parent window
 // (forwarded by the main Nimbus frontend from the WebSocket).
@@ -97,10 +98,8 @@ const HMR_CLIENT = `<script type="module">
  */
 const ERROR_OVERLAY_CLIENT = `<script>(()=>{const s=(m)=>{let o=document.getElementById('nimbus-error-overlay');if(!o){o=document.createElement('div');o.id='nimbus-error-overlay';o.style.cssText='position:fixed;top:0;left:0;right:0;background:#b91c1c;color:white;padding:16px;font-family:monospace;font-size:13px;z-index:999999;max-height:50vh;overflow:auto;box-shadow:0 4px 12px rgba(0,0,0,.3)';document.body&&document.body.appendChild(o)}o.innerHTML='<strong>Preview crashed</strong><pre style="white-space:pre-wrap;margin:8px 0 0">'+String(m||'').replace(/</g,'&lt;')+'</pre>'+(/does not provide an export|Failed to resolve/.test(m||'')?'<div style="margin-top:8px;font-size:12px">Hint: run <code>npm install</code> in your project.</div>':'')+'<button onclick="location.reload()" style="margin-top:8px;padding:4px 12px;background:white;color:#b91c1c;border:0;border-radius:4px;cursor:pointer">Reload</button>'};window.addEventListener('error',e=>s((e.message||'')+' @ '+String(e.filename||'').replace(location.origin,'')+':'+e.lineno));window.addEventListener('unhandledrejection',e=>s(String(e.reason?.message||e.reason||'(rejection)').substring(0,500)))})();</script>`;
 // ── MIME types ───────────────────────────────────────────────────────────
-const MIME_TYPES = {
-    '.html': 'text/html; charset=utf-8',
-    '.js': 'application/javascript; charset=utf-8',
-    '.mjs': 'application/javascript; charset=utf-8',
+/** The shared static vocabulary, with what the dev server also serves. */
+const MIME_TYPES = staticMimeTypes({
     '.cjs': 'application/javascript; charset=utf-8',
     '.ts': 'application/javascript; charset=utf-8',
     '.tsx': 'application/javascript; charset=utf-8',
@@ -113,28 +112,14 @@ const MIME_TYPES = {
     // resolver correctness problem. At least the MIME is right.
     '.vue': 'application/javascript; charset=utf-8',
     '.svelte': 'application/javascript; charset=utf-8',
-    '.css': 'text/css; charset=utf-8',
-    '.json': 'application/json; charset=utf-8',
-    '.svg': 'image/svg+xml',
-    '.png': 'image/png',
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.gif': 'image/gif',
-    '.ico': 'image/x-icon',
-    '.webp': 'image/webp',
-    '.woff': 'font/woff',
-    '.woff2': 'font/woff2',
     '.ttf': 'font/ttf',
     '.otf': 'font/otf',
-    '.txt': 'text/plain; charset=utf-8',
     '.md': 'text/plain; charset=utf-8',
-    '.wasm': 'application/wasm',
-    '.map': 'application/json; charset=utf-8',
     '.mp4': 'video/mp4',
     '.webm': 'video/webm',
     '.mp3': 'audio/mpeg',
     '.pdf': 'application/pdf',
-};
+});
 /** File extensions that should be treated as static assets when imported from JS */
 const ASSET_EXTS = new Set([
     '.svg', '.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp',
@@ -217,7 +202,7 @@ export function rewriteExternalRequires(code, basePath) {
  * Cloudflare Workers runtime disallows string-to-code generation outside of
  * module initialization.
  *
- * The names are the CJS scan's Vite policy over the entire bundled text:
+ * The names are the CJS scan's (runtime/cjs-export-names.ts) over the entire bundled text:
  * `exports.NAME =`, `exports["NAME"] =`, `module.exports.NAME =`, every
  * `Object.defineProperty(exports, "NAME", ...)`, and every key of a
  * `module.exports = { ... }` literal whatever its value.
@@ -270,7 +255,7 @@ export function synthesizeCjsNamedExports(code) {
 }
 /**
  * The names a CJS bundle source exports that can be ES named exports:
- * runtime/cjs-export-names.ts's scan under its Vite policy (every key a
+ * runtime/cjs-export-names.ts's scan (every key a
  * module may put on module.exports, anywhere in the text: CJS exports appear
  * throughout __commonJS wrappers; real Vite reads any named import off the
  * default, so a name missed here is an import that fails), less `default`
@@ -278,7 +263,7 @@ export function synthesizeCjsNamedExports(code) {
  * ES identifier.
  */
 function extractCjsExportNames(code) {
-    return scanCjsExports(code, 'vite').names.filter(n => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(n) &&
+    return scanCjsExports(code).names.filter(n => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(n) &&
         n !== 'default' &&
         !RESERVED_ES_KEYWORDS.has(n));
 }
@@ -322,8 +307,8 @@ const EXPORT_SCAN = { files: 64, fileBytes: 1024 * 1024, totalBytes: 4 * 1024 * 
 /**
  * The names the module at `entry` exports, as far as its source and the
  * relative modules it re-exports say: ESM `export`s (es-module-lexer), or
- * for a module without them, CommonJS's (cjs-export-names under the Vite
- * policy). Best effort, and bounded (EXPORT_SCAN): what cannot be read,
+ * for a module without them, CommonJS's (cjs-export-names). Best effort,
+ * and bounded (EXPORT_SCAN): what cannot be read,
  * resolved or afforded adds nothing.
  */
 function moduleExportNames(vfs, entry) {
@@ -386,7 +371,7 @@ function moduleExportNames(vfs, entry) {
         catch { /* not ESM: the CommonJS scan below */ }
         if (esm)
             continue;
-        const cjs = scanCjsExports(source, 'vite');
+        const cjs = scanCjsExports(source);
         for (const name of cjs.names)
             names.add(name);
         for (const specifier of cjs.reexports) {
@@ -1766,10 +1751,9 @@ export class ViteDevServer {
             // public/ directory — serve static assets as-is
             const publicPath = this.root + '/public' + pathname;
             if (this.vfs.exists(publicPath) && !this.vfs.isDirectory(publicPath)) {
-                const ext = pathname.includes('.') ? '.' + pathname.split('.').pop().toLowerCase() : '';
                 const data = this.vfs.readFile(publicPath);
                 return new Response(data, {
-                    headers: { ...headers, 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream' },
+                    headers: { ...headers, 'Content-Type': staticMimeType(MIME_TYPES, staticExtension(pathname)) },
                 });
             }
             // Serve from VFS (with transforms for TS/TSX/JSX). Awaited, so a
@@ -2208,16 +2192,8 @@ export class ViteDevServer {
                 return this.serveIndexHtml(headers, base);
             }
         }
-        // Extract extension using slash-aware dot detection. Naive `split('.').pop()`
-        // returns garbage for paths with dotted directories like `/src/v1.0/App`
-        // (would produce `ext = '.0/app'`). We only accept a dot that occurs AFTER
-        // the final slash and has at least one character after it.
-        const pExtLastSlash = pathname.lastIndexOf('/');
-        const pExtLastDot = pathname.lastIndexOf('.');
-        const ext = (pExtLastDot > pExtLastSlash && pExtLastDot < pathname.length - 1)
-            ? pathname.substring(pExtLastDot).toLowerCase()
-            : '';
-        const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+        const ext = staticExtension(pathname);
+        const contentType = staticMimeType(MIME_TYPES, ext);
         // Every HTML page gets the dev head, as Vite's transformIndexHtml gives
         // every page of a multi-page app; only the root index.html takes a <base>.
         if (ext === '.html') {

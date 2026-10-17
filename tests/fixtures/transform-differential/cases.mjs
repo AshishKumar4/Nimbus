@@ -106,6 +106,7 @@ export const CASES = [
 
 /** Where the engines answer differently on purpose, and why. */
 export const DIVERGENT = {
+  'dup-decl.mjs': 'both refuse the duplicate binding; esbuild locates its second declaration, Oxc its first',
   'strict-violation.js': 'esbuild refuses `var await` in a script, which Node and Oxc accept',
   'proto-export.mjs': 'esbuild writes the getter as `__proto__: () => x`, which sets the getters object\'s prototype and loses the export; Oxc writes `["__proto__"]`',
   'ambient-default.ts': 'a `declare const` has no value: esbuild exports it and the module throws a ReferenceError when it runs; Oxc elides the export (nuxt ships such files as *.d.vue.ts)',

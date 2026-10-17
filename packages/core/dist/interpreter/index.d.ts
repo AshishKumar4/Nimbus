@@ -1,5 +1,5 @@
 import { type RuntimeFunctionKind } from '../_shared/runtime-function-source.js';
-import { type ModuleCell, type ModuleHelpers } from './modules.js';
+import { type ModuleCell, type ModuleHelpers, type ModuleLink, type ModuleLinkRequest } from './modules.js';
 import type { HostOps, NativeFunction } from './host-ops.js';
 import { type ModuleRequest } from './module-requests.js';
 import type { ModuleBindings } from '../runtime/esm-interop.js';
@@ -64,6 +64,15 @@ export interface Interpreter {
      * runs (node-shims' require(esm)). False for any other cell.
      */
     moduleAwaits(cell: unknown): boolean;
+    /**
+     * The link of `cell`, an ES module's cell: its InitializeEnvironment, which
+     * answers its ExecuteModule (modules.ts ModuleLink), for a host that
+     * evaluates a module graph as ECMA-262 does (runtime/esm-graph.ts); null
+     * for a CommonJS cell.
+     */
+    moduleLink(cell: ModuleCell): ModuleLink | null;
+    /** The static imports `cell`'s link requires (its specifiers and `type` attributes), in order; null for a CommonJS cell. */
+    moduleLinkRequests(cell: ModuleCell): readonly ModuleLinkRequest[] | null;
     /**
      * A function returning the value of the script `code` when it is one
      * expression (scriptExpression): vm.runInThisContext's code, as node-shims

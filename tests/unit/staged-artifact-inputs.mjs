@@ -113,10 +113,16 @@ try {
   await writeFile(path.join(root, linker), await readFile(path.join(root, linker), 'utf8') + '\n');
   refused(run('packages/worker/scripts/bundle-napi-wasm.mjs'), linker, `bun scripts/ci/remote-napi-binding.mjs ${Object.keys(SPECS).join(' ')}`);
   await copy(linker);
+  // The wasm reader both Rust recipes check and record through stales every binding and the Oxc wasm.
+  const reader = 'packages/core/src/runtime/wasm-binary.ts';
+  await writeFile(path.join(root, reader), await readFile(path.join(root, reader), 'utf8') + '\n');
+  refused(run('packages/worker/scripts/bundle-napi-wasm.mjs'), reader, `bun scripts/ci/remote-napi-binding.mjs ${Object.keys(SPECS).join(' ')}`);
+  refused(run('packages/worker/scripts/bundle-oxc-wasm.mjs'), '../../../core/src/runtime/wasm-binary.ts', 'remote-oxc-wasm.mjs');
+  await copy(reader);
 
   for (const [script, file, command] of [
     ['packages/worker/scripts/bundle-opencode.mjs', 'packages/worker/scripts/opencode/stubs/bun-shim.ts', 'rebuild-opencode.mjs'],
-    ['packages/worker/scripts/bundle-oxc-wasm.mjs', 'packages/worker/scripts/oxc-wasm/src/lib.rs', 'oxc-wasm/build.mjs'],
+    ['packages/worker/scripts/bundle-oxc-wasm.mjs', 'packages/worker/scripts/oxc-wasm/src/lib.rs', 'remote-oxc-wasm.mjs'],
   ]) {
     await writeFile(path.join(root, file), await readFile(path.join(root, file), 'utf8') + '\n');
     refused(run(script), file.includes('/oxc-wasm/') ? 'src/lib.rs' : file, command);

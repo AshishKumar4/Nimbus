@@ -13,6 +13,11 @@
 //
 // This sidesteps trying to parse cursor-movement bytes — we observe
 // the *result* of the edits, which is the user-visible contract.
+//
+// The four keybinding probes run through the suite runner like any other;
+// to run just them, one at a time:
+//   NIMBUS_PROBE_ONLY=keybindings/cursor-movement,keybindings/edit-ops,keybindings/history,keybindings/misc \
+//     BASE=<target> bun tests/behavioral/run-all.mjs --jobs 1
 
 import { mintSession, Terminal, makeAsserter, stripAnsi, sleep, WS_BASE } from '../_driver.mjs';
 

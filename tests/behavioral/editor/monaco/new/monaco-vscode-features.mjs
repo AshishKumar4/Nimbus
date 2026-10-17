@@ -1,84 +1,76 @@
 #!/usr/bin/env bun
-// editor/monaco/new/monaco-vscode-features — Monaco config is the
-// full VSCode-like options object (not the bare initial config the
-// first editor draft shipped, which the user flagged as "useless").
-//
-// We assert the inlined JS contains the full feature set:
-//   - minimap enabled (right side)
-//   - line numbers on
-//   - bracket pair colorization
-//   - indent guides
-//   - format on paste/type
-//   - auto-indent / auto-close brackets
-//   - smooth scrolling / smooth cursor
-//   - sticky scroll
-//   - tab size 2
-//   - font 14px Menlo/Monaco/Consolas
-//
-// These options are deliberately verified at the source level
-// (regex on the served HTML's inline JS) rather than via a real
-// browser. A future puppeteer probe could exercise them at runtime.
+// editor/monaco/new/monaco-vscode-features — the editor runs with the full
+// VSCode-like options (not the bare initial config the first editor draft
+// shipped, which the user flagged as "useless"), read from the live editor
+// in a real Chrome after it opens a JavaScript file: minimap on the right,
+// line numbers, bracket pair colors and guides, indent guides, full
+// auto-indent, language-defined auto-closing, format on paste and type,
+// smooth scrolling and caret, sticky scroll, two-space indentation in the
+// opened file's model, Menlo/Monaco 14px, automatic layout, the dark theme.
 
-import { mintSession, BASE, makeAsserter, requestHeaders } from '../../../_driver.mjs';
+import { BASE, mintSession, deleteSession, makeAsserter, requestHeaders } from '../../../_driver.mjs';
+import { launchBrowser, openPage } from '../../../_runtime-behavioral-template.mjs';
+import { Nimbus } from '../../../../../packages/sdk/src/index.ts';
 
-if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('editor/monaco/new/monaco-vscode-features');
-console.log(`editor/monaco/new/monaco-vscode-features — ${process.env.BASE}`);
-
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders({}, sid) });
-const html = await r.text();
+const box = Nimbus.connect({ endpoint: BASE, headers: () => requestHeaders({}, sid) }).sandbox(sid);
+const path = '/home/user/features.js';
+const browser = await launchBrowser();
+try {
+  // No indented line, so the model's indentation is the configured default, not one detected from the file.
+  await box.files.write(path, 'const answer = 42;\n');
+  const { page, pageErrors } = await openPage(browser, sid);
+  await page.goto(`${BASE}/s/${sid}/`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  await page.waitForFunction(() => window.__nimbusMonacoEditor, { timeout: 60_000 });
+  await page.locator(`.tree-node[data-path="${path}"]`).click();
+  await page.waitForFunction(() => window.__nimbusMonacoEditor.getValue().startsWith('const answer'), { timeout: 30_000 });
 
-// Required options.
-const required = [
-  // Minimap.
-  { name: 'minimap enabled',         re: /minimap:\s*\{[^}]*enabled:\s*true/ },
-  { name: 'minimap on right',        re: /minimap:\s*\{[^}]*side:\s*['"]right['"]/ },
-  // Line numbers.
-  { name: 'line numbers on',         re: /lineNumbers:\s*['"]on['"]/ },
-  // Bracket pair colorization.
-  { name: 'bracketPairColorization', re: /bracketPairColorization:\s*\{[^}]*enabled:\s*true/ },
-  // Indent + bracket guides.
-  { name: 'guides bracketPairs',     re: /guides:\s*\{[^}]*bracketPairs:\s*['"]active['"]/ },
-  { name: 'guides indentation',      re: /guides:\s*\{[^}]*indentation:\s*true/ },
-  // Auto-indent + auto-close brackets.
-  { name: 'autoIndent full',         re: /autoIndent:\s*['"]full['"]/ },
-  { name: 'autoClosingBrackets',     re: /autoClosingBrackets:\s*['"]languageDefined['"]/ },
-  { name: 'autoClosingQuotes',       re: /autoClosingQuotes:\s*['"]languageDefined['"]/ },
-  // Format on paste/type.
-  { name: 'formatOnPaste',           re: /formatOnPaste:\s*true/ },
-  { name: 'formatOnType',            re: /formatOnType:\s*true/ },
-  // Smooth scrolling/cursor.
-  { name: 'smoothScrolling',         re: /smoothScrolling:\s*true/ },
-  { name: 'cursorSmoothCaret',       re: /cursorSmoothCaretAnimation:\s*['"]on['"]/ },
-  // Sticky scroll (the floating-header-on-scroll feature VSCode added in 2023).
-  { name: 'stickyScroll enabled',    re: /stickyScroll:\s*\{[^}]*enabled:\s*true/ },
-  // Tab size 2 + insertSpaces.
-  { name: 'tabSize 2',               re: /tabSize:\s*2\b/ },
-  { name: 'insertSpaces true',       re: /insertSpaces:\s*true/ },
-  // Font (Menlo/Monaco/Consolas first per real VSCode default).
-  { name: 'fontFamily Menlo first, then Monaco', re: /fontFamily:\s*["']Menlo[^"']*Monaco/ },
-  { name: 'fontSize 14',             re: /fontSize:\s*14\b/ },
-  // automaticLayout (REQUIRED for split-pane resize — without this
-  // the editor sees its initial container size forever).
-  { name: 'automaticLayout true',    re: /automaticLayout:\s*true/ },
-  // Theme.
-  { name: 'theme vs-dark',           re: /theme:\s*['"]vs-dark['"]/ },
-];
-
-for (const { name, re } of required) {
-  a.check(`Monaco config has: ${name}`, re.test(html), `regex didn't match: ${re}`);
+  const live = await page.evaluate(() => {
+    const editor = window.__nimbusMonacoEditor;
+    const { EditorOption } = window.monaco.editor;
+    const option = (name) => editor.getOption(EditorOption[name]);
+    const raw = editor.getRawOptions();
+    const model = editor.getModel().getOptions();
+    return {
+      minimap: option('minimap'),
+      lineNumbers: raw.lineNumbers,
+      bracketPairColorization: option('bracketPairColorization'),
+      guides: option('guides'),
+      autoIndent: raw.autoIndent,
+      autoClosingBrackets: option('autoClosingBrackets'),
+      autoClosingQuotes: option('autoClosingQuotes'),
+      formatOnPaste: option('formatOnPaste'),
+      formatOnType: option('formatOnType'),
+      smoothScrolling: option('smoothScrolling'),
+      cursorSmoothCaretAnimation: option('cursorSmoothCaretAnimation'),
+      stickyScroll: option('stickyScroll'),
+      tabSize: model.tabSize,
+      insertSpaces: model.insertSpaces,
+      fontFamily: option('fontFamily'),
+      fontSize: option('fontSize'),
+      automaticLayout: option('automaticLayout'),
+      darkTheme: document.querySelector('#editorPanel .monaco-editor').classList.contains('vs-dark'),
+    };
+  });
+  const expect = (name, ok) => a.check(`the editor runs with ${name}`, ok, JSON.stringify(live));
+  expect('the minimap enabled, on the right', live.minimap.enabled === true && live.minimap.side === 'right');
+  expect('line numbers on', live.lineNumbers === 'on');
+  expect('bracket pair colorization', live.bracketPairColorization.enabled === true);
+  expect('active bracket pair and indentation guides', live.guides.bracketPairs === 'active' && live.guides.indentation === true);
+  expect('full auto-indent', live.autoIndent === 'full');
+  expect('language-defined auto-closing brackets and quotes', live.autoClosingBrackets === 'languageDefined' && live.autoClosingQuotes === 'languageDefined');
+  expect('format on paste and on type', live.formatOnPaste === true && live.formatOnType === true);
+  expect('smooth scrolling and caret animation', live.smoothScrolling === true && live.cursorSmoothCaretAnimation === 'on');
+  expect('sticky scroll', live.stickyScroll.enabled === true);
+  expect('two-space indentation in a newly opened file', live.tabSize === 2 && live.insertSpaces === true);
+  expect('Menlo, then Monaco, at 14px', /^Menlo,\s*Monaco/.test(live.fontFamily) && live.fontSize === 14);
+  expect('automatic layout', live.automaticLayout === true);
+  expect('the dark theme', live.darkTheme);
+  a.check('no page errors while the editor opened the file', pageErrors.length === 0, JSON.stringify(pageErrors));
+} finally {
+  await browser.close();
+  await deleteSession(sid);
 }
-
-// Negative: NO weak/bare config. Pre-fix the editor was just
-// {value, language, theme, automaticLayout, minimap:{enabled:false},
-// fontFamily, fontSize:13, wordWrap, scrollBeyondLastLine}. The
-// minimap-disabled string would still be present in HISTORY but not
-// in the live HTML. Specifically: minimap:{enabled:false} should
-// NOT appear.
-a.check('Monaco config no longer ships minimap disabled',
-  !/minimap:\s*\{\s*enabled:\s*false\s*\}/.test(html),
-  `minimap:{enabled:false} still in HTML`);
-
-const sum = a.summary();
-process.exit(sum.fail > 0 ? 1 : 0);
+const result = a.summary();
+process.exit(result.fail ? 1 : 0);

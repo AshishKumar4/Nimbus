@@ -4,7 +4,7 @@
 //
 // Black-box surfaces only. NO _diag.
 
-import { mintSession, Terminal, makeAsserter, sleep } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('git-clone');
@@ -14,7 +14,7 @@ const sid = await mintSession();
 console.log(`SID: ${sid}`);
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
+await t.waitForPrompt(60_000);
 
 await t.run('cd /home/user', 10_000);
 

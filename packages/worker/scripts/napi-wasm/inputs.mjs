@@ -86,7 +86,8 @@ function packageNames(key) {
 export async function bindingInputs(key, root = REPO) {
   const spec = SPECS[key];
   if (!spec) throw new Error(`napi-wasm: no binding spec ${key}`);
-  const names = [...RECIPE, `${HERE}/link-wasm.sh`, `${HERE}/rustc-remap.sh`];
+  // The wasm reader decides the ABI checks and the memory and imports provenance records.
+  const names = [...RECIPE, 'packages/worker/scripts/rust-build-env.mjs', 'packages/core/src/runtime/wasm-binary.ts', `${HERE}/link-wasm.sh`, `${HERE}/rustc-remap.sh`];
   if (spec.build.mode === 'wrapper') {
     names.push(`${HERE}/${spec.build.wrapper}/Cargo.toml`, `${HERE}/${spec.build.wrapper}/binding`);
   }
@@ -95,6 +96,27 @@ export async function bindingInputs(key, root = REPO) {
     ...await digestInputs(root, names),
     [`${HERE}/specs.mjs#${key}`]: sha256Hex(JSON.stringify(spec)),
     [`${HERE}/specs.mjs#emnapi-link`]: sha256Hex(JSON.stringify({ packages: EMNAPI.packages, source: SPECS[EMNAPI.lockfileFrom].source })),
+  };
+}
+
+/**
+ * An esbuild plugin that resolves every @emnapi/* the loader imports from the
+ * pinned, integrity-checked, seamed packages under `npmDir`, and refuses one
+ * that resolves anywhere else. A copy installed in the workspace (for its
+ * types, say) lies on the loader's own resolution path before nodePaths.
+ */
+export function pinnedEmnapi(npmDir) {
+  return {
+    name: 'pinned-emnapi',
+    setup(build) {
+      build.onResolve({ filter: /^@emnapi\// }, async (args) => {
+        if (args.pluginData === 'pinned') return undefined;
+        const pinned = await build.resolve(args.path, { kind: args.kind, resolveDir: npmDir, pluginData: 'pinned' });
+        if (pinned.errors.length > 0) return { errors: pinned.errors };
+        if (path.relative(npmDir, pinned.path).startsWith('..')) return { errors: [{ text: `${args.path} resolved outside the pinned emnapi: ${pinned.path}` }] };
+        return { path: pinned.path, namespace: pinned.namespace, sideEffects: pinned.sideEffects };
+      });
+    },
   };
 }
 

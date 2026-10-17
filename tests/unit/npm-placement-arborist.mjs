@@ -50,14 +50,12 @@ import { Database } from 'bun:sqlite';
 import { packageTarball, sriOf } from './lib/tarball-fixture.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { pickPackumentVersion } from '../../packages/core/src/_shared/npm-semver.ts';
-import { parseRegistryRequest } from '../../packages/core/src/_shared/npm-spec.ts';
 import { createNpmCommand } from '../../packages/core/src/substrate/lifo/commands/system/npm.ts';
 import { npmInstallInvocation } from '../../packages/core/src/substrate/lifo/commands/system/npm-install-args.ts';
 import { loadNpmConfig } from '../../packages/core/src/substrate/lifo/commands/system/npm-config.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
-import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
-import { registryRecord } from '../../packages/worker/src/npm/registry-record.ts';
+import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
+import { npmRegistry } from './lib/npm-registry.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 /** name → version → manifest fields (dependencies, peerDependencies, optionalDependencies). */
@@ -185,25 +183,26 @@ const server = createServer((request, response) => {
     response.end(tarballs.get(path));
     return;
   }
-  const versions = REGISTRY[path];
-  if (!versions) {
+  const packument = registry.packumentFor(path);
+  if (!packument) {
     response.writeHead(404, { 'content-type': 'application/json' });
     response.end('{"error":"not found"}');
     return;
   }
-  const names = Object.keys(versions);
   response.writeHead(200, { 'content-type': 'application/json' });
-  response.end(JSON.stringify({
-    name: path,
-    'dist-tags': { latest: names[names.length - 1] },
-    versions: Object.fromEntries(names.map((version) => [version, {
-      ...manifest(path, version),
-      dist: { tarball: `${base}/${path}-${version}.tgz`, integrity: brokenNow.has(`${path}-${version}.tgz`) ? NO_BYTES : integrity.get(`${path}-${version}.tgz`) },
-    }])),
-  }));
+  response.end(JSON.stringify(packument));
 });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
+const registry = npmRegistry(Object.fromEntries(Object.entries(REGISTRY).map(([name, versions]) => [
+  name, Object.fromEntries(Object.entries(versions).map(([version, fields]) => [version, {
+    ...fields,
+    get dist() {
+      const file = `${name}-${version}.tgz`;
+      return { tarball: `${base}/${file}`, integrity: isBroken(file) ? NO_BYTES : integrity.get(file) };
+    },
+  }])),
+])));
 
 /** placement → version, sorted, as each engine left the tree (`name@version` where the package is not the one its placement names: an alias). */
 const sorted = (entries) => Object.fromEntries([...entries].sort(([x], [y]) => (x < y ? -1 : 1)));
@@ -256,25 +255,6 @@ async function fallbackWorkspace() {
   };
 }
 
-/** The worker's resolve task over REGISTRY: the version npm's pick takes, a missing name unresolved. */
-function resolveTask(name, spec) {
-  const request = parseRegistryRequest(name, spec.range);
-  const empty = { cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
-  const versions = REGISTRY[request.registryName];
-  const names = Object.keys(versions ?? {});
-  const version = versions ? pickPackumentVersion(versions, { latest: names.at(-1) }, request.range) : null;
-  if (!version) return { ...empty, pkg: null, error: { type: 'unresolved', reason: `no version of ${request.registryName} satisfies ${request.range}` } };
-  const fields = REGISTRY[request.registryName][version];
-  const file = `${request.registryName}-${version}.tgz`;
-  const pkg = {
-    name: request.installName, version, tarballUrl: `${base}/${file}`, integrity: isBroken(file) ? NO_BYTES : integrity.get(file),
-    dependencies: fields.dependencies ?? {}, peerDependencies: fields.peerDependencies, peerDependenciesMeta: fields.peerDependenciesMeta, bundleDependencies: fields.bundleDependencies,
-    optionalDependencies: fields.optionalDependencies,
-    exports: null, main: 'index.js', module: '', bin: {},
-  };
-  return { ...empty, pkg, cacheWrites: [registryRecord(pkg, Date.now())] };
-}
-
 /** A fresh project `dir` the worker's NpmInstaller installs into, over a fake fanout serving REGISTRY. */
 function workerProject(dir = 'app') {
   const harness = createSqliteVfsTestHarness(new Database(':memory:'));
@@ -285,7 +265,7 @@ function workerProject(dir = 'app') {
   if (dir === 'app') write({});
   const file = (p) => p.tarballUrl.slice(base.length + 1);
   const env = makeFanoutEnv({
-    root, NM: `${dir}/node_modules`, resultFor: resolveTask,
+    root, NM: `${dir}/node_modules`, resultFor: registry.resultFor,
     failFor: (p) => (isBroken(file(p)) ? `integrity mismatch for ${file(p)}` : null),
     manifestFor: (p) => manifests.get(file(p)),
     filesFor: (p) => BUNDLED[file(p)] ?? {},

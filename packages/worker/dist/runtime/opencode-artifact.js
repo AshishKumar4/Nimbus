@@ -91,17 +91,23 @@ export async function fetchOpencodeWorkerSource(env, file) {
  * mapping every `chunk-<hash>.js` module name to its ESM source. index.js
  * imports these chunks from its lazy command handlers; the facet module map
  * carries each as its own module.
+ *
+ * Each chunk is decoded from its own byte range of the pack (`ranges`, its
+ * JSON string literal, found when the pack was staged), never the pack as
+ * one text first: the pack is 22.6 MB of UTF-8 whose non-ASCII bytes make
+ * that text a two-byte string of about 45 MB, held beside the sources parsed
+ * out of it. The ranges are of the pinned bytes, which fetchAsset verifies.
  */
-export async function fetchOpencodeChunkSources(env, packFile) {
-    const ab = await fetchAsset(env, packFile);
-    const parsed = JSON.parse(new TextDecoder().decode(ab));
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        throw new Error(`opencode chunk pack ${packFile} is not a name→source object`);
-    }
-    for (const [name, source] of Object.entries(parsed)) {
+export async function fetchOpencodeChunkSources(env, packFile, ranges) {
+    const bytes = new Uint8Array(await fetchAsset(env, packFile));
+    const decoder = new TextDecoder();
+    const sources = {};
+    for (const [name, [start, end]] of Object.entries(ranges)) {
+        const source = JSON.parse(decoder.decode(bytes.subarray(start, end)));
         if (typeof source !== 'string') {
             throw new Error(`opencode chunk pack ${packFile} entry ${name} is not a source string`);
         }
+        sources[name] = source;
     }
-    return parsed;
+    return sources;
 }

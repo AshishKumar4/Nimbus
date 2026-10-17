@@ -2,6 +2,7 @@ import type { ProcessView } from '../../../runtime/process-files.js';
 import { crc32 } from '@nimbus-sh/platform/crc32.js';
 import { resolve, dirname } from './path.js';
 import { encode, decode, concatBytes } from './encoding.js';
+import { nameDec } from '../../../_shared/bytes.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 import { streamTarRecords, tarBytes, TarTruncatedError, type TarHeader } from '../../../_shared/tarball-stream.js';
 
@@ -274,7 +275,7 @@ export function parseZip(data: Uint8Array): ZipEntry[] {
     const localOffset = readU32LE(data, centralOffset + 42);
 
     const nameBytes = data.subarray(centralOffset + 46, centralOffset + 46 + nameLen);
-    let path = decode(nameBytes);
+    let path = nameDec.decode(nameBytes);
 
     const isDirectory = path.endsWith('/');
     if (isDirectory) path = path.slice(0, -1);

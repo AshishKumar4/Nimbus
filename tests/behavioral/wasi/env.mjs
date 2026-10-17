@@ -7,7 +7,8 @@
 // we assert. The '0' character would mean envc=0 which is the only fail
 // state we care about for this probe.
 
-import { openWasiProbe, tailLines, trimmedLines } from './_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/env', { dir: '/home/user/wasi', fixture: 'env', as: 'env.wasm' });
 const { t } = probe;
@@ -19,7 +20,7 @@ try {
   // not the command echo). Nimbus's session env post primitives+heap
   // waves is ~20 keys → 'D'. We accept any single-char line that isn't
   // '0' (which would mean envc=0 → environ_sizes_get is broken).
-  const lines = trimmedLines(tail);
+  const lines = outputLines(tail);
   const oneByteLine = lines.find(s => s.length === 1 && /^[!-~]$/.test(s));
   const envcOk = !!oneByteLine;
   const notZeroEnvc = oneByteLine !== '0';

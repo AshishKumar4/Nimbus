@@ -16,7 +16,7 @@
  * via the stub).
  *
  * Per DEFECT-D1: ctx is taken via `(self as any).ctx` cast where needed
- * (rpcInnerDoFetch uses self.ctx.id and self.ctx.facets). The InitHost-style escape applies because
+ * (_rpcInnerDoCall uses self.ctx.id and self.ctx.facets). The InitHost-style escape applies because
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
@@ -25,7 +25,6 @@ import { sessionFileStatOf } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { isBrokenPipe } from '@nimbus-sh/core/substrate/lifo/utils/bytes-io.js';
 import { STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
-import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { getInnerDoClass, innerDoFacetName, noteInnerDoFacetOpened } from '@nimbus-sh/fabric/inner-do-registry.js';
 import { KvEmulator, serveKvCall } from '../bindings/kv.js';
 import { R2Emulator, serveR2Call } from '../bindings/r2.js';
@@ -190,64 +189,6 @@ export async function _rpcReadFile(self, path, pid, cred) {
  */
 export async function _rpcReadFileBytes(self, path, pid, cred) {
     return self.supervisorOp({ op: 'readFileBytes', args: [path], pid, cred });
-}
-/**
- * Phase-3 inner-DO fetch dispatcher. Called by NimbusDOStub.fetch()
- * from the inner Worker via the env.NIMBUS_SESSION loopback. We
- * resolve the inner DO class from the module-level registry (keyed
- * by <thisDoId>:<bindingName>), use ctx.facets.get with the inner's
- * id string as the facet id, and forward the serialized Request.
- *
- * All steps run in THIS RPC method's context, so no cross-request
- * I/O boundaries are crossed — the ctx.facets stub and its fetch()
- * are both created here.
- */
-export async function _rpcInnerDoFetch(self, req) {
-    const facet = innerDoFacet(self, req.bindingName, req.id);
-    if (!facet) {
-        const body = enc.encode(`Nimbus: inner DO binding '${req.bindingName}' has no registered class (supervisor=${self.ctx.id.toString()})`);
-        return {
-            status: 502,
-            statusText: 'Bad Gateway',
-            headers: [['Content-Type', 'text/plain']],
-            body: body.buffer,
-        };
-    }
-    try {
-        // Reconstruct the Request in the current context.
-        const headers = new Headers();
-        for (const [k, v] of req.headers)
-            headers.append(k, v);
-        const r = new Request(req.url, {
-            method: req.method,
-            headers,
-            body: req.body,
-        });
-        const res = await facet.fetch(r);
-        try {
-            const resHeaderList = [];
-            res.headers.forEach((v, k) => { resHeaderList.push([k, v]); });
-            const resBody = await res.arrayBuffer();
-            return {
-                status: res.status,
-                statusText: res.statusText,
-                headers: resHeaderList,
-                body: resBody,
-            };
-        }
-        finally {
-            disposeRpcResource(res);
-        }
-    }
-    catch (e) {
-        const body = enc.encode(`Nimbus inner DO error: ${e?.message || String(e)}`);
-        return {
-            status: 500,
-            statusText: 'Internal Server Error',
-            headers: [['Content-Type', 'text/plain']],
-            body: body.buffer,
-        };
-    }
 }
 /**
  * The facet that runs the inner Worker's object `id` of binding
@@ -424,6 +365,10 @@ const FsReadBatchRangeSchema = z.object({
     length: FsRangeOffsetSchema.max(FS_READ_BATCH_REQUEST_BYTES),
     expectedEpoch: z.string().optional(),
     expectedRevision: FsRangeOffsetSchema.optional(),
+    // The file as a listing's stat named it (RuntimeReadOptions.expectedFile).
+    expectedFile: z.object({
+        dev: z.number(), ino: z.number(), size: z.number(), mtime: z.number(), ctime: z.number(), revision: z.number(),
+    }).optional(),
 });
 /**
  * A path's own metadata, not followed through a symlink: what `lstat`
@@ -741,7 +686,7 @@ export async function _rpcFsReadBatch(self, requests, pid) {
                 // read awaits, and a name looked up after it is no receipt for it.
                 entries.push(await readHydrating(hydrated, async () => {
                     const read = fs.readRange(request.path, request.offset, request.length, {
-                        expectedEpoch: request.expectedEpoch, expectedRevision: request.expectedRevision,
+                        expectedEpoch: request.expectedEpoch, expectedRevision: request.expectedRevision, expectedFile: request.expectedFile,
                     });
                     if (read instanceof Promise || read === null)
                         return { bytes: await read };

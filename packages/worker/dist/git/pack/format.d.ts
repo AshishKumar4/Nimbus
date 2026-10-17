@@ -79,8 +79,13 @@ export declare function deltaSizes(delta: Uint8Array): DeltaSizes;
 export declare function applyDelta(base: Uint8Array, delta: Uint8Array): Uint8Array;
 /** "<type> <size>\0", the prefix an object id hashes before the content. */
 export declare function objectIdPrefix(type: GitObjectType, size: number): Uint8Array;
+/** An object's id: SHA-1 of its prefix and its bytes. */
+export declare function objectHash(type: GitObjectType, data: Uint8Array): Uint8Array;
+/** The object id at `at` in `oid` (an id alone, or one inside a tree, an index or a pack), as hex. */
 export declare function oidToHex(oid: Uint8Array, at?: number): string;
 export declare function oidFromHex(hex: string): Uint8Array;
+/** The bytes of `hex`, an object id known to be 40 lowercase hex digits (oidFromHex checks one). */
+export declare function oidBytes(hex: string): Uint8Array;
 /** Byte order of two ids, each at its own offset; the idx's sort order. */
 export declare function compareOids(a: Uint8Array, aAt: number, b: Uint8Array, bAt: number): number;
 //# sourceMappingURL=format.d.ts.map

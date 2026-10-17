@@ -3,7 +3,7 @@
  * bytes: a byte that is not valid UTF-8 passes through unchanged. Decoding
  * with TextDecoder would turn it into U+FFFD, three different bytes.
  */
-import { concatBytes as concatParts, enc, dec } from '../../../_shared/bytes.js';
+import { concatBytes as concatParts, enc, nameDec } from '../../../_shared/bytes.js';
 import { readToEnd } from '../../../runtime/process-files.js';
 import { isVfsError, syscallError } from '../../../vfs/vfs-error.js';
 import { resolve } from './path.js';
@@ -153,7 +153,7 @@ export function decodeLossless(bytes) {
     let run = 0;
     const flush = (end) => {
         if (end > run)
-            out += dec.decode(bytes.subarray(run, end));
+            out += nameDec.decode(bytes.subarray(run, end));
     };
     for (let i = 0; i < bytes.length;) {
         const b = bytes[i];
@@ -174,8 +174,8 @@ export function decodeLossless(bytes) {
     flush(bytes.length);
     return out;
 }
-/** Valid UTF-8, decoded as the walk's runs are (a leading BOM dropped, as `new TextDecoder()` drops it). */
-const validUtf8 = new TextDecoder('utf-8', { fatal: true });
+/** Valid UTF-8, decoded as the walk's runs are: a leading U+FEFF kept, as every other character (_shared/bytes.ts nameDec). */
+const validUtf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 /** The length of the valid UTF-8 sequence at `i`, or 0. */
 export function utf8SequenceLength(bytes, i) {
     const b = bytes[i];

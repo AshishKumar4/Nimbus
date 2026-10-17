@@ -13,6 +13,7 @@
  * CommonJS lexer), so a launch whose imports never need it never compiles it.
  */
 import { cjsModuleExportNames } from './cjs-module-exports.js';
+import { dataModule } from './esm-loader-policy.js';
 /** The facades' export names, by row, read once. */
 let facadeNames;
 /** A facade row's export names, or null where unknown. */
@@ -28,6 +29,24 @@ function rowNames(host, row) {
     }
     return facadeNames[row] ?? null;
 }
+/** Staged module rows as read, by row, once each. */
+const rowReads = new Map();
+/** A staged module row's source, read once (its static imports index its targets). */
+function rowRead(host, row) {
+    const known = rowReads.get(row);
+    if (known !== undefined)
+        return known;
+    const key = host.rowKey(row);
+    const text = host.source(key, row);
+    const analysis = text === null ? null : host.requests(key, text, true, 'module');
+    const specifiers = [];
+    for (const request of analysis?.requests ?? [])
+        if (request.kind === 'static')
+            specifiers.push(request.specifier);
+    const read = { analysis, specifiers };
+    rowReads.set(row, read);
+    return read;
+}
 /** Staged module rows' facts, by row, read from their sources when a link first needs them. */
 const rowFacts = new Map();
 /** A staged module row's facts, or null where its source does not tell them. */
@@ -37,21 +56,19 @@ function moduleFacts(host, row) {
         return known;
     let facts = null;
     const key = host.rowKey(row);
-    const text = host.source(key, row);
-    const analysis = text === null ? null : host.requests(key, text, true, 'module');
+    const { analysis, specifiers } = rowRead(host, row);
     const bindings = analysis?.bindings;
     const targets = host.rowTargets(row);
-    const specifiers = [];
-    for (const request of analysis?.requests ?? [])
-        if (request.kind === 'static')
-            specifiers.push(request.specifier);
     if (bindings !== undefined && bindings.imports.length === targets.length && specifiers.length === targets.length) {
-        // What static import `at` loads: a row, or the late module at the URL staging handed it on to (a query's or a fragment's instance).
+        // What static import `at` loads: a row, or what staging handed it on to.
         const loads = (at) => {
             if (targets[at] >= 0)
                 return { row: targets[at] };
             const missing = host.missing(-2 - targets[at]);
-            return missing !== null && 'handedOn' in missing ? { url: missing.handedOn } : null;
+            if (missing === null || !('handedOn' in missing))
+                return null;
+            const file = handedOnFile(host, key, missing.handedOn, specifiers[at], bindings.types[at]);
+            return file === null ? handedOnTarget(missing.handedOn) : lateTarget(host, file);
         };
         const exports = [];
         for (let i = 0; i < bindings.exports.length; i++)
@@ -80,6 +97,19 @@ function moduleFacts(host, row) {
     rowFacts.set(row, facts);
     return facts;
 }
+/**
+ * The modules an import()'s link failed in, by instance (a file's path; a
+ * query's, a fragment's or a data: module's URL): the module a static
+ * import of did not resolve or load, and each that imports it on the way
+ * from the link's root. The failure stays, as Node's loader keeps a
+ * ModuleJob that did not link: a later link reaching one fails with it,
+ * whatever the program wrote since.
+ */
+const linkFailures = new Map();
+/** The failure an import()'s link kept for the staged module at `key` (linkFailures): what a later load of it throws. */
+export function keptFailure(key) {
+    return linkFailures.get(key);
+}
 /** Every late module a link has read, by URL: what an interpreted module's `export *` asks of (starConflicts). */
 const lateModules = new Map();
 /** The CommonJS modules' names Node's lexer found, by path. */
@@ -103,9 +133,9 @@ export function commonJsNames(host, key) {
  * staged modules it imports, in import order, for the caller to evaluate
  * before the interpreter does the rest.
  */
-export function linkLateGraph(host, key, url) {
+export function linkLateGraph(host, key, url, kept) {
     const order = [];
-    const late = { modules: new Map(), rows: [] };
+    const late = { modules: new Map(), rows: [], kept };
     plan(host, key, url, new Set(), order, new Set(), late);
     checkBindings(host, late, url);
     for (const row of late.rows)
@@ -123,12 +153,12 @@ const checkedRows = new Set();
 export function linkAdopted(host, id, key, url) {
     if (checkedRows.has(id))
         return;
-    linkLateGraph(host, key, url);
+    linkLateGraph(host, key, url, true);
     checkedRows.add(id);
 }
 /** The names the `export *`s of the interpreted module at `url` reach two different bindings of, which its namespace omits. */
 export function starConflicts(host, url) {
-    const late = { modules: lateModules, rows: [] };
+    const late = { modules: lateModules, rows: [], kept: false };
     // A staged module the interpreter evaluates, by its file; not a query's or a fragment's instance.
     const { protocol, search, hash, pathname } = new URL(url);
     const row = protocol === 'file:' && search === '' && hash === '' ? host.row('module', decodeURIComponent(pathname).replace(/^\/+/, '')) : -1;
@@ -138,17 +168,55 @@ export function starConflicts(host, url) {
         return [];
     return names.filter((name) => resolveExport(host, late, target, name, new Set()) === AMBIGUOUS);
 }
+/**
+ * The names of the namespace of the late module at `url`, as its link read
+ * them: its own and its `export *`s', but those two of them reach different
+ * bindings of; null where its link did not read them (one not linked, or
+ * whose names its source does not tell). Known before its body runs, so a
+ * namespace taken in a cycle has them all.
+ */
+export function namespaceNames(host, url) {
+    const late = { modules: lateModules, rows: [], kept: false };
+    if (!lateModules.has(url))
+        return null;
+    const target = { url };
+    const names = exportedNames(host, late, target, new Set());
+    if (names === null)
+        return null;
+    return names.filter((name) => resolveExport(host, late, target, name, new Set()) !== AMBIGUOUS);
+}
+/**
+ * Plans the late module at `url` (a file's at `key`; a data: URL's is its
+ * URL): its static imports' modules, their names, and the staged rows it
+ * reaches, into `late` and `order`.
+ */
 function plan(host, key, url, seen, order, checked, late) {
     if (seen.has(url))
         return;
     seen.add(url);
-    const staged = host.row('module', key);
-    const text = host.source(key, staged);
+    const instance = url.startsWith('file:') && !url.includes('?') && !url.includes('#') ? key : url;
+    const failure = linkFailures.get(instance);
+    if (failure !== undefined)
+        throw failure;
+    try {
+        planModule(host, key, url, seen, order, checked, late);
+    }
+    catch (e) {
+        if (late.kept && e instanceof Error)
+            linkFailures.set(instance, e);
+        throw e;
+    }
+}
+function planModule(host, key, url, seen, order, checked, late) {
+    // A data: URL's module is its body, an ES module (its MIME type's goal): no row, no file.
+    const data = url.startsWith('data:') ? dataModule(url) : null;
+    const staged = data !== null ? -1 : host.row('module', key);
+    const text = data !== null ? (data.format === 'module' ? data.source : null) : host.source(key, staged);
     if (text === null)
         return;
     // Read with the parse goal the loader gives it: an adopted staged module's, a module; another's, its format.
-    const format = staged !== -1 ? 'module' : host.fileFormat(key);
-    const analysis = host.requests(key, text, staged !== -1, format ?? 'detect');
+    const format = staged !== -1 || data !== null ? 'module' : host.fileFormat(key);
+    const analysis = host.requests(key, text, staged !== -1 || data !== null, format ?? 'detect');
     // A module its parser could not read (a syntax error, TypeScript, JSX) is
     // loaded as the interpreter loads it, for that load's error, before any
     // body runs; a staged one is the launch's own to link.
@@ -196,6 +264,11 @@ function plan(host, key, url, seen, order, checked, late) {
                     node.reexports.push([entry[0], loads, entry[2]]);
             }
         }
+        // A data: JavaScript module is the late graph's own, by its URL.
+        if (resolution.format === 'data') {
+            plan(host, resolution.url, resolution.url, seen, order, checked, late);
+            continue;
+        }
         if (resolution.path === undefined)
             continue;
         const target = resolution.path.replace(/^\/+/, '');
@@ -213,11 +286,39 @@ function plan(host, key, url, seen, order, checked, late) {
             order.push(id);
     }
 }
+/**
+ * A file staging handed on (one the launch lacked, did not stage as the
+ * format it is, or a query's or a fragment's instance), resolved again from
+ * its importer at `key` as the loader resolves it when the importer is
+ * imported, checked against its `type` attribute: the module it loads is
+ * its format's. Null for a data: URL. Throws Node's error where it does not
+ * resolve still.
+ */
+function handedOnFile(host, key, url, specifier, type) {
+    if (new URL(url).protocol !== 'file:')
+        return null;
+    const parent = new URL('file://');
+    parent.pathname = '/' + key;
+    return host.resolve(specifier, parent.href, type);
+}
+/**
+ * What a module staging handed on (or a data: import) loads: a query's or a
+ * fragment's instance, a late module by its URL; a data: module by its MIME
+ * type, JavaScript a late module of its own, JSON its default alone.
+ */
+function handedOnTarget(url) {
+    if (!url.startsWith('data:'))
+        return { url };
+    const { format } = dataModule(url);
+    return format === 'module' ? { url } : format === 'json' ? { url, names: ['default'], commonjs: false } : null;
+}
 function lateTarget(host, resolution) {
     if (resolution.format === 'builtin' && resolution.builtin !== undefined) {
         const id = host.row('builtin', resolution.builtin);
         return id !== -1 ? { row: id } : { url: resolution.url, names: host.builtinNames(resolution.builtin), commonjs: false };
     }
+    if (resolution.format === 'data')
+        return handedOnTarget(resolution.url);
     if (resolution.path === undefined)
         return null;
     const key = resolution.path.replace(/^\/+/, '');
@@ -243,31 +344,61 @@ function lateTarget(host, resolution) {
  * makes that staging refused for good. A staging handed on (a query's or a
  * fragment's instance, which the interpreter evaluates where it is
  * imported) is planned as the late graph's own. The graph's unevaluated
- * rows go to `late`.
+ * rows go to `late`. A require() staging hoisted (a target past the row's
+ * static imports) is not followed: the interpreter evaluates the row's own
+ * text, whose require() links its module where it runs, as Node's does,
+ * after the row's static imports evaluate (which may write its files).
  */
 function checkLinks(host, id, seen, checked, late) {
-    const visit = (at) => {
-        if (checked.has(at))
-            return;
-        checked.add(at);
-        if (host.rowKind(at) !== 'module' || host.rowSettled(at))
-            return;
-        late.rows.push(at);
-        for (const target of host.rowTargets(at)) {
-            if (target >= 0) {
-                visit(target);
-                continue;
-            }
-            const missing = host.missing(-2 - target);
-            if (missing === null)
-                continue;
-            if ('refusal' in missing)
-                throw missing.refusal;
-            const handed = new URL(missing.handedOn);
-            plan(host, decodeURIComponent(handed.pathname).replace(/^\/+/, ''), missing.handedOn, seen, [], checked, late);
-        }
-    };
-    visit(id);
+    if (checked.has(id))
+        return;
+    checked.add(id);
+    if (host.rowKind(id) !== 'module' || host.rowSettled(id))
+        return;
+    const failure = linkFailures.get(host.rowKey(id));
+    if (failure !== undefined)
+        throw failure;
+    try {
+        late.rows.push(id);
+        const { analysis, specifiers } = rowRead(host, id);
+        const targets = host.rowTargets(id).length;
+        const statics = analysis === null ? targets : Math.min(specifiers.length, targets);
+        for (let index = 0; index < statics; index++)
+            checkTarget(host, id, index, seen, checked, late);
+    }
+    catch (e) {
+        if (late.kept && e instanceof Error)
+            linkFailures.set(host.rowKey(id), e);
+        throw e;
+    }
+}
+/** Throws the refusal of staged row `row`'s target `index`, as checkLinks does; what it loads goes to `late`. */
+function checkTarget(host, row, index, seen, checked, late) {
+    const target = host.rowTargets(row)[index];
+    if (target >= 0) {
+        checkLinks(host, target, seen, checked, late);
+        return;
+    }
+    const missing = host.missing(-2 - target);
+    if (missing === null)
+        return;
+    if ('refusal' in missing)
+        throw missing.refusal;
+    // A file handed on is resolved now, as the loader resolves it when the
+    // module is imported (Node's error if it is missing still), and planned
+    // as an unstaged module is: a JSON or CommonJS file has no links.
+    const { analysis, specifiers } = rowRead(host, row);
+    const specifier = specifiers[index];
+    const file = specifier === undefined ? null : handedOnFile(host, host.rowKey(row), missing.handedOn, specifier, analysis?.bindings?.types[index]);
+    if (file !== null) {
+        if (file.path !== undefined && (file.format === 'module' || file.format === 'detect'))
+            plan(host, file.path.replace(/^\/+/, ''), file.url, seen, [], checked, late);
+        return;
+    }
+    // A query's or a fragment's file by its path; a data: module by its URL.
+    const handed = new URL(missing.handedOn);
+    const key = handed.protocol === 'data:' ? missing.handedOn : decodeURIComponent(handed.pathname).replace(/^\/+/, '');
+    plan(host, key, missing.handedOn, seen, [], checked, late);
 }
 /**
  * Each name a module of the late graph imports is one its module exports,

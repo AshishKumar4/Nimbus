@@ -8,9 +8,10 @@
  * only the trees no store already holds.
  */
 import { oidFromHex, oidToHex } from '../pack/format.js';
-import { TreeEntries } from '../pack/tree-object.js';
+import { concatBytes } from '@nimbus-sh/core/_shared/bytes.js';
+import { diffTreeLeaves, TreeEntries } from '../pack/tree-object.js';
 import { encodeNode } from './cachetree.js';
-import { S_IFMT, comparePaths, decodePath } from './dircache.js';
+import { S_IFMT, decodePath } from './dircache.js';
 export const S_IFDIR = 0o040000;
 export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 const encoder = new TextEncoder();
@@ -59,73 +60,47 @@ export async function* treeLeaves(store, tree, prefix = '', within = () => true)
         }
     }
 }
-/** git's tree order: a directory sorts as its name with a '/' after it. */
-function treeKey(entry) {
-    return isTree(entry.mode) ? `${entry.name}/` : entry.name;
+/** A tree path's bytes as treeLeaves names it: each name decoded on its own, as readTree decodes it. */
+function decodeTreePath(raw) {
+    let path = '';
+    for (let start = 0;;) {
+        const end = raw.indexOf(0x2f, start);
+        const name = decodePath(raw.subarray(start, end === -1 ? raw.length : end));
+        path = path ? `${path}/${name}` : name;
+        if (end === -1)
+            return path;
+        start = end + 1;
+    }
 }
 /**
- * diff-tree -r of two trees (null for none): `visit` gets every leaf path
- * whose entry differs, with each side's leaf or null. A subtree both sides
- * hold with the same id is never read.
+ * diff-tree -r of two trees (null for none), as pack/tree-object.ts
+ * diffTreeLeaves walks it: `visit` gets every leaf path whose entry
+ * differs, with each side's leaf or null. A subtree both sides hold with the
+ * same id is never read. Names that are not UTF-8 can decode alike: their
+ * one path comes once for each.
  */
-export async function diffTrees(store, from, to, visit, prefix = '') {
-    if (from === to)
-        return;
-    const before = from === null ? [] : await readTree(store, from);
-    const after = to === null ? [] : await readTree(store, to);
-    const join = (name) => (prefix ? `${prefix}/${name}` : name);
-    const leaf = (entry) => ({ path: join(entry.name), mode: entry.mode, oid: entry.oid });
-    let i = 0;
-    let j = 0;
-    while (i < before.length || j < after.length) {
-        const a = before[i];
-        const b = after[j];
-        const order = a === undefined ? 1 : b === undefined ? -1 : comparePaths(treeKey(a), treeKey(b));
-        if (order === 0) {
-            i++;
-            j++;
-            if (a.oid === b.oid && a.mode === b.mode)
-                continue;
-            if (isTree(a.mode))
-                await diffTrees(store, a.oid, b.oid, visit, join(a.name));
-            else
-                await visit(join(a.name), leaf(a), leaf(b));
-            continue;
-        }
-        // Same name, a tree on one side and a leaf on the other, sort apart: each is its own change.
-        if (order < 0) {
-            i++;
-            if (isTree(a.mode))
-                await diffTrees(store, a.oid, null, visit, join(a.name));
-            else
-                await visit(join(a.name), leaf(a), null);
-        }
-        else {
-            j++;
-            if (isTree(b.mode))
-                await diffTrees(store, null, b.oid, visit, join(b.name));
-            else
-                await visit(join(b.name), null, leaf(b));
-        }
-    }
+export async function diffTrees(store, from, to, visit) {
+    const read = async (oid) => {
+        const hex = oidToHex(oid);
+        if (hex === EMPTY_TREE)
+            return new Uint8Array(0);
+        const { type, data } = await store.read(hex);
+        if (type !== 'tree')
+            throw new Error(`object ${hex} is a ${type}, not a tree`);
+        return data;
+    };
+    const leaf = (path, entry) => (entry === null ? null : { path, mode: entry.mode, oid: oidToHex(entry.oid) });
+    await diffTreeLeaves(read, from === null ? null : oidFromHex(from), to === null ? null : oidFromHex(to), async (raw, before, after) => {
+        const path = decodeTreePath(raw);
+        await visit(path, leaf(path, before), leaf(path, after));
+        return true;
+    });
 }
 function treeLine(mode, name, oid) {
     const head = encoder.encode(`${mode.toString(8)} ${name}\0`);
     const out = new Uint8Array(head.length + 20);
     out.set(head);
     out.set(oid, head.length);
-    return out;
-}
-function concat(parts) {
-    let size = 0;
-    for (const part of parts)
-        size += part.length;
-    const out = new Uint8Array(size);
-    let at = 0;
-    for (const part of parts) {
-        out.set(part, at);
-        at += part.length;
-    }
     return out;
 }
 /**
@@ -139,7 +114,7 @@ export async function writeTreeFromIndex(store, dc) {
     const frames = [open('')];
     const close = async () => {
         const frame = frames.pop();
-        const oid = await store.write('tree', concat(frame.parts));
+        const oid = await store.write('tree', concatBytes(frame.parts));
         const parent = frames[frames.length - 1];
         const name = frame.dir.slice(parent.dir ? parent.dir.length + 1 : 0);
         parent.parts.push(treeLine(S_IFDIR, name, oidFromHex(oid)));
@@ -167,6 +142,6 @@ export async function writeTreeFromIndex(store, dc) {
     while (frames.length > 1)
         await close();
     const root = frames[0];
-    const oid = await store.write('tree', concat(root.parts));
+    const oid = await store.write('tree', concatBytes(root.parts));
     return { oid, cacheTree: encodeNode('', root.count, oid, root.subtrees).bytes };
 }

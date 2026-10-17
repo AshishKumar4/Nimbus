@@ -1,3 +1,4 @@
+import { normalizeVfsPath } from '../vfs/path.js';
 /**
  * A package's `bin` field as npm installs it (npm-normalize-package-bin).
  *
@@ -114,4 +115,18 @@ function posixBasename(path) {
         throw new TypeError(`The "path" argument must be of type string. Received ${path === null ? 'null' : typeof path}`);
     const trimmed = path.replace(/\/+$/, '');
     return trimmed.slice(trimmed.lastIndexOf('/') + 1);
+}
+/**
+ * The file a bin is linked as: a Node script in `shimDir` that runs
+ * `target`, named relative to it as npm's .bin symlinks are, so a tree
+ * moved whole (a staged install renamed into place) still runs.
+ */
+export function npmBinShim(shimDir, target) {
+    const from = normalizeVfsPath(shimDir).split('/').filter(Boolean);
+    const to = normalizeVfsPath(target).split('/').filter(Boolean);
+    let common = 0;
+    while (common < from.length && common < to.length - 1 && from[common] === to[common])
+        common++;
+    const rel = [...from.slice(common).map(() => '..'), ...to.slice(common)].join('/');
+    return `#!/usr/bin/env node\nrequire(${JSON.stringify(rel.startsWith('../') ? rel : `./${rel}`)});\n`;
 }

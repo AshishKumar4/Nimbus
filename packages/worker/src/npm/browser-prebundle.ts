@@ -25,6 +25,7 @@ import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { parseResolvablePackageJson, resolvePackageEntry, type ResolvablePackageJson } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { PRE_BUNDLE_SLICE_CAP_BYTES } from '@nimbus-sh/platform/limits.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import { attributeAllocation } from '@nimbus-sh/platform/diag-counters.js';
 import type { ResizableCreditLease } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { describeError } from '@nimbus-sh/platform/oom-classify.js';
 import type { BundlePool, BundlePoolProvider } from '../facets/prebundle-pool.js';
@@ -238,7 +239,7 @@ export async function buildPrebundle<T>(
     let built: Built | string;
     if (pool !== null && typeof pool !== 'string') {
       // The slice's worst case is leased before it is walked, then shrunk to its size.
-      lease = await acquireSupervisorAllocation(PRE_BUNDLE_SLICE_CAP_BYTES);
+      lease = attributeAllocation('preBundleSliceBytes', await acquireSupervisorAllocation(PRE_BUNDLE_SLICE_CAP_BYTES));
       built = await buildInFacet(ctx, pool, specifier, entry, lease);
     } else {
       built = await buildInService(ctx, specifier, entry.entryPath);

@@ -10,7 +10,7 @@
 
 import assert from 'node:assert/strict';
 
-import { SYSROOT_FILES, commandContext, makeInvocationVfs } from './clang-runner-test-harness.mjs';
+import { SYSROOT_FILES, commandContext, makeInvocationVfs } from './lib/clang-runner-test-harness.mjs';
 import { W7_MAX_OWNED_PATH_BYTES, W7_MAX_PATHS_PER_BATCH } from '../../packages/platform/src/w7-frame.ts';
 
 const SYSROOT = 'runtime/clang/share/clang/sysroot';

@@ -21,6 +21,7 @@ import { coneMatcher, coneOf, coneSparseCheckout } from './sparse.js';
 import { ENTRY_BYTES, entryOffset } from './idx.js';
 import { installPack, RangedPackFile, readRange, resumeInstall } from './install.js';
 import { ByteLru } from '@nimbus-sh/core/_shared/lru-map.js';
+import { concatBytes, nameDec } from '@nimbus-sh/core/_shared/bytes.js';
 import { GitEntryWriteFailure } from './mount-writer.js';
 import { GRAPH_RECORDS_DIR } from './commit-graph.js';
 import { MissingBaseError, PackObjectResolver, runAsync } from './reader.js';
@@ -282,7 +283,7 @@ function cacheTreeOf(name, root, trees) {
             count++;
             continue;
         }
-        const child = cacheTreeOf(decoder.decode(data.subarray(e.nameAt, e.nameEnd)), oidToHex(data, e.oidAt), trees);
+        const child = cacheTreeOf(nameDec.decode(data.subarray(e.nameAt, e.nameEnd)), oidToHex(data, e.oidAt), trees);
         count += child.count;
         subtrees.push(child.built);
     }
@@ -413,7 +414,7 @@ export async function cloneFast(context, request, advertisement) {
             const path = plan.path(entry);
             const mode = plan.mode(entry);
             if (mode === MODE_SYMLINK)
-                await blobWriter.symlink(path, decoder.decode(data));
+                await blobWriter.symlink(path, nameDec.decode(data));
             else
                 await blobWriter.file(path, mode, data.slice());
             inline.push({ path, mode, oid });
@@ -495,7 +496,7 @@ export async function cloneFast(context, request, advertisement) {
     const shares = [];
     if (blobWriter !== null) {
         await blobWriter.flush();
-        const share = concat(inline.map(({ path, mode, oid }) => {
+        const share = concatBytes(inline.map(({ path, mode, oid }) => {
             const stat = receipts.get(stripSlash(join(context.dir, path)));
             if (stat === undefined)
                 throw new PackFormatError('no receipt for ' + path);
@@ -560,7 +561,7 @@ async function stagePlan(writer, plan, cacheTree, present, blobsPerBatch, option
             unwritten.push(encodeIndexEntry(plan.path(i), MODE_GITLINK, plan.oid(i), null));
         }
     }
-    const unwrittenShare = concat(unwritten);
+    const unwrittenShare = concatBytes(unwritten);
     const shares = [{ name: 'index-unwritten', bytes: unwrittenShare.byteLength }];
     await writer.file(STAGE_DIR + '/index-unwritten', 0o644, unwrittenShare);
     const cacheTreeBytes = cacheTree.byteLength;
@@ -731,18 +732,6 @@ export async function clonePlanFromStore(context, request) {
         ...(plan.refused === null ? {} : { checkoutErrors: [invalidPathError(plan.refused)] }),
     };
 }
-export function concat(parts) {
-    let size = 0;
-    for (const part of parts)
-        size += part.byteLength;
-    const out = new Uint8Array(size);
-    size = 0;
-    for (const part of parts) {
-        out.set(part, size);
-        size += part.byteLength;
-    }
-    return out;
-}
 /** One batch: its blobs fetched by id, written at their paths as they resolve. */
 export async function cloneBatch(context, request) {
     const batchPath = join(context.dir, STAGE_DIR + '/batch-' + request.index);
@@ -768,7 +757,7 @@ export async function cloneBatch(context, request) {
         for (const { mode, path } of paths) {
             try {
                 if (mode === MODE_SYMLINK)
-                    await writer.symlink(path, decoder.decode(data));
+                    await writer.symlink(path, nameDec.decode(data));
                 else
                     await writer.file(path, mode, data.slice());
             }
@@ -815,7 +804,7 @@ export async function cloneBatch(context, request) {
             throw new PackFormatError('no receipt for ' + path);
         return encodeIndexEntry(path, mode, oid, stat);
     });
-    const share = concat(entries);
+    const share = concatBytes(entries);
     const indexBytes = share.byteLength;
     await writer.file(STAGE_DIR + '/index-' + request.index, 0o644, share);
     await writer.flush();

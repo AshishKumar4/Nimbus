@@ -12,26 +12,21 @@ import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { registryRecord } from '../../packages/worker/src/npm/registry-record.ts';
-import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { npmRegistry } from './lib/npm-registry.mjs';
+import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const PROJ = 'app';
 const NM = `${PROJ}/node_modules`;
+const registry = npmRegistry({ a: { '1.0.0': {} }, b: { '1.0.0': { dependencies: { c: '1.0.0' } } }, c: { '1.0.0': {} } });
 const asked = [];
+const resultFor = (name, spec) => { asked.push(name); return registry.resultFor(name, spec); };
 const harness = createSqliteVfsTestHarness(new Database(':memory:'));
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
 const root = vfs.as(CRED_KERNEL);
 root.mkdir(NM, { recursive: true });
 root.writeFile(`${PROJ}/package.json`, JSON.stringify({ name: 'app', version: '1.0.0', dependencies: { a: '1.0.0' } }));
-const env = makeFanoutEnv({
-  root, NM,
-  resultFor: (name) => {
-    asked.push(name);
-    const pkg = { name, registryName: name, version: '1.0.0', tarballUrl: `https://registry.invalid/${name}-1.0.0.tgz`, integrity: `sha512-${name}`, dependencies: name === 'b' ? { c: '1.0.0' } : {}, exports: null, main: 'index.js', module: '', bin: {} };
-    return { pkg, cacheWrites: [registryRecord(pkg, Date.now())], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
-  },
-});
+const env = makeFanoutEnv({ root, NM, resultFor });
 const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
 const first = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: () => {} });
 const second = kernelInstaller(vfs, harness.sql, { env, ctx, onProgress: () => {} });

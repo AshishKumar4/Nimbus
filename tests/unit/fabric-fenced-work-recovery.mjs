@@ -16,42 +16,10 @@
 
 import assert from 'node:assert/strict';
 import { FENCED_WORK_KEY_PREFIX, FencedWork } from '../../packages/fabric/src/fenced-work.ts';
+import { memoryStorage } from './lib/do-storage.mjs';
 
-/**
- * DO storage as the platform behaves: reads see buffered writes; flush()
- * models the background flush (in-order, any time); sync() is the barrier;
- * crash() is a reset — every unflushed write is gone.
- */
-function createStorage(durable = new Map()) {
-  let buffered = [];
-  const view = () => {
-    const m = new Map(durable);
-    for (const op of buffered) {
-      if (op.kind === 'put') m.set(op.key, op.value);
-      else m.delete(op.key);
-    }
-    return m;
-  };
-  return {
-    durable,
-    async put(key, value) { buffered.push({ kind: 'put', key, value: structuredClone(value) }); },
-    async delete(key) { buffered.push({ kind: 'delete', key }); return view().has(key); },
-    async list({ prefix }) {
-      const m = new Map();
-      for (const [k, v] of view()) if (k.startsWith(prefix)) m.set(k, structuredClone(v));
-      return m;
-    },
-    async sync() { this.flush(); },
-    flush() {
-      for (const op of buffered) {
-        if (op.kind === 'put') durable.set(op.key, op.value);
-        else durable.delete(op.key);
-      }
-      buffered = [];
-    },
-    crash() { buffered = []; },
-  };
-}
+/** DO storage as the platform behaves: the background flush, the barrier and the reset (do-storage.mjs). */
+const createStorage = (rows) => memoryStorage({ rows, crashable: true });
 
 function createHost(storage, base, { redrive } = {}) {
   const events = { redriven: [], abandoned: [], failed: [] };

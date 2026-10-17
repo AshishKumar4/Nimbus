@@ -20,5 +20,4 @@ export { graphFiltersPlan, graphFiltersPiece, graphFiltersAssemble, graphFilters
 export { facetPacks } from './facet-packs.js';
 export { mountWriter, replaceFile, withinDeadline, GitWriteFailure, PhaseDeadlineError, CHECKOUT_FAILED } from './mount-writer.js';
 export { listRefs, fetchPack, fetchPackResume, pushPack } from './remote.js';
-export { retryingGitHttp } from './transport.js';
 export { networkWorker } from './network-worker.js';

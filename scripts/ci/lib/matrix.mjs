@@ -68,7 +68,7 @@ function beyondDeferral(row, entry) {
 }
 
 /**
- * @param {Array<{ tasks: Array<{ task: string, outcome?: { kind: string }, rows: Array<{ name: string, exitCode: number, seconds: number, output: string, assertions?: any[] | null }> | null }> } | null>} verdicts
+ * @param {Array<{ problems?: string[], tasks: Array<{ task: string, outcome?: { kind: string }, rows: Array<{ name: string, exitCode: number, seconds: number, output: string, assertions?: any[] | null, regraded?: { task: string, evidence: string[] } }> | null }> } | null>} verdicts
  *   the matrix's remote-probes verdicts (null for one that wrote none)
  * @param {import('../../../tests/behavioral/_deferred.mjs').ReleaseException[]} deferred
  * @returns {{ exitCode: 0 | 1 | 2, red: string[], applied: Array<object>, problems: string[] }}
@@ -80,11 +80,20 @@ export function gradeMatrix(verdicts, deferred) {
   const problems = [];
   let notGraded = false;
   const rows = [];
+  // A row remote-probes regraded (only the platform storage reset turned it
+  // red) is graded by its rerun's task, when that task holds the same probe's row.
+  const reruns = new Set(verdicts.flatMap((verdict) => verdict?.tasks ?? [])
+    .flatMap((task) => (task.rows ?? []).map((row) => `${task.task}\0${row.name}`)));
   for (const verdict of verdicts) {
     if (!verdict) {
       notGraded = true;
       problems.push('a remote-probes run wrote no verdict');
       continue;
+    }
+    // What made the run not graded beyond its rows: a deployment that changed under a job, a regrade that could not run.
+    for (const problem of verdict.problems ?? []) {
+      notGraded = true;
+      problems.push(problem);
     }
     for (const task of verdict.tasks) {
       if (!task.rows) {
@@ -92,13 +101,17 @@ export function gradeMatrix(verdicts, deferred) {
         problems.push(`${task.task} was not graded (${task.outcome?.kind ?? 'no outcome'})`);
         continue;
       }
-      for (const row of task.rows) rows.push({ ...row, task: task.task });
+      for (const row of task.rows) {
+        if (!(row.regraded && reruns.has(`${row.regraded.task}\0${row.name}`))) rows.push({ ...row, task: task.task });
+      }
     }
   }
+  // Exit 2 is a row that did not grade the commit: a task that could not run,
+  // or a paired perf probe without enough baseline rounds.
   for (const row of rows) {
-    if (row.name === 'probes' && row.exitCode === 2) {
+    if (row.exitCode === 2) {
       notGraded = true;
-      problems.push(`${row.task} was not graded: ${row.output.split('\n')[0]}`);
+      problems.push(`${row.name === 'probes' ? row.task : `${row.name} (${row.task})`} was not graded: ${row.output.split('\n')[0]}`);
     }
   }
 
@@ -106,7 +119,7 @@ export function gradeMatrix(verdicts, deferred) {
   const red = [];
   const covered = new Map();
   for (const row of rows) {
-    if (row.exitCode === 0 || (row.name === 'probes' && row.exitCode === 2)) continue;
+    if (row.exitCode === 0 || row.exitCode === 2) continue;
     const entry = row.name.startsWith('tests/behavioral/') ? byProbe.get(probeOf(row.name)) : undefined;
     const beyond = entry ? beyondDeferral(row, entry) : null;
     if (entry && beyond === null) {

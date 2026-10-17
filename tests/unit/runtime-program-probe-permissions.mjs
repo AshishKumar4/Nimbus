@@ -48,6 +48,7 @@ function invocationVfs(filesystem) {
   }, 'home/user/locked/tool.py');
   const run = makeCPythonRunnerFactory({ facets: unreachableFacets, network: ISOLATE_NETWORK })(
     {
+      version: '3.13.14-3',
       files: [
         { path: 'share/cpython/python.wasm' },
         { path: 'lib/python313.zip' },

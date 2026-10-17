@@ -364,6 +364,8 @@ interface FacetVfsState {
      * under the ceiling on the map lowers its bound from (_rebuildUnderCeiling).
      */
     rawBytes?: number;
+    /** This state's last one-shot map's owned bytes; a cache hit takes that share before generating it again. */
+    oneShotMapBytes?: number;
     /** Diagnostics: how the build's transforms were answered. */
     transforms?: BundleCellTransformStats;
     /**
@@ -1186,7 +1188,10 @@ export declare class FacetManager {
      * journal recovery rides the first pump.
      */
     private readonly launchPump;
-    /** One-shot launches not yet running, by pid: the stage each is at and since when (launchState). */
+    /**
+     * One-shot launches not yet running, by pid: the stage each is at and since
+     * when (launchState), and the check that reports one stalled at a stage.
+     */
     private readonly launching;
     private readonly launchTasks;
     private launchesClosed;
@@ -1236,9 +1241,10 @@ export declare class FacetManager {
      * its build's, held from the build until its module map is generated, or
      * for a state it did not build its map's (_holdMapShare); either taken
      * before it holds a worker. What it built is live until then, and no
-     * other build runs beside it beyond what the budget holds. Given back once
-     * the map is made (_generateUnderCeiling), kept for a rebuild under the
-     * ceiling, and given back as its launch ends however it ends.
+     * other build runs beside it beyond what the budget holds. A one-shot keeps
+     * only its map's retained share while parked, until the loader takes it;
+     * other maps give it back once generated (_generateUnderCeiling). Kept for
+     * a rebuild under the ceiling, and given back as its launch ends however it ends.
      */
     private readonly buildAdmissions;
     private _releaseBuildAdmission;
@@ -1778,6 +1784,15 @@ export declare class FacetManager {
         /** The bin it runs: learned a server when it runs on as one (_promote). */
         server?: ServerIdentity;
     }): Promise<FacetExecResult>;
+    /**
+     * `entry`'s launch is at `stage` from now, until its run is entered or it
+     * is killed (`signal`). One that waits LAUNCH_STALL_MS at a stage logs one
+     * line naming it, with the ledger's, the pacer's and the supervisor
+     * budget's state, and no more after that.
+     */
+    private _launchStage;
+    /** `pid`'s launch is over: its run was entered, or it ended before it could be. */
+    private _launchEnded;
     /** The one-shot launches not yet running (their stage and its age) and the launches waiting for a turn. */
     launchState(now?: number): {
         launches: Array<{
@@ -1858,6 +1873,11 @@ export declare class FacetManager {
      * always maps to rpc_timeout regardless of message.
      */
     private _w5RecordTermination;
+    private _ensureOneShotShare;
+    private _oneShotMemberBytes;
+    private _parkOneShotMap;
+    /** Generate before waiting for a worker, keeping only the map's retained share until the load takes it. */
+    private _prepareOneShotCode;
     private _execViaLoader;
     /**
      * Run a staged-artifact bundle (currently opencode) as an ESM mainModule.

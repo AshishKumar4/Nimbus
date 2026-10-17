@@ -13,7 +13,7 @@
 
 import assert from 'node:assert/strict';
 
-import { commandContext, makeInvocationVfs } from './clang-runner-test-harness.mjs';
+import { commandContext, makeInvocationVfs } from './lib/clang-runner-test-harness.mjs';
 
 const THREADED_INVOCATIONS = [
   ['-pthread', 'main.c', '-o', 'main.wasm'],

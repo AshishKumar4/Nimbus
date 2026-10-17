@@ -94,7 +94,7 @@ export const REPLAY_OPERATION_POLICY = {
     fsAwaitRecall: { kind: 'input' }, fsRecalled: mutation,
     // Waits for the session's publication of what the process wrote, and implements that boundary itself.
     fsPublished: control,
-    innerDoFetch: effect, innerDoCall: effect, kvCall: effect, r2Call: effect, d1Query: effect,
+    innerDoCall: effect, kvCall: effect, r2Call: effect, d1Query: effect,
     fanoutExecute: effect, processHostProbe: effect, loaderCodeStore: mutation,
     hostProcess: effect, awaitHostedBoot: effect,
     routeHostedHttp: effect, abandonHostedHttp: effect, cancelHostProcess: effect, hmrRelay: effect,

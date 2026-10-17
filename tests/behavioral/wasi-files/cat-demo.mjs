@@ -12,7 +12,8 @@
 // validates argv-driven path_open + multi-block fd_read loop + fd_write
 // to stdout.
 
-import { openWasiProbe, tailLines } from '../wasi/_harness.mjs';
+import { tailLines } from '../_driver.mjs';
+import { openWasiProbe } from '../wasi/_harness.mjs';
 
 const CONTENTS = 'hello, world from cat.wasm running on Nimbus WASI filesystem WASI\n';
 

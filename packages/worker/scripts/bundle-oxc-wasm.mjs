@@ -63,7 +63,7 @@ if (provenance.outputs?.['nimbus-oxc.wasm']?.sha256 !== digest) {
   fail(`${src.wasm} sha256 ${digest} does not match its provenance.json (${provenance.outputs?.['nimbus-oxc.wasm']?.sha256})`);
 }
 assertCurrentInputs('nimbus-oxc', provenance.source?.inputs, await oxcWasmInputs(),
-  'bun packages/worker/scripts/oxc-wasm/build.mjs --work <dir> --out <dir>, then NIMBUS_OXC_WASM_ARTIFACTS=<out> node packages/worker/scripts/bundle-oxc-wasm.mjs');
+  'bun scripts/ci/remote-oxc-wasm.mjs');
 const memoryPages = provenance.wasm?.memoryInitialPages;
 if (!Number.isInteger(memoryPages) || memoryPages <= 0) fail(`${src.provenance} records no memoryInitialPages`);
 

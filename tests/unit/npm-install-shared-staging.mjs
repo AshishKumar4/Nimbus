@@ -13,9 +13,10 @@
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
-import { makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
+import { npmRegistry } from './lib/npm-registry.mjs';
 
 // The session's factory reaches `cloudflare:workers`: it is bundled, with what it is handed, as one graph.
 const {
@@ -33,13 +34,7 @@ const {
   'packages/core/src/_shared/workspace-network.ts': ['ISOLATE_NETWORK'],
 });
 
-const resolved = (name, version) => ({
-  pkg: {
-    name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
-    dependencies: {}, exports: null, main: 'index.js', module: '', bin: {},
-  },
-  cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-});
+const { resultFor } = npmRegistry({ 'dep-a': { '1.0.0': {} }, 'dep-b': { '1.0.0': {} } });
 
 const harness = createSqliteVfsTestHarness(new Database(':memory:'));
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -74,7 +69,7 @@ for (const project of ['a', 'b']) {
 
 // The session as the install port sees it, its installer made by the session's own factory.
 const processes = new SessionProcessSupervisor();
-const env = makeFanoutEnv({ root: vfs.as(CRED_SESSION_USER), NM: 'unused', resultFor: (name) => resolved(name, '1.0.0') });
+const env = makeFanoutEnv({ root: vfs.as(CRED_SESSION_USER), NM: 'unused', resultFor });
 const session = {
   npmInstaller: null,
   esbuildService: null,

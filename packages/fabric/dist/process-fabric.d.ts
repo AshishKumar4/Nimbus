@@ -78,7 +78,7 @@ import type { SupervisorBindingProps } from './supervisor-props.js';
 import { z } from 'zod/v4';
 import type { ResponseScope, RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
-import type { ServiceStub, WorkerCode } from './vendor/types.js';
+import type { CjsModule, JsModule, ServiceStub, WorkerCode } from './vendor/types.js';
 /**
  * The class every generated resident runner exports. One name for every
  * runtime: the fabric names it unconditionally, so nothing about which program
@@ -483,9 +483,7 @@ export interface OneShotCodeSpec {
     mainModule: string;
     modules: Record<string, string | {
         wasm: ArrayBuffer;
-    } | {
-        cjs: string;
-    }>;
+    } | CjsModule | JsModule>;
 }
 /**
  * A one-shot's program: its module map, or a stage the composed assembler
@@ -540,6 +538,13 @@ export interface OneShotParams {
      * can see where one ends and the other begins.
      */
     onLoaded?(): void;
+    /**
+     * Called once the program's run is entered: its first call back to its
+     * host (the run's `ended`). A staged run, started in its stateless hop,
+     * which tells its host nothing more, is entered as its fetch is sent.
+     * Between onLoaded and this, the platform is starting its worker.
+     */
+    onEntered?(): void;
     /**
      * The program's network goes through its supervisor binding: the binding
      * is also its globalOutbound, so its fetch and connect reach the session,

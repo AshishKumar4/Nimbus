@@ -13,8 +13,9 @@
 //
 // Black-box: the session's terminal, its Worker URL and its diagnostics.
 
-import { deleteSession, makeAsserter, mintSession, requestHeaders, sleep, stripAnsi, Terminal } from '../../_driver.mjs';
-import { afterReset } from '../../durable/_reset-window.mjs';
+import { dirname } from 'node:path';
+import { deleteSession, makeAsserter, mintSession, requestHeaders, sleep, stripAnsi, Terminal, writeFileViaShell } from '../../_driver.mjs';
+import { afterReset, incarnation, resetInstance } from '../../durable/_reset-window.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const BASE = process.env.BASE;
@@ -32,10 +33,6 @@ const worker = async (path) => {
   const response = await afterReset(() => fetch(`${BASE}/s/${sid}/__nimbus/worker${path}`, { headers: requestHeaders({}, sid), signal: AbortSignal.timeout(90_000) }));
   return { status: response.status, body: (await response.text()).slice(0, 300) };
 };
-const generation = async () => {
-  const response = await afterReset(() => fetch(`${BASE}/s/${sid}/api/_diag/memory`, { headers: requestHeaders({}, sid), signal: AbortSignal.timeout(30_000) }));
-  return (await response.json()).hib?.isolateGen ?? null;
-};
 const served = (answer, path) => answer.status === 200 && answer.body === `served by ${path}`;
 const MARKER = 'vite-marker-7b1';
 /** The session's preview door: whether it answers the `vite` server's page. */
@@ -49,10 +46,10 @@ let t = new Terminal(sid);
 try {
   await t.connect();
   await t.waitForPrompt(60_000);
-  const write = (path, content) => t.run(
-    `node -e "require('fs').mkdirSync(require('path').dirname('${path}'),{recursive:true});require('fs').writeFileSync('${path}', Buffer.from('${Buffer.from(content).toString('base64')}','base64'))"`,
-    60_000,
-  );
+  const write = async (path, content) => {
+    await t.run(`mkdir -p ${dirname(path)}`, 10_000);
+    return writeFileViaShell((command) => t.run(command, 60_000), path, content);
+  };
   await write('/home/user/idle/wrangler.jsonc', JSON.stringify(CONFIG));
   await write('/home/user/idle/src/index.js', WORKER);
   await write('/home/user/site/index.html', `<!doctype html><title>site</title><p>${MARKER}</p>`);
@@ -75,10 +72,9 @@ try {
 
   // ── an instance reset ──
   const reset = async (what) => {
-    const abort = await fetch(`${BASE}/s/${sid}/api/_diag/abort`, { method: 'POST', headers: requestHeaders({}, sid) });
-    a.check(`_diag/abort answers ${what}`, abort.status === 204, `status=${abort.status}`);
-    // A request sent right after the 204 can still reach the instance being
-    // reset; the reset ends the instance's sockets, so this terminal's close marks it.
+    const reset = await resetInstance(sid);
+    a.check(`${what} gave the session a new incarnation`, reset.ok, reset.detail);
+    // The reset ends the instance's sockets, so this terminal's close marks it.
     const deadline = Date.now() + 10_000;
     while (!t.closed && Date.now() < deadline) await sleep(50);
     a.check(`${what} ended the instance (its terminal socket dropped)`, t.closed, `closed=${t.closed}`);
@@ -90,10 +86,10 @@ try {
   a.check('after an instance reset the vite preview is served', previewAfterAbort.previewed, JSON.stringify(previewAfterAbort));
 
   // ── the session idles out and is re-created ──
-  const before = await generation();
+  const before = await incarnation(sid);
   await sleep(150_000);
   const afterIdle = await worker('/after-idle');
-  const after = await generation();
+  const after = await incarnation(sid);
   a.check('the idle session was re-created (its generation moved)', before !== null && after !== null && after > before, `before=${before} after=${after}`);
   a.check('after the session idled out the Worker is served', served(afterIdle, '/after-idle'), JSON.stringify(afterIdle));
   const previewAfterIdle = await preview();

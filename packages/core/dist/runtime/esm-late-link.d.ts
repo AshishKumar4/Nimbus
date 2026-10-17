@@ -33,7 +33,11 @@ export interface LateLinkHost {
     rowTargets(row: number): readonly number[];
     /** Whether a staged row has run, or the interpreter took it over. */
     rowSettled(row: number): boolean;
-    /** The staging refused as -2 - i: a query's or a fragment's instance handed on (its URL), or Node's refusal. */
+    /**
+     * The staging refused as -2 - i: a module handed on (its URL: a query's or
+     * a fragment's instance, a data: module, or a file the launch lacked or did
+     * not stage, resolved again when it is linked), or Node's refusal.
+     */
     missing(i: number): {
         readonly handedOn: string;
     } | {
@@ -62,6 +66,8 @@ export interface LateLinkHost {
     /** A module's requests and bindings, as the interpreter reads it with the loader's parse goal (interpreter/index.ts moduleRequests). */
     requests(path: string, text: string, javaScript: boolean, goal: 'module' | 'commonjs' | 'detect'): ModuleRequests;
 }
+/** The failure an import()'s link kept for the staged module at `key` (linkFailures): what a later load of it throws. */
+export declare function keptFailure(key: string): Error | undefined;
 /**
  * The names Node's loader finds in the CommonJS module at `key` before it
  * runs: a staged facade's, else Node's lexer's over its source and the
@@ -75,7 +81,7 @@ export declare function commonJsNames(host: LateLinkHost, key: string): readonly
  * staged modules it imports, in import order, for the caller to evaluate
  * before the interpreter does the rest.
  */
-export declare function linkLateGraph(host: LateLinkHost, key: string, url: string): number[];
+export declare function linkLateGraph(host: LateLinkHost, key: string, url: string, kept: boolean): number[];
 /**
  * Links staged row `id` (its module at `key`, `url`), which the interpreter
  * adopts because workerd could not link its graph (it reaches a module
@@ -85,4 +91,12 @@ export declare function linkLateGraph(host: LateLinkHost, key: string, url: stri
 export declare function linkAdopted(host: LateLinkHost, id: number, key: string, url: string): void;
 /** The names the `export *`s of the interpreted module at `url` reach two different bindings of, which its namespace omits. */
 export declare function starConflicts(host: LateLinkHost, url: string): string[];
+/**
+ * The names of the namespace of the late module at `url`, as its link read
+ * them: its own and its `export *`s', but those two of them reach different
+ * bindings of; null where its link did not read them (one not linked, or
+ * whose names its source does not tell). Known before its body runs, so a
+ * namespace taken in a cycle has them all.
+ */
+export declare function namespaceNames(host: LateLinkHost, url: string): string[] | null;
 //# sourceMappingURL=esm-late-link.d.ts.map

@@ -9,10 +9,10 @@
  * with its namespace as the router; a filesystem without one ingests with none.
  */
 
-import { acquireSupervisorAllocation, tryAcquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import { acquireSupervisorRunningAllocation, tryAcquireSupervisorRunningAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { decodeWriteBatchStream, encodeWriteBatchStream, openAccessRights, type BatchInodeEntry, type BatchWritePayload, type W7DataCall, type W7DecodedRecord } from '@nimbus-sh/platform/w7-frame.js';
 import type { CreditLease } from '@nimbus-sh/platform/weighted-credit-pool.js';
-import { concatBytes } from '../_shared/bytes.js';
+import { concatBytes, nameDec } from '../_shared/bytes.js';
 import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import { SYSCALL_VERDICTS, errnoCodeOf, vfsError, type VfsErrorCode } from '../vfs/vfs-error.js';
 import { parentKey } from '../vfs/path.js';
@@ -525,9 +525,10 @@ export class WaveIngest {
       );
       let supervisorLease: CreditLease;
       try {
+        // A running facet's wave: running work, never held up by a launch that is not running (the lock order).
         supervisorLease = await awaitCredit(
-          () => tryAcquireSupervisorAllocation(byteLength),
-          () => acquireSupervisorAllocation(byteLength, abort),
+          () => tryAcquireSupervisorRunningAllocation(byteLength),
+          () => acquireSupervisorRunningAllocation(byteLength, abort),
         );
       } catch (error) {
         writeLease.release();
@@ -1233,7 +1234,7 @@ export class WaveIngest {
           const stat = await backend(router.apply(file.call !== undefined
             ? { type: 'data-call', call: file.call, path: file.placed, mode: file.mode, bytes, ...(file.offset === undefined ? {} : { offset: file.offset }) }
             : file.link
-            ? { type: 'symlink', path: file.placed, target: new TextDecoder().decode(bytes), slot: `${at.waveId}-${file.index}` }
+            ? { type: 'symlink', path: file.placed, target: nameDec.decode(bytes), slot: `${at.waveId}-${file.index}` }
             : { type: 'file', path: file.placed, mode: file.mode, bytes }, withUmask(cred, file.umask), at.guard, owner));
           at.committed(stat === null ? null : { path: file.named, ...stat }, bytes.byteLength);
         } finally {

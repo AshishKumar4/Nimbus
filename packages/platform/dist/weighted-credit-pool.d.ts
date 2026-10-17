@@ -55,6 +55,18 @@ export declare class WeightedCreditPool {
     get stats(): WeightedCreditPoolStats;
     private isSmall;
     tryAcquire(bytes: number): ResizableCreditLease | null;
+    /**
+     * A running program's ask (SupervisorAllocationBudget.acquireRunning),
+     * ahead of every ordinary ask: granted now if it fits beside what is held,
+     * whatever is queued (a small one in its reserve too), or else as soon as
+     * it fits in the shared capacity, the credit running work and reclaims
+     * free. It never waits on the reserve, which neither frees.
+     */
+    acquireAhead(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
+    /** Whether a running program's ask (acquireAhead) waits. */
+    get aheadQueued(): boolean;
+    /** acquireAhead's credit now, or null. */
+    tryAcquireAhead(bytes: number): ResizableCreditLease | null;
     acquire(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
     private validateRequest;
 }

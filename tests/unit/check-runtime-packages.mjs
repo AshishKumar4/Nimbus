@@ -6,11 +6,12 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   checkRuntimePackage,
+  checkRuntimePackages,
   publishCommand,
   runThroughCore,
 } from '../../packages/core/scripts/check-runtime-packages.mjs';
@@ -96,6 +97,30 @@ try {
     assert.equal(problems.length, 1, JSON.stringify(problems));
     assert.match(problems[0].problem, /latest of @nimbus-sh\/runtime-toy is 1\.0\.0, not 1\.0\.0-2/);
     assert.equal(problems[0].fix, 'npm dist-tag add @nimbus-sh/runtime-toy@1.0.0-2 latest --auth-type=web');
+  }
+
+  // ── The whole gate, with a runtime its caller built and packed already ──
+  // publish-pack builds CPython once and packs it for signing: the gate
+  // checks that build's tarball against its directory and builds the rest.
+  {
+    const built = [];
+    const build = (spec, dir) => {
+      built.push(spec.runtime);
+      cpSync(good, dir, { recursive: true });
+      return null;
+    };
+    const specs = [
+      { runtime: 'toy', version: '1.0.0-2', name: NAME, npmVersion: '1.0.0-2' },
+      { runtime: 'cpython', version: '1.0.0-2', name: NAME, npmVersion: '1.0.0-2' },
+    ];
+    const registry = fakeRegistry({ '1.0.0-2': builtSha }, '1.0.0-2');
+    const gate = (tarball) => checkRuntimePackages({ specs, registry, root: mkdtempSync(join(root, 'gate-')), build, prepared: { runtime: 'cpython', tarball, dir: good } });
+    const verdicts = await gate(pack(good));
+    assert.deepEqual(built, ['toy'], 'the prepared runtime is not built again');
+    assert.deepEqual(verdicts.map((verdict) => [verdict.prepared, verdict.problems]), [[false, []], [true, []]], JSON.stringify(verdicts));
+    assert.equal(verdicts[1].dir, good, 'the prepared runtime is its caller\'s build');
+    const mismatched = await gate(pack(packageDir('other-archive', BASH_RUNNER + '-other')));
+    assert.ok(mismatched[1].problems.some((item) => /carries manifest.json sha256/.test(item.problem)), 'its tarball is still checked against its build');
   }
 
   // ── A runner this core does not register: refused, even when released ─

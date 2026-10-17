@@ -22,9 +22,7 @@ export interface RegistryCacheEntry {
      * the column existed (added via ALTER TABLE, see ensureSchema).
      */
     peerDepsJson?: string;
-    exportsJson: string;
     main: string;
-    moduleField: string;
     binJson: string;
     /**
      * JSON-encoded npm platform constraints — `{ os?, cpu?, libc? }`.
@@ -48,12 +46,11 @@ export interface RegistryCacheEntry {
     bundleJson?: string;
     /** JSON-encoded `engines` as published; '' for none. */
     enginesJson?: string;
-    fetchedAt: number;
 }
 /** `engines` as a manifest states it (a registry's, a lock's): what it asks of each engine. */
 export declare const isEngines: (value: unknown) => value is Readonly<Record<string, unknown>>;
-/** The record of `pkg`, fetched at `fetchedAt`, as the cache keeps it. */
-export declare function registryRecord(pkg: ResolvedPackage, fetchedAt: number): RegistryCacheEntry;
+/** The record of `pkg`, as the cache keeps it. */
+export declare function registryRecord(pkg: ResolvedPackage): RegistryCacheEntry;
 /** The package a record describes, as a cold resolve of its version answers it. */
 export declare function resolvedFromRecord(record: RegistryCacheEntry): ResolvedPackage;
 //# sourceMappingURL=registry-record.d.ts.map

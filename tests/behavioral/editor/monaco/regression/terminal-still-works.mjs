@@ -9,7 +9,7 @@
 // baseline: each check reads a command's output lines, never its echo,
 // so a command that prints nothing cannot pass on its own text.
 
-import { hasOutputLine, mintSession, Terminal, makeAsserter, stripAnsi, termBody } from '../../../_driver.mjs';
+import { hasOutputLine, mintSession, Terminal, makeAsserter, stripAnsi, termBody, outputLines } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('editor/monaco/regression/terminal-still-works');
@@ -26,7 +26,7 @@ a.check('a fresh shell starts in /home/user',
   hasOutputLine(r0.output, '/home/user'),
   `output=${JSON.stringify(stripAnsi(r0.output).slice(-200))}`);
 const lsRun = await t.run('ls -1 /home/user', 10_000);
-const listed = termBody(lsRun.output).split('\n').map((line) => line.trim()).filter(Boolean);
+const listed = outputLines(termBody(lsRun.output)).filter(Boolean);
 a.check('ls /home/user lists entries',
   lsRun.exitCode === 0 && listed.length > 0,
   `exit=${lsRun.exitCode} output=${JSON.stringify(stripAnsi(lsRun.output).slice(-300))}`);

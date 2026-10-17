@@ -10,7 +10,7 @@
  */
 
 import { retrying } from '@nimbus-sh/platform/retry.js';
-import { RETRY_ATTEMPTS, RETRY_BACKOFF_MS, STALL_MS, TRANSIENT_HTTP_STATUSES, UploadPackError, gitHttpHeaders, gitHttpRemote, type GitTransportAuth } from './transport.js';
+import { RETRY_ATTEMPTS, RETRY_BACKOFF_MS, STALL_MS, TRANSIENT_HTTP_STATUSES, UploadPackError, agentCapability, gitHttpHeaders, gitHttpRemote, type GitTransportAuth } from './transport.js';
 import { PktReader, pktLine, text } from './pkt-line.js';
 import { PackFormatError } from './format.js';
 import { answeredFailure, transportFailure } from './remote-failure.js';
@@ -62,7 +62,6 @@ export interface PackResponse {
   pack: AsyncIterable<Uint8Array> | null;
 }
 
-const AGENT = 'agent=git/nimbus';
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -186,7 +185,7 @@ function requestCapabilities(advertised: Set<string>, request: PackRequest): str
     if (!advertised.has('filter')) throw new UploadPackError('the server does not support --filter');
     capabilities.push('filter');
   }
-  capabilities.push(AGENT);
+  capabilities.push(...agentCapability(advertised));
   return capabilities;
 }
 

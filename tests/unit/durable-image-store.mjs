@@ -30,7 +30,7 @@ import {
   createFacetWorld,
   createFacetCtx,
   createProcessFacetCtx,
-} from './facet-host-harness.mjs';
+} from './lib/facet-host-harness.mjs';
 import { runColdStart } from '../../packages/fabric/src/generation.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';

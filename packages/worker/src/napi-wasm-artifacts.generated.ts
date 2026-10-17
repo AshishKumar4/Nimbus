@@ -30,8 +30,8 @@ export interface StagedBindingArtifact {
   readonly wasm: NapiWasmAsset;
 }
 
-export const NAPI_WASM_LOADER: NapiWasmAsset = {"path":"/_assets/napi-wasm/loader/103b4d19dd972a9c/napi-wasm-loader.mjs","sha256":"1b79bc3076eed6968ed7f11d08cc4b1c62579b560221cc4b33773bd531cb1b1a","bytes":212756};
-export const NAPI_WASM_TRAMPOLINE: NapiWasmAsset = {"path":"/_assets/napi-wasm/loader/103b4d19dd972a9c/wasi-trampoline.wasm","sha256":"0ad53da157e16656eee42877724d38aaa9876de20369f975f44b8a5e5d6f9cf6","bytes":1961};
+export const NAPI_WASM_LOADER: NapiWasmAsset = {"path":"/_assets/napi-wasm/loader/509367ac77c6ad1f/napi-wasm-loader.mjs","sha256":"7dd7bdaf1ae87443e36f6d6f810b4147831f815210b5cb8b0960a709022b881f","bytes":212676};
+export const NAPI_WASM_TRAMPOLINE: NapiWasmAsset = {"path":"/_assets/napi-wasm/loader/509367ac77c6ad1f/wasi-trampoline.wasm","sha256":"0ad53da157e16656eee42877724d38aaa9876de20369f975f44b8a5e5d6f9cf6","bytes":1961};
 export const STAGED_BINDING_ARTIFACTS: readonly StagedBindingArtifact[] = [
   {
     "name": "rolldown",
@@ -101,20 +101,6 @@ export const STAGED_BINDING_ARTIFACTS: readonly StagedBindingArtifact[] = [
       "path": "/_assets/napi-wasm/astro-compiler/0.5.2/astro-compiler.wasm",
       "sha256": "8d5bb39f31cc53eacb7943517a33c6a1d408549d4420186df4bdf460b0325f77",
       "bytes": 6574305
-    }
-  },
-  {
-    "name": "oxide",
-    "version": "4.3.3",
-    "owner": "@tailwindcss/oxide",
-    "requiredAs": [
-      "@tailwindcss/oxide-wasm32-wasi"
-    ],
-    "memoryPages": 70,
-    "wasm": {
-      "path": "/_assets/napi-wasm/oxide/4.3.3/oxide.wasm",
-      "sha256": "161dc7f93bbedaf0989074ec099d498fa7ed399bf17294a0eb118f07762a1ea8",
-      "bytes": 1906658
     }
   }
 ];

@@ -27,7 +27,7 @@ import { journalSource, sqlJournal } from '../../../packages/core/src/_shared/pr
 import { PortRegistry } from '../../../packages/core/src/runtime/port-registry.ts';
 import { assumeGeneration } from '../../../packages/fabric/src/generation.ts';
 import { FacetManager } from '../../../packages/worker/src/facets/manager.ts';
-import { createFacetCtx, createFacetWorld } from '../facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { CRED, createAuthority, facetSql, facetSupervisor, launchResident, sleep, until } from './resident-body.mjs';
 
 export const ENGINES = ['node', 'holder'];

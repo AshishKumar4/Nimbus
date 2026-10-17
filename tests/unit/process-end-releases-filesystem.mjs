@@ -27,7 +27,7 @@ import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { assumeGeneration } from '../../packages/fabric/src/generation.ts';
 import { routeToSessionPort } from '../../packages/worker/src/session/port-capability.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld, createPeerNamespace } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld, createPeerNamespace } from './lib/facet-host-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { programmaticHost } from './lib/programmatic-host.mjs';
 

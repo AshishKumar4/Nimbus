@@ -1,7 +1,7 @@
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { PYTHON_REPL_TASK } from '../loaders/compiled-bodies.generated.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
-import { withHostView, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
+import { hostImage, withHostView, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 
 import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { z } from 'zod/v4';
@@ -29,14 +29,15 @@ import { z } from 'zod/v4';
 
 import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
-import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
+import { installedFile, type RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
 import type { ReplAdapter, ReplPushResult } from './repl-session.js';
 import { ReplSession } from './repl-session.js';
 import { sessionUsesSciVariant } from '@nimbus-sh/core/runtime/python-pip.js';
-import { buildCPythonPreamble, enterWorkingDirectory } from '@nimbus-sh/core/runtime/cpython-runner.js';
+import { buildCPythonPreamble, cpythonMarkers, enterWorkingDirectory } from '@nimbus-sh/core/runtime/cpython-runner.js';
 import { getFacetManagerLoaderHost } from './facet-loader-host.js';
 import { CRED_KERNEL, CRED_SESSION_USER, type NimbusFilesystemAuthority, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { exists } from '@nimbus-sh/core/vfs/vfs.js';
+import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
 
 /** Written by the driver when the source so far cannot yet be run. */
 const INCOMPLETE_MARKER = '__NIMBUS_PY_INCOMPLETE__';
@@ -116,7 +117,7 @@ const CPYTHON_STDLIB_REL = 'lib/python313.zip';
  * every escape on the way through.
  */
 function buildReplDriver(source: string): string {
-  const b64 = btoa(String.fromCharCode(...new TextEncoder().encode(source)));
+  const b64 = base64Utf8(source);
   return [
     'import base64, codeop, sys, traceback',
     'import __main__',
@@ -157,7 +158,6 @@ class PythonReplAdapter implements ReplAdapter {
   /** Which interpreter variant the cached pool holds; see ensurePool. */
   private poolUsesSci = false;
   private deps: InterpreterDeps;
-  private wasmBytes: ArrayBuffer | null = null;
   private pythonHome = '/usr/local';
 
   ps1 = '>>> ';
@@ -169,7 +169,7 @@ class PythonReplAdapter implements ReplAdapter {
 
   banner(): string {
     return (
-      'Python 3.13.14 (CPython, wasm32-wasi, Nimbus runtime)\r\n' +
+      `Python ${cpythonMarkers(this.deps.manifest).python_full_version} (CPython, wasm32-wasi, Nimbus runtime)\r\n` +
       'Type "exit()" or press Ctrl-D to exit.\r\n'
     );
   }
@@ -244,7 +244,6 @@ class PythonReplAdapter implements ReplAdapter {
   private resetPool(): void {
     const pool = this.pool;
     this.pool = null;
-    this.wasmBytes = null;
     pool?.dispose();
   }
   async interrupt(): Promise<void> {
@@ -277,43 +276,38 @@ class PythonReplAdapter implements ReplAdapter {
     if (this.pool) return;
     this.poolUsesSci = wantsSci;
     const { installRoot, facetMgr } = this.deps;
-    const wasmPath = wantsSci ? sciPath : `${installRoot}/${CPYTHON_WASM_REL}`;
+    const wasmRel = wantsSci ? CPYTHON_SCI_WASM_REL : CPYTHON_WASM_REL;
+    const wasm = installedFile(this.deps.manifest, installRoot, wasmRel);
     const stdlibPath = `${installRoot}/${CPYTHON_STDLIB_REL}`;
-    if (!(await vfs.exists(wasmPath))) {
-      throw new Error(`python.wasm missing at ${wasmPath} (run 'nimbus install python')`);
+    if (!wasm || !(await vfs.exists(wasm.path))) {
+      throw new Error(`python.wasm missing at ${installRoot}/${wasmRel} (run 'nimbus install python')`);
     }
     if (!(await vfs.exists(stdlibPath))) {
       throw new Error(`python313.zip missing at ${stdlibPath} (run 'nimbus install python')`);
     }
-    this.wasmBytes = await vfs.readArrayBufferUncached(wasmPath);
+    // Opened, not read: the host reads it for each load of the REPL's facet
+    // alone (FacetImage), through a lease of its own, for the prompt outlives this one.
+    const image = await hostImage(this.deps.authority, CRED_KERNEL, wasm.path, wasm);
 
     this.pythonHome = `/${installRoot.replace(/^\/+/, '')}`;
 
     const host = getFacetManagerLoaderHost(facetMgr);
-    // A prompt where `open(path, "w")` silently does nothing is worse than one
-    // that refuses to start, so the pid decides which pool this is. Written as
-    // two literals rather than a spread because the rule that catches this
-    // mistake (tests/unit/runtime-pool-supervisor-pid.mjs) reads the options
-    // object as text, and a pool whose credential is hidden behind a variable
-    // is exactly the shape it exists to find.
-    const base = {
+    const pid = this.deps.pid;
+    this.pool = new IsolatePool(host.env, host.ctx, {
       // Distinct from cpython-runner's tag: a REPL facet holds a live
       // interpreter and must never be handed a one-shot invocation.
       tag: wantsSci ? 'python-repl:sci' : 'python-repl',
       scope: crypto.randomUUID(),
       concurrency: 1,
       preamble: buildCPythonPreamble(),
-      wasmModules: { 'python.wasm': this.wasmBytes },
+      wasmModules: { 'python.wasm': image },
+      // The install-time warm-up has no process and gets no supervisor.
+      ...(typeof pid === 'number' && pid > 0
+        ? { supervisorPid: pid, processSupervisor: supervisorBindingProps(host.ctx, pid, { writerId: crypto.randomUUID(), network: host.network }) }
+        : { omitSupervisor: true }),
       // The workspace's, as every facet a manager's runtimes open (facetHostForManager).
       network: host.network,
-    };
-    const pid = this.deps.pid;
-    this.pool = typeof pid === 'number' && pid > 0
-      ? new IsolatePool(host.env, host.ctx, { ...base, supervisorPid: pid, network: host.network, processSupervisor: supervisorBindingProps(host.ctx, pid, { writerId: crypto.randomUUID(), network: host.network }) })
-      // The install-time warm-up has no invoking process. It boots the
-      // interpreter and never touches a file, so it asks for no supervisor
-      // rather than binding one it cannot authenticate to.
-      : new IsolatePool(host.env, host.ctx, { ...base, omitSupervisor: true, network: host.network });
+    });
   }
   private active: { controller: AbortController; done: Promise<ReplPushResult> } | null = null;
 

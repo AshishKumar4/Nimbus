@@ -22,15 +22,14 @@
 //   2. Both rows visible in `ps`
 //   3. Both produce identical stdout output
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, BASE, writeFileViaShell, outputLines } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[G4] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
-await t.waitForPrompt(15_000).catch(() => {});
+await t.waitForPrompt(15_000);
 
 await t.run('mkdir -p /home/user/g4-probe/node_modules/.bin', 5_000);
 await t.run('cd /home/user/g4-probe', 5_000);
@@ -42,11 +41,7 @@ const cliCode =
   '"use strict";\n' +
   'console.log("PARITY-MARKER:" + JSON.stringify(process.argv.slice(2)));\n' +
   'process.exit(0);\n';
-const cliCodeB64 = Buffer.from(cliCode, 'utf8').toString('base64');
-await t.run(
-  `node -e "require('fs').writeFileSync('node_modules/.bin/parity', Buffer.from('${cliCodeB64}','base64').toString('utf8'))"`,
-  10_000,
-);
+await writeFileViaShell((command) => t.run(command, 10_000), 'node_modules/.bin/parity', cliCode);
 
 function highestPid(psOutput) {
   const rows = psOutput.split(/\r?\n/).filter(l => /^\s+\d+\s+/.test(l));
@@ -81,7 +76,7 @@ const pid2 = highestPid(ps2);
 const npxPidDelta = pid2 - pid1;
 
 // ── Both visible in ps after the second invocation? ──
-const ps2Rows = ps2.split(/\r?\n/).filter(l => /parity/i.test(l));
+const ps2Rows = outputLines(ps2).filter(l => /parity/i.test(l));
 const psHasDirect = ps2Rows.some(l => /--direct/.test(l));
 const psHasNpx    = ps2Rows.some(l => /--npx/.test(l));
 

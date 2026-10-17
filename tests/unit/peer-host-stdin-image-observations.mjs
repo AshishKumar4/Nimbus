@@ -7,7 +7,7 @@ import { mock } from 'bun:test';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { facetImageDigest, facetImagePath } from '../../packages/fabric/src/process-fabric.ts';
 import { ReplaySessions } from '../../packages/worker/src/runtime/replay-session.ts';
-import { createFacetWorld, createProcessHost, PROCESS_HOST_MODES } from './facet-host-harness.mjs';
+import { createFacetWorld, createProcessHost, PROCESS_HOST_MODES } from './lib/facet-host-harness.mjs';
 
 mock.module('cloudflare:workers', () => ({ WorkerEntrypoint: class { constructor(ctx, env) { this.ctx = ctx; this.env = env; } } }));
 const { SupervisorRPC } = await import('../../packages/worker/src/session/supervisor-rpc.ts');

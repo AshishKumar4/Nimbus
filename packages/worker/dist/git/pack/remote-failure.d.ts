@@ -12,7 +12,6 @@
  * credentials it offered taken out (remoteFailureText), and exits as git
  * does (128; a pull, whose fetch is git's child, 1).
  */
-import type { HttpClient } from '../../../vendor/git-http.generated.js';
 /** Why a request to the git server failed. */
 export type RemoteFailure = 
 /** No answer: the connection, DNS, TLS or the stream failed. `detail` says how. */
@@ -80,21 +79,9 @@ export declare function answeredFailure(request: RemoteRequest, status: number, 
 export declare function transportFailure(request: RemoteRequest, detail: string): RemoteFailure;
 /**
  * What `error`, the facet's failure, says failed at the git server: an
- * UploadPackError's (a clone's own requests), or cf-git's through `http`;
+ * UploadPackError's (Nimbus's requests: upload-pack.ts, receive-pack.ts);
  * undefined when it is not the server's failure.
  */
-export declare function remoteFailureOf(error: unknown, http?: ObservedGitHttp): RemoteFailure | undefined;
-/** cf-git's HTTP client, with the failure of its last request kept (`failureOf`). */
-export interface ObservedGitHttp extends HttpClient {
-    /** What `error` (thrown by cf-git) says failed at the server, or undefined when it is not a server's failure. */
-    failureOf(error: unknown): RemoteFailure | undefined;
-}
-/**
- * `http` with each failure kept: a request that threw (the transport: that
- * error), and an answer with a failing status (answeredFailure; cf-git then
- * reads an empty body). cf-git's HttpError for that status, or the
- * transport's own error, is then known for what it is.
- */
-export declare function observedGitHttp(http: HttpClient): ObservedGitHttp;
+export declare function remoteFailureOf(error: unknown): RemoteFailure | undefined;
 export {};
 //# sourceMappingURL=remote-failure.d.ts.map

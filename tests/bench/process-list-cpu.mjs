@@ -1,0 +1,73 @@
+#!/usr/bin/env bun
+// Independent module copies and databases for main, main's null arm, and head.
+import assert from 'node:assert/strict';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { hostSqlite } from '../unit/lib/host-sqlite.mjs';
+import { cpuMs } from './lib/paired-cpu.mjs';
+import { CORE_CPU_SOURCES } from './lib/cpu-sources.mjs';
+import { loadIsolatedCore } from './lib/isolated-core.mjs';
+import { runPairedBenchmark } from './lib/paired-runner.mjs';
+
+let checksum = 0;
+
+async function make({ SqliteVFS, ProcessFiles }, size) {
+  const host = await hostSqlite();
+  const engine = new SqliteVFS(host.sql, host.transactions);
+  const root = engine.as(CRED_KERNEL);
+  root.mkdir('tree');
+  for (let offset = 0; offset < size; offset += 64) {
+    root.writeBatch({ inodes: Array.from({ length: Math.min(64, size - offset) }, (_, i) => ({
+      path: `tree/f${String(offset + i).padStart(6, '0')}`, parentPath: 'tree', isDir: false,
+      size: 0, mtime: 1, mode: 0o644, chunkCount: 0, uid: 0, gid: 0,
+    })), chunks: [] });
+  }
+  root.writeFile('tree/mutated', 'initial');
+  const files = new ProcessFiles(engine);
+  const bridge = files.bind({ pid: 71, cred: CRED_KERNEL });
+  const page = bridge.list(null, 256);
+  assert.equal(page instanceof Promise, false);
+  return { engine, root, files, bridge, writes: 0, nextPid: 72 };
+}
+
+async function cpu(arm, kind, iterations) {
+  const cursor = { epoch: arm.engine.epoch, rev: arm.engine.revision() };
+  if (kind === 'acquire-one') arm.root.writeFile('tree/mutated', `write-${++arm.writes}`);
+  return cpuMs(async () => {
+    for (let i = 0; i < iterations; i++) {
+      if (kind === 'cold-first-list') {
+        const pid = arm.nextPid++;
+        const bridge = arm.files.bind({ pid, cred: CRED_KERNEL });
+        const page = bridge.list(null, 256);
+        assert.equal(page instanceof Promise, false);
+        checksum += page.entries.length;
+        await arm.files.releaseProcess(pid);
+      } else if (kind === 'first-list') {
+        const page = arm.bridge.list(null, 256);
+        assert.equal(page instanceof Promise, false);
+        checksum += page.entries.length;
+      } else {
+        const answer = arm.bridge.acquire(cursor.epoch, cursor.rev, { namespace: true });
+        assert.equal(answer.poison, false);
+        assert.equal(answer.paths.length > 0, kind === 'acquire-one');
+        checksum += answer.rev + answer.paths.length;
+      }
+    }
+  });
+}
+
+await runPairedBenchmark({
+  source: CORE_CPU_SOURCES.source,
+  async run({ short, cleanup, withArms, sample }) {
+    const count = (kind) => kind === 'cold-first-list' ? (short ? 2 : 20) : kind === 'first-list' ? (short ? 4 : 80) : (short ? 64 : 2000);
+    await withArms((from) => loadIsolatedCore(from, cleanup), async (modules) => {
+      for (const [label, size] of [['small', 64], ['large', 8192]]) {
+        await withArms((loaded) => make(loaded, size), async (arms) => {
+          for (const kind of ['acquire-none', 'acquire-one', 'first-list', 'cold-first-list']) {
+            await sample(`${label}/${kind}`, arms, (arm) => cpu(arm, kind, count(kind)), { pairs: 30, warm: 8, iterations: count(kind) });
+          }
+        }, { from: modules, dispose: (arm) => arm.files.releaseProcess(71) });
+      }
+    });
+    assert.ok(checksum > 0);
+  }
+});

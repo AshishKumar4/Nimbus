@@ -669,6 +669,8 @@ requirements:
       - Nimbus.Vfs.Composite.noninterference
       - Nimbus.Vfs.Composite.pfx_iff
       - Nimbus.Vfs.Composite.route_fold
+      - Nimbus.Vfs.MountSelection.fold_spec
+      - Nimbus.Vfs.MountSelection.optional_spec
       - Nimbus.Vfs.Composite.absent_of_prefix
       - Nimbus.Vfs.Composite.route_not_hidden
       - Nimbus.Vfs.Composite.linkAt_agree
@@ -679,24 +681,38 @@ requirements:
       - Nimbus.Vfs.Composite.backendOp_agree
       - Nimbus.Vfs.Composite.dirErr_agree
     tsRefs:
-      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+      - packages/core/src/vfs/composite.ts#CompositeVFS.route
+      - packages/core/src/vfs/composite.ts#CompositeVFS.locate
+      - packages/core/src/vfs/composite.ts#CompositeVFS.resolve
+      - packages/core/src/vfs/composite.ts#CompositeVFS.absentOn
+      - packages/core/src/vfs/composite.ts#CompositeVFS.isStructural
+      - packages/core/src/vfs/composite.ts#CompositeVFS.readdirAt
+      - packages/core/src/vfs/composite.ts#CompositeVFS.renameAt
     refinement:
       - lean/fixtures/composite-vfs.json :: tests/unit/composite-vfs-refinement.mjs
     remainingEvidence:
       - Rules DESIGN.md leaves open, as agreed with the Filesystem lane: absent when any mount on the path is null; a synthesized directory wins over a root link of the same name; EBUSY for writeFile, mkdir, rmdir and rename of a live mount point or ancestor, EISDIR for unlink of any directory; refusal order ENXIO, EBUSY, EXDEV, backend; POSIX rename replacement; 40 link hops
       - Backends are trees without POSIX modes; removeRecursive, copy, readRange, capabilities and ENOTSUP are not modeled
-      - The tsRef is a placeholder until composite.ts lands; the lane's refinement test is the bridge
   VFS-COMP-002:
-    statement: The node facet's staged store over a CompositeVFS serves at a resumption only values the backend now serving the path held at or after the barrier, given each backend's own no-stale guarantee, whatever the mount table did; a backend without changes is never staged; keying the store by composite path instead serves the previous backend's bytes after a source switches.
+    statement: A composite cache can stage and synchronously serve unfed bytes at revision 0 without claiming freshness; dated reads satisfy the serving backend's barrier given its own no-stale guarantee; revision 0 never vouches for held bytes during reconciliation, which drops an unjustified row on a complete listing but preserves own writes, equal readable content and rows a short listing cannot judge; refetch installs the returned bytes.
     status: proved-in-abstract-model
     theorems:
       - Nimbus.Vfs.CompositeCache.sync_read_fresh
-      - Nimbus.Vfs.CompositeCache.never_cached
+      - Nimbus.Vfs.CompositeCache.unfed_entries_undated
+      - Nimbus.Vfs.CompositeCache.revision_zero_never_vouches
+      - Nimbus.Vfs.CompositeCache.undated_reconcile_drops
+      - Nimbus.Vfs.CompositeCache.reconcile_preserves_other_evidence
+      - Nimbus.Vfs.CompositeCache.sync_read_installed
+      - Nimbus.Vfs.CompositeCache.undated_can_be_stale
       - Nimbus.Vfs.CompositeCache.a_path_keyed_cache_serves_the_old_backend
     tsRefs:
       - packages/worker/src/vfs/resident/index.ts#createResidentStore
+      - packages/worker/src/vfs/resident/sync.ts#createSync
+      - packages/worker/src/vfs/resident/cells.ts#createCells
     remainingEvidence:
       - Each backend's own guarantee is a hypothesis (Coherence.Store.no_stale_read proves it for SqliteVFS); a barrier is taken to advance every changes-backend's horizon to its instant
+      - Backend/path keys abstract serving identity; the resident implementation keys by composite path and reconciles against a new listing when that identity changes, rather than implementing this abstract key scheme
+      - The undated launch/hold/acquire/reconcile/refetch example is bridged by COMP-004's composite-feed fixture through the real resident store; dated freshness and the evidence exceptions remain abstract here
   VFS-PF-001:
     statement: ProcessFiles accounts for every acknowledged write (applied, pending on a live handle, or reported lost) through flushes, failed flushes, releaseProcess and kills; one backend call is the unit of atomicity (an append that takes the end in its own call never overlaps another, a two-call append and a buffered read-modify-write flush can lose bytes); a mutation checked on the literal and the resolved form of each path never touches another owner's lease; a receipt taken in the commit's step (or any later one before the path's next commit) names the committed bytes; a process reads and stats its own handles' pending writes merged in by the flush merge (Linux page-cache semantics), and another process sees the flushed file.
     status: proved-and-refined
@@ -787,13 +803,24 @@ requirements:
       - With a capability present the model asserts support only; revision semantics are Coherence's
       - Main's rulings: the copy primitive answers ENOTSUP for / or an ancestor of a live mount (cp -r falls back to a crossing walk, a command-level test); a directory onto anything existing is EEXIST; lookup precedes the capability check (ENOENT before ENOTSUP), except a writeFileIfRevision expecting revision 0, create-if-absent, which only the backend can make atomic (2026-10-11)
   VFS-COMP-004:
-    statement: ProcessFs's staged namespace over the composite equals the composite's staged view (structural first - a live mount point and every directory above one is the composite's directory) in every reachable state, and is always a tree; the root feed filtered to paths the composite routes to the root backend and each changes-mount's feed re-rooted and filtered to its own non-structural paths make it exact, including subtree/structural entries (relisted where shown, a poison at a composite directory from the backend it routes to); a mount-table change between the two ends of the window poisons (no feed reports it), an ABA window does not; a mount without changes stages nothing under its point; epoch-qualified CAS revisions identify one write across recoveries that regress gens.
+    statement: ProcessFs's staged namespace is a tree combining the routed feed view with bounded partial launch-walk observations installed at boot/relist and retained between them; an unfed mount contributes no incremental records, walked entries have revision 0, and only a fully listed directory certifies absence; filtered feeds repair the fed view, structural subtree entries or table/source changes poison and relist, a composite-feed ABA window needs no poison but a SQLite-only bound listing conservatively relists after any mount-generation change; epoch-qualified CAS revisions identify one write across incarnations.
     status: proved-and-refined
     theorems:
       - Nimbus.Vfs.CompositeFeed.feed_exact
       - Nimbus.Vfs.CompositeFeed.feed_values
       - Nimbus.Vfs.CompositeFeed.step_exact
-      - Nimbus.Vfs.CompositeFeed.no_changes_never_staged
+      - Nimbus.Vfs.CompositeFeed.sqlite_generation_change_poisons
+      - Nimbus.Vfs.CompositeFeed.sqlite_only_aba_relists
+      - Nimbus.Vfs.CompositeFeed.no_changes_no_incremental
+      - Nimbus.Vfs.CompositeFeed.unfed_view_is_walk
+      - Nimbus.Vfs.CompositeFeed.unlisted_does_not_mean_absent
+      - Nimbus.Vfs.CompositeFeed.walk_inv
+      - Nimbus.Vfs.CompositeFeed.walk_entries_undated
+      - Nimbus.Vfs.CompositeFeed.listed_absence
+      - Nimbus.Vfs.CompositeFeed.installed_walks_closed
+      - Nimbus.Vfs.CompositeFeed.walks_closed_of_retained
+      - Nimbus.Vfs.CompositeFeed.staged_walk_bounded
+      - Nimbus.Vfs.CompositeFeed.a_walk_can_hold_an_old_unfed_value
       - Nimbus.Vfs.CompositeFeed.revision_unique
       - Nimbus.Vfs.CompositeFeed.an_unfiltered_root_feed_stages_a_shadowed_row
       - Nimbus.Vfs.CompositeFeed.a_mount_appearing_is_not_in_any_feed
@@ -801,8 +828,6 @@ requirements:
       - Nimbus.Vfs.CompositeFeed.ownerPt_mem
       - Nimbus.Vfs.CompositeFeed.view_table_congr
       - Nimbus.Vfs.CompositeFeed.cas_inv
-      - Nimbus.Vfs.CompositeFeed.ownerPt_fold_max
-      - Nimbus.Vfs.CompositeFeed.ownerPt_fold_none
       - Nimbus.Vfs.CompositeFeed.ownerPt_max
       - Nimbus.Vfs.CompositeFeed.ownerPt_none
       - Nimbus.Vfs.CompositeFeed.ownerPt_between
@@ -822,13 +847,28 @@ requirements:
       - Nimbus.Vfs.CompositeFeed.fs_inv
       - Nimbus.Vfs.CompositeFeed.staged_closed
     tsRefs:
-      - packages/core/src/vfs/sqlite-vfs.ts#SqliteVFS.invalidatedSince
+      - packages/core/src/vfs/composite.ts#CompositeVFS.feed
+      - packages/core/src/vfs/composite.ts#CompositeVFS.feedSignature
+      - packages/core/src/vfs/composite.ts#CompositeVFS.mountGeneration
+      - packages/core/src/vfs/composite.ts#CompositeVFS.someMountPoint
+      - packages/core/src/vfs/composite.ts#CompositeVFS.feedSince
+      - packages/core/src/vfs/composite.ts#CompositeVFS.feedList
+      - packages/core/src/vfs/composite.ts#CompositeVFS.walkUnfed
+      - packages/core/src/runtime/process-files.ts#ProcessFiles.nameLaunch
+      - packages/core/src/runtime/process-files.ts#AwaitingProcessBridge.list
+      - packages/core/src/runtime/process-files.ts#AwaitingProcessBridge.listMounted
+      - packages/core/src/runtime/process-files.ts#AwaitingProcessBridge.acquire
     refinement:
       - lean/fixtures/composite-feed.json :: tests/unit/composite-feed-refinement.mjs
     remainingEvidence:
       - Closedness is discharged (view_closed, fs_inv); what remains assumed is that every backend is a POSIX tree and that its log covers every changed path (at the path, or under a sub entry above it)
       - An own mutation's delta is assumed to name every staged path it changed (FsStep.own); the lane's own-write overlay is not modeled here
       - One principal's table; per-principal source switches are table changes for that principal
+      - The walk model abstracts traversal order to bounded parent-closed observations and whole-directory completion certificates, not a promise to discover every name; concurrent backend mutation during the walk is not modeled; the fixture exercises the implemented 8192-name bound, unlisted directories and retention across listing pages
+      - Bound ProcessFiles listing is used for every fixture; root/unfed-only cases also use its acquire, while independent fed backends retain CompositeFeed's multi-feed cursor, which the SQLite-only process cursor does not encode
+      - The generation-only route requires zero declared non-kernel mount points; a declared but absent source stays on the signature route, so null-to-live changes are detected without a mount operation
+      - Resident mounted-byte refinement covers async-only unfed mounts; a synchronous unfed mount currently refuses the resident fill with ESTALE when fsReadBatch carries the SQLite expectedEpoch, so that runtime path is not claimed here
+      - Unfed own-write overlays are not modeled by FsStep.own, which preserves the held walk; the cache model treats own bytes as separate reconciliation evidence
       - The CAS model identifies writes by (epoch, gen); the epoch is assumed fresh per incarnation
   VFS-COMP-005:
     statement: CompositeVFS resolves paths as Linux does, in the caller's namespace - every symlink, whichever backend holds it (absolute from the caller's root, relative from the link's directory, .. at a mount root to the mount point's parent), search checked with the caller's credential on every directory left, before the next lookup (EACCES before a later component's error), 40 hops then ELOOP; whatever a path resolves to, every directory on it grants the caller search (it reaches only what it could name directly), except in or into a path past the point of the mount it is in when that mount's backend resolves its own paths (hands; handed over by handsTo unless the lookup goes on into a mount nested there: looked up, searched and link-followed by that backend alone, .. lexical), where its backend checks; structural directories are described by the backend that holds them (synthesized 0755 root:root where it holds nothing or reports no modes) and readdir of one needs read; uid 0 passes; the answer at a resolved backend path is that backend's own (never widened), depends only on that backend, and a mutation changes only it; in a setgid directory a new entry takes the directory's group and a new directory is setgid, a directory's default ACL base entries mask a new entry's create mode instead of the umask (never granting more than the create mode asked for) and are inherited by new subdirectories, and rename keeps an entry's owner, group, mode and default ACL (N26); a directory renamed to another parent needs write on itself (its .. changes), uid 0 passing; a sqlite / is 0755 0:0, so non-root creates, renames and removals directly in / are EACCES; open of a directory without r is EACCES before EISDIR, and unlink checks the parent's w and the sticky bit before EISDIR.
@@ -1051,7 +1091,7 @@ requirements:
     remainingEvidence:
       - The root is resolved by name from / (every directory above it must grant search, as Nimbus re-resolves a descriptor root), stricter than Linux; per-principal sources and mount-point refusals are not modeled here
   RT-PIPE-001:
-    statement: The wasm bash's pipes and pipeline scheduler (the approved design after the 5bdfec12 review, per-pipe budget) - every byte a writer handed over is read, still in flight, or discarded when its pipe's last reader closed, and none is lost; SIGPIPE or EPIPE only on a pipe with no read end, EPIPE when SIGPIPE is ignored; a read ends only when no write end is left; the bytes in flight in a pipe never exceed the budget; a fork leaves a parked operation as it was and its child starts with none; the scheduler runs a process that can progress whenever one exists, every scheduler step lowers a well-founded measure (no spin; every run ends), and when nothing can run and nothing is suspended every live process waits as it would on Linux; a command stopped because a reader would wait on writers suspended beneath it, or nothing could run while a frame was suspended, has a named error and a non-zero status. The review's findings (held-exit SIGPIPE, a fork dropping a parked write, silent truncation past the spill, an ignored SIGPIPE still killing) and the rejected global budget are rule variants, each shown by a decided trace to lose output or kill wrongly; a writer on a local host that exits with more than the capacity unread in a pipe it writes has its exit status held, which changes no step of the run (no byte, read, EOF or other status), is released by each such pipe at the first step after which it holds at most the capacity unread (a read drained it) or has lost its last read end, settles once every one has released it, to 141 only when one of them lost its last reader with more than the capacity unread (remembered from that close), else to the writer's own status, and always settles once no process is alive.
+    statement: The wasm bash's pipes and pipeline scheduler (the approved design after the 5bdfec12 review, per-pipe local budget) - every byte a writer handed over is read, still in flight, or discarded when its pipe's last reader closed, and none is lost; SIGPIPE or EPIPE only on a pipe with no read end, EPIPE when SIGPIPE is ignored; a read ends only when no write end is left; a local pipe accepts a whole write when empty, even if it exceeds B, otherwise only when the resulting queue fits B; JSPI accepts a whole write when the current queue is below capacity, independently of B and write size, so neither B nor capacity is a hard bound on queued bytes; a fork leaves a parked operation as it was and its child starts with none; the scheduler runs a process that can progress whenever one exists, every scheduler step lowers a well-founded measure (no spin; every run ends), and when nothing can run and nothing is suspended every live process waits as it would on Linux; a command stopped because a reader would wait on writers suspended beneath it, or nothing could run while a frame was suspended, has a named error and a non-zero status. The review's findings (held-exit SIGPIPE, a fork dropping a parked write, silent truncation past the spill, an ignored SIGPIPE still killing) and the rejected global budget are rule variants, each shown by a decided trace to lose output or kill wrongly; a writer on a local host that exits with more than the capacity unread in a pipe it writes has its exit status held, which changes no step of the run (no byte, read, EOF or other status), is released by each such pipe at the first step after which it holds at most the capacity unread (a read drained it) or has lost its last read end, settles once every one has released it, to 141 only when one of them lost its last reader with more than the capacity unread (remembered from that close), else to the writer's own status, and always settles once no process is alive.
     status: proved-and-refined
     theorems:
       - Nimbus.Runtime.Pipes.upd_same
@@ -1102,7 +1142,9 @@ requirements:
       - Nimbus.Runtime.Pipes.step_B
       - Nimbus.Runtime.Pipes.books
       - Nimbus.Runtime.Pipes.accounting
-      - Nimbus.Runtime.Pipes.budget
+      - Nimbus.Runtime.Pipes.local_write_budget
+      - Nimbus.Runtime.Pipes.local_empty_write
+      - Nimbus.Runtime.Pipes.jspi_write_capacity
       - Nimbus.Runtime.Pipes.drop_only_readerless
       - Nimbus.Runtime.Pipes.abort_named
       - Nimbus.Runtime.Pipes.meas_setProc
@@ -1155,11 +1197,13 @@ requirements:
     tsRefs:
       - packages/core/src/runtime/bash/preamble.ts#writeThroughFd
       - packages/core/src/runtime/bash/preamble.ts#newPipe
+      - packages/core/src/runtime/bash/pipe-rules.ts#decideWrite
     refinement:
       - lean/fixtures/pipes.json :: tests/unit/pipes-refinement.mjs
     remainingEvidence:
-      - Traces are scaled down (capacity 4, small budgets); the rules do not depend on the sizes. A JSPI-host fixture case sets B large, as B never binds a JSPI writer
-      - SIGPIPE ignored is modeled and proved, but untestable on this runtime (bash.wasm cannot report its disposition); those fixture cases carry "untestable"
+      - Traces are scaled down (capacity 4, small budgets), including oversized local writes and JSPI writes with a budget of zero; the rules do not depend on the sizes
+      - The refinement replays pipe decisions with modeled signal dispositions; tests/unit/bash-pipe-sigpipe.mjs additionally compares native bash against the staged wasm's write errors, stderr and statuses on local and JSPI hosts
+      - Bash's own writes query its live signal-disposition export. Exec'd coreutils (the staged BusyBox) expose no such export; the host knows only SIG_IGN inherited at exec, not disposition changes inside that guest. The inherited mask is cleared when the guest ends and never describes later bash writes
       - A fork is synchronous here; a fork as a pending task on a local host is covered by the rule that a reader with nothing to run stops the command
       - The held status equals Linux's for a pipe with one writer; with several writers another writer's later bytes count against a held one, as the runtime does (real bash is timing-dependent there). A wait on a held pid is not modeled (the runtime waits until it settles)
       - The model discards a readerless pipe's bytes, so the runtime's readers > 0 guard on holding is not distinguished by the fixture; the runtime keeps the guard

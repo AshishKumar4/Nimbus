@@ -16,13 +16,10 @@ const entryFixture = {
   integrity: 'sha512-abc',
   depsJson: '{}',
   peerDepsJson: '{}',
-  exportsJson: 'null',
   main: '',
-  moduleField: '',
   binJson: '{}',
   platformJson: JSON.stringify({ os: ['linux'], cpu: ['x64'] }),
   optionalDepsJson: JSON.stringify({ fsevents: '^2.0.0' }),
-  fetchedAt: 1700000000000,
 };
 
 const SOURCE = { registry: 'https://registry.npmjs.org', network: '' };

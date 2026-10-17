@@ -15,8 +15,8 @@
  * for one node's subtrees at a time; a write rewrites the bytes in one pass.
  */
 import { oidFromHex, oidToHex } from '../pack/format.js';
+import { concatBytes, nameDec } from '@nimbus-sh/core/_shared/bytes.js';
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 /** subtree_name_cmp: by length, then bytes. */
 function subtreeOrder(a, b) {
     if (a.length !== b.length)
@@ -34,18 +34,6 @@ function nodeHeader(name, count, subtrees) {
     out.set(tail, name.length);
     return out;
 }
-function concat(parts) {
-    let size = 0;
-    for (const part of parts)
-        size += part.length;
-    const out = new Uint8Array(size);
-    let at = 0;
-    for (const part of parts) {
-        out.set(part, at);
-        at += part.length;
-    }
-    return out;
-}
 /**
  * A node's bytes as written: `count` -1 for an invalid node (no id), its
  * subtrees (each already written) in git's order. The root's name is ''.
@@ -58,7 +46,7 @@ export function encodeNode(name, count, oid, subtrees) {
         parts.push(oidFromHex(oid));
     for (const sub of subtrees)
         parts.push(sub.bytes);
-    return { name: nameBytes, bytes: concat(parts) };
+    return { name: nameBytes, bytes: concatBytes(parts) };
 }
 /**
  * The extension read: where each node lies, in the order written (root
@@ -175,7 +163,7 @@ export class CacheTree {
     subtrees(node) {
         const out = new Map();
         for (let child = node + 1, i = 0; i < this.subtreeCounts[node]; i++, child = this.ends[child]) {
-            out.set(decoder.decode(this.bytes.subarray(this.nameAt[child], this.nameEnd[child])), child);
+            out.set(nameDec.decode(this.bytes.subarray(this.nameAt[child], this.nameEnd[child])), child);
         }
         return out;
     }

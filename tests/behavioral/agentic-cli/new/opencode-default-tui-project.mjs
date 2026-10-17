@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Non-bare default command: project resolution and network/global flags reach
 // a real serve+attach pair, and unsupported controls launch neither half.
-import { connectProcessTerminal, deleteSession, makeAsserter, mintSession, stripAnsi, Terminal } from '../../_driver.mjs';
+import { connectProcessTerminal, deleteSession, makeAsserter, mintSession, stripAnsi, Terminal, outputLines } from '../../_driver.mjs';
 const a = makeAsserter('agentic-cli/new/opencode-default-tui-project');
 const sid = await mintSession();
 console.log(`SID: ${sid}`);
@@ -25,7 +25,7 @@ try {
     await tui.waitFor(() => /\x1b\[/.test(tui.rawOutput), 60_000, 'default project TUI frame');
     a.check('the non-bare invocation renders an actual frame', /\x1b\[/.test(tui.rawOutput), tui.output.slice(-500));
     const fetched = await terminal.run('curl -s http://127.0.0.1:4201/path', 30_000);
-    const line = stripAnsi(fetched.output).split(/\r?\n/).find(line => line.startsWith('{') && line.includes('"directory"'));
+    const line = outputLines(fetched.output).find(line => line.startsWith('{') && line.includes('"directory"'));
     const directory = line ? JSON.parse(line).directory : undefined;
     a.check('the requested server port serves the resolved project directory',
       fetched.exitCode === 0 && directory === '/home/user/opencode-project', JSON.stringify({ directory, output: stripAnsi(fetched.output).slice(-700) }));

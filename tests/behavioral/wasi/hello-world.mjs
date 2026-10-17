@@ -8,7 +8,8 @@
 //
 // core WASI WASI fn under test: fd_write (fd 1 → stdout via ProcessLogStore).
 
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/hello-world', { dir: '/home/user/wasi', fixture: 'hello', as: 'hello.wasm' });
 const { t } = probe;

@@ -51,10 +51,11 @@
  * destructuring pattern, a rest parameter) stops the build, so an acorn
  * upgrade that reaches something new fails here rather than at runtime.
  * parser-audit.mjs checks the output with nothing of this rewrite's:
- * tests/unit/interpreter-primordials.mjs requires it to find nothing.
+ * tests/unit/primordials-audit.mjs requires it to find nothing.
  */
 
 import { parse } from 'acorn';
+import { bindingIdentifiers } from '@nimbus-sh/core/runtime/binding-pattern.js';
 
 /** The namespace the rewritten parser imports parser-realm as. */
 const REALM = '$$';
@@ -182,19 +183,6 @@ function where(source, node) {
 
 const isFunction = (n) => n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression';
 
-function patternNames(pattern, out) {
-  if (!pattern) return out;
-  switch (pattern.type) {
-    case 'Identifier': out.push(pattern); break;
-    case 'ObjectPattern': for (const p of pattern.properties) patternNames(p.type === 'RestElement' ? p.argument : p.value, out); break;
-    case 'ArrayPattern': for (const e of pattern.elements) patternNames(e, out); break;
-    case 'RestElement': patternNames(pattern.argument, out); break;
-    case 'AssignmentPattern': patternNames(pattern.left, out); break;
-    default: break;
-  }
-  return out;
-}
-
 /**
  * Each identifier reference's declaration (an Identifier node), or null when
  * it is a global. var and function declarations belong to their function (or
@@ -220,7 +208,7 @@ function resolveReferences(program) {
       const inner = scopeOf(node, scope, 'function');
       if (node.type === 'FunctionExpression' && node.id) { declare(inner, node.id); declarations.add(node.id); }
       for (const param of node.params) {
-        for (const id of patternNames(param, [])) { declare(inner, id); declarations.add(id); }
+        for (const id of bindingIdentifiers(param, [])) { declare(inner, id); declarations.add(id); }
         declareIn(param, inner);
       }
       if (node.type !== 'ArrowFunctionExpression') inner.names.set('arguments', null);
@@ -233,11 +221,11 @@ function resolveReferences(program) {
       inner = scopeOf(node, scope, 'block');
     } else if (node.type === 'CatchClause') {
       inner = scopeOf(node, scope, 'block');
-      for (const id of patternNames(node.param, [])) { declare(inner, id); declarations.add(id); }
+      for (const id of bindingIdentifiers(node.param, [])) { declare(inner, id); declarations.add(id); }
     }
     if (node.type === 'VariableDeclaration') {
       const target = node.kind === 'var' ? functionScope(inner) : inner;
-      for (const d of node.declarations) for (const id of patternNames(d.id, [])) { declare(target, id); declarations.add(id); }
+      for (const d of node.declarations) for (const id of bindingIdentifiers(d.id, [])) { declare(target, id); declarations.add(id); }
     } else if (node.type === 'ClassDeclaration') {
       declare(inner, node.id); declarations.add(node.id);
     } else if (node.type === 'ImportSpecifier' || node.type === 'ImportDefaultSpecifier' || node.type === 'ImportNamespaceSpecifier') {
@@ -433,7 +421,7 @@ export function primordialAcorn(source, realmSpecifier) {
 
   // A caught exception may be the realm's: only compared and rethrown.
   const caught = new Set();
-  walk(program, (node) => { if (node.type === 'CatchClause' && node.param) for (const id of patternNames(node.param, [])) caught.add(id); });
+  walk(program, (node) => { if (node.type === 'CatchClause' && node.param) for (const id of bindingIdentifiers(node.param, [])) caught.add(id); });
   /** A list acorn made: a variable whose value is a list literal, never assigned. */
   const isOwnList = (n) => {
     if (n.type !== 'Identifier') return false;

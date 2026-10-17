@@ -13,15 +13,14 @@
 // helper file that itself uses `require('./inner')` two levels deep.
 // All three files must be in the prefetch bundle for the bin to run.
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, BASE } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[G3] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
-await t.waitForPrompt(15_000).catch(() => {});
+await t.waitForPrompt(15_000);
 
 await t.run('mkdir -p /home/user/g3-probe/node_modules/.bin', 5_000);
 await t.run('mkdir -p /home/user/g3-probe/node_modules/sibling-cli/lib /home/user/g3-probe/node_modules/sibling-cli/bin', 5_000);

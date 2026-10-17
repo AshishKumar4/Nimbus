@@ -1,48 +1,89 @@
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { bounded, captureTerminal } from './lib/terminal-capture.mjs';
 
 const root = process.argv[2] ? pathToFileURL(`${resolve(process.argv[2])}/`) : new URL('../../', import.meta.url);
 const { WebSocketTerminal } = await import(new URL('packages/worker/src/facets/ws-terminal.ts', root));
 const { ReplSession } = await import(new URL('packages/worker/src/runtime/repl-session.ts', root));
 
-async function bounded(promise, label) {
-  let timer;
-  try {
-    return await Promise.race([promise, new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error(label)), 2000);
-    })]);
-  } finally { clearTimeout(timer); }
-}
-
-function capture() {
-  const chunks = [];
-  const listeners = new Set();
-  const terminal = new WebSocketTerminal(null, (text) => {
-    chunks.push(text);
-    for (const listener of listeners) listener();
-  });
-  return {
-    terminal,
-    text() { terminal.flushNow(); return chunks.join(''); },
-    reset() { terminal.flushNow(); chunks.length = 0; },
-    seen(text) {
-      terminal.flushNow();
-      if (chunks.join('').includes(text)) return Promise.resolve();
-      return bounded(new Promise((done) => {
-        const listener = () => {
-          if (!chunks.join('').includes(text)) return;
-          listeners.delete(listener);
-          done();
-        };
-        listeners.add(listener);
-      }), `missing terminal output ${JSON.stringify(text)}`);
-    },
-  };
-}
+const capture = () => captureTerminal(WebSocketTerminal);
 
 const output = (stdout = '') => ({ kind: 'output', stdout, stderr: '' });
 const baseAdapter = { ps1: '>>> ', ps2: '... ', banner: () => '', close: async () => {} };
+
+/** `text` without the notice a Ctrl-C prints on the line after `line`, which must be there. */
+const withoutNotice = (text, line) => {
+  const lines = text.split('\r\n');
+  const at = lines.indexOf(line) + 1;
+  assert.ok(at > 0 && lines[at].length > 0, `a Ctrl-C after ${JSON.stringify(line)} prints a notice`);
+  lines.splice(at, 1);
+  return lines.join('\r\n');
+};
+
+// Editing stays at the end, including after history, cancellation and a block.
+{
+  const view = capture();
+  const calls = [];
+  const run = new ReplSession({
+    ...baseAdapter,
+    push: async (line) => {
+      calls.push(line);
+      return line === 'block' ? { kind: 'incomplete' } : output(`EVAL ${calls.length}\n`);
+    },
+  }, view.terminal).run();
+  try {
+    view.reset();
+    view.terminal.sendData('\x1b[A\x1b[B\b\x7fabc\b\x7fD\x1b[DX\x1b[CY\t\x04\r');
+    await view.seen('EVAL 1');
+    assert.equal(view.text(), 'abc\b \b\b \bDXY\r\nEVAL 1\r\n>>> ', 'end-only editing echoes each change once');
+    view.terminal.sendData('two\r');
+    await view.seen('EVAL 2');
+    for (const [input, expected] of [
+      ['draft\x1b[A', 'draft' + '\b'.repeat(5) + ' '.repeat(5) + '\b'.repeat(5) + 'two'],
+      ['\x1b[A', '\b'.repeat(3) + ' '.repeat(3) + '\b'.repeat(3) + 'aDXY'],
+      ['\x1b[B', '\b'.repeat(4) + ' '.repeat(4) + '\b'.repeat(4) + 'two'],
+      ['\x1b[B', '\b'.repeat(3) + ' '.repeat(3) + '\b'.repeat(3)],
+    ]) {
+      view.reset();
+      view.terminal.sendData(input);
+      await view.seen(expected, 'history replacement');
+      assert.equal(view.text(), expected, 'history replaces the displayed line without leaving a tail');
+    }
+    view.reset();
+    view.terminal.sendData('fresh\bZ\r');
+    await view.seen('EVAL 3');
+    assert.equal(view.text(), 'fresh\b \bZ\r\nEVAL 3\r\n>>> ');
+    view.terminal.sendData('\x1b[A\b!\r');
+    await view.seen('EVAL 4');
+    view.reset();
+    view.terminal.sendData('discard\x03kept\r');
+    await view.seen('EVAL 5');
+    assert.equal(withoutNotice(view.text(), 'discard'), 'discard\r\n>>> kept\r\nEVAL 5\r\n>>> ');
+    view.reset();
+    view.terminal.sendData('block\r');
+    await view.seen('... ');
+    const beforeEof = view.text();
+    view.terminal.sendData('\x04');
+    assert.equal(view.text(), beforeEof, 'Ctrl-D inside an incomplete block neither redraws nor closes it');
+    assert.deepEqual(calls, ['aDXY', 'two', 'fresZ', 'fres!', 'kept', 'block']);
+    view.terminal.sendData('tailX\b\r');
+    await view.seen('EVAL 7');
+    view.reset();
+    view.terminal.sendData('block\r');
+    await view.seen('... ');
+    view.terminal.sendData('abandoned\x03last\r');
+    await view.seen('EVAL 9');
+    assert.equal(withoutNotice(view.text(), '... abandoned'), 'block\r\n... abandoned\r\n>>> last\r\nEVAL 9\r\n>>> ');
+    assert.deepEqual(calls, ['aDXY', 'two', 'fresZ', 'fres!', 'kept', 'block', 'block\ntail', 'block', 'last']);
+    view.terminal.sendData('\x04');
+    assert.equal(await bounded(run, 'empty-line Ctrl-D did not close the editor'), 0);
+  } finally {
+    await bounded(view.terminal.disposeRepl(), 'editing REPL cleanup hung');
+    await bounded(run, 'editing REPL run did not end');
+    view.terminal.close();
+  }
+}
 
 // The first prompt is a readiness signal, not a promise to boot on the first line.
 {
@@ -168,13 +209,13 @@ const baseAdapter = { ps1: '>>> ', ps2: '... ', banner: () => '', close: async (
     aborted.resolve();
     await Promise.resolve();
     await Promise.resolve();
-    assert.doesNotMatch(view.text(), />>>|state reset/, 'interrupt reported readiness while evaluation remained active');
+    assert.ok(!view.text().includes(baseAdapter.ps1), 'interrupt reported readiness while evaluation remained active');
     assert.deepEqual(calls, ['first']);
     finished.resolve(output('STALE\n'));
     await view.seen('SECOND');
     assert.deepEqual(calls, ['first', 'second']);
     assert.doesNotMatch(view.text(), /STALE/);
-    assert.equal((view.text().match(/state reset/g) ?? []).length, 1);
+    assert.equal(view.text().split(baseAdapter.ps1).length - 1, 2, 'each settled evaluation publishes one prompt');
   } finally {
     finished.resolve(output());
     aborted.resolve();
@@ -199,11 +240,12 @@ for (const interrupt of [undefined, () => { throw new Error('cannot cancel'); },
     view.terminal.sendData('\x03');
     await Promise.resolve();
     await Promise.resolve();
-    assert.doesNotMatch(view.text(), />>>|state reset/, 'unsupported or failed interrupt reported readiness');
+    assert.ok(!view.text().includes(baseAdapter.ps1), 'unsupported or failed interrupt reported readiness');
     finished.resolve(output('PRESERVED\n'));
     await view.seen('PRESERVED');
-    assert.doesNotMatch(view.text(), /state reset/);
-    if (interrupt) assert.match(view.text(), /interrupt failed: cannot cancel/);
+    assert.equal(view.text().split(baseAdapter.ps1).length - 1, 1);
+    assert.equal(view.text().split('PRESERVED').length - 1, 1);
+    if (interrupt) assert.ok(view.text().includes('cannot cancel'), 'the adapter failure remains visible');
   } finally {
     finished.resolve(output());
     await bounded(view.terminal.disposeRepl(), 'REPL cleanup hung');
@@ -255,7 +297,8 @@ for (const interrupt of [undefined, () => { throw new Error('cannot cancel'); },
   view.terminal.sendData('x');
   assert.deepEqual(calls, ['inner', 'close inner', 'shell']);
   view.terminal.attachRepl(() => {}, async () => { throw new Error('cleanup broke'); });
-  await assert.rejects(view.terminal.disposeRepl(), /REPL cleanup failed/);
+  await assert.rejects(view.terminal.disposeRepl(), (error) => error instanceof AggregateError
+    && error.errors.length === 1 && error.errors[0].message === 'cleanup broke');
   view.terminal.close();
 }
 

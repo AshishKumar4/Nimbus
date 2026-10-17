@@ -54,9 +54,11 @@ import { outputControlReader } from '../wasi/output-control.js';
 import { clockNs, clockResolutionNs, realtimeNs } from '../wasi/clock.js';
 import { unixGroups, unixUsers } from '../../shell/unix-accounts.js';
 import { ARENA_SIZE, CaptureStore, type ModuleLayout } from './capture-store.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+import { nameDec } from '../../_shared/bytes.js';
 
 const PAGE = 65536, te = new TextEncoder(), td = new TextDecoder();
-const E = { ACCES: 2, BADF: 8, EXIST: 20, INVAL: 28, ISDIR: 31, LOOP: 32, NOENT: 44, NOSYS: 52, NOTDIR: 54, NOTEMPTY: 55, PERM: 63, RANGE: 68, SPIPE: 70, SRCH: 71 } satisfies Record<string, BashErrno>;
+const E = { ACCES: 2, BADF: 8, EXIST: 20, INVAL: 28, ISDIR: 31, LOOP: 32, NOENT: 44, NOSYS: 52, NOTDIR: 54, NOTEMPTY: 55, PERM: 63, PIPE: 64, RANGE: 68, SPIPE: 70, SRCH: 71 } satisfies Record<string, BashErrno>;
 class Exit { declare code: number; constructor(c: number) { this.code = c; } }
 /** A process killed by a signal's default action: SIGPIPE, a write to a pipe no one can read. */
 class Signalled { declare signal: number; constructor(signal: number) { this.signal = signal; } }
@@ -335,7 +337,7 @@ function installPreopenRehoming(proc: BashProc, imports: BashWasiFsImports): voi
 function makeWasiFs(s: BashSession, proc: BashProc, DV: () => DataView, U8: () => Uint8Array, io: BashIo, memory: () => WebAssembly.Memory, synchronous = false, resident?: BashProc['resident']): BashWasiFsImports {
   const imports = {
     ...makeUnsupported(s),
-    fd_prestat_get(fd: number, out: number) { const e = proc.fds.get(fd); if (e?.kind !== 'preopen') return E.BADF; DV().setUint8(out, 0); DV().setUint32(out + 4, te.encode(e.wasiPath).length, true); return 0; },
+    fd_prestat_get(fd: number, out: number) { const e = proc.fds.get(fd); if (e?.kind !== 'preopen') return E.BADF; DV().setUint8(out, 0); DV().setUint32(out + 4, utf8Length(e.wasiPath), true); return 0; },
     fd_prestat_dir_name(fd: number, out: number, cap: number) { const e = proc.fds.get(fd); if (e?.kind !== 'preopen') return E.BADF; const bytes = te.encode(e.wasiPath); if (cap < bytes.length) return E.INVAL; U8().set(bytes, out); return 0; },
     fd_close(fd: number) { if (!proc.fds.has(fd)) return E.BADF; closeFd(s, proc, fd); return 0; },
     fd_renumber(from: number, to: number): BashErrno {
@@ -353,7 +355,19 @@ function makeWasiFs(s: BashSession, proc: BashProc, DV: () => DataView, U8: () =
     fd_read: (fd: number, p: number, n: number, out: number) => io.read(fd, readIovs(DV(),p,n),out),
     fd_write(fd: number, p: number, n: number, out: number) {
       if (!proc.fds.has(fd)) return E.BADF;
-      const write = () => { let written = 0; for (const v of readIovs(DV(),p,n).list) { const count=io.write(fd,U8().subarray(v.ptr,v.ptr+v.len)); if (count === null) return E.BADF; written+=count; } DV().setUint32(out,written,true); return 0; };
+      const write = (): BashErrno => {
+        let written = 0;
+        for (const v of readIovs(DV(), p, n).list) {
+          const result = io.write(fd, U8().subarray(v.ptr, v.ptr + v.len));
+          if (typeof result !== 'number') {
+            if (written === 0) return result.errno;
+            break;
+          }
+          written += result;
+        }
+        DV().setUint32(out, written, true);
+        return 0;
+      };
       // A pipe at capacity makes the writer wait before any byte of this call
       // is written, so a call re-entered after the wait never writes twice.
       const gate = io.writeGate?.(fd);
@@ -376,7 +390,7 @@ function makeWasiFs(s: BashSession, proc: BashProc, DV: () => DataView, U8: () =
 // Route a write through the process fd table. The caller has already rejected
 // an fd the table does not hold, so every branch here answers a real entry —
 // an unknown fd must never land in the user's terminal.
-function writeThroughFd(s: BashSession, proc: BashProc, fd: number, bytes: Uint8Array): number | null {
+function writeThroughFd(s: BashSession, proc: BashProc, fd: number, bytes: Uint8Array): ReturnType<BashIo['write']> {
   const e = proc.fds.get(fd);
   if (e && e.kind === 'pipe') {
     // A pipe descriptor has a direction, and it was recorded and never read.
@@ -384,7 +398,7 @@ function writeThroughFd(s: BashSession, proc: BashProc, fd: number, bytes: Uint8
     // written, so `exec 3< …; echo x >&3` fed the reader its own output — data
     // appearing from nowhere, attributed to the wrong writer, with no error
     // anywhere. POSIX makes the direction part of the descriptor: EBADF.
-    if (e.end === 'r') return null;
+    if (e.end === 'r') return { errno: E.BADF };
     const pp = s.pipes.get(e.pipeId) as BashPipe;
     // Without JSPI nothing parks on a write: past the pipe's budget the
     // writer runs the pipe's readers nested until they bring it back under,
@@ -395,9 +409,10 @@ function writeThroughFd(s: BashSession, proc: BashProc, fd: number, bytes: Uint8
     for (;;) {
       const decision = decideWrite(pp, bytes.length, pipeHost(s), PIPE_CAPACITY, s.pipeBudget);
       if (decision !== 'nest') {
-        // No one can read it, now or ever: SIGPIPE, whose default action ends
-        // the writer; bash reports it as 128 + 13 = 141. What stops `yes | head`.
-        if (decision === 'sigpipe') throw new Signalled(SIGPIPE);
+        if (decision === 'sigpipe') {
+          if (signalDisposition(proc, SIGPIPE) === 1) return { errno: E.PIPE };
+          throw new Signalled(SIGPIPE);
+        }
         break;
       }
       if (!pumpSuspended(s, proc)) throw pipeLimitExceeded(s);
@@ -406,7 +421,7 @@ function writeThroughFd(s: BashSession, proc: BashProc, fd: number, bytes: Uint8
     wakePipe(s, pp);
     return bytes.length;
   }
-  if (!e || (e.kind !== 'stdout' && e.kind !== 'stderr')) return null;
+  if (!e || (e.kind !== 'stdout' && e.kind !== 'stderr')) return { errno: E.BADF };
   const owned = bytes.slice();
   const delivered = e.kind === 'stderr' ? s.output.stderrBytes(owned) : s.output.stdoutBytes(owned);
   if (delivered && typeof delivered.then === 'function') queueSessionTask(s, Promise.resolve(delivered));
@@ -676,9 +691,9 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
   const wasiBase = makeWasiFs(s, proc, DV, U8, io, () => proc.inst.exports.memory, false, proc.resident);
   const wasi: BashWasiImports = {
     ...wasiBase,
-    args_sizes_get: (a, b) => { const dv = DV(); dv.setUint32(a, s.argv.length, true); dv.setUint32(b, s.argv.reduce((x, v) => x + te.encode(v).length + 1, 0), true); return 0; },
+    args_sizes_get: (a, b) => { const dv = DV(); dv.setUint32(a, s.argv.length, true); dv.setUint32(b, s.argv.reduce((x, v) => x + utf8Length(v) + 1, 0), true); return 0; },
     args_get: (ptrs, buf) => { const dv = DV(); let p = buf; for (const a of s.argv) { dv.setUint32(ptrs, p, true); ptrs += 4; p += wstr(p, a); U8()[p++] = 0; } return 0; },
-    environ_sizes_get: (a, b) => { const dv = DV(); dv.setUint32(a, s.environ.length, true); dv.setUint32(b, s.environ.reduce((x, v) => x + te.encode(v).length + 1, 0), true); return 0; },
+    environ_sizes_get: (a, b) => { const dv = DV(); dv.setUint32(a, s.environ.length, true); dv.setUint32(b, s.environ.reduce((x, v) => x + utf8Length(v) + 1, 0), true); return 0; },
     environ_get: (ptrs, buf) => { const dv = DV(); let p = buf; for (const v of s.environ) { dv.setUint32(ptrs, p, true); ptrs += 4; p += wstr(p, v); U8()[p++] = 0; } return 0; },
   };
 
@@ -693,7 +708,7 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
       if (capacity <= bytes.length) return -37;
       U8().set(bytes, ptr); U8()[ptr + bytes.length] = 0; return bytes.length;
     },
-    capture_cwd: (ptr: number, length: number) => { proc.cwd = td.decode(U8().subarray(ptr, ptr + length)); return 0; },
+    capture_cwd: (ptr: number, length: number) => { proc.cwd = nameDec.decode(U8().subarray(ptr, ptr + length)); return 0; },
     stat_metadata: suspend('stat_metadata', procFs.stat_metadata),
     account: suspend('account', procFs.account),
     // A landing (the capture's own rewind, or a longjmp's) stops the rewind and runs no hook.
@@ -732,11 +747,11 @@ function makeProc(s: BashSession, pid: number, ppid: number, fds: Map<number, Ba
       const u8 = U8();
       let e = pathPtr; while (u8[e]) e++;
       c.reason = 'exec';
-      c.execPath = td.decode(u8.subarray(pathPtr, e));
-      c.execArgv = td.decode(u8.subarray(argvFlatPtr, argvFlatPtr + argvLen)).split('\0').filter((x) => x.length);
+      c.execPath = nameDec.decode(u8.subarray(pathPtr, e));
+      c.execArgv = nameDec.decode(u8.subarray(argvFlatPtr, argvFlatPtr + argvLen)).split('\0').filter((x) => x.length);
       // The child's REAL environment (bash's export set at exec time —
       // PWD tracks the shell's cd, unlike the boot-time s.environ).
-      c.execEnv = td.decode(u8.subarray(envFlatPtr, envFlatPtr + envLen)).split('\0').filter((x) => x.length);
+      c.execEnv = nameDec.decode(u8.subarray(envFlatPtr, envFlatPtr + envLen)).split('\0').filter((x) => x.length);
       startUnwind();
       return 0;
     },
@@ -1085,7 +1100,7 @@ function ownerSide(bits: number): number | null {
 }
 
 function metadataImports(s: BashSession, proc: BashProc, DV: () => DataView, U8: () => Uint8Array, fs: RuntimeFsBridge | RuntimeSynchronousFs) {
-  const readPath = (ptr: number, length: number) => td.decode(U8().subarray(ptr, ptr + length));
+  const readPath = (ptr: number, length: number) => nameDec.decode(U8().subarray(ptr, ptr + length));
   const at = (fd: number, path: string): RuntimeFsPath => {
     if (path.startsWith('/')) return path;
     if (fd === -1) return proc.cwd + '/' + path;
@@ -1151,7 +1166,7 @@ function metadataImports(s: BashSession, proc: BashProc, DV: () => DataView, U8:
         // A uid, gid or index is unsigned, and comes as i32: one above 0x7fffffff arrives negative.
         const id = idBits >>> 0, capacity = capacityBits >>> 0;
         const text = bytes === null ? '' : td.decode(bytes);
-        const name = by === 1 ? td.decode(U8().subarray(ptr, ptr + length)) : '';
+        const name = by === 1 ? nameDec.decode(U8().subarray(ptr, ptr + length)) : '';
         let ids: [number, number];
         let strings: string[];
         if (kind === 1) {
@@ -1285,9 +1300,9 @@ async function doExec(s: BashSession, proc: BashProc): Promise<void> {
   };
   const wasi = {
     ...makeWasiFs(s, proc, DV, U8, io, memory, !canPark),
-    args_sizes_get: (a: number, b: number) => { DV().setUint32(a, argv.length, true); DV().setUint32(b, argv.reduce((n, v) => n + te.encode(v).length + 1, 0), true); return 0; },
+    args_sizes_get: (a: number, b: number) => { DV().setUint32(a, argv.length, true); DV().setUint32(b, argv.reduce((n, v) => n + utf8Length(v) + 1, 0), true); return 0; },
     args_get: (a: number, b: number) => writeStrings(argv, a, b),
-    environ_sizes_get: (a: number, b: number) => { DV().setUint32(a, env.length, true); DV().setUint32(b, env.reduce((n, v) => n + te.encode(v).length + 1, 0), true); return 0; },
+    environ_sizes_get: (a: number, b: number) => { DV().setUint32(a, env.length, true); DV().setUint32(b, env.reduce((n, v) => n + utf8Length(v) + 1, 0), true); return 0; },
     environ_get: (a: number, b: number) => writeStrings(env, a, b),
     proc_exit: (code: number): never => { throw new Exit(code); },
   };
@@ -1426,6 +1441,15 @@ function waitChild(proc: BashProc, register: (complete: () => void) => void): Pr
   });
 }
 
+function signalDisposition(proc: BashProc, signal: number): number {
+  if (signal === 9) return 0;
+  // Bash uses its live export. An active exec'd coreutil exposes no disposition
+  // export, so only its inherited mask is known; guest-side changes are not visible.
+  return proc.execIgnoredSignals === undefined
+    ? proc.inst.exports.__nimbus_signal_disposition(signal)
+    : (proc.execIgnoredSignals & (1n << BigInt(signal))) !== 0n ? 1 : 0;
+}
+
 /** Default terminating signals for virtual children, never host OS pids. */
 function signalProc(s: BashSession, caller: BashProc, pid: number, signal: number): number {
   if (!Number.isInteger(signal) || signal < 0 || signal >= 65) return -E.INVAL;
@@ -1437,10 +1461,7 @@ function signalProc(s: BashSession, caller: BashProc, pid: number, signal: numbe
   // Every virtual Bash process owns its instance/memory. Query the VICTIM,
   // not the caller currently executing kill. An exec'd child has reset its
   // caught handlers; consulting its old shell image would be incorrect.
-  const disposition = signal === 9 ? 0
-    : victim.execIgnoredSignals === undefined
-      ? victim.inst.exports.__nimbus_signal_disposition(signal)
-      : (victim.execIgnoredSignals & (1n << BigInt(signal))) !== 0n ? 1 : 0;
+  const disposition = signalDisposition(victim, signal);
   if (disposition === 1) return 0;
   if (disposition !== 0) return -E.NOSYS;
   switch (signal) {
@@ -1468,6 +1489,7 @@ function finishProc(s: BashSession, proc: BashProc, code: number, signal = 0): v
   // A terminated JSPI child may unwind after its signal exit was published.
   // Never overwrite that status or wake a later wait with a second exit.
   if (!s.procs.has(proc.pid)) return;
+  delete proc.execIgnoredSignals;
   // A wait status: the exit code in the second byte, or the killing signal in
   // the low seven bits (WIFSIGNALED), which bash reports as 128 + signal.
   const st = signal ? signal & 0x7f : (code & 0xff) << 8;

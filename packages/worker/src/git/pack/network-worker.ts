@@ -28,8 +28,8 @@ import { graphFiltersAssemble, graphFiltersDiscard, graphFiltersPiece, graphFilt
 import { historyPlan, historyResume, historyStep, type HistoryKind, type StagedFile } from './history.js';
 import { GitWriteFailure, mountWriter } from './mount-writer.js';
 import { discover, requestPack } from './upload-pack.js';
-import { retryingGitHttp } from './transport.js';
-import { observedGitHttp, remoteFailureOf } from './remote-failure.js';
+import { discoverReceivePack, sendPack } from './receive-pack.js';
+import { remoteFailureOf } from './remote-failure.js';
 import { listRefs, fetchPack, fetchPackResume, pushPack } from './remote.js';
 import { readFramedGitBody } from './remote-body.js';
 import type * as GitBundle from '../../../vendor/git.generated.mjs';
@@ -349,7 +349,6 @@ export const networkWorker = {
       }, 500);
     }
     const git = bundle.git;
-    const http = observedGitHttp(retryingGitHttp(bundle.gitHttp));
 
     // Keep progress bounded: phase transitions and completions, plus one
     // timed update every two seconds. cf-git fires this callback per pack
@@ -541,7 +540,7 @@ export const networkWorker = {
       } else if (opts.op === 'fetch') {
         // ref is the branch a pull merges; without it, the current branch's, as git fetch picks.
         await git.fetch({
-          fs, http,
+          fs,
           url: opts.url,
           uploadPack: { discover, requestPack },
           dir: opts.dir,
@@ -554,7 +553,16 @@ export const networkWorker = {
           onAuth,
         });
       } else if (opts.op === 'push') {
-        await git.push({ fs, http, dir: opts.dir, url: opts.url, remote: opts.remote || 'origin', ref: opts.ref, onProgress, onAuth });
+        await git.push({
+          fs,
+          receivePack: { discover: discoverReceivePack, sendPack },
+          dir: opts.dir,
+          url: opts.url,
+          remote: opts.remote || 'origin',
+          ref: opts.ref,
+          onProgress,
+          onAuth,
+        });
       } else {
         throw new Error('Unknown op: ' + opts.op);
       }
@@ -569,7 +577,7 @@ export const networkWorker = {
         error: (error && error.message) || String(e),
         // A write git would have failed: git's own lines (pack/mount-writer.ts).
         gitFailure: e instanceof GitWriteFailure ? e.lines : undefined,
-        remoteFailure: remoteFailureOf(e, http),
+        remoteFailure: remoteFailureOf(e),
       });
     }
   },

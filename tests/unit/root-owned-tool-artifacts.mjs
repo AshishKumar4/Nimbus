@@ -18,21 +18,16 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CommandRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
-import { makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
+import { npmRegistry } from './lib/npm-registry.mjs';
 
 const USER = CRED_SESSION_USER;
 const PID = 7;
 const tgz = (name, version) => `https://registry.invalid/${name}-${version}.tgz`;
-const resolved = (name, version) => ({
-  pkg: {
-    name, version, tarballUrl: tgz(name, version), integrity: 'sha512-fixture',
-    dependencies: {}, exports: null, main: 'index.js', module: '', bin: {},
-  },
-  cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-});
+const { resultFor } = npmRegistry({ 'is-number': { '7.0.0': { dist: { integrity: 'sha512-fixture' } } } });
 
 const harness = createSqliteVfsTestHarness(new Database(':memory:'));
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -46,7 +41,7 @@ const files = new ProcessFiles(vfs);
 
 const log = [];
 // The shards' batch writes are authorized as the invoking process, so they write as the user.
-const env = makeFanoutEnv({ root: user, NM: 'unused', resultFor: (name) => resolved(name, '7.0.0') });
+const env = makeFanoutEnv({ root: user, NM: 'unused', resultFor });
 const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };
 const installer = new NpmInstaller(files, harness.sql, { env, ctx, onProgress: (msg) => log.push(msg) });
 const install = (dir, opts = {}) => installer.install(dir, { pid: PID, cred: USER, ...opts });

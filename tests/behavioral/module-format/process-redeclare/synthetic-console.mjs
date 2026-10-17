@@ -20,14 +20,13 @@
 // to assert on the shape that actually exists: `con=object` with a
 // callable `.log`.
 
-import { Terminal, mintSession, sleep, makeAsserter, BASE } from '../../_driver.mjs';
+import { Terminal, mintSession, makeAsserter, BASE } from '../../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[process-redeclare/synthetic-console] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 const A = makeAsserter('process-redeclare/synthetic-console');

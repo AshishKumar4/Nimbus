@@ -33,7 +33,6 @@ try {
   };
 
   const worker = await importGitFacetWorker(tempDir, `
-export const gitHttp = {};
 export const git = {
   async fetch({ fs, dir }) {
     const bytes = await fs.promises.readFile(dir + '/.git/objects/pack/pack-test.pack');

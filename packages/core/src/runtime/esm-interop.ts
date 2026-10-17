@@ -7,14 +7,17 @@
  * itself (native-esm.ts). The linking:
  *
  *   - the export getters are installed first, on the CommonJS exports object
- *     (ESM_EXPORTS_HELPER: `__esModule`, a `Module` tag, live enumerable
+ *     (ESM_EXPORTS_HELPER: `__esModule`, not enumerable and replaced by a
+ *     module's own export of that name, a `Module` tag, live enumerable
  *     getters in exported-name order), so a module in a cycle with this one
  *     finds them;
- *   - every requested module is then loaded in source order (ESM_LOAD_HELPER:
- *     the importer's require, resolving it as an import, with its `type`
- *     attribute), which gives its namespace as Node's loader makes it: an
- *     ES module's own, or a CommonJS module's, a builtin's or JSON's as
- *     Node's translators make it (node-shims); a default import reads its
+ *   - every requested module's namespace is then bound in source order
+ *     (ESM_LOAD_HELPER: the require the module's link is given, asked with
+ *     each specifier and its `type` attribute), the namespace Node's loader
+ *     makes: an ES module's own, or a CommonJS module's, a builtin's or
+ *     JSON's as Node's translators make it. Nothing is evaluated then:
+ *     node-shims evaluates the graph as ECMA-262 does (runtime/esm-graph.ts),
+ *     a module's link its InitializeEnvironment. A default import reads its
  *     `default`, and a namespace import is it;
  *   - last, each `export *` copies its module's names (ESM_STAR_HELPER) but
  *     those two of them reach different bindings of (ESM_CONFLICTS_HELPER:
@@ -27,7 +30,7 @@
  * namespace is, so a call on it reads `Module.f` in a stack.
  *
  * The interpreter runs this module after a program may have replaced
- * built-ins, so it names none (tests/unit/interpreter-primordials.mjs), and
+ * built-ins, so it names none (tests/unit/primordials-audit.mjs), and
  * it makes its lists with the caller's EsmLists.
  */
 import type { ExportAllDeclaration, ExportNamedDeclaration, Identifier, ImportDeclaration, Literal, ModuleDeclaration, Statement } from 'acorn';
@@ -35,14 +38,15 @@ import { bindingIdentifiers } from './binding-pattern.js';
 
 /** The CommonJS exports object marked as an ES module's; answers the function that installs an export's getter. */
 export const ESM_EXPORTS_HELPER = '(() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; '
-  + 'return (exports) => { O.defineProperty(exports, "__esModule", { value: true }); O.defineProperty(exports, tag, { value: "Module" }); '
-  + 'return (name, get) => O.defineProperty(exports, name, { enumerable: true, get }); }; })()';
+  + 'return (exports) => { O.defineProperty(exports, "__esModule", { value: true, configurable: true }); O.defineProperty(exports, tag, { value: "Module" }); '
+  + 'return (name, get) => O.defineProperty(exports, name, { enumerable: true, configurable: false, get }); }; })()';
 
 /**
  * `export *`: each name of the module but `default`, those already exported
- * and those `omitted` (ESM_CONFLICTS_HELPER's), read through.
+ * (enumerable: the `__esModule` marker is not, and a star replaces it as an
+ * export would) and those `omitted` (ESM_CONFLICTS_HELPER's), read through.
  */
-export const ESM_STAR_HELPER = '(exports, define, m, omitted) => { for (const k in m) { if (k === "default" || ({}).hasOwnProperty.call(exports, k)) continue; '
+export const ESM_STAR_HELPER = '(exports, define, m, omitted) => { for (const k in m) { if (k === "default" || ({}).propertyIsEnumerable.call(exports, k)) continue; '
   + 'let left = false; for (let i = 0; omitted && i < omitted.length; i++) if (omitted[i] === k) left = true; if (!left) define(k, () => m[k]); } }';
 
 /** What a module's require is passed for the names its `export *`s reach two different bindings of. */
@@ -52,14 +56,14 @@ export const ESM_STAR_CONFLICTS = 'nimbus:star-conflicts';
 export const ESM_CONFLICTS_HELPER = `(require) => require("", "${ESM_STAR_CONFLICTS}")`;
 
 /**
- * What a module's require is passed beside a static import's specifier: the
- * loader resolves it as Node's ESM loader does (node-shims' __requireFrom),
- * not as require() does. A require of a module takes its first argument
- * alone, as Node's does.
+ * What a module's link require is passed beside a static import's
+ * specifier (node-shims' __nimbusInterpretedRecord answers it with the
+ * namespace of the module its graph resolved the request to), apart from
+ * the conflicts an `export *` asks for (ESM_STAR_CONFLICTS).
  */
 export const ESM_STATIC_IMPORT = 'nimbus:static-import';
 
-/** A static import's module: the importer's require, told the request is an import, with its `type` attribute (or null). */
+/** A static import's namespace: the link's require, told the request is an import, with its `type` attribute (or null). */
 export const ESM_LOAD_HELPER = `(require, source, type) => require(source, "${ESM_STATIC_IMPORT}", type)`;
 
 /** The helpers as an object literal's source: what a launch compiles for its interpreter (interpreter/modules.ts ModuleHelpers). */

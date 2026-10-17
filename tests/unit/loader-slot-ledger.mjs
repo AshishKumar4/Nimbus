@@ -35,7 +35,7 @@ import {
   createCtxExports,
   createFacetCtx,
   createFacetWorld,
-} from './facet-host-harness.mjs';
+} from './lib/facet-host-harness.mjs';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 
 // The platform's words for the limit, as a deployed Durable Object received them.

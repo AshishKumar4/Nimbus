@@ -6,7 +6,7 @@
 // resets the whole session object.
 
 import assert from 'node:assert/strict';
-import { _rpcInnerDoFetch } from '../../packages/worker/src/session/rpc.ts';
+import { _rpcInnerDoCall } from '../../packages/worker/src/session/rpc.ts';
 import { registerInnerDoClass } from '../../packages/fabric/src/inner-do-registry.ts';
 
 // ctx.facets of one object, shared by its incarnations: a running facet
@@ -51,10 +51,10 @@ const counter = (label) => class {
 const DO_ID = 'inner-do-incarnation-object';
 const facets = facetsOfOneObject();
 const incarnation = () => ({ ctx: { id: { toString: () => DO_ID }, facets } });
-const request = {
-  bindingName: 'COUNTER', id: 'room-1', method: 'GET', url: 'https://inner.test/', headers: [], body: null,
-};
-const answer = async (host) => new TextDecoder().decode((await _rpcInnerDoFetch(host, request)).body);
+/** What object room-1's fetch answers on `host`, called as a stub's caller calls it. */
+const answer = async (host) => (await _rpcInnerDoCall(host, {
+  bindingName: 'COUNTER', id: 'room-1', path: ['fetch'], args: [new Request('https://inner.test/')],
+})).text();
 
 const first = incarnation();
 registerInnerDoClass(DO_ID, 'COUNTER', counter('A'));

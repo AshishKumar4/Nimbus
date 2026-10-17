@@ -29,7 +29,7 @@ import { processHostFor } from '../../packages/worker/src/loaders/process-host.t
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { programmaticHost } from './lib/programmatic-host.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld } from './lib/facet-host-harness.mjs';
 
 adoptCtxExports({
   SupervisorRPC: (options) => ({ props: options.props, async stdout() {}, [Symbol.dispose]() {} }),

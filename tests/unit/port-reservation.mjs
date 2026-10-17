@@ -18,7 +18,7 @@ import {
   reservePort,
 } from '../../packages/worker/src/session/port-capability.ts';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../../packages/worker/src/session/keys.ts';
-import { createFacetCtx } from './facet-host-harness.mjs';
+import { createFacetCtx } from './lib/facet-host-harness.mjs';
 
 // The store is the harness's facet ctx: serialized transactions over a
 // private snapshot, commits on success only — the same contract the DO

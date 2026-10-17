@@ -26,8 +26,9 @@
 import { GRAPH_RECORDS_DIR, commitRecord } from './commit-graph.js';
 import { decodeBatch, MODE_GITLINK, MODE_TREE } from './plan.js';
 import { TreeEntries } from './tree-object.js';
-import { OID_BYTES, oidToHex, PackFormatError } from './format.js';
-import { STAGE_DIR, commitTree, concat, join, readRange, resumePack, settledBefore, TagWatch, storePackResumable, } from './clone.js';
+import { OID_BYTES, oidBytes, oidToHex, PackFormatError } from './format.js';
+import { concatBytes, nameDec } from '@nimbus-sh/core/_shared/bytes.js';
+import { STAGE_DIR, commitTree, join, readRange, resumePack, settledBefore, TagWatch, storePackResumable, } from './clone.js';
 import { requestPack } from './upload-pack.js';
 /** Root trees per trees request. */
 export const COMMITS_PER_CHUNK = 5_000;
@@ -41,7 +42,6 @@ export const BLOBS_PER_HISTORY_BATCH = 10_000;
 /** History packs are resolved with this cache, and this many stored bytes kept readable. */
 const HISTORY_CACHE_BYTES = 8 * 1024 * 1024;
 const HISTORY_RECENT_BYTES = 24 * 1024 * 1024;
-const decoder = new TextDecoder();
 function transport(context) {
     return { url: context.url, auth: context.auth, fetch: context.fetch, onProgress: context.onProgress };
 }
@@ -66,7 +66,7 @@ class ListWriter {
         const bytes = this.size;
         if (this.dir !== STAGE_DIR)
             await writer.directory(this.dir);
-        await writer.file(this.dir + '/' + name, 0o644, concat(this.parts));
+        await writer.file(this.dir + '/' + name, 0o644, concatBytes(this.parts));
         return [{ name, bytes }];
     }
 }
@@ -76,7 +76,7 @@ function lister(kind, list, graph) {
         return (object) => {
             if (object.type !== 'commit')
                 return;
-            list.add(hexBytes(commitTree(object.data, oidToHex(object.oid))));
+            list.add(oidBytes(commitTree(object.data, oidToHex(object.oid))));
             try {
                 graph.add(commitRecord(object.oid, object.data));
             }
@@ -112,12 +112,6 @@ function lister(kind, list, graph) {
         };
     }
     return undefined;
-}
-function hexBytes(hex) {
-    const out = new Uint8Array(OID_BYTES);
-    for (let i = 0; i < OID_BYTES; i++)
-        out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-    return out;
 }
 async function settle(writer, kind, stored, list, graph, listName, watch) {
     const lists = await list.write(writer, listName);
@@ -294,14 +288,14 @@ export async function historyPlan(context, request) {
     for (const file of request.present) {
         const bytes = await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/' + file.name), 0, file.bytes);
         for (const oid of decodeBatch(bytes).keys())
-            table.add(hexBytes(oid), 0, null);
+            table.add(oidBytes(oid), 0, null);
     }
     for (const file of request.lists) {
         const bytes = await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/' + file.name), 0, file.bytes);
         const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
         for (let at = 0; at < bytes.byteLength;) {
             const length = view.getUint16(at + OID_BYTES);
-            table.add(bytes, at, decoder.decode(bytes.subarray(at + OID_BYTES + 2, at + OID_BYTES + 2 + length)));
+            table.add(bytes, at, nameDec.decode(bytes.subarray(at + OID_BYTES + 2, at + OID_BYTES + 2 + length)));
             at += OID_BYTES + 2 + length;
         }
     }

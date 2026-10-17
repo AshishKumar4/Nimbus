@@ -27,7 +27,7 @@
 // probe surfaces the change in its forensic output for the operator
 // to migrate to an R-tier probe.
 
-import { mintSession, Terminal, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, outputLines } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 console.log(`shell-polish/bash-extensions-out-of-scope — forensic`);
@@ -43,7 +43,7 @@ async function run(c, to = 10_000) {
 }
 
 function lastLine(out, predicate) {
-  const lines = out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const lines = outputLines(out).filter(Boolean);
   return lines.reverse().find(predicate) || '';
 }
 
