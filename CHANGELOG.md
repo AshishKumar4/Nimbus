@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (shell): in the built-in shell, an octal or hex escape in `printf`
+  (its format and `%b`) and `echo -e` writes one byte, as bash does.
+  `printf '\303\251'` writes "é" and `printf '\377'` writes the byte 0xff.
+  Before, each escape became a character written as UTF-8, so
+  `printf '\357\273\277'` gave six bytes instead of a byte order mark.
+  `printf %c` writes its argument's first byte.
+
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
