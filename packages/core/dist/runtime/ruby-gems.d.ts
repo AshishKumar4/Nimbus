@@ -32,6 +32,14 @@ export interface GemLoadPath {
  * costs no activation, and RubyGems does not read it at all.
  */
 export declare function installedGemLoadPath(vfs: CredentialedVfs, gemHome: string): Promise<GemLoadPath>;
+/**
+ * Every gem-bin wrapper in `gemHome` that an earlier Nimbus wrote, written
+ * again as writeGemExecutableWrapper writes one now, so that RubyGems chooses
+ * its executable where it chooses its version. Its gem is named by its
+ * specification (readGemSpec). Run before the bins are registered; a wrapper
+ * already current is read and left alone.
+ */
+export declare function reconcileGemBinWrappers(vfs: CredentialedVfs, gemHome: string): Promise<void>;
 export declare function installedGemBins(vfs: CredentialedVfs, gemHome: string): Promise<InstalledRubyGemBin[]>;
 export declare function installRubyGems(vfs: CredentialedVfs, requests: RubyGemRequest[], 
 /** `network`: the workspace's; RubyGems is reached through its egress, when it has one. */

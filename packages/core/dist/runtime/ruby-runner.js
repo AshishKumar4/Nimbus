@@ -53,7 +53,7 @@ import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { RUBY_SOCKET_SHIM } from './ruby-socket-shim.js';
 import { RUBY_GREEN_THREADS } from './ruby-green-threads.js';
-import { gemHomeFor, installRubyBundle, installRubyGems, installedGemBins, installedGemLoadPath, parseRubyGemRequirements, } from './ruby-gems.js';
+import { gemHomeFor, installRubyBundle, installRubyGems, installedGemBins, installedGemLoadPath, reconcileGemBinWrappers, parseRubyGemRequirements, } from './ruby-gems.js';
 import { errorText } from '../_shared/error-text.js';
 import { openRuntimeStdio, runtimeOutput } from './runtime-stdio.js';
 import { unsettledNoteOf } from '../_shared/process-fs-client.js';
@@ -69,6 +69,8 @@ export function makeRubyRunnerFactory(deps) {
     return async function rubyRunnerFactory(manifest, installRoot, binName, binKind) {
         const wasm = installedFile(manifest, installRoot, 'share/ruby/ruby+stdlib.wasm');
         const registerGemBins = async (vfs, home) => {
+            // Wrappers an earlier Nimbus wrote, made to let RubyGems choose their executable as it chooses their version.
+            await reconcileGemBinWrappers(vfs, gemHomeFor(home));
             if (!registry)
                 return;
             for (const bin of (await installedGemBins(vfs, gemHomeFor(home)))) {
