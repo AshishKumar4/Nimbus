@@ -44,7 +44,7 @@ import { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, explicitT
 import { RecallRequired, recallOf, withRecall } from './recall.js';
 import { SESSION_KERNEL_ROOTS, readLeaseCovers } from '../_shared/read-lease-cover.js';
 export { RecallRequired, recallOf, withRecall } from './recall.js';
-import { copiedPermissions, copyfileMode, readDeclaredSource, syncValue } from './vfs.js';
+import { copiedPermissions, copySetsMode, readDeclaredSource, syncValue } from './vfs.js';
 import { errnoCodeOf, toVfsError, vfsError } from './vfs-error.js';
 import { walkRemoval } from './removal-walk.js';
 import { inodeKind, linkedSignal, untilAborted, validateFileChunks, validateInodeShape, withUmask, } from '../runtime/wave-contracts.js';
@@ -5711,10 +5711,10 @@ export class SqliteVFS {
         let mode = prior ? prior.mode : made.mode;
         let gid = prior?.gid ?? made.gid;
         let uid = prior?.uid ?? cred.uid;
-        if (options?.keepMode || options?.preserve) {
+        const wanted = copySetsMode(inode.mode, inode.size, cred.uid, options ?? {});
+        if (wanted !== null) {
             // libuv's fchmod (cp -p's) of what open left: the file there, or the one made.
             const opened = prior ?? { mode, uid: cred.uid, gid, isDir: false, kind: 'file' };
-            const wanted = options.preserve ? inode.mode & 0o7777 : copyfileMode(inode.mode, inode.size, cred.uid);
             ({ mode, gid } = this.modeChange(opened, wanted, cred, target.path));
         }
         // cp -p's owner, which only root may give; a shared directory's group stands.

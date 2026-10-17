@@ -932,11 +932,13 @@ export declare class CompositeVFS implements VFS {
     private copyBytes;
     /**
      * cp -p's metadata for an entry a copy between backends made at `toRel`
-     * (a file or a directory; a link's own is not set, as no backend sets a
-     * link's own times or owner, and through it they would land on another
-     * file): the source's owner when root copies, then its mode (a chown may
-     * clear set-id bits), then its times, as the backend allows each. As a
-     * native copy preserves them (SqliteVFS copyFile, planCopyTree).
+     * (`toAt` in the namespace; a file or a directory; a link's own is not
+     * set, as no backend sets a link's own times or owner, and through it
+     * they would land on another file): the source's owner when root copies,
+     * then its mode (a chown may clear set-id bits), then its times, as the
+     * backend allows each. Each is guarded right before it is made, after the
+     * write it waited on, and told as a change once it lands. As a native
+     * copy preserves them (SqliteVFS copyFile, planCopyTree).
      */
     private preserveMetadata;
     /** rmdir, or on a backend without it, an emptiness check and unlink. */

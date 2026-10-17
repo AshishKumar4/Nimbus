@@ -1208,11 +1208,11 @@ export function residentFilesystem(session, resident, delegation) {
         return entry ? store.content(key, entry.revision) : undefined;
     };
     // A copy both of whose names a held subtree holds, its source's bytes the
-    // holder's or ones the view vouches for: decided here; any other, the
-    // session's.
+    // holder's or ones the view vouches for: decided here; any other, and one
+    // that preserves (cp -p's metadata, the session's to judge), the session's.
     const bySessionCopy = fs.copyFile;
     fs.copyFile = (from, to, options) => {
-        if (holder === null)
+        if (holder === null || options?.preserve === true)
             return bySessionCopy(from, to, options);
         const local = decide('copyFile', () => after(walkFor(from, true), (source) => (source === DELEGATE ? DELEGATE
             : after(walkFor(to, true), (target) => {
