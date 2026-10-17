@@ -20,14 +20,15 @@ published independently in the `@nimbus-sh` npm scope.
   what it waited for.
 - Changed (core): `FacetSpec.wasmModules` and a call's `wasmModules` take
   `FacetImage`s instead of ArrayBuffers. Open one with
-  `ProcessView.image(path, { sha256, size })` or `hostImage(authority,
-  cred, path, { sha256, size })`, naming the bytes it must be: for an
-  installed runtime file, `installedFile(manifest, installRoot, rel)`
-  gives its path and the manifest's digest. The host reads the image when
-  it builds the facet, bounded at `size`, and refuses it (ESTALE) unless
-  the file holds those bytes. An image on a mount, which cannot bound the
-  read, is refused (EFBIG). `ws.fs.readArrayBufferUncached` is removed;
-  `readFileUncached` returns the read's own bytes without copying them.
+  `ProcessView.image(path)` or `hostImage(authority, cred, path)`. An
+  image is named by the store's content key for its bytes
+  (`RuntimeFsBridge.contentKey`), which equal bytes share in every
+  session, and nothing is hashed to name it. The host reads the image
+  when it builds the facet, and refuses it (ESTALE) unless the file still
+  holds those bytes, checked in the read's own turn. An image on a mount,
+  which keeps no content keys, is refused (ENOTSUP).
+  `ws.fs.readArrayBufferUncached` is removed; `readFileUncached` returns
+  the read's own bytes without copying them.
 - Added: `/api/_diag/memory` names the isolate the session runs in
   (`isolate.id`). Sessions that report one id share its memory limit.
 - Fixed: `NIMBUS_DEBUG` means the same in a hosted runtime as in a session.

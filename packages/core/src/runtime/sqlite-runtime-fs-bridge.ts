@@ -161,6 +161,11 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       const located = this.locate(path, options.followSymlinks !== false);
       if (located === null || located.absent) return null;
       try {
+        if (options.contentKey !== undefined) {
+          // Checked in the read's own turn: the bytes read are the bytes the key names.
+          if (located.mount) throw fsError('ENOTSUP', 'read', path);
+          if (this.vfs.contentKey(located.path) !== options.contentKey) throw fsError('ESTALE', 'read', path);
+        }
         if (options.maxBytes !== undefined) {
           // A bounded whole read is SQLite's alone, where the size check and
           // the read are one turn: a mount's stat and read are two calls, and
@@ -601,6 +606,16 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     const located = this.locate(path, true);
     if (located === null) throw fsError('ELOOP', 'revision', path);
     return located.mount ? 0 : this.vfs.revision(located.path);
+  }
+
+  contentKey(path: RuntimeFsPath): string {
+    return called({ syscall: 'open', path }, () => {
+      const located = this.locate(path, true);
+      if (located === null) throw fsError('ELOOP', 'open', path);
+      if (located.absent) throw fsError('ENOENT', 'open', path);
+      if (located.mount) throw fsError('ENOTSUP', 'open', path);
+      return this.vfs.contentKey(located.path);
+    });
   }
 
   acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult {

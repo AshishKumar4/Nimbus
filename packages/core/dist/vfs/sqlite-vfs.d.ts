@@ -1498,8 +1498,9 @@ export declare class SqliteVFS {
     /**
      * The content key of an inode's bytes: sha256 of them up to CHUNK_SIZE,
      * else the digest of the manifest's ordered chunk hashes. An in-place edit
-     * clears a manifest's digest; it is recomputed here and stored unless
-     * another content already holds it.
+     * clears a manifest's digest; it is recomputed here once per edit and
+     * remembered (contentKeyMemo, dropped by the next edit), never written: a
+     * lookup is a read, and the store may be open read-only.
      */
     private contentKeyOf;
     private manifestDigest;

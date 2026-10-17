@@ -37,7 +37,6 @@ import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors
 import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted, reopenMounted } from '../vfs/mounted-description.js';
 import { registerDirectoryReadBridge, directoryReadHandleClosed } from './read-directory-batch.js';
 import { readLeaseCovers, SESSION_KERNEL_ROOTS } from '../_shared/read-lease-cover.js';
-import { sha256Hex } from '../_shared/crypto.js';
 function immutableCredential(cred) {
     // One frozen whole already (a process table's: ProcessTable.credOf) is kept, not copied again.
     if (Object.isFrozen(cred) && Object.isFrozen(cred.groups) && isVfsCred(cred))
@@ -164,6 +163,7 @@ class GuardedProcessBridge {
     symlink(target, path) { this.guard(); return this.target.symlink(target, path); }
     fsync(handleId) { this.guard(); return this.target.fsync(handleId); }
     revision(path) { this.guard(); return this.target.revision(path); }
+    contentKey(path) { this.guard(); return this.reading(() => this.target.contentKey(path)); }
     acquire(epoch, cursor, options) {
         this.guard();
         return this.withReadLease(this.target.acquire(epoch, cursor, options), options);
@@ -766,6 +766,11 @@ class AwaitingProcessBridge {
     get synchronous() { return this.bridge; }
     gateLaunch(named) { return this.bridge.gateLaunch(named); }
     revision(path) { return this.bridge.revision(path); }
+    contentKey(path) {
+        return this.either([path], () => this.bridge.contentKey(path), async () => {
+            throw syscallError('ENOTSUP', 'open', await this.path(path));
+        });
+    }
     /** The process's namespace's changes at `path` and under it (CompositeVFS.watchChanges), named as its listings name them; stopped with its scope. */
     subscribe(path, listener, options) {
         this.authority();
@@ -973,6 +978,9 @@ class AwaitingProcessBridge {
             // Only SQLite bounds a whole read (SqliteRuntimeFsBridge.readFile): a mount answers EFBIG, unread.
             if (options?.maxBytes !== undefined)
                 throw syscallError('EFBIG', 'read', name);
+            // Nor does a mount keep content keys to read by.
+            if (options?.contentKey !== undefined)
+                throw syscallError('ENOTSUP', 'read', name);
             const bytes = (await this.viewed(name, follow)) ?? (await this.namespace.readFile(name));
             // An uncached read hands back bytes of its own, as SqliteRuntimeFsBridge's does.
             return options?.cached === false ? bytes.slice() : bytes;
@@ -1451,14 +1459,22 @@ export class ProcessView {
      * again here. `maxBytes` as readFile's.
      */
     async readFileUncached(path, options) {
-        const bytes = await this.call('open', path, () => this.fs.readFile(path, { cached: false, maxBytes: options?.maxBytes }));
+        const bytes = await this.call('open', path, () => this.fs.readFile(path, { cached: false, maxBytes: options?.maxBytes, contentKey: options?.contentKey }));
         if (bytes === null)
             throw syscallError('ENOENT', 'open', path);
         return bytes;
     }
-    /** `path` as the wasm image `expected` names, read through this view when the host builds the facet (openFacetImage). */
-    async image(path, expected) {
-        return await openFacetImage((use) => use(this), path, expected);
+    /** The file's content key (RuntimeFsBridge.contentKey): equal keys, equal bytes; ENOTSUP where the filesystem keeps none. */
+    async contentKey(path) {
+        const { fs } = this;
+        const contentKey = fs.contentKey;
+        if (contentKey === undefined)
+            throw syscallError('ENOTSUP', 'open', path);
+        return await this.call('open', path, () => contentKey(path));
+    }
+    /** `path` as a wasm image a facet loads, read through this view when the host builds the facet (openFacetImage). */
+    async image(path) {
+        return await openFacetImage((use) => use(this), path);
     }
     /**
      * rm: a file, or with `recursive` a tree, whole or not at all; `force`
@@ -1641,44 +1657,47 @@ export async function withOpenFiles(view, use, failed) {
     }
 }
 /**
- * `path` as the wasm image `expected` names ({@link FacetImage}), each access
- * made through a view `through` hands for its duration: a stat now, and the
- * bytes only when the host builds the facet. Its identity is the digest, so
- * it names the same bytes in every session, store and epoch. A read is bounded
- * at the expected size where the filesystem can bound one (SQLite; a mount
- * answers EFBIG, unread), and its bytes are the image or the read is refused
- * (ESTALE): whatever happened to the file, a facet loads only the bytes its
- * identity names.
+ * `path` as a wasm image a facet loads ({@link FacetImage}), each access made
+ * through a view `through` hands for its duration: its content key and size
+ * now, and its bytes only when the host builds the facet. The key is the
+ * store's own record of the bytes (RuntimeFsBridge.contentKey), so the
+ * image's identity, the key with the size, names the same bytes in every
+ * session and store, and nothing is hashed. A read takes only the bytes the
+ * key names, bounded at the size opened, both checked in the read's own turn,
+ * and of exactly that size: whatever happened to the file, a facet loads
+ * those bytes or none (ESTALE, EFBIG). A mount keeps no content keys, so an
+ * image there is refused (ENOTSUP).
  */
-async function openFacetImage(through, path, expected) {
-    // Taken now: the image is these bytes whatever the caller's object says later.
-    const { sha256, size } = expected;
-    const opened = await through((view) => view.stat(path));
-    if (opened === null)
-        throw syscallError('ENOENT', 'open', path);
-    if (opened.type !== 'file')
-        throw syscallError('EISDIR', 'open', path);
+async function openFacetImage(through, path) {
+    const { key, size } = await through(async (view) => {
+        const opened = await view.stat(path);
+        if (opened === null)
+            throw syscallError('ENOENT', 'open', path);
+        if (opened.type !== 'file')
+            throw syscallError('EISDIR', 'open', path);
+        return { key: await view.contentKey(path), size: opened.size };
+    });
     return {
         path,
-        identity: `sha256:${sha256}`,
+        // A key and its length: a small file's key hashes its bytes and a large one's its chunk list, so only the two together name one set of bytes.
+        identity: `content:${key}:${size}`,
         size,
         peak: size,
         read: () => through(async (view) => {
-            const bytes = await view.readFileUncached(path, { maxBytes: size });
-            if (bytes.byteLength !== size || await sha256Hex(bytes) !== sha256) {
-                throw syscallError('ESTALE', 'open', path, { detail: 'the file is not the image it was opened as' });
-            }
+            const bytes = await view.readFileUncached(path, { contentKey: key, maxBytes: size });
+            if (bytes.byteLength !== size)
+                throw syscallError('ESTALE', 'open', path);
             return bytes;
         }),
     };
 }
 /**
- * `path` as the wasm image `expected` names, read as `cred` through a host
- * view of its own at every load: for a facet that outlives the view it was
- * opened from (a shell's bash, a git that leaves its facet warm, a REPL).
+ * `path` as a wasm image a facet loads, read as `cred` through a host view
+ * of its own at every load: for a facet that outlives the view it was opened
+ * from (a shell's bash, a git that leaves its facet warm, a REPL).
  */
-export async function hostImage(authority, cred, path, expected) {
-    return await openFacetImage((use) => withHostView(authority, cred, use), path, expected);
+export async function hostImage(authority, cred, path) {
+    return await openFacetImage((use) => withHostView(authority, cred, use), path);
 }
 function vfsStatOf(stat) {
     return {

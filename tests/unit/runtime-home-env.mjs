@@ -41,7 +41,7 @@ const commandContext = (filesystem, env) => runtimeContext(filesystem, { args: [
     version: '0.29.4',
     files: [
       manifestFile('share/cpython/python.wasm', new Uint8Array([0])),
-      { path: 'lib/python313.zip' },
+      manifestFile('lib/python313.zip', new Uint8Array()),
     ],
     runtime_artifacts: [{
       id: 'pyodide-0.29.4-workerd-adapter-v2',
