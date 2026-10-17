@@ -691,13 +691,29 @@ export function readBracedExpansion(
 /** What a `#` that starts a comment may follow: a blank, or an operator that ends a word. */
 const COMMENT_AFTER = ' \t\n;&|()<>';
 
+/** A table of the ASCII characters in `chars`, for nextStop. */
+function stopTable(chars: string): Uint8Array {
+  const table = new Uint8Array(128);
+  for (const c of chars) table[c.charCodeAt(0)] = 1;
+  return table;
+}
+
 /** Where a balanced span's scan must look, by its brackets: every other character is body as it stands. */
-const SPAN_STOPS: Readonly<Record<'(' | '{', RegExp>> = {
-  '(': /[\\'"$`#()]/g,
-  '{': /[\\'"$`#{}]/g,
+const SPAN_STOPS: Readonly<Record<'(' | '{', Uint8Array>> = {
+  '(': stopTable('\\\'"$`#()'),
+  '{': stopTable('\\\'"$`#{}'),
 };
 /** Where a double-quoted span's scan must look. */
-const DOUBLE_QUOTED_STOPS = /["\\$`]/g;
+const DOUBLE_QUOTED_STOPS = stopTable('"\\$`');
+
+/** The first index from `i` whose character `stops` marks, or the input's length. */
+function nextStop(input: string, i: number, stops: Uint8Array): number {
+  for (; i < input.length; i++) {
+    const c = input.charCodeAt(i);
+    if (c < 128 && stops[c] === 1) return i;
+  }
+  return i;
+}
 
 /**
  * The body of a balanced `open`...`close` span whose body starts at `pos`
@@ -718,8 +734,7 @@ export function readBalancedCommand(
 
   while (i < input.length) {
     // Characters that are no syntax here go into the body as one run.
-    stops.lastIndex = i;
-    const at = stops.exec(input)?.index ?? input.length;
+    const at = nextStop(input, i, stops);
     if (at > i) {
       body += input.slice(i, at);
       i = at;
@@ -802,8 +817,7 @@ function readQuoted(input: string, pos: number, quote: '"' | "'"): { text: strin
   let i = pos + 1;
   let text = quote;
   while (i < input.length) {
-    DOUBLE_QUOTED_STOPS.lastIndex = i;
-    const at = DOUBLE_QUOTED_STOPS.exec(input)?.index ?? input.length;
+    const at = nextStop(input, i, DOUBLE_QUOTED_STOPS);
     text += input.slice(i, at);
     i = at;
     if (i === input.length) break;
