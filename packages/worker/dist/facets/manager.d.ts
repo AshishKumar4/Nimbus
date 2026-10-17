@@ -1236,9 +1236,10 @@ export declare class FacetManager {
      * its build's, held from the build until its module map is generated, or
      * for a state it did not build its map's (_holdMapShare); either taken
      * before it holds a worker. What it built is live until then, and no
-     * other build runs beside it beyond what the budget holds. Given back once
-     * the map is made (_generateUnderCeiling), kept for a rebuild under the
-     * ceiling, and given back as its launch ends however it ends.
+     * other build runs beside it beyond what the budget holds. A one-shot keeps
+     * only its map's retained share while parked, until the loader takes it;
+     * other maps give it back once generated (_generateUnderCeiling). Kept for
+     * a rebuild under the ceiling, and given back as its launch ends however it ends.
      */
     private readonly buildAdmissions;
     private _releaseBuildAdmission;
@@ -1858,6 +1859,8 @@ export declare class FacetManager {
      * always maps to rpc_timeout regardless of message.
      */
     private _w5RecordTermination;
+    /** Generate before waiting for a worker, keeping only the map's retained share until the load takes it. */
+    private _prepareOneShotCode;
     private _execViaLoader;
     /**
      * Run a staged-artifact bundle (currently opencode) as an ESM mainModule.
