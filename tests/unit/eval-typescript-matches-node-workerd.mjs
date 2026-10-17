@@ -48,6 +48,8 @@ const SOURCES = {
   wideReturn: 'const s = "日本"; return s',
   innerReturn: 'function f() { return 3 } console.log(f())',
   cryptoReturn: 'crypto; return 1',
+  // V8 refuses an escaped keyword first: "Keyword must not contain escaped characters".
+  escapedReturn: 'ret\\u0075rn 1; return 2',
 };
 /** Sources `-p` prints the value of. */
 const PRINTED = {
@@ -66,7 +68,7 @@ const PRINTED_STDIN = ['ts', 'invalid'];
  */
 const FLAGS = [
   { flags: '', stdin: true },
-  { flags: '--no-experimental-strip-types', sources: ['ts', 'invalid', 'enum', 'esmTs', 'esmInvalid', 'nestedImport', 'nestedExport', 'jsFrame', 'topReturn', 'laterReturn'], stdin: true },
+  { flags: '--no-experimental-strip-types', sources: ['ts', 'invalid', 'enum', 'esmTs', 'esmInvalid', 'nestedImport', 'nestedExport', 'jsFrame', 'topReturn', 'laterReturn', 'escapedReturn'], stdin: true },
   { flags: '--input-type=commonjs', sources: ['ts', 'invalid', 'esmJs', 'esmTs', 'topReturn'] },
   { flags: '--input-type=module', sources: ['ts', 'invalid', 'js', 'esmTs', 'topReturn'] },
   { flags: '--input-type=commonjs-typescript', sources: ['js', 'ts', 'invalid', 'enum', 'esmTs', 'throws', 'frame', 'topReturn'], stdin: true },

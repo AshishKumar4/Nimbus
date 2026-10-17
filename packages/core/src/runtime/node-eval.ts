@@ -104,6 +104,8 @@ function illegalReturn(code: string, mode: NodeEvalMode): NodeEvalProgram | null
     return null;
   } catch (e) {
     if (!(e instanceof SyntaxError) || !e.message.startsWith("'return' outside of function") || !('pos' in e) || typeof e.pos !== 'number') return null;
+    // An escaped `return` (r\u0065turn) is V8's other error, at the keyword: the compile's own.
+    if (!code.startsWith('return', e.pos)) return null;
     return { code: `throw __nimbusEvalIllegalReturn(${JSON.stringify(code)}, ${e.pos});`, refusedBeforeImports: mode === 'default' };
   }
 }
