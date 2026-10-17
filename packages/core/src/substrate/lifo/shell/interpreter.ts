@@ -1371,7 +1371,6 @@ export class Interpreter {
         // An `exit` inside it ends only it; so does a call past the nesting bound.
         if (!(e instanceof ExitSignal) && !(e instanceof FunctionNestingSignal)) throw e;
         exitCode = e.exitCode;
-        if (e instanceof FunctionNestingSignal) this.setPipestatus([exitCode]);
       }
       return (await this.runExitTrap(exitCode, io, true));
     } finally {
