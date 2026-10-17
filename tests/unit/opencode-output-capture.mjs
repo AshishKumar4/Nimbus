@@ -51,8 +51,12 @@ function framed(bytes, begin, end) {
   return to < 0 ? null : [...Buffer.from(text.slice(from + begin.length, to), 'latin1')];
 }
 
+// The test process's own, taken before a runner replaces the realm's process.
+const memoryUsage = process.memoryUsage.bind(process);
+const { gc } = Bun;
+
 /** The heap's size after a full collection. */
-const heap = () => { Bun.gc(true); return process.memoryUsage().heapUsed; };
+const heap = () => { gc(true); return memoryUsage().heapUsed; };
 
 /** Run `program` as the opencode bundle of a one-shot runner: its answer, and what it caught. */
 async function opencodeOneShot(program) {
