@@ -83,6 +83,7 @@ import { z } from 'zod/v4';
 import type { ResponseScope, RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import type { ServiceStub, WorkerCode } from './vendor/types.js';
+import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 
 /**
  * The class every generated resident runner exports. One name for every
@@ -249,9 +250,7 @@ export const FACET_IMAGE_DIR = '.nimbus/facet-images';
  */
 export async function facetImageDigest(image: string | Uint8Array): Promise<string> {
   // An image is its UTF-8 bytes; a caller holding them is not made to encode a second copy.
-  const bytes = typeof image === 'string' ? new TextEncoder().encode(image) : image;
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
-  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+  return sha256Hex(typeof image === 'string' ? new TextEncoder().encode(image) : image);
 }
 
 export function facetImagePath(digest: string): string {
