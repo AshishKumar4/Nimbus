@@ -5,6 +5,31 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: one session's compiles no longer reset the other sessions that
+  share its isolate. The platform runs several sessions in one isolate
+  with one memory limit, and resets all of them when it is crossed. Each
+  `clang` compile read its 31 MiB compiler into that isolate, copied it,
+  and held it through the link, so three compiles at once, in one session
+  or across co-tenants, reset every session there. A runtime's wasm image
+  (clang, wasm-ld, CPython, Ruby, bash, git, a `wasm-runner` program) is
+  now read by path when its facet loads, without a copy, and each load is
+  admitted on the isolate's transient budget: loads that would overlap
+  take turns, and one larger than the budget runs alone. Staged opencode
+  decodes its chunk pack one chunk at a time and assembles under the same
+  admission. A load not admitted within 60 s fails with EAGAIN, naming
+  what it waited for.
+- Changed (core): `FacetSpec.wasmModules` and a call's `wasmModules` take
+  `FacetImage`s instead of ArrayBuffers. Open one with
+  `ProcessView.image(path, { sha256, size })` or `hostImage(authority,
+  cred, path, { sha256, size })`, naming the bytes it must be: for an
+  installed runtime file, `installedFile(manifest, installRoot, rel)`
+  gives its path and the manifest's digest. The host reads the image when
+  it builds the facet, bounded at `size`, and refuses it (ESTALE) unless
+  the file holds those bytes. An image on a mount, which cannot bound the
+  read, is refused (EFBIG). `ws.fs.readArrayBufferUncached` is removed;
+  `readFileUncached` returns the read's own bytes without copying them.
+- Added: `/api/_diag/memory` names the isolate the session runs in
+  (`isolate.id`). Sessions that report one id share its memory limit.
 - Fixed: output that begins with U+FEFF (the UTF-8 BOM) keeps it, as a
   Linux terminal receives every byte a program writes. This covers a
   program's output in the terminal, process logs and `exec` results, a

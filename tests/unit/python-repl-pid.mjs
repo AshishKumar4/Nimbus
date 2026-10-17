@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mock } from 'bun:test';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
@@ -39,7 +40,8 @@ root.writeFile('py/lib/python313.zip', 'stdlib asset');
 const authority = new ProcessFiles(raw);
 const deps = {
   facetMgr: { loaderHost: () => ({ env: {}, ctx: { id: {}, waitUntil() {} }, network: ISOLATE_NETWORK }) },
-  authority, installRoot: 'py', home: '/home/user', manifest: { version: '3.13.14-3' },
+  authority, installRoot: 'py', home: '/home/user',
+  manifest: { version: '3.13.14-3', files: [{ path: 'share/cpython/python.wasm', sha256: createHash('sha256').update('compiled interpreter asset').digest('hex'), size: 26 }] },
 };
 try {
   await warmPythonRepl(deps);
