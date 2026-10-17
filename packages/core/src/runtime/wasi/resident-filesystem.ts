@@ -1096,8 +1096,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   /** A read through the session's open description of `handleId`'s file (Provisional.sessionOf), at `offset` or the descriptor's position. */
   const readByAnchor = async (handleId: number, offset: number | null, length: number): Promise<Uint8Array> => {
     const key = holder!.keyOf(handleId);
-    // What this process logged reaches the session first; a refusal among it is the next sync's to report, not this read's.
-    await holder!.send();
+    await holder!.flush();
     const session = holder!.provisional.sessionOf(handleId);
     if (session === undefined) throw fsError('ESTALE', 'read', '/' + key);
     const start = offset ?? holder!.seek(handleId, 0, 'current');
