@@ -66,8 +66,6 @@ export declare class ReplSession {
     private shellRef;
     /** Current line buffer (chars typed since the last enter). */
     private lineBuf;
-    /** Cursor position within lineBuf (0 = beginning). */
-    private cursorPos;
     /** Accumulated lines for a multi-line block (e.g. inside def/class). */
     private blockBuf;
     /** True while the adapter is processing a push (block subsequent submits). */
