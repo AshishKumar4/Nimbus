@@ -1186,7 +1186,10 @@ export declare class FacetManager {
      * journal recovery rides the first pump.
      */
     private readonly launchPump;
-    /** One-shot launches not yet running, by pid: the stage each is at and since when (launchState). */
+    /**
+     * One-shot launches not yet running, by pid: the stage each is at and since
+     * when (launchState), and the check that reports one stalled at a stage.
+     */
     private readonly launching;
     private readonly launchTasks;
     private launchesClosed;
@@ -1778,6 +1781,14 @@ export declare class FacetManager {
         /** The bin it runs: learned a server when it runs on as one (_promote). */
         server?: ServerIdentity;
     }): Promise<FacetExecResult>;
+    /**
+     * `entry`'s launch is at `stage` from now. One that waits LAUNCH_STALL_MS
+     * at a stage logs one line naming it, with the ledger's and the pacer's
+     * state, and no more after that.
+     */
+    private _launchStage;
+    /** `pid`'s launch is over: it runs, or it ended before it could. */
+    private _launchEnded;
     /** The one-shot launches not yet running (their stage and its age) and the launches waiting for a turn. */
     launchState(now?: number): {
         launches: Array<{
