@@ -38,7 +38,6 @@ adoptCtxExports({
       maxEntries: 64, maxBytes: 1048576, recording: () => true,
       disqualify: (why) => assert.fail(why),
     });
-    current.minted.push(rpc);
     return rpc;
   },
 });
@@ -87,7 +86,7 @@ function world() {
     root.writeFile(path, bytes);
   }
   const cached = new Map();
-  const w = { harness, root, ctx, deliveries, users, minted: [], calls: 0, scenario: null };
+  const w = { harness, root, ctx, deliveries, users, calls: 0, scenario: null };
   // Only the platform transport/interpreter is stood in for: the real pool
   // builds WorkerCode, caches it, and hands its actual SUPERVISOR to the guest.
   const loader = {
@@ -160,9 +159,14 @@ for (const kind of ['python', 'ruby', 'loader', 'loader-per-call']) {
   current = w;
   try {
     if (kind === 'python') {
-      w.scenario = async (supervisor) => assert.equal(supervisor, undefined, 'warm-up exposed a SUPERVISOR');
+      let warmed = false;
+      w.scenario = async (supervisor) => {
+        assert.equal(supervisor, undefined, 'warm-up exposed a SUPERVISOR');
+        warmed = true;
+      };
       await warmPythonRepl({ ...w.deps, ...w.python, home: '/home/user' });
       assert.equal(w.calls, 1, 'warm-up never reached its loaded worker');
+      assert.equal(warmed, true, 'warm-up did not finish without a supervisor');
     }
     const previous = new Map();
     for (const round of [1, 2]) for (const [index, user] of w.users.entries()) {
