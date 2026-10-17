@@ -137,6 +137,7 @@
     "bundle:sqlite": "node scripts/bundle-sqlite-wasm.mjs",
     "bundle:shims": "node scripts/bundle-node-shims.mjs",
     "bundle:tailwind": "node scripts/bundle-tailwind-play.mjs",
+    "source:tailwind": "node scripts/bundle-tailwind-play.mjs --fetch",
     "bundle:opencode": "node scripts/bundle-opencode.mjs",
     "bundle:napi-wasm": "node scripts/bundle-napi-wasm.mjs",
     "bundle:python": "node wasm/python/inputs.mjs --check",
