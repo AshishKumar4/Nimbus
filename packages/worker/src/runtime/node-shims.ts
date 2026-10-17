@@ -78,7 +78,7 @@ import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
 import { NODE_SOURCE_MAPS_SOURCE } from './node-source-maps.js';
 import { NODE_BUILTIN_FRONTS_SOURCE } from './node-builtin-fronts.js';
 import { NODE_MINIMATCH_SOURCE } from './node-minimatch-source.js';
-import { RUNTIME_ESM_LATE_MODULE, RUNTIME_INTERPRETER_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_PARSER_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { ENTRY_CHECKED, RUNTIME_ESM_LATE_MODULE, RUNTIME_INTERPRETER_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_PARSER_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { STAGED_BINDING_ARTIFACTS } from '../napi-wasm-artifacts.generated.js';
 
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
@@ -14143,18 +14143,29 @@ const __NIMBUS_COMMONJS_ONLY_ERRORS = [
 // Node's enrichCJSError, for the main module (CJS loader wrapSafe): a
 // SyntaxError compiling it, whose source has module syntax, is preceded by a
 // warning, emitted at once, as the process is about to end.
+// Whether \`e\`, compiling \`source\` as CommonJS, is the error of module syntax, which Node's loader retries as an ES module.
+function __nimbusModuleSyntaxError(e, source) {
+  if (!(e instanceof SyntaxError)) return false;
+  if (__NIMBUS_ESM_SYNTAX_ERRORS.includes(e.message)) return true;
+  if (!__NIMBUS_COMMONJS_ONLY_ERRORS.includes(e.message)) return false;
+  const text = source();
+  return text !== null && __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}").fatalLocation(text, "module", -1) === null;
+}
 function __nimbusEnrichCommonJsError(e, source, filename) {
-  if (!(e instanceof SyntaxError)) return;
-  let moduleSyntax = __NIMBUS_ESM_SYNTAX_ERRORS.includes(e.message);
-  if (!moduleSyntax && __NIMBUS_COMMONJS_ONLY_ERRORS.includes(e.message)) {
-    const text = source();
-    moduleSyntax = text !== null && __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}").fatalLocation(text, "module", -1) === null;
-  }
-  if (!moduleSyntax) return;
+  if (!__nimbusModuleSyntaxError(e, source)) return;
   const warning = new Error("Failed to load the ES module: " + filename + ". Make sure to set \\"type\\": \\"module\\" in the nearest package.json file or use the .mjs extension.");
   warning.name = "Warning";
   Error.captureStackTrace(warning, __nimbusEnrichCommonJsError);
   __processMod.emit("warning", warning);
+}
+// -c of a cell that compiled: its text alone must parse as a function body,
+// or it compiled only by closing the wrapper's, and is the SyntaxError Node
+// reports, at the token that does (V8 names a stray one so).
+function __nimbusCheckedAlone(source) {
+  const text = source();
+  const at = text === null ? null : __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}").fatalLocation(text, "script", -1);
+  if (at === null) return undefined;
+  throw new SyntaxError("Unexpected token '" + text.slice(at[0], at[1]) + "'");
 }
 // A CommonJS entry evaluated as Node's loader runs it (manager.ts
 // entryModule; an ES entry is the registry's, __nimbusEsmRunEntry).
@@ -14165,12 +14176,20 @@ function __nimbusEvaluateEntry(load, mod, filename, dirname) {
   // A file's \`this\` is its exports, as Node's wrapper is called; -e and
   // stdin code is a script, whose \`this\` is the global object.
   const evaluated = filename === "<eval>" || filename === "[stdin]";
-  // -c: compiled as Node's check compiles it (check_syntax.js wrapSafe, stdin's too), and not run.
+  // -c: compiled as Node's check compiles it (check_syntax.js wrapSafe, stdin's
+  // too). Its cell stops at its first statement (manager.ts programEntry), so
+  // a compile that succeeds runs nothing of it.
   const check = __nimbusNodeCommandLine?.check === true;
   let wrapper;
   try {
     wrapper = load();
   } catch (e) {
+    if (check && e === ${JSON.stringify(ENTRY_CHECKED)}) return __nimbusCheckedAlone(source);
+    // TypeScript's module syntax Node retries as an ES module (wrapSafe), which cannot be checked here without running it.
+    if (check && stripsTypeScript(filename) && __nimbusModuleSyntaxError(e, source)) {
+      __processMod.stderr.write("node: -c cannot check an ES module entry in Nimbus without running it\n");
+      __processMod.exit(9);
+    }
     if (!evaluated || check) __nimbusEnrichCommonJsError(e, source, filename);
     throw e;
   }

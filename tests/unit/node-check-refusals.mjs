@@ -3,7 +3,9 @@
 // are decided before anything runs (core runtime/runtime-registry.ts):
 //   - Node's own refusals of the command line (exit 9), as host Node prints
 //     them: -c with -e or -p, an --experimental-default-type that is neither
-//     module nor commonjs, and both at once, each on its line;
+//     module nor commonjs, and both at once, each on its line; an invalid
+//     one in NODE_OPTIONS, which the command line cannot override (nor
+//     --version or --help pass);
 //   - -c of an ES module entry (.mjs, a typeless .js of module syntax, stdin
 //     under --input-type=module) is refused, exit 9, and nothing runs: no ES
 //     module compiles here without being evaluated;
@@ -27,8 +29,8 @@ const files = {
   'home/user/ok.ts': 'const a: number = 1;\n',
 };
 
-/** The hosted node run with `args` (stdin `input`): its exit, stderr, and the runs it asked of its runner. */
-async function node(args, input) {
+/** The hosted node run with `args` (stdin `input`, NODE_OPTIONS `nodeOptions`): its exit, stderr, and the runs it asked of its runner. */
+async function node(args, input, nodeOptions) {
   const runs = [];
   const fs = {
     exists: (p) => Object.hasOwn(files, p),
@@ -55,7 +57,7 @@ async function node(args, input) {
   });
   const stderr = [];
   const exitCode = await handler({
-    vfs: fs, args, cwd: '/home/user', env: {},
+    vfs: fs, args, cwd: '/home/user', env: nodeOptions === undefined ? {} : { NODE_OPTIONS: nodeOptions },
     cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
     stdout: { write: () => {} },
     stderr: { write: (text) => stderr.push(text) },
@@ -64,12 +66,19 @@ async function node(args, input) {
   return { exitCode, stderr: stderr.join(''), runs };
 }
 
-// Node's refusals, host Node the oracle.
-for (const args of [['-c', '-e', '1'], ['-e', '1', '-c'], ['--check', '--print', '1'], ['--experimental-default-type=bogus', '-e', '1'], ['--experimental-default-type=bogus', '-c', '-e', '1']]) {
-  const host = spawnSync('node', args, { encoding: 'utf8' });
-  const ours = await node(args);
-  assert.deepEqual([ours.exitCode, ours.stderr], [host.status, host.stderr], `node ${args.join(' ')}`);
-  assert.equal(ours.runs.length, 0, `node ${args.join(' ')}: nothing runs`);
+// Node's refusals, host Node the oracle. NODE_OPTIONS' are checked as it is read, before the command line overrides it.
+for (const [args, nodeOptions] of [
+  [['-c', '-e', '1']], [['-e', '1', '-c']], [['--check', '--print', '1']],
+  [['--experimental-default-type=bogus', '-e', '1']], [['--experimental-default-type=bogus', '-c', '-e', '1']],
+  [['--experimental-default-type=commonjs', '--version'], '--experimental-default-type=bogus'],
+  [['--help'], '--experimental-default-type=bogus'],
+  [['--experimental-default-type=bogus', '-c', '-e', '1'], '--experimental-default-type=module'],
+]) {
+  const host = spawnSync('node', args, { encoding: 'utf8', env: { PATH: process.env.PATH, ...(nodeOptions === undefined ? {} : { NODE_OPTIONS: nodeOptions }) } });
+  const ours = await node(args, undefined, nodeOptions);
+  const label = `${nodeOptions === undefined ? '' : `NODE_OPTIONS=${nodeOptions} `}node ${args.join(' ')}`;
+  assert.deepEqual([ours.exitCode, ours.stderr], [host.status, host.stderr], label);
+  assert.equal(ours.runs.length, 0, `${label}: nothing runs`);
 }
 
 const MODULE_CHECK = 'node: -c cannot check an ES module entry in Nimbus without running it\n';
