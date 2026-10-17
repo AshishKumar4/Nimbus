@@ -33,13 +33,17 @@ try {
 
   // Its capture lost, released over the preview's frame, where this page hears nothing:
   // moving back without a press resizes nothing, and the next press starts a drag.
-  const frame = await (await page.waitForSelector('#previewPanel', { visible: true, timeout: 30_000 })).boundingBox();
+  // The app preview shows the frame; the welcome Markdown preview hides it.
+  await page.waitForSelector('#previewTabs .preview-tab.markdown', { timeout: 30_000 });
+  await page.click('#previewTabs .preview-tab:not(.markdown)');
+  const frame = await (await page.waitForSelector('#preview-frame', { visible: true, timeout: 15_000 })).boundingBox();
   const again = await grabHandle(page, '#treeResizeHandle');
   await page.evaluate(() => {
     const element = document.getElementById('treeResizeHandle');
     for (const id of [1, 0]) if (element.hasPointerCapture(id)) element.releasePointerCapture(id);
   });
   await page.mouse.move(frame.x + frame.width / 2, frame.y + frame.height / 2, { steps: 10 });
+  a.check('the release point is the frame', await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.id, { x: frame.x + frame.width / 2, y: frame.y + frame.height / 2 }) === 'preview-frame');
   await again.release();
   const dropped = await width();
   await page.mouse.move(again.x + 30, again.y, { steps: 5 });
