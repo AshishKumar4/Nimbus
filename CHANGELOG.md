@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Breaking (react): `useNimbusSession` no longer takes `tenant` or `sub`.
+  The hook never read them; identity belongs to the token.
+  `<NimbusTerminal />` keeps both props, to show on its iframe. Drop them
+  from a hook call.
+- Fixed (react): the headless `useNimbusSession` guide (README and the
+  hook's own example) works as written. It mounts the iframe at once and
+  shows its loading state over it until the shell reports ready. Before,
+  it waited for ready before mounting the iframe, and only that iframe
+  could report ready, so it showed "Loading…" forever.
+
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
