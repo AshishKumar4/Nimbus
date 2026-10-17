@@ -82,7 +82,7 @@ await runScenarios(fileURLToPath(import.meta.url), {
           return new Proxy(view, {
             get(bound, member) {
               if (member === 'readFile') return (path) => {
-                if (path.endsWith('/first.js') || path.endsWith('/large.js')) reads.push(path);
+                if (path.endsWith('/first.js') || path.endsWith('/large.js') || path.endsWith('/manifest/package.json')) reads.push(path);
                 return bound.readFile(path);
               };
               const value = Reflect.get(bound, member, bound);
@@ -109,6 +109,23 @@ await runScenarios(fileURLToPath(import.meta.url), {
     }
     ran(await waiting, '7');
     assert.ok(reads.some((path) => path.endsWith('/large.js')), 'the whole-budget retry read the crossing file');
+    drained();
+
+    authority.kfs.mkdir(`${cwd}/node_modules/manifest`, { recursive: true });
+    authority.kfs.writeFile(`${cwd}/node_modules/manifest/package.json`, JSON.stringify({ name: 'manifest', main: 'index.js', padding: 'x'.repeat(128 * 1024) }));
+    authority.kfs.writeFile(`${cwd}/node_modules/manifest/index.js`, 'module.exports = 7;');
+    const metadataHold = await acquireSupervisorAllocation(budget.capacity - 192 * 1024);
+    const metadata = manager.exec('process.stdout.write(String(require("manifest")))', {
+      cwd, filename: `${cwd}/manifest-run.js`, captureOutput: true,
+    });
+    try {
+      await until(() => readSupervisorAllocationBudget().queued === 1, 'eager metadata crosses the final raw-byte bound and bounces');
+      assert.ok(reads.some((path) => path.endsWith('/manifest/package.json')), 'the existing eager-manifest walk reads metadata before its final check');
+      assert.equal(readSupervisorAllocationBudget().current, budget.capacity - 192 * 1024, 'the metadata bounce returns its partial share');
+    } finally {
+      metadataHold.release();
+    }
+    ran(await metadata, '7');
     drained();
   },
 

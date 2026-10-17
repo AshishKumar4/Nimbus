@@ -89,7 +89,6 @@ try {
     let timer;
     try {
       await until(() => sessions[0].manager.launchState().launches[0]?.stage === 'admission');
-      parked.push(...sessions.slice(1, 15).map(({ manager }) => launch(manager)));
       timer = setTimeout(() => { for (const release of holds.splice(0)) release(); }, 40);
       const beforeCpu = process.cpuUsage();
       const beforeWall = performance.now();
