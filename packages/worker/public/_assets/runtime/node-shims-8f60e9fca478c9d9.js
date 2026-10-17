@@ -429,6 +429,7 @@ return { O_ACCMODE, O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY
 var { createProcessWarnings } = (() => {
 function createProcessWarnings(process, write) {
   let traceHintWritten = false;
+  let generation = 0;
   return {
     emitWarning(warning, type, code, ctor) {
       const proc = process();
@@ -471,15 +472,20 @@ function createProcessWarnings(process, write) {
       if (told.name === "DeprecationWarning") {
         if (proc.noDeprecation) return;
         if (proc.throwDeprecation) {
+          const at2 = generation;
           proc.nextTick(() => {
-            throw told;
+            if (at2 === generation) throw told;
           });
           return;
         }
       }
+      const at = generation;
       proc.nextTick(() => {
-        proc.emit("warning", told);
+        if (at === generation) proc.emit("warning", told);
       });
+    },
+    dropQueued() {
+      generation++;
     },
     onWarning(warning) {
       if (!(warning instanceof Error)) return;
@@ -15286,11 +15292,14 @@ function __nimbusUncaughtException(error, fromPromise = false) {
       __nimbusReportProcessExit(thrown.code, "");
       return true;
     }
+    // The process ends: Node runs no more ticks, a warning's included.
+    __nimbusWarnings.dropQueued();
     const report = __nimbusFatalReport(thrown, false, false);
     __nimbusWriteFatal(report);
     __nimbusReportProcessExit(7, report);
     return false;
   }
+  __nimbusWarnings.dropQueued();
   try {
     if (!__processMod._exiting) {
       __processMod._exiting = true;
