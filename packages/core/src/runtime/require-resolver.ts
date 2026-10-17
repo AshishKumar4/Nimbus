@@ -264,18 +264,17 @@ export interface PreloadModuleRoot {
  * Resolve the complete dependency graph starting from entry code.
  * `conditions`: the program's own (`node --conditions`), beside Node's, for
  * `require` and `import` alike, as the process resolves under them.
- * `abortBundleBytes` only refuses a try; it never limits optional content.
  */
 export function prefetchForRequire(
   vfs: StagingRequireFs, entryCode: string, cwd: string, entryFile?: string,
   maxBundleBytes?: number, progress?: WalkProgress, policy?: undefined, requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>,
-  conditions?: readonly string[], abortBundleBytes?: number,
+  conditions?: readonly string[],
 ): Promise<PrefetchOutcome>;
 export function prefetchForRequire(
   vfs: StagingRequireFs, entryCode: string, cwd: string, entryFile: string | undefined,
   maxBundleBytes: number | undefined, progress: WalkProgress | undefined,
   policy: DependencyClosurePolicy, requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>,
-  conditions?: readonly string[], abortBundleBytes?: number,
+  conditions?: readonly string[],
 ): Promise<DependencyClosureOutcome>;
 export async function prefetchForRequire(
   vfs: StagingRequireFs,
@@ -287,7 +286,6 @@ export async function prefetchForRequire(
   policy?: DependencyClosurePolicy,
   requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>,
   conditions: readonly string[] = [],
-  abortBundleBytes?: number,
 ): Promise<DependencyClosureOutcome> {
   const report = progress;
   if (report) progress = async work => {
@@ -299,7 +297,6 @@ export async function prefetchForRequire(
   const speculative = new Set<string>();
   const visited = new Set<string>();
   let bytesSeen = 0;
-  let abortBytesSeen = 0;
   let closureExceeded: ClosureBoundExceeded | null = null;
   let declined: DependencyClosureDeclined | null = null;
   let additionalBytes = 0;
@@ -370,12 +367,8 @@ export async function prefetchForRequire(
     }
     let size = 0;
     const counted = !policy && (kind === 'module' || lazy);
-    if (!reuseHeld && (policy || counted || abortBundleBytes !== undefined)) {
+    if (!reuseHeld && (policy || counted)) {
       try { size = (await vfs.stat(path))?.size ?? 0; } catch { /* the read decides */ }
-      if (abortBundleBytes !== undefined && abortBytesSeen + size > abortBundleBytes) {
-        closureExceeded = { kind: 'closure-exceeds-bound', entry: entryFile ?? 'entry code', bytesSeen: abortBytesSeen, bound: abortBundleBytes, lastPath: path };
-        return null;
-      }
       if (!fits(path, size)) return null;
       if (counted && bytesSeen + size > maxBundleBytes) {
         if (!lazy) closureExceeded = { kind: 'closure-exceeds-bound', entry: entryFile ?? 'entry code', bytesSeen, bound: maxBundleBytes, lastPath: path };
@@ -404,7 +397,6 @@ export async function prefetchForRequire(
       additionalFiles++;
     }
     if (counted) bytesSeen += size;
-    if (abortBundleBytes !== undefined) abortBytesSeen += size;
     bundle[path] = content;
     if (lazy) speculative.add(path);
     if (unit) unit.staged.push([path, counted ? size : 0]);
@@ -757,7 +749,7 @@ export async function prefetchForRequire(
 
     // Phase 2: dynamic-import subtrees, fewest alternatives first; the queue grows as they are walked.
     lazy = true;
-    for (let next = nextDeferred(); next !== undefined && !closureExceeded && bytesSeen < maxBundleBytes; next = nextDeferred()) {
+    for (let next = nextDeferred(); next !== undefined && bytesSeen < maxBundleBytes; next = nextDeferred()) {
       const resolved = next.path ?? (next.require
         ? (await resolveStaticDependency(next.specifier, next.fromDir))?.resolved ?? null
         : await resolveDynamicImport(next.specifier, next.fromDir));
@@ -773,10 +765,7 @@ export async function prefetchForRequire(
       const queuedBefore = new Map([...deferredDynamic].map(([alternatives, queue]) => [alternatives, queue.length]));
       try { await addFile(resolved); } finally {
         if (unit?.cut) {
-          for (const [path, size] of unit.staged) {
-            delete bundle[path]; speculative.delete(path); bytesSeen -= size;
-            if (abortBundleBytes !== undefined) abortBytesSeen -= size;
-          }
+          for (const [path, size] of unit.staged) { delete bundle[path]; speculative.delete(path); bytesSeen -= size; }
           let at = 0;
           const walked: string[] = [];
           for (const path of visited) if (at++ >= visitedBefore) walked.push(path);
@@ -788,11 +777,9 @@ export async function prefetchForRequire(
         }
         unit = null;
       }
-      if (closureExceeded) return closureExceeded;
       if (configRoots.has(resolved) && typeof bundle[resolved] === 'string') await deferConfigNames(resolved);
     }
 
-    if (closureExceeded) return closureExceeded;
     return { bundle, speculative, entryPaths, edges, ...(units.length > 0 ? { units } : {}) };
   }
   try { return await walk(); }

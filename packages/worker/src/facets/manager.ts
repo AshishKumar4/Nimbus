@@ -4462,7 +4462,7 @@ async function gatherPrefetchBundle(vfs: LaunchFs, options: PrefetchBundleOption
 
 async function gatherPrefetchWithin(vfs: LaunchFs, options: PrefetchBundleOptions, creditLimit?: number): Promise<FacetVfsState> {
   try {
-    const state = await _buildPrefetchBundle(vfs, options, creditLimit);
+    const state = await _buildPrefetchBundle(vfs, options);
     prefetchReadCredit.getStore()?.check();
     return state;
   } catch (error) {
@@ -4478,7 +4478,7 @@ async function gatherPrefetchWithin(vfs: LaunchFs, options: PrefetchBundleOption
     if (!(error instanceof ClosureBoundExceededError) || error.outcome.bound === creditLimit || learned.length === 0 || learned.every((root) => root.optional)) throw error;
     console.warn(`[facet-manager] the modules earlier runs executed take ${options.scriptPath ?? 'the entry code'}'s map past `
       + `its ${options.maxBundleBytes ?? VFS_BUNDLE_MAX_BYTES}-byte bound (${error.outcome.lastPath}); they are staged as optional roots, as far as the bound allows`);
-    const state = await _buildPrefetchBundle(vfs, { ...options, executedModules: learned.map((root) => ({ ...root, optional: true })) }, creditLimit);
+    const state = await _buildPrefetchBundle(vfs, { ...options, executedModules: learned.map((root) => ({ ...root, optional: true })) });
     prefetchReadCredit.getStore()?.check();
     return state;
   }
@@ -4506,7 +4506,6 @@ async function _buildPrefetchBundle(
     staticRefs,
     dataOnly = false,
   }: PrefetchBundleOptions,
-  creditLimit?: number,
 ): Promise<FacetVfsState> {
   // Read the cursor BEFORE the walk: a mutation that lands while the bundle
   // is being assembled must be reported as invalidated, not silently missed.
@@ -4527,7 +4526,7 @@ async function _buildPrefetchBundle(
   // configs ride along, as optional roots (RequiredModuleRoot.config).
   const configRoots = [...preloads, ...await toolConfigRoots(vfs, cwd, scriptPath)];
   const walkRoots = (roots: Array<RequiredModuleRoot | PreloadModuleRoot>) => prefetchForRequire(filesOf(vfs), entryCode || '', cwd, scriptPath,
-    maxBundleBytes, pacer?.spend.bind(pacer), undefined, roots.length > 0 ? roots : undefined, conditions, creditLimit);
+    maxBundleBytes, pacer?.spend.bind(pacer), undefined, roots.length > 0 ? roots : undefined, conditions);
   // A launch they take past the bound is built again with them optional (buildPrefetchBundle).
   const prefetch = await walkRoots([...configRoots, ...executedModules ?? []]);
   prefetchReadCredit.getStore()?.check();
@@ -4562,14 +4561,7 @@ async function _buildPrefetchBundle(
   // while a small one never reaches a chunk bound and runs exactly as it
   // always did, with no suspension at all.
   const paceAfterPass = () => {
-    const credit = prefetchReadCredit.getStore();
-    if (credit !== undefined) {
-      credit.check();
-      for (const [path, cell] of Object.entries(bundle)) {
-        if (!codeOnly.has(path)) credit.charge(path, _bundleCellRawBytes(cell));
-      }
-      for (const [path, emit] of emits) credit.charge(path, utf8Length(emit), 'emit');
-    }
+    prefetchReadCredit.getStore()?.check();
     return pacer ? pacer.spend(_bundleWeight(bundle)) : Promise.resolve();
   };
 
