@@ -5,7 +5,9 @@
 // another's: the session would recall the process's own grant, wait for an
 // answer the process cannot give while it waits on the write, and revoke it.
 //   (1) a file written from a source that arrives over turns (writeFileFrom);
-//   (2) a tree copied in slices (copyTree past one slice's rows).
+//   (2) a tree copied in slices (copyTree past one slice's rows);
+//   (3) both, started behind a snapshot that quiesces: they begin later,
+//       outside the call, and are still their caller's.
 // Red before: each later turn ran without the caller's holds, and the
 // process's own grant was revoked for not answering the recall its write made.
 
@@ -25,7 +27,7 @@ function holding() {
   kernel.mkdir('home/user/proj', { recursive: true });
   kernel.chown('home/user', 1000, 1000);
   kernel.chown('home/user/proj', 1000, 1000);
-  const session = { kernel, revoked: 0 };
+  const session = { engine, kernel, revoked: 0 };
   const files = new ProcessFiles(engine, { delegationRecallTimeoutMs: 300, delegationRevoked: () => { session.revoked++; } });
   session.files = files;
   session.proc = files.bind({ pid: 7, cred: user });
@@ -63,6 +65,50 @@ function holding() {
   assert.equal(s.files.delegations.size, 1, '(2) the grant is still the process\'s');
   s.proc.releaseExclusiveMutation(s.grant.owner);
   assert.equal(s.kernel.exists('home/user/proj/copy/d49999'), true);
+}
+
+// ── (3) both, started behind a snapshot that quiesces ──
+// Another's write over turns keeps the snapshot quiescing while the
+// process's call is made: it waits for it and begins after, outside the
+// call that made it. Red before: it took the holds that were active when
+// it began, which were none.
+/** `call` made by `s`'s process while a snapshot quiesces behind another's write; its answer once the snapshot is taken. */
+async function behindSnapshot(s, call) {
+  const go = Promise.withResolvers();
+  async function* held() { await go.promise; yield new Uint8Array(70_000).fill(1); }
+  const blocking = s.kernel.writeFileFrom('tmp-slow.bin', 70_000, held());
+  const snapshot = s.engine.snapshot('quiet', { quiesce: true });
+  const called = call();
+  go.resolve();
+  await blocking;
+  await snapshot;
+  return called;
+}
+{
+  const s = holding();
+  const piece = new Uint8Array(65_536).fill(3);
+  async function* source() {
+    for (let i = 0; i < 3; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      yield piece;
+    }
+  }
+  assert.ok(await behindSnapshot(s, () => s.proc.writeFileFrom('/home/user/proj/late.bin', piece.byteLength * 3, source())) > 0);
+  assert.equal(s.revoked, 0, '(3) a write started behind the snapshot recalled its process\'s own grant');
+  assert.equal(s.files.delegations.size, 1, '(3) the grant is still the process\'s');
+  s.proc.releaseExclusiveMutation(s.grant.owner);
+  assert.equal(s.kernel.stat('home/user/proj/late.bin').size, piece.byteLength * 3);
+}
+{
+  const s = holding();
+  s.kernel.mkdir('home/user/small', { recursive: true });
+  s.kernel.mkdirBatch(['home/user/small/x', 'home/user/small/y']);
+  s.kernel.chown('home/user/small', 1000, 1000);
+  assert.ok(await behindSnapshot(s, () => s.proc.copyTree('/home/user/small', '/home/user/proj/small')) > 0);
+  assert.equal(s.revoked, 0, '(3) a copy started behind the snapshot recalled its process\'s own grant');
+  assert.equal(s.files.delegations.size, 1, '(3) the grant is still the process\'s');
+  s.proc.releaseExclusiveMutation(s.grant.owner);
+  assert.equal(s.kernel.exists('home/user/proj/small/y'), true);
 }
 
 console.log('ok - vfs-spanning-holds (a write over turns and a copy in slices stay their caller\'s, its holds included)');
