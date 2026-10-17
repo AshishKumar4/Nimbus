@@ -63,7 +63,7 @@ import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platf
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { generation, onColdStart } from '@nimbus-sh/fabric/generation.js';
-import { DYNAMIC_WORKER_CODE_LIMIT_BYTES, isDynamicWorkerDeadlock, suspendLaunchAdmission, waitOutsideLedger, withLaunchAdmission, withLaunchPreparation } from '@nimbus-sh/fabric/budgets.js';
+import { DYNAMIC_WORKER_CODE_LIMIT_BYTES, isDynamicWorkerDeadlock, loaderLedgerStats, suspendLaunchAdmission, waitOutsideLedger, withLaunchAdmission, withLaunchPreparation } from '@nimbus-sh/fabric/budgets.js';
 import { FencedWork, FENCED_WORK_KEY_PREFIX, RESIDENT_PROVEN_MS, } from '@nimbus-sh/fabric/fenced-work.js';
 import { rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/provided-packages.js';
 import { bundleCompiledLoader, esbuildDiagnosticShim, isBundleModuleCandidate, looksLikeEsm, needsBundleCellTransform, transformBundleCells, transformEntryScript, } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
@@ -1891,6 +1891,14 @@ function moduleMemberBytes(members) {
 }
 /** The entry the one-shot host adds to a map (fabric workerd-facet-host.ts oneShotEntry, about 600 bytes): at most this. */
 const ONE_SHOT_HOST_ENTRY_BYTES = 4096;
+/**
+ * How long a one-shot's launch may wait at one stage before it says so, once
+ * (FacetManager._launchStage). A user's command that hangs before it runs
+ * leaves only Workers Logs behind: no session to read _diag from.
+ */
+const LAUNCH_STALL_MS = 10_000;
+/** How much of a stalled launch's command its report carries: a command line can be any length, and a log line has a budget. */
+const LAUNCH_STALL_COMMAND_CHARS = 200;
 /**
  * The module-map source for a state, memoized form first.
  *
@@ -4389,7 +4397,10 @@ export class FacetManager {
      * journal recovery rides the first pump.
      */
     launchPump;
-    /** One-shot launches not yet running, by pid: the stage each is at and since when (launchState). */
+    /**
+     * One-shot launches not yet running, by pid: the stage each is at and since
+     * when (launchState), and the check that reports one stalled at a stage.
+     */
     launching = new Map();
     launchTasks = new Set();
     launchesClosed = false;
@@ -6179,7 +6190,9 @@ export class FacetManager {
         // Kinu #29: follow AGENTS.md's supervisor-credit / Dynamic Worker lock order.
         let admitted = false;
         let prepareFailed = false;
-        this.launching.set(entry.pid, { stage: 'prepare', since: Date.now() });
+        this._launchStage(entry, 'prepare', abortController.signal);
+        // A kill ends the launch where it waits, whether or not that wait hears it.
+        abortController.signal.addEventListener('abort', () => this._launchEnded(entry.pid), { once: true });
         // Paced like a resident launch: a tree too large for one turn costs
         // turns, and the pacer's stillWanted check ends a build whose process was
         // killed while it was suspended. The invocation that granted the last
@@ -6269,7 +6282,7 @@ export class FacetManager {
                 }
             });
             const prepareAgain = async () => {
-                this.launching.set(entry.pid, { stage: 'prepare', since: Date.now() });
+                this._launchStage(entry, 'prepare', abortController.signal);
                 if (vfsState.generatedSourcesReleased)
                     vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
                 else
@@ -6316,7 +6329,7 @@ export class FacetManager {
             }
             const admittedRun = async (run) => {
                 for (;;) {
-                    this.launching.set(entry.pid, { stage: 'admission', since: Date.now() });
+                    this._launchStage(entry, 'admission', abortController.signal);
                     const parked = this._parkOneShotMap(entry.pid, prepared, abortController.signal);
                     let brokeredGranted = false;
                     try {
@@ -6350,7 +6363,7 @@ export class FacetManager {
             };
             return await admittedRun(async () => {
                 admitted = true;
-                this.launching.set(entry.pid, { stage: 'load', since: Date.now() });
+                this._launchStage(entry, 'load', abortController.signal);
                 // What it reports missing as it runs is filed against this bundle.
                 if (vfsState.bundleKey)
                     this.launchBundles.set(entry.pid, { key: vfsState.bundleKey, refused: new Set() });
@@ -6447,7 +6460,7 @@ export class FacetManager {
                         for (;;) {
                             prepared = await prepareAgain();
                             dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
-                            this.launching.set(entry.pid, { stage: 'admission', since: Date.now() });
+                            this._launchStage(entry, 'admission', abortController.signal);
                             const parked = this._parkOneShotMap(entry.pid, prepared, abortController.signal);
                             let granted = false;
                             try {
@@ -6547,10 +6560,46 @@ export class FacetManager {
             throw err;
         }
         finally {
-            this.launching.delete(entry.pid);
+            this._launchEnded(entry.pid);
             opts.signal?.removeEventListener('abort', onShellAbort);
             this._releaseBuildAdmission(entry.pid);
         }
+    }
+    /**
+     * `entry`'s launch is at `stage` from now, until its run is entered or it
+     * is killed (`signal`). One that waits LAUNCH_STALL_MS at a stage logs one
+     * line naming it, with the ledger's, the pacer's and the supervisor
+     * budget's state, and no more after that.
+     */
+    _launchStage(entry, stage, signal) {
+        if (signal.aborted)
+            return;
+        const prior = this.launching.get(entry.pid);
+        if (prior?.stall)
+            clearTimeout(prior.stall);
+        const reported = prior !== undefined && prior.stall === null;
+        const stall = reported ? null : setTimeout(() => {
+            const launch = this.launching.get(entry.pid);
+            if (!launch)
+                return;
+            launch.stall = null;
+            const { inFlightWorkers, waiting, pauseMs } = loaderLedgerStats(this.ctx);
+            console.warn(`[facet-manager] launch stalled: ${JSON.stringify({
+                pid: entry.pid,
+                command: launch.command.length > LAUNCH_STALL_COMMAND_CHARS ? `${launch.command.slice(0, LAUNCH_STALL_COMMAND_CHARS)}…` : launch.command,
+                stage: launch.stage, ms: Date.now() - launch.since,
+                ledger: { inFlight: inFlightWorkers.length, waiting, pauseMs }, pacer: this.launchPump.state(),
+                budget: readSupervisorAllocationBudget(),
+            })}`);
+        }, LAUNCH_STALL_MS);
+        this.launching.set(entry.pid, { stage, since: Date.now(), command: entry.command, stall });
+    }
+    /** `pid`'s launch is over: its run was entered, or it ended before it could be. */
+    _launchEnded(pid) {
+        const launch = this.launching.get(pid);
+        if (launch?.stall)
+            clearTimeout(launch.stall);
+        this.launching.delete(pid);
     }
     /** The one-shot launches not yet running (their stage and its age) and the launches waiting for a turn. */
     launchState(now = Date.now()) {
@@ -7081,9 +7130,9 @@ export class FacetManager {
                     this._activateProcessVfsWriter(entry.pid, id);
                     writerActivated = true;
                 },
+                onEntered: () => this._launchEnded(entry.pid),
                 onLoaded: () => {
                     pacer.settle();
-                    this.launching.delete(entry.pid);
                     if (!diagSink)
                         return;
                     diagSink.loadMs = Date.now() - __loadStart;
