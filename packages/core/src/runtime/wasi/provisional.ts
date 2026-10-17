@@ -366,8 +366,16 @@ export function provisional(host: ProvisionalHost): Provisional {
     );
   };
 
+  /** The Inode `inode` is now: itself, or the one it merged into (canonicalize). */
+  const live = (inode: Inode): Inode => {
+    let at = inode;
+    while (at.mergedInto !== undefined) at = at.mergedInto;
+    return at;
+  };
+
   /** `records` of `inode` met their op's fate: a refused one leaves and the rest fold again from the baseline; an answered one is stamped. */
-  const settleRecords = (inode: Inode, records: readonly InodeRecord[], refused: boolean): void => {
+  const settleRecords = (made: Inode, records: readonly InodeRecord[], refused: boolean): void => {
+    const inode = live(made);
     let changed = false;
     for (const record of records) {
       const at = inode.records.indexOf(record);
@@ -443,8 +451,7 @@ export function provisional(host: ProvisionalHost): Provisional {
 
   /** `key` names `inode` from now on (null: nothing). */
   const place = (key: string, placed: Inode | null): void => {
-    let inode = placed;
-    while (inode?.mergedInto !== undefined) inode = inode.mergedInto;
+    const inode = placed === null ? null : live(placed);
     layer.set(key, inode);
     note(parentKey(key), nameOf(key), inode === null ? null : inode.type);
     if (inode !== null) {
@@ -639,8 +646,9 @@ export function provisional(host: ProvisionalHost): Provisional {
     const opened = ops.filter((op) => op.kind !== 'write').map((op) => fold(target, op));
     if (row === null) {
       loggedName(open, [key], () => place(key, target), (refused, answer) => {
-        settleRecords(target, opened, refused);
+        // Numbered first: a merge splices its records, its O_TRUNC among them, before any is answered.
         if (!refused) canonicalize(target, answer);
+        settleRecords(target, opened, refused);
       });
     } else {
       host.count(key);
