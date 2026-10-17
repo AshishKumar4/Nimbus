@@ -222,6 +222,7 @@ import { MAX_RPC_SAFE_PAYLOAD_BYTES, SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTE
 import { CRED_KERNEL, isNativeBinPath, launchNamedPaths, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import {
   acquireSupervisorAllocation, acquireSupervisorCopyAllocation, readSupervisorAllocationBudget, tryAcquireSupervisorAllocation, tryAcquireSupervisorCopyAllocation,
+  reclaimableSupervisorAllocation,
 } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import type { ResizableCreditLease } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
@@ -1004,6 +1005,7 @@ interface GeneratedNodeFacetCode {
 
 interface PreparedOneShotCode {
   code(): Promise<OneShotCodeSpec>;
+  discard(): void;
   digest?: string;
 }
 
@@ -4284,6 +4286,8 @@ interface PrefetchAdmission {
   fit(closureBytes: number): void;
   /** Keeps only what the generated map owns while its launch waits for a worker. */
   retain(bytes: number): void;
+  /** Registers its parked map until the worker is granted or the share is released. */
+  reclaimable(reclaim: () => void): () => void;
   /** Gives it all back; once. */
   release(): void;
 }
@@ -4350,6 +4354,7 @@ function admissionOf(admitted: ResizableCreditLease, queued: boolean): PrefetchA
   // Attributed so it lands under `prefetchBundleBytes`, not the unattributed remainder.
   const lease = attributeAllocation('prefetchBundleBytes', admitted);
   let released = false;
+  let unregister: (() => void) | undefined;
   return {
     queued,
     held: () => (released ? 0 : lease.bytes),
@@ -4362,7 +4367,19 @@ function admissionOf(admitted: ResizableCreditLease, queued: boolean): PrefetchA
       // Shared source miscounted as owned may exceed the share; it never grows here.
       if (!released) lease.shrinkTo(Math.max(1, Math.min(lease.bytes, bytes)));
     },
+    reclaimable(reclaim) {
+      if (released) return () => {};
+      unregister?.();
+      const leave = reclaimableSupervisorAllocation(reclaim);
+      unregister = leave;
+      return () => {
+        leave();
+        if (unregister === leave) unregister = undefined;
+      };
+    },
     release() {
+      unregister?.();
+      unregister = undefined;
       released = true;
       lease.release();
     },
@@ -7227,6 +7244,13 @@ export class FacetManager {
       this._end(entry.pid, { code: 1, cause: `runtime worker error: ${errorMessage(error)}` });
       return { exitCode: 1, stdout: '', stderr: `${errorMessage(error)}\n${unsettled}${refused}` };
     };
+    const preparationFailed = async <Failure>(error: Failure): Promise<FacetExecResult> => {
+      prepareFailed = true;
+      pacer.settle();
+      stdinPump?.stop();
+      foreground?.release();
+      return failed(error);
+    };
     try {
       const diagOn = isExecDiagEnabled();
       const __bundleStart = diagOn ? Date.now() : 0;
@@ -7247,7 +7271,7 @@ export class FacetManager {
       // A launch a broker let in before asking (a running program's child,
       // hosted/services.ts) gives that worker back for its preparation, and
       // takes it again for its run.
-      const brokered = suspendLaunchAdmission(this.ctx, entry.pid);
+      let brokered = suspendLaunchAdmission(this.ctx, entry.pid);
       let vfsState: FacetVfsState;
       const prepare = (): Promise<PreparedOneShotCode> => withLaunchPreparation(this.ctx, { pid: entry.pid }, async () => {
         try {
@@ -7258,6 +7282,12 @@ export class FacetManager {
           return this._prepareOneShotCode(code, launch, entry, vfsState, pacer, diagSink);
         }
       });
+      const prepareAgain = async (): Promise<PreparedOneShotCode> => {
+        this.launching.set(entry.pid, { stage: 'prepare', since: Date.now() });
+        if (vfsState.generatedSourcesReleased) vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
+        else await this._holdMapShare(entry, vfsState);
+        return prepare();
+      };
       let prepared: PreparedOneShotCode;
       try {
         vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
@@ -7293,15 +7323,35 @@ export class FacetManager {
       try {
         prepared = await prepare();
       } catch (error) {
-        prepareFailed = true;
-        pacer.settle();
-        stdinPump?.stop();
-        foreground?.release();
-        return await failed(error);
+        return await preparationFailed(error);
       }
-      this.launching.set(entry.pid, { stage: 'admission', since: Date.now() });
-      await brokered?.(abortController.signal);
-      return await withLaunchAdmission(this.ctx, { pid: entry.pid }, abortController.signal, async () => {
+      const admittedRun = async (run: () => Promise<FacetExecResult>): Promise<FacetExecResult> => {
+        for (;;) {
+          this.launching.set(entry.pid, { stage: 'admission', since: Date.now() });
+          const parked = this._parkOneShotMap(entry.pid, prepared, abortController.signal);
+          let brokeredGranted = false;
+          try {
+            if (brokered) {
+              await brokered(parked.signal);
+              brokeredGranted = true;
+              parked.unregister();
+            }
+            return await withLaunchAdmission(this.ctx, { pid: entry.pid }, parked.signal, () => {
+              parked.unregister();
+              parked.signal.throwIfAborted();
+              return run();
+            });
+          } catch (error) {
+            if (!parked.reclaimed || abortController.signal.aborted) throw error;
+            if (brokeredGranted) brokered = suspendLaunchAdmission(this.ctx, entry.pid);
+            try { prepared = await prepareAgain(); }
+            catch (failure) { return preparationFailed(failure); }
+          } finally {
+            parked.unregister();
+          }
+        }
+      };
+      return await admittedRun(async () => {
         admitted = true;
         this.launching.set(entry.pid, { stage: 'load', since: Date.now() });
         // What it reports missing as it runs is filed against this bundle.
@@ -7373,7 +7423,7 @@ export class FacetManager {
             // outer launch admission must go too: only the session waits on its
             // stdin now, and keeping that slot could prevent the parent starting
             // the child whose exit tells it to close this stdin.
-            const resumeAdmission = suspendLaunchAdmission(this.ctx);
+            let resumeAdmission = suspendLaunchAdmission(this.ctx);
             // The stopped run's descriptors go with it: the next run opens its
             // own, numbered as the stopped run's were.
             await this.hooks.rewindProcessFiles?.(entry.pid);
@@ -7384,25 +7434,35 @@ export class FacetManager {
             // when nothing it holds has changed since. Built, and its map's
             // share of the credit held, before it holds a worker again (the
             // lock order); its helpers wait as its process meanwhile.
-            if (vfsState.generatedSourcesReleased) {
-              vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
-            } else {
-              await this._holdMapShare(entry, vfsState);
+            let refusedResume: FacetExecResult | undefined;
+            for (;;) {
+              prepared = await prepareAgain();
+              dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+              this.launching.set(entry.pid, { stage: 'admission', since: Date.now() });
+              const parked = this._parkOneShotMap(entry.pid, prepared, abortController.signal);
+              let granted = false;
+              try {
+                await resumeAdmission?.(parked.signal);
+                granted = true;
+                parked.unregister();
+                parked.signal.throwIfAborted();
+                break;
+              } catch (error) {
+                if (parked.reclaimed && !abortController.signal.aborted) {
+                  if (granted) resumeAdmission = suspendLaunchAdmission(this.ctx);
+                  continue;
+                }
+                if (abortController.signal.aborted || !isDynamicWorkerDeadlock(error)) throw error;
+                // This program already ran: a refusal to resume ends that process, never its spawn.
+                const message = `node: could not resume after waiting for stdin (${error.code}): ${error.message}\n`;
+                if (!launch.captureOutput) await this._deliverOutput(entry.pid, 'stderr', new TextEncoder().encode(message));
+                refusedResume = { exitCode: 1, stdout: acceptedCapture.stdout, stderr: launch.captureOutput ? acceptedCapture.stderr + message : '' };
+                break;
+              } finally {
+                parked.unregister();
+              }
             }
-            prepared = await prepare();
-            dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
-            // The replay is a new Worker in flight: it rejoins the admission queue.
-            try {
-              await resumeAdmission?.(abortController.signal);
-            } catch (error) {
-              if (abortController.signal.aborted || !isDynamicWorkerDeadlock(error)) throw error;
-              // This program already ran and printed before its read. A refusal
-              // to run it AGAIN ends that existing process, never its spawn.
-              const message = `node: could not resume after waiting for stdin (${error.code}): ${error.message}\n`;
-              if (!launch.captureOutput) await this._deliverOutput(entry.pid, 'stderr', new TextEncoder().encode(message));
-              result = { exitCode: 1, stdout: acceptedCapture.stdout, stderr: launch.captureOutput ? acceptedCapture.stderr + message : '' };
-              break;
-            }
+            if (refusedResume) { result = refusedResume; break; }
             this.processes.setUmask(entry.pid, startUmask);
             launch = { ...launch, ...resumed.next, stopNonce: crypto.randomUUID() };
           }
@@ -7808,6 +7868,22 @@ export class FacetManager {
 
   // ── One-shot dynamic Worker entrypoint ────────────────────────────────
 
+  private _parkOneShotMap(pid: number, prepared: PreparedOneShotCode, signal: AbortSignal): {
+    readonly signal: AbortSignal; readonly reclaimed: boolean; unregister(): void;
+  } {
+    const reclaimed = new AbortController();
+    const unregister = this.buildAdmissions.get(pid)?.reclaimable(() => {
+      prepared.discard();
+      this._releaseBuildAdmission(pid);
+      reclaimed.abort(new Error(`Nimbus: the parked module map for pid ${pid} was reclaimed for running work`));
+    }) ?? (() => {});
+    return {
+      signal: AbortSignal.any([signal, reclaimed.signal]),
+      get reclaimed() { return reclaimed.signal.aborted; },
+      unregister,
+    };
+  }
+
   /** Generate before waiting for a worker, keeping only the map's retained share until the load takes it. */
   private async _prepareOneShotCode(
     code: string,
@@ -7861,6 +7937,7 @@ export class FacetManager {
     };
     return {
       digest,
+      discard: () => { map = undefined; },
       code: async () => {
         if (map === undefined) throw new Error(`Nimbus: the module map for pid ${entry.pid} was already loaded`);
         const taken = map;

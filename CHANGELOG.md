@@ -9,6 +9,8 @@ published independently in the `@nimbus-sh` npm scope.
   commands in other sessions sharing its isolate. One-shot commands prepare
   their module maps before waiting and keep only their retained share of the
   isolate budget; new builds use the remaining room within a checked bound.
+  Running programs can reclaim parked maps for their writes and reads; the
+  waiting commands prepare their maps again before taking a worker.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
