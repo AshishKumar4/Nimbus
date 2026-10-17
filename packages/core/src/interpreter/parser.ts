@@ -9,7 +9,7 @@
  */
 import { Parser, parse, tokTypes, type Options, type Program, type Token } from 'acorn';
 import { own } from './parser-realm.js';
-import { objectCreate, objectKeys, reflectGet, reflectSet, stringSlice } from './intrinsics.js';
+import { append, newSafeList, objectCreate, objectKeys, reflectGet, reflectSet, stringSlice } from './intrinsics.js';
 import type { AcornParser } from '../runtime/javascript-ast.js';
 
 // The interpreter's acorn (worker scripts/interpreter-bundle.mjs checks it imports nothing else).
@@ -202,11 +202,9 @@ export function tokenizer(code: string, options: Options): Tokens {
  */
 export function lastTokenBefore(text: string, offset: number): [number, number] | null {
   let last: [number, number] | null = null;
+  const tokens = Parser.tokenizer(text, COMMONJS_OPTIONS);
   try {
-    for (const token of Parser.tokenizer(text, COMMONJS_OPTIONS)) {
-      if (token.end > offset) break;
-      last = [token.start, token.end];
-    }
+    for (let token = tokens.getToken(); token.type !== tokTypes.eof && token.end <= offset; token = tokens.getToken()) last = [token.start, token.end];
   } catch {
     // A token that does not end (an unterminated string) is past the last one.
   }
@@ -220,17 +218,14 @@ export function lastTokenBefore(text: string, offset: number): [number, number] 
  * (ParseArrowParametersWithRest) at the end of the input. Null for none.
  */
 export function openParenRest(text: string, offset: number): [number, number] | null {
-  const open: { readonly paren: boolean; rest: [number, number] | null }[] = [];
+  const open = newSafeList<{ readonly paren: boolean; rest: [number, number] | null }>();
+  const tokens = Parser.tokenizer(text, COMMONJS_OPTIONS);
   try {
-    for (const token of Parser.tokenizer(text, COMMONJS_OPTIONS)) {
-      if (token.end > offset) break;
+    for (let token = tokens.getToken(); token.type !== tokTypes.eof && token.end <= offset; token = tokens.getToken()) {
       const label = token.type.label;
-      if (label === '(' || label === '[' || label === '{' || label === '${') open.push({ paren: label === '(', rest: null });
-      else if (label === ')' || label === ']' || label === '}') open.pop();
-      else if (label === '...') {
-        const inner = open.at(-1);
-        if (inner !== undefined) inner.rest ??= [token.start, token.end];
-      }
+      if (label === '(' || label === '[' || label === '{' || label === '${') append(open, { paren: label === '(', rest: null });
+      else if (label === ')' || label === ']' || label === '}') open.length = open.length > 0 ? open.length - 1 : 0;
+      else if (label === '...' && open.length > 0) open[open.length - 1].rest ??= [token.start, token.end];
     }
   } catch {
     // A token that does not end (an unterminated string) is past the last one.
