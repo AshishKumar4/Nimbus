@@ -64,6 +64,13 @@ try {
   if (dev.ok) {
     const first = await stylesheetWith(sid, ['#123456'], 60_000);
     a.check('the first stylesheet carries the utility App.tsx uses', first.ok, `${first.css.status} ${first.css.body.slice(0, 600)}`);
+    if (!first.ok) {
+      // Scratch diagnosis: what the server read and was never given, said at its exit.
+      proc.signal('SIGTERM'); for (let i = 0; i < 100 && !proc.exit; i++) await sleep(100);
+      console.log('DIAG dev output:\n' + stripAnsi(proc.output).split('\n').filter((l) => /nimbus-debug|never staged|^  \/|planned|stylesheet|source|EAGAIN|residen/i.test(l)).slice(-80).join('\n'));
+      console.log('DIAG first css tail: ' + first.css.body.slice(-1500));
+      throw new Error('diagnosed');
+    }
     a.check('and the one the out-of-tree source uses', first.css.body.includes('#13579b'), `${first.css.status} ${first.css.body.slice(0, 600)}`);
     await t.run(heredocCommand(`${APP}/src/Badge.tsx`, BADGE_TSX), 15_000);
     await t.run(heredocCommand(`${APP}/src/App.tsx`, APP_TSX(true)), 15_000);
