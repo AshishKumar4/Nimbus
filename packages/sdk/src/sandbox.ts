@@ -8,6 +8,7 @@ import {
   readPreviewHostSuffix,
 } from '@nimbus-sh/worker/preview-host';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 
 /**
  * The identities `files.as` takes by name: the session's user (what every
@@ -999,23 +1000,11 @@ function trimTrailingSlashes(value: string): string {
 /**
  * Resolve an exec `cwd` to the absolute POSIX path the session shell needs.
  * Absolute inputs pass through untouched; relative ones resolve against the
- * sandbox root, collapsing `.`/`..` segments (`rel` → `<root>/rel`,
- * `../x` → the sibling of root). The session filesystem is always POSIX —
- * `node:path` is not portable across every SDK host, so this resolves by
- * segment instead of importing it.
+ * sandbox root as the session's own paths do (core's resolveVfsPath:
+ * `rel` → `<root>/rel`, `../x` → the sibling of root).
  */
 function resolveSandboxCwd(root: string, cwd: string): string {
-  if (cwd.startsWith('/')) return cwd;
-  const segments: string[] = [];
-  for (const seg of `${root}/${cwd}`.split('/')) {
-    if (seg === '..') {
-      // A '..' at the filesystem root stays at the root, POSIX-style.
-      if (segments.length > 0) segments.pop();
-    } else if (seg !== '' && seg !== '.') {
-      segments.push(seg);
-    }
-  }
-  return '/' + segments.join('/');
+  return cwd.startsWith('/') ? cwd : '/' + resolveVfsPath(cwd, root);
 }
 
 async function resolveHeaders(input: NimbusHeaders | undefined): Promise<HeadersInit | undefined> {
