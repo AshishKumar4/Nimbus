@@ -19,7 +19,7 @@ import { acquireSupervisorAllocation, acquireSupervisorRunningAllocation, tryAcq
 import { runningLaunchAdmission, suspendHeldAdmission } from '@nimbus-sh/fabric/budgets.js';
 import { prebundleSliceBytes } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import type { PrebundleResult, PrebundleSpec } from '../npm/pre-bundle-facet.js';
-import { buildFacetPrebundler } from './build-facet.js';
+import { BuildFacetResetError, buildFacetPrebundler } from './build-facet.js';
 
 /** A worker takes a prepared slice only at dispatch, never while its slot is queued. */
 export interface PrebundleTask {
@@ -65,8 +65,16 @@ export class PrebundlePool implements BundlePoolProvider {
   get session(): string { return this.ctx.id.toString(); }
 
   async acquire(signal?: AbortSignal): Promise<BundlePool> {
-    const prebundle = await buildFacetPrebundler(this.ctx, this.env, signal);
-    return { prebundle: (task) => this.dispatch(task, prebundle) };
+    let prebundle = await buildFacetPrebundler(this.ctx, this.env, signal);
+    return { prebundle: async (task) => {
+      for (let attempt = 0; ; attempt++) {
+        try { return await this.dispatch(task, prebundle); }
+        catch (error) {
+          if (!(error instanceof BuildFacetResetError) || attempt > 0) throw error;
+          prebundle = await buildFacetPrebundler(this.ctx, this.env, task.signal);
+        }
+      }
+    } };
   }
 
   private async dispatch(task: PrebundleTask, run: (task: PrebundleDispatch) => Promise<PrebundleResult>): Promise<PrebundleResult> {

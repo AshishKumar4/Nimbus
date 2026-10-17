@@ -10,6 +10,9 @@
 // esbuild).
 
 import assert from 'node:assert/strict';
+import { prebundleSliceBytes } from '../../packages/core/src/runtime/prebundle-slice.ts';
+
+const prebundleTask = (spec) => ({ specifier: spec.specifier, bytes: prebundleSliceBytes(spec.slice), prepare: () => structuredClone(spec) });
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { EsbuildService, buildWithEsbuild } from '../../packages/core/src/runtime/esbuild-service.ts';
@@ -179,7 +182,7 @@ try {
     await provider.acquire();
     await provider.acquire();
     assert.equal(counts.calls, calls, `acquiring a loaded facet asked it ${counts.calls - calls} more calls`);
-    const results = await Promise.all(CASES.map((c) => pool.prebundle(specOf(c))));
+    const results = await Promise.all(CASES.map((c) => pool.prebundle(prebundleTask(specOf(c)))));
     assert.equal(counts.mostPrebundling, PRE_BUNDLE_CONCURRENCY, 'pre-bundles run one at a time');
     for (const [i, c] of CASES.entries()) {
       const native = await prebundleSlice(specOf(c), (o, p) => buildWithRolldown(rolldownNative, structuredClone(o), p));
@@ -202,7 +205,7 @@ try {
     // Its generation retired: the next acquire loads the fresh one before any slice is built.
     await provider.acquire();
     assert.equal(counts.facetNames.length, 2, 'an acquire after a retirement loads the next generation');
-    const after = await pool.prebundle(specOf(CASES.find((c) => c.specifier === 'cjs-lib')));
+    const after = await pool.prebundle(prebundleTask(specOf(CASES.find((c) => c.specifier === 'cjs-lib'))));
     assert.equal(after.ok, true);
     assert.equal(counts.facetNames.length, 2, 'the next pre-bundle runs on that fresh isolate');
     console.log(`  ok  ${CASES.length} pre-bundles through PrebundlePool: one facet load, one at a time, native rolldown's output; a dying binding fails only its own`);

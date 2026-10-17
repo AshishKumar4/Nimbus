@@ -101,9 +101,12 @@ function makeVfs({ faults = new Map(), extraFiles = new Map(), reads = null } = 
 function makeParkedBundlePool() {
   const submits = [];
   const pool = {
-    prebundle: (spec) => new Promise((resolve, reject) => {
-      submits.push({ specifier: spec.specifier, sliceBytes: spec.slice.reduce((n, e) => n + (e.bytes?.length ?? 0), 0), resolve, reject });
-    }),
+    prebundle: (task) => {
+      const spec = task.prepare();
+      return new Promise((resolve, reject) => {
+        submits.push({ specifier: spec.specifier, sliceBytes: spec.slice.reduce((n, e) => n + (e.bytes?.length ?? 0), 0), resolve, reject });
+      });
+    },
   };
   return { provider: { acquire: async () => pool }, submits };
 }

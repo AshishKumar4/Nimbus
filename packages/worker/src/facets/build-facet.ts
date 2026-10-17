@@ -402,6 +402,7 @@ export async function buildFacetPrebundler(ctx: DurableObjectState, env: unknown
   await untilAborted(facet.warmed, signal);
   const stub = await untilAborted(facet.stub, signal);
   return async (task) => {
+    if (facet.retired || facet.generation !== generation) throw new BuildFacetResetError(task.specifier, 'the warmed generation was retired');
     const endCall = await beginCall(ctx, facet, task.signal);
     let result: PrebundleResult & Crashed;
     try {

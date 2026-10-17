@@ -27,7 +27,6 @@ import { PRE_BUNDLE_SLICE_CAP_BYTES } from '@nimbus-sh/platform/limits.js';
 import type { SupervisorAllocationOwner } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { describeError } from '@nimbus-sh/platform/oom-classify.js';
 import type { BundlePool, BundlePoolProvider } from '../facets/prebundle-pool.js';
-import { BuildFacetResetError } from '../facets/build-facet.js';
 import {
   discoverScopedSliceForSynthetic,
   buildSyntheticEntry,
@@ -221,6 +220,7 @@ export async function buildPrebundle<T>(
   barrel: BarrelInput | null,
   serve: (esmCode: string) => T,
 ): Promise<PrebundleOutcome<T>> {
+  ctx = { ...ctx };
   ctx.signal?.throwIfAborted();
   const resolved = resolvePrebundleEntry(ctx.vfs, ctx.root, specifier);
   if (!resolved) return { kind: 'unresolved' };
@@ -322,7 +322,6 @@ async function buildInFacet(
   entry: { entryPath: string; referencedFiles: string[] | null },
 ): Promise<Built | string> {
   let pool = initialPool;
-  let resets = 0;
   let changedPlans = 0;
   for (;;) {
     ctx.signal?.throwIfAborted();
@@ -350,8 +349,7 @@ async function buildInFacet(
     } catch (error) {
       ctx.signal?.throwIfAborted();
       if (recallOf(error) !== null || ['EACCES', 'EPERM'].includes(Reflect.get(Object(error), 'code'))) throw error;
-      if (error instanceof PrebundlePlanChanged && changedPlans++ === 0) continue;
-      if (error instanceof BuildFacetResetError && resets++ === 0) {
+      if (error instanceof PrebundlePlanChanged && changedPlans++ === 0) {
         const next = await acquirePool(ctx);
         if (next === null || typeof next === 'string') return next ?? 'the build facet pool is unavailable';
         pool = next;

@@ -66,7 +66,11 @@ try {
   const { BuildFacet } = await freshFacetClass();
   const facet = new BuildFacet({ id: { toString: () => 'barrel-scan-shared-row' } }, {});
   const bundled = [];
-  const bundlePool = { acquire: async () => ({ prebundle: (spec) => (bundled.push('/' + spec.entryPath.replace(/^\/+/, '')), facet.prebundle(spec)) }) };
+  const bundlePool = { acquire: async () => ({ prebundle: (task) => {
+    const spec = task.prepare();
+    bundled.push('/' + spec.entryPath.replace(/^\/+/, ''));
+    return facet.prebundle(spec);
+  } }) };
 
   const installer = kernelInstaller(vfs, harness.sql, {
     env,

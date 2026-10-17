@@ -12,7 +12,7 @@ import { launchManager } from './lib/facet-launch-harness.mjs';
 import { namedFacetPlatform } from './lib/named-facet-platform.mjs';
 import { createAuthority, runScenarios, until } from './lib/resident-body.mjs';
 
-function bundleFixture(name, bytes = 128 * 1024) {
+function bundleFixture(name, bytes = 128 * 1024, resets = 0) {
   const authority = createAuthority();
   const root = 'home/user/app';
   authority.kfs.mkdir(`${root}/node_modules/pkg`, { recursive: true });
@@ -21,9 +21,17 @@ function bundleFixture(name, bytes = 128 * 1024) {
   const entered = Promise.withResolvers();
   const finish = Promise.withResolvers();
   let sliceRef;
+  let calls = 0;
+  const inputs = [];
+  const rpcCredit = [];
   class Bundler {
     async warm() {}
     async prebundle(spec) {
+      rpcCredit.push(readSupervisorAllocationBudget().current);
+      if (calls++ < resets) {
+        authority.kfs.writeFile(`${root}/node_modules/pkg/index.js`, 'export const x=2;');
+        throw new Error('the build facet connection reset');
+      }
       entered.resolve();
       await finish.promise;
       return { specifier: spec.specifier, ok: true, esmCode: 'export const x=1;', elapsed: 0, warnings: [] };
@@ -33,6 +41,7 @@ function bundleFixture(name, bytes = 128 * 1024) {
     invoke(_name, method, args, instance) {
       if (method === 'prebundle') sliceRef = new WeakRef(args[0].slice);
       const transferred = structuredClone(args);
+      if (method === 'prebundle') inputs.push(transferred[0]);
       args.length = 0;
       return instance.then((target) => target[method](...transferred));
     },
@@ -40,7 +49,7 @@ function bundleFixture(name, bytes = 128 * 1024) {
   const provider = new PrebundlePool(platform.env, platform.ctx);
   const context = { vfs: authority.kfs, root, cache: null, pool: provider,
     parse: async (_path, source) => source, esbuild: new EsbuildService(undefined, {}), serviceFallback: false };
-  return { ...platform, provider, context, authority, entered: entered.promise, finish: () => finish.resolve(), sliceRef: () => sliceRef,
+  return { ...platform, provider, context, authority, inputs, rpcCredit, entered: entered.promise, finish: () => finish.resolve(), sliceRef: () => sliceRef,
     build: () => buildPrebundle(context, 'pkg', null, (code) => code) };
 }
 
@@ -195,6 +204,17 @@ await runScenarios(fileURLToPath(import.meta.url), {
       assert.equal(live, false, 'the supervisor keeps no slice vector while the RPC answer is pending');
       assert.equal(readSupervisorAllocationBudget().current, 0, 'the transferred slice keeps no supervisor credit');
     } finally { h.finish(); await building; }
+  },
+  async resetRegathersTheSlice() {
+    const h = bundleFixture('reset-prebundle-slice', 128 * 1024, 1);
+    h.finish();
+    const result = await h.build();
+    assert.equal(result.kind, 'built', JSON.stringify(result));
+    assert.equal(h.inputs.length, 2, 'one reset retries exactly once with a freshly prepared input');
+    const source = (spec) => new TextDecoder().decode(spec.slice.find((entry) => entry.path.endsWith('/pkg/index.js')).bytes);
+    assert.ok(source(h.inputs[0]).includes('x=1'));
+    assert.ok(source(h.inputs[1]).includes('x=2'), 'the retry reads the new package bytes, never the old RPC slice');
+    assert.deepEqual(h.rpcCredit, [0, 0], 'neither pending RPC owns a supervisor slice lease');
   },
   async abortPoolSlot() {
     const h = bundleFixture('abort-prebundle-slot');

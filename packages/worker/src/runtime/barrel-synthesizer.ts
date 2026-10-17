@@ -54,6 +54,7 @@
  */
 
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { recallOf } from '@nimbus-sh/core/vfs/recall.js';
 import type { SliceEntry } from '../npm/pre-bundle-facet.js';
 import { packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 import { importedSpecifiers, maskSourceForImports, UndecidableSourceError } from '@nimbus-sh/core/runtime/comment-strip.js';
@@ -620,7 +621,7 @@ export async function discoverScopedSliceForSynthetic(
       vfs.access(pkgJsonPath, 4);
       entries.push({ path: pkgJsonPath, isDir: false });
       visited.add(pkgJsonPath);
-    } catch {}
+    } catch (error) { if (recallOf(error) !== null) throw error; }
   }
 
   // Walker: BFS over referenced files + their relative imports.
@@ -631,7 +632,10 @@ export async function discoverScopedSliceForSynthetic(
     visited.add(filePath);
     if (!vfs.exists(filePath) || vfs.isDirectory(filePath)) continue;
     let source: string;
-    try { source = vfs.readFileString(filePath); } catch { continue; }
+    try { source = vfs.readFileString(filePath); } catch (error) {
+      if (recallOf(error) !== null) throw error;
+      continue;
+    }
     // Track parent dirs so esbuild's plugin's dirSet has them.
     const slash = filePath.lastIndexOf('/');
     if (slash > 0) addDir(filePath.substring(0, slash));
