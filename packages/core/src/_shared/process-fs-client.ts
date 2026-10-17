@@ -1341,7 +1341,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       // The same file's next bytes, right after its last unsent change: folded into it.
       const tail = queue[queue.length - 1];
       // (The queue holds only unsent changes; one sent and back for a re-send is numbered.)
-      const fold = parts.length === 1 && tail !== undefined && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged
+      const fold = parts.length === 1 && tail !== undefined && tail.paths[0] === named[0] && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged
         ? folded(tail.op, parts[0]!) : null;
       if (fold !== null && tail !== undefined) {
         const before = (tail.op as { call: DataCall }).call;
