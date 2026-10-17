@@ -1449,6 +1449,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     const syncCap = options.syncCapBytes ?? (journal.durable ? PROCESS_FS_SYNC_CAP_BYTES : PROCESS_FS_HEAP_SYNC_CAP_BYTES);
     let heapBytes = 0;
     const queue = [];
+    let tailBuffer = null;
     let inFlight = null;
     let scheduled = false;
     let pendingBytes = 0;
@@ -1580,6 +1581,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         bytes += next.bytes;
         taken.push(queue.shift());
       }
+      if (queue.length === 0) tailBuffer = null;
       return taken;
     };
     const send = async (entries) => {
@@ -1607,7 +1609,6 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         for (const entry of entries) if (entry.op !== null) {
           heapBytes -= entry.bytes;
           entry.op = null;
-          entry.buffer = null;
         }
         bytes = await encodeWriteBatch({ inodes: [], chunks: [], ops });
         numberEntries(entries);
@@ -1715,11 +1716,11 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     const endedProcess = (entries, refusal, writer) => {
       processGone ??= refusal;
       const ended = [...entries, ...queue.splice(0)];
+      tailBuffer = null;
       for (const entry of ended) {
         if (entry.op !== null) {
           heapBytes -= entry.bytes;
           entry.op = null;
-          entry.buffer = null;
         }
         fail(entry, "ESRCH", processGone.message);
       }
@@ -1731,11 +1732,11 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     const exhaustedInvocation = (entries, refusal) => {
       processGone ??= fsError("EIO", refusal.message, "");
       const stopped = [...entries, ...queue.splice(0)];
+      tailBuffer = null;
       for (const entry of stopped) {
         if (entry.op !== null) {
           heapBytes -= entry.bytes;
           entry.op = null;
-          entry.buffer = null;
         }
         fail(entry, "EIO", refusal.message);
       }
@@ -2024,13 +2025,13 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           throw fsError("ENOMEM", `ENOMEM: ${pendingSyncBytes} bytes of synchronous writes are waiting for the session, and this one (${bytes}) would pass the ${syncCap}-byte cap; let the program yield (an await) for them to be sent`, pathsOf(op)[0] ?? "");
         }
         const tail = queue[queue.length - 1];
-        const merged = parts.length === 1 && tail !== void 0 && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged ? folded(tail.op, parts[0], tail.buffer) : null;
+        const merged = parts.length === 1 && tail !== void 0 && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged ? folded(tail.op, parts[0], tailBuffer) : null;
         if (merged !== null && tail !== void 0) {
           const mergedBytes = merged.op.type === "call" && "data" in merged.op.call ? merged.op.call.data.byteLength : 0;
           journal.replace(tail.jid, merged.op, merged.append);
           const grown = mergedBytes - tail.bytes;
           tail.op = merged.op;
-          tail.buffer = merged.buffer;
+          tailBuffer = merged.buffer;
           tail.bytes = mergedBytes;
           if (tail.lingers && !lingers) {
             tail.lingers = false;
@@ -2062,7 +2063,8 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           const jid = journal.append(part);
           const kept = !journal.durable || heapBytes + partBytes <= PROCESS_FS_HEAP_WINDOW_BYTES;
           if (kept) heapBytes += partBytes;
-          queue.push({ op: kept ? part : null, buffer: null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject });
+          tailBuffer = null;
+          queue.push({ op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject });
           pendingBytes += partBytes;
           if (acknowledged) {
             pendingSyncBytes += partBytes;
