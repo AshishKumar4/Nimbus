@@ -38,6 +38,7 @@ async function compare(free, expectBounce, observedOnly = false) {
     let bridge;
     let paused = false;
     let unrelated = false;
+    let unrelatedStats = 0;
     const reads = [];
     const entered = Promise.withResolvers();
     const proceed = Promise.withResolvers();
@@ -61,6 +62,10 @@ async function compare(free, expectBounce, observedOnly = false) {
           const view = target.bind(...args);
           const bound = new Proxy(view, {
             get(current, member) {
+              if (member === 'stat') return (...args) => {
+                if (unrelated) unrelatedStats++;
+                return current.stat(...args);
+              };
               if (member === 'readFile') return async (path) => {
                 if (pauseEntry && !paused && path.endsWith('/entry.cjs')) {
                   paused = true;
@@ -87,8 +92,10 @@ async function compare(free, expectBounce, observedOnly = false) {
         assert.ok(bridge);
         unrelated = true;
         try {
+          const before = unrelatedStats;
           const result = await addObservedReads(bridge, new Set(['opt/observed.txt']), {}, new Set(), { totalBytes: 0, fileCount: 0 });
           assert.equal(result.added, 1, 'an unrelated reader of the same bridge is not charged to the suspended gather');
+          assert.equal(unrelatedStats - before, 1, 'without a gate the adapter adds no stat beyond the pass own lstat');
         } finally { unrelated = false; }
       },
     };
