@@ -15,7 +15,6 @@
  */
 import { z } from 'zod/v4';
 import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
-import type { ImageDigest } from './facet-host.js';
 export interface ManifestFile {
     /** VFS path relative to /usr/lib/nimbus/<name>/<version>/. */
     path: string;
@@ -81,14 +80,8 @@ export interface RuntimeManifest {
     runtime_artifacts?: RuntimeArtifactMetadata[];
 }
 export declare const HexSha256Schema: z.ZodString;
-/**
- * `rel` as `manifest` installs it under `installRoot`: its path, with the
- * digest and size the manifest vouches for (an image's, ImageDigest); null
- * when the manifest has no such file.
- */
-export declare function installedFile(manifest: RuntimeManifest, installRoot: string, rel: string): (ImageDigest & {
-    path: string;
-}) | null;
+/** Where `manifest` installs `rel` under `installRoot`; null when the manifest has no such file. */
+export declare function installedPath(manifest: RuntimeManifest, installRoot: string, rel: string): string | null;
 export declare const RuntimePythonPackageArtifactMetadataSchema: z.ZodType<RuntimePythonPackageArtifactMetadata>;
 export declare function parseRuntimeManifest(value: unknown): RuntimeManifest;
 export declare function isRuntimePythonPackageArtifactMetadata(artifact: RuntimeArtifactMetadata): artifact is RuntimePythonPackageArtifactMetadata;
