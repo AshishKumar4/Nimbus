@@ -1126,7 +1126,8 @@ export function provisional(host: ProvisionalHost): Provisional {
 
     unnamed: (handleId) => {
       const inode = descs.get(handleId)?.inode;
-      return inode !== undefined && inode.cell === undefined && !named(inode);
+      // One made here and not yet the session's has no other name there to be found by.
+      return inode !== undefined && inode.cell === undefined && !inode.local && !named(inode);
     },
 
     anchored: (description, handle) => {
