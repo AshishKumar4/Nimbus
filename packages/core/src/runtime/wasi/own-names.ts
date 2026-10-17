@@ -13,8 +13,6 @@ import type { ResidentEntry } from './resident-filesystem.js';
 export interface OwnNamesOptions {
   /** The view's own word, this process's aside (HolderStore.entry). */
   entry(key: string): ResidentEntry | null | undefined;
-  /** Whether a subtree the process holds covers `key`: its decisions stand while it holds it. */
-  held(key: string): boolean;
   /** `key` retired: what it decided there was `entry`. */
   forgot(key: string, entry: ResidentEntry | null | undefined): void;
 }
@@ -22,7 +20,7 @@ export interface OwnNamesOptions {
 export interface OwnNames {
   /** This process's word on `key`: what it decided, or absent for a name not made in a directory it made. Undefined where it has none. */
   entry(key: string): ResidentEntry | null | undefined;
-  /** What it decided, by name (null: removed): read and changed as the holder decides. */
+  /** What it decided, by name (null: removed): read and changed as the holder decides; deciding a name again makes it the deciding grant's. */
   readonly decided: Map<string, ResidentEntry | null>;
   /** Its decision at `key` is no longer its own: the session's answer replaced it. */
   undecide(key: string): void;
@@ -44,7 +42,7 @@ export interface OwnNames {
   released(root: string): void;
   /** A barrier begins: its number, which `retire` takes once it lands. */
   barrierBegun(): number;
-  /** Barrier `begun` landed: each name outside a held subtree whose ops were all answered before it began retires. */
+  /** Barrier `begun` landed: each name given back, not decided again since, whose ops were all answered before it began retires. */
   retire(begun: number): void;
 }
 
@@ -62,13 +60,17 @@ function within(key: string, root: string): boolean {
 }
 
 export function ownNames(options: OwnNamesOptions): OwnNames {
-  const decided = new Map<string, ResidentEntry | null>();
+  /** The barriers begun when each name's subtree was last given back, everything decided there answered, and not decided again since: one begun after retires it. */
+  const own = new Map<string, number>();
+  /** What it decided; a name decided again is the deciding grant's, whatever an earlier one gave back. */
+  const decided = new (class extends Map<string, ResidentEntry | null> {
+    override set(key: string, value: ResidentEntry | null): this {
+      own.delete(key);
+      return super.set(key, value);
+    }
+  })();
   const added = new Map<string, Map<string, RuntimeVfsDirEntry['type']>>();
   const removed = new Map<string, Set<string>>();
-  /** The barriers begun when each name's subtree was last given back, everything decided there answered: one begun after retires it. */
-  const own = new Map<string, number>();
-  /** Of those, the ones outside a held subtree: what a landed barrier may retire. */
-  const settling = new Set<string>();
   let barriers = 0;
   /** The directories made here: until the view has one, its names are the ones made in it. */
   const made = new Set<string>();
@@ -80,7 +82,6 @@ export function ownNames(options: OwnNamesOptions): OwnNames {
   const forget = (key: string): void => {
     const entry = decided.get(key);
     own.delete(key);
-    settling.delete(key);
     decided.delete(key);
     made.delete(key);
     added.get(parentKey(key))?.delete(nameOf(key));
@@ -142,24 +143,16 @@ export function ownNames(options: OwnNamesOptions): OwnNames {
         if (key === from || !within(key, from)) continue;
         own.delete(key);
         own.set(moved(key), value);
-        if (settling.delete(key)) settling.add(moved(key));
       }
     },
     released: (root) => {
       // Stamped at every release: one decided under a later grant retires after this release, not an earlier one.
-      for (const key of decided.keys()) {
-        if (!within(key, root)) continue;
-        own.set(key, barriers);
-        settling.add(key);
-      }
+      for (const key of decided.keys()) if (within(key, root)) own.set(key, barriers);
     },
     barrierBegun: () => ++barriers,
+    // A subtree held again since does not keep it: what the session has there now is what the view read.
     retire: (begun) => {
-      for (const key of [...settling]) {
-        const settled = own.get(key);
-        if (settled === undefined || options.held(key)) settling.delete(key);
-        else if (settled < begun) forget(key);
-      }
+      for (const [key, settled] of [...own]) if (settled < begun) forget(key);
     },
   };
 }

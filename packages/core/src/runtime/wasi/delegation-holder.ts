@@ -241,7 +241,6 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   /** What it decided by name, until the view has it. */
   const names = ownNames({
     entry: (key) => store.entry(key),
-    held: (key) => client.held(key) !== undefined,
     // A cell goes with its name, but for bytes still unlogged or open.
     forgot: (key, entry) => {
       const inode = entry ? prov.inode(entry.dev, entry.ino) : undefined;
