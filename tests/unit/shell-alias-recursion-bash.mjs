@@ -28,8 +28,8 @@ const CASES = [
   "alias l='echo L'\nalias m='l; l'\nm",
 ];
 
-/** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `. */
-const plainStderr = (text) => text.replace(/^bash: (?:-c: )?(?:line \d+: )?/gm, '');
+/** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, and a function's `environment: line 2: ` (the armada image's bash). */
+const plainStderr = (text) => text.replace(/^(?:bash|environment): (?:-c: )?(?:line \d+: )?/gm, '');
 const FILES = ['a.txt', 'b.txt'];
 const bash = new Map();
 for (const line of CASES) {
