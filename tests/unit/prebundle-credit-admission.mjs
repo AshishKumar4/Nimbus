@@ -190,9 +190,27 @@ await runScenarios(fileURLToPath(import.meta.url), {
   },
   async residentAndOneShotProgressDuringDiscovery() {
     const discovery = deferredDiscovery('resident-prebundle-discovery');
+    const helperNames = new Set();
+    const helperNamespace = discovery.h.ctx.facets;
+    const helperGet = helperNamespace.get.bind(helperNamespace);
+    const helperAbort = helperNamespace.abort.bind(helperNamespace);
+    helperNamespace.get = (name, ...args) => { helperNames.add(name); return helperGet(name, ...args); };
+    await discovery.h.provider.acquire();
+    const node = nodeSession(14 * 1024 * 1024);
+    const namespace = node.ctx.facets;
+    const get = namespace.get.bind(namespace);
+    const abort = namespace.abort.bind(namespace);
+    namespace.get = (name, ...args) => helperNames.has(name) ? helperGet(name, ...args) : get(name, ...args);
+    namespace.abort = (name) => helperNames.has(name) ? helperAbort(name) : abort(name);
+    const fs = node.vfs.as(CRED_KERNEL);
+    const root = discovery.h.context.root + '/node_modules/pkg';
+    fs.mkdir(root, { recursive: true, mode: 0o755 });
+    for (const name of ['package.json', 'index.js', 'component.tsx']) fs.writeFile(root + '/' + name,
+      discovery.h.authority.kfs.readFile(root + '/' + name), { mode: 0o644 });
+    discovery.h.context.vfs = fs;
+    discovery.h.context.pool = new PrebundlePool(discovery.h.env, node.ctx);
     const building = discovery.build();
     await discovery.entered;
-    const node = nodeSession(14 * 1024 * 1024);
     const resident = node.resident();
     const one = node.one();
     let timer;
@@ -207,7 +225,8 @@ await runScenarios(fileURLToPath(import.meta.url), {
       assert.equal(settled[1].exitCode, 0, settled[1].stderr);
       node.manager.kill(settled[0].pid);
     } finally {
-      discovery.finish(); await building;
+      discovery.finish();
+      assert.equal((await building).kind, 'built', 'the prebundle also completes after unrelated resident image writes');
       const completed = await Promise.allSettled([resident, one]);
       if (completed[0].status === 'fulfilled') node.manager.kill(completed[0].value.pid);
     }
