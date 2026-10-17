@@ -7,7 +7,9 @@
  * Red before (live, wasi-fs-load, python):
  *   - a second run that rewrote files a first run had written listed its
  *     directory as empty and stat'd the files it had just written as missing;
- *   - a 2 to 5 MiB file read back right after it was written had no bytes.
+ *   - a 2 to 5 MiB file read back right after it was written had no bytes;
+ *   - pip's first file in a package directory it had just made failed
+ *     ENOENT when the grant was renewed while the open's walk waited.
  */
 
 import assert from 'node:assert/strict';
@@ -42,8 +44,12 @@ async function sessionWith(seed = {}) {
   return { files, kernel, next: 2 };
 }
 
-/** A process of `session` (its own pid) over its own real store, holding what it writes. `gate`: each wave waits for it. */
-async function processOf(session, gate = () => null) {
+/**
+ * A process of `session` (its own pid) over its own real store, holding what
+ * it writes. `gate`: each wave waits for it. `grantInos`: a first grant's
+ * range. `looked`: each lookup's answer waits for it, taken as the session had it when asked.
+ */
+async function processOf(session, gate = () => null, { grantInos, looked } = {}) {
   const authority = session.files.bind({ pid: session.next++, cred: USER });
   const storeSource = createResidentStore();
   storeSource.bindInMemory(WASI_RESIDENT_STORE_BYTES);
@@ -61,6 +67,7 @@ async function processOf(session, gate = () => null) {
           else out.push({ bytes: await authority.readRange(request.path, request.offset, request.length) });
         } catch (error) { out.push({ error }); }
       }
+      await looked?.(requests);
       return out;
     },
   };
@@ -85,13 +92,23 @@ async function processOf(session, gate = () => null) {
   const fs = residentFilesystem(authority, view, {
     session: port,
     isHomeRoot: (key) => key.startsWith('home/') && !key.slice(5).includes('/'),
+    ...(grantInos === undefined ? {} : { grantInos }),
   });
   return { fs, kernel: session.kernel, authority };
 }
 
 /** A session with `seed`, and one process of it. */
-async function processOver(seed = {}, gate) {
-  return processOf(await sessionWith(seed), gate);
+async function processOver(seed = {}, gate, options) {
+  return processOf(await sessionWith(seed), gate, options);
+}
+
+/** Resolves once `ready()` answers, polling. */
+async function until(ready, what) {
+  for (let i = 0; i < 400; i++) {
+    if (ready()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`never: ${what}`);
 }
 
 /** Python's open(name, 'w') and one write of `bytes`. */
@@ -189,6 +206,41 @@ async function readWhole(fs, name) {
   assert.equal((answered ?? final).size, 3, 'a stat after the send answered without the write made during it');
   await closed;
   await fs.settle();
+}
+
+// ── A grant given back while a walk waits on the session: the walk reads what the process made ──
+// pip's wheel install (python/numpy-flask-startup-modules, staging): a
+// package's directory is made under the grant, the last of its range, so the
+// grant is renewed; the first file's open walks the session for its name
+// (the directory is not sent yet), and while that lookup waits, the renewal
+// sends the log, gives the grant back and drops what was decided under it.
+// Red before: the walk went on over the store's listing from before the
+// directory was sent, and the open failed ENOENT.
+{
+  let holding = false;
+  const sent = Promise.withResolvers();
+  let proc;
+  let lookups = 0;
+  const looked = async (requests) => {
+    if (!requests.some((request) => request.path.endsWith('/site/b/f0.py')) || ++lookups !== 2) return;
+    holding = false;
+    sent.resolve();
+    await until(() => proc.fs.stats().client.released > 0, 'the grant given back');
+  };
+  proc = await processOver({ 'site/seen.txt': 'x' }, () => (holding ? sent.promise : null), { grantInos: 4, looked });
+  const { fs, authority } = proc;
+  await fs.readdir(beneath('site'));
+  for (let i = 0; i < 8; i++) await fs.mkdir(beneath(`site/w${i}`));
+  await until(() => fs.stats().client.grants > 0, 'the subtree taken');
+  await fs.mkdir(beneath('site/a'));
+  await rewrite(fs, 'site/a/f0.py', enc.encode('a0'));
+  await rewrite(fs, 'site/a/f1.py', enc.encode('a1'));
+  holding = true;
+  await fs.mkdir(beneath('site/b'));
+  await rewrite(fs, 'site/b/f0.py', enc.encode('b0'));
+  assert.equal(lookups >= 2 && fs.stats().client.renewed, 1, 'the grant was not renewed while the walk waited');
+  await fs.settle();
+  assert.equal(dec.decode(await authority.readFile(beneath('site/b/f0.py'))), 'b0');
 }
 
 // ── A file of a few MiB reads back what was written, at once ──
