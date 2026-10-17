@@ -38,6 +38,11 @@ published independently in the `@nimbus-sh` npm scope.
   unsupported, as the portable node does. Before, it was ignored: `-e`
   code under `=module` ran as CommonJS. A value other than `module` or
   `commonjs` is Node's own refusal.
+- Fixed: a workspace resize handle could stop following the pointer
+  mid-drag when the page lost the pointer's capture. The drag now follows
+  the pointer until it is released, and a release the page cannot hear
+  (over the preview's frame, or outside the window) ends it at the next
+  move or when the window loses focus.
 - Changed: a program whose launch waits 10 seconds at one stage (its
   preparation, its admission for a worker, or its load) logs one line to
   Workers Logs: `[facet-manager] launch stalled:` with its pid, command,
