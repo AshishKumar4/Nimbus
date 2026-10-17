@@ -947,9 +947,9 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const handle = heldDesc(handleId);
       if (handle === undefined) {
         prov.fsetattr(handleId, change);
-        // A name a grant decided for the file shows the change made through its description, as the session will.
+        // A name its grant decides for the file shows the change made through its description, as the session will (one given back is the view's to say).
         const inode = prov.descriptor(handleId)!.inode;
-        const named = decided.get(inode.key);
+        const named = names.current(inode.key);
         if (named && named.ino === inode.ino) {
           decided.set(inode.key, changedBy(named, 'atime' in change ? { atime: timeAt(change.atime, named.atime, now()), mtime: timeAt(change.mtime, named.mtime, now()) } : change));
         }
