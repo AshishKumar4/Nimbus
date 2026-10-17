@@ -33,6 +33,7 @@
  * The transform facet's runtime bundles it (oxc-facet/preamble.ts).
  */
 import { resolveTsSettings } from './tsconfig-raw.js';
+import { nameDec } from '../_shared/bytes.js';
 /** The wasm's exports, checked against the ABI scripts/oxc-wasm/src/abi.rs defines. */
 function bindExports(instance) {
     const exports = instance.exports;
@@ -159,7 +160,7 @@ export function createOxcTransform(module, { retireAboveBytes = 64 * 1024 * 1024
             at++;
             if (at + length > bytes.length)
                 throw new Error('oxc transform: malformed diagnostics');
-            fields.push(decoder.decode(bytes.subarray(at, at + length)));
+            fields.push(nameDec.decode(bytes.subarray(at, at + length)));
             at += length;
         }
         if (fields.length % 7 !== 0)

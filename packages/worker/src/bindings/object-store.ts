@@ -15,6 +15,7 @@
 
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { nameDec } from '@nimbus-sh/core/_shared/bytes.js';
 
 /** The directory a binding's objects live in, under the project `root`. */
 export function objectStoreDir(root: string, kind: 'kv' | 'r2', binding: string): string {
@@ -86,5 +87,5 @@ export function cursorAfter(key: string): string {
 
 /** The key a cursor's page ended at, which the next page starts after. */
 export function cursorKey(cursor: string): string {
-  return new TextDecoder().decode(Uint8Array.from(atob(cursor), (char) => char.charCodeAt(0)));
+  return nameDec.decode(Uint8Array.from(atob(cursor), (char) => char.charCodeAt(0)));
 }

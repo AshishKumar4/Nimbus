@@ -18,6 +18,7 @@
  * Not stateless-connect or connect: with those git would run the protocol
  * itself, and git.wasm cannot demultiplex a sideband (start_async forks).
  */
+import { nameDec } from '@nimbus-sh/core/_shared/bytes.js';
 import { RemoteEngineError } from './engine.js';
 import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
@@ -32,7 +33,7 @@ export function unquoteC(value) {
     for (let i = 1; i < value.length; i++) {
         const c = value[i];
         if (c === '"')
-            return i === value.length - 1 ? new TextDecoder().decode(new Uint8Array(bytes)) : null;
+            return i === value.length - 1 ? nameDec.decode(new Uint8Array(bytes)) : null;
         if (c !== '\\') {
             bytes.push(...enc.encode(c));
             continue;
@@ -131,8 +132,9 @@ async function storageOf(io, gitDir) {
     let commonDir = io.env.GIT_COMMON_DIR ? '/' + resolveVfsPath(io.env.GIT_COMMON_DIR, io.cwd) : gitDir;
     if (!io.env.GIT_COMMON_DIR) {
         const common = await io.readFile(gitDir + '/commondir');
+        // Its line's end dropped, and nothing else (setup.c get_common_dir_noenv).
         if (common !== null)
-            commonDir = '/' + resolveVfsPath(new TextDecoder().decode(common).trimEnd(), gitDir);
+            commonDir = '/' + resolveVfsPath(nameDec.decode(common).replace(/[\r\n]+$/, ''), gitDir);
     }
     return {
         ...(commonDir !== gitDir ? { commonDir } : {}),

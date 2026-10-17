@@ -782,8 +782,10 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
   };
 
   const jsAbiResources = jsValueSlab;
+  // A Ruby string's value, a leading U+FEFF kept: a name or a value, never a document.
+  const guestStringDecoder = new TextDecoder('utf-8', { ignoreBOM: true });
   function readGuestString(ptr, len) {
-    return new TextDecoder().decode(new Uint8Array(memRef.buffer, ptr, len));
+    return guestStringDecoder.decode(new Uint8Array(memRef.buffer, ptr, len));
   }
   function writeGuestString(outPtr, value) {
     const bytes = new TextEncoder().encode(String(value));

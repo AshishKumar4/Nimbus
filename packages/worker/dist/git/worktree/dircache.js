@@ -10,6 +10,7 @@
  * written by one ordered merge of the old entries' bytes with the new ones,
  * which are themselves held as bytes (NewEntries), straight into the file.
  */
+import { nameDec } from '@nimbus-sh/core/_shared/bytes.js';
 import { createHash } from 'node:crypto';
 import { objectHash, oidFromHex, oidToHex } from '../pack/format.js';
 import { CacheTree } from './cachetree.js';
@@ -34,7 +35,6 @@ const VALID = 0x8000;
 const SKIP_WORKTREE = 0x4000;
 const INTENT_TO_ADD = 0x2000;
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 /** git's name order: the bytes of the path. */
 export function compareBytes(a, b) {
     const n = Math.min(a.length, b.length);
@@ -47,7 +47,7 @@ export function compareBytes(a, b) {
 export function decodePath(bytes) {
     for (let i = 0; i < bytes.length; i++) {
         if (bytes[i] >= 0x80)
-            return decoder.decode(bytes);
+            return nameDec.decode(bytes);
     }
     return String.fromCharCode.apply(null, bytes);
 }

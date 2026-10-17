@@ -27,7 +27,7 @@ import { PromisorFetchError, fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { errnoCodeOf, fsError, isVfsError, strerror } from '@nimbus-sh/core/vfs/vfs-error.js';
-import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
+import { dec, enc, nameDec } from '@nimbus-sh/core/_shared/bytes.js';
 import { DEFAULT_CONTEXT, DEFAULT_RENAME_SCORE, absentSpec, binaryPath, bytesFromBinary, detectRenames, formatNameOnly, formatNameStatus, formatPatch, formatStat, parseRenameScore, pathLine, statFile, StatList, } from './unified-diff.js';
 import { CheckoutRefused, UnmergedIndex, switchTrees } from './worktree/checkout.js';
 import { parseSparseCheckoutArgs, sparseCheckout } from './sparse-checkout.js';
@@ -2708,7 +2708,7 @@ async function checkoutPaths(ctx, git, vfs, fs, source, pathArgs, ignoreSkipWork
             const file = `${root}/${path}`;
             const { data } = await wrepo.store.read(oid);
             if (mode === 0o120000) {
-                await writer.symlink(dec.decode(data), file);
+                await writer.symlink(nameDec.decode(data), file);
             }
             else {
                 const fileMode = mode === 0o100755 ? 0o755 : 0o644;

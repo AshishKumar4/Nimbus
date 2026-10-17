@@ -18,6 +18,15 @@ published independently in the `@nimbus-sh` npm scope.
   request and sent it with a Content-Length. Push no longer reads the
   isomorphic-git-only `http.corsProxy` setting, which fetch already
   ignored and git never had.
+- Fixed: a name that begins with U+FEFF (the UTF-8 BOM, bytes EF BB BF)
+  keeps it, as git, tar and Linux keep it. This covers file and directory
+  names in git's index, trees and checkouts, symlink targets, ZIP member
+  names, paths in the wasm bash and its programs, and the text `$( )`
+  captures. Before, each was decoded with a TextDecoder that drops a
+  leading BOM: a clone of a repository with a directory named by a BOM alone
+  failed with "invalid path", a file `\uFEFFf` was created as `f`, and
+  `readlink` lost the BOM from its link's target. A `.git/commondir` loses
+  only its line's end, as git reads it.
 - Fixed: a hosted ES module, staged or interpreted, can statically import
   a `data:` module (`import x from 'data:text/javascript,…'`). Its imported
   names are checked before any module body runs. It runs once, in a cycle

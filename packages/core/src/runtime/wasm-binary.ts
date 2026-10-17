@@ -11,6 +11,9 @@
 /** Section ids this module names. */
 export const WASM_SECTION = { custom: 0, import: 2, memory: 5, export: 7 } as const;
 
+/** A name's UTF-8, a leading U+FEFF kept (as _shared/bytes.ts nameDec, which this file does not import). */
+const NAME_DECODER = new TextDecoder('utf-8', { ignoreBOM: true });
+
 /** Import and export kinds. */
 export const WASM_EXTERN = { func: 0x00, table: 0x01, memory: 0x02, global: 0x03 } as const;
 
@@ -50,7 +53,7 @@ export class WasmReader {
     const length = this.varuint();
     const end = this.offset + length;
     if (end > this.bytes.length) throw new Error('wasm: truncated');
-    const value = new TextDecoder().decode(this.bytes.subarray(this.offset, end));
+    const value = NAME_DECODER.decode(this.bytes.subarray(this.offset, end));
     this.offset = end;
     return value;
   }
