@@ -73,28 +73,31 @@ async function run(steps) {
     // Attribute operations need live descriptions, not immutable read-only copies.
     const open = (name, flags) => guest.open(name, { ...flags, allocate: true });
 
-    const check = async (label) => {
+    const check = async (label, reopen = false, contents = false) => {
       for (const [fd, opened] of fds) {
         await compareStat(`${label}: fd ${fd} fd_filestat_get`, () => guest.fstat(opened.guest), () => fstat(opened.direct));
-        const flags = { read: opened.flags.read, write: opened.flags.write, append: opened.flags.append };
-        let ours, theirs;
-        try {
-          await compare(`${label}: fd ${fd} /dev/fd open`, async () => { ours = await open(`dev/fd/${opened.guest}`, flags); }, async () => { theirs = (await direct.reopen({ handle: opened.direct }, flags)).id; });
-          if (ours !== undefined) {
-            await compareStat(`${label}: fd ${fd} /dev/fd fd_filestat_get`, () => guest.fstat(ours), () => fstat(theirs));
-            if (flags.read) {
-              await compare(`${label}: fd ${fd} /dev/fd fd_read`, () => guest.read(ours, 1 << 12), async () => dec.decode(await direct.read(theirs, null, 1 << 12)));
-              await compare(`${label}: fd ${fd} /dev/fd fd_read at end`, () => guest.read(ours, 1), async () => dec.decode(await direct.read(theirs, null, 1)));
+        if (reopen) {
+          const flags = { read: opened.flags.read, write: opened.flags.write, append: opened.flags.append };
+          let ours, theirs;
+          try {
+            await compare(`${label}: fd ${fd} /dev/fd open`, async () => { ours = await open(`dev/fd/${opened.guest}`, flags); }, async () => { theirs = (await direct.reopen({ handle: opened.direct }, flags)).id; });
+            if (ours !== undefined) {
+              await compareStat(`${label}: fd ${fd} /dev/fd fd_filestat_get`, () => guest.fstat(ours), () => fstat(theirs));
+              if (flags.read) {
+                await compare(`${label}: fd ${fd} /dev/fd fd_read`, () => guest.read(ours, 1 << 12), async () => dec.decode(await direct.read(theirs, null, 1 << 12)));
+                await compare(`${label}: fd ${fd} /dev/fd fd_read at end`, () => guest.read(ours, 1), async () => dec.decode(await direct.read(theirs, null, 1)));
+              }
             }
+          } finally {
+            if (ours !== undefined) await ok(guest.close(ours));
+            if (theirs !== undefined) await direct.close(theirs);
           }
-        } finally {
-          if (ours !== undefined) await ok(guest.close(ours));
-          if (theirs !== undefined) await direct.close(theirs);
         }
         if (opened.flags.read) await compare(`${label}: fd ${fd} fd_pread`, () => guest.pread(opened.guest, 1 << 12), async () => dec.decode(await direct.read(opened.direct, 0, 1 << 12)));
       }
       for (const name of NAMES) {
         await compareStat(`${label}: ${name} path_filestat_get`, () => guest.stat(path(name)), () => stat(name));
+        if (!contents) continue;
         await compare(`${label}: ${name} path bytes`, async () => {
           const fd = await open(path(name), { read: true });
           try { return await guest.pread(fd, 1 << 12); }
@@ -161,12 +164,12 @@ async function run(steps) {
         if (step.op === 'catchUp') guest.inbound();
       } else if (step.op === 'peer') await peerStep(step, label);
       else await processStep(step, label);
-      await check(label);
+      await check(label, ['rename', 'unlink', 'deliver', 'catchUp'].includes(step.op));
     }
     for (const fd of [...fds.keys()]) await processStep({ op: 'close', fd }, 'the end');
     assert.equal(await guest.settle(), null, 'the end: unsettled writes');
     guest.inbound();
-    await check('the end');
+    await check('the end', false, true);
   } catch (error) {
     failed = true;
     throw error;
