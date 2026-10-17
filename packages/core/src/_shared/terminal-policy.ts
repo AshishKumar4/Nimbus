@@ -7,7 +7,7 @@
 
 export const TERMINAL_FONT_FAMILY = "'JetBrains Mono', 'Fira Code', Menlo, monospace";
 
-export const TERMINAL_CURSOR = { cursorBlink: true, cursorStyle: 'bar' } as const;
+export const TERMINAL_CURSOR: { cursorBlink: boolean; cursorStyle: 'bar' } = { cursorBlink: true, cursorStyle: 'bar' };
 
 /** xterm's theme, but its background. */
 export const TERMINAL_THEME = {
@@ -18,4 +18,4 @@ export const TERMINAL_THEME = {
   blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39d353', white: '#c9d1d9',
   brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#56d364', brightYellow: '#e3b341',
   brightBlue: '#79c0ff', brightMagenta: '#d2a8ff', brightCyan: '#56d364', brightWhite: '#f0f6fc',
-} as const;
+};

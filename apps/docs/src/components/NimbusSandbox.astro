@@ -293,7 +293,7 @@ const appUrl = Astro.site ? new URL(Astro.site).origin : 'https://nimbus-os.dev'
 		// The session this browser booted from this endpoint, kept so a
 		// returning or refreshing visitor reattaches to it.
 		const SESSION_KEY = sessionCacheKey(attachUrl);
-		adoptLegacyCachedSession(SESSION_KEY);
+		const adopted = adoptLegacyCachedSession(SESSION_KEY);
 
 		function setState(state: 'connecting' | 'running' | 'live' | 'ended' | 'error', label: string) {
 			badge.hidden = false;
@@ -317,7 +317,7 @@ const appUrl = Astro.site ? new URL(Astro.site).origin : 'https://nimbus-os.dev'
 
 			// Reuse the visit's session when possible; fall back to a fresh
 			// one if the cached attach URL no longer connects.
-			const cached = readCachedSession(SESSION_KEY);
+			const cached = readCachedSession(SESSION_KEY) ?? adopted;
 			let ws: WebSocket;
 			let reused = cached !== null;
 			if (cached) {
