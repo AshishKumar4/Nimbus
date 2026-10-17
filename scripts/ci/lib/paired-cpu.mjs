@@ -38,16 +38,16 @@ const git = (...args) => {
 /**
  * A paired CPU bench of `revision` (default HEAD) against `baseline`, from
  * the command line (`<baseline> [<revision>]`), on armada: RUNS processes,
- * each given the baseline's `files` (paths under `source`; every file there
- * when omitted) under `baselineDir`, as
+ * each given the baseline's `files` or `directories` (paths under `source`;
+ * every file there when both are omitted) under `baselineDir`, as
  * `command --baseline <baselineDir> --out <file>`. Writes
  * the receipt under NIMBUS_STATE/`receipts`, prints the verdicts, and exits
  * 0 only when every run finished and no kind is slower.
  * `--short` runs two small workload smoke checks without grading performance.
  *
- * @param {{ name: string, receipts: string, source: string, baselineDir: string, files?: string[], command: string[] }} bench
+ * @param {{ name: string, receipts: string, source: string, baselineDir: string, files?: string[], directories?: string[], command: string[] }} bench
  */
-export async function remotePairedCpu({ name, receipts, source, baselineDir, files, command }) {
+export async function remotePairedCpu({ name, receipts, source, baselineDir, files, directories, command }) {
   const { values, positionals } = parseArgs({ options: { short: { type: 'boolean', default: false } }, allowPositionals: true });
   const RUNS = values.short ? 2 : 8;
   const [baseline, revision = 'HEAD'] = positionals;
@@ -55,7 +55,12 @@ export async function remotePairedCpu({ name, receipts, source, baselineDir, fil
   const repo = git('rev-parse', '--show-toplevel').trim();
   const sha = git('rev-parse', `${revision}^{commit}`).trim();
   const base = git('rev-parse', `${baseline}^{commit}`).trim();
-  const names = files ?? git('ls-tree', '-r', '--name-only', base, `${source}/`).split('\n').filter(Boolean).map((path) => path.slice(source.length + 1));
+  const names = [...new Set([
+    ...(files ?? []),
+    ...(directories !== undefined || files === undefined
+      ? git('ls-tree', '-r', '--name-only', base, '--', ...(directories ?? ['']).map((path) => path ? `${source}/${path}/` : `${source}/`))
+        .split('\n').filter(Boolean).map((path) => path.slice(source.length + 1)) : []),
+  ])];
   const measured = overlayCommit(repo, sha, names.map((path) => ({ path: `${baselineDir}/${path}`, bytes: git('show', `${base}:${source}/${path}`) })));
   const run = await mapOnArmada({
     repo, sha: measured, files: [], items: Array.from({ length: RUNS }, (_, i) => i + 1), pool: RUNS, timeout: 1200,
