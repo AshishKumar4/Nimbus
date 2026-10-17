@@ -669,6 +669,8 @@ requirements:
       - Nimbus.Vfs.Composite.noninterference
       - Nimbus.Vfs.Composite.pfx_iff
       - Nimbus.Vfs.Composite.route_fold
+      - Nimbus.Vfs.MountSelection.fold_spec
+      - Nimbus.Vfs.MountSelection.optional_spec
       - Nimbus.Vfs.Composite.absent_of_prefix
       - Nimbus.Vfs.Composite.route_not_hidden
       - Nimbus.Vfs.Composite.linkAt_agree
@@ -801,8 +803,6 @@ requirements:
       - Nimbus.Vfs.CompositeFeed.ownerPt_mem
       - Nimbus.Vfs.CompositeFeed.view_table_congr
       - Nimbus.Vfs.CompositeFeed.cas_inv
-      - Nimbus.Vfs.CompositeFeed.ownerPt_fold_max
-      - Nimbus.Vfs.CompositeFeed.ownerPt_fold_none
       - Nimbus.Vfs.CompositeFeed.ownerPt_max
       - Nimbus.Vfs.CompositeFeed.ownerPt_none
       - Nimbus.Vfs.CompositeFeed.ownerPt_between
