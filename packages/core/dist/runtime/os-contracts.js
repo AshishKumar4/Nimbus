@@ -42,6 +42,11 @@ export function sameCred(a, b) {
     return a.uid === b.uid && a.gid === b.gid && a.umask === b.umask
         && a.groups.length === b.groups.length && a.groups.every((group, index) => group === b.groups[index]);
 }
+/** Whether `stat` is the file `expected` named, unchanged as far as its stat can tell. */
+export function sameFileVersion(stat, expected) {
+    return stat !== null && stat.dev === expected.dev && stat.ino === expected.ino && stat.size === expected.size
+        && stat.mtime === expected.mtime && stat.ctime === expected.ctime && stat.revision === expected.revision;
+}
 /**
  * N17: a launch that reads synchronously waits for the paths it names (its
  * program, and each argument resolved against `cwd`; one that names nothing

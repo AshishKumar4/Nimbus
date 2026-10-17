@@ -123,7 +123,7 @@ export function createSync(coherence, admission, namespace, cells, transport) {
             const found = namespace.resolve(path, false);
             if (!found || found === 'ELOOP' || found.row.kind !== NS_FILE)
                 continue;
-            refetch.push({ path, size: found.row.size, rev: found.row.rev, epoch: applied.cursor.epoch });
+            refetch.push({ path, size: found.row.size, rev: found.row.rev, epoch: applied.cursor.epoch, version: versionOf(found.row) });
         }
         if (refetch.length > 0)
             await transport.fetchFiles(supervisor, refetch);
@@ -548,7 +548,7 @@ export function createSync(coherence, admission, namespace, cells, transport) {
                 const row = nsRowAt(t, path);
                 if (row === undefined || row.kind !== NS_FILE)
                     continue;
-                fetch.push({ path, size: row.size, rev: row.rev, epoch: cursor.epoch, ckey: null });
+                fetch.push({ path, size: row.size, rev: row.rev, epoch: cursor.epoch, ckey: null, version: versionOf(row) });
             }
             return transport.fetchFiles(supervisor, fetch);
         },
@@ -578,4 +578,8 @@ export function createSync(coherence, admission, namespace, cells, transport) {
                 + (failure || namespace.notReadyCause()) + ')';
         },
     };
+}
+/** The file a namespace row names, as a read of an undated one (rev 0) checks it (transport.ts WantedFile). */
+function versionOf(row) {
+    return { dev: row.dev, ino: row.ino, size: row.size, mtime: row.mtime, ctime: row.ctime, revision: row.rev };
 }
