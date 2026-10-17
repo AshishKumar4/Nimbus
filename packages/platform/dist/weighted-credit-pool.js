@@ -14,6 +14,10 @@ class CreditLane {
     get stats() {
         return { current: this.current, peak: this.peak, queued: this.waiters.length + this.ahead.length };
     }
+    /** Whether an ask ahead is queued. */
+    get aheadQueued() {
+        return this.ahead.length > 0;
+    }
     /** Granted now, or null: an ask ahead waits only for asks ahead of it, any other for every ask queued. */
     tryAcquire(bytes, ahead = false) {
         if (this.ahead.length > 0 || (!ahead && this.waiters.length > 0) || this.current + bytes > this.capacity)
@@ -21,7 +25,7 @@ class CreditLane {
         return this.grant(bytes);
     }
     acquire(bytes, signal) {
-        return this.wait(bytes, signal, false).lease;
+        return this.wait(bytes, signal, false);
     }
     /** acquire, ahead of every ordinary ask: granted as soon as it fits, after only the asks ahead before it. */
     acquireAhead(bytes, signal) {
@@ -29,33 +33,29 @@ class CreditLane {
     }
     wait(bytes, signal, ahead) {
         if (signal?.aborted)
-            return { lease: Promise.reject(abortError(signal)), waiting: () => false };
+            return Promise.reject(abortError(signal));
         const immediate = this.tryAcquire(bytes, ahead);
         if (immediate)
-            return { lease: Promise.resolve(immediate), waiting: () => false };
+            return Promise.resolve(immediate);
         const queue = ahead ? this.ahead : this.waiters;
-        let waiter;
-        const lease = new Promise((resolve, reject) => {
+        return new Promise((resolve, reject) => {
             const queued = {
                 bytes,
                 resolve,
                 reject,
                 signal,
-                settled: false,
                 onAbort: signal
                     ? () => {
                         const index = queue.indexOf(queued);
                         if (index < 0)
                             return;
                         queue.splice(index, 1);
-                        queued.settled = true;
                         signal.removeEventListener('abort', queued.onAbort);
                         reject(abortError(signal));
                         this.drain();
                     }
                     : undefined,
             };
-            waiter = queued;
             queue.push(queued);
             signal?.addEventListener('abort', queued.onAbort, { once: true });
             if (signal?.aborted)
@@ -63,7 +63,6 @@ class CreditLane {
             else
                 this.drain();
         });
-        return { lease, waiting: () => waiter?.settled === false };
     }
     grant(bytes) {
         this.current += bytes;
@@ -105,7 +104,6 @@ class CreditLane {
             for (let waiter = queue[0]; waiter !== undefined; waiter = queue[0]) {
                 if (waiter.signal?.aborted) {
                     queue.shift();
-                    waiter.settled = true;
                     waiter.signal.removeEventListener('abort', waiter.onAbort);
                     waiter.reject(abortError(waiter.signal));
                     continue;
@@ -114,7 +112,6 @@ class CreditLane {
                     return;
                 queue.shift();
                 waiter.signal?.removeEventListener('abort', waiter.onAbort);
-                waiter.settled = true;
                 waiter.resolve(this.grant(waiter.bytes));
             }
         }
@@ -197,9 +194,11 @@ export class WeightedCreditPool {
     acquireAhead(bytes, signal) {
         this.validateRequest(bytes);
         const now = signal?.aborted ? null : this.tryAcquireAhead(bytes);
-        if (now)
-            return { lease: Promise.resolve(now), waiting: () => false };
-        return this.general.acquireAhead(bytes, signal);
+        return now ? Promise.resolve(now) : this.general.acquireAhead(bytes, signal);
+    }
+    /** Whether a running program's ask (acquireAhead) waits. */
+    get aheadQueued() {
+        return this.general.aheadQueued;
     }
     /** acquireAhead's credit now, or null. */
     tryAcquireAhead(bytes) {

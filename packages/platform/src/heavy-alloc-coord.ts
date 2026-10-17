@@ -16,7 +16,6 @@ import {
 } from './limits.js';
 import {
   WeightedCreditPool,
-  type CreditWait,
   type ResizableCreditLease,
   type WeightedCreditPoolOptions,
 } from './weighted-credit-pool.js';
@@ -145,14 +144,11 @@ export class SupervisorAllocationBudget {
   reclaimable(reclaim: () => void): () => void {
     this.reclaimers.add(reclaim);
     // A running ask queued before this launch parked is owed it, once the registration has returned.
-    if (this.runningWaits()) queueMicrotask(() => this.reclaimForRunning());
+    if (this.credits.aheadQueued) queueMicrotask(() => this.reclaimForRunning());
     return () => {
       this.reclaimers.delete(reclaim);
     };
   }
-
-  /** Running asks (acquireRunning) not yet settled. */
-  private readonly running = new Set<CreditWait>();
 
   /**
    * Running work's credit, the lock order's one exception
@@ -162,28 +158,18 @@ export class SupervisorAllocationBudget {
    * only for credit other running work holds.
    */
   async acquireRunning(bytes: number, signal?: AbortSignal, drivesLifecycle = true): Promise<ResizableCreditLease> {
-    const wait = this.credits.acquireAhead(Math.min(bytes, this.capacity), signal);
-    this.running.add(wait);
-    try {
-      this.reclaimForRunning();
-      return this.wrap(await wait.lease, drivesLifecycle);
-    } finally {
-      this.running.delete(wait);
-    }
+    const lease = this.credits.acquireAhead(Math.min(bytes, this.capacity), signal);
+    this.reclaimForRunning();
+    return this.wrap(await lease, drivesLifecycle);
   }
 
   /** Reclaim parked launches' credit, the oldest parked first, while a running ask waits: what a reclaim frees goes to running asks first. */
   private reclaimForRunning(): void {
     for (const reclaim of this.reclaimers) {
-      if (!this.runningWaits()) return;
+      if (!this.credits.aheadQueued) return;
       this.reclaimers.delete(reclaim);
       reclaim();
     }
-  }
-
-  private runningWaits(): boolean {
-    for (const wait of this.running) if (wait.waiting()) return true;
-    return false;
   }
 
   /** acquireRunning's credit now, ahead of every queued ask, without reclaiming, or null. */

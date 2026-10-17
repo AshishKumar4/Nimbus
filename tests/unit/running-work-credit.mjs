@@ -9,6 +9,8 @@
 //   - A small running ask may take the read reserve, but never waits on it,
 //     so it never reclaims for credit no reclaim frees.
 //   - An ordinary ask reclaims nothing.
+//   - A load holding its credit while it waits for a worker (a refused call's
+//     readmission) is reclaimed for running work, and loads once let in.
 //   - The full cycle: every worker held by a running facet whose next write
 //     needs credit, and the budget full of parked launches each waiting for
 //     a worker. The writes get their credit, the facets end, and the parked
@@ -23,6 +25,9 @@ import {
   reclaimableSupervisorAllocation,
 } from '../../packages/platform/src/heavy-alloc-coord.ts';
 import { beginLoaderFetch, beginLoaderFetchWhenFree, DO_DYNAMIC_WORKER_LIMIT } from '../../packages/fabric/src/budgets.ts';
+import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
+import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 
 const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -159,6 +164,56 @@ function park(budget, bytes) {
   for (const end of ends) end();
   assert.equal(readSupervisorAllocationBudget().current, 0, 'nothing stays held');
   console.log('  ✓ the full cycle resolves: the running facets write, end, and the parked launches are admitted');
+}
+
+// ── a load waiting for a worker holding its credit is reclaimed for running work ─
+{
+  const MiB = 1024 * 1024;
+  const ctx = { id: { toString: () => 'running-work-readmit' }, waitUntil() {} };
+  const capacity = readSupervisorAllocationBudget().capacity;
+  const CAP_MESSAGE = 'Dynamic worker concurrency limit exceeded: each request may have up to 10 concurrent dynamic worker invocations. Wait for one to finish before starting another.';
+  // The platform counts each worker running, and refuses past the limit.
+  const counted = new Set();
+  let refused = 0;
+  const env = {
+    LOADER: {
+      get(id, load) {
+        return {
+          getEntrypoint: () => ({
+            async execute(value) {
+              if (!counted.has(id) && counted.size >= DO_DYNAMIC_WORKER_LIMIT) { refused++; throw new Error(CAP_MESSAGE); }
+              counted.add(id);
+              try { await load(); return value; } finally { counted.delete(id); }
+            },
+          }),
+        };
+      },
+    },
+  };
+  // Every worker held by a running facet.
+  const facets = Array.from({ length: DO_DYNAMIC_WORKER_LIMIT }, (_, i) => {
+    counted.add(`running-${i}`);
+    return beginLoaderFetch(ctx, `running-${i}`);
+  });
+  // A load as large as the budget, refused, waits to be let in again holding its credit.
+  const image = { path: '/whole.wasm', identity: 'whole', size: 8 * MiB, peak: capacity, async read() { return new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]); } };
+  const pool = new IsolatePool(env, ctx, { tag: 'whole', network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0, wasmModules: { 'primary.wasm': image } });
+  const loading = pool.map(facetTaskSource('(value) => value'), [1]);
+  for (let i = 0; i < 100 && !(refused > 0 && readSupervisorAllocationBudget().current === capacity); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(readSupervisorAllocationBudget().current, capacity, 'refused, the load waits for a worker holding the whole budget');
+  // A running facet's next write needs credit only that load holds.
+  const write = await Promise.race([
+    acquireSupervisorRunningAllocation(4 * MiB),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('a running facet waited on a load waiting for its worker')), 5_000)),
+  ]);
+  write.release();
+  // The facet ends; the load is let in and takes its credit then.
+  counted.delete('running-0');
+  facets[0]();
+  assert.deepEqual(await loading, [1]);
+  for (const end of facets.slice(1)) end();
+  assert.equal(readSupervisorAllocationBudget().current, 0, 'nothing stays held');
+  console.log('  ✓ a load waiting for a worker holding its credit is reclaimed for running work');
 }
 
 console.log('running-work-credit: ok');

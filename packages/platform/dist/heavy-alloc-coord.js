@@ -121,14 +121,12 @@ export class SupervisorAllocationBudget {
     reclaimable(reclaim) {
         this.reclaimers.add(reclaim);
         // A running ask queued before this launch parked is owed it, once the registration has returned.
-        if (this.runningWaits())
+        if (this.credits.aheadQueued)
             queueMicrotask(() => this.reclaimForRunning());
         return () => {
             this.reclaimers.delete(reclaim);
         };
     }
-    /** Running asks (acquireRunning) not yet settled. */
-    running = new Set();
     /**
      * Running work's credit, the lock order's one exception
      * (acquireSupervisorLoad): granted at once where it fits, ahead of every
@@ -137,30 +135,18 @@ export class SupervisorAllocationBudget {
      * only for credit other running work holds.
      */
     async acquireRunning(bytes, signal, drivesLifecycle = true) {
-        const wait = this.credits.acquireAhead(Math.min(bytes, this.capacity), signal);
-        this.running.add(wait);
-        try {
-            this.reclaimForRunning();
-            return this.wrap(await wait.lease, drivesLifecycle);
-        }
-        finally {
-            this.running.delete(wait);
-        }
+        const lease = this.credits.acquireAhead(Math.min(bytes, this.capacity), signal);
+        this.reclaimForRunning();
+        return this.wrap(await lease, drivesLifecycle);
     }
     /** Reclaim parked launches' credit, the oldest parked first, while a running ask waits: what a reclaim frees goes to running asks first. */
     reclaimForRunning() {
         for (const reclaim of this.reclaimers) {
-            if (!this.runningWaits())
+            if (!this.credits.aheadQueued)
                 return;
             this.reclaimers.delete(reclaim);
             reclaim();
         }
-    }
-    runningWaits() {
-        for (const wait of this.running)
-            if (wait.waiting())
-                return true;
-        return false;
     }
     /** acquireRunning's credit now, ahead of every queued ask, without reclaiming, or null. */
     tryAcquireRunning(bytes) {
