@@ -210,13 +210,8 @@ class PythonReplAdapter {
         const image = await hostImage(this.deps.authority, CRED_KERNEL, wasm.path, wasm);
         this.pythonHome = `/${installRoot.replace(/^\/+/, '')}`;
         const host = getFacetManagerLoaderHost(facetMgr);
-        // A prompt where `open(path, "w")` silently does nothing is worse than one
-        // that refuses to start, so the pid decides which pool this is. Written as
-        // two literals rather than a spread because the rule that catches this
-        // mistake (tests/unit/runtime-pool-supervisor-pid.mjs) reads the options
-        // object as text, and a pool whose credential is hidden behind a variable
-        // is exactly the shape it exists to find.
-        const base = {
+        const pid = this.deps.pid;
+        this.pool = new IsolatePool(host.env, host.ctx, {
             // Distinct from cpython-runner's tag: a REPL facet holds a live
             // interpreter and must never be handed a one-shot invocation.
             tag: wantsSci ? 'python-repl:sci' : 'python-repl',
@@ -224,16 +219,13 @@ class PythonReplAdapter {
             concurrency: 1,
             preamble: buildCPythonPreamble(),
             wasmModules: { 'python.wasm': image },
+            // The install-time warm-up has no process and gets no supervisor.
+            ...(typeof pid === 'number' && pid > 0
+                ? { supervisorPid: pid, processSupervisor: supervisorBindingProps(host.ctx, pid, { writerId: crypto.randomUUID(), network: host.network }) }
+                : { omitSupervisor: true }),
             // The workspace's, as every facet a manager's runtimes open (facetHostForManager).
             network: host.network,
-        };
-        const pid = this.deps.pid;
-        this.pool = typeof pid === 'number' && pid > 0
-            ? new IsolatePool(host.env, host.ctx, { ...base, supervisorPid: pid, network: host.network, processSupervisor: supervisorBindingProps(host.ctx, pid, { writerId: crypto.randomUUID(), network: host.network }) })
-            // The install-time warm-up has no invoking process. It boots the
-            // interpreter and never touches a file, so it asks for no supervisor
-            // rather than binding one it cannot authenticate to.
-            : new IsolatePool(host.env, host.ctx, { ...base, omitSupervisor: true, network: host.network });
+        });
     }
     active = null;
     async submit(userCode, signal) {

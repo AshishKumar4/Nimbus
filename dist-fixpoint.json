@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "38c618b93b91dd78130889b55fc94d564e3358e27b3581693f0ecc38bc558dfe",
+  "fingerprint": "349e6ed2bb13effb7682101f07fb16c15c17009697d51b079b2efa720a20e31a",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2748,8 +2748,8 @@
     "packages/worker/dist/runtime/project-fs.d.ts.map": "9198e250d42ae28fb8d714154f0b058f8731948458962bee9ba654fef1427251",
     "packages/worker/dist/runtime/project-fs.js": "52cd049e6fe7059f809c54c297ede0bd86ff30aa7bac9c0f8b1e40b7414c7f19",
     "packages/worker/dist/runtime/python-repl.d.ts": "f6307ea46138a35689d5bde014cbbac18de0dac68e0c977408403e73d62a002e",
-    "packages/worker/dist/runtime/python-repl.d.ts.map": "fb7514d0351acd00d256f2ba781f7100850381b7538b0deba33b85254d04d1e9",
-    "packages/worker/dist/runtime/python-repl.js": "ca0d7c963cfbfe4626c10d6187862efe1167c228a30f988007911dbde42152a5",
+    "packages/worker/dist/runtime/python-repl.d.ts.map": "4d2ab7c6ca41764e3bf24aa5827cfd8028daed7dc20c57cee71fe353847c7c0b",
+    "packages/worker/dist/runtime/python-repl.js": "24a7d69ba2aef8e51c3871e4f8f0710041de870f1103a9d6f67276c95f818b60",
     "packages/worker/dist/runtime/repl-facet-tasks.d.ts": "9ee883d6b49f0450f5b6fae4f5b59b73953149a622bc08ab4ab806473b1747e2",
     "packages/worker/dist/runtime/repl-facet-tasks.d.ts.map": "d132b9247f6d72e763cade25289e363714587ddb0e8780012f28fd269453a0e8",
     "packages/worker/dist/runtime/repl-facet-tasks.js": "70ddc9e5a40981541cf51a0dd138e3028071bd1fb620e0a8b8caebef3d153a4b",
@@ -3330,7 +3330,7 @@
     "packages/worker/src/runtime/pending-io.ts": "814007b7b62601dfe4eb7c53a19aca773910acd9a1da74c25776478e49264c72",
     "packages/worker/src/runtime/process-logs-api.ts": "b5e2e21128fca49c6a19cfbc9c4512a6bdc3da94c1138d14854b089f5741c14b",
     "packages/worker/src/runtime/project-fs.ts": "30d2e715ed57a2582c768fed382b5c34c3b6fdfed8cb1c4f0e398b0b74921959",
-    "packages/worker/src/runtime/python-repl.ts": "58b6b39957fabccfdfd445046739033ee7d9fa0bfb00620b3b00976eec67da26",
+    "packages/worker/src/runtime/python-repl.ts": "89e317b36b2e9721f5bed0461e573e243d2b9ea85d60054d1e3561784dbeca7d",
     "packages/worker/src/runtime/repl-facet-tasks.ts": "56692cebed52c98868381b83db41a819b5b16992d0ef60f4c17b13551c8000bc",
     "packages/worker/src/runtime/repl-session.ts": "2615cadb587e41c7cf1bda12eb1e9f321932f76480aaf51598c2aa43f189b401",
     "packages/worker/src/runtime/replay-session.ts": "9af36c9a91a9577995d2e4c8095f29a7c255e09eb16dae38e16b787ec006c25a",
