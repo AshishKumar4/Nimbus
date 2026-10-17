@@ -193,7 +193,7 @@ export async function checkRuntimePackages({ specs, registry, root, build, prepa
     const dir = own?.dir ?? join(root, name.split('/').pop());
     const failure = own ? null : build(spec, dir);
     const problems = failure === null
-      ? await checkRuntimePackage({ name, version: npmVersion, dir, registry, runThroughCore, ...(own ? { tarball: own.tarball } : {}) })
+      ? await checkRuntimePackage({ name, version: npmVersion, dir, registry, runThroughCore, tarball: own?.tarball })
       : [{ problem: `building it failed:\n${failure}`, fix: `cd ${WORKER} && node ${buildArgs(runtime, version, dir).join(' ')}` }];
     verdicts.push({ name, npmVersion, dir, prepared: own !== null, problems });
   }
