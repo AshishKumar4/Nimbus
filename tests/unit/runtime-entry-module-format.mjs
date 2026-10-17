@@ -112,7 +112,7 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
   assert.equal(r.exitCode, 0, r.stderr);
   assert.equal(r.transforms.length, 0, 'a CommonJS bin must not be rewritten');
   assert.equal(r.opts.esModule, undefined);
-  assert.equal(r.code, CJS_SOURCE.slice(CJS_SOURCE.indexOf('\n') + 1));
+  assert.equal(r.code, CJS_SOURCE.slice(CJS_SOURCE.indexOf('\n')), 'the shebang strip keeps its line, empty');
 }
 
 // ── the nearest package.json wins, not an ancestor ──
