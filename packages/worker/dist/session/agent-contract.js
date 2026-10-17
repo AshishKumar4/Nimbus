@@ -71,22 +71,27 @@ export function storedMessageParts(message) {
     }
     return message.content ? [{ type: 'text', text: message.content }] : [];
 }
+function isJsonObject(value) {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 /**
  * A tool result written before parts, as its own `tool`-role row: the
  * tool's name (the payload's, else the row's, else 'tool'), its input, and
  * its output (the payload's, else the row's whole content).
  */
 export function legacyToolResult(message) {
-    let payload;
+    let payload = {};
     try {
         const parsed = JSON.parse(message.content || '{}');
-        payload = parsed !== null && typeof parsed === 'object' ? parsed : {};
+        if (isJsonObject(parsed))
+            payload = parsed;
     }
     catch {
         payload = { output: message.content };
     }
+    const tool = payload.tool;
     return {
-        toolName: payload.tool || message.name || 'tool',
+        toolName: (typeof tool === 'string' && tool) || message.name || 'tool',
         input: payload.input,
         output: payload.output ?? message.content,
     };

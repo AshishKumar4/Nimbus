@@ -140,11 +140,11 @@ export function storedMessageParts(message: StoredMessage): StoredTurnPart[] {
   return message.content ? [{ type: 'text', text: message.content }] : [];
 }
 
-/** A `tool`-role row's content, as rows written before parts hold it. */
-interface LegacyToolPayload {
-  tool?: string;
-  input?: StoredToolPart['input'];
-  output?: StoredToolPart['output'];
+/** A value JSON.parse can return. */
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
+function isJsonObject(value: JsonValue): value is { [key: string]: JsonValue } {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -153,15 +153,16 @@ interface LegacyToolPayload {
  * its output (the payload's, else the row's whole content).
  */
 export function legacyToolResult(message: StoredMessage): Pick<StoredToolPart, 'toolName' | 'input' | 'output'> {
-  let payload: LegacyToolPayload;
+  let payload: { [key: string]: JsonValue } = {};
   try {
-    const parsed: LegacyToolPayload | null = JSON.parse(message.content || '{}');
-    payload = parsed !== null && typeof parsed === 'object' ? parsed : {};
+    const parsed: JsonValue = JSON.parse(message.content || '{}');
+    if (isJsonObject(parsed)) payload = parsed;
   } catch {
     payload = { output: message.content };
   }
+  const tool = payload.tool;
   return {
-    toolName: payload.tool || message.name || 'tool',
+    toolName: (typeof tool === 'string' && tool) || message.name || 'tool',
     input: payload.input,
     output: payload.output ?? message.content,
   };
