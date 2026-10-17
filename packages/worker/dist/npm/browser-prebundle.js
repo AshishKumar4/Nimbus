@@ -258,6 +258,10 @@ async function buildInFacet(ctx, initialPool, specifier, entry) {
 async function discoverSlice(ctx, specifier, entry) {
     const revision = ctx.vfs.revision();
     const nmDir = ctx.root + '/node_modules';
+    const initialFences = entry.referencedFiles === null ? null : [...new Set([
+            nmDir, nmDir + '/' + packageNameFromSpecifier(specifier), entry.entryPath,
+            ...entry.referencedFiles.map((path) => path.substring(0, path.lastIndexOf('/'))),
+        ])].map((path) => ({ path, revision: ctx.vfs.revision(path) }));
     let plan;
     if (entry.referencedFiles !== null) {
         const paths = await discoverScopedSliceForSynthetic(ctx.vfs, nmDir, packageNameFromSpecifier(specifier), entry.referencedFiles, ctx.parse);
@@ -273,7 +277,7 @@ async function discoverSlice(ctx, specifier, entry) {
     const sources = plan.entries.filter((item) => !item.isDir).map((item) => '/' + item.path.replace(/^\/+/, ''));
     const request = prebundleRequest(specifier, manifestsOf(sources, (path) => readText(ctx, path)));
     const key = await prebundleCacheKey(request);
-    if (ctx.vfs.revision() !== revision)
+    if (ctx.vfs.revision() !== revision && (initialFences ?? plan.fences).some((fence) => ctx.vfs.revision(fence.path) !== fence.revision))
         throw new PrebundlePlanChanged();
     return { plan, revision, sources, key, externals: [...request.externals] };
 }
