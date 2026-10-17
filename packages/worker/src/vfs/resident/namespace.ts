@@ -515,7 +515,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
           && held.mode === Number(s.mode) && held.uid === Number(s.uid)
           && held.gid === Number(s.gid) && held.mtime === Number(s.mtime)
           && held.ctime === Number(s.ctime) && held.ino === Number(s.ino)
-          && held.rev === Number(entry.rev)
+          && held.dev === (Number(s.dev) || 0) && held.rev === Number(entry.rev)
           && (held.target ?? null) === (entry.linkTarget ?? entry.unlisted ?? null)) continue;
         put(t, k, s, entry.rev, entry.linkTarget, entry.unlisted ?? null);
       }

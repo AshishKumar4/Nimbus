@@ -787,6 +787,10 @@
       const pending = new Map();
       const queued = new Map();
       const listeners = new Map();
+      // Requests that read and change nothing: one a dropped socket took
+      // unanswered is sent again on the next. A write may have been done,
+      // and a watch belongs to the socket it was made on: those fail.
+      const READS = new Set(['fs-list', 'fs-read']);
       const isOpen = () => socket?.readyState === WebSocket.OPEN;
 
       function subscribe(type, listener) {
@@ -819,14 +823,17 @@
         const reqId = nextReqId++;
         return new Promise((resolve, reject) => {
           const timer = setTimeout(() => settle(reqId, new Error('fs request timed out')), 15000);
-          pending.set(reqId, { resolve, reject, timer });
-          queued.set(reqId, { ...frame, reqId });
+          const sent = { ...frame, reqId };
+          pending.set(reqId, { resolve, reject, timer, frame: sent });
+          queued.set(reqId, sent);
           drain();
         });
       }
       function disconnect() {
-        for (const reqId of pending.keys()) {
-          if (!queued.has(reqId)) settle(reqId, new Error('Session connection closed'));
+        for (const [reqId, slot] of pending) {
+          if (queued.has(reqId)) continue;
+          if (READS.has(slot.frame.type)) queued.set(reqId, slot.frame);
+          else settle(reqId, new Error('Session connection closed'));
         }
         emit('close');
       }

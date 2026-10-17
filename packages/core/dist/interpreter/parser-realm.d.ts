@@ -19,7 +19,7 @@
  * inherits nothing, every regexp only RegExp.prototype's captured members;
  * its constructors' prototypes inherit nothing. A method
  * here refuses a receiver acorn does not call it on rather than reach the
- * realm (tests/unit/interpreter-primordials.mjs checks the rewritten parser
+ * realm (tests/unit/primordials-audit.mjs checks the rewritten parser
  * for any other reach, tests/unit/interpreter-parser-realm.mjs runs it in a
  * realm whose built-ins all log their use).
  */

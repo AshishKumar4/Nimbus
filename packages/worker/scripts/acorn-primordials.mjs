@@ -51,7 +51,7 @@
  * destructuring pattern, a rest parameter) stops the build, so an acorn
  * upgrade that reaches something new fails here rather than at runtime.
  * parser-audit.mjs checks the output with nothing of this rewrite's:
- * tests/unit/interpreter-primordials.mjs requires it to find nothing.
+ * tests/unit/primordials-audit.mjs requires it to find nothing.
  */
 
 import { parse } from 'acorn';

@@ -26,32 +26,26 @@ function __nimbusFront(target, name, make) {
   Object.defineProperty(target, name, { value: fronted, writable: true, enumerable: descriptor?.enumerable ?? true, configurable: true });
 }
 
-// lib/path.js: validate from the right until an absolute path ends resolution.
+// lib/path.js: the posix half is Node's own (core _shared/posix-path.ts),
+// which checks its arguments as Node's does; win32's and matchesGlob are the
+// platform's.
 function __nimbusFrontPath(path) {
-  __nimbusFront(path, "resolve", (real) => function (...paths) {
-    for (let i = paths.length - 1; i >= 0; i--) {
-      if (typeof paths[i] !== "string") throw invalidArgType("paths[" + i + "]", "string", paths[i]);
-      if (paths[i].charCodeAt(0) === 47) break;
-    }
-    return Reflect.apply(real, this, paths);
-  });
-  __nimbusFront(path, "relative", (real) => function (from, to) {
-    if (typeof from !== "string") throw invalidArgType("from", "string", from);
-    if (typeof to !== "string") throw invalidArgType("to", "string", to);
+  __nimbusFront(path, "matchesGlob", (real) => function (path, pattern) {
+    if (typeof path !== "string") throw invalidArgType("path", "string", path);
+    if (typeof pattern !== "string") throw invalidArgType("pattern", "string", pattern);
     return Reflect.apply(real, this, arguments);
   });
-  for (const mod of [path, path.win32]) {
-    __nimbusFront(mod, "basename", (real) => function (path, suffix) {
-      if (suffix !== undefined && typeof suffix !== "string") throw invalidArgType("suffix", "string", suffix);
-      return Reflect.apply(real, this, arguments);
-    });
-    __nimbusFront(mod, "matchesGlob", (real) => function (path, pattern) {
-      if (typeof path !== "string") throw invalidArgType("path", "string", path);
-      if (typeof pattern !== "string") throw invalidArgType("pattern", "string", pattern);
-      return Reflect.apply(real, this, arguments);
-    });
-    mod._makeLong = mod.toNamespacedPath;
-  }
+  const win32 = path.win32;
+  __nimbusFront(win32, "basename", (real) => function (path, suffix) {
+    if (suffix !== undefined && typeof suffix !== "string") throw invalidArgType("suffix", "string", suffix);
+    return Reflect.apply(real, this, arguments);
+  });
+  __nimbusFront(win32, "matchesGlob", (real) => function (path, pattern) {
+    if (typeof path !== "string") throw invalidArgType("path", "string", path);
+    if (typeof pattern !== "string") throw invalidArgType("pattern", "string", pattern);
+    return Reflect.apply(real, this, arguments);
+  });
+  win32._makeLong = win32.toNamespacedPath;
 }
 
 function __nimbusFrontUrl(url) {
