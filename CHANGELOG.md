@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: with two versions of a gem installed, `require` now picks the
+  version host Ruby does. A bare `require "a"` loads the highest version.
+  A gem whose dependency requires `a < 2` gets a 1.x. Requiring both
+  where they conflict raises `Gem::ConflictError`. Before, the older
+  version could be loaded, and conflicts loaded anyway. Only gems whose
+  version RubyGems must choose are activated: two versions installed, or
+  a dependency, at any depth, that has two. Every other require loads from
+  the load path as before, at no added cost.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
