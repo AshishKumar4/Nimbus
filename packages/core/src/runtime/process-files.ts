@@ -1694,11 +1694,12 @@ export async function withOpenFiles<T>(
  * through a view `through` hands for its duration: its content key and size
  * now, and its bytes only when the host builds the facet. The key is the
  * store's own record of the bytes (RuntimeFsBridge.contentKey), so the
- * image's identity names the same bytes in every session and store, and
- * nothing is hashed. A read takes only the bytes the key names, bounded at
- * the size opened, both checked in the read's own turn: whatever happened to
- * the file, a facet loads those bytes or none (ESTALE, EFBIG). A mount keeps
- * no content keys, so an image there is refused (ENOTSUP).
+ * image's identity, the key with the size, names the same bytes in every
+ * session and store, and nothing is hashed. A read takes only the bytes the
+ * key names, bounded at the size opened, both checked in the read's own turn,
+ * and of exactly that size: whatever happened to the file, a facet loads
+ * those bytes or none (ESTALE, EFBIG). A mount keeps no content keys, so an
+ * image there is refused (ENOTSUP).
  */
 async function openFacetImage(through: <T>(use: (view: ProcessView) => Promise<T>) => Promise<T>, path: string): Promise<FacetImage> {
   const { key, size } = await through(async (view) => {
@@ -1709,10 +1710,15 @@ async function openFacetImage(through: <T>(use: (view: ProcessView) => Promise<T
   });
   return {
     path,
-    identity: `content:${key}`,
+    // A key and its length: a small file's key hashes its bytes and a large one's its chunk list, so only the two together name one set of bytes.
+    identity: `content:${key}:${size}`,
     size,
     peak: size,
-    read: () => through((view) => view.readFileUncached(path, { contentKey: key, maxBytes: size })),
+    read: () => through(async (view) => {
+      const bytes = await view.readFileUncached(path, { contentKey: key, maxBytes: size });
+      if (bytes.byteLength !== size) throw syscallError('ESTALE', 'open', path);
+      return bytes;
+    }),
   };
 }
 

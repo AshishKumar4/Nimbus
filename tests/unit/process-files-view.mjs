@@ -10,6 +10,7 @@ import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { isVfsError } from '../../packages/core/src/vfs/vfs-error.ts';
 import { exists, isDirectory, readText, statOrThrow } from '../../packages/core/src/vfs/vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { chunkHash, cutContent } from '../../packages/core/src/vfs/content-chunking.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
@@ -141,7 +142,7 @@ assert.deepEqual((await vfs.readdir('/mnt/s')).map((e) => e.name), ['f']);
   const image = Uint8Array.from({ length: 200_000 }, (_, i) => (i * 13) & 0xff);
   await vfs.writeFile('/home/user/image.wasm', image);
   const opened = await vfs.image('/home/user/image.wasm');
-  assert.match(opened.identity, /^content:[0-9a-f]{64}$/, 'an image is named by its content key');
+  assert.match(opened.identity, /^content:[0-9a-f]{64}:200000$/, 'an image is named by its content key and size');
   assert.equal(opened.size, image.byteLength, 'and admitted at its size');
   const seen = await opened.read();
   assert.deepEqual(seen, image, 'its bytes read whole');
@@ -163,6 +164,28 @@ assert.deepEqual((await vfs.readdir('/mnt/s')).map((e) => e.name), ['f']);
   assert.equal(await code(() => opened.read()), 'ESTALE', 'as it is once the file has grown');
   assert.equal(await code(() => vfs.image('/home/user/none.wasm')), 'ENOENT');
   assert.equal(await code(() => vfs.image('/home/user')), 'EISDIR');
+
+  // A large file's key hashes its chunk list, a small one's its bytes: a small
+  // file holding exactly that list has the large one's key. The size tells
+  // them apart, in the identity and at the read.
+  const large = Uint8Array.from({ length: 70 * 1024 }, (_, i) => (i * 7 + (i >> 9)) & 0xff);
+  const pieces = [new TextEncoder().encode('nimbus-manifest-v1')];
+  let from = 0;
+  for (const cut of cutContent(large)) { pieces.push(chunkHash(large.subarray(from, cut))); from = cut; }
+  const trailer = new Uint8Array(8);
+  new DataView(trailer.buffer).setBigUint64(0, BigInt(large.byteLength));
+  pieces.push(trailer);
+  const manifestBytes = new Uint8Array(pieces.reduce((n, p) => n + p.byteLength, 0));
+  let at = 0;
+  for (const p of pieces) { manifestBytes.set(p, at); at += p.byteLength; }
+  await vfs.writeFile('/home/user/large.wasm', large);
+  await vfs.writeFile('/home/user/list.wasm', manifestBytes);
+  const largeImage = await vfs.image('/home/user/large.wasm');
+  const listImage = await vfs.image('/home/user/list.wasm');
+  assert.equal(largeImage.identity.split(':')[1], listImage.identity.split(':')[1], 'the store gives the two one key');
+  assert.notEqual(largeImage.identity, listImage.identity, 'they are two images');
+  await vfs.writeFile('/home/user/large.wasm', manifestBytes);
+  assert.equal(await code(() => largeImage.read()), 'ESTALE', 'and the small one read in the large one\'s place is refused');
 
   // A mount keeps no content keys: an image there is refused, unread.
   const held = new Map([['/big.wasm', image]]);

@@ -5231,8 +5231,9 @@ export class SqliteVFS {
   /**
    * The content key of an inode's bytes: sha256 of them up to CHUNK_SIZE,
    * else the digest of the manifest's ordered chunk hashes. An in-place edit
-   * clears a manifest's digest; it is recomputed here and stored unless
-   * another content already holds it.
+   * clears a manifest's digest; it is recomputed here once per edit and
+   * remembered (contentKeyMemo, dropped by the next edit), never written: a
+   * lookup is a read, and the store may be open read-only.
    */
   private contentKeyOf(ref: ContentRef & { size: number; path: string }): string {
     if (ref.chunkId !== null) {
@@ -5246,12 +5247,9 @@ export class SqliteVFS {
     if (content.digest !== null && content.digest !== undefined) return hex(this.blobToUint8Array(content.digest));
     const memo = this.contentKeyMemo.get(ref.contentId);
     if (memo !== undefined) return memo;
-    const digest = this.manifestDigest(ref.contentId);
-    const key = digest.digest(ref.size);
-    const taken = [...this.sql.exec('SELECT 1 FROM vfs_contents WHERE digest = ?', key)].length > 0;
-    if (taken) this.contentKeyMemo.set(ref.contentId, hex(key));
-    else this.transactionSync(() => { this.sql.exec('UPDATE vfs_contents SET digest = ? WHERE id = ?', key, ref.contentId); });
-    return hex(key);
+    const key = hex(this.manifestDigest(ref.contentId).digest(ref.size));
+    this.contentKeyMemo.set(ref.contentId, key);
+    return key;
   }
 
   private manifestDigest(content: number): ManifestDigest {
