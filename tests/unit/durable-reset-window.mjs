@@ -23,7 +23,7 @@ const server = Bun.serve({
     }
     if (pathname === '/s/reset/api/_diag/memory') {
       // A read replica answers every other read with an incarnation of its own, which the abort leaves alone.
-      if (world.replica && (world.reads++ % 2 === 1)) return Response.json({ hib: { isolateGen: 99 }, replica: { isReplica: true } });
+      if (world.replica !== null && world.reads++ % 2 === world.replica) return Response.json({ hib: { isolateGen: 99 }, replica: { isReplica: true } });
       if (world.aborted && world.ends && world.down-- > 0) return new Response('Application called abort() to reset Durable Object.', { status: 500 });
       if (world.aborted && world.ends) world.gen = world.next;
       return Response.json({ hib: { isolateGen: world.gen }, replica: { isReplica: false } });
@@ -31,7 +31,8 @@ const server = Bun.serve({
     return new Response('not found', { status: 404 });
   },
 });
-const resetWith = (abortStatus, ends, down = 0, replica = false) => {
+// `replica`: which reads (0: the first, 1: the second, and every other one after it) a read replica answers; null: none.
+const resetWith = (abortStatus, ends, down = 0, replica = null) => {
   world = { gen: 4, next: 5, abortStatus, ends, down, aborted: false, replica, reads: 0 };
   return resetInstance('reset', { base: `http://127.0.0.1:${server.port}`, budgetMs: 1_500 });
 };
@@ -42,8 +43,11 @@ try {
   assert.equal((await resetWith(500, false)).ok, false, 'a 500 from an instance that lives on is red');
   assert.equal((await resetWith(204, false)).ok, false, 'an abort that answers and resets nothing is red');
   assert.equal((await resetWith(503, true)).ok, false, 'an answer a reset cannot give is red, though the instance ended');
-  assert.equal((await resetWith(500, false, 0, true)).ok, false, "a replica's incarnation is not the primary's: a live primary's 500 stays red");
-  assert.deepEqual(await resetWith(204, true, 0, true), { ok: true, answer: ABORT_ANSWERED, detail: 'abort answered 204; incarnation 4 → 5' });
+  for (const replica of [0, 1]) {
+    assert.equal((await resetWith(500, false, 0, replica)).ok, false, "a replica's incarnation is not the primary's: a live primary's 500 stays red");
+    assert.deepEqual(await resetWith(204, true, 0, replica), { ok: true, answer: ABORT_ANSWERED, detail: 'abort answered 204; incarnation 4 → 5' },
+      `a reset is graded by the primary's incarnations, a replica answering read ${replica} first`);
+  }
 } finally {
   server.stop(true);
 }

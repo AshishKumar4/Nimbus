@@ -46,10 +46,13 @@ export async function incarnation(sid, base = BASE) {
  * ABORT_TORN_DOWN), which is not graded; `detail` says what was seen.
  */
 export async function resetInstance(sid, { base = BASE, budgetMs = 30_000 } = {}) {
-  const before = await incarnation(sid, base);
+  const deadline = Date.now() + budgetMs;
+  const pause = () => new Promise((resolve) => setTimeout(resolve, 250));
+  let before = await incarnation(sid, base);
+  while (before === null && Date.now() < deadline) { await pause(); before = await incarnation(sid, base); }
   const abort = await fetch(`${base}/s/${sid}/api/_diag/abort`, { method: 'POST', headers: requestHeaders({}, sid) });
   let after = null;
-  for (const deadline = Date.now() + budgetMs; Date.now() < deadline; await new Promise((resolve) => setTimeout(resolve, 250))) {
+  for (; Date.now() < deadline; await pause()) {
     after = await incarnation(sid, base);
     if (after !== null && after !== before) break;
   }
