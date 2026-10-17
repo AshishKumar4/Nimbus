@@ -147,9 +147,9 @@ export function writeModuleSet(dir, modules, entry, rewrite = (_name, source) =>
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, member.cjs);
     } else if (member?.wasm !== undefined) {
-      // Staging may compile bytes; a guest can only evaluate the resulting member.
-      const compiled = new NativeWasmModule(member.wasm);
+      // Only the registry may compile a member, when it is first evaluated.
       wasmRegistry.set(join(dir, decodeURIComponent(name)), () => {
+        const compiled = new NativeWasmModule(member.wasm);
         onWasmEvaluate(name, compiled);
         return compiled;
       });
