@@ -212,6 +212,12 @@ type ExecutionIo = {
   interactive?: boolean;
   /** Files the enclosing redirections hold open, by their stream. */
   openFiles?: ReadonlyMap<CommandInputStream | CommandOutputStream, OpenFile>;
+  /**
+   * The aliases whose expansion this runs within: none of them is expanded
+   * again inside it (bash's rule), so an alias that names itself, directly
+   * or through another, runs that name as a command once.
+   */
+  aliasesExpanding?: ReadonlySet<string>;
 };
 
 function terminalStdinFd(io: ExecutionIo, stdin = io.stdin): boolean {
@@ -918,10 +924,12 @@ export class Interpreter {
     const aliases = replacesShell || viaCommand ? undefined : this.config.aliases;
     if (aliases) {
       const aliasValue = aliases.get(name);
-      if (aliasValue !== undefined) {
+      if (aliasValue !== undefined && !io.aliasesExpanding?.has(name)) {
         // Rebuild the command line with the alias expanded
         const expandedLine = aliasValue + (args.length > 0 ? ' ' + args.join(' ') : '');
-        return (await this.executeLineWithIo(expandedLine, io));
+        const aliasesExpanding = new Set(io.aliasesExpanding);
+        aliasesExpanding.add(name);
+        return (await this.executeLineWithIo(expandedLine, { ...io, aliasesExpanding }));
       }
     }
 
@@ -1367,6 +1375,7 @@ export class Interpreter {
     if (io.vfs) next.vfs = io.vfs;
     if (io.interactive) next.interactive = true;
     if (io.openFiles) next.openFiles = io.openFiles;
+    if (io.aliasesExpanding) next.aliasesExpanding = io.aliasesExpanding;
     return next;
   }
 
