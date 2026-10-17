@@ -677,7 +677,8 @@ export function provisional(host: ProvisionalHost): Provisional {
    */
   const extended = (record: InodeRecord, op: InodeOp): boolean => {
     const was = record.op;
-    if (op.kind === 'append' ? was.kind !== 'append' : op.kind !== 'write' || was.kind !== 'write' || op.offset !== was.offset + was.data.byteLength) return false;
+    if (!('data' in was) || !('data' in op)) return false;
+    if (op.kind === 'append' ? was.kind !== 'append' : was.kind !== 'write' || op.offset !== was.offset + was.data.byteLength) return false;
     const before = was.data.byteLength;
     const length = before + op.data.byteLength;
     let room = record.room;

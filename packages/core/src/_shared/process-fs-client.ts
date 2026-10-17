@@ -521,7 +521,7 @@ interface Entry {
   lingers: boolean;
   resolve(answer: ProcessFsAnswer): void;
   reject(error: Error): void;
-  /** What its caller was given, and what each op folded into it is given: one answer for the entry. */
+  /** What an op folded into it is given: its call's answer (a one-piece call's), else its piece's. */
   answer: Promise<ProcessFsAnswer> | null;
 }
 
@@ -1374,7 +1374,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         return tail.answer!;
       }
       const answers = parts.map((part) => {
-        let entry!: Entry;
+        let entry: Entry | undefined;
         const answer = new Promise<ProcessFsAnswer>((resolve, reject) => {
           const partBytes = part.type === 'call' && 'data' in part.call ? part.call.data.byteLength : 0;
           // Logged where the process's death does not reach, before it is told anything.
@@ -1391,18 +1391,14 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
           }
           counters.ops++;
         });
-        entry.answer = answer;
-        return answer;
+        // Undefined where the journal refused it: nothing was queued, and the answer is that refusal.
+        if (entry !== undefined) entry.answer = answer;
+        return { entry, answer };
       });
       schedule();
-      // One piece: its answer is the call's, and the one an op folded into it is given.
-      if (answers.length === 1) {
-        if (acknowledged) answers[0]!.catch(() => {});
-        return answers[0]!;
-      }
       // A piece failed fails the call; its last piece's receipt answers it,
       // and its mutation spans them all.
-      const answer = Promise.all(answers).then((all): ProcessFsAnswer => {
+      const answer = Promise.all(answers.map((piece) => piece.answer)).then((all): ProcessFsAnswer => {
         const first = all[0]?.mutation;
         const last = all[all.length - 1];
         if (last === undefined) return {};
@@ -1417,6 +1413,9 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         return first !== undefined && last.mutation !== undefined ? { ...rest, mutation: { before: first.before, after: last.mutation.after } } : rest;
       });
       if (acknowledged) answer.catch(() => {});
+      // A one-piece call's entry gives an op folded into it the call's own answer: the same, at the same turn.
+      const only = answers.length === 1 ? answers[0]!.entry : undefined;
+      if (only !== undefined) only.answer = answer;
       return answer;
     },
     hurry() {
