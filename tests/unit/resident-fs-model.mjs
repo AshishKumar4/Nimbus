@@ -230,6 +230,8 @@ async function runSteps(steps, met) {
     }
   };
 
+  /** Names a peer wrote or moved a file to: their mtime is not one the process set. */
+  const peerWritten = new Set();
   /** Descriptions whose descriptor closed while another descriptor of its file stayed open: the session keeps them open (anchors) until the last closes. */
   const retained = [];
   const sameFile = (a, b) => resolve({ opened: a }) === resolve({ opened: b });
@@ -456,6 +458,8 @@ async function runSteps(steps, met) {
     if (step.op === 'deliver') await deliver();
     else if (step.op === 'catchUp') await catchUp();
     else if (step.op === 'peer') {
+      // A peer's write stamps its own mtime, at each session's own clock: not one the process set.
+      if (step.kind === 'write' || step.kind === 'rename') peerWritten.add(step.kind === 'rename' ? step.to : step.name);
       // Between deliveries: the session has it before what the process sends next, and so does the reference.
       for (const target of [s.kernel, ref.kernel]) {
         const key = `${DIR}/${step.name}`;
@@ -483,7 +487,7 @@ async function runSteps(steps, met) {
     // An mtime the process set explicitly since the file's content last changed is the session's too.
     const reference = final.names.get(name);
     const mtime = reference === undefined ? undefined : final.fileOf(resolve(reference))?.mtime;
-    if (typeof mtime === 'number' && mine !== '-' && other !== '-') {
+    if (typeof mtime === 'number' && mine !== '-' && other !== '-' && !peerWritten.has(name)) {
       assert.equal(Number(s.kernel.stat(`${DIR}/${name}`).mtime), Number(ref.kernel.stat(`${DIR}/${name}`).mtime), `the end: ${name}'s mtime differs from the reference's`);
     }
   }
