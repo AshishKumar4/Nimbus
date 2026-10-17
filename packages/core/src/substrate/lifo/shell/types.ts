@@ -54,6 +54,11 @@ export interface ListNode {
     connector: '&&' | '||' | null;
   }>;
   background: boolean;
+  /**
+   * A script's list a newline (or the end) follows: the last of the lines
+   * bash reads and runs as one (a discard skips to it). Set at the top level.
+   */
+  endsLine?: boolean;
 }
 
 export interface PipelineNode {

@@ -52,6 +52,26 @@ export class ExitSignal {
         this.exitCode = exitCode;
     }
 }
+/**
+ * A function call past the nesting bound (functionNestingLimit): the rest of
+ * the line it is in is discarded (bash's jump_to_top_level(DISCARD)): a
+ * shell goes on with the next line it reads, its own or a `source`d file's
+ * or a trap's, with $? 1; a child shell (subshell, substitution, pipeline
+ * element, job) ends with 1. Neither `||`, `if` nor a loop goes on.
+ */
+export class FunctionNestingSignal {
+    exitCode = 1;
+}
+/**
+ * The deepest shell functions nest where FUNCNEST does not lower it. Bash
+ * has no bound then, and recurses until its stack is gone (a segfault); a
+ * call holds about 9 KiB of the session's heap (8.6 KiB measured at 6000
+ * levels), so a runaway function ends here, with bash's message, long
+ * before the heap does.
+ */
+const MAX_FUNCTION_NESTING = 1000;
+/** FUNCNEST as bash reads it (legal_number): a decimal integer, signed, blanks around it. */
+const FUNCNEST_NUMBER = /^\s*[+-]?\d+\s*$/;
 class RedirectionOpenError extends Error {
     target;
     fsError;
@@ -103,6 +123,8 @@ export class Interpreter {
     exitTrapDepth = 0;
     /** One frame per running function call, holding the bindings `local` shadowed. */
     localFrames = [];
+    /** A child shell (fork): a discarded line ends it (finishChild). */
+    child = false;
     constructor(config) {
         this.config = config;
     }
@@ -122,6 +144,7 @@ export class Interpreter {
      */
     fork() {
         const child = new Interpreter({ ...this.config, ...forkShellState(this.config) });
+        child.child = true;
         child.lastExitCode = this.lastExitCode;
         child.functions = new Map(this.functions);
         child.persistentOutputFds = new Map(this.persistentOutputFds);
@@ -143,13 +166,29 @@ export class Interpreter {
         this.lastExitCode = exitCode;
     }
     async executeScript(script, terminalStdin) {
-        return (await this.executeScriptWithIo(script, this.createTerminalIo(terminalStdin)));
+        return (await this.executeScriptWithIo(script, this.createTerminalIo(terminalStdin), true));
     }
-    async executeScriptWithIo(script, io) {
+    /**
+     * Runs `script`'s lists. As lines a shell reads (`readsLines`: its own,
+     * a sourced file's, a trap's; not an alias's text, which is part of the
+     * line it is in), a line a nested call discards ends, and the next runs
+     * with $? 1, in a shell that is no child: a child's ends (finishChild).
+     */
+    async executeScriptWithIo(script, io, readsLines = false) {
         let exitCode = 0;
         try {
-            for (const list of script.lists) {
-                exitCode = await this.executeList(list, io);
+            for (let i = 0; i < script.lists.length; i++) {
+                try {
+                    exitCode = await this.executeList(script.lists[i], io);
+                }
+                catch (error) {
+                    if (!(error instanceof FunctionNestingSignal) || !readsLines || this.child)
+                        throw error;
+                    exitCode = error.exitCode;
+                    this.lastExitCode = exitCode;
+                    while (i < script.lists.length - 1 && script.lists[i].endsLine !== true)
+                        i++;
+                }
             }
         }
         catch (error) {
@@ -196,7 +235,7 @@ export class Interpreter {
         try {
             const tokens = lex(input);
             const script = parse(tokens);
-            const exitCode = await this.executeScriptWithIo(script, io);
+            const exitCode = await this.executeScriptWithIo(script, io, true);
             return await this.runExitTrap(exitCode, io, options?.runExitTrap === true);
         }
         catch (e) {
@@ -714,6 +753,12 @@ export class Interpreter {
                 // Check functions
                 const funcBody = replacesShell || viaCommand ? undefined : this.functions.get(name);
                 if (funcBody) {
+                    const limit = this.functionNestingLimit();
+                    if (this.localFrames.length >= limit) {
+                        // On the call's own stderr, its redirections applied, as bash writes it.
+                        (await stderr.write(`${name}: maximum function nesting level exceeded (${limit})\n`));
+                        throw new FunctionNestingSignal();
+                    }
                     exitCode = await this.executeFunction(funcBody, args, this.createIoFromFds(io, fds));
                 }
                 else {
@@ -965,6 +1010,16 @@ export class Interpreter {
         // On an array name, `arr=x` and `arr+=x` land on its first element.
         return assignVariable(this.config, name, value, assign.append);
     }
+    /**
+     * How many function calls may be running at once: FUNCNEST where it is a
+     * number above 0, as bash reads it at each call (a `local FUNCNEST` included),
+     * but never past MAX_FUNCTION_NESTING, which applies where it is not.
+     */
+    functionNestingLimit() {
+        const funcnest = this.config.env.FUNCNEST;
+        const set = funcnest !== undefined && FUNCNEST_NUMBER.test(funcnest) ? Number.parseInt(funcnest, 10) : 0;
+        return set > 0 ? Math.min(set, MAX_FUNCTION_NESTING) : MAX_FUNCTION_NESTING;
+    }
     async executeFunction(body, args, io) {
         let exitCode;
         const functionIo = this.createCommandIo(io);
@@ -1024,12 +1079,12 @@ export class Interpreter {
         if (options.positionals !== undefined) {
             inlineIo.positionals = { args: [...options.positionals] };
         }
-        return (await this.executeLineWithIo(input, inlineIo));
+        return (await this.executeLineWithIo(input, inlineIo, true));
     }
-    async executeLineWithIo(input, io) {
+    async executeLineWithIo(input, io, readsLines = false) {
         const tokens = lex(input);
         const script = parse(tokens);
-        return (await this.executeScriptWithIo(script, io));
+        return (await this.executeScriptWithIo(script, io, readsLines));
     }
     /**
      * A child shell's run and end: it holds the files its io inherited while it
@@ -1048,7 +1103,8 @@ export class Interpreter {
                 exitCode = await run();
             }
             catch (e) {
-                if (!(e instanceof ExitSignal))
+                // An `exit` inside it ends only it; so does a call past the nesting bound.
+                if (!(e instanceof ExitSignal) && !(e instanceof FunctionNestingSignal))
                     throw e;
                 exitCode = e.exitCode;
             }
@@ -1068,7 +1124,12 @@ export class Interpreter {
         this.lastExitCode = exitCode;
         this.exitTrapDepth++;
         try {
-            await this.executeLineWithIo(action, io);
+            await this.executeLineWithIo(action, io, true);
+        }
+        catch (e) {
+            // A call past the nesting bound ends the action, a child shell's too; the status stays (bash 5.2).
+            if (!(e instanceof FunctionNestingSignal))
+                throw e;
         }
         finally {
             this.exitTrapDepth--;
