@@ -41,7 +41,11 @@ export const schemaContract = {
   RuntimeArtifactMetadata: [true, true] satisfies TwoWay<OldRuntimeArtifactMetadata, RuntimeArtifactMetadata>,
   RuntimePythonExtensionModuleMetadata: [true, true] satisfies TwoWay<OldRuntimePythonExtensionModuleMetadata, RuntimePythonExtensionModuleMetadata>,
   RuntimePythonPackageArtifactMetadata: [true, true] satisfies TwoWay<OldRuntimePythonPackageArtifactMetadata, RuntimePythonPackageArtifactMetadata>,
-  RuntimeManifest: [true, true] satisfies TwoWay<OldRuntimeManifest, RuntimeManifest>,
+  RuntimeManifest: [false, true] satisfies TwoWay<OldRuntimeManifest, RuntimeManifest>,
+  // The one difference, isolated: a manifest's artifacts parse passthrough, so their derived type keeps unknown keys.
+  RuntimeManifestWithoutArtifacts: [true, true] satisfies TwoWay<Omit<OldRuntimeManifest, 'runtime_artifacts'>, Omit<RuntimeManifest, 'runtime_artifacts'>>,
+  RuntimeManifestArtifact: [false, true] satisfies TwoWay<OldRuntimeArtifactMetadata, NonNullable<RuntimeManifest['runtime_artifacts']>[number]>,
+  RuntimeManifestArtifactKnownFields: [true, true] satisfies TwoWay<OldRuntimeArtifactMetadata, Pick<NonNullable<RuntimeManifest['runtime_artifacts']>[number], keyof OldRuntimeArtifactMetadata>>,
   CatalogVersionEntry: [true, true] satisfies TwoWay<OldCatalogVersionEntry, CatalogVersionEntry>,
   CatalogRuntimeEntry: [true, true] satisfies TwoWay<OldCatalogRuntimeEntry, CatalogRuntimeEntry>,
   RuntimeCatalog: [true, true] satisfies TwoWay<OldRuntimeCatalog, RuntimeCatalog>,
