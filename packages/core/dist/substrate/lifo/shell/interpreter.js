@@ -1560,7 +1560,8 @@ export class Interpreter {
     createFileReader(vfs, path, readRange = async (offset, length) => (await vfs.readRange(path, offset, length)), 
     /** A `< file` redirect: name the file and position (CommandInputStream.file), so a program's fd 0 can be the file. */
     namesFile = false) {
-        const decoder = new TextDecoder('utf-8');
+        // A redirected file is read as its bytes: a leading U+FEFF stays.
+        const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
         let offset = 0;
         let eof = false;
         const file = namesFile ? { path, get offset() { return offset; } } : undefined;

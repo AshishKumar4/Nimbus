@@ -19,7 +19,7 @@ import { FindUsageError, quote } from './find/errors.js';
 import { parseFindCommand, type Expression, type FindPlan, type Primary, type TypeLetter } from './find/expression.js';
 import { direntTypeLetter, fileTypeLetter, renderFormat, type FileTypeLetter } from './find/format.js';
 import { FindEntry, READ_AHEAD_CALLS, Walker, type VisitResult } from './find/walk.js';
-import { dec as decoder } from '../../../../_shared/bytes.js';
+import { nameDec as decoder } from '../../../../_shared/bytes.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 
 

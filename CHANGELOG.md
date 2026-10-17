@@ -5,6 +5,18 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: output that begins with U+FEFF (the UTF-8 BOM) keeps it, as a
+  Linux terminal receives every byte a program writes. This covers a
+  program's output in the terminal, process logs and `exec` results, a
+  program's stdin read as text (`process.stdin.setEncoding`, `readline`),
+  `curl`'s body, and the text-only output of `cut`, `find` and git. `grep`
+  matches a line's bytes, BOM included, as GNU grep does. Before, each
+  decoded with a TextDecoder that drops a leading BOM, per process or per
+  chunk; `setEncoding` and `readline` also split a character whose bytes
+  arrived in two chunks.
+- Fixed: `child_process.spawn(' node')` (a command with spaces or a BOM
+  around its name) finds no program (ENOENT), as in Node. Before, the name
+  was trimmed and `node` ran.
 - Breaking (worker): `vendor/git.generated.mjs` no longer exports
   `gitHttp`, cf-git's own HTTP client (isomorphic-git/http/web), nor
   declares it (`vendor/git-http.generated.d.ts` is gone). Nimbus's git

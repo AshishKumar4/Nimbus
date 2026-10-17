@@ -28,6 +28,7 @@
  * another runs (its child, or one beside it) takes another.
  */
 import { withHostView } from './process-files.js';
+import { nameDec } from '../_shared/bytes.js';
 import { GIT_CALL_TASK } from './compiled-bodies.generated.js';
 import { CRED_KERNEL, GIT_WASI_ENV, gateSyncLaunch, requireVfsCred } from './os-contracts.js';
 import { normalizeVfsPath } from '../vfs/path.js';
@@ -178,7 +179,7 @@ async function writeOut(sink, bytes) {
     if (sink.writeBytes)
         await sink.writeBytes(bytes);
     else
-        await sink.write(new TextDecoder().decode(bytes));
+        await sink.write(nameDec.decode(bytes));
 }
 function errorMessage(error) {
     return error instanceof Error ? error.message : String(error);

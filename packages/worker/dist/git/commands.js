@@ -948,7 +948,7 @@ async function writeBinary(stream, bin) {
     if (stream.writeBytes)
         await stream.writeBytes(bytes);
     else
-        await stream.write(dec.decode(bytes));
+        await stream.write(nameDec.decode(bytes));
 }
 // ── Staging ──────────────────────────────────────────────────────────────
 /** What one command's worktree work cost, by its filesystem (one per command): NIMBUS_GIT_COUNTERS=1 prints it. */

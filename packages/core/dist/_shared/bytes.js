@@ -15,9 +15,11 @@ export const enc = new TextEncoder();
 /** Shared UTF-8 decoder. Stateless; safe to share across all callers. */
 export const dec = new TextDecoder();
 /**
- * Shared UTF-8 decoder for names: paths, directory and archive entries,
- * link targets, argv and environment. It keeps a leading U+FEFF, as git, tar
- * and Linux keep it in a name; `dec` drops it, as a file's text drops it.
+ * Shared UTF-8 decoder for names (paths, directory and archive entries,
+ * link targets, argv and environment) and for a stream's bytes decoded whole
+ * (a write's output, a chunk of stdin). It keeps a leading U+FEFF, as git,
+ * tar and Linux keep it in a name and a terminal shows it in output; `dec`
+ * drops it, as a file's text drops it.
  */
 export const nameDec = new TextDecoder('utf-8', { ignoreBOM: true });
 /**
@@ -33,15 +35,16 @@ export function toArrayBuffer(bytes) {
 /**
  * A text consumer's edge over a byte stream: one streaming UTF-8 decoder per
  * key (a pid, or a (pid, stream) pair), so a multibyte character whose bytes
- * arrive in two chunks still decodes as one character. `drop(key)` flushes
- * the decoder's pending bytes and forgets it; call it when the stream ends.
+ * arrive in two chunks still decodes as one character, and a leading U+FEFF
+ * is the stream's own, as a terminal shows it. `drop(key)` flushes the
+ * decoder's pending bytes and forgets it; call it when the stream ends.
  */
 export class StreamTextDecoders {
     decoders = new Map();
     decode(key, bytes) {
         let decoder = this.decoders.get(key);
         if (!decoder) {
-            decoder = new TextDecoder('utf-8');
+            decoder = new TextDecoder('utf-8', { ignoreBOM: true });
             this.decoders.set(key, decoder);
         }
         return decoder.decode(bytes, { stream: true });

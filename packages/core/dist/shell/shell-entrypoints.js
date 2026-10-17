@@ -1,4 +1,5 @@
 import { resolveVfsPath } from '../vfs/path.js';
+import { nameDec } from '../_shared/bytes.js';
 import { outputHooks } from '../_shared/byte-stream.js';
 import { parseShellInvocation } from './shell-invocation.js';
 const SHELL_ALIASES = {
@@ -210,9 +211,9 @@ function stdinChunkToString(chunk) {
     if (typeof chunk === 'string')
         return chunk;
     if (chunk instanceof Uint8Array)
-        return new TextDecoder().decode(chunk);
+        return nameDec.decode(chunk);
     if (chunk instanceof ArrayBuffer)
-        return new TextDecoder().decode(chunk);
+        return nameDec.decode(chunk);
     return String(chunk);
 }
 function formatError(error) {
