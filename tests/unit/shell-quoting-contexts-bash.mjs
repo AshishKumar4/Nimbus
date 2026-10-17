@@ -115,7 +115,15 @@ try {
   for (const line of CASES) {
     const dir = `/home/user/q${n++}`;
     await ws.exec(`mkdir -p ${dir} && cd ${dir} && touch ${FILES.join(' ')}`, { cwd: '/home/user' });
-    const r = await ws.exec(line, { cwd: dir });
+    // A line the session does not finish in 10 s is a failure of its own (an alias expanding itself, say).
+    process.stderr.write(`case ${n}: ${JSON.stringify(line)}\n`);
+    let r;
+    try {
+      r = await ws.exec(line, { cwd: dir, signal: AbortSignal.timeout(10_000) });
+    } catch (error) {
+      failed.push(`${JSON.stringify(line)}\n  ours: did not finish (${error?.message})`);
+      continue;
+    }
     const ours = { stdout: r.stdout, stderr: r.stderr, status: r.exitCode };
     const theirs = bash.get(line);
     const agrees = /syntax error/.test(theirs.stderr)
