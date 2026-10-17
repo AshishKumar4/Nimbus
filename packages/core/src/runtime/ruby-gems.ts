@@ -54,17 +54,25 @@ export function gemHomeFor(home: string): string {
   return `${normalizeVfsPath(home)}/.gem`;
 }
 
+/** What a launch gives Ruby of a gem home (installedGemLoadPath). */
+export interface GemLoadPath {
+  /** The lib directories its load path is given ahead of RubyGems (NIMBUS_GEM_LIBS), sorted. */
+  libs: string[];
+  /** Whether a gem was left for RubyGems to activate: only then does RubyGems read the home. */
+  activates: boolean;
+}
+
 /**
  * The installed gems' lib directories Ruby's load path is given ahead of
- * RubyGems (NIMBUS_GEM_LIBS), sorted: each version the specifications name
- * (`gems/<name>-<version>/lib`, where that is a directory), the one
- * inventory, so a gem whose install was interrupted has none. A gem whose
- * version RubyGems must choose is left out, for `require` to activate it as
- * RubyGems does: one with two versions installed, and one whose runtime
- * dependencies reach such a gem at any depth (its requirements choose the
- * version). Every other require costs no activation.
+ * RubyGems: each version the specifications name (`gems/<name>-<version>/lib`,
+ * where that is a directory), the one inventory, so a gem whose install was
+ * interrupted has none. A gem whose version RubyGems must choose is left out,
+ * for `require` to activate it as RubyGems does: one with two versions
+ * installed, and one whose runtime dependencies reach such a gem at any depth
+ * (its requirements choose the version). A home with no version to choose
+ * costs no activation, and RubyGems does not read it at all.
  */
-export async function installedGemLibRoots(vfs: CredentialedVfs, gemHome: string): Promise<string[]> {
+export async function installedGemLoadPath(vfs: CredentialedVfs, gemHome: string): Promise<GemLoadPath> {
   const home = normalizeVfsPath(gemHome);
   const installed = await Promise.all((await gemSpecFiles(vfs, home)).map(async (path) => ({ path, spec: await readGemSpec(vfs, path) })));
   const specs = installed.flatMap(({ spec }) => (spec === null ? [] : [spec]));
@@ -80,13 +88,13 @@ export async function installedGemLibRoots(vfs: CredentialedVfs, gemHome: string
       }
     }
   }
-  const out: string[] = [];
+  const libs: string[] = [];
   for (const { path, spec } of installed) {
     if (spec !== null && chosen.has(spec.name)) continue;
     const lib = `${home}/gems/${path.slice(path.lastIndexOf('/') + 1, -'.gemspec'.length)}/lib`;
-    if ((await vfs.exists(lib)) && (await vfs.isDirectory(lib))) out.push('/' + lib);
+    if ((await vfs.exists(lib)) && (await vfs.isDirectory(lib))) libs.push('/' + lib);
   }
-  return out.sort();
+  return { libs: libs.sort(), activates: chosen.size > 0 };
 }
 
 export async function installedGemBins(vfs: CredentialedVfs, gemHome: string): Promise<InstalledRubyGemBin[]> {
