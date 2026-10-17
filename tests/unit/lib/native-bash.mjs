@@ -22,19 +22,19 @@ function nativeBashVersion() {
 }
 
 /** `script` under the host's bash, capped at NATIVE_MEMORY_KIB of address space and NATIVE_TIMEOUT_MS: its stdout and status. */
-function nativeBash(script) {
+function nativeBash(script, compareStderr) {
   const run = spawnSync('bash', ['--norc', '--noprofile', '-c', `ulimit -v ${NATIVE_MEMORY_KIB} && exec bash --norc --noprofile -c "$1"`, 'native', script], {
     encoding: 'utf8', timeout: NATIVE_TIMEOUT_MS, killSignal: 'SIGKILL', cwd: '/tmp', env: ENV,
   });
   assert.equal(run.error, undefined, `native bash ran ${JSON.stringify(script)} within its bounds`);
-  return { stdout: run.stdout, code: run.status };
+  return { stdout: run.stdout, code: run.status, ...(compareStderr ? { stderr: run.stderr } : {}) };
 }
 
 /** `script` under Nimbus's wasm bash, through the real runner: its stdout and status. */
-async function wasmBash(script) {
-  const r = await runScript(script, { dirs: ['tmp'], modes: { tmp: 7 } });
+async function wasmBash(script, compareStderr, runnerOptions) {
+  const r = await runScript(script, { dirs: ['tmp'], modes: { tmp: 7 }, ...runnerOptions });
   assert.equal(r.state, 'exited', `${script}: ${r.error ?? r.stderr}`);
-  return { stdout: r.stdout, code: r.exitCode };
+  return { stdout: r.stdout, code: r.exitCode, ...(compareStderr ? { stderr: r.stderr } : {}) };
 }
 
 /**
@@ -42,12 +42,12 @@ async function wasmBash(script) {
  * stdout and status, or a failure that names every case that differs.
  * Answers the reference's version.
  */
-export async function assertMatchesNativeBash(cases) {
+export async function assertMatchesNativeBash(cases, { compareStderr = false, ...runnerOptions } = {}) {
   const version = nativeBashVersion();
   const failures = [];
   for (const script of cases) {
-    const expected = nativeBash(script);
-    const actual = await wasmBash(script);
+    const expected = nativeBash(script, compareStderr);
+    const actual = await wasmBash(script, compareStderr, runnerOptions);
     try {
       assert.deepEqual(actual, expected);
       console.log(`  ✓ ${script}`);
