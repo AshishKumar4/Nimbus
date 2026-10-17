@@ -7,10 +7,12 @@
       "packages/core/src/vfs/vfs-error.ts": "0470e3d0a43c1b5c6f8b5daebeea895f6858307203a72f984fde4d6e01041008",
       "packages/core/src/vfs/vfs.ts": "0b175801c0381098ecee652a18c0422b3f67e39fd77a6958f2ad582d1ff2a066",
       "packages/core/tsconfig.json": "6dc680d90729597ee71dcaf78368fceb9f44638d4e301811dd4cff58bdb9b62f",
+      "packages/platform/src/lexical-path.ts": "58d1bc5165b8a64475e83a10739f9e917d56dba8b1ecb30ecbb48d6c62979ed9",
+      "packages/platform/tsconfig.json": "6dc680d90729597ee71dcaf78368fceb9f44638d4e301811dd4cff58bdb9b62f",
       "packages/worker/scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
       "packages/worker/scripts/napi-wasm/build.mjs": "5f1d124e26a906bfef4ba0faccf0a0d9e36164f1ae370b6c4f2d40f873c0b645",
       "packages/worker/scripts/napi-wasm/inputs.mjs": "a06c519ffee5e2637688e25ca527bf885f99d2f2fa4b5fe34a81ba5afda94dc4",
-      "packages/worker/scripts/napi-wasm/loader/napi-wasm-loader.ts": "be1f648fadb9ad0fef6f0317d37dd616076a10e4ffc0e186609ee23361fe2918",
+      "packages/worker/scripts/napi-wasm/loader/napi-wasm-loader.ts": "fab2d0be04a9525221ca9e3cc755e69f62d10e0ad91f429c7070011b111b21e6",
       "packages/worker/scripts/napi-wasm/loader/wasi-trampoline.mjs": "cb857b5989626e502f2a1d86198ba32cec763f360e09bab108bacde3746bbd62",
       "packages/worker/scripts/napi-wasm/specs.mjs": "620c3977a3fc18514806a5d438057c26993067f8ab61192adb0051e50d598260",
       "packages/worker/scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",
@@ -46,6 +48,7 @@
       "bun.lock#esbuild": "add5ecc823d2dd6f81362b09025f25d76ab708b382ff33103bd0314cb655dee7",
       "package.json": "a0d482519e26833358f20cc67a3d24067c15c173e0c0c753423d415a62aa483a",
       "packages/core/package.json": "8a4be1f62df7008c2590b696b3b4efb455d87b7633a8f4e856cf35aa5439e383",
+      "packages/platform/package.json": "a747888a19282e5bcd5b014c8bbcba11b6ccf1570f52d4a80e6cd2b2d964f38f",
       "packages/worker/package.json": "bccd12af498cbdea35cdd8ef9dc3aa479e30e3a9caba16ca695f8084f3bbab43"
     },
     "graph": [
@@ -53,6 +56,7 @@
       "packages/core/src/vfs/dirent-type.ts",
       "packages/core/src/vfs/vfs-error.ts",
       "packages/core/src/vfs/vfs.ts",
+      "packages/platform/src/lexical-path.ts",
       "packages/worker/scripts/napi-wasm/loader/napi-wasm-loader.ts"
     ],
     "npmInputs": {
@@ -164,8 +168,8 @@
   ],
   "outputs": {
     "napi-wasm-loader.mjs": {
-      "bytes": 212676,
-      "sha256": "7dd7bdaf1ae87443e36f6d6f810b4147831f815210b5cb8b0960a709022b881f"
+      "bytes": 212702,
+      "sha256": "a08a05cbf29a802754a4f23b714064b3ed64f9a3070e9fe8a49f4ecb282e4b41"
     },
     "wasi-trampoline.wasm": {
       "bytes": 1961,
