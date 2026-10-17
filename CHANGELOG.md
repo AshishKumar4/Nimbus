@@ -5,6 +5,9 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: stalled resident launches now emit the same once-per-launch
+  allocation-owner report as one-shots, including preparation before a
+  worker is admitted.
 - Fixed: a pre-bundle waiting for a compiler slot or worker, or for a slow
   compiler RPC, no longer holds up other sessions' launch credit. Slices
   are stat-sized, prepared only for a ready consumer and dropped at RPC

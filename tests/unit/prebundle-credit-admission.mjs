@@ -53,16 +53,37 @@ function bundleFixture(name, bytes = 128 * 1024, resets = 0) {
     build: () => buildPrebundle(context, 'pkg', null, (code) => code) };
 }
 
-function otherSession() {
-  adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
-  const h = launchManager('prebundle-co-tenant', { env: { LOADER: {
+function nodeSession(bytes = 17 * 1024 * 1024) {
+  adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }), NimbusLoadedEntrypoint: () => ({
+    async startProcess() { return { ok: true }; }, async handleHttpRequest() { return new Response('ok'); },
+  }) });
+  let h;
+  h = launchManager('prebundle-co-tenant', { env: { LOADER: {
     load() { return { getEntrypoint: () => ({ async run() { return Response.json({ exitCode: 0, stdout: 'other', stderr: '' }); } }) }; },
-    get() { throw new Error('one-shots use the unkeyed loader'); },
-  } } });
+    get: (...args) => h.world.loader.get(...args),
+  } }, hooks: { requestLaunchTurn: () => { setTimeout(() => { void h.manager.pumpResidentLaunches(); }, 0); } } });
   const fs = h.vfs.as(CRED_KERNEL);
   fs.mkdir('home/user/other', { recursive: true, mode: 0o755 });
-  fs.writeFile('home/user/other/cell.js', `module.exports=7;\n// ${'x'.repeat(17 * 1024 * 1024)}\n`, { mode: 0o644 });
-  return () => h.manager.exec('require("./cell.js");', { cwd: '/home/user/other', filename: '/home/user/other/run.js', captureOutput: true });
+  fs.writeFile('home/user/other/cell.js', `module.exports=7;\n// ${'x'.repeat(bytes)}\n`, { mode: 0o644 });
+  const code = 'require("./cell.js");';
+  const options = { cwd: '/home/user/other', filename: '/home/user/other/run.js' };
+  return { ...h, one: () => h.manager.exec(code, { ...options, captureOutput: true }),
+    resident: () => h.manager.spawnNode(code, { ...options, command: 'node run.js --host' }) };
+}
+
+const otherSession = () => nodeSession().one;
+
+function deferredDiscovery(name) {
+  const h = bundleFixture(name);
+  const root = h.context.root + '/node_modules/pkg';
+  h.authority.kfs.writeFile(`${root}/index.js`, 'export { X } from "./component.tsx";');
+  const parameter = 'T' + 'x'.repeat(600);
+  h.authority.kfs.writeFile(`${root}/component.tsx`, `type Identity = <${parameter}>(value: ${parameter}) => ${parameter}; export const X: Identity = value => value;`);
+  const entered = Promise.withResolvers();
+  const finish = Promise.withResolvers();
+  h.context.parse = async () => { entered.resolve(); await finish.promise; return 'export const X = () => null;'; };
+  return { h, entered: entered.promise, finish: () => { finish.resolve(); h.finish(); },
+    build: () => buildPrebundle(h.context, 'pkg', { pkgName: 'pkg', fileCount: 1000, names: new Set(['X']), inputHash: 'x' }, (code) => code) };
 }
 
 async function coTenantRuns(mode) {
@@ -159,20 +180,37 @@ await runScenarios(fileURLToPath(import.meta.url), {
     assert.equal(readSupervisorAllocationBudget().current, 0);
   },
   async delegatedDiscoveryHoldsNoSlice() {
-    const h = bundleFixture('delegated-prebundle');
-    const root = h.context.root + '/node_modules/pkg';
-    h.authority.kfs.writeFile(`${root}/index.js`, 'export { X } from "./component.tsx";');
-    const parameter = 'T' + 'x'.repeat(600);
-    h.authority.kfs.writeFile(`${root}/component.tsx`, `type Identity = <${parameter}>(value: ${parameter}) => ${parameter}; export const X: Identity = value => value;`);
-    const entered = Promise.withResolvers();
-    const finish = Promise.withResolvers();
-    h.context.parse = async () => { entered.resolve(); await finish.promise; return 'export const X = () => null;'; };
-    const building = buildPrebundle(h.context, 'pkg', { pkgName: 'pkg', fileCount: 1000, names: new Set(['X']), inputHash: 'x' }, (code) => code);
+    const discovery = deferredDiscovery('delegated-prebundle');
+    const building = discovery.build();
     try {
-      await Promise.race([entered.promise, h.entered.then(() => { throw new Error('the fixture did not need delegated parsing'); }),
+      await Promise.race([discovery.entered, discovery.h.entered.then(() => { throw new Error('the fixture did not need delegated parsing'); }),
         building.then((result) => { throw new Error(`the fixture completed before delegated parsing: ${JSON.stringify(result)}`); })]);
       assert.equal(readSupervisorAllocationBudget().current, 0, 'delegated discovery holds no retained slice credit');
-    } finally { finish.resolve(); h.finish(); await building; }
+    } finally { discovery.finish(); await building; }
+  },
+  async residentAndOneShotProgressDuringDiscovery() {
+    const discovery = deferredDiscovery('resident-prebundle-discovery');
+    const building = discovery.build();
+    await discovery.entered;
+    const node = nodeSession(14 * 1024 * 1024);
+    const resident = node.resident();
+    const one = node.one();
+    let timer;
+    try {
+      const settled = await Promise.race([Promise.all([resident, one]), new Promise((resolve) => {
+        timer = setTimeout(() => resolve(null), 20_000);
+      })]).finally(() => clearTimeout(timer));
+      const ledger = loaderLedgerStats(node.ctx);
+      assert.ok(settled, `resident launch and same-entry one-shot wait on the prebundle: ${JSON.stringify({
+        budget: readSupervisorAllocationBudget(), launch: node.manager.launchState(), inFlight: ledger.inFlightWorkers, waiters: ledger.waiters,
+      })}`);
+      assert.equal(settled[1].exitCode, 0, settled[1].stderr);
+      node.manager.kill(settled[0].pid);
+    } finally {
+      discovery.finish(); await building;
+      const completed = await Promise.allSettled([resident, one]);
+      if (completed[0].status === 'fulfilled') node.manager.kill(completed[0].value.pid);
+    }
   },
   async abortWorkerWait() {
     const h = bundleFixture('abort-prebundle-worker');
@@ -235,5 +273,28 @@ await runScenarios(fileURLToPath(import.meta.url), {
       assert.equal(readSupervisorAllocationBudget().current, 0);
     } finally { h.finish(); await first; }
     assert.equal((await h.build()).kind, 'built', 'cancelling a queued slot leaves the next submission runnable');
+  },
+  async unrelatedWriteDoesNotRequeueThePlan() {
+    const h = bundleFixture('queued-prebundle-revision');
+    const queued = Promise.withResolvers();
+    let submissions = 0;
+    h.context.pool = { acquire: async (signal) => {
+      const pool = await h.provider.acquire(signal);
+      return { prebundle: (task) => {
+        const result = pool.prebundle(task);
+        if (++submissions === 2) queued.resolve();
+        return result;
+      } };
+    } };
+    const first = h.build();
+    await h.entered;
+    const second = h.build();
+    try {
+      await queued.promise;
+      h.authority.kfs.writeFile(h.context.root + '/unrelated.txt', 'a concurrent project edit');
+    } finally { h.finish(); }
+    const results = await Promise.all([first, second]);
+    assert.ok(results.every((result) => result.kind === 'built'), JSON.stringify(results));
+    assert.equal(submissions, 2, 'an unrelated project write neither changes the package plan nor loses its queue position');
   },
 });

@@ -7673,7 +7673,7 @@ export class FacetManager {
     this.launching.delete(pid);
   }
 
-  /** The one-shot launches not yet running (their stage and its age) and the launches waiting for a turn. */
+  /** Launches not yet running (their stage and its age) and the launches waiting for a turn. */
   launchState(now = Date.now()): { launches: Array<{ pid: number; stage: string; ms: number }>; pacer: { waiting: number; oldestMs: number | null } } {
     return {
       launches: [...this.launching].map(([pid, { stage, since }]) => ({ pid, stage, ms: now - since })),
@@ -9042,17 +9042,21 @@ export class FacetManager {
     // gives it back for good, and its boot takes a slot of its own, as a
     // resident started in none does (_startResidentProcess).
     const inherited = suspendLaunchAdmission(this.ctx);
-    let admitted: () => Promise<void> = async () => {};
-    let stopWaiting = () => {};
-    if (inherited !== undefined && !opts.attachedTty) {
-      const ended = new AbortController();
-      stopWaiting = this.processes.subscribeTerminal(entry.pid, () => {
-        ended.abort(new Error(`Nimbus: the launch for pid ${entry.pid} was cancelled while it waited for a worker`));
-      });
-      admitted = () => inherited(ended.signal);
-    }
+    const ended = new AbortController();
+    const stopWaiting = this.processes.subscribeTerminal(entry.pid, () => {
+      ended.abort(new Error(`Nimbus: the launch for pid ${entry.pid} ended`));
+      this._launchEnded(entry.pid);
+    });
+    this._launchStage(entry, 'prepare', ended.signal);
+    const admitted = async () => {
+      if (inherited !== undefined && !opts.attachedTty) {
+        this._launchStage(entry, 'admission', ended.signal);
+        await inherited(ended.signal);
+      }
+      this._launchStage(entry, 'load', ended.signal);
+    };
     const launch = withLaunchPreparation(this.ctx, { pid: entry.pid }, () => this._runResidentLaunchBody(entry, code, command, opts, attempt, admitted));
-    return this.trackLaunchTask(launch.finally(() => { stopWaiting(); preparing(); }));
+    return this.trackLaunchTask(launch.finally(() => { this._launchEnded(entry.pid); stopWaiting(); preparing(); }));
   }
 
   private async _runResidentLaunchBody(
@@ -9464,6 +9468,7 @@ export class FacetManager {
       } else {
         await handle.booted();
       }
+      this._launchEnded(entry.pid);
       break;
       } catch (e: unknown) {
         // The boot stopped itself at a synchronous read of stdin that has to
