@@ -18,7 +18,7 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { createSupervisorOpHandler, journalDrainSession } from '../../packages/core/src/workspace/supervisor-op.ts';
-import { drainProcessFsJournal, journalSource, processFsClient, sqlJournal } from '../../packages/core/src/_shared/process-fs-client.ts';
+import { drainProcessFsJournal, journalSource, memoryJournal, processFsClient, sqlJournal } from '../../packages/core/src/_shared/process-fs-client.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const enc = new TextEncoder();
@@ -194,6 +194,26 @@ function mortalPort(s, live = Infinity) {
   await c.settle();
   assert.equal(s.text('home/user/out/fault'), 'first-second-third', 'a failed fold changed the queued bytes');
   assert.equal(sqlJournal(harness.sql).bytes, 0);
+}
+
+// ── Reusing an older journal op must not overwrite a newer prefix sharing its buffer ──
+{
+  const s = session();
+  const journal = memoryJournal();
+  const c = processFsClient({ session: s.port, journal, retry: RETRY });
+  const path = 'home/user/out/shared';
+  const prefix = 'a'.repeat(10) + 'b'.repeat(10) + 'c'.repeat(10);
+  c.submit(writeFile(path, 'a'.repeat(10)), { acknowledged: true });
+  c.submit(append(path, 'b'.repeat(10)), { acknowledged: true });
+  c.submit(append(path, 'c'.repeat(10)), { acknowledged: true });
+  const remembered = journal.entries()[0].op;
+  c.submit(append(path, 'd'.repeat(5)), { acknowledged: true });
+  c.submit({ type: 'call', call: { call: 'copyFile', from: path, path: 'home/user/out/snapshot' } }, { acknowledged: true });
+  c.submit(remembered, { acknowledged: true });
+  c.submit(append(path, 'e'.repeat(5)), { acknowledged: true });
+  await c.settle();
+  assert.equal(s.text('home/user/out/snapshot'), prefix + 'd'.repeat(5));
+  assert.equal(s.text(path), prefix + 'e'.repeat(5));
 }
 
 // ── A new entry refused by the journal does not disturb its preceding folded tail ──
