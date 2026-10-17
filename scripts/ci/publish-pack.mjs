@@ -38,7 +38,8 @@ try {
   rows.push(runtimeBuild);
   if (runtimeBuild.exitCode !== 0) throw new Error('CPython package build failed');
   const runtime = prepareTarball(dir, work);
-  const runtimeGate = await step('runtime-packages', root, 'node', ['packages/core/scripts/check-runtime-packages.mjs', '--runtime-tarball', runtime.path]);
+  // The gate checks this build and its tarball, without building CPython a second time.
+  const runtimeGate = await step('runtime-packages', root, 'node', ['packages/core/scripts/check-runtime-packages.mjs', '--runtime-tarball', runtime.path, '--runtime-dir', dir]);
   rows.push(runtimeGate);
   if (runtimeGate.exitCode !== 0) throw new Error('runtime gate failed; no signing artifacts will be returned');
   tarballs.push(...[runtime, ...prepared].map(({ path, ...artifact }) => artifact));
