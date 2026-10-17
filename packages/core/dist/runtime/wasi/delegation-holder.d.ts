@@ -156,9 +156,7 @@ export interface DelegationHolder {
      * parent known): a descriptor of the holder's, or undefined when the
      * session is to decide it.
      */
-    open(key: string, path: string, flags: RuntimeOpenFlags): RuntimeFileHandle | undefined;
-    /** As open, with room for `initial` bytes drawn before anything is decided (undefined where there is none). */
-    openFor(key: string, path: string, flags: RuntimeOpenFlags, initial: number): RuntimeFileHandle | undefined;
+    open(key: string, path: string, flags: RuntimeOpenFlags, initial?: number): RuntimeFileHandle | undefined;
     /**
      * A whole file written by name (an open of `flags`, a write and a close),
      * decided here as `open` decides: its revision, or undefined when the

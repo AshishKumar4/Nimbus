@@ -912,8 +912,7 @@ export function processFsClient(options) {
     // session's answer, which comes once it is published.
     const heldGrant = (key) => (escaped !== null ? undefined
         : grants.find((grant) => !grant.ended && !grant.closing && !grant.shared && within(key, grant.root)));
-    /** Whether `bytes` more of synchronous writes would pass the cap the client holds unanswered, and what refuses them. */
-    const pastSyncCap = (bytes) => !sealed && pendingSyncBytes + bytes > syncCap;
+    /** What refuses `bytes` more of synchronous writes past the cap the client holds unanswered. */
     const syncCapRefusal = (bytes, path) => fsError('ENOMEM', `ENOMEM: ${pendingSyncBytes} bytes of synchronous writes are waiting for the session, and this one (${bytes}) would pass the ${syncCap}-byte cap; let the program yield (an await) for them to be sent`, path);
     const client = {
         holder(key) {
@@ -999,7 +998,7 @@ export function processFsClient(options) {
             return queue.length > 0 || inFlight !== null;
         },
         fitsSync(bytes, path) {
-            if (pastSyncCap(bytes))
+            if (!sealed && pendingSyncBytes + bytes > syncCap)
                 throw syncCapRefusal(bytes, path);
         },
         submit(given, submitOptions) {
@@ -1018,7 +1017,7 @@ export function processFsClient(options) {
             }
             const parts = pieces(op);
             const bytes = parts.reduce((sum, part) => sum + (part.type === 'call' && 'data' in part.call ? part.call.data.byteLength : 0), 0);
-            if (acknowledged && pastSyncCap(bytes))
+            if (acknowledged && !sealed && pendingSyncBytes + bytes > syncCap)
                 throw syncCapRefusal(bytes, pathsOf(op)[0] ?? '');
             // The same file's next bytes, right after its last unsent change: folded into it.
             const tail = queue[queue.length - 1];

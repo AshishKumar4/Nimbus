@@ -476,7 +476,8 @@ export function provisional(host) {
         }
         const at = host.now();
         const ops = [];
-        if (row !== null && flags.truncate)
+        // A made file's O_TRUNC changes nothing here, but is the session's if the name turns out to be another's file (canonicalize).
+        if (flags.truncate)
             ops.push({ kind: 'truncate', size: 0, at });
         if (bytes !== null && bytes.byteLength > 0)
             ops.push({ kind: 'write', offset: 0, data: bytes, at });

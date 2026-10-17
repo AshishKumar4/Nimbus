@@ -49,8 +49,7 @@ export function ownNames(options) {
             const dir = parentKey(key);
             return key !== '' && madeHere(dir) && !added.get(dir)?.has(nameOf(key)) ? null : undefined;
         },
-        decided: (key) => decided.get(key),
-        decide: (key, entry) => { decided.set(key, entry); },
+        decided,
         undecide: (key) => { decided.delete(key); },
         note: (dir, name, type) => {
             if (type === null) {
