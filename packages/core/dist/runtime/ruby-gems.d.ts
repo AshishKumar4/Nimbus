@@ -14,17 +14,24 @@ export interface InstalledRubyGemBin {
 }
 /** Where `gem install` puts gems for the user whose home is `home`, as `gem --user-install` does. */
 export declare function gemHomeFor(home: string): string;
+/** What a launch gives Ruby of a gem home (installedGemLoadPath). */
+export interface GemLoadPath {
+    /** The lib directories its load path is given ahead of RubyGems (NIMBUS_GEM_LIBS), sorted. */
+    libs: string[];
+    /** Whether a gem was left for RubyGems to activate: only then does RubyGems read the home. */
+    activates: boolean;
+}
 /**
  * The installed gems' lib directories Ruby's load path is given ahead of
- * RubyGems (NIMBUS_GEM_LIBS), sorted: each version the specifications name
- * (`gems/<name>-<version>/lib`, where that is a directory), the one
- * inventory, so a gem whose install was interrupted has none. A gem whose
- * version RubyGems must choose is left out, for `require` to activate it as
- * RubyGems does: one with two versions installed, and one whose runtime
- * dependencies reach such a gem at any depth (its requirements choose the
- * version). Every other require costs no activation.
+ * RubyGems: each version the specifications name (`gems/<name>-<version>/lib`,
+ * where that is a directory), the one inventory, so a gem whose install was
+ * interrupted has none. A gem whose version RubyGems must choose is left out,
+ * for `require` to activate it as RubyGems does: one with two versions
+ * installed, and one whose runtime dependencies reach such a gem at any depth
+ * (its requirements choose the version). A home with no version to choose
+ * costs no activation, and RubyGems does not read it at all.
  */
-export declare function installedGemLibRoots(vfs: CredentialedVfs, gemHome: string): Promise<string[]>;
+export declare function installedGemLoadPath(vfs: CredentialedVfs, gemHome: string): Promise<GemLoadPath>;
 export declare function installedGemBins(vfs: CredentialedVfs, gemHome: string): Promise<InstalledRubyGemBin[]>;
 export declare function installRubyGems(vfs: CredentialedVfs, requests: RubyGemRequest[], 
 /** `network`: the workspace's; RubyGems is reached through its egress, when it has one. */

@@ -10,15 +10,15 @@ export function gemHomeFor(home) {
 }
 /**
  * The installed gems' lib directories Ruby's load path is given ahead of
- * RubyGems (NIMBUS_GEM_LIBS), sorted: each version the specifications name
- * (`gems/<name>-<version>/lib`, where that is a directory), the one
- * inventory, so a gem whose install was interrupted has none. A gem whose
- * version RubyGems must choose is left out, for `require` to activate it as
- * RubyGems does: one with two versions installed, and one whose runtime
- * dependencies reach such a gem at any depth (its requirements choose the
- * version). Every other require costs no activation.
+ * RubyGems: each version the specifications name (`gems/<name>-<version>/lib`,
+ * where that is a directory), the one inventory, so a gem whose install was
+ * interrupted has none. A gem whose version RubyGems must choose is left out,
+ * for `require` to activate it as RubyGems does: one with two versions
+ * installed, and one whose runtime dependencies reach such a gem at any depth
+ * (its requirements choose the version). A home with no version to choose
+ * costs no activation, and RubyGems does not read it at all.
  */
-export async function installedGemLibRoots(vfs, gemHome) {
+export async function installedGemLoadPath(vfs, gemHome) {
     const home = normalizeVfsPath(gemHome);
     const installed = await Promise.all((await gemSpecFiles(vfs, home)).map(async (path) => ({ path, spec: await readGemSpec(vfs, path) })));
     const specs = installed.flatMap(({ spec }) => (spec === null ? [] : [spec]));
@@ -35,15 +35,15 @@ export async function installedGemLibRoots(vfs, gemHome) {
             }
         }
     }
-    const out = [];
+    const libs = [];
     for (const { path, spec } of installed) {
         if (spec !== null && chosen.has(spec.name))
             continue;
         const lib = `${home}/gems/${path.slice(path.lastIndexOf('/') + 1, -'.gemspec'.length)}/lib`;
         if ((await vfs.exists(lib)) && (await vfs.isDirectory(lib)))
-            out.push('/' + lib);
+            libs.push('/' + lib);
     }
-    return out.sort();
+    return { libs: libs.sort(), activates: chosen.size > 0 };
 }
 export async function installedGemBins(vfs, gemHome) {
     const binRoot = `${normalizeVfsPath(gemHome)}/bin`;

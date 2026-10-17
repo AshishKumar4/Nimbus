@@ -53,7 +53,7 @@ import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import { RUBY_SOCKET_SHIM } from './ruby-socket-shim.js';
 import { RUBY_GREEN_THREADS } from './ruby-green-threads.js';
-import { gemHomeFor, installRubyBundle, installRubyGems, installedGemBins, installedGemLibRoots, parseRubyGemRequirements, } from './ruby-gems.js';
+import { gemHomeFor, installRubyBundle, installRubyGems, installedGemBins, installedGemLoadPath, parseRubyGemRequirements, } from './ruby-gems.js';
 import { errorText } from '../_shared/error-text.js';
 import { openRuntimeStdio, runtimeOutput } from './runtime-stdio.js';
 import { unsettledNoteOf } from '../_shared/process-fs-client.js';
@@ -178,7 +178,10 @@ export function makeRubyRunnerFactory(deps) {
                 userEnv.LANG = 'C.UTF-8';
             userEnv.GEM_HOME ||= '/' + gemHomeFor(home);
             userEnv.GEM_PATH ||= userEnv.GEM_HOME;
-            userEnv.NIMBUS_GEM_LIBS = (await installedGemLibRoots(vfs, gemHomeFor(home))).join(':');
+            const gems = await installedGemLoadPath(vfs, gemHomeFor(home));
+            userEnv.NIMBUS_GEM_LIBS = gems.libs.join(':');
+            if (gems.activates)
+                userEnv.NIMBUS_GEM_ACTIVATE = '1';
             // Ruby looks for charset hints via these vars; set sensible
             // defaults so puts of non-ASCII strings doesn't trip on the
             // wasi default of "ASCII-8BIT".
@@ -1260,10 +1263,12 @@ async function __rubyRunOnce(args) {
     'ENV["GEM_HOME"] ||= File.join(ENV["HOME"], ".gem")',
     'ENV["GEM_PATH"] ||= ENV["GEM_HOME"]',
     'begin; Dir.mkdir(ENV["GEM_HOME"]) unless Dir.exist?(ENV["GEM_HOME"]); rescue Exception; end',
-    // RubyGems read its paths when the VM booted, before this env: it reads
-    // them again (Gem.clear_paths) whenever they differ from what it last
-    // read, so a gem left off NIMBUS_GEM_LIBS is activated from GEM_HOME.
-    'begin; $__nimbus_gem_env = [ENV["GEM_HOME"], ENV["GEM_PATH"]].tap { |e| Gem.clear_paths unless $__nimbus_gem_env == e } if defined?(Gem); rescue Exception; end',
+    // RubyGems read its paths when the VM booted, before this env. Where a gem
+    // was left off NIMBUS_GEM_LIBS for it to activate (NIMBUS_GEM_ACTIVATE),
+    // it reads them again (Gem.clear_paths) whenever they differ from what it
+    // last read; elsewhere it never reads GEM_HOME, which would cost every
+    // default gem's require a search of it.
+    'begin; if defined?(Gem) && ENV["NIMBUS_GEM_ACTIVATE"] == "1"; e = [ENV["GEM_HOME"], ENV["GEM_PATH"]]; (Gem.clear_paths; $__nimbus_gem_env = e) unless $__nimbus_gem_env == e; end; rescue Exception; end',
     // A cwd it cannot enter fails the run before the program starts (the
     // body below), as a shell's cd fails, rather than running it in '/'. A
     // step that continues a VM (a prompt's next line) names no cwd and keeps
