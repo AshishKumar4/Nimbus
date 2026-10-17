@@ -7,7 +7,7 @@
  * entry so a cache over it can tell a change.
  */
 import type { SyncVFS, VFS, VfsDirent, VfsStat } from './vfs.js';
-import type { FsTime } from '../runtime/os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 export declare class MemoryVFS implements VFS {
     private readonly owner;
     /** VFS.storesWrites: a regular file holds what it was written. */

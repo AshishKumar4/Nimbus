@@ -34,7 +34,7 @@
  * a guest that waits in a syscall lets it run; one computing does not
  * (the documented limit, answered by the session's recall timeout).
  */
-import type { FsTime, RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '../os-contracts.js';
+import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '../os-contracts.js';
 import type { ResidentEntry } from './resident-filesystem.js';
 import { type Provisional } from './provisional.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
@@ -82,17 +82,6 @@ export interface HolderOptions {
     /** The process's live umask, for what it makes provisionally (a held subtree's grant carries the session's). */
     readonly umask?: () => number;
 }
-/** A file made or rewritten here: its bytes until they are sent. */
-/** An attribute change by a descriptor: a mode, an owner (null or -1 kept), or times (FsTime). */
-export type HolderAttrChange = {
-    mode: number;
-} | {
-    uid: number | null;
-    gid: number | null;
-} | {
-    atime: FsTime;
-    mtime: FsTime;
-};
 /** The decisions the process made in a held subtree, not yet sent. */
 export interface DelegationHolder {
     /** The process's filesystem client: what the holder decided is logged into it. */
@@ -223,7 +212,7 @@ export interface DelegationHolder {
      * resolved here as it is decided; false when it is the session's, through
      * the description it holds of the file (restat after).
      */
-    fsetattr(handleId: number, change: HolderAttrChange): boolean;
+    fsetattr(handleId: number, change: W7Attrs): boolean;
     /** The session's stat of the file a through description opened, after a change through it: what fstat answers from now on. */
     restat(handleId: number, stat: Omit<ResidentEntry, 'target'>): void;
     /**

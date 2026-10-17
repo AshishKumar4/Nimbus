@@ -21,7 +21,8 @@
  * would change what the operation means.
  */
 import type { Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsCopyOptions, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteObserver, VfsWriteWants } from './vfs.js';
-import type { FsTime, RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
+import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import { type VfsEvent } from './events.js';
 import { type VfsErrorCode } from './vfs-error.js';
 /**

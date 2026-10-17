@@ -20,8 +20,9 @@ export function ownNames(options) {
     const decided = new Map();
     const added = new Map();
     const removed = new Map();
+    /** The barriers begun when each name's subtree was last given back, everything decided there answered: one begun after retires it. */
     const own = new Map();
-    /** Of those, the ones all answered outside a held subtree: what a landed barrier may retire. */
+    /** Of those, the ones outside a held subtree: what a landed barrier may retire. */
     const settling = new Set();
     let barriers = 0;
     /** The directories made here: until the view has one, its names are the ones made in it. */
@@ -121,23 +122,21 @@ export function ownNames(options) {
             }
         },
         released: (root) => {
+            // Stamped at every release: one decided under a later grant retires after this release, not an earlier one.
             for (const key of decided.keys()) {
                 if (!within(key, root))
                     continue;
-                const record = own.get(key);
-                if (record === undefined)
-                    own.set(key, { pending: 0, settled: barriers });
-                if (record === undefined || record.pending === 0)
-                    settling.add(key);
+                own.set(key, barriers);
+                settling.add(key);
             }
         },
         barrierBegun: () => ++barriers,
         retire: (begun) => {
             for (const key of [...settling]) {
-                const record = own.get(key);
-                if (record === undefined || options.held(key))
+                const settled = own.get(key);
+                if (settled === undefined || options.held(key))
                     settling.delete(key);
-                else if (record.pending === 0 && record.settled < begun)
+                else if (settled < begun)
                     forget(key);
             }
         },

@@ -17,7 +17,7 @@
 import { type MoveOptions } from '../vfs/move.js';
 import type { VFS, VfsCopyOptions, VfsDirent, VfsRemoval } from '../vfs/vfs.js';
 import type { ProcessStat, ProcessView } from '../runtime/process-files.js';
-import type { FsTime } from '../runtime/os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 export declare class WorkspaceFs implements VFS {
     private readonly view;
     /** Where a relative path starts: this view's own, which no `cd` in a shell moves. */

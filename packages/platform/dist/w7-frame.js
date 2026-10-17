@@ -737,8 +737,16 @@ function parseAttrs(value, label) {
     if (keys === 'gid,uid')
         return { uid: ownerId(value.uid, `${label} uid`), gid: ownerId(value.gid, `${label} gid`) };
     if (keys === 'atime,mtime')
-        return { atime: safeInteger(value.atime, `${label} atime`), mtime: safeInteger(value.mtime, `${label} mtime`) };
+        return { atime: parseFsTime(value.atime, `w7-frame: ${label} atime`), mtime: parseFsTime(value.mtime, `w7-frame: ${label} mtime`) };
     throw new Error(`w7-frame: ${label} changes the mode, the owner or the times, one of them: got ${keys || 'nothing'}`);
+}
+/** `value` as an FsTime (a finite number of milliseconds, 'now' or 'omit'); else an error naming `label`. */
+export function parseFsTime(value, label) {
+    if (value === 'now' || value === 'omit')
+        return value;
+    if (typeof value === 'number' && Number.isFinite(value))
+        return value;
+    throw new Error(`${label} must be a time: milliseconds, 'now' or 'omit'`);
 }
 function parseDelete(bytes) {
     const value = parseObject(bytes, 'delete', ['path']);

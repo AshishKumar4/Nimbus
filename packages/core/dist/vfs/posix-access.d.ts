@@ -1,4 +1,4 @@
-import type { FsTime } from '../runtime/os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 /** What an entry is, as its filesystem says: the type every access check is given. */
 export type PosixNodeType = 'file' | 'directory' | 'symlink';
 /**

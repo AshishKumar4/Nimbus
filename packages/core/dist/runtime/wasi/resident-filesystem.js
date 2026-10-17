@@ -127,7 +127,7 @@ function statOf(entry) {
 const identity = (dev, ino) => `${dev}:${ino}`;
 export function residentFilesystem(session, resident, delegation) {
     let directoryPool = null;
-    const counts = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, readAhead: 0, barriers: 0, waitMs: 0, sessionCalls: 0, notResident: 0, pinnedBytes: 0, pins: 0, pagedReads: 0, pagesFetched: 0 };
+    const counts = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, readAhead: 0, barriers: 0, waitMs: 0, sessionCalls: 0, notResident: 0, pinnedBytes: 0, pins: 0, provisionalBytes: 0, pagedReads: 0, pagesFetched: 0 };
     /** A call of `synchronous` is running: it answers now or not at all (NOT_NOW). */
     let now = false;
     // Every session interaction begins here, given as what would begin it: the
@@ -685,6 +685,7 @@ export function residentFilesystem(session, resident, delegation) {
         delegated: { ...counts.delegated },
         pins: pins.size,
         pinnedBytes: [...pins.values()].reduce((total, pin) => total + pin.bytes.byteLength, 0),
+        provisionalBytes: holder?.provisional.kept() ?? 0,
         ...(holder === null ? {} : { client: holder.client.stats() }),
     });
     fs.stat = (path, options = {}) => answer('stat', () => {
@@ -1237,7 +1238,8 @@ export function residentFilesystem(session, resident, delegation) {
         });
     }
     /** An fchown side as the guest sent it: a uid or gid, or null (keep the file's). */
-    const ownerSide = (value) => typeof value === 'number' ? value : null;
+    /** An owner as chown(2) and fchown(2) take it: -1 (or none) keeps it, null on the wire. */
+    const ownerSide = (value) => (typeof value === 'number' && value !== -1 ? value : null);
     /**
      * fchmod, fchown and futimes of a descriptor of the holder's, on the file
      * it opened, never on a name: decided here where the holder decides that

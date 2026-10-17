@@ -13,7 +13,8 @@
  * 4 GB file is not a ranged read. A caller without the capability learns
  * that (ENOTSUP) and decides.
  */
-import type { FsTime, RuntimeDirentType, VfsAcquireOptions, VfsAcquireResult, VfsListPage } from '../runtime/os-contracts.js';
+import type { RuntimeDirentType, VfsAcquireOptions, VfsAcquireResult, VfsListPage } from '../runtime/os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import type { VfsEvent } from './events.js';
 import { type VfsError } from './vfs-error.js';
 export type Awaitable<T> = T | Promise<T>;

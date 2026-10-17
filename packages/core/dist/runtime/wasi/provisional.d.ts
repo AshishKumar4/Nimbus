@@ -25,7 +25,7 @@
  * keeps), then commits: a refusal, or a call that cannot answer now, leaves
  * nothing. What is admitted is given back by the object that holds it.
  */
-import type { FsTime, RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '../os-contracts.js';
+import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '../os-contracts.js';
 import type { ResidentEntry } from './resident-filesystem.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import type { ProcessFsClient } from '../../_shared/process-fs-client.js';
@@ -62,17 +62,9 @@ export interface ProvisionalHost {
     /** The next descriptor id, from the holder's own range. */
     nextHandle(): number;
 }
-/** An attribute change by a descriptor: a mode, an owner (null or -1 kept), or times. */
-export type DescriptorAttrs = {
-    mode: number;
-} | {
-    uid: number | null;
-    gid: number | null;
-} | {
-    atime: FsTime;
-    mtime: FsTime;
-};
 export interface Provisional {
+    /** What it keeps of the process's budget now, counted afresh from what it holds: what it has taken of it, where its accounting is right. */
+    kept(): number;
     owns(handleId: number): boolean;
     /** Whether a decision of this process's at `key`, or at the directory it is in, is not yet the view's: a held subtree decides nothing there until it is. */
     touches(key: string): boolean;
@@ -94,7 +86,7 @@ export interface Provisional {
     ftruncate(handleId: number, size: number): void;
     seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number;
     fstat(handleId: number): ResidentEntry;
-    fsetattr(handleId: number, attrs: DescriptorAttrs): void;
+    fsetattr(handleId: number, attrs: W7Attrs): void;
     close(handleId: number): void;
     dup(handleId: number): RuntimeFileHandle;
     reopen(handleId: number, flags: RuntimeOpenFlags): RuntimeFileHandle | undefined;

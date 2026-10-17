@@ -70,14 +70,24 @@ export interface BatchWritePayload {
  * chmod, chown and utimes each make. An owner side that is null keeps what
  * the file has when the change lands (chown's -1).
  */
+/**
+ * A time utimes and futimes set, as utimensat(2) takes it: ms since the
+ * epoch (explicit: only the owner may set it), 'now' (UTIME_NOW: the
+ * clock of the filesystem that commits the change, as it commits it) or
+ * 'omit' (UTIME_OMIT: left as it is then). 'now' and 'omit' need only write
+ * permission. Carried as it is to the filesystem that commits the change,
+ * which alone resolves it (posix-access.ts, timeAt) and judges it
+ * (utimesRefusal, explicitTimes).
+ */
+export type FsTime = number | 'now' | 'omit';
 export type W7Attrs = {
     mode: number;
 } | {
     uid: number | null;
     gid: number | null;
 } | {
-    atime: number;
-    mtime: number;
+    atime: FsTime;
+    mtime: FsTime;
 };
 /**
  * A process's filesystem call as a record (v4), applied by the session's own
@@ -400,5 +410,7 @@ export declare function encodeWriteBatch(payload: BatchWritePayload): Promise<Ui
  * and before its payload bytes are read or copied.
  */
 export declare function decodeWriteBatchStream(stream: ReadableStream<Uint8Array>, options?: W7DecodeOptions): Promise<W7DecodedStream>;
+/** `value` as an FsTime (a finite number of milliseconds, 'now' or 'omit'); else an error naming `label`. */
+export declare function parseFsTime(value: unknown, label: string): FsTime;
 export {};
 //# sourceMappingURL=w7-frame.d.ts.map

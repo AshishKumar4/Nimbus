@@ -32,7 +32,8 @@ export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { type Principal, type VfsDirentType, type VfsRemoval, type VfsWriteEvent } from './vfs.js';
 import { type WaveScope, type WriteBatchStreamResult, type WriteStreamOptions } from '../runtime/wave-contracts.js';
 import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
-import { type FsTime, type GrantCertificate, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
+import { type GrantCertificate, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 /** The tables the store keeps (dropped whole by a reset of an older store; listed by an embedder's destroy). */
 export declare const STORE_TABLES: readonly ["vfs_state", "vfs_inodes", "vfs_chunks", "vfs_contents", "vfs_content_chunks", "vfs_inode_history", "vfs_tombstones", "vfs_cold_trash", "vfs_gc_queue", "vfs_snapshots", "vfs_jobs", "vfs_wave_cursors", "vfs_wave_descriptions"];
 /** The root directory has no row; this is what it is. */

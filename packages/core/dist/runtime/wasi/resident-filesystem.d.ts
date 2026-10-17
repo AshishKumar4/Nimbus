@@ -203,6 +203,8 @@ export interface ResidentFilesystemStats {
     /** File bytes pinned for descriptors now, and how many buffers hold them. */
     pinnedBytes: number;
     pins: number;
+    /** What its provisional decisions keep of the store's budget now, as they cost it (Provisional.kept): with pinnedBytes, all it has taken. */
+    provisionalBytes: number;
     /** Its filesystem client's waves, grants and recalls, when it holds delegations. */
     client?: ProcessFsStats;
 }

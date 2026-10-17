@@ -10,9 +10,18 @@
  * or a clock.
  */
 import { chownedMode, timeAt } from '../../vfs/posix-access.js';
+/**
+ * A private copy of the first `length` of `bytes`: a plain array no one else
+ * holds, whatever `bytes` is (a Buffer's slice is a view of it, not a copy).
+ */
+export function owned(bytes, length = bytes.byteLength) {
+    const copy = new Uint8Array(length);
+    copy.set(bytes.subarray(0, length));
+    return copy;
+}
 /** A copy of `state` that folding into does not change `state`. */
 export function copyState(state) {
-    return { ...state, bytes: state.bytes === null ? null : state.bytes.slice(0, state.size) };
+    return { ...state, bytes: state.bytes === null ? null : owned(state.bytes, state.size) };
 }
 /** Room for `size` bytes in `state`'s buffer, its first `state.size` kept, the rest zero. */
 function grown(state, size) {

@@ -30,7 +30,7 @@ import { isVfsError, syscallError, toVfsError } from '../vfs/vfs-error.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { abandon, andThen, readDeclaredSource, readRangeOrWhole, readText } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
-import { CRED_KERNEL, isVfsCred, requireVfsCred, } from './os-contracts.js';
+import { CRED_KERNEL, isVfsCred, requireVfsCred } from './os-contracts.js';
 import { fsError, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
 import { modeAllows } from '../vfs/posix-access.js';
 import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, scopeSignal, settleHeldAt } from './descriptors.js';

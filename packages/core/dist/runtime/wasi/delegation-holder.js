@@ -391,11 +391,10 @@ export function delegationHolder(options) {
         }
     };
     /** An owner or group id a chown keeps (null, or -1 as fchown(2) spells it): null, as chownRefusal takes it. */
-    const kept = (id) => (id === -1 ? null : id);
     /** `entry` as chmod, chown (the set-id bits chownedMode clears) and utimes leave it, its ctime now. */
     const changedBy = (entry, attrs) => ('mode' in attrs ? { ...entry, mode: (entry.mode & ~0o7777) | (attrs.mode & 0o7777), ctime: now() }
-        : 'uid' in attrs ? { ...entry, uid: kept(attrs.uid) ?? entry.uid, gid: kept(attrs.gid) ?? entry.gid, mode: chownedMode(entry.mode, store.cred), ctime: now() }
-            : { ...entry, atime: attrs.atime, mtime: attrs.mtime, ctime: now() });
+        : 'uid' in attrs ? { ...entry, uid: attrs.uid ?? entry.uid, gid: attrs.gid ?? entry.gid, mode: chownedMode(entry.mode, store.cred), ctime: now() }
+            : { ...entry, atime: timeAt(attrs.atime, entry.atime, now()), mtime: timeAt(attrs.mtime, entry.mtime, now()), ctime: now() });
     const holder = {
         client,
         provisional: prov,
@@ -890,7 +889,7 @@ export function delegationHolder(options) {
             // chmod, chown and utimes allow it; anything else is the session's to judge.
             if (store.cred.uid !== 0 && store.cred.uid !== current.uid)
                 return false;
-            if ('uid' in attrs && chownRefusal(current, kept(attrs.uid), kept(attrs.gid), store.cred) !== null)
+            if ('uid' in attrs && chownRefusal(current, attrs.uid, attrs.gid, store.cred) !== null)
                 return false;
             // A grant a confined principal may not make: the session's to judge.
             if ('mode' in attrs && confinedModeRefusal(current.mode, attrs.mode) !== null)
@@ -927,7 +926,7 @@ export function delegationHolder(options) {
             // principal too (judged confined once no grant there says).
             const confined = client.held(file.key)?.confined ?? true;
             const refused = 'mode' in attrs ? chmodRefusal(entry, store.cred) ?? (confined ? confinedModeRefusal(entry.mode, attrs.mode) : null)
-                : 'uid' in attrs ? chownRefusal(entry, kept(attrs.uid), kept(attrs.gid), store.cred)
+                : 'uid' in attrs ? chownRefusal(entry, attrs.uid, attrs.gid, store.cred)
                     : utimesRefusal(entry, 'atime' in change && explicitTimes(change.atime, change.mtime), store.cred);
             if (refused !== null)
                 throw fsError(refused, 'mode' in attrs ? 'fchmod' : 'uid' in attrs ? 'fchown' : 'futimes', '/' + file.key);

@@ -1068,17 +1068,20 @@ export function processFsClient(options) {
                 counters.ops++;
             }));
             schedule();
-            // A piece refused rejects the call; its last piece's receipt answers it,
+            // A piece failed fails the call; its last piece's receipt answers it,
             // and its mutation spans them all.
             const answer = Promise.all(answers).then((all) => {
                 const first = all[0]?.mutation;
                 const last = all[all.length - 1];
                 if (last === undefined)
                     return {};
-                // An acknowledged piece refused: the call's failure (reported once, by the client).
-                const failed = all.find((piece) => piece.failed !== undefined)?.failed;
-                if (failed !== undefined)
-                    return { failed };
+                // An acknowledged piece failed: the call's failure (reported once, by the client). Refused,
+                // never applied, only where every piece was: one applied or of unknown fate leaves the call's unknown.
+                const failures = all.filter((piece) => piece.failed !== undefined);
+                if (failures.length > 0) {
+                    const { errno, message } = failures[0].failed;
+                    return { failed: failures.length === all.length && failures.every((piece) => piece.failed.refused === true) ? { errno, message, refused: true } : { errno, message } };
+                }
                 const { mutation: _mutation, ...rest } = last;
                 return first !== undefined && last.mutation !== undefined ? { ...rest, mutation: { before: first.before, after: last.mutation.after } } : rest;
             });

@@ -9,7 +9,7 @@
  * Plain values in, plain values out: nothing here reads the store, the log
  * or a clock.
  */
-import type { FsTime } from '../os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 /** What an inode is, as far as its own operations change it. */
 export interface InodeState {
     /** Its bytes, the first `size` of them; null where the baseline's bytes are not held (its size is still known). */
@@ -55,6 +55,11 @@ export type InodeOp = {
     readonly mtime: FsTime;
     readonly at: number;
 };
+/**
+ * A private copy of the first `length` of `bytes`: a plain array no one else
+ * holds, whatever `bytes` is (a Buffer's slice is a view of it, not a copy).
+ */
+export declare function owned(bytes: Uint8Array, length?: number): Uint8Array;
 /** A copy of `state` that folding into does not change `state`. */
 export declare function copyState(state: InodeState): InodeState;
 /**

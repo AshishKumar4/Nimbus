@@ -51,7 +51,7 @@ import { inodeKind, linkedSignal, untilAborted, validateFileChunks, validateInod
 import { LEDGER_ROW_BYTES, StorageLedger, databaseBytesOf } from '../runtime/storage-ledger.js';
 import { CDC_MIN, ContentCutter, EMPTY_CONTENT_KEY, ManifestDigest, chunkHash, cutContent, hex, } from './content-chunking.js';
 import { inflateChunk } from './chunk-codec.js';
-import { CRED_KERNEL, sameCred, } from '../runtime/os-contracts.js';
+import { CRED_KERNEL, sameCred } from '../runtime/os-contracts.js';
 /**
  * Schema version of the content store. 3: `/` is inode 1 and the allocator
  * starts at 2, and directories carry a default ACL (dacl). A schema-2 store

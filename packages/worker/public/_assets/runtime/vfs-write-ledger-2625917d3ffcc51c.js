@@ -484,8 +484,15 @@ var __nimbusProcessFsModule = (() => {
     if (keys === "gid,uid")
       return { uid: ownerId(value.uid, `${label} uid`), gid: ownerId(value.gid, `${label} gid`) };
     if (keys === "atime,mtime")
-      return { atime: safeInteger(value.atime, `${label} atime`), mtime: safeInteger(value.mtime, `${label} mtime`) };
+      return { atime: parseFsTime(value.atime, `w7-frame: ${label} atime`), mtime: parseFsTime(value.mtime, `w7-frame: ${label} mtime`) };
     throw new Error(`w7-frame: ${label} changes the mode, the owner or the times, one of them: got ${keys || "nothing"}`);
+  }
+  function parseFsTime(value, label) {
+    if (value === "now" || value === "omit")
+      return value;
+    if (typeof value === "number" && Number.isFinite(value))
+      return value;
+    throw new Error(`${label} must be a time: milliseconds, 'now' or 'omit'`);
   }
   function parsePathCall(value, path) {
     const keys = Object.keys(value).sort().join(",");
@@ -2049,8 +2056,11 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           const first = all[0]?.mutation;
           const last = all[all.length - 1];
           if (last === void 0) return {};
-          const failed = all.find((piece) => piece.failed !== void 0)?.failed;
-          if (failed !== void 0) return { failed };
+          const failures2 = all.filter((piece) => piece.failed !== void 0);
+          if (failures2.length > 0) {
+            const { errno, message } = failures2[0].failed;
+            return { failed: failures2.length === all.length && failures2.every((piece) => piece.failed.refused === true) ? { errno, message, refused: true } : { errno, message } };
+          }
           const { mutation: _mutation, ...rest } = last;
           return first !== void 0 && last.mutation !== void 0 ? { ...rest, mutation: { before: first.before, after: last.mutation.after } } : rest;
         });
