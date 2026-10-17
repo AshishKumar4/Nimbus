@@ -846,6 +846,7 @@ requirements:
       - Nimbus.Vfs.CompositeFeed.staged_closed
     tsRefs:
       - packages/core/src/vfs/composite.ts#CompositeVFS.feed
+      - packages/core/src/vfs/composite.ts#CompositeVFS.feedSignature
       - packages/core/src/vfs/composite.ts#CompositeVFS.feedSince
       - packages/core/src/vfs/composite.ts#CompositeVFS.feedList
       - packages/core/src/vfs/composite.ts#CompositeVFS.walkUnfed

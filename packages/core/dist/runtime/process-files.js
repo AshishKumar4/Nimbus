@@ -393,7 +393,7 @@ export class ProcessFiles {
     createListing(pid) {
         let listing = this.listings.get(pid);
         if (listing === undefined) {
-            listing = { named: new Set(), table: null, held: null };
+            listing = { named: new Set(), table: null, sqliteOnly: false, held: null };
             this.listings.set(pid, listing);
         }
         return listing;
@@ -810,10 +810,12 @@ class AwaitingProcessBridge {
      */
     list(after, limit) {
         if (!mountsBeyondSqlite(this.namespace)) {
-            // A listing of SQLite alone from the start begins at no mount table.
-            const listing = after === null || after === undefined ? this.listing(false) : undefined;
-            if (listing)
-                listing.table = null;
+            // A later mount must invalidate this SQLite-only listing too.
+            const listing = after === null || after === undefined ? this.listing(true) : undefined;
+            if (listing) {
+                listing.table = this.namespace.feed.signature();
+                listing.sqliteOnly = true;
+            }
             return this.bridge.list(after, limit);
         }
         this.authority();
@@ -831,8 +833,10 @@ class AwaitingProcessBridge {
         // Read before the page, as SqliteVFS.list reads its cursor (VfsListPage).
         const position = feed.position();
         const root = position.feeds['/'];
-        if (after === null && listing)
+        if (after === null && listing) {
             listing.table = position.table;
+            listing.sqliteOnly = false;
+        }
         const page = feed.list(after === null ? null : `/${after}`, want, walk);
         // SQLite measured its own entries when it listed them; each is measured
         // here under the path the process sees, which only re-encodes that path.
@@ -862,7 +866,7 @@ class AwaitingProcessBridge {
      */
     acquire(epoch, cursor, options) {
         const listing = this.listing(false);
-        if (!mountsBeyondSqlite(this.namespace) && (listing?.table ?? null) === null)
+        if (!mountsBeyondSqlite(this.namespace) && (listing?.sqliteOnly === true || (listing?.table ?? null) === null))
             return this.bridge.acquire(epoch, cursor, options);
         this.authority();
         const feed = this.namespace.feed;

@@ -296,6 +296,7 @@ export class CompositeVFS {
     /** This principal's namespace feed. */
     get feed() {
         return {
+            signature: () => this.feedSignature(),
             position: () => this.feedPosition(this.feedSignature(), this.feedSources()),
             since: (position, options) => this.feedSince(position, options),
             list: (after, limit, walked) => this.feedList(after, limit, walked),

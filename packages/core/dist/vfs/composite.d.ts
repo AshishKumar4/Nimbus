@@ -59,6 +59,8 @@ export type MountWalk = readonly VfsListEntry[];
  * `walk` of it, what the walk named.
  */
 export interface CompositeFeed {
+    /** The current mount table, without reading the backends' revision clocks. */
+    signature(): string;
     position(): FeedPosition;
     since(position: FeedPosition<string | null>, options?: VfsAcquireOptions): FeedAnswer;
     list(after: string | null, limit: number, walked?: MountWalk): {
