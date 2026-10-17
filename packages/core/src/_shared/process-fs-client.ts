@@ -492,6 +492,8 @@ function commonAncestor(left: string, right: string): string {
 interface Entry {
   /** The change, while the heap holds it; else the journal does (journal.read(jid)). */
   op: ProcessFsOp | null;
+  /** Reusable capacity, held only after an extending fold. */
+  buffer?: Uint8Array;
   /** Its place in the journal. */
   jid: number;
   /** The call's name, for a failure's report (writeFile, mkdir, rename, …). */
@@ -556,14 +558,14 @@ function extended(call: DataCall, data: Uint8Array, buffer: Uint8Array | null): 
 }
 
 /**
- * How `next` folds into `last`, the log's unsent tail, when it is the same
+ * `next` folded into `last`, the log's unsent tail, when it is the same
  * file's next bytes and nothing was logged between them: a whole write
  * replacing a whole write (its make, mode and number kept), an append
  * extending a write or an append, a positional write continuing one. As the
  * page cache folds them; null when it is not such a change, or the folded
  * bytes would pass a piece.
  */
-function folded(last: ProcessFsOp, next: ProcessFsOp): 'append' | 'replace' | null {
+function folded(last: ProcessFsOp, next: ProcessFsOp, buffer: Uint8Array | null): { op: ProcessFsOp; buffer: Uint8Array | null; append?: Uint8Array } | null {
   if (last.type !== 'call' || next.type !== 'call' || !('data' in last.call) || !('data' in next.call)) return null;
   const a = last.call;
   const b = next.call;
@@ -572,16 +574,16 @@ function folded(last: ProcessFsOp, next: ProcessFsOp): 'append' | 'replace' | nu
   const inoOf = (call: W7Call): number | undefined => ('ino' in call ? call.ino : undefined);
   if (b.call === 'writeFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) {
     // The last write's file is made (or kept) by the first: its make wins, the bytes are the last's.
-    return 'replace';
+    return { op: { type: 'call', call: { ...a, call: 'writeFile', data: b.data } as W7Call }, buffer: null };
   }
   if (b.call === 'appendFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) {
-    return 'append';
+    return extended(a, b.data, buffer);
   }
   if (b.call === 'append' && a.call === 'append' && inoOf(a) === inoOf(b)) {
-    return 'append';
+    return extended(a, b.data, buffer);
   }
   if (b.call === 'write' && a.call === 'write' && inoOf(a) === inoOf(b) && a.offset + a.data.byteLength === b.offset) {
-    return 'append';
+    return extended(a, b.data, buffer);
   }
   return null;
 }
@@ -619,9 +621,6 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   let heapBytes = 0;
   /** Logged, not yet sent; the first ones may carry numbers from a wave they came back from. */
   const queue: Entry[] = [];
-  /** Spare capacity for the unsent tail's next bytes; doubled when full. */
-  let tailBuffer: Uint8Array | null = null;
-  let bufferedTail: Entry | null = null;
   let inFlight: Entry[] | null = null;
   let scheduled = false;
   let pendingBytes = 0;
@@ -790,10 +789,6 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       bytes += next.bytes;
       taken.push(queue.shift()!);
     }
-    if (queue.length === 0 || (bufferedTail !== null && taken.includes(bufferedTail))) {
-      tailBuffer = null;
-      bufferedTail = null;
-    }
     return taken;
   };
 
@@ -820,7 +815,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     try {
       ops = entries.map(opOf);
       // Sent: the heap's copy is the wave's now.
-      for (const entry of entries) if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; }
+      for (const entry of entries) if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; if (entry.buffer !== undefined) entry.buffer = undefined; }
       bytes = await encodeWriteBatch({ inodes: [], chunks: [], ops });
       // Numbered once, under the epoch they are first sent under; a re-send keeps them.
       numberEntries(entries);
@@ -956,10 +951,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   const endedProcess = (entries: Entry[], refusal: Error & { code: string }, writer: string | null): void => {
     processGone ??= refusal;
     const ended = [...entries, ...queue.splice(0)];
-    tailBuffer = null;
-    bufferedTail = null;
     for (const entry of ended) {
-      if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; }
+      if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; if (entry.buffer !== undefined) entry.buffer = undefined; }
       fail(entry, 'ESRCH', processGone.message);
     }
     forget(ended[ended.length - 1]!.jid, false);
@@ -971,10 +964,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   const exhaustedInvocation = (entries: Entry[], refusal: Error): void => {
     processGone ??= fsError('EIO', refusal.message, '');
     const stopped = [...entries, ...queue.splice(0)];
-    tailBuffer = null;
-    bufferedTail = null;
     for (const entry of stopped) {
-      if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; }
+      if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; if (entry.buffer !== undefined) entry.buffer = undefined; }
       fail(entry, 'EIO', refusal.message);
     }
     forget(stopped[stopped.length - 1]!.jid, false);
@@ -1341,20 +1332,14 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       // The same file's next bytes, right after its last unsent change: folded into it.
       const tail = queue[queue.length - 1];
       // (The queue holds only unsent changes; one sent and back for a re-send is numbered.)
-      const fold = parts.length === 1 && tail !== undefined && tail.paths[0] === named[0] && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged
-        ? folded(tail.op, parts[0]!) : null;
-      if (fold !== null && tail !== undefined) {
-        const before = (tail.op as { call: DataCall }).call;
-        const after = (parts[0] as { call: DataCall }).call;
-        const merged: { op: ProcessFsOp; buffer: Uint8Array | null; append?: Uint8Array } = fold === 'append'
-          ? extended(before, after.data, bufferedTail === tail ? tailBuffer : null)
-          : { op: { type: 'call', call: { ...before, call: 'writeFile', data: after.data } as W7Call }, buffer: null };
+      const merged = parts.length === 1 && tail !== undefined && tail.paths[0] === named[0] && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged
+        ? folded(tail.op, parts[0]!, tail.buffer ?? null) : null;
+      if (merged !== null && tail !== undefined) {
         const mergedBytes = merged.op.type === 'call' && 'data' in merged.op.call ? merged.op.call.data.byteLength : 0;
         journal.replace(tail.jid, merged.op, merged.append);
         const grown = mergedBytes - tail.bytes;
         tail.op = merged.op;
-        tailBuffer = merged.buffer;
-        bufferedTail = merged.buffer === null ? null : tail;
+        if (merged.buffer !== null || tail.buffer !== undefined) tail.buffer = merged.buffer ?? undefined;
         tail.bytes = mergedBytes;
         // Someone waits on the fold now: what lingered goes.
         if (tail.lingers && !lingers) {
