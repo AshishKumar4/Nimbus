@@ -35,7 +35,7 @@ import { LRU_MAX_ENTRIES, FS_LIST_PAGE_LIMIT, MAX_RPC_SAFE_PAYLOAD_BYTES, FS_REA
 import { CHUNK_SIZE, MAX_TX_BLOB_BYTES, MAX_TX_LOGICAL_ROWS, MAX_TX_SQL_EXECS, MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES, SQL_MAX_BOUND_PARAMETERS, DO_STORAGE_LIMIT_BYTES, } from '@nimbus-sh/platform/limits.js';
 import { recordFailure } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
-import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+import { compareUtf8, utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { concatBytes, dec, enc, nameDec } from '../_shared/bytes.js';
 import { w7ChunkCount, w7Chunks, } from '@nimbus-sh/platform/w7-frame.js';
 import { WeightedCreditPool, } from '@nimbus-sh/platform/weighted-credit-pool.js';
@@ -6279,19 +6279,6 @@ export class SqliteVFS {
          SELECT ${HISTORY_SELECT_COLUMNS} FROM vfs_inode_history WHERE path > ?${below} AND gen_to > ? AND gen_from <= ? ORDER BY path LIMIT ?
        ) ORDER BY path LIMIT ?`, after, ...bound, g, limit, after, ...bound, g, g, limit, limit)].map((row) => this.inodeFromRow(row));
     }
-    /** SQLite's `ORDER BY path` (UTF-8 bytes) for JS strings: keyset cursors compare in this order. */
-    static comparePaths(a, b) {
-        const x = enc.encode(a), y = enc.encode(b);
-        let i = 0;
-        for (const byte of x) {
-            const other = y[i++];
-            if (other === undefined)
-                return 1;
-            if (byte !== other)
-                return byte - other;
-        }
-        return i === y.length ? 0 : -1;
-    }
     /**
      * A read-only view of snapshot `name` for `cred`: the same methods, the
      * same permission checks and symlink resolution, over the tree the
@@ -6860,7 +6847,7 @@ export class SqliteVFS {
             if (!inode.isDir)
                 return { schema: VFS_EXPORT_SCHEMA, source, root, nextIno, after, rows, next: null };
         }
-        const key = SqliteVFS.comparePaths(lastPath, range.lower) < 0 ? range.lower : lastPath;
+        const key = compareUtf8(lastPath, range.lower) < 0 ? range.lower : lastPath;
         let exhausted = true;
         for (const inode of this.pageAt(g, key, limit + 1, range.upper)) {
             if (!take(inode)) {
@@ -7082,7 +7069,7 @@ export class SqliteVFS {
         const compare = (a, b) => {
             if (a === null || b === null)
                 return a === b ? 0 : a === null ? -1 : 1;
-            const byPath = SqliteVFS.comparePaths(a[0], b[0]);
+            const byPath = compareUtf8(a[0], b[0]);
             if (byPath !== 0)
                 return byPath;
             const x = a[1] === -1 ? Infinity : a[1], y = b[1] === -1 ? Infinity : b[1];
@@ -7090,7 +7077,7 @@ export class SqliteVFS {
         };
         if (compare(from, cursor) > 0)
             throw vfsError('EINVAL', 'import page skips uncommitted progress');
-        const rows = page.rows.filter((row) => cursor === null || SqliteVFS.comparePaths(row.path, cursor[0]) > 0 || (row.path === cursor[0] && cursor[1] >= 0));
+        const rows = page.rows.filter((row) => cursor === null || compareUtf8(row.path, cursor[0]) > 0 || (row.path === cursor[0] && cursor[1] >= 0));
         // A continued page writes only into an open import. Without one, dst holds
         // a finished import (whose replay writes nothing) or whatever replaced an
         // abandoned one, which is not that import's to write into.
@@ -7110,7 +7097,7 @@ export class SqliteVFS {
         let pending = job?.pending;
         let lastPath;
         for (const row of page.rows) {
-            if (lastPath !== undefined && SqliteVFS.comparePaths(row.path, lastPath) <= 0)
+            if (lastPath !== undefined && compareUtf8(row.path, lastPath) <= 0)
                 throw vfsError('EINVAL', 'import rows are not strictly ordered');
             lastPath = row.path;
             if (!Number.isSafeInteger(row.size) || row.size < 0 || !Number.isSafeInteger(row.pieceOffset) || row.pieceOffset < 0
@@ -7133,7 +7120,7 @@ export class SqliteVFS {
                 || (!row.manifest && (row.pieceOffset !== 0 || end !== row.size || row.pieces.length > 1 || row.size > CHUNK_SIZE))) {
                 throw vfsError('EINVAL', row.path, 'invalid manifest extent');
             }
-            const already = cursor !== null && (SqliteVFS.comparePaths(row.path, cursor[0]) < 0 || (row.path === cursor[0] && cursor[1] === -1));
+            const already = cursor !== null && (compareUtf8(row.path, cursor[0]) < 0 || (row.path === cursor[0] && cursor[1] === -1));
             if (already) {
                 const inode = this.inodes.get(full(row.path));
                 const expected = this.importedEntry(full(row.path), row, { type: 'none' });

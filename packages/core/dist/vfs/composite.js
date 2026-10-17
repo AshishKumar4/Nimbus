@@ -7,22 +7,9 @@ import { recallOf, withRecall } from './recall.js';
 import { DIRENT_TYPES } from './dirent-type.js';
 import { walkRemoval } from './removal-walk.js';
 import { S_IFMT, abandon, andThen, copiedPermissions, copyfileMode, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
-/** Path order as SQLite's index keeps it: by UTF-8 bytes, which is code point order. */
-export function comparePaths(a, b) {
-    const n = Math.min(a.length, b.length);
-    for (let i = 0; i < n; i++) {
-        const x = a.charCodeAt(i), y = b.charCodeAt(i);
-        if (x === y)
-            continue;
-        // A surrogate half (a code point past U+FFFF) sorts after U+E000..U+FFFF.
-        if (x >= 0xd800 && x <= 0xdfff && y >= 0xe000)
-            return 1;
-        if (y >= 0xd800 && y <= 0xdfff && x >= 0xe000)
-            return -1;
-        return x - y;
-    }
-    return a.length - b.length;
-}
+import { compareUtf8 as comparePaths } from '@nimbus-sh/platform/utf8.js';
+/** Path order as SQLite's index keeps it: by UTF-8 bytes (platform utf8.ts compareUtf8). */
+export { comparePaths };
 /** `entries` in path order: as given when they already are (a backend's listing is), else sorted. */
 function inPathOrder(entries) {
     for (let i = 1; i < entries.length; i++) {

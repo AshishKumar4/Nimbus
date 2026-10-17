@@ -24,6 +24,7 @@ import type { Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsCopyOptions, 
 import type { FsTime, RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
 import { type VfsEvent } from './events.js';
 import { type VfsErrorCode } from './vfs-error.js';
+import { compareUtf8 as comparePaths } from '@nimbus-sh/platform/utf8.js';
 /**
  * Where a reader of a namespace's feed stands: the mount table as its
  * principal saw it, and each change feed's epoch and cursor.
@@ -79,8 +80,8 @@ export interface CompositeFeed {
      */
     walk(named: Iterable<string>, limit: number): Promise<MountWalk>;
 }
-/** Path order as SQLite's index keeps it: by UTF-8 bytes, which is code point order. */
-export declare function comparePaths(a: string, b: string): number;
+/** Path order as SQLite's index keeps it: by UTF-8 bytes (platform utf8.ts compareUtf8). */
+export { comparePaths };
 /**
  * A namespace entry's stat in the runtime contract's shape: its identity
  * (dev, ino) is the namespace's, and a mounted backend's entries carry no
