@@ -23,10 +23,10 @@ export interface WeightedCreditPoolOptions {
      */
     readonly reserve?: number;
 }
-/** A wait for credit: its lease once granted, and whether it has been, known at once. */
+/** A wait for credit: its lease once granted, and whether it is still queued, known at once. */
 export interface CreditWait {
     readonly lease: Promise<ResizableCreditLease>;
-    granted(): boolean;
+    waiting(): boolean;
 }
 /**
  * FIFO byte-credit pool shared by concurrent allocation owners.
@@ -61,9 +61,11 @@ export declare class WeightedCreditPool {
     private isSmall;
     tryAcquire(bytes: number): ResizableCreditLease | null;
     /**
-     * A running program's ask (SupervisorAllocationBudget.acquireRunning), on
-     * the shared capacity ahead of every ordinary ask: granted now if it fits
-     * beside what is held, whatever is queued, or else as soon as it does.
+     * A running program's ask (SupervisorAllocationBudget.acquireRunning),
+     * ahead of every ordinary ask: granted now if it fits beside what is held,
+     * whatever is queued (a small one in its reserve too), or else as soon as
+     * it fits in the shared capacity, the credit running work and reclaims
+     * free. It never waits on the reserve, which neither frees.
      */
     acquireAhead(bytes: number, signal?: AbortSignal): CreditWait;
     /** acquireAhead's credit now, or null. */

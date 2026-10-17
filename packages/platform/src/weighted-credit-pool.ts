@@ -33,14 +33,14 @@ interface CreditWaiter {
   readonly reject: (error: Error) => void;
   readonly signal?: AbortSignal;
   readonly onAbort?: () => void;
-  /** Set as the lane grants it, before its promise settles. */
-  granted: boolean;
+  /** Set as the lane grants or drops it, before its promise settles. */
+  settled: boolean;
 }
 
-/** A wait for credit: its lease once granted, and whether it has been, known at once. */
+/** A wait for credit: its lease once granted, and whether it is still queued, known at once. */
 export interface CreditWait {
   readonly lease: Promise<ResizableCreditLease>;
-  granted(): boolean;
+  waiting(): boolean;
 }
 
 /**
@@ -75,9 +75,9 @@ class CreditLane {
   }
 
   private wait(bytes: number, signal: AbortSignal | undefined, ahead: boolean): CreditWait {
-    if (signal?.aborted) return { lease: Promise.reject(abortError(signal)), granted: () => false };
+    if (signal?.aborted) return { lease: Promise.reject(abortError(signal)), waiting: () => false };
     const immediate = this.tryAcquire(bytes, ahead);
-    if (immediate) return { lease: Promise.resolve(immediate), granted: () => true };
+    if (immediate) return { lease: Promise.resolve(immediate), waiting: () => false };
     const queue = ahead ? this.ahead : this.waiters;
     let waiter: CreditWaiter | undefined;
     const lease = new Promise<ResizableCreditLease>((resolve, reject) => {
@@ -86,12 +86,13 @@ class CreditLane {
         resolve,
         reject,
         signal,
-        granted: false,
+        settled: false,
         onAbort: signal
           ? () => {
               const index = queue.indexOf(queued);
               if (index < 0) return;
               queue.splice(index, 1);
+              queued.settled = true;
               signal.removeEventListener('abort', queued.onAbort!);
               reject(abortError(signal));
               this.drain();
@@ -104,7 +105,7 @@ class CreditLane {
       if (signal?.aborted) queued.onAbort!();
       else this.drain();
     });
-    return { lease, granted: () => waiter?.granted === true };
+    return { lease, waiting: () => waiter?.settled === false };
   }
 
   private grant(bytes: number): ResizableCreditLease {
@@ -151,6 +152,7 @@ class CreditLane {
       for (let waiter = queue[0]; waiter !== undefined; waiter = queue[0]) {
         if (waiter.signal?.aborted) {
           queue.shift();
+          waiter.settled = true;
           waiter.signal.removeEventListener('abort', waiter.onAbort!);
           waiter.reject(abortError(waiter.signal));
           continue;
@@ -158,7 +160,7 @@ class CreditLane {
         if (this.current + waiter.bytes > this.capacity) return;
         queue.shift();
         waiter.signal?.removeEventListener('abort', waiter.onAbort!);
-        waiter.granted = true;
+        waiter.settled = true;
         waiter.resolve(this.grant(waiter.bytes));
       }
     }
@@ -236,19 +238,25 @@ export class WeightedCreditPool {
   }
 
   /**
-   * A running program's ask (SupervisorAllocationBudget.acquireRunning), on
-   * the shared capacity ahead of every ordinary ask: granted now if it fits
-   * beside what is held, whatever is queued, or else as soon as it does.
+   * A running program's ask (SupervisorAllocationBudget.acquireRunning),
+   * ahead of every ordinary ask: granted now if it fits beside what is held,
+   * whatever is queued (a small one in its reserve too), or else as soon as
+   * it fits in the shared capacity, the credit running work and reclaims
+   * free. It never waits on the reserve, which neither frees.
    */
   acquireAhead(bytes: number, signal?: AbortSignal): CreditWait {
     this.validateRequest(bytes);
+    const now = signal?.aborted ? null : this.tryAcquireAhead(bytes);
+    if (now) return { lease: Promise.resolve(now), waiting: () => false };
     return this.general.acquireAhead(bytes, signal);
   }
 
   /** acquireAhead's credit now, or null. */
   tryAcquireAhead(bytes: number): ResizableCreditLease | null {
     this.validateRequest(bytes);
-    return this.general.tryAcquire(bytes, true);
+    const shared = this.general.tryAcquire(bytes, true);
+    const small = this.isSmall(bytes) ? this.small : null;
+    return shared ?? small?.tryAcquire(bytes, true) ?? null;
   }
 
   acquire(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease> {

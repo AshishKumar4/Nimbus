@@ -16,6 +16,7 @@ import {
 } from './limits.js';
 import {
   WeightedCreditPool,
+  type CreditWait,
   type ResizableCreditLease,
   type WeightedCreditPoolOptions,
 } from './weighted-credit-pool.js';
@@ -143,10 +144,15 @@ export class SupervisorAllocationBudget {
    */
   reclaimable(reclaim: () => void): () => void {
     this.reclaimers.add(reclaim);
+    // A running ask queued before this launch parked is owed it, once the registration has returned.
+    if (this.runningWaits()) queueMicrotask(() => this.reclaimForRunning());
     return () => {
       this.reclaimers.delete(reclaim);
     };
   }
+
+  /** Running asks (acquireRunning) not yet settled. */
+  private readonly running = new Set<CreditWait>();
 
   /**
    * Running work's credit, the lock order's one exception
@@ -157,13 +163,27 @@ export class SupervisorAllocationBudget {
    */
   async acquireRunning(bytes: number, signal?: AbortSignal, drivesLifecycle = true): Promise<ResizableCreditLease> {
     const wait = this.credits.acquireAhead(Math.min(bytes, this.capacity), signal);
-    // What a reclaim frees goes to the asks ahead first, so to this one.
+    this.running.add(wait);
+    try {
+      this.reclaimForRunning();
+      return this.wrap(await wait.lease, drivesLifecycle);
+    } finally {
+      this.running.delete(wait);
+    }
+  }
+
+  /** Reclaim parked launches' credit, the oldest parked first, while a running ask waits: what a reclaim frees goes to running asks first. */
+  private reclaimForRunning(): void {
     for (const reclaim of this.reclaimers) {
-      if (wait.granted()) break;
+      if (!this.runningWaits()) return;
       this.reclaimers.delete(reclaim);
       reclaim();
     }
-    return this.wrap(await wait.lease, drivesLifecycle);
+  }
+
+  private runningWaits(): boolean {
+    for (const wait of this.running) if (wait.waiting()) return true;
+    return false;
   }
 
   /** acquireRunning's credit now, ahead of every queued ask, without reclaiming, or null. */
