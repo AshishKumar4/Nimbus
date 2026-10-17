@@ -6831,9 +6831,11 @@ export class FacetManager {
     if (vfsState.bundleKey !== undefined) this._dropPrefetchCacheEntry(vfsState.bundleKey);
     releaseGeneratedSources(vfsState);
     const maxBundleBytes = Math.max(0, (vfsState.rawBytes ?? 0) - error.over);
+    // Every later credit retry or replay builds this same effective, ceiling-bounded launch.
+    spec.maxBundleBytes = maxBundleBytes;
     console.warn(`[facet-manager] pid ${entry.pid}: ${error.message}; building it again with its walked modules bounded at `
       + `${maxBundleBytes.toLocaleString('en-US')} bytes, what earlier runs executed staged as far as that allows`);
-    return this._buildProcessBundle(entry, { ...spec, maxBundleBytes }, pacer);
+    return this._buildProcessBundle(entry, spec, pacer);
   }
 
   /**
