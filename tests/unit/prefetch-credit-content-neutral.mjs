@@ -11,7 +11,7 @@ import { launchManager, launchSession } from './lib/facet-launch-harness.mjs';
 import { moduleMapBundle } from './lib/module-map-bundle.mjs';
 import { runScenarios, until } from './lib/resident-body.mjs';
 
-async function compare(free, expectBounce) {
+async function compare(free, expectBounce, observedOnly = false) {
   adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
   const session = launchSession();
   const fs = session.vfs.as(CRED_KERNEL);
@@ -21,8 +21,8 @@ async function compare(free, expectBounce) {
   fs.writeFile('home/user/app/entry.cjs', 'module.exports = require("pkg");', { mode: 0o644 });
   fs.writeFile('home/user/node_modules/pkg/package.json', JSON.stringify({ name: 'pkg', main: 'index.cjs' }), { mode: 0o644 });
   fs.writeFile('home/user/node_modules/pkg/index.cjs', 'module.exports = () => import("./lazy.cjs");', { mode: 0o644 });
-  fs.writeFile('home/user/node_modules/pkg/lazy.cjs', `module.exports = require("./deep.cjs");\n// ${'l'.repeat(32 * 1024)}\n`, { mode: 0o644 });
-  fs.writeFile('home/user/node_modules/pkg/deep.cjs', `module.exports = 7;\n// ${'d'.repeat(96 * 1024)}\n`, { mode: 0o644 });
+  fs.writeFile('home/user/node_modules/pkg/lazy.cjs', `module.exports = require("./deep.cjs");\n// ${'l'.repeat((observedOnly ? 1 : 32) * 1024)}\n`, { mode: 0o644 });
+  fs.writeFile('home/user/node_modules/pkg/deep.cjs', `module.exports = 7;\n// ${'d'.repeat((observedOnly ? 1 : 96) * 1024)}\n`, { mode: 0o644 });
   fs.writeFile('home/user/node_modules/learned/package.json', JSON.stringify({ name: 'learned', main: 'index.cjs' }), { mode: 0o644 });
   fs.writeFile('home/user/node_modules/learned/index.cjs', `module.exports = "learned";\n// ${'e'.repeat(32 * 1024)}\n`, { mode: 0o644 });
   fs.writeFile('opt/observed.txt', `learned synchronous read\n${'o'.repeat(128 * 1024)}`, { mode: 0o644 });
@@ -93,6 +93,7 @@ async function compare(free, expectBounce) {
 
 await runScenarios(fileURLToPath(import.meta.url), {
   bouncesWithoutChangingContent: () => compare(256 * 1024, true),
+  observedReadsBounceWithoutChangingContent: () => compare(256 * 1024, true, true),
   fittingTryHasIdenticalContent: () => compare(6 * 1024 * 1024, false),
 });
 console.log('prefetch-credit-content-neutral: tight admission changes scheduling, never the map or plan');

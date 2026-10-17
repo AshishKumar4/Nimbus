@@ -366,13 +366,14 @@ await runScenarios(fileURLToPath(import.meta.url), {
       cwd, filename: `${cwd}/manifest-run.js`, captureOutput: true,
     });
     try {
-      await until(() => readSupervisorAllocationBudget().queued === 1, 'eager metadata crosses the final raw-byte bound and bounces');
-      assert.ok(reads.some((path) => path.endsWith('/manifest/package.json')), 'the existing eager-manifest walk reads metadata before its final check');
+      await until(() => readSupervisorAllocationBudget().queued === 1, 'metadata crosses the transient abort limit and bounces');
+      assert.equal(reads.filter((path) => path.endsWith('/manifest/package.json')).length, 0, 'the transient limit refuses the metadata file from its stat before reading it');
       assert.equal(readSupervisorAllocationBudget().current, budget.capacity - 192 * 1024, 'the metadata bounce returns its partial share');
     } finally {
       metadataHold.release();
     }
     ran(await metadata, '7');
+    assert.ok(reads.some((path) => path.endsWith('/manifest/package.json')), 'the full-credit retry reads the metadata file');
     drained();
   },
 
